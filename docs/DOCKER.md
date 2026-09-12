@@ -61,7 +61,7 @@ and the rest of the app keeps working.
 | Magenta RT2 | External engine | No auto-spawn in the container (the engine needs a GPU + JAX/MLX stack). Point `THEDAW_MAGENTA_URL` at a separately-run engine — e.g. a companion GPU container or a host on the LAN — and the module talks to it over HTTP. |
 | VST3 hosting (audio) | Works headless | `pedalboard` ships Linux wheels, so plugins can process audio in the container. Plugin binaries are per-OS (a Windows `.vst3` never loads on Linux) and native editor windows cannot display headless. |
 | Kinect point cloud, Quest bridge | Unavailable | Both need desktop hardware attached to the host. |
-| MuseScore engraving (PDF/SVG) | Off | No MuseScore binary is installed; MusicXML export still works. |
+| MuseScore engraving (PDF/SVG) | Off | No MuseScore binary is installed. PDF and SVG still come from the headless OSMD renderer when node and the frontend's node_modules are in the image; MusicXML and ABC export always work. |
 | Whisper transcription sidecar | Off | The sidecar bootstraps its own venv on Windows and is not provisioned in the image. |
 
 ## Image size expectations

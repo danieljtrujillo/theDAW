@@ -55,6 +55,12 @@ export interface NotationCapabilities {
   /** True when PDF can be engraved headlessly through the frontend's OSMD,
    *  which needs no MuseScore install. */
   osmd_pdf?: boolean;
+  /** Engines that can engrave each of pdf / svg, in the order the backend
+   *  tries them: 'osmd' (the SCORE tab's own renderer) first, 'musescore' as
+   *  the stand-in. An empty list means the format is not offered. */
+  engravers?: Record<string, string[]>;
+  /** Where to get MuseScore when no engraver is present. */
+  musescore_download_url?: string;
   formats: string[];
   tab_tunings?: string[];
   /** Open-string MIDI pitches per tuning id, low string first (the backend's
@@ -240,10 +246,12 @@ export function invalidateArtifactText(artifactId?: string): void {
   else artifactTextCache.clear();
 }
 
-/** Download a score as a zip of the source + a PDF engraved on download by
- *  the headless OSMD renderer (the MusicXML is always included; the PDF only
- *  when that renderer is available — MuseScore plays no part in PDF). Use for
- *  musicxml sheets. */
-export function notationPackUrl(artifactId: string): string {
-  return `/api/notation/pack/${encodeURIComponent(artifactId)}`;
+/** Download a score as a zip of the symbolic source + a PDF engraved on
+ *  download (the headless OSMD renderer, or MuseScore when that is missing;
+ *  with neither the zip carries the source alone). A musicxml sheet packs as
+ *  MusicXML + PDF, a midi artifact as MIDI + PDF. `parts` (indices in
+ *  <part-list> order) scopes both members to those parts (`?parts=0,2`). */
+export function notationPackUrl(artifactId: string, parts?: number[]): string {
+  const base = `/api/notation/pack/${encodeURIComponent(artifactId)}`;
+  return parts && parts.length > 0 ? `${base}?parts=${parts.map((p) => String(p)).join(',')}` : base;
 }

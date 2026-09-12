@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Download, FileMusic, Guitar, LayoutGrid, Loa
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
+import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import {
   buildTimeMap,
   createCursorDriver,
@@ -300,15 +301,24 @@ export const ScoreView: React.FC = () => {
     }
   };
 
-  // Always the whole sheet: no format but beatsaber honours options.parts, and
-  // beatsaber goes through its popover. The EXPORT menu disables the per-part
-  // entries of every other format for that reason (score/exportMenuModel.ts).
-  const exportSelectedAs = async (format: string) => {
-    if (!selectedEntryId || !selectedArtifact || selectedArtifact.kind !== 'musicxml') return;
+  // Any part, any format: options.parts scopes every export-route format to
+  // one part (the backend filters the sheet with stage_parts, then converts);
+  // null exports the whole sheet. A MIDI artifact exports the same way (the
+  // backend stages it through music21 first).
+  const exportSelectedAs = async (format: string, partIndex: number | null = null) => {
+    if (!selectedEntryId || !selectedArtifact) return;
+    if (selectedArtifact.kind !== 'musicxml' && selectedArtifact.kind !== 'midi') return;
     setExporting(format);
     try {
-      const artifact = await exportArtifact(selectedEntryId, selectedArtifact.id, format);
-      logInfo('score', `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`);
+      const options = partIndex === null ? undefined : { parts: [partIndex] };
+      const artifact = await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
+      const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
+      logInfo(
+        'score',
+        partName
+          ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
+          : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
+      );
       await loadArtifacts();
       if (artifact?.id) setSelectedArtifactId(artifact.id);
     } catch (e) {
@@ -443,14 +453,15 @@ export const ScoreView: React.FC = () => {
   /** Open the Beat Saber popover; a part index (from a per-part EXPORT menu
    *  entry) pre-selects that one part, null offers every pitched part. */
   const openBeatSaber = (partIndex: number | null = null) => {
-    if (!selectedArtifact || selectedArtifact.kind !== 'musicxml') return;
+    if (!selectedArtifact || (selectedArtifact.kind !== 'musicxml' && selectedArtifact.kind !== 'midi')) return;
     const id = selectedArtifact.id;
     bsForRef.current = id;
     const known = knownParts(id);
     setBsParts(known ? known.map((p) => p.name) : null);
     setBsInitialParts(partIndex === null ? null : [partIndex]);
     setBsOpen(true);
-    if (!known) {
+    // A MIDI has no <part-list> to read; the backend maps every pitched part.
+    if (!known && selectedArtifact.kind === 'musicxml') {
       discoverParts(id)
         .then((parts) => {
           if (bsForRef.current === id) setBsParts(parts.map((p) => p.name));
@@ -484,6 +495,42 @@ export const ScoreView: React.FC = () => {
       .finally(() => {
         if (partsForRef.current === id) setPartsLoading(false);
       });
+  };
+
+  // The EXPORT menu's LOCATE MUSESCORE… entry (offered when no engraver is
+  // present): pick the executable, save it in Settings (notation.musescore_path),
+  // then re-read what the backend can do so PDF/SVG light up without a restart.
+  // In a browser there is no file picker; Settings has the path field instead.
+  const onExportAction = async (id: string) => {
+    if (id !== 'locate-musescore') return;
+    const selectFile = (window as unknown as {
+      electronAPI?: { selectFile?: () => Promise<{ canceled: boolean; filePaths: string[] }> };
+    }).electronAPI?.selectFile;
+    if (!selectFile) {
+      window.dispatchEvent(new Event('thedaw:open-settings'));
+      logInfo('score', 'Set the MuseScore path in Settings: the artist button (top right of Settings) opens the field.');
+      return;
+    }
+    try {
+      const r = await selectFile();
+      if (r.canceled || !r.filePaths[0]) return;
+      const chosen = r.filePaths[0];
+      const saved = await useFeatureToggleStore.getState().patch({ notation: { musescore_path: chosen } });
+      if (!saved) {
+        logError('score', `Could not save the MuseScore path ${chosen}`);
+        return;
+      }
+      const next = await getNotationCapabilities();
+      setCaps(next);
+      logInfo(
+        'score',
+        next.musescore
+          ? `MuseScore set to ${chosen}`
+          : `MuseScore path saved (${chosen}), but the backend could not run it — check it is the MuseScore executable`,
+      );
+    } catch (e) {
+      logError('score', `Could not set the MuseScore path: ${e instanceof Error ? e.message : String(e)}`);
+    }
   };
 
   // PAGE and STRIP are the expensive mounts (an engraving pass per open); once
@@ -778,7 +825,8 @@ export const ScoreView: React.FC = () => {
             partsLoading={partsLoading}
             exporting={exporting}
             onOpen={onExportMenuOpen}
-            onExport={(fmt) => void exportSelectedAs(fmt)}
+            onExport={(fmt, part) => void exportSelectedAs(fmt, part)}
+            onAction={(id) => void onExportAction(id)}
             onOpenBeatSaber={openBeatSaber}
             popoverOpen={bsOpen}
           >

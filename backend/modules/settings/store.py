@@ -110,6 +110,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # editable in Settings. The engine falls back to GANTASMO even if this
         # is blanked, so a sheet is never credited to "Music21".
         "artist": "GANTASMO",
+        # Path to the MuseScore executable the user picked (Settings → artist
+        # popover → MuseScore, or the SCORE tab's LOCATE MUSESCORE…). Empty =
+        # auto-detect (PATH, then the standard install locations). MuseScore
+        # stands in for the headless OSMD renderer for PDF/SVG when node or the
+        # frontend dependencies are missing. `patch` only accepts keys listed
+        # here, so this default is what lets the PATCH land.
+        "musescore_path": "",
     },
 }
 
