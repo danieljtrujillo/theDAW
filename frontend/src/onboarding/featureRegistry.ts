@@ -505,6 +505,21 @@ export const FEATURES: FeatureEntry[] = [
     featured: true,
   },
   {
+    id: 'import',
+    name: 'Import',
+    what: 'Bring audio files, a .tasmo project or a DAW project into theDAW from any tab',
+    how: [
+      'Click IMPORT in the header — it is in the same place on every tab.',
+      'Choose Audio files to add tracks to the library, Open project for a .tasmo, or DAW project for an Ableton set.',
+      'Or drop audio files straight onto the IMPORT button.',
+    ],
+    where: 'Header, right',
+    surface: { kind: 'shell' },
+    aliases: ['open', 'load', 'add', 'upload', 'file', 'files', 'audio files', 'tracks', 'tasmo', 'ableton', 'als', 'daw project'],
+    guide: 'App Menu and Project Operations',
+    locate: tourTarget('import'),
+  },
+  {
     id: 'prompt',
     name: 'Prompt box',
     what: 'Where you describe the sound you want before pressing CREATE',

@@ -29,6 +29,7 @@ import { FeatureNotes } from '../../onboarding/FeatureNotes';
 import { HelpSearchPopover } from '../../onboarding/HelpSearchPopover';
 import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import { TopBarButton } from './TopBarButton';
+import { ImportMenu, IMPORT_AUDIO_EVENT } from './ImportMenu';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
@@ -283,15 +284,16 @@ export const Shell: React.FC = () => {
       style={{
         ...({ '--layout-zoom': String(layoutZoom) } as React.CSSProperties),
         zoom: layoutZoom,
-        height: 'calc((100vh - 3.5rem) / var(--layout-zoom))',
+        // FOOTER_H (lib/layoutScale.ts) is the fixed, unzoomed PlayerFooter below.
+        height: `calc((100vh - ${FOOTER_H}px) / var(--layout-zoom))`,
         ...(editTheme.vars as React.CSSProperties),
       }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
-          Mobile / Help / app-menu (right). G-Search moved to the footer.
+          Mobile / Help / Import / app-menu (right). G-Search moved to the footer.
 
           z-40 is about what DROPS OUT of this row, not about the row: the app
-          menu and the help search hang below it, over the library rail (z-20)
+          menu, the import menu and the help search hang below it, over the library rail (z-20)
           and the bottom dock (z-30). At z-10 they were painted behind an open
           rail — the header never overlaps either strip itself, so raising it
           changes nothing else. It stays under the modal layer (z-50 and up). */}
@@ -319,7 +321,7 @@ export const Shell: React.FC = () => {
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Order: Mobile, Help, then the app menu (hamburger) on the far right. */}
+          {/* Order: Mobile, Help, Import, then the app menu (hamburger) on the far right. */}
           <TopBarButton
             onClick={() => setShareOpen(true)}
             icon={<Smartphone className="w-3.5 h-3.5" />}
@@ -330,9 +332,17 @@ export const Shell: React.FC = () => {
               in, beside the search field, because "open the manual" is the
               answer to a question the search can usually answer better. */}
           <HelpSearchPopover onOpenDocs={() => setDocsOpen(true)} />
+          {/* Global import — audio files to the library, a .tasmo, or a DAW
+              project. On every tab, in one place, next to the menu that also
+              lists the project ops, so nobody has to hunt per workspace. */}
+          <ImportMenu
+            onOpenProject={() => openProject('open')}
+            onImportDawProject={() => openDawImport()}
+          />
           {/* App menu — project ops, backup/migrate, updates, Settings, Edit
-              Layout, DAW import, and .tasmo save/open all live here. It is the
-              sole entry point for Settings (the header gear was retired). */}
+              Layout, DAW import (also under IMPORT), and .tasmo save/open all
+              live here. It is the sole entry point for Settings (the header
+              gear was retired). */}
           <span data-tour="app-menu" className="inline-flex">
             <HamburgerMenu
               onNewProject={handleNewProject}
@@ -620,6 +630,10 @@ export const Shell: React.FC = () => {
           onToggleShowAtStartup={setHomeShowAtStartup}
           onNavigate={(tab) => setCenterTab(tab)}
           onOpenProject={() => openProject('open')}
+          // Synchronous on purpose: the header's ImportMenu clicks its file
+          // input inside this same user activation, and a deferred dispatch
+          // would leave the browser refusing to open the picker.
+          onImportAudio={() => window.dispatchEvent(new CustomEvent(IMPORT_AUDIO_EVENT))}
           onStartTour={startTour}
           onClose={() => setHomeOpen(false)}
         />
@@ -705,7 +719,7 @@ const ShellBottomDock: React.FC = () => {
   // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
   // LOG overlay. Maximized fills the work area. The height MUST be computed in
   // the same zoom-aware space as the .dense-layout root (height =
-  // calc((100vh - 3.5rem) / var(--layout-zoom))); a raw `100vh` calc here ignores
+  // calc((100vh - FOOTER_H) / var(--layout-zoom))); a raw `100vh` calc here ignores
   // --layout-zoom and, at zoom > 1, overflows the root's overflow-hidden so the
   // dock's own bottom (e.g. the Score viewer's page/zoom controls) is clipped.
   // Reserve 4.5rem inside the root for the header (h-11 = 44px) + the always-on
@@ -722,7 +736,7 @@ const ShellBottomDock: React.FC = () => {
     Math.min(multiHeight, Math.floor(workAreaH * DOCK_MAX_FRACTION_OF_WORK)),
   );
   const bodyHeight = multiMaximized
-    ? 'calc((100vh - 3.5rem) / var(--layout-zoom) - 4.5rem)'
+    ? `calc((100vh - ${FOOTER_H}px) / var(--layout-zoom) - 4.5rem)`
     : `${effectiveMultiHeight}px`;
   // The LOG strip section auto-fits its content (the telemetry readouts + the
   // fixed action button). Mirror its measured width into logWidth so the LOG

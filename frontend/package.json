@@ -15,7 +15,7 @@
     "lint": "tsc --noEmit",
     "screenshots": "tsx ../scripts/screenshots/capture.ts",
     "docs:coverage": "tsx ../scripts/screenshots/featureCoverage.ts",
-    "test": "npm run test:playalong && npm run test:sing && npm run test:onboarding && npm run test:lyricstudio && npm run test:loom && npm run test:audio && npm run test:effects && npm run test:orb && npm run test:generate && npm run test:rendergate && npm run test:score-export-menu",
+    "test": "npm run test:playalong && npm run test:sing && npm run test:onboarding && npm run test:lyricstudio && npm run test:loom && npm run test:audio && npm run test:effects && npm run test:orb && npm run test:generate && npm run test:rendergate && npm run test:import-audio && npm run test:score-export-menu",
     "test:playalong": "tsx src/state/playAlongStore.test.ts && tsx src/lib/chordShapes.test.ts && tsx src/components/layout/score/strip/stripXMap.test.ts && tsx src/components/layout/score/highway/schedule.test.ts && tsx src/components/layout/score/highway/HighwayScene.test.ts && tsx src/components/layout/score/chords/ChordDiagram.test.tsx && tsx src/components/layout/score/scoreFit.test.ts && tsx src/components/layout/score/playAlong/latencyMath.test.ts && tsx src/components/layout/score/playAlong/partRegistry.test.ts && tsx src/components/layout/score/beatsaber/beatsaberMeta.test.ts",
     "test:score-export-menu": "tsx src/components/layout/score/exportMenu.test.ts",
     "test:sing": "tsx src/components/layout/sing/singSync.test.ts && tsx src/components/layout/sing/wires.test.ts",
@@ -26,7 +26,8 @@
     "test:audio": "tsx src/lib/wavEncode.test.ts",
     "test:effects": "tsx src/components/audio/effects/editModulesContract.test.ts && tsx src/components/audio/effects/effectSchema.test.ts && tsx src/state/effectCatalog.test.ts",
     "test:orb": "tsx src/orb-kit/actionHandlers.test.ts && tsx src/orb-kit/appContext.test.ts && tsx src/orb-kit/assistantEvents.test.ts && tsx src/orb-kit/promptEnhancer.test.ts",
-    "test:generate": "tsx src/state/generateStore.test.ts && tsx src/state/spectrogramRequest.test.ts"
+    "test:generate": "tsx src/state/generateStore.test.ts && tsx src/state/spectrogramRequest.test.ts",
+    "test:import-audio": "tsx src/lib/importAudioFiles.test.ts"
   },
   "dependencies": {
     "@coderline/alphatab": "^1.8.3",
