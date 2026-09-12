@@ -243,14 +243,14 @@ def capabilities() -> dict[str, Any]:
         "beatsaber",
         "chordtrack",
     ]
-    # PDF comes from the headless OSMD renderer, so it no longer depends on a
-    # MuseScore install; MuseScore is still what engraves SVG.
+    # PDF comes from the headless OSMD renderer and from nothing else:
+    # convert_score routes "pdf" to _convert_to_pdf only, so listing it for a
+    # MuseScore-only machine would offer an export that then fails. MuseScore
+    # is what engraves SVG.
     if osmd["ok"]:
         formats.append("pdf")
     if musescore is not None:
         formats.append("svg")
-        if not osmd["ok"]:
-            formats.append("pdf")
     return {
         "ok": True,
         "music21": importlib.util.find_spec("music21") is not None,
@@ -262,9 +262,7 @@ def capabilities() -> dict[str, Any]:
             "midi_to_musicxml": "music21",
             "midi_to_tabs": "fretboard-dp",
             "midi_to_arrangement": "music21-arrange",
-            "score_to_pdf": "osmd"
-            if osmd["ok"]
-            else ("musescore" if musescore else None),
+            "score_to_pdf": "osmd" if osmd["ok"] else None,
             "score_to_notechart": "notechart",
             "score_to_beatsaber": "beatsaber",
             "chords": "chordtrack",
@@ -505,10 +503,12 @@ def convert_score(
     and register the result as a notation artifact.
 
     ``music21`` handles ``musicxml`` directly and ``abc`` is written by
-    :mod:`.exporters.abc_writer` (music21 cannot write ABC). ``pdf`` and ``svg``
-    are engraved by the MuseScore CLI when installed; without it they return
-    ``ok=False`` with an install hint. When ``title`` is given it is stamped on
-    the score so the rendered sheet shows the originating song's name.
+    :mod:`.exporters.abc_writer` (music21 cannot write ABC). ``pdf`` is engraved
+    by the headless OSMD renderer (:mod:`.pdf_render`) and ``svg`` by the
+    MuseScore CLI when installed; a missing engraver returns ``ok=False`` with a
+    hint rather than raising, and neither stands in for the other. When
+    ``title`` is given it is stamped on the score so the rendered sheet shows
+    the originating song's name.
 
     ``options`` (per-format export options), ``audio_path``,
     ``audio_duration_sec`` and ``analysis_bpm`` are consumed by the chart-based

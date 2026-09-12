@@ -240,9 +240,10 @@ export function invalidateArtifactText(artifactId?: string): void {
   else artifactTextCache.clear();
 }
 
-/** Download a score as a zip of the source + a PDF engraved on download
- *  (headless OSMD first, MuseScore as fallback; the MusicXML is always
- *  included, the PDF only when an engraver is there). Use for musicxml sheets. */
+/** Download a score as a zip of the source + a PDF engraved on download by
+ *  the headless OSMD renderer (the MusicXML is always included; the PDF only
+ *  when that renderer is available — MuseScore plays no part in PDF). Use for
+ *  musicxml sheets. */
 export function notationPackUrl(artifactId: string): string {
   return `/api/notation/pack/${encodeURIComponent(artifactId)}`;
 }

@@ -12,8 +12,11 @@
  *
  * Keyboard: ArrowUp/Down move within a column (disabled entries skipped),
  * Home/End jump within it, ArrowRight goes from a part to its first enabled
- * format, ArrowLeft goes back to the highlighted part, Escape closes and
- * returns focus to the button, Tab closes and lets focus move on.
+ * format, ArrowLeft goes back to the highlighted part, Enter or Space
+ * activates an entry (the download entries are links, which on their own
+ * follow Enter but ignore Space), Escape closes and returns focus to the
+ * button, Tab closes and lets focus move on. Focus also returns to the
+ * button when the Beat Saber popover closes.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Download, Gamepad2, Loader2 } from 'lucide-react';
@@ -107,6 +110,20 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
     if (popoverOpen) setOpen(false);
   }, [popoverOpen]);
 
+  // The popover held focus; unmounting it (Escape, CANCEL, a finished export,
+  // a sheet change) would leave focus on <body>. Bring it back to the EXPORT
+  // button — only on a close, never on mount, and only when nothing else took
+  // focus meanwhile (a control the user clicked while the popover was open
+  // keeps it).
+  const popoverWasOpen = useRef(popoverOpen);
+  useEffect(() => {
+    const wasOpen = popoverWasOpen.current;
+    popoverWasOpen.current = popoverOpen;
+    if (wasOpen && !popoverOpen && document.activeElement === document.body) {
+      triggerRef.current?.focus();
+    }
+  }, [popoverOpen]);
+
   // Outside click closes without moving focus. The trigger is inside
   // rootRef, so the click that opened the menu is not mistaken for an
   // outside one (attaching a listener during the opening click's effect
@@ -120,18 +137,15 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
     return () => window.removeEventListener('mousedown', onDown);
   }, [open]);
 
-  // Focus lands on the highlighted part (All parts on open) so the arrow
-  // keys work at once.
+  // Focus lands on All parts when the menu opens so the arrow keys work at
+  // once. openMenu always highlights All parts, the first part button, so
+  // the effect needs nothing but `open`: keying it on the highlight as well
+  // would drag focus back to the parts column while the user is in the
+  // formats column.
   useEffect(() => {
     if (!open) return;
-    const raf = requestAnimationFrame(() => {
-      const idx = Math.max(0, model.parts.findIndex((p) => p.key === highlightedKey));
-      partRefs.current[idx]?.focus();
-    });
+    const raf = requestAnimationFrame(() => partRefs.current[0]?.focus());
     return () => cancelAnimationFrame(raf);
-    // Only on open: re-running on every highlight change would drag focus
-    // back to the parts column while the user is in the formats column.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const openMenu = () => {
@@ -257,6 +271,14 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
         <ChevronDown className="w-3 h-3" aria-hidden="true" />
       </button>
 
+      {/* Mounted with the component, not with the menu: a live region is
+          announced on a text CHANGE, and one inserted with its text already
+          in it is not reliably read. The visible hint in the parts column is
+          aria-hidden so the words are not read twice. */}
+      <span role="status" className="sr-only">
+        {partsLoading ? 'Reading parts…' : ''}
+      </span>
+
       {menuOpen && artifact && (
         <div
           id={EXPORT_MENU_ID}
@@ -297,7 +319,9 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
               );
             })}
             {partsLoading && (
-              <span className="text-[8px] text-zinc-500 px-1.5 py-1">Reading parts…</span>
+              // Not a menu item: no ref, so the arrow keys never land here;
+              // the sr-only role="status" above carries the announcement.
+              <span aria-hidden="true" className="text-[8px] text-zinc-500 px-1.5 py-1">Reading parts…</span>
             )}
           </div>
 
@@ -338,6 +362,15 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                     className={ITEM_CLS}
                     title={entry.title}
                     onClick={closeAndFocusTrigger}
+                    // A link follows Enter by itself but ignores Space (which
+                    // would scroll the page instead); a menuitem must
+                    // activate on both.
+                    onKeyDown={(e) => {
+                      if (e.key === ' ') {
+                        e.preventDefault();
+                        e.currentTarget.click();
+                      }
+                    }}
                   >
                     <Download className="w-3 h-3 shrink-0" aria-hidden="true" />
                     {entry.label}

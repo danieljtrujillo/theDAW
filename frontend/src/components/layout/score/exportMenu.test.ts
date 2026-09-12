@@ -42,6 +42,10 @@ const byId = (entries: ExportMenuEntry[], id: string) => {
   assert.equal(byId(all, 'beatsaber').kind, 'popover');
   assert.ok(all.every((e) => e.partScoped === false), 'All parts is never part-scoped');
   assert.ok(byId(all, 'pack').title.includes('engraved on download'));
+  // Neither PDF entry claims a MuseScore fallback the backend does not have:
+  // convert_score routes pdf to the OSMD renderer only (engine.py).
+  assert.ok(!byId(all, 'pdf').title.includes('MuseScore'), byId(all, 'pdf').title);
+  assert.ok(!byId(all, 'pack').title.includes('MuseScore'), byId(all, 'pack').title);
 }
 
 // (b) Without MuseScore and without the OSMD renderer: PDF and SVG stay in
@@ -54,8 +58,11 @@ const byId = (entries: ExportMenuEntry[], id: string) => {
   const svg = byId(all, 'svg');
   assert.equal(pdf.enabled, false);
   assert.equal(svg.enabled, false);
-  assert.ok(pdf.title.includes('MuseScore') && pdf.title.includes('OSMD'), pdf.title);
-  assert.ok(svg.title.includes('MuseScore'), svg.title);
+  // PDF is engraved by the headless OSMD renderer and by nothing else, so
+  // its reason must not send anyone to install MuseScore; SVG is the one
+  // format MuseScore engraves.
+  assert.ok(pdf.title.includes('OSMD') && !pdf.title.includes('MuseScore'), pdf.title);
+  assert.ok(svg.title.includes('MuseScore') && !svg.title.includes('OSMD'), svg.title);
   assert.equal(byId(all, 'abc').enabled, true);
   assert.equal(byId(all, 'notechart').enabled, true);
   assert.equal(byId(all, 'beatsaber').enabled, true);

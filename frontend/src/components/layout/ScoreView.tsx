@@ -792,6 +792,8 @@ export const ScoreView: React.FC = () => {
                   caps={caps}
                   analysisBpm={analysisBpm}
                   onDone={(artifact) => void onBeatSaberDone(artifact)}
+                  // Both paths unmount the popover; ExportMenu then returns
+                  // focus to its EXPORT button.
                   onClose={() => setBsOpen(false)}
                 />
               </React.Suspense>
@@ -1411,11 +1413,12 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
    *  OSMD already lays the score out as real A4 portrait page <svg>s, so the
    *  pages are drawn straight into the PDF as VECTORS via svg2pdf.js: staff
    *  lines stay lines and text stays selectable text, rather than a screenshot.
-   *  This deliberately does not go through the backend /export route, because
-   *  that path engraves with the MuseScore CLI and returns ok=false with an
-   *  install hint when the binary is absent (it is absent here), which left the
-   *  SCORE tab with no working PDF at all. Rendering from the pages already on
-   *  screen needs no external binary, so PDF works on every machine.
+   *  This deliberately does not go through the backend /export route: that
+   *  path engraves with the headless OSMD renderer, which needs node and the
+   *  frontend's node_modules on the backend machine and returns ok=false when
+   *  they are missing. The pages are already drawn on screen here, so
+   *  rendering them needs nothing from the backend and PDF works on every
+   *  machine.
    *
    *  Both libraries are imported dynamically to keep them out of the initial
    *  bundle, matching how OSMD and alphaTab are already loaded in this file. */

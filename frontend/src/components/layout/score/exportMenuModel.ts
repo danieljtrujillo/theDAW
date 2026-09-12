@@ -79,7 +79,7 @@ const LABELS: Record<ExportEntryId, string> = {
 
 /** Hover text for an offered sheet export. */
 const OFFERED_TITLES: Record<SheetExportFormat, string> = {
-  pdf: 'Export PDF from this score (engraved by the headless OSMD renderer, or MuseScore)',
+  pdf: 'Export PDF from this score (engraved by the headless OSMD renderer, the engraver the SCORE tab draws with)',
   abc: 'Export ABC from this score',
   svg: 'Export SVG from this score (engraved by MuseScore)',
   notechart: 'Export the Unity note chart (timecode + spelled notes) from this score',
@@ -88,15 +88,17 @@ const OFFERED_TITLES: Record<SheetExportFormat, string> = {
 
 const XML_TITLE = 'MusicXML — the sheet itself';
 const PACK_TITLE =
-  'MusicXML + a PDF engraved on download (headless OSMD, MuseScore as fallback); a big score takes a few seconds';
+  'MusicXML + a PDF engraved on download by the headless OSMD renderer (the MusicXML alone without it); a big score takes a few seconds';
 
 /** Why a sheet export is not offered. The pdf/svg reasons mirror how
- *  capabilities() gates them (backend/modules/notation/engine.py). */
+ *  capabilities() gates them (backend/modules/notation/engine.py): pdf on
+ *  the headless OSMD renderer, svg on MuseScore — neither engraver stands in
+ *  for the other. */
 function unavailableReason(id: SheetExportFormat, caps: NotationCapabilities | null): string {
   if (!caps) return 'Reading backend capabilities…';
   switch (id) {
     case 'pdf':
-      return 'PDF needs the headless OSMD renderer (node) or MuseScore on the backend';
+      return 'PDF needs the headless OSMD renderer (node) on the backend';
     case 'svg':
       return 'SVG needs MuseScore on the backend';
     default:
