@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { X, Send, Sparkles, Bot, User, Loader2, Command, Play, Zap, RefreshCw, Trash2, Minimize2, Maximize2, Copy, Square, Paperclip, Mic, MicOff, FileText, Image as ImageIcon, Music, Film } from 'lucide-react';
+import { X, Send, Sparkles, Bot, User, Loader2, Command, Play, Zap, KeyRound, RefreshCw, Trash2, Minimize2, Maximize2, Copy, Square, Paperclip, Mic, MicOff, FileText, Image as ImageIcon, Music, Film } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ProviderModelSelector, type ModelInfo } from './ProviderModelSelector';
+import { SecretFieldLabel } from '../components/ui/SecretFieldLabel';
 import { actionFromAssistantEvent, sanitizeAssistantAction, statusFromAssistantEvent } from './assistantEvents';
 import { getToolTier, describeToolCall } from './tool-tiers';
 import { buildtheDAWAppContext } from './appContext';
@@ -830,7 +831,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 <div className="border-b border-border">
                     <div className="flex border-b border-white/5">
                         <button onClick={() => setSettingsTab('model')} className={`flex-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'model' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}>Chat</button>
-                        <button onClick={() => setSettingsTab('keys')} className={`flex-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'keys' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}>Keys</button>
+                        <button onClick={() => setSettingsTab('keys')} className={`flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'keys' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}><KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />Keys</button>
                     </div>
 
                     {settingsTab === 'model' && (
@@ -845,10 +846,15 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             />
                             <div className="flex items-center justify-between text-[10px] pt-0.5">
                                 <span className="text-muted">Active: <span className="font-mono text-primary">{selectedModel}</span></span>
-                                <span className="font-mono text-green-400">
-                                    {selectedProvider === 'claude'
-                                        ? `effort ${DEFAULT_ASSISTANT_EFFORT}`
-                                        : `${keyPools[selectedProvider]?.available ?? '?'}/${keyPools[selectedProvider]?.total ?? '?'} keys`}
+                                <span className="inline-flex items-center gap-1 font-mono text-green-400">
+                                    {selectedProvider === 'claude' ? (
+                                        `effort ${DEFAULT_ASSISTANT_EFFORT}`
+                                    ) : (
+                                        <>
+                                            <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                            {`${keyPools[selectedProvider]?.available ?? '?'}/${keyPools[selectedProvider]?.total ?? '?'} keys`}
+                                        </>
+                                    )}
                                 </span>
                             </div>
                             <ModelCapabilityHints
@@ -865,6 +871,9 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 const pool = keyPools[p.id];
                                 const keyCount = pool?.total || 0;
                                 const availCount = pool?.available || 0;
+                                // One id per provider row: it labels the paste field, and it is what
+                                // the Add button points aria-controls at while that field is open.
+                                const keyFieldId = `assistant-key-input-${p.id}`;
                                 return (
                                 <div key={p.id} className="py-1.5 border-b border-white/5 last:border-0">
                                     <div className="flex items-center gap-2">
@@ -881,10 +890,26 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                             )}
                                             <button
                                                 onClick={() => { setEditingKeyProvider(editingKeyProvider === p.id ? null : p.id); setKeyInput(''); }}
-                                                className="ml-auto text-[9px] text-primary/70 hover:text-primary"
-                                            >{editingKeyProvider === p.id ? 'Cancel' : (keyCount > 0 ? '+ Add' : 'Add keys')}</button>
+                                                aria-expanded={editingKeyProvider === p.id}
+                                                aria-controls={editingKeyProvider === p.id ? keyFieldId : undefined}
+                                                title={editingKeyProvider === p.id ? `Close the ${p.label} key field` : `Paste ${p.label} API keys`}
+                                                className="ml-auto inline-flex items-center gap-1 text-[9px] text-primary/70 hover:text-primary"
+                                            >
+                                                {editingKeyProvider === p.id
+                                                    ? <X className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                                    : <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />}
+                                                {editingKeyProvider === p.id ? 'Cancel' : (keyCount > 0 ? 'Add' : 'Add keys')}
+                                            </button>
                                             {keyCount > 0 && (
-                                                <button onClick={() => clearProviderKeys(p.id)} className="text-[9px] text-red-400/50 hover:text-red-400">Clear</button>
+                                                <button
+                                                    onClick={() => clearProviderKeys(p.id)}
+                                                    aria-label={`Clear every ${p.label} key`}
+                                                    title={`Forget every ${p.label} key`}
+                                                    className="inline-flex items-center gap-1 text-[9px] text-red-400/50 hover:text-red-400"
+                                                >
+                                                    <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                                    Clear
+                                                </button>
                                             )}
                                         </div>
                                     </div>
@@ -892,8 +917,19 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     {/* Key input area — supports pasting multiple keys */}
                                     {editingKeyProvider === p.id && (
                                         <div className="mt-1.5 space-y-1">
+                                            {/* A real label, not a placeholder: this field carried a name
+                                                and nothing else, so it was anonymous to a screen reader
+                                                and unmarked on screen. */}
+                                            <SecretFieldLabel
+                                                htmlFor={keyFieldId}
+                                                className="text-[9px] font-mono uppercase tracking-wider text-muted"
+                                                iconClassName="w-3 h-3 shrink-0 text-primary/70"
+                                            >
+                                                {p.label} API keys
+                                            </SecretFieldLabel>
                                             <textarea
-                                                name={`assistant-key-input-${p.id}`}
+                                                id={keyFieldId}
+                                                name={keyFieldId}
                                                 value={keyInput}
                                                 onChange={e => setKeyInput(e.target.value)}
                                                 placeholder="Paste keys (one per line, or comma/semicolon separated)..."
@@ -916,14 +952,22 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     {/* Show individual keys in pool */}
                                     {pool?.keys && pool.keys.length > 0 && editingKeyProvider !== p.id && (
                                         <div className="mt-1 space-y-0.5">
-                                            {pool.keys.map((k, i) => (
+                                            {pool.keys.map((k) => (
                                                 <div key={k.id} className="flex items-center gap-1.5 pl-2 text-[9px]">
-                                                    <span className={`w-1.5 h-1.5 rounded-full ${k.available ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${k.available ? 'bg-green-400' : 'bg-yellow-400'}`} title={k.available ? 'Available' : 'Cooling down'} />
+                                                    <KeyRound className="w-3 h-3 shrink-0 text-muted/60" aria-hidden="true" />
                                                     <span className="font-mono text-muted">{k.masked}</span>
                                                     <span className="text-muted/40">{k.source}</span>
                                                     {k.fail_count > 0 && <span className="text-red-400/60">{k.fail_count}x fail</span>}
                                                     {k.source !== 'env' && (
-                                                        <button onClick={() => removeOneKey(p.id, k.id)} className="ml-auto text-red-400/40 hover:text-red-400">x</button>
+                                                        <button
+                                                            onClick={() => removeOneKey(p.id, k.id)}
+                                                            aria-label={`Remove ${p.label} key ${k.masked}`}
+                                                            title="Remove this key"
+                                                            className="ml-auto text-red-400/40 hover:text-red-400"
+                                                        >
+                                                            <X className="w-3 h-3" aria-hidden="true" />
+                                                        </button>
                                                     )}
                                                 </div>
                                             ))}

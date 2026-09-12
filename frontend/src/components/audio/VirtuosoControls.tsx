@@ -10,7 +10,7 @@
  */
 import React from 'react';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
-import { LibraryMidiPicker } from './LibraryMidiPicker';
+import { LibraryPicker, MIDI_ONLY_TABS } from './LibraryPicker';
 import { logError } from '../../state/logStore';
 import {
   STYLES,
@@ -293,14 +293,19 @@ export const VirtuosoControls: React.FC = () => {
         </div>
       )}
 
-      <LibraryMidiPicker
+      <LibraryPicker
         open={pickGroove}
         title="Pick a groove reference"
+        subtitle="Its timing and velocities become the groove template"
+        tabs={MIDI_ONLY_TABS}
+        allowFiles
+        showInstrument
         onClose={() => setPickGroove(false)}
-        onPick={(bytes, label) => {
-          const ok = setGrooveFromBytes(bytes, label);
-          if (!ok) logError('virtuoso', 'That MIDI had no notes to learn a groove from.');
+        onPick={(pick) => {
           setPickGroove(false);
+          if (pick.kind !== 'midi') return;
+          const ok = setGrooveFromBytes(pick.bytes, pick.label);
+          if (!ok) logError('virtuoso', 'That MIDI had no notes to learn a groove from.');
         }}
       />
     </>

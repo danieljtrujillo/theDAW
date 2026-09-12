@@ -45,6 +45,10 @@ export type ContextMenuItem =
       label: React.ReactNode;
       /** Right-aligned hint badge (hotkey, count, etc.) */
       hint?: React.ReactNode;
+      /** Native tooltip on the row — the long form of what the item does.
+       *  Note a DISABLED item is `pointer-events: none`, so a reason that the
+       *  user must see belongs in `hint`, which is always visible. */
+      title?: string;
       danger?: boolean;
       disabled?: boolean;
       onSelect: () => void;
@@ -199,6 +203,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             type="button"
             role="menuitem"
             disabled={item.disabled}
+            title={item.title}
             onClick={() => handleItemClick(item)}
             className={`w-full text-left px-3 py-1.5 flex items-center justify-between gap-3 disabled:opacity-40 disabled:pointer-events-none ${itemColor}`}
           >
