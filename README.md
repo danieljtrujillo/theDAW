@@ -487,7 +487,7 @@ theDAW generates its own documentation from the running app. `scripts/screenshot
 
 **Out of memory on the Medium model.** Use the `small` model, a shorter `duration`, or close other CUDA processes.
 
-**Static or noise from the Medium model on Windows.** Check `GET /api/health` for `flash_attention_active`. On Turing GPUs (RTX 20xx, GTX 16xx) it reads false by design and the model runs on an equivalent fallback. On Ampere or newer with a broken wheel, reinstall a matching wheel from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+**Static or noise from the Medium model on Windows.** Check `GET /api/health` for `flash_attention_active`. On Turing GPUs (RTX 20xx, GTX 16xx) it reads false by design and the model runs on an equivalent fallback. On Ampere or newer with a broken wheel, re-sync it — `uv sync --reinstall-package flash-attn`. The wheel has to match **torch 2.14 + CUDA 13**, which is what this project pins; `pyproject.toml` selects the `flash_attn-2.8.3+cu130torch2.14-cp3XX-cp3XX-win_amd64.whl` asset for your Python minor from [mjun0812/flash-attention-prebuild-wheels v0.10.2](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2). A wheel built for any other torch/CUDA pair will not import.
 
 [User Guide §23](docs/USER_GUIDE.md#23-troubleshooting) has the full list.
 
