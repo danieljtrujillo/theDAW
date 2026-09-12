@@ -65,6 +65,12 @@ export interface NotationSettings {
   /** Global artist/composer name, stamped on every generated sheet + appended
    *  to song titles. Defaults to GANTASMO. */
   artist: string;
+  /** Path to the MuseScore executable the user pointed theDAW at (Settings →
+   *  artist popover → MuseScore, or the SCORE tab's LOCATE MUSESCORE…). Empty
+   *  = the backend auto-detects (PATH, then the standard install folders).
+   *  MuseScore engraves PDF/SVG when the headless OSMD renderer (node) is
+   *  missing. */
+  musescore_path: string;
 }
 
 export interface FeatureSettings {
@@ -110,6 +116,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   },
   notation: {
     artist: 'GANTASMO',
+    musescore_path: '',
   },
 };
 

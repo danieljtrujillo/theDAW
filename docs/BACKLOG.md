@@ -172,7 +172,7 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
   - The artist/title splitter and its 30 tests exist, but every producer still calls `artist_name()` and titles with the whole raw filename, which is the exact defect the module was written to fix.
   - Fixing it means sheets, tabs, arrangements and note charts are credited correctly. Pairs with SCORE-001.
 
-- [ ] **SCORE-003** P1 S SCORE export buttons are gated on MuseScore, hiding PDF and note chart `frontend/src/components/layout/ScoreView.tsx:136`
+- [x] **SCORE-003** P1 S SCORE export buttons are gated on MuseScore, hiding PDF and note chart (closed: the EXPORT menu keys off `caps.formats`, PRs #154 and score-export-any-part-any-engine) `frontend/src/components/layout/ScoreView.tsx:136`
   - PDF is engraved headlessly by OSMD and `notechart` is a backend export format, but the button row still keys off `caps.musescore`, so a machine without MuseScore is offered only ABC.
   - The entire Unity note-chart export has no UI entry point today.
 
@@ -270,7 +270,7 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
 
 ## Docs
 
-- [ ] **DOC-001** P1 S USER_GUIDE still tells users PDF requires MuseScore `docs/USER_GUIDE.md:2143`
+- [x] **DOC-001** P1 S USER_GUIDE still tells users PDF requires MuseScore (closed with the §33.5 / §33.7 rewrite) `docs/USER_GUIDE.md:2143`
   - PDF is engraved headlessly by OSMD; the guide also omits `notechart`, the `/reindex`, `/backfill` and `/pack` endpoints, and the SCORE follow-along cursor.
   - This doc is in the RAG index, so the in-app assistant answers from it. Doc edits are approval-based.
 

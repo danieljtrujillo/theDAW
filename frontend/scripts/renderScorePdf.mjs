@@ -7,13 +7,17 @@
  * jsdom keeps one engraver for both paths, so a bundle PDF is the same engraving the
  * user already looked at on screen rather than a second renderer's approximation.
  *
- * Usage: node scripts/renderScorePdf.mjs <in.musicxml> <out.pdf> [--artist NAME] [--zoom N]
- *        [--page-width N] [--check-fit]
+ * Usage: node scripts/renderScorePdf.mjs <in.musicxml> <out.pdf|out.svg> [--artist NAME]
+ *        [--zoom N] [--page-width N] [--check-fit] [--svg]
  * On success one JSON line goes to stdout: {"ok":true,"pages":N,"bytes":M,"zoom":Z}
  * with --check-fit it also carries "fit":{"tallestBottom","usable","printable",
  * "pageHeight","bottomMargin","systems","passes","startZoom","overflows"} (OSMD units)
  * describing the measure-and-fit result; "usable" is the fit target, "printable" is
  * OSMD's PageHeight - PageBottomMargin.
+ * With --svg the engraved pages are written as SVG files instead of a PDF: page 1 at
+ * <out>, page N at <dir>/<stem>-N.svg (how MuseScore paginates SVG too); "bytes" is
+ * page 1's size and "files" lists every page written. Same engraving, same zoom and
+ * measure-and-fit as the PDF, so the pages match it and the SCORE tab.
  *
  * Measure-and-fit: without an explicit --zoom the script does what the SCORE tab
  * does after every automatic render (ScoreView.tsx doRender, maths in
@@ -59,7 +63,7 @@ const fail = (message) => {
 };
 
 // Flags that take no value; everything else consumes the next argv entry.
-const BOOLEAN_FLAGS = new Set(['check-fit']);
+const BOOLEAN_FLAGS = new Set(['check-fit', 'svg']);
 
 const parseArgs = (argv) => {
   const positional = [];
@@ -88,6 +92,8 @@ const parseArgs = (argv) => {
     // An explicit zoom is the user's choice and is never auto-fitted.
     fit: flags.zoom === undefined,
     checkFit: flags['check-fit'] === true,
+    // Write the page SVGs themselves instead of drawing them into a PDF.
+    svg: flags.svg === true,
     pageWidth: Number.isFinite(pageWidth) && pageWidth > 0 ? pageWidth : PAGE_WIDTH_PX,
   };
 };
@@ -95,8 +101,8 @@ const parseArgs = (argv) => {
 const args = parseArgs(process.argv.slice(2));
 if (!args.source || !args.output) {
   fail(
-    'usage: renderScorePdf.mjs <input.musicxml> <output.pdf> ' +
-      '[--artist NAME] [--zoom N] [--page-width N] [--check-fit]',
+    'usage: renderScorePdf.mjs <input.musicxml> <output.pdf|output.svg> ' +
+      '[--artist NAME] [--zoom N] [--page-width N] [--check-fit] [--svg]',
   );
 }
 
@@ -749,30 +755,73 @@ try {
 const pages = Array.from(host.querySelectorAll('svg'));
 if (pages.length === 0) fail('OSMD rendered no pages');
 
-// ---- PDF -------------------------------------------------------------------
+// ---- output: the page SVGs, or one PDF ----------------------------------------
 
-// Node resolves the UMD build, so the named export arrives under default.
-const svg2pdfModule = await import('svg2pdf.js');
-const svg2pdf = svg2pdfModule.svg2pdf || svg2pdfModule.default?.svg2pdf;
-if (typeof svg2pdf !== 'function') fail('svg2pdf.js did not export svg2pdf');
-const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-for (let i = 0; i < pages.length; i += 1) {
-  if (i > 0) doc.addPage('a4', 'portrait');
-  try {
-    await svg2pdf(pages[i], doc, { x: 0, y: 0, width: A4_WIDTH_MM, height: A4_HEIGHT_MM });
-  } catch (e) {
-    fail(`page ${i + 1} could not be drawn into the PDF: ${e.message}`);
+let bytesWritten = 0;
+let files;
+if (args.svg) {
+  // The engraved pages themselves, one file per page: page 1 at the output
+  // path, page N beside it as <stem>-N.svg (how MuseScore paginates SVG too).
+  // OSMD builds each page with createElementNS, so the serializer normally
+  // declares the SVG namespace itself; a root that comes out without one gets
+  // it added, or a browser would read the file as HTML. width/height stay on
+  // the root so the file has a size without a viewer computing one.
+  const { dirname, join, basename, extname } = await import('node:path');
+  const serializer = new win.XMLSerializer();
+  const ext = extname(args.output) || '.svg';
+  const stem = basename(args.output, ext);
+  const dir = dirname(args.output);
+  files = [];
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i];
+    if (!page.getAttribute('width') || !page.getAttribute('height')) {
+      const box = (page.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+      if (box.length === 4 && box.every(Number.isFinite)) {
+        if (!page.getAttribute('width')) page.setAttribute('width', String(box[2]));
+        if (!page.getAttribute('height')) page.setAttribute('height', String(box[3]));
+      }
+    }
+    let text = serializer.serializeToString(page);
+    const openTag = text.slice(0, text.indexOf('>') + 1);
+    if (!/\sxmlns=/.test(openTag)) {
+      text = text.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    if (!text.startsWith('<?xml')) text = `<?xml version="1.0" encoding="UTF-8"?>\n${text}`;
+    const target = i === 0 ? args.output : join(dir, `${stem}-${i + 1}${ext}`);
+    try {
+      writeFileSync(target, text, 'utf8');
+    } catch (e) {
+      fail(`cannot write ${target}: ${e.message}`);
+    }
+    files.push(target);
+    if (i === 0) bytesWritten = Buffer.byteLength(text, 'utf8');
   }
+} else {
+  // Node resolves the UMD build, so the named export arrives under default.
+  const svg2pdfModule = await import('svg2pdf.js');
+  const svg2pdf = svg2pdfModule.svg2pdf || svg2pdfModule.default?.svg2pdf;
+  if (typeof svg2pdf !== 'function') fail('svg2pdf.js did not export svg2pdf');
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  for (let i = 0; i < pages.length; i += 1) {
+    if (i > 0) doc.addPage('a4', 'portrait');
+    try {
+      await svg2pdf(pages[i], doc, { x: 0, y: 0, width: A4_WIDTH_MM, height: A4_HEIGHT_MM });
+    } catch (e) {
+      fail(`page ${i + 1} could not be drawn into the PDF: ${e.message}`);
+    }
+  }
+
+  const bytes = Buffer.from(doc.output('arraybuffer'));
+  try {
+    writeFileSync(args.output, bytes);
+  } catch (e) {
+    fail(`cannot write ${args.output}: ${e.message}`);
+  }
+  bytesWritten = bytes.length;
 }
 
-const bytes = Buffer.from(doc.output('arraybuffer'));
-try {
-  writeFileSync(args.output, bytes);
-} catch (e) {
-  fail(`cannot write ${args.output}: ${e.message}`);
-}
-
-const summary = { ok: true, pages: pages.length, bytes: bytes.length, zoom };
+const summary = { ok: true, pages: pages.length, bytes: bytesWritten, zoom };
+if (files) summary.files = files;
 if (args.checkFit) {
   summary.fit = {
     tallestBottom: fitReport.tallestBottom,

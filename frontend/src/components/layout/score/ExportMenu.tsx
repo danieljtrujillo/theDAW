@@ -6,20 +6,25 @@
  * visible at once and the whole thing is one role="menu".
  *
  * What the menu offers comes from buildExportMenu (exportMenuModel.ts); this
- * file is the DOM, the keyboard and the focus handling. The Beat Saber
- * popover renders through `children` inside the same anchor so the dialog
- * sits under the EXPORT button; while it is open the menu stays closed.
+ * file is the DOM, the keyboard and the focus handling. Any part goes to any
+ * format: an 'export' entry POSTs through onExport with the highlighted part's
+ * index (null for All parts), the pack link carries ?parts=, and the Beat
+ * Saber popover (rendered through `children` inside the same anchor so the
+ * dialog sits under the EXPORT button) pre-selects the part; while it is open
+ * the menu stays closed. A 'link' entry (GET MUSESCORE) is an external page —
+ * Electron's window-open handler sends it to the system browser — and an
+ * 'action' entry (LOCATE MUSESCORE…) hands its id to onAction.
  *
  * Keyboard: ArrowUp/Down move within a column (disabled entries skipped),
  * Home/End jump within it, ArrowRight goes from a part to its first enabled
  * format, ArrowLeft goes back to the highlighted part, Enter or Space
- * activates an entry (the download entries are links, which on their own
- * follow Enter but ignore Space), Escape closes and returns focus to the
- * button, Tab closes and lets focus move on. Focus also returns to the
+ * activates an entry (the download and link entries are anchors, which on
+ * their own follow Enter but ignore Space), Escape closes and returns focus
+ * to the button, Tab closes and lets focus move on. Focus also returns to the
  * button when the Beat Saber popover closes.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Download, Gamepad2, Loader2 } from 'lucide-react';
+import { ChevronDown, Download, ExternalLink, FolderOpen, Gamepad2, Loader2 } from 'lucide-react';
 import {
   notationArtifactUrl,
   notationPackUrl,
@@ -30,9 +35,10 @@ import type { PartDescriptor } from '../../../state/playAlongStore';
 import {
   ALL_PARTS,
   buildExportMenu,
+  routeFormatFor,
   type ExportMenuEntry,
   type ExportMenuPart,
-  type SheetExportFormat,
+  type ExportRouteFormat,
 } from './exportMenuModel';
 
 export const EXPORT_TRIGGER_ID = 'score-export-trigger';
@@ -50,7 +56,10 @@ export interface ExportMenuProps {
   exporting: string | null;
   /** Called when the menu opens, so the owner can go and read the parts. */
   onOpen: () => void;
-  onExport: (format: SheetExportFormat) => void;
+  /** POST an export; partIndex is the highlighted part (null = the whole sheet). */
+  onExport: (format: ExportRouteFormat, partIndex: number | null) => void;
+  /** An 'action' entry was chosen (today: 'locate-musescore'). */
+  onAction: (id: string) => void;
   /** Open the Beat Saber popover; a part index pre-selects that one part. */
   onOpenBeatSaber: (partIndex: number | null) => void;
   popoverOpen: boolean;
@@ -76,6 +85,7 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
   exporting,
   onOpen,
   onExport,
+  onAction,
   onOpenBeatSaber,
   popoverOpen,
   children,
@@ -234,7 +244,21 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
     }
     if (entry.kind === 'export') {
       closeAndFocusTrigger();
-      onExport(entry.id as SheetExportFormat);
+      onExport(routeFormatFor(entry), highlighted.index);
+      return;
+    }
+    if (entry.kind === 'action') {
+      closeAndFocusTrigger();
+      onAction(entry.id);
+    }
+  };
+
+  // A link follows Enter by itself but ignores Space (which would scroll the
+  // page instead); a menuitem must activate on both.
+  const spaceActivates = (e: React.KeyboardEvent<HTMLAnchorElement>) => {
+    if (e.key === ' ') {
+      e.preventDefault();
+      e.currentTarget.click();
     }
   };
 
@@ -350,7 +374,12 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                     </span>
                   );
                 }
-                const href = entry.id === 'pack' ? notationPackUrl(artifact.id) : notationArtifactUrl(artifact.id);
+                // The pack of one part carries ?parts=; the file download is
+                // always the whole artifact.
+                const href =
+                  entry.id === 'pack'
+                    ? notationPackUrl(artifact.id, highlighted.index === null ? undefined : [highlighted.index])
+                    : notationArtifactUrl(artifact.id);
                 return (
                   <a
                     key={entry.id}
@@ -362,17 +391,31 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                     className={ITEM_CLS}
                     title={entry.title}
                     onClick={closeAndFocusTrigger}
-                    // A link follows Enter by itself but ignores Space (which
-                    // would scroll the page instead); a menuitem must
-                    // activate on both.
-                    onKeyDown={(e) => {
-                      if (e.key === ' ') {
-                        e.preventDefault();
-                        e.currentTarget.click();
-                      }
-                    }}
+                    onKeyDown={spaceActivates}
                   >
                     <Download className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    {entry.label}
+                  </a>
+                );
+              }
+              if (entry.kind === 'link') {
+                // An external page: target=_blank reaches Electron's
+                // window-open handler, which opens it in the system browser.
+                return (
+                  <a
+                    key={entry.id}
+                    role="menuitem"
+                    tabIndex={-1}
+                    ref={setRef}
+                    href={entry.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={ITEM_CLS}
+                    title={entry.title}
+                    onClick={closeAndFocusTrigger}
+                    onKeyDown={spaceActivates}
+                  >
+                    <ExternalLink className="w-3 h-3 shrink-0 text-sky-300" aria-hidden="true" />
                     {entry.label}
                   </a>
                 );
@@ -393,7 +436,9 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                 >
                   {entry.kind === 'popover' ? (
                     <Gamepad2 className="w-3 h-3 shrink-0 text-rose-300" aria-hidden="true" />
-                  ) : exporting === entry.id ? (
+                  ) : entry.kind === 'action' ? (
+                    <FolderOpen className="w-3 h-3 shrink-0 text-sky-300" aria-hidden="true" />
+                  ) : exporting === routeFormatFor(entry) ? (
                     <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-hidden="true" />
                   ) : null}
                   {entry.label}

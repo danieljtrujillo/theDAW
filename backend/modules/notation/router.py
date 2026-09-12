@@ -23,8 +23,10 @@ from .engine import (
     midi_to_arrangement,
     midi_to_musicxml,
     midi_to_tabs,
+    part_names,
     register_existing_midis,
     register_on_disk_artifacts,
+    stage_parts,
 )
 
 log = logging.getLogger(__name__)
@@ -77,12 +79,62 @@ def _scored_name(slug: str, base: str) -> str:
     return base
 
 
+def _parts_option(options: Optional[dict[str, Any]]) -> list[int]:
+    """``options["parts"]`` as a de-duplicated list of ints (request order),
+    or ``[]``: absent, empty, not a list, or nothing in it is an int."""
+    raw = (options or {}).get("parts")
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for p in raw:
+        try:
+            idx = int(p)
+        except (TypeError, ValueError):
+            continue
+        if idx not in out:
+            out.append(idx)
+    return out
+
+
+def _parse_parts_query(parts: Optional[str]) -> list[int]:
+    """``?parts=0,2`` -> ``[0, 2]``; 422 on anything that is not ints."""
+    if parts is None or not parts.strip():
+        return []
+    try:
+        return _parts_option({"parts": [int(p) for p in parts.split(",") if p.strip()]})
+    except ValueError as exc:
+        raise HTTPException(
+            422, f"parts must be comma-separated ints: {parts!r}"
+        ) from exc
+
+
+def _parts_suffix(source_path: Path, parts: list[int]) -> str:
+    """A file-name tag for a part-scoped export: the kept parts' names slugged
+    (``Bass``, ``Lead-Bass``), ``p<idx>`` for an unnamed or unknown part."""
+    names = part_names(source_path)
+    tags = [
+        _song_slug(names[i] if 0 <= i < len(names) else "", fallback=f"p{i}")
+        for i in parts
+    ]
+    return "-".join(tags)[:80]
+
+
+def _export_artifact_id(source_id: str, fmt: str, parts: list[int]) -> str:
+    """``<source>__<fmt>`` for the whole sheet; ``<source>__<fmt>__p0-2`` for a
+    part-scoped export, so it never overwrites the whole-sheet row."""
+    if not parts:
+        return f"{source_id}__{fmt}"
+    return f"{source_id}__{fmt}__p{'-'.join(str(i) for i in parts)}"
+
+
 class ExportRequest(BaseModel):
     source_artifact_id: str
     format: str
-    # Per-format export options. Beat Saber reads: difficulties (list of
-    # Easy/Normal/Hard/Expert/ExpertPlus), version (2|3), bpm_source
-    # ('analysis'|'chart'), parts (chart part indices) and include_audio.
+    # Per-format export options. Every format reads `parts` (indices in
+    # <part-list> order) to export only those parts, and pdf/svg read `engine`
+    # ('osmd'|'musescore') to pin an engraver. Beat Saber also reads:
+    # difficulties (list of Easy/Normal/Hard/Expert/ExpertPlus), version (2|3),
+    # bpm_source ('analysis'|'chart') and include_audio.
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -236,8 +288,15 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
 def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     """Export an existing notation artifact (MIDI or MusicXML) to another
     format and register the result. Targets: the keys of ``_EXT_FOR_FORMAT``
-    (musicxml, abc, pdf, svg, notechart, beatsaber); ``pdf`` is engraved by the
-    headless OSMD renderer and ``svg`` by MuseScore."""
+    (musicxml, abc, pdf, svg, notechart, beatsaber). ``pdf`` and ``svg`` are
+    engraved by the headless OSMD renderer, or by MuseScore when that is
+    missing (``options.engine`` pins one).
+
+    ``options.parts`` (a non-empty list of part indices, ``<part-list>``
+    order) scopes any format to those parts. The file is then named
+    ``<stem>__<part slug>`` and the artifact ``<source>__<fmt>__p<i-j>``, so
+    a per-part export sits beside the whole-sheet one instead of replacing it.
+    """
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
@@ -269,7 +328,14 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     subdir = _SUBDIR_FOR_FORMAT.get(fmt)
     if subdir:
         out_dir = out_dir / subdir
-    output = out_dir / _scored_name(slug, f"{source_path.stem}{ext}")
+    parts = _parts_option(body.options)
+    part_tag = _parts_suffix(source_path, parts) if parts else ""
+    base = (
+        f"{source_path.stem}__{part_tag}{ext}"
+        if part_tag
+        else f"{source_path.stem}{ext}"
+    )
+    output = out_dir / _scored_name(slug, base)
 
     # Audio context for the chart-based targets (notechart duration, Beat Saber
     # song.ogg + Info.dat BPM). Harmless for the symbolic formats.
@@ -291,7 +357,7 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
         fmt=fmt,
         output_path=output,
         source_ref=body.source_artifact_id,
-        artifact_id=f"{body.source_artifact_id}__{fmt}",
+        artifact_id=_export_artifact_id(body.source_artifact_id, fmt, parts),
         title=title,
         options=dict(body.options or {}),
         audio_path=audio_path,
@@ -628,11 +694,18 @@ def backfill() -> dict[str, Any]:
 
 
 @router.get("/pack/{artifact_id}")
-def download_score_pack(artifact_id: str) -> Response:
-    """Download a score as a zip of the source plus a PDF. The PDF is engraved
-    by the headless OSMD renderer (``convert_score`` "pdf") when that renderer
-    is available; without it the zip still carries the MusicXML so the download
-    never fails."""
+def download_score_pack(artifact_id: str, parts: Optional[str] = None) -> Response:
+    """Download a score as a zip of the symbolic source plus a PDF.
+
+    The PDF is engraved by ``convert_score`` "pdf" (the headless OSMD renderer,
+    MuseScore when that is missing); with neither engraver the zip still
+    carries the source so the download never fails. A ``musicxml`` artifact
+    packs as MusicXML + PDF, a ``midi`` artifact as MIDI + PDF (the sheet is
+    staged through music21 on the way). ``?parts=0,2`` (indices in
+    ``<part-list>`` order) scopes both members to those parts: the MusicXML in
+    the zip is the filtered sheet and the PDF is engraved from it. The staged
+    files never outlive the request and are never registered.
+    """
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
@@ -642,42 +715,69 @@ def download_score_pack(artifact_id: str) -> Response:
     src = Path(artifact.get("path") or "")
     if not src.is_file():
         raise HTTPException(404, f"artifact file missing on disk: {src}")
+    indices = _parse_parts_query(parts)
 
     entry_id = str(artifact.get("entry_id") or "")
-    slug = _song_slug(_entry_title(store, entry_id)) or src.stem
-    members: list[tuple[Path, str]] = [(src, f"{slug}{src.suffix}")]
+    title = _entry_title(store, entry_id)
+    slug = _song_slug(title) or src.stem
+    kind = str(artifact.get("kind") or "")
+    symbolic = kind in ("musicxml", "midi")
+    part_tag = _parts_suffix(src, indices) if indices and symbolic else ""
+    name_stem = f"{slug}__{part_tag}" if part_tag else slug
+    entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - module convention
+    members: list[tuple[str, bytes]] = []
 
-    # Engrave a PDF from a MusicXML sheet. convert_score reports ok=False when
-    # the OSMD renderer is missing, and the zip then stays MusicXML-only.
-    if artifact.get("kind") == "musicxml":
-        entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - module convention
-        if entry_dir is not None:
-            pdf_out = entry_dir / "notation" / f"{src.stem}.pdf"
-            result = convert_score(
-                store.db,
-                entry_id=entry_id,
-                source_path=src,
-                fmt="pdf",
-                output_path=pdf_out,
-                source_ref=artifact_id,
-                artifact_id=f"{artifact_id}__pdf",
-                title=_entry_title(store, entry_id),
-            )
-            if result.get("ok"):
-                pdf_path = Path(result.get("path") or pdf_out)
-                if pdf_path.is_file():
-                    members.append((pdf_path, f"{slug}.pdf"))
+    if part_tag:
+        # The filtered sheet is the zip's MusicXML. Read it into memory and
+        # remove it BEFORE the PDF export, which stages under the same name.
+        if entry_dir is None:
+            raise HTTPException(500, f"entry directory missing for {entry_id!r}")
+        stage_out = entry_dir / "notation" / f"{src.stem}__{part_tag}.musicxml"
+        try:
+            staged = stage_parts(src, indices, title, output_path=stage_out)
+        except Exception as exc:  # noqa: BLE001 - a bad part list is a 422
+            raise HTTPException(
+                422, f"could not scope {src.name} to parts {indices}: {exc}"
+            ) from exc
+        try:
+            members.append((f"{name_stem}.musicxml", staged.path.read_bytes()))
+        finally:
+            staged.path.unlink(missing_ok=True)
+    else:
+        members.append((f"{name_stem}{src.suffix}", src.read_bytes()))
+
+    # Engrave the PDF. convert_score reports ok=False when no engraver is
+    # available, and the zip then stays source-only.
+    if symbolic and entry_dir is not None:
+        pdf_name = f"{src.stem}__{part_tag}.pdf" if part_tag else f"{src.stem}.pdf"
+        pdf_out = entry_dir / "notation" / pdf_name
+        result = convert_score(
+            store.db,
+            entry_id=entry_id,
+            source_path=src,
+            fmt="pdf",
+            output_path=pdf_out,
+            source_ref=artifact_id,
+            artifact_id=_export_artifact_id(artifact_id, "pdf", indices),
+            title=title,
+            options={"parts": indices} if indices else None,
+        )
+        if result.get("ok"):
+            pdf_path = Path(result.get("path") or pdf_out)
+            if pdf_path.is_file():
+                members.append((f"{name_stem}.pdf", pdf_path.read_bytes()))
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for path, arcname in members:
-            if path.is_file():
-                zf.write(path, arcname=arcname)
+        for arcname, payload in members:
+            zf.writestr(arcname, payload)
     buf.seek(0)
     return Response(
         content=buf.read(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{slug}_score.zip"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{name_stem}_score.zip"'
+        },
     )
 
 

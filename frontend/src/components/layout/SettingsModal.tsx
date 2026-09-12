@@ -43,6 +43,28 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
     if (v !== (featureSettings.notation?.artist ?? '')) void patchFeatures({ notation: { artist: v } });
   };
 
+  // MuseScore path: the stand-in engraver for PDF/SVG when the headless OSMD
+  // renderer (node) is missing. Empty = the backend auto-detects. Same
+  // draft-then-commit pattern as the artist name; BROWSE… uses the desktop
+  // app's file picker when there is one.
+  const musescorePath = featureSettings.notation?.musescore_path ?? '';
+  const [musescoreDraft, setMusescoreDraft] = useState('');
+  useEffect(() => { setMusescoreDraft(featureSettings.notation?.musescore_path ?? ''); }, [featureSettings.notation?.musescore_path]);
+  const commitMusescore = (value: string = musescoreDraft) => {
+    const v = value.trim();
+    if (v !== musescorePath) void patchFeatures({ notation: { musescore_path: v } });
+  };
+  const electronSelectFile = (window as unknown as {
+    electronAPI?: { selectFile?: () => Promise<{ canceled: boolean; filePaths: string[] }> };
+  }).electronAPI?.selectFile;
+  const browseMusescore = async () => {
+    if (!electronSelectFile) return;
+    const r = await electronSelectFile();
+    if (r.canceled || !r.filePaths[0]) return;
+    setMusescoreDraft(r.filePaths[0]);
+    commitMusescore(r.filePaths[0]);
+  };
+
   // Icon-button styling shared by the header's launch-mode + profile toggles.
   const iconBtn = (active: boolean) =>
     `p-1 rounded border transition-colors ${active
@@ -120,24 +142,56 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             </button>
           </div>
 
-          {/* Artist-name popover (toggled by the profile icon). */}
+          {/* Artist-name + MuseScore popover (toggled by the profile icon):
+              two stacked rows, the artist credit and the optional MuseScore
+              path the notation engine falls back to. */}
           <div
             id="settings-artist-popover"
             hidden={!showName}
-            className="absolute right-3 top-full mt-1 z-10 flex items-center gap-2 rounded-md border border-purple-500/30 bg-[#0c0a14] p-2 shadow-xl"
+            className="absolute right-3 top-full mt-1 z-10 flex flex-col gap-2 rounded-md border border-purple-500/30 bg-[#0c0a14] p-2 shadow-xl"
           >
-            <label htmlFor="settings-artist" className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">Artist</label>
-            <input
-              id="settings-artist"
-              name="settings-artist"
-              type="text"
-              value={artistDraft}
-              onChange={(e) => setArtistDraft(e.target.value)}
-              onBlur={commitArtist}
-              onKeyDown={(e) => { if (e.key === 'Enter') { commitArtist(); setShowName(false); } }}
-              placeholder="GANTASMO"
-              className="w-44 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs text-zinc-100 outline-none focus:border-purple-400/50"
-            />
+            <div className="flex items-center gap-2">
+              <label htmlFor="settings-artist" className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">Artist</label>
+              <input
+                id="settings-artist"
+                name="settings-artist"
+                type="text"
+                value={artistDraft}
+                onChange={(e) => setArtistDraft(e.target.value)}
+                onBlur={commitArtist}
+                onKeyDown={(e) => { if (e.key === 'Enter') { commitArtist(); setShowName(false); } }}
+                placeholder="GANTASMO"
+                className="w-44 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs text-zinc-100 outline-none focus:border-purple-400/50"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label htmlFor="settings-musescore-path" className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">MuseScore</label>
+              <input
+                id="settings-musescore-path"
+                name="settings-musescore-path"
+                type="text"
+                value={musescoreDraft}
+                onChange={(e) => setMusescoreDraft(e.target.value)}
+                onBlur={() => commitMusescore()}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitMusescore(); }}
+                placeholder="auto-detected"
+                className="w-44 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs text-zinc-100 outline-none focus:border-purple-400/50"
+              />
+              {electronSelectFile && (
+                <button
+                  type="button"
+                  onClick={() => void browseMusescore()}
+                  aria-label="Browse for the MuseScore executable"
+                  title="Pick the MuseScore executable"
+                  className="btn-ghost text-[10px] px-1.5 py-1 shrink-0"
+                >
+                  BROWSE…
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-zinc-500 max-w-72">
+              Optional: PDF and SVG use the built-in engraver; MuseScore stands in when node is missing.
+            </p>
           </div>
         </div>
 
