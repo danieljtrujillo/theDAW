@@ -14,6 +14,15 @@ memory for 10 minutes, so the first call may return
 Handlers are sync ``def`` functions, so Starlette runs them on its worker
 thread pool -- the blocking httpx whoami call (10s timeout on login) never
 touches the event loop.
+
+Status codes, and why ``/login`` never answers 502: a 502 in this app means a
+gateway in front of the backend (the packaged app:// proxy, the Vite dev proxy)
+could not reach the backend at all, so nothing was asked of huggingface.co.
+This router's own upstream failures -- the Hub refused or could not be reached
+-- are the OPPOSITE fact, and they answer 503 plus the ``x-thedaw-hop:
+huggingface`` marker header. Both meanings once shared 502, which is how a
+loopback mismatch got reported as "couldn't reach huggingface.co"
+(gantasmo/theDAW#144). Frontend side: frontend/src/lib/httpError.ts.
 """
 
 from __future__ import annotations
@@ -39,6 +48,13 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _TOKEN_PATH = Path(HF_TOKEN_PATH)
+
+# Marker on every response about a hop this backend does not own. The frontend
+# reads it to name the failing hop; the 503 status says the same thing on its
+# own, so a deployment that strips custom headers still reads correctly.
+HOP_HEADER = "x-thedaw-hop"
+HOP_HUGGINGFACE = "huggingface"
+_HUB_HEADERS = {HOP_HEADER: HOP_HUGGINGFACE}
 
 _WHOAMI_URL = "https://huggingface.co/api/whoami-v2"
 _LOGIN_URL = "https://huggingface.co/settings/tokens"
@@ -184,13 +200,19 @@ def login(body: LoginRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=401, detail="Invalid Hugging Face token"
             ) from exc
+        # 503, NOT 502: the Hub answered badly. A 502 from anywhere in this app
+        # means the backend itself was never reached, which is the opposite
+        # claim -- see the module docstring.
         raise HTTPException(
-            status_code=502,
+            status_code=503,
             detail=f"huggingface.co returned HTTP {exc.response.status_code}",
+            headers=_HUB_HEADERS,
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
-            status_code=503, detail=f"Could not reach huggingface.co: {exc}"
+            status_code=503,
+            detail=f"Could not reach huggingface.co: {exc}",
+            headers=_HUB_HEADERS,
         ) from exc
 
     # Persist to huggingface_hub's standard token store (the same file the

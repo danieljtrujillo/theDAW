@@ -577,7 +577,11 @@ function loadRenderer(): void {
   if (!app.isPackaged && devURL) {
     mainWindow.loadURL(devURL)
   } else if (!app.isPackaged) {
-    mainWindow.loadURL('http://localhost:5173')
+    // 127.0.0.1, not 'localhost': the Vite dev server binds 0.0.0.0 (IPv4
+    // only, see electron.vite.config.ts) and Chromium prefers ::1 for
+    // 'localhost' on Windows, which loads a blank ERR_CONNECTION_REFUSED
+    // window with a running dev server sitting right there.
+    mainWindow.loadURL('http://127.0.0.1:5173')
   } else {
     mainWindow.loadURL('app://./index.html')
   }

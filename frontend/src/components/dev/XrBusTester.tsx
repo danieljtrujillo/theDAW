@@ -24,7 +24,8 @@ function wsUrl(): string {
     return `wss://${host}/api/xr/control/ws`;
   }
   // Desktop (app://) and local dev: connect straight to the backend.
-  return 'ws://localhost:8600/api/xr/control/ws';
+  // 127.0.0.1, never 'localhost' — see xrControlClient.wsUrl (issue #144).
+  return 'ws://127.0.0.1:8600/api/xr/control/ws';
 }
 
 const RANGE_KINDS = new Set(['knob', 'fader', 'crossfader', 'xy', 'xyz', 'jog']);

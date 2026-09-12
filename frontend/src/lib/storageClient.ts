@@ -4,6 +4,8 @@
 // checkpoints generate via their `local:<id>` ids) and the Settings → Models
 // & Storage panel (locations browser, HF cache table, local-only switch).
 
+import { describeHttpError } from './httpError';
+
 export interface RegisteredCheckpoint {
   id: string; // "local:<8-hex>" — what the Model dropdown submits
   name: string;
@@ -101,11 +103,12 @@ export interface ModelStatusResponse {
   local_only: boolean;
 }
 
+// Error text comes from describeHttpError, not from a bare `HTTP ${status}`.
+// This wrapper's message is what Settings → Models prints after "Model status
+// failed: ", so "HTTP 502" was the whole of what a user got when the app could
+// not reach its own backend — see frontend/src/lib/httpError.ts.
 async function json<T>(r: Response): Promise<T> {
-  if (!r.ok) {
-    const detail = await r.json().then((j) => j?.detail).catch(() => null);
-    throw new Error(typeof detail === 'string' ? detail : `HTTP ${r.status}`);
-  }
+  if (!r.ok) throw new Error(await describeHttpError(r));
   return r.json() as Promise<T>;
 }
 
