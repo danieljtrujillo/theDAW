@@ -96,15 +96,84 @@ const SHUTDOWN_URL = `${BACKEND_BASE}/api/admin/shutdown`
 // Packaged-app paths + first-run bootstrap
 //
 // In a packaged build the Python project, a bundled uv.exe, and ffmpeg.exe ship
-// under process.resourcesPath (see electron-builder.yml -> extraResources). The
-// per-user install directory is writable, so uv creates the venv next to the
-// bundled pyproject.toml on first launch and the backend writes its data/ tree
-// there. In dev none of this applies: the backend runs from the repo via uv on
-// PATH exactly as before.
+// under process.resourcesPath (see electron-builder.yml -> extraResources). In
+// dev none of this applies: the backend runs from the repo via uv on PATH
+// exactly as before.
+//
+// This used to assume the install directory was writable, because the NSIS
+// config asks for a per-user install under %LOCALAPPDATA%\Programs\theDAW. But
+// electron-builder.yml also sets allowToChangeInstallationDirectory, so a user
+// can install into C:\Program Files\theDAW, and then NOTHING may be written
+// beside the app. First run died on the very first step:
+//
+//   error: Failed to initialize cache at `.uv-cache`
+//   Caused by: failed to create directory
+//   `C:\Program Files\theDAW\resources\python\.uv-cache`: Access is denied.
+//
+// after which the backend exited 2 and every request answered 502. Three
+// separate things wanted to write into the install directory: uv's package
+// cache, the venv itself, and the backend's data/ tree. getWritableRuntimeDir
+// decides once where all three go.
 // ---------------------------------------------------------------------------
 
 function getPythonDir(): string {
   return app.isPackaged ? path.join(process.resourcesPath, 'python') : repoRoot
+}
+
+/** Per-user base for anything large. Deliberately LOCAL app data, not roaming:
+ *  the venv and uv's cache are several GB and a roaming profile syncs. */
+function localAppDataRoot(): string {
+  const local = process.env.LOCALAPPDATA
+  if (process.platform === 'win32' && local) return path.join(local, 'theDAW')
+  // app.getPath('userData') is already per-user and per-app everywhere else.
+  return app.getPath('userData')
+}
+
+/** Can we actually create a file in `dir`? Probed, never inferred from ACLs:
+ *  a directory can look writable and still refuse, and the reverse. */
+function isWritableDir(dir: string): boolean {
+  const probe = path.join(dir, `.thedaw-write-probe-${process.pid}`)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(probe, '')
+    fs.rmSync(probe, { force: true })
+    return true
+  } catch {
+    try {
+      fs.rmSync(probe, { force: true })
+    } catch {
+      /* nothing to clean up */
+    }
+    return false
+  }
+}
+
+let cachedRuntimeDir: string | null = null
+
+/**
+ * Where the packaged app may write: uv's cache, the venv, the data tree.
+ *
+ * The install directory when that is writable, which keeps every existing
+ * per-user install exactly as it was, venv included. Otherwise a per-user
+ * directory, so a Program Files install works without elevation.
+ */
+function getWritableRuntimeDir(): string {
+  if (!app.isPackaged) return repoRoot
+  if (cachedRuntimeDir) return cachedRuntimeDir
+  const pyDir = getPythonDir()
+  if (isWritableDir(pyDir)) {
+    cachedRuntimeDir = pyDir
+  } else {
+    const fallback = path.join(localAppDataRoot(), 'runtime')
+    log(`Install directory is read-only (${pyDir}); using ${fallback} for the venv, cache and data.`)
+    cachedRuntimeDir = fallback
+  }
+  return cachedRuntimeDir
+}
+
+/** True when the runtime had to move out of the install directory. */
+function runtimeIsRelocated(): boolean {
+  return app.isPackaged && getWritableRuntimeDir() !== getPythonDir()
 }
 
 function getToolsDir(): string {
@@ -121,10 +190,18 @@ function getUvCommand(): string {
   )
 }
 
-function venvPython(pyDir: string): string {
+/** The venv root. Beside the project when the install dir is writable, in the
+ *  per-user runtime dir when it is not. uv is pointed at it with
+ *  UV_PROJECT_ENVIRONMENT (buildBackendEnv), which relocates the environment
+ *  without moving the project. */
+function getVenvDir(): string {
+  return path.join(getWritableRuntimeDir(), '.venv')
+}
+
+function venvPython(venvRoot: string): string {
   return process.platform === 'win32'
-    ? path.join(pyDir, '.venv', 'Scripts', 'python.exe')
-    : path.join(pyDir, '.venv', 'bin', 'python')
+    ? path.join(venvRoot, 'Scripts', 'python.exe')
+    : path.join(venvRoot, 'bin', 'python')
 }
 
 // Environment for the backend + the uv sync step. Packaged builds prepend the
@@ -147,7 +224,16 @@ function buildBackendEnv(): NodeJS.ProcessEnv {
   // backend itself invokes (e.g. the on-demand Underfit trainer env). An
   // explicit UV_CACHE_DIR (e.g. from theDAW.bat's dev/web launch) is respected.
   const cacheKey = Object.keys(env).find((k) => k.toLowerCase() === 'uv_cache_dir')
-  if (!cacheKey) env.UV_CACHE_DIR = path.join(getPythonDir(), '.uv-cache')
+  if (!cacheKey) env.UV_CACHE_DIR = path.join(getWritableRuntimeDir(), '.uv-cache')
+  if (runtimeIsRelocated()) {
+    // The install directory is read-only, so the venv and the library cannot
+    // live beside the project. Both honour an env var, and an explicit value
+    // from the caller still wins.
+    if (!env.UV_PROJECT_ENVIRONMENT) env.UV_PROJECT_ENVIRONMENT = getVenvDir()
+    if (!env.theDAW_GENERATIONS_DIR) {
+      env.theDAW_GENERATIONS_DIR = path.join(getWritableRuntimeDir(), 'data', 'generations')
+    }
+  }
   return env
 }
 
@@ -168,8 +254,12 @@ function coreImportsOk(py: string): Promise<boolean> {
 
 function runUvSync(uvCmd: string, cwd: string): Promise<void> {
   return new Promise((resolve) => {
-    log(`Running ${uvCmd} sync --group dev in ${cwd}`)
-    const proc = spawn(uvCmd, ['sync', '--group', 'dev'], {
+    // --frozen: use the shipped uv.lock as-is and never rewrite it. Required
+    // when the install directory is read-only, and correct regardless -- the
+    // lock is generated with the build and must not be re-resolved on a user's
+    // machine.
+    log(`Running ${uvCmd} sync --frozen --group dev in ${cwd}`)
+    const proc = spawn(uvCmd, ['sync', '--frozen', '--group', 'dev'], {
       cwd,
       env: buildBackendEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -217,7 +307,7 @@ function runUvSync(uvCmd: string, cwd: string): Promise<void> {
 async function ensurePythonEnv(): Promise<void> {
   if (!app.isPackaged) return
   const pyDir = getPythonDir()
-  const py = venvPython(pyDir)
+  const py = venvPython(getVenvDir())
   let ok = fs.existsSync(py)
   if (ok) ok = await coreImportsOk(py)
   if (ok) {
@@ -249,14 +339,17 @@ function spawnBackend(): void {
   const isWindows = process.platform === 'win32'
   const cwd = getPythonDir()
   const env = buildBackendEnv()
-  const devVenvPy = venvPython(cwd)
+  const devVenvPy = venvPython(path.join(cwd, '.venv'))
   const useDevVenv = !app.isPackaged && fs.existsSync(devVenvPy)
 
   if (app.isPackaged) {
     // The bundled uv is an absolute path, so it is invoked directly (no shell).
     backendProcess = spawn(
       getUvCommand(),
-      ['run', 'python', '-m', 'backend._supervisor'],
+      // --frozen for the same reason as the sync above: `uv run` re-checks the
+      // lock and would try to rewrite it, which fails in a read-only install.
+      // ensurePythonEnv has already built and verified the env by this point.
+      ['run', '--frozen', 'python', '-m', 'backend._supervisor'],
       {
         cwd,
         env,
