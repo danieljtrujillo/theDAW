@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12"></a>
-  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-CUDA%2012.8-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch CUDA 12.8"></a>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-CUDA%2013.0-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch CUDA 13.0"></a>
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React%2019%20%2F%20Vite%207-Tailwind%204-61DAFB?logo=react&logoColor=black" alt="React 19, Vite 7, Tailwind 4"></a>
   <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white" alt="FastAPI backend"></a>
   <br>
@@ -280,7 +280,7 @@ The launchers install these when one is missing. The list is here for manual set
 | **[Node.js](https://nodejs.org/) 20.19+ or 22.12+** | The frontend dev server and the VJ sidecar. |
 | **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** on PATH | Effects, exports, library import, MIDI conversion, URL import. |
 | **[Git](https://git-scm.com/)** | Cloning the repo. `--recurse-submodules` fetches the Magenta sidecar source. |
-| **NVIDIA driver 550+** | The Medium model, Magenta, Demucs and GPU whisper. The Small model and CPU whisper work without it. Turing cards (RTX 20xx, GTX 16xx) are supported. |
+| **NVIDIA driver 580+** | The Medium model, Magenta, Demucs and GPU whisper: the torch build is a CUDA 13 wheel, which needs the R580 driver branch or newer. The Small model and CPU whisper work without it. Turing cards (RTX 20xx, GTX 16xx) are supported. |
 
 ---
 
