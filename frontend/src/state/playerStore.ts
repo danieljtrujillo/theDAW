@@ -338,6 +338,21 @@ if (typeof window !== 'undefined') {
   window.addEventListener('touchstart', onFirstGesture, { once: false, passive: true });
 }
 
+/**
+ * Transport repeat, in the three states a music player has:
+ *   'off' - the track ends and the queue moves on; at the end of the list,
+ *           playback stops.
+ *   'all' - the queue wraps, so a library list plays forever.
+ *   'one' - the <audio> element loops natively and never fires `ended`.
+ *
+ * `isLooping` is kept in lockstep with `mode === 'one'` because MIDI mapping,
+ * the control-surface bridge and the live mixer all read and write that flag;
+ * they mean "loop this one thing", which is exactly 'one'.
+ */
+export type RepeatMode = 'off' | 'all' | 'one';
+
+export const REPEAT_ORDER: RepeatMode[] = ['off', 'all', 'one'];
+
 interface PlayerStoreState {
   // Currently-loaded track meta
   currentLabel: string | null;
@@ -346,6 +361,7 @@ interface PlayerStoreState {
   currentTime: number;
   isPlaying: boolean;
   isLooping: boolean;
+  repeatMode: RepeatMode;
   // Whether a track is loaded at all (for footer UI states)
   hasTrack: boolean;
 
@@ -357,6 +373,9 @@ interface PlayerStoreState {
   seek: (sec: number) => void;
   seekByFraction: (frac: number) => void;
   toggleLoop: () => void;
+  /** off -> all -> one -> off. What the LOOP key in the footer does. */
+  cycleRepeat: () => void;
+  setRepeatMode: (mode: RepeatMode) => void;
   setMasterGain: (gain: number) => void;
 }
 
@@ -366,7 +385,10 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   duration: 0,
   currentTime: 0,
   isPlaying: false,
-  isLooping: true,
+  // Playing a track from the library plays the rest of the list after it, so
+  // the default is 'all' rather than looping the one track forever.
+  isLooping: false,
+  repeatMode: 'all',
   hasTrack: false,
 
   load: async (blob, meta) => {
@@ -481,10 +503,20 @@ export const usePlayerStore = create<PlayerStoreState>()((set, get) => ({
   },
 
   toggleLoop: () => {
-    const next = !get().isLooping;
-    set({ isLooping: next });
+    // Kept for the callers that mean "loop this one thing" (MIDI mapping, the
+    // control-surface bridge): it flips between 'one' and 'off'.
+    get().setRepeatMode(get().isLooping ? 'off' : 'one');
+  },
+
+  cycleRepeat: () => {
+    const i = REPEAT_ORDER.indexOf(get().repeatMode);
+    get().setRepeatMode(REPEAT_ORDER[(i + 1) % REPEAT_ORDER.length]);
+  },
+
+  setRepeatMode: (mode) => {
+    set({ repeatMode: mode, isLooping: mode === 'one' });
     const { audioEl } = ensureEngine();
-    audioEl.loop = next;
+    audioEl.loop = mode === 'one';
   },
 
   setMasterGain: (gain) => {

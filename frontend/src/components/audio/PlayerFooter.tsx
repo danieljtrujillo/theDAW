@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Volume2, Download, Share2, Heart, Repeat, Shuffle, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Activity, ChevronUp, Headphones, Speaker } from 'lucide-react';
+import { Volume2, Download, Share2, Heart, Repeat, Repeat1, Shuffle, VolumeX, Maximize2, MoreHorizontal, Cast, Check, Activity, ChevronUp, Headphones, Speaker } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore } from '../../state/playerStore';
@@ -30,6 +30,18 @@ import {
 import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 import { LogActionButton } from '../layout/ProcessingLog';
+
+/** What each repeat state is called, in the tooltip and for a screen reader. */
+const REPEAT_LABEL: Record<'off' | 'all' | 'one', string> = {
+  off: 'Repeat off - play the list through and stop',
+  all: 'Repeat all - the list starts again at the end',
+  one: 'Repeat one - this track loops',
+};
+const REPEAT_KEY_LABEL: Record<'off' | 'all' | 'one', string> = {
+  off: 'LOOP',
+  all: 'ALL',
+  one: 'ONE',
+};
 
 const formatDuration = (sec: number | null | undefined): string => {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return '--:--';
@@ -512,11 +524,11 @@ export const PlayerFooter: React.FC = () => {
   const engineLabel = usePlayerStore((s) => s.currentLabel);
   const engineDuration = usePlayerStore((s) => s.duration);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
-  const isLooping = usePlayerStore((s) => s.isLooping);
+  const repeatMode = usePlayerStore((s) => s.repeatMode);
   const hasTrack = usePlayerStore((s) => s.hasTrack);
   const toggle = usePlayerStore((s) => s.toggle);
   const seekByFraction = usePlayerStore((s) => s.seekByFraction);
-  const toggleLoop = usePlayerStore((s) => s.toggleLoop);
+  const cycleRepeat = usePlayerStore((s) => s.cycleRepeat);
   const setMasterGain = usePlayerStore((s) => s.setMasterGain);
   const load = usePlayerStore((s) => s.load);
   const currentEntryId = usePlayerStore((s) => s.currentEntryId);
@@ -777,16 +789,23 @@ export const PlayerFooter: React.FC = () => {
             overflow-hidden or a clip-path: the keys' focus outline draws
             outside them. */}
         <div data-tour="transport" className="shrink-0 flex items-stretch h-9 p-px gap-px rounded-xs border border-white/8 bg-black/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          {/* Three states, one key: off -> the list plays through and stops,
+              all -> the list wraps, one -> this track repeats. aria-pressed is
+              deliberately absent: a tri-state control is not a toggle, so the
+              state travels in the label instead. */}
           <button
             type="button"
-            onClick={toggleLoop}
-            aria-label={isLooping ? 'Looping on' : 'Looping off'}
-            aria-pressed={isLooping}
-            title={isLooping ? 'Looping on' : 'Looping off'}
-            className={`${transportKey} ${isLooping ? transportKeyOn : transportKeyOff}`}
+            onClick={cycleRepeat}
+            aria-label={REPEAT_LABEL[repeatMode]}
+            title={`${REPEAT_LABEL[repeatMode]} - click to change`}
+            className={`${transportKey} ${repeatMode === 'off' ? transportKeyOff : transportKeyOn}`}
           >
-            <Repeat className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
-            <span aria-hidden="true" className={keyLabel}>LOOP</span>
+            {repeatMode === 'one' ? (
+              <Repeat1 className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
+            ) : (
+              <Repeat className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
+            )}
+            <span aria-hidden="true" className={keyLabel}>{REPEAT_KEY_LABEL[repeatMode]}</span>
           </button>
           <button
             type="button"
