@@ -5,14 +5,23 @@ Stable Audio 3 uses a 44.1k stereo audio autoencoder to compress waveforms into 
 ## Encoding audio to latents
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import AutoencoderModel
 
 ae = AutoencoderModel.from_pretrained("same-l")  # "same-s" (small), "same-l" (medium/large)
-waveform, sr = torchaudio.load("audio.wav")
+waveform, sr = load_audio("audio.wav")
 latents = ae.encode(waveform, sr)
 # → (1, latent_dim, latent_time)
 ```
+
+> `torchaudio.load` and `torchaudio.save` are not usable in this environment.
+> Since 2.9 they decode through torchcodec, which loads FFmpeg's *shared*
+> libraries at import — no ordinary Windows ffmpeg build has them — and
+> `save` also stopped honouring `encoding` / `bits_per_sample`, so a float
+> export came back requantized. `backend/lib/audio_io.py` reads and writes
+> through libsndfile (falling back to the ffmpeg CLI for containers libsndfile
+> cannot open), never clamps a float subtype, and returns the same
+> `(tensor[channels, frames], sample_rate)` shape `torchaudio.load` did.
 
 Resampling, channel conversion, and padding are handled automatically. The latent time dimension is `samples // downsampling_ratio` (4096 for all current models). At 44.1 kHz, 10 seconds of stereo audio produces 216 latent frames, with a latent dimension of 256.
 
@@ -26,14 +35,14 @@ latents = ae.encode([waveform_a, waveform_b], sr=[44100, 22050])
 ## Decoding latents to audio
 
 ```python
-import torchaudio
+from backend.lib.audio_io import save_audio
 from stable_audio_3 import AutoencoderModel
 
 ae = AutoencoderModel.from_pretrained("same-l")
 audio_out = ae.decode(latents)
 # → (1, 2, samples)
 
-torchaudio.save("reconstructed.wav", audio_out[0].cpu(), ae.sample_rate)
+save_audio("reconstructed.wav", audio_out[0].cpu(), ae.sample_rate)
 ```
 
 ## Chunked processing for long audio
@@ -41,11 +50,11 @@ torchaudio.save("reconstructed.wav", audio_out[0].cpu(), ae.sample_rate)
 For audio that is too long to encode or decode in a single forward pass, pass `chunked=True`. `chunk_size` and `overlap` are both measured in latent frames (not audio samples).
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import AutoencoderModel
 
 ae = AutoencoderModel.from_pretrained("same-l")
-waveform, sr = torchaudio.load("audio.wav")
+waveform, sr = load_audio("audio.wav")
 
 latents = ae.encode(waveform, sr, chunked=True, chunk_size=128, overlap=32)
 audio_out = ae.decode(latents, chunked=True, chunk_size=128, overlap=32)

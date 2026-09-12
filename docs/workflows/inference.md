@@ -56,11 +56,12 @@ Overview of the main controls
 Using init audio, you can edit an existing recording to change the style, genres and mood to create variations. Use the prompt to control the variation.
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import StableAudioModel
 
 model = StableAudioModel.from_pretrained("medium")
-init_audio = torchaudio.load("/path/to/some/audio.wav")
+waveform, sr = load_audio("/path/to/some/audio.wav")
+init_audio = (sr, waveform)   # note the order: (sample_rate, tensor)
 audio = model.generate(
     init_audio=init_audio,
     init_noise_level=0.9,
@@ -69,9 +70,16 @@ audio = model.generate(
 )
 ```
 
+> Two things about that load. `torchaudio.load` / `save` are not usable here —
+> since 2.9 they decode through torchcodec, which needs FFmpeg's *shared*
+> libraries at import — so `backend/lib/audio_io.py` is the loader: libsndfile,
+> with an ffmpeg-CLI fallback, and no clamping. And it returns
+> `(tensor, sample_rate)` while the pipeline wants `(sample_rate, tensor)`, so
+> the tuple is built explicitly rather than passed straight through.
+
 
 ## Controls
-- **`init_audio`** - The source audio as a `(sample_rate, tensor)` tuple (e.g. from `torchaudio.load()`). The audio will be noised and then denoised.
+- **`init_audio`** - The source audio as a `(sample_rate, tensor)` tuple — e.g. `(sr, waveform)` from `backend.lib.audio_io.load_audio()`, which returns them the other way round. The audio will be noised and then denoised.
 - **`init_noise_level`** — Controls how much the init audio influences the output (range: `0.0`–`1.0`, default: `1.0`). At `1.0` the init audio is fully replaced by noise and has no effect (pure generation). Lower values preserve more of the original — for example `0.1` produces a close variation, while `0.5` is a halfway blend between the original and pure generation.
 
 The other controls for text to audio are the same, however the `prompt` is now used to control how the audio will be edited. The [Prompt Guide](../guides/prompting.md) has some examples for this
@@ -80,11 +88,12 @@ The other controls for text to audio are the same, however the `prompt` is now u
 Inpainting lets you regenerate a specific region of an existing audio file while keeping the rest intact, useful for fixing a section, swapping out a sound, or extending a loop.
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import StableAudioModel
 
 model = StableAudioModel.from_pretrained("medium")
-inpaint_audio = torchaudio.load("/path/to/some/audio.wav")
+waveform, sr = load_audio("/path/to/some/audio.wav")
+inpaint_audio = (sr, waveform)   # note the order: (sample_rate, tensor)
 audio = model.generate(
     inpaint_audio=inpaint_audio,
     inpaint_mask_start_seconds=4.0,
@@ -97,11 +106,12 @@ audio = model.generate(
 You can also *extend* an audio by performing continuation. Simply choose a duration that is longer than your `inpaint_audio` and set `mask_start_seconds` to be the length of your audio file.
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import StableAudioModel
 
 model = StableAudioModel.from_pretrained("medium")
-inpaint_audio = torchaudio.load("/path/to/some/audio.wav") # Assume this is 10s long
+waveform, sr = load_audio("/path/to/some/audio.wav")  # assume this is 10s long
+inpaint_audio = (sr, waveform)   # note the order: (sample_rate, tensor)
 audio = model.generate(
     inpaint_audio=inpaint_audio,
     inpaint_mask_start_seconds=10.0,
@@ -112,7 +122,7 @@ audio = model.generate(
 
 ## Controls
 
-- **`inpaint_audio`** — The source audio as a `(sample_rate, tensor)` tuple (e.g. from `torchaudio.load()`). The region outside the mask is preserved; only the masked region is regenerated.
+- **`inpaint_audio`** — The source audio as a `(sample_rate, tensor)` tuple — e.g. `(sr, waveform)` from `backend.lib.audio_io.load_audio()`, which returns them the other way round. The region outside the mask is preserved; only the masked region is regenerated.
 - **`inpaint_mask_start_seconds`** — Start of the region to regenerate, in seconds.
 - **`inpaint_mask_end_seconds`** — End of the region to regenerate, in seconds.
 
@@ -124,11 +134,12 @@ When using batch size > 1, certain controls can be customized per-batch.
 For example, with batch_size=4:
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 from stable_audio_3 import StableAudioModel
 
 model = StableAudioModel.from_pretrained("medium")
-inpaint_audio = torchaudio.load("/path/to/some/audio1.wav")
+waveform, sr = load_audio("/path/to/some/audio1.wav")
+inpaint_audio = (sr, waveform)   # note the order: (sample_rate, tensor)
 
 audio = model.generate(
     inpaint_audio=inpaint_audio,

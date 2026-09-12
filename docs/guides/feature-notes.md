@@ -7,23 +7,35 @@ a close button.
 
 They exist because of a real report: someone spent a long time hunting for the
 Library, read the docs and asked the assistant, and only found it by eventually
-noticing the slim tab on the right edge of the window. The feature tour did not
-save them, and structurally cannot — a tour is a sequence you click through
-once and then it is gone, so it teaches nothing about an affordance you next
-meet three sessions later. A note stays pinned to the thing until you have
-actually used it.
+noticing the slim tab on the right edge of the window.
 
-## The three notes
+Two things came out of that, and neither of them is a note. The rail tab now
+carries the **LIBRARY** wordmark, so the control says what it is. And the
+header's **?** button searches the feature registry and will take you to
+anything it names, so "where is X?" has a direct answer at last.
+
+Feature Notes are what is left over: a pinned label beside the few controls that
+still carry none. The feature tour did not save that user and structurally
+cannot — a tour is a sequence you click through once and then it is gone, so it
+teaches nothing about an affordance you next meet three sessions later. A note
+stays pinned to the thing until you have actually used it.
+
+## The two notes
 
 | Note | Points at |
 |---|---|
-| **Library** | The slim tab on the right edge of the window that slides the library out. |
 | **Log** | The LOG strip at the bottom right — machine stats and every job the app has run. |
 | **Panels** | The bottom strip that opens the panel tabs: Score, Sing, Lyric, Levels, MIDI and the rest. |
 
-Three is deliberate. A note on every control would be the same as no notes at
-all; the bar for adding one is whether a new user could find that affordance
-without being told.
+The Library used to head this list and no longer qualifies: its edge tab carries
+the LIBRARY wordmark now, and the first rule is that a control which says what
+it is does not get a note. (`featureRegistry.test.ts` asserts there is no
+library note, so it cannot creep back.)
+
+Two is deliberate. A note on every control would be the same as no notes at all;
+the bar for adding one is whether a new user could find that affordance without
+being told — and for anything that *is* labelled, the **?** search will take you
+to it.
 
 ## They retire themselves
 
