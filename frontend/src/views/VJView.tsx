@@ -22,6 +22,7 @@ import { getAnalyser } from '../state/playerStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { subscribeToMidi } from '../state/midiBus';
+import { describeHttpError } from '../lib/httpError';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { getVjPlaybackState, registerVjPlaybackHandler, reportVjPlaybackState } from '../state/vjPlaybackBus';
 import { registerVjSetHandler, sendTrackToVj } from '../state/vjSetBus';
@@ -335,7 +336,10 @@ export const VJView: React.FC = () => {
     setStatus('loading');
     try {
       const r = await fetch('/api/vj/url');
-      if (!r.ok) throw new Error(`backend returned ${r.status}`);
+      // `backend returned 502` hid the cause: /api/vj/url never returns 502,
+      // so that status comes from a hop in FRONT of the backend and means the
+      // backend was unreachable, not that the VJ build is missing.
+      if (!r.ok) throw new Error(await describeHttpError(r));
       const j = (await r.json()) as {
         url: string;
         mode?: string;
