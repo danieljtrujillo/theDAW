@@ -29,6 +29,7 @@ import { FeatureNotes } from '../../onboarding/FeatureNotes';
 import { HelpSearchPopover } from '../../onboarding/HelpSearchPopover';
 import { useOnboardingStore } from '../../onboarding/onboardingStore';
 import { TopBarButton } from './TopBarButton';
+import { ImportMenu, IMPORT_AUDIO_EVENT } from './ImportMenu';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
@@ -289,10 +290,10 @@ export const Shell: React.FC = () => {
       }}
     >
       {/* Combined header + tab bar — logo (left), workspace tabs (center),
-          Mobile / Help / app-menu (right). G-Search moved to the footer.
+          Mobile / Help / Import / app-menu (right). G-Search moved to the footer.
 
           z-40 is about what DROPS OUT of this row, not about the row: the app
-          menu and the help search hang below it, over the library rail (z-20)
+          menu, the import menu and the help search hang below it, over the library rail (z-20)
           and the bottom dock (z-30). At z-10 they were painted behind an open
           rail — the header never overlaps either strip itself, so raising it
           changes nothing else. It stays under the modal layer (z-50 and up). */}
@@ -320,7 +321,7 @@ export const Shell: React.FC = () => {
         />
 
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* Order: Mobile, Help, then the app menu (hamburger) on the far right. */}
+          {/* Order: Mobile, Help, Import, then the app menu (hamburger) on the far right. */}
           <TopBarButton
             onClick={() => setShareOpen(true)}
             icon={<Smartphone className="w-3.5 h-3.5" />}
@@ -331,9 +332,17 @@ export const Shell: React.FC = () => {
               in, beside the search field, because "open the manual" is the
               answer to a question the search can usually answer better. */}
           <HelpSearchPopover onOpenDocs={() => setDocsOpen(true)} />
+          {/* Global import — audio files to the library, a .tasmo, or a DAW
+              project. On every tab, in one place, next to the menu that also
+              lists the project ops, so nobody has to hunt per workspace. */}
+          <ImportMenu
+            onOpenProject={() => openProject('open')}
+            onImportDawProject={() => openDawImport()}
+          />
           {/* App menu — project ops, backup/migrate, updates, Settings, Edit
-              Layout, DAW import, and .tasmo save/open all live here. It is the
-              sole entry point for Settings (the header gear was retired). */}
+              Layout, DAW import (also under IMPORT), and .tasmo save/open all
+              live here. It is the sole entry point for Settings (the header
+              gear was retired). */}
           <span data-tour="app-menu" className="inline-flex">
             <HamburgerMenu
               onNewProject={handleNewProject}
@@ -621,6 +630,10 @@ export const Shell: React.FC = () => {
           onToggleShowAtStartup={setHomeShowAtStartup}
           onNavigate={(tab) => setCenterTab(tab)}
           onOpenProject={() => openProject('open')}
+          // Synchronous on purpose: the header's ImportMenu clicks its file
+          // input inside this same user activation, and a deferred dispatch
+          // would leave the browser refusing to open the picker.
+          onImportAudio={() => window.dispatchEvent(new CustomEvent(IMPORT_AUDIO_EVENT))}
           onStartTour={startTour}
           onClose={() => setHomeOpen(false)}
         />
