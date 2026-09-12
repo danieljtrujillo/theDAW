@@ -2,7 +2,8 @@
 
 Linux x86_64 is a supported target for the backend and the web UI. The
 dependency graph already maps it (`pyproject.toml` `[tool.uv.sources]` pulls
-the cu126 torch/torchaudio wheels for `sys_platform == 'linux'`), every pull
+the cu130 torch/torchaudio wheels for `sys_platform == 'linux'` on
+`x86_64`), every pull
 request runs `uv sync` + the test suite on `ubuntu-latest`, and the root
 `Dockerfile` runs the whole app on Debian. What has been missing is this page
 and a shell launcher — `theDAW.bat` is Windows-only.
@@ -28,11 +29,11 @@ the steps by hand.
 
 | Tool | Why | Install |
 |---|---|---|
-| **uv** | Python env + every Python dependency (pulls its own CPython 3.10) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **uv** | Python env + every Python dependency (pulls its own CPython 3.12) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | **Node ≥ 20.19** (22.12 recommended) | Frontend dev server and the VJ sidecar | See below — distro packages are usually too old |
 | **ffmpeg** | All audio I/O: effects, exports, library ingest, MIDI, YouTube | `apt-get install ffmpeg` |
 | **git**, **build-essential**, **libglib2.0-0** | Submodules; native builds; `opencv-python-headless` runtime | `apt-get install git build-essential libglib2.0-0` |
-| **NVIDIA driver + CUDA 12.x** | GPU generation (the Medium model requires it; Small runs on CPU) | Distro / NVIDIA instructions |
+| **NVIDIA driver 580+ (R580 branch, for CUDA 13)** | GPU generation (the Medium model requires it; Small runs on CPU) | Distro / NVIDIA instructions |
 
 > **Node from apt is too old.** Ubuntu 22.04 and 24.04 ship Node 18/20.x
 > below the `>=20.19` floor in `frontend/package.json`. Use nvm:
@@ -59,10 +60,10 @@ uv sync --group dev
 cd frontend && npm install && cd ..
 ```
 
-`uv sync` installs torch + torchaudio from the cu126 index automatically —
+`uv sync` installs torch + torchaudio from the cu130 index automatically —
 there is no `--index-url` step and no manual CUDA wheel selection. A prebuilt
-`manylinux2014_x86_64` aubio wheel is committed under `wheels/`, so nothing
-needs a compiler.
+cp312 `manylinux2014_x86_64` aubio wheel is committed under `wheels/`, so
+nothing needs a compiler.
 
 ### If `uv sync` fails on `pyk4a-bundle`
 
@@ -137,8 +138,9 @@ curl -s http://localhost:8600/api/health
 ```
 
 `torch.cuda.is_available()` should print `True` on an NVIDIA machine with a
-working driver. If it prints `False`, the cu126 wheel installed but the driver
-is missing or too old for CUDA 12.6 — `nvidia-smi` will say.
+working driver. If it prints `False`, the cu130 wheel installed but the driver
+is missing or older than 580, which is what CUDA 13.0 requires — `nvidia-smi`
+will say which is installed.
 
 ## Models
 

@@ -2,7 +2,7 @@
 
 ## Optimization: running a multi-model stack on a modest GPU
 
-theDAW never holds the whole system in memory at once. It is a FastAPI backend (`backend/server.py`, bound to `localhost:8600` by `backend/run.py:10-16`) plus a React/Vite frontend, and almost every heavy component is **deferred, lazily loaded, single-resident, or pushed into a separate process**. The result is that the parts that are actually running at any moment fit a small GPU, while everything else stays cold on disk.
+theDAW never holds the whole system in memory at once. It is a FastAPI backend (`backend/server.py`, bound to `localhost:8600` by `backend/run.py` `uvicorn.run(...)`, `:39-42`) plus a React/Vite frontend, and almost every heavy component is **deferred, lazily loaded, single-resident, or pushed into a separate process**. The result is that the parts that are actually running at any moment fit a small GPU, while everything else stays cold on disk.
 
 ### 1. Pick a small model, then run it in half precision
 
@@ -26,17 +26,17 @@ Duration drives the latent sequence length directly, and the request path aligns
 
 The torch / torchaudio / matplotlib / `stable_audio_3` graph (~9.6s of imports) is kept **off module scope** and imported inside the handlers that use it:
 
-> "Heavy imports … total ~9.6s and are deliberately kept OFF module scope so uvicorn binds :8600 in ~1s instead of after the whole torch/XLA stack loads" — `server.py:38-46`
+> "Heavy imports … total ~9.6s and are deliberately kept OFF module scope so uvicorn binds :8600 in ~1s instead of after the whole torch/XLA stack loads" — `server.py:39-45`
 
-The heavy stack is then warmed in a background daemon thread **after** the port is bound (`_warm_heavy`, `server.py:135-172`, started at `server.py:861`), and the model catalog import is itself lazy and cached (`_generation_models`, `server.py:123-132`). RAG embeddings load only on the first assistant query (`server.py:870-872`).
+The heavy stack is then warmed in a background daemon thread **after** the port is bound (`_warm_heavy`, `server.py:136`, started at `server.py:955`), and the model catalog import is itself lazy and cached (`_generation_models`, `server.py:124`). RAG embeddings load only on the first assistant query (`backend/rag.py` `retrieve()`; see the note at `server.py:964`).
 
 ### 5. Models load on demand, one GPU-resident at a time
 
-No checkpoint is loaded at startup — "generation models load on demand" (`server.py:863-868`). When a model is first needed it is loaded and cached (`_get_or_load_generation_pipeline`, `server.py:303-365`), and a **single-resident policy** keeps only one big model on the GPU: switching models parks the previous pipeline in CPU RAM for a fast bit-identical swap when there is ≥10 GB free RAM, otherwise evicts it entirely (`_park_or_evict_other_generation_pipelines`, `server.py:214-265`, `_PARK_MIN_FREE_RAM_GB=10.0` at `:211`).
+No checkpoint is loaded at startup — "generation models load on demand" (`server.py:957-962`). When a model is first needed it is loaded and cached (`_get_or_load_generation_pipeline`, `server.py:306`), and a **single-resident policy** keeps only one big model on the GPU: switching models parks the previous pipeline in CPU RAM for a fast bit-identical swap when there is ≥10 GB free RAM, otherwise evicts it entirely (`_park_or_evict_other_generation_pipelines`, `server.py:217`, `_PARK_MIN_FREE_RAM_GB = 10.0` at `:214`).
 
 ### 6. Non-destructive VRAM offload for co-resident GPU work
 
-`POST /api/model/offload` parks the SA3 model(s) in CPU RAM to free VRAM (e.g. for the Magenta sidecar) without a disk reload, and `/api/model/onload` swaps them straight back — "a pure tensor transfer (no dtype change, bit-identical weights)" (`server.py:1065-1088` `_move_pipelines`, `:1090-1155`). Before any SA3 load/wake, a resident Magenta engine is stopped first to avoid stacking two GPU/commit loads (`_ensure_gpu_clear_of_magenta`, `server.py:267-300`).
+`POST /api/model/offload` parks the SA3 model(s) in CPU RAM to free VRAM (e.g. for the Magenta sidecar) without a disk reload, and `/api/model/onload` swaps them straight back — "a pure tensor transfer (no dtype change, bit-identical weights)" (`_move_pipelines`, `server.py:1303`). Before any SA3 load/wake, a resident Magenta engine is stopped first to avoid stacking two GPU/commit loads (`_ensure_gpu_clear_of_magenta`, `server.py:270`).
 
 ### 7. Frontend: code-split, lazy panels, separate mobile bundle
 
@@ -44,11 +44,11 @@ Every workspace tab is `React.lazy` so "its JS — and its heavy deps (wavesurfe
 
 ### 8. Bounded caches and idle-gated background work
 
-Spectrograms are an LRU capped at 20 (`server.py:113-120`), finished generate-jobs are pruned past 40 (`server.py:1497-1508`), and model-resolution events cap at 200 (`model_configs.py:22`). Deferred work (analysis, stems, MIDI, notation backfill) runs through an idle-gated queue that checks `is_idle()` before pulling jobs (`server.py:876-902`; `backend/core/idle.py:35-115`), so background compute never competes with an active generation.
+Spectrograms are an LRU capped at 20 (`_SPEC_CACHE_MAX_SIZE`, `server.py:115`), finished generate-jobs are pruned past 40 (`_prune_jobs`, `server.py:1786`), and model-resolution events cap at 200 (`model_configs.py:22`). Deferred work (analysis, stems, MIDI, notation backfill) runs through an idle-gated queue that checks `is_idle()` before pulling jobs (`server.py:968-980`; `backend/core/idle.py` `is_idle()`, `:69`), so background compute never competes with an active generation.
 
 ### 9. Heavy/exotic stacks isolated in sidecar processes
 
-The JAX/CUDA Magenta RealTime engine runs in a **separate WSL2 process** on `:8777`, spawned on demand and health-probed, not loaded into the API process (`backend/modules/magenta/sidecar.py:36,84,201-258`). Stem separation runs in the Demucs/LARSNET `integration-package` sidecar (`backend/modules/stems/module.json`), and Whisper transcription runs in its own isolated venv (`pyproject.toml:187`). This keeps the always-on backend light and lets the OS reclaim their memory when idle.
+The JAX/CUDA Magenta RealTime engine runs in a **separate WSL2 process** on `:8777`, spawned on demand and health-probed, not loaded into the API process (`backend/modules/magenta/sidecar.py:36,84,201-258`). Stem separation runs in the Demucs/LARSNET `integration-package` sidecar (`backend/modules/stems/module.json`), and Whisper transcription runs in its own isolated venv (`pyproject.toml:249`, the `.whisper_venv` ruff exclude). This keeps the always-on backend light and lets the OS reclaim their memory when idle.
 
 ### 10. On-demand, local-first model download
 
@@ -58,12 +58,12 @@ Weights are resolved **local folder → HF cache → download**, every step logg
 
 ## No cloud, no datacenters: run the core fully offline
 
-The entire creative core of theDAW runs on the local machine. The backend is a localhost FastAPI server (`backend/run.py:10-16`, `host="0.0.0.0"`, port 8600) and the frontend is a localhost Vite app (`vite.config.ts:88`, port 5173). Generation, decoding, stems, effects, the DAW, and the VJ engine all execute on-device; the only things that ever touch the internet are optional and can be skipped.
+The entire creative core of theDAW runs on the local machine. The backend is a localhost FastAPI server (`backend/run.py:39-42`, `host="0.0.0.0"`, port 8600) and the frontend is a localhost Vite app (`vite.config.ts:88`, port 5173). Generation, decoding, stems, effects, the DAW, and the VJ engine all execute on-device; the only things that ever touch the internet are optional and can be skipped.
 
 ### Local-first, no account required
 
 - **Audio generation** runs entirely on the local DiT + SAME autoencoder (`stable_audio_3/model.py`, `pipeline.py`). Model weights are fetched from Hugging Face **once** and then served from the local folder / HF cache forever after (`model_configs.py:147-191`). A hard offline switch exists: `SA3_LOCAL_ONLY=1` refuses any network access and requires the files be on disk (`model_configs.py:334-354`, `:428-444`). Drop the checkpoints under `models/` (or point `SA3_LOCAL_MODELS_DIR` / `local_models.txt` at them, `model_configs.py:194-213`) and generation needs no network at all.
-- **Generated output is written to local disk**, not a cloud bucket: audio, spectrogram PNGs, and metadata land in `data/generations/…` (`server.py:412-419`, `:474-520`).
+- **Generated output is written to local disk**, not a cloud bucket: audio, spectrogram PNGs, and metadata land in `data/generations/…` (`theDAW_GENERATIONS_DIR` overrides the location, `server.py:443`).
 - **Stem separation** is a local Demucs/LARSNET sidecar (`backend/modules/stems/module.json`).
 - **Effects / mastering / export** are local DSP: FFmpeg (`backend/modules/effects/module.json`), plus `scipy`, `pyloudnorm`, and JUCE/VST3 hosting via `pedalboard` (`pyproject.toml:36,81`).
 - **MIDI, notation, and DAW import** are local libraries — `basic-pitch` + `piano-transcription-inference` (`pyproject.toml:48-56`), `music21` (`:60`), and the `.flp`/`.rpp`/`.aup3`/`.tasmo` parsers (`:81-91`).
@@ -74,6 +74,13 @@ The Magenta RealTime "MAKE" engine is a local sidecar too (WSL2/CUDA on `:8777`,
 ### Optional cloud — present, gated, and skippable
 
 Nothing below is required to make music:
+
+> **On the `path:line` citations.** Line numbers on this page are correct as of
+> the commit that last touched it, and `backend/server.py` in particular moves
+> under refactors — it lost ~100 lines when audio I/O was routed through
+> `backend/lib/audio_io.py`. Where a claim rests on a named function or
+> constant, the symbol is cited alongside the line, and the symbol is the part
+> to trust: search for it rather than jumping to the number.
 
 - **Assistant LLM providers** are multi-provider and include **fully local** backends — Ollama, LM Studio, llama.cpp, and vLLM, all pointed at localhost with `env_key=None` (`backend/assistant_routes.py:299-326`). The cloud providers (Gemini, OpenAI, Anthropic, xAI, Groq, OpenRouter) each require an API key that is only read from the environment (`assistant_routes.py:249-298`, keys enumerated `:70-74`); with no key they are simply unavailable. The assistant panel is lazy-mounted only when the orb chat is opened (`App.tsx:14-17`), and its RAG document retrieval degrades gracefully — without `chromadb` "the server logs a non-fatal warning and the assistant runs without document retrieval" (`pyproject.toml:24-30`).
 - **Suno** is an optional cloud proxy module (marked with a "Cloud" icon, `backend/modules/suno/module.json`) for those who want it; the local generator does not depend on it.
@@ -91,23 +98,23 @@ Once the model weights are on disk, **a musician can run theDAW's core — text-
 - Chunked attention (chunk_size=128) and sliding-window attention in autoencoder resampling blocks -> stable_audio_3/models/autoencoders.py:41, :61-63
 - Overlapping chunked encode/decode bounds peak AE memory for any clip length -> stable_audio_3/models/autoencoders.py:556-600, :602-644 (exposed model.py:485-538)
 - Gradient checkpointing available in AE transformer blocks -> stable_audio_3/models/autoencoders.py:48, :177-178
-- Variable-length generation: sample size aligned to chunk grid, mask_padding_attention + effective-length schedule avoid padding compute -> stable_audio_3/model.py:312-317, :378-407; backend/server.py:586-639
-- Heavy imports (torch/torchaudio/stable_audio_3, ~9.6s) kept off module scope so uvicorn binds :8600 in ~1s -> backend/server.py:38-46
-- Heavy stack warmed in background thread after port bind; catalog import lazy+cached -> backend/server.py:135-172, :861, :123-132
-- Models load on demand, none at startup -> backend/server.py:303-365, :863-868
-- Single GPU-resident policy: previous pipeline parked in CPU RAM (>=10GB free) or evicted -> backend/server.py:214-265, :211
-- Non-destructive VRAM offload/onload swaps model CPU<->GPU with no disk reload -> backend/server.py:1065-1088, :1090-1155
-- Magenta sidecar cleared from GPU before SA3 load to avoid Windows commit-limit crash -> backend/server.py:267-300
+- Variable-length generation: sample size aligned to chunk grid, mask_padding_attention + effective-length schedule avoid padding compute -> stable_audio_3/model.py:312-317, :378-407; backend/server.py `_compute_request_sample_size` :615
+- Heavy imports (torch/torchaudio/matplotlib/stable_audio_3, ~9.6s) kept off module scope so uvicorn binds :8600 in ~1s -> backend/server.py:39-45
+- Heavy stack warmed in background thread after port bind; catalog import lazy+cached -> backend/server.py `_warm_heavy` :136, started :955; `_generation_models` :124
+- Models load on demand, none at startup -> backend/server.py `_get_or_load_generation_pipeline` :306; :957-962
+- Single GPU-resident policy: previous pipeline parked in CPU RAM (>=10GB free) or evicted -> backend/server.py `_park_or_evict_other_generation_pipelines` :217, `_PARK_MIN_FREE_RAM_GB` :214
+- Non-destructive VRAM offload/onload swaps model CPU<->GPU with no disk reload -> backend/server.py `_move_pipelines` :1303
+- Magenta sidecar cleared from GPU before SA3 load to avoid Windows commit-limit crash -> backend/server.py `_ensure_gpu_clear_of_magenta` :270
 - Frontend tab views code-split via React.lazy so heavy deps load only on first open -> frontend/src/components/layout/DAWCenterPanel.tsx:16-41
 - Assistant chunk (react-markdown + @google/genai) deferred until orb chat opened -> frontend/src/App.tsx:14-17, :437-446
 - Vite manualChunks split stable vendors; separate small mobile-companion entry bundle -> frontend/vite.config.ts:54-77
 - DJ/VJ tabs stay mounted-but-hidden with VJ iframe render loop paused (~0% GPU backgrounded) -> frontend/src/components/layout/DAWCenterPanel.tsx:22-30
-- Bounded caches: spectrogram LRU=20, generate-jobs pruned at 40, resolution events cap 200 -> backend/server.py:113-120, :1497-1508; model_configs.py:22
-- Idle-gated background worker queue checks is_idle() before running analysis/stems/midi/notation work -> backend/server.py:876-902; backend/core/idle.py:35-115
-- Heavy stacks isolated in sidecar processes (Magenta WSL2/JAX :8777, Demucs stems, Whisper venv) -> backend/modules/magenta/sidecar.py:36,84,201-258; backend/modules/stems/module.json; pyproject.toml:187
+- Bounded caches: spectrogram LRU=20, generate-jobs pruned at 40, resolution events cap 200 -> backend/server.py `_SPEC_CACHE_MAX_SIZE` :115, `_prune_jobs` :1786; model_configs.py:22
+- Idle-gated background worker queue checks is_idle() before running analysis/stems/midi/notation work -> backend/server.py:968-980; backend/core/idle.py `is_idle()` :69
+- Heavy stacks isolated in sidecar processes (Magenta WSL2/JAX :8777, Demucs stems, Whisper venv) -> backend/modules/magenta/sidecar.py:36,84,201-258; backend/modules/stems/module.json; pyproject.toml:249
 - On-demand local-first model resolution (local folder -> HF cache -> download) with live progress and mirror fallback -> stable_audio_3/model_configs.py:147-191, :85-144; backend/modules/modeldl/router.py:65-107,144-208
 - Fully offline switch SA3_LOCAL_ONLY=1 blocks all network model fetch -> stable_audio_3/model_configs.py:334-354, :428-444
-- Generated audio/spectrograms/metadata written to local disk (data/generations) -> backend/server.py:412-419, :474-520
+- Generated audio/spectrograms/metadata written to local disk (data/generations) -> backend/server.py:443 (`theDAW_GENERATIONS_DIR`)
 - Local LLM assistant providers (Ollama/LM Studio/llama.cpp/vLLM) with no API key; cloud providers key-gated and optional -> backend/assistant_routes.py:299-326, :249-298
 - RAG retrieval degrades gracefully without chromadb (non-fatal) -> pyproject.toml:24-30
 - Suno and genaiproxy are optional cloud modules, not required by local generation -> backend/modules/suno/module.json; backend/modules/genaiproxy/module.json

@@ -119,5 +119,3 @@ When the layout is ready, the toolbar offers three outputs:
 - If the tab shows "VST Foundry did not start," see the
   [Windows troubleshooting guide](../windows/troubleshooting.md); the
   `/api/foundry/status` endpoint reports the project path, port, and any issues.
-</content>
-</invoke>

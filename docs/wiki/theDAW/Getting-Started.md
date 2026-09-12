@@ -17,7 +17,7 @@ uv run uvicorn backend.server:app --host 0.0.0.0 --port 8600 --reload   # backen
 cd frontend && npm run dev                                              # frontend
 ```
 
-On Windows, `uv sync` installs CUDA 12.8 torch and torchaudio plus the pre-built Flash Attention wheel automatically.
+On Windows, `uv sync` installs CUDA 13.0 torch and torchaudio plus the pre-built Flash Attention wheel automatically.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ On Windows, `uv sync` installs CUDA 12.8 torch and torchaudio plus the pre-built
 | [Node.js](https://nodejs.org/) 20.19+ or 22.12+ | Frontend dev server and the VJ sidecar. |
 | [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH | All audio I/O: effects, exports, library ingest, MIDI conversion, import. |
 | [Git](https://git-scm.com/) | Clones the repo; `--recurse-submodules` brings in the Magenta sidecar source. |
-| NVIDIA driver 550+ | Runs the Medium model and Magenta. The Small model runs on CPU. |
+| NVIDIA driver 580+ (R580 branch) | Runs the Medium model and Magenta. The Small model runs on CPU. |
 
 ## Reference
 
