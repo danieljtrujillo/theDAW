@@ -218,16 +218,18 @@ def is_static_mode() -> bool:
     return resolve_dist_dir() is not None
 
 
-# Set True by server.py when the /vj-app StaticFiles mount is actually
-# registered (mounting happens once, at server import). Routes must key the
-# "return the static URL" decision off THIS, not is_static_mode(): a dist
-# built later in the session flips is_static_mode() true while no mount
-# exists, which would hand the iframe a /vj-app/ URL that 404s.
+# Set True by server.py once the /vj-app route is registered, which it always
+# is. The route resolves the build per request (server._serve_static_build), so
+# a dist that appears mid-session — Pinokio's Update npm-installs the VJ
+# checkout while theDAW is running — serves immediately instead of 404ing until
+# the next backend restart.
 STATIC_MOUNTED = False
 
 
 def static_mount_active() -> bool:
-    return STATIC_MOUNTED
+    """True when a request to /vj-app would actually serve a build: the route
+    is registered AND a dist is resolvable right now."""
+    return STATIC_MOUNTED and resolve_dist_dir() is not None
 
 
 def ensure_static_dist() -> Path:

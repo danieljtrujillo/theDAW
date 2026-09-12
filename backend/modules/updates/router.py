@@ -313,8 +313,25 @@ def _run_git(args: list[str], tail: list[str]) -> int:
     return proc.wait()
 
 
-def _tree_dirty() -> bool:
-    """Refuse to pull over local edits; True on any git failure (fail safe)."""
+# Lockfiles the setup step rewrites on an ordinary run: `npm install` in
+# frontend/ and electron-ui/, `uv sync` re-resolving. A clone dirtied only by
+# those was dirtied by its own launcher, not by the user, so an update restores
+# them instead of refusing. Refusing was a dead end for the Pinokio launcher,
+# whose Update runs a bare `git pull` and died with "Your local changes to the
+# following files would be overwritten by merge" with nothing the user could do
+# about it from inside the app.
+_TOOL_OWNED_PATHS = frozenset(
+    {
+        "uv.lock",
+        "frontend/package-lock.json",
+        "electron-ui/package-lock.json",
+    }
+)
+
+
+def _dirty_paths() -> list[str] | None:
+    """Tracked files with local modifications. None when git itself failed,
+    which is NOT the same as a clean tree and must not be treated as one."""
     try:
         out = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=no"],
@@ -324,8 +341,19 @@ def _tree_dirty() -> bool:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
-        return True
-    return out.returncode != 0 or bool(out.stdout.strip())
+        return None
+    if out.returncode != 0:
+        return None
+    paths: list[str] = []
+    for line in out.stdout.splitlines():
+        entry = line[3:].strip()
+        if not entry:
+            continue
+        # A rename reads "old -> new"; the working-tree file is the new one.
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1]
+        paths.append(entry.strip('"'))
+    return paths
 
 
 def _set_apply(**fields: Any) -> None:
@@ -337,6 +365,19 @@ def _apply_worker() -> None:
     global _current_version
     tail: list[str] = []
     try:
+        # Restore the lockfiles the launcher rewrote, or the pull refuses to
+        # overwrite them. Checked again here, not just at the request, because
+        # a launch can dirty the tree between the two.
+        restore = sorted(p for p in (_dirty_paths() or []) if p in _TOOL_OWNED_PATHS)
+        if restore:
+            _set_apply(
+                step="restore",
+                message="Restoring lockfiles the setup step rewrote.",
+            )
+            _apply_log(
+                tail, f"restoring launcher-rewritten files: {', '.join(restore)}"
+            )
+            _run_git(["checkout", "--", *restore], tail)
         _set_apply(step="pull", message="Pulling the latest code.")
         rc = _run_git(["pull", "--ff-only"], tail)
         if rc != 0:
@@ -427,11 +468,21 @@ def apply_update() -> dict[str, Any]:
     with _apply_lock:
         if _apply["state"] in ("running", "restarting"):
             return dict(_apply)
-    if _tree_dirty():
+    dirty = _dirty_paths()
+    if dirty is None:
+        raise HTTPException(
+            status_code=503,
+            detail="git could not report this clone's status, so the update was not attempted.",
+        )
+    blocked = sorted(p for p in dirty if p not in _TOOL_OWNED_PATHS)
+    if blocked:
+        shown = ", ".join(blocked[:8])
+        if len(blocked) > 8:
+            shown += f", and {len(blocked) - 8} more"
         raise HTTPException(
             status_code=409,
             detail="This clone has uncommitted local changes, so the update would overwrite "
-            "them. Commit or stash them, then update again.",
+            f"them: {shown}. Commit or stash them, then update again.",
         )
     _set_apply(
         state="running",

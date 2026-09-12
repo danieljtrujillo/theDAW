@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 from fastapi import Body, FastAPI, Form, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
@@ -2339,6 +2339,7 @@ async def get_log(since: int = 0, limit: int = 1000):
 app.include_router(assistant_router)
 app.include_router(admin_router)
 
+
 # VJ app served as a static production build (default when a build is
 # bundled/resolvable; theDAW_VJ_DEV=1 opts back into the Node dev server). This
 # removes the runtime Node.js requirement on end-user machines and makes the VJ
@@ -2346,29 +2347,61 @@ app.include_router(admin_router)
 # /vj-app (matching the VJ build's vite base) BEFORE the SPA catch-all below so
 # it isn't shadowed. In dev the frontend's Vite config proxies /vj-app -> :8600,
 # so the iframe loads it same-origin; in packaged/Docker it's already one origin.
+def _serve_static_build(dist: Path | None, rel: str, label: str) -> FileResponse:
+    """Serve one file out of an embedded app build, resolved PER REQUEST.
+
+    These builds are produced by a step that can run after the backend is
+    already up — Pinokio's Update npm-installs the VJ checkout while theDAW is
+    running — and an import-time ``app.mount`` freezes the decision at boot, so
+    the tab 404s until someone restarts the backend for reasons no error
+    message explains. Resolving here costs a stat per request and makes a build
+    that appears mid-session serve immediately.
+
+    Unknown paths fall back to ``index.html``, matching StaticFiles(html=True):
+    both builds are SPAs that route client-side.
+    """
+    if dist is None:
+        raise HTTPException(
+            status_code=404, detail=f"no {label} build is staged on this machine"
+        )
+    root = dist.resolve()
+    target = (
+        (root / rel.lstrip("/")).resolve() if rel.strip("/") else root / "index.html"
+    )
+    try:
+        target.relative_to(root)
+    except ValueError:
+        # A traversal attempt ("../../secrets"); never serve outside the build.
+        raise HTTPException(status_code=404, detail="not found") from None
+    if target.is_dir():
+        target = target / "index.html"
+    if not target.is_file():
+        target = root / "index.html"
+    if not target.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"the staged {label} build has no index.html"
+        )
+    return FileResponse(target)
+
+
 try:
     from backend.modules.vj import sidecar as _vj_sidecar
 
-    if _vj_sidecar.is_static_mode():
-        _vj_dist = _vj_sidecar.resolve_dist_dir()
-        if _vj_dist is not None:
-            from fastapi.staticfiles import StaticFiles
+    @app.get(f"{_vj_sidecar.STATIC_MOUNT_PATH}/", include_in_schema=False)
+    @app.get(_vj_sidecar.STATIC_MOUNT_PATH + "/{rel:path}", include_in_schema=False)
+    def _serve_vj_app(rel: str = "") -> FileResponse:
+        return _serve_static_build(_vj_sidecar.resolve_dist_dir(), rel, "VJ")
 
-            app.mount(
-                _vj_sidecar.STATIC_MOUNT_PATH,
-                StaticFiles(directory=_vj_dist, html=True),
-                name="vj-app",
-            )
-            # Freeze the decision: routes return the /vj-app URL only when
-            # this mount really exists (see sidecar.static_mount_active).
-            _vj_sidecar.STATIC_MOUNTED = True
-            logger.info(
-                "vj: serving %s at %s (static build)",
-                _vj_dist,
-                _vj_sidecar.STATIC_MOUNT_PATH,
-            )
+    # The route exists from here on, so static_mount_active() only has to ask
+    # whether a build is resolvable right now.
+    _vj_sidecar.STATIC_MOUNTED = True
+    logger.info(
+        "vj: %s serves the build at %s",
+        _vj_sidecar.STATIC_MOUNT_PATH,
+        _vj_sidecar.resolve_dist_dir() or "(none staged yet)",
+    )
 except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
-    logger.warning("vj: static mount skipped: %s", _vj_mount_err)
+    logger.warning("vj: static route not registered: %s", _vj_mount_err)
 
 # SwayCommand cockpit served as a static embed build, same shape as the VJ mount
 # above and for the same reasons: one origin, no Node on the target machine,
@@ -2381,31 +2414,19 @@ except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
 try:
     from backend.modules.sway import sidecar as _sway_sidecar
 
-    _sway_dist = _sway_sidecar.resolve_dist_dir()
-    if _sway_dist is not None:
-        from fastapi.staticfiles import StaticFiles
+    @app.get(f"{_sway_sidecar.STATIC_MOUNT_PATH}/", include_in_schema=False)
+    @app.get(_sway_sidecar.STATIC_MOUNT_PATH + "/{rel:path}", include_in_schema=False)
+    def _serve_sway_app(rel: str = "") -> FileResponse:
+        return _serve_static_build(_sway_sidecar.resolve_dist_dir(), rel, "SwayCommand")
 
-        app.mount(
-            _sway_sidecar.STATIC_MOUNT_PATH,
-            StaticFiles(directory=_sway_dist, html=True),
-            name="sway-app",
-        )
-        # Freeze the decision: /api/sway/url hands out the embed URL only when
-        # this mount really exists (see sidecar.static_mount_active).
-        _sway_sidecar.STATIC_MOUNTED = True
-        logger.info(
-            "sway: serving %s at %s (static embed build)",
-            _sway_dist,
-            _sway_sidecar.STATIC_MOUNT_PATH,
-        )
-    else:
-        logger.info(
-            "sway: no embed build staged — the SWAY tab will explain how to "
-            "stage one (%s)",
-            _sway_sidecar.DIST_ENV,
-        )
+    _sway_sidecar.STATIC_MOUNTED = True
+    logger.info(
+        "sway: %s serves the embed build at %s",
+        _sway_sidecar.STATIC_MOUNT_PATH,
+        _sway_sidecar.resolve_dist_dir() or "(none staged yet)",
+    )
 except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Sway
-    logger.warning("sway: static mount skipped: %s", _sway_mount_err)
+    logger.warning("sway: static route not registered: %s", _sway_mount_err)
 
 # Single-container / companion UI serving. Every API route lives under /api and
 # is registered above, BEFORE this mount, so the SPA catch-all can never shadow
