@@ -247,8 +247,9 @@ export const IoSection: React.FC = () => {
         theDAW cannot enumerate them from here.
       </p>
       <p className={NOTE}>
-        Voice commands in the assistant orb always use the system default; the browser&apos;s speech
-        API has no device setting.
+        Voice commands always use the system default microphone. In theDAW the browser&apos;s speech
+        API has no device setting; the UNDERFIT orb runs inside underfit&apos;s own page on another
+        origin, which cannot read these settings at all.
       </p>
       <p className={`${NOTE} ${SECTION_META}`}>
         Lyria, Foundry, Sway, UNDERFIT and the VJ canvas make sound in their own windows — theDAW

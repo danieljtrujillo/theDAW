@@ -48,12 +48,12 @@ export const IO_SURFACES = [
     label: 'Vocal → MIDI',
     hint: 'The YIN note recorder inside the MIDI tab.',
   },
-  {
-    id: 'assistantVoice',
-    kind: 'audioIn',
-    label: 'Assistant voice (UNDERFIT)',
-    hint: 'The push-to-talk clip the UNDERFIT orb uploads for transcription.',
-  },
+  // NOT here: the UNDERFIT assistant orb. It is built by a SEPARATE entry
+  // (vite.orb.config.ts -> underfit/dashboard/assistant/underfit-orb.js) and
+  // runs inside underfit's own page on :8791 — a different origin with its own
+  // localStorage and no /api/settings of ours, so nothing chosen here could
+  // ever reach it. Offering the row would be a dropdown that does nothing;
+  // IoSection says so in words instead.
   {
     id: 'preview',
     kind: 'audioOut',

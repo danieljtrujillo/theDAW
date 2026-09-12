@@ -19,7 +19,7 @@
  */
 import { nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from './nodefiTypes';
 import { useLibraryStore } from '../state/libraryStore';
-import { getEngineCtx } from '../state/playerStore';
+import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import {
   getRackEffect,
   rackEffectDefaults,
@@ -344,7 +344,11 @@ export async function startLiveGraph(
         } else if (n.kind === 'lout') {
           const g = ctx.createGain();
           g.gain.value = num(n.params.gain, 0.9);
-          g.connect(ctx.destination);
+          // The master summing bus, NOT ctx.destination: straight to the
+          // destination this audible node bypassed the rack insert, the live
+          // FX, the analyser and the monitor gain — so the footer volume did
+          // not attenuate it and the meter never saw it.
+          g.connect(getMasterGain());
           inst.set(n.id, {
             inputs: { in: g },
             output: null,

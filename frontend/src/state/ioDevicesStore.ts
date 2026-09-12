@@ -144,6 +144,9 @@ export const useIoDevicesStore = create<IoDevicesState>()((set, get) => ({
       labelsKnown: labelsAreKnown([...audioIn, ...audioOut]),
     });
     void queryMicPermission().then((micPermission) => set({ micPermission }));
+    // Labels may have just become readable, which is the condition the legacy
+    // mic adoption waits on.
+    adoptLegacyMic();
     syncResolution();
   },
 
@@ -291,6 +294,8 @@ export const setMidiInputSelection = async (cfg: MidiInputConfig): Promise<boole
 
 /** Notice ids currently raised, so one absent device cannot stack cards. */
 const raised = new Set<string>();
+/** Refs whose id rotation we have already tried to re-persist. See below. */
+const rewriteAttempted = new Set<string>();
 let syncing = false;
 
 function noticeFor(kind: IoKind, ref: DeviceRef, where: string): void {
@@ -335,7 +340,12 @@ export function syncResolution(): void {
       const r = resolveRef(ref, liveDevices(kind), labelsKnownFor(kind));
       if (r.source === 'missing') noticeFor(kind, ref, where);
       else clearNotice(kind, ref);
-      if (r.rewrite) {
+      if (r.rewrite && !rewriteAttempted.has(missingNoticeId(kind, ref))) {
+        // Once per ref per session. A failed PATCH rolls the settings back to
+        // the OLD id, which lands here again through the store subscription —
+        // without this the pair would spin a fetch loop against a backend that
+        // is down (the Restart server button in this very modal does that).
+        rewriteAttempted.add(missingNoticeId(kind, ref));
         logInfo('audio', `${r.label} came back with a new device id; the saved choice was updated.`);
         rewrite(r.rewrite);
       }
@@ -405,6 +415,9 @@ let migrated = false;
  * that never reconciled. Adopt it as the GLOBAL microphone once, then leave the
  * key in place for one release as a read-only fallback so rolling the build
  * back does not lose the user's mic.
+ *
+ * Called from `refresh()` as well as from the settings subscription, because it
+ * needs a device list whose LABELS are readable — see below.
  */
 function adoptLegacyMic(): void {
   if (migrated) return;
@@ -412,21 +425,42 @@ function adoptLegacyMic(): void {
   // on a first run in the other launch mode, and adopting against it would
   // overwrite a device the user had already chosen on the other origin.
   if (!useFeatureToggleStore.getState().loaded) return;
-  migrated = true;
   const io = ioSettings();
-  if (!isSystemDefault(io.audio_input)) return;
+  if (!isSystemDefault(io.audio_input)) {
+    migrated = true;
+    return;
+  }
   let legacy = '';
   try {
     legacy = localStorage.getItem(LEGACY_MIC_KEY) ?? '';
   } catch {
     // Site data blocked. The old code read this in a useState initializer with
     // no try/catch and threw during render; this is that bug's fix.
+    migrated = true;
     return;
   }
-  if (!legacy) return;
-  const hit = liveDevices('audioIn').find((d) => d.id === legacy);
-  void setGlobalDevice('audio_input', { id: legacy, label: hit?.label ?? '' });
-  logInfo('audio', 'Adopted the old microphone choice into Settings → Inputs & outputs.');
+  if (!legacy) {
+    migrated = true;
+    return;
+  }
+  // Wait for a list we can actually read. The old key held a bare deviceId, and
+  // a ref saved with no label cannot be recovered by label — so in the other
+  // launch mode (a second origin, where that id means nothing) it would resolve
+  // to 'missing' and raise a notice naming a salted hash the user has never
+  // seen. Adopt the LABEL too or do not adopt at all.
+  const live = liveDevices('audioIn');
+  if (!labelsAreKnown(live)) return;
+  migrated = true;
+  const hit = live.find((d) => d.id === legacy);
+  if (!hit) {
+    logInfo(
+      'audio',
+      'The old microphone choice is no longer connected; Settings → Inputs & outputs stays on the system default.',
+    );
+    return;
+  }
+  void setGlobalDevice('audio_input', { id: hit.id, label: hit.label });
+  logInfo('audio', `Adopted the old microphone choice (${hit.label}) into Settings → Inputs & outputs.`);
 }
 
 /* ── boot ─────────────────────────────────────────────────────────────────── */

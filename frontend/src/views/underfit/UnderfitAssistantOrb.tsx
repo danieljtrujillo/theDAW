@@ -30,7 +30,6 @@ import GantasmoOrb from "../../orb-kit/react/GantasmoOrb";
 import "../../orb-kit/styles/gantasmo-orb.css";
 import "../../orb-kit/chat/orb-chat.css";
 import "./underfit-orb.css";
-import { surfaceDeviceId, useIoDevicesStore } from "../../state/ioDevicesStore";
 
 // Assistant backend base URL. This orb is bundled INTO underfit's dashboard
 // (served on :8791). It talks to underfit's OWN assistant backend — a clone of
@@ -331,11 +330,11 @@ function useSpeechInput(onText: (t: string) => void) {
     if (!supported || recRef.current) return;
     let stream: MediaStream;
     try {
-      const deviceId = surfaceDeviceId("assistantVoice");
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId } : true,
-      });
-      useIoDevicesStore.getState().notePermissionGranted();
+      // The OS default, deliberately. This file is built by a SEPARATE entry
+      // (vite.orb.config.ts) into underfit's own dashboard on :8791, so it has
+      // no access to theDAW's settings — reading the I/O menu here would
+      // silently always resolve to the default and make the menu a liar.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
       // Say WHICH failure it was: "permission denied" for a device that is
       // simply unplugged sends the user to the wrong fix.
