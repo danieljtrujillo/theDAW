@@ -28,10 +28,11 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
-# Resolved against the project root for a relative ``export_root``.
+# Resolved against the writable data root for a relative ``export_root``.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -118,11 +119,13 @@ SUPPORTED_CODECS = (*_VIDEO_CODECS.keys(), "pngseq")
 def resolve_export_dir(export_root: str, subfolder: str) -> Path:
     """Resolve ``<export_root>/<subfolder>`` into an absolute directory,
     creating it. A relative ``export_root`` resolves against the project
-    root. ``subfolder`` is sanitised so it can never escape the root.
+    root, or against the writable data root when the install directory is
+    read-only. ``subfolder`` is sanitised so it can never escape the root.
     """
     root = Path(export_root.strip() or "exports/vj").expanduser()
     if not root.is_absolute():
-        root = _PROJECT_ROOT / root
+        base = paths.data_dir() if paths.is_relocated() else _PROJECT_ROOT
+        root = base / root
     root = root.resolve()
 
     safe = _sanitize_subfolder(subfolder)

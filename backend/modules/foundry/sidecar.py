@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +46,7 @@ PORT_POLL_INTERVAL_SEC = 0.5
 # output to a logfile instead of DEVNULL so a spawn that dies (missing dep,
 # bad package.json script) leaves a trail the /url and /status endpoints can
 # surface, instead of vanishing into a vague timeout.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_LOG_PATH = _REPO_ROOT / "data" / "logs" / "foundry-sidecar.log"
+_LOG_PATH = paths.data_path("logs", "foundry-sidecar.log")
 
 
 @dataclass(frozen=True)

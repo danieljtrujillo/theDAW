@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import IO, Iterator, Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ NPM_INSTALL_TIMEOUT_SEC = 600.0
 # Child-process output (npm install, vite dev/preview) lands here so failures
 # are diagnosable; previously it went to DEVNULL and a server that died before
 # ready reported only "exited (rc=1)" with no cause anywhere.
-SIDECAR_LOG_PATH = _REPO_ROOT / "data" / "logs" / "vj-sidecar.log"
+SIDECAR_LOG_PATH = paths.data_path("logs", "vj-sidecar.log")
 
 
 @contextmanager
@@ -217,16 +218,18 @@ def is_static_mode() -> bool:
     return resolve_dist_dir() is not None
 
 
-# Set True by server.py when the /vj-app StaticFiles mount is actually
-# registered (mounting happens once, at server import). Routes must key the
-# "return the static URL" decision off THIS, not is_static_mode(): a dist
-# built later in the session flips is_static_mode() true while no mount
-# exists, which would hand the iframe a /vj-app/ URL that 404s.
+# Set True by server.py once the /vj-app route is registered, which it always
+# is. The route resolves the build per request (server._serve_static_build), so
+# a dist that appears mid-session — Pinokio's Update npm-installs the VJ
+# checkout while theDAW is running — serves immediately instead of 404ing until
+# the next backend restart.
 STATIC_MOUNTED = False
 
 
 def static_mount_active() -> bool:
-    return STATIC_MOUNTED
+    """True when a request to /vj-app would actually serve a build: the route
+    is registered AND a dist is resolvable right now."""
+    return STATIC_MOUNTED and resolve_dist_dir() is not None
 
 
 def ensure_static_dist() -> Path:

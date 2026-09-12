@@ -33,11 +33,12 @@ from pydantic import BaseModel
 from backend.modules.project import media_access
 
 from . import sidecar
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-_PROJECTS_DIR = sidecar._REPO_ROOT / "data" / "sway-projects"
+_PROJECTS_DIR = paths.data_path("sway-projects")
 
 _template_media_registered = False
 

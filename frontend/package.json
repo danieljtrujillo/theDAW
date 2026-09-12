@@ -30,6 +30,13 @@
     "test:import-audio": "tsx src/lib/importAudioFiles.test.ts",
     "test:library-drop": "tsx src/lib/libraryDrop.test.ts"
   },
+  "allowScripts": [
+    "@google/genai",
+    "core-js",
+    "esbuild",
+    "gl",
+    "protobufjs"
+  ],
   "dependencies": {
     "@coderline/alphatab": "^1.8.3",
     "@coderline/alphatab-vite": "^1.8.3",

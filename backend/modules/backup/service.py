@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -82,15 +83,8 @@ class RootSpec:
 
 def user_data_roots() -> list[RootSpec]:
     """Every user-data root worth backing up, in a stable order."""
-    data_dir = PROJECT_ROOT / "data"
-    # Mirrors backend.modules.library.store.default_library_root without
-    # importing the library module (keeps this module import-light).
-    configured = os.getenv("theDAW_GENERATIONS_DIR")
-    library_path = (
-        Path(configured).expanduser().resolve()
-        if configured
-        else data_dir / "generations"
-    )
+    data_dir = paths.data_dir()
+    library_path = paths.library_root()
     return [
         RootSpec(
             id="library",

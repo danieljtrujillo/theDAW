@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import time
 import uuid
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .db import LibraryDB
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -128,13 +128,12 @@ class LibraryRecord:
         }
 
 
-def default_library_root(project_root: Path) -> Path:
-    """Resolve the library root path. Env override wins; otherwise it lives
-    alongside the existing generate artifacts so old data is picked up."""
-    configured = os.getenv("theDAW_GENERATIONS_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return project_root / "data" / "generations"
+def default_library_root() -> Path:
+    """Resolve the library root path. ``theDAW_GENERATIONS_DIR`` wins;
+    otherwise it lives alongside the existing generate artifacts, under the
+    writable data root (which is NOT the install directory when that is
+    read-only — see backend.lib.paths)."""
+    return paths.library_root()
 
 
 def _audio_url_for(api_prefix: str, entry_id: str) -> str:

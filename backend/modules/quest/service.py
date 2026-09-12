@@ -24,11 +24,11 @@ from typing import Optional
 import httpx
 
 from backend.lib.atomic import atomic_replace
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_PATH = PROJECT_ROOT / "data" / "quest.json"
+_CONFIG_PATH = paths.data_path("quest.json")
 
 # theDAW-XR publishes the prebuilt Quest APK as a GitHub release asset; the
 # deploy dialog can pull the newest one instead of requiring a local build.
@@ -37,7 +37,7 @@ _XR_LATEST_URL = f"https://api.github.com/repos/{_XR_REPO_SLUG}/releases/latest"
 _HTTP_TIMEOUT_S = 8.0
 # The APK is ~150 MB; allow a slow connection to finish.
 _DOWNLOAD_TIMEOUT_S = 600.0
-_APK_DIR = PROJECT_ROOT / "data" / "quest"
+_APK_DIR = paths.data_path("quest")
 
 _EXE = "adb.exe" if os.name == "nt" else "adb"
 

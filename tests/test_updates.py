@@ -82,27 +82,62 @@ def test_apply_refuses_packaged_install(client):
     assert "desktop shell" in res.json()["detail"]
 
 
+class _NoopThread:
+    """Stands in for threading.Thread so /apply returns without doing the work."""
+
+    def __init__(self, target, daemon, name):
+        pass
+
+    def start(self) -> None:
+        pass
+
+
 def test_apply_refuses_dirty_tree(client, monkeypatch, tmp_path):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/git")
-    monkeypatch.setattr(updates, "_tree_dirty", lambda: True)
+    monkeypatch.setattr(updates, "_dirty_paths", lambda: ["backend/server.py"])
     res = client.post("/api/updates/apply")
     assert res.status_code == 409
-    assert "uncommitted" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert "uncommitted" in detail
+    # The old message named nothing, which left the user guessing what to stash.
+    assert "backend/server.py" in detail
+
+
+def test_apply_ignores_launcher_rewritten_lockfiles(client, monkeypatch, tmp_path):
+    """A clone that has only been launched has uv.lock / package-lock.json
+    modified by its own setup step. That must not block the update -- it is the
+    exact state Pinokio's Update died in."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(
+        updates,
+        "_dirty_paths",
+        lambda: ["uv.lock", "frontend/package-lock.json"],
+    )
+    monkeypatch.setattr(updates.threading, "Thread", _NoopThread)
+    body = client.post("/api/updates/apply").json()
+    assert body["state"] == "running"
+
+
+def test_apply_refuses_when_git_status_fails(client, monkeypatch, tmp_path):
+    """A git that cannot report status is not a clean tree."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(updates, "_dirty_paths", lambda: None)
+    res = client.post("/api/updates/apply")
+    assert res.status_code == 503
 
 
 def test_apply_starts_worker_and_reports_status(client, monkeypatch, tmp_path):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/git")
-    monkeypatch.setattr(updates, "_tree_dirty", lambda: False)
+    monkeypatch.setattr(updates, "_dirty_paths", lambda: [])
     started: list[str] = []
 
-    class _Thread:
+    class _Thread(_NoopThread):
         def __init__(self, target, daemon, name):
             started.append(name)
-
-        def start(self):
-            pass
 
     monkeypatch.setattr(updates.threading, "Thread", _Thread)
     body = client.post("/api/updates/apply").json()
