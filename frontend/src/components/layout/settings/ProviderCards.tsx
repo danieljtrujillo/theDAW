@@ -26,7 +26,8 @@ import {
   stopMagentaEngine,
 } from '../../../lib/magentaEngineClient';
 import type { ModelOption, ProviderStatus } from './providerTypes';
-import { BTN_AMBER, BTN_GHOST, BTN_PURPLE, BTN_ROSE, BTN_SKY, CARD, INPUT, postFix, sleep } from './shared';
+import { BTN_AMBER, BTN_GHOST, BTN_PURPLE, BTN_ROSE, BTN_SKY, CARD, FIELD_LABEL, INPUT, postFix, sleep } from './shared';
+import { SecretFieldLabel } from '../../ui/SecretFieldLabel';
 
 export const MODEL_STATE_LABELS: Record<string, string> = {
   active: 'Active',
@@ -496,11 +497,17 @@ const SunoKeyInput: React.FC = () => {
   };
 
   return (
-    <form className="flex gap-1" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-      {/* id is scoped to this modal: SunoKeySettings.tsx renders a second Suno
-          key field with its own id, and the two can be on screen at once —
-          a duplicate id would point both labels at whichever came first. */}
-      <label htmlFor="settings-suno-api-key" className="sr-only">Suno API key</label>
+    <form className="flex flex-wrap items-center gap-1" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+      {/* Visible, not sr-only: this was an unlabelled box you had to recognise
+          by its placeholder, and the placeholder disappears the moment a key is
+          configured. The key glyph says what goes in it, in every state. */}
+      <SecretFieldLabel
+        htmlFor="settings-suno-api-key"
+        className={`shrink-0 ${FIELD_LABEL}`}
+        title="Suno API key — saved to the backend; cloud generation reconnects on save."
+      >
+        API key
+      </SecretFieldLabel>
       <div className="relative flex-1 min-w-0">
         <input
           id="settings-suno-api-key"
@@ -594,7 +601,13 @@ const LyriaKeyInput: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
     : `GEMINI_API_KEY (aistudio.google.com)${info?.mock ? ' — optional in mock mode' : ''}`;
   return (
     <form className="flex flex-wrap items-center gap-1" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-      <label htmlFor="settings-lyria-gemini-key" className="sr-only">Gemini API key for Lyria</label>
+      <SecretFieldLabel
+        htmlFor="settings-lyria-gemini-key"
+        className={`shrink-0 ${FIELD_LABEL}`}
+        title="The GEMINI_API_KEY theDAW hands the Lyria sidecar. An environment variable wins; otherwise the key saved here, then the assistant's Gemini key."
+      >
+        Gemini key
+      </SecretFieldLabel>
       <div className="relative flex-1 min-w-0">
         <input
           id="settings-lyria-gemini-key"

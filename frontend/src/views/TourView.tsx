@@ -1662,9 +1662,15 @@ const KeyField: React.FC<{
   };
   return (
     <div>
-      <label htmlFor={id} className="flex items-baseline justify-between text-[10px]">
-        <span className="font-bold uppercase tracking-wider text-zinc-300">{label}</span>
-        <span className="text-[9px] text-zinc-400">
+      {/* Same key glyph as the button that opened this popover, and as every
+          other secret field in the app. The layout keeps its own markup because
+          the state word sits on the right — see SecretFieldLabel's note. */}
+      <label htmlFor={id} className="flex items-center justify-between gap-2 text-[10px]">
+        <span className="flex min-w-0 items-center gap-1 font-bold uppercase tracking-wider text-zinc-300">
+          <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" aria-hidden="true" />
+          <span className="truncate">{label}</span>
+        </span>
+        <span className="shrink-0 text-[9px] text-zinc-400">
           {state?.from_env ? 'set by env (env wins)' : state?.configured ? 'configured' : 'not set'}
         </span>
       </label>

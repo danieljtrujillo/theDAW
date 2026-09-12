@@ -25,6 +25,9 @@ import {
   Copy,
   RotateCcw,
   Sparkles,
+  Eye,
+  EyeOff,
+  KeyRound,
 } from "lucide-react";
 import GantasmoOrb from "../../orb-kit/react/GantasmoOrb";
 import "../../orb-kit/styles/gantasmo-orb.css";
@@ -1702,8 +1705,10 @@ export default function UnderfitAssistantOrb() {
                             background: "none", border: "none", textTransform: "uppercase", letterSpacing: "0.5px",
                             borderBottom: settingsTab === tab ? "2px solid #8b5cf6" : "2px solid transparent",
                             color: settingsTab === tab ? "#8b5cf6" : "#52525b",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4,
                           }}
                         >
+                          {tab === "keys" && <KeyRound size={11} style={{ flexShrink: 0 }} aria-hidden="true" />}
                           {tab === "model" ? "Chat" : "Keys"}
                         </button>
                       ))}
@@ -1712,8 +1717,10 @@ export default function UnderfitAssistantOrb() {
                     {settingsTab === "model" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
                         <div>
-                          <span style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Provider</span>
+                          <label htmlFor="fdy-provider" style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Provider</label>
                           <select
+                            id="fdy-provider"
+                            name="fdy-provider"
                             value={selectedProvider}
                             onChange={(e) => setSelectedProvider(e.target.value)}
                             style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", fontSize: 11, color: "#fafafa", outline: "none", cursor: "pointer" }}
@@ -1727,8 +1734,10 @@ export default function UnderfitAssistantOrb() {
                           </select>
                         </div>
                         <div>
-                          <span style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Model</span>
+                          <label htmlFor="fdy-model" style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Model</label>
                           <select
+                            id="fdy-model"
+                            name="fdy-model"
                             value={selectedModel}
                             onChange={(e) => setSelectedModel(e.target.value)}
                             style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", fontSize: 11, fontFamily: "monospace", color: "#8b5cf6", outline: "none", cursor: "pointer" }}
@@ -1746,8 +1755,10 @@ export default function UnderfitAssistantOrb() {
                         </div>
                         {selectedProvider === "claude" && (
                           <div>
-                            <span style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Effort</span>
+                            <label htmlFor="fdy-effort" style={{ fontSize: 10, color: "#52525b", display: "block", marginBottom: 4 }}>Effort</label>
                             <select
+                              id="fdy-effort"
+                              name="fdy-effort"
                               value={effort}
                               onChange={(e) => setEffort(e.target.value)}
                               style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", fontSize: 11, color: "#fafafa", outline: "none", cursor: "pointer" }}
@@ -1766,13 +1777,32 @@ export default function UnderfitAssistantOrb() {
 
                     {settingsTab === "keys" && (
                       <div style={{ maxHeight: 220, overflowY: "auto", paddingTop: 4 }}>
-                        {providers.filter((p) => p.id !== "claude" && !p.isLocal).map((p) => (
+                        {providers.filter((p) => p.id !== "claude" && !p.isLocal).map((p) => {
+                          // The provider name IS this field's label: a real <label htmlFor>
+                          // while the input exists (it used to carry a name and nothing else),
+                          // wearing the key glyph in every state so the row reads as
+                          // "a key goes here" before anything is clicked.
+                          const keyInputId = `fdy-key-${p.id}`;
+                          const nameStyle: React.CSSProperties = {
+                            display: "inline-flex", alignItems: "center", gap: 4,
+                            fontSize: 10, color: "#52525b", width: 80, flexShrink: 0,
+                          };
+                          const nameBody = (
+                            <>
+                              <KeyRound size={11} style={{ flexShrink: 0 }} aria-hidden="true" />
+                              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.label}</span>
+                            </>
+                          );
+                          return (
                           <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                            <span style={{ fontSize: 10, color: "#52525b", width: 80, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.label}</span>
+                            {editingKey === p.id
+                              ? <label htmlFor={keyInputId} style={nameStyle}>{nameBody}</label>
+                              : <span style={nameStyle}>{nameBody}</span>}
                             {editingKey === p.id ? (
                               <div style={{ flex: 1, display: "flex", gap: 4 }}>
                                 <input
-                                  name={`fdy-key-${p.id}`}
+                                  id={keyInputId}
+                                  name={keyInputId}
                                   type={showKeyText ? "text" : "password"}
                                   value={keyInput}
                                   onChange={(e) => setKeyInput(e.target.value)}
@@ -1784,25 +1814,26 @@ export default function UnderfitAssistantOrb() {
                                   }}
                                   style={{ flex: 1, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "2px 8px", fontSize: 10, fontFamily: "monospace", color: "#fafafa", outline: "none" }}
                                 />
-                                <button onClick={() => setShowKeyText(!showKeyText)} style={{ fontSize: 9, color: "#52525b", background: "none", border: "none", cursor: "pointer" }}>{showKeyText ? "Hide" : "Show"}</button>
+                                <button onClick={() => setShowKeyText(!showKeyText)} aria-label={showKeyText ? "Hide key" : "Show key"} aria-pressed={showKeyText} title={showKeyText ? "Hide key" : "Show key"} style={{ display: "inline-flex", alignItems: "center", color: "#52525b", background: "none", border: "none", cursor: "pointer", padding: 0 }}>{showKeyText ? <EyeOff size={12} /> : <Eye size={12} />}</button>
                                 <button onClick={() => { if (keyInput.trim()) { setProviderApiKeys((prev) => ({ ...prev, [p.id]: keyInput.trim() })); setEditingKey(null); setKeyInput(""); } }} style={{ fontSize: 9, color: "#8b5cf6", background: "rgba(139,92,246,0.2)", border: "none", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}>Save</button>
-                                <button onClick={() => { setEditingKey(null); setKeyInput(""); }} style={{ fontSize: 9, color: "#52525b", background: "none", border: "none", cursor: "pointer" }}>X</button>
+                                <button onClick={() => { setEditingKey(null); setKeyInput(""); }} aria-label="Cancel" title="Cancel" style={{ display: "inline-flex", alignItems: "center", color: "#52525b", background: "none", border: "none", cursor: "pointer", padding: 0 }}><X size={12} /></button>
                               </div>
                             ) : (
                               <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 6 }}>
                                 {providerApiKeys[p.id] ? (
                                   <>
                                     <span style={{ fontFamily: "monospace", fontSize: 9, color: "#10b981" }}>{maskKey(providerApiKeys[p.id])}</span>
-                                    <button onClick={() => setProviderApiKeys((prev) => { const n = { ...prev }; delete n[p.id]; return n; })} style={{ fontSize: 9, color: "#ef4444", background: "none", border: "none", cursor: "pointer" }}>Clear</button>
+                                    <button onClick={() => setProviderApiKeys((prev) => { const n = { ...prev }; delete n[p.id]; return n; })} aria-label={`Forget the ${p.label} key`} title={`Forget the ${p.label} key`} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "#ef4444", background: "none", border: "none", cursor: "pointer", padding: 0 }}><Trash2 size={11} aria-hidden="true" />Clear</button>
                                   </>
                                 ) : (
                                   <span style={{ fontSize: 9, color: "rgba(82,82,91,0.5)" }}>{p.requiresKey === false ? "env" : "not set"}</span>
                                 )}
-                                <button onClick={() => { setEditingKey(p.id); setKeyInput(providerApiKeys[p.id] || ""); }} style={{ marginLeft: "auto", fontSize: 9, color: "rgba(139,92,246,0.7)", background: "none", border: "none", cursor: "pointer" }}>{providerApiKeys[p.id] ? "Edit" : "Add"}</button>
+                                <button onClick={() => { setEditingKey(p.id); setKeyInput(providerApiKeys[p.id] || ""); }} title={providerApiKeys[p.id] ? `Replace the ${p.label} key` : `Paste a ${p.label} API key`} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "rgba(139,92,246,0.7)", background: "none", border: "none", cursor: "pointer", padding: 0 }}><KeyRound size={11} aria-hidden="true" />{providerApiKeys[p.id] ? "Edit" : "Add"}</button>
                               </div>
                             )}
                           </div>
-                        ))}
+                          );
+                        })}
                         <div style={{ paddingTop: 4, fontSize: 9, color: "rgba(82,82,91,0.4)", fontStyle: "italic" }}>Keys stored in browser localStorage.</div>
                       </div>
                     )}

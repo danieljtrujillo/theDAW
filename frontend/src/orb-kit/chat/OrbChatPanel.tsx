@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Paperclip } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Paperclip, Trash2, X } from 'lucide-react';
 import { useOrbChat, type OrbChatMessage, type OrbChatConfig } from './useOrbChat';
 import { ProviderModelSelector } from '../ProviderModelSelector';
 
@@ -229,7 +229,11 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
                                     background: 'none', border: 'none',
                                     borderBottom: settingsTab === tab ? '1px solid #8b5cf6' : '1px solid transparent',
                                     color: settingsTab === tab ? '#8b5cf6' : '#52525b',
-                                }}>{tab === 'model' ? 'Chat' : 'Keys'}</button>
+                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                                }}>
+                                    {tab === 'keys' && <KeyRound size={11} style={{ flexShrink: 0 }} aria-hidden="true" />}
+                                    {tab === 'model' ? 'Chat' : 'Keys'}
+                                </button>
                             ))}
                         </div>
 
@@ -255,16 +259,35 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
 
                         {settingsTab === 'keys' && (
                             <div style={{ padding: '8px 16px', maxHeight: 180, overflowY: 'auto' }}>
-                                {chat.providers.filter(p => p.id !== 'claude' && !p.is_local).map(p => (
+                                {chat.providers.filter(p => p.id !== 'claude' && !p.is_local).map(p => {
+                                    // The provider name IS this field's label: a real <label htmlFor>
+                                    // while the input exists (it used to carry a name and nothing
+                                    // else), and it wears the key glyph in every state so the row
+                                    // reads as "a key goes here" before anything is clicked.
+                                    const keyInputId = `orb-chat-key-input-${p.id}`;
+                                    const nameStyle: React.CSSProperties = {
+                                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                                        fontSize: 10, color: '#52525b', width: 80, flexShrink: 0,
+                                    };
+                                    const nameBody = (
+                                        <>
+                                            <KeyRound size={11} style={{ flexShrink: 0 }} aria-hidden="true" />
+                                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</span>
+                                        </>
+                                    );
+                                    return (
                                     <div key={p.id} style={{
                                         display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
                                         borderBottom: '1px solid rgba(255,255,255,0.03)',
                                     }}>
-                                        <span style={{ fontSize: 10, color: '#52525b', width: 80, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</span>
+                                        {editingKey === p.id
+                                            ? <label htmlFor={keyInputId} style={nameStyle}>{nameBody}</label>
+                                            : <span style={nameStyle}>{nameBody}</span>}
                                         {editingKey === p.id ? (
                                             <div style={{ flex: 1, display: 'flex', gap: 4 }}>
                                                 <input
-                                                    name={`orb-chat-key-input-${p.id}`}
+                                                    id={keyInputId}
+                                                    name={keyInputId}
                                                     type={showKeyText ? 'text' : 'password'} value={keyInput}
                                                     onChange={e => setKeyInput(e.target.value)}
                                                     placeholder="Paste API key..."
@@ -278,25 +301,26 @@ export const OrbChatPanel: React.FC<OrbChatPanelProps> = ({
                                                         borderRadius: 4, padding: '2px 8px', fontSize: 10, fontFamily: 'monospace', color: '#fafafa',
                                                     }}
                                                 />
-                                                <button onClick={() => setShowKeyText(!showKeyText)} style={{ fontSize: 9, color: '#52525b', background: 'none', border: 'none', cursor: 'pointer' }}>{showKeyText ? 'Hide' : 'Show'}</button>
+                                                <button onClick={() => setShowKeyText(!showKeyText)} aria-label={showKeyText ? 'Hide key' : 'Show key'} aria-pressed={showKeyText} title={showKeyText ? 'Hide key' : 'Show key'} style={{ display: 'inline-flex', alignItems: 'center', color: '#52525b', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{showKeyText ? <EyeOff size={12} /> : <Eye size={12} />}</button>
                                                 <button onClick={() => { if (keyInput.trim()) { chat.saveApiKey(p.id, keyInput.trim()); setEditingKey(null); setKeyInput(''); } }} style={{ fontSize: 9, color: '#8b5cf6', background: 'rgba(139,92,246,0.2)', border: 'none', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}>Save</button>
-                                                <button onClick={() => { setEditingKey(null); setKeyInput(''); }} style={{ fontSize: 9, color: '#52525b', background: 'none', border: 'none', cursor: 'pointer' }}>X</button>
+                                                <button onClick={() => { setEditingKey(null); setKeyInput(''); }} aria-label="Cancel" title="Cancel" style={{ display: 'inline-flex', alignItems: 'center', color: '#52525b', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}><X size={12} /></button>
                                             </div>
                                         ) : (
                                             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
                                                 {chat.apiKeys[p.id] ? (
                                                     <>
                                                         <span style={{ fontFamily: 'monospace', fontSize: 9, color: '#10b981' }}>{chat.maskKey(chat.apiKeys[p.id])}</span>
-                                                        <button onClick={() => chat.clearApiKey(p.id)} style={{ fontSize: 9, color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer' }}>Clear</button>
+                                                        <button onClick={() => chat.clearApiKey(p.id)} aria-label={`Forget the ${p.label} key`} title={`Forget the ${p.label} key`} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}><Trash2 size={11} aria-hidden="true" />Clear</button>
                                                     </>
                                                 ) : (
                                                     <span style={{ fontSize: 9, color: 'rgba(82,82,91,0.5)' }}>{p.has_key ? 'env' : 'not set'}</span>
                                                 )}
-                                                <button onClick={() => { setEditingKey(p.id); setKeyInput(chat.apiKeys[p.id] || ''); }} style={{ marginLeft: 'auto', fontSize: 9, color: 'rgba(139,92,246,0.7)', background: 'none', border: 'none', cursor: 'pointer' }}>{chat.apiKeys[p.id] ? 'Edit' : 'Add'}</button>
+                                                <button onClick={() => { setEditingKey(p.id); setKeyInput(chat.apiKeys[p.id] || ''); }} title={chat.apiKeys[p.id] ? `Replace the ${p.label} key` : `Paste a ${p.label} API key`} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, color: 'rgba(139,92,246,0.7)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}><KeyRound size={11} aria-hidden="true" />{chat.apiKeys[p.id] ? 'Edit' : 'Add'}</button>
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                                 <div style={{ paddingTop: 4, fontSize: 9, color: 'rgba(82,82,91,0.4)', fontStyle: 'italic' }}>Keys stored in browser localStorage.</div>
                             </div>
                         )}
