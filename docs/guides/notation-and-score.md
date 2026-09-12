@@ -31,18 +31,43 @@ signature). The result renders in the browser as standard notation via
 OpenSheetMusicDisplay. MusicXML is the canonical interchange format, so it also
 feeds tabs, arrangements, and exports.
 
-## Exporting scores (ABC, PDF, SVG)
+## Exporting scores (the EXPORT menu)
 
-With a MusicXML score selected, the toolbar offers export buttons:
+With a MusicXML sheet or a MIDI artifact selected, the toolbar's **EXPORT**
+button opens a two-column menu: pick a part on the left (**All parts**, then
+each part of the sheet in score order), then a format on the right. Every
+format works for a single part as well as for the whole sheet: the part is
+cut out of the score first and the chosen format is written from that.
 
-- **ABC** — a compact lead-sheet/folk text format, produced by music21. Always
-  available.
-- **PDF** and **SVG** — engraved by the MuseScore command-line tool. These appear
-  only when MuseScore is installed and detected (set the `MUSESCORE_BIN`
-  environment variable to point at it if it is not on PATH). Without MuseScore,
-  PDF/SVG are hidden and the action reports that MuseScore is required.
+- **XML** — the MusicXML sheet itself. For one part, or for a MIDI source, it
+  is written as a new MusicXML artifact.
+- **XML + PDF PACK** — a zip of the MusicXML plus a PDF engraved on download.
+- **PDF** and **SVG** — engraved by the headless OpenSheetMusicDisplay
+  renderer, the same engraver the SCORE tab draws with, so the download matches
+  the sheet on screen. It needs node and the frontend's dependencies on the
+  backend machine. When that renderer is missing, or its render fails, the
+  MuseScore command-line tool engraves the same format instead, so either
+  engraver produces both. `options.engine` (`osmd` or `musescore`) forces one.
+- **ABC** — a compact lead-sheet/folk text format. Always available.
+- **NOTECHART** — the Unity flying-notation chart (timecode + spelled notes).
+- **BEAT SABER** — opens the Beat Saber export popover (difficulties, BPM
+  source, map version, song.ogg, parts to map).
 
-Exports are registered as new notation artifacts and can be downloaded.
+MuseScore is looked for on PATH, at the usual install locations (Program
+Files, the per-user Programs folder, the Store alias, scoop and chocolatey on
+Windows; `/Applications` on macOS; the snap, flatpak, AppImage and `/opt`
+locations on Linux), at the path saved in Settings (the artist button's
+**MuseScore** field, with a **BROWSE…** button in the desktop app) and in the
+`MUSESCORE_BIN` environment variable. When neither engraver is available, PDF
+and SVG stay in the menu, disabled, with the reason as their tooltip, and two
+more entries appear: **GET MUSESCORE** opens the MuseScore download page and
+**LOCATE MUSESCORE…** lets you point theDAW at an installed copy.
+
+The menu is keyboard-driven: arrows move within a column, Right/Left switch
+columns, Enter or Space activates, Escape closes.
+
+Exports are registered as new notation artifacts (a single-part export is
+named after its part) and can be downloaded.
 
 ## Guitar and bass tabs
 
@@ -191,12 +216,20 @@ always works without it.
 
 Notation endpoints (prefix `/api/notation`):
 
-- `GET /api/notation` — capabilities (music21, MuseScore, formats, tab tunings,
-  arrangement styles).
+- `GET /api/notation` — capabilities (music21, MuseScore, `osmd_pdf`, formats,
+  `engravers` — which of `osmd` / `musescore` can produce `pdf` and `svg`, in
+  the order they are tried — tab tunings, arrangement styles). `formats` lists
+  `pdf` and `svg` whenever either engraver is present.
 - `GET /api/notation/{entry_id}/artifacts` — list a track's notation artifacts.
 - `POST /api/notation/{entry_id}/from-midi/{midi_id}` — MIDI → MusicXML.
-- `POST /api/notation/{entry_id}/export` — `{source_artifact_id, format}` where
-  format is musicxml/abc/pdf/svg.
+- `POST /api/notation/{entry_id}/export` — `{source_artifact_id, format, options?}`
+  where format is musicxml/abc/pdf/svg/notechart/beatsaber and the source is a
+  MusicXML or MIDI artifact. `options.parts` (part indices in score order)
+  exports only those parts, for every format; `options.engine` picks the
+  engraver for `pdf`/`svg`; the rest of `options` is read by `beatsaber`
+  (difficulties, version, bpm_source, include_audio).
+- `GET /api/notation/pack/{artifact_id}?parts=0,2` — the MusicXML + PDF zip,
+  optionally cut down to those parts.
 - `POST /api/notation/{entry_id}/tabs` — `{source_artifact_id|midi_id, instrument,
   tuning_name, capo, difficulty}` → alphaTex.
 - `POST /api/notation/{entry_id}/arrange` — `{style, source_artifact_id |
