@@ -26,13 +26,14 @@ import {
   type VocalArtifactDoc,
 } from '../../lib/vocalExport';
 import {
-  listAudioInputs,
-  queryMicPermission,
   startInputMonitor,
   type InputMonitor,
 } from '../../lib/vocalToMidi';
+import { IoSurfaceSelect } from '../audio/IoDeviceSelect';
+import { useIoDevicesStore, useResolvedSurface } from '../../state/ioDevicesStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { logInfo, logWarn } from '../../state/logStore';
+import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
@@ -128,11 +129,13 @@ export const MidiPanel: React.FC = () => {
   const [artifact, setArtifact] = useState<VocalArtifactDoc | null>(null);
   const [validateMsg, setValidateMsg] = useState('');
   const [arpOn, setArpOn] = useState(false);
-  const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
-  const [deviceId, setDeviceId] = useState<string>(
-    () => localStorage.getItem('vocal.inputDeviceId') ?? '',
-  );
-  const [micPerm, setMicPerm] = useState<string>('unknown');
+  // The device comes from the global I/O menu (Settings -> Inputs & outputs),
+  // with a per-surface override right here. It used to be a useState seeded
+  // from localStorage with NO try/catch — which threw during render in a
+  // browser with site data blocked — and the SING pitch lane kept a second,
+  // never-reconciled copy of the very same key.
+  const deviceId = useResolvedSurface('midiVocal').deviceId;
+  const micPerm = useIoDevicesStore((s) => s.micPermission);
   const monitorRef = useRef<InputMonitor | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStartRef = useRef(0);
@@ -163,14 +166,7 @@ export const MidiPanel: React.FC = () => {
   })();
 
   const refreshInputs = useCallback(async () => {
-    setMicPerm(await queryMicPermission());
-    setInputs(await listAudioInputs());
-  }, []);
-
-  const pickDevice = useCallback((id: string) => {
-    setDeviceId(id);
-    if (id) localStorage.setItem('vocal.inputDeviceId', id);
-    else localStorage.removeItem('vocal.inputDeviceId');
+    await useIoDevicesStore.getState().refresh();
   }, []);
 
   // Always-on input monitor while the tab is open: opens the mic + an analyser so
@@ -189,8 +185,16 @@ export const MidiPanel: React.FC = () => {
         void refreshInputs();
       } catch (e) {
         if (!cancelled) {
-          setMicPerm(await queryMicPermission());
-          logWarn('vocal', `mic monitor unavailable: ${String(e)}`);
+          // Re-enumerate first: a device that went away raises the "not
+          // connected" notice from the store, in one place.
+          void refreshInputs();
+          // A machine with no microphone is not a fault, and this effect re-runs
+          // on every device change and remount — so classify it, say it once,
+          // and only call it a warning when something is actually wrong.
+          const failure = describeMicFailure(e, 'the level meter');
+          if (shouldAnnounceMicFailure(failure, 'the level meter')) {
+            (failure.benign ? logInfo : logWarn)('vocal', failure.message);
+          }
         }
       }
     })();
@@ -399,26 +403,13 @@ export const MidiPanel: React.FC = () => {
     <div className="h-full w-full flex flex-col bg-zinc-950 text-zinc-200">
       {/* tools toolbar — vocal recording is the input; the rest operate on the roll */}
       <div className="shrink-0 flex flex-wrap items-center gap-2 px-2 py-1.5 border-b border-white/8">
-        {/* Vocal input */}
-        <label htmlFor="midi-input-device" className="sr-only">
-          Microphone input
-        </label>
-        <select
+        {/* Vocal input — an override of the global microphone (Settings). */}
+        <IoSurfaceSelect
+          surface="midiVocal"
           id="midi-input-device"
-          name="midi-input-device"
-          value={deviceId}
-          onChange={(e) => pickDevice(e.target.value)}
-          aria-label="Microphone input"
-          title="Microphone input device used for recording and the level meter"
-          className="max-w-40 bg-zinc-800 border border-zinc-500 text-zinc-100 text-[10px] font-mono px-1 py-1 rounded"
-        >
-          <option value="">System default input</option>
-          {inputs.map((d) => (
-            <option key={d.deviceId} value={d.deviceId}>
-              {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
-            </option>
-          ))}
-        </select>
+          label="Microphone input"
+          className="max-w-40 text-[10px]"
+        />
         {micPerm === 'denied' && (
           <span className="text-[9px] font-mono text-rose-400">mic blocked</span>
         )}

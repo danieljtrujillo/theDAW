@@ -18,6 +18,11 @@ export const BODY = 'text-xs text-zinc-300';
 export const CARD = 'rounded border border-white/8 bg-white/3';
 export const INPUT =
   'min-w-0 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs font-mono text-zinc-200 placeholder:text-zinc-500 outline-none focus:border-purple-500/50';
+/** Native <select>. A device list cannot be a Segmented group — the options are
+ *  discovered at runtime and there can be a dozen — so this is the modal's one
+ *  dropdown style. Always paired with a real <label htmlFor>. */
+export const SELECT =
+  'min-w-0 max-w-48 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs font-mono text-zinc-200 outline-none focus:border-purple-500/50 disabled:opacity-50';
 
 const BTN_BASE =
   'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-black uppercase tracking-widest transition-colors disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-1';

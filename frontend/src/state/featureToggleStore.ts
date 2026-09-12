@@ -15,6 +15,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { DeviceRef } from '../lib/ioResolve';
 import { dismissFeatureGate, requireFeature } from '../notices/featureGateStore';
 import { logError } from './logStore';
 
@@ -73,6 +74,38 @@ export interface NotationSettings {
   musescore_path: string;
 }
 
+/** Which MIDI input ports are let through. 'all' = every port, including one
+ *  plugged in after the choice was made. */
+export interface MidiInputSelection {
+  mode: string;
+  ports: DeviceRef[];
+}
+
+/**
+ * Global input/output device choices + per-surface overrides.
+ *
+ * Every slot is a {id,label} pair, never a bare deviceId: ids are salted per
+ * origin and rotate when site data is cleared, and the same user opens theDAW
+ * both as a browser tab and as the desktop app. The label is the recovery key
+ * (see lib/ioResolve). Empty id AND label = "the system default".
+ *
+ * `overrides` is keyed by surface id (state/ioSurfaces). A surface with NO
+ * entry follows its global slot; an entry of {id:'',label:''} means "the OS
+ * default, ignoring the global".
+ *
+ * Every value here is replaced WHOLESALE by the backend's patch() — it does not
+ * deep-merge — so a writer must always send the complete object.
+ */
+export interface IoSettings {
+  audio_output: DeviceRef;
+  cue_output: DeviceRef;
+  audio_input: DeviceRef;
+  midi_inputs: MidiInputSelection;
+  midi_output: DeviceRef;
+  visual_display: DeviceRef;
+  overrides: Record<string, DeviceRef>;
+}
+
 export interface FeatureSettings {
   schema_version: number;
   app: AppSettings;
@@ -82,6 +115,7 @@ export interface FeatureSettings {
   idle: IdleSettings;
   vj: VjSettings;
   notation: NotationSettings;
+  io: IoSettings;
 }
 
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
@@ -118,6 +152,15 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
     artist: 'GANTASMO',
     musescore_path: '',
   },
+  io: {
+    audio_output: { id: '', label: '' },
+    cue_output: { id: '', label: '' },
+    audio_input: { id: '', label: '' },
+    midi_inputs: { mode: 'all', ports: [] },
+    midi_output: { id: '', label: '' },
+    visual_display: { id: '', label: '' },
+    overrides: {},
+  },
 };
 
 interface FeatureToggleState {
@@ -132,7 +175,7 @@ interface FeatureToggleState {
    * false when it was rolled back (the reason is in `error` and on the
    * notice card). Never throws.
    */
-  patch: (partial: DeepPartial<FeatureSettings>) => Promise<boolean>;
+  patch: (partial: FeatureSettingsPatch) => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -140,7 +183,17 @@ type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
-function mergeSettings(base: FeatureSettings, patch: DeepPartial<FeatureSettings>): FeatureSettings {
+/**
+ * `io` is deliberately NOT deep-partial: the backend store assigns a
+ * dict-valued key wholesale, so half an `audio_output` would REPLACE the whole
+ * slot and drop the label. Writers send complete slot objects; the io store's
+ * helpers are what build them.
+ */
+export type FeatureSettingsPatch = DeepPartial<Omit<FeatureSettings, 'io'>> & {
+  io?: Partial<IoSettings>;
+};
+
+function mergeSettings(base: FeatureSettings, patch: FeatureSettingsPatch): FeatureSettings {
   const next: FeatureSettings = {
     ...base,
     app: { ...DEFAULT_FEATURE_SETTINGS.app, ...(base.app ?? {}), ...(patch.app ?? {}) },
@@ -150,18 +203,34 @@ function mergeSettings(base: FeatureSettings, patch: DeepPartial<FeatureSettings
     idle: { ...base.idle, ...(patch.idle ?? {}) },
     vj: { ...base.vj, ...(patch.vj ?? {}) },
     notation: { ...DEFAULT_FEATURE_SETTINGS.notation, ...(base.notation ?? {}), ...(patch.notation ?? {}) },
+    // ONE level only, on purpose: it mirrors the backend's wholesale-replace
+    // semantics. Deep-merging here would make a deleted per-surface override
+    // resurrect itself on the next patch.
+    io: { ...DEFAULT_FEATURE_SETTINGS.io, ...(base.io ?? {}), ...(patch.io ?? {}) },
   };
   if (patch.schema_version != null) next.schema_version = patch.schema_version;
   return next;
 }
 
 /** "stems.auto_on_import = on" — what the failed save was, for the notice. */
-function describePatch(partial: DeepPartial<FeatureSettings>): string {
+function describePatch(partial: FeatureSettingsPatch): string {
   const parts: string[] = [];
   for (const [section, values] of Object.entries(partial)) {
     if (!values || typeof values !== 'object') continue;
     for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
-      const shown = typeof value === 'boolean' ? (value ? 'on' : 'off') : String(value);
+      const shown =
+        typeof value === 'boolean'
+          ? value
+            ? 'on'
+            : 'off'
+          : value && typeof value === 'object'
+            ? // Device slots are {id,label}; the label is the half a person
+              // reads. Anything else nested (overrides, midi_inputs) just says
+              // it changed rather than printing [object Object].
+              typeof (value as { label?: unknown }).label === 'string'
+              ? (value as { label: string }).label || 'system default'
+              : 'updated'
+            : String(value);
       parts.push(`${section}.${key} = ${shown}`);
     }
   }

@@ -33,6 +33,7 @@ import { logError, logInfo, logWarn } from '../state/logStore';
 import { backendHttpBase, lanReachablePort } from '../lib/backendBase';
 import { importMedia, isMediaFile } from '../lib/mediaLibrary';
 import { describeQuestCastStatus, type QuestCastStatus } from '../components/vj/QuestCastPreview';
+import { resolveGlobal } from '../state/ioDevicesStore';
 
 
 /**
@@ -687,10 +688,17 @@ export const VJView: React.FC = () => {
     // 1280x800 is a reasonable default for a VJ canvas — big enough
     // to look good on a second monitor, small enough to not auto-
     // maximize on a single-screen setup.
+    //
+    // The chosen monitor (Settings -> Inputs & outputs -> Pop-out screen)
+    // rides along in the features string: the desktop app's window-open
+    // handler reads it and positions the window. A browser ignores the token,
+    // which is the honest outcome — no web API places a window on a monitor.
+    // window.open MUST stay inside this click handler (see DetachableWindow).
+    const display = resolveGlobal('visual_display').deviceId;
     const w = window.open(
       vjSrc,
       'sa3-vj-window',
-      'noopener=no,width=1280,height=800,location=no,menubar=no,toolbar=no,status=no',
+      `noopener=no,width=1280,height=800,location=no,menubar=no,toolbar=no,status=no${display ? `,thedawDisplay=${display}` : ''}`,
     );
     if (!w) {
       const m = 'Pop-out blocked — allow pop-ups for this origin, then try again.';

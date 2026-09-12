@@ -144,6 +144,9 @@ let limiterEnabled = true; // brickwall on the DJ bus for clip safety (D5)
 let cueBus: GainNode | null = null;
 let cueDest: MediaStreamAudioDestinationNode | null = null;
 let cueAudioEl: HTMLAudioElement | null = null;
+// Cached choice, NOT the source of truth: the global I/O menu owns it
+// (settings io.cue_output) and pushes it here. Cached so a cue bus built after
+// the preference loaded is already routed to the headphones.
 let cueSinkId = '';
 // Sampler bank (D7): one-shot pads routed through djMaster (so they ride the DJ
 // mix + limiter + visualizer). Decoded buffers keyed by pad id.
@@ -185,6 +188,10 @@ function ensureCueBus(): GainNode {
   cueBus.connect(cueDest);
   cueAudioEl = new Audio();
   cueAudioEl.srcObject = cueDest.stream;
+  // The MediaStreamDestination does NOT follow the context's sinkId, which is
+  // exactly why cue works: the mains and the headphones stay independent by
+  // construction. Apply whatever the I/O menu already chose.
+  if (cueSinkId) void applyCueSink();
   return cueBus;
 }
 
@@ -820,14 +827,30 @@ export function setDeckCue(id: DeckId, on: boolean): void {
   if (on && cueAudioEl) void cueAudioEl.play().catch(() => { /* needs a gesture — the toggle click is one */ });
 }
 
-/** Route the cue bus to a specific output device (headphones). '' = default. */
+/** Push the cached choice onto the hidden cue element. */
+async function applyCueSink(): Promise<void> {
+  const el = cueAudioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+  if (!el?.setSinkId) return;
+  try { await el.setSinkId(cueSinkId); } catch (e) { logError('dj', `cue setSinkId failed: ${e instanceof Error ? e.message : String(e)}`); }
+}
+
+/**
+ * Route the cue bus to a specific output device (headphones). '' = default.
+ *
+ * Called by the global I/O menu (state/ioDevicesStore), which is the single
+ * owner of the choice — the DJ tab's own cue select writes through it too, so
+ * both places always agree. Does NOT build the cue bus for an empty id: a user
+ * who never picks a cue device should not get an extra MediaStreamDestination
+ * (and an AudioContext) constructed at boot on their behalf.
+ */
 export async function setCueSinkId(deviceId: string): Promise<void> {
+  if (!deviceId && !cueBus) {
+    cueSinkId = '';
+    return;
+  }
   ensureCueBus();
   cueSinkId = deviceId;
-  const el = cueAudioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
-  if (el?.setSinkId) {
-    try { await el.setSinkId(deviceId); } catch (e) { logError('dj', `cue setSinkId failed: ${e instanceof Error ? e.message : String(e)}`); }
-  }
+  await applyCueSink();
 }
 
 export function getCueSinkId(): string {

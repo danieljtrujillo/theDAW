@@ -2,7 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Mic, Square, Play, Pause, Trash2, Wand2, PenLine, Layers, Save, X,
 } from 'lucide-react';
+import { registerSinkElement } from '../../lib/audioSink';
+import { surfaceDeviceId, useIoDevicesStore } from '../../state/ioDevicesStore';
 import { logError, logInfo } from '../../state/logStore';
+import { describeMicFailure } from '../../lib/micErrors';
 import { useLibraryStore } from '../../state/libraryStore';
 import {
   sendAudioToEditor, sendAudioToInit, sendAudioToInpaint,
@@ -96,13 +99,21 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
       return;
     }
     try {
+      // The chosen microphone (global, or this surface's own override), as a
+      // SOFT constraint so a device that vanished between the enumerate and
+      // the open degrades to the OS default instead of throwing.
+      const deviceId = surfaceDeviceId('micRecorder');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          ...(deviceId ? { deviceId } : {}),
+          // Voice-memo profile: deliberately the OPPOSITE of the pitch paths,
+          // where all three of these distort f0 and are forced off.
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
       });
+      useIoDevicesStore.getState().notePermissionGranted();
       streamRef.current = stream;
       const mime = pickMime();
       const opts = mime ? { mimeType: mime } : undefined;
@@ -135,9 +146,14 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
         setElapsedSec((Date.now() - startedAtRef.current) / 1000);
       }, 250);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      logError('mic', `getUserMedia failed: ${msg}`);
+      // "NotFoundError: Requested device not found" told the user nothing about
+      // what to do. describeMicFailure names the cause and the fix, and marks
+      // the no-microphone case as the ordinary state of a machine rather than a
+      // fault worth an error line.
+      const failure = describeMicFailure(e, 'recording');
+      setError(failure.message);
+      if (failure.benign) logInfo('mic', failure.message);
+      else logError('mic', failure.message);
     }
   };
 
@@ -256,6 +272,10 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
       setBusy(false);
     }
   };
+
+  // The take preview plays through its own element, outside the shared graph,
+  // so it follows the 'preview' surface's output rather than the main mix.
+  useEffect(() => registerSinkElement('preview', audioElRef.current), [blobUrl]);
 
   const audioEl = (
     <audio

@@ -330,10 +330,24 @@ function useSpeechInput(onText: (t: string) => void) {
     if (!supported || recRef.current) return;
     let stream: MediaStream;
     try {
+      // The OS default, deliberately. This file is built by a SEPARATE entry
+      // (vite.orb.config.ts) into underfit's own dashboard on :8791, so it has
+      // no access to theDAW's settings — reading the I/O menu here would
+      // silently always resolve to the default and make the menu a liar.
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      // Mic permission denied / no device — surface as a one-shot note in input.
-      onText("[microphone unavailable — permission denied]");
+    } catch (e) {
+      // Say WHICH failure it was: "permission denied" for a device that is
+      // simply unplugged sends the user to the wrong fix.
+      const name = e instanceof Error ? e.name : "";
+      const why =
+        name === "NotAllowedError" || name === "SecurityError"
+          ? "permission denied"
+          : name === "NotFoundError" || name === "OverconstrainedError"
+            ? "no microphone found"
+            : name === "NotReadableError"
+              ? "the microphone is in use by another app"
+              : name || "unknown error";
+      onText(`[microphone unavailable — ${why}]`);
       return;
     }
     streamRef.current = stream;

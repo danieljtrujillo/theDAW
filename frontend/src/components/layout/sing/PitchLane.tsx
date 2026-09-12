@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Mic, MicOff } from 'lucide-react';
 import { fetchVocalArtifact, type VocalArtifactDoc } from '../../../lib/vocalExport';
-import { listAudioInputs } from '../../../lib/vocalToMidi';
+import { IoSurfaceSelect } from '../../audio/IoDeviceSelect';
+import { useIoDevicesStore, useResolvedSurface } from '../../../state/ioDevicesStore';
 import { pollVocalJob } from '../../../lib/lyricsClient';
 import { useLyricsStore } from '../../../state/lyricsStore';
 import { logError } from '../../../state/logStore';
+import { describeMicFailure } from '../../../lib/micErrors';
 import { LineScore, MIN_CLARITY, scoreFrame } from './singSync';
 import { FrameRing, startSingMic, type SingMic } from './singPitch';
 
@@ -16,7 +18,6 @@ export interface PitchLaneProps {
   activeLineRef: React.MutableRefObject<number>;
 }
 
-const MIC_DEVICE_KEY = 'vocal.inputDeviceId';
 const WINDOW_BEFORE_MS = 1200;
 const WINDOW_AFTER_MS = 2800;
 const PLAYHEAD_POS = 0.3;
@@ -72,14 +73,11 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [artifact, setArtifact] = useState<VocalArtifactDoc | null | 'loading'>('loading');
   const [analyzing, setAnalyzing] = useState<string | null>(null);
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [deviceId, setDeviceId] = useState<string>(() => {
-    try {
-      return localStorage.getItem(MIC_DEVICE_KEY) ?? '';
-    } catch {
-      return '';
-    }
-  });
+  // One source of truth: the global microphone (Settings -> Inputs & outputs)
+  // with a per-surface override in the strip below. This used to be a second,
+  // independent copy of the same localStorage key the MIDI tab wrote, so
+  // changing the mic in one place left the other one open on the old device.
+  const deviceId = useResolvedSurface('singPitch').deviceId;
   const [micError, setMicError] = useState<string | null>(null);
   const [liveText, setLiveText] = useState('');
   const micOn = useLyricsStore((s) => s.micOn);
@@ -115,10 +113,6 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
   useEffect(() => {
     void loadArtifact();
   }, [loadArtifact]);
-
-  useEffect(() => {
-    listAudioInputs().then(setDevices).catch(() => setDevices([]));
-  }, []);
 
   const analyzeMelody = async () => {
     if (analyzing) return;
@@ -176,7 +170,15 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
       })
       .catch((e) => {
         if (cancelled) return;
-        setMicError(e instanceof Error ? e.message : String(e));
+        // A device that went away mid-session is not a permission problem, and
+        // saying "permission denied" for it sends the user to the wrong fix.
+        // describeMicFailure separates the four real causes; re-enumerating
+        // raises the "not connected" notice from one place.
+        const failure = describeMicFailure(e, "SING's pitch lane");
+        setMicError(failure.message);
+        if (failure.kind === 'no-device' || failure.kind === 'overconstrained') {
+          void useIoDevicesStore.getState().refresh();
+        }
         setMicOn(false);
       });
     return () => {
@@ -346,16 +348,6 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
     };
   }, [activeLineRef, micOn]);
 
-  const chooseDevice = (id: string) => {
-    setDeviceId(id);
-    try {
-      if (id) localStorage.setItem(MIC_DEVICE_KEY, id);
-      else localStorage.removeItem(MIC_DEVICE_KEY);
-    } catch {
-      /* private mode */
-    }
-  };
-
   return (
     <div className="shrink-0 border-b border-white/10 bg-[#0a080f]">
       <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-[9px] font-mono text-zinc-400">
@@ -381,19 +373,14 @@ export const PitchLane: React.FC<PitchLaneProps> = ({ entryId, getPosMs, activeL
         >
           {micOn ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />} MIC {micOn ? 'ON' : 'OFF'}
         </button>
-        <label htmlFor="sing-mic" className="text-zinc-500">MIC</label>
-        <select
+        <IoSurfaceSelect
+          surface="singPitch"
           id="sing-mic"
-          name="sing-mic"
-          className="form-select text-[9px] px-1 py-0.5 max-w-40"
-          value={deviceId}
-          onChange={(e) => chooseDevice(e.target.value)}
-        >
-          <option value="">Default input</option>
-          {devices.map((d) => (
-            <option key={d.deviceId} value={d.deviceId}>{d.label || `Input ${d.deviceId.slice(0, 6)}`}</option>
-          ))}
-        </select>
+          label="MIC"
+          showLabel
+          labelClassName="text-zinc-500 shrink-0"
+          className="text-[9px] px-1 py-0.5 max-w-40"
+        />
         <label htmlFor="sing-mic-offset" className="text-zinc-500" title="Microphone latency compensation">MIC OFFSET ms</label>
         <input
           id="sing-mic-offset"

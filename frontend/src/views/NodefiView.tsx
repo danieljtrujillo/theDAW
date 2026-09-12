@@ -30,6 +30,7 @@ import { logInfo } from '../state/logStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { NODEFI_TEMPLATES, resolveTemplateSource } from '../data/nodefiTemplates';
 import { startLiveGraph, isLiveOnlyKind, type LiveController } from '../lib/nodefiLive';
+import { registerSinkElement } from '../lib/audioSink';
 import type { SavedNodeSet } from '../state/nodefiSetsStore';
 
 // Circular glossy nodes (see NODE_EDITOR reference): a fixed-diameter disc with
@@ -89,7 +90,11 @@ function PreviewButton({ url }: { url: string }): React.ReactElement {
     const a = new Audio(url);
     a.onended = () => setPlaying(false);
     audioRef.current = a;
+    // Outside the shared Web Audio graph, so AudioContext.setSinkId does not
+    // move it: it follows the 'preview' surface's output setting instead.
+    const unregister = registerSinkElement('preview', a);
     return () => {
+      unregister();
       a.pause();
       audioRef.current = null;
     };
