@@ -55,9 +55,17 @@ export default defineConfig({
       fs: {
         allow: [resolve(__dirname, '../frontend'), resolve(__dirname, '..')]
       },
+      // Every target below is the LITERAL 127.0.0.1, never 'localhost'.
+      // backend/run.py binds 0.0.0.0 — IPv4 only — while Node's resolver
+      // prefers ::1 for 'localhost' on Windows 11. When it does, the proxy
+      // cannot connect and answers 502, which the renderer reported as
+      // "couldn't reach huggingface.co" (issue #144). This is the DEV path
+      // theDAW.bat's desktop mode takes; main/index.ts already pinned the
+      // packaged proxy the same way. An address cannot resolve to the wrong
+      // family. Keep these in sync with frontend/vite.config.ts.
       proxy: {
         '/api': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
           // WebSocket upgrade (xr control bus, questmidi) — without this the
           // proxy silently drops WS connections and the control manifest
@@ -71,7 +79,7 @@ export default defineConfig({
         // SPA fallback, which served the app's own index.html INTO the iframe —
         // the whole app nested inside itself (doubled header) in electron dev.
         '/vj-app': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
           ws: true,
           timeout: 0,
@@ -83,7 +91,7 @@ export default defineConfig({
         // see the entire app nested inside itself, which is the single most
         // confusing failure in this pattern.
         '/sway-app': {
-          target: 'http://localhost:8600',
+          target: 'http://127.0.0.1:8600',
           changeOrigin: true,
           ws: true,
           timeout: 0,

@@ -84,7 +84,10 @@ function wsUrl(): string {
   }
   // Desktop app:// renderer — its protocol handler proxies HTTP /api/* but
   // cannot upgrade WebSockets, and the backend is always local on :8600.
-  return 'ws://localhost:8600/api/xr/control/ws';
+  // 127.0.0.1, never 'localhost': the backend binds 0.0.0.0 (IPv4 only) and
+  // Chromium resolves 'localhost' to ::1 on Windows, so the socket never
+  // connects (issue #144). The LAN cases are handled above, by origin.
+  return 'ws://127.0.0.1:8600/api/xr/control/ws';
 }
 
 async function buildManifest(): Promise<XrManifestEntry[]> {

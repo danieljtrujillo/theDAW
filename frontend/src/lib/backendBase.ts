@@ -6,10 +6,15 @@
 // /api/* to the backend, but anything that needs a genuine http origin (the VJ
 // iframe and its ?api= param, WebSockets, LAN/share/QR links shown to phones)
 // breaks when composed from app://. These helpers give those call sites the
-// backend's real http origin instead. The packaged backend always binds
-// http://localhost:8600 (electron-ui/main/index.ts BACKEND_BASE).
+// backend's real http origin instead.
+//
+// The host is the LITERAL 127.0.0.1, never 'localhost', and must stay that
+// way: backend/run.py binds 0.0.0.0 — IPv4 only — while Chromium prefers ::1
+// for 'localhost' on Windows 11, so a 'localhost' URL reaches nothing at all
+// with the backend running (issue #144). Same value as the packaged proxy's
+// BACKEND_BASE in electron-ui/main/index.ts.
 
-export const PACKAGED_BACKEND_HTTP_BASE = 'http://localhost:8600';
+export const PACKAGED_BACKEND_HTTP_BASE = 'http://127.0.0.1:8600';
 
 /** True when the page itself is served over http(s) (browser dev, Docker). */
 export const isHttpOrigin = (): boolean =>

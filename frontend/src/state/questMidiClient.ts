@@ -28,7 +28,10 @@ function wsUrl(): string {
   }
   // Desktop (app://) and local dev: connect straight to the backend — the
   // app:// handler can't upgrade WebSockets and dev proxies may lack ws:true.
-  return 'ws://localhost:8600/api/questmidi/ws';
+  // 127.0.0.1, never 'localhost': the backend binds 0.0.0.0 (IPv4 only) and
+  // Chromium resolves 'localhost' to ::1 on Windows, so the socket never
+  // connects (issue #144).
+  return 'ws://127.0.0.1:8600/api/questmidi/ws';
 }
 
 function scheduleReconnect(): void {
