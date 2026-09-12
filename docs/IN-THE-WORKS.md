@@ -250,16 +250,33 @@ driven in the live app yet; items stay here until that happens.
   share a two-column layout; STUDY is `pane === 'analysis'`), and
   `LyricAnalysisPane.tsx` for the STUDY column. The engine's own write-up is
   `docs/guides/rhythm-analysis.md`. — M
-- [ ] **The assistant orb and its chat panel render all-white while SCORE is
-  open**, in the packaged exe (seen on v0.1.7). Both the WebGL orb and its DOM
-  chat go white at once, which points at something global rather than the
-  renderer. Under investigation; the mechanism and the proposed fix will be
-  attached here. Note the likely files (`frontend/src/orb-kit/AssistantPanel.tsx`,
-  `frontend/src/orb-kit/chat/OrbChatPanel.tsx`) are owned by the open
-  `key-icon-everywhere` branch, so the fix lands AFTER that merges rather than on
-  a branch stacked on it. Suspect window is `v0.1.6..v0.1.7`, in particular
-  `69fa44d` (the orb's alpha canvas + OutputPass) and `9a5e86f`/`3f65470` (the
-  WebGL render gate). — S
+- [x] **The assistant CHAT PANEL rendered all-white over SCORE.** Diagnosed and
+  fixed on branch `fix-assistant-panel-has-no-background` (acf4283): orb-kit was
+  ported from a host whose Tailwind config defined `surface`/`border`/`primary`/
+  `muted`, which theDAW never did, so all 71 uses of `bg-surface/95`,
+  `border-border`, `text-primary`, `text-muted`, `bg-primary` and `from-primary`
+  compiled to nothing and the panel was a bare `backdrop-filter: blur(8px)` with
+  no fill. It showed whatever was behind it; SCORE is the one tab with a white
+  ground. Latent since `f473bb8`, not a v0.1.7 regression. Awaiting the user's
+  visual pass.
+- [ ] **The ORB itself over a white backdrop — the user's call.** `69fa44d`
+  removed the orb's only opaque fill in three places at once
+  (`gantasmo-orb.css:223` `background: transparent`, `FerroOrbCore.tsx:49`
+  `premultipliedAlpha: false`, `:98,104` clear-to-alpha-0 + `scene.background =
+  null`), which is exactly what "the orb loses its disc" asked for. The cost is
+  that the orb has no ground of its own, so over a white page it is a white
+  cloud: the body is near-black metal and what reads as "the orb" is the bloom,
+  which at 1.65 gain clamps toward opaque white. Two candidate changes, both of
+  which alter a look that was chosen deliberately, so neither is made:
+  (a) a feathered radial ground on `.orb-2x .orb-core-main` — opaque under the
+  body, gone before the rim, so no edge against the app; (b) drop
+  `premultipliedAlpha: false` and premultiply in the shader instead, which
+  three.js documents as the correct path and which may itself be why the bloom
+  blows out in Chromium. The failure-path half of this IS fixed on the branch
+  above (no-WebGL now paints a body; a context loss now rebuilds instead of
+  retiring the orb for the session). To decide it: drag the orb onto a white
+  SCORE page and then back onto the dark rail — if it flips white/dark with the
+  backdrop, (a) is the fix. — S
 - [ ] **aubio cannot read mp3, and says so on every import.** `chimera detect:
   aubio could not handle <file>.mp3 (AUBIO ERROR: source_wavread: Failed opening
   ... could not find RIFF header) - falling back to librosa`. The fallback works,
