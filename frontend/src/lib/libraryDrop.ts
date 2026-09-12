@@ -56,6 +56,23 @@ export function dropHasLibraryOrFiles(
   return Array.from(dt.items ?? []).some(isAudioFileItem);
 }
 
+/**
+ * What a drop on a list OF the library means: 'import' for files off the
+ * desktop, 'ignore' for anything else — including an in-app library row,
+ * which is already in the library, so dropping it back is a no-op.
+ *
+ * Both the dragover gate and the drop handler ask this one question, so a
+ * surface can never highlight for a drag it will then refuse (or the reverse).
+ */
+export type LibraryListDropIntent = 'import' | 'ignore';
+
+export function libraryListDropIntent(dt: DataTransfer): LibraryListDropIntent {
+  const types = Array.from(dt.types ?? []);
+  if (types.includes(LIBRARY_ID_MIME)) return 'ignore';
+  // `[]`: no in-app mime counts here, only files from the OS.
+  return dropHasLibraryOrFiles(dt, []) ? 'import' : 'ignore';
+}
+
 export interface EntriesFromDropOptions {
   /** In-app drag mimes that carry a library entry id. Default: the library mime. */
   mimes?: readonly string[];

@@ -6,7 +6,9 @@
  * order through the injected `importEntry`, skips non-audio files with one
  * warning that names them, and honours `max` for single-slot targets; and the
  * dragover gate says yes to the mime, to a 'Files' drag, and to an empty-type
- * file item (the Windows case), and no to a text-only drag.
+ * file item (the Windows case), and no to a text-only drag. `libraryListDropIntent`
+ * adds the list-OF-the-library rule: files import, a library row dropped back
+ * on the library is ignored.
  *
  * The DataTransfer is a plain object shaped like the real one: `types`,
  * `getData`, `files`, `items` — everything the helper touches.
@@ -21,6 +23,7 @@ import {
   LIBRARY_ID_MIME,
   dropHasLibraryOrFiles,
   entriesFromDrop,
+  libraryListDropIntent,
 } from './libraryDrop';
 
 const bytes = new Uint8Array([82, 73, 70, 70]);
@@ -102,6 +105,26 @@ assert.equal(dropHasLibraryOrFiles(makeDt({ types: [DJ_MIME] }), [DJ_MIME]), tru
 assert.equal(dropHasLibraryOrFiles(makeDt({ types: [LIBRARY_ID_MIME] }), [DJ_MIME]), false, '…and excludes mimes not in it');
 assert.equal(dropHasLibraryOrFiles(makeDt({ types: [LIBRARY_ID_MIME] }), []), false, 'an empty list ignores every in-app mime');
 assert.equal(dropHasLibraryOrFiles(makeDt({ types: ['Files'] }), []), true, '…but still takes OS files');
+
+// ── libraryListDropIntent: a list OF the library only takes files ───────────
+assert.equal(libraryListDropIntent(makeDt({ types: ['Files'], files: [wav] })), 'import', 'desktop files -> import');
+assert.equal(
+  libraryListDropIntent(makeDt({ types: [], items: [{ kind: 'file', type: '' }] })),
+  'import',
+  'the Windows empty-type dragover -> import',
+);
+assert.equal(
+  libraryListDropIntent(makeDt({ types: [LIBRARY_ID_MIME, 'text/plain'] })),
+  'ignore',
+  'a library row dropped on the library -> ignore',
+);
+assert.equal(
+  libraryListDropIntent(makeDt({ types: [LIBRARY_ID_MIME, 'Files'], files: [wav] })),
+  'ignore',
+  '…even if the drag also claims files',
+);
+assert.equal(libraryListDropIntent(makeDt({ types: ['text/plain'] })), 'ignore', 'a text drag -> ignore');
+assert.equal(libraryListDropIntent(makeDt({})), 'ignore', 'an empty drag -> ignore');
 
 // ── entriesFromDrop: an in-app drag resolves, never imports ─────────────────
 reset();
