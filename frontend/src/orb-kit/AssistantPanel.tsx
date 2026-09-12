@@ -903,7 +903,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                             {keyCount > 0 && (
                                                 <button
                                                     onClick={() => clearProviderKeys(p.id)}
-                                                    aria-label={`Forget every ${p.label} key`}
+                                                    aria-label={`Clear every ${p.label} key`}
                                                     title={`Forget every ${p.label} key`}
                                                     className="inline-flex items-center gap-1 text-[9px] text-red-400/50 hover:text-red-400"
                                                 >

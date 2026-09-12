@@ -1823,7 +1823,7 @@ export default function UnderfitAssistantOrb() {
                                 {providerApiKeys[p.id] ? (
                                   <>
                                     <span style={{ fontFamily: "monospace", fontSize: 9, color: "#10b981" }}>{maskKey(providerApiKeys[p.id])}</span>
-                                    <button onClick={() => setProviderApiKeys((prev) => { const n = { ...prev }; delete n[p.id]; return n; })} aria-label={`Forget the ${p.label} key`} title={`Forget the ${p.label} key`} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "#ef4444", background: "none", border: "none", cursor: "pointer", padding: 0 }}><Trash2 size={11} aria-hidden="true" />Clear</button>
+                                    <button onClick={() => setProviderApiKeys((prev) => { const n = { ...prev }; delete n[p.id]; return n; })} aria-label={`Clear the ${p.label} key`} title={`Forget the ${p.label} key`} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "#ef4444", background: "none", border: "none", cursor: "pointer", padding: 0 }}><Trash2 size={11} aria-hidden="true" />Clear</button>
                                   </>
                                 ) : (
                                   <span style={{ fontSize: 9, color: "rgba(82,82,91,0.5)" }}>{p.requiresKey === false ? "env" : "not set"}</span>
