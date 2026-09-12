@@ -81,10 +81,20 @@ one letter per line, sections separated by spaces.
 ### Sound, repetition and structure
 
 Sound devices are found from the phones: a repeated word-initial consonant
-within three words is alliteration, a repeated stressed vowel within four is
-assonance, a repeated non-initial consonant with at least three carriers is
-consonance, and a dense enough run of s/z/sh/ch or p/b/t/d/k/g over a six-word
-window is sibilance or plosives.
+within three words is alliteration, a repeated non-initial consonant with at
+least three carriers is consonance, and a dense enough run of s/z/sh/ch or
+p/b/t/d/k/g over a six-word window is sibilance or plosives.
+
+Assonance is not an exact-phone match. It is a run of words ringing on one vowel
+**colour**, within a tolerance — so "green / grin" belongs together the way an
+ear hears it rather than the way a dictionary spells it. Two rules keep that
+honest. Every member of a run is measured against every other member, not just
+against the one before it, because chaining neighbour to neighbour lets a run
+drift the whole length of the vowel space one comfortable step at a time
+("green / grin / grand / grunt" comes out as one run, which is an artefact of
+the walk and not a finding). And a run may reach across a line break, but only
+so far, so a vowel does not tie the whole song together. A run that rings on
+more than one vowel reports both, with how far apart they are.
 
 Repetition is found from the words: lines that open alike (anaphora), close
 alike (epistrophe), do both (symploce), hand the last word to the next line

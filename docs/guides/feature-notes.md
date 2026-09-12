@@ -37,6 +37,30 @@ the bar for adding one is whether a new user could find that affordance without
 being told — and for anything that *is* labelled, the **?** search will take you
 to it.
 
+## Finding anything: the ? search
+
+The header's **?** button is the direct answer to "where is X?". It searches the
+**feature registry** — the same data the Feature Tour walks and the notes point
+at, so the three cannot drift apart from one another — and every hit says what
+the thing is, how to use it, and which tab it lives in.
+
+The part a document search cannot do is the last button on each card. A registry
+entry carries a selector, so **LOCATE** hands the id to the solo spotlight: the
+app switches workspace, opens the panel the control lives in, and rings the real
+control on the real screen. Nothing is closed again afterwards — you asked to be
+taken there.
+
+Keyboard: the field takes focus when the popover opens, Down steps into the
+results, Up comes back out of the top of them, Enter locates the best hit, and
+Escape closes and hands focus back to the **?** button. With nothing typed it
+shows a handful of featured entries rather than an empty list.
+
+**Docs** sits beside the input, one click further in, and still opens the full
+manual untouched. It used to be the header's only help affordance, which is
+exactly the problem the search was built to fix: a 185 KB manual whose own
+search filters headings by substring only answers "where is the library?" for
+someone who already knows the heading is called Library.
+
 ## They retire themselves
 
 A note disappears the first moment you use the thing it points at — open the

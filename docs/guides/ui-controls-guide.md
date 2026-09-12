@@ -4,6 +4,30 @@ A complete breakdown of every control in the generation interface. No jargon, no
 
 ---
 
+## Driving a knob or a fader
+
+Every continuous control in theDAW — the MIX knobs, the DJ FX sends, the track
+faders, the SLIDE surface — answers to the same four gestures.
+
+| Gesture | What it does |
+|---|---|
+| **Drag** up or down | Moves the value. Hold **Shift** for a quarter-speed fine drag. |
+| **Double-click** | Resets to that control's default. A bipolar control goes back to centre. |
+| **Arrow keys** | One step per press, or ten steps with **Shift**. **Home** and **End** jump to the top and the bottom. |
+| **Wheel** | One step per notch, ten with **Shift** — **but only when the control has focus.** |
+
+That last rule is deliberate and it is the one worth knowing. An unmodified
+wheel over an *unfocused* knob does nothing to it: the page scrolls underneath
+instead. These controls carry live level, so a knob you are merely scrolling
+past must not move — it used to walk its value with no undo entry and no cue
+that anything had happened.
+
+Focus is cheap to get. Clicking a control focuses it (the click still starts a
+drag as normal), and so does tabbing to it. Once it is focused, the wheel works
+and the page no longer scrolls under the pointer.
+
+---
+
 ## Prompting
 
 | Control | What it does |

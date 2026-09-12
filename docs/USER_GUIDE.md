@@ -260,12 +260,37 @@ Six controls arranged in a 3-column grid:
 
 | Control | Type | Notes |
 |---|---|---|
-| **Model** | Dropdown | `small` and `medium` for primary inference, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel. The `small-rf` and `medium-rf` checkpoints are rectified-flow training bases surfaced through the Underfit trainer (§11) rather than inference models; selecting an `-rf` variant for a direct render raises Steps to 50 and CFG to 7.0 to run it, and the ARC `small` and `medium` checkpoints are the intended generation path. |
+| **Model** | Dropdown | `small` and `medium` for primary inference, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel, and `lyria` (Lyria 3 Pro) opens the Lyria panel in place of it (§6.2.1). The `small-rf` and `medium-rf` checkpoints are rectified-flow training bases surfaced through the Underfit trainer (§11) rather than inference models; selecting an `-rf` variant for a direct render raises Steps to 50 and CFG to 7.0 to run it, and the ARC `small` and `medium` checkpoints are the intended generation path. |
 | **Duration (s)** | Integer | Total output length in seconds. Small model: max 120 s. Medium and Large: max 380 s. |
 | **Batch** | Integer | Number of simultaneous variations. Each variation produces a distinct library entry with its own seed. |
 | **Steps** | Integer | Sampler denoising steps. ARC default: 8. RF default: 50. |
 | **CFG** | Float | Classifier-free guidance scale. ARC default: 1.0. RF default: 7.0. Higher values increase adherence to the prompt and can introduce artifacts. |
 | **Seed** | Integer + reroll button | Use −1 for a random seed on each run. The reroll button generates and displays a new random seed without submitting a job. |
+
+#### 6.2.1 Lyria 3 Pro
+
+Choosing **Lyria 3 Pro (Cloud)** in the Model dropdown replaces the whole MAKE
+surface with the Lyria 3 Pro app, embedded whole and unmodified. It is its own
+project (`StarskreamEXE/lyria-3-pro`), it ships its own Express server, SPA,
+settings and library, and theDAW spawns it as a sidecar on port 5188 and frames
+it. The model dropdown stays on screen above it, because without one you would
+be stranded inside the frame with no route back to Stable Audio.
+
+It is framed rather than absorbed on purpose: at its own origin the app's
+relative `/api/*` fetches resolve against its own server, so it needs no CORS,
+no base URL and no client rewrite, and its viewport styling, portals, window
+event bus and Ctrl+Enter binding all apply to its own document and cannot
+collide with theDAW's. It drives its own transport, so there is no bridge
+between the two.
+
+The sidecar is request-driven: the Node process only starts when someone
+actually opens the panel, and the panel retries while it comes up. Once warmed,
+the frame stays mounted so a round trip to Stable Audio does not restart the
+server or lose its in-app state. `POST /api/lyria/install` clones the project
+and runs its `npm install` in the background (it needs `git`), so Settings can
+repair a missing Lyria without handing you a command line, and
+`GET`/`POST`/`DELETE /api/lyria/key` manage the `GEMINI_API_KEY` theDAW passes
+to it. A pop-out button opens it in its own window.
 
 ### 6.3 Advanced Generation Panel
 
@@ -1685,7 +1710,7 @@ latents = ae.encode(waveform, sr)
 audio_out = ae.decode(latents)
 ```
 
-Batch encoding, chunked processing, and dataset pre-encoding for LoRA training: see [docs/workflows/autoencoder.md](autoencoder.md).
+Batch encoding, chunked processing, and dataset pre-encoding for LoRA training: see [docs/workflows/autoencoder.md](workflows/autoencoder.md).
 
 ### 20.5 LoRA at Inference
 
@@ -1858,7 +1883,7 @@ Eight adapter types are available, trading parameter count against expressivenes
 | `--base_precision` | none | Cast frozen base weights to `bf16` after applying LoRA. Reduces VRAM usage; LoRA parameters stay in fp32. |
 | `--lora_checkpoint` | none | Existing checkpoint to resume from. Loaded with `strict=False`. |
 
-Full training walkthrough: [docs/workflows/lora.md](lora.md).
+Full training walkthrough: [docs/workflows/lora.md](workflows/lora.md).
 
 ---
 
