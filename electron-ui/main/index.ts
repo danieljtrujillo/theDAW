@@ -226,12 +226,18 @@ function buildBackendEnv(): NodeJS.ProcessEnv {
   const cacheKey = Object.keys(env).find((k) => k.toLowerCase() === 'uv_cache_dir')
   if (!cacheKey) env.UV_CACHE_DIR = path.join(getWritableRuntimeDir(), '.uv-cache')
   if (runtimeIsRelocated()) {
-    // The install directory is read-only, so the venv and the library cannot
-    // live beside the project. Both honour an env var, and an explicit value
-    // from the caller still wins.
+    // The install directory is read-only, so neither the venv nor anything the
+    // backend persists can live beside the project. Both honour an env var, and
+    // an explicit value from the caller still wins.
     if (!env.UV_PROJECT_ENVIRONMENT) env.UV_PROJECT_ENVIRONMENT = getVenvDir()
-    if (!env.theDAW_GENERATIONS_DIR) {
-      env.theDAW_GENERATIONS_DIR = path.join(getWritableRuntimeDir(), 'data', 'generations')
+    // theDAW_DATA_DIR moves the backend's WHOLE writable tree at once --
+    // settings.json, every registry, the caches, the library, sidecar logs.
+    // backend/lib/paths.py is the single resolver; pointing only the library
+    // elsewhere still left /api/settings answering 500 on first launch, because
+    // SettingsStore went on trying to mkdir <install>/data. A user-set
+    // theDAW_GENERATIONS_DIR still moves the library on its own.
+    if (!env.theDAW_DATA_DIR) {
+      env.theDAW_DATA_DIR = path.join(getWritableRuntimeDir(), 'data')
     }
   }
   return env

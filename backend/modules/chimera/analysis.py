@@ -33,6 +33,7 @@ from backend.lib.atomic import atomic_replace
 from backend.modules.chimera import structure, tempo
 from backend.modules.chimera.detect import detect_tempo_and_beats
 from backend.modules.chimera.types import BarFeature, BeatGrid, ClipAnalysis, Phrase
+from backend.lib import paths
 
 __all__ = [
     "CACHE_DIR",
@@ -52,7 +53,7 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache" / "chimera"
+CACHE_DIR = paths.data_path("cache", "chimera")
 CACHE_VERSION = 2
 ANALYSIS_SR = 22050
 DEFAULT_PHRASE_BARS = 8

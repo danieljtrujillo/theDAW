@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from backend.modules.project import media_access
 from backend.modules.project.tasmo_project import TasmoProject
 from backend.modules.project.tasmo_file import TasmoFile
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,7 +57,7 @@ _AUDIO_EXTS = _BROWSER_OK_EXTS | _TRANSCODE_EXTS
 
 
 # --- Recent files tracking (in-memory, mirrored to disk so it survives restarts) ---
-_RECENT_PATH = Path(__file__).resolve().parents[3] / "data" / "recent_projects.json"
+_RECENT_PATH = paths.data_path("recent_projects.json")
 MAX_RECENT = 20
 
 

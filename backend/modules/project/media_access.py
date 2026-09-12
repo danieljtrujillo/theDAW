@@ -31,11 +31,12 @@ import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_ROOTS_STATE = _PROJECT_ROOT / "data" / "media_roots.json"
+_ROOTS_STATE = paths.data_path("media_roots.json")
 
 # A session root is remembered per opened project; the cap keeps a long-lived
 # install from accumulating an unbounded allowlist.
@@ -72,11 +73,12 @@ def _static_roots() -> list[Path]:
     roots: list[Path] = []
 
     # The library/generations tree, wherever the user pointed it.
-    configured = os.getenv("theDAW_GENERATIONS_DIR")
-    if configured:
-        roots.append(Path(configured).expanduser())
-    # data/ holds the default generations dir plus uploads, bundles and the
-    # media folders .tasmo archives extract into.
+    roots.append(paths.library_root())
+    # The data tree holds the default generations dir plus uploads, bundles
+    # and the media folders .tasmo archives extract into. Both the writable
+    # root and the in-install one: they differ when the install directory is
+    # read-only, and content that shipped with the app still reads fine.
+    roots.append(paths.data_dir())
     roots.append(_PROJECT_ROOT / "data")
     roots.append(Path(tempfile.gettempdir()) / "thedaw_transcode")
     roots.append(Path.home() / "Documents" / "theDAW Projects")

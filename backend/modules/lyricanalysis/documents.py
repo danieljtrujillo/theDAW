@@ -45,6 +45,7 @@ from .schema import (
     Span,
     UpdateLyricDocumentRequest,
 )
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -84,12 +85,11 @@ MAX_REANCHOR_SHIFT = 16
 
 
 def documents_dir() -> Path:
-    """``<project>/data/lyric-documents``; ``theDAW_LYRIC_DOCS_DIR`` wins."""
+    """``<data>/lyric-documents``; ``theDAW_LYRIC_DOCS_DIR`` wins."""
     configured = os.getenv("theDAW_LYRIC_DOCS_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / "data" / DIRNAME
+    return paths.data_path(DIRNAME)
 
 
 def new_id() -> str:

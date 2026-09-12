@@ -14,7 +14,6 @@ newer or older shape than the backend knows about.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body
@@ -30,8 +29,7 @@ _store: Optional[SettingsStore] = None
 def get_store() -> SettingsStore:
     global _store
     if _store is None:
-        project_root = Path(__file__).resolve().parents[3]
-        _store = SettingsStore(default_settings_path(project_root))
+        _store = SettingsStore(default_settings_path())
     return _store
 
 

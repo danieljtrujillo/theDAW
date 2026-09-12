@@ -28,6 +28,7 @@ from threading import Lock
 from typing import Optional
 
 from . import sidecar
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _PREFIX = "underfit"
 _SUBREPO_DIR = _REPO_ROOT / _PREFIX
 _GITREPO = _SUBREPO_DIR / ".gitrepo"
-_STATE = _REPO_ROOT / "data" / "underfit_update.json"
+_STATE = paths.data_path("underfit_update.json")
 _DEFAULT_REMOTE = "https://github.com/dada-bots/underfit.git"
 _DEFAULT_BRANCH = "main"
 _CHECK_TTL = 900  # 15 min — don't poll the network more often than this

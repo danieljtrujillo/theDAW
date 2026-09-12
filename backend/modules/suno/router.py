@@ -42,6 +42,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from backend.lib.atomic import atomic_replace
+from backend.lib import paths
 
 router = APIRouter()
 
@@ -55,8 +56,6 @@ _ALLOWED_AUDIO_HOSTS = frozenset(
 )
 log = logging.getLogger(__name__)
 
-# backend/modules/suno/router.py -> parents[3] == theDAW repo root
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_BASE = "https://api.suno.com"
 
 # Three preset voices provided by the hackathon API.
@@ -85,9 +84,7 @@ PRESET_VOICES = [
 
 
 def _data_dir() -> Path:
-    d = PROJECT_ROOT / "data"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return paths.ensure_data_dir()
 
 
 def _key_file() -> Path:
