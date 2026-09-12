@@ -3,6 +3,7 @@ import {
   Archive,
   BookOpen,
   Compass,
+  ExternalLink,
   FilePlus2,
   FolderInput,
   FolderOpen,
@@ -40,11 +41,17 @@ export interface HamburgerMenuProps {
 interface MenuAction {
   id: string;
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  /** Omitted by rows that carry no icon (the sponsor row). */
+  icon?: React.ComponentType<{ className?: string }>;
   iconCls: string;
   onSelect: () => void;
   /** Row shows an accent dot when the underlying toggle is on (Edit Layout). */
   active?: boolean;
+  /** Sponsor row: purple-filled, so it reads as an offer and not a setting. */
+  accent?: boolean;
+  /** Trailing arrow + native tooltip for rows that leave the app. */
+  external?: boolean;
+  title?: string;
 }
 
 interface MenuSection {
@@ -60,6 +67,16 @@ const TRIGGER_ACTIVE =
 
 const ITEM_CLS =
   'w-full flex items-center gap-2 px-2 py-1 rounded text-left text-[10px] text-zinc-300 hover:bg-purple-500/15 hover:text-zinc-100 transition-colors outline-none focus-visible:bg-purple-500/15 focus-visible:text-zinc-100 focus-visible:ring-1 focus-visible:ring-purple-400/60';
+/* The sponsor row: no icon, label centred in the row rather than left-aligned
+   with the rest of the menu. */
+const ITEM_ACCENT_CLS =
+  'justify-center border border-purple-400/50 bg-purple-500/20 text-purple-100 font-black uppercase tracking-wider hover:bg-purple-500/30 hover:text-white';
+
+/** Where every Sponsor entry points: the hamburger row here, the pinned row in
+ *  Settings, the README badge, .github/FUNDING.yml and the Pinokio menu. */
+const SPONSOR_URL = 'https://github.com/sponsors/gantasmo';
+const SPONSOR_TITLE =
+  'theDAW is independent and self-funded. A sponsorship keeps development going (food, coffee, and compute) and flows straight back into the software.';
 
 /**
  * App hamburger menu for the top header: project open/save, backup/migrate,
@@ -183,6 +200,23 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
         { id: 'home-screen', label: 'Home Screen', icon: Home, iconCls: 'text-amber-300', onSelect: onOpenHome },
       ],
     },
+    {
+      label: 'Support',
+      items: [
+        {
+          id: 'sponsor',
+          label: 'Sponsor theDAW',
+          iconCls: '',
+          accent: true,
+          external: true,
+          title: SPONSOR_TITLE,
+          // In the desktop app window.open is intercepted by the main process
+          // (setWindowOpenHandler -> shell.openExternal), so this opens the
+          // system browser there and a new tab in the browser build.
+          onSelect: () => window.open(SPONSOR_URL, '_blank', 'noopener,noreferrer'),
+        },
+      ],
+    },
   ];
   const flatItems = sections.flatMap((s) => s.items);
 
@@ -300,10 +334,20 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
                       itemRefs.current[refIndex] = el;
                     }}
                     onClick={() => selectItem(item)}
-                    className={`${ITEM_CLS} ${item.active ? 'bg-purple-500/10 text-purple-200' : ''}`}
+                    title={item.title}
+                    className={`${ITEM_CLS} ${item.accent ? ITEM_ACCENT_CLS : ''} ${
+                      item.active ? 'bg-purple-500/10 text-purple-200' : ''
+                    }`}
                   >
-                    <Icon className={`w-3.5 h-3.5 shrink-0 ${item.iconCls}`} />
-                    <span className="flex-1 min-w-0 truncate">{item.label}</span>
+                    {Icon && <Icon className={`w-3.5 h-3.5 shrink-0 ${item.iconCls}`} />}
+                    <span
+                      className={
+                        item.accent ? 'min-w-0 truncate' : 'flex-1 min-w-0 truncate'
+                      }
+                    >
+                      {item.label}
+                    </span>
+                    {item.external && <ExternalLink className="w-3 h-3 opacity-70 shrink-0" />}
                     {item.active && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0" />}
                   </button>
                 );

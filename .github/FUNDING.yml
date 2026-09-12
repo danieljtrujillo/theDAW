@@ -1,0 +1,6 @@
+# Puts the "Sponsor" button at the top of the repository and the
+# "Sponsor this project" card in the sidebar — GitHub's own funding surface,
+# so no banner of our own is needed in the repo chrome.
+# Same destination as the in-app Sponsor entries (hamburger menu, Settings
+# footer) and the Pinokio launcher menu.
+github: [gantasmo]

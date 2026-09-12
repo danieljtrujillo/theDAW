@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/sponsors/gantasmo"><img src="https://img.shields.io/badge/Sponsor-theDAW-EA4AAA?logo=githubsponsors&logoColor=white" alt="Sponsor theDAW on GitHub Sponsors"></a>
   <a href="https://open.spotify.com/artist/4q5n0QgK6mvyuw8FRzhuNA"><img src="https://img.shields.io/badge/Listen-Spotify-1DB954?logo=spotify&logoColor=white" alt="Listen on Spotify"></a>
   <a href="https://www.youtube.com/@GANTASMO"><img src="https://img.shields.io/badge/Watch-YouTube-FF0000?logo=youtube&logoColor=white" alt="Watch on YouTube"></a>
   <a href="https://www.instagram.com/gantasmo"><img src="https://img.shields.io/badge/Follow-%40gantasmo-E4405F?logo=instagram&logoColor=white" alt="Follow @gantasmo on Instagram"></a>
