@@ -47,3 +47,24 @@ export const hasAudioExt = (name: string): boolean => {
 
 const AUDIO_GLOBS = AUDIO_EXTS.map((e) => `*.${e}`).join(';');
 export const AUDIO_FILTER = `Audio (${AUDIO_GLOBS})|${AUDIO_GLOBS}|All files (*.*)|*.*`;
+
+/**
+ * MIDI extensions, spelled out for the same reason as AUDIO_EXTS: `audio/midi`
+ * alone greys out a .mid on a machine with no registered MIDI handler, which is
+ * most Windows installs. Lives here rather than being hardcoded at each file
+ * input — three of them had drifted apart before this constant existed.
+ */
+export const MIDI_EXTS = ['mid', 'midi', 'smf'] as const;
+
+/** The same set as an `accept` list for `input[type=file]` (mime + extensions). */
+export const MIDI_ACCEPT = `audio/midi,audio/x-midi,${MIDI_EXTS.map((e) => `.${e}`).join(',')}`;
+
+/** True when the filename's extension is one of MIDI_EXTS (case-insensitive). */
+export const hasMidiExt = (name: string): boolean => {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && (MIDI_EXTS as readonly string[]).includes(name.slice(dot + 1).toLowerCase());
+};
+
+/** Strip a MIDI extension for a clip / track label. */
+export const midiFileLabel = (name: string): string =>
+  name.replace(/\.(midi?|smf)$/i, '') || name;

@@ -13,7 +13,7 @@
  * Lazy-loaded (three.js must stay out of the first-paint bundle) and mounted
  * into GantasmoOrb via its coreOverlay prop, beneath the face SVG.
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { createRenderGate } from '../../lib/renderGate';
@@ -31,6 +31,9 @@ const FOV = 65;
 
 const FerroOrbCore: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Bumped by `webglcontextrestored`. It is in this effect's deps, so a restore
+  // tears the dead scene down through the normal cleanup and builds a new one.
+  const [contextEpoch, setContextEpoch] = useState(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -45,15 +48,45 @@ const FerroOrbCore: React.FC = () => {
       // premultiplied canvas would darken the halo's fringe.
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false });
     } catch {
-      // WebGL unavailable / context exhausted — the CSS gradient core beneath
-      // this overlay stays visible, so the orb still renders.
+      // WebGL unavailable, or the context budget is exhausted (the app keeps
+      // five live contexts, six once SCORE's highway mounts).
+      //
+      // This used to say the CSS gradient core beneath the overlay stayed
+      // visible "so the orb still renders". That stopped being true when the
+      // core was set to `background: transparent` (orb-kit/styles/
+      // gantasmo-orb.css) to remove the disc: with no canvas AND no core there
+      // is no orb at all, just a hole that shows the app through it — white
+      // wherever the backdrop is white, such as over SCORE's sheet.
+      //
+      // So paint the body here instead, feathered out before the rim so it
+      // never draws the hard-edged disc that was deliberately removed. This
+      // runs ONLY when there is no renderer; the normal path is untouched.
+      container.style.background =
+        'radial-gradient(circle at 50% 45%, #1a1030 0%, #0e0912 58%, rgba(14, 9, 18, 0) 78%)';
       return;
     }
     const canvas = renderer.domElement;
+    // Clear the no-WebGL fallback fill: this run has a renderer, and leaving the
+    // gradient behind a working transparent canvas would put back the disc.
+    container.style.background = '';
     canvas.style.display = 'block';
     canvas.style.width = '100%';
     canvas.style.height = '100%';
+    // preventDefault says "I intend to restore", which is only true if somebody
+    // actually rebuilds. Without the restore listener below, the render loop hit
+    // its `isContextLost()` bail and the orb stayed a transparent hole for the
+    // rest of the session — one eviction retired it permanently.
     canvas.addEventListener('webglcontextlost', (e) => e.preventDefault(), false);
+    canvas.addEventListener(
+      'webglcontextrestored',
+      () => {
+        // Bumping the epoch re-runs this effect: its cleanup disposes the dead
+        // renderer, scene, composer and observers, then setup starts again on
+        // the restored context.
+        if (!disposed) setContextEpoch((n) => n + 1);
+      },
+      false,
+    );
     container.appendChild(canvas);
 
     // Same tunables as CymaticsVisualizer's orb.
@@ -265,7 +298,7 @@ const FerroOrbCore: React.FC = () => {
       renderer.forceContextLoss();
       if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
     };
-  }, []);
+  }, [contextEpoch]);
 
   return (
     <div

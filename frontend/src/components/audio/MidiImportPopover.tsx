@@ -2,27 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Upload, FolderOpen, Search, Star, Music, FileMusic } from 'lucide-react';
 import { sendMidiIdToTarget } from '../../lib/sendToTargets';
 import { SHEET_ACCEPT } from '../../lib/sheetImportClient';
-import { logError } from '../../state/logStore';
-
-interface MidiRow {
-  id: string;
-  source?: string;
-  midi_path?: string;
-  notes_count?: number;
-  favorite?: number;
-  parent_title?: string;
-  parent_id?: string;
-}
-
-/** "<title> · <part>" label for a library MIDI row, derived from its filename. */
-const rowLabel = (m: MidiRow): string => {
-  const part =
-    (m.midi_path || '').split(/[\\/]/).pop()?.replace(/\.midi?$/i, '') ||
-    m.source ||
-    'midi';
-  const title = (m.parent_title || m.parent_id || 'Untitled').replace(/\.[a-z0-9]+$/i, '');
-  return `${title} · ${part}`;
-};
+import {
+  cachedLibraryMidi,
+  loadLibraryMidi,
+  midiRowLabel as rowLabel,
+  type LibraryMidiRow as MidiRow,
+} from '../../lib/libraryIndex';
 
 /**
  * IMPORT MIDI control for the Piano Roll. One popover, two sources:
@@ -42,14 +27,16 @@ export const MidiImportPopover: React.FC<{
   const fileRef = useRef<HTMLInputElement>(null);
   const sheetRef = useRef<HTMLInputElement>(null);
 
+  // The index (fetch, cache, row label) is shared with the LibraryPicker and
+  // the LIBRARY tab, so a row reads the same wherever it is listed.
   const loadMidis = useCallback(async () => {
     setLoading(true);
     try {
-      const j = await fetch('/api/library/_all/midi').then((r) => r.json());
-      setMidis((j.midis as MidiRow[]) || []);
-    } catch (e) {
-      logError('piano-roll', `Could not load library MIDI: ${e instanceof Error ? e.message : String(e)}`);
-      setMidis([]);
+      setMidis(await loadLibraryMidi({ force: true }));
+    } catch {
+      // loadLibraryMidi already wrote the LOG line; fall back to whatever is
+      // cached rather than blanking a list the user is looking at.
+      setMidis(cachedLibraryMidi() ?? []);
     } finally {
       setLoading(false);
     }

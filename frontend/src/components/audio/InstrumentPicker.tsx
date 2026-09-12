@@ -9,8 +9,13 @@ const VOICE_GROUPS = Array.from(new Set(SYNTH_VOICES.map((v) => v.group)));
  * Single dropdown that picks the MIDI voice: the built-in sawtooth ("Basic") or
  * a General MIDI soundfont program. Drives the shared soundfont store, so the
  * choice applies to live preview, playback, and offline WAV bounce alike.
+ *
+ * `idPrefix` exists because the id used to be hardcoded `pr-instrument`: any
+ * second mount (a picker open beside the Piano Roll) produced two elements with
+ * the same id and a <label htmlFor> that named whichever came first. Callers
+ * that can co-exist with the roll pass their own prefix.
  */
-export const InstrumentPicker: React.FC = () => {
+export const InstrumentPicker: React.FC<{ idPrefix?: string }> = ({ idPrefix = 'pr-instrument' }) => {
   const useSoundfont = useSoundfontStore((s) => s.useSoundfont);
   const activeProgram = useSoundfontStore((s) => s.activeProgram);
   const activeSynthVoice = useSoundfontStore((s) => s.activeSynthVoice);
@@ -40,12 +45,12 @@ export const InstrumentPicker: React.FC = () => {
 
   return (
     <div className="flex items-center gap-1.5">
-      <label htmlFor="pr-instrument" className="text-xs text-white/50">
+      <label htmlFor={idPrefix} className="text-xs text-white/50">
         Instrument
       </label>
       <select
-        id="pr-instrument"
-        name="pr-instrument"
+        id={idPrefix}
+        name={idPrefix}
         aria-label="MIDI instrument"
         value={value}
         onChange={onChange}

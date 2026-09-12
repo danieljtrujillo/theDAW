@@ -562,7 +562,9 @@ export const Vocal2MidiPanel: React.FC = () => {
           </div>
           <div>
             <span className={labelCls}>Instrument (theDAW soundfonts)</span>
-            <div className="mt-0.5"><InstrumentPicker /></div>
+            {/* Own id prefix — this panel renders beside the Piano Roll, which
+                owns `pr-instrument`. */}
+            <div className="mt-0.5"><InstrumentPicker idPrefix="v2m-instrument" /></div>
           </div>
         </Section>
 
