@@ -23,6 +23,7 @@
 import React from 'react';
 import { AlertTriangle, CheckCircle2, ExternalLink, Eye, EyeOff, KeyRound, Loader2 } from 'lucide-react';
 import { fetchHfStatus, hfLogin, hfLoginUrl, HfAuthError, type HfAuthStatus } from '../../lib/hfAuthClient';
+import { SECRET_ICON_CLASS, SecretFieldLabel } from './SecretFieldLabel';
 
 type Accent = 'purple' | 'rose' | 'yellow';
 
@@ -151,7 +152,9 @@ export const HfTokenField: React.FC<Props> = ({
     return (
       <div className={`flex ${compact ? 'items-center gap-2' : 'flex-col gap-1'} ${className ?? ''}`}>
         <div className={`flex items-center gap-1.5 ${text} min-w-0 flex-1`}>
-          {compact && <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" />}
+          {/* The key glyph identifies the row in BOTH layouts — the same field
+              must not introduce itself differently depending on its host. */}
+          <KeyRound className={SECRET_ICON_CLASS} aria-hidden="true" />
           {compact && <span className="shrink-0 font-mono uppercase tracking-wider text-zinc-300">Hugging Face</span>}
           <CheckCircle2 className="w-3 h-3 shrink-0 text-emerald-300" />
           <span className="min-w-0 truncate text-emerald-200" title={envOverride ? ENV_OVERRIDE_TEXT : undefined}>
@@ -237,14 +240,13 @@ export const HfTokenField: React.FC<Props> = ({
           void save();
         }}
       >
-        <label
+        <SecretFieldLabel
           htmlFor={inputId}
           title={`${SAVED_HELP}${envOverride ? ` ${ENV_OVERRIDE_TEXT}` : ''}`}
-          className={`flex shrink-0 items-center gap-1 ${text} font-mono uppercase tracking-wider text-zinc-300`}
+          className={`shrink-0 ${text} font-mono uppercase tracking-wider text-zinc-300`}
         >
-          <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" />
           Hugging Face
-        </label>
+        </SecretFieldLabel>
         {input}
         {saveButton}
         {getTokenButton}
@@ -270,13 +272,12 @@ export const HfTokenField: React.FC<Props> = ({
         void save();
       }}
     >
-      <label
+      <SecretFieldLabel
         htmlFor={inputId}
-        className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-zinc-300"
+        className="text-[9px] font-mono uppercase tracking-wider text-zinc-300"
       >
-        <KeyRound className="w-3 h-3 shrink-0 text-zinc-400" />
         Hugging Face token
-      </label>
+      </SecretFieldLabel>
       <div className="flex gap-1">
         {input}
         {saveButton}

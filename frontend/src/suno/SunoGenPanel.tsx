@@ -84,8 +84,9 @@ const OUTPUT_TIP = {
 // the identical need — see PANEL_MODEL_OPTIONS for why magenta-* is excluded.
 const MODEL_OPTIONS = PANEL_MODEL_OPTIONS;
 
-/** Slim "key required" notice. The actual key INPUT lives in Settings → Suno API
- *  (SunoKeySettings); this just points the user there and opens it. */
+/** Slim "key required" notice. The actual key INPUT lives in Settings → Models,
+ *  on the Suno card (ProviderCards' SunoKeyInput); this just points the user
+ *  there and opens it. */
 const KeyNotice: React.FC = () => (
   <div className="flex items-center gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/6 px-3 py-2">
     <span className="grid place-items-center w-6 h-6 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 shrink-0">
