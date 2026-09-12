@@ -2,7 +2,7 @@
  * Continuous, width AND height aware shell scale.
  *
  * The DAW is designed against a fixed logical canvas (DESIGN_W x DESIGN_SHELL_H
- * CSS px for the Shell, plus the unzoomed 56px (h-14) PlayerFooter beneath it). The
+ * CSS px for the Shell, plus the unzoomed FOOTER_H px (h-16) PlayerFooter beneath it). The
  * Shell renders under CSS `zoom` so that canvas always fits the real window:
  *
  *   zoom = clamp(MIN, min(innerWidth / DESIGN_W, (innerHeight - FOOTER_H) / DESIGN_SHELL_H), MAX)
