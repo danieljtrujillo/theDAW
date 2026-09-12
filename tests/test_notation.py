@@ -9,6 +9,7 @@ first-class notation artifacts.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import zipfile
@@ -29,9 +30,11 @@ from backend.modules.notation.engine import (
     lyrics_artifact_id,
     midi_to_musicxml,
     musescore_binary,
+    musescore_command,
     raw_midi_for,
     register_existing_midis,
     register_on_disk_artifacts,
+    stage_parts,
 )
 from backend.modules.notation.exporters import beatsaber
 
@@ -637,9 +640,11 @@ def test_pdf_export_no_longer_needs_musescore(tmp_path: Path):
     works with no MuseScore install. This previously asserted the opposite: the
     old music21/MuseScore path returned ok=False with an install hint whenever
     the CLI was absent, which left a machine without MuseScore unable to export
-    a printable sheet at all. When the Node renderer is unavailable too (no node,
-    or frontend deps not installed) the call must still degrade rather than
-    raise. The test adapts to whichever environment runs it."""
+    a printable sheet at all. MuseScore now stands in the other way round: when
+    the Node renderer is unavailable (no node, or frontend deps not installed)
+    an installed MuseScore engraves the PDF, and with neither the call must
+    still degrade, naming both, rather than raise. The test adapts to whichever
+    environment runs it."""
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})
     midi_path = tmp_path / "midi" / "scale.mid"
@@ -659,14 +664,14 @@ def test_pdf_export_no_longer_needs_musescore(tmp_path: Path):
         assert final.is_file()
         # A real engraved document, not an empty or stub file.
         assert final.read_bytes()[:5] == b"%PDF-"
-        assert result["engine"] == "osmd"
+        # OSMD is tried first; MuseScore only if that render failed.
+        assert result["engine"] in ("osmd", "musescore"), result
         # The staging MusicXML written for a MIDI source must be cleaned up, and
         # must never leave a DB row pointing at a deleted path.
         assert not list(final.parent.glob("*__osmd_src.musicxml"))
     elif musescore_binary() is None:
         assert result["ok"] is False
-        assert result["engine"] == "osmd"
-        assert result["error"]
+        assert "OSMD" in result["error"] and "MuseScore" in result["error"], result
 
 
 def test_midi_to_musicxml_missing_input_returns_error(tmp_path: Path):
@@ -837,3 +842,365 @@ def test_pdf_render_leaves_a_lead_sheet_unchanged(tmp_path: Path):
     assert fitted["pages"] >= 2  # long enough that pagination is being tested
     assert fitted["pages"] == pinned["pages"]
     assert fitted["bytes"] == pinned["bytes"]
+
+
+# ---- any part, any format, from either engraver ---------------------------------
+
+
+def _write_two_part_musicxml(path: Path) -> None:
+    """Two named parts, Lead (treble) then Bass (bass clef), a few notes each,
+    in that ``<part-list>`` order."""
+    from music21 import clef, meter, note, stream  # type: ignore[import]
+
+    score = stream.Score()
+    for index, (name, pitches, part_clef) in enumerate(
+        (
+            ("Lead", [72, 74, 76, 77], clef.TrebleClef()),
+            ("Bass", [36, 38, 40, 41], clef.BassClef()),
+        )
+    ):
+        part = stream.Part(id=f"P{index + 1}")
+        part.partName = name
+        part.append(part_clef)
+        part.append(meter.TimeSignature("4/4"))
+        for _measure in range(2):
+            for pitch in pitches:
+                part.append(note.Note(pitch, quarterLength=1.0))
+        part.makeMeasures(inPlace=True)
+        score.insert(0, part)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    score.write("musicxml", fp=str(path))
+
+
+def test_capabilities_lists_engravers_for_pdf_and_svg():
+    """PDF and SVG each come from either engraver (OSMD first, MuseScore as the
+    stand-in), so a format is offered exactly when at least one is present,
+    and the probe says which, in the order convert_score tries them."""
+    caps = capabilities()
+    engravers = caps["engravers"]
+    for fmt in ("pdf", "svg"):
+        assert set(engravers[fmt]) <= {"osmd", "musescore"}, engravers
+        assert (fmt in caps["formats"]) == bool(engravers[fmt]), (
+            caps["formats"],
+            engravers,
+        )
+    assert engravers["pdf"] == engravers["svg"]
+    assert caps["musescore_download_url"].startswith("https://musescore.org")
+    first = engravers["pdf"][0] if engravers["pdf"] else None
+    assert caps["engines"]["score_to_pdf"] == first
+    assert caps["engines"]["score_to_svg"] == first
+    if caps["osmd_pdf"]:
+        assert engravers["pdf"][0] == "osmd"
+    if caps["musescore"]:
+        assert "musescore" in engravers["pdf"]
+        assert caps["musescore_path"]
+
+
+def test_convert_score_scopes_any_format_to_one_part(tmp_path: Path):
+    """options.parts filters the sheet before the ordinary converter runs, so
+    ABC, MusicXML and the note chart of ONE part come out of the same sheet;
+    the artifact records which part, the staging file is gone afterwards, and a
+    part that does not exist is an error rather than a whole-sheet export."""
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    sheet = tmp_path / "notation" / "band.musicxml"
+    _write_two_part_musicxml(sheet)
+    out_dir = tmp_path / "notation"
+
+    # ABC of the Bass only: a single voice (no V: declarations) that says so.
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=out_dir / "band__Bass.abc",
+        source_ref="band_xml",
+        artifact_id="band_xml__abc__p1",
+        title="Song.wav",
+        options={"parts": [1]},
+    )
+    assert result["ok"] is True, result
+    meta = json.loads(result["artifact"]["metadata_json"])
+    assert meta["parts"] == [{"index": 1, "name": "Bass"}]
+    assert meta["source"] == str(sheet)  # the sheet, never the staging file
+    text = Path(result["path"]).read_text(encoding="utf-8")
+    assert "V:" not in text, text
+    assert "T:Song · Bass" in text, text
+    # The whole sheet has two voices, so the filter did the work.
+    whole = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=out_dir / "band.abc",
+        artifact_id="band_xml__abc",
+        title="Song.wav",
+    )
+    assert whole["ok"] is True, whole
+    whole_text = Path(whole["path"]).read_text(encoding="utf-8")
+    assert "V:2" in whole_text and "T:Song\n" in whole_text, whole_text
+
+    # MusicXML of the Lead only: exactly one <score-part>, and it is Lead.
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="musicxml",
+        output_path=out_dir / "band__Lead.musicxml",
+        artifact_id="band_xml__musicxml__p0",
+        title="Song",
+        options={"parts": [0]},
+    )
+    assert result["ok"] is True, result
+    assert result["engine"] == "music21"
+    xml = Path(result["path"]).read_text(encoding="utf-8")
+    assert xml.count("<score-part ") == 1 and xml.count("<part ") == 1, xml[:2000]
+    assert "<part-name>Lead</part-name>" in xml and "Bass" not in xml
+    assert "<work-title>Song · Lead</work-title>" in xml
+    assert json.loads(result["artifact"]["metadata_json"])["parts"] == [
+        {"index": 0, "name": "Lead"}
+    ]
+    from music21 import converter as m21converter
+
+    assert len(m21converter.parse(result["path"]).parts) == 1
+
+    # The note chart too: one part in the document.
+    chart = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="notechart",
+        output_path=out_dir / "band__Bass.notechart.json",
+        options={"parts": [1]},
+        audio_duration_sec=8.0,
+    )
+    assert chart["ok"] is True, chart
+    doc = json.loads(Path(chart["path"]).read_text(encoding="utf-8"))
+    assert len(doc["parts"]) == 1, [p.get("name") for p in doc["parts"]]
+
+    # Nothing staged is left behind, and nothing staged was registered.
+    assert not list(out_dir.glob("*__parts_src.musicxml"))
+    assert not list(out_dir.glob("*__parts_midi_src.musicxml"))
+    assert all(
+        "__parts_src" not in a["path"] for a in db.list_notation_artifacts("track")
+    )
+
+    # A part that does not exist is an error, not a silent whole-sheet export.
+    missing = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=out_dir / "band__p5.abc",
+        options={"parts": [5]},
+    )
+    assert missing["ok"] is False, missing
+    assert "5" in missing["error"]
+    assert not (out_dir / "band__p5.abc").exists()
+    assert not list(out_dir.glob("*__parts_src.musicxml"))
+
+
+def test_stage_parts_from_a_midi_source(tmp_path: Path):
+    """A MIDI source is staged as MusicXML first, then filtered; the MIDI
+    staging file goes with it."""
+    midi_path = tmp_path / "midi" / "scale.mid"
+    _write_scale_midi(midi_path)
+    staged = stage_parts(
+        midi_path, [0], "Scale", output_path=tmp_path / "out" / "x.abc"
+    )
+    try:
+        assert staged.path.name == "x__parts_src.musicxml"
+        assert staged.parts[0]["index"] == 0
+        xml = staged.path.read_text(encoding="utf-8")
+        assert xml.count("<score-part ") == 1
+        assert not list((tmp_path / "out").glob("*__parts_midi_src.musicxml"))
+    finally:
+        staged.path.unlink(missing_ok=True)
+    with pytest.raises(ValueError):
+        stage_parts(midi_path, [7], "Scale", output_path=tmp_path / "out" / "y.abc")
+
+
+def test_svg_export_comes_from_osmd_or_names_both_engravers(tmp_path: Path):
+    """SVG is engraved by the headless OSMD renderer first (MuseScore stands
+    in); with neither the error names both. A forced engraver that is absent
+    is an error, never a silent switch."""
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    sheet = tmp_path / "notation" / "band.musicxml"
+    _write_two_part_musicxml(sheet)
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="svg",
+        output_path=tmp_path / "notation" / "band.svg",
+        artifact_id="band_xml__svg",
+        title="Song",
+    )
+    if pdf_render.available()["ok"]:
+        assert result["ok"] is True, result
+        assert result["engine"] == "osmd"
+        assert result["artifact"]["kind"] == "svg"
+        svg_path = Path(result["path"])
+        head = svg_path.read_bytes()[:64].lstrip()
+        assert head.startswith(b"<svg") or head.startswith(b"<?xml"), head
+        opening = svg_path.read_text(encoding="utf-8")[:600]
+        assert 'xmlns="http://www.w3.org/2000/svg"' in opening, opening
+        assert result["pages"] >= 1
+
+        # One part only, same engraver.
+        part = convert_score(
+            db,
+            entry_id="track",
+            source_path=sheet,
+            fmt="svg",
+            output_path=tmp_path / "notation" / "band__Lead.svg",
+            artifact_id="band_xml__svg__p0",
+            title="Song",
+            options={"parts": [0]},
+        )
+        assert part["ok"] is True, part
+        assert json.loads(part["artifact"]["metadata_json"])["parts"] == [
+            {"index": 0, "name": "Lead"}
+        ]
+        assert not list((tmp_path / "notation").glob("*__parts_src.musicxml"))
+    elif musescore_binary() is None:
+        assert result["ok"] is False, result
+        error = result["error"]
+        assert "OSMD" in error and "node" in error and "MuseScore" in error, error
+
+    if musescore_binary() is None:
+        forced = convert_score(
+            db,
+            entry_id="track",
+            source_path=sheet,
+            fmt="pdf",
+            output_path=tmp_path / "notation" / "band_forced.pdf",
+            options={"engine": "musescore"},
+        )
+        assert forced["ok"] is False, forced
+        assert "MuseScore was not found" in forced["error"], forced
+        assert "musescore.org" in forced["error"]
+
+
+def test_musescore_command_honours_env_then_settings(tmp_path: Path, monkeypatch):
+    """MUSESCORE_BIN wins; without it the path chosen in Settings
+    (notation.musescore_path) is found; a stale path is skipped."""
+    from backend.modules.settings import router as settings_router
+
+    fake = tmp_path / "MuseScore4.exe"
+    fake.write_bytes(b"")
+    monkeypatch.setenv("MUSESCORE_BIN", str(fake))
+    assert musescore_command() == [str(fake)]
+    assert musescore_binary() == str(fake)
+    assert capabilities()["musescore_path"] == str(fake)
+
+    monkeypatch.delenv("MUSESCORE_BIN", raising=False)
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"notation": {"musescore_path": str(fake)}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("theDAW_SETTINGS_PATH", str(settings_file))
+    monkeypatch.setattr(settings_router, "_store", None)
+    assert musescore_command() == [str(fake)]
+    # The settings store accepts the key (it is in DEFAULT_SETTINGS), so a
+    # PATCH from the UI lands rather than being dropped as unknown.
+    settings_router.get_store().patch({"notation": {"musescore_path": str(fake)}})
+    assert settings_router.get_store().get_section("notation")["musescore_path"] == str(
+        fake
+    )
+
+    fake.unlink()
+    assert musescore_binary() != str(fake)
+
+
+def test_export_route_part_scoped_names_the_artifact_and_file(
+    notation_client: TestClient, tmp_path: Path
+):
+    """POST /export with options.parts names the file after the part and the
+    artifact ``__<fmt>__p<i>``, beside the whole-sheet export; the pack takes
+    the same filter as ``?parts=``."""
+    from backend.modules.library import router as library_router_module
+    from tests.test_library_store import _seed_generate_entry
+
+    _seed_generate_entry(tmp_path, "job_px", 0)
+    entry_id = "job_px_00"
+    store = library_router_module.get_store()
+    assert store.get_entry(entry_id) is not None
+    entry_dir = tmp_path / "job_px" / "00"
+    sheet = entry_dir / "notation" / "band.musicxml"
+    _write_two_part_musicxml(sheet)
+    store.db.add_notation_artifact(
+        artifact_id="band_xml", entry_id=entry_id, kind="musicxml", path=str(sheet)
+    )
+
+    r = notation_client.post(
+        f"/api/notation/{entry_id}/export",
+        json={
+            "source_artifact_id": "band_xml",
+            "format": "abc",
+            "options": {"parts": [0]},
+        },
+    )
+    assert r.status_code == 200, r.text
+    artifact = r.json()["artifact"]
+    assert artifact["id"].endswith("__abc__p0"), artifact["id"]
+    part_path = Path(artifact["path"])
+    assert part_path.name.endswith("__Lead.abc"), part_path.name
+    assert json.loads(artifact["metadata_json"])["parts"] == [
+        {"index": 0, "name": "Lead"}
+    ]
+
+    # The whole-sheet export keeps its own id and file; the per-part one stays.
+    r = notation_client.post(
+        f"/api/notation/{entry_id}/export",
+        json={"source_artifact_id": "band_xml", "format": "abc"},
+    )
+    assert r.status_code == 200, r.text
+    whole = r.json()["artifact"]
+    assert whole["id"] == "band_xml__abc"
+    assert Path(whole["path"]).name.endswith("band.abc")
+    assert part_path.is_file()
+    assert not list((entry_dir / "notation").glob("*__parts_src.musicxml"))
+
+    # The pack ships the filtered sheet under the part's name.
+    r = notation_client.get("/api/notation/pack/band_xml", params={"parts": "1"})
+    assert r.status_code == 200, r.text
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+        xml_name = next(n for n in names if n.endswith(".musicxml"))
+        xml = zf.read(xml_name).decode("utf-8")
+    assert xml_name.endswith("__Bass.musicxml"), names
+    assert xml.count("<score-part ") == 1 and "<part-name>Bass</part-name>" in xml
+    assert "__Bass_score.zip" in r.headers["content-disposition"]
+    assert not list((entry_dir / "notation").glob("*__parts_src.musicxml"))
+
+    r = notation_client.get("/api/notation/pack/band_xml", params={"parts": "x"})
+    assert r.status_code == 422
+
+
+def test_pack_route_packs_a_midi_source_too(
+    notation_client: TestClient, tmp_path: Path
+):
+    """A MIDI artifact packs as MIDI + PDF (the PDF engraved from a staged
+    sheet); without any engraver the zip still carries the MIDI."""
+    from backend.modules.library import router as library_router_module
+    from tests.test_library_store import _seed_generate_entry
+
+    _seed_generate_entry(tmp_path, "job_pm", 0)
+    entry_id = "job_pm_00"
+    store = library_router_module.get_store()
+    entry_dir = tmp_path / "job_pm" / "00"
+    midi = entry_dir / "midi" / "scale.mid"
+    _write_scale_midi(midi)
+    store.db.add_notation_artifact(
+        artifact_id="scale_mid", entry_id=entry_id, kind="midi", path=str(midi)
+    )
+    r = notation_client.get("/api/notation/pack/scale_mid")
+    assert r.status_code == 200, r.text
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+    assert any(n.endswith(".mid") for n in names), names
+    if pdf_render.available()["ok"] or musescore_binary() is not None:
+        assert any(n.endswith(".pdf") for n in names), names
+    assert not list((entry_dir / "notation").glob("*__osmd_src.musicxml"))

@@ -598,7 +598,7 @@ export const TOUR_STEPS: ChapteredStep[] = [
         same audio clock.
       </>
     ),
-    tip: <>EXPORT: pick a part, then a format — MusicXML, PDF, ABC, SVG (needs MuseScore), note chart or Beat Saber.</>,
+    tip: <>EXPORT: any part, any format — MusicXML, PDF, ABC, SVG, note chart or Beat Saber, for the whole sheet or one part.</>,
     targetSelector: '[data-tour="bottom-tab-score"]',
     prepare: openDock('score'),
   },

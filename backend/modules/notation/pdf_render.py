@@ -137,36 +137,21 @@ def available() -> dict[str, Any]:
     }
 
 
-def render_musicxml_pdf(
+def _spawn_renderer(
     source: Path,
     output: Path,
-    artist: str = "",
     *,
+    artist: str = "",
     page_width: Optional[int] = None,
     zoom: Optional[float] = None,
     check_fit: bool = False,
+    svg: bool = False,
 ) -> dict[str, Any]:
-    """Engrave ``source`` (MusicXML) into ``output`` (PDF). Never raises.
-
-    ``artist`` becomes the subtitle under the title, as in the SCORE tab. Left
-    empty, the renderer falls back to the score's own composer credit.
-
-    ``page_width`` is the container width in CSS px the renderer sizes one page
-    from (the tab's initial 520 when omitted). ``zoom`` pins the zoom the way a
-    user's manual zoom does; left ``None`` the renderer starts at the tab's
-    default and auto-fits (lowers the zoom when a music system is taller than
-    the printable page, exactly as the SCORE tab does), so the bundle PDF
-    paginates like the sheet on screen. ``check_fit`` asks the renderer to
-    report that measurement.
-
-    Returns ``{"ok": True, "pages": int, "bytes": int, "zoom": float, "error":
-    None}`` on success, plus ``"fit": {"tallestBottom", "usable", "printable",
-    "pageHeight", "bottomMargin", "systems", "passes", "startZoom", "overflows"}``
-    (OSMD page units; ``usable`` is the fit target the renderer keeps every system
-    above, ``printable`` is OSMD's PageHeight - PageBottomMargin) when
-    ``check_fit`` is set, or ``{"ok": False, "pages": 0, "bytes": 0, "error": "..."}`` with a
-    message the caller can surface as-is. Tablature (alphaTex) renders through a
-    different script that has no zoom/fit notion; those keys are absent then.
+    """Run the score renderer for ``source`` -> ``output`` and return its JSON
+    summary as ``{"ok": True, "summary": {...}, "stderr": "..."}``, or
+    ``{"ok": False, "error": "..."}``. Shared by the PDF and SVG entry points:
+    same script, same cwd, same timeout, same one-line-JSON contract. Never
+    raises. The caller verifies the file it asked for.
     """
     # Absolute: the child runs with cwd set to the frontend, so a relative path
     # from the caller would resolve against the wrong directory.
@@ -174,7 +159,7 @@ def render_musicxml_pdf(
     output = Path(output).resolve()
 
     def failure(error: str) -> dict[str, Any]:
-        return {"ok": False, "pages": 0, "bytes": 0, "error": error}
+        return {"ok": False, "error": error}
 
     if not source.is_file():
         return failure(f"source not found: {source}")
@@ -204,6 +189,8 @@ def render_musicxml_pdf(
     # Tablature is alphaTex, which OSMD cannot read; alphaTab renders it instead.
     # Both scripts share the same argv shape and the same one-line JSON result.
     is_tab = source.suffix.lower() == ".alphatex"
+    if is_tab and svg:
+        return failure("tablature (.alphatex) renders to PDF only, not SVG")
     script = _TAB_SCRIPT_RELPATH if is_tab else _SCRIPT_RELPATH
     cmd = [node, str(script.as_posix()), str(source), str(output)]
     if artist.strip() and not is_tab:
@@ -215,6 +202,8 @@ def render_musicxml_pdf(
             cmd += ["--zoom", repr(float(zoom))]
         if check_fit:
             cmd.append("--check-fit")
+        if svg:
+            cmd.append("--svg")
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         proc = subprocess.run(
@@ -252,21 +241,15 @@ def render_musicxml_pdf(
         summary = json.loads(line)
     except ValueError:
         return failure(stderr or "the score renderer produced no result")
-    if not summary.get("ok"):
+    if not isinstance(summary, dict) or not summary.get("ok"):
         return failure(stderr or "the score renderer reported failure")
-
-    # A zero-exit run that left no PDF header means the summary lied; callers get
-    # a file path back, so it has to be a real PDF.
-    try:
-        with open(output, "rb") as fh:
-            header = fh.read(5)
-    except OSError as e:
-        return failure(f"the score renderer wrote no readable PDF: {e}")
-    if header != b"%PDF-":
-        return failure(f"{output.name} is not a PDF")
-
     if stderr:
         log.debug("notation.pdf_render: %s", stderr)
+    return {"ok": True, "summary": summary, "stderr": stderr}
+
+
+def _shape_result(summary: dict[str, Any]) -> dict[str, Any]:
+    """The public result shape (pages, bytes, zoom, fit) from a summary."""
     result: dict[str, Any] = {
         "ok": True,
         "pages": int(summary.get("pages") or 0),
@@ -288,4 +271,111 @@ def render_musicxml_pdf(
             "startZoom": float(fit.get("startZoom") or 0.0),
             "overflows": bool(fit.get("overflows")),
         }
+    return result
+
+
+def _failed(error: str) -> dict[str, Any]:
+    return {"ok": False, "pages": 0, "bytes": 0, "error": error}
+
+
+def render_musicxml_pdf(
+    source: Path,
+    output: Path,
+    artist: str = "",
+    *,
+    page_width: Optional[int] = None,
+    zoom: Optional[float] = None,
+    check_fit: bool = False,
+) -> dict[str, Any]:
+    """Engrave ``source`` (MusicXML) into ``output`` (PDF). Never raises.
+
+    ``artist`` becomes the subtitle under the title, as in the SCORE tab. Left
+    empty, the renderer falls back to the score's own composer credit.
+
+    ``page_width`` is the container width in CSS px the renderer sizes one page
+    from (the tab's initial 520 when omitted). ``zoom`` pins the zoom the way a
+    user's manual zoom does; left ``None`` the renderer starts at the tab's
+    default and auto-fits (lowers the zoom when a music system is taller than
+    the printable page, exactly as the SCORE tab does), so the bundle PDF
+    paginates like the sheet on screen. ``check_fit`` asks the renderer to
+    report that measurement.
+
+    Returns ``{"ok": True, "pages": int, "bytes": int, "zoom": float, "error":
+    None}`` on success, plus ``"fit": {"tallestBottom", "usable", "printable",
+    "pageHeight", "bottomMargin", "systems", "passes", "startZoom", "overflows"}``
+    (OSMD page units; ``usable`` is the fit target the renderer keeps every system
+    above, ``printable`` is OSMD's PageHeight - PageBottomMargin) when
+    ``check_fit`` is set, or ``{"ok": False, "pages": 0, "bytes": 0, "error": "..."}`` with a
+    message the caller can surface as-is. Tablature (alphaTex) renders through a
+    different script that has no zoom/fit notion; those keys are absent then.
+    """
+    output = Path(output).resolve()
+    run = _spawn_renderer(
+        source,
+        output,
+        artist=artist,
+        page_width=page_width,
+        zoom=zoom,
+        check_fit=check_fit,
+    )
+    if not run["ok"]:
+        return _failed(run["error"])
+
+    # A zero-exit run that left no PDF header means the summary lied; callers get
+    # a file path back, so it has to be a real PDF.
+    try:
+        with open(output, "rb") as fh:
+            header = fh.read(5)
+    except OSError as e:
+        return _failed(f"the score renderer wrote no readable PDF: {e}")
+    if header != b"%PDF-":
+        return _failed(f"{output.name} is not a PDF")
+    return _shape_result(run["summary"])
+
+
+def render_musicxml_svg(
+    source: Path,
+    output: Path,
+    artist: str = "",
+    *,
+    page_width: Optional[int] = None,
+    zoom: Optional[float] = None,
+) -> dict[str, Any]:
+    """Engrave ``source`` (MusicXML) into ``output`` (SVG, page 1). Never raises.
+
+    The same OSMD engraving as :func:`render_musicxml_pdf` (same rules, same
+    zoom and measure-and-fit, so the pages match the PDF and the SCORE tab),
+    written as the page SVGs themselves instead of drawn into a PDF: page 1 at
+    ``output``, page N (N >= 2) beside it as ``<stem>-N.svg``, which is also how
+    MuseScore paginates SVG. ``artist`` / ``page_width`` / ``zoom`` as for PDF.
+
+    Returns ``{"ok": True, "pages": int, "bytes": int (page 1), "zoom": float,
+    "files": [str, ...], "error": None}`` or ``{"ok": False, "pages": 0,
+    "bytes": 0, "error": "..."}``. Tablature (.alphatex) is PDF-only: it
+    renders through alphaTab, which has no SVG page output here.
+    """
+    output = Path(output).resolve()
+    if Path(source).suffix.lower() == ".alphatex":
+        return _failed(
+            "tablature (.alphatex) can be engraved to PDF but not to SVG; "
+            "export the PDF instead"
+        )
+    run = _spawn_renderer(
+        source, output, artist=artist, page_width=page_width, zoom=zoom, svg=True
+    )
+    if not run["ok"]:
+        return _failed(run["error"])
+
+    try:
+        with open(output, "rb") as fh:
+            header = fh.read(64).lstrip()
+    except OSError as e:
+        return _failed(f"the score renderer wrote no readable SVG: {e}")
+    if not (header.startswith(b"<svg") or header.startswith(b"<?xml")):
+        return _failed(f"{output.name} is not an SVG")
+    result = _shape_result(run["summary"])
+    files = run["summary"].get("files")
+    result["files"] = (
+        [str(f) for f in files] if isinstance(files, list) and files else [str(output)]
+    )
     return result
