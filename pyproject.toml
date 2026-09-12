@@ -198,6 +198,17 @@ override-dependencies = [
 # Needed because the PyTorch CUDA index pins some packages (e.g. certifi) at
 # older versions than PyPI. Without this flag uv refuses to install them.
 index-strategy = "unsafe-best-match"
+# The lock must carry wheels for every platform theDAW ships to. Without this
+# list `uv lock` records whatever the index listed at that minute: on
+# 2026-09-10 onnxruntime-gpu 1.30.0 was locked twenty minutes before its Linux
+# x86_64 wheels reached PyPI, the lock kept only the aarch64 and Windows
+# wheels, and the first Linux CI run after the merge failed to install. With
+# the list, uv refuses to lock a version that lacks a wheel for either target.
+# scripts/check_lock.py (pre-commit hook + CI) proves the lock installs on both.
+required-environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
 
 [build-system]
 requires = ["hatchling"]

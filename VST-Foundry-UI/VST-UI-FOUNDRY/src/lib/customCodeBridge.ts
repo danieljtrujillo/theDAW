@@ -73,6 +73,46 @@ export const BRIDGE_BOOTSTRAP_SOURCE = `(function () {
   var ERROR = "foundry:error";
   var READY = "foundry:ready";
 
+  // A sandboxed srcdoc has an opaque origin, so touching window.localStorage
+  // throws a SecurityError. Element code written for a normal page reaches for
+  // it at boot (remembered settings, presets), and every such read used to land
+  // in the host's diagnostics as an error. Give it an in-memory Storage for the
+  // life of the frame instead. Never allow-same-origin: the sandbox stays.
+  function memoryStorage() {
+    var data = {};
+    var s = {
+      getItem: function (k) {
+        k = String(k);
+        return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
+      },
+      setItem: function (k, v) { data[String(k)] = String(v); },
+      removeItem: function (k) { delete data[String(k)]; },
+      clear: function () { data = {}; },
+      key: function (i) {
+        var ks = Object.keys(data);
+        return i >= 0 && i < ks.length ? ks[i] : null;
+      },
+    };
+    try {
+      Object.defineProperty(s, "length", {
+        get: function () { return Object.keys(data).length; },
+      });
+    } catch (e) {}
+    return s;
+  }
+  function shimStorage(name) {
+    var usable = false;
+    try { usable = !!window[name]; } catch (e) {}
+    if (usable) return;
+    try {
+      Object.defineProperty(window, name, {
+        value: memoryStorage(), configurable: true, writable: true,
+      });
+    } catch (e) {}
+  }
+  shimStorage("localStorage");
+  shimStorage("sessionStorage");
+
   if (!window.PARAMS || typeof window.PARAMS !== "object") window.PARAMS = {};
   var userRegistered = false;
 

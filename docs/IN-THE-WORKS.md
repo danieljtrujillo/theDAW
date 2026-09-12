@@ -231,6 +231,25 @@ driven in the live app yet; items stay here until that happens.
 
 ---
 
+## P1 — from the user, 2026-09-11 (marked done only when the user says so)
+
+- [ ] **LOG strip: the gradient runs far past the readouts.** Only the things
+  that float over the strip (the system stats, the library-rail handle) get the
+  dark gradient, and only behind themselves. The log readouts extend to the edge
+  of the panel / window unless a floating element sits over them. The LOG body
+  is exactly as wide as the tab that opens and closes it. — S —
+  `frontend/src/components/layout/Shell.tsx:825-860` (LOG strip section,
+  `logWidth`), `frontend/src/components/layout/ProcessingLog.tsx:296` (the
+  `linear-gradient(to left, rgba(0,0,0,0.85) 60%, transparent)` backdrop),
+  `frontend/src/state/bottomPanelStore.ts` (`logWidth`)
+- [ ] **CHORDS: bring the chord visual to the NOW line.** The section reads as
+  crowded at the top and the current chord sits at the far left. The sounding
+  chord belongs on the NOW line with the next chord to its right and the
+  previous to its left, and the section gets a nicer layout. — S —
+  `frontend/src/components/layout/score/chords/ChordPlayAlong.tsx`,
+  `frontend/src/components/layout/score/chords/ChordStripCanvas.tsx`,
+  `frontend/src/components/layout/score/chords/ChordDiagram.tsx`
+
 ## P0 — breaks the app's primary action
 
 - [ ] **ABORT is client-side only.** No cancel route exists; the job finishes on the GPU, writes artifacts to the library, and holds `_generation_job_lock` so the next CREATE queues behind it. — M — `backend/server.py:105,1351`, `frontend/src/state/generateStore.ts:759`

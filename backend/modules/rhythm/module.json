@@ -1,0 +1,10 @@
+{
+  "name": "rhythm",
+  "label": "Rhythm",
+  "enabled": true,
+  "icon": "Waves",
+  "sidebar": false,
+  "api_prefix": "/api/rhythm",
+  "backend": true,
+  "description": "Deep rhythm analysis for music whose meter does not sit still: a tempo curve with change points, beats that follow it, a meter map (time signature per segment with additive groupings like 7/8 as 2+2+3), downbeats and bars, per-bar syncopation (Longuet-Higgins & Lee, WNBD, off-beat ratio, swing), polymeter per layer and cross-rhythms from the tempogram. numpy + librosa, no model."
+}

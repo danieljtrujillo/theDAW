@@ -44,6 +44,10 @@ DOC_PATHS = [
     # opt-in interpretive LLM pass. Its companion is the LYRIC tab's notebook.
     PROJECT_ROOT / "docs" / "guides" / "lyric-analysis.md",
     PROJECT_ROOT / "docs" / "guides" / "lyric-notebook.md",
+    # The rhythm module (backend/modules/rhythm): the meter map and how to read
+    # its confidence and `?` marks, syncopation, swing, polymeter, cross-rhythms
+    # — and the six things that silently break any beat-synchronous analysis.
+    PROJECT_ROOT / "docs" / "guides" / "rhythm-analysis.md",
     # Onboarding: the pinned labels on the library rail, LOG and PANELS, why
     # they retire themselves, and the menu entry that brings them back. Indexed
     # because "where is the library?" is exactly what gets asked here.

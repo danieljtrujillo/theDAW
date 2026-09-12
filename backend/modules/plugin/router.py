@@ -189,7 +189,7 @@ def open_plugin(req: OpenRequest) -> dict:
         GAN_DIR.mkdir(parents=True, exist_ok=True)
         dest = _gan_path(pid)
         if src.resolve() != dest.resolve():
-            shutil.copyfile(src, dest)
+            GanFile.install(str(src), str(dest))
         GanFile.extract(str(dest), str(_runtime_dir(pid)))
         return {"manifest": manifest, "entry_url": _entry_url(pid, manifest)}
 

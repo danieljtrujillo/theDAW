@@ -319,7 +319,7 @@ The \`elements/\` folder contains the JSON representation of each individual UI 
   const handleImportGanFile = async (file: File) => {
     try {
       const buf = await file.arrayBuffer();
-      const { project, sourceKind } = await parseGan(buf);
+      const { project, sourceKind, omittedImages } = await parseGan(buf);
       clearElementSignals();
       clearHistory(project.elements || []);
       setCanvasState(project.canvasState);
@@ -331,7 +331,13 @@ The \`elements/\` folder contains the JSON representation of each individual UI 
       if (sourceKind === "reconstructed") {
         console.info(
           "[gan] No embedded Foundry source in this .gan; reconstructed an " +
-            "editable layout from the manifest.",
+            "editable layout from the runtime's index.html.",
+        );
+      }
+      if (omittedImages.length > 0) {
+        console.info(
+          `[gan] ${omittedImages.length} image element(s) carried no image data ` +
+            `and were left out (the artwork already shows them): ${omittedImages.join(", ")}`,
         );
       }
     } catch (e) {
