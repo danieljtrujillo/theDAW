@@ -10,6 +10,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Git hooks: the repo ships them in .githooks (ruff on every commit, the
+# cross-platform lock check when pyproject/uv.lock are staged). One config
+# line per clone, safe to repeat; ignored when git is absent.
+git config core.hooksPath .githooks 2>/dev/null || true
+
 say()  { printf '\033[1;35m[theDAW]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[theDAW]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[theDAW]\033[0m %s\n' "$*" >&2; exit 1; }

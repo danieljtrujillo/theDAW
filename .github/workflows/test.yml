@@ -36,6 +36,25 @@ env:
   UV_VERSION: "0.9.5"
 
 jobs:
+  # uv.lock must install on every platform theDAW ships to, not only on this
+  # runner. scripts/check_lock.py runs `uv lock --check` and a cross-platform
+  # dry-run sync per target (Linux x86_64 and Windows) with the same flags the
+  # pytest job installs with, so a lock that only carries one platform's
+  # wheels fails here in seconds with the package named, before pytest
+  # spends minutes downloading. The same script is the pre-commit hook.
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - name: Install uv
+        run: pipx install "uv==${{ env.UV_VERSION }}"
+      - name: uv.lock is current and installs on Linux x86_64 and Windows
+        run: python scripts/check_lock.py
+
   pytest:
     runs-on: ubuntu-latest
     # The cold dependency install dominates: uv.lock pins torch 2.14.0+cu130

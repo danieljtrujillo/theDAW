@@ -109,17 +109,28 @@ const WRAPPER_TAG = /<div\b[^>]*\sclass="gan-el(?:\s[^"]*)?"[^>]*>/g;
 const FRAME_TAG = /<iframe\b[^>]*\sclass="[^"]*\bgan-frame\b[^"]*"[^>]*>/;
 const KNOB_TAG = /<div\b[^>]*\sclass="gan-knob"[^>]*>/;
 
-const attr = (tag: string, name: string): string | null =>
-  new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(tag)?.[1] ?? null;
+// One literal pattern for every `name="value"` pair in a tag; callers pick the
+// attribute by name from the matches, so no RegExp is ever built from a string.
+const ATTR_PAIR = /(?:^|\s)([A-Za-z_:][-\w:.]*)="([^"]*)"/g;
+
+const attr = (tag: string, name: string): string | null => {
+  for (const m of tag.matchAll(ATTR_PAIR)) if (m[1] === name) return m[2];
+  return null;
+};
 
 // One CSS length out of a style declaration, in canvas pixels. The runtime
 // writes percentages so the layout survives resizing; px is accepted too.
+// Every `prop: <number>(%|px)` declaration in a style string, matched by name.
+const LENGTH_DECL = /(?:^|;)\s*([-\w]+)\s*:\s*(-?[\d.]+)(%|px)/g;
+
 function lengthPx(decl: string, prop: string, span: number): number | null {
-  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*(-?[\\d.]+)(%|px)`).exec(decl);
-  if (!m) return null;
-  const v = parseFloat(m[1]);
-  if (!Number.isFinite(v)) return null;
-  return m[2] === "%" ? (v / 100) * span : v;
+  for (const m of decl.matchAll(LENGTH_DECL)) {
+    if (m[1] !== prop) continue;
+    const v = parseFloat(m[2]);
+    if (!Number.isFinite(v)) return null;
+    return m[3] === "%" ? (v / 100) * span : v;
+  }
+  return null;
 }
 
 function boxFromStyle(decl: string, canvasW: number, canvasH: number): FrameRect | null {
@@ -145,8 +156,13 @@ function rotationFromStyle(decl: string): number | undefined {
   return Math.abs(deg) < 0.005 ? undefined : Math.round(deg * 100) / 100;
 }
 
-const cssVar = (decl: string, name: string): string | undefined =>
-  new RegExp(`${name}\\s*:\\s*([^;"]+)`).exec(decl)?.[1]?.trim() || undefined;
+// Every `--name: value` custom property in a style string, matched by name.
+const CSS_VAR_DECL = /(?:^|;)\s*(--[-\w]+)\s*:\s*([^;"]+)/g;
+
+const cssVar = (decl: string, name: string): string | undefined => {
+  for (const m of decl.matchAll(CSS_VAR_DECL)) if (m[1] === name) return m[2].trim() || undefined;
+  return undefined;
+};
 
 /** Element id -> placement for every element the runtime index.html draws, in
  *  stage order (which is z-order). Placeholders with no element behind them and

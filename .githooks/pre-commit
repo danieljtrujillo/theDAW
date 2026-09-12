@@ -1,0 +1,31 @@
+#!/bin/sh
+# theDAW pre-commit hook. Installed per clone by theDAW.bat / theDAW.sh with
+#   git config core.hooksPath .githooks
+# and runnable by hand as `.githooks/pre-commit`.
+#
+# 1. ruff check + ruff format --check on the whole repo, with the ONE ruff the
+#    project venv carries (CLAUDE.md hard rule 2: never a second ruff).
+# 2. When pyproject.toml or uv.lock is staged, scripts/check_lock.py proves the
+#    lock is current and installs on Linux x86_64 and Windows (hard rule 4), so
+#    a platform-incomplete lock never reaches a pull request.
+#
+# Worktrees share the main checkout's venv: the venv lives beside the common
+# git dir, never inside a scratch worktree.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+if [ -x "$MAIN/.venv/Scripts/ruff.exe" ]; then
+  RUFF="$MAIN/.venv/Scripts/ruff.exe"; PY="$MAIN/.venv/Scripts/python.exe"
+elif [ -x "$MAIN/.venv/bin/ruff" ]; then
+  RUFF="$MAIN/.venv/bin/ruff"; PY="$MAIN/.venv/bin/python"
+else
+  echo "pre-commit: no project venv at $MAIN/.venv (run uv sync --group dev)" >&2
+  exit 1
+fi
+
+"$RUFF" check .
+"$RUFF" format --check .
+
+if git diff --cached --name-only | grep -qE '^(pyproject\.toml|uv\.lock)$'; then
+  "$PY" scripts/check_lock.py
+fi
