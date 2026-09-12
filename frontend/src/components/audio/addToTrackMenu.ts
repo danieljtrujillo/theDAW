@@ -71,6 +71,11 @@ export interface AddToTrackEntry {
   enabled: boolean;
   /** Hover text — the REASON when the entry is disabled. */
   title: string;
+  /** The same reason in two or three words, for a disabled row's always-visible
+   *  badge. Null when the entry is enabled. A disabled menu item is
+   *  `pointer-events: none`, so `title` alone never reaches the user on the one
+   *  row where the explanation matters — this is what actually gets shown. */
+  shortReason: string | null;
   /** True when choosing this lands on a NEW track rather than the clicked one. */
   createsTrack: boolean;
 }
@@ -96,6 +101,13 @@ const NO_LIBRARY_MIDI =
 const NO_CLIPBOARD = 'Copy or cut a clip first (Ctrl+C / Ctrl+X)';
 const NO_TRACKS = 'There is no track to paste onto yet';
 
+/** The badge forms of the four reasons above. Short enough to sit beside the
+ *  label without squeezing it out of a menu that caps at 22rem. */
+const SHORT_NO_LIBRARY_AUDIO = 'library empty';
+const SHORT_NO_LIBRARY_MIDI = 'no MIDI yet';
+const SHORT_NO_CLIPBOARD = 'nothing copied';
+const SHORT_NO_TRACKS = 'no tracks';
+
 export function buildAddToTrackMenu(
   target: AddToTrackTarget,
   caps: AddToTrackCapabilities,
@@ -117,6 +129,7 @@ export function buildAddToTrackMenu(
       title: hasLibraryAudio
         ? `Browse library takes and stems, and place one ${where}`
         : NO_LIBRARY_AUDIO,
+      shortReason: hasLibraryAudio ? null : SHORT_NO_LIBRARY_AUDIO,
       createsTrack,
     },
     {
@@ -128,6 +141,7 @@ export function buildAddToTrackMenu(
       // Every system pick is imported to the library first, exactly like a
       // desktop drop, so the clip is indistinguishable from a dropped one.
       title: `Pick audio files from this computer — they import to the library, then land ${where}`,
+      shortReason: null,
       createsTrack,
     },
     {
@@ -139,6 +153,7 @@ export function buildAddToTrackMenu(
       title: hasLibraryMidi
         ? `Browse library MIDI and place it as an editable clip ${where}`
         : NO_LIBRARY_MIDI,
+      shortReason: hasLibraryMidi ? null : SHORT_NO_LIBRARY_MIDI,
       createsTrack,
     },
     {
@@ -148,6 +163,7 @@ export function buildAddToTrackMenu(
       source: 'system',
       enabled: true,
       title: `Pick a .mid file from this computer and place it as an editable clip ${where}`,
+      shortReason: null,
       createsTrack,
     },
     {
@@ -169,6 +185,11 @@ export function buildAddToTrackMenu(
         : caps.clipboardClipCount === 0
           ? NO_CLIPBOARD
           : NO_TRACKS,
+      shortReason: canPaste
+        ? null
+        : caps.clipboardClipCount === 0
+          ? SHORT_NO_CLIPBOARD
+          : SHORT_NO_TRACKS,
       createsTrack: false,
     },
     {
@@ -178,6 +199,7 @@ export function buildAddToTrackMenu(
       source: null,
       enabled: true,
       title: 'Add an empty track at the bottom of the timeline',
+      shortReason: null,
       createsTrack: true,
     },
   ];

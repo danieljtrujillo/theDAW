@@ -369,21 +369,27 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
      why it never landed at the cursor.
      The clamp re-runs on every size change, not just on open: the old one had
      deps `[open, anchor]` and measured an EMPTY card before the fetch resolved,
-     so a panel that grew when its rows arrived hung off the bottom forever. */
+     so a panel that grew when its rows arrived hung off the bottom forever.
+     It depends on the anchor's two NUMBERS, not the object: every caller builds
+     `{ x, y }` inline, so an object dep re-runs this effect on each parent
+     render — disconnecting and re-observing the ResizeObserver and forcing a
+     synchronous layout every time, for coordinates that did not move. */
+  const anchorX = anchor ? anchor.x : null;
+  const anchorY = anchor ? anchor.y : null;
   const clamp = useCallback(() => {
     const card = cardRef.current;
-    if (!card || !anchor) return;
+    if (!card || anchorX === null || anchorY === null) return;
     const rect = card.getBoundingClientRect();
     const pad = 8;
     setPos((prev) => {
-      const x = Math.max(pad, Math.min(anchor.x, window.innerWidth - rect.width - pad));
-      const y = Math.max(pad, Math.min(anchor.y, window.innerHeight - rect.height - pad));
+      const x = Math.max(pad, Math.min(anchorX, window.innerWidth - rect.width - pad));
+      const y = Math.max(pad, Math.min(anchorY, window.innerHeight - rect.height - pad));
       return prev && prev.x === x && prev.y === y ? prev : { x, y };
     });
-  }, [anchor]);
+  }, [anchorX, anchorY]);
 
   useLayoutEffect(() => {
-    if (!open || !anchor) {
+    if (!open || anchorX === null || anchorY === null) {
       setPos(null);
       return;
     }
@@ -397,7 +403,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
       ro.disconnect();
       window.removeEventListener('resize', clamp);
     };
-  }, [open, anchor, clamp]);
+  }, [open, anchorX, anchorY, clamp]);
 
   /* --- Dismissal ---------------------------------------------------------
      Anchored: no overlay, so the app underneath stays clickable (the old
@@ -405,13 +411,26 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
      it was open). Outside mousedown / right-click / Escape close it, and the
      listeners attach one macrotask late because the click that opened the
      picker is still mid-dispatch — attaching synchronously closes it instantly.
-     Centered: the scrim is a real element, so only Escape is needed here. */
+     Centered: the scrim is a real element, so only Escape is needed here.
+
+     `onClose` is read through a ref rather than being a dep. Callers pass an
+     inline arrow, so a dep would rebuild this effect on every parent render —
+     clearing the pending `setTimeout` and scheduling a fresh one each time. A
+     parent that re-renders faster than a macrotask (the editor does while the
+     transport moves the playhead in automation-follow mode) would then never
+     get the listeners attached at all, and the popover would stop closing on an
+     outside click. */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -419,7 +438,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
 
     const onDown = (e: MouseEvent) => {
       if (cardRef.current?.contains(e.target as Node)) return;
-      onClose();
+      onCloseRef.current();
     };
     let attached = false;
     const attach = () => {
@@ -436,7 +455,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
         window.removeEventListener('contextmenu', onDown);
       }
     };
-  }, [open, anchored, onClose]);
+  }, [open, anchored]);
 
   // Focus the search box on open so typing filters immediately.
   useEffect(() => {

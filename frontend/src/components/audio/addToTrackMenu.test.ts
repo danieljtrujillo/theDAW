@@ -124,6 +124,43 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
   assert.equal(byId(menu, 'new-track').enabled, true);
 }
 
+// (d2) Every disabled row carries a SHORT reason as well as the long one, and
+// every enabled row carries none. The long `title` becomes a native tooltip,
+// which a disabled menu item (pointer-events: none) can never show — so the
+// short form is the only explanation that reaches a user looking at a greyed
+// out "Audio from Library…" on a fresh install.
+{
+  const menu = buildAddToTrackMenu(belowAllTracks, emptyCaps);
+  for (const entry of menu) {
+    if (entry.enabled) {
+      assert.equal(entry.shortReason, null, `${entry.id} is enabled, so it has no reason`);
+    } else {
+      assert.ok(entry.shortReason, `${entry.id} is disabled, so it says why`);
+      assert.ok(
+        entry.shortReason.length <= 16,
+        `${entry.id} reason "${entry.shortReason}" must be badge-sized`,
+      );
+    }
+  }
+  assert.equal(byId(menu, 'audio-library').shortReason, 'library empty');
+  assert.equal(byId(menu, 'midi-library').shortReason, 'no MIDI yet');
+  assert.equal(byId(menu, 'paste').shortReason, 'nothing copied');
+
+  // The two paste reasons are distinct: nothing copied is not the same problem
+  // as nowhere to put it.
+  const noTracks = buildAddToTrackMenu(belowAllTracks, { ...fullCaps, trackCount: 0 });
+  assert.equal(byId(noTracks, 'paste').shortReason, 'no tracks');
+
+  // An unread index is not a disabled row, so it gets no reason either.
+  const cold = buildAddToTrackMenu(belowAllTracks, {
+    ...emptyCaps,
+    libraryAudioCount: null,
+    libraryMidiCount: null,
+  });
+  assert.equal(byId(cold, 'audio-library').shortReason, null);
+  assert.equal(byId(cold, 'midi-library').shortReason, null);
+}
+
 // (e) An UNREAD index (null) is not an empty one: the row stays offered,
 // because disabling it on "we haven't fetched yet" would hide a working library
 // behind a race with the index request. The library store loads on an idle

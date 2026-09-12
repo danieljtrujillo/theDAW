@@ -3580,7 +3580,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         type: 'item',
         icon: ADD_ENTRY_ICON[entry.id],
         label: entry.label,
-        hint: entry.createsTrack && isAddSourceEntry(entry) ? 'new track' : undefined,
+        // A disabled row explains itself in the badge: a disabled menu item is
+        // pointer-events:none, so the `title` tooltip below never fires on the
+        // one row whose reason the user actually needs.
+        hint: entry.shortReason
+          ? entry.shortReason
+          : entry.createsTrack && isAddSourceEntry(entry)
+            ? 'new track'
+            : undefined,
+        title: entry.title,
         disabled: !entry.enabled,
         onSelect: () => runAddEntry(entry, target, at),
       }));
