@@ -235,7 +235,9 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
 @router.post("/{entry_id}/export")
 def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     """Export an existing notation artifact (MIDI or MusicXML) to another
-    format and register the result. Targets: musicxml, abc, pdf, svg."""
+    format and register the result. Targets: the keys of ``_EXT_FOR_FORMAT``
+    (musicxml, abc, pdf, svg, notechart, beatsaber); ``pdf`` is engraved by the
+    headless OSMD renderer and ``svg`` by MuseScore."""
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
@@ -628,8 +630,9 @@ def backfill() -> dict[str, Any]:
 @router.get("/pack/{artifact_id}")
 def download_score_pack(artifact_id: str) -> Response:
     """Download a score as a zip of the source plus a PDF. The PDF is engraved
-    by the MuseScore CLI when available; without it the zip still carries the
-    MusicXML so the download never fails."""
+    by the headless OSMD renderer (``convert_score`` "pdf") when that renderer
+    is available; without it the zip still carries the MusicXML so the download
+    never fails."""
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
@@ -644,7 +647,8 @@ def download_score_pack(artifact_id: str) -> Response:
     slug = _song_slug(_entry_title(store, entry_id)) or src.stem
     members: list[tuple[Path, str]] = [(src, f"{slug}{src.suffix}")]
 
-    # Engrave a PDF from a MusicXML sheet when MuseScore is installed.
+    # Engrave a PDF from a MusicXML sheet. convert_score reports ok=False when
+    # the OSMD renderer is missing, and the zip then stays MusicXML-only.
     if artifact.get("kind") == "musicxml":
         entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - module convention
         if entry_dir is not None:

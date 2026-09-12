@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileMusic, Gamepad2, Guitar, LayoutGrid, Loader2, Minus, Music2, Music4, Pause, Play, Plus, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileMusic, Guitar, LayoutGrid, Loader2, Minus, Music2, Music4, Pause, Play, Plus, RefreshCw } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
@@ -22,8 +22,6 @@ import {
   makeArrangement,
   makeChordTrack,
   makeTabs,
-  notationArtifactUrl,
-  notationPackUrl,
   type NotationArtifact,
   type NotationCapabilities,
 } from '../../lib/notationClient';
@@ -113,6 +111,7 @@ import {
   type PlayAlongMode,
 } from '../../state/playAlongStore';
 import { ModeSwitch } from './score/playAlong/ModeSwitch';
+import { ExportMenu } from './score/ExportMenu';
 import { PlayAlongTransportCompact } from './score/playAlong/PlayAlongTransport';
 import { applyInstrumentPreset, discoverParts, knownParts, useKnownParts } from './score/playAlong/partRegistry';
 
@@ -181,6 +180,13 @@ export const ScoreView: React.FC = () => {
   const [bsOpen, setBsOpen] = useState(false);
   const [bsParts, setBsParts] = useState<string[] | null>(null);
   const bsForRef = useRef<string | null>(null);
+  // Chart part indices a per-part BEAT SABER menu entry pre-selects in the
+  // popover; null = every pitched part.
+  const [bsInitialParts, setBsInitialParts] = useState<number[] | null>(null);
+  // True while the EXPORT menu is reading a sheet's part-list, and the sheet
+  // it is reading for: a stale finish must not end a newer read's spinner.
+  const [partsLoading, setPartsLoading] = useState(false);
+  const partsForRef = useRef<string | null>(null);
   const mode = usePlayAlongStore((s) => s.mode);
   const setMode = usePlayAlongStore((s) => s.setMode);
   const setSkin = usePlayAlongStore((s) => s.setSkin);
@@ -194,17 +200,8 @@ export const ScoreView: React.FC = () => {
   const midiArtifacts = artifacts.filter((artifact) => artifact.kind === 'midi');
   const tabTunings = caps?.tab_tunings ?? DEFAULT_TUNINGS;
   const arrangementStyles = caps?.arrangement_styles ?? DEFAULT_STYLES;
-  // Ask the backend what it can actually export rather than deciding here. The
-  // old form hardcoded `caps.musescore ? ['abc','pdf','svg'] : ['abc']`, which
-  // meant that on a machine without MuseScore the only button offered was ABC,
-  // hiding the headless-OSMD PDF and the Unity note chart even though both work.
-  // capabilities().formats already accounts for the OSMD renderer and MuseScore
-  // separately, so intersecting it with what the export ROUTE accepts is the
-  // honest answer. musicxml and midi are inputs here, never export targets.
-  const EXPORTABLE_FROM_SHEET = ['pdf', 'abc', 'svg', 'notechart', 'beatsaber'];
-  const exportFormats = selectedArtifact?.kind === 'musicxml'
-    ? EXPORTABLE_FROM_SHEET.filter((fmt) => (caps?.formats ?? []).includes(fmt))
-    : [];
+  // What the EXPORT menu offers, and why an entry is disabled, is decided in
+  // score/exportMenuModel.ts from caps.formats; nothing about exports is guessed here.
   // Which play-along views the selected artifact supports. A Beat Saber pack
   // has its own card; anything that is not a sheet, tab, chart or chord track
   // (a MIDI, a vocal transcript) only offers chords, and only with a track to
@@ -303,6 +300,9 @@ export const ScoreView: React.FC = () => {
     }
   };
 
+  // Always the whole sheet: no format but beatsaber honours options.parts, and
+  // beatsaber goes through its popover. The EXPORT menu disables the per-part
+  // entries of every other format for that reason (score/exportMenuModel.ts).
   const exportSelectedAs = async (format: string) => {
     if (!selectedEntryId || !selectedArtifact || selectedArtifact.kind !== 'musicxml') return;
     setExporting(format);
@@ -430,17 +430,25 @@ export const ScoreView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedArtifactId, instrument, applyPreset]);
 
-  // The export popover belongs to one sheet; selecting another closes it.
+  // The Beat Saber popover and the part read belong to one sheet; selecting
+  // another closes the popover, forgets its pre-selected part and drops the
+  // "Reading parts…" hint. (The EXPORT menu resets itself.)
   useEffect(() => {
     setBsOpen(false);
+    setBsInitialParts(null);
+    setPartsLoading(false);
+    partsForRef.current = null;
   }, [selectedArtifactId]);
 
-  const openBeatSaber = () => {
+  /** Open the Beat Saber popover; a part index (from a per-part EXPORT menu
+   *  entry) pre-selects that one part, null offers every pitched part. */
+  const openBeatSaber = (partIndex: number | null = null) => {
     if (!selectedArtifact || selectedArtifact.kind !== 'musicxml') return;
     const id = selectedArtifact.id;
     bsForRef.current = id;
     const known = knownParts(id);
     setBsParts(known ? known.map((p) => p.name) : null);
+    setBsInitialParts(partIndex === null ? null : [partIndex]);
     setBsOpen(true);
     if (!known) {
       discoverParts(id)
@@ -457,6 +465,25 @@ export const ScoreView: React.FC = () => {
     setBsOpen(false);
     await loadArtifacts();
     if (artifact?.id) setSelectedArtifactId(artifact.id);
+  };
+
+  // The EXPORT menu lists the sheet's parts, which only a loaded STRIP or
+  // highway registers; in PAGE mode nobody has, so read the part-list when
+  // the menu opens. discoverParts goes through the artifact text cache, so a
+  // sheet a view already fetched is not downloaded again; useKnownParts picks
+  // up the registration and the menu fills in.
+  const onExportMenuOpen = () => {
+    if (!selectedArtifact || selectedArtifact.kind !== 'musicxml' || selectedParts) return;
+    const id = selectedArtifact.id;
+    partsForRef.current = id;
+    setPartsLoading(true);
+    discoverParts(id)
+      .catch((e) => {
+        logError('score', `Could not read the parts of ${id}: ${e instanceof Error ? e.message : String(e)}`);
+      })
+      .finally(() => {
+        if (partsForRef.current === id) setPartsLoading(false);
+      });
   };
 
   // PAGE and STRIP are the expensive mounts (an engraving pass per open); once
@@ -744,66 +771,34 @@ export const ScoreView: React.FC = () => {
               <option key={inst} value={inst}>{INSTRUMENT_LABELS[inst]}</option>
             ))}
           </select>
-          {exportFormats.map((fmt) => (
-            fmt === 'beatsaber' ? (
-              <span key={fmt} className="relative">
-                <button
-                  className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
-                  onClick={() => (bsOpen ? setBsOpen(false) : openBeatSaber())}
-                  disabled={exporting !== null || !selectedEntryId}
-                  title="Export a Beat Saber level pack (Info.dat + one .dat per difficulty + song.ogg) from this score"
-                  aria-haspopup="dialog"
-                  aria-expanded={bsOpen}
-                  aria-controls="score-bs-popover"
-                >
-                  <Gamepad2 className="w-3 h-3 text-rose-300" />
-                  BEAT SABER
-                </button>
-                {bsOpen && selectedEntryId && selectedArtifact && (
-                  <React.Suspense fallback={null}>
-                    <BeatSaberExportPopover
-                      entryId={selectedEntryId}
-                      artifact={selectedArtifact}
-                      parts={bsParts}
-                      caps={caps}
-                      analysisBpm={analysisBpm}
-                      onDone={(artifact) => void onBeatSaberDone(artifact)}
-                      onClose={() => setBsOpen(false)}
-                    />
-                  </React.Suspense>
-                )}
-              </span>
-            ) : (
-              <button
-                key={fmt}
-                className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
-                onClick={() => void exportSelectedAs(fmt)}
-                disabled={exporting !== null}
-                title={`Export ${fmt.toUpperCase()} from this score`}
-              >
-                {exporting === fmt ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                {fmt.toUpperCase()}
-              </button>
-            )
-          ))}
-          {selectedArtifact && (
-            <a
-              className="btn-ghost text-[8px] py-1 flex items-center gap-1"
-              href={
-                selectedArtifact.kind === 'musicxml'
-                  ? notationPackUrl(selectedArtifact.id)
-                  : notationArtifactUrl(selectedArtifact.id)
-              }
-              download
-              title={
-                selectedArtifact.kind === 'musicxml'
-                  ? 'Download MusicXML + PDF (PDF needs MuseScore)'
-                  : 'Download this artifact'
-              }
-            >
-              <Download className="w-3 h-3" /> DOWNLOAD
-            </a>
-          )}
+          <ExportMenu
+            artifact={selectedArtifact}
+            caps={caps}
+            parts={selectedParts}
+            partsLoading={partsLoading}
+            exporting={exporting}
+            onOpen={onExportMenuOpen}
+            onExport={(fmt) => void exportSelectedAs(fmt)}
+            onOpenBeatSaber={openBeatSaber}
+            popoverOpen={bsOpen}
+          >
+            {bsOpen && selectedEntryId && selectedArtifact && (
+              <React.Suspense fallback={null}>
+                <BeatSaberExportPopover
+                  entryId={selectedEntryId}
+                  artifact={selectedArtifact}
+                  parts={bsParts}
+                  initialParts={bsInitialParts}
+                  caps={caps}
+                  analysisBpm={analysisBpm}
+                  onDone={(artifact) => void onBeatSaberDone(artifact)}
+                  // Both paths unmount the popover; ExportMenu then returns
+                  // focus to its EXPORT button.
+                  onClose={() => setBsOpen(false)}
+                />
+              </React.Suspense>
+            )}
+          </ExportMenu>
         </div>
         <div className="relative flex-1 min-h-0 bg-[#0b0810]">
           {renderPreview()}
@@ -1418,11 +1413,12 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
    *  OSMD already lays the score out as real A4 portrait page <svg>s, so the
    *  pages are drawn straight into the PDF as VECTORS via svg2pdf.js: staff
    *  lines stay lines and text stays selectable text, rather than a screenshot.
-   *  This deliberately does not go through the backend /export route, because
-   *  that path engraves with the MuseScore CLI and returns ok=false with an
-   *  install hint when the binary is absent (it is absent here), which left the
-   *  SCORE tab with no working PDF at all. Rendering from the pages already on
-   *  screen needs no external binary, so PDF works on every machine.
+   *  This deliberately does not go through the backend /export route: that
+   *  path engraves with the headless OSMD renderer, which needs node and the
+   *  frontend's node_modules on the backend machine and returns ok=false when
+   *  they are missing. The pages are already drawn on screen here, so
+   *  rendering them needs nothing from the backend and PDF works on every
+   *  machine.
    *
    *  Both libraries are imported dynamically to keep them out of the initial
    *  bundle, matching how OSMD and alphaTab are already loaded in this file. */
