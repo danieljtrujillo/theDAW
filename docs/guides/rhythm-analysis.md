@@ -33,10 +33,12 @@ Each segment line reads like this:
  ?  0.1-   22.2s  3/4          L=3  bars=16  bpm=129.8  sub=simple  conf=0.05
 ```
 
-- **L** is the bar length in *tracked beats*. The time signature is derived
-  from it: with a compound subdivision (each beat splitting in three) `L=2`
-  is 6/8 and `L=4` is 12/8; a fast odd pulse (over 160 bpm, 5/6/7/9/10/11/12)
-  is written in eighths; otherwise the tracked beat is the quarter.
+- **L** is the bar length in beats of the grid the segment was read on. At
+  the tracked level the time signature is derived from it: with a compound
+  subdivision (each beat splitting in three) `L=2` is 6/8 and `L=4` is 12/8;
+  a fast odd pulse (over 160 bpm, 5/6/7/9/10/11/12) is written in eighths;
+  otherwise the tracked beat is the quarter. At a tatum level L counts
+  eighths or sixteenths and the signature is written in them (19/16).
 - **(2+2+3)** is the grouping — how the bar's beats bundle into twos and
   threes. It comes from where the accents fall, so 7 as 2+2+3 and 7 as 3+2+2
   are told apart.
@@ -63,6 +65,22 @@ Each segment line reads like this:
 The rhythm section sets the bar. When the drums read 4 and the whole mix
 reads 12 because a melody cycles in 3, the map says 4/4 and the polymeter
 list says the melody keeps 3 — not 12/4.
+
+## Levels: the tracked beat and the tatum
+
+The map is read first at the tracked beat. When that reading is poor (mean
+window confidence under 0.35) the engine tries the tatum: the fastest strong
+pulse above the beat in the tempogram, hats on eighths or sixteenths, tracked
+at hop 128 so a sixteenth's period is not rounded away. A finer level replaces
+the tracked one only when it reads an odd bar (an even one is the coarser bar
+in more positions) and either reads clearly better or reads a shorter bar
+about as well: 13/8 at the quarter is a two-bar 13/4, and the bar is the
+shortest cycle that explains the accents. A grid finer than the music is
+rejected by an occupancy test: a position is occupied when its onset mass is
+1.5x the mass at the midpoints either side, and a grid needs 60 % of its
+positions occupied. `level` on each segment names the grid it was read on;
+`diagnostics.levels` lists every grid tried with its rate, occupancy, quality
+and why it was taken or not.
 
 ## Known limits
 
@@ -113,6 +131,11 @@ this codebase, not only this module.
    docstring says "multichannel", but `bpm.shape[-1]` may equal the envelope
    length and the DP follows it. The 0 % beat match on a tempo change was the
    phase (item 1), never the tempo.
+7. **`onset_strength(S=...)` assumes `n_fft=2048`.** It shifts the envelope
+   by `n_fft // (2 * hop)` frames to undo the STFT's centering. With a 512
+   window at hop 128 that is 6 frames (35 ms) late against the band power
+   from the same STFT, and a beat phase chosen on band power then sits off
+   every flux peak. Pass `n_fft`.
 
 Two more that shaped the design: a melody louder than the kick in its own
 band drags the composite reading to the lowest common multiple (12 over 4/4
