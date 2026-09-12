@@ -35,12 +35,13 @@ from backend.modules.vst.host import (
     process_with_plugin,
     list_builtin_effects,
 )
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 # Per-plugin captured editor state (from the native-GUI sidecar) lands here.
-_PRESET_DIR = Path(__file__).resolve().parents[3] / "data" / "vst_presets"
+_PRESET_DIR = paths.data_path("vst_presets")
 
 # Editor sidecars spawned by this process, so a crashed editor can be detected
 # instead of leaving the frontend polling a status that will never change.

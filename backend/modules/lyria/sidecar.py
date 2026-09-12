@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import IO, Iterator, Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ NPM_INSTALL_TIMEOUT_SEC = 600.0
 
 # Child-process output (npm install, the Express/tsx server) lands here so
 # failures are diagnosable rather than vanishing into DEVNULL.
-SIDECAR_LOG_PATH = _REPO_ROOT / "data" / "logs" / "lyria-sidecar.log"
+SIDECAR_LOG_PATH = paths.data_path("logs", "lyria-sidecar.log")
 
 # The upstream project the sidecar embeds (module.json / the docstrings name
 # it as StarskreamEXE/lyria-3-pro). ``start_install`` clones exactly this.
@@ -107,7 +108,7 @@ GIT_CLONE_TIMEOUT_SEC = 900.0
 # The GEMINI_API_KEY theDAW hands the child (see _child_env). Env wins, then
 # this file (POST /api/lyria/key), then the assistant's Gemini key pool so a
 # key pasted for the assistant serves Lyria too.
-_GEMINI_KEY_FILE = _REPO_ROOT / "data" / "lyria_gemini_key.json"
+_GEMINI_KEY_FILE = paths.data_path("lyria_gemini_key.json")
 
 
 @contextmanager

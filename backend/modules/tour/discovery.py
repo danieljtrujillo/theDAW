@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 
 from .vocab import annotate
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +58,6 @@ _PLACE_TYPES = {
 # 20-30-50-100-500 mile radii before jumping 200 miles away".
 _RING_BOUNDS_MI = (50.0, 120.0, 250.0, 500.0)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
 # Serialize + space out calls per provider (module-level: one backend process).
 _nominatim_lock = asyncio.Lock()
 _overpass_lock = asyncio.Lock()
@@ -67,9 +66,7 @@ _MIN_GAP_SEC = {"nominatim": 1.1, "overpass": 2.0}
 
 
 def _cache_dir() -> Path:
-    d = PROJECT_ROOT / "data" / "tour_cache"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return paths.ensure_data_dir("tour_cache")
 
 
 def _cache_get(name: str, ttl: int) -> Optional[Any]:

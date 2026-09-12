@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import IO, Iterator, Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ NPM_INSTALL_TIMEOUT_SEC = 600.0
 # Child-process output (npm install, vite dev/preview) lands here so failures
 # are diagnosable; previously it went to DEVNULL and a server that died before
 # ready reported only "exited (rc=1)" with no cause anywhere.
-SIDECAR_LOG_PATH = _REPO_ROOT / "data" / "logs" / "vj-sidecar.log"
+SIDECAR_LOG_PATH = paths.data_path("logs", "vj-sidecar.log")
 
 
 @contextmanager

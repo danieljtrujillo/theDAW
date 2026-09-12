@@ -28,14 +28,13 @@ from pydantic import BaseModel
 from backend.lib.atomic import atomic_write
 
 from .engine import RHYTHM_VERSION, analyze_file
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Repo-root anchored, so it resolves regardless of the process CWD.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-CACHE_DIR = _REPO_ROOT / "data" / "rhythm"
+CACHE_DIR = paths.data_path("rhythm")
 
 
 def _cache_path(entry_id: str) -> Path:

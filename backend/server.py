@@ -35,6 +35,7 @@ from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
+from backend.lib import paths
 
 # Heavy imports (torch, torchaudio, matplotlib, and the stable_audio_3 model
 # graph) total ~9.6s and are deliberately kept OFF module scope so uvicorn binds
@@ -440,12 +441,7 @@ def _condense_filename_text(text: str | None, fallback: str = "_") -> str:
 
 def _get_generation_artifacts_root() -> Path:
     """Return the local folder where generated audio + spectrograms are saved."""
-    configured = os.getenv("theDAW_GENERATIONS_DIR")
-    return (
-        Path(configured).expanduser().resolve()
-        if configured
-        else PROJECT_ROOT / "data" / "generations"
-    )
+    return paths.library_root()
 
 
 def _safe_filename(filename: str | None, fallback: str = "output.wav") -> str:

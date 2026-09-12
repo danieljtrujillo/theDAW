@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from stable_audio_3.model_configs import resolve_local_checkpoint
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-REGISTRY_PATH = PROJECT_ROOT / "data" / "local_checkpoints.json"
+REGISTRY_PATH = paths.data_path("local_checkpoints.json")
 
 _DEFAULT: dict[str, Any] = {"local_only": True, "checkpoints": []}
 

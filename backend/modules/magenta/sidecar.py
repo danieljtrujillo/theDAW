@@ -42,6 +42,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ _INSTALLER = _REPO_ROOT / "sidecars" / "magenta-rt2-nvidia" / "Setup-MRT2.bat"
 # Env default for the engine model; the in-app pick (``set_engine_model``) is
 # persisted in _MODEL_FILE and outranks it, see ``engine_model``.
 _ENGINE_MODEL = os.getenv("THEDAW_MAGENTA_MODEL", "mrt2_small")
-_MODEL_FILE = _REPO_ROOT / "data" / "magenta_engine.json"
+_MODEL_FILE = paths.data_path("magenta_engine.json")
 _WSL_PYTHON = os.getenv("THEDAW_MAGENTA_WSL_PY", "~/mrt2/.venv/bin/python")
 # Native engine interpreter for Linux/macOS auto-spawn (Windows uses WSL). On
 # Linux this is the CUDA JAX venv; on macOS the magenta-rt[mlx] venv. The
@@ -115,7 +116,7 @@ _ENGINE_PKILL_PATTERN = "sidecars/magenta/server.py|studio_server.py"
 # ``mrt checkpoints download`` write here; the engine loads from here).
 _ASSETS_DIR = "~/Documents/Magenta/magenta-rt-v2"
 _CHECKPOINTS_DIR = f"{_ASSETS_DIR}/checkpoints"
-_LOG_DIR = _REPO_ROOT / "logs"
+_LOG_DIR = paths.data_path("logs")
 
 # ── the model catalog ───────────────────────────────────────────────────────
 #

@@ -19,6 +19,7 @@ import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -150,13 +151,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
-def default_settings_path(project_root: Path) -> Path:
-    """Resolve the settings file path. Env override wins; otherwise it lives
-    next to the library generations directory."""
+def default_settings_path() -> Path:
+    """Resolve the settings file path. ``theDAW_SETTINGS_PATH`` wins;
+    otherwise it sits at the root of the writable data tree (which is NOT
+    the install directory when that is read-only — see
+    backend.lib.paths)."""
     configured = os.getenv("theDAW_SETTINGS_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    return project_root / "data" / "settings.json"
+    return paths.data_path("settings.json")
 
 
 def _merge_defaults(payload: dict[str, Any]) -> dict[str, Any]:

@@ -175,7 +175,7 @@ def main() -> None:
 
     from backend.modules.library.store import default_library_root
 
-    library_root = default_library_root(PROJECT_ROOT)
+    library_root = default_library_root()
     log.info("Library root: %s", library_root)
 
     count = ingest(selected, library_root)
