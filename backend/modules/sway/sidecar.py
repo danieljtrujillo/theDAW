@@ -86,17 +86,17 @@ def is_static_mode() -> bool:
     return resolve_dist_dir() is not None
 
 
-# Set True by server.py when the /sway-app StaticFiles mount is actually
-# registered (mounting happens once, at server import). Routes must key the
-# "return the embed URL" decision off THIS, not is_static_mode(): a build
-# staged later in the session flips is_static_mode() true while no mount
-# exists, which would hand the iframe a /sway-app/ URL that 404s. The VJ
-# module learned this the hard way; the same race exists here.
+# Set True by server.py once the /sway-app route is registered, which it always
+# is. The route resolves the embed build per request
+# (server._serve_static_build), so a build staged mid-session serves
+# immediately rather than 404ing until the next backend restart.
 STATIC_MOUNTED = False
 
 
 def static_mount_active() -> bool:
-    return STATIC_MOUNTED
+    """True when a request to /sway-app would actually serve a build: the route
+    is registered AND an embed build is resolvable right now."""
+    return STATIC_MOUNTED and resolve_dist_dir() is not None
 
 
 def read_build_stamp() -> Optional[dict]:
