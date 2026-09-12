@@ -20,12 +20,13 @@ Models are not downloaded during Install. theDAW downloads a model the first tim
 
 ## Start
 
-Start launches theDAW as a daemon and opens the app. It runs two servers:
+Start launches theDAW as a daemon and opens the app. It runs a preflight and two servers:
 
-- The FastAPI backend starts with `uv run uvicorn backend.server:app --port 8600`. Start waits until the backend reports that Uvicorn is running.
+- Start first runs `uv run --no-sync python -m backend.ports --free`, which stops theDAW's own stale listeners on 5173 and 8600. `theDAW.bat` and `theDAW.sh` do the same thing with a shell pipeline before they launch; this step is the portable equivalent. It only stops a process it can identify as theDAW's, running from this checkout, so a program of yours that happens to hold one of those ports is reported and left alone.
+- The FastAPI backend starts with `uv run --no-sync python -m backend._supervisor`, which runs `backend.run` and relaunches it in place when the app asks for a restart or an update. Start waits until the backend reports that Uvicorn is running.
 - The Vite frontend starts with `npm run dev`. Start captures the local URL the frontend prints and opens the app at that URL.
 
-The backend serves on port 8600. The frontend serves on port 5173. If Start fails right away, close any other process already holding 5173 or 8600, such as a copy launched through `theDAW.bat`.
+The backend serves on port 8600. The frontend serves on port 5173. If a port is held by something theDAW cannot stop, the backend now says which program and process holds it instead of printing a raw socket error, and Start ends there.
 
 ## Update
 
