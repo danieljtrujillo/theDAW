@@ -1,6 +1,6 @@
 # theDAW — Windows Setup Guide
 
-> Targets Windows 11 with an NVIDIA GPU and Python 3.10. theDAW is a React +
+> Targets Windows 11 with an NVIDIA GPU and Python 3.12. theDAW is a React +
 > FastAPI application; this guide covers the Windows-specific pieces the README
 > links to here.
 
@@ -32,12 +32,12 @@ detail and fallbacks.
 
 | Tool | Why |
 |------|-----|
-| Python 3.10 | The Windows Flash Attention + cu128 torch wheels are built for cp310. Python 3.11+ skips the Flash Attention wheel and the Medium GPU path degrades. `uv` can install 3.10 for you (`uv python install 3.10`). |
+| Python 3.12 | The repo pins it (`.python-version`, `requires-python >= 3.12`), and it is what the committed aubio wheel, the CUDA-13 onnxruntime-gpu wheels and the tested Flash Attention wheel are built for. `uv` installs it for you (`uv python install 3.12`). |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Creates the venv and installs torch/CUDA + Flash Attention. |
 | [Node.js](https://nodejs.org/) v20.19+ / v22.12+ | Frontend dev server + VJ sidecar (the Vite 7 floor). Includes npm. |
 | [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on PATH | All audio I/O: effects, exports, library ingest, MIDI conversion, YouTube/SoundCloud import. |
 | Git | Cloning the repo (use `--recurse-submodules` so the Magenta sidecar source is present). |
-| NVIDIA GPU + Driver 550+ | CUDA support for the Medium model and the Magenta sidecar. The Small model runs on CPU. |
+| NVIDIA GPU + Driver 580+ | CUDA 13 needs a driver on the R580 branch or newer. Turing (sm_75) through Blackwell are supported. Runs the Medium model and the Magenta sidecar; the Small model runs on CPU. |
 | Hugging Face account | Only if a model repo you load requires authentication. |
 
 > **`winget` not found?** Some commands below use `winget` (Windows Package
@@ -76,13 +76,15 @@ hf auth login
 
 ## What `uv sync` installs automatically on Windows
 
-`pyproject.toml` pins CUDA 12.8 wheels for torch and torchaudio and the prebuilt
-Flash Attention wheel under `[tool.uv.sources]`, gated to Windows and Python
-3.10. A plain `uv sync --group dev` on Windows therefore pulls:
+`pyproject.toml` pins CUDA 13.0 (cu130) wheels for torch and torchaudio and the
+prebuilt Flash Attention wheel under `[tool.uv.sources]`, gated to Windows and
+Python 3.12-3.14. A plain `uv sync --group dev` on Windows therefore pulls:
 
-- **torch 2.7.1+cu128** and **torchaudio 2.7.1+cu128** (from the cu128 index)
-- **flash-attn 2.8.3** (the [kingbri1](https://github.com/kingbri1/flash-attention/releases) prebuilt cp310 wheel)
-- **soundfile** (a base dependency; torchaudio's audio backend on Windows)
+- **torch 2.14.0+cu130** and **torchaudio 2.11.0+cu130** (from the cu130 index)
+- **flash-attn 2.8.3+cu130torch2.14** (the [mjun0812](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2) prebuilt cp312 wheel)
+- **soundfile** (a base dependency; libsndfile is what `backend/lib/audio_io.py`
+  reads and writes every file with. torchaudio is kept for transforms only — its
+  own `load` / `save` go through torchcodec now and are never called here)
 
 There is no manual torch reinstall, no manual wheel download, and no separate
 `soundfile` install. Those were required on the old upstream layout and are now
@@ -96,10 +98,11 @@ handled by `pyproject.toml`.
 > slower, with a one-line `flash_attn disabled on …` notice in the LOG panel.
 > No configuration is needed.
 
-> **Why Python 3.10?** The Flash Attention wheel is built for cp310, and
-> `pyproject.toml` only requests flash-attn on `python_version < '3.11'`. On
-> Python 3.11+ that wheel is skipped, so use Python 3.10 for the supported
-> Windows GPU path.
+> **Why Python 3.12?** `requires-python` is `>= 3.12` and `.python-version`
+> pins 3.12, which is also what the committed aubio wheel and the CUDA-13
+> onnxruntime-gpu wheels are built for. `pyproject.toml` requests flash-attn on
+> `python_version < '3.15'` and carries a wheel for cp312, cp313 and cp314, so
+> 3.13 and 3.14 get Flash Attention too — 3.12 is the tested one.
 
 ---
 
@@ -123,8 +126,8 @@ sidecar down cleanly when it exits. See the
 .\.venv\Scripts\python.exe -c "
 import torch
 print('torch', torch.__version__, '| CUDA:', torch.cuda.is_available())
-import torchaudio
-print('torchaudio backends:', torchaudio.list_audio_backends())
+from backend.lib.audio_io import load_audio, save_audio
+print('audio I/O: libsndfile via backend.lib.audio_io')
 import flash_attn
 print('flash_attn', flash_attn.__version__)
 "
@@ -133,10 +136,14 @@ print('flash_attn', flash_attn.__version__)
 Expected output:
 
 ```
-torch 2.7.1+cu128 | CUDA: True
-torchaudio backends: ['soundfile']
+torch 2.14.0+cu130 | CUDA: True
+audio I/O: libsndfile via backend.lib.audio_io
 flash_attn 2.8.3
 ```
+
+The audio check imports the app's own I/O layer rather than asking torchaudio
+for a backend list: torchaudio's `load` / `save` are not used here at all, so
+what they report says nothing about whether the app can read a file.
 
 ---
 
@@ -188,33 +195,33 @@ backend's GPU offload to share VRAM.
 
 ## Fallbacks
 
-These are only needed if the automatic install above did not apply (for example
-a non-3.10 Python, a different CUDA version, or `uv sync` resolving CPU torch).
+`uv sync` is the supported install path, and it is the only one the lock guard
+can vouch for: `[tool.uv] required-environments` names Linux x86_64 and Windows
+AMD64, so `uv lock` refuses a version without wheels for both, and
+`scripts/check_lock.py` (the pre-commit hook and CI) proves the lock installs on
+each. Hand-installing an off-lock wheel puts the venv somewhere nothing has
+tested. Re-sync instead of reaching for `uv pip install`.
 
 ### `uv sync` installed CPU-only torch
 
 ```powershell
-uv pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128 --reinstall
+uv sync --reinstall-package torch --reinstall-package torchaudio
 ```
 
-### A different Python or CUDA version
+`[tool.uv.sources]` maps both to the cu130 index on Windows, so a re-sync is the
+fix. If it still resolves CPU torch, something else is interfering — a custom
+index in `UV_INDEX_URL`, an offline cache, or a venv built for another platform.
 
-Flash Attention has no official Windows wheels, so match a prebuilt one to your
-Python version from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases):
+### A different Python version
 
-| Python | Wheel |
-|--------|-------|
-| 3.10 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl` |
-| 3.11 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl` |
-| 3.12 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl` |
-| 3.13 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp313-cp313-win_amd64.whl` |
+`pyproject.toml` carries a prebuilt Flash Attention wheel for cp312, cp313 and
+cp314 — the `flash_attn-2.8.3+cu130torch2.14-cp3XX-cp3XX-win_amd64.whl` assets on
+[mjun0812/flash-attention-prebuild-wheels v0.10.2](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2).
+Python 3.15 and later get no wheel and fall back to PyTorch's SDPA path.
 
-```powershell
-uv pip install https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
-```
-
-The wheel's CUDA version must match your torch build (these are cu128, so pair
-them with `torch==2.7.1+cu128`).
+A wheel has to match **both** the torch version and the CUDA version it was
+built against. This project is torch 2.14 + CUDA 13; a wheel for any other pair
+will not import, whatever Python it says on the filename.
 
 ### Other Windows issues
 

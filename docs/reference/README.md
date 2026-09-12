@@ -1,8 +1,20 @@
 # theDAW Reference
 
-The complete, code-grounded reference for theDAW: what every feature does, which
-models and libraries it uses, and the full HTTP API. Every claim on these pages
-cites the source it came from as `path:line`.
+A code-grounded reference for theDAW: what each feature does, which models and
+libraries it uses, and the HTTP API by router cluster. Every claim on these
+pages cites the source it came from as `path:line`; line numbers are correct as
+of the commit that last touched the page, so trust a cited symbol name over a
+cited number.
+
+It is not yet complete. Five mounted modules have no route table here —
+`/api/rhythm`, `/api/shards`, `/api/lyricanalysis`, `/api/lyrics` and
+`/api/lyria` — and two workspaces, SWAY and LOOM, have no feature page. Until
+they do, their guides are the reference: [rhythm](../guides/rhythm-analysis.md),
+[LOOM and the Shard Index](../guides/loom-and-shards.md),
+[lyric analysis](../guides/lyric-analysis.md),
+[the lyric notebook](../guides/lyric-notebook.md),
+[sing-along and lyrics](../guides/sing-along-and-lyrics.md) and
+[SWAY](../guides/sway-perform-live.md).
 
 ## It runs on your machine
 
@@ -61,6 +73,14 @@ rule and the shared module contract.
 | [Audio / DSP modules](api/02-audio-dsp-modules.md) | chimera, stems, analysis, convert, effects, mastering, notation, vocal, midi |
 | [Studio / project / plugin modules](api/03-studio-project-plugin-modules.md) | foundry, project, dawimport, underfit, vj, magenta, plugin, vst, library, settings |
 | [TOUR / XR / cloud modules](api/04-tour-xr-cloud-modules.md) | tour, quest suite, xrcontrol, akvj, suno, genaiproxy |
+
+Not yet covered by a page: `lyrics`, `lyricanalysis`, `rhythm`, `shards` and
+`lyria`. Their routes are documented in the guides linked at the top of this
+page — [LOOM and the Shard Index](../guides/loom-and-shards.md) for
+`/api/shards`, [lyric analysis](../guides/lyric-analysis.md) and [the lyric
+notebook](../guides/lyric-notebook.md) for `/api/lyricanalysis`,
+[rhythm analysis](../guides/rhythm-analysis.md) for `/api/rhythm`, and
+[sing-along and lyrics](../guides/sing-along-and-lyrics.md) for `/api/lyrics`.
 
 ## How these pages are maintained
 

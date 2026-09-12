@@ -32,6 +32,22 @@ admin route referenced there (`PATCH /api/modules/{name}/enabled`).
 This is why a route can 404 on one machine and work on another: the module is
 off in Settings. It is not a missing endpoint.
 
+### Off, or broken?
+
+A module can also fail to mount — a bad import, a `SyntaxError` — and the
+symptom is identical: every one of its routes 404s. The loader records the
+reason rather than swallowing it. `load_modules` writes a `module name → reason`
+map to `app.state.module_load_errors` and logs the failure at ERROR with the
+traceback, and `GET /api/modules/all` returns `_loaded: false` plus a
+`_load_error` string for any module that tried and failed
+(`backend/modules/loader.py:16-21`, `:54-65`; `backend/server.py:1028-1052`).
+
+So there are three states, and the endpoint distinguishes them: enabled and
+loaded, disabled by `module.json`, or enabled but broken with the reason
+attached. The last one used to be invisible — the underfit module shipped with
+a `SyntaxError` for three days and the tab merely looked like a network
+problem.
+
 ## The shared tool contract
 
 Modules in the effect/tool families are built with `build_router(family, tools)`

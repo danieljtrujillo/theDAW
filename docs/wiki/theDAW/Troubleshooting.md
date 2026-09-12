@@ -1,6 +1,6 @@
 # Troubleshooting
 
-**Static glitch output on the Medium model.** Flash Attention is not installed correctly. Verify it with `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"` and reinstall a wheel matching the Python, torch, and CUDA combination from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+**Static glitch output on the Medium model.** Flash Attention is not installed correctly. Verify it with `uv run python -c "from flash_attn import flash_attn_func; import flash_attn; print(flash_attn.__version__)"`, then re-sync it with `uv sync --reinstall-package flash-attn`. The wheel has to match **torch 2.14 + CUDA 13**, which is what this project pins; `pyproject.toml` selects the `flash_attn-2.8.3+cu130torch2.14-cp3XX-cp3XX-win_amd64.whl` asset for your Python minor from [mjun0812/flash-attention-prebuild-wheels v0.10.2](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2). A wheel built for any other torch/CUDA pair will not import.
 
 **"API UNREACHABLE" banner.** The backend is not listening on port 8600. Test it with `curl http://localhost:8600/api/health`. On Windows, `.\theDAW.bat` clears stale processes automatically.
 
