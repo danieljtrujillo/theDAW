@@ -61,6 +61,7 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components
 import { sendSetToVj, sendTrackToVj, isVjSetTargetActive, type VjSetItem } from '../state/vjSetBus';
 import { registerDjMasterHandler, reportDjMasterState } from '../state/djMasterBus';
 import { importUrlToLibrary } from '../lib/onlineImport';
+import { importAudioFile } from '../lib/importAudioFiles';
 import { listStems, prepareStems } from '../lib/djStems';
 import * as djEngine from '../state/djEngine';
 
@@ -199,34 +200,10 @@ const hasDeckLoadDragData = (event: React.DragEvent): boolean => {
   return Array.from(dt.items ?? []).some((item) => item.kind === 'file' && (item.type.startsWith('audio/') || item.type === ''));
 };
 
-const decodeAudioDuration = async (file: File): Promise<number | undefined> => {
-  const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextCtor) return undefined;
-  const ctx = new AudioContextCtor();
-  try {
-    const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
-    return decoded.duration;
-  } finally {
-    await ctx.close().catch(() => undefined);
-  }
-};
-
-const importAudioFileToLibrary = async (file: File): Promise<LibraryEntry> => {
-  const duration = await decodeAudioDuration(file).catch(() => undefined);
-  return useLibraryStore.getState().importEntry({
-    blob: file,
-    filename: file.name,
-    mimeType: file.type || undefined,
-    metadata: {
-      title: file.name.replace(/\.[^.]+$/, '') || file.name,
-      prompt: 'Imported from Finder drop',
-      model: 'imported',
-      duration,
-      source: 'import',
-      tags: ['finder-drop'],
-    },
-  });
-};
+/** Finder/Explorer drops onto a deck or a set. The same helper as the header
+ *  IMPORT button; only the recorded provenance differs. */
+const importAudioFileToLibrary = (file: File): Promise<LibraryEntry> =>
+  importAudioFile(file, { prompt: 'Imported from Finder drop', tags: ['finder-drop'] });
 
 const sameStringArray = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
