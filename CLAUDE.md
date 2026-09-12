@@ -139,9 +139,13 @@ uv run ruff format --check
 cd frontend && npm run lint          # tsc --noEmit
 ```
 
-**Adding a frontend test:** a `*.test.ts` file only runs if a `test:*` script
-names it, and `npm test` chains every `test:*` script. Add yours to both, or it
-silently never runs — nine suites were orphaned that way.
+**Adding a frontend test:** just write the `*.test.ts(x)` file under
+`frontend/src/`. `npm test` runs `frontend/scripts/run-tests.mjs`, which
+discovers every test file and runs each in its own `tsx` process, so a new
+suite runs with no registration step. The per-suite `test:*` scripts are still
+there for running ONE suite while you work on it (`npm run test:sing`); they no
+longer decide what gets run. (This replaced a hand-maintained chain that
+required naming each file in two places — nine suites were orphaned that way.)
 
 ## Architecture
 
