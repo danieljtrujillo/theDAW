@@ -5,6 +5,11 @@ title theDAW
 :: below resolve .venv / frontend\node_modules relative to the project.
 cd /d "%~dp0"
 
+:: -- Git hooks: the repo ships them in .githooks (ruff on every commit, the
+:: cross-platform lock check when pyproject/uv.lock are staged). One config
+:: line per clone, safe to repeat; ignored when git is absent.
+git config core.hooksPath .githooks >nul 2>&1
+
 :: -- uv cache on THIS repo's drive --------------------------------------
 :: uv installs wheels into .venv by hardlinking from its cache, but a hardlink
 :: cannot cross volumes. uv's default cache lives on the system drive, which is
