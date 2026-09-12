@@ -222,7 +222,7 @@ The application window has five regions:
 
 **Global bottom dock:** pinned across the bottom of the app are two independent columns, the bottom multi-tab panel on the left (Levels / Visualize / MIDI / Sequence / DRAW / Score / Sing / Lyric / Details / SLIDE / SWAY) and the processing log on the right, aligned under the library rail. Each column has its own height, collapse toggle, and resize handle, so expanding or resizing one does not move the other, and the dock stays put regardless of the library panel's state.
 
-**Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. This guide is one document in the assistant's RAG corpus (the full list is in `backend/rag.py`), so revising it improves both the in-app manual and the assistant's grounding.
+**Docs modal:** open the **?** help popover and click **Docs** beside its search field to read this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. This guide is one document in the assistant's RAG corpus (the full list is in `backend/rag.py`), so revising it improves both the in-app manual and the assistant's grounding.
 
 **Mobile access share:** click the QR/link button in the header to copy or scan the current LAN or tunnel URL for mobile performance access. This is useful with the VJ tab and any browser-based controller or viewer.
 

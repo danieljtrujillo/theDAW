@@ -64,7 +64,7 @@ someone who already knows the heading is called Library.
 ## They retire themselves
 
 A note disappears the first moment you use the thing it points at — open the
-library once and the library note is gone for good, without your having to
+LOG strip once and the Log note is gone for good, without your having to
 dismiss it. Closing one by hand does the same thing permanently.
 
 The state is remembered per browser, so notes do not come back on the next
@@ -82,8 +82,8 @@ close.
 
 A note never sits on top of what it is pointing at, and the whole layer ignores
 the mouse, so a note can never swallow a click meant for the control beneath
-it. Positions are measured live rather than fixed, so notes follow the library
-tab as the window, the dock height and the rail width change, and a control
+it. Positions are measured live rather than fixed, so notes follow the strips they
+point at as the window, the dock height and the rail width change, and a control
 hard against an edge of the screen still gets its card fully on screen. Each
 note is wired to its target for screen readers, so the hint is not
 sighted-only.
