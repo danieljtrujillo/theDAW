@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Scissors, Play, Pause, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
   Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
-  Maximize2, Rows3, Keyboard, AudioLines, Spline,
+  Maximize2, Rows3, Keyboard, AudioLines, Spline, FolderOpen,
 } from 'lucide-react';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
@@ -37,7 +37,18 @@ import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActivePr
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { parseMidi } from '../../utils/midi';
 import type { PianoNote } from '../../state/pianoRollStore';
-import { LibraryMidiPicker } from './LibraryMidiPicker';
+import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
+import {
+  addToTrackGroupLabel,
+  buildAddToTrackMenu,
+  isAddSourceEntry,
+  type AddToTrackEntry,
+  type AddToTrackTarget,
+} from './addToTrackMenu';
+import { cachedLibraryMidiCount, loadLibraryMidi } from '../../lib/libraryIndex';
+import { AUDIO_ACCEPT, MIDI_ACCEPT, midiFileLabel } from '../../lib/fileFilters';
+import { importAudioFiles, type AudioImportOrigin } from '../../lib/importAudioFiles';
+import { fetchBlobWithRetry } from '../../lib/fetchRetry';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { classifyModelGate } from '../../lib/modelDownloadClient';
@@ -48,7 +59,7 @@ import { registerEditorPlayback, unregisterEditorPlayback } from '../../state/ed
 import { publishSelectedTracks } from '../../state/editorSelectionBridge';
 import * as liveMixer from '../../state/liveMixer';
 import { useDjAnalysisStore } from '../../state/djAnalysisStore';
-import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
+import { ContextMenu, useContextMenu, type ContextMenuItem, type ContextMenuPosition } from '../ui/ContextMenu';
 import { StemsRunModal, type StemsRunOptions } from '../library/StemsRunModal';
 import { EffectWindowsHost, FxChainList, openEffectWindow, type FxScope } from './EffectWindows';
 import { ensureStems } from '../../lib/djStems';
@@ -56,6 +67,26 @@ import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import { SurfaceAudio } from './IoDeviceSelect';
 
 const TRACK_HEADER_PX = 180;
+
+/** Provenance recorded on a file the user adds straight to a track from the
+ *  timeline's right-click menu. The file still goes through the library first,
+ *  exactly like a desktop drop, so the clip is indistinguishable from a dropped
+ *  one and the take is findable in LIBRARY afterwards. */
+const ADD_TO_TRACK_ORIGIN: AudioImportOrigin = {
+  prompt: 'Added to a track from the timeline menu',
+  tags: ['imported'],
+};
+
+/** Icon per add-to-track entry. Library and System share a kind, so the icon
+ *  says WHERE it comes from and the label says WHAT it is. */
+const ADD_ENTRY_ICON: Record<AddToTrackEntry['id'], React.ReactNode> = {
+  'audio-library': <AudioLines className="w-3 h-3" />,
+  'audio-system': <FolderOpen className="w-3 h-3" />,
+  'midi-library': <Music className="w-3 h-3" />,
+  'midi-system': <FolderOpen className="w-3 h-3" />,
+  paste: <Copy className="w-3 h-3" />,
+  'new-track': <Plus className="w-3 h-3" />,
+};
 const DECODE_TIMEOUT_MS = 15000;
 
 // Track/clip colors for exploded stems, keyed by Demucs/LARSNET stem name.
@@ -1315,8 +1346,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     | { kind: 'generating'; jobId: string }
     | { kind: 'review'; blob: Blob; blobUrl: string };
   const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
-  // When set, the LibraryMidiPicker is open; `sec` is the drop time, x/y anchor the panel.
-  const [midiDrop, setMidiDrop] = useState<{ sec: number; x: number; y: number } | null>(null);
+  // When set, the LibraryPicker is open: which tab it opens on, where the pick
+  // lands (`trackId` null = make a new track, matching a drop below all lanes),
+  // and the viewport point to anchor the popover at.
+  const [addPicker, setAddPicker] = useState<
+    { tab: LibraryPickerTab; trackId: string | null; atSec: number; x: number; y: number } | null
+  >(null);
+  // Library MIDI rows, or null until the index has been read once. Feeds the
+  // add-to-track menu so "MIDI from Library" can say WHY it is greyed out
+  // instead of opening an empty picker.
+  const [libraryMidiCount, setLibraryMidiCount] = useState<number | null>(cachedLibraryMidiCount);
+  // Only `loaded` is subscribed — the entry count itself is read when a menu
+  // opens. This flag is what makes the menu re-render once the startup load
+  // finishes, so "Audio from Library" stops reading as an empty library.
+  const libraryLoaded = useLibraryStore((s) => s.loaded);
   const [inpaintPrompt, setInpaintPrompt] = useState('');
   const [inpaintSteps, setInpaintSteps] = useState(8);
   const [inpaintSeed, setInpaintSeed] = useState(-1);
@@ -1982,17 +2025,29 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [copySelectedClips, deleteSelectedClips]);
 
   /** Paste at the playhead, preserving the clips' relative timing and their track
-   *  layout. A clip whose original track is gone lands on the first track. */
-  const pasteClips = useCallback(() => {
+   *  layout. A clip whose original track is gone lands on the first track.
+   *
+   *  `opts` is what the timeline's right-click "Paste clip here" passes: the
+   *  clicked time instead of the playhead, and the clicked lane instead of each
+   *  clip's original track (so a paste lands where the user pointed). */
+  const pasteClips = useCallback((opts?: { atSec?: number; trackId?: string }) => {
     const buf = clipboardRef.current;
     if (buf.length === 0) return;
-    const anchor = snapSec(useEditorStore.getState().playheadSec);
+    const anchor = snapSec(opts?.atSec ?? useEditorStore.getState().playheadSec);
     const earliest = Math.min(...buf.map((c) => c.startSec));
     const liveTracks = useEditorStore.getState().tracks;
-    const fallbackTrackId = liveTracks[0]?.id;
+    const fallbackTrackId = opts?.trackId ?? liveTracks[0]?.id;
     if (!fallbackTrackId) return;
+    // Pasting AT a lane re-homes the earliest clip onto it and keeps the rest
+    // in their own lanes only when those still exist.
+    const anchorTrackId = buf.reduce((a, c) => (c.startSec < a.startSec ? c : a), buf[0]).trackId;
     const newIds = buf.map((c) => {
-      const trackId = liveTracks.some((t) => t.id === c.trackId) ? c.trackId : fallbackTrackId;
+      const trackId =
+        opts?.trackId && c.trackId === anchorTrackId
+          ? opts.trackId
+          : liveTracks.some((t) => t.id === c.trackId)
+            ? c.trackId
+            : fallbackTrackId;
       const { id: _omit, ...rest } = c;
       return addClipToTrack({ ...rest, trackId, startSec: Math.max(0, anchor + (c.startSec - earliest)) });
     });
@@ -2276,6 +2331,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // --- Right-click context menu (uses shared ContextMenu primitive) ---
   const clipMenu = useContextMenu<{ clipId: string; atSec: number }>();
   const trackMenu = useContextMenu<{ trackId: string }>();
+  /** The timeline's "Add to track" menu. Its payload is the lane + time the
+   *  right-click resolved to; a null trackId means "below every lane", which
+   *  adds to a new track exactly as dropping there does. */
+  const addMenu = useContextMenu<AddToTrackTarget>();
+  const addInputUid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const addAudioInputId = `editor-add-audio-${addInputUid}`;
+  const addMidiInputId = `editor-add-midi-${addInputUid}`;
 
   const openContextMenu = (e: React.MouseEvent, clipId: string) => {
     e.stopPropagation();
@@ -2986,25 +3048,69 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   };
 
-  /** Fetch, decode and place one library entry as a clip on `targetTrack` —
-   *  the shared tail of a library drop and a desktop drop. */
-  const placeEntryOnTrack = async (entry: LibraryEntry, targetTrack: EditorTrack, startSec: number) => {
-    const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
+  /** Fetch, decode and place ANY audio source as a clip on `targetTrack` — the
+   *  shared tail of a library drop, a desktop drop, and every "Add to track"
+   *  menu entry that produces audio (a library take, a separated stem, a file
+   *  the user just picked). One implementation: the only thing that differs
+   *  between the sources is where the Blob comes from.
+   *
+   *  `libraryEntryId` is passed through because it is what later unlocks the
+   *  clip's bpm/key readout and the stems explode path — a library-sourced clip
+   *  that loses it looks like a bare recording. */
+  const placeAudioOnTrack = async (
+    audio: { label: string; mimeType?: string; entryId?: string; fallbackDuration?: number; fetch: () => Promise<Blob> },
+    targetTrack: EditorTrack,
+    startSec: number,
+    verb = 'Dropped',
+  ) => {
+    const blob = await audio.fetch();
     const { peaks, duration } = await computePeaks(blob, 240);
+    const length = duration || audio.fallbackDuration || 0;
     const clipId = addClipToTrack({
       trackId: targetTrack.id,
-      label: entry.title ?? `clip_${entry.id.slice(0, 6)}`,
+      label: audio.label,
       audioBlob: blob,
-      mimeType: entry.mimeType,
-      sourceDuration: duration || entry.duration,
+      mimeType: audio.mimeType ?? blob.type ?? 'audio/wav',
+      sourceDuration: length,
       offsetIntoSource: 0,
-      durationSec: duration || entry.duration,
+      durationSec: length,
       startSec,
       color: targetTrack.color,
-      libraryEntryId: entry.id,
+      libraryEntryId: audio.entryId,
     });
     cachePeaks(clipId, peaks);
-    logInfo('editor', `Dropped ${entry.title} on ${targetTrack.name} at ${startSec.toFixed(2)}s`);
+    logInfo('editor', `${verb} ${audio.label} on ${targetTrack.name} at ${startSec.toFixed(2)}s`);
+  };
+
+  /** A library entry as a clip on `targetTrack`. */
+  const placeEntryOnTrack = async (
+    entry: LibraryEntry,
+    targetTrack: EditorTrack,
+    startSec: number,
+    verb = 'Dropped',
+  ) =>
+    placeAudioOnTrack(
+      {
+        label: entry.title ?? `clip_${entry.id.slice(0, 6)}`,
+        mimeType: entry.mimeType,
+        entryId: entry.id,
+        fallbackDuration: entry.duration,
+        fetch: () => useLibraryStore.getState().fetchAudioBlob(entry),
+      },
+      targetTrack,
+      startSec,
+      verb,
+    );
+
+  /** The track an add lands on: the one the user clicked, or a fresh track when
+   *  they clicked below every lane (the same rule a drop there follows). Reads
+   *  the track back out of the store because `addTrack` returns only an id. */
+  const resolveAddTarget = (trackId: string | null, newTrackName?: string): EditorTrack | undefined => {
+    const live = useEditorStore.getState().tracks;
+    const existing = trackId ? live.find((t) => t.id === trackId) : undefined;
+    if (existing) return existing;
+    const newId = addTrack(newTrackName ? { name: newTrackName } : undefined);
+    return useEditorStore.getState().tracks.find((t) => t.id === newId);
   };
 
   const onTimelineDrop = async (e: React.DragEvent) => {
@@ -3149,7 +3255,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const onTimelineClick = (e: React.MouseEvent) => {
     if (automationEdit) return; // automation edit mode owns the lanes; ruler still moves the playhead
-    if (e.button === 2) return; // right-click is the add-MIDI menu, not a playhead move
+    if (e.button === 2) return; // right-click opens the add-to-track menu, not a playhead move
     if (!timelineRef.current) return;
     if (opRef.current) return;
     // Only react to direct clicks on the timeline gutter (not on a clip).
@@ -3192,20 +3298,55 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (clip.sourcePianoRoll) editClipInPianoRoll(clip);
   };
 
-  /** Right-click an empty part of the timeline → open the MIDI picker there. */
+  /** Read the two indexes the add menu counts, so it can tell "there is none of
+   *  this in the library" (disable the row, say why) from "not fetched yet"
+   *  (offer it). Both are cheap and cached, both are no-ops once warm, and the
+   *  menu re-renders when either lands — opening a menu is the only moment the
+   *  counts matter, so this runs on the right-click rather than on mount. */
+  const warmAddMenuCounts = () => {
+    const library = useLibraryStore.getState();
+    if (!library.loaded) void library.load();
+    void loadLibraryMidi()
+      .then((rows) => setLibraryMidiCount(rows.length))
+      .catch(() => undefined);
+  };
+
+  /** Right-click an empty part of the timeline → the "Add to track" menu,
+   *  aimed at the lane under the pointer.
+   *
+   *  The lane comes from clientY the same way `onTimelineDrop` resolves it
+   *  (viewport px -> local px, compared against trackH), and a click in the
+   *  34px band below the last lane means "a new track" — so right-clicking
+   *  somewhere adds exactly what dropping there would. */
   const onLanesContextMenu = (e: React.MouseEvent) => {
     if (automationEdit) return; // right-click deletes automation points in edit mode
     const target = e.target as HTMLElement;
     if (target.closest('[data-clip="1"]')) return; // a clip's own menu handles it
-    e.preventDefault();
-    if (!timelineRef.current) return;
-    const rect = timelineRef.current.getBoundingClientRect();
-    setMidiDrop({ sec: Math.max(0, snapSec(contentClientXToSec(e.clientX))), x: e.clientX, y: e.clientY });
+    e.preventDefault(); // suppress the OS menu even if the lane rect is missing
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const yPx = viewportPxToLocal(e.clientY - rect.top);
+    const belowAllTracks = yPx >= tracks.length * trackH;
+    const trackIdx = Math.max(0, Math.min(tracks.length - 1, Math.floor(yPx / trackH)));
+    const track = belowAllTracks ? undefined : tracks[trackIdx];
+    warmAddMenuCounts();
+    addMenu.open(e, {
+      trackId: track?.id ?? null,
+      trackName: track?.name ?? null,
+      // Below all lanes a drop starts at 0; match it so the two agree.
+      atSec: belowAllTracks ? 0 : Math.max(0, snapSec(contentClientXToSec(e.clientX))),
+    });
   };
 
-  /** Turn picked MIDI bytes into a piano-roll clip on a new track at `startSec`,
-   *  using the currently selected instrument (live-playable + editable). */
-  const addMidiClipFromBytes = useCallback(async (bytes: ArrayBuffer, label: string, startSec: number) => {
+  /** Turn picked MIDI bytes into a piano-roll clip at `startSec` — on
+   *  `targetTrackId` when one is given, otherwise on a new track. Live-playable
+   *  and editable in the Piano Roll either way. */
+  const addMidiClipFromBytes = useCallback(async (
+    bytes: ArrayBuffer,
+    label: string,
+    startSec: number,
+    targetTrackId?: string | null,
+  ) => {
     try {
       const data = parseMidi(new Uint8Array(bytes));
       const stepTicks = (data.ppq || 480) / 4;
@@ -3228,11 +3369,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const bpm = Math.round(data.bpm) || 120;
       const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
       const totalSteps = Math.max(16, Math.ceil(lastStep / 16) * 16);
-      const program = isSoundfontActive() ? getActiveProgram() : undefined;
+      const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
       const nominalDuration = totalSteps * (60 / Math.max(40, bpm) / 4);
       const blob = silentWavBlob();
-      const trackId = addTrack({ name: label, instrumentProgram: program });
-      const color = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
+      // Land on the track the user pointed at; make one only when there is
+      // none. Until this parameter existed every MIDI insert called addTrack,
+      // so "add to track" never added to the track that was right-clicked.
+      const existing = targetTrackId
+        ? useEditorStore.getState().tracks.find((t) => t.id === targetTrackId)
+        : undefined;
+      // An existing track's own instrument wins, the same order
+      // `effectiveProgramFor` resolves at playback. Matching it here means the
+      // `renderedProgram` written below is already right and the instrument-sync
+      // effect has nothing to re-render.
+      const program = existing?.instrumentProgram ?? globalProgram;
+      const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
+      const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
+      const color = track?.color ?? '#a855f7';
       const clipId = addClipToTrack({
         trackId,
         label,
@@ -3249,7 +3402,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         sourceTotalSteps: totalSteps,
         instrumentProgram: program,
       });
-      logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) at ${startSec.toFixed(2)}s; rendering audio in background…`);
+      logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
       void (async () => {
         const started = performance.now();
         try {
@@ -3274,6 +3427,172 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       logError('editor', `Add MIDI failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [addTrack, addClipToTrack, cachePeaks, updateClip]);
+
+  /* -- "Add to track" ------------------------------------------------------
+     One dispatcher behind the timeline menu, the track-header menu and the two
+     file inputs, so anything added from a menu is built by the same code that
+     builds a dropped clip. Nothing here duplicates an insert path: audio goes
+     through placeAudioOnTrack, MIDI through addMidiClipFromBytes, a picked file
+     through importAudioFiles first (like a desktop drop). */
+
+  /** Hand focus back to the timeline. The menu item that triggered an action is
+   *  unmounting with its menu, so without this a cancelled OS file dialog
+   *  strands focus on <body> -- the bug commit 5af1090 fixed for IMPORT. */
+  const returnFocusToTimeline = () => timelineRef.current?.focus({ preventScroll: true });
+
+  /** The target a pending OS file dialog will place into. A ref, not state: it
+   *  is written synchronously next to `input.click()` and read back in the
+   *  change handler, with no render in between. */
+  const pendingSystemAdd = useRef<AddToTrackTarget | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
+  const midiFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /** Library entries -> clips. The first lands where the user pointed; further
+   *  files of a multi-file pick get a track each, the rule onTimelineDrop uses. */
+  const placeEntriesOnTarget = async (entries: LibraryEntry[], target: AddToTrackTarget) => {
+    if (entries.length === 0) return;
+    const first = resolveAddTarget(target.trackId, entries[0].title);
+    if (!first) return;
+    try {
+      await placeEntryOnTrack(entries[0], first, target.atSec, 'Added');
+      for (const entry of entries.slice(1)) {
+        const track = resolveAddTarget(null, entry.title);
+        if (track) await placeEntryOnTrack(entry, track, target.atSec, 'Added');
+      }
+    } catch (err) {
+      logError('editor', `Add to track failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  /** Whatever the picker handed back, on the target track. */
+  const placePick = async (pick: LibraryPick, target: AddToTrackTarget) => {
+    if (pick.kind === 'midi') {
+      await addMidiClipFromBytes(pick.bytes, pick.label, target.atSec, target.trackId);
+      return;
+    }
+    const track = resolveAddTarget(target.trackId, pick.label);
+    if (!track) return;
+    try {
+      if (pick.kind === 'audio') {
+        await placeEntryOnTrack(pick.entry, track, target.atSec, 'Added');
+      } else {
+        // A stem is an ordinary audio clip: there is no stem clip kind, only a
+        // different place the Blob comes from.
+        await placeAudioOnTrack(
+          {
+            label: pick.label,
+            mimeType: 'audio/wav',
+            fetch: () => fetchBlobWithRetry(pick.url, { label: pick.label }),
+          },
+          track,
+          target.atSec,
+          'Added',
+        );
+      }
+    } catch (err) {
+      logError('editor', `Add to track failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  /** Audio chosen from the OS dialog: imported to the library first (what a
+   *  desktop drop does), then placed. */
+  const onAddAudioFiles = async (files: File[]) => {
+    const target = pendingSystemAdd.current;
+    pendingSystemAdd.current = null;
+    if (!target || files.length === 0) return;
+    // importAudioFiles logs its own failures and its own multi-file summary.
+    const { imported } = await importAudioFiles(files, ADD_TO_TRACK_ORIGIN);
+    await placeEntriesOnTarget(imported, target);
+  };
+
+  const onAddMidiFile = async (file: File) => {
+    const target = pendingSystemAdd.current;
+    pendingSystemAdd.current = null;
+    if (!target) return;
+    try {
+      const bytes = await file.arrayBuffer();
+      await addMidiClipFromBytes(bytes, midiFileLabel(file.name), target.atSec, target.trackId);
+    } catch (err) {
+      logError('editor', `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  /** Run one entry of the add-to-track menu.
+   *
+   *  Anything that opens an OS file dialog calls `input.click()` synchronously
+   *  from here. ContextMenu runs `onSelect` in the same tick as the click, so
+   *  the user activation is still live -- one `await` before the `.click()` and
+   *  Chrome refuses to open the dialog, silently. */
+  const runAddEntry = (
+    entry: AddToTrackEntry,
+    target: AddToTrackTarget,
+    at: ContextMenuPosition | null,
+  ) => {
+    returnFocusToTimeline();
+    switch (entry.id) {
+      case 'audio-library':
+      case 'midi-library':
+        setAddPicker({
+          tab: entry.id === 'midi-library' ? 'midi' : 'audio',
+          trackId: target.trackId,
+          atSec: target.atSec,
+          // The menu's own anchor, captured at render: the menu has already
+          // closed by the time this runs, so its state is gone.
+          x: at?.x ?? 240,
+          y: at?.y ?? 160,
+        });
+        return;
+      case 'audio-system':
+        pendingSystemAdd.current = target;
+        audioFileInputRef.current?.click();
+        return;
+      case 'midi-system':
+        pendingSystemAdd.current = target;
+        midiFileInputRef.current?.click();
+        return;
+      case 'paste':
+        pasteClips({ atSec: target.atSec, trackId: target.trackId ?? undefined });
+        return;
+      case 'new-track':
+        selectTrackSingle(addTrack());
+        return;
+    }
+  };
+
+  /** The add-to-track entries as ContextMenu items. Shared by the timeline menu
+   *  and the track-header menu so the two can never drift. */
+  const addToTrackItems = (
+    target: AddToTrackTarget,
+    at: ContextMenuPosition | null,
+    only?: (entry: AddToTrackEntry) => boolean,
+  ): ContextMenuItem[] =>
+    buildAddToTrackMenu(target, {
+      // Null until the library store has loaded, so a right-click during boot
+      // offers the row instead of greying it out with "no audio in the library".
+      libraryAudioCount: libraryLoaded
+        ? useLibraryStore.getState().entries.filter((e) => (e.kind ?? 'audio') === 'audio').length
+        : null,
+      libraryMidiCount,
+      clipboardClipCount: clipboardRef.current.length,
+      trackCount: tracks.length,
+    })
+      .filter((entry) => (only ? only(entry) : true))
+      .map((entry): ContextMenuItem => ({
+        type: 'item',
+        icon: ADD_ENTRY_ICON[entry.id],
+        label: entry.label,
+        // A disabled row explains itself in the badge: a disabled menu item is
+        // pointer-events:none, so the `title` tooltip below never fires on the
+        // one row whose reason the user actually needs.
+        hint: entry.shortReason
+          ? entry.shortReason
+          : entry.createsTrack && isAddSourceEntry(entry)
+            ? 'new track'
+            : undefined,
+        title: entry.title,
+        disabled: !entry.enabled,
+        onSelect: () => runAddEntry(entry, target, at),
+      }));
 
   // --- Renderers ---
   const renderRuler = useMemo(() => {
@@ -4035,12 +4354,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <div
                 key={t.id}
                 onPointerDown={(e) => handleTrackHeaderPointerDown(e, t.id)}
-                onContextMenu={(e) => { selectTrackSingle(t.id); trackMenu.open(e, { trackId: t.id }); }}
+                onContextMenu={(e) => { selectTrackSingle(t.id); warmAddMenuCounts(); trackMenu.open(e, { trackId: t.id }); }}
                 /* overflow-hidden: shrinking the lane height (vertical zoom) clips the
                    header's controls rather than letting them spill into the next track. */
                 className={`border-b border-[#1a1528] p-2 flex flex-col gap-1.5 overflow-hidden transition-colors ${selectedTrackIds.includes(t.id) ? 'bg-purple-500/10 ring-1 ring-inset ring-purple-500/35' : ''}`}
                 style={{ height: trackH }}
-                title="Click to select track. Ctrl/Cmd-click to multi-select tracks. Right-click for track FX."
+                title="Click to select track. Ctrl/Cmd-click to multi-select tracks. Right-click to add audio or MIDI to it, or for track FX."
               >
                 <div className="flex justify-between items-center gap-1">
                   <input
@@ -4230,7 +4549,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Track lanes + 'drop here for new track' slot at the bottom */}
           <div
             ref={timelineRef}
-            className={`relative ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-default'}`}
+            /* tabIndex -1: never in the Tab order, but focusable from script so
+               a menu item that opens an OS dialog can hand focus back here
+               instead of stranding it on <body> when the dialog is cancelled. */
+            tabIndex={-1}
+            className={`relative outline-none ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-default'}`}
             style={{ width: timelineWidthPx, height: tracks.length * trackH + 34 + (automationEdit ? MASTER_STRIP_H : 0) }}
             onMouseDown={onTimelineClick}
             onContextMenu={onLanesContextMenu}
@@ -4520,7 +4843,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </span>
           ) : (
             <span className="text-[8px] font-mono text-zinc-700 uppercase tracking-wider">
-              {clips.length === 0 ? 'No clips yet — send something from LIBRARY' : 'No selection'}
+              {clips.length === 0 ? 'No clips yet — right-click a lane to add, or drag from LIBRARY' : 'No selection'}
             </span>
           )}
         </div>
@@ -4589,7 +4912,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           label: 'Paste at playhead',
           hint: 'Ctrl+V',
           disabled: clipboardRef.current.length === 0,
-          onSelect: pasteClips,
+          onSelect: () => pasteClips(),
         });
         items.push({ type: 'separator' });
         if (clip) {
@@ -4726,7 +5049,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           : null;
         const styleText = srcEntry ? deriveStyle(srcEntry).trim() : '';
         const lyricsText = srcEntry ? deriveLyrics(srcEntry).trim() : '';
+        // The header is where a user looks for "add something to THIS track",
+        // so it offers the same sources as right-clicking the lane. A header
+        // click has no x, so the insert point is the playhead.
+        const headerTarget: AddToTrackTarget = {
+          trackId: t.id,
+          trackName: t.name,
+          atSec: Math.max(0, snapSec(useEditorStore.getState().playheadSec)),
+        };
         const items: ContextMenuItem[] = [
+          { type: 'header', label: 'Add to this track' },
+          ...addToTrackItems(headerTarget, trackMenu.position, isAddSourceEntry),
+          { type: 'separator' },
           {
             type: 'item',
             icon: <Copy className="w-3 h-3" />,
@@ -4778,16 +5112,98 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
-      {/* MIDI picker — opened by right-clicking an empty part of the timeline. */}
-      <LibraryMidiPicker
-        open={midiDrop !== null}
-        anchor={midiDrop ? { x: midiDrop.x, y: midiDrop.y } : null}
-        title="Add MIDI to timeline"
-        onClose={() => setMidiDrop(null)}
-        onPick={(bytes, label) => {
-          const at = midiDrop?.sec ?? 0;
-          setMidiDrop(null);
-          void addMidiClipFromBytes(bytes, label, at);
+      {/* Add-to-track menu — right-click an empty part of the timeline. The
+          group header names the lane the click resolved to, so it can never
+          again claim to add to a track while quietly making a new one. */}
+      {addMenu.position && addMenu.payload && (() => {
+        const target = addMenu.payload;
+        const items: ContextMenuItem[] = [
+          { type: 'header', label: addToTrackGroupLabel(target) },
+          ...addToTrackItems(target, addMenu.position, isAddSourceEntry),
+          { type: 'separator' },
+          ...addToTrackItems(target, addMenu.position, (entry) => !isAddSourceEntry(entry)),
+        ];
+        return (
+          <ContextMenu
+            position={addMenu.position}
+            onClose={addMenu.close}
+            items={items}
+            title={`Timeline · ${formatTimecode(target.atSec)}`}
+            minWidth="13rem"
+          />
+        );
+      })()}
+
+      {/* Library picker — opened by an "… from Library" entry of either menu.
+          Portaled, anchored, no overlay: the app behind it stays usable. */}
+      <LibraryPicker
+        open={addPicker !== null}
+        anchor={addPicker ? { x: addPicker.x, y: addPicker.y } : null}
+        title={addPicker?.tab === 'midi' ? 'Add MIDI to a track' : 'Add audio to a track'}
+        subtitle={
+          addPicker
+            ? `${tracks.find((t) => t.id === addPicker.trackId)?.name ?? 'New track'} · ${formatTimecode(addPicker.atSec)}`
+            : undefined
+        }
+        initialTab={addPicker?.tab ?? 'audio'}
+        onClose={() => {
+          setAddPicker(null);
+          returnFocusToTimeline();
+        }}
+        onPick={(pick) => {
+          const target = addPicker;
+          setAddPicker(null);
+          returnFocusToTimeline();
+          if (target) {
+            void placePick(pick, { trackId: target.trackId, trackName: null, atSec: target.atSec });
+          }
+        }}
+      />
+
+      {/* The OS dialogs behind "… from System". A real <input type=file>, not
+          electronAPI.selectFile / storageClient.pickFile: those return a
+          filesystem PATH with no bytes, and nothing downstream can read a path.
+          Inside Electron this input opens the same native dialog, so one route
+          covers the desktop app and the browser at :5173 alike.
+          Hidden with sr-only rather than display:none — `hidden` would drop the
+          field out of the accessibility tree and leave its label naming
+          nothing — and kept out of the Tab order because the menu is the route. */}
+      <label htmlFor={addAudioInputId} className="sr-only">
+        Audio files to add to a track
+      </label>
+      <input
+        ref={audioFileInputRef}
+        id={addAudioInputId}
+        name={addAudioInputId}
+        type="file"
+        /* AUDIO_ACCEPT rather than the wildcard audio mime: Windows hands
+           many audio files over with an EMPTY mime type, and the wildcard then
+           greys out a 32-bit-float .wav the backend imports fine. */
+        accept={AUDIO_ACCEPT}
+        multiple
+        tabIndex={-1}
+        className="sr-only"
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = ''; // so picking the same file again still fires
+          void onAddAudioFiles(files);
+        }}
+      />
+      <label htmlFor={addMidiInputId} className="sr-only">
+        MIDI file to add to a track
+      </label>
+      <input
+        ref={midiFileInputRef}
+        id={addMidiInputId}
+        name={addMidiInputId}
+        type="file"
+        accept={MIDI_ACCEPT}
+        tabIndex={-1}
+        className="sr-only"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void onAddMidiFile(file);
         }}
       />
 

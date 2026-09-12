@@ -238,7 +238,10 @@ export const ArpeggiatorPanel: React.FC = () => {
           <span className="text-[8px] font-mono text-purple-300 w-8 text-right">{ragPct > 0 ? '+' : ''}{ragPct}%</span>
         </div>
 
-        <InstrumentPicker />
+        {/* Own id prefix: the arpeggiator and the Piano Roll are both mounted
+            at once (MidiPanel keeps the roll alive behind the arp face), so the
+            default `pr-instrument` id would exist twice in one document. */}
+        <InstrumentPicker idPrefix="arp-instrument" />
 
         {/* Bass */}
         <button
