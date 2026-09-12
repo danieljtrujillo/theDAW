@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from .bundle import build_bundle_bytes
 from .store import AUDIO_EXTS, LibraryStore, _read_metadata, default_library_root
 from .tags import MAX_EMBEDDED_COVER_BYTES
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +50,7 @@ _store: Optional[LibraryStore] = None
 def get_store() -> LibraryStore:
     global _store
     if _store is None:
-        project_root = Path(__file__).resolve().parents[3]
-        _store = LibraryStore(default_library_root(project_root))
+        _store = LibraryStore(default_library_root())
     return _store
 
 
@@ -522,11 +522,10 @@ _PERF_SETS_DIRNAME = "performance-sets"
 
 
 def _perf_sets_root() -> Path:
-    """`<project>/data/performance-sets/` — where external set builders
+    """`<data>/performance-sets/` — where external set builders
     (Z-AutoDJ) drop prepared sets: one folder per set containing the audio
     files plus a `performance.json` timeline."""
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / "data" / _PERF_SETS_DIRNAME
+    return paths.data_path(_PERF_SETS_DIRNAME)
 
 
 def _load_perf_set(store: LibraryStore, set_dir: Path) -> Optional[dict[str, Any]]:

@@ -44,6 +44,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from backend._update_sync import UPDATE_EXIT_CODE, run_dependency_sync
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ router = APIRouter()
 # backend/modules/updates/router.py -> parents[3] == repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
-_CACHE_PATH = _REPO_ROOT / "data" / "updates_check.json"
+_CACHE_PATH = paths.data_path("updates_check.json")
 
 _REPO_SLUG = "gantasmo/theDAW"
 _RELEASES_URL = f"https://api.github.com/repos/{_REPO_SLUG}/releases"

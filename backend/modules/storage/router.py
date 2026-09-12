@@ -42,7 +42,8 @@ from stable_audio_3.model_configs import (
     rf_models,
 )
 
-from .store import PROJECT_ROOT, get_registry
+from .store import get_registry
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -184,9 +185,9 @@ def _windows_locations() -> list[tuple[str, str, Path]]:
         (
             "generations",
             "Generated audio library",
-            PROJECT_ROOT / "data" / "generations",
+            paths.library_root(),
         ),
-        ("rag-index", "Assistant RAG index", PROJECT_ROOT / "backend" / "rag_index"),
+        ("rag-index", "Assistant RAG index", paths.rag_index_dir()),
         (
             "torch-cache",
             "Torch hub cache (Demucs, MIDI models)",

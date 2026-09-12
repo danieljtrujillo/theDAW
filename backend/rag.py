@@ -12,11 +12,12 @@ import re
 import threading
 from pathlib import Path
 from typing import Optional
+from backend.lib import paths
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RAG_INDEX_DIR = PROJECT_ROOT / "backend" / "rag_index"
+RAG_INDEX_DIR = paths.rag_index_dir()
 
 DOC_PATHS = [
     PROJECT_ROOT / "CLAUDE.md",

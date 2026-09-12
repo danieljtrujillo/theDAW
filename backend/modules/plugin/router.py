@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from backend.core.startup import register_startup_hook
 from backend.modules.plugin.gan_file import GanFile
 from backend.modules.plugin.owl_import import import_vst_foundry, source_fingerprint
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ router = APIRouter()
 
 # Repo-root anchored, so it resolves regardless of the process CWD.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-GAN_DIR = _REPO_ROOT / "data" / "plugins"
+GAN_DIR = paths.data_path("plugins")
 RUNTIME_DIR = GAN_DIR / "_runtime"
 
 # In-repo source for the bundled "The Owl" plugin (the sidecar .gan).

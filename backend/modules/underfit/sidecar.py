@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Optional
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ PORT_READY_TIMEOUT_SEC = 30.0
 PORT_POLL_INTERVAL_SEC = 0.5
 # Child stdout/stderr land here so a spawn that dies (missing venv dep,
 # port clash, traceback) can be diagnosed instead of vanishing.
-LOG_PATH = _REPO_ROOT / "data" / "underfit-sidecar.log"
+LOG_PATH = paths.data_path("underfit-sidecar.log")
 
 
 @dataclass

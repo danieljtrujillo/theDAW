@@ -27,12 +27,11 @@ from pydantic import BaseModel
 
 from . import discovery, enrich, routing
 from .vocab import GENRES, VIBES
+from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["tour"])
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 # Key registry: env var name -> short id used in /status + /config payloads.
 # ORS (openrouteservice) backs /route until/unless a self-hosted VROOM ships;
@@ -45,9 +44,7 @@ _KEYS = {
 
 
 def _data_dir() -> Path:
-    d = PROJECT_ROOT / "data"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return paths.ensure_data_dir()
 
 
 def _key_file() -> Path:
