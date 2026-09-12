@@ -283,7 +283,8 @@ export const Shell: React.FC = () => {
       style={{
         ...({ '--layout-zoom': String(layoutZoom) } as React.CSSProperties),
         zoom: layoutZoom,
-        height: 'calc((100vh - 3.5rem) / var(--layout-zoom))',
+        // FOOTER_H (lib/layoutScale.ts) is the fixed, unzoomed PlayerFooter below.
+        height: `calc((100vh - ${FOOTER_H}px) / var(--layout-zoom))`,
         ...(editTheme.vars as React.CSSProperties),
       }}
     >
@@ -705,7 +706,7 @@ const ShellBottomDock: React.FC = () => {
   // Dock-body height — shared by the multi-tab panel (in-flow) and the floating
   // LOG overlay. Maximized fills the work area. The height MUST be computed in
   // the same zoom-aware space as the .dense-layout root (height =
-  // calc((100vh - 3.5rem) / var(--layout-zoom))); a raw `100vh` calc here ignores
+  // calc((100vh - FOOTER_H) / var(--layout-zoom))); a raw `100vh` calc here ignores
   // --layout-zoom and, at zoom > 1, overflows the root's overflow-hidden so the
   // dock's own bottom (e.g. the Score viewer's page/zoom controls) is clipped.
   // Reserve 4.5rem inside the root for the header (h-11 = 44px) + the always-on
@@ -722,7 +723,7 @@ const ShellBottomDock: React.FC = () => {
     Math.min(multiHeight, Math.floor(workAreaH * DOCK_MAX_FRACTION_OF_WORK)),
   );
   const bodyHeight = multiMaximized
-    ? 'calc((100vh - 3.5rem) / var(--layout-zoom) - 4.5rem)'
+    ? `calc((100vh - ${FOOTER_H}px) / var(--layout-zoom) - 4.5rem)`
     : `${effectiveMultiHeight}px`;
   // The LOG strip section auto-fits its content (the telemetry readouts + the
   // fixed action button). Mirror its measured width into logWidth so the LOG

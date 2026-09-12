@@ -2,7 +2,7 @@
  * Continuous, width AND height aware shell scale.
  *
  * The DAW is designed against a fixed logical canvas (DESIGN_W x DESIGN_SHELL_H
- * CSS px for the Shell, plus the unzoomed 56px (h-14) PlayerFooter beneath it). The
+ * CSS px for the Shell, plus the unzoomed FOOTER_H px (h-16) PlayerFooter beneath it). The
  * Shell renders under CSS `zoom` so that canvas always fits the real window:
  *
  *   zoom = clamp(MIN, min(innerWidth / DESIGN_W, (innerHeight - FOOTER_H) / DESIGN_SHELL_H), MAX)
@@ -30,8 +30,9 @@ import { useEffect, useState } from 'react';
 
 export const DESIGN_W = 1600;
 export const DESIGN_SHELL_H = 820;
-/** PlayerFooter height (h-20) — fixed, outside the zoomed subtree. */
-export const FOOTER_H = 56;
+/** PlayerFooter height (h-16: a 16px scrub strip over a 48px control row) —
+ *  fixed, outside the zoomed subtree. PlayerFooter's `h-16` must match. */
+export const FOOTER_H = 64;
 export const LAYOUT_ZOOM_MIN = 0.6;
 export const LAYOUT_ZOOM_MAX = 1.1;
 
