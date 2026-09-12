@@ -4,21 +4,34 @@ Common issues and fixes specific to running Stable Audio 3 on Windows.
 
 ---
 
-## torchaudio: "Couldn't find appropriate backend"
+## torchaudio: "Could not load libtorchcodec"
 
 **Symptom:**
 ```
-RuntimeError: Couldn't find appropriate backend to handle uri output.wav and format None.
+RuntimeError: Could not load libtorchcodec. ... FFmpeg
 ```
 
-**Cause:** torchaudio has no audio I/O backend installed. `soundfile` is now a
-base dependency, so `uv sync` installs it automatically; this only appears if a
-custom or partial environment dropped it.
+**Cause:** from 2.9, `torchaudio.load` and `torchaudio.save` decode through
+torchcodec, which loads FFmpeg's *shared* libraries at import. No ordinary
+Windows ffmpeg build carries them — the winget, gyan "essentials" and gyan
+"full" builds are all static — so the call fails on every Windows machine.
+torchcodec is not in `uv.lock` and is not meant to be.
 
-**Fix:**
-```powershell
-uv pip install soundfile
+theDAW therefore never calls `torchaudio.load` / `save`. All audio I/O is
+`backend/lib/audio_io.py`, which reads and writes through libsndfile
+(`soundfile`) and falls back to the ffmpeg CLI for the containers libsndfile
+cannot open (m4a/aac, webm, anything with a video track). torchaudio stays in
+the project for its transforms — resample, spectrograms — and nothing else.
+
+**Fix:** if you see this, something is calling torchaudio directly. Use the
+app's loader instead:
+
+```python
+from backend.lib.audio_io import load_audio, save_audio
 ```
+
+If `soundfile` itself is missing from a hand-built environment, `uv sync`
+restores it — it is a base dependency.
 
 ---
 
@@ -29,17 +42,25 @@ uv pip install soundfile
 >>> torch.cuda.is_available()
 False
 >>> torch.__version__
-'2.7.1+cpu'
+'2.14.0+cpu'
 ```
 
 **Cause:** `uv sync` resolved CPU torch instead of the CUDA build. On Windows,
-`pyproject.toml` maps torch to the cu128 index automatically, so this usually
+`pyproject.toml` maps torch to the cu130 index automatically, so this usually
 means a custom index, an offline cache, or a non-Windows resolution interfered.
 
 **Fix:**
 ```powershell
-uv pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128 --reinstall
+uv sync --reinstall-package torch --reinstall-package torchaudio
 ```
+
+Re-sync rather than `uv pip install` a wheel by hand: `scripts/check_lock.py`
+and the pre-commit hook verify that the lock installs on both shipped platforms,
+and an off-lock wheel is outside what that check covers.
+
+`torch.cuda.is_available()` can also read `False` on a correctly installed cu130
+build when the driver is older than **580** — the R580 branch is what CUDA 13
+requires. `nvidia-smi` reports the installed driver version.
 
 ---
 
@@ -51,23 +72,25 @@ missing MSVC/CUDA toolkit.
 **Cause:** flash-attn has no official Windows wheels. Building from source
 requires Visual Studio Build Tools with MSVC and the matching CUDA toolkit.
 
-**Fix:** Use pre-built wheels. Match your Python version:
+**Fix:** there is nothing to build — `pyproject.toml` already pins a prebuilt
+wheel per Python minor under `[tool.uv.sources]`, so `uv sync` installs one:
+
+```powershell
+uv sync --reinstall-package flash-attn
+```
 
 | Python | Wheel |
 |--------|-------|
-| 3.10 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl` |
-| 3.11 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp311-cp311-win_amd64.whl` |
-| 3.12 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl` |
-| 3.13 | `flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp313-cp313-win_amd64.whl` |
+| 3.12 | `flash_attn-2.8.3+cu130torch2.14-cp312-cp312-win_amd64.whl` |
+| 3.13 | `flash_attn-2.8.3+cu130torch2.14-cp313-cp313-win_amd64.whl` |
+| 3.14 | `flash_attn-2.8.3+cu130torch2.14-cp314-cp314-win_amd64.whl` |
 
-Download from: https://github.com/kingbri1/flash-attention/releases/tag/v2.8.3
+They are the release assets on
+https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2
 
-```powershell
-uv pip install https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
-```
-
-**Important:** Your PyTorch CUDA version must match the wheel. These wheels
-require cu128, so use `torch==2.7.1+cu128`.
+**Important:** the wheel's torch and CUDA versions must both match your build.
+These are **torch 2.14 + cu130**, which is what `uv sync` installs. A wheel built
+against any other pair will install and then fail to import.
 
 ---
 

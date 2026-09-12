@@ -106,7 +106,7 @@ All in-browser audio (library playback, waveform editor preview, step sequencer,
 
 ### Prerequisites
 
-Put these on the PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path: effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 550+** for the Medium model and Magenta (the Small model runs on CPU). On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
+Put these on the PATH first: **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python env + packages), **[Node.js](https://nodejs.org/) v20.19+ / v22.12+** (frontend + VJ sidecar, includes npm; the Vite 7 floor), **[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)** (every audio path: effects, exports, ingest, MIDI, YouTube import), **Git** (clone with `--recurse-submodules` for the Magenta sidecar source), and an **NVIDIA driver 580+** — the R580 branch, which CUDA 13 requires — for the Medium model and Magenta (the Small model runs on CPU). Turing (sm_75) through Blackwell are supported. On Windows, `theDAW.bat` verifies uv/node/npm, warns on missing FFmpeg, and bootstraps the venv + `node_modules` on first run (§4); the Windows specifics are in [windows/setup-guide.md](windows/setup-guide.md).
 
 ### Base Python environment
 
@@ -116,7 +116,7 @@ uv sync
 
 ### Linux
 
-No separate CUDA step: `pyproject.toml` maps Linux x86_64 to the cu126
+No separate CUDA step: `pyproject.toml` maps Linux x86_64 to the cu130
 torch/torchaudio index under `[tool.uv.sources]`, so plain `uv sync` installs
 the GPU build. The full walkthrough — prerequisites (Node from nvm, ffmpeg), the
 `pyk4a-bundle` glibc caveat, the `./theDAW.sh` launcher, and what differs from
@@ -130,14 +130,11 @@ uv sync --group dev
 
 ### Windows-specific requirements
 
-`pyproject.toml` includes CUDA 12.8 wheel sources for torch, torchaudio, and Flash Attention under `[tool.uv.sources]`. Running `uv sync` on Windows installs all of them automatically. No additional flags or manual wheel downloads are required for Python 3.10 with CUDA 12.8.
+`pyproject.toml` includes CUDA 13.0 (cu130) wheel sources for torch, torchaudio, and Flash Attention under `[tool.uv.sources]`. Running `uv sync` on Windows installs all of them automatically. No additional flags and no manual wheel downloads are required for the project's Python 3.12 venv with CUDA 13.0.
 
-On a different CUDA or Python version, install PyTorch manually:
-```powershell
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-```
+`uv sync` is the only supported install path. `[tool.uv] required-environments` names Linux x86_64 and Windows AMD64, so `uv lock` refuses a version that has no wheels for both, and `scripts/check_lock.py` proves the lock installs on each of them — hand-installing an off-lock wheel breaks that guarantee.
 
-`soundfile` is included in the base dependencies. Flash Attention is conditionally installed (`sys_platform == 'win32' and python_version < '3.11'`); the wheel URL in `pyproject.toml` targets Python 3.10 with CUDA 12.8 and torch 2.7.0. For other combinations, download a matching wheel from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+`soundfile` is a base dependency, and libsndfile is what every audio read and write actually runs on, through `backend/lib/audio_io.py` (§20.2). Flash Attention is conditionally installed (`sys_platform == 'win32' and python_version < '3.15'`); `pyproject.toml` pins one prebuilt [mjun0812/flash-attention-prebuild-wheels](https://github.com/mjun0812/flash-attention-prebuild-wheels) wheel per Python minor — cp312, cp313 and cp314, all `flash_attn-2.8.3+cu130torch2.14`. On Windows this package is the only FlashAttention-2 there is, because torch's built-in flash SDPA kernel is not compiled under MSVC, and `transformer.py` gates it off below sm_80 regardless.
 
 Full walkthrough: [docs/windows/setup-guide.md](windows/setup-guide.md).
 
@@ -187,19 +184,21 @@ cd frontend && npm run dev
 
 The application window has five regions:
 
-- **Full-width header** (top): the theDAW logo, a global search input, and action buttons (Docs, mobile access QR/link, Settings, user avatar, AI Assistant orb).
+- **Full-width header** (top): the theDAW logo, the center workspace tabs, and four actions on the right — mobile access QR/link, the **?** help search, **IMPORT**, and the app menu (§37).
 - **Center workspace**: the center tab bar at the top and the active workspace below it, including that tab's own controls and run action.
 - **Library rail** (right, collapsible): browse and route library material without leaving the active workspace.
 - **Global bottom dock**: the bottom multi-tab panel and the processing log, side by side.
 - **Player footer** (bottom): a fixed transport bar.
 
-**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, a global search input, the app menu (§37), and the action buttons listed above. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
+**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, the center tab bar, and the four right-hand actions above, in that order. Settings opens only from the app menu — the header gear was retired; Docs opens from inside the **?** help popover; the global search moved to the player footer; and the AI Assistant orb is a free-floating draggable element over the app rather than a header button. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
+
+**The ? help search:** the **?** button opens a search over the feature registry — the same entries the Feature Tour and the pinned Feature Notes read, so the three can never drift apart. Type what you are after and each hit says what the thing is, how to use it, and which tab it lives in; **LOCATE** hands the id to the solo spotlight, which switches workspace, opens the panel the control lives in, and rings the real control on the real screen. The field takes focus on open, Down steps into the results, Up comes back out of the top of them, Enter locates the best hit, and Escape closes and hands focus back to the button. **Docs** sits beside the input and still opens this manual untouched.
 
 **IMPORT** sits between the ? help button and the ☰ app menu on every tab. It opens a small menu: **Audio files…** adds tracks to the library (pick several at once; the newest is selected and the library rail opens), **Open project…** opens a saved `.tasmo`, **DAW project…** imports an Ableton set. You can also drop audio files straight onto the IMPORT button.
 
 **Dropping files from the desktop.** Anywhere a library track can be dropped also takes audio files dragged in from File Explorer or Finder: the library list itself, the EDIT timeline (each file becomes a clip, extra files on new tracks), the MAKE init and inpaint slots, the MIX source, the Chimera stack, the MIDI panel's song box, the DJ decks, sampler pads, NEXT queue and prepared sets, the Media bucket and, for video and image files, the VJ tab. The file is imported into the library first (it shows up in the library rail with the newest selected) and then lands where you dropped it, exactly as a library track would.
 
-**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. Alongside the nine below, the bar also carries **NodeF.I.** (§40), **SWAY**, and **Tour**. The nine core tabs are:
+**Center tab switching:** the active workspace is controlled by the center tab bar (`CenterTabBar`). Each tab carries its own accent color. Legacy navigation targets such as `create`, `advanced`, `edit`, and `train` are translated into these center tabs, so assistant actions, library sends, and older shortcuts still route correctly — and the assistant can reach every workspace plus the Library rail, reporting an honest failure rather than a false success if a target does not exist. There are thirteen tabs, in this on-screen order: MAKE, EDIT, MIX, PERFORM, DJ, VJ, SWAY, FOUNDRY, UNDERFIT, NODEFI, LOOM, LEARN, TOUR. Alongside the nine core tabs below, the bar carries **SWAY** (§35), **NodeF.I.** (§40), **LOOM** and **Tour**. The nine core tabs are:
 
 - **MAKE**: generate audio from a text prompt with the AI models (§6).
 - **EDIT**: arrange clips on a timeline, add effects and automation, and export (§7).
@@ -211,7 +210,9 @@ The application window has five regions:
 - **Underfit**: train LoRA finetunes in the embedded Underfit dashboard (§11).
 - **Learn**: lineage, genealogy, and the guides and assistant (§12).
 
-**Shell surfaces from the app menu:** three surfaces sit above the workspaces and open from the header. The **app menu** (§37) is the hamburger button in the header icon cluster; it groups project operations, data operations, device deploy, layout and settings, and help. The **HOME overlay** (§38) is a full-screen launcher with one card per workspace tab, a task row, and a show-at-startup preference; it appears after the boot intro and reopens from the menu. The **Feature Tour** (§38) is a six-step guided walkthrough that spotlights real controls; it starts from the menu or the HOME task row.
+**LOOM** is the thirteenth tab: the Shard Index drawn as one living colony that grows a generation every bar. It has its own guide, [guides/loom-and-shards.md](guides/loom-and-shards.md).
+
+**Shell surfaces from the app menu:** three surfaces sit above the workspaces and open from the header. The **app menu** (§37) is the hamburger button in the header icon cluster; it groups project operations, data operations, device deploy, layout and settings, and help. The **HOME overlay** (§38) is a full-screen launcher with one card per workspace tab, a task row, and a show-at-startup preference; it appears after the boot intro and reopens from the menu. The **Feature Tour** (§38) is a chaptered guided walkthrough that spotlights real controls; it starts from the menu or the HOME task row.
 
 **PERFORM tab:** the Perform workspace (`SessionView`) imports a DAW project or a `.tasmo` file and performs its scene/clip grid live. The project controls live in the tab header (a path input, Browse, and Import), so the session grid gets the full remaining height. Clicking or focusing the path input opens a dropdown of recent projects: ArrowDown and ArrowUp move through the list, Enter opens the highlighted entry, Escape closes the dropdown, and one click on an entry imports it immediately. The recent list persists across backend restarts (`data/recent_projects.json`).
 
@@ -219,19 +220,25 @@ The application window has five regions:
 
 **Right-side library rail:** the Library is a collapsible panel on the right edge. A compact, vertically-centered pull handle on the right edge of the work area (present in every workspace) toggles it open or closed, and a drag handle on the rail's inner edge resizes it; the width persists between 280 px and 640 px. Expanded fully, the rail becomes the full-width Catalogue. This lets MAKE, MIX, LEARN, VJ, and editor workflows stay visible while browsing or routing library material.
 
-**Global bottom dock:** pinned across the bottom of the app are two independent columns, the bottom multi-tab panel on the left (Visualize / Piano / Sequence / Details / Media / SLIDE / Score) and the processing log on the right, aligned under the library rail. Each column has its own height, collapse toggle, and resize handle, so expanding or resizing one does not move the other, and the dock stays put regardless of the library panel's state.
+**Global bottom dock:** pinned across the bottom of the app are two independent columns, the bottom multi-tab panel on the left (Levels / Visualize / MIDI / Sequence / DRAW / Score / Sing / Lyric / Details / SLIDE / SWAY) and the processing log on the right, aligned under the library rail. Each column has its own height, collapse toggle, and resize handle, so expanding or resizing one does not move the other, and the dock stays put regardless of the library panel's state.
 
-**Docs modal:** click the Docs button in the header to open this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. This guide is one document in the assistant's RAG corpus (the full list is in `backend/rag.py`), so revising it improves both the in-app manual and the assistant's grounding.
+**Docs modal:** open the **?** help popover and click **Docs** beside its search field to read this guide in-app. The modal supports anchor links, syntax-highlighted Markdown tables and code blocks, raw Markdown download, and browser print/PDF export. This guide is one document in the assistant's RAG corpus (the full list is in `backend/rag.py`), so revising it improves both the in-app manual and the assistant's grounding.
 
 **Mobile access share:** click the QR/link button in the header to copy or scan the current LAN or tunnel URL for mobile performance access. This is useful with the VJ tab and any browser-based controller or viewer.
 
-**AI Assistant panel:** click the orb icon in the header to open the collapsible assistant panel. It streams chat from any configured LLM provider with RAG context retrieved from the document corpus registered in `backend/rag.py` (this guide plus the other manuals and guides), supports file attachments and voice input, and exposes provider and key-pool controls. See [§19.11](#1911-assistant) for the API reference.
+**AI Assistant panel:** click the assistant orb — a free-floating element you can drag anywhere over the app, not a header button — to open the collapsible assistant panel. It streams chat from any configured LLM provider with RAG context retrieved from the document corpus registered in `backend/rag.py` (this guide plus the other manuals and guides), supports file attachments and voice input, and exposes provider and key-pool controls. See [§19.11](#1911-assistant) for the API reference.
 
-**Viewport scaling:** the UI applies a CSS `zoom` factor based on viewport width (0.85 below 1440 px; 0.95 at 1440 to 1919 px; 1.1 at 1920 px and above). Shell height calculations compensate so the layout tiles cleanly down to the footer.
+**Viewport scaling:** the Shell renders under a CSS `zoom` that fits a fixed logical canvas — 1600 x 820 CSS px — into the real window:
+
+```
+zoom = clamp(0.6, min(innerWidth / 1600, (innerHeight - 64) / 820), 1.1)
+```
+
+It is rounded to two decimals (stable across sub-pixel resize jitter), recomputed on every resize, and published as the `--layout-zoom` custom property on the `.dense-layout` root (`frontend/src/lib/layoutScale.ts`). The 64 px player footer sits outside the zoomed subtree, so the layout always tiles cleanly down to it. This replaced three width-only tiers (0.85 / 0.95 / 1.1) that had no height term, so a short window lost shell height it could not spare.
 
 ![UI shell with center tabs and right library rail](screenshots/01-shell-make.png)
 
-![Header actions (Docs, share, settings, assistant)](screenshots/01-shell-make__header-actions.png)
+![Header actions (mobile share, help search, import, app menu)](screenshots/01-shell-make__header-actions.png)
 
 ---
 
@@ -253,12 +260,37 @@ Six controls arranged in a 3-column grid:
 
 | Control | Type | Notes |
 |---|---|---|
-| **Model** | Dropdown | `small` and `medium` for primary inference, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel. The `small-rf` and `medium-rf` checkpoints are rectified-flow training bases surfaced through the Underfit trainer (§11) rather than inference models; selecting an `-rf` variant for a direct render raises Steps to 50 and CFG to 7.0 to run it, and the ARC `small` and `medium` checkpoints are the intended generation path. |
+| **Model** | Dropdown | `small` and `medium` for primary inference, plus `magenta-small` for Magenta RealTime 2 (§27) and `suno` for Suno cloud generation (§26). Picking Magenta drops Steps to 1 and brings up the MRT2 conditioning controls. The Suno entry opens the Aurora Cloud Console in place of the local panel, and `lyria` (Lyria 3 Pro) opens the Lyria panel in place of it (§6.2.1). The `small-rf` and `medium-rf` checkpoints are rectified-flow training bases surfaced through the Underfit trainer (§11) rather than inference models; selecting an `-rf` variant for a direct render raises Steps to 50 and CFG to 7.0 to run it, and the ARC `small` and `medium` checkpoints are the intended generation path. |
 | **Duration (s)** | Integer | Total output length in seconds. Small model: max 120 s. Medium and Large: max 380 s. |
 | **Batch** | Integer | Number of simultaneous variations. Each variation produces a distinct library entry with its own seed. |
 | **Steps** | Integer | Sampler denoising steps. ARC default: 8. RF default: 50. |
 | **CFG** | Float | Classifier-free guidance scale. ARC default: 1.0. RF default: 7.0. Higher values increase adherence to the prompt and can introduce artifacts. |
 | **Seed** | Integer + reroll button | Use −1 for a random seed on each run. The reroll button generates and displays a new random seed without submitting a job. |
+
+#### 6.2.1 Lyria 3 Pro
+
+Choosing **Lyria 3 Pro (Cloud)** in the Model dropdown replaces the whole MAKE
+surface with the Lyria 3 Pro app, embedded whole and unmodified. It is its own
+project (`StarskreamEXE/lyria-3-pro`), it ships its own Express server, SPA,
+settings and library, and theDAW spawns it as a sidecar on port 5188 and frames
+it. The model dropdown stays on screen above it, because without one you would
+be stranded inside the frame with no route back to Stable Audio.
+
+It is framed rather than absorbed on purpose: at its own origin the app's
+relative `/api/*` fetches resolve against its own server, so it needs no CORS,
+no base URL and no client rewrite, and its viewport styling, portals, window
+event bus and Ctrl+Enter binding all apply to its own document and cannot
+collide with theDAW's. It drives its own transport, so there is no bridge
+between the two.
+
+The sidecar is request-driven: the Node process only starts when someone
+actually opens the panel, and the panel retries while it comes up. Once warmed,
+the frame stays mounted so a round trip to Stable Audio does not restart the
+server or lose its in-app state. `POST /api/lyria/install` clones the project
+and runs its `npm install` in the background (it needs `git`), so Settings can
+repair a missing Lyria without handing you a command line, and
+`GET`/`POST`/`DELETE /api/lyria/key` manage the `GEMINI_API_KEY` theDAW passes
+to it. A pop-out button opens it in its own window.
 
 ### 6.3 Advanced Generation Panel
 
@@ -1069,7 +1101,9 @@ The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chor
 
 ## 16. Bottom Panel Tabs
 
-The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Ten tabs are available, in order: Levels, Visualize, Piano, Sequence, DRAW, Score, Details, Media, SLIDE, and SWAY. Development builds add an eleventh, **XR Bus**, a tester for the XR control bus (§34.4); production builds hide the tab and remap a persisted selection so it can never strand you on a missing tab.
+The bottom panel is collapsible and vertically resizable (drag the grip handle above it), and a maximize toggle expands any tab to fill the window. Eleven tabs are available, in order: Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Lyric, Details, SLIDE, and SWAY. Development builds add a twelfth, **XR Bus**, a tester for the XR control bus (§34.4); production builds hide the tab and remap a persisted selection so it can never strand you on a missing tab.
+
+Two tabs carry their own layout toggle in the tab row. **Details** switches between Details alone, Media alone, and both side by side; **Sing** switches between **Lyrics**, **Both**, **Score** and **Study** (the lyrics beside the literary analysis). What each tab *is* lives in the feature registry under `panel-<id>`, so the hover tooltip on a tab and the sentence the **?** help search returns for it are the same sentence.
 
 The panel's tab strip reads as part of the footer rather than a separate slab: it carries the footer's tinted-blur treatment and hairline border, the group toggle is a labelled **PANELS** button showing the active tab, and both dock bodies animate outward from the button that opened them.
 
@@ -1099,9 +1133,9 @@ Text in the overlay uses `textShadow` for legibility against any visualization b
 
 ![The real-time spectral analyzer](screenshots/visualizer.png)
 
-### 16.2 Piano
+### 16.2 MIDI
 
-Full piano roll interface embedded in the bottom panel. See [§15](#15-piano-roll).
+The tab reads **MIDI** in the tab row. It is the full piano roll interface embedded in the bottom panel. See [§15](#15-piano-roll).
 
 ### 16.3 Sequence
 
@@ -1130,9 +1164,11 @@ Displays full metadata for the currently selected library entry.
 
 **Prompt inference:** When the entry has been analyzed (§13.8), the **PROMPT INFERENCE** box derives a Stable Audio prompt and semantic tags from the analysis, and **USE AS PROMPT** copies the text into the MAKE prompt field. See §33.6.
 
-### 16.5 Media
+### 16.5 Media (a pane of Details)
 
-A session-scoped file holding area for arbitrary audio files. Contents are cleared on page reload.
+Media is not its own tab any more. It is one of the DETAILS tab's three layouts, chosen with the **Details tab layout** toggle in the tab row: Details alone, Media alone, or both side by side.
+
+It is a session-scoped file holding area for arbitrary audio files. Contents are cleared on page reload.
 
 - **Dropzone** accepts drag-and-drop or click-to-upload. Supported formats: WAV, MP3, FLAC, OGG, AAC, M4A, Opus. Library entries can be dragged in directly using the `application/x-thedaw-library-id` transfer protocol to locate the source file from the backend store.
 - **Per-item display**: filename, MIME type, file size.
@@ -1184,33 +1220,45 @@ The Sway's six expressive-motion dimensions (`strike`, `sway`, `pulse`, `glide`,
 
 The Sing tab shows the selected song's lyrics large and centred and moves them with the track line by line and word by word. Lyrics come from the entry's Lyrics field (Suno imports and tagged files fill it), a paste, an LRC file or whisper. **ALIGN** keeps your words and times every one of them against the vocal stem with a forced aligner; whisper then reviews the result in a separate job and underlines words it heard differently. **TAP** stamps line starts by hand while the song plays. **AUTO** runs ALIGN by itself when a song opens with lyrics but no timings. **PITCH** shows the vocal's melody and scores what you sing into the microphone. **EXPORT** writes LRC. The full walkthrough, the `lyrics` settings and the API are in [guides/sing-along-and-lyrics.md](guides/sing-along-and-lyrics.md).
 
+### 16.12 Lyric
+
+The writing surface: a notebook of lyric drafts that is not tied to a library track, with the analysis pane beside it. Write here, analyse from here, and mark rhymes by hand here — hand-made marks are stored against a lyric document, so MARK is only offered on a notebook draft. See [guides/lyric-notebook.md](guides/lyric-notebook.md) and [guides/lyric-analysis.md](guides/lyric-analysis.md).
+
 ## 17. Player Footer
 
-A fixed bar at the bottom of the viewport (z-index 50), visible and functional across all tabs and workspace modes.
+A fixed 64 px bar at the bottom of the viewport (z-index 50), visible and functional across all tabs and workspace modes. It sits outside the Shell's zoomed subtree (§5), so it is the one region that never scales. Two rows: a scrub strip on top, and a control row beneath it laid out as three tracks — now playing, the transport plate, up next and the utilities.
 
-### 17.1 Track Information (left region)
+### 17.1 Now playing (left region)
 
-- **Thumbnail**: an animated music-note icon with a purple pulse during playback.
+- **Orb speech bubble**: on wide windows (xl and up) the assistant orb's tip bubble occupies the leftmost slot, where the global search used to sit.
 - **Title**: the current `playerStore.currentLabel`, truncated to fit the column.
-- **Model chip**: derived from `useGenerateStore.lastModelName`. Shows `LIBRARY` for entries loaded from the library and `IDLE` when nothing has been generated or loaded.
+- **Model chip**: derived from `useGenerateStore.lastModelName`, drawn in the active theme's accent. Shows `LIBRARY` for entries loaded from the library and `IDLE` when nothing has been generated or loaded.
 - **Duration readout**: `MM:SS // 48kHz`, read from `playerStore.duration`.
+- **Like** and **Share** appear on hover or keyboard focus. In VJ mode a **VJ** chip also shows how many items the current set holds and whether the VJ has acknowledged it.
 
 ### 17.2 Transport (center region)
 
-| Control | Description |
+The transport is a single matte plate of five labelled keys on a hairline grid, held on the exact viewport centre by the surrounding `1fr · auto · 1fr` layout (an even key count either side of PLAY is what keeps it there):
+
+| Key | Description |
 |---|---|
-| **Loop** | Toggles looped playback in `playerStore`. Active state shown in purple. |
-| **Skip to start** | Calls `playerStore.seekByFraction(0)`. |
-| **Play / Pause** | Primary playback toggle. In EDIT workspace mode with no editor audio loaded, the first press triggers an offline render of the waveform editor timeline, loads the result into `playerStore`, and begins playback. Subsequent presses toggle playback natively. |
-| **Skip to end** | Calls `playerStore.seekByFraction(1)`. |
-| **Fullscreen** | Toggles browser fullscreen on `document.documentElement`. |
+| **LOOP** | Toggles looped playback in `playerStore`. A latched key draws in the active theme's accent (`--et-accent`), not a fixed purple. |
+| **START** | Calls `playerStore.seekByFraction(0)`. |
+| **PLAY / PAUSE** | Primary playback toggle; the printed legend flips with the glyph. In EDIT workspace mode with no editor audio loaded, the first press triggers an offline render of the waveform editor timeline, loads the result into `playerStore`, and begins playback. Subsequent presses toggle playback natively. |
+| **END** | Calls `playerStore.seekByFraction(1)`. |
+| **RAND** | Random order: any other library track plays next instead of the following one. |
 
-**Progress bar:** a horizontal track showing playback position. Click anywhere to seek (`playerStore.seekByFraction`). On hover, a circular scrubber handle appears at the current position. Time labels at left and right show current time and total duration. The footer synchronizes its playhead with the Waveform Editor; scrubbing the progress bar updates the editor timeline position when the editor timeline is the active audio source.
+Fullscreen is no longer on the plate — it is a window utility and sits with Mute, Volume and Download on the right (§17.3).
 
-### 17.3 Utilities (right region)
+**Scrub strip:** the footer's first row is a scrub strip, centred at three-fifths of the footer width with the elapsed and total times either side of it. The rail is a flat hairline that thickens under the pointer or keyboard focus; the filled part draws in the theme accent, and the playhead is a small cursor bar that widens under the hand. Click or drag anywhere to seek, and a time bubble follows the pointer. It is a real slider for assistive technology (`role="slider"` with `aria-valuetext`): Left/Right and Up/Down step by 5 s, Shift multiplies the step by six, and Home and End jump to the ends. The footer synchronizes its playhead with the Waveform Editor; scrubbing updates the editor timeline position when the editor timeline is the active audio source.
 
+### 17.3 Up next and utilities (right region)
+
+- **Up Next** (xl and up) mirrors the Now Playing block on the right: the next library entry's title and duration under an **Up Next** chip. Clicking it loads that track; with RAND on it is a random other entry, which the tooltip says. It reads "Nothing queued" when the library has nothing to follow with.
+- **Master FX indicator** is a chip that appears whenever the global master insert has effects on it. It says how many, and its tooltip says whether any of them take level; clicking it opens MIX, and the chevron beside it expands a list of what is on the insert. It draws in the theme accent and is hidden when the insert is empty.
 - **Mute toggle** switches the `playbackStore` mute flag. The volume icon changes to a red `VolumeX` when muted.
-- **Volume slider**: an overlay `<input type="range">` drives `playbackStore.volume` (0 to 100). The visual fill scales proportionally. The combined `volume × !muted` value is forwarded to `playerStore.setMasterGain`, which drives the shared Web Audio master gain node.
+- **Volume**: a `SlideTrack` (a custom `role="slider"`, keyboard-operable) drives `playbackStore.volume` (0 to 100). The combined `volume × !muted` value is forwarded to `playerStore.setMasterGain`, which drives the shared Web Audio master gain node.
+- **Fullscreen** toggles browser fullscreen on `document.documentElement`. It moved here from the transport plate.
 - **Download** retrieves the library entry whose `id` matches `playerStore.currentEntryId` and triggers a browser file download.
 - **More** is decorative.
 
@@ -1610,9 +1658,10 @@ audio = pipe.generate(
 ### 20.2 Audio-to-audio
 
 ```python
-import torchaudio
+from backend.lib.audio_io import load_audio
 
-init_audio = torchaudio.load("/path/to/audio.wav")
+waveform, sr = load_audio("/path/to/audio.wav")
+init_audio = (sr, waveform)   # the pipeline takes (sample_rate, tensor)
 audio = pipe.generate(
     init_audio=init_audio,
     init_noise_level=0.9,
@@ -1621,10 +1670,24 @@ audio = pipe.generate(
 )
 ```
 
+> **Do not call `torchaudio.load` or `torchaudio.save`.** From 2.9 they decode
+> through torchcodec, which loads FFmpeg's *shared* libraries at import — no
+> ordinary Windows ffmpeg build ships them, so the call raises "Could not load
+> libtorchcodec". `backend/lib/audio_io.py` reads and writes through libsndfile,
+> falls back to the ffmpeg CLI for containers libsndfile cannot open, never
+> clamps, and returns the same `(tensor[channels, frames], sample_rate)` shape
+> `torchaudio.load` used to. torchaudio stays in the project for transforms only.
+>
+> Note the order: `load_audio` returns `(tensor, sample_rate)`, and the pipeline
+> wants `(sample_rate, tensor)`.
+
 ### 20.3 Inpainting
 
 ```python
-inpaint_audio = torchaudio.load("/path/to/audio.wav")
+from backend.lib.audio_io import load_audio
+
+waveform, sr = load_audio("/path/to/audio.wav")
+inpaint_audio = (sr, waveform)
 audio = pipe.generate(
     inpaint_audio=inpaint_audio,
     inpaint_mask_start_seconds=4.0,
@@ -1642,12 +1705,12 @@ audio = pipe.generate(
 from stable_audio_3 import AutoencoderModel
 
 ae = AutoencoderModel.from_pretrained("same-l")
-waveform, sr = torchaudio.load("audio.wav")
+waveform, sr = load_audio("audio.wav")
 latents = ae.encode(waveform, sr)
 audio_out = ae.decode(latents)
 ```
 
-Batch encoding, chunked processing, and dataset pre-encoding for LoRA training: see [docs/workflows/autoencoder.md](autoencoder.md).
+Batch encoding, chunked processing, and dataset pre-encoding for LoRA training: see [docs/workflows/autoencoder.md](workflows/autoencoder.md).
 
 ### 20.5 LoRA at Inference
 
@@ -1820,7 +1883,7 @@ Eight adapter types are available, trading parameter count against expressivenes
 | `--base_precision` | none | Cast frozen base weights to `bf16` after applying LoRA. Reduces VRAM usage; LoRA parameters stay in fp32. |
 | `--lora_checkpoint` | none | Existing checkpoint to resume from. Loaded with `strict=False`. |
 
-Full training walkthrough: [docs/workflows/lora.md](lora.md).
+Full training walkthrough: [docs/workflows/lora.md](workflows/lora.md).
 
 ---
 
@@ -1832,7 +1895,13 @@ Flash Attention is not loaded correctly. Verify:
 ```bash
 uv run python -c "import flash_attn; from flash_attn import flash_attn_func; print('Version:', flash_attn.__version__)"
 ```
-Any import error means the wheel does not match the installed Python, PyTorch, and CUDA combination. Reinstall from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+Any import error means the wheel does not match the installed Python, PyTorch, and CUDA combination. The wheel must be built for **torch 2.14 and CUDA 13** — that is what this project pins, and a wheel for any other pair will not import. `uv sync` installs the right one, so the fix is almost always to re-sync:
+
+```powershell
+uv sync --reinstall-package flash-attn
+```
+
+The wheels themselves are the `flash_attn-2.8.3+cu130torch2.14-cp3XX-cp3XX-win_amd64.whl` assets on [mjun0812/flash-attention-prebuild-wheels release v0.10.2](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2), one per Python minor (cp312, cp313, cp314); `pyproject.toml` pins them under `[tool.uv.sources]`.
 
 ### "FlashAttention only supports Ampere GPUs or newer"
 
@@ -2361,8 +2430,8 @@ The app menu (`HamburgerMenu`) is the hamburger button in the header icon cluste
 - **Project**: **New Project** clears the workspace for a fresh session. **Open Project** loads a saved `.tasmo` file. **Save Project** writes the current session to a `.tasmo` file. **Import DAW Project** brings in a project written by another DAW. **Open Project** and **Import DAW Project** are also reachable from the header IMPORT button, which is on screen on every tab.
 - **Data**: **Backup / Migrate**, **Check for Updates**, and **Restore Previous Version** open the maintenance dialogs described in §39.
 - **Devices**: **Deploy to Quest** opens the headset deploy dialog described in §34.8.
-- **App**: **Edit Layout** toggles Design Mode for the draggable panel layouts (its row shows an accent dot while active). **Settings** opens the Settings modal. **Docs** opens this guide (§5).
-- **Help**: **Feature Tour** starts the guided walkthrough, and **Home Screen** reopens the HOME overlay, both covered in §38.
+- **App**: **Edit Layout** toggles Design Mode for the draggable panel layouts (its row shows an accent dot while active). **Change Theme** opens the theme picker ([guides/themes.md](guides/themes.md)). **Settings** opens the Settings modal — this menu is the only way in, the header gear having been retired. **Docs** opens this guide (§5).
+- **Help**: **Feature Tour** starts the guided walkthrough, **Hide Feature Notes** / **Show Feature Notes** turns the pinned labels off or brings every one of them back (dismissed ones included), and **Home Screen** reopens the HOME overlay. All three are covered in §38 and [guides/feature-notes.md](guides/feature-notes.md).
 
 ### 37.2 The .tasmo project format
 
@@ -2378,20 +2447,24 @@ theDAW saves and loads native projects as `.tasmo` files through the `project` m
 
 ### 38.1 HOME overlay
 
-The HOME overlay (`HomeScreen`) is a full-screen launcher. It appears after the boot intro finishes and reopens on demand from the app menu's **Home Screen** item (§37). The top row shows the theDAW wordmark and a version chip. Below the hero line sit the workspace cards, one per center tab (MAKE, EDIT, MIX, Perform, DJ, VJ, Foundry, Underfit, Learn); each card shows the tab's name and its one-line description, and clicking a card opens that workspace and dismisses the overlay.
+The HOME overlay (`HomeScreen`) is a full-screen launcher. It appears after the boot intro finishes and reopens on demand from the app menu's **Home Screen** item (§37). The top row shows the theDAW wordmark and a version chip. Below the hero line sit the workspace cards, one per center tab — MAKE, EDIT, MIX, Perform, DJ, VJ, SWAY, Foundry, Underfit, NodeF.I., LOOM, Learn and Tour; each card shows the tab's name and its one-line description, and clicking a card opens that workspace and dismisses the overlay.
 
 A slim task row sits under the cards with **Open Project**, **Import Audio** (shown when an import handler is available), and **Feature Tour**. A **Show at startup** checkbox controls whether HOME appears on the next launch; the preference persists on its own (the overlay's open state always resets per launch). Escape dismisses the overlay.
 
 ### 38.2 Feature Tour
 
-The Feature Tour is a six-step guided walkthrough (`TOUR_STEPS`). It starts from the app menu's **Feature Tour** item or the HOME task row. Each step switches to the relevant tab and spotlights a real on-screen control:
+The Feature Tour is a chaptered guided walkthrough (`TOUR_CHAPTERS` and `TOUR_STEPS` in `frontend/src/onboarding/tourSteps.tsx`). It starts from the app menu's **Feature Tour** item or the HOME task row and opens on a chapter picker: take the six chapters in order, or open the one you need and leave. Each step switches to the relevant tab, opens the panel the control lives in, and spotlights the real on-screen control — the overlay swallows clicks, so a step shows you a control rather than asking you to operate one.
 
-1. **Settings**: open the app menu and go to Settings to enable or download the models and modules a feature needs.
-2. **Make music**: type a prompt in MAKE to generate audio.
-3. **Chimera**: braid two or more sounds into one by adding clips to the Chimera stack in MAKE (§6.3.1), shown with a splice motif.
-4. **Draw sound**: the DRAW panel turns a sketch into generative music.
-5. **Stems anywhere**: right-click a library track and choose Separate stems, or enable auto-stems in Settings.
-6. **Train a custom LoRA**: train on a personal dataset in the Underfit tab (§11).
+1. **Getting started** — the shell: workspaces, library, the dock, the transport, the menu.
+2. **Making music** — prompts, models, starting from audio, Chimera, DRAW and SEQUENCE.
+3. **Editing and mixing** — the timeline, the effect rack, meters, spectrum and track details.
+4. **Performing** — PERFORM, DJ, VJ, SWAY and the SLIDE control surface.
+5. **Words and notes** — Score, karaoke, lyric analysis, the rhyme web and the piano roll.
+6. **The deep end** — LOOM, NodeF.I., FOUNDRY, UNDERFIT, the assistant, LEARN and TOUR.
+
+Chapters exist because the whole walk is forty-one steps, which is not a sitting — and because the center panel warm-mounts each heavy workspace the first time it is visited, so one linear pass would start a WebGL visuals engine, a map, a 3D graph and four sidecar iframes on a machine whose owner has not made a sound yet. A chapter mounts what you opened and nothing else.
+
+The same feature registry backs the header's **?** help search and the pinned Feature Notes, so a control named in one is findable in the others.
 
 ---
 
@@ -2405,7 +2478,15 @@ The app menu's **Data** section (§37) holds backup, restore, and update operati
 
 ### 39.2 Update checks and version restore
 
-**Check for Updates** opens the update dialog, backed by the `updates` module (`/api/updates`). It compares the installed version, read from `pyproject.toml`, against the latest published release on GitHub, and caches the result on disk for six hours. **Restore Previous Version** opens the same dialog on its releases list, so an install can move to an earlier published release.
+**Check for Updates** opens the update dialog, backed by the `updates` module (`/api/updates`). It compares the installed version, read from `pyproject.toml`, against the latest published release on GitHub, and caches the result on disk for six hours (`?force=true` bypasses the cache). Being offline never produces an error page: the check returns "unknown" with the reason attached.
+
+When an update is available the dialog installs it, and how depends on the install kind `GET /check` detects:
+
+- **A git clone** (theDAW.bat, theDAW.sh, Pinokio, dev Electron) is updated in place by `POST /api/updates/apply`. The backend pulls, then exits with code **89**; the launcher that spawned it reads that code as "pull done", syncs dependencies and respawns, while the dialog polls `/api/updates/apply-status` and then `/api/health` and reloads the page when the backend is back. A clone with uncommitted local changes is refused with a 409 rather than overwritten, and a missing `git` returns 503.
+- **The packaged Windows app** downloads the installer through electron-updater — the progress bar is that download — then quits and runs it.
+- **The macOS dmg** is unsigned and cannot self-update, so the button downloads the new dmg for you to open.
+
+If anything fails, the dialog shows the log tail with **Try again** and **Release page**. **Restore Previous Version** opens the same dialog on its releases list; moving *backward* is release-driven, so it hands you that release's download page rather than switching versions for you. The full walkthrough is [guides/backup-and-updates.md](guides/backup-and-updates.md).
 
 ---
 

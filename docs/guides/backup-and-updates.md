@@ -64,9 +64,42 @@ The backend picks the newest published stable release as the latest candidate. I
 The dialog shows one of several states:
 
 - **Up to date**: the installed version matches or exceeds the latest release.
-- **Update available**: the latest release is newer. The dialog shows the new version, its publish date, an excerpt of the release notes, and an Open release page control that opens the release in the system browser.
+- **Update available**: the latest release is newer. The dialog shows the new version, its publish date, an excerpt of the release notes, an install button appropriate to the install kind, and an Open release page control that opens the release in the system browser.
 - **Indeterminate**: the version strings could not be compared numerically. The dialog reports the latest published version and leaves the comparison to the reader.
 - **Offline**: the release server could not be reached. The dialog shows an amber message and the Check again control becomes Retry.
+
+### Installing an update
+
+When an update is available the dialog offers to install it, and the check
+result says how: `GET /check` reports an `install_kind` alongside the version
+comparison. Three kinds, one button.
+
+**A git clone** — theDAW.bat, theDAW.sh, Pinokio, or a dev Electron run — has a
+`.git` at the repo root and is updated in place. The dialog asks for
+confirmation, then posts `/api/updates/apply`. The backend pulls, then exits
+with sentinel code **89**. The process that spawned it (`backend._supervisor`,
+`backend._devstack`, or the Electron shell through the supervisor) reads that
+code as "pull done", runs the dependency sync, and respawns the backend. The
+sync runs *between* processes on purpose: on Windows `uv sync` cannot replace a
+DLL the running interpreter has already loaded, so a sync from inside the
+backend fails exactly when a release bumps torch or numpy. Meanwhile the dialog
+shows a progress bar and a log tail, polling `/api/updates/apply-status` and
+then `/api/health`, and reloads the page when the backend answers again.
+
+A clone with uncommitted local changes is refused with a 409 rather than
+overwritten — commit or stash first. A missing `git` on the backend's PATH
+returns 503, and a second `/apply` while one is running returns the running
+one rather than starting another.
+
+**The packaged Windows app** has no `.git`. There the Electron shell downloads
+the installer through electron-updater — the progress bar is that download —
+then quits and runs it. The renderer never calls `/apply`.
+
+**The packaged macOS app** ships as an unsigned dmg and cannot self-update, so
+the button downloads the new dmg for you to open.
+
+If anything fails, the dialog shows the log tail with **Try again** and
+**Release page**.
 
 ### The six-hour cache and offline behavior
 
@@ -78,4 +111,4 @@ A network failure never produces a server error. When offline, the check returns
 
 The Previous versions section expands to list up to ten recent releases. The first time it opens, the dialog loads the release list from the backend. Each row shows the release tag, name, and publish date, and opens that release's page in the system browser.
 
-Restoring an older version is release-driven. The backend surfaces release metadata and download-page URLs only. It performs no automatic version switching. To move to a specific version, download that release's installer from its release page and run it. Back up data first from the Backup / Migrate dialog before changing versions.
+Moving *forward* is automatic — see [Installing an update](#installing-an-update). Moving *backward* is not. The `releases` endpoint surfaces release metadata and download-page URLs only, and the backend performs no automatic downgrade. To move to a specific older version, download that release's installer from its release page and run it, or, on a clone, check out its tag. Back up data first from the Backup / Migrate dialog before changing versions either way.

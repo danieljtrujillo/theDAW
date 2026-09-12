@@ -41,4 +41,6 @@ Adapters load onto a live model and blend at runtime. Types: `lora`, `dora-rows`
 Resolution is local-first (local folder → HF cache → download), with `SA3_LOCAL_ONLY=1` forcing disk-only (`stable_audio_3/model_configs.py:147`, `:334`). Gated ARC repos fall back to an ungated public mirror with identical weights so a tokenless first run still works (`:74`). After the one-time download of the checkpoint and the ~2 GB T5Gemma encoder, no network or cloud key is needed.
 
 ### Key libraries (verbatim from pyproject.toml)
-`torch==2.7.1`, `torchaudio==2.7.1`, `transformers>=5.8.0`, `huggingface-hub>=1.7.1`, `safetensors>=0.7.0`, `einops>=0.8.2`; on Windows a pinned `flash-attn` 2.8.3 cu128/cp310 wheel, with a graceful `torch.scaled_dot_product_attention` fallback when Flash Attention is absent (`stable_audio_3/models/transformer.py:22`, `:697`).
+`torch==2.14.0`, `torchaudio==2.11.0` (both from the cu130 index), `transformers>=5.8.0`, `huggingface-hub>=1.7.1`, `safetensors>=0.7.0`, `einops>=0.8.2`; on Windows a pinned `flash-attn` 2.8.3+cu130torch2.14 wheel per Python minor (cp312–cp314), with a graceful `torch.scaled_dot_product_attention` fallback when Flash Attention is absent (`stable_audio_3/models/transformer.py:22`, `:697`).
+
+torchaudio is used for **transforms only**. All audio I/O goes through `backend/lib/audio_io.py` — libsndfile with an ffmpeg-CLI fallback — never `torchaudio.load` / `save`, which decode through torchcodec and need FFmpeg's shared libraries at import.

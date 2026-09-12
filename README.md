@@ -36,7 +36,7 @@
 2. **Make a track.** Open the MAKE tab, type a prompt, press CREATE. Models do not download by themselves. Allow downloads once in **Settings → Models** and the first CREATE fetches the model it needs. The `small` model runs on a CPU. The `medium` model needs an NVIDIA GPU.
 3. **Do more with it.** Right-click the new track in the library to open it in EDIT, MIX, SCORE or SING, or to load it on a DJ deck. The assistant orb in the bottom left corner answers questions about the app from the manual.
 
-> The in-app **TOUR** shows every tab, and **Feature Notes** stay pinned to the few controls that carry no label — the library's edge tab, the LOG strip, the PANELS strip — until you have used them. The menu brings them back. The [User Guide](docs/USER_GUIDE.md) is the full reference.
+> The in-app **TOUR** shows every tab, and **Feature Notes** stay pinned to the few controls that carry no label — the LOG strip and the PANELS strip — until you have used them, and the header's **?** search takes you to anything that does have one. The menu brings them back. The [User Guide](docs/USER_GUIDE.md) is the full reference.
 
 ## What you can do
 
@@ -61,7 +61,7 @@
 
 **Included at no cost.** Stem separation up to 12 stems, a mastering suite, VST3 hosting, the HRTF spatializer The Owl, DJ decks with sync and Automix, audio-to-MIDI with engraving, LoRA training, forced-aligned lyrics with a whisper review, a rhyme and literary reading of any lyric, and export to WAV, MP3, FLAC, OGG, AIFF, Opus, M4A, MIDI, MusicXML and LRC. Every model in that list runs on the GPU when there is one, one at a time, and never twice for the same song.
 
-**Only in theDAW.** [theDAW-XR](https://github.com/gantasmo/theDAW-XR) hand-tracked control on Meta Quest 3, Chimera clip fusion, DRAW (draw on a canvas to play generative music), native Audima Sway motion-controller support, The Foundry plugin designer, import of Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig and Resolume projects, the first non-Mac port of Magenta RealTime 2, and sixteen themes plus a custom theme built from any image.
+**Only in theDAW.** [theDAW-XR](https://github.com/gantasmo/theDAW-XR) hand-tracked control on Meta Quest 3, Chimera clip fusion, DRAW (draw on a canvas to play generative music), native Audima Sway motion-controller support, The Foundry plugin designer, import of Ableton, Reaper, FL Studio, Audacity, Audition, Bitwig and Resolume projects, the first non-Mac port of Magenta RealTime 2, and 28 themes plus a custom theme built from any image.
 
 ---
 
@@ -301,13 +301,16 @@ ARC checkpoints are post-trained for 8-step inference at `cfg_scale=1`. RF check
 
 ```python
 from stable_audio_3 import StableAudioModel
+from backend.lib.audio_io import load_audio   # never torchaudio.load — see docs/guides/audio-io.md
 pipe = StableAudioModel.from_pretrained("medium")
 
 # Text-to-audio
 audio = pipe.generate(prompt="Lo-fi boom bap meets orchestral strings, 84 BPM", duration=180)
 
 # Audio-to-audio. init_noise_level sets how far the result moves from the source.
-audio = pipe.generate(init_audio=torchaudio.load("in.wav"), init_noise_level=0.9,
+wav, sr = load_audio("in.wav")               # returns (tensor, sample_rate)
+audio = pipe.generate(init_audio=(sr, wav),  # the pipeline wants (sample_rate, tensor)
+                      init_noise_level=0.9,
                       prompt="bossa nova bassline", duration=30)
 
 # LoRA adapters stack; the strength can be changed at runtime.
@@ -327,7 +330,7 @@ audio = pipe.generate(
 
 ## Themes and layout
 
-**Change the theme.** The hamburger menu opens Change Theme: sixteen themes (dark, metallic, paper, pastel and colour families) plus a custom theme built from any background image. A theme recolours every surface through shared design tokens. The screenshots on this page use **Brushed Steel**. Obsidian is the default.
+**Change the theme.** The hamburger menu opens Change Theme: 28 themes in seven groups (dark, metal, duotone, light, light duotone, pastel and gradient) plus a custom theme built from any background image. A theme recolours every surface through shared design tokens. The screenshots on this page use **Brushed Steel**. Obsidian is the default.
 
 <p align="center">
   <img src="docs/readme/themes/obsidian.png" alt="Obsidian theme" width="150">
@@ -384,7 +387,7 @@ The GitHub **[Wiki](https://github.com/gantasmo/theDAW/wiki)** has the same inde
 | **ML pipeline** | `stable_audio_3/` | The DiT diffusion transformer, the SAME autoencoder, all samplers, LoRA training and inference, distribution-shift schedules. |
 | **FastAPI backend** | `backend/server.py` | The HTTP server on port 8600: a generation job queue, FFmpeg audio processing, and model introspection. |
 | **Backend modules** | `backend/modules/` | A plugin system. Each subdirectory has a `module.json` and a `router.py`. The loader mounts every enabled module and isolates failures: `analysis`, `chimera`, `effects`, `library`, `lyrics`, `midi`, `notation`, `stems`, `vocal`, `suno`, `magenta`, the XR bridges, `foundry`, `underfit`, and the rest. |
-| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Thirteen tabs (MAKE, EDIT, MIX, PERFORM, DJ, VJ, SWAY, FOUNDRY, UNDERFIT, NODEFI, LOOM, LEARN, TOUR), the library and Catalogue, and the bottom panel (Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Details, Media, SLIDE, SWAY). The dev server on port 5173 proxies `/api/*` to the backend. |
+| **theDAW interface** | `frontend/` | React 19, Vite 7, Tailwind 4, Zustand 5. Thirteen tabs (MAKE, EDIT, MIX, PERFORM, DJ, VJ, SWAY, FOUNDRY, UNDERFIT, NODEFI, LOOM, LEARN, TOUR), the library and Catalogue, and the bottom panel (Levels, Visualize, MIDI, Sequence, DRAW, Score, Sing, Lyric, Details, SLIDE, SWAY). The dev server on port 5173 proxies `/api/*` to the backend. |
 | **Sidecars** | `sidecars/` | The vendored `magenta-rt2-nvidia` port, the `questcast` and `queststitch` Quest bridges, and the `magenta` studio sidecar. Demucs and whisper build their own isolated environments on first use. |
 
 ```text
@@ -487,7 +490,7 @@ theDAW generates its own documentation from the running app. `scripts/screenshot
 
 **Out of memory on the Medium model.** Use the `small` model, a shorter `duration`, or close other CUDA processes.
 
-**Static or noise from the Medium model on Windows.** Check `GET /api/health` for `flash_attention_active`. On Turing GPUs (RTX 20xx, GTX 16xx) it reads false by design and the model runs on an equivalent fallback. On Ampere or newer with a broken wheel, reinstall a matching wheel from [kingbri1/flash-attention](https://github.com/kingbri1/flash-attention/releases).
+**Static or noise from the Medium model on Windows.** Check `GET /api/health` for `flash_attention_active`. On Turing GPUs (RTX 20xx, GTX 16xx) it reads false by design and the model runs on an equivalent fallback. On Ampere or newer with a broken wheel, re-sync it — `uv sync --reinstall-package flash-attn`. The wheel has to match **torch 2.14 + CUDA 13**, which is what this project pins; `pyproject.toml` selects the `flash_attn-2.8.3+cu130torch2.14-cp3XX-cp3XX-win_amd64.whl` asset for your Python minor from [mjun0812/flash-attention-prebuild-wheels v0.10.2](https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/tag/v0.10.2). A wheel built for any other torch/CUDA pair will not import.
 
 [User Guide §23](docs/USER_GUIDE.md#23-troubleshooting) has the full list.
 
