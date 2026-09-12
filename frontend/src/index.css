@@ -3,6 +3,43 @@
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* The colour names orb-kit was written against.
+   *
+   * frontend/src/orb-kit/AssistantPanel.tsx and ProviderModelSelector.tsx were
+   * ported from a host whose Tailwind config defined `surface`, `border`,
+   * `primary` and `muted`. theDAW never did, so all 71 of their uses —
+   * `bg-surface/95`, `border-border`, `text-primary`, `text-muted`,
+   * `bg-primary`, `from-primary` — compiled to NOTHING. Confirmed against the
+   * shipped bundle: `.bg-surface`, `.border-border`, `.text-muted`,
+   * `.text-primary` and `.bg-primary` appear zero times in it, while
+   * `.backdrop-blur-sm` and `.shadow-2xl` on the very same element appear once
+   * each.
+   *
+   * The visible consequence: the assistant's chat panel had no fill at all. It
+   * was a bare `backdrop-filter: blur(8px)` pane, so it took the colour of
+   * whatever sat behind it. On theDAW's dark chrome that passed for deliberate
+   * dark glass, which is why it went unnoticed. Over the SCORE tab it does not:
+   * the sheet is painted white (ScoreView `[&>svg]:bg-white`, SheetStrip's
+   * `bg-white` pane), so the panel and its near-white text both went white and
+   * unreadable.
+   *
+   * The values are theDAW's OWN palette from the `:root` block below, not new
+   * colours, so the panel now matches every other panel in the app. Keep them
+   * in step with it:
+   *   surface = --panel · border = --panel-border · primary = --accent ·
+   *   muted = --text-secondary
+   * Literal hex rather than `var(--panel)` because `bg-surface/95` needs a
+   * colour Tailwind can mix an alpha into.
+   *
+   * `text-primary` is the ACCENT here, not body text — `bg-primary/20
+   * text-primary` at AssistantPanel.tsx:745 is an accent pill, and :847 uses it
+   * to emphasise a value beside a `text-muted` label. One token serves
+   * text/bg/from correctly. */
+  --color-surface: #110e1a;
+  --color-border: #231e38;
+  --color-primary: #8b5cf6;
+  --color-muted: #94a3b8;
 }
 
 /* Theme ink / border utilities (see lib/editThemes.ts + the APP THEMING block
