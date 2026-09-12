@@ -13,6 +13,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import threading
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from backend.core.startup import register_startup_hook
 from backend.modules.plugin.gan_file import GanFile
 from backend.modules.plugin.owl_import import import_vst_foundry, source_fingerprint
 
@@ -344,3 +346,32 @@ def serve_runtime(plugin_id: str, asset_path: str, request: Request) -> Response
     if _not_modified(request, etag, stat.st_mtime):
         return Response(status_code=304, headers=headers)
     return FileResponse(target, headers=headers)
+
+
+def _build_bundled_plugins() -> None:
+    """Build the two bundled .gan plugins if they are not installed yet.
+
+    Both are compiled from in-repo assets by package-owl / package-ares, and
+    nothing called those until a person opened the shelf and pressed a button.
+    A fresh install — Pinokio, or the packaged desktop app — therefore started
+    with an empty PLUGINS shelf and an empty MIX Studio tile, while the
+    machine that had once pressed the button kept working. Both builders
+    fingerprint their source and return the installed bundle untouched when it
+    matches, so running this on every start costs one hash after the first.
+
+    Off the startup path in a daemon thread: importing a Foundry project is a
+    second or two of work and nothing should wait on it.
+    """
+
+    def _build() -> None:
+        for label, build in (("The Owl", package_owl), ("Ares", package_ares)):
+            try:
+                if build().get("rebuilt"):
+                    log.info("plugin: built the bundled %s package", label)
+            except Exception as e:  # noqa: BLE001 — a missing asset is not fatal
+                log.warning("plugin: bundled %s is unavailable: %s", label, e)
+
+    threading.Thread(target=_build, daemon=True, name="plugin-bundled").start()
+
+
+register_startup_hook("plugin-bundled", _build_bundled_plugins)
