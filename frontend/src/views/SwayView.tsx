@@ -33,6 +33,7 @@ import { AlertTriangle, RefreshCw, Waves } from 'lucide-react';
 import { subscribeToMidi } from '../state/midiBus';
 import { getAnalyser } from '../state/playerStore';
 import { logInfo, logWarn } from '../state/logStore';
+import { describeHttpError } from '../lib/httpError';
 import { useMidiDevicesStore } from '../state/midiDevicesStore';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 
@@ -126,7 +127,12 @@ export const SwayView: React.FC = () => {
       const res = await fetch('/api/sway/url');
       if (!res.ok) {
         setEmbedState('error');
-        setDetail(`GET /api/sway/url returned HTTP ${res.status}.`);
+        // "GET /api/sway/url returned HTTP 502." named the request and hid the
+        // cause. /api/sway/url never returns 502 -- that status comes from a
+        // hop in FRONT of the backend (the packaged app's proxy, or Vite's),
+        // meaning the backend was unreachable rather than the cockpit missing.
+        // describeHttpError says which hop failed and what to do about it.
+        setDetail(await describeHttpError(res));
         return;
       }
       const data = (await res.json()) as SwayUrlResponse;

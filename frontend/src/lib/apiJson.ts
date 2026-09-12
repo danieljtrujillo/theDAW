@@ -2,20 +2,35 @@
 // Every backend route lives behind the Vite /api proxy (-> :8600), so URLs
 // are relative. Errors surface the FastAPI {detail} (or {error}) field.
 
+import { describeHttpError } from './httpError';
+
 async function handle<T>(r: Response): Promise<T> {
   if (!r.ok) {
-    let detail = `HTTP ${r.status}`;
-    try {
-      const j = (await r.json()) as { detail?: unknown; error?: unknown };
-      if (typeof j.detail === 'string') detail = j.detail;
-      else if (typeof j.error === 'string') detail = j.error;
-    } catch {
-      // Non-JSON body (e.g. the Vite HTML fallback when the backend is down).
-      detail = `${detail} — is the backend running on port 8600?`;
-    }
-    throw new Error(detail);
+    // describeHttpError reads the body once, prefers a FastAPI `detail`, and
+    // for 502/503/504 says WHICH hop failed -- theDAW's own backend, or the
+    // service behind it. Those are different problems with different fixes,
+    // and the previous version collapsed them: a non-JSON body (which is what
+    // a proxy sends when the backend is unreachable) produced
+    // `HTTP 502 - is the backend running on port 8600?` for a Hub timeout just
+    // as readily as for a dead backend.
+    //
+    // `error` is read here as well as `detail` because a few of this app's own
+    // routes answer with that key.
+    throw new Error(await describeApiError(r));
   }
   return (await r.json()) as T;
+}
+
+/** `describeHttpError`, plus this app's non-standard `{error: "..."}` bodies. */
+async function describeApiError(r: Response): Promise<string> {
+  const body = await r.clone().text();
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error.trim();
+  } catch {
+    /* not JSON, or no `error` key: fall through to the shared description */
+  }
+  return describeHttpError(r);
 }
 
 export async function getJson<T>(url: string): Promise<T> {
