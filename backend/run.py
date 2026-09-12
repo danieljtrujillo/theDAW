@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,14 +33,53 @@ def _configure_logging() -> None:
 
 _configure_logging()
 
-import uvicorn  # noqa: E402 — after logging, on purpose
-from backend.server import app  # noqa: E402
+from backend.ports import BACKEND_PORT, describe_occupant  # noqa: E402
+
+# Exit code for "the port was already taken". Distinct from the supervisor's
+# 88 (restart) and 89 (update), both of which respawn — this one must not, and
+# backend/_supervisor.py terminates on any other code.
+PORT_IN_USE_EXIT_CODE = 90
+
+
+def _preflight_port() -> Optional[str]:
+    """Whoever already holds the backend port, described in a sentence.
+
+    Without this the failure surfaced as uvicorn's raw socket error:
+
+        ERROR: [Errno 10048] error while attempting to bind on address
+        ('0.0.0.0', 8600): only one usage of each socket address ... permitted
+
+    which tells a user nothing about what to close. It was worse through a
+    launcher: the Pinokio start script scrapes the child's output for a
+    "Uvicorn running on" line, so on a clash it matched nothing useful and
+    reported the whole failure as the event ``["Errno "]``.
+
+    Checked BEFORE the bind so the message is the first and only thing printed,
+    and so importing the app is not wasted when it cannot serve anyway.
+    """
+    return describe_occupant(BACKEND_PORT)
+
 
 if __name__ == "__main__":
+    # BEFORE importing the app. Importing backend.server mounts every module
+    # and opens the library DB, so doing it first would spend seconds of work
+    # and touch the database of the instance already running, only to exit.
+    occupant = _preflight_port()
+    if occupant is not None:
+        print(f"theDAW cannot start: {occupant}", file=sys.stderr, flush=True)
+        logging.getLogger("backend.run").error(
+            "port %d unavailable: %s", BACKEND_PORT, occupant
+        )
+        sys.exit(PORT_IN_USE_EXIT_CODE)
+
+    import uvicorn
+
+    from backend.server import app
+
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8600,
+        port=BACKEND_PORT,
         reload=False,
         log_level="info",
     )
