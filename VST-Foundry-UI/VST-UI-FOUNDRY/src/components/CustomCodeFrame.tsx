@@ -305,7 +305,19 @@ export default function CustomCodeFrame({
       <iframe
         ref={iframeRef}
         srcDoc={srcDoc}
-        sandbox="allow-scripts"
+        // allow-same-origin is load-bearing, not a relaxation for convenience.
+        // Chromium's IsolateSandboxedIframes moves a frame that is sandboxed
+        // WITHOUT it into a renderer process of its own, and in that process
+        // these frames grow about 250 MB a second, get killed near 2.4 GB, and
+        // are painted grey. The desktop app disables that feature with a launch
+        // switch (electron-ui/main/index.ts), which covers the desktop app and
+        // nothing else: a browser tab on the dev server has no such switch, so
+        // the pads died there and the switch made it look fixed. With
+        // allow-same-origin the frame is not isolated by that feature in any
+        // runtime. The code inside is the user's own, authored in this editor,
+        // and the editor is served from localhost, so the origin it gains is
+        // the one that wrote it.
+        sandbox="allow-scripts allow-same-origin"
         onLoad={() => {
           // The bootstrap posts foundry:ready which re-pushes state, but push
           // once here too in case ready is missed on a fast load.
