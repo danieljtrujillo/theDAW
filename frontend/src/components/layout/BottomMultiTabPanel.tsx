@@ -10,14 +10,13 @@
 import React, { useState, lazy, Suspense } from 'react';
 import {
   Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Waves, Brush, Gauge, Radio, MicVocal, NotebookPen,
+  FileMusic, Brush, Gauge, MicVocal, NotebookPen,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
 import { DetailsMediaView } from './DetailsMediaView';
 import { ScoreView } from './ScoreView';
 import { SlidePanel } from './SlidePanel';
-import { SwayPanel } from './SwayPanel';
 import { LevelsPanel } from '../audio/levels/LevelsPanel';
 // Lazy: the MIDI tab (piano roll + vocal2midi) drags in @google/genai
 // (AI compose + gemini vocal services). Keep it out of first paint; the chunk
@@ -35,9 +34,9 @@ const LyricStudioView = lazy(() =>
 );
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
-import { XrBusPanel } from '../dev/XrBusTester';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 import { useSlideStore } from '../../state/slideStore';
+import { XrBusButton } from '../dev/XrBusButton';
 import { featureById } from '../../onboarding/featureRegistry';
 
 /**
@@ -58,13 +57,6 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.Component
   { id: 'lyric',    label: 'Lyric',     icon: NotebookPen,     colorActive: 'border-rose-500 text-rose-300' },
   { id: 'details',  label: 'Details',   icon: Info,            colorActive: 'border-emerald-500 text-emerald-300' },
   { id: 'slide',    label: 'SLIDE',     icon: SlidersVertical, colorActive: 'border-pink-500 text-pink-300' },
-  { id: 'sway',     label: 'SWAY',      icon: Waves,           colorActive: 'border-fuchsia-500 text-fuchsia-300' },
-  // Dev-only: the simulated XR/phone controller that drives the control bus.
-  // Registered here (not floating over the footer) so it reads as the
-  // diagnostics tab it is; stripped from production builds with the DEV flag.
-  ...(import.meta.env.DEV
-    ? [{ id: 'xrbus' as BottomPanelTab, label: 'XR Bus', icon: Radio, colorActive: 'border-cyan-500 text-cyan-300' }]
-    : []),
 ];
 
 /** Tab id → display label, for surfaces that name the active tab without
@@ -136,6 +128,7 @@ export const BottomMultiTabPanel: React.FC = () => {
           {activeTab === 'slide' && (
             <>
               <SlideContentToggle />
+              <XrBusButton />
               <button
                 onClick={toggleSlideDetach}
                 className={`p-1 rounded border text-[9px] flex items-center gap-1 ${
@@ -214,16 +207,6 @@ export const BottomMultiTabPanel: React.FC = () => {
             <Suspense fallback={null}>
               <LyricStudioView />
             </Suspense>
-          </div>
-        )}
-        {activeTab === 'sway' && (
-          <div className="absolute inset-0">
-            <SwayPanel />
-          </div>
-        )}
-        {activeTab === 'xrbus' && import.meta.env.DEV && (
-          <div className="absolute inset-0">
-            <XrBusPanel />
           </div>
         )}
         {activeTab === 'slide' && (
