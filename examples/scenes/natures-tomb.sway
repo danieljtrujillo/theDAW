@@ -1,0 +1,183 @@
+{
+  "format": "sway",
+  "format_version": 1,
+  "app_version": "",
+  "audio_mode": "external",
+  "created_at": null,
+  "modified_at": null,
+  "project": {
+    "meta": {
+      "id": "natures-tomb",
+      "name": "Nature's Tomb",
+      "description": "Three organisms under dark-field light. KNOB 6 picks the organism: centre the egg cell, right the slime mold, left the mycelium. KNOB 5 sets the development level \u2014 cell divisions, the colony's reach, the hyphal growth \u2014 and any pad steps it; sway morphs each organism, press squeezes, the hand pans and dollies. The rack stays off.",
+      "author": "",
+      "vibe": "cellular",
+      "bpmHint": 0,
+      "pairsWith": null,
+      "template": true
+    },
+    "palette": [
+      "#f2c9a6",
+      "#5b3f9e",
+      "#bfefff",
+      "#ffb26b",
+      "#e88aa8"
+    ],
+    "engine": {
+      "quality": "med",
+      "fxEnabled": false,
+      "autoVJ": {
+        "enabled": false,
+        "pool": [
+          "naturestomb"
+        ],
+        "minHold": 60,
+        "maxHold": 120,
+        "fadeTime": 4
+      },
+      "start": {
+        "scene": "naturestomb"
+      }
+    },
+    "fx": {
+      "params": {}
+    },
+    "synth": {
+      "enabled": true,
+      "preset": "Init",
+      "patch": null
+    },
+    "media": [],
+    "sampler": {
+      "kit": {
+        "version": 1,
+        "pads": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "knobs": {
+        "master": 0.5,
+        "cutoff": 0.5,
+        "rate": 0.5,
+        "send": 0.5
+      }
+    },
+    "timeline": {
+      "loop": {
+        "enabled": false,
+        "start": 0,
+        "end": 0
+      },
+      "locators": [],
+      "tracks": [
+        {
+          "id": "audio-1",
+          "type": "audio",
+          "name": "Audio",
+          "gain": 1,
+          "muted": false,
+          "clips": []
+        },
+        {
+          "id": "visual-1",
+          "type": "visual",
+          "name": "Scenes",
+          "clips": []
+        }
+      ]
+    },
+    "assignments": {
+      "version": 1,
+      "noteRouting": {
+        "synth": "unassigned"
+      },
+      "pads": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "knobs": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "gestures": [],
+      "buttons": [
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        }
+      ]
+    },
+    "midiOverrides": {}
+  }
+}

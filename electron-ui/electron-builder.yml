@@ -129,6 +129,16 @@ extraResources:
     to: python/frontend/public/owl
     filter:
       - "**/*"
+  # The bundled asset catalog: example projects and plugin packages the asset
+  # library lists. backend/modules/assets reads examples/catalog.json at
+  # _REPO_ROOT, which in a packaged app is python/examples. Install-directory
+  # reads only, so a read-only install serves them fine. The opus sources the
+  # projects were built from are gitignored and not shipped.
+  - from: ../examples
+    to: python/examples
+    filter:
+      - "**/*"
+      - "!audio/**"
   # Headless notation engraver: frontend/scripts (renderScorePdf.mjs via OSMD,
   # renderTabPdf.mjs via alphaTab) plus the production node_modules they import,
   # staged by scripts/fetch-notation-renderer.mjs (npm run fetch:notation).

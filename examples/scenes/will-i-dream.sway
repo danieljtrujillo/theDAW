@@ -1,0 +1,263 @@
+{
+  "format": "sway",
+  "format_version": 1,
+  "app_version": "",
+  "audio_mode": "external",
+  "created_at": null,
+  "modified_at": null,
+  "project": {
+    "meta": {
+      "id": "will-i-dream",
+      "name": "Will I Dream",
+      "description": "The universe begins on the downbeat: dark until play, then the big bang resolves into a straight flight through deep space, set to the track. Warp rides the hand toward the right and close to the sensors; every jump ends at a new arrival that grows in as the star trails slow. PAD 0 big bang, PAD 1 thrust surge, PAD 2 hyperspace jump, PAD 3 spawn an object, PAD 4 wormhole end, PAD 5 tunnel end, PAD 6 wormhole pt 1, PAD 7 black hole, PAD 8 and PAD 15 bank, PAD 9 wormhole transit, PAD 10 relativistic warp. The rack stays off.",
+      "author": "",
+      "vibe": "lucid",
+      "bpmHint": 0,
+      "pairsWith": null,
+      "template": true
+    },
+    "palette": [
+      "#8fd3ff",
+      "#5b3fd6",
+      "#7df9ff",
+      "#ffd36e",
+      "#ff5fb0"
+    ],
+    "engine": {
+      "quality": "med",
+      "fxEnabled": false,
+      "autoVJ": {
+        "enabled": false,
+        "pool": [
+          "willidream"
+        ],
+        "minHold": 60,
+        "maxHold": 120,
+        "fadeTime": 4
+      },
+      "start": {
+        "scene": "willidream"
+      }
+    },
+    "fx": {
+      "params": {}
+    },
+    "synth": {
+      "enabled": true,
+      "preset": "Init",
+      "patch": null
+    },
+    "media": [
+      {
+        "id": "will-i-dream",
+        "name": "New Will I Dream Master Style 2 - Live Punchy.mp3",
+        "path": "",
+        "sha256": "510de9de7fcb3b80edc85cacbef10ada685b0543b2e22dc9ec5a776f615a0e39",
+        "bytes": 9167722,
+        "duration": 229.008
+      }
+    ],
+    "sampler": {
+      "kit": {
+        "version": 1,
+        "pads": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "knobs": {
+        "master": 0.5,
+        "cutoff": 0.5,
+        "rate": 0.5,
+        "send": 0.5
+      }
+    },
+    "timeline": {
+      "loop": {
+        "enabled": false,
+        "start": 0,
+        "end": 0
+      },
+      "locators": [],
+      "tracks": [
+        {
+          "id": "audio-1",
+          "type": "audio",
+          "name": "Audio",
+          "gain": 1,
+          "muted": false,
+          "clips": [
+            {
+              "id": "a-will-i-dream",
+              "name": "Will I Dream",
+              "media": "will-i-dream",
+              "start": 0,
+              "end": 229.008,
+              "offset": 0,
+              "gain": 1,
+              "fadeIn": 0,
+              "fadeOut": 2
+            }
+          ]
+        },
+        {
+          "id": "visual-1",
+          "type": "visual",
+          "name": "Scenes",
+          "clips": [
+            {
+              "id": "v-will-i-dream",
+              "scene": "willidream",
+              "start": 0,
+              "end": 229.008,
+              "transition": {
+                "type": "cut",
+                "duration": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "assignments": {
+      "version": 1,
+      "noteRouting": {
+        "synth": "unassigned"
+      },
+      "pads": [
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "bigbang"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "thrust"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "hyperspace"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "spawn"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "wormholeEnd"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "tunnelEnd"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "wormholePt1"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "blackhole"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "bankLeft"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "wormhole"
+        },
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "warp"
+        },
+        null,
+        null,
+        null,
+        null,
+        {
+          "type": "sceneAction",
+          "scene": "willidream",
+          "action": "bankRight"
+        }
+      ],
+      "knobs": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "gestures": [],
+      "buttons": [
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        },
+        {
+          "cc": null,
+          "channel": null,
+          "action": null
+        }
+      ]
+    },
+    "midiOverrides": {}
+  }
+}
