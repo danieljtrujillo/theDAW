@@ -636,19 +636,21 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
             Shell's `.dense-layout` CSS zoom, which breaks the graph
             libraries' pointer math (three-render-objects raycasts and the
             SVG pan/drag both assume unzoomed CSS pixels). The inner
-            wrapper counter-zooms by 1/zoom and pre-scales its box by zoom
-            so the graph area runs at an effective scale of 1 — matching
-            the portaled modal and fullscreen paths, which stay untouched
-            (they get a plain full-size wrapper). */}
+            wrapper counter-zooms by 1/zoom so the graph area runs at an
+            effective scale of 1, matching the portaled modal and
+            fullscreen paths.
+
+            Its size stays 100%. Under standardized CSS zoom (Chromium 128+,
+            every Electron this app ships) a percentage resolves against the
+            parent and is not scaled by the element's own zoom, so a box of
+            `100% * zoom` covered only `zoom` of the panel in each direction
+            at zoom < 1 and overflowed it, clipped, at zoom > 1.
+            lineageWrapperGuards.test.ts fails if the multiplier returns. */}
         <div className="flex-1 min-h-0 relative">
           <div
             className="relative"
             style={useInlineLayout
-              ? {
-                  zoom: 'calc(1 / var(--layout-zoom, 1))',
-                  width: 'calc(100% * var(--layout-zoom, 1))',
-                  height: 'calc(100% * var(--layout-zoom, 1))',
-                }
+              ? { zoom: 'calc(1 / var(--layout-zoom, 1))', width: '100%', height: '100%' }
               : { width: '100%', height: '100%' }}
           >
             {loading && (
