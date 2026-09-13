@@ -396,3 +396,7 @@ data/cache/
 
 # UNCANNY demo album staging (converted audio + stems; distributed separately)
 data/uncanny/
+
+# Opus transcodes the example projects embed. scripts/build_examples.py
+# regenerates them from the masters; the .tasmo files carry the audio.
+examples/audio/

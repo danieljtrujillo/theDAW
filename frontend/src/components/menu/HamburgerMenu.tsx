@@ -10,6 +10,7 @@ import {
   Headset,
   History,
   Home,
+  Layers,
   LayoutGrid,
   Menu,
   Palette,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useFeatureNoteStore } from '../../onboarding/featureNoteStore';
 import { FEATURE_NOTES } from '../../onboarding/featureNoteList';
+import { AssetLibraryModal } from '../assets/AssetLibraryModal';
 import { BackupModal } from './BackupModal';
 import { UpdateModal } from './UpdateModal';
 import { QuestDeployModal } from './QuestDeployModal';
@@ -102,6 +104,7 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
   const notesEnabled = useFeatureNoteStore((s) => s.enabled);
   const notesDismissed = useFeatureNoteStore((s) => s.dismissed);
   const notesShown = notesEnabled && notesDismissed.length < FEATURE_NOTES.length;
+  const [assetsOpen, setAssetsOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateShowsReleases, setUpdateShowsReleases] = useState(false);
@@ -124,6 +127,13 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
     {
       label: 'Data',
       items: [
+        {
+          id: 'asset-library',
+          label: 'Asset Library',
+          icon: Layers,
+          iconCls: 'text-emerald-300',
+          onSelect: () => setAssetsOpen(true),
+        },
         {
           id: 'backup-migrate',
           label: 'Backup / Migrate',
@@ -357,6 +367,7 @@ export const HamburgerMenu: React.FC<HamburgerMenuProps> = ({
         </div>
       )}
 
+      <AssetLibraryModal open={assetsOpen} onClose={() => setAssetsOpen(false)} />
       <BackupModal open={backupOpen} onClose={() => setBackupOpen(false)} />
       <UpdateModal
         open={updateOpen}

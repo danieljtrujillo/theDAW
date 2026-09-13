@@ -1,0 +1,10 @@
+{
+  "name": "assets",
+  "label": "Assets",
+  "enabled": true,
+  "icon": "Package",
+  "sidebar": false,
+  "api_prefix": "/api/assets",
+  "backend": true,
+  "description": "Browsable, searchable catalog of downloadable content: .tasmo example projects, .gan plugins, .ares volumetric captures and .sway cockpit scenes. Serves the bundled catalog shipped in examples/, plus any catalog the user adds, and installs an item into the place its format belongs."
+}
