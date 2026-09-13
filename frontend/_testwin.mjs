@@ -2,7 +2,12 @@
 // every probe; probes attach over CDP (_probe.mjs) instead of relaunching.
 // Persistent profile dir -> permission grants stick; midi granted up front.
 import { chromium } from 'playwright';
-const profile = 'C:/Users/Cyboman/AppData/Local/Temp/claude-thedaw-testprofile';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+// Under the running user's temp directory: a profile path written for one
+// machine is a path that works on exactly that machine.
+const profile = process.env.THEDAW_TEST_PROFILE
+  || join(tmpdir(), 'claude-thedaw-testprofile');
 const ctx = await chromium.launchPersistentContext(profile, {
   headless: false,
   viewport: { width: 1920, height: 1080 },

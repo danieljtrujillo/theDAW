@@ -33,14 +33,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-# Where to look. Directories that do not exist are skipped in silence.
-SEARCH_ROOTS = [
-    Path.home() / "Music",
-    Path("E:/StableAudio"),
-    Path("G:/Users/dtruj/Dev/sway"),
-    Path("G:/Users/dtruj/Dev/SwayCommand/projects"),
-    Path("G:/Users/dtruj/Dev/theDAW/examples"),
-]
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def default_roots() -> list[Path]:
+    """Where to look when the caller names nothing.
+
+    Every entry is derived from this checkout or from the running user's own
+    home directory, so no machine's layout is written into the repository. Add
+    anything else with --root, or set THEDAW_ASSET_ROOTS to a list separated by
+    the platform path separator. Directories that do not exist are skipped.
+    """
+    roots = [
+        REPO_ROOT / "examples",
+        REPO_ROOT.parent / "SwayCommand" / "projects",
+        Path.home() / "Music",
+        Path.home() / "Documents",
+    ]
+    extra = os.environ.get("THEDAW_ASSET_ROOTS", "")
+    roots.extend(Path(part) for part in extra.split(os.pathsep) if part.strip())
+    return roots
+
 
 # Directories that hold nothing worth collecting and cost minutes to walk.
 SKIP_DIRS = {
@@ -207,11 +220,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         action="append",
         default=[],
-        help="an extra directory to search; repeatable",
+        help="an extra directory to search; repeatable. THEDAW_ASSET_ROOTS "
+        "adds more, separated by the platform path separator.",
     )
     args = ap.parse_args(argv)
 
-    roots = [r for r in (SEARCH_ROOTS + args.root) if r.is_dir()]
+    roots = [r for r in (default_roots() + args.root) if r.is_dir()]
     if not roots:
         print("None of the search roots exist. Pass --root.", file=sys.stderr)
         return 1

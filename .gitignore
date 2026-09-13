@@ -400,3 +400,8 @@ data/uncanny/
 # Opus transcodes the example projects embed. scripts/build_examples.py
 # regenerates them from the masters; the .tasmo files carry the audio.
 examples/audio/
+
+# Codacy's generated config records absolute paths for the machine that
+# ran it, which do not belong in the repository.
+/.codacy/codacy.config.json
+/.codacy/codacy.config.baseline.json
