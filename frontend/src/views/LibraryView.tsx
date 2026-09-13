@@ -5,10 +5,12 @@ import {
   LayoutGrid, List as ListIcon, Activity, Scissors, Layers, Wand2, PenLine,
   Package, Network, FileMusic, Loader2, Mic, Piano, ListOrdered,
   CheckSquare, Square, MoreHorizontal, Combine, Paintbrush, FileText, ChevronDown, Maximize2,
-  Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat, Info, Link2,
+  Film, Image as ImageIcon, Upload, RefreshCw, Tv2, Repeat, Info, Link2, FolderPlus,
 } from 'lucide-react';
 import { CoverArt } from '../catalog/CoverArt';
 import { importUrlToLibrary } from '../lib/onlineImport';
+import { importFolder } from '../lib/mediaLibrary';
+import { startQueue } from '../state/playlistQueue';
 import { DESKTOP_DROP_ORIGIN, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
@@ -778,11 +780,37 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       }
       return;
     }
-    // Otherwise load and play through the global engine — visualizer + footer follow.
+    // Play the list, not the track: pressing play on a row queues everything
+    // currently visible (so a filter or a search narrows what plays) starting
+    // at that row. The transport's repeat mode decides what happens at the
+    // end — stop, wrap, or loop this one track.
+    const list = filteredEntries.map((e) => e.id);
+    const at = list.indexOf(entry.id);
+    if (at >= 0) {
+      await startQueue(list, at);
+      return;
+    }
     const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
     await engineLoad(blob, { label: entry.title, entryId: entry.id });
     enginePlay();
     setPlayingId(entry.id);
+  };
+
+  const handleImportFolder = async () => {
+    try {
+      const res = await importFolder();
+      if (res.cancelled) return;
+      await useLibraryStore.getState().refresh();
+      logInfo(
+        'library',
+        `Added ${res.entries.length} track${res.entries.length === 1 ? '' : 's'} from ${res.folder}`,
+      );
+    } catch (e) {
+      logError(
+        'library',
+        `Folder import failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
 
   // Compact analytics strip at the very top of the panel — the user
@@ -886,6 +914,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             title="Import a .mid file → piano roll"
           >
             <FileMusic className="w-3 h-3" />
+          </button>
+          <button
+            onClick={() => void handleImportFolder()}
+            className="p-1 rounded text-zinc-500 hover:text-purple-300"
+            title="Add a folder of audio to the library (files stay where they are)"
+            aria-label="Import a folder into the library"
+          >
+            <FolderPlus className="w-3 h-3" />
           </button>
           <button
             onClick={() => setLinkOpen((v) => !v)}
