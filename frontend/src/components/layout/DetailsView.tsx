@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Database, Tag, Star, Calendar, Clock, Music, Disc, Hash, FileAudio, Layers, Send, Download, Scissors, Activity, Wand2, Loader2, MicVocal } from 'lucide-react';
+import { RhythmBlock } from './RhythmBlock';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
@@ -448,6 +449,11 @@ export const DetailsView: React.FC = () => {
           </details>
         )}
       </div>
+
+      {/* Metamorphic meter: time signature per section rather than one global
+          guess, plus tempo segments, syncopation, swing and polymeter. Run on
+          demand -- a full read is seconds of CPU per track. */}
+      <RhythmBlock entryId={selectedId} title={entry?.title ?? 'track'} analysis={analysis} />
 
       {/* Prompt inference: a Stable Audio-style prompt + semantic tags derived
           from the analysis above (deterministic; folds in embedded genre/mood). */}
