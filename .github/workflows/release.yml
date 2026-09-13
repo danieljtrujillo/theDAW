@@ -41,9 +41,6 @@ env:
   # Electron shell. KEEP IN SYNC with the Node version documented in
   # docs/RELEASING.md (section "Local builds").
   NODE_VERSION: "22"
-  # Container image name on the GitHub Container Registry. KEEP IN SYNC
-  # with the image name documented in docs/RELEASING.md.
-  IMAGE_NAME: ghcr.io/gantasmo/thedaw
   # SwayCommand (the SWAY tab's cockpit) is public, so the installer jobs check
   # it out with the built-in GITHUB_TOKEN and build the embed bundle from it
   # (electron-ui/scripts/fetch-sway-build.mjs via SWAY_PROJECT). It used to be
@@ -276,8 +273,14 @@ jobs:
       # third-party actions (house rule from lint.yml).
       - name: Log in to the GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      # The image goes to the namespace of the repository running the workflow:
+      # ghcr.io/gantasmo/thedaw on gantasmo/theDAW, the image documented in
+      # docs/RELEASING.md. GITHUB_TOKEN can write packages only for its own
+      # owner, so a fixed gantasmo name failed the push on every fork. GHCR
+      # names are lowercase, hence ${,,}.
       - name: Build and push the image
         run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/thedaw"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             docker buildx build --push \
               --tag "${IMAGE_NAME}:${VERSION}" \
