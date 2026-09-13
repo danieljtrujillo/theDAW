@@ -3,13 +3,11 @@
  *
  * The Shell renders under CSS `zoom: var(--layout-zoom)`. A panel that needs
  * unzoomed pointer math (the LEARN graphs) counter-zooms with
- * `zoom: calc(1 / var(--layout-zoom))`. Under standardized CSS zoom, which is
- * what Chromium 128+ and every shipped Electron implement, a percentage size
- * resolves against the parent and ignores the element's own zoom. A wrapper
- * sized `calc(100% * var(--layout-zoom))` therefore covers `zoom` of its panel
- * in each direction below zoom 1 and overflows it above zoom 1. Measured in
- * Chromium 148: at zoom 0.85 the LEARN graph box was 1136x476 inside a
- * 1337x560 panel.
+ * `zoom: calc(1 / var(--layout-zoom))` and keeps its size at 100%. A wrapper
+ * sized `calc(100% * var(--layout-zoom))` covers `zoom` of its panel in each
+ * direction below zoom 1 and overflows it above zoom 1, under Chromium's
+ * standardized CSS zoom and under its legacy zoom. At zoom 0.85 the LEARN
+ * graph canvas measured 1136x476 inside a 1337x560 panel.
  *
  * This reads every .tsx under src and fails on any element that counter-zooms
  * and also multiplies its width or height by --layout-zoom.
