@@ -6,7 +6,8 @@
  * (.sway). Install puts the file where its format belongs and reports the
  * path; download hands the raw file over for use elsewhere.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Check,
@@ -14,6 +15,7 @@ import {
   FileMusic,
   Layers,
   Loader2,
+  GripVertical,
   Package,
   Search,
   Waves,
@@ -54,6 +56,41 @@ const KIND_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   scene: Waves,
 };
 
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const MIN_W = 520;
+const MIN_H = 340;
+
+/** A panel the size of most of the window, centred, never off an edge. */
+const initialRect = (): Rect => {
+  const w = Math.max(MIN_W, Math.min(1120, window.innerWidth - 80));
+  const h = Math.max(MIN_H, Math.min(720, window.innerHeight - 120));
+  return {
+    x: Math.max(8, Math.round((window.innerWidth - w) / 2)),
+    y: Math.max(8, Math.round((window.innerHeight - h) / 2)),
+    w,
+    h,
+  };
+};
+
+const clampRect = (r: Rect): Rect => {
+  const w = Math.max(MIN_W, Math.min(r.w, window.innerWidth - 16));
+  const h = Math.max(MIN_H, Math.min(r.h, window.innerHeight - 16));
+  return {
+    w,
+    h,
+    // A title bar dragged past the bottom edge cannot be grabbed again, so the
+    // panel stays reachable by construction rather than by the user's care.
+    x: Math.max(8 - w + 120, Math.min(r.x, window.innerWidth - 120)),
+    y: Math.max(8, Math.min(r.y, window.innerHeight - 44)),
+  };
+};
+
 const fmtSize = (bytes: number): string =>
   bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 
@@ -79,6 +116,53 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installed, setInstalled] = useState<Record<string, string>>({});
+  const [rect, setRect] = useState<Rect>(initialRect);
+  // The gesture in flight. A ref, not state: it changes on every pointermove
+  // and nothing renders from it.
+  const drag = useRef<{ mode: 'move' | 'resize'; x: number; y: number; rect: Rect } | null>(null);
+
+  // Opening recentres, so a panel left somewhere awkward, or a window resized
+  // while it was closed, does not open off screen.
+  useEffect(() => {
+    if (open) setRect(initialRect());
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => setRect((r) => clampRect(r));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [open]);
+
+  const startGesture = useCallback(
+    (mode: 'move' | 'resize') => (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      drag.current = { mode, x: e.clientX, y: e.clientY, rect };
+    },
+    [rect],
+  );
+
+  const onGesturePointerMove = useCallback((e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    setRect(
+      clampRect(
+        d.mode === 'move'
+          ? { ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy }
+          : { ...d.rect, w: d.rect.w + dx, h: d.rect.h + dy },
+      ),
+    );
+  }, []);
+
+  const endGesture = useCallback((e: React.PointerEvent) => {
+    drag.current = null;
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -166,24 +250,37 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
 
   if (!open) return null;
 
-  return (
+  // Rendered into document.body. The Shell carries a CSS `zoom`, and a fixed
+  // element inside a zoomed ancestor is laid out in the zoomed coordinate
+  // space: without the portal this panel opens offset and oversized, past the
+  // window edges, which is exactly what it did.
+  return createPortal(
     <div
       role="dialog"
       aria-label="Asset library"
       aria-modal="true"
-      className="fixed inset-0 z-200 flex items-center justify-center bg-black/70 p-6"
-      onClick={onClose}
+      className="fixed inset-0 z-50"
     >
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div
-        className="relative flex w-full max-w-6xl h-[80vh] flex-col overflow-hidden rounded-lg border border-purple-500/30 bg-[#0a080f] shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="absolute flex flex-col overflow-hidden rounded-lg border border-purple-500/30 bg-[#0a080f] shadow-2xl"
+        style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
       >
-        <div className="flex shrink-0 items-center gap-3 border-b border-white/10 px-3 py-2">
+        <div
+          className="flex shrink-0 cursor-grab touch-none select-none items-center gap-3 border-b border-white/10 px-3 py-2 active:cursor-grabbing"
+          onPointerDown={startGesture('move')}
+          onPointerMove={onGesturePointerMove}
+          onPointerUp={endGesture}
+          onPointerCancel={endGesture}
+        >
           <Layers className="h-4 w-4 text-purple-300" />
           <h2 className="text-[11px] font-black uppercase tracking-widest text-purple-200">
             Asset library
           </h2>
-          <div className="relative ml-3 grow max-w-md">
+          <div
+            className="relative ml-3 grow max-w-md"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-500" />
             <input
               id="asset-search"
@@ -199,6 +296,7 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
           <button
             type="button"
             onClick={onClose}
+            onPointerDown={(e) => e.stopPropagation()}
             aria-label="Close the asset library"
             className="ml-auto rounded p-1 text-zinc-400 hover:text-zinc-100"
           >
@@ -352,8 +450,34 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
             </aside>
           )}
         </div>
+
+        {/* Bottom-right resize grip. A button so it takes focus and announces
+            itself; keyboard sizing is the arrow keys on it. */}
+        <button
+          type="button"
+          aria-label="Resize the asset library"
+          onPointerDown={startGesture('resize')}
+          onPointerMove={onGesturePointerMove}
+          onPointerUp={endGesture}
+          onPointerCancel={endGesture}
+          onKeyDown={(e) => {
+            const step = e.shiftKey ? 64 : 16;
+            const by = (dw: number, dh: number) => {
+              e.preventDefault();
+              setRect((r) => clampRect({ ...r, w: r.w + dw, h: r.h + dh }));
+            };
+            if (e.key === 'ArrowRight') by(step, 0);
+            else if (e.key === 'ArrowLeft') by(-step, 0);
+            else if (e.key === 'ArrowDown') by(0, step);
+            else if (e.key === 'ArrowUp') by(0, -step);
+          }}
+          className="absolute bottom-0 right-0 flex h-4 w-4 cursor-nwse-resize touch-none items-center justify-center text-zinc-600 hover:text-purple-300"
+        >
+          <GripVertical className="h-3 w-3 rotate-45" />
+        </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 
