@@ -120,6 +120,15 @@ extraResources:
       - "!WHERE-WE-STAND.md"
   - from: ../frontend/public/USER_GUIDE.md
     to: python/frontend/public/USER_GUIDE.md
+  # The Owl's artwork. plugin/router.py composes the bundled the-owl.gan from
+  # backend/modules/plugin/assets/the-owl/project.json plus this image, and it
+  # resolves it at _REPO_ROOT/frontend/public/owl -- which in a packaged app is
+  # python/frontend/public/owl. Without this the installed app builds the Owl
+  # with no background and the surface opens blank.
+  - from: ../frontend/public/owl
+    to: python/frontend/public/owl
+    filter:
+      - "**/*"
   # Headless notation engraver: frontend/scripts (renderScorePdf.mjs via OSMD,
   # renderTabPdf.mjs via alphaTab) plus the production node_modules they import,
   # staged by scripts/fetch-notation-renderer.mjs (npm run fetch:notation).
