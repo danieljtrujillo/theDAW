@@ -18,6 +18,7 @@ import {
   Glasses,
 } from 'lucide-react';
 
+import { XrBusButton } from '../components/dev/XrBusButton';
 import { getAnalyser } from '../state/playerStore';
 import { usePlayerStore } from '../state/playerStore';
 import { useLibraryStore } from '../state/libraryStore';
@@ -772,6 +773,7 @@ export const VJView: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-1">
+          <XrBusButton />
           {/* Input toggles — click to enable/disable each signal
               feeding the VJ iframe. Minimum 1 must stay active. The
               VJ side mutes/unmutes its own bus when it receives the

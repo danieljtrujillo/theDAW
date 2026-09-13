@@ -20,7 +20,7 @@ import { FEATURE_NOTES } from './featureNoteList';
  */
 const DOCK_TABS = [
   'levels', 'spectral', 'details', 'score', 'sing', 'lyric',
-  'midi', 'step-seq', 'draw', 'slide', 'sway', 'xrbus',
+  'midi', 'step-seq', 'draw', 'slide',
 ] as const;
 
 const ids = new Set<string>();

@@ -23,9 +23,7 @@ export type BottomPanelTab =
   | 'midi'
   | 'step-seq'
   | 'draw'
-  | 'slide'
-  | 'sway'
-  | 'xrbus'; // dev-only tab; hidden (and remapped on rehydrate) in production builds
+  | 'slide';
 
 /** Layout of the merged DETAILS tab: both panes, or one of them full-width. */
 export type DetailsPane = 'split' | 'details' | 'media';
@@ -131,9 +129,11 @@ export const useBottomPanelStore = create<BottomPanelState>()(
         if (p.activeTab === 'bucket') {
           p.activeTab = 'details';
         }
-        // The XR Bus tab only exists in dev builds; a persisted selection must
-        // not leave a production dock with no active tab.
-        if (p.activeTab === 'xrbus' && !import.meta.env.DEV) {
+        // SWAY left the dock: the SWAY tab embeds the SwayCommand cockpit and
+        // renders the same link panel beside it, so the dock entry was a second
+        // door to one room. XR Bus left too -- it is a dev tester, and it is a
+        // button on the VJ and SLIDE surfaces it tests now.
+        if (p.activeTab === 'sway' || p.activeTab === 'xrbus') {
           p.activeTab = 'spectral';
         }
         return p as unknown as BottomPanelState;

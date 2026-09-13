@@ -563,14 +563,13 @@ export const TOUR_STEPS: ChapteredStep[] = [
     title: 'Bind a controller to anything',
     body: (
       <>
-        The dock's <Em>SWAY</Em> panel is theDAW's own half of that integration: arm <Em>LEARN</Em> on
+        The <Em>SWAY</Em> tab's link panel is theDAW's own half of that integration: arm <Em>LEARN</Em> on
         one of the six expressive dimensions, move any control on any MIDI device, and it is bound. The
         VJ's camera-pose channels and the Sway's Ableton pad map route from the same strip.
       </>
     ),
     tip: <>PERFORM reads whatever you bind here, and a .tasmo carries it with the project.</>,
-    targetSelector: '[data-tour="bottom-tab-sway"]',
-    prepare: openDock('sway'),
+    targetSelector: '[data-tour="tab-sway"]',
   },
   {
     id: 'slide',
