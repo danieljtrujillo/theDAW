@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { logError, logInfo } from '../../state/logStore';
+import { useProjectStore } from '../../state/projectStore';
 
 interface Asset {
   id: string;
@@ -228,20 +229,43 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  const install = useCallback(async (asset: Asset) => {
-    setInstalling(true);
-    try {
-      const r = await fetch(`/api/assets/${encodeURIComponent(asset.id)}/install`, { method: 'POST' });
-      if (!r.ok) throw new Error(await r.text());
-      const j = (await r.json()) as { path: string; where: string };
-      setInstalled((prev) => ({ ...prev, [asset.id]: j.path }));
-      logInfo('assets', `Installed ${asset.name} to ${j.path}`);
-    } catch (e) {
-      logError('assets', `Install failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setInstalling(false);
-    }
-  }, []);
+  /**
+   * One button, one outcome: the item ends up usable.
+   *
+   * A project is installed and then opened on the EDIT timeline, because
+   * installing a project and leaving the user to find the file is not getting
+   * the project. Installing the same item twice returns the copy already on
+   * disk rather than writing a second one. Plugins and scenes land where their
+   * format belongs and the panel says where.
+   */
+  const get = useCallback(
+    async (asset: Asset) => {
+      setInstalling(true);
+      try {
+        const r = await fetch(`/api/assets/${encodeURIComponent(asset.id)}/install`, {
+          method: 'POST',
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const j = (await r.json()) as { path: string; where: string; already?: boolean };
+        setInstalled((prev) => ({ ...prev, [asset.id]: j.path }));
+        logInfo(
+          'assets',
+          j.already
+            ? `${asset.name} was already installed at ${j.path}`
+            : `Installed ${asset.name} to ${j.path}`,
+        );
+        if (asset.kind === 'project') {
+          onClose();
+          await useProjectStore.getState().loadPath(j.path);
+        }
+      } catch (e) {
+        logError('assets', `Could not get ${asset.name}: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setInstalling(false);
+      }
+    },
+    [onClose],
+  );
 
   const selected = useMemo(
     () => detail ?? assets.find((a) => a.id === selectedId) ?? null,
@@ -421,30 +445,37 @@ export const AssetLibraryModal: React.FC<{ open: boolean; onClose: () => void }>
               <div className="mt-3 flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => void install(selected)}
+                  onClick={() => void get(selected)}
                   disabled={installing || !selected.available}
-                  className="btn-ghost flex items-center gap-1 text-[9px] disabled:opacity-40"
+                  title={
+                    selected.kind === 'project'
+                      ? 'Install it and open it on the EDIT timeline'
+                      : `Install it into ${selected.installs_to ?? 'the place it belongs'}`
+                  }
+                  className="btn-primary flex items-center gap-1 text-[9px] disabled:opacity-40"
                 >
-                  {installing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3 text-emerald-300" />}
-                  INSTALL
+                  {installing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                  {selected.kind === 'project' ? 'OPEN' : 'INSTALL'}
                 </button>
                 <a
                   href={selected.download_url}
                   download
+                  title="Save the file somewhere else"
+                  aria-label={`Save ${selected.name} as a file`}
                   className="btn-ghost flex items-center gap-1 text-[9px]"
                 >
-                  <Download className="h-3 w-3 text-purple-300" /> DOWNLOAD
+                  <Download className="h-3 w-3 text-purple-300" />
                 </a>
               </div>
 
-              {selected.installs_to && (
-                <p className="mt-2 text-[9px] font-mono text-zinc-500">
-                  Installs to {selected.installs_to}
-                </p>
-              )}
+              <p className="mt-2 text-[9px] font-mono leading-relaxed text-zinc-500">
+                {selected.kind === 'project'
+                  ? `OPEN puts it in ${selected.installs_to ?? 'your projects folder'} and opens it on the timeline.`
+                  : `INSTALL puts it in ${selected.installs_to ?? 'the place it belongs'}.`}
+              </p>
               {installed[selected.id] && (
                 <p className="mt-1 text-[9px] font-mono text-emerald-300">
-                  Installed at {installed[selected.id]}
+                  On disk at {installed[selected.id]}
                 </p>
               )}
             </aside>

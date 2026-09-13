@@ -14,6 +14,7 @@ wrote, so the UI can say where the thing went.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -38,9 +39,46 @@ def _entry_or_404(asset_id: str) -> catalog.AssetEntry:
     raise HTTPException(404, f"No asset with id {asset_id!r}")
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """True when two paths hold the same bytes. Size first, then a hash, so
+    the common case costs one stat."""
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+    except OSError:
+        return False
+    return _digest(a) == _digest(b)
+
+
+def _digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _existing_copy(target: Path, source: Path, name: str) -> Path | None:
+    """An installed copy of this exact file, if one is already there.
+
+    Pressing install twice used to leave "name (2)" and "name (3)" behind. An
+    untouched copy is the same file, so the second press has nothing to do and
+    the caller can open what is already on disk. A copy the user has since
+    edited differs, and that one is kept.
+    """
+    stem, suffix = Path(name).stem, Path(name).suffix
+    candidates = [target / name] + [
+        target / f"{stem} ({n}){suffix}" for n in range(2, 20)
+    ]
+    for c in candidates:
+        if c.is_file() and _same_file(c, source):
+            return c
+    return None
+
+
 def _unique_path(target: Path, name: str) -> Path:
     """``target/name``, with a numeric suffix when that exists already, so an
-    install never overwrites a project the user has since edited."""
+    install never overwrites a copy the user has edited."""
     candidate = target / name
     if not candidate.exists():
         return candidate
@@ -161,9 +199,24 @@ def install_asset(asset_id: str) -> dict[str, Any]:
     target = _install_path(entry)
     try:
         target.mkdir(parents=True, exist_ok=True)
+        existing = _existing_copy(target, entry.file, entry.file.name)
+        if existing is not None:
+            return {
+                "id": entry.id,
+                "installed": True,
+                "already": True,
+                "path": str(existing),
+                "where": str(target),
+            }
         dest = _unique_path(target, entry.file.name)
         shutil.copy2(entry.file, dest)
     except OSError as e:
         raise HTTPException(500, f"could not install {entry.name}: {e}") from e
     log.info("assets: installed %s to %s", entry.id, dest)
-    return {"id": entry.id, "installed": True, "path": str(dest), "where": str(target)}
+    return {
+        "id": entry.id,
+        "installed": True,
+        "already": False,
+        "path": str(dest),
+        "where": str(target),
+    }

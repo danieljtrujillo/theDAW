@@ -12,7 +12,8 @@ Four formats are carried, each with a place it belongs:
 ``.gan``    a web plugin, installed through the plugin module's own importer
 ``.ares``   a volumetric capture (ARES container: mesh chunks plus a video
             track), installed into ``data/volumetric``
-``.sway``   a SwayCommand cockpit scene, installed into ``data/sway-scenes``
+``.sway``   a SwayCommand cockpit scene, installed into ``data/sway-projects``,
+            which is the directory /api/sway/projects lists
 
 A catalog file is data, not code: it is read, validated field by field, and an
 entry that fails validation is dropped with a warning rather than taking the
@@ -42,7 +43,7 @@ FORMAT_TARGETS: dict[str, str | None] = {
     ".tasmo": "projects",
     ".gan": None,
     ".ares": "volumetric",
-    ".sway": "sway-scenes",
+    ".sway": "sway-projects",
 }
 
 KINDS = ("project", "plugin", "volumetric", "scene")

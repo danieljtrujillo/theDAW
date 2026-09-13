@@ -131,23 +131,43 @@ def test_facets_count_every_axis(client: TestClient, bundled: Path) -> None:
     assert {"value": "EDIT", "count": 1} in f["tabs"]
 
 
-def test_install_twice_keeps_both_copies(
+def test_installing_twice_reuses_the_copy_on_disk(
     client: TestClient, bundled: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The second install of an item the user has since edited must not land on
-    top of their copy."""
+    """Pressing the button twice used to leave demo (2) and demo (3) behind. An
+    untouched copy is the same file, so the second press has nothing to do."""
     projects = tmp_path / "Documents" / "theDAW Projects"
     monkeypatch.setattr(
         "backend.modules.assets.router._install_path", lambda entry: projects
     )
 
     first = client.post("/api/assets/demo/install").json()
-    assert Path(first["path"]).is_file()
     assert Path(first["path"]).name == "demo.tasmo"
+    assert first["already"] is False
+
+    second = client.post("/api/assets/demo/install").json()
+    assert second["path"] == first["path"]
+    assert second["already"] is True
+    assert [p.name for p in sorted(projects.iterdir())] == ["demo.tasmo"]
+
+
+def test_an_edited_copy_is_never_overwritten(
+    client: TestClient, bundled: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy the user has worked on differs from the shipped file, so a fresh
+    install lands beside it under a numbered name."""
+    projects = tmp_path / "Documents" / "theDAW Projects"
+    monkeypatch.setattr(
+        "backend.modules.assets.router._install_path", lambda entry: projects
+    )
+
+    first = Path(client.post("/api/assets/demo/install").json()["path"])
+    first.write_bytes(b"the user has been working on this")
 
     second = client.post("/api/assets/demo/install").json()
     assert Path(second["path"]).name == "demo (2).tasmo"
-    assert Path(first["path"]).is_file()
+    assert second["already"] is False
+    assert first.read_bytes() == b"the user has been working on this"
 
 
 def test_installing_something_absent_is_a_404(

@@ -12,8 +12,8 @@
       "author": "GANTASMO",
       "version": "1.0",
       "duration_sec": 218.5,
-      "summary": "A song in 6/8 that steps into additive 33/8 twice, with a locator on every change.",
-      "description": "The project opens at 118.79 bpm in 6/8 with the whole song on one audio track. Six locators mark what the rhythm engine read: two passages of 33/8, grouped 3+2+3+3 and then 3+2+2+2+2, inside a song that is otherwise compound duple. Locator colours follow bar length, so the odd sections stand out on the timeline. Press MAP in DETAILS to run the analysis yourself and compare it against the markers. Suggested order: look at the timeline, run the meter map, then open SCORE.",
+      "summary": "Compound duple at 118.79 bpm that steps into additive 33/8 twice.",
+      "description": "Three minutes thirty-eight of audio on one track, opening at 118.79 bpm in 6/8. Six locators mark where the meter changes: the song leaves 6/8 at 0:31 for a passage of 33/8 grouped 3+2+3+3, returns, and leaves again at 2:54 for 33/8 grouped 3+2+2+2+2. Locator colour follows bar-length family, so the additive passages are visible on the timeline without reading the names. The tempo stays near 118 throughout and the engine marks most of the 6/8 stretches as uncertain, which is what a dense mix with a weak downbeat looks like to it. Press MAP in DETAILS to run the analysis and compare the result against the markers. A cockpit scene built for this song ships alongside it.",
       "tags": ["uncanny", "meter", "additive", "6/8", "33/8", "locators"],
       "tabs": ["EDIT", "DETAILS", "SCORE"]
     },
@@ -27,8 +27,8 @@
       "author": "GANTASMO",
       "version": "1.0",
       "duration_sec": 273.0,
-      "summary": "A tempo change from 162 to 199 bpm, with the meter moving through 5/8 and 12/8.",
-      "description": "Nine locators, including an amber marker at the tempo change 39 seconds in. The meter passes through 6/8, 5/8 grouped 2+3, and two 12/8 passages, one of them grouped 3+2+2+3+2. The swing ratio the engine read here is 1.28, so the eighths are noticeably uneven. Open it in SING to put the lyric beside the score, and in DETAILS to read the map.",
+      "summary": "Four and a half minutes that accelerate from 162 to 199 bpm, through 5/8 and two groupings of 12/8.",
+      "description": "The project opens at 162 bpm in 6/8. An amber locator at 0:39 marks the tempo change to 199, where the song stays. Eight more locators follow the meter: 5/8 grouped 2+3, a 12/8 passage grouped in twos, a long stretch of 6/8, and a second 12/8 grouped 3+2+2+3+2. The engine read a swing ratio of 1.28 here, so the eighths are audibly uneven rather than straight. Open SING to put the lyric beside the score, and DETAILS to read the map and export it.",
       "tags": ["uncanny", "tempo change", "swing", "5/8", "12/8"],
       "tabs": ["SING", "SCORE", "DETAILS"]
     },
@@ -42,8 +42,8 @@
       "author": "GANTASMO",
       "version": "1.0",
       "duration_sec": 377.0,
-      "summary": "Six named scenes for the PERFORM grid over a song that moves between 2/4, 4/4, 8/4 and 6/4.",
-      "description": "The longest of the five, with thirteen locators covering four tempo changes and nine meter segments. Six scenes are named in the project (Intro, Verse, Turn, Chorus, Break, Out) so the PERFORM grid opens with a row per section rather than a generic ladder. The engine read cross-rhythms at 4:3 and 2:3 in three separate segments, which is what the 8/4 passage grouped 3+3+2 is doing.",
+      "summary": "Six and a quarter minutes at 98.96 bpm, with six named scenes ready in the PERFORM grid.",
+      "description": "Six scenes are named in the project, so the PERFORM grid opens with a row per section: Intro, Verse, Turn, Chorus, Break and Out. Thirteen locators cover four tempo changes and nine meter segments, moving between 2/4, 4/4, an 8/4 passage grouped 3+3+2, and 6/4. The engine found cross-rhythms at 4:3 and 2:3 in three separate segments, which is the pulse the 8/4 passage is playing against. A cockpit scene built for this song ships alongside it.",
       "tags": ["uncanny", "scenes", "perform", "cross-rhythm", "tempo change"],
       "tabs": ["PERFORM", "EDIT", "DETAILS"]
     },
@@ -57,8 +57,8 @@
       "author": "GANTASMO",
       "version": "1.0",
       "duration_sec": 304.0,
-      "summary": "A three-stage mastering chain on the track, over a song that alternates 6/8, 9/8 and 15/8.",
-      "description": "The audio track carries an EQ, a compressor and a reverb, one of each, with values you can read and change: the compressor sits at -18 dB with a ratio of 2.5, the reverb is 12 percent wet. Open MIX to see the chain, bypass a stage and hear what it was doing. Ten locators mark the meter, which moves from 6/8 into 9/8, back, through a 15/8 passage grouped 2+3, and ends in 9/8.",
+      "summary": "Five minutes at 115.72 bpm carrying a three-stage mastering chain you can read and change.",
+      "description": "The audio track has an EQ, a compressor and a reverb on it, one of each, with values written into the project: the EQ lifts the low and high bands and cuts the mids, the compressor sits at -18 dB with a ratio of 2.5 and a 12 ms attack, and the reverb is 12 percent wet in a small room. Open MIX to see the chain, bypass a stage and hear what it was doing. Ten locators follow the meter, which opens in 6/8, moves into 9/8 at 0:58, returns, plays a passage of 15/8 grouped 2+3 at 2:46, and closes in 9/8.",
       "tags": ["uncanny", "mix", "effects", "9/8", "15/8"],
       "tabs": ["MIX", "EDIT", "DETAILS"]
     },
@@ -72,10 +72,49 @@
       "author": "GANTASMO",
       "version": "1.0",
       "duration_sec": 333.3,
-      "summary": "Five and a half minutes at a steady tempo, the simplest of the five to start with.",
-      "description": "Four locators and no tempo change, so this is the one to open first if the others look busy. The whole song sits on one track with fades at both ends. Use it to learn the timeline, then run the meter map in DETAILS and export the report to see what an analysis contains.",
+      "summary": "Five and a half minutes at a steady tempo, on a single track with four locators.",
+      "description": "One audio track with fades at both ends, no tempo change, and four locators covering the whole song. The timeline is the thing to learn here: drag the clip, split it, move the playhead between locators. Then open DETAILS, press MAP, and export the report to see what a full analysis of a track contains.",
       "tags": ["uncanny", "starter", "timeline"],
       "tabs": ["EDIT", "DETAILS", "VJ"]
+    },
+    {
+      "id": "scene-will-i-dream",
+      "name": "will i dream (cockpit scene)",
+      "kind": "scene",
+      "format": ".sway",
+      "file": "scenes/will-i-dream.sway",
+      "author": "GANTASMO",
+      "version": "1.0",
+      "summary": "The SwayCommand cockpit scene built for this song.",
+      "description": "Installs into the cockpit's project list, where the SWAY tab opens it. Set the SWAY tab's Audio source to theDAW master and play the song: the scene reacts to what theDAW is putting out, so it needs no audio file of its own.",
+      "tags": ["uncanny", "sway", "cockpit", "scene", "visuals"],
+      "tabs": ["SWAY"]
+    },
+    {
+      "id": "scene-miracle-mile",
+      "name": "Miracle Mile (cockpit scene)",
+      "kind": "scene",
+      "format": ".sway",
+      "file": "scenes/miracle-mile.sway",
+      "author": "GANTASMO",
+      "version": "1.0",
+      "summary": "The SwayCommand cockpit scene built for this song.",
+      "description": "Installs into the cockpit's project list, where the SWAY tab opens it. Set the SWAY tab's Audio source to theDAW master and play the song: the scene reacts to what theDAW is putting out, so it needs no audio file of its own.",
+      "tags": ["uncanny", "sway", "cockpit", "scene", "visuals"],
+      "tabs": ["SWAY"]
+    },
+    {
+      "id": "scene-natures-tomb",
+      "name": "Nature's Tomb (cockpit scene)",
+      "kind": "scene",
+      "format": ".sway",
+      "file": "scenes/natures-tomb.sway",
+      "author": "GANTASMO",
+      "version": "1.0",
+      "summary": "The SwayCommand cockpit scene built for this song.",
+      "description": "Installs into the cockpit's project list, where the SWAY tab opens it. Set the SWAY tab's Audio source to theDAW master and play the song: the scene reacts to what theDAW is putting out, so it needs no audio file of its own.",
+      "tags": ["uncanny", "sway", "cockpit", "scene", "visuals"],
+      "tabs": ["SWAY"]
     },
     {
       "id": "plugin-the-owl",
@@ -85,9 +124,9 @@
       "file": "plugins/the-owl.gan",
       "author": "GANTASMO",
       "version": "1.0",
-      "summary": "The bundled Owl control surface as a .gan package.",
-      "description": "A web plugin built from a VST Foundry export: artwork, canvas surfaces and the controls that drive them. Installing it puts the package on the plugin shelf and extracts its runtime, the same path a plugin you build yourself takes.",
-      "tags": ["plugin", "surface", "bundled"],
+      "summary": "A control surface packaged as a .gan, with its artwork and canvas surfaces.",
+      "description": "Installing it puts the package on the plugin shelf and extracts its runtime, so it opens in the plugin stage straight away. Downloading gives you the .gan itself, which FOUNDRY opens for editing the layout.",
+      "tags": ["plugin", "surface", "owl"],
       "tabs": ["MIX", "FOUNDRY"]
     },
     {
@@ -98,9 +137,9 @@
       "file": "plugins/ares.gan",
       "author": "GANTASMO",
       "version": "1.0",
-      "summary": "The Ares control surface as a .gan package.",
-      "description": "The control surface the MIX Studio tile opens, packaged as a .gan. Install it to put it on the plugin shelf, or download the file to open it in FOUNDRY and edit the layout.",
-      "tags": ["plugin", "surface", "bundled", "control"],
+      "summary": "The control surface the MIX Studio tile opens, packaged as a .gan.",
+      "description": "Five knobs and a set of custom-code pads over a single artwork layer. Installing it puts the package on the plugin shelf and extracts its runtime. Downloading gives you the .gan itself, which FOUNDRY opens for editing the layout.",
+      "tags": ["plugin", "surface", "control", "ares"],
       "tabs": ["MIX", "FOUNDRY"]
     }
   ]
