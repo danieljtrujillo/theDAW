@@ -47,7 +47,7 @@ const TIPS: string[] = [
   'stack 2+ clips in CHIMERA to blend them',
   'drag a clip to the EDIT timeline to arrange it',
   'use the cut tool to split a clip, then drag its edge to fade',
-  'hit COMMIT EDIT to bounce the arrangement to one file',
+  'hit MIXDOWN to bounce the arrangement to one file',
   'drag effects into the MIX chain to reorder them',
   'load a deck, press SYNC, then move the crossfader',
   'pull a stem fader to drop the vocal mid-track',

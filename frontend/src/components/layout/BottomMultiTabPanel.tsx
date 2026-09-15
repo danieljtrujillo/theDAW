@@ -9,8 +9,7 @@
  */
 import React, { useState, lazy, Suspense } from 'react';
 import {
-  Activity, Info, Piano, Layers, FolderOpen, SlidersVertical, ExternalLink, Maximize2, Minimize2,
-  FileMusic, Brush, Gauge, MicVocal, NotebookPen,
+  Info, FolderOpen, ExternalLink, Maximize2, Minimize2, FileMusic, MicVocal,
 } from 'lucide-react';
 import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
@@ -44,20 +43,20 @@ import { featureById } from '../../onboarding/featureRegistry';
  * `panel-<id>`, not here: the hover tooltip reads that entry's `what`, so the
  * sentence the help search returns and the sentence on the tab cannot drift
  * apart. This table keeps only what is the row's own business — order, label
- * and icon. Every tab lights the same way when selected: the theme's accent
+ * word alone — no icon. Every tab lights the same way when selected: the accent
  * (`--et-accent`), a 2px accent edge and a soft glow.
  */
-const TAB_DEFS: Array<{ id: BottomPanelTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { id: 'levels',   label: 'Levels',    icon: Gauge },
-  { id: 'spectral', label: 'Visualize', icon: Activity },
-  { id: 'midi',     label: 'MIDI',      icon: Piano },
-  { id: 'step-seq', label: 'Sequence',  icon: Layers },
-  { id: 'draw',     label: 'DRAW',      icon: Brush },
-  { id: 'score',    label: 'Score',     icon: FileMusic },
-  { id: 'sing',     label: 'Sing',      icon: MicVocal },
-  { id: 'lyric',    label: 'Lyric',     icon: NotebookPen },
-  { id: 'details',  label: 'Details',   icon: Info },
-  { id: 'slide',    label: 'SLIDE',     icon: SlidersVertical },
+const TAB_DEFS: Array<{ id: BottomPanelTab; label: string }> = [
+  { id: 'levels',   label: 'Levels' },
+  { id: 'spectral', label: 'Visualize' },
+  { id: 'midi',     label: 'MIDI' },
+  { id: 'step-seq', label: 'Sequence' },
+  { id: 'draw',     label: 'DRAW' },
+  { id: 'score',    label: 'Score' },
+  { id: 'sing',     label: 'Sing' },
+  { id: 'lyric',    label: 'Lyric' },
+  { id: 'details',  label: 'Details' },
+  { id: 'slide',    label: 'SLIDE' },
 ];
 
 /** The selected tab: accent ink, accent edge, and a glow the drop-shadow draws
@@ -107,7 +106,6 @@ export const BottomMultiTabPanel: React.FC = () => {
       <div className="flex items-center justify-between border-b border-white/5 shrink-0 bg-black/30">
         <div className="flex overflow-x-auto no-scrollbar">
           {TAB_DEFS.map((t) => {
-            const Icon = t.icon;
             const active = activeTab === t.id;
             return (
               <button
@@ -116,10 +114,10 @@ export const BottomMultiTabPanel: React.FC = () => {
                 data-tour={`bottom-tab-${t.id}`}
                 onClick={() => setActiveTab(t.id)}
                 aria-pressed={active}
-                className={`px-3 py-1 flex items-center gap-1.5 border-b-2 text-[12px] leading-[13.5px] font-display font-bold uppercase transition-colors whitespace-nowrap ${active ? TAB_ACTIVE : 'border-transparent et-ink-2 hover:et-ink'}`}
+                className={`px-3 py-1 flex items-center border-b-2 text-[12px] leading-[13.5px] font-display font-bold uppercase transition-colors whitespace-nowrap ${active ? TAB_ACTIVE : 'border-transparent et-ink-2 hover:et-ink'}`}
                 title={featureById(`panel-${t.id}`)?.what}
               >
-                <Icon className="w-3 h-3" /> {t.label}
+                {t.label}
               </button>
             );
           })}

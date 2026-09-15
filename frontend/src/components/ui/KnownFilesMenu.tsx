@@ -38,6 +38,9 @@ interface KnownFilesMenuProps {
   exts: string[];
   /** known_paths kinds to include; every kind when omitted. */
   kinds?: string[];
+  /** Names the trigger and its list ("Recent audio" → "Recent audio files").
+   *  It is never printed: the trigger is the clock icon, and the word travels
+   *  in the accessible name and the tooltip. */
   label?: string;
   /** The trigger's and the list's accessible name; defaults to "<label> files". */
   name?: string;
@@ -261,11 +264,12 @@ export const KnownFilesMenu: React.FC<KnownFilesMenuProps> = ({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-label={menuName}
-        title="Lists recent files this app saved, installed, opened or downloaded."
-        className={`shrink-0 inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-1 ${size === 'flyout' ? 'text-[12px]' : 'text-[9px]'} font-display font-bold uppercase text-zinc-300 hover:text-[rgb(var(--et-accent))] hover:shadow-[inset_0_0_0_100px_rgba(255,255,255,0.06)] transition-colors ${className}`}
+        title={`${menuName}: recent files this app saved, installed, opened or downloaded.`}
+        className={`shrink-0 inline-flex items-center justify-center rounded border border-white/10 bg-white/5 px-1.5 py-1 text-zinc-300 hover:text-[rgb(var(--et-accent))] hover:shadow-[inset_0_0_0_100px_rgba(255,255,255,0.06)] transition-colors ${className}`}
       >
-        <History className="w-3 h-3" />
-        {label}
+        {/* The clock alone. The word travels in aria-label and the tooltip:
+            the user asked for these triggers to be their icon. */}
+        <History className="w-3.5 h-3.5" />
       </button>
       {open &&
         createPortal(

@@ -7,7 +7,7 @@
  * this notice does not auto-dismiss.
  */
 import React from 'react';
-import { History, Loader2, Trash2 } from 'lucide-react';
+import { History, Loader2 } from 'lucide-react';
 import { useAutosaveRecoveryStore } from '../../lib/editorAutosave';
 import { useAppUiStore } from '../../state/appUiStore';
 
@@ -58,9 +58,8 @@ export const AutosaveRecoveryNotice: React.FC = () => {
           type="button"
           disabled={busy}
           onClick={() => void discard()}
-          className="flex items-center gap-1.5 rounded border border-white/10 bg-white/5 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-400 transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:opacity-50"
+          className="flex items-center rounded border border-white/10 bg-white/5 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-400 transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:opacity-50"
         >
-          <Trash2 className="h-3 w-3" />
           Discard
         </button>
       </div>

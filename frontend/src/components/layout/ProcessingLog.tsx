@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback, useId } from 'react';
-import { Trash2, Download, CircleAlert, Sparkles, Link, Send, type LucideIcon } from 'lucide-react';
+import { Trash2, Download, CircleAlert } from 'lucide-react';
 import {
   actionCaption,
   actionKey,
@@ -11,8 +11,7 @@ import {
   transportPlayOn,
   transportPlayRest,
 } from '../audio/transportKeys';
-import { Glyph, GLYPH_STEPS, GLYPH_STOP, GLYPH_WAVE } from '../audio/transportGlyphs';
-import { actionKeyFace, type ActionGlyph, type CaptionTone } from './actionKeyFace';
+import { actionKeyFace, type CaptionTone } from './actionKeyFace';
 import { useLogStore, type LogLevel, type LogEntry } from '../../state/logStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { buildGenerateParamsFromState, useGenerateStore } from '../../state/generateStore';
@@ -339,23 +338,10 @@ export const LogBody: React.FC = () => {
 // while a CREATE or TRAIN run is live, CHAIN on MIX, SEND on DJ. It is drawn
 // from the transport's key grammar (audio/transportKeys.ts), so it reads as one
 // of PLAY's neighbours: PLAY's tile and primary ink at rest, PLAY's ON form
-// (accent ink and a 1px accent bottom edge) while its run is live, a glyph over
-// a 12px Orbitron legend, no border ring and no glow. What each tab and run
-// shows is actionKeyFace.ts; the handlers are here.
-
-/**
- * Each face's glyph. STOP, PROCESS and TRAIN are fill paths on the transport's
- * 14-unit grid (audio/transportGlyphs.tsx), hard-cornered like START and PAUSE
- * and crisp at 14px on a 1x screen: a square, a waveform, rising steps.
- */
-const ACTION_GLYPHS: Record<ActionGlyph, { icon: LucideIcon } | { path: string }> = {
-  create: { icon: Sparkles },
-  process: { path: GLYPH_WAVE },
-  train: { path: GLYPH_STEPS },
-  stop: { path: GLYPH_STOP },
-  chain: { icon: Link },
-  send: { icon: Send },
-};
+// (accent ink and a 1px accent bottom edge) while its run is live, no border
+// ring and no glow. The key is its 12px Orbitron word and nothing else — it
+// carried a glyph above the word and the user asked for the word alone. What
+// each tab and run shows is actionKeyFace.ts; the handlers are here.
 
 /** How often the UNDERFIT key re-reads the dashboard's runs while that tab is open. */
 const UNDERFIT_RUNS_POLL_MS = 3000;
@@ -469,7 +455,6 @@ export const LogActionButton: React.FC = () => {
     }
   };
 
-  const glyph = ACTION_GLYPHS[face.glyph];
   // Busy on its own run: the ON ink with no hover or press. Waiting on the
   // other studio run: PLAY's dead face, the ink at 40%.
   const tone = face.disabled
@@ -490,21 +475,10 @@ export const LogActionButton: React.FC = () => {
         title={face.label}
         className={`${actionKey} ${tone}`}
       >
-        {/* The glyph, and the run's percentage beside it once there is one. */}
-        <span aria-hidden="true" className="flex items-center gap-1">
-          {'icon' in glyph ? (
-            <glyph.icon
-              className="w-3.5 h-3.5 shrink-0"
-              strokeWidth={1.5}
-              absoluteStrokeWidth
-              strokeLinecap="square"
-              strokeLinejoin="miter"
-            />
-          ) : (
-            <Glyph d={glyph.path} className="w-3.5 h-3.5 shrink-0" />
-          )}
-          {pct !== null && <span className={keyValue}>{pct}%</span>}
-        </span>
+        {/* The word alone. The key carried a glyph above its legend; the user
+            asked for the word and nothing else, so the run's percentage — the
+            one thing the glyph row still had to say — sits above the word. */}
+        {pct !== null && <span aria-hidden="true" className={keyValue}>{pct}%</span>}
         <span aria-hidden="true" className={keyLabel}>{face.legend}</span>
         {/* Progress along the key's foot, on the accent edge: a 2px fill to the
             run's percentage, or the whole foot pulsing while a run has no

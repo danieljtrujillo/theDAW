@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Mic, Square, Play, Pause, Trash2, Wand2, PenLine, Layers, Save, X,
+  Mic, Square, Play, Pause, Wand2, PenLine, Layers, Save, X,
 } from 'lucide-react';
 import { registerSinkElement } from '../../lib/audioSink';
 import { surfaceDeviceId, useIoDevicesStore } from '../../state/ioDevicesStore';
@@ -354,10 +354,10 @@ export const MicRecorder: React.FC<Props> = ({ onClose, embedded = false }) => {
             </button>
             <button
               onClick={resetAll}
-              className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-white/15 bg-white/5 text-zinc-400 hover:text-red-200 hover:border-red-500/40 hover:bg-red-500/10"
+              className="flex items-center text-[9px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-white/15 bg-white/5 text-zinc-400 hover:text-red-200 hover:border-red-500/40 hover:bg-red-500/10"
               title="Discard and start over"
             >
-              <Trash2 className="w-3 h-3" /> Discard
+              Discard
             </button>
           </>
         )}

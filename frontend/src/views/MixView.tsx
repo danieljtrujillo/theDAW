@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import {
   Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2,
-  Download, Send, Sparkles, Plus, Gauge, History, Library, LayoutList, Grid3x3,
+  Download, Send, Sparkles, Plus, Gauge, History, LayoutList, Grid3x3,
   Plug, RefreshCw, Loader2, Square, Blocks, FolderOpen, SlidersHorizontal,
   AudioWaveform, Activity, Layers,
 } from 'lucide-react';
@@ -614,7 +614,6 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         <button onClick={() => p.setActiveCategory('all')}
           title="Every effect in MIX, grouped by category"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-300 hover:text-zinc-100 hover:bg-white/5'}`}>
-          <Library className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[10px] font-bold flex-1 truncate">All</span>
           <span className="text-[8px] font-mono text-zinc-500 shrink-0">{p.allEffectCount}</span>
         </button>

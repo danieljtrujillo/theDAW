@@ -4,8 +4,8 @@
  * Each workspace that plays audio used to reach its own import a different
  * way (a deck drop here, a menu entry there, a HOME card that was never wired
  * up), so the user asked for one control that is always on screen. This is
- * it: a labelled button beside the app menu that opens a small menu with the
- * three things "import" can mean — audio files into the library, a .tasmo
+ * it: a button beside the app menu that opens a small menu with the three
+ * things "import" can mean — audio files into the library, a .tasmo
  * project, or a DAW project — and that also takes audio files dropped
  * straight onto it. A Recent button beside it lists the audio files the app
  * saved or downloaded, and choosing one imports it through the same handler.
@@ -207,8 +207,7 @@ export const ImportMenu: React.FC<ImportMenuProps> = ({ onOpenProject, onImportD
           buttonRef={triggerRef}
           onClick={() => setOpen((v) => !v)}
           icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}
-          label="Import"
-          title="Import audio files, a .tasmo project or a DAW project — or drop audio files here"
+          title="Import: audio files, a .tasmo project or a DAW project — or drop audio files here"
           accent="sky"
           active={open || dragOver}
           ariaHasPopup="menu"

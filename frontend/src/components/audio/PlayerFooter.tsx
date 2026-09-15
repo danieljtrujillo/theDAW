@@ -31,7 +31,6 @@ import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 import { LogActionButton } from '../layout/ProcessingLog';
 import {
-  keyLabel,
   transportKey,
   transportKeyDead,
   transportKeyOff,
@@ -58,11 +57,6 @@ const REPEAT_LABEL: Record<'off' | 'all' | 'one', string> = {
   off: 'Loop off - play the list through and stop',
   all: 'Loop all - the list starts again at the end',
   one: 'Loop one - this track loops',
-};
-const REPEAT_KEY_LABEL: Record<'off' | 'all' | 'one', string> = {
-  off: 'LOOP',
-  all: 'ALL',
-  one: 'ONE',
 };
 
 const formatDuration = (sec: number | null | undefined): string => {
@@ -783,14 +777,13 @@ export const PlayerFooter: React.FC = () => {
             onClick={cycleRepeat}
             aria-label={REPEAT_LABEL[repeatMode]}
             title={`${REPEAT_LABEL[repeatMode]} - click to change`}
-            className={`${transportKey} w-12 ${repeatMode === 'off' ? transportKeyOff : transportKeyOn}`}
+            className={`${transportKey} w-9 ${repeatMode === 'off' ? transportKeyOff : transportKeyOn}`}
           >
             {repeatMode === 'one' ? (
               <Repeat1 className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
             ) : (
               <Repeat className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
             )}
-            <span aria-hidden="true" className={keyLabel}>{REPEAT_KEY_LABEL[repeatMode]}</span>
           </button>
           <button
             type="button"
@@ -798,10 +791,9 @@ export const PlayerFooter: React.FC = () => {
             disabled={startDisabled}
             aria-label="Jump to start"
             title="Jump to start"
-            className={`${transportKey} w-14 ${startDisabled ? transportKeyDead : transportKeyOff}`}
+            className={`${transportKey} w-9 ${startDisabled ? transportKeyDead : transportKeyOff}`}
           >
             <Glyph d={GLYPH_TO_START} className="w-3.5 h-3.5" />
-            <span aria-hidden="true" className={keyLabel}>START</span>
           </button>
           <button
             type="button"
@@ -809,14 +801,11 @@ export const PlayerFooter: React.FC = () => {
             disabled={playDisabled}
             aria-label={displayIsPlaying ? 'Pause' : 'Play'}
             title={displayIsPlaying ? 'Pause' : 'Play'}
-            className={`${transportPlayKey} w-15 ${playDisabled ? transportPlayDead : displayIsPlaying ? transportPlayOn : transportPlayRest}`}
+            className={`${transportPlayKey} w-11 ${playDisabled ? transportPlayDead : displayIsPlaying ? transportPlayOn : transportPlayRest}`}
           >
             {displayIsPlaying
               ? <Glyph d={GLYPH_PAUSE} className="w-4 h-4" />
               : <Glyph d={GLYPH_PLAY} className="w-4 h-4 ml-0.5" />}
-            {/* The legend flips with the glyph so the printed word stays inside
-                the accessible name (label-in-name). */}
-            <span aria-hidden="true" className={keyLabel}>{displayIsPlaying ? 'PAUSE' : 'PLAY'}</span>
           </button>
           <button
             type="button"
@@ -824,10 +813,9 @@ export const PlayerFooter: React.FC = () => {
             disabled={!hasTrack}
             aria-label="Jump to end"
             title="Jump to end"
-            className={`${transportKey} w-14 ${hasTrack ? transportKeyOff : transportKeyDead}`}
+            className={`${transportKey} w-9 ${hasTrack ? transportKeyOff : transportKeyDead}`}
           >
             <Glyph d={GLYPH_TO_END} className="w-3.5 h-3.5" />
-            <span aria-hidden="true" className={keyLabel}>END</span>
           </button>
           <button
             type="button"
@@ -835,17 +823,16 @@ export const PlayerFooter: React.FC = () => {
             aria-label="Rand: random order"
             aria-pressed={isShuffle}
             title={`Rand: random order ${isShuffle ? 'on' : 'off'} - any other library track plays next`}
-            className={`${transportKey} w-12 ${isShuffle ? transportKeyOn : transportKeyOff}`}
+            className={`${transportKey} w-9 ${isShuffle ? transportKeyOn : transportKeyOff}`}
           >
             <Shuffle className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth strokeLinecap="square" strokeLinejoin="miter" />
-            <span aria-hidden="true" className={keyLabel}>RAND</span>
           </button>
         </div>
 
-        {/* 3. Up Next (mirrors Now Playing) + Utilities, right-aligned in the
+        {/* 3. Next (mirrors Now Playing) + Utilities, right-aligned in the
             right track. */}
         <div className="flex items-center gap-4 min-w-0 justify-end">
-          {/* Up Next — mirror of the Now Playing block, right-aligned. Click loads
+          {/* Next — mirror of the Now Playing block, right-aligned. Click loads
               the next track (no formal queue yet, so it's the next library entry —
               or a random other one while RAND is on, which the title says).
               Hidden below xl: there the right track is all the utilities' (at
@@ -867,7 +854,7 @@ export const PlayerFooter: React.FC = () => {
                 {nextEntry ? formatDuration(nextEntry.duration) : '--:--'}
               </span>
               <span className="shrink-0 font-display font-bold text-xs leading-4 uppercase text-emerald-400 border border-emerald-500/20 px-1 rounded-xs bg-emerald-500/5">
-                Up Next
+                Next
               </span>
             </div>
           </button>
@@ -878,7 +865,7 @@ export const PlayerFooter: React.FC = () => {
               the top bar, beside Mobile. Below 2xl the gaps close to 8px and the
               volume track to 64px (312px of utilities, 384px at 2xl): that keeps
               them inside the right track beside the 276px transport plate from
-              the desktop app's 960px minimum, and leaves Up Next room for its
+              the desktop app's 960px minimum, and leaves Next room for its
               title and chip row from xl. */}
           <div className="flex items-center gap-2 2xl:gap-4 shrink-0">
             <div className="flex items-center gap-1">
