@@ -134,10 +134,10 @@ assertRoll('clip-1');
 assert.deepEqual(rollClipFields(st()), fields);
 
 // 5. Save the project: captureEditorSession writes these keys through clipNotesToTasmo, and the file
-// goes out and back as JSON. Lane B loops and both lanes bend, so the roll notes are what the file keeps:
-// the played notes are their unroll, and are not written a second time.
+// goes out and back as JSON. Lane B loops and both lanes bend, so the file keeps the roll notes, and
+// beside them the played notes (their unroll) as midi_notes, the list every build reads.
 const saved: ReturnType<typeof clipNotesToTasmo> = JSON.parse(JSON.stringify(clipNotesToTasmo(clip)));
-assert.equal(saved.midi_notes, undefined, 'the played notes are not stored twice');
+assert.equal(saved.midi_notes?.length, clip.sourcePianoRoll.length, 'the played notes are written for older builds');
 assert.deepEqual(saved.roll_notes?.map((n) => n.lane), [undefined, undefined, 1, 1]);
 assert.deepEqual(saved.roll_bends?.map((b) => [b.lane, b.range, b.points.length]), [[0, 2, 2], [1, 12, 2]]);
 // Each roll note carries its ticks, which agree with its steps.

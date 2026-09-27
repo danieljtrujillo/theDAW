@@ -174,6 +174,25 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     assert clip.bpm is None
     assert clip.library_entry_id is None
     assert clip.roll_notes is None
+    project = TasmoProject.model_validate({"project_name": "old"})
+    assert project.roll_voice is None
+
+
+def test_the_roll_voice_round_trips_through_the_archive(tmp_path: Path) -> None:
+    """The piano roll's own voice (the Vocal2MIDI panel's Roll voice) was not
+    part of the model, so pydantic dropped it and a reopened project's roll
+    played on the picker's program."""
+    project = TasmoProject.model_validate(
+        {**_project([_note(0)]), "roll_voice": {"program": 48}}
+    )
+    out = tmp_path / "voice.tasmo"
+    TasmoFile.save(project, str(out))
+    loaded, _ = TasmoFile.load(str(out))
+    assert loaded.roll_voice is not None
+    assert loaded.roll_voice.program == 48
+    picker = TasmoProject.model_validate({"roll_voice": {"program": None}})
+    assert picker.roll_voice is not None
+    assert picker.roll_voice.program is None
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +284,9 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["tagged"]["source_bpm"] == 92
     assert clips["tagged"]["bpm"] == 124
     assert clips["tagged"]["library_entry_id"] == "lib-7"
-    assert clips["looped"]["midi_notes"] is None
+    # A looping lane keeps its roll notes and writes the notes it plays as
+    # midi_notes, the list a build older than roll_notes reads.
+    assert [n["step"] for n in clips["looped"]["midi_notes"]] == [0, 4, 8, 12]
     assert clips["looped"]["roll_notes"][0]["lane"] == 1
     assert clips["plain"]["midi_notes"][1]["channel"] == 3
     assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
@@ -274,6 +295,8 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert drums["is_percussion"] is True
     assert drums["instrument_program"] == 25
     assert clips["kit"]["rendered_percussion"] is True
+    # The piano roll's own voice rides at the top level.
+    assert back["roll_voice"] == sent["roll_voice"] == {"program": None}
 
 
 # ---------------------------------------------------------------------------

@@ -231,6 +231,15 @@ export interface TasmoCompRegion {
   crossfade_sec?: number;
 }
 
+/**
+ * The piano roll's own voice: the GM program (0-127) a roll with no linked EDIT
+ * clip auditions and bounces with, or null to follow the global instrument
+ * picker. The backend's `RollVoice`.
+ */
+export interface TasmoRollVoice {
+  program: number | null;
+}
+
 // --- Save payload (built in the frontend, validated by the backend) ---
 export interface TasmoClipInput {
   id: string;
@@ -242,8 +251,8 @@ export interface TasmoClipInput {
   audio_file?: string | null;
   /** Carried so MIDI clips survive the round-trip (the backend Clip model keeps
    *  these). The shape is whatever the importer produced; the loader is tolerant.
-   *  A piano-roll clip writes the notes as they sound, lane repeats written out,
-   *  unless its roll notes alone rebuild them (see clipNotesToTasmo). */
+   *  A piano-roll clip always writes the notes as they sound, lane repeats
+   *  written out, so every build opens it (see clipNotesToTasmo). */
   midi_notes?: unknown[] | null;
   /** A piano-roll clip's own notes with their lanes, which the roll loads.
    *  Left out when they are the played notes as written (see clipNotesToTasmo). */
@@ -378,6 +387,8 @@ export interface TasmoProjectInput {
   controller_mappings?: TasmoControllerMappings | null;
   /** Perform-tab scene-launch + modulation routing (see performRouting.ts). */
   perform_routing?: PerformRoutingSnapshot | null;
+  /** The piano roll's own voice (pianoRollStore voiceProgram). */
+  roll_voice?: TasmoRollVoice;
 }
 
 // --- Load result. The backend returns the FULL TasmoProject (model_dump), so
@@ -390,8 +401,8 @@ export interface TasmoLoadedClip {
   start_time?: number;
   end_time?: number;
   audio_file: string | null;
-  /** The notes as they sound. Absent from a piano-roll clip saved with only its
-   *  roll notes (see clipNotesToTasmo), and from every audio clip. */
+  /** The notes as they sound. Absent from every audio clip, and from a
+   *  piano-roll clip an earlier build saved with only its roll notes. */
   midi_notes?: Array<Record<string, number>> | null;
   /** A piano-roll clip's own notes with their lanes; absent in .tasmo files
    *  written before the roll had lanes. */
@@ -502,6 +513,9 @@ export interface TasmoProjectLoaded {
   automation_lanes?: TasmoAutomationLane[] | null;
   controller_mappings?: TasmoControllerMappings | null;
   perform_routing?: PerformRoutingSnapshot | null;
+  /** The piano roll's own voice. Absent (or null) in files written before it
+   *  was saved, which the loader leaves the live roll voice alone for. */
+  roll_voice?: TasmoRollVoice | null;
 }
 
 export interface ProjectManifest {
@@ -725,36 +739,38 @@ const sameSounding = (a: readonly PianoNote[], b: readonly PianoNote[]): boolean
 };
 
 /**
- * A piano-roll clip's notes, grid length and meter in the .tasmo shape, each
- * note stored once where the file allows it. Three cases, checked in order on
- * the file shape through the reader's own mapper, so each approves only what a
- * reload really reproduces:
+ * A piano-roll clip's notes, grid length and meter in the .tasmo shape. Every
+ * build reads `midi_notes`, the notes as the clip plays them, so they are
+ * always written: a build that predates `roll_notes` opens any roll clip as a
+ * MIDI clip playing what it played. Two cases, checked on the file shape
+ * through the reader's own mapper, so each approves only what a reload really
+ * reproduces:
  *
  * 1. The roll notes play exactly as written (no note in a lane, no lane bend):
- *    they are the played notes, so only `midi_notes` is written. Every build
- *    reads `midi_notes`, so a build older than this one still opens the clip as
- *    a roll clip, and this one loads it the way it loads any clip without roll
- *    notes (`clipRollLoad` then opens the roll on the played notes).
- * 2. Unrolling the roll notes across the clip's lanes gives exactly the played
- *    notes: only `roll_notes` is written, and the reader rebuilds the played
- *    notes with `playedNotesFromRoll`, the call the bounce used.
- * 3. Anything else (played notes edited apart from the roll notes, as EDIT's
- *    note tools do, or no roll notes at all) writes both, so nothing the clip
- *    plays is lost.
+ *    they are the played notes, so only `midi_notes` is written, and this build
+ *    loads the clip the way it loads any clip without roll notes
+ *    (`clipRollLoad` then opens the roll on the played notes).
+ * 2. Anything else (a looping lane, a lane bend, played notes edited apart from
+ *    the roll notes as EDIT's note tools do) writes `roll_notes` beside them,
+ *    so the roll reopens on its own notes and lanes. A clip with roll notes and
+ *    no played notes writes the roll notes unrolled across its lanes
+ *    (`playedNotesFromRoll`, the call the bounce used) as its `midi_notes`.
  */
 export const clipNotesToTasmo = (
   c: ClipMeterFields & Pick<AudioClip, 'sourcePianoRoll'>,
 ): TasmoMeterFields & Pick<TasmoClipInput, 'midi_notes'> => {
   const meter = clipMeterToTasmo(c);
-  const played = c.sourcePianoRoll;
-  const midiNotes = played ? played.map(pianoNoteToTasmo) : null;
   const reloaded = meter.roll_notes?.length ? tasmoMeterToClip(meter) : undefined;
-  if (played?.length && reloaded?.sourceRollNotes?.length) {
-    if (!reloaded.sourceBends?.length && sameSounding(reloaded.sourceRollNotes, played)) {
-      const { roll_notes: _once, ...rest } = meter;
-      return { ...rest, midi_notes: midiNotes };
-    }
-    if (sameSounding(playedNotesFromRoll(reloaded), played)) return meter;
+  const played = c.sourcePianoRoll ?? (reloaded ? playedNotesFromRoll(reloaded) : undefined);
+  const midiNotes = played ? played.map(pianoNoteToTasmo) : null;
+  if (
+    played?.length &&
+    reloaded?.sourceRollNotes?.length &&
+    !reloaded.sourceBends?.length &&
+    sameSounding(reloaded.sourceRollNotes, played)
+  ) {
+    const { roll_notes: _once, ...rest } = meter;
+    return { ...rest, midi_notes: midiNotes };
   }
   return { ...meter, midi_notes: midiNotes };
 };

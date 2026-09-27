@@ -339,6 +339,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           automation_lanes: doc.automationLanes,
           controller_mappings: doc.controllerMappings ?? null,
           perform_routing: pendingPerformRouting,
+          roll_voice: doc.rollVoice,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
         res = await projectApi.save(project, path, embedAudio);
@@ -377,6 +378,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           master_vst_chain: session.masterVstChain,
           automation_lanes: session.automationLanes,
           controller_mappings: session.controllerMappings ?? null,
+          // The piano roll's own voice, so a reopened project's roll auditions
+          // and bounces on the instrument it was left on.
+          roll_voice: session.rollVoice,
         };
         logInfo(
           'project',

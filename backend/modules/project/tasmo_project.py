@@ -487,6 +487,15 @@ class Bus(BaseModel):
     effect_chain: list[EffectChainNode] = []
 
 
+class RollVoice(BaseModel):
+    """The piano roll's own voice: the GM program (0-127) a roll with no linked
+    EDIT clip auditions and bounces with, set from the Vocal2MIDI panel. None
+    follows the global instrument picker. The reader keeps a whole program
+    0-127 and reads anything else as None."""
+
+    program: int | None = None
+
+
 class TasmoProject(BaseModel):
     """The complete .tasmo project model."""
 
@@ -560,3 +569,8 @@ class TasmoProject(BaseModel):
     # nested shape (mirrors the frontend PerformRoutingSnapshot); see
     # performRouting.ts.
     perform_routing: dict | None = None
+    # The piano roll's own voice (see RollVoice). None means the file was
+    # written before it was saved, and the reader leaves the live roll voice
+    # alone; RollVoice(program=None) says this project's roll follows the
+    # picker, and the reader sets it so.
+    roll_voice: RollVoice | None = None

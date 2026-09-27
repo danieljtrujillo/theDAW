@@ -351,9 +351,10 @@ const st = () => useEditorStore.getState();
   // build still opens it as a roll clip. Its audio is embedded for any reader.
   assert.equal(saved.get('plain')?.midi_notes?.length, 3);
   assert.equal(saved.get('plain')?.roll_notes, undefined);
-  // Looped: stored once as roll_notes; the repeats are rebuilt on load.
+  // Looped: the roll notes with their lane, and the repeats written out as
+  // midi_notes, so a build that predates roll_notes opens it as a MIDI clip.
   assert.equal(saved.get('looped')?.roll_notes?.length, 2);
-  assert.equal(saved.get('looped')?.midi_notes, undefined);
+  assert.equal(saved.get('looped')?.midi_notes?.length, 5);
   // Edited apart: both, so the edit is not lost.
   assert.equal(saved.get('edited')?.midi_notes?.length, 1);
   assert.equal(saved.get('edited')?.roll_notes?.length, 1);
@@ -381,7 +382,7 @@ const st = () => useEditorStore.getState();
   assert.deepEqual(
     withoutIds(l?.sourcePianoRoll).sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
     withoutIds(loopedPlayed).sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
-    'the repeats come back from the roll notes',
+    'the repeats come back',
   );
   for (const n of l?.sourcePianoRoll ?? []) assert.equal(n.tick, tickOfStep(n.step), `the repeat at step ${n.step} keeps its own tick`);
   assert.deepEqual(withoutIds(l?.sourceRollNotes), withoutIds(looped));
@@ -389,6 +390,52 @@ const st = () => useEditorStore.getState();
   const e = clips.get('edited');
   assert.deepEqual(withoutIds(e?.sourcePianoRoll), withoutIds(editedPlayed));
   assert.deepEqual(withoutIds(e?.sourceRollNotes), [withoutIds([note('r0', 60, 0, 1)])[0]]);
+}
+
+// ── A build that predates roll_notes opens a looping lane and a lane bend as MIDI ──
+{
+  // A build before roll_notes reads only midi_notes (8039b45's buildClip: a
+  // clip with none opens as an audio clip, its bounce). A roll clip whose
+  // played notes were its roll notes unrolled, or whose lane bends, was saved
+  // with roll_notes alone, so that build opened it as audio with no notes.
+  const lanes = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 4 }];
+  const loopRoll = [note('l0', 36, 0, 1, { lane: 1 }), note('l1', 60, 8, 2)];
+  const loopPlayed = [note('q0', 36, 0, 1), note('q1', 36, 4, 1), note('q2', 60, 8, 2), note('q3', 36, 8, 1), note('q4', 36, 12, 1)];
+  const bendNotes = [note('b0', 64, 0, 4), note('b1', 67, 4, 4)];
+  const bend = [{ lane: 0, range: 2, points: [{ id: 'x', step: 0, value: 0, shape: 'linear' as const }, { id: 'y', step: 4, value: 1, shape: 'linear' as const }] }];
+  useEditorStore.setState({
+    bpm: 120,
+    tracks: [track('o1'), track('o2')],
+    clips: [
+      rollClip('loop', 'o1', { sourcePianoRoll: loopPlayed, sourceRollNotes: loopRoll, sourceLanes: lanes }),
+      rollClip('bend', 'o2', { sourcePianoRoll: bendNotes, sourceRollNotes: bendNotes, sourceBends: bend }),
+    ],
+  });
+  const { form, files } = await saveThroughTheWire();
+  const project = await projectFrom(form);
+  // What that build reads of each clip: every key it knew, none of the roll's own.
+  const older: TasmoProjectLoaded = {
+    ...project,
+    tracks: project.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map(({ roll_notes: _r, roll_bends: _b, lanes: _l, total_steps: _s, meter_map: _m, pickup_steps: _p, ...c }) => c),
+    })),
+  };
+  useEditorStore.setState({ tracks: [track('other')], clips: [] });
+  await openWithFiles(older, files);
+  const byId = new Map(st().clips.map((c) => [c.id, c]));
+  const at = (c: AudioClip | undefined) => (c?.sourcePianoRoll ?? []).map((n) => [n.note, n.step, n.length]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  assert.equal(byId.get('loop')?.sourceKind, 'piano-roll', 'the looping lane opens as a MIDI clip');
+  assert.deepEqual(at(byId.get('loop')), [[36, 0, 1], [36, 4, 1], [36, 8, 1], [60, 8, 2], [36, 12, 1]], 'with every repeat of the lane');
+  assert.equal(byId.get('bend')?.sourceKind, 'piano-roll', 'the bent lane opens as a MIDI clip');
+  assert.deepEqual(at(byId.get('bend')), [[64, 0, 4], [67, 4, 4]]);
+
+  // This build still opens the roll on its own notes, lanes and bend.
+  useEditorStore.setState({ tracks: [track('other')], clips: [] });
+  await openWithFiles(project, files);
+  const loop = st().clips.find((c) => c.id === 'loop');
+  assert.deepEqual(withoutIds(loop?.sourceRollNotes), withoutIds(loopRoll));
+  assert.deepEqual(st().clips.find((c) => c.id === 'bend')?.sourceBends?.[0]?.points.map((p) => p.value), [0, 1]);
 }
 
 // ── 100,000 notes: the save goes out, and every note comes back ──────────────
@@ -428,7 +475,8 @@ const st = () => useEditorStore.getState();
 // ── PERFORM opens the same save: roll-only clips, own tempo, sub-step lengths ─
 {
   // Lane B loops every 4 steps across 16 at 90 BPM; both notes are triplet
-  // sixteenths, 2/3 of a step. The file stores only the two roll notes.
+  // sixteenths, 2/3 of a step. The file stores the two roll notes and the five
+  // notes they play.
   const lanes = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 4 }];
   const T = 2 / 3;
   const roll: PianoNote[] = [note('g0', 60, 1, T), note('g1', 38, 0, T, { lane: 1 })];
@@ -447,7 +495,7 @@ const st = () => useEditorStore.getState();
   const { form } = await saveThroughTheWire();
   const project = await projectFrom(form);
   const saved = project.tracks[0].clips[0];
-  assert.equal(saved.midi_notes, undefined, 'only the roll notes are in the file');
+  assert.equal(saved.midi_notes?.length, 5, 'the played notes are in the file');
   assert.equal(saved.roll_notes?.length, 2);
 
   const grid = tasmoLoadedToDawProject(project).tracks[0].clips[0];

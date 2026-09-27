@@ -120,7 +120,9 @@ interface PianoRollState {
   /** The GM program a roll with no linked clip auditions and bounces with;
    *  null follows the global instrument picker. A roll linked to an EDIT clip
    *  plays its clip's voice (lib/clipProgram rollVoice). Set by the Vocal2MIDI
-   *  panel's voice and cleared from the roll's strip. A setting, not an edit. */
+   *  panel's voice and cleared from the roll's strip. A setting, not an edit:
+   *  it rides in the feel record (localStorage), so a reload keeps it, and a
+   *  .tasmo saves it as `roll_voice`. */
   voiceProgram: number | null;
   /** Step span of the most recent live recording, highlighted in the grid; null
    *  when no recording has been placed. */
@@ -675,7 +677,9 @@ const DEFAULT_SWING_PCT = 0;
 /** The feel's groove before anyone picks one: the roll's own swing. */
 export const DEFAULT_GROOVE_ID = 'swing';
 
-type RollFeel = { quantizePct: number; swingPct: number; grooveId: string };
+/** The feel record. `voiceProgram` joined it after the others, so a record
+ *  written before it has none and the roll follows the picker. */
+type RollFeel = { quantizePct: number; swingPct: number; grooveId: string; voiceProgram: number | null };
 
 const clampQuantizePct = (v: number): number =>
   Math.max(0, Math.min(100, Math.round(isNum(v) ? v : DEFAULT_QUANTIZE_PCT)));
@@ -683,6 +687,9 @@ const clampSwingPct = (v: number): number => Math.max(-50, Math.min(50, Math.rou
 /** Any non-blank string is a groove id — the templates live elsewhere, and an id
  *  for a groove this session does not have simply finds nothing. */
 const cleanGrooveId = (v: unknown): string => (typeof v === 'string' && v.trim() ? v.trim() : DEFAULT_GROOVE_ID);
+/** A GM program 0-127, rounded, or null (follow the picker) for anything else. */
+export const cleanVoiceProgram = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(127, Math.round(v))) : null;
 
 const loadFeel = (): RollFeel => {
   try {
@@ -697,9 +704,10 @@ const loadFeel = (): RollFeel => {
       swingPct: clampSwingPct(o.swingPct as number),
       // A record written before grooves had a home has no id; the default fills in.
       grooveId: cleanGrooveId(o.grooveId),
+      voiceProgram: cleanVoiceProgram(o.voiceProgram),
     };
   } catch {
-    return { quantizePct: DEFAULT_QUANTIZE_PCT, swingPct: DEFAULT_SWING_PCT, grooveId: DEFAULT_GROOVE_ID };
+    return { quantizePct: DEFAULT_QUANTIZE_PCT, swingPct: DEFAULT_SWING_PCT, grooveId: DEFAULT_GROOVE_ID, voiceProgram: null };
   }
 };
 
@@ -748,7 +756,6 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   loopOn: false,
   seekId: 0,
   editingClipId: null,
-  voiceProgram: null,
   recordedRange: null,
   meterMap: normalizeMeterMap(null),
   pickupSteps: 0,
@@ -859,19 +866,19 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   setQuantizePct: (pct) =>
     set((s) => {
       const quantizePct = clampQuantizePct(pct);
-      saveFeel({ quantizePct, swingPct: s.swingPct, grooveId: s.grooveId });
+      saveFeel({ quantizePct, swingPct: s.swingPct, grooveId: s.grooveId, voiceProgram: s.voiceProgram });
       return { quantizePct };
     }),
   setSwingPct: (pct) =>
     set((s) => {
       const swingPct = clampSwingPct(pct);
-      saveFeel({ quantizePct: s.quantizePct, swingPct, grooveId: s.grooveId });
+      saveFeel({ quantizePct: s.quantizePct, swingPct, grooveId: s.grooveId, voiceProgram: s.voiceProgram });
       return { swingPct };
     }),
   setGrooveId: (id) =>
     set((s) => {
       const grooveId = cleanGrooveId(id);
-      saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId });
+      saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId, voiceProgram: s.voiceProgram });
       return { grooveId };
     }),
 
@@ -906,7 +913,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
   setVoiceProgram: (program) =>
-    set({ voiceProgram: program === null || !Number.isFinite(program) ? null : Math.max(0, Math.min(127, Math.round(program))) }),
+    set((s) => {
+      const voiceProgram = cleanVoiceProgram(program);
+      saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId: s.grooveId, voiceProgram });
+      return { voiceProgram };
+    }),
   loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved
