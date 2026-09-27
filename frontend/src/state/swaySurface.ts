@@ -23,10 +23,12 @@ import { getSelectedTracks } from './editorSelectionBridge';
 import { triggerPianoNoteFromMidi } from '../lib/pianoTrigger';
 import {
   ensureSoundfontReady,
+  getGlobalVoice,
   isLiveSynthReady,
   liveNoteOn,
   liveNoteOff,
 } from '../lib/soundfontEngine';
+import { PAD_LO, swayPadVoice } from '../lib/swayPadVoice';
 import { isSwaySurfaceEnabled, getSwayPadMode, isSwaySustain } from './swaySurfaceStore';
 
 // --- The decoded "The Sway" MIDI map (channels are 0-indexed here) ---------- //
@@ -36,21 +38,8 @@ const SLIDER_CH = 0; // channel for the volume / pan CCs
 const PAD_CH = 15; // channel for the 16 pads (PADCHANNEL = 15)
 const TRACKVOL_CC = [1, 2, 3, 4, 5, 6, 7, 8];
 const TRACKPAN_CC = [9, 10, 11, 12, 13, 14, 15, 16];
-const PAD_LO = 24;
-const PAD_HI = 39; // inclusive -> 16 pads
+const PAD_HI = 39; // inclusive -> 16 pads (from lib/swayPadVoice PAD_LO)
 const BANK_SIZE = 8;
-
-// 16 pads -> General MIDI percussion (drum channel), MPC-style layout.
-const GM_DRUM_FOR_PAD = [
-  36, 38, 42, 46, // kick, snare, closed hat, open hat
-  41, 45, 48, 39, // low/mid/high tom, hand clap
-  37, 56, 54, 51, // rim shot, cowbell, tambourine, ride
-  49, 55, 70, 63, // crash, splash, maracas, high conga
-];
-const DRUM_CH = 9; // GM channel 10 = percussion
-const TRACK_PAD_CH = 0; // channel for "selected track instrument" pad mode
-const PIANO_PAD_CH = 1; // channel for "piano" pad mode (GM Acoustic Grand)
-const SUSTAIN_PROGRAM = 16; // GM Drawbar Organ — rings forever while a note is on
 
 // Held pad voices, so note-off releases exactly what note-on started (and a held
 // pad sustains until release). null = a fallback piano one-shot with nothing to
@@ -87,11 +76,11 @@ function toggleTransport(): void {
   else callEditorPlay();
 }
 
-function selectedTrackProgram(): number {
+/** The selected EDIT track, else the first one. */
+function selectedTrack(): EditorTrack | undefined {
   const tracks = useEditorStore.getState().tracks;
   const sel = getSelectedTracks();
-  const t = sel.length ? tracks.find((x) => x.id === sel[0]) : tracks[0];
-  return Math.max(0, Math.min(127, t?.instrumentProgram ?? 0));
+  return sel.length ? tracks.find((x) => x.id === sel[0]) : tracks[0];
 }
 
 function padOn(padIdx: number, velocity: number): void {
@@ -114,24 +103,9 @@ function padOn(padIdx: number, velocity: number): void {
     padVoices.set(padIdx, null);
     return;
   }
-  let channel: number;
-  let program: number;
-  let note: number;
-  if (mode === 'drums') {
-    channel = DRUM_CH;
-    program = 0;
-    note = GM_DRUM_FOR_PAD[padIdx];
-  } else if (mode === 'track') {
-    channel = TRACK_PAD_CH;
-    // A sustaining organ patch when sustain is on, so a held melodic pad rings
-    // indefinitely (the selected track's piano-ish patch would decay).
-    program = sustain ? SUSTAIN_PROGRAM : selectedTrackProgram();
-    note = PAD_LO + padIdx;
-  } else {
-    channel = PIANO_PAD_CH;
-    program = sustain ? SUSTAIN_PROGRAM : 0; // GM Acoustic Grand, or organ when sustaining
-    note = PAD_LO + padIdx;
-  }
+  // Drums, the selected track's voice (its kit on a drum track) or the piano;
+  // a melodic pad plays a sustaining organ while sustain latches (lib/swayPadVoice).
+  const { channel, program, note } = swayPadVoice(mode, padIdx, sustain, mode === 'track' ? selectedTrack() : null, getGlobalVoice());
   // Note-on now; with sustain off, note-off on release; with sustain on, the note
   // is latched and only released by the next press on this pad.
   liveNoteOn(channel, program, note, vel);
