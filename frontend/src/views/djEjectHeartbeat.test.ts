@@ -2,8 +2,9 @@
  * A loaded deck's Eject pad pulses red. DJView puts `dj-eject-heartbeat` on the
  * pad while the deck holds a track; this suite pins that index.css defines that
  * class where SlidePad's unlit utilities and the theme remaps cannot grey it
- * out, that the pulse never grows the pad past its cell, and that reduced
- * motion holds it still.
+ * out, that its edge keeps the accent-border floor's solid rose step on dark
+ * and light themes, that the pulse never grows the pad past its cell, and that
+ * reduced motion holds it still.
  *
  * Run: npx tsx src/views/djEjectHeartbeat.test.ts
  */
@@ -44,6 +45,23 @@ for (const prop of ['color', 'border-color', 'background-color', 'box-shadow']) 
 }
 assert.doesNotMatch(frames.body, /transform|scale/, 'the pulse never scales the pad past its cell');
 assert.doesNotMatch(frames.body, /#[0-9a-f]{3,8}\b|rgba?\(/i, 'the reds come from the theme variables');
+
+// The edge is solid, in the step the accent-border floor gives a rose control
+// on each theme (it clears 3:1 there); only the fill and the glow pulse.
+const edges = [...frames.body.matchAll(/(?:^|[\s;{])border-color\s*:\s*([^;}]+)/g)].map((m) => m[1].trim());
+assert.ok(edges.length > 0 && edges.every((v) => v === 'var(--eject-edge)'), `the edge is drawn solid in --eject-edge (${edges.join(' | ')})`);
+/** The colour variable the floor sets on a `.border-rose-500/30` control. */
+const floorStep = (scope: string) => {
+  const floor = blocks.find((b) => b.prelude.startsWith(`.edit-theme-scope${scope} :is(button`) && b.prelude.includes('.border-rose-500\\/30'));
+  assert.ok(floor, `the accent-border floor has a rose rule (${scope || 'light'})`);
+  return /border-color:\s*var\((--color-rose-\d+)/.exec(floor.body)?.[1];
+};
+const edgeOf = (b: { body: string } | undefined) => (b ? /--eject-edge:\s*var\((--color-rose-\d+)/.exec(b.body)?.[1] : undefined);
+const light = blocks.find((b) => b.prelude === '.edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat');
+assert.equal(floorStep(':not([data-et-light="1"])'), '--color-rose-400');
+assert.equal(edgeOf(rule), floorStep(':not([data-et-light="1"])'), 'dark themes draw the edge in the floor step, rose-400');
+assert.equal(floorStep('[data-et-light="1"]'), '--color-rose-700');
+assert.equal(edgeOf(light), floorStep('[data-et-light="1"]'), 'light themes draw the edge in the floor step, rose-700');
 
 const reduced = blocks.find((b) => b.prelude.startsWith('@media (prefers-reduced-motion: reduce)') && b.body.includes('.dj-eject-heartbeat'));
 assert.ok(reduced, 'reduced motion has a rule for the pad');

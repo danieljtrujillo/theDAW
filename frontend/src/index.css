@@ -818,29 +818,33 @@ select optgroup {
 @media (prefers-reduced-motion: reduce) { .loom-live { animation: none; } }
 
 /* DJ Eject pad on a loaded deck (DJView gives it `dj-eject-heartbeat`): a red
- * heartbeat in its glow, fill and edge. The pad keeps its size, so it never
- * grows past its cell. Unlayered, and the colours ride in the keyframes: an
- * animation's values win over every normal declaration, so neither SlidePad's
- * unlit utilities (border-white/12, bg-black/40, text-zinc-400) nor the theme
- * remaps of those utilities above can grey it out. The red is SlidePad's DANGER
- * (rose-500); light themes take the darker rose steps the rose text and border
- * rules above use. Hover brightens the edge and the ink through the variables. */
+ * heartbeat in its glow and fill inside a steady rose edge. The pad keeps its
+ * size, so it never grows past its cell. Unlayered, and the colours ride in the
+ * keyframes: an animation's values win over every normal declaration, so
+ * neither SlidePad's unlit utilities (border-white/12, bg-black/40,
+ * text-zinc-400) nor the theme remaps of those utilities above can grey it out.
+ * The pulse red is SlidePad's DANGER (rose-500). The edge is solid, in the step
+ * the accent-border floor above gives rose controls to clear 3:1: rose-400 on
+ * dark themes, rose-700 on light themes. Light themes also take the darker rose
+ * steps the rose text rules above use. Hover steps the edge and the ink up
+ * through the variables. */
 .dj-eject-heartbeat {
   --eject-red: var(--color-rose-500, #f43f5e);
+  --eject-edge: var(--color-rose-400, #fb7185);
   --eject-ink: var(--color-rose-200, #fecdd3);
-  --eject-edge: 58%;
   animation: dj-eject-heartbeat 1.45s ease-in-out infinite;
 }
-.dj-eject-heartbeat:hover { --eject-ink: var(--color-white, #fff); --eject-edge: 88%; }
+.dj-eject-heartbeat:hover { --eject-edge: var(--color-rose-300, #fda4af); --eject-ink: var(--color-white, #fff); }
 .edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat {
   --eject-red: var(--color-rose-700, #be123c);
+  --eject-edge: var(--color-rose-700, #be123c);
   --eject-ink: var(--color-rose-900, #881337);
 }
-.edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat:hover { --eject-ink: var(--color-rose-950, #4c0519); }
+.edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat:hover { --eject-edge: var(--color-rose-800, #9f1239); --eject-ink: var(--color-rose-950, #4c0519); }
 @keyframes dj-eject-heartbeat {
   0%, 48%, 100% {
     color: var(--eject-ink);
-    border-color: color-mix(in srgb, var(--eject-red) var(--eject-edge), transparent);
+    border-color: var(--eject-edge);
     background-color: color-mix(in srgb, var(--eject-red) 12%, transparent);
     box-shadow: 0 0 0 transparent, 0 0 0 transparent;
   }
