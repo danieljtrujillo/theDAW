@@ -179,7 +179,9 @@ interface PianoRollState {
   /** Load an editor clip. A `meter` field left out keeps the roll's current value.
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
-   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone. */
+   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
+   *  Opening a clip starts a new document: the undo and redo stacks empty, so an
+   *  undo can never bring another clip's notes into this one. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -244,9 +246,16 @@ interface PianoRollState {
 
 /** The document slices tracked by undo / redo.
  *  The meter, the lanes and the bends are part of what the roll IS, so they
- *  belong here. Selection, the playhead, transport, the active lane, the linked
- *  clip and the recorded range deliberately do NOT — they are view and transport
- *  state, and putting them in the stack makes undo unusable mid-session. */
+ *  belong here. Selection, the playhead, transport, the active lane and the
+ *  recorded range deliberately do NOT — they are view and transport
+ *  state, and putting them in the stack makes undo unusable mid-session.
+ *
+ *  The linked clip rides along on one kind of step only: a write that changed
+ *  the link together with the document (CLEAR empties the roll and unlinks).
+ *  That step carries the link it replaced, so undoing it relinks the clip whose
+ *  notes come back, and SAVE keeps writing those notes into their own clip. A
+ *  link change on its own (a bounce binding a new clip, UNLINK) is not a step,
+ *  and opening a clip empties both stacks (loadFromClip). */
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
@@ -257,6 +266,8 @@ interface RollHistorySnapshot {
   pickupSteps: number;
   lanes: PolyLane[];
   bends: LaneBend[];
+  /** The linked clip before the step, present only when the step's write changed it. */
+  editingClipId?: string | null;
 }
 
 const DEFAULT_STEPS = 256;
@@ -673,6 +684,10 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   bends: s.bends,
 });
 
+/** `snap` carrying `link` when `step` carries a link, so the opposite stack's step puts the link back too. */
+const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: string | null): RollHistorySnapshot =>
+  'editingClipId' in step ? { ...snap, editingClipId: link } : snap;
+
 export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   notes: seed(),
   bpm: 120,
@@ -817,28 +832,41 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
-  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) =>
-    set((s) => {
-      const notes = migrateNotes(incoming);
-      const m = mergeMeter(s, meter);
-      const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
-      return {
-        notes,
-        ...m,
-        bends: replacedBends(s, m.lanes, incomingBends),
-        bpm: Math.max(40, Math.min(240, bpm)),
-        totalSteps: Math.min(
-          MAX_STEPS,
-          roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
-        ),
-        ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
-        editingClipId: clipId,
-        ...noSelection(),
-        isPlaying: false,
-        currentStep: 0,
-        recordedRange: null,
-      };
-    }),
+  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
+    // A new document: its history starts empty. The write is not recorded (an
+    // undo of it would hand back the previous clip's notes while the roll is
+    // linked to this one, and SAVE would write them here), and the next edit
+    // starts a fresh step instead of folding into whatever came before.
+    historyApplying = true;
+    try {
+      set((s) => {
+        const notes = migrateNotes(incoming);
+        const m = mergeMeter(s, meter);
+        const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
+        return {
+          notes,
+          ...m,
+          bends: replacedBends(s, m.lanes, incomingBends),
+          bpm: Math.max(40, Math.min(240, bpm)),
+          totalSteps: Math.min(
+            MAX_STEPS,
+            roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
+          ),
+          ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
+          editingClipId: clipId,
+          ...noSelection(),
+          isPlaying: false,
+          currentStep: 0,
+          recordedRange: null,
+          _undo: [],
+          _redo: [],
+        };
+      });
+    } finally {
+      historyApplying = false;
+    }
+    lastDocChangeAt = -Infinity;
+  },
 
   importNotes: (incoming, bpm, meter, incomingBends) =>
     set((s) => {
@@ -990,7 +1018,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const s = get();
     if (s._undo.length === 0) return;
     const prev = s._undo[s._undo.length - 1];
-    const current = docSnapshot(s);
+    // A step that carries the link restores it (spread from `prev` below), and
+    // its redo carries the link it replaces.
+    const current = withLink(docSnapshot(s), prev, s.editingClipId);
     historyApplying = true;
     set({
       ...prev,
@@ -1011,7 +1041,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const s = get();
     if (s._redo.length === 0) return;
     const next = s._redo[s._redo.length - 1];
-    const current = docSnapshot(s);
+    const current = withLink(docSnapshot(s), next, s.editingClipId);
     historyApplying = true;
     set({
       ...next,
@@ -1029,9 +1059,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 // Record undo history whenever a tracked document slice changes. Only the FIRST
 // change of a burst captures the pre-change snapshot, so a continuous gesture (a
 // note drag, a resize, a bend-point drag) collapses into a single undo step.
-// Selection, the playhead, transport, the active lane and the recorded range
-// don't touch these slices, so they never pollute history. undo/redo set
-// historyApplying so their own writes aren't recorded.
+// Selection, the playhead, transport, the active lane and the recorded
+// range don't touch these slices, so they never pollute history. A
+// write that changes the linked clip WITH the document (CLEAR) always starts
+// its own step, and the step keeps the link it replaced. undo/redo and
+// loadFromClip set historyApplying so their own writes aren't recorded.
 usePianoRollStore.subscribe((state, prev) => {
   if (historyApplying) return;
   if (
@@ -1045,13 +1077,15 @@ usePianoRollStore.subscribe((state, prev) => {
     state.lanes === prev.lanes &&
     state.bends === prev.bends
   ) return;
+  const relinked = state.editingClipId !== prev.editingClipId;
   const now = performance.now();
-  const coalesce = now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  const coalesce = !relinked && now - lastDocChangeAt < HISTORY_COALESCE_MS;
   lastDocChangeAt = now;
   if (coalesce) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   usePianoRollStore.setState((s) => {
-    const undo = [...s._undo, docSnapshot(prev)];
+    const snap = docSnapshot(prev);
+    const undo = [...s._undo, relinked ? { ...snap, editingClipId: prev.editingClipId } : snap];
     if (undo.length > HISTORY_LIMIT) undo.shift();
     return { _undo: undo, _redo: [] };
   });
