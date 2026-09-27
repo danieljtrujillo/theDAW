@@ -3,11 +3,11 @@
  *
  * Centralizes the offline render path so MIDI is usable everywhere audio is:
  * preview playback, init audio, chimera fodder, and the piano roll's SEND TO
- * EDITOR bounce. Today the only engine is a built-in subtractive sawtooth
- * voice (no soundfont dependency), but the public surface is engine-shaped so
- * a sample/soundfont engine can be dropped in later without touching callers.
+ * EDITOR bounce. Two engines sit behind one surface: the General MIDI
+ * soundfont (lib/soundfontEngine) and the built-in voices (the subtractive
+ * sawtooth below, and the procedural synth voices of lib/synthVoices).
  *
- * The voice is byte-for-byte the same one the piano roll used inline before
+ * The sawtooth is byte-for-byte the voice the piano roll used inline before
  * this module existed, so previews and bounces stay consistent.
  */
 import { parseMidi } from './midi';
@@ -17,6 +17,8 @@ import { stepNotesToRender, voiceContext, type VoiceBend } from './pitchBendVoic
 import { encodeWav } from './wavEncode';
 import { isSoundfontActive, getActiveSynthVoice, renderNotesToBlobSF, renderMidiBufferToBlobSF } from './soundfontEngine';
 import { getSynthVoice } from './synthVoices';
+import { GM_STANDARD_KIT } from './clipProgram';
+import { DRUM_CHANNEL } from './editChannels';
 
 /** One note in absolute seconds — the engine-neutral render unit. */
 export interface RenderNote {
@@ -37,16 +39,27 @@ export interface RenderNote {
 export interface RenderOptions {
   /** Output sample rate. Defaults to 44.1kHz to match the rest of the app. */
   sampleRate?: number;
-  /** Silence appended after the last note so tails aren't clipped. */
+  /** A fixed time the render rings past its last note. Left out, a soundfont
+   *  render rings for the longest release among the presets it plays and is cut
+   *  where it falls silent (lib/renderTail); the built-in voices ring 0.6 s. */
   tailSec?: number;
+  /** The least the rendered audio lasts, in seconds: a clip's nominal length, so
+   *  its trailing rests are in the audio and not only in the reported duration. */
+  minDurationSec?: number;
   /** GM program (0-127) to render through. Defaults to the globally selected
    *  instrument. Pass a clip's effective program so the bounced audio matches the
    *  instrument the live scheduler plays it with — otherwise a clip assigned an
-   *  instrument after it was created exports as whatever was selected at insert. */
+   *  instrument after it was created exports as whatever was selected at insert.
+   *  A program is a soundfont instrument, so a render given one uses the
+   *  soundfont even while the picker is on Basic or a synth voice, as live
+   *  playback does. */
   program?: number;
   /** Pitch wheels by channel for a soundfont render (the built-in voices bend through each note's `bend`). */
   wheel?: SmfWheel[];
 }
+
+/** Built-in voices ring this long past the last note: the sawtooth's release and a margin. */
+const BUILTIN_TAIL_SEC = 0.6;
 
 /**
  * Schedule a single sawtooth + lowpass + envelope voice on any audio context.
@@ -108,15 +121,15 @@ export const triggerActiveVoice = (
 export const encodeWavBlob = (audioBuf: AudioBuffer): Blob => encodeWav(audioBuf);
 
 /**
- * Render absolute-seconds notes to a WAV Blob. Uses the active soundfont
- * instrument when one is selected, falling back to the built-in sawtooth voice
- * if soundfonts are off or fail to render.
+ * Render absolute-seconds notes to a WAV Blob. Uses the soundfont when the
+ * picker is on it or the caller names a program, falling back to the built-in
+ * voice if soundfonts are off or fail to render.
  */
 export const renderNotesToBlob = async (
   notes: RenderNote[],
   opts: RenderOptions = {},
 ): Promise<{ blob: Blob; duration: number }> => {
-  if (isSoundfontActive()) {
+  if (opts.program !== undefined || isSoundfontActive()) {
     try {
       return await renderNotesToBlobSF(notes, opts);
     } catch {
@@ -133,13 +146,13 @@ const renderNotesBuiltin = async (
   opts: RenderOptions = {},
 ): Promise<{ blob: Blob; duration: number }> => {
   const sr = opts.sampleRate ?? 44100;
-  const tail = opts.tailSec ?? 0.6;
+  const tail = opts.tailSec ?? BUILTIN_TAIL_SEC;
   let maxEnd = 0;
   for (const n of notes) {
     const end = n.startSec + n.durationSec;
     if (end > maxEnd) maxEnd = end;
   }
-  const totalSec = Math.max(0.1, maxEnd + tail);
+  const totalSec = Math.max(0.1, maxEnd + tail, opts.minDurationSec ?? 0);
   const offline = new OfflineAudioContext(2, Math.ceil(totalSec * sr), sr);
   for (const n of notes) {
     triggerActiveVoice(offline, offline.destination, n.midi, n.velocity, n.startSec, n.durationSec, 1, n.bend);
@@ -149,24 +162,47 @@ const renderNotesBuiltin = async (
 };
 
 /** Render step-grid notes (piano roll / step sequencer) to a WAV Blob. With
- *  `bends` (lib/pitchBend rollRenderBends) each note follows its lane's bend. */
+ *  `bends` (lib/pitchBend rollRenderBends) each note follows its lane's bend.
+ *  With `percussion` every note plays on the General MIDI drum channel, where
+ *  `program` picks the kit (the Standard kit when left out); a drum channel has
+ *  one wheel for every drum, so a percussion render carries no lane bends.
+ *
+ *  The audio lasts at least the pattern's nominal length, so trailing rests are
+ *  in it, and rings out past the last note for as long as its instrument's
+ *  release (RenderOptions.tailSec), so a final chord is not cut. */
 export const renderStepNotesToBlob = async (
   notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
   bpm: number,
   totalSteps: number,
-  opts: { program?: number; bends?: RollRenderBends } = {},
+  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
 ): Promise<{ blob: Blob; duration: number }> => {
-  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
-  const render = stepNotesToRender(notes, stepSec, opts.bends);
-  // Pad to the pattern's nominal length so trailing rests are preserved.
-  const result = await renderNotesToBlob(render.notes, {
-    tailSec: 0.6,
-    program: opts.program,
-    ...(render.wheel.length ? { wheel: render.wheel } : {}),
-  });
-  const nominal = totalSteps * stepSec;
-  return { blob: result.blob, duration: Math.max(result.duration, nominal) };
+  const request = stepRenderRequest(notes, bpm, totalSteps, opts);
+  const result = await renderNotesToBlob(request.notes, request.options);
+  return { blob: result.blob, duration: Math.max(result.duration, request.nominalSec) };
 };
+
+/** The notes and options renderStepNotesToBlob renders a step pattern with,
+ *  and the pattern's nominal length in seconds. The options carry no fixed
+ *  tail, so a soundfont render rings out (RenderOptions.tailSec). */
+export function stepRenderRequest(
+  notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
+  bpm: number,
+  totalSteps: number,
+  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
+): { notes: RenderNote[]; options: RenderOptions; nominalSec: number } {
+  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
+  const render = stepNotesToRender(notes, stepSec, opts.percussion ? undefined : opts.bends);
+  const nominalSec = totalSteps * stepSec;
+  return {
+    notes: opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes,
+    options: {
+      minDurationSec: nominalSec,
+      program: opts.percussion ? (opts.program ?? GM_STANDARD_KIT) : opts.program,
+      ...(render.wheel.length ? { wheel: render.wheel } : {}),
+    },
+    nominalSec,
+  };
+}
 
 /**
  * Parse a Standard MIDI File buffer and render it to a WAV Blob. Uses the active

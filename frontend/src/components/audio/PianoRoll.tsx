@@ -34,14 +34,13 @@ import {
   loopedWheelEvents,
   playedRollBends,
   playingLane,
-  rollRenderBends,
   shiftPlayedBends,
   type LaneBend,
   type PlayedBend,
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
-import { feelLength, playedRollNotes, quantizeRollClip, rollClipFields } from '../../lib/rollClip';
+import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
   followLap,
@@ -88,7 +87,10 @@ import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
-import { isSoundfontActive, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
+import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
+import { rollVoice, type ClipVoice } from '../../lib/clipProgram';
+import { gmShortName } from '../../lib/gmInstruments';
+import { bounceRollToEditor } from '../../lib/rollBounce';
 import { parseSheetFile } from '../../lib/sheetImportClient';
 import { ownsKey } from '../../lib/keyScope';
 import {
@@ -188,6 +190,14 @@ const PIANO_MIDI_PARAMS = [
   { key: 'bpm' as const,        label: 'BPM',         min: 40,  max: 240, autoCc: 14, integer: true },
   { key: 'totalSteps' as const, label: 'Total Steps', min: 16,  max: 256, autoCc: 15, integer: true },
 ];
+
+/** The voice the roll plays with now: its linked EDIT clip's, else its own
+ *  program, else the global picker's (lib/clipProgram rollVoice). */
+const currentRollVoice = (): ClipVoice => {
+  const { clips, tracks } = useEditorStore.getState();
+  const { editingClipId, voiceProgram } = usePianoRollStore.getState();
+  return rollVoice(editingClipId, clips, tracks, getGlobalVoice(), voiceProgram);
+};
 
 const useMasterGainRef = () => {
   const masterGain = usePlaybackStore((s) => (s.muted ? 0 : s.volume / 100));
@@ -331,7 +341,9 @@ export const PianoRollTransport: React.FC<{
         lapCurves = shiftPlayedBends(bent, lap.start);
       }
       const targetAbs = clock.step + (now + lookahead - clock.time) / stepSec;
-      const soundfont = isSoundfontActive();
+      // The roll plays through its linked clip's voice, or the picker's.
+      const voice = currentRollVoice();
+      const soundfont = voice.program !== undefined;
       if (soundfont) {
         // A channel whose lane stopped bending goes back to the centre.
         const bentChannels = new Set([...lapCurves.keys()].map((lane) => channels.get(lane) ?? 0));
@@ -362,7 +374,12 @@ export const PianoRollTransport: React.FC<{
           const { events, originStep } = loopedBendAutomation(curve, lap.len, n.step - lap.start + (at - when) / stepSec, n.length + BEND_TAIL_SEC / stepSec);
           bend = { events, originStep, stepSec };
         }
-        triggerPianoNote(n.note, n.velocity, at, n.length * stepSec, masterRef.current, { channel, bend });
+        triggerPianoNote(n.note, n.velocity, at, n.length * stepSec, masterRef.current, {
+          channel,
+          bend,
+          program: voice.program,
+          percussion: voice.percussion,
+        });
       }
       cursor = Math.max(cursor, targetAbs);
       const elapsedAbs = clock.step + (now - clock.time) / stepSec;
@@ -547,6 +564,29 @@ export const PianoRollBendKey: React.FC<{ on: boolean; onChange: (on: boolean) =
           ? `Pitch bend: the lane under the grid. ${bent} lane${bent === 1 ? '' : 's'} bend${bent === 1 ? 's' : ''} in this roll.`
           : 'Pitch bend: open the lane under the grid and click to add a point'
       }
+    />
+  );
+};
+
+/**
+ * The roll's own voice, shown while an unlinked roll plays one (the Vocal2MIDI
+ * panel's voice): the roll auditions and bounces with it in place of the
+ * instrument picker. Pressing it returns the roll to the picker.
+ */
+export const PianoRollVoiceKey: React.FC = () => {
+  const voiceProgram = usePianoRollStore((s) => s.voiceProgram);
+  const linked = usePianoRollStore((s) => s.editingClipId !== null);
+  const setVoiceProgram = usePianoRollStore((s) => s.setVoiceProgram);
+  if (voiceProgram === null || linked) return null;
+  const name = gmShortName(voiceProgram);
+  return (
+    <StripKey
+      on
+      onClick={() => setVoiceProgram(null)}
+      aria-label={`Roll voice ${name}. Press to follow the instrument picker`}
+      legend={`Roll: ${name}`}
+      icon={<X className={STRIP_GLYPH} />}
+      description={`The roll plays and bounces as ${name}, set by Vocal2MIDI. Press to follow the instrument picker.`}
     />
   );
 };
@@ -813,72 +853,22 @@ export const PianoRollEditKey: React.FC = () => {
   const keyRef = useRef<HTMLButtonElement>(null);
 
   const handleSendToEditor = async () => {
-    const roll = usePianoRollStore.getState();
-    const { bpm, totalSteps } = roll;
-    if (roll.notes.length === 0) {
+    if (usePianoRollStore.getState().notes.length === 0) {
       logError('piano-roll', 'No notes to bounce');
       return;
     }
-    // The editor plays a clip's notes once, so it gets the lane repeats written
-    // out (sourcePianoRoll). The roll's own notes, meter map, pickup, lanes and
-    // bends are copied beside them, so re-editing later sees the exact same state.
-    const fields = rollClipFields(roll);
-    const notes = fields.sourcePianoRoll;
     setIsBouncing(true);
     const start = performance.now();
     try {
-      // Each note renders in its own lane, so a lane's pitch bend bends its notes in the audio too.
-      const { blob, duration } = await renderStepNotesToBlob(unrollLanes(roll.notes, roll.lanes, totalSteps), bpm, totalSteps, {
-        bends: rollRenderBends(roll.bends, roll.lanes, totalSteps),
-      });
-      const { peaks } = await computePeaks(blob, 240);
-      const editor = useEditorStore.getState();
-
-      if (editingClipId) {
-        const existing = editor.clips.find((c) => c.id === editingClipId);
-        if (existing) {
-          editor.updateClip(editingClipId, {
-            audioBlob: blob,
-            mimeType: 'audio/wav',
-            sourceDuration: duration,
-            durationSec: duration,
-            offsetIntoSource: 0,
-            peaks,
-            ...fields,
-            sourceKind: 'piano-roll',
-            label: existing.label.startsWith('roll_')
-              ? `roll_${bpm}bpm_${notes.length}n`
-              : existing.label,
-          });
-          logInfo('piano-roll', `Updated editor clip ${editingClipId.slice(0, 8)} (${duration.toFixed(2)}s, ${notes.length} notes)`);
-          const ms = (performance.now() - start).toFixed(0);
-          logInfo('piano-roll', `Re-bounce took ${ms}ms`);
-          return;
-        }
-        // The clip the roll was bound to is gone — fall through to create a new one.
-        setEditingClip(null);
-      }
-
-      const trackId = editor.addTrack({ name: `Piano ${bpm} BPM` });
-      const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
-      const newClipId = editor.addClipToTrack({
-        trackId,
-        label: `roll_${bpm}bpm_${notes.length}n`,
-        audioBlob: blob,
-        mimeType: 'audio/wav',
-        sourceDuration: duration,
-        offsetIntoSource: 0,
-        durationSec: duration,
-        startSec: 0,
-        color: trackColor,
-        sourceKind: 'piano-roll',
-        ...fields,
-      });
-      editor.cachePeaks(newClipId, peaks);
-      // Bind the roll to the new clip so subsequent Send-to-Editor edits in place.
-      setEditingClip(newClipId);
+      const done = await bounceRollToEditor({ render: renderStepNotesToBlob, computePeaks, global: getGlobalVoice });
+      if (!done) return;
       const ms = (performance.now() - start).toFixed(0);
-      logInfo('piano-roll', `Bounced ${notes.length} notes → editor (${duration.toFixed(2)}s in ${ms}ms)`);
+      if (done.kind === 'updated') {
+        logInfo('piano-roll', `Updated editor clip ${done.clipId.slice(0, 8)} (${done.duration.toFixed(2)}s, ${done.noteCount} notes)`);
+        logInfo('piano-roll', `Re-bounce took ${ms}ms`);
+      } else {
+        logInfo('piano-roll', `Bounced ${done.noteCount} notes → editor (${done.duration.toFixed(2)}s in ${ms}ms)`);
+      }
     } catch (e) {
       logError('piano-roll', `Bounce failed: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -1403,7 +1393,7 @@ const KeyboardKeys = React.memo(function KeyboardKeys({
         return (
           <div
             key={midi}
-            onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current)}
+            onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current, currentRollVoice())}
             // Fixed key colours: the theme remaps bg-zinc-900 and text-zinc-700 (light
             // black keys on paper, pale C labels on dark), while a keyboard needs
             // dark black keys and dark ink on the white ones in every theme.
@@ -1830,7 +1820,7 @@ export const PianoRoll: React.FC<{
     }
     // Otherwise add a 2-step note (an 8th) on the clicked cell.
     addNote({ note: targetNote, step: targetStep, length: 2, velocity: 96 });
-    triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current);
+    triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
   };
 
   // A press on a note selects it. The click that ends the press deletes the

@@ -6,8 +6,8 @@
  * ---------------
  * `state/midiBus.ts` carries every inbound message, but nothing on the bus ever
  * kept one: the two readers are `publishMidi`'s subscribers (VJ forwarder, the
- * MidiMapper popups) and `lib/pianoTrigger.triggerPianoNoteFromMidi`, a 0.18 s
- * preview voice. Pressing RECORD with a controller plugged in armed the mic and
+ * MidiMapper popups) and `lib/keyboardMonitor`, which sounds each key while it
+ * is held and keeps nothing. Pressing RECORD with a controller plugged in armed the mic and
  * nothing else — a played part vanished the moment the voice decayed. This
  * module pairs note-on/note-off into held notes stamped with the transport
  * second they were played at, and turns a pass into a piano-roll clip on the
@@ -24,10 +24,11 @@
  * and `lib/takeNotes.takeToRoll` for the seconds-to-ticks step — with no
  * imports that load a store: every store, clock, render and notice the runtime
  * needs is a `MidiCaptureDeps` entry supplied by the one `startMidiCapture()`
- * mount in `App.tsx`. The one runtime import is `lib/takeNotes`, a pure module
- * whose only import is `lib/noteClock`, which has none; the rest are `import
- * type`, erased at compile. So the core is testable under plain `tsx` with no
- * DOM, no store graph and — the point — no real MIDI device.
+ * mount in `App.tsx`. The runtime imports are pure modules that load no store:
+ * `lib/takeNotes` (whose only import is `lib/noteClock`, which has none),
+ * `lib/clipProgram` and `lib/clipRenderWindow`; the rest are `import type`,
+ * erased at compile. So the core is testable under plain `tsx` with no DOM, no
+ * store graph and — the point — no real MIDI device.
  *
  * Design source
  * -------------
@@ -40,6 +41,8 @@
  */
 
 import type { AudioClip, EditorTrack } from '../state/editorStore';
+import { clipVoice, renderedVoiceFields, type ClipVoice } from './clipProgram';
+import { renderedWindowFields, type RenderWindowClip } from './clipRenderWindow';
 import type { MidiBusMessage } from '../state/midiBus';
 import type { PianoNote } from '../state/pianoRollStore';
 import { takeToRoll } from './takeNotes';
@@ -246,7 +249,7 @@ export function stepSeconds(bpm: number, stepsPerBeat: number = STEPS_PER_BEAT):
 export type CaptureClip = Pick<AudioClip, 'trackId' | 'startSec' | 'sourceKind' | 'sourcePianoRoll'>;
 
 /** What the runtime needs to know about a track. */
-export type CaptureTrack = Pick<EditorTrack, 'id' | 'color' | 'instrumentProgram'>;
+export type CaptureTrack = Pick<EditorTrack, 'id' | 'color' | 'instrumentProgram' | 'isPercussion'>;
 
 /** A MIDI clip = a piano-roll clip carrying its editable notes. The predicate
  *  `state/liveMixer.ts` schedules by (it is private there, so it is restated
@@ -259,7 +262,7 @@ export function isMidiCaptureClip(clip: CaptureClip): boolean {
  * Does an armed track capture MIDI on this pass?
  *
  * THE RULE: yes when the track declares an instrument (`instrumentProgram` is
- * set) or when its LATEST clip is a MIDI clip. No otherwise — including a track
+ * set), is a drum track (`isPercussion`), or when its LATEST clip is a MIDI clip. No otherwise — including a track
  * with no clips at all, which is indistinguishable from a fresh audio track. A
  * track becomes a MIDI track the moment it has an instrument or a MIDI clip on
  * it, both of which are things the user did on purpose.
@@ -279,7 +282,7 @@ export function isMidiCaptureClip(clip: CaptureClip): boolean {
  * closes on.
  */
 export function capturesMidi(track: CaptureTrack, clips: readonly CaptureClip[]): boolean {
-  if (track.instrumentProgram !== undefined) return true;
+  if (track.instrumentProgram !== undefined || track.isPercussion === true) return true;
   let latest: CaptureClip | null = null;
   for (const c of clips) {
     if (c.trackId !== track.id) continue;
@@ -377,7 +380,7 @@ export interface MidiCaptureDeps {
   punchWindow: () => PunchWindow | null;
   /** The program a track with no `instrumentProgram` of its own falls back to —
    *  the soundfont picker's active program when soundfonts are on, else
-   *  `undefined`. The last term of WaveformEditor's `effectiveProgramFor`, which
+   *  `undefined`. The last term of lib/clipProgram's `effectiveProgramFor`, which
    *  is what decides whether a fresh clip's bounce is already correct. */
   globalProgram: () => number | undefined;
   /** `soundfontEngine.ensureSoundfontReady` — warmed before a render so the
@@ -390,12 +393,15 @@ export interface MidiCaptureDeps {
   addClipToTrack: (clip: Omit<AudioClip, 'id'> & { id?: string }) => string;
   /** `useEditorStore.getState().applyClipRender` — history-exempt. */
   applyClipRender: (id: string, updates: Partial<AudioClip>, peaks?: Float32Array) => void;
+  /** The clip with this id as the editor holds it now, read when its render
+   *  lands so a take the user trimmed meanwhile keeps its window. */
+  clipWindow: (id: string) => RenderWindowClip | undefined;
   /** `midiSynth.renderStepNotesToBlob`. */
   renderStepNotes: (
     notes: StepRenderNote[],
     bpm: number,
     totalSteps: number,
-    opts?: { program?: number },
+    opts?: { program?: number; percussion?: boolean },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** `editorStore.computePeaks`. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array; duration: number }>;
@@ -410,6 +416,8 @@ interface OpenCapture {
   /** Transport second the pass opened at, before any punch crop. */
   openedAt: number;
   program?: number;
+  /** The track is a drum track: the take renders on the drum channel. */
+  percussion?: boolean;
   color?: string;
 }
 
@@ -453,6 +461,7 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         capture,
         openedAt: at,
         program: track.instrumentProgram,
+        percussion: track.isPercussion === true,
         color: track.color,
       });
     }
@@ -473,9 +482,9 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
       totalSteps: number;
       startSec: number;
       durationSec: number;
-      /** The program this clip's audio is rendered with, resolved the way
-       *  WaveformEditor's `effectiveProgramFor` resolves it. */
-      program: number | undefined;
+      /** The voice this clip's audio is rendered with, resolved the way
+       *  lib/clipProgram `clipVoice` resolves it. */
+      voice: ClipVoice;
     }> = [];
     let played = 0;
     const bpm = deps.bpm();
@@ -509,7 +518,11 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         // fallback a track with no instrument of its own lands a clip whose
         // effective program is the soundfont's, is stamped with nothing, and is
         // therefore re-bounced the instant it appears.
-        program: pass.program ?? globalProgram,
+        voice: clipVoice(
+          { instrumentProgram: pass.program },
+          { isPercussion: pass.percussion },
+          { useSoundfont: globalProgram !== undefined, activeProgram: globalProgram ?? 0 },
+        ),
       });
     }
 
@@ -569,7 +582,7 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
           land.rollNotes.map((n) => ({ note: n.note, velocity: n.velocity, step: n.step, length: n.length })),
           bpm,
           land.totalSteps,
-          land.program !== undefined ? { program: land.program } : {},
+          land.voice.program !== undefined ? { program: land.voice.program, percussion: land.voice.percussion } : {},
         );
         let peaks: Float32Array | undefined;
         try {
@@ -577,17 +590,20 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         } catch {
           /* a clip that draws flat is still a clip; the notes are on it */
         }
+        // The render rings out past the last note-off, so an untrimmed take
+        // grows to hold the release and export plays what live playback does.
+        const now = deps.clipWindow(clipId);
         deps.applyClipRender(
           clipId,
           {
             audioBlob: blob,
             mimeType: 'audio/wav',
-            sourceDuration: duration,
+            ...(now ? renderedWindowFields(now, duration) : { sourceDuration: duration }),
             // What the blob actually contains, so WaveformEditor's
             // instrument-sync pass does not immediately re-render it. This is
             // the RESOLVED program (track's own, else the global picker's) —
             // the same value `effectiveProgramFor` reports for this clip.
-            ...(land.program !== undefined ? { renderedProgram: land.program } : {}),
+            ...(land.voice.program !== undefined ? renderedVoiceFields(land.voice) : {}),
           },
           peaks,
         );

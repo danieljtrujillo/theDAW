@@ -19,6 +19,7 @@ import { dueAt, nextFollow, type FollowAction, type FollowKind } from '../../lib
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { renderNotesToBlob, type RenderNote } from '../../lib/midiSynth';
+import { sessionCellSpan, sessionMidiRenderOptions } from '../../lib/sessionCellSpan';
 import { subscribeToMidi } from '../../state/midiBus';
 import { subscribeSwayValue } from '../../state/swayBus';
 import { enableMidi } from '../../state/midiTriggerStore';
@@ -359,20 +360,13 @@ const startClipPlayer = (
     source.playbackRate.value = projectTempo / clip.source_tempo;
   }
 
-  // The clip is a WINDOW onto its sample: start at the trim point and run for
-  // the clip's own length, not the file's.
-  const maxOffset = Math.max(0, buffer.duration - 0.01);
-  const offset = Math.min(Math.max(0, clip.offset_into_source ?? 0), maxOffset);
-  const span = Math.max(0, (clip.end_time ?? 0) - (clip.start_time ?? 0));
-  const available = Math.max(0, buffer.duration - offset);
-  const duration = span > 0.02 ? Math.min(span, available) : available;
-
-  // Loop when Live says so. `loop_on == null` means the set didn't say, so treat
-  // it as a one-shot rather than looping material never meant to repeat.
-  if (clip.loop_on) {
+  // The clip is a WINDOW onto its sample, looped when Live says so; a one-shot
+  // MIDI cell rings out past it (lib/sessionCellSpan).
+  const { offset, duration, passSec, loopEnd } = sessionCellSpan(clip, buffer.duration, clip.file_path ? [] : notesFromDawClip(clip));
+  if (loopEnd !== null) {
     source.loop = true;
     source.loopStart = offset;
-    source.loopEnd = Math.min(buffer.duration, offset + (duration || available));
+    source.loopEnd = loopEnd;
   }
 
   // Mute/solo are honoured here for the first time: a track muted in Live came
@@ -402,9 +396,9 @@ const startClipPlayer = (
     trackIndex: opts.trackIndex,
     mixIndex: opts.mixIndex,
     sceneIndex: opts.sceneIndex,
-    // `duration` is a span of the SOURCE; a warped clip plays it at
+    // `passSec` is a span of the SOURCE; a warped clip plays it at
     // `playbackRate`, so one pass takes that many fewer (or more) wall seconds.
-    lengthSec: Math.max(0, duration || available) / (source.playbackRate.value || 1),
+    lengthSec: Math.max(0, passSec) / (source.playbackRate.value || 1),
   };
 };
 
@@ -803,10 +797,11 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         if (!response.ok) throw new Error(`clip fetch ${response.status}`);
         return context.decodeAudioData(await response.arrayBuffer());
       }
-      // MIDI clip: render its notes to audio so session cells still play.
+      // MIDI clip: render its notes to audio so session cells still play, to
+      // the end of the cell's window and ringing out (lib/sessionCellSpan).
       const notes = notesFromDawClip(clip);
       if (notes.length === 0) throw new Error('clip has no audio or notes');
-      const rendered = await renderNotesToBlob(notes, { tailSec: 0.2 });
+      const rendered = await renderNotesToBlob(notes, sessionMidiRenderOptions(clip));
       return context.decodeAudioData(await rendered.blob.arrayBuffer());
     })();
     bufferCacheRef.current.set(key, task);

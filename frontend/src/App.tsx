@@ -31,7 +31,8 @@ import { useLibraryStore } from './state/libraryStore';
 import { useModuleStore } from './state/moduleStore';
 import { useDownloadStore } from './state/downloadStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
-import { triggerPianoNoteFromMidi } from './lib/pianoTrigger';
+import { startHeldNote, stopHeldNote, type HeldNote } from './lib/pianoTrigger';
+import { createKeyboardMonitor, monitorVoice } from './lib/keyboardMonitor';
 import { publishMidi, subscribeToMidi } from './state/midiBus';
 import { isMidiMessageIgnored } from './state/midiIgnoreStore';
 // Live MIDI capture (see the mount below). Every module here is already in this
@@ -42,7 +43,7 @@ import { currentPassPunchWindow, useRecordingStore } from './state/recordingStor
 import { beginUndoStep, computePeaks, useEditorStore } from './state/editorStore';
 import { currentTransportSec } from './state/liveMixer';
 import { renderStepNotesToBlob } from './lib/midiSynth';
-import { ensureSoundfontReady, getActiveProgram, isSoundfontActive } from './lib/soundfontEngine';
+import { ensureSoundfontReady, getActiveProgram, getGlobalVoice, isSoundfontActive } from './lib/soundfontEngine';
 import { postStatus } from './state/statusNoticeStore';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
@@ -250,10 +251,10 @@ export default function App() {
   }, [uiScale]);
 
   // ── Global Web MIDI listener ───────────────────────────────────
-  // Any connected MIDI controller's note-on messages trigger the
-  // synthesizer voice exposed by PianoRoll (triggerPianoNoteFromMidi).
-  // Velocity is preserved 0-127. note-off events stop nothing —
-  // the synth voice has its own envelope that naturally decays.
+  // Any connected MIDI controller is monitored through lib/keyboardMonitor:
+  // each key sounds from its note-on to its note-off, held on while the
+  // sustain pedal (CC64) is down, in the armed MIDI track's instrument (the
+  // global picker's when none is armed). Velocity is preserved 0-127.
   // Hot-plug aware via MIDIAccess.onstatechange.
   const midiEnabled = useMidiTriggerStore((s) => s.enabled);
   // Which ports are let through (Settings -> Inputs & outputs). Re-attaching on
@@ -277,6 +278,14 @@ export default function App() {
     if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
     let access: MIDIAccess | null = null;
     let cancelled = false;
+    const monitor = createKeyboardMonitor({
+      voice: () => {
+        const ed = useEditorStore.getState();
+        return monitorVoice(useRecordingStore.getState().armedTrackIds, ed.tracks, ed.clips, getGlobalVoice());
+      },
+      start: (key) => startHeldNote(key.note, key.velocity, key.voice),
+      stop: (handle) => stopHeldNote(handle as HeldNote),
+    });
 
     const onMidiMessage = (e: MIDIMessageEvent) => {
       if (!e.data) return;
@@ -286,29 +295,31 @@ export default function App() {
       //    what to do with it. ONE Web MIDI listener, many readers.
       publishMidi(e.data);
 
-      // 2. Built-in piano-synth trigger on note-on. This reads raw
-      //    `e.data` directly — it is NOT a bus subscriber, so
-      //    publishMidi's own ignore filter (midiBus.ts) never sees
-      //    it and the check has to be repeated here. Skipped when
-      //    the user has muted MIDI audio triggering (VJ performers
-      //    who want the controller to drive effects only), or when
-      //    the note is on the DJ MIDI map's ignore list. The bus
+      // 2. The keyboard monitor. This reads raw `e.data` directly —
+      //    it is NOT a bus subscriber, so publishMidi's own ignore
+      //    filter (midiBus.ts) never sees it and the check has to be
+      //    repeated here. A message the Sway surface consumes, or one
+      //    on the DJ MIDI map's ignore list, never reaches it. A
+      //    note-on is also skipped while the user has muted MIDI
+      //    audio triggering (VJ performers who want the controller to
+      //    drive effects only); note-offs and the pedal always pass,
+      //    so a key held across the mute still releases. The bus
       //    publish above still runs (minus ignored controls), so
       //    visual effects keep reacting.
-      const [status, data1, data2] = e.data;
+      const [status, , data2] = e.data;
       const command = status & 0xf0;
+      const noteOn = command === 0x90 && data2 > 0;
       if (
-        command === 0x90 &&
-        data2 > 0 &&
-        !isMidiAudioMuted() &&
+        (command === 0x80 || command === 0x90 || command === 0xb0) &&
+        !(noteOn && isMidiAudioMuted()) &&
         !swaySurfaceConsumes(e.data) &&
         !isMidiMessageIgnored(e.data)
       ) {
         try {
-          triggerPianoNoteFromMidi(data1, data2);
+          monitor.message(e.data);
         } catch (err) {
           /* a single failed voice should not silence the whole bus */
-          console.error('[midi] note trigger failed:', err);
+          console.error('[midi] keyboard monitor failed:', err);
         }
       }
     };
@@ -370,6 +381,8 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      // Keys held when MIDI is turned off or the ports change would get no note-off.
+      monitor.panic();
       if (access) {
         access.inputs.forEach((input) => {
           input.onmidimessage = null;
@@ -389,7 +402,7 @@ export default function App() {
   // Mounted once, unconditionally, and deliberately NOT gated on `midiEnabled`:
   // that flag guards `requestMIDIAccess` only, while the bus also carries the
   // Quest bridge and the synthetic Sway surface — a pass played through either
-  // is still a pass. Live monitoring (`triggerPianoNoteFromMidi`, above) is
+  // is still a pass. Live monitoring (lib/keyboardMonitor, above) is
   // untouched: capture reads the bus, it does not consume it.
   useEffect(
     () =>
@@ -409,7 +422,7 @@ export default function App() {
         // again here would crop the notes to a window the take crop is not
         // using the moment the user touched the loop region during the count.
         punchWindow: currentPassPunchWindow,
-        // The last term of WaveformEditor's `effectiveProgramFor`, resolved the
+        // The last term of lib/clipProgram's `effectiveProgramFor`, resolved the
         // same way its MIDI-insert path does: the picker's program only while
         // soundfonts are on.
         globalProgram: () => (isSoundfontActive() ? getActiveProgram() : undefined),
@@ -417,6 +430,7 @@ export default function App() {
         beginUndoStep,
         addClipToTrack: (clip) => useEditorStore.getState().addClipToTrack(clip),
         applyClipRender: (id, updates, peaks) => useEditorStore.getState().applyClipRender(id, updates, peaks),
+        clipWindow: (id) => useEditorStore.getState().clips.find((c) => c.id === id),
         renderStepNotes: (notes, bpm, totalSteps, opts) => renderStepNotesToBlob(notes, bpm, totalSteps, opts),
         computePeaks,
         postStatus,

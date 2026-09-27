@@ -117,6 +117,11 @@ interface PianoRollState {
   seekId: number;
   /** If set, the roll is editing an existing editor clip — next "send to editor" updates that clip in place. */
   editingClipId: string | null;
+  /** The GM program a roll with no linked clip auditions and bounces with;
+   *  null follows the global instrument picker. A roll linked to an EDIT clip
+   *  plays its clip's voice (lib/clipProgram rollVoice). Set by the Vocal2MIDI
+   *  panel's voice and cleared from the roll's strip. A setting, not an edit. */
+  voiceProgram: number | null;
   /** Step span of the most recent live recording, highlighted in the grid; null
    *  when no recording has been placed. */
   recordedRange: { startStep: number; endStep: number } | null;
@@ -209,6 +214,8 @@ interface PianoRollState {
   appendNotes: (notes: PianoNote[]) => void;
   clear: () => void;
   setEditingClip: (id: string | null) => void;
+  /** Set the unlinked roll's own program (0-127), or null to follow the picker. */
+  setVoiceProgram: (program: number | null) => void;
   /** Load an editor clip. A `meter` field left out keeps the roll's current value.
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
@@ -741,6 +748,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   loopOn: false,
   seekId: 0,
   editingClipId: null,
+  voiceProgram: null,
   recordedRange: null,
   meterMap: normalizeMeterMap(null),
   pickupSteps: 0,
@@ -897,6 +905,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
+  setVoiceProgram: (program) =>
+    set({ voiceProgram: program === null || !Number.isFinite(program) ? null : Math.max(0, Math.min(127, Math.round(program))) }),
   loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved

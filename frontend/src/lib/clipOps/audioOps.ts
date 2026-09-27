@@ -293,7 +293,7 @@ export type StepNoteRenderer = (
   notes: StepNote[],
   bpm: number,
   totalSteps: number,
-  opts?: { program?: number },
+  opts?: { program?: number; percussion?: boolean },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -310,6 +310,8 @@ export const defaultStepNoteRenderer: StepNoteRenderer = async (notes, bpm, tota
 export interface MidiRenderOptions {
   /** Overrides the clip's own `instrumentProgram`. */
   program?: number;
+  /** Render on the General MIDI drum channel, where the program is the kit (a percussion track's clip). */
+  percussion?: boolean;
   /** Tempo to use when the clip has no `sourceBpm` (e.g. the editor's). */
   bpm?: number;
   render?: StepNoteRenderer;
@@ -351,7 +353,7 @@ export async function bounceMidiClip(
   const notes = notesOf(clip);
   const bpm = tempoOf(clip, opts.bpm);
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram });
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion });
 }
 
 /**
@@ -380,5 +382,5 @@ export async function stretchMidiClip(
     );
   }
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram });
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion });
 }

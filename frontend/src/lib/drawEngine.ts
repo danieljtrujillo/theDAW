@@ -36,6 +36,7 @@ import {
 } from './rackEffects';
 import type { ChainEntry } from '../state/effectChainStore';
 import { ensureSoundfontReady, liveNoteOff, liveNoteOn } from './soundfontEngine';
+import { drawStrokeChannel } from './pitchBend';
 
 // ── musical constants (from art2music) ────────────────────────────────────────
 const SCALE = ['B3', 'Db4', 'Eb4', 'F4', 'G4', 'A4', 'B4', 'Db5', 'Eb5', 'F5', 'G5', 'A5', 'B5', 'Db6'];
@@ -382,7 +383,7 @@ export class DrawEngine {
   private chainHandle: ChainHandle | null = null;
   private effects: Record<string, AudioNode> = {};
   private fxOsc: OscillatorNode[] = [];
-  private sfChannelSeq = 1;
+  private sfChannelSeq = 0;
   private grainBuffer: AudioBuffer | null = null;
   private grainSeq = 0;
   private magentaLoop = false;
@@ -1078,7 +1079,8 @@ export class DrawEngine {
         p.voice.panner.pan.setTargetAtTime(pan, ctx.currentTime, 0.03);
       } else if (this.soundMode === 'soundfont') {
         if (p.sfMidi === undefined) {
-          const channel = (this.sfChannelSeq = (this.sfChannelSeq % 15) + 1);
+          // Each stroke takes the next of DRAW's own channels, never a drum channel.
+          const channel = drawStrokeChannel(this.sfChannelSeq++);
           const midi = noteToMidi(SCALE[p.noteIndex]);
           const vel = Math.round(scale01(energy, [44, 118]));
           p.sfChannel = channel;

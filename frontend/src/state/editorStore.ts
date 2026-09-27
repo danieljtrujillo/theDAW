@@ -184,6 +184,11 @@ export interface AudioClip {
    *  moment an instrument is reassigned after insert. Recording what the blob
    *  contains lets the editor re-render it on change and keep export == preview. */
   renderedProgram?: number;
+  /** True when `audioBlob` was rendered on the General MIDI drum channel, with
+   *  `renderedProgram` choosing the kit. A write of `renderedProgram` that does
+   *  not name this field clears it (`clipWithUpdates`), so a render that knows
+   *  nothing about drums is recorded as the melodic render it is. */
+  renderedPercussion?: boolean;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
@@ -250,8 +255,12 @@ export interface EditorTrack {
   /** Record-armed: target for mic/vocal recording. Shown as a red dot in the
    *  track header. */
   armed?: boolean;
-  /** Default GM program (0-127) for MIDI clips on this track; undefined = global default. */
+  /** Default GM program (0-127) for MIDI clips on this track; undefined = global default.
+   *  On a percussion track it chooses the drum kit (0 = Standard). */
   instrumentProgram?: number;
+  /** A drum track: its MIDI clips play and render on the General MIDI drum
+   *  channel, where a note is a drum and the program is the kit. */
+  isPercussion?: boolean;
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
    *  the track fader and its panner during live playback and offline bounce. */
   fxChain?: ChainEntry[];
@@ -647,6 +656,11 @@ interface EditorStoreState {
   insertTrack: (index: number, overrides?: Partial<EditorTrack>) => string;
   removeTrack: (id: string) => void;
   updateTrack: (id: string, updates: Partial<EditorTrack>) => void;
+  /** Make a track a drum track (`on`) or a melodic one. A program is an
+   *  instrument on one and a kit on the other, so the track's program and every
+   *  program its clips hold are cleared with the flag, and the track and its
+   *  clips start on their defaults. One undo step; a flag already set writes nothing. */
+  setTrackPercussion: (id: string, on: boolean) => void;
   /** Put `orderedIds` at the top in the order given; every track not named keeps
    *  its relative position after them. Unknown ids are ignored, so a partial or
    *  stale list can reorder but never drop a track. */
@@ -1366,7 +1380,14 @@ const mirrorOntoTakes = (clip: AudioClip, updates: Partial<AudioClip>): ClipTake
 /** `{ ...clip, ...updates }` with the take list kept in step (`mirrorOntoTakes`). */
 const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioClip => {
   const takes = mirrorOntoTakes(clip, updates);
-  return takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  const next = takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  // A render stamps `renderedProgram`. One that does not say it rendered drums
+  // rendered melodic, so a drum stamp from an earlier render does not survive it.
+  if ('renderedProgram' in updates && !('renderedPercussion' in updates) && next.renderedPercussion !== undefined) {
+    const { renderedPercussion: _drums, ...melodic } = next;
+    return melodic;
+  }
+  return next;
 };
 
 /**
@@ -1790,6 +1811,16 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     coalesceAs(params ? `track:${id}:${params.join('+')}` : null);
     set((s) => ({
       tracks: s.tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    }));
+  },
+
+  setTrackPercussion: (id, on) => {
+    const track = get().tracks.find((t) => t.id === id);
+    if (!track || (track.isPercussion === true) === on) return;
+    coalesceAs(null);
+    set((s) => ({
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: on ? true : undefined, instrumentProgram: undefined } : t)),
+      clips: s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)),
     }));
   },
 

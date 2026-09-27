@@ -79,11 +79,11 @@ const samplesOf = async (blob: Blob): Promise<Float32Array> =>
 /** A stub for `midiSynth.renderStepNotesToBlob` that records every call. The
  *  first sample encodes the note count so two renders of different note lists
  *  are distinguishable without decoding a synth. */
-interface RenderCall { notes: readonly { note: number; step: number }[]; bpm: number; totalSteps: number; program?: number }
+interface RenderCall { notes: readonly { note: number; step: number }[]; bpm: number; totalSteps: number; program?: number; percussion?: boolean }
 let renderCalls: RenderCall[] = [];
 
 const render: StepNoteRenderer = async (notes, bpm, totalSteps, opts) => {
-  renderCalls.push({ notes: notes.map((n) => ({ note: n.note, step: n.step })), bpm, totalSteps, program: opts?.program });
+  renderCalls.push({ notes: notes.map((n) => ({ note: n.note, step: n.step })), bpm, totalSteps, program: opts?.program, percussion: opts?.percussion });
   const duration = (totalSteps * (60 / bpm)) / 4;
   const frames = Math.max(2, Math.round(duration * SR));
   const data = new Float32Array(frames);
@@ -360,6 +360,19 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   assert.equal(clipOf('midi1').renderedProgram, 11, 'the blob and the program stay in step');
   assert.equal(renderCalls.at(-1).program, 11);
   assert.match(errOf(await tools.setClipInstrument({ clip_id: 'bass', program: 200, ...seams }), 'bad program'), /0-127/);
+
+  // The clip's track becomes a drum track (the drum key), then the assistant
+  // edits the clip. The re-bounce renders on the drum channel with the Standard
+  // kit and is stamped as a drum render, so EDIT does not re-render it again.
+  // At 8039b45 the tools rendered it as a melodic part.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { instrumentProgram: undefined });
+  useEditorStore.getState().updateTrack('t1', { isPercussion: true });
+  okOf(await tools.transposeClip({ clip_id: 'bass', semitones: 2, ...seams }), 'transpose on a drum track');
+  assert.equal(renderCalls.at(-1).program, 0, 'the Standard kit');
+  assert.equal(renderCalls.at(-1).percussion, true, 'on the drum channel');
+  assert.equal(clipOf('midi1').renderedProgram, 0);
+  assert.equal(clipOf('midi1').renderedPercussion, true);
 
   seed();
   okOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 95 }), 'source bpm');

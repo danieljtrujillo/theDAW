@@ -6,13 +6,22 @@
  * soundfont-player. Instrument selection maps onto General MIDI programs; the
  * compact panel also exposes theDAW's own instrument picker for the full 128-program
  * range. WAV export uses theDAW's offline soundfont render.
+ *
+ * The panel's voice is the piano roll's own voice (pianoRollStore
+ * `voiceProgram`): the assistant's instrument choice and the panel's ROLL VOICE
+ * select set it, the panel previews and exports with it, and the roll it fills
+ * auditions and bounces with it while no EDIT clip is linked (lib/clipProgram
+ * rollVoice). It never writes the global picker, whose program every EDIT clip
+ * without one of its own follows. Left unset, all of them play the picker's
+ * program.
  */
 import type { NoteEvent } from './types';
+import { usePianoRollStore } from '../../../state/pianoRollStore';
 import {
+  getActiveProgram,
   previewNoteSF,
   renderNotesToBlobSF,
   liveAllNotesOff,
-  useSoundfontStore,
 } from '../../../lib/soundfontEngine';
 import type { RenderNote } from '../../../lib/midiSynth';
 import { getEngineCtx } from '../../../state/playerStore';
@@ -33,6 +42,9 @@ const INSTRUMENT_GM: Record<InstrumentType, { name: string; program: number }> =
   organ: { name: 'Rock Organ', program: 18 },
 };
 
+/** The program the panel previews and renders with: the roll's own, else the picker's. */
+export const vocalVoiceProgram = (): number => usePianoRollStore.getState().voiceProgram ?? getActiveProgram();
+
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 const toRenderNotes = (notes: NoteEvent[]): RenderNote[] =>
@@ -52,12 +64,10 @@ export class MidiSynth {
   private startedAt = 0;
   private startOffset = 0;
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async setInstrument(instrument: InstrumentType): Promise<void> {
+  setInstrument(instrument: InstrumentType): Promise<void> {
     this.instrument = instrument;
-    const sf = useSoundfontStore.getState();
-    sf.setActiveProgram(INSTRUMENT_GM[instrument].program);
-    sf.setUseSoundfont(true);
+    usePianoRollStore.getState().setVoiceProgram(INSTRUMENT_GM[instrument].program);
+    return Promise.resolve();
   }
 
   getInstrument(): InstrumentType {
@@ -73,8 +83,7 @@ export class MidiSynth {
    * into the sequence (notes before it are skipped). Each note triggers a live
    * soundfont voice at its absolute start, scaled by the synth volume.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async playNotes(notes: NoteEvent[], onEnd?: () => void, startFromTime = 0): Promise<void> {
+  playNotes(notes: NoteEvent[], onEnd?: () => void, startFromTime = 0): Promise<void> {
     this.stop();
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
@@ -89,7 +98,7 @@ export class MidiSynth {
       if (at < 0) continue;
       const vel = Math.max(1, Math.min(127, Math.round(n.velocity * (0.4 + this.volume * 0.6))));
       const id = window.setTimeout(() => {
-        void previewNoteSF(n.midiNote, vel, n.duration);
+        void previewNoteSF(n.midiNote, vel, n.duration, 0, undefined, vocalVoiceProgram());
       }, Math.max(0, at * 1000));
       this.timers.push(id);
     }
@@ -99,6 +108,7 @@ export class MidiSynth {
       this.endTimer = null;
       onEnd?.();
     }, totalMs);
+    return Promise.resolve();
   }
 
   /** Alias kept for callers that use `play(notes, bpm)`. */
@@ -132,7 +142,7 @@ export class MidiSynth {
 
   /** Render the notes to a WAV Blob through theDAW's offline soundfont render. */
   async renderToWav(notes: NoteEvent[]): Promise<Blob> {
-    const { blob } = await renderNotesToBlobSF(toRenderNotes(notes));
+    const { blob } = await renderNotesToBlobSF(toRenderNotes(notes), { program: vocalVoiceProgram() });
     return blob;
   }
 

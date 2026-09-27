@@ -73,6 +73,7 @@ import {
   PianoRollBendKey,
   PianoRollNoteCount,
   PianoRollTransport,
+  PianoRollVoiceKey,
   PianoRollZoom,
   exportRollMidi,
   importMidiFileToRoll,
@@ -618,6 +619,7 @@ export const MidiPanel: React.FC = () => {
         <PianoRollTransport arpShowing={arpOn} arpPlaying={arpPlaying} onArpPlayingChange={setArpPlaying} />
         <Sep />
         <InstrumentPicker compact />
+        <PianoRollVoiceKey />
         <Sep />
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
