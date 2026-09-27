@@ -58,8 +58,9 @@ export const noteEndStep = (notes: readonly { step: number; length: number }[], 
  * Grid step for each snap division, in beats. Mirrors the table the timeline
  * editor snaps to (`SNAP_BEATS` in `state/editorStore.ts`) so the assistant and
  * the toolbar agree on what "1/8T" means. Triplets are 2/3 of the straight
- * value, dotted are 3/2, and '1/1' assumes 4/4 because the editor still has no
- * time-signature model.
+ * value, a quintuplet 16th (Q) is a fifth of a beat and a septuplet 16th (S) a
+ * seventh, dotted are 3/2, and '1/1' assumes 4/4 because the editor still has
+ * no time-signature model.
  */
 const DIVISION_BEATS: Record<Exclude<SnapDivision, 'off'>, number> = {
   '1/1': 4,
@@ -68,9 +69,13 @@ const DIVISION_BEATS: Record<Exclude<SnapDivision, 'off'>, number> = {
   '1/8': 0.5,
   '1/16': 0.25,
   '1/32': 0.125,
+  '1/64': 0.0625,
   '1/4T': 2 / 3,
   '1/8T': 1 / 3,
   '1/16T': 1 / 6,
+  '1/32T': 1 / 12,
+  '1/16Q': 1 / 5,
+  '1/16S': 1 / 7,
   '1/4D': 1.5,
   '1/8D': 0.75,
   '1/16D': 0.375,

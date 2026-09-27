@@ -176,7 +176,7 @@ EDIT arrangement actions (the current tracks/clips/playhead are in `editorState`
 Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit the note list and re-bounce the clip's audio, so playback and exports stay in step. A re-bounce writes the FULL rendered length, so a clip that had been trimmed grows back; the result says so when the length moved. Every `*_id` argument also accepts the object's exact label/name.
 - `editor_get_notes` — Read the note list: `{id, note (pitch 0-127), step (16ths from the clip start), length, velocity}`. Payload: `{"clip_id": "..."}`
 - `editor_set_notes` — Replace the note list wholesale. Payload: `{"clip_id": "...", "notes": [{"note": 60, "step": 0, "length": 4, "velocity": 100, "id?": "..."}]}`
-- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/4T"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool}`
+- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool}`
 - `editor_nudge_notes` — Shift every note in time. EXACTLY ONE unit. Payload: `{"clip_id": "...", "steps?": 0.5}` or `{"ms?": 42}` or `{"ticks?": 120}`
 - `editor_transpose_clip` — Payload: `{"clip_id": "...", "semitones": -12}`
 - `editor_scale_velocity` — Payload: `{"clip_id": "...", "factor?": 0.8, "offset?": -5, "min?": 1, "max?": 127}`
@@ -209,7 +209,7 @@ Selection and grid:
 - `editor_select_clips` — Replace the selection ( `[]` clears it). Payload: `{"clip_ids": ["..."]}`
 - `editor_select_range` — Payload: `{"start_sec": 0, "end_sec": 32, "track_ids?": ["..."]}`
 - `editor_select_notes` — Payload: `{"clip_id": "...", "note_ids?": ["..."], "min_pitch?": 36, "max_pitch?": 48, "start_step?": 0, "end_step?": 16}`
-- `editor_set_snap` — Payload: `{"snap": "off"|"1/1"|"1/2"|"1/4"|"1/8"|"1/16"|"1/32"|"1/4T"|"1/8T"|"1/16T"|"1/4D"|"1/8D"|"1/16D"}`
+- `editor_set_snap` — Payload: `{"snap": "off"|"1/1"|"1/2"|"1/4"|"1/8"|"1/16"|"1/32"|"1/64"|"1/4T"|"1/8T"|"1/16T"|"1/32T"|"1/16Q"|"1/16S"|"1/4D"|"1/8D"|"1/16D"}`
 - `editor_set_tool` — Payload: `{"tool": "move"|"cut"|"split"}`
 
 Tracks:

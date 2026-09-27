@@ -82,6 +82,7 @@ import {
 } from '../audio/PianoRoll';
 import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
 import { VirtuosoControls } from '../audio/VirtuosoControls';
+import { RollSnapControls } from '../audio/RollSnapControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 import { AiComposePopover } from '../audio/AiComposePopover';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
@@ -623,6 +624,8 @@ export const MidiPanel: React.FC = () => {
         <Sep />
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
+        <Sep />
+        <RollSnapControls />
         <Sep />
         <PianoRollFeel />
         <Sep />

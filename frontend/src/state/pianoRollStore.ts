@@ -17,6 +17,8 @@ import {
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
 import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
+// lib/rollSnap imports only the PianoNote TYPE back from here, as rollSelection does.
+import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -158,6 +160,12 @@ interface PianoRollState {
    * reload comes back to the feel someone chose.
    */
   grooveId: string;
+  /**
+   * The grid a click, a drag, a resize, an arrow nudge, the note menu and a
+   * paste land on (lib/rollSnap), and the subdivision the grid draws. A
+   * setting like the feel: persisted, never undo history.
+   */
+  snap: RollSnapId;
 
   setBpm: (bpm: number) => void;
   setTotalSteps: (s: number) => void;
@@ -193,6 +201,15 @@ interface PianoRollState {
   setSwingPct: (pct: number) => void;
   /** The groove template id the feel applies; persisted. Blank falls back to the default. */
   setGrooveId: (id: string) => void;
+  /** The snap grid; persisted. An id the roll does not know leaves it as it is. */
+  setSnap: (snap: RollSnapId) => void;
+  /**
+   * Retime and repitch notes in ONE write (one undo step), keeping the
+   * selection: a drag of note bodies, TUPLET, and the note menu's steps. Each
+   * update names a note's new `tick`, `ticks` and `note`; a field left out
+   * stays, and an id with no note is skipped.
+   */
+  setNoteTimes: (updates: ReadonlyArray<{ id: string; tick?: number; ticks?: number; note?: number }>) => void;
   setPlaying: (playing: boolean) => void;
   /** PLAY: start the roll where the playhead is. The playhead, the seek and the
    *  loop stay as they are; the scheduler's lap starts from them (playStartLap). */
@@ -470,9 +487,10 @@ const noSelection = (): SelectionSlice => ({ selectedIds: new Set<string>(), sel
 // ── Note validation ──────────────────────────────────────────────────────────
 
 /**
- * The shortest note a GESTURE makes, in steps: a click on an empty cell, a
- * resize drag, the note menu's Shorten. The grid cannot draw or grab a note
- * thinner than one cell by hand, so those gestures stop at one step.
+ * The length, in steps, a note gets when its `length` is missing altogether.
+ * The hand gestures (a click on an empty cell, a resize drag, the note menu's
+ * Shorten) stop at one cell of the snap grid instead (lib/rollSnap), so a
+ * quintuplet or a 64th drawn by hand keeps its own size.
  *
  * The MODEL's floor is one tick (`MIN_NOTE_TICKS`), however a length arrives:
  * as `ticks`, or as a `length` in steps from a caller that builds notes without
@@ -712,6 +730,29 @@ const saveFeel = (feel: RollFeel): void => {
   }
 };
 
+// ── The snap grid, persisted ─────────────────────────────────────────────────
+
+const SNAP_KEY = 'thedaw.roll.snap.v1';
+
+const loadSnap = (): RollSnapId => {
+  try {
+    if (typeof localStorage === 'undefined') return DEFAULT_ROLL_SNAP;
+    const raw = localStorage.getItem(SNAP_KEY);
+    return isRollSnapId(raw) ? raw : DEFAULT_ROLL_SNAP;
+  } catch {
+    return DEFAULT_ROLL_SNAP;
+  }
+};
+
+const saveSnap = (snap: RollSnapId): void => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(SNAP_KEY, snap);
+  } catch {
+    /* private mode / quota: the grid just does not survive the reload */
+  }
+};
+
 // ── Undo / redo plumbing (module-scoped) ─────────────────────────────────────
 const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
@@ -756,6 +797,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   activeLane: 0,
   bends: [],
   ...loadFeel(),
+  snap: loadSnap(),
   _undo: [],
   _redo: [],
 
@@ -873,6 +915,30 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const grooveId = cleanGrooveId(id);
       saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId });
       return { grooveId };
+    }),
+
+  setSnap: (snap) => {
+    if (!isRollSnapId(snap)) return;
+    saveSnap(snap);
+    set({ snap });
+  },
+  setNoteTimes: (updates) =>
+    set((s) => {
+      const byId = new Map(updates.map((u) => [u.id, u]));
+      let changed = false;
+      const notes = s.notes.map((n) => {
+        const u = byId.get(n.id);
+        if (!u) return n;
+        const patch: Partial<PianoNote> = {};
+        if (isNum(u.tick) && u.tick !== n.tick) patch.tick = u.tick;
+        if (isNum(u.ticks) && u.ticks !== n.ticks) patch.ticks = u.ticks;
+        if (isNum(u.note) && u.note !== n.note) patch.note = u.note;
+        if (Object.keys(patch).length === 0) return n;
+        changed = true;
+        return patchedNote(n, patch);
+      });
+      // No write when nothing moved, so a held drag records no undo step of its own.
+      return changed ? { notes } : {};
     }),
 
   setPlaying: (isPlaying) => set({ isPlaying }),
