@@ -22,7 +22,7 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
 from backend.lib.inpaint_composite import (
+    MAX_FEATHER_SEC,
     CompositeOptions,
     composite_inpaint,
     keep_mask_from_seconds,
@@ -1892,6 +1893,29 @@ def _clamp_for_output(audio, fmt: str, wav_bit_depth: str):
 _COMPOSITE_ARG = "composite_original"
 
 
+def _composite_options(
+    feather_sec: float | None, match_loudness: str | None
+) -> CompositeOptions:
+    """CompositeOptions from the optional seam-tuning form fields. An absent
+    field keeps the default; a feather outside 0..MAX_FEATHER_SEC is refused
+    with the range in the message."""
+    options = CompositeOptions()
+    if feather_sec is not None:
+        feather = float(feather_sec)
+        if not (math.isfinite(feather) and 0.0 <= feather <= MAX_FEATHER_SEC):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"mask_feather_sec must be from 0 to {MAX_FEATHER_SEC:g} "
+                    f"seconds. Got {feather_sec}."
+                ),
+            )
+        options = replace(options, feather_sec=feather)
+    if match_loudness is not None:
+        options = replace(options, match_loudness=_coerce_form_bool(match_loudness))
+    return options
+
+
 def _composite_with_original(
     audio, output_sample_rate: int, generate_args: dict, options: CompositeOptions
 ):
@@ -2207,6 +2231,12 @@ async def generate_jobs(
     # inpaint sends it. Absent, MAKE's inpaint and the Chimera polish pass keep
     # the model's rendering of the whole window.
     composite_original: str = Form("false"),
+    # The composite's seam tuning, read only with composite_original: the
+    # crossfade at each edge that borders kept audio (0 to 0.5 s) and whether
+    # the region is matched to the original's loudness. Absent fields keep
+    # CompositeOptions' defaults (0.10 s, on).
+    mask_feather_sec: Optional[float] = Form(None),
+    match_loudness: Optional[str] = Form(None),
     sampler_type: Optional[str] = Form(None),
     sigma_max: float = Form(1.0),
     duration_padding_sec: float = Form(6.0),
@@ -2376,7 +2406,9 @@ async def generate_jobs(
                 base_args["inpaint_mask"] = inpaint_mask
                 inpaint_regions_count = len(inpaint_region_list)
             if _coerce_form_bool(composite_original):
-                base_args[_COMPOSITE_ARG] = CompositeOptions()
+                base_args[_COMPOSITE_ARG] = _composite_options(
+                    mask_feather_sec, match_loudness
+                )
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(

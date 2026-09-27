@@ -15,6 +15,7 @@ import io
 import numpy as np
 import pytest
 import torch
+from fastapi import HTTPException
 
 import backend.server as server
 from backend.core.idle import get_idle_manager
@@ -403,7 +404,26 @@ def test_generate_to_bytes_composites_around_a_prebuilt_mask():
         np.testing.assert_array_equal(decoded[ch, kept], original[0, kept])
 
 
-# ---- the /api/generate-jobs field ------------------------------------------
+def test_generate_to_bytes_uses_the_take_feather():
+    # A zero feather is a hard edge: the region is the generation from its
+    # first sample to its last.
+    original = np.full((2, 2 * SR), 0.5, dtype=np.float32)
+    take = np.zeros((2, 2 * SR), dtype=np.float32)
+    args = _inpaint_args(
+        original,
+        composite_original=CompositeOptions(feather_sec=0.0, match_loudness=False),
+    )
+    audio_bytes, _fmt = server._generate_to_bytes(
+        _FakePipeline(take), args, "wav", None, "32f"
+    )
+    decoded, _sr = load_audio_array(audio_bytes)
+    a, b = int(0.5 * SR), int(1.5 * SR)
+    np.testing.assert_array_equal(decoded[:, a:b], take[:, a:b])
+    np.testing.assert_array_equal(decoded[:, :a], original[:, :a])
+    np.testing.assert_array_equal(decoded[:, b:], original[:, b:])
+
+
+# ---- the /api/generate-jobs fields -----------------------------------------
 
 
 class _Upload:
@@ -484,3 +504,29 @@ def test_the_edit_field_asks_for_the_composite(monkeypatch):
 def test_without_the_field_make_and_chimera_keep_the_model_rendering(monkeypatch):
     base = _base_args_for(monkeypatch)
     assert "composite_original" not in base
+
+
+def test_the_seam_tuning_fields_reach_the_composite(monkeypatch):
+    base = _base_args_for(
+        monkeypatch,
+        composite_original="true",
+        mask_feather_sec=0.05,
+        match_loudness="false",
+    )
+    assert base["composite_original"] == CompositeOptions(
+        feather_sec=0.05, match_loudness=False
+    )
+
+
+def test_the_seam_tuning_alone_does_not_turn_the_composite_on(monkeypatch):
+    base = _base_args_for(monkeypatch, mask_feather_sec=0.3, match_loudness="true")
+    assert "composite_original" not in base
+
+
+@pytest.mark.parametrize("bad", [-0.01, 0.51, float("nan"), float("inf")])
+def test_a_feather_outside_its_range_is_refused(monkeypatch, bad):
+    with pytest.raises(HTTPException) as exc:
+        _base_args_for(monkeypatch, composite_original="true", mask_feather_sec=bad)
+    assert exc.value.status_code == 400
+    assert "mask_feather_sec" in exc.value.detail
+    assert get_idle_manager().active_tags() == []

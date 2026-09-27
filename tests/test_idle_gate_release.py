@@ -139,6 +139,8 @@ def _generate_kwargs(**overrides) -> dict:
         "mask_end": 0.0,
         "inpaint_regions": "",
         "composite_original": "false",
+        "mask_feather_sec": None,
+        "match_loudness": None,
         "sampler_type": None,
         "sigma_max": 1.0,
         "duration_padding_sec": 6.0,
