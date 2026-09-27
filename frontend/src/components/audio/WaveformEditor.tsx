@@ -59,6 +59,7 @@ import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipNoteSpan, clipRenderInput, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
@@ -1333,8 +1334,9 @@ const pushSeparator = (items: ContextMenuItem[]): void => {
 const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean }> = ({ clip, zoom, selected }) => {
   const notes = clip.sourcePianoRoll;
   if (!notes || notes.length === 0) return null;
-  const bpm = clip.sourceBpm ?? 120;
-  const stepSec = 60 / Math.max(40, bpm) / 4;
+  // The clip's own clock: one tempo, or its tempo map, so a note inside a
+  // ritardando is drawn where it plays.
+  const clock = stepClock(clip.sourceBpm ?? 120, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const clipDur = clip.durationSec;
 
@@ -1354,7 +1356,7 @@ const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean
   return (
     <div className="absolute inset-x-0 bottom-0 top-3.5 overflow-hidden pointer-events-none">
       {notes.map((n) => {
-        const { relStart, relEnd } = clipNoteSpan(n, stepSec, offset);
+        const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
         if (relEnd <= 0 || relStart >= clipDur) return null; // outside the visible window
         const vStart = Math.max(0, relStart);
         const vEnd = Math.min(clipDur, relEnd);
@@ -5594,7 +5596,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const bpm = fields.sourceBpm;
       const totalSteps = fields.sourceTotalSteps;
       const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
-      const nominalDuration = totalSteps * (60 / Math.max(40, bpm) / 4);
+      // The clip's length under the file's own tempo changes.
+      const nominalDuration = stepClock(bpm, fields.sourceTempoMap).at(totalSteps);
       const blob = silentWavBlob();
       // Land on the track the user pointed at; make one only when there is
       // none. Until this parameter existed every MIDI insert called addTrack,
@@ -5636,6 +5639,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             program: voice.program,
             percussion: voice.percussion,
             ...(input.bends ? { bends: input.bends } : {}),
+            ...(fields.sourceTempoMap ? { tempoMap: fields.sourceTempoMap } : {}),
           });
           const { peaks } = await computePeaks(rendered.blob, 240);
           // Re-read: the clip may have been trimmed or deleted mid-render.
@@ -7480,7 +7484,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               let bpmText: string | null = null;
               let keyText: string | null = null;
               if (clip.sourceKind === 'piano-roll') {
-                if (clip.sourceBpm) bpmText = String(Math.round(clip.sourceBpm));
+                // A clip whose tempo changes reads as its slowest to fastest tempo.
+                const span = clip.sourceBpm ? tempoSpan(clip.sourceBpm, clip.sourceTempoMap) : null;
+                if (span) bpmText = span[0] === span[1] ? String(span[0]) : `${span[0]}-${span[1]}`;
               } else if (clip.bpm) {
                 bpmText = String(Math.round(clip.bpm));
                 const d = clip.libraryEntryId ? djAnalysisById[clip.libraryEntryId]?.data : undefined;

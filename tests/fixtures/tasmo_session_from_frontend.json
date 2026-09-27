@@ -63,6 +63,29 @@
                 "cycle_steps": null
               }
             ],
+            "tempo_map": [
+              {
+                "beat": 0,
+                "bpm": 90
+              },
+              {
+                "beat": 2,
+                "bpm": 90,
+                "curve": "linear"
+              },
+              {
+                "beat": 4,
+                "bpm": 60
+              },
+              {
+                "beat": 4,
+                "bpm": 60,
+                "fermata": {
+                  "beats": 1,
+                  "stretch": 2
+                }
+              }
+            ],
             "midi_notes": [
               {
                 "note": 60,

@@ -147,7 +147,8 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         });
         _songMap = normalizeMeterMap(song.meterMap);
         _songOwned = sectionMeterBars(s.sections);
-        roll.importNotes(song.notes, roll.bpm, { meterMap: song.meterMap }, keepBends ? roll.bends : undefined);
+        // The song is built at the roll's tempo, so the roll keeps its tempo map as it is.
+        roll.importNotes(song.notes, roll.bpm, { meterMap: song.meterMap }, keepBends ? roll.bends : undefined, roll.tempoMap);
       };
 
       const scheduleSongRebuild = (): void => {

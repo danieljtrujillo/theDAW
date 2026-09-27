@@ -3,6 +3,7 @@ import { logError, logInfo, logWarn } from './logStore';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
+import type { TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import {
   compDigest,
@@ -175,6 +176,11 @@ export interface AudioClip {
   /** When sourceKind === 'piano-roll', each lane's pitch bend at render time (lib/pitchBend).
    *  Absent on clips bounced before the roll had pitch bend, or with none. */
   sourceBends?: LaneBend[];
+  /** When sourceKind === 'piano-roll', the roll's tempo map at render time (lib/rollTempo):
+   *  its tempo changes, ramps and fermatas, scaled so it starts at `sourceBpm`. Live
+   *  playback, drawing and every re-render time the notes through it. Absent on a clip
+   *  at one tempo, and on clips bounced before the roll had a tempo map. */
+  sourceTempoMap?: TempoEvent[];
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;

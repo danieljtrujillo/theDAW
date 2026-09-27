@@ -76,7 +76,7 @@ const assertAsHeard = (what: string, heard: readonly ArtifactNote[]): void => {
 }
 
 // LOAD of an artifact with no tempo keeps the roll's tempo; a tempo past the
-// roll's range is held to 40-240.
+// roll's range is held to the app's 20-300.
 {
   usePianoRollStore.getState().setBpm(133.5);
   const doc: { notes: ArtifactNote[]; timing?: { tempo_bpm?: number } } = { notes: HEARD };
@@ -84,8 +84,10 @@ const assertAsHeard = (what: string, heard: readonly ArtifactNote[]): void => {
   assert.equal(usePianoRollStore.getState().bpm, 133.5);
   assertAsHeard('LOAD at the roll tempo', HEARD);
   assert.equal(takeRollBpm(Number.NaN), 133.5);
-  assert.equal(takeRollBpm(300), 240);
-  assert.equal(takeRollBpm(20), 40);
+  assert.equal(takeRollBpm(300), 300);
+  assert.equal(takeRollBpm(20), 20);
+  assert.equal(takeRollBpm(420), 300);
+  assert.equal(takeRollBpm(12), 20);
 }
 
 console.log('rollTakes tests passed');

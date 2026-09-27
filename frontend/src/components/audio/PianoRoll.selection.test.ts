@@ -57,6 +57,7 @@ const beginBlock = () => {
       {
         notes: s.notes,
         bpm: s.bpm,
+        tempoMap: s.tempoMap,
         totalSteps: s.totalSteps,
         lowestNote: s.lowestNote,
         highestNote: s.highestNote,

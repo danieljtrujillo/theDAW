@@ -19,6 +19,7 @@ import { renderedVoiceFields, rollVoice, type GlobalVoice } from './clipProgram'
 import { unrollLanes } from './meterMap';
 import { rollRenderBends, type RollRenderBends } from './pitchBend';
 import { rollClipFields } from './rollClip';
+import type { TempoEvent } from './tempoMap';
 
 export interface RollBounceDeps {
   /** lib/midiSynth renderStepNotesToBlob. */
@@ -26,7 +27,7 @@ export interface RollBounceDeps {
     notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
     bpm: number,
     totalSteps: number,
-    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends },
+    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array }>;
@@ -54,12 +55,17 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   const noteCount = fields.sourcePianoRoll.length;
   const before = useEditorStore.getState();
   const voice = rollVoice(editingClipId, before.clips, before.tracks, deps.global(), roll.voiceProgram);
-  // Each note renders in its own lane, so a lane's pitch bend bends its notes in the audio too.
+  // Each note renders in its own lane, so a lane's pitch bend bends its notes in
+  // the audio too, and at its step's seconds under the roll's tempo map, so a
+  // ritardando is in the audio while every note stays on its bar line.
   const { blob, duration } = await deps.render(unrollLanes(roll.notes, roll.lanes, totalSteps), bpm, totalSteps, {
     program: voice.program,
     percussion: voice.percussion,
     bends: rollRenderBends(roll.bends, roll.lanes, totalSteps),
+    ...(fields.sourceTempoMap ? { tempoMap: fields.sourceTempoMap } : {}),
   });
+  // The tempo in labels and names, to the hundredth (a detected 97.333… reads 97.33).
+  const bpmText = String(Math.round(bpm * 100) / 100);
   const { peaks } = await deps.computePeaks(blob, 240);
   const editor = useEditorStore.getState();
 
@@ -76,7 +82,7 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
         ...fields,
         ...renderedVoiceFields(voice),
         sourceKind: 'piano-roll',
-        label: existing.label.startsWith('roll_') ? `roll_${bpm}bpm_${noteCount}n` : existing.label,
+        label: existing.label.startsWith('roll_') ? `roll_${bpmText}bpm_${noteCount}n` : existing.label,
       });
       return { kind: 'updated', clipId: editingClipId, duration, noteCount };
     }
@@ -85,11 +91,11 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   }
 
   // Here the voice is the roll's own or the picker's (rollVoice found no linked clip).
-  const trackId = editor.addTrack({ name: `Piano ${bpm} BPM`, instrumentProgram: voice.program });
+  const trackId = editor.addTrack({ name: `Piano ${bpmText} BPM`, instrumentProgram: voice.program });
   const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
   const clipId = editor.addClipToTrack({
     trackId,
-    label: `roll_${bpm}bpm_${noteCount}n`,
+    label: `roll_${bpmText}bpm_${noteCount}n`,
     audioBlob: blob,
     mimeType: 'audio/wav',
     sourceDuration: duration,

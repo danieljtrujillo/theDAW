@@ -26,8 +26,9 @@
  *
  * 3. **An operation this layer cannot really perform is an error, not a stub.**
  *    Audio time-stretch needs the backend. Freezing a track needs the offline
- *    renderer that lives in the timeline component. Metronome and tempo maps do
- *    not exist in the model at all. Each of those returns a refusal that names
+ *    renderer that lives in the timeline component. The metronome does not
+ *    exist in the model at all, and a tempo map lives only on a piano-roll clip
+ *    (written in the roll's TEMPO lane). Each of those returns a refusal that names
  *    what is missing and where the real path is, because a tool that quietly
  *    does nothing and says "done" is worse than one that says no.
  *
@@ -231,8 +232,8 @@ const liveClip = (id: string): AudioClip | undefined => store().clips.find((c) =
 /** Where the clip sits and which part of its media plays. Every render writes
  *  a window of its own, so any of these moving invalidates it. */
 const WINDOW_FIELDS: readonly (keyof AudioClip)[] = ['trackId', 'startSec', 'offsetIntoSource', 'durationSec'];
-/** What a MIDI re-bounce is rendered FROM. */
-const MIDI_INPUTS: readonly (keyof AudioClip)[] = [...WINDOW_FIELDS, 'sourcePianoRoll', 'sourceBpm', 'instrumentProgram'];
+/** What a MIDI re-bounce is rendered FROM: its notes, its tempo and tempo map, and its voice. */
+const MIDI_INPUTS: readonly (keyof AudioClip)[] = [...WINDOW_FIELDS, 'sourcePianoRoll', 'sourceBpm', 'sourceTempoMap', 'instrumentProgram'];
 /** What a sample-domain op (reverse / normalize) is computed from. */
 const AUDIO_INPUTS: readonly (keyof AudioClip)[] = [...WINDOW_FIELDS, 'audioBlob'];
 /** An audio bounce also prints the envelope and gain it read. */
@@ -1696,7 +1697,7 @@ export const UNSUPPORTED_OPERATIONS: Record<string, string> = {
   set_metronome:
     'the editor has no metronome: no click track, no count-in, nothing in the store to switch. Adding a flag that nothing reads would report success for silence.',
   tempo_map:
-    'the editor has ONE project bpm, not a tempo map. There is no per-position tempo model to write to, so a tempo map cannot be stored, played back or exported.',
+    'the EDIT timeline has ONE project bpm, not a tempo map. A piano-roll clip carries a tempo map of its own (drawn in the TEMPO lane of the MIDI tab, played and rendered with the clip and saved with it), but this layer has no tool that writes one: open the clip in the piano roll and use the TEMPO lane.',
   editor_stretch_audio:
     'a pitch-preserving audio stretch runs on the backend (/api/studio/process, time_pitch). stretchClip handles MIDI clips locally and refuses audio ones by name.',
   editor_freeze_track:

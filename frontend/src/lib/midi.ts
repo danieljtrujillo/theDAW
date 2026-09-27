@@ -6,7 +6,9 @@
  * what the sequencer's drum-pattern export and the piano roll's note grid both
  * need. A signature's additive grouping (3+2+2) has no field in FF 58, so it
  * travels in a text event `theDAW:groups=3+2+2` at the signature's tick, which
- * only this parser reads back.
+ * only this parser reads back. A tempo map's ramps and fermatas have no field
+ * in FF 51 either: the tempo metas carry what every reader plays, and the map
+ * itself rides in one text event `theDAW:tempomap=…` (lib/rollMidi reads it).
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -63,16 +65,27 @@ export interface MidiFileData {
   ppq: number;
   /**
    * Beats per minute. Parsed: the tempo at tick 0, or the first tempo when none
-   * sits at tick 0, to three decimals as `tempos` holds it (97.3 stays 97.3, a
-   * written 97 reads 97); 120 when the file has no tempo. Encoded: written at
-   * tick 0 unless `tempos` holds a tick-0 entry.
+   * sits at tick 0, as `tempos` holds it; 120 when the file has no tempo.
+   * Encoded: written at tick 0 unless `tempos` holds a tick-0 entry.
    */
   bpm: number;
   tracks: MidiTrack[];
   /** Every time signature (FF 58), sorted by tick, merged across tracks. Parsed: absent when the file has none. Encoded: absent or empty writes 4/4 at tick 0. */
   timeSignatures?: MeterEvent[];
-  /** Every tempo (FF 51), sorted by tick, merged across tracks. Parsed: absent when the file has none. */
+  /**
+   * Every tempo (FF 51), sorted by tick, merged across tracks. Parsed: absent
+   * when the file has none. A parsed tempo is the one its microseconds give,
+   * read to three decimals when those three decimals give the same
+   * microseconds back (a written 97 reads 97, 97.3 reads 97.3) and exactly
+   * otherwise, so no two tempos a file can hold read as one.
+   */
   tempos?: MidiTempo[];
+  /**
+   * The `theDAW:tempomap=` text of the conductor track: a tempo map with its
+   * ramps and fermatas, which FF 51 cannot say (lib/rollMidi writes and reads
+   * it). Encoded at tick 0 when present; parsed from the last one in the file.
+   */
+  dawTempoMap?: string;
 }
 
 // =============================================================================
@@ -232,9 +245,18 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
 
 const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
+const TEMPOMAP_TEXT = 'theDAW:tempomap=';
+
+/**
+ * FF 51's microseconds a quarter for `bpm`: as slow as the 24-bit field holds
+ * (about 3.58 bpm), so a fermata's held beats are written at their own slowed
+ * tempo. A tempo that is not a positive number is written as 120.
+ */
+export const tempoMicros = (bpm: number): number =>
+  Math.max(1, Math.min(0xffffff, Math.round(60_000_000 / (Number.isFinite(bpm) && bpm > 0 ? bpm : 120))));
 
 const tempoBytes = (bpm: number): number[] => {
-  const microsPerQuarter = Math.min(0xffffff, Math.round(60_000_000 / Math.max(20, bpm)));
+  const microsPerQuarter = tempoMicros(bpm);
   return [0xff, 0x51, 0x03, (microsPerQuarter >>> 16) & 0xff, (microsPerQuarter >>> 8) & 0xff, microsPerQuarter & 0xff];
 };
 
@@ -275,6 +297,8 @@ const conductorEvents = (file: MidiFileData): RankedEvent[] => {
     const tick = tickOf(s.tick);
     meterEventMetas(s).forEach((bytes, i) => events.push({ tick, rank: 1 + i, bytes }));
   }
+  // After every other meta at tick 0, so a reader that stops at the first text still meets the signature's own.
+  if (file.dawTempoMap) events.push({ tick: 0, rank: 100, bytes: textBytes(`${TEMPOMAP_TEXT}${file.dawTempoMap}`) });
   events.sort(byTickAndRank);
   return events;
 };
@@ -346,6 +370,8 @@ interface DecodedTrack {
   groups: Array<{ tick: number; groups: number[] }>;
   /** `theDAW:pickup=` text events, attached the same way. */
   pickups: Array<{ tick: number; steps: number }>;
+  /** The last `theDAW:tempomap=` text's body, or null. */
+  tempoMap: string | null;
   bends: MidiBend[];
   ranges: MidiBendRange[];
 }
@@ -359,6 +385,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
   const pickups: DecodedTrack['pickups'] = [];
+  let tempoMap: string | null = null;
   // The notes held down, by `${ch}:${note}`, oldest first. A note-off ends the
   // OLDEST held note of its channel and pitch, so two notes of one pitch that
   // overlap (a unison between two voices, a repeated note played legato) are
@@ -399,11 +426,12 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         } else if (text.startsWith(PICKUP_TEXT)) {
           const steps = Number(text.slice(PICKUP_TEXT.length));
           if (Number.isFinite(steps) && steps >= 0) pickups.push({ tick, steps });
+        } else if (text.startsWith(TEMPOMAP_TEXT)) {
+          tempoMap = text.slice(TEMPOMAP_TEXT.length);
         }
       } else if (meta === 0x51 && data.length === 3) {
         const microsPerQuarter = (data[0] << 16) | (data[1] << 8) | data[2];
-        // Three decimals: the microsecond rounding of FF 51 reads 97 back as 96.99995.
-        if (microsPerQuarter > 0) tempos.push({ tick, bpm: Math.round(60_000_000_000 / microsPerQuarter) / 1000 });
+        if (microsPerQuarter > 0) tempos.push({ tick, bpm: tempoOfMicros(microsPerQuarter) });
       } else if (meta === 0x58 && data.length >= 2) {
         if (data[0] > 0) signatures.push({ tick, num: data[0], den: 2 ** data[1] });
       } else if (meta === 0x2f) {
@@ -488,7 +516,20 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, bends, ranges };
+  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges };
+};
+
+/**
+ * The tempo FF 51's microseconds a quarter give. The microsecond rounding
+ * reads a written 97 back as 96.99995, so the tempo is read to three decimals
+ * when those give the same microseconds back; when they do not (below about
+ * 40 bpm, one thousandth of a bpm spans several microseconds), it is read
+ * exactly, so a slow tempo is not moved and two tempos never read as one.
+ */
+export const tempoOfMicros = (microsPerQuarter: number): number => {
+  const exact = 60_000_000 / microsPerQuarter;
+  const short = Math.round(exact * 1000) / 1000;
+  return Math.round(60_000_000 / short) === microsPerQuarter ? short : exact;
 };
 
 export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
@@ -510,6 +551,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
   const pickups: DecodedTrack['pickups'] = [];
+  let dawTempoMap: string | null = null;
   for (let i = 0; i < ntrks; i += 1) {
     if (r.str(4) !== 'MTrk') throw new Error(`Track ${i} missing MTrk marker`);
     const len = r.u32();
@@ -521,6 +563,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     for (const e of t.signatures) signatures.push(e);
     for (const e of t.groups) groups.push(e);
     for (const e of t.pickups) pickups.push(e);
+    if (t.tempoMap !== null) dawTempoMap = t.tempoMap;
     // A track that only bends is kept: its channel's wheel bends notes another track holds.
     if (t.notes.length > 0 || t.bends.length > 0) {
       tracks.push({
@@ -548,6 +591,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     tracks,
     ...(signatures.length ? { timeSignatures: signatures } : {}),
     ...(tempos.length ? { tempos } : {}),
+    ...(dawTempoMap !== null ? { dawTempoMap } : {}),
   };
 };
 

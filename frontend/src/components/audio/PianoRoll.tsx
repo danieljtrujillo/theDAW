@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Check, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   DEFAULT_LANES,
@@ -40,19 +40,26 @@ import {
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
+import {
+  followRollPlay,
+  lapAbsAt,
+  lapLocalTime,
+  lapTimeOf,
+  spanSec,
+  startRollPlay,
+  stepsIn,
+  type RollPlayState,
+} from '../../lib/rollTempo';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
-  followLap,
   loopLabel,
-  playRange,
   rulerKeyStep,
   rulerLoop,
   rulerSeekStep,
   shownStep,
-  playStartLap,
   windowOnsets,
-  type LapState,
   type RollLoop,
 } from '../../lib/rollTransport';
 import { copyNotes, duplicateNotes, pasteNotes, type NoteClipboardPayload } from '../../lib/noteClipboard';
@@ -82,6 +89,7 @@ import {
 } from '../../lib/grooveTemplate';
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
+import { TempoLane } from './TempoLane';
 import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
@@ -187,7 +195,8 @@ let noteClipboard: NoteClipboardPayload | null = null;
 // whole component graph. The piano roll uses `triggerPianoNote` for its own
 // scheduling (imported above).
 const PIANO_MIDI_PARAMS = [
-  { key: 'bpm' as const,        label: 'BPM',         min: 40,  max: 240, autoCc: 14, integer: true },
+  // The app's tempo range (lib/tempoMap TEMPO_BPM_MIN..MAX), kept with its fraction.
+  { key: 'bpm' as const,        label: 'BPM',         min: TEMPO_BPM_MIN, max: TEMPO_BPM_MAX, autoCc: 14 },
   { key: 'totalSteps' as const, label: 'Total Steps', min: 16,  max: 256, autoCc: 15, integer: true },
 ];
 
@@ -251,19 +260,22 @@ export const PianoRollTransport: React.FC<{
     setPlaying(false);
   }, [setPlaying]);
 
-  // Time-based lookahead scheduler: notes fire at their exact time
-  // (step * stepSec), so FRACTIONAL step positions (32nd/64th notes and
-  // micro-timing offsets) play — not just integer 16ths. It counts absolute
+  // Time-based lookahead scheduler: notes fire at their exact time (the
+  // roll's tempo map gives every step its seconds, lib/rollTempo), so
+  // FRACTIONAL step positions (32nd/64th notes and micro-timing offsets) play —
+  // not just integer 16ths — and a ritardando or a fermata slows the notes
+  // while they stay on their bar lines. It counts absolute
   // steps from the moment PLAY starts, and a lap (lib/rollTransport) maps them
   // onto roll steps over and over: the whole roll, or the loop range while the
   // loop is on. It starts at the playhead (the store's current step, which
   // every tick writes); with the loop on and the playhead outside it, at the
   // loop's start. It plays the lanes unrolled, and a note at or past the roll's
   // end (or outside the loop) stays silent. Each tick reads the notes, lanes,
-  // length, BPM, loop and bends from the store, so an edit while playing (a
-  // note, a meter, a lane's loop, a bend, the loop range) changes what plays
-  // next without a restart, and a step already scheduled is never scheduled
-  // again. A seek (the ruler) re-anchors the lap at the new playhead.
+  // length, tempo map, loop and bends from the store, so an edit while playing
+  // (a note, a meter, a tempo point, a lane's loop, a bend, the loop range)
+  // changes what plays next without a restart, and a step already scheduled is
+  // never scheduled again. A seek (the ruler) re-anchors the lap at the new
+  // playhead.
   //
   // Pitch bend: a built-in voice follows its lane's curve through automation
   // scheduled with the note (lib/pitchBendVoice). A soundfont wheel bends a
@@ -278,13 +290,13 @@ export const PianoRollTransport: React.FC<{
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
     const lookahead = 0.12; // seconds scheduled ahead each tick
-    // Absolute step `clock.step` sounds at `clock.time`; absolute step 0 is where
-    // PLAY started. A tempo change re-anchors the clock at the cursor.
-    const clock = { step: 0, time: ctx.currentTime + 0.06, stepSec: 0 };
     // Absolute steps map onto roll steps through the lap (lib/rollTransport): it
     // starts at the playhead, and a seek, a new length or a new loop re-anchors
-    // it just past the cursor.
-    let lapState: LapState = playStartLap(usePianoRollStore.getState());
+    // it just past the cursor. The lap's clock (lib/rollTempo) gives every step
+    // its seconds under the tempo map; absolute step 0 is where PLAY started,
+    // 60 ms from now, and a new lap or a new map re-anchors the clock keeping the
+    // time of the step it anchors at, so nothing already scheduled moves.
+    let playState: RollPlayState = startRollPlay(usePianoRollStore.getState(), ctx.currentTime + 0.06);
     let cursor = -REANCHOR_STEPS; // absolute step scheduled up to (inclusive)
     // Unroll once per note, lane, length or bend edit, not once per tick.
     let source: { notes: PianoNote[]; lanes: PolyLane[]; total: number; bends: LaneBend[] } | null = null;
@@ -311,23 +323,13 @@ export const PianoRollTransport: React.FC<{
     const tick = () => {
       const now = ctx.currentTime;
       const roll = usePianoRollStore.getState();
-      const { notes, lanes, totalSteps: steps, bpm: tempo, bends } = roll;
-      const total = Math.max(1, steps);
-      const stepSec = 60 / Math.max(40, tempo) / 4;
-      if (clock.stepSec === 0) clock.stepSec = stepSec;
-      else if (stepSec !== clock.stepSec) {
-        clock.time += (cursor - clock.step) * clock.stepSec;
-        clock.step = cursor;
-        clock.stepSec = stepSec;
-      }
-      const followed = followLap(
-        lapState,
-        { range: playRange(roll.loop, roll.loopOn, total), seekId: roll.seekId, playhead: roll.currentStep },
-        cursor,
-      );
+      const { notes, lanes, totalSteps, bends } = roll;
+      const total = Math.max(1, totalSteps);
+      const followed = followRollPlay(playState, roll, cursor);
       // A re-anchored lap sends every bent channel where its curve is at the new place.
-      if (followed !== lapState) wheelFresh = true;
-      lapState = followed;
+      if (followed.lapState !== playState.lapState) wheelFresh = true;
+      playState = followed;
+      const { lapState, steps, clock: lc } = playState;
       const { lap } = lapState;
       if (!source || source.notes !== notes || source.lanes !== lanes || source.total !== total || source.bends !== bends) {
         if (source && (source.lanes !== lanes || source.total !== total || source.bends !== bends)) wheelFresh = true;
@@ -340,7 +342,7 @@ export const PianoRollTransport: React.FC<{
         lapCurvesOf = { bent, start: lap.start };
         lapCurves = shiftPlayedBends(bent, lap.start);
       }
-      const targetAbs = clock.step + (now + lookahead - clock.time) / stepSec;
+      const targetAbs = lapAbsAt(lc, now + lookahead);
       // The roll plays through its linked clip's voice, or the picker's.
       const voice = currentRollVoice();
       const soundfont = voice.program !== undefined;
@@ -355,7 +357,7 @@ export const PianoRollTransport: React.FC<{
             wheelRanges.set(ch, curve.range);
           }
           for (const e of loopedWheelEvents(curve.points, lap.len, cursor - lap.base, targetAbs - lap.base, wheelFresh, curve.range)) {
-            const at = Math.max(now, clock.time + (e.abs + lap.base - clock.step) * stepSec);
+            const at = Math.max(now, lapTimeOf(lc, e.abs + lap.base));
             sfPitchWheel(ch, e.raw, at);
             lastWheelTime = Math.max(lastWheelTime, at);
           }
@@ -366,15 +368,20 @@ export const PianoRollTransport: React.FC<{
         const lane = playingLane(n.lane, lanes);
         const channel = channels.get(lane) ?? 0;
         const curve = soundfont ? undefined : lapCurves.get(lane);
-        const when = clock.time + (occ - clock.step) * stepSec;
+        const when = lapTimeOf(lc, occ);
         const at = Math.max(now, when);
         let bend: VoiceBend | undefined;
         if (curve) {
           // A note that starts late picks its curve up where the curve is by then.
-          const { events, originStep } = loopedBendAutomation(curve, lap.len, n.step - lap.start + (at - when) / stepSec, n.length + BEND_TAIL_SEC / stepSec);
-          bend = { events, originStep, stepSec };
+          const late = at > when ? stepsIn(steps, n.step, at - when) : 0;
+          const end = n.step + n.length;
+          const { events, originStep } = loopedBendAutomation(curve, lap.len, n.step - lap.start + late, n.length + stepsIn(steps, end, BEND_TAIL_SEC));
+          bend = steps.stepSec !== undefined
+            ? { events, originStep, stepSec: steps.stepSec }
+            : { events, originStep, stepSec: spanSec(steps, n.step, 1), stepTime: lapLocalTime(lap, steps) };
         }
-        triggerPianoNote(n.note, n.velocity, at, n.length * stepSec, masterRef.current, {
+        // A note lasts as long as its own steps do under the map.
+        triggerPianoNote(n.note, n.velocity, at, spanSec(steps, n.step, n.length), masterRef.current, {
           channel,
           bend,
           program: voice.program,
@@ -382,8 +389,7 @@ export const PianoRollTransport: React.FC<{
         });
       }
       cursor = Math.max(cursor, targetAbs);
-      const elapsedAbs = clock.step + (now - clock.time) / stepSec;
-      setCurrentStep(shownStep(lapState, elapsedAbs));
+      setCurrentStep(shownStep(lapState, lapAbsAt(lc, now)));
     };
     playTimerRef.current = window.setInterval(tick, 25);
     return () => {
@@ -446,6 +452,18 @@ export const PianoRollTransport: React.FC<{
   // length applies on Enter or when the field loses focus, so the store never
   // rounds a first digit up to a bar line while the rest is still being typed.
   const endBarSteps = barAt(meterMap, Math.max(0, totalSteps - 1e-6), pickupSteps).len;
+  // BPM edits the starting tempo (the tempo map's beat-0 point), 20-300 with its fraction.
+  const tempoChanges = usePianoRollStore((s) => s.tempoMap.length - 1);
+  const [bpmDraft, setBpmDraft] = useState<string | null>(null);
+  const changeBpm = (text: string) => {
+    const v = Number.parseFloat(text);
+    if (Number.isFinite(v) && v > 0) setBpm(v);
+  };
+  const commitBpmDraft = () => {
+    if (bpmDraft === null) return;
+    setBpmDraft(null);
+    changeBpm(bpmDraft);
+  };
   const [stepsDraft, setStepsDraft] = useState<string | null>(null);
   const changeTotalSteps = (v: number) => {
     if (!Number.isFinite(v)) return;
@@ -497,20 +515,35 @@ export const PianoRollTransport: React.FC<{
         )}
         {loopRange && clearLoopTip.tip}
       </div>
-      <div className={FIELD}>
+      <div className={FIELD} title={tempoChanges > 0 ? `The starting tempo; the TEMPO lane holds ${tempoChanges} more point${tempoChanges === 1 ? '' : 's'}` : 'The roll tempo, 20-300'}>
         <label htmlFor="piano-roll-bpm" className={FIELD_LEGEND}>BPM</label>
         <input
           id="piano-roll-bpm"
           type="number"
           name="piano-roll-bpm"
-          min={40}
-          max={240}
+          min={TEMPO_BPM_MIN}
+          max={TEMPO_BPM_MAX}
           step="any"
           // A take imported at a detected tempo keeps its fraction (97.3), so
           // the field shows it to the hundredth and takes a typed fraction.
-          value={Math.round(bpm * 100) / 100}
-          onChange={(e) => setBpm(Number.parseFloat(e.target.value) || 120)}
-          className={`${FIELD_VALUE} w-12 bg-transparent border-none outline-none`}
+          value={bpmDraft ?? Math.round(bpm * 100) / 100}
+          onChange={(e) => {
+            // Typing arrives as an InputEvent and applies on Enter or blur, so
+            // the "1" of a typed 140 is never clamped to 20 first; a step from
+            // the arrows or the spin buttons applies at once.
+            if ('inputType' in e.nativeEvent) {
+              setBpmDraft(e.target.value);
+              return;
+            }
+            setBpmDraft(null);
+            changeBpm(e.target.value);
+          }}
+          onBlur={commitBpmDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitBpmDraft();
+            else if (e.key === 'Escape') setBpmDraft(null);
+          }}
+          className={`${FIELD_VALUE} w-13 bg-transparent border-none outline-none`}
         />
       </div>
       <div className={FIELD}>
@@ -563,6 +596,30 @@ export const PianoRollBendKey: React.FC<{ on: boolean; onChange: (on: boolean) =
         bent > 0
           ? `Pitch bend: the lane under the grid. ${bent} lane${bent === 1 ? '' : 's'} bend${bent === 1 ? 's' : ''} in this roll.`
           : 'Pitch bend: open the lane under the grid and click to add a point'
+      }
+    />
+  );
+};
+
+/**
+ * TEMPO: opens the tempo lane under the grid (TempoLane.tsx), where tempo
+ * changes, ramps and fermatas are drawn. It latches like BEND, and counts the
+ * points after the starting tempo so a roll that changes tempo says so with the
+ * lane closed.
+ */
+export const PianoRollTempoKey: React.FC<{ on: boolean; onChange: (on: boolean) => void }> = ({ on, onChange }) => {
+  const changes = usePianoRollStore((s) => s.tempoMap.length - 1);
+  return (
+    <StripKey
+      on={on}
+      aria-pressed={on}
+      onClick={() => onChange(!on)}
+      legend="Tempo"
+      icon={<Gauge className={STRIP_GLYPH} />}
+      description={
+        changes > 0
+          ? `Tempo map: the lane under the grid. ${changes} tempo point${changes === 1 ? '' : 's'} after the start: changes, ramps and fermatas.`
+          : 'Tempo map: open the lane under the grid to add a tempo change, a ritardando or a fermata'
       }
     />
   );
@@ -829,7 +886,7 @@ export const PianoRollMapKey: React.FC = () => (
     params={PIANO_MIDI_PARAMS}
     onChange={(key, value) => {
       const { setBpm, setTotalSteps, meterMap, pickupSteps } = usePianoRollStore.getState();
-      if (key === 'bpm') setBpm(Math.round(value));
+      if (key === 'bpm') setBpm(value);
       else if (key === 'totalSteps') {
         // Up to the next bar line of the roll's meter.
         setTotalSteps(Math.max(16, roundUpToBar(meterMap, Math.round(value), pickupSteps)));
@@ -1003,17 +1060,18 @@ export const importMidiFileToRoll = (file: File): void => {
       // Every track's notes, the file's time signatures and pickup (4/4 when it
       // has none). A channel whose pitch wheel moves gets its own lane and curve;
       // every other note is in lane A (lib/rollMidi).
-      const { notes: flat, bpm, meter, bends } = midiFileToRoll(data, 'imp');
+      const { notes: flat, bpm, meter, bends, tempoMap } = midiFileToRoll(data, 'imp');
       if (flat.length === 0) {
         logError('piano-roll', `No notes found in "${file.name}"`);
         return;
       }
       // importNotes auto-fits the grid length (to a bar line of that map) AND pitch range to the import.
-      usePianoRollStore.getState().importNotes(flat, bpm, meter, bends);
+      usePianoRollStore.getState().importNotes(flat, bpm, meter, bends, tempoMap);
       const bent = bends.filter((b) => b.points.length).length;
+      const changes = tempoMap.length - 1;
       logInfo(
         'piano-roll',
-        `Imported ${flat.length} notes from "${file.name}" at ${Math.round(bpm * 100) / 100} BPM in ${meterLabel(meter.meterMap[0].meter)}${bent ? `, pitch bend in ${bent} lane${bent === 1 ? '' : 's'}` : ''}`,
+        `Imported ${flat.length} notes from "${file.name}" at ${Math.round(bpm * 100) / 100} BPM${changes > 0 ? ` with ${changes} tempo change${changes === 1 ? '' : 's'}` : ''} in ${meterLabel(meter.meterMap[0].meter)}${bent ? `, pitch bend in ${bent} lane${bent === 1 ? '' : 's'}` : ''}`,
       );
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1633,10 +1691,13 @@ export const PianoRoll: React.FC<{
   onStepPxChange: (px: number) => void;
   /** The bend lane is open under the grid (the strip's BEND key). */
   showBend?: boolean;
+  /** The tempo lane is open under the grid (the strip's TEMPO key). */
+  showTempo?: boolean;
 }> = ({
   stepPx,
   onStepPxChange,
   showBend = false,
+  showTempo = false,
 }) => {
   const notes = usePianoRollStore((s) => s.notes);
   const totalSteps = usePianoRollStore((s) => s.totalSteps);
@@ -2320,12 +2381,13 @@ export const PianoRoll: React.FC<{
             )}
           </div>
 
-          {/* The velocity and bend lanes, inside the grid's scroll box so they
-              keep the grid's x scale and scroll with it: a bar stays under its
-              note, and a point under the note it bends, at every zoom and every
-              scroll position. */}
+          {/* The velocity, bend and tempo lanes, inside the grid's scroll box so
+              they keep the grid's x scale and scroll with it: a bar stays under
+              its note, a point under the note it bends, and a tempo change over
+              its bar line, at every zoom and every scroll position. */}
           <VelocityLane stepPx={stepPx} totalSteps={totalSteps} win={view} />
           {showBend && <BendLane stepPx={stepPx} totalSteps={totalSteps} />}
+          {showTempo && <TempoLane stepPx={stepPx} totalSteps={totalSteps} />}
         </div>
       </div>
 

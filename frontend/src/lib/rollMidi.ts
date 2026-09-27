@@ -21,6 +21,16 @@
  * 480 or 96 PPQ file scales rather than snapping to the grid. Bends still speak
  * in steps: a curve is drawn against the grid, not against a note.
  *
+ * TEMPO: export writes every tempo of the roll's map (lib/rollTempo) as an
+ * FF 51 at its tick. A ramp is written as a tempo every 32nd note, each the
+ * tempo that makes its 32nd last exactly as long as the ramp's does, and a
+ * fermata as its slowed tempo over the held beats and the tempo after it, so
+ * any reader plays the notes at the seconds the roll does. The map itself
+ * rides beside them in a `theDAW:tempomap=` text (tempoMapText), and import
+ * takes it back, ramps and fermatas included, when the file's tempos are still
+ * the ones it writes; a file edited elsewhere, or written by anything else,
+ * comes in as its tempos, each a step at its tick.
+ *
  * No Vite-only imports, so node tests load it.
  */
 import {
@@ -42,7 +52,9 @@ import {
   type LaneBend,
 } from './pitchBend';
 import { meterMapToMidiEvents, midiEventsToMeterMap, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
-import type { MidiBend, MidiBendRange, MidiFileData, MidiNote } from './midi';
+import { tempoMicros, type MidiBend, type MidiBendRange, type MidiFileData, type MidiNote, type MidiTempo } from './midi';
+import { hasTempoChanges, sanitizeRollTempoMap, startTempoOf } from './rollTempo';
+import { beatToTime, normalizeTempoMap, type TempoEvent } from './tempoMap';
 import {
   DEFAULT_LANES,
   MIN_NOTE_TICKS,
@@ -67,14 +79,120 @@ export interface RollMidiSource {
   meterMap: readonly MeterSegment[];
   pickupSteps: number;
   bends: readonly LaneBend[];
+  /** The roll's tempo map; left out, the roll holds `bpm`. */
+  tempoMap?: readonly TempoEvent[];
 }
 
 /** What an import hands to the roll's importNotes. */
 export interface RollMidiImport {
   notes: PianoNote[];
+  /** The file's first tempo: its map's beat-0 tempo. */
   bpm: number;
   meter: RollMeter;
   bends: LaneBend[];
+  /** The file's tempo map (sanitized, starting at `bpm`). */
+  tempoMap: TempoEvent[];
+}
+
+/** A ramp is written to a file as one tempo per this many quarter notes: a 32nd. */
+export const RAMP_WRITE_BEATS = 1 / 8;
+
+/**
+ * The FF 51 tempos that play `map` at `ppq`: one per tempo change, one per
+ * RAMP_WRITE_BEATS along a ramp (the tempo that gives that span its exact
+ * seconds), and a fermata's slowed tempo and the tempo after it. A tempo that
+ * repeats the one before it, in microseconds, is left out; two at one tick keep
+ * the later one.
+ */
+export function tempoMapToMidiTempos(map: readonly TempoEvent[], ppq: number): MidiTempo[] {
+  const points = normalizeTempoMap(map);
+  const out: MidiTempo[] = [];
+  const push = (beat: number, bpm: number) => {
+    const tick = Math.max(0, Math.round(beat * ppq));
+    const last = out[out.length - 1];
+    if (last && last.tick === tick) out.pop();
+    const before = out[out.length - 1];
+    if (before && tempoMicros(before.bpm) === tempoMicros(bpm)) return;
+    out.push({ tick, bpm });
+  };
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i];
+    const next = points[i + 1];
+    if (!next || p.slope === 0) {
+      push(p.beat, p.bpm);
+      continue;
+    }
+    // Pieces on the file's 32nd grid from the ramp's start to the next point.
+    let a = p.beat;
+    while (a < next.beat - 1e-9) {
+      const b = Math.min(next.beat, (Math.floor(a / RAMP_WRITE_BEATS + 1e-9) + 1) * RAMP_WRITE_BEATS);
+      push(a, (60 * (b - a)) / (beatToTime(map, b) - beatToTime(map, a)));
+      a = b;
+    }
+  }
+  return out;
+}
+
+const fmtNum = (v: number): string => String(v);
+
+/**
+ * The `theDAW:tempomap=` text of a map: `beat:bpm` per tempo event, `:l` after
+ * one that ramps, `f:beat:beats:stretch` per fermata, joined by `;`. Every
+ * number is written in full, so the map comes back exactly.
+ */
+export function tempoMapText(map: readonly TempoEvent[]): string {
+  return map
+    .map((e) => (e.fermata
+      ? `f:${fmtNum(e.beat)}:${fmtNum(e.fermata.beats)}:${fmtNum(e.fermata.stretch)}`
+      : `${fmtNum(e.beat)}:${fmtNum(e.bpm)}${e.curve === 'linear' ? ':l' : ''}`))
+    .join(';');
+}
+
+/** The map a `theDAW:tempomap=` text holds, or null when any part of it does not read. */
+export function parseTempoMapText(text: string): TempoEvent[] | null {
+  const out: TempoEvent[] = [];
+  for (const part of text.split(';')) {
+    const f = part.split(':');
+    if (f[0] === 'f' && f.length === 4) {
+      const [beat, beats, stretch] = f.slice(1).map(Number);
+      if (![beat, beats, stretch].every(Number.isFinite)) return null;
+      out.push({ beat, bpm: 0, fermata: { beats, stretch } });
+    } else if (f.length === 2 || (f.length === 3 && f[2] === 'l')) {
+      const beat = Number(f[0]);
+      const bpm = Number(f[1]);
+      if (!Number.isFinite(beat) || !Number.isFinite(bpm) || bpm <= 0) return null;
+      out.push({ beat, bpm, curve: f.length === 3 ? 'linear' : 'step' });
+    } else return null;
+  }
+  return out.length ? out : null;
+}
+
+/** True when two tempo lists put the same microseconds at the same ticks. */
+const sameTempos = (a: readonly MidiTempo[], b: readonly MidiTempo[]): boolean =>
+  a.length === b.length && a.every((t, i) => t.tick === b[i].tick && tempoMicros(t.bpm) === tempoMicros(b[i].bpm));
+
+/**
+ * A parsed file's tempo map: the `theDAW:tempomap=` map when the file's tempos
+ * are still exactly the ones it writes, else each tempo as a step at its tick,
+ * the file's first tempo at beat 0.
+ */
+export function midiFileTempoMap(data: MidiFileData): TempoEvent[] {
+  const ppq = data.ppq || ROLL_PPQ;
+  const start = Number.isFinite(data.bpm) && data.bpm > 0 ? data.bpm : 120;
+  const tempos = data.tempos ?? [];
+  if (data.dawTempoMap) {
+    const own = parseTempoMapText(data.dawTempoMap);
+    if (own) {
+      const map = sanitizeRollTempoMap(own, startTempoOf(own as TempoEvent[]) ?? start);
+      // The file's own tempos, first tempo written at tick 0 as the encoder does.
+      const written = tempos.some((t) => t.tick === 0) ? tempos : [{ tick: 0, bpm: start }, ...tempos];
+      if (sameTempos(tempoMapToMidiTempos(map, ppq), written)) return map;
+    }
+  }
+  return sanitizeRollTempoMap(
+    [{ beat: 0, bpm: start }, ...tempos.map((t) => ({ beat: t.tick / ppq, bpm: t.bpm }))],
+    start,
+  );
 }
 
 /** The roll as one MIDI track at its own tempo and time signatures, with each bent lane's wheel and range on its channel. */
@@ -113,10 +231,13 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
     }
   }
   bends.sort((a, b) => a.tick - b.tick);
+  const tempoMap = sanitizeRollTempoMap(s.tempoMap ?? [], s.bpm);
   return {
     ppq,
     bpm: s.bpm,
-    tempos: [{ tick: 0, bpm: s.bpm }],
+    // Every tempo change, ramp and fermata, as tempos any reader plays; the map itself beside them.
+    tempos: tempoMapToMidiTempos(tempoMap, ppq),
+    ...(hasTempoChanges(tempoMap) ? { dawTempoMap: tempoMapText(tempoMap) } : {}),
     // One FF 58 per meter change, a partial bar at tick 0 for a pickup.
     timeSignatures: meterMapToMidiEvents(s.meterMap, ppq, s.pickupSteps),
     tracks: [{ name: 'Piano Roll', notes, ...(bends.length ? { bends, bendRanges } : {}) }],
@@ -217,5 +338,6 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
       g.bent ? [{ lane: id, ...channelBend(wheel.get(g.first) ?? [], ranges.get(g.first) ?? [], stepTicks, `bp${id}`) }] : [],
     ),
   );
-  return { notes, bpm: data.bpm, meter: { meterMap: map, pickupSteps, lanes }, bends };
+  const tempoMap = midiFileTempoMap(data);
+  return { notes, bpm: startTempoOf(tempoMap) ?? data.bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap };
 }

@@ -128,6 +128,7 @@ _ROLL_KEYS = (
     "pickup_steps",
     "lanes",
     "roll_bends",
+    "tempo_map",
 )
 
 
@@ -170,6 +171,13 @@ def test_tasmo_clip_meter_roundtrip(tmp_path):
             ],
         }
     ]
+    # The roll's tempo map: a slow start, a ritardando, and a fermata.
+    tempo_map = [
+        {"beat": 0, "bpm": 54},
+        {"beat": 4, "bpm": 132, "curve": "linear"},
+        {"beat": 8, "bpm": 66},
+        {"beat": 10, "bpm": 66, "fermata": {"beats": 1, "stretch": 2.5}},
+    ]
     # The frontend posts this JSON; the router validates it into the model.
     payload = {
         "project_name": "Meter",
@@ -192,6 +200,7 @@ def test_tasmo_clip_meter_roundtrip(tmp_path):
                         "pickup_steps": 4,
                         "lanes": lanes,
                         "roll_bends": roll_bends,
+                        "tempo_map": tempo_map,
                     }
                 ],
             }
@@ -211,6 +220,7 @@ def test_tasmo_clip_meter_roundtrip(tmp_path):
     assert clip.roll_notes == roll_notes
     assert clip.roll_notes[1]["lane"] == 1
     assert clip.roll_bends == roll_bends
+    assert clip.tempo_map == tempo_map
     # And back out to the frontend as JSON.
     dumped = json.loads(json.dumps(loaded.model_dump()))["tracks"][0]["clips"][0]
     assert {k: dumped[k] for k in _ROLL_KEYS} == {
@@ -220,11 +230,13 @@ def test_tasmo_clip_meter_roundtrip(tmp_path):
         "pickup_steps": 4,
         "lanes": lanes,
         "roll_bends": roll_bends,
+        "tempo_map": tempo_map,
     }
     audio = Clip(id="c2", name="audio", clip_type="audio", track_id="t1")
     assert audio.meter_map is None
     assert audio.roll_notes is None
     assert audio.roll_bends is None
+    assert audio.tempo_map is None
 
 
 def test_tasmo_file_without_meter_fields_loads_unchanged(tmp_path):

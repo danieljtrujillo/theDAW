@@ -173,13 +173,14 @@ export function loadMidiIntoPianoRoll(
     // Every track's notes, and the file's time signatures set the roll's meter (a file with no FF 58 is
     // 4/4 by the MIDI spec). A channel whose pitch wheel moves gets its own lane and curve; every other
     // note is in lane A (lib/rollMidi).
-    const { notes, bpm, meter, bends } = midiFileToRoll(midi, 'pn');
+    const { notes, bpm, meter, bends, tempoMap } = midiFileToRoll(midi, 'pn');
     if (notes.length === 0) {
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
     }
     const piano = usePianoRollStore.getState();
-    piano.importNotes(notes, bpm, meter, bends); // auto-fits length + pitch range to the import
+    // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
+    piano.importNotes(notes, bpm, meter, bends, tempoMap);
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
     logInfo(

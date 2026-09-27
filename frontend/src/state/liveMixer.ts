@@ -104,6 +104,7 @@ import {
 } from '../lib/clipComp';
 import { isMidiClip } from '../lib/clipEditTarget';
 import { clipNoteSpan } from '../lib/rollClip';
+import { stepClock } from '../lib/rollTempo';
 import type { ChainEntry } from './effectChainStore';
 import {
   CONN_SIDECHAIN,
@@ -2978,18 +2979,20 @@ export interface MidiNoteTime {
  * its entire pattern twice, while the on-screen notes showed it once. A note that
  * has finished, or is already sounding at `fromSec`, is left out. Each note keeps
  * its own length (clipNoteSpan), so a run shorter than a 16th stays detached.
+ * A clip with a tempo map (`sourceTempoMap`) times each note through it
+ * (lib/rollTempo stepClock), so its ritardandos and fermatas play live as they
+ * render.
  */
 export function midiClipNoteTimes(
-  clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourcePianoRoll' | 'sourceBpm'>,
+  clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourcePianoRoll' | 'sourceBpm' | 'sourceTempoMap'>,
   fallbackBpm: number | undefined,
   fromSec: number,
 ): MidiNoteTime[] {
-  const bpm = clip.sourceBpm ?? fallbackBpm ?? 120;
-  const stepSec = 60 / Math.max(40, bpm) / 4;
+  const clock = stepClock(clip.sourceBpm ?? fallbackBpm ?? 120, clip.sourceTempoMap);
   const offsetIntoSource = clip.offsetIntoSource ?? 0;
   const out: MidiNoteTime[] = [];
   for (const n of clip.sourcePianoRoll ?? []) {
-    const { relStart, relEnd } = clipNoteSpan(n, stepSec, offsetIntoSource);
+    const { relStart, relEnd } = clipNoteSpan(n, clock, offsetIntoSource);
     if (relEnd <= 0 || relStart >= clip.durationSec) continue; // outside this clip's window
     const onSec = clip.startSec + Math.max(0, relStart);
     // Clamp the note-off to the clip edge so a note running past the trim point

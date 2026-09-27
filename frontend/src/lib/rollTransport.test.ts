@@ -92,12 +92,16 @@ function play(ticks: number, window = 1, onTick?: (i: number) => void): { heard:
 
   // The PLAY key and the scheduler in PianoRoll.tsx run exactly these two calls:
   // the key starts the transport with play() and never moves the playhead, and
-  // the scheduler's lap starts from playStartLap(the store).
+  // the scheduler's lap starts from playStartLap(the store), through
+  // lib/rollTempo startRollPlay, which also starts the tempo map's clock.
   const src = readFileSync(new URL('../components/audio/PianoRoll.tsx', import.meta.url), 'utf8');
   const toggle = src.slice(src.indexOf('const handlePlayToggle = () => {'), src.indexOf('// LOOP: turns the loop range on and off.'));
   assert.ok(toggle.length > 0 && /(?<![.\w])play\(\);/.test(toggle), 'the PLAY key calls the store action play()');
   assert.equal(/setCurrentStep\(|seek\(|setPlaying\(true\)/.test(toggle), false, 'the PLAY key never moves the playhead');
-  assert.ok(src.includes('let lapState: LapState = playStartLap(usePianoRollStore.getState());'), "the scheduler's lap starts from the store");
+  assert.ok(src.includes('let playState: RollPlayState = startRollPlay(usePianoRollStore.getState(), '), "the scheduler's play state starts from the store");
+  const tempoSrc = readFileSync(new URL('./rollTempo.ts', import.meta.url), 'utf8');
+  const start = tempoSrc.slice(tempoSrc.indexOf('export function startRollPlay('), tempoSrc.indexOf('export function followRollPlay('));
+  assert.ok(start.includes('const lapState = playStartLap(roll);'), "and its lap from playStartLap(the store)");
 }
 
 // The playhead stays where playback stopped, so PLAY after STOP carries on

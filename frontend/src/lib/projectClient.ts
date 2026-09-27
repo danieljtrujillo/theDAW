@@ -10,6 +10,8 @@ import { normalizeMeterMap, roundUpToBar } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
 import { playedRollNotes } from './rollClip';
+import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
+import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
@@ -64,6 +66,19 @@ export interface TasmoLaneBend {
   lane: number;
   range: number;
   points: TasmoBendPoint[];
+}
+
+/**
+ * One event of a piano-roll clip's tempo map (lib/rollTempo): a quarter-note
+ * `beat` from the clip's first step and a `bpm`, `curve` "linear" when it ramps
+ * to the next event (left out for a step), or a `fermata` hold instead of a
+ * tempo change.
+ */
+export interface TasmoTempoEvent {
+  beat: number;
+  bpm: number;
+  curve?: 'linear';
+  fermata?: { beats: number; stretch: number };
 }
 
 // --- Effect chain (mirrors backend tasmo_project.py EffectChainNode/VstPluginState) ---
@@ -276,6 +291,8 @@ export interface TasmoClipInput {
   lanes?: TasmoPolyLane[] | null;
   /** Piano-roll clips: each lane's pitch bend. */
   roll_bends?: TasmoLaneBend[] | null;
+  /** Piano-roll clips: the tempo map, written only when the clip changes tempo. */
+  tempo_map?: TasmoTempoEvent[] | null;
   /** Alternate recordings of this clip, one file entry each, and the comp
    *  across them. `active_take_index` names the take the clip's OWN
    *  `audio_file` / `offset_into_source` mirror, so a reader that ignores all
@@ -440,6 +457,8 @@ export interface TasmoLoadedClip {
   lanes?: TasmoPolyLane[] | null;
   /** Each lane's pitch bend; absent in .tasmo files written before the roll had pitch bend. */
   roll_bends?: TasmoLaneBend[] | null;
+  /** The tempo map; absent in .tasmo files written before the roll had one, and on a clip at one tempo. */
+  tempo_map?: TasmoTempoEvent[] | null;
   /** Alternate recordings, the comp across them, and which take the clip's own
    *  fields mirror; all three absent in .tasmo files written before takes
    *  existed, which is why the loader treats their absence as "not comped"
@@ -522,8 +541,11 @@ export interface RecentItem {
 }
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---
-type ClipMeterFields = Pick<AudioClip, 'sourceRollNotes' | 'sourceTotalSteps' | 'sourceMeterMap' | 'sourcePickupSteps' | 'sourceLanes' | 'sourceBends'>;
-type TasmoMeterFields = Pick<TasmoClipInput, 'roll_notes' | 'total_steps' | 'meter_map' | 'pickup_steps' | 'lanes' | 'roll_bends'>;
+type ClipMeterFields = Pick<
+  AudioClip,
+  'sourceRollNotes' | 'sourceTotalSteps' | 'sourceMeterMap' | 'sourcePickupSteps' | 'sourceLanes' | 'sourceBends' | 'sourceTempoMap'
+>;
+type TasmoMeterFields = Pick<TasmoClipInput, 'roll_notes' | 'total_steps' | 'meter_map' | 'pickup_steps' | 'lanes' | 'roll_bends' | 'tempo_map'>;
 
 const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
 
@@ -594,6 +616,14 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
         })),
       }
     : {}),
+  ...(hasTempoChanges(c.sourceTempoMap) ? { tempo_map: (c.sourceTempoMap ?? []).map(tempoEventToTasmo) } : {}),
+});
+
+/** A tempo event in the file shape: `curve` only when it ramps, `fermata` only on a hold. */
+const tempoEventToTasmo = (e: TempoEvent): TasmoTempoEvent => ({
+  beat: e.beat,
+  bpm: e.bpm,
+  ...(e.fermata ? { fermata: { beats: e.fermata.beats, stretch: e.fermata.stretch } } : e.curve === 'linear' ? { curve: 'linear' as const } : {}),
 });
 
 const numberAtLeast = (v: unknown, min: number): number | undefined =>
@@ -689,6 +719,14 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
         })),
     );
     if (bends.length) out.sourceBends = bends;
+  }
+  if (Array.isArray(c.tempo_map) && c.tempo_map.length) {
+    // Junk events are dropped and the rest brought into range (sanitizeRollTempoMap);
+    // a map with nothing past its start is one tempo, which the clip's source_bpm already says.
+    const events = c.tempo_map.filter((e): e is TasmoTempoEvent => !!e && typeof e === 'object');
+    const start = events.find((e) => e.beat === 0 && !e.fermata)?.bpm ?? events.find((e) => !e.fermata)?.bpm ?? 120;
+    const map = sanitizeRollTempoMap(events, start);
+    if (hasTempoChanges(map)) out.sourceTempoMap = copyTempoMap(map);
   }
   return out;
 };

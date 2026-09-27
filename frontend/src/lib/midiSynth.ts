@@ -10,7 +10,7 @@
  * The sawtooth is byte-for-byte the voice the piano roll used inline before
  * this module existed, so previews and bounces stay consistent.
  */
-import { parseMidi } from './midi';
+import { parseMidi, type MidiFileData } from './midi';
 import type { SmfWheel } from './midiWrite';
 import type { RollRenderBends } from './pitchBend';
 import { stepNotesToRender, voiceContext, type VoiceBend } from './pitchBendVoice';
@@ -19,6 +19,20 @@ import { isSoundfontActive, getActiveSynthVoice, renderNotesToBlobSF, renderMidi
 import { getSynthVoice } from './synthVoices';
 import { GM_STANDARD_KIT } from './clipProgram';
 import { DRUM_CHANNEL } from './editChannels';
+import { stepClock } from './rollTempo';
+import { beatToTime, type TempoEvent } from './tempoMap';
+
+/** What a step-grid render takes besides its notes: the voice, lane bends, and the roll's tempo map. */
+export interface StepRenderOptions {
+  program?: number;
+  percussion?: boolean;
+  bends?: RollRenderBends;
+  /**
+   * The roll's or the clip's tempo map (lib/rollTempo). Its tempi are scaled so
+   * it starts at the render's `bpm`; left out, or one event, the render holds `bpm`.
+   */
+  tempoMap?: readonly TempoEvent[];
+}
 
 /** One note in absolute seconds — the engine-neutral render unit. */
 export interface RenderNote {
@@ -162,7 +176,9 @@ const renderNotesBuiltin = async (
 };
 
 /** Render step-grid notes (piano roll / step sequencer) to a WAV Blob. With
- *  `bends` (lib/pitchBend rollRenderBends) each note follows its lane's bend.
+ *  `bends` (lib/pitchBend rollRenderBends) each note follows its lane's bend,
+ *  and with a `tempoMap` each note sounds at its step's seconds under the map
+ *  (tempo changes, ritardandos and fermatas), its bar lines where they are.
  *  With `percussion` every note plays on the General MIDI drum channel, where
  *  `program` picks the kit (the Standard kit when left out); a drum channel has
  *  one wheel for every drum, so a percussion render carries no lane bends.
@@ -174,7 +190,7 @@ export const renderStepNotesToBlob = async (
   notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
   bpm: number,
   totalSteps: number,
-  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
+  opts: StepRenderOptions = {},
 ): Promise<{ blob: Blob; duration: number }> => {
   const request = stepRenderRequest(notes, bpm, totalSteps, opts);
   const result = await renderNotesToBlob(request.notes, request.options);
@@ -188,11 +204,12 @@ export function stepRenderRequest(
   notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
   bpm: number,
   totalSteps: number,
-  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
+  opts: StepRenderOptions = {},
 ): { notes: RenderNote[]; options: RenderOptions; nominalSec: number } {
-  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
-  const render = stepNotesToRender(notes, stepSec, opts.percussion ? undefined : opts.bends);
-  const nominalSec = totalSteps * stepSec;
+  // A 16th's seconds at one tempo (20-300, the app's range), or the map's clock.
+  const clock = stepClock(bpm, opts.tempoMap);
+  const render = stepNotesToRender(notes, clock, opts.percussion ? undefined : opts.bends);
+  const nominalSec = clock.at(totalSteps);
   return {
     notes: opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes,
     options: {
@@ -219,18 +236,29 @@ export const renderMidiBufferToBlob = async (
       /* fall back to the built-in voice below */
     }
   }
-  const midi = parseMidi(buf);
-  const ppq = midi.ppq || 480;
-  const bpm = midi.bpm || 120;
-  const secPerTick = 60 / Math.max(20, bpm) / ppq;
-  const notes: RenderNote[] = midi.tracks.flatMap((t) =>
-    t.notes.map((n) => ({
-      midi: n.note,
-      velocity: n.velocity,
-      startSec: n.tick * secPerTick,
-      durationSec: Math.max(0.02, n.durationTicks * secPerTick),
-    })),
-  );
+  const notes = midiFileRenderNotes(parseMidi(buf));
   if (notes.length === 0) throw new Error('MIDI has no playable notes');
   return renderNotesBuiltin(notes);
 };
+
+/**
+ * A parsed file's notes in seconds, for the built-in voice: every tempo the
+ * file sets, each at its own tick, so a file that slows down renders slowing
+ * down. A file with no tempo plays at its one tempo (120 when it names none).
+ */
+export function midiFileRenderNotes(midi: MidiFileData): RenderNote[] {
+  const ppq = midi.ppq || 480;
+  const tempos: TempoEvent[] = midi.tempos?.length
+    ? midi.tempos.map((t) => ({ beat: t.tick / ppq, bpm: t.bpm }))
+    : [{ beat: 0, bpm: midi.bpm || 120 }];
+  if (!tempos.some((t) => t.beat === 0)) tempos.unshift({ beat: 0, bpm: tempos[0].bpm });
+  const secOf = (tick: number) => beatToTime(tempos, tick / ppq);
+  return midi.tracks.flatMap((t) =>
+    t.notes.map((n) => ({
+      midi: n.note,
+      velocity: n.velocity,
+      startSec: secOf(n.tick),
+      durationSec: Math.max(0.02, secOf(n.tick + n.durationTicks) - secOf(n.tick)),
+    })),
+  );
+}

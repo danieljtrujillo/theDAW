@@ -17,6 +17,8 @@ import {
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
 import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
+import { sanitizeFermata, sanitizeRollTempoMap, startTempoOf, tickBeat } from '../lib/rollTempo';
+import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -79,9 +81,22 @@ export interface RollMeter {
   lanes: PolyLane[];
 }
 
+/** Which of the two kinds of tempo-map event a TEMPO lane edit names: a tempo change (or a ramp's start) or a fermata. */
+export type TempoEventKind = 'tempo' | 'fermata';
+
 interface PianoRollState {
   notes: PianoNote[];
+  /** The starting tempo: always the tempo of `tempoMap`'s beat-0 event, which the header's BPM field edits. */
   bpm: number;
+  /**
+   * The tempo map (lib/rollTempo, lib/tempoMap): the beat-0 event at `bpm`,
+   * then every tempo change, ramp and fermata, by quarter-note beat from the
+   * roll's first step. Always sanitized (sanitizeRollTempoMap) and frozen, and
+   * replaced whole on every change, so the scheduler and every render can key
+   * their clocks on its identity. Part of the document: undo tracks it, a
+   * bounce copies it onto the clip as `sourceTempoMap`, and MIDI export writes it.
+   */
+  tempoMap: TempoEvent[];
   /** Total grid length in 16th-note steps. */
   totalSteps: number;
   /** Lowest and highest MIDI note numbers in view (inclusive). */
@@ -159,7 +174,20 @@ interface PianoRollState {
    */
   grooveId: string;
 
+  /** Set the starting tempo, 20-300 with its fraction kept; the map's beat-0 event takes it. */
   setBpm: (bpm: number) => void;
+  /** Replace the tempo map (sanitized). Its beat-0 tempo becomes `bpm`; with none, the current `bpm` starts it. */
+  setTempoMap: (events: readonly TempoEvent[]) => void;
+  /** Add a tempo change, or a fermata when `event.fermata` is set, replacing one of its kind at its beat (on the roll's ticks). */
+  addTempoEvent: (event: TempoEvent) => void;
+  /**
+   * Move, re-value or re-shape the event of `kind` at `beat`. The starting tempo
+   * stays at beat 0 (a patch that moves it changes only its tempo and curve), and
+   * an event that lands on another of its kind replaces it.
+   */
+  moveTempoEvent: (beat: number, kind: TempoEventKind, patch: Partial<TempoEvent>) => void;
+  /** Remove the event of `kind` at `beat`. The starting tempo is never removed. */
+  removeTempoEvent: (beat: number, kind: TempoEventKind) => void;
   setTotalSteps: (s: number) => void;
   setRange: (lo: number, hi: number) => void;
   addNote: (note: Omit<PianoNote, 'id'>) => string;
@@ -230,13 +258,23 @@ interface PianoRollState {
     totalSteps: number,
     meter?: Partial<RollMeter>,
     bends?: readonly LaneBend[],
+    tempoMap?: readonly TempoEvent[],
   ) => void;
   /** Replace the grid with imported notes, auto-fitting length (to a bar line) AND
    *  pitch range to the content. A `meter` field left out keeps the roll's current value.
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
-   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone. */
-  importNotes: (notes: PianoNote[], bpm?: number, meter?: Partial<RollMeter>, bends?: readonly LaneBend[]) => void;
+   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
+   *  `tempoMap` replaces the roll's map (a MIDI file's tempo changes); left out, a
+   *  finite `bpm` makes the roll one tempo at `bpm`, since the notes were placed
+   *  at that tempo, and no `bpm` keeps the map the roll has. */
+  importNotes: (
+    notes: PianoNote[],
+    bpm?: number,
+    meter?: Partial<RollMeter>,
+    bends?: readonly LaneBend[],
+    tempoMap?: readonly TempoEvent[],
+  ) => void;
   /** Place a live recording WITHOUT shrinking the grid (keeps at least the 256
    *  default, rounded up to a bar), expanding the pitch range to fit, and marks the recorded span. */
   placeRecording: (notes: PianoNote[], range: { startStep: number; endStep: number }) => void;
@@ -286,8 +324,8 @@ interface PianoRollState {
 }
 
 /** The document slices tracked by undo / redo.
- *  The meter, the lanes and the bends are part of what the roll IS, so they
- *  belong here. Selection, the playhead, the loop, transport, the active lane
+ *  The meter, the tempo map, the lanes and the bends are part of what the
+ *  roll IS, so they belong here. Selection, the playhead, the loop, transport, the active lane
  *  and the recorded range deliberately do NOT — they are view and transport
  *  state, and putting them in the stack makes undo unusable mid-session.
  *
@@ -301,6 +339,7 @@ interface PianoRollState {
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
+  tempoMap: TempoEvent[];
   totalSteps: number;
   lowestNote: number;
   highestNote: number;
@@ -500,13 +539,30 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 export { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT };
 
 /**
- * The BPM importNotes gives the roll for a finite `bpm`: `bpm` held to 40-240
- * with its fraction kept, as loadFromClip and setBpm keep it (any other `bpm`
- * leaves the roll's tempo as it is). A take converted to ticks at this tempo
- * plays back at the seconds it was played or detected at, and a take quantised
- * at a fractional tempo (97.3) keeps every note on its grid line.
+ * The BPM importNotes gives the roll for a finite `bpm`: `bpm` held to the
+ * app's 20-300 (lib/tempoMap TEMPO_BPM_MIN..MAX) with its fraction kept, as
+ * loadFromClip and setBpm keep it (any other `bpm` leaves the roll's tempo as
+ * it is). A take converted to ticks at this tempo plays back at the seconds it
+ * was played or detected at, and a take quantised at a fractional tempo (97.3)
+ * keeps every note on its grid line.
  */
-export const importedRollBpm = (bpm: number): number => Math.max(40, Math.min(240, bpm));
+export const importedRollBpm = (bpm: number): number => clampTempoBpm(bpm);
+
+/** One tempo at `bpm`: the map a roll gets when its notes arrive at a single tempo. */
+const oneTempo = (bpm: number): TempoEvent[] => sanitizeRollTempoMap([], bpm);
+
+/** The map and the `bpm` it starts at, written together so the two can never disagree. */
+const tempoSlice = (tempoMap: TempoEvent[]): Pick<PianoRollState, 'bpm' | 'tempoMap'> =>
+  ({ tempoMap, bpm: startTempoOf(tempoMap) as number });
+
+/** True when `e` is the event of `kind` at `beat`. */
+const isEventOf = (e: TempoEvent, beat: number, kind: TempoEventKind): boolean =>
+  e.beat === beat && (kind === 'fermata') === !!e.fermata;
+
+/** True when two tempo events hold the same beat, tempo, curve and fermata. */
+const sameEvent = (a: TempoEvent, b: TempoEvent | undefined): boolean =>
+  !!b && a.beat === b.beat && a.bpm === b.bpm && (a.curve ?? 'step') === (b.curve ?? 'step')
+  && a.fermata?.beats === b.fermata?.beats && a.fermata?.stretch === b.fermata?.stretch;
 
 /** One tick as a length in the roll's steps: the model's floor for a `length`. */
 export const MIN_NOTE_STEPS = MIN_NOTE_TICKS / (PPQ / ROLL_STEPS_PER_BEAT);
@@ -721,6 +777,7 @@ let lastDocChangeAt = -Infinity;
 const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   notes: s.notes,
   bpm: s.bpm,
+  tempoMap: s.tempoMap,
   totalSteps: s.totalSteps,
   lowestNote: s.lowestNote,
   highestNote: s.highestNote,
@@ -737,6 +794,7 @@ const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: st
 export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   notes: seed(),
   bpm: 120,
+  tempoMap: oneTempo(120),
   totalSteps: DEFAULT_STEPS, // 16 bars at 16ths — a roomy default canvas
   lowestNote: FULL_LOW, // A0 — full piano in view, scrollable
   highestNote: FULL_HIGH, // C8
@@ -759,7 +817,45 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   _undo: [],
   _redo: [],
 
-  setBpm: (bpm) => set({ bpm: Math.max(40, Math.min(240, bpm)) }),
+  setBpm: (bpm) =>
+    set((s) => {
+      if (!isNum(bpm) || bpm <= 0) return {};
+      const next = clampTempoBpm(bpm);
+      if (next === s.bpm) return {};
+      return tempoSlice(sanitizeRollTempoMap(s.tempoMap.map((e) => (isEventOf(e, 0, 'tempo') ? { ...e, bpm: next } : e)), next));
+    }),
+  setTempoMap: (events) => set((s) => tempoSlice(sanitizeRollTempoMap(events, s.bpm))),
+  addTempoEvent: (event) =>
+    set((s) => {
+      if (!event || !isNum(event.beat)) return {};
+      // Appended last, so it wins over an event of its kind already at its beat.
+      return tempoSlice(sanitizeRollTempoMap([...s.tempoMap, event], s.bpm));
+    }),
+  moveTempoEvent: (beat, kind, patch) =>
+    set((s) => {
+      const found = s.tempoMap.find((e) => isEventOf(e, beat, kind));
+      if (!found) return {};
+      const start = kind === 'tempo' && beat === 0;
+      const moved: TempoEvent = {
+        ...found,
+        beat: start ? 0 : isNum(patch.beat) ? tickBeat(patch.beat) : found.beat,
+        bpm: isNum(patch.bpm) && patch.bpm > 0 ? patch.bpm : found.bpm,
+        ...(kind === 'tempo' ? { curve: patch.curve ?? found.curve } : {}),
+        ...(kind === 'fermata' ? { fermata: sanitizeFermata({ ...found.fermata, ...patch.fermata }) ?? found.fermata } : {}),
+      };
+      // A tempo change dragged onto beat 0 would take the starting tempo's
+      // place; it stops a tick after it instead, so the start is never lost.
+      if (!start && kind === 'tempo' && moved.beat <= 0) moved.beat = tickBeat(1 / PPQ);
+      const rest = s.tempoMap.filter((e) => e !== found);
+      const next = sanitizeRollTempoMap([...rest, moved], s.bpm);
+      return next.length === s.tempoMap.length && next.every((e, i) => sameEvent(e, s.tempoMap[i])) ? {} : tempoSlice(next);
+    }),
+  removeTempoEvent: (beat, kind) =>
+    set((s) => {
+      if (kind === 'tempo' && beat === 0) return {};
+      const next = s.tempoMap.filter((e) => !isEventOf(e, beat, kind));
+      return next.length === s.tempoMap.length ? {} : tempoSlice(sanitizeRollTempoMap(next, s.bpm));
+    }),
   setTotalSteps: (totalSteps) =>
     set((s) => ({ totalSteps: Math.min(MAX_STEPS, roundUpToBar(s.meterMap, Math.max(MIN_STEPS, totalSteps), s.pickupSteps)) })),
   setRange: (lo, hi) => set({ lowestNote: Math.max(0, lo), highestNote: Math.min(127, hi) }),
@@ -907,7 +1003,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   setEditingClip: (editingClipId) => set({ editingClipId }),
   setVoiceProgram: (program) =>
     set({ voiceProgram: program === null || !Number.isFinite(program) ? null : Math.max(0, Math.min(127, Math.round(program))) }),
-  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
+  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends, incomingTempo) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved
     // work included) linked to the clip they came from, so SAVE writes them
@@ -926,7 +1022,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           notes,
           ...m,
           bends: replacedBends(s, m.lanes, incomingBends),
-          bpm: Math.max(40, Math.min(240, bpm)),
+          // A clip bounced before the roll had a tempo map plays at one tempo, its own.
+          ...tempoSlice(sanitizeRollTempoMap(incomingTempo ?? [], isNum(bpm) && bpm > 0 ? bpm : s.bpm)),
           totalSteps: Math.min(
             MAX_STEPS,
             roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
@@ -949,13 +1046,20 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     lastDocChangeAt = -Infinity;
   },
 
-  importNotes: (incoming, bpm, meter, incomingBends) =>
+  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo) =>
     set((s) => {
       const notes = migrateNotes(incoming);
       const m = mergeMeter(s, meter);
       const bends = replacedBends(s, m.lanes, incomingBends);
+      const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
+      // The file's own map, or one tempo at the tempo the notes were placed at, or the roll's map as it is.
+      const tempo = incomingTempo
+        ? tempoSlice(sanitizeRollTempoMap(incomingTempo, finiteBpm ? importedRollBpm(bpm) : s.bpm))
+        : finiteBpm
+          ? tempoSlice(oneTempo(importedRollBpm(bpm)))
+          : {};
       if (notes.length === 0) {
-        return { notes, ...m, bends, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
+        return { notes, ...m, bends, ...tempo, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
       return {
         notes,
@@ -966,7 +1070,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         currentStep: 0,
         isPlaying: false,
         recordedRange: null,
-        ...(typeof bpm === 'number' && Number.isFinite(bpm) ? { bpm: importedRollBpm(bpm) } : {}),
+        ...tempo,
       };
     }),
 
@@ -1149,6 +1253,7 @@ usePianoRollStore.subscribe((state, prev) => {
   if (
     state.notes === prev.notes &&
     state.bpm === prev.bpm &&
+    state.tempoMap === prev.tempoMap &&
     state.totalSteps === prev.totalSteps &&
     state.lowestNote === prev.lowestNote &&
     state.highestNote === prev.highestNote &&
