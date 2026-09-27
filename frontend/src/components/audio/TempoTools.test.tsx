@@ -174,7 +174,7 @@ await step(() => type(laneBar, '1'));
 assert.equal(laneBar.value, '1', 'the typed digit shows as typed');
 assert.match(byId('tempo-lane-mod-card').textContent ?? '', /at bar 3/, 'and the bar stays until Enter');
 await step(() => type(laneBar, '12'));
-await step(() => key(laneBar, 'Enter'));
+await step(() => { key(laneBar, 'Enter'); });
 assert.equal(laneBar.value, '12');
 assert.match(byId('tempo-lane-mod-card').textContent ?? '', /at bar 12/, 'Enter picks bar 12');
 // Blur applies a typed bar too, and a bar past the end is held to the last bar.
