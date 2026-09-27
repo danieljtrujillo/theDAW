@@ -37,10 +37,10 @@
 import { MusicalScale, noteNameToMidi } from './arpEngine';
 import { barSeconds, DEFAULT_METER, type Meter } from './colony';
 import {
+  accentLines,
   barAt,
   bars,
   barStartStep,
-  groupLines,
   meterAtBar,
   normalizeMeterMap,
   sanitizeMeter,
@@ -332,10 +332,10 @@ function gridOf(o?: MeterOpts): Grid {
   return { map, pickup, bar, inBar, segmentStart, onPosition };
 }
 
-/** Each group of `m` as a start and a length in steps; a meter without groups is one group. */
+/** Each group of `m` as a start and a length in steps; a compound meter without groups is one group per dotted beat, any other meter without groups one group. */
 function groupSpans(m: Meter): Array<{ start: number; len: number }> {
   const len = stepsPerBar(m);
-  const starts = groupLines(m);
+  const starts = accentLines(m);
   return starts.map((start, i) => ({ start, len: (starts[i + 1] ?? len) - start }));
 }
 

@@ -11,11 +11,11 @@
  *
  * Everything here is pure.
  */
-import { partitions, type Meter, type RuleNode } from './colony';
+import { parseGroups, partitions, type Meter, type RuleNode } from './colony';
 import { GEN_DEFAULT_OPTS, type GenKind, type GenOpts } from './loomGen';
 import { pitchClass } from './loomKey';
 import {
-  barAt, barStartStep, normalizeMeterMap, removeChangeAt, segmentBars, segmentIndexAt, setMeterAt, stepsPerBar,
+  barAt, barStartStep, defaultGroups, normalizeMeterMap, removeChangeAt, segmentBars, segmentIndexAt, setMeterAt, stepsPerBar,
   type MeterSegment, type PolyLane,
 } from './meterMap';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
@@ -26,7 +26,8 @@ const EPS = 1e-9;
 
 export const BEATS_MIN = 1;
 export const BEATS_MAX = 32;
-export const UNITS = [4, 8, 16] as const;
+/** The unit keys: whole, half, quarter, 8th, 16th and 32nd notes (2/2, 3/2 and 7/32 are all choosable). */
+export const UNITS = [1, 2, 4, 8, 16, 32] as const;
 /** Velocity of a GEN note at 0 dB; the rule's gain and the group accent move it. */
 export const GEN_VELOCITY = 96;
 
@@ -92,12 +93,23 @@ export function editMeter(map: readonly MeterSegment[], selected: number, patch:
   return { meterMap, selected: i };
 }
 
-/** BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears them. */
-export const setBeats = (map: readonly MeterSegment[], selected: number, num: number): MeterEdit =>
-  editMeter(map, selected, { num: clamp(Math.round(num), BEATS_MIN, BEATS_MAX), groups: [] });
+/**
+ * BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears
+ * them, except that a compound meter starts in threes (6/8 is 3+3), so its
+ * accents land on the dotted beats.
+ */
+export function setBeats(map: readonly MeterSegment[], selected: number, num: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const n = clamp(Math.round(num), BEATS_MIN, BEATS_MAX);
+  return editMeter(segs, selected, { num: n, groups: defaultGroups(n, segs[clampSelection(segs, selected)].meter.den) });
+}
 
-export const setUnit = (map: readonly MeterSegment[], selected: number, den: number): MeterEdit =>
-  editMeter(map, selected, { den });
+/** UNIT: the denominator. Groups the meter has stay; a meter with none that becomes compound starts in threes. */
+export function setUnit(map: readonly MeterSegment[], selected: number, den: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const meter = segs[clampSelection(segs, selected)].meter;
+  return editMeter(segs, selected, { den, ...(meter.groups.length > 1 ? {} : { groups: defaultGroups(meter.num, den) }) });
+}
 
 export const setGroups = (map: readonly MeterSegment[], selected: number, groups: readonly number[]): MeterEdit =>
   editMeter(map, selected, { groups: [...groups] });
@@ -114,6 +126,62 @@ export function removeChange(map: readonly MeterSegment[], selected: number): Me
 /** The select's value for a grouping: "3+2+2", or "" for even. */
 export const groupsValue = (groups: readonly number[]): string => (groups.length > 1 ? groups.join('+') : '');
 export const parseGroupsValue = (value: string): number[] => (value ? value.split('+').map(Number) : []);
+
+/**
+ * The grouping field's text as groups for `meter`: "3+3+2+1" gives the
+ * groups, and a sum that differs from the numerator gives the numerator with
+ * them (typing 2+2+3 into 4/8 makes 7/8 2+2+3). "" or one number is Even.
+ * Null for text that is not whole numbers joined by "+", or that sums past
+ * BEATS_MAX.
+ */
+export function parseGroupingText(text: string, meter: Meter): { num: number; groups: number[] } | null {
+  const t = text.replace(/\s+/g, '');
+  if (!t) return { num: meter.num, groups: [] };
+  if (!/^\d+(\+\d+)*$/.test(t)) return null;
+  const parts = t.split('+').map(Number);
+  const sum = parts.reduce((a, b) => a + b, 0);
+  if (sum < BEATS_MIN || sum > BEATS_MAX || !parseGroups(t, sum)) return null;
+  return { num: sum, groups: parts.length > 1 ? parts : [] };
+}
+
+/** GROUPING field: the typed grouping applied to the selected segment, or null (the text is kept for the user to fix). */
+export function setGroupingText(map: readonly MeterSegment[], selected: number, text: string): MeterEdit | null {
+  const segs = normalizeMeterMap(map, false);
+  const parsed = parseGroupingText(text, segs[clampSelection(segs, selected)].meter);
+  return parsed ? editMeter(segs, selected, parsed) : null;
+}
+
+/* ── the pickup ─────────────────────────────────────────────────────────── */
+
+/**
+ * PICKUP steps by one unit of the first meter (an 8th in 6/8, a quarter in
+ * 4/4), and by a half step with Shift, from none up to one unit short of a
+ * full bar, the store's half-step grid and its 64-step cap. Returns the new
+ * pickup in steps.
+ */
+export function stepPickup(map: readonly MeterSegment[], pickupSteps: number, dir: -1 | 1, fine: boolean): number {
+  const first = normalizeMeterMap(map, false)[0].meter;
+  const unit = fine ? 0.5 : Math.max(0.5, 16 / first.den);
+  const max = pickupMax(map);
+  const now = clamp(Number.isFinite(pickupSteps) ? pickupSteps : 0, 0, max);
+  // From an off-unit pickup the first press lands on the unit grid.
+  const next = dir > 0 ? Math.floor(now / unit + EPS) * unit + unit : Math.ceil(now / unit - EPS) * unit - unit;
+  return clamp(Math.round(next * 2) / 2, 0, max);
+}
+
+/** The longest pickup: half a step short of a full bar of the first meter, and at most 64 steps. */
+export const pickupMax = (map: readonly MeterSegment[]): number =>
+  Math.max(0, Math.min(64, stepsPerBar(normalizeMeterMap(map, false)[0].meter) - 0.5));
+
+/** The PICKUP readout: "Off", or the pickup as a fraction of a whole note in lowest terms ("1/2", "3/8", "5/32"). */
+export function pickupLabel(pickupSteps: number): string {
+  if (!(pickupSteps > EPS)) return 'Off';
+  // Steps are 16ths and the store keeps half steps, so the pickup is a whole number of 32nds.
+  const num = Math.round(pickupSteps * 2);
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const g = gcd(num, 32);
+  return `${num / g}/${32 / g}`;
+}
 
 /** GROUPS: Even plus LOOM's partitions of the numerator, and the meter's own grouping when those miss it. */
 export function groupChoices(meter: Meter): Array<{ value: string; label: string }> {
@@ -418,8 +486,8 @@ const m = (num: number, den: number, groups: number[] = []): Meter => ({ num, de
 
 /** The meters the FORM editor offers a section; "" is the roll's own map. */
 export const SECTION_METERS: readonly Meter[] = [
-  m(4, 4), m(3, 4), m(2, 4), m(6, 8), m(5, 4), m(5, 8),
-  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8),
+  m(4, 4), m(3, 4), m(2, 4), m(2, 2), m(3, 2), m(6, 8, [3, 3]), m(9, 8, [3, 3, 3]), m(5, 4), m(5, 8),
+  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8, [3, 3, 3, 3]),
 ];
 
 /** The FORM select's options for a section: the list, plus the section's own meter when the list lacks it. */

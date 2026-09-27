@@ -3,10 +3,13 @@
  * polymeter lanes and the syncopation amounts, inline on one row.
  *
  *   BARS    the selected meter change's bars, stepped change to change
- *   BEATS   its numerator; the /4 /8 /16 keys its unit; GROUPS its grouping,
- *           as keys for three choices or fewer and a menu for more
+ *   BEATS   its numerator (a compound meter starts in threes); the /1 to /32
+ *           keys its unit; GROUPS its grouping, as keys for three choices or
+ *           fewer and a menu for more; the grouping field takes any grouping
+ *           typed as 3+3+2+1
  *   ADD     a change at the playhead's bar (off when that bar starts after the
  *           roll ends); the trash key removes the selected one
+ *   PICKUP  the steps before bar 1, a unit of the first meter at a time
  *   LANES   one key per lane in its roll look (a menu past five lanes); + adds
  *           a lane, the trash key removes the active one
  *   LOOP    the active lane's loop in steps (Shift steps a bar)
@@ -23,8 +26,8 @@
 import React from 'react';
 import { create } from 'zustand';
 import {
-  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, DiamondMinus, DiamondPlus, Dices, ListPlus, ListX, Minus,
-  Plus, Send,
+  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, DiamondMinus, DiamondPlus, Dices,
+  ListPlus, ListX, Minus, Plus, Send,
 } from 'lucide-react';
 import { laneName, usePianoRollStore } from '../../state/pianoRollStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
@@ -36,8 +39,8 @@ import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
   BEATS_MAX, BEATS_MIN, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneForms, lanePitches, matchApply, matchError,
-  meterLabel, newLaneCycle, parseGroupsValue, removeChange, segmentAtStep, segmentLabel, setBeats, setGroups, setUnit,
-  stepLoop, stepOption, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax, removeChange, segmentAtStep, segmentLabel, setBeats, setGroupingText,
+  setGroups, setUnit, stepLoop, stepOption, stepPickup, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
@@ -101,7 +104,7 @@ interface StepperProps {
 /** The −/+ keys are one control with the readout between them, named by their
  *  own DockTips; the field carries no title, so no key shows two tooltips. A key
  *  its press takes to the limit passes keyboard focus to its pair. */
-const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
+export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
   <div className={FIELD}>
     {legend && <span className={flyout ? FLYOUT_LEGEND : FIELD_LEGEND} title={title}>{legend}</span>}
     <StripKey
@@ -168,7 +171,14 @@ const GATE_KEYS: Array<{ kind: GateKind; legend: string; title: string }> = [
 ];
 
 /** What each unit key means; its accessible name is the printed "/4" followed by this. */
-const UNIT_NAMES: Record<number, string> = { 4: 'Quarter-note beat', 8: 'Eighth-note beat', 16: 'Sixteenth-note beat' };
+const UNIT_NAMES: Record<number, string> = {
+  1: 'Whole-note beat',
+  2: 'Half-note beat',
+  4: 'Quarter-note beat',
+  8: 'Eighth-note beat',
+  16: 'Sixteenth-note beat',
+  32: 'Thirty-second-note beat',
+};
 
 const barsText = (first: number, last: number): string => (first === last ? `${first + 1}` : `${first + 1}-${last + 1}`);
 
@@ -310,6 +320,28 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     }
   };
 
+  /* GROUPING field: a draft while typed, applied on Enter or when it loses focus. */
+  const [groupDraft, setGroupDraft] = React.useState<string | null>(null);
+  // Another segment, or an edit from elsewhere (UNIT, the GROUPS keys, undo), drops a draft that no longer describes it.
+  React.useEffect(() => setGroupDraft(null), [selected, meter]);
+  const commitGrouping = (): void => {
+    if (groupDraft === null) return;
+    const edit = setGroupingText(usePianoRollStore.getState().meterMap, selected, groupDraft);
+    if (!edit) {
+      post(`"${groupDraft}" IS NOT A GROUPING. TYPE WHOLE NUMBERS JOINED BY +, SUCH AS 3+3+2, UP TO ${BEATS_MAX} BEATS.`, 'warn');
+      return;
+    }
+    setGroupDraft(null);
+    writeMap(edit);
+  };
+
+  const onPickup = (dir: -1 | 1, fine: boolean): void => {
+    const r = usePianoRollStore.getState();
+    r.applyMeter({ pickupSteps: stepPickup(r.meterMap, r.pickupSteps, dir, fine) });
+  };
+  const pickupTop = pickupMax(segs);
+  const firstUnit = segs[0].meter.den;
+
   const groups = groupChoices(meter);
   const groupsNow = groupsValue(meter.groups);
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
@@ -351,7 +383,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       <Stepper
         id="mf-beats"
         legend="Beats"
-        title="Beats in a bar of the selected change (1-32). A new count clears the groups."
+        title="Beats in a bar of the selected change (1-32). A new count clears the groups; 6/8, 9/8 and 12/8 start in threes."
         value={String(meter.num)}
         downLabel="Fewer beats"
         upLabel="More beats"
@@ -409,6 +441,25 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
           </select>
         </div>
       )}
+      <div className={FIELD} title="Grouping: type any grouping, such as 3+3+2+1, and press Enter. A sum that differs from the beats sets the beats too.">
+        <label htmlFor="mf-grouping" className={FIELD_LEGEND}>Grouping</label>
+        <input
+          id="mf-grouping"
+          name="mf-grouping"
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          value={groupDraft ?? groupsValue(meter.groups)}
+          placeholder="Even"
+          onChange={(e) => setGroupDraft(e.target.value)}
+          onBlur={commitGrouping}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitGrouping();
+            else if (e.key === 'Escape') setGroupDraft(null);
+          }}
+          className={`${FIELD_VALUE} w-16 text-left bg-transparent border-none outline-none`}
+        />
+      </div>
 
       <StripKey
         iconOnly
@@ -432,6 +483,21 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         description={seg.bar === 0 ? 'Bar 1 always keeps a meter' : `Remove the meter change at bar ${seg.bar + 1}`}
         icon={<DiamondMinus className={STRIP_GLYPH} />}
         legend="Remove"
+      />
+
+      <Stepper
+        id="mf-pickup"
+        legend="Pickup"
+        title={`Pickup: the notes before bar 1, a 1/${firstUnit} at a time; Shift-click steps half a 16th. Off starts the roll on a downbeat.`}
+        value={pickupLabel(pickupSteps)}
+        valueClass="min-w-7"
+        downLabel="Shorter pickup"
+        upLabel="Longer pickup"
+        downIcon={<ChevronsLeft className={MINI_GLYPH} />}
+        upIcon={<ChevronsRight className={MINI_GLYPH} />}
+        downDisabled={pickupSteps <= 0}
+        upDisabled={pickupSteps >= pickupTop}
+        onStep={onPickup}
       />
 
       <Sep />

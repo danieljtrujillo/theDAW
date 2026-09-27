@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { barSeconds, canWire, findNode, graphAt, groupStarts, nodeKey, parseColony, partitions, serializeColony, STARTER_COLONY, uniqueId, walkNodes } from './colony.ts';
+import { barSeconds, canWire, findNode, graphAt, groupStarts, nodeKey, parseColony, partitions, PARTITIONS_MAX, serializeColony, STARTER_COLONY, uniqueId, walkNodes } from './colony.ts';
 
 // The starter is a SPORE — one loop that repeats itself, and it grows.
 {
@@ -120,8 +120,26 @@ pulse -> seven on=0
 // Groupings a meter control offers: 2s, 3s and 4s, even first.
 {
   assert.deepEqual(partitions(7), [[], [3, 2, 2], [3, 4], [2, 3, 2], [2, 2, 3], [4, 3]]);
-  assert.deepEqual(partitions(3), [[]]);
-  assert.ok(partitions(16).length <= 9);
+  // Under four beats: 2s and 1s, so 3/8 can lean 2+1 or 1+2. Two beats and one beat have only Even.
+  assert.deepEqual(partitions(3), [[], [2, 1], [1, 2]]);
+  assert.deepEqual(partitions(2), [[]]);
+  assert.deepEqual(partitions(1), [[]]);
+  // No cap of five parts: 12 offers six 2s, and the groupings of one size come first.
+  assert.deepEqual(partitions(12).slice(0, 4), [[], [3, 3, 3, 3], [2, 2, 2, 2, 2, 2], [4, 4, 4]]);
+  assert.ok(partitions(12).some((g) => g.join('+') === '3+3+2+2+2'), 'five parts');
+  // No cap of nine choices: 16 offers more, up to PARTITIONS_MAX, each summing to 16 and listed once.
+  const sixteen = partitions(16);
+  assert.ok(sixteen.length > 9 && sixteen.length <= PARTITIONS_MAX, `16 beats: ${sixteen.length} choices`);
+  assert.ok(sixteen.slice(1).every((g) => g.reduce((a, b) => a + b, 0) === 16));
+  assert.equal(new Set(sixteen.map((g) => g.join('+'))).size, sixteen.length);
+  assert.equal(partitions(32).length, PARTITIONS_MAX, 'a long bar stops at the cap without enumerating every grouping');
+  assert.deepEqual(partitions(16, 3), [[], [2, 2, 2, 2, 2, 2, 2, 2], [4, 4, 4, 4]], 'a caller can ask for fewer');
+}
+
+// Group starts: whole steps for a rule, exact positions for the roll's /32 bars.
+{
+  assert.deepEqual(groupStarts({ num: 7, den: 32, groups: [3, 2, 2] }, 3.5), [0, 2, 3], 'a rule rounds to its steps');
+  assert.deepEqual(groupStarts({ num: 7, den: 32, groups: [3, 2, 2] }, 3.5, true), [0, 1.5, 2.5], 'the roll keeps the half steps');
 }
 
 // Fractal nesting: a colony in a colony in a colony, each with its own meter and tempo.

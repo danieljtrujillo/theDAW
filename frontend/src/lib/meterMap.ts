@@ -22,8 +22,13 @@ import type { PianoNote } from '../state/pianoRollStore';
 export interface MeterSegment { bar: number; meter: Meter }
 export interface PolyLane { id: number; name: string; cycleSteps: number | null }
 export interface BarSpan { bar: number; start: number; len: number; meter: Meter }
-/** `pickupSteps` rides on theDAW's tick-0 signature: the roll's pickup, so a reader never has to guess it. */
-export interface MeterEvent { tick: number; num: number; den: number; groups?: number[]; pickupSteps?: number }
+/**
+ * `pickupSteps` rides on theDAW's tick-0 signature: the roll's pickup, so a
+ * reader never has to guess it. `clocks` is the FF 58's MIDI clocks per click
+ * as a file wrote it (36 a dotted quarter), which a reader fills in only when
+ * it is not one unit of the denominator (24 for a quarter).
+ */
+export interface MeterEvent { tick: number; num: number; den: number; groups?: number[]; pickupSteps?: number; clocks?: number }
 export type LaneNote = PianoNote & { lane?: number };
 
 export const DEFAULT_METER_MAP: readonly MeterSegment[] = Object.freeze([{ bar: 0, meter: DEFAULT_METER }]);
@@ -154,9 +159,45 @@ export function beatLines(m: Meter): number[] {
   return out;
 }
 
-/** Group starts inside one bar, 0 included (7/8 3+2+2 gives [0, 6, 10]). */
+/** Group starts inside one bar, 0 included (7/8 3+2+2 gives [0, 6, 10]); a /32 group can start on a half step. */
 export function groupLines(m: Meter): number[] {
-  return groupStarts(m, stepsPerBar(m));
+  return groupStarts(m, stepsPerBar(m), true);
+}
+
+/**
+ * True for a compound meter: a numerator of 6 or more in threes over an 8th or
+ * shorter (6/8, 9/8, 12/8, 15/16), which counts in dotted beats.
+ */
+export const isCompound = (m: Pick<Meter, 'num' | 'den'>): boolean => m.den >= 8 && m.num > 3 && m.num % 3 === 0;
+
+/** The groups a new num/den starts with: threes for a compound meter (6/8 is 3+3), none otherwise. */
+export const defaultGroups = (num: number, den: number): number[] =>
+  isCompound({ num, den }) ? new Array<number>(num / 3).fill(3) : [];
+
+/** Steps in one dotted beat of a compound meter (6 for /8); null for any other meter. */
+export const dottedBeatSteps = (m: Meter): number | null => (isCompound(m) ? (3 * 16) / m.den : null);
+
+/**
+ * Where the bar's accents fall, 0 included: its group starts, a compound meter
+ * with no groups on its dotted beats (6/8 counts in two), any other meter with
+ * no groups on its first beat alone.
+ */
+export function accentLines(m: Meter): number[] {
+  if (m.groups.length > 1) return groupLines(m);
+  const dotted = dottedBeatSteps(m);
+  if (dotted === null) return [0];
+  const out: number[] = [];
+  for (let t = 0; t < stepsPerBar(m) - EPS; t += dotted) out.push(t);
+  return out;
+}
+
+/**
+ * Where the bar's pulse falls, 0 included: its accents (accentLines) when it
+ * has more than one, otherwise its beats. The snap's GROUP grid.
+ */
+export function pulseLines(m: Meter): number[] {
+  const accents = accentLines(m);
+  return accents.length > 1 ? accents : beatLines(m);
 }
 
 /**
@@ -259,7 +300,11 @@ export function midiEventsToMeterMap(events: readonly MeterEvent[], ppq: number)
   const byStep = new Map<number, Meter>();
   let marked: number | null = null;
   for (const e of events) {
-    const meter = sanitizeMeter({ num: e.num, den: e.den, groups: e.groups ?? [] });
+    // A file that wrote no groups but clicks a dotted beat (FF 58's 36 clocks
+    // for 6/8) is counted in threes, as the file's author heard it.
+    const clickUnits = typeof e.clocks === 'number' && e.clocks > 0 ? (e.clocks * e.den) / 96 : 0;
+    const groups = e.groups?.length ? e.groups : clickUnits === 3 ? defaultGroups(e.num, e.den) : [];
+    const meter = sanitizeMeter({ num: e.num, den: e.den, groups });
     if (!meter || !Number.isFinite(e.tick) || e.tick < 0) continue;
     byStep.set(e.tick / tps, meter);
     if (e.tick === 0 && typeof e.pickupSteps === 'number' && Number.isFinite(e.pickupSteps) && e.pickupSteps >= 0) marked = e.pickupSteps;
