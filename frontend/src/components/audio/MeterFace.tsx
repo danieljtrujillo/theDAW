@@ -46,11 +46,11 @@ import { GEN_RULES } from '../../lib/rollLoom';
 import { GEN_DEFAULT_OPTS, GEN_KINDS, type GenKind, type GenOpts } from '../../lib/loomGen';
 import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
-  BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, bpmText, clampSelection, formatOption, genOptionSpecs,
+  BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
   laneMeterValue, lanePitches, laneSpanLabel, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
   removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
-  stepLaneTuplet, stepLoop, stepOption, stepPickup, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
@@ -402,11 +402,8 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
   const selSpan = segmentSpan(segs, selected, pickupSteps);
   const selWhole = selSpan.start <= 1e-9 && selSpan.end === null;
-  // The tempos the map moves between; a fermata is a hold, not a tempo.
-  const tempos = tempoMap.filter((e) => !e.fermata);
-  const tempoLow = tempos.reduce((m, e) => Math.min(m, e.bpm), Infinity);
-  const tempoHigh = tempos.reduce((m, e) => Math.max(m, e.bpm), 0);
-  const tempoChanges = tempoMap.length - 1;
+  // The TEMPO readout: the tempos the map moves between, with fermatas counted apart.
+  const tempoSum = tempoSummary(tempoMap, rollBpm);
 
   return (
     <>
@@ -679,20 +676,20 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
           <span
             id="mf-tempo-value"
             aria-live="polite"
-            title={`${tempoChanges} tempo point${tempoChanges === 1 ? '' : 's'} after the ${bpmText(rollBpm)} BPM start, from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM`}
+            title={tempoSum.title}
             className={`${FIELD_VALUE} min-w-10`}
           >
-            {bpmText(tempoLow)}-{bpmText(tempoHigh)}
+            {tempoSum.value}
           </span>
           <StripKey
             mini
             iconOnly
-            aria-label="Clear the tempo changes"
+            aria-label={tempoSum.clearLabel}
             aria-describedby="mf-tempo-value"
-            description={`Clear the tempo changes; the roll runs at ${bpmText(rollBpm)} BPM throughout`}
+            description={tempoSum.clearDescription}
             onClick={() => usePianoRollStore.getState().setTempoMap([])}
             icon={<Eraser className={MINI_GLYPH} />}
-            legend="Clear the tempo changes"
+            legend={tempoSum.clearLabel}
           />
         </div>
       )}

@@ -561,6 +561,45 @@ const joinParts = (parts: string[]): string =>
 /** A tempo as the status line prints it: up to two decimals, no trailing zeros. */
 export const bpmText = (bpm: number): string => String(Math.round(bpm * 100) / 100);
 
+/** The METER face's TEMPO readout for a tempo map that holds more than its start. */
+export interface TempoSummary {
+  /** The tempo range: one tempo when the map never moves off it ("120"), else "90-120". */
+  value: string;
+  /** The hover: how many tempo points and fermatas follow the start, and the range. */
+  title: string;
+  /** The Clear key's name, which says whether it clears tempo points, fermatas or both. */
+  clearLabel: string;
+  clearDescription: string;
+}
+
+/**
+ * The readout for `map` (the roll's tempo map; `startBpm` is its beat-0
+ * tempo). A fermata is a hold, not a tempo, so it is counted apart from the
+ * tempo points and never widens the range.
+ */
+export function tempoSummary(map: readonly TempoEvent[], startBpm: number): TempoSummary {
+  const tempos = map.filter((e) => !e.fermata);
+  const holds = map.length - tempos.length;
+  const points = Math.max(0, tempos.length - 1);
+  const low = tempos.reduce((m, e) => Math.min(m, e.bpm), Infinity);
+  const high = tempos.reduce((m, e) => Math.max(m, e.bpm), 0);
+  const lowText = bpmText(Number.isFinite(low) ? low : startBpm);
+  const highText = bpmText(high > 0 ? high : startBpm);
+  const value = lowText === highText ? lowText : `${lowText}-${highText}`;
+  const pointText = `${points} tempo point${points === 1 ? '' : 's'}`;
+  const holdText = `${holds} fermata${holds === 1 ? '' : 's'}`;
+  const counted = [points > 0 ? pointText : '', holds > 0 ? holdText : ''].filter(Boolean).join(' and ');
+  const range = lowText === highText ? `at ${lowText} BPM throughout` : `from ${lowText} to ${highText} BPM`;
+  const title = `${counted || 'Nothing'} after the ${bpmText(startBpm)} BPM start, ${range}`;
+  const what = points > 0 && holds > 0 ? 'the tempo changes and fermatas' : holds > 0 ? 'the fermatas' : 'the tempo changes';
+  return {
+    value,
+    title,
+    clearLabel: `Clear ${what}`,
+    clearDescription: `Clear ${what}; the roll runs at ${bpmText(startBpm)} BPM throughout`,
+  };
+}
+
 /** The swing groove's name as the status line prints it: "GROUP SWING 8THS 61.5%". */
 export const swingText = (sw: RhythmSwing): string => `GROUP SWING ${sw.unit}THS ${sw.pct}%`;
 

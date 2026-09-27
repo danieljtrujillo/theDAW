@@ -9,7 +9,7 @@ import {
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
   setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
-  setGroupingText, stepPickup, UNITS, type GenSettings,
+  setGroupingText, stepPickup, tempoSummary, UNITS, type GenSettings,
 } from './meterFace.ts';
 import { stepRenderRequest } from './midiSynth.ts';
 import { encodeMidi, parseMidi } from './midi.ts';
@@ -533,6 +533,27 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.equal(segmentLabel(st().meterMap, sel, st().totalSteps), '1+');
   assert.deepEqual(st().lanes, [LANE_A, { id: 1, name: 'B', cycleSteps: 12 }]);
   assert.equal(st().notes.length, 6);
+}
+
+// The TEMPO readout. Up to cb4f3e20 a map holding only a fermata read
+// "120-120", its hover counted the fermata as a tempo point, and the Clear key
+// said it cleared tempo changes while it also cleared the fermata.
+{
+  const onlyHold = tempoSummary([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 120, fermata: { beats: 1, stretch: 2 } }], 120);
+  assert.equal(onlyHold.value, '120', 'one tempo, printed once');
+  assert.equal(onlyHold.title, '1 fermata after the 120 BPM start, at 120 BPM throughout');
+  assert.equal(onlyHold.clearLabel, 'Clear the fermatas');
+  assert.equal(onlyHold.clearDescription, 'Clear the fermatas; the roll runs at 120 BPM throughout');
+
+  const rit = tempoSummary([{ beat: 0, bpm: 50 }, { beat: 16, bpm: 126 }, { beat: 32, bpm: 126, curve: 'linear' }, { beat: 40, bpm: 63 }], 50);
+  assert.equal(rit.value, '50-126');
+  assert.equal(rit.title, '3 tempo points after the 50 BPM start, from 50 to 126 BPM');
+  assert.equal(rit.clearLabel, 'Clear the tempo changes');
+
+  const both = tempoSummary([{ beat: 0, bpm: 72.5 }, { beat: 12, bpm: 60 }, { beat: 14, bpm: 60, fermata: { beats: 2, stretch: 3 } }, { beat: 20, bpm: 60, fermata: { beats: 1, stretch: 2 } }], 72.5);
+  assert.equal(both.value, '60-72.5');
+  assert.equal(both.title, '1 tempo point and 2 fermatas after the 72.5 BPM start, from 60 to 72.5 BPM');
+  assert.equal(both.clearLabel, 'Clear the tempo changes and fermatas');
 }
 
 console.log('meterFace: all assertions passed');
