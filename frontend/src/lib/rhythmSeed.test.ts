@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { seedFromRhythm, swingFromRhythm, tempoRuns, type RhythmAnalysis } from './rhythmSeed.ts';
-import { barStartStep } from './meterMap.ts';
+import { seedFromRhythm, swingFromRhythm, tempoRuns, type RhythmAnalysis, type RhythmMeterSegment } from './rhythmSeed.ts';
+import { barStartStep, unrollLanes } from './meterMap.ts';
+import { matchApply } from './meterFace.ts';
 import { beatToTime } from './tempoMap.ts';
 
 const base: RhythmAnalysis = {
@@ -135,7 +136,8 @@ const close = (a: number, b: number, tol: number, what: string) => assert.ok(Mat
 }
 
 // Lanes cover the segments their loop was heard in: one heard in the middle
-// segment only plays there, one heard in the first and the last runs the whole roll.
+// segment only plays there; one heard in the first and the last gets a lane
+// for each, so it stays out of the middle segment where nobody heard it.
 {
   const three: RhythmAnalysis = {
     status: 'ready',
@@ -157,8 +159,90 @@ const close = (a: number, b: number, tol: number, what: string) => assert.ok(Mat
   assert.deepEqual(s.lanes, [
     { id: 0, name: 'A', cycleSteps: null },
     { id: 1, name: 'Low', cycleSteps: 12, span: { start: 64, end: 120 } },
-    { id: 2, name: 'High', cycleSteps: 6 },
+    { id: 2, name: 'High', cycleSteps: 6, span: { start: 0, end: 64 } },
+    { id: 3, name: 'High 2', cycleSteps: 6, span: { start: 120, end: null } },
   ]);
+  // Played out, the second lane's notes sound in the last segment only.
+  const played = unrollLanes([{ id: 'h', note: 60, step: 0, length: 1, velocity: 100, lane: 3 }], s.lanes, 184);
+  assert.deepEqual(played.map((n) => n.step), [120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180]);
+}
+
+// A 4/4 song at a steady 120 whose fourth bar is cut to two beats where 3/4
+// starts (the engine ends a segment's last bar at the change). The cut bar is a
+// 2/4 bar of its own, the tempo stays 120 with no tempo changes, and every bar
+// line lands on its downbeat.
+{
+  const downbeats = [0, 2, 4, 6, 7, 8.5, 10, 11.5];
+  const cut: RhythmAnalysis = {
+    status: 'ready',
+    tempo: { bpm: 120, stable: true },
+    downbeats,
+    bars: [4, 4, 4, 2, 3, 3, 3, 3].map((beats, j) => ({ segment: j < 4 ? 0 : 1, beats })),
+    meter_map: [
+      { start_bar: 0, bars: 4, numerator: 4, denominator: 4, grouping: [4], beats_per_bar: 4, beat_unit: 'quarter', start_beat: 0, end_beat: 14 },
+      { start_bar: 4, bars: 4, numerator: 3, denominator: 4, grouping: [3], beats_per_bar: 3, beat_unit: 'quarter', start_beat: 14, end_beat: 26 },
+    ],
+  };
+  const s = seedFromRhythm(cut, 120);
+  assert.ok(s);
+  assert.equal(s.bpm, 120, 'the song never changes tempo');
+  assert.deepEqual(s.tempoMap, [], 'no tempo changes');
+  assert.deepEqual(s.meterMap, [
+    { bar: 0, meter: { num: 4, den: 4, groups: [] } },
+    { bar: 3, meter: { num: 2, den: 4, groups: [] } },
+    { bar: 4, meter: { num: 3, den: 4, groups: [] } },
+  ]);
+  downbeats.forEach((d, j) => close(barStartStep(s.meterMap, j, s.pickupSteps) / 4 * 0.5, d, 1e-9, `bar ${j + 1} lands on its downbeat`));
+  const m = matchApply({ lanes: [{ id: 0, name: 'A', cycleSteps: null }], bpm: 90 }, cut);
+  assert.equal(m.status, 'MATCH SET 3 METERS, NO PICKUP AND 120 BPM.');
+  assert.equal(m.level, 'info');
+
+  // The same song where 3/4's first downbeat comes a beat after the change:
+  // bar 4 holds its one beat and that one, so it is a 2/4 bar again.
+  const late: RhythmAnalysis = {
+    ...cut,
+    bars: [4, 4, 4, 1, 3, 3, 3, 3].map((beats, j) => ({ segment: j < 4 ? 0 : 1, beats })),
+    meter_map: [
+      { ...cut.meter_map![0], end_beat: 13 },
+      { ...cut.meter_map![1], start_beat: 13, end_beat: 26 },
+    ],
+  };
+  assert.deepEqual(seedFromRhythm(late, 120)?.meterMap, s.meterMap);
+  // A 7/8 2+2+3 bar cut to four eighths keeps its first two groups.
+  const odd: RhythmAnalysis = {
+    status: 'ready',
+    tempo: { bpm: 190, stable: true },
+    downbeats: [0, 7 * 60 / 190, 11 * 60 / 190, 18 * 60 / 190],
+    bars: [7, 4, 7, 7].map((beats) => ({ segment: 0, beats })),
+    meter_map: [{ start_bar: 0, bars: 4, numerator: 7, denominator: 8, grouping: [2, 2, 3], beats_per_bar: 7, beat_unit: 'eighth' }],
+  };
+  const o = seedFromRhythm(odd, 120);
+  assert.ok(o);
+  assert.deepEqual(o.meterMap, [
+    { bar: 0, meter: { num: 7, den: 8, groups: [2, 2, 3] } },
+    { bar: 1, meter: { num: 4, den: 8, groups: [2, 2] } },
+    { bar: 2, meter: { num: 7, den: 8, groups: [2, 2, 3] } },
+  ]);
+  close(o.bpm ?? 0, 95, 1e-9, '95 to the quarter throughout');
+  assert.deepEqual(o.tempoMap, []);
+  // An analysis written before bars[] existed reads every bar as whole.
+  assert.deepEqual(seedFromRhythm({ ...cut, bars: undefined }, 120)?.meterMap.length, 2);
+}
+
+// Too few downbeats: the tracked tempo stands in, converted to the quarter by
+// the beat's note value (190 in eighths is 95), or a tatum segment's own tempo.
+{
+  const one = (seg: Partial<RhythmMeterSegment>, bpm: number): number | null =>
+    seedFromRhythm({
+      status: 'ready',
+      tempo: { bpm, stable: true },
+      downbeats: [0.3],
+      meter_map: [{ start_bar: 0, bars: 4, numerator: 7, denominator: 8, grouping: [2, 2, 3], beats_per_bar: 7, ...seg }],
+    }, 120)?.bpm ?? null;
+  close(one({ beat_unit: 'eighth' }, 190) ?? 0, 95, 1e-9, 'eighths at 190 are 95 to the quarter');
+  close(one({ numerator: 6, grouping: [1, 1], beats_per_bar: 2, beat_unit: 'dotted-quarter' }, 60) ?? 0, 90, 1e-9, 'dotted quarters at 60 are 90');
+  close(one({ beat_unit: 'eighth', level: 'tatum', bpm: 101.5 }, 203) ?? 0, 101.5, 1e-9, "a tatum segment's tempo is already to the quarter");
+  close(one({}, 190) ?? 0, 190, 1e-9, 'no beat unit: the tracked tempo as it is');
 }
 
 console.log('rhythmSeed: ok');

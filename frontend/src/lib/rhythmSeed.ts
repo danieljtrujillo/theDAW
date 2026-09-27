@@ -14,16 +14,25 @@
  * lasts. Runs grow while every downbeat inside them stays within
  * TEMPO_TOLERANCE_SEC of where that tempo puts it; a new run starts where the
  * song speeds up or slows down. One run is one BPM; more become the roll's
- * tempo map, so the bar lines follow the song's downbeats while the notes keep
- * their steps. Reading tempo off bar lengths also makes it a quarter-note
- * tempo whatever pulse the engine tracked (it reports 190 for a 7/8 counted
- * in eighths, which is 95 to the quarter).
+ * tempo map, placed so each bar line falls on the song's downbeat under it
+ * while the notes keep their steps. Reading tempo off bar lengths also makes
+ * it a quarter-note tempo whatever pulse the engine tracked (it reports 190
+ * for a 7/8 counted in eighths, which is 95 to the quarter); with too few
+ * downbeats the tracked tempo is converted by the beat's note value instead.
+ *
+ * A bar is not always a whole bar of its segment's meter. The engine's last
+ * bar before a meter change stops where the new meter starts, and beats
+ * between a change and the new meter's first downbeat belong to the bar
+ * before. The analysis's bars[] says how many tracked beats each bar holds,
+ * so such a bar becomes a meter change of its own (a 4/4 bar cut to two beats
+ * is a 2/4 bar), and the bar after it goes back to the segment's meter.
  *
  * The analysis's swing ratio (long off-beat over short, 1 straight, 2
  * triplet) becomes a swing groove on the tracked beat's halves: 8ths under a
  * quarter-note beat, 16ths under an eighth-note beat.
  */
-import { barStartStep, meterFromAnalysis, normalizeMeterMap, stepsPerBar, type LaneSpan, type MeterSegment, type PolyLane } from './meterMap';
+import { barStartStep, meterAtBar, meterFromAnalysis, normalizeMeterMap, stepsPerBar, type LaneSpan, type MeterSegment, type PolyLane } from './meterMap';
+import type { Meter } from './colony';
 import type { TempoEvent } from './tempoMap';
 
 export interface RhythmMeterSegment {
@@ -35,6 +44,12 @@ export interface RhythmMeterSegment {
   beats_per_bar: number;
   /** The tracked beat's note value: 'quarter', 'eighth', 'sixteenth' or 'dotted-quarter'. */
   beat_unit?: string;
+  /** The grid the segment was read on: 'tracked' (the beat) or a tatum grid ('tatum', 'tatum/2'). */
+  level?: string;
+  /** Beat indices the segment covers, end exclusive. */
+  start_beat?: number;
+  end_beat?: number;
+  /** The segment's tempo: in `beat_unit`s on the tracked grid, to the quarter on a tatum grid. */
   bpm?: number;
   confidence?: number;
   uncertain?: boolean;
@@ -51,12 +66,21 @@ export interface RhythmPolymeterEntry {
   confidence: number;
 }
 
+export interface RhythmBar {
+  /** Index into meter_map. */
+  segment: number;
+  /** Tracked beats from this bar's downbeat to the next one's in its segment, or to the segment's end. */
+  beats: number;
+}
+
 export interface RhythmAnalysis {
   entry_id?: string;
   status: 'ready' | 'pending';
   tempo?: { bpm: number; stable: boolean };
   /** Seconds of each analysis bar's first beat, bar 0 first. */
   downbeats?: number[];
+  /** One entry per downbeat: the meter_map segment it belongs to and the tracked beats it holds. */
+  bars?: RhythmBar[];
   meter_map?: RhythmMeterSegment[];
   polymeter?: RhythmPolymeterEntry[];
   syncopation?: { swing_ratio?: number | null; swing_confidence?: number };
@@ -142,6 +166,79 @@ export function swingFromRhythm(a: RhythmAnalysis): RhythmSwing | null {
   return { ratio, pct, unit, grooveId: `swing${unit}:${pct}` };
 }
 
+/** Quarter notes in one tracked beat, by the beat's note value. */
+const UNIT_QUARTERS: Record<string, number> = { quarter: 1, eighth: 0.5, sixteenth: 0.25, 'dotted-quarter': 1.5 };
+
+/**
+ * The song's quarter-note tempo when the downbeats cannot give one: a tatum
+ * segment's own tempo (already to the quarter), else the tracked tempo times
+ * the quarter notes in the tracked beat (190 in eighths is 95). An analysis
+ * that names no beat unit keeps the tracked tempo as it is.
+ */
+function trackedQuarterBpm(a: RhythmAnalysis, first: RhythmMeterSegment | undefined): number | null {
+  const tracked = a.tempo && a.tempo.bpm > 0 ? a.tempo.bpm : null;
+  if (tracked == null) return null;
+  if (first?.level && first.level !== 'tracked' && typeof first.bpm === 'number' && first.bpm > 0) return first.bpm;
+  const per = first?.beat_unit ? UNIT_QUARTERS[first.beat_unit] : undefined;
+  return per ? tracked * per : tracked;
+}
+
+/**
+ * The meter of a bar of `seg` that holds `beats` tracked beats: the segment's
+ * meter scaled to them, its grouping cut short (or given one more group for
+ * extra beats). Null when the scaled numerator is not a whole number.
+ */
+function barMeter(seg: RhythmMeterSegment, beats: number): Meter | null {
+  const per = seg.beats_per_bar > 0 ? seg.numerator / seg.beats_per_bar : NaN;
+  const num = per * beats;
+  if (!Number.isInteger(num) || num < 1) return null;
+  const grouping: number[] = [];
+  let acc = 0;
+  for (const g of seg.grouping ?? []) {
+    if (acc >= beats) break;
+    const take = Math.min(g, beats - acc);
+    grouping.push(take);
+    acc += take;
+  }
+  if (acc < beats) grouping.push(beats - acc);
+  return meterFromAnalysis({ numerator: num, denominator: seg.denominator, grouping, beats_per_bar: beats });
+}
+
+/**
+ * Each analysis bar's meter where it differs from its segment's, keyed by
+ * analysis bar: a bar that holds fewer tracked beats than the segment's bar
+ * (the last one before a meter change), or more (the beats between a change
+ * and the new meter's first downbeat play in the bar before it). The song's
+ * last bar keeps its segment's meter: no downbeat follows it, so nothing says
+ * it was cut. Empty when the analysis has no bars[] matching its downbeats
+ * (caches written before bars existed).
+ */
+export function oddBars(a: RhythmAnalysis): Map<number, Meter> {
+  const out = new Map<number, Meter>();
+  const bars = a.bars;
+  const map = a.meter_map ?? [];
+  if (!Array.isArray(bars) || bars.length !== (a.downbeats ?? []).length || bars.length < 2) return out;
+  const beats = bars.map((b) => Math.round(Number(b?.beats)));
+  if (beats.some((b) => !Number.isFinite(b) || b < 1)) return out;
+  // A segment's bars run from its first downbeat to its end, so the beats
+  // between its first beat and that downbeat belong to the bar before.
+  bars.forEach((b, j) => {
+    if (j === 0 || bars[j - 1].segment === b.segment) return;
+    const seg = map[b.segment];
+    if (!seg || typeof seg.start_beat !== 'number' || typeof seg.end_beat !== 'number') return;
+    const own = bars.reduce((n, x, k) => (x.segment === b.segment ? n + beats[k] : n), 0);
+    const gap = seg.end_beat - own - seg.start_beat;
+    if (gap > 0 && gap < seg.beats_per_bar) beats[j - 1] += gap;
+  });
+  for (let j = 0; j < bars.length - 1; j += 1) {
+    const seg = map[bars[j].segment];
+    if (!seg || beats[j] === seg.beats_per_bar) continue;
+    const meter = barMeter(seg, beats[j]);
+    if (meter) out.set(j, meter);
+  }
+  return out;
+}
+
 /**
  * The roll's meter and tempo for a ready analysis, or null when it is pending
  * or has no meter map. `rollBpm` places the pickup when the analysis carries
@@ -156,7 +253,19 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
     if (meter) raw.push({ bar: Math.max(0, Math.round(s.start_bar)), meter });
   }
   if (!raw.length) return null;
-  const songMap = normalizeMeterMap(raw);
+  const firstMeter = raw[0].meter;
+  // Meters by analysis bar: each segment's from its first bar, a bar cut
+  // short (or lengthened) at a change as a meter of its own, and the bar
+  // after it back on its segment's meter.
+  const segMap = normalizeMeterMap(raw, false);
+  const byBar = new Map<number, Meter>(raw.map((r) => [r.bar, r.meter]));
+  const odd = oddBars(a);
+  for (const bar of odd.keys()) {
+    if (!odd.has(bar + 1) && !byBar.has(bar + 1)) byBar.set(bar + 1, meterAtBar(segMap, bar + 1));
+  }
+  for (const [bar, meter] of odd) byBar.set(bar, meter);
+  const barList = [...byBar].map(([bar, meter]) => ({ bar, meter }));
+  const songMap = normalizeMeterMap(barList);
 
   // Each downbeat's quarter-note position counted from the analysis's bar 0,
   // kept only while both keep rising.
@@ -169,20 +278,22 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
     ds.push(d);
   });
   const runs = tempoRuns(qs, ds);
-  const tracked = a.tempo && a.tempo.bpm > 0 ? a.tempo.bpm : null;
   const average = runs.length ? (60 * (qs[qs.length - 1] - qs[0])) / (ds[ds.length - 1] - ds[0]) : null;
-  const bpm = average ?? tracked;
+  const bpm = average ?? trackedQuarterBpm(a, segs[0]);
 
   // The pickup counts at the tempo the song opens with.
   const stepSec = 60 / (runs[0]?.bpm ?? bpm ?? rollBpm) / 4;
   const firstDownbeat = a.downbeats?.[0];
-  const barLen = stepsPerBar(songMap[0].meter);
+  const barLen = stepsPerBar(firstMeter);
   const lead = typeof firstDownbeat === 'number' && firstDownbeat > 0 && stepSec > 0 ? Math.round(firstDownbeat / stepSec) : 0;
   // Whole bars of the first meter before the first downbeat come ahead of the
   // analysis's bar 0; what is left over is the pickup.
   const extraBars = barLen > 0 ? Math.floor(lead / barLen + EPS) : 0;
   const pickupSteps = Math.min(MAX_PICKUP, Math.max(0, lead - extraBars * barLen));
-  const meterMap = normalizeMeterMap(raw.map((s, i) => ({ bar: i === 0 ? 0 : s.bar + extraBars, meter: s.meter })));
+  const meterMap = normalizeMeterMap([
+    { bar: 0, meter: firstMeter },
+    ...barList.map((s) => ({ bar: s.bar + extraBars, meter: s.meter })),
+  ]);
 
   // Tempo events in the roll's beats: the first run from beat 0 (the pickup
   // and the bars before the first downbeat take its tempo), each later run from
@@ -196,9 +307,10 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
   });
   const tempoMap = events.length > 1 ? events : [];
 
-  // Polymeter loops by cycle: the strongest entry names the lane, and the lane
-  // plays over the bars of every segment where its loop was heard.
-  const byCycle = new Map<number, { name: string; first: number; last: number }>();
+  // Polymeter loops by cycle: the strongest entry names the loop, and the loop
+  // gets a lane for each unbroken run of segments it was heard in, playing
+  // over just those bars.
+  const byCycle = new Map<number, { name: string; heard: Set<number> }>();
   const entries = [...(a.polymeter ?? [])].sort((x, y) => y.confidence - x.confidence);
   for (const p of entries) {
     if (!(typeof p.denominator === 'number' && p.denominator > 0)) continue;
@@ -210,20 +322,28 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
     const at = seg ? p.segment : 0;
     const got = byCycle.get(cycle);
     if (got) {
-      got.first = Math.min(got.first, at);
-      got.last = Math.max(got.last, at);
+      got.heard.add(at);
       continue;
     }
     if (byCycle.size >= maxLanes) continue;
-    byCycle.set(cycle, { name: title(p.layer), first: at, last: at });
+    byCycle.set(cycle, { name: title(p.layer), heard: new Set([at]) });
   }
   const segStart = (i: number): number => barStartStep(meterMap, Math.round(segs[i].start_bar) + extraBars, pickupSteps);
   const lanes: PolyLane[] = [{ id: 0, name: 'A', cycleSteps: null }];
   for (const [cycle, c] of byCycle) {
-    const id = lanes.length;
-    const span: LaneSpan = { start: c.first === 0 ? 0 : segStart(c.first), end: c.last + 1 < segs.length ? segStart(c.last + 1) : null };
-    const whole = span.start <= EPS && span.end === null;
-    lanes.push({ id, name: c.name || `Lane ${id}`, cycleSteps: cycle, ...(whole ? {} : { span }) });
+    const heardRuns: Array<{ first: number; last: number }> = [];
+    for (const i of [...c.heard].sort((x, y) => x - y)) {
+      const run = heardRuns[heardRuns.length - 1];
+      if (run && i === run.last + 1) run.last = i;
+      else heardRuns.push({ first: i, last: i });
+    }
+    heardRuns.forEach((run, k) => {
+      const id = lanes.length;
+      const span: LaneSpan = { start: run.first === 0 ? 0 : segStart(run.first), end: run.last + 1 < segs.length ? segStart(run.last + 1) : null };
+      const whole = span.start <= EPS && span.end === null;
+      const name = c.name || `Lane ${id}`;
+      lanes.push({ id, name: k === 0 ? name : `${name} ${k + 1}`, cycleSteps: cycle, ...(whole ? {} : { span }) });
+    });
   }
 
   return {
