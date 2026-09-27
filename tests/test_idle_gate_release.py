@@ -137,6 +137,8 @@ def _generate_kwargs(**overrides) -> dict:
         "custom_name": "",
         "mask_start": 0.0,
         "mask_end": 0.0,
+        "inpaint_regions": "",
+        "composite_original": "false",
         "sampler_type": None,
         "sigma_max": 1.0,
         "duration_padding_sec": 6.0,

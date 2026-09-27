@@ -176,6 +176,10 @@ const silentWavBlob = (): Blob => {
  * Decode an audio Blob, extract the portion [offsetSec, offsetSec+durationSec],
  * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
  * exactly the visible clip region, with mask coords relative to its start.
+ *
+ * Float WAV: the backend puts these samples back outside the region
+ * (composite_original), so what the model is sent is what the clip keeps. A
+ * 16-bit crop would requantize the whole clip on every inpaint.
  */
 const cropAudioBlob = async (
   blob: Blob,
@@ -199,7 +203,7 @@ const cropAudioBlob = async (
     src.connect(offline.destination);
     src.start(0, safeOffset, safeDur);
     const rendered = await offline.startRendering();
-    return encodeWav(rendered);
+    return encodeWav(rendered, { float32: true });
   } finally {
     tmpCtx.close().catch(() => {});
   }
@@ -1686,6 +1690,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     fd.append('duration', String(clip.durationSec));
     fd.append('mask_start', String(Math.max(0, maskStart)));
     fd.append('mask_end', String(Math.min(clip.durationSec, maskEnd)));
+    // Only the selection changes: the backend restores the clip's own samples
+    // outside it and crossfades the two edges inside it. The result comes back
+    // as float WAV so those samples survive the trip unrequantized.
+    fd.append('composite_original', 'true');
+    fd.append('wav_bit_depth', '32f');
     fd.append('inpaint_audio', new File([croppedAudio], 'inpaint.wav', { type: 'audio/wav' }));
     try {
       const res = await fetch('/api/generate-jobs', { method: 'POST', body: fd });

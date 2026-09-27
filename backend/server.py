@@ -33,6 +33,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
+from backend.lib.inpaint_composite import (
+    CompositeOptions,
+    composite_inpaint,
+    keep_mask_from_seconds,
+)
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
 from backend.lib import paths
@@ -1880,6 +1885,52 @@ def _clamp_for_output(audio, fmt: str, wav_bit_depth: str):
     return audio.clamp(-1, 1)
 
 
+#: generate_args key carrying the CompositeOptions of an inpaint that asked for
+#: the original back outside its region (the EDIT inpaint). It rides in the
+#: job's args like every per-job setting, but it configures the composite, not
+#: the model, so _generate_to_bytes takes it out before generate() sees it.
+_COMPOSITE_ARG = "composite_original"
+
+
+def _composite_with_original(
+    audio, output_sample_rate: int, generate_args: dict, options: CompositeOptions
+):
+    """The generation with the uploaded original restored outside the region
+    the model regenerated (backend/lib/inpaint_composite.py).
+
+    The region is the one generate() used: the seconds when both are set
+    (pipeline.generate lets them override a prebuilt mask), else the prebuilt
+    multi-region ``inpaint_mask``, which is already at the model's rate. With
+    neither there is no region to composite around and the audio passes through.
+    """
+    import torch
+
+    inpaint = generate_args.get("inpaint_audio")
+    if inpaint is None:
+        return audio
+    original_rate, original = inpaint
+    start = generate_args.get("inpaint_mask_start_seconds")
+    end = generate_args.get("inpaint_mask_end_seconds")
+    if start is not None and end is not None:
+        keep = keep_mask_from_seconds(
+            audio.shape[-1], output_sample_rate, float(start), float(end)
+        )
+    elif generate_args.get("inpaint_mask") is not None:
+        keep = generate_args["inpaint_mask"].detach().cpu().reshape(-1).numpy()
+    else:
+        return audio
+    composited = composite_inpaint(
+        original.detach().to(torch.float32).cpu().numpy(),
+        audio.numpy(),
+        output_sample_rate,
+        keep,
+        original_sample_rate=int(original_rate),
+        feather_sec=options.feather_sec,
+        match_loudness=options.match_loudness,
+    )
+    return torch.from_numpy(composited)
+
+
 def _generate_to_bytes(
     generation_pipeline,
     generate_args: dict,
@@ -1889,16 +1940,24 @@ def _generate_to_bytes(
 ) -> tuple[bytes, str]:
     import torch
 
+    # This take's own copy: the composite rider comes out here and the callback
+    # goes in, and neither may reach the job's base_args, which every take of a
+    # batch copies from.
+    generate_args = dict(generate_args)
+    composite = generate_args.pop(_COMPOSITE_ARG, None)
     if callback:
         generate_args["callback"] = callback
     audio = generation_pipeline.generate(**generate_args)
     fmt = file_format if file_format in ("wav", "flac", "ogg") else "wav"
-    audio = (
-        _clamp_for_output(audio.to(torch.float32), fmt, wav_bit_depth).squeeze(0).cpu()
-    )
+    audio = audio.to(torch.float32).squeeze(0).cpu()
     output_sample_rate = int(
         generation_pipeline.model_config.get("sample_rate", sample_rate)
     )
+    if composite is not None:
+        audio = _composite_with_original(
+            audio, output_sample_rate, generate_args, composite
+        )
+    audio = _clamp_for_output(audio, fmt, wav_bit_depth)
     buf = io.BytesIO()
     save_audio(
         buf,
@@ -2143,6 +2202,11 @@ async def generate_jobs(
     # JSON [[start_sec, end_sec], ...]; multi-region mask used only when
     # inpaint_audio is present and mask_start == mask_end == 0.
     inpaint_regions: str = Form(""),
+    # "true" restores the uploaded inpaint audio outside the regenerated region
+    # (backend/lib/inpaint_composite.py), so only the region changes. The EDIT
+    # inpaint sends it. Absent, MAKE's inpaint and the Chimera polish pass keep
+    # the model's rendering of the whole window.
+    composite_original: str = Form("false"),
     sampler_type: Optional[str] = Form(None),
     sigma_max: float = Form(1.0),
     duration_padding_sec: float = Form(6.0),
@@ -2311,6 +2375,8 @@ async def generate_jobs(
                     _require_inpaint_region(mask_start, mask_end)
                 base_args["inpaint_mask"] = inpaint_mask
                 inpaint_regions_count = len(inpaint_region_list)
+            if _coerce_form_bool(composite_original):
+                base_args[_COMPOSITE_ARG] = CompositeOptions()
 
         job_id = str(uuid.uuid4())
         lora_paths, lora_weights, lora_temp_dir = await _persist_lora_uploads(

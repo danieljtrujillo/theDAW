@@ -84,5 +84,22 @@ const enabledInitAudioForm = buildGenerateJobFormData(
 assert.equal(disabledInitAudioForm.has('init_audio'), false);
 assert.equal((enabledInitAudioForm.get('init_audio') as File).name, 'source.wav');
 
+// MAKE's inpaint and the Chimera polish pass (its region list) keep the model's
+// rendering of the whole window: only the EDIT inpaint asks the backend to
+// restore the original outside the region.
+const inpaintAudioFile = new File(['audio'], 'inpaint.wav', { type: 'audio/wav' });
+const makeInpaintForm = buildGenerateJobFormData(
+  { ...params, inpaintEnabled: true, inpaintAudioFile, maskStart: 1, maskEnd: 2 },
+  params.prompt.trim(),
+);
+const polishForm = buildGenerateJobFormData(
+  { ...params, inpaintEnabled: true, inpaintAudioFile, inpaintRegions: [[1, 2], [5, 6]] },
+  params.prompt.trim(),
+);
+assert.equal((makeInpaintForm.get('inpaint_audio') as File).name, 'inpaint.wav');
+assert.equal(makeInpaintForm.has('composite_original'), false);
+assert.equal(polishForm.has('inpaint_regions'), true);
+assert.equal(polishForm.has('composite_original'), false);
+
 console.log('generateStore form contract regression passed');
 
