@@ -2736,13 +2736,13 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ),
         (
             "engine.py",
-            2223,
+            2227,
             "output_path",
             "write_text",
         ): "Path.write_text (ABC export, plain text -- not MusicXML)",
         (
             "engine.py",
-            2525,
+            2529,
             "output_path",
             "write_text",
         ): "Path.write_text (alphaTex export, plain text -- not MusicXML)",
@@ -2783,7 +2783,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ),
         (
             "exporters/notechart.py",
-            1608,
+            1672,
             "output_path",
             "write_text",
         ): "Path.write_text (note-chart JSON export, not MusicXML)",

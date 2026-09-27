@@ -19,6 +19,15 @@ transcription whose notes overlap:
 it, joins the pieces ``makeTies`` split back into one note, and returns parts
 with no measures, voices or rests: each note or chord at its absolute offset.
 music21 bars and ties them again, correctly, when the score is written.
+
+A MIDI note is the pitch that sounds, so every part is marked
+``atSoundingPitch``. music21 reads a General MIDI clarinet, horn, trumpet,
+saxophone, English horn, piccolo, contrabass or banjo program as a transposing
+instrument, and its MusicXML writer calls ``toWrittenPitch``, which moves a
+part at sounding pitch to the written pitch its ``<transpose>`` states. A part
+whose ``atSoundingPitch`` is music21's ``'unknown'`` is written untransposed
+under that ``<transpose>``, so a reader applying it plays a B-flat clarinet a
+whole step low.
 """
 
 from __future__ import annotations
@@ -60,6 +69,7 @@ def read_midi(path: Path, *, cache: bool = True) -> Any:
 
     parsed = converter.parse(str(path), forceSource=not cache)
     score = stream.Score()
+    score.atSoundingPitch = True
     if parsed.metadata is not None:
         score.insert(0, copy.deepcopy(parsed.metadata))
     parts = list(parsed.parts) if isinstance(parsed, stream.Score) else [parsed]
@@ -88,6 +98,7 @@ def _flat_part(part: Any) -> Any:
     out = stream.Part()
     out.partName = part.partName
     out.partAbbreviation = part.partAbbreviation
+    out.atSoundingPitch = True
     seen: set[tuple[str, float]] = set()
     for element in flat.getElementsByClass(_CONTEXT_CLASSES):
         offset = common.opFrac(element.getOffsetBySite(flat))

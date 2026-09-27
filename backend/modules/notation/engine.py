@@ -2207,6 +2207,10 @@ def _convert_to_abc(
         from .exporters.abc_writer import score_to_abc
 
         score = read_score(source_path)
+        # ABC states no transposition, so a player plays every note as written.
+        # A MusicXML part for a transposing instrument holds written pitch;
+        # move it, and its key, to the pitch it sounds.
+        score.toSoundingPitch(inPlace=True)
         try:
             score = score.quantize((4, 3), inPlace=False, recurse=True)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
