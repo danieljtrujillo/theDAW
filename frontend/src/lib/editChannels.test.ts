@@ -59,6 +59,34 @@ run('tracks past the last bank get no channel and are listed', () => {
   assert.equal(planEditChannels(tracks(MAX_EDIT_BANKS * 15)).dropped.length, 0);
 });
 
+run('a track whose lanes bend takes one channel per bent lane and one more, past the drum channel and across banks', () => {
+  const plan = planEditChannels([
+    { id: 'a', percussion: false, channels: 8 },
+    { id: 'b', percussion: false, channels: 3 },
+    { id: 'd', percussion: true, channels: 4 },
+    { id: 'c', percussion: false, channels: 6 },
+  ]);
+  assert.deepEqual(plan.channelsOf.get('a'), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(plan.channelsOf.get('b'), [8, 10, 11], 'skipping the drum channel');
+  assert.deepEqual(plan.channelsOf.get('d'), [DRUM_CHANNEL], 'a drum track holds its one drum channel');
+  assert.deepEqual(plan.channelsOf.get('c'), [12, 13, 14, 15, 16, 17], 'running on into bank 1');
+  assert.equal(plan.channelOf.get('c'), 12, 'channelOf is the first channel');
+  assert.equal(plan.banks, 2);
+  for (const chans of plan.channelsOf.values()) for (const ch of chans) {
+    if (chans.length > 1 || ch !== DRUM_CHANNEL) assert.notEqual(localChannel(ch), DRUM_CHANNEL);
+  }
+});
+
+run('a track whose channels do not fit plays its bounce and leaves the pool to the next track', () => {
+  const plan = planEditChannels([
+    { id: 'a', percussion: false, channels: 14 },
+    { id: 'big', percussion: false, channels: 5 },
+    { id: 'small', percussion: false },
+  ], 1);
+  assert.deepEqual(plan.dropped, ['big']);
+  assert.deepEqual(plan.channelsOf.get('small'), [15], 'the last melodic channel of bank 0');
+});
+
 run('global channels split into bank and local channel', () => {
   assert.equal(bankOfChannel(25), 1);
   assert.equal(localChannel(25), 9);

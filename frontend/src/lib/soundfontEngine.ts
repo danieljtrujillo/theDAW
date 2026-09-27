@@ -193,12 +193,14 @@ export async function ensureSoundfontReady(): Promise<boolean> {
  * Switch a channel to `program` when it plays another one, and remember it in
  * `programs` (that synth's map), so every caller on that channel (a preview, a
  * roll lane, the keyboard) knows what the channel plays and switches it back
- * when it needs its own.
+ * when it needs its own. With a `time` (audio-context seconds) the change is
+ * queued on the synth for then, so a note scheduled ahead switches the channel
+ * at its own moment and not while the note before it is still sounding.
  */
-function setChannelProgram(synth: WorkletSynthesizer, ch: number, program: number, programs = channelProgram): void {
+function setChannelProgram(synth: WorkletSynthesizer, ch: number, program: number, programs = channelProgram, time?: number): void {
   const p = Math.max(0, Math.min(127, Math.round(program)));
   if (programs.get(ch) === p) return;
-  synth.programChange(ch, p);
+  synth.programChange(ch, p, time !== undefined ? { time } : undefined);
   programs.set(ch, p);
 }
 
@@ -352,6 +354,8 @@ interface EditBank {
   programs: Map<number, number>;
   /** Channels taken off the master, and the node each one now feeds. */
   routes: Map<number, AudioNode>;
+  /** True while every output is off the master (parkEditRouting), so a note left in the queue sounds nowhere. */
+  parked: boolean;
 }
 
 const editBanks: EditBank[] = [];
@@ -368,7 +372,7 @@ export function ensureEditBanks(count: number): Promise<boolean> {
     try {
       await getLiveSynth(); // the worklet module and the soundfont, loaded once
       while (editBanks.length < want) {
-        editBanks.push({ synth: await createLiveSynth(), programs: new Map(), routes: new Map() });
+        editBanks.push({ synth: await createLiveSynth(), programs: new Map(), routes: new Map(), parked: false });
       }
       return true;
     } catch {
@@ -385,20 +389,56 @@ function editChannel(channel: number): { bank: EditBank; ch: number } | null {
   return bank ? { bank, ch: localChannel(channel) } : null;
 }
 
-/** Note-on on an EDIT channel, switching its program first if it changed. No-op until its bank exists. */
-export function editNoteOn(channel: number, program: number, midi: number, velocity: number): void {
+/** SpessaSynth's event options for audio-context time `time`, or none (now). */
+const atTime = (time?: number) => (time !== undefined && Number.isFinite(time) ? { time } : undefined);
+
+/**
+ * Note-on on an EDIT channel at audio-context time `time` (now when absent),
+ * switching its program first, at the same time, if it changed. The synth
+ * queues a timed event and plays it on the render quantum it falls in, so a
+ * note scheduled ahead (lib/editMidiScheduler) sounds on the audio clock the
+ * clips play on. No-op until its bank exists.
+ */
+export function editNoteOn(channel: number, program: number, midi: number, velocity: number, time?: number): void {
   const at = editChannel(channel);
   if (!at) return;
-  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs);
-  at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))));
+  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, atTime(time)?.time);
+  at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))), atTime(time));
 }
 
-/** Note-off on an EDIT channel. No-op until its bank exists. */
-export function editNoteOff(channel: number, midi: number): void {
+/** Note-off on an EDIT channel at audio-context time `time` (now when absent). No-op until its bank exists. */
+export function editNoteOff(channel: number, midi: number, time?: number): void {
   const at = editChannel(channel);
   if (!at) return;
   try {
-    at.bank.synth.noteOff(at.ch, Math.round(midi));
+    at.bank.synth.noteOff(at.ch, Math.round(midi), atTime(time));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Move an EDIT channel's pitch wheel (raw 0-16383, 8192 the centre) at `time` (now when absent). No-op until its bank exists. */
+export function editPitchWheel(channel: number, raw: number, time?: number): void {
+  const at = editChannel(channel);
+  if (!at) return;
+  try {
+    at.bank.synth.pitchWheel(at.ch, Math.max(0, Math.min(16383, Math.round(raw))), atTime(time));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Set an EDIT channel's pitch bend range in semitones at `time` (now when
+ * absent): the RPN 0/0 messages the bounce writes (lib/midi bendRangeMessages),
+ * so a clip's bend plays live over the range it renders with. No-op until its
+ * bank exists.
+ */
+export function editPitchWheelRange(channel: number, semitones: number, time?: number): void {
+  const at = editChannel(channel);
+  if (!at) return;
+  try {
+    for (const bytes of bendRangeMessages(at.ch, Math.max(0, semitones), RANGE_LSB_SPESSA)) at.bank.synth.sendMessage(bytes, 0, atTime(time));
   } catch {
     /* ignore */
   }
@@ -410,6 +450,11 @@ export function routeEditChannel(channel: number, dest: AudioNode | null): void 
   const at = editChannel(channel);
   if (!at) return;
   const master = getMasterGain();
+  if (at.bank.parked) {
+    // Back on the master, all seventeen outputs (the effects bus included), then routed.
+    try { at.bank.synth.connect(master); } catch { /* master always valid */ }
+    at.bank.parked = false;
+  }
   const current = at.bank.routes.get(at.ch) ?? master;
   const next = dest ?? master;
   if (current === next) return;
@@ -429,6 +474,24 @@ export function resetEditRouting(): void {
       try { bank.synth.connectChannel(master, ch); } catch { /* master always valid */ }
     }
     bank.routes.clear();
+  }
+}
+
+/**
+ * Take every EDIT bank off the master and its tracks: the channels go back to
+ * the master (resetEditRouting), then all seventeen outputs leave it. The
+ * scheduler queues notes ahead of the clock and SpessaSynth cannot take a
+ * queued event back, so after a stop a note already queued would otherwise
+ * sound on the master. The next routeEditChannel puts the bank back. MUST run
+ * before the track nodes are disposed, as resetEditRouting must.
+ */
+export function parkEditRouting(): void {
+  resetEditRouting();
+  const master = getMasterGain();
+  for (const bank of editBanks) {
+    if (bank.parked) continue;
+    try { bank.synth.disconnect(master); } catch { /* an output already off the master */ }
+    bank.parked = true;
   }
 }
 

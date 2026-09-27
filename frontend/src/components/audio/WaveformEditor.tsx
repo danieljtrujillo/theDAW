@@ -1454,8 +1454,13 @@ const PopoverPortal: React.FC<{
  * The drum key beside it makes the track a percussion track: its MIDI clips
  * play and render on the General MIDI drum channel, where a note is a drum and
  * the program picks the kit, so the list offers the kits instead.
+ *
+ * The status after it (a dot and one word) says how the track's MIDI sounds on
+ * the next play: Live, on EDIT's synths on the audio clock
+ * (lib/editMidiScheduler), or Bounce, its rendered audio; its title says why
+ * and how many channels a live track holds.
  */
-const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
+const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: liveMixer.LiveMidiTrackStatus }> = ({ track, status }) => {
   const updateTrack = useEditorStore((s) => s.updateTrack);
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
@@ -1514,6 +1519,16 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
           <option value={track.instrumentProgram}>{`${drumKitName(track.instrumentProgram)} kit`}</option>
         )}
       </select>
+      {status && (
+        <span
+          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
+          title={status.reason}
+        >
+          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+          {status.mode === 'live' ? 'Live' : 'Bounce'}
+          <span className="sr-only">{`: ${status.reason}`}</span>
+        </span>
+      )}
     </div>
   );
 };
@@ -2647,6 +2662,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // instrument at either of those levels would leave the bounced audio stale.
   const sfActiveProgram = useSoundfontStore((s) => s.activeProgram);
   const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
+  // Which MIDI tracks the next pass plays live on EDIT's synths and which play
+  // their bounce, for the status beside each track's instrument (the same plan
+  // play() makes, liveMixer planLiveMidi).
+  const liveMidiStatus = useMemo(
+    () => liveMixer.liveMidiTrackStatus(clips, tracks, { useSoundfont: sfEnabled, activeProgram: sfActiveProgram }),
+    [clips, tracks, sfActiveProgram, sfEnabled],
+  );
   const midiClipProgramSig = useMemo(
     () => clips.filter((c) => c.sourceKind === 'piano-roll')
       .map((c) => {
@@ -7230,7 +7252,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   </span>
                 </div>
                 {clips.some((c) => c.trackId === t.id && isMidiClip(c)) && (
-                  <TrackInstrumentSelect track={t} />
+                  <TrackInstrumentSelect track={t} status={liveMidiStatus.get(t.id)} />
                 )}
               </div>
             ))}
