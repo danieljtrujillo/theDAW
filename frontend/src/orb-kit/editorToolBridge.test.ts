@@ -237,6 +237,31 @@ assert.equal(captured[0].form.get('maxMatchSec'), '0.5');
 assert.match(late.message, /The MIDI is LATE — move it earlier/);
 assert.match(late.message, /ms:-17\}/);
 
+// A clip with a tempo map sends its notes where EDIT plays them: 60 bpm for
+// beat 0, 120 from beat 1 (step 4), so steps 0/4/8 sit at 0 / 1 / 1.5 s into
+// the clip, and a sourceBpm retag to 90 scales the whole map (0 / 0.667 / 1).
+seed();
+useEditorStore.getState().updateClip('m1', { sourceBpm: 60, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 120 }] });
+okOf(
+  await bridge.compareTiming(
+    { midi_clip_id: 'm1', audio_clip_id: 'a1' },
+    { fetchImpl: scripted(() => jsonReply({ medianOffsetSec: 0, meanOffsetSec: 0, matched: 3, unmatchedNotes: 0, perNote: [] })) },
+  ),
+  'compare timing with a tempo map',
+);
+//   + midi.startSec 2 - audio.startSec 1.5 + audio.offsetIntoSource 0.25 = +0.75
+assert.equal(captured[0].form.get('noteStartsSec'), '[0.75,1.75,2.25]');
+seed();
+useEditorStore.getState().updateClip('m1', { sourceBpm: 90, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 120 }] });
+okOf(
+  await bridge.compareTiming(
+    { midi_clip_id: 'm1', audio_clip_id: 'a1' },
+    { fetchImpl: scripted(() => jsonReply({ medianOffsetSec: 0, meanOffsetSec: 0, matched: 3, unmatchedNotes: 0, perNote: [] })) },
+  ),
+  'compare timing with a retagged tempo map',
+);
+assert.equal(captured[0].form.get('noteStartsSec'), '[0.75,1.417,1.75]');
+
 seed();
 assert.match(
   errOf(await bridge.compareTiming({ midi_clip_id: 'a1', audio_clip_id: 'm1' }, {}), 'not midi'),
