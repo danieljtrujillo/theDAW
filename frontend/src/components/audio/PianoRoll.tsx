@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Check, Info, Minus, Plus, Save, Scissors, Trash2, Unlink, Waves } from 'lucide-react';
-import { DEFAULT_GROOVE_ID, DEFAULT_LANES, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import {
+  DEFAULT_GROOVE_ID,
+  DEFAULT_LANES,
+  MIN_NOTE_LENGTH,
+  usePianoRollStore,
+  type PianoNote,
+} from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
@@ -32,7 +38,7 @@ import {
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
-import { playedRollNotes, quantizeRollClip, rollClipFields } from '../../lib/rollClip';
+import { feelLength, playedRollNotes, quantizeRollClip, rollClipFields } from '../../lib/rollClip';
 import { copyNotes, duplicateNotes, pasteNotes, type NoteClipboardPayload } from '../../lib/noteClipboard';
 import {
   MARQUEE_MIN_PX,
@@ -569,9 +575,10 @@ export const PianoRollFeel: React.FC = () => {
     // (`rollClip.quantizeRollClip`, which is `clipNotes.quantizeNotes` — the
     // arithmetic is not reimplemented here), then lay the groove over it
     // (`grooveTemplate.applyGroove`, same as before). Lengths are handled
-    // separately, unchanged: a note's DURATION rounds toward the nearest whole
-    // step, which is not what `quantizeEnds` computes (that snaps the note's
-    // END POSITION to the grid, a different quantity).
+    // separately (`rollClip.feelLength`): a note's DURATION moves toward the
+    // nearest whole step by QUANT, which is not what `quantizeEnds` computes
+    // (that snaps the note's END POSITION to the grid, a different quantity).
+    // At QUANT 0 a length stays as it was, a sub-step one included.
     const { sourceRollNotes: quantizedSteps } = quantizeRollClip(
       {
         sourceRollNotes: notes,
@@ -583,11 +590,7 @@ export const PianoRollFeel: React.FC = () => {
       },
       { grid: '1/16', strength: q, groove, grooveStrength: picked ? q : 1 },
     );
-    const adjusted = quantizedSteps.map((note, i) => {
-      const originalLength = notes[i].length;
-      const quantizedLength = Math.max(1, Math.round(originalLength));
-      return { ...note, length: Math.max(1, originalLength + (quantizedLength - originalLength) * q) };
-    });
+    const adjusted = quantizedSteps.map((note, i) => ({ ...note, length: feelLength(notes[i].length, q) }));
     replaceAll(adjusted);
     logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% · groove ${groove.name}`);
   };
@@ -1615,7 +1618,7 @@ export const PianoRoll: React.FC<{
       }
       return;
     }
-    // Otherwise add a 1-step note.
+    // Otherwise add a 2-step note (an 8th) on the clicked cell.
     addNote({ note: targetNote, step: targetStep, length: 2, velocity: 96 });
     triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current);
   };
@@ -1694,9 +1697,12 @@ export const PianoRoll: React.FC<{
     if (op) {
       const dx = e.clientX - op.startX;
       if (Math.abs(dx) >= 3 && pressRef.current?.id === op.id) pressRef.current.wasSelected = false;
+      // Whole steps, stopping at one step (MIN_NOTE_LENGTH: the grid cannot grab
+      // a thinner note by hand). A note already shorter than a step, a triplet
+      // 16th out of GEN, keeps its length until the drag makes it longer.
       const deltaSteps = Math.round(dx / stepPx);
-      const newLen = Math.max(1, op.initialLength + deltaSteps);
-      updateNote(op.id, { length: newLen });
+      const newLen = Math.max(Math.min(MIN_NOTE_LENGTH, op.initialLength), op.initialLength + deltaSteps);
+      if (newLen !== usePianoRollStore.getState().notes.find((n) => n.id === op.id)?.length) updateNote(op.id, { length: newLen });
       return;
     }
     const mq = marqueeRef.current;
@@ -2143,8 +2149,8 @@ export const PianoRoll: React.FC<{
           {
             type: 'item',
             label: 'Shorten (−1 step)',
-            disabled: n.length <= 1,
-            onSelect: () => updateNote(n.id, { length: Math.max(1, n.length - 1) }),
+            disabled: n.length <= MIN_NOTE_LENGTH,
+            onSelect: () => updateNote(n.id, { length: Math.max(MIN_NOTE_LENGTH, n.length - 1) }),
           },
           {
             type: 'item',

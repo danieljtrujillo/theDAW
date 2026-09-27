@@ -41,7 +41,7 @@ export type RollLoadArgs = [clipId: string, notes: PianoNote[], bpm: number, tot
 
 /** The step just past the last note's end — the grid length a note list implies when nothing else says otherwise. */
 const noteEndSteps = (notes: readonly PianoNote[]): number =>
-  notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
 
 /**
  * The notes as they sound: each looping lane's repeats written out across the
@@ -171,4 +171,17 @@ export function quantizeRollClip(
   if (legacy) return { sourceRollNotes: [], sourcePianoRoll: result };
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
   return { sourceRollNotes: result, sourcePianoRoll: playedRollNotes(result, lanes, totalSteps) };
+}
+
+/**
+ * A note's length after the roll's APPLY at quantize strength `q` (0-1):
+ * pulled from its own length toward the nearest whole number of steps (at
+ * least one), `q` of the way. At 0 the length stays as it was, a sub-step
+ * triplet 16th included, so a swing-only APPLY moves starts and leaves lengths
+ * alone; at 1 it lands on whole steps, APPLY's 1/16 grid.
+ */
+export function feelLength(length: number, q: number): number {
+  const strength = Math.max(0, Math.min(1, Number.isFinite(q) ? q : 0));
+  const whole = Math.max(1, Math.round(length));
+  return length + (whole - length) * strength;
 }

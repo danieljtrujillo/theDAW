@@ -369,7 +369,7 @@ const fitToNotes = (
   meterMap: MeterSegment[],
   pickupSteps: number,
 ): { totalSteps: number; lowestNote: number; highestNote: number } => {
-  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
   const totalSteps = Math.min(MAX_STEPS, roundUpToBar(meterMap, Math.max(MIN_STEPS, lastStep), pickupSteps));
   const lo = Math.max(0, Math.min(FULL_LOW, notes.reduce((m, n) => Math.min(m, n.note), 127) - 2));
   const hi = Math.min(127, Math.max(FULL_HIGH, notes.reduce((m, n) => Math.max(m, n.note), 0) + 2));
@@ -414,26 +414,16 @@ const noSelection = (): SelectionSlice => ({ selectedIds: new Set<string>(), sel
 // ── Note validation ──────────────────────────────────────────────────────────
 
 /**
- * The shortest note the 16th grid holds when a caller gives a LENGTH IN STEPS.
+ * The shortest note a GESTURE makes, in steps: a click on an empty cell, a
+ * resize drag, the note menu's Shorten. The grid cannot draw or grab a note
+ * thinner than one cell by hand, so those gestures stop at one step.
  *
- * The model has TWO length floors on purpose, and they are deliberately
- * different:
- *
- *   • a length in STEPS floors at one step (this constant). A step length is
- *     something the GRID drew — a drawn, dragged or resized note, an import
- *     counted in steps — and the roll cannot draw, hit-test or hand back a note
- *     thinner than one cell, so a sub-step step-length is a rounding artefact,
- *     not an intention. Rounding it up to a cell is what keeps a dragged note
- *     visible and grabbable.
- *   • a length in TICKS floors at one tick (`MIN_NOTE_TICKS`). A tick length
- *     came from the model's own clock — a recorded take, a bend-laden import,
- *     an off-grid paste — where a 32nd-of-a-step flam IS the intention. Floors
- *     of a whole step there would quantise exactly the material the tick model
- *     exists to preserve; one tick is only the "this is still a note, not a
- *     note-off" bound.
- *
- * So a caller that gives `ticks` may go far shorter than a caller that gives
- * `length`, and `timingOf` applies whichever floor matches the field it used.
+ * The MODEL's floor is one tick (`MIN_NOTE_TICKS`), however a length arrives:
+ * as `ticks`, or as a `length` in steps from a caller that builds notes without
+ * ticks — GEN, Virtuoso, sheet import, audio-to-notes, AI COMPOSE, a paste. A
+ * two-thirds-step 16th triplet or a half-step 32nd is the intention there, and
+ * raising it to a whole step would make every such run overlap the note after
+ * it. A length missing altogether (not a number) is taken as one step.
  */
 export const MIN_NOTE_LENGTH = 1;
 
@@ -460,6 +450,9 @@ export const ROLL_STEPS_PER_BEAT = 4;
 
 /** The shortest note the model holds at all: one tick. */
 export const MIN_NOTE_TICKS = 1;
+
+/** One tick as a length in the roll's steps: the model's floor for a `length`. */
+export const MIN_NOTE_STEPS = MIN_NOTE_TICKS / (PPQ / ROLL_STEPS_PER_BEAT);
 
 const validStepsPerBeat = (stepsPerBeat?: number): number =>
   isNum(stepsPerBeat) && stepsPerBeat > 0 ? stepsPerBeat : ROLL_STEPS_PER_BEAT;
@@ -500,9 +493,11 @@ const timingOf = (n: Partial<PianoNote>, stepsPerBeat?: number): { tick: number;
   const keepTick = isNum(n.tick) && (!isNum(n.step) || Math.abs(n.tick - n.step * per) < 0.5);
   const tick = keepTick ? Math.max(0, Math.round(n.tick as number)) : tickOfStep(isNum(n.step) ? n.step : 0, stepsPerBeat);
   const keepTicks = isNum(n.ticks) && (!isNum(n.length) || Math.abs(n.ticks - n.length * per) < 0.5);
+  // A tick-less length keeps its own size down to one tick; only a length that
+  // is not a number at all falls back to one step (see MIN_NOTE_LENGTH).
   const ticks = keepTicks
     ? Math.max(MIN_NOTE_TICKS, Math.round(n.ticks as number))
-    : Math.max(MIN_NOTE_TICKS, tickOfStep(Math.max(MIN_NOTE_LENGTH, isNum(n.length) ? n.length : MIN_NOTE_LENGTH), stepsPerBeat));
+    : Math.max(MIN_NOTE_TICKS, tickOfStep(isNum(n.length) ? n.length : MIN_NOTE_LENGTH, stepsPerBeat));
   return { tick, ticks };
 };
 
@@ -563,8 +558,8 @@ export const migrateNotes = (notes: readonly PianoNote[], stepsPerBeat?: number)
 /**
  * A note's fields brought inside the model's bounds: a whole MIDI note 0-127, a
  * whole velocity 1-127 (0 is a note-off, never a note), a start at or after the
- * roll's beginning and a length of at least one step, a whole tick at or after
- * 0, a length of at least one tick, a channel 1-16 and expression in range.
+ * roll's beginning and a length of at least one tick (in steps or in ticks), a
+ * whole tick at or after 0, a channel 1-16 and expression in range.
  *
  * `step` keeps its FRACTION on purpose — swing, micro-timing and an imported
  * off-grid take all place notes between 16ths, and the scheduler fires them at
@@ -577,7 +572,7 @@ const validNote = <T extends Partial<PianoNote>>(patch: T): Omit<T, 'id'> => {
   if ('note' in out) out.note = Math.max(0, Math.min(127, Math.round(isNum(out.note) ? out.note : 0)));
   if ('velocity' in out) out.velocity = clampVelocity(out.velocity as number);
   if ('step' in out) out.step = Math.max(0, isNum(out.step) ? out.step : 0);
-  if ('length' in out) out.length = Math.max(MIN_NOTE_LENGTH, isNum(out.length) ? out.length : MIN_NOTE_LENGTH);
+  if ('length' in out) out.length = isNum(out.length) ? Math.max(MIN_NOTE_STEPS, out.length) : MIN_NOTE_LENGTH;
   if ('tick' in out) out.tick = Math.max(0, Math.round(isNum(out.tick) ? out.tick : 0));
   if ('ticks' in out) out.ticks = Math.max(MIN_NOTE_TICKS, Math.round(isNum(out.ticks) ? out.ticks : MIN_NOTE_TICKS));
   if ('channel' in out) {
