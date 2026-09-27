@@ -32,7 +32,8 @@ import {
 } from './audioProcessing';
 import { quantizeNotes, transposeNotes, snapNotesToScale, changeKey, getKeyName } from './midiEditor';
 import { detectKeyAndScale, getRelatedKeys } from './musicTheory';
-import { getMidiSynth } from './midiSynth';
+import { getMidiSynth, useVocalVoiceStore } from './midiSynth';
+import { GM_NAMES } from '../../../lib/gmInstruments';
 import { analyzeAudioWithGemini, smartCleanupMidi, type AnalysisContext } from './geminiService';
 import { Visualizer } from './Visualizer';
 import { BpmTapper } from './BpmTapper';
@@ -126,6 +127,8 @@ const chipOn = KEY_ON;
 export const Vocal2MidiPanel: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [config, setConfig] = useState<ProcessingConfig>({ ...DEFAULT_CONFIG });
+  const previewProgram = useVocalVoiceStore((st) => st.program);
+  const setPreviewProgram = useVocalVoiceStore((st) => st.setProgram);
   const [capturedNotes, setCapturedNotes] = useState<NoteEvent[]>([]);
   const [processedNotes, setProcessedNotes] = useState<NoteEvent[]>([]);
   const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysisResult | null>(null);
@@ -657,6 +660,25 @@ export const Vocal2MidiPanel: React.FC = () => {
             {/* Own id prefix — this panel renders beside the Piano Roll, which
                 owns `pr-instrument`. */}
             <div className="mt-0.5"><InstrumentPicker idPrefix="v2m-instrument" /></div>
+          </div>
+          <div>
+            {/* The panel's own voice for PLAY and WAV export. The assistant's
+                instrument choice lands here, never on the picker above, whose
+                program every EDIT clip without its own follows. */}
+            <label htmlFor="v2m-preview-voice" className={labelCls}>Preview voice</label>
+            <select
+              id="v2m-preview-voice"
+              name="v2m-preview-voice"
+              value={previewProgram === null ? 'picker' : String(previewProgram)}
+              onChange={(e) => setPreviewProgram(e.target.value === 'picker' ? null : Number(e.target.value))}
+              className="mt-0.5 block form-select px-2 py-1 text-xs font-semibold max-w-44"
+              style={{ colorScheme: 'dark' }}
+            >
+              <option value="picker">Same as the instrument</option>
+              {GM_NAMES.map((n, i) => (
+                <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
+              ))}
+            </select>
           </div>
         </Section>
 

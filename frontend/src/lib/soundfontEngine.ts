@@ -9,15 +9,32 @@
  * so MIDI rendered to WAV (Library, sendToTargets, PianoRoll) uses the soundfont
  * too. Arbitrary notes are bridged to a MIDI sequence via `notesToSmf`, since
  * SpessaSynth renders from a parsed MIDI rather than loose notes.
+ *
+ * Live synths: the PREVIEW synth plays the piano roll's lanes, the
+ * arpeggiator, the hardware keyboard, the Sway pads, DRAW and every preview, all
+ * to the engine master. EDIT's live MIDI plays on EDIT BANKS, synths of its own
+ * with sixteen channels each (lib/editChannels), whose channels are routed into
+ * the tracks' strips. The two never share a channel.
  */
 import { create } from 'zustand';
 import { WorkletSynthesizer, audioBufferToWav } from 'spessasynth_lib';
-import { BasicMIDI } from 'spessasynth_core';
+import { BasicMIDI, SoundBankLoader } from 'spessasynth_core';
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { RANGE_LSB_SPESSA, bendRangeMessages } from './midi';
 import { addWorkletModule } from './audioWorkletSupport';
 import { notesToSmf, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
+import type { GlobalVoice } from './clipProgram';
+import { KEYBOARD_LIVE_CHANNEL } from './pitchBend';
+import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
+import {
+  RENDER_TAIL_CAP_SEC,
+  audibleFrames,
+  midiPresetKeys,
+  releaseLookupFromBank,
+  renderTailSec,
+  type ReleaseLookup,
+} from './renderTail';
 
 /** Bundled default General MIDI soundfont, served from frontend/public. */
 const DEFAULT_SOUNDFONT_URL = '/soundfonts/gm.sf3';
@@ -60,6 +77,11 @@ export const useSoundfontStore = create<SoundfontState>((set) => ({
 export const isSoundfontActive = (): boolean => useSoundfontStore.getState().useSoundfont;
 /** The active GM program (0-127). */
 export const getActiveProgram = (): number => useSoundfontStore.getState().activeProgram;
+/** The picker's state as lib/clipProgram reads it: whether soundfonts are on and the program. */
+export const getGlobalVoice = (): GlobalVoice => {
+  const { useSoundfont, activeProgram } = useSoundfontStore.getState();
+  return { useSoundfont, activeProgram };
+};
 /** The active procedural synth voice id, or null when on soundfont/basic. */
 export const getActiveSynthVoice = (): string | null => useSoundfontStore.getState().activeSynthVoice;
 
@@ -110,21 +132,29 @@ function getProcessorUrl(): Promise<string> {
   return processorUrlPromise;
 }
 
+/** A live synth on the engine context, wired to the master, with the default soundfont loaded. */
+async function createLiveSynth(): Promise<WorkletSynthesizer> {
+  const ctx = getEngineCtx();
+  await addWorkletModule(ctx, await getProcessorUrl());
+  const synth = new WorkletSynthesizer(ctx);
+  synth.connect(getMasterGain());
+  const sf = await loadDefaultSoundfont();
+  // Pass a copy: the worklet transfers (detaches) the buffer it receives, and
+  // the cached `sf` is reused by the offline render path too.
+  await synth.soundBankManager.addSoundBank(sf.slice(0), 'main');
+  await synth.isReady;
+  return synth;
+}
+
 let liveSynth: WorkletSynthesizer | null = null;
 let liveSynthPromise: Promise<WorkletSynthesizer> | null = null;
 const channelProgram = new Map<number, number>();
 function getLiveSynth(): Promise<WorkletSynthesizer> {
   if (!liveSynthPromise) {
     liveSynthPromise = (async () => {
-      const ctx = getEngineCtx();
-      await addWorkletModule(ctx, await getProcessorUrl());
-      const synth = new WorkletSynthesizer(ctx);
-      synth.connect(getMasterGain());
-      const sf = await loadDefaultSoundfont();
-      // Pass a copy: the worklet transfers (detaches) the buffer it receives, and
-      // the cached `sf` is reused by the offline render path too.
-      await synth.soundBankManager.addSoundBank(sf.slice(0), 'main');
-      await synth.isReady;
+      const synth = await createLiveSynth();
+      // Channel 16 is the hardware keyboard's (KEYBOARD_LIVE_CHANNEL).
+      synth.addNewChannel();
       liveSynth = synth;
       channelProgram.clear();
       useSoundfontStore.setState({ ready: true });
@@ -136,6 +166,10 @@ function getLiveSynth(): Promise<WorkletSynthesizer> {
   }
   return liveSynthPromise;
 }
+
+/** A preview-synth channel: 0-15, or the keyboard's 16. */
+const previewChannel = (channel: number): number =>
+  Math.max(0, Math.min(KEYBOARD_LIVE_CHANNEL, Number.isFinite(channel) ? Math.round(channel) : 0));
 
 /**
  * Warm up the engine (worklet + soundfont) ahead of first use so the first note
@@ -152,25 +186,34 @@ export async function ensureSoundfontReady(): Promise<boolean> {
 }
 
 /**
- * Switch a channel to `program` when it plays another one, and remember it, so
- * every caller on that channel (a preview, the roll, EDIT's live MIDI) knows
- * what the channel plays and switches it back when it needs its own.
+ * Switch a channel to `program` when it plays another one, and remember it in
+ * `programs` (that synth's map), so every caller on that channel (a preview, a
+ * roll lane, the keyboard) knows what the channel plays and switches it back
+ * when it needs its own.
  */
-function setChannelProgram(synth: WorkletSynthesizer, ch: number, program: number): void {
+function setChannelProgram(synth: WorkletSynthesizer, ch: number, program: number, programs = channelProgram): void {
   const p = Math.max(0, Math.min(127, Math.round(program)));
-  if (channelProgram.get(ch) === p) return;
+  if (programs.get(ch) === p) return;
   synth.programChange(ch, p);
-  channelProgram.set(ch, p);
+  programs.set(ch, p);
 }
 
 /**
  * Play a single note live through the soundfont on `channel` (0 unless the
  * caller keeps a channel of its own), at audio-context time `when` (now when
- * left out or already past) for `durationSec`. The note-on and note-off are
- * timed on the synth, so a note lands with the wheel messages sent for the same
- * time. Failure-safe (no throw).
+ * left out or already past) for `durationSec`, with `program` (the global
+ * picker's when left out). The note-on and note-off are timed on the synth, so
+ * a note lands with the wheel messages sent for the same time. Failure-safe
+ * (no throw).
  */
-export async function previewNoteSF(midi: number, velocity: number, durationSec: number, channel = 0, when?: number): Promise<void> {
+export async function previewNoteSF(
+  midi: number,
+  velocity: number,
+  durationSec: number,
+  channel = 0,
+  when?: number,
+  program?: number,
+): Promise<void> {
   try {
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') {
@@ -181,8 +224,8 @@ export async function previewNoteSF(midi: number, velocity: number, durationSec:
       }
     }
     const synth = await getLiveSynth();
-    const ch = channel & 0x0f;
-    setChannelProgram(synth, ch, getActiveProgram());
+    const ch = previewChannel(channel);
+    setChannelProgram(synth, ch, program ?? getActiveProgram());
     const note = Math.round(midi);
     // A time that passed while the synth loaded plays now, and the note keeps its length.
     const start = Math.max(when ?? 0, ctx.currentTime);
@@ -193,14 +236,49 @@ export async function previewNoteSF(midi: number, velocity: number, durationSec:
   }
 }
 
+/**
+ * Each preset's release by key, read once from the default soundfont on the
+ * main thread (lib/renderTail). A soundfont the parser refuses gives every note
+ * the longest tail, which the silence cut then trims, so no final chord is cut.
+ */
+let releaseLookupPromise: Promise<ReleaseLookup> | null = null;
+function getReleaseLookup(sf: ArrayBuffer): Promise<ReleaseLookup> {
+  if (!releaseLookupPromise) {
+    releaseLookupPromise = Promise.resolve()
+      .then(() => releaseLookupFromBank(SoundBankLoader.fromArrayBuffer(sf.slice(0))))
+      .catch((): ReleaseLookup => () => RENDER_TAIL_CAP_SEC);
+  }
+  return releaseLookupPromise;
+}
+
+/** Render lengths: `minDurationSec` is the least the audio lasts (a clip's
+ *  nominal length). `tailSec` rings a fixed time past the last event; left out,
+ *  the render rings for the longest release among the presets it plays and is
+ *  cut where it falls silent, never before its last event or `minDurationSec`. */
+interface RenderLength {
+  tailSec?: number;
+  minDurationSec?: number;
+}
+
+/** The first `frames` of `buffer`, or `buffer` itself when that is all of it. */
+function leadingFrames(buffer: AudioBuffer, frames: number): AudioBuffer {
+  if (frames >= buffer.length) return buffer;
+  const out = new AudioBuffer({ numberOfChannels: buffer.numberOfChannels, length: Math.max(1, frames), sampleRate: buffer.sampleRate });
+  for (let c = 0; c < buffer.numberOfChannels; c += 1) out.copyToChannel(buffer.getChannelData(c).subarray(0, out.length), c);
+  return out;
+}
+
 async function renderMidiToBlob(
   midiBytes: ArrayBuffer,
   sampleRate: number,
-  tailSec: number,
+  opts: RenderLength,
 ): Promise<{ blob: Blob; duration: number }> {
   const sf = await loadDefaultSoundfont();
   const midi = BasicMIDI.fromArrayBuffer(midiBytes, 'render');
-  const length = Math.max(1, Math.ceil(sampleRate * (midi.duration + tailSec)));
+  const floorSec = Math.max(midi.duration, opts.minDurationSec ?? 0);
+  const ringsOut = opts.tailSec === undefined;
+  const tailSec = opts.tailSec ?? renderTailSec(midiPresetKeys(midi), await getReleaseLookup(sf));
+  const length = Math.max(1, Math.ceil(sampleRate * Math.max(floorSec, midi.duration + tailSec)));
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, sampleRate, length });
   await addWorkletModule(ctx, await getProcessorUrl());
   const synth = new WorkletSynthesizer(ctx, { eventsEnabled: false });
@@ -213,7 +291,10 @@ async function renderMidiToBlob(
     loopCount: 0,
   });
   await synth.isReady;
-  const out = await ctx.startRendering();
+  const rendered = await ctx.startRendering();
+  const out = ringsOut
+    ? leadingFrames(rendered, audibleFrames(Array.from({ length: rendered.numberOfChannels }, (_, c) => rendered.getChannelData(c)), floorSec * sampleRate, sampleRate))
+    : rendered;
   const wav: unknown = audioBufferToWav(out);
   const blob = wav instanceof Blob ? wav : new Blob([wav as ArrayBuffer], { type: 'audio/wav' });
   return { blob, duration: out.duration };
@@ -222,27 +303,27 @@ async function renderMidiToBlob(
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
 export async function renderNotesToBlobSF(
   notes: RenderNote[],
-  opts: { sampleRate?: number; tailSec?: number; program?: number; wheel?: SmfWheel[] } = {},
+  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[] } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
   // Honor an explicit program when the caller knows the clip's instrument; only
   // fall back to the global picker when it doesn't. Pitch wheels ride in the same file.
   const smf = notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? []);
-  return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts.tailSec ?? 0.6);
+  return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts);
 }
 
 /** Render a Standard MIDI File buffer to a WAV blob through the soundfont. */
 export async function renderMidiBufferToBlobSF(
   buf: ArrayBuffer | Uint8Array,
-  opts: { sampleRate?: number; tailSec?: number } = {},
+  opts: { sampleRate?: number } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
   const ab =
     buf instanceof Uint8Array
       ? (buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer)
       : buf;
-  return renderMidiToBlob(ab, opts.sampleRate ?? 44100, opts.tailSec ?? 1);
+  return renderMidiToBlob(ab, opts.sampleRate ?? 44100, opts);
 }
 
-/* ── per-channel output routing ────────────────────────────────────────────────
+/* ── EDIT banks: live synths of EDIT's own, routed per track ──────────────────
  * The worklet exposes 17 outputs: output 0 is the shared effects bus (reverb /
  * chorus returns) and outputs 1-16 are the dry per-MIDI-channel outs.
  * `synth.connect(node)` wires ALL 17 to one destination, which is why live MIDI
@@ -251,53 +332,122 @@ export async function renderMidiBufferToBlobSF(
  *
  * Rerouting a channel is therefore just: detach it from master, attach it to the
  * track's gain node. `connectChannel(node, ch)` maps to `worklet.connect(node,
- * ch % 16 + 1)`, so this uses the public API only — no `oneOutput` rebuild of the
- * synth, which would have changed the topology for the piano roll and MIDI panel
- * too. Output 0 stays on master: the effects bus is shared across all channels
- * and cannot be attributed to one track, so a track's synth reverb tail is the
- * one part that still bypasses its chain.
+ * ch % 16 + 1)`, so this uses the public API only. Output 0 stays on master: the
+ * effects bus is shared across all channels and cannot be attributed to one
+ * track, so a track's synth reverb tail is the one part that still bypasses its
+ * chain.
+ *
+ * Because a channel past fifteen shares a dry output with channel n % 16, EDIT
+ * gets one synth per sixteen channels (lib/editChannels), and none of them is
+ * the preview synth, so the roll's lanes, the arpeggiator and the keyboard keep
+ * their channels while EDIT plays.
  */
-const channelRoutes = new Map<number, AudioNode>();
+interface EditBank {
+  synth: WorkletSynthesizer;
+  /** The program each channel was last switched to. */
+  programs: Map<number, number>;
+  /** Channels taken off the master, and the node each one now feeds. */
+  routes: Map<number, AudioNode>;
+}
 
-/** Send MIDI channel `ch` to `dest` (a track's gain node), or back to the engine
- *  master when `dest` is null. No-op until the live synth exists. */
-export function routeMidiChannel(ch: number, dest: AudioNode | null): void {
-  const synth = liveSynth;
-  if (!synth) return;
+const editBanks: EditBank[] = [];
+let editBankQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Make sure `count` EDIT banks exist (at most MAX_EDIT_BANKS), creating the
+ * missing ones one after another. Resolves false when a synth or the soundfont
+ * cannot load, so the caller keeps playing the clips' bounced audio.
+ */
+export function ensureEditBanks(count: number): Promise<boolean> {
+  const want = Math.max(0, Math.min(MAX_EDIT_BANKS, Math.round(count)));
+  const grown = editBankQueue.then(async () => {
+    try {
+      await getLiveSynth(); // the worklet module and the soundfont, loaded once
+      while (editBanks.length < want) {
+        editBanks.push({ synth: await createLiveSynth(), programs: new Map(), routes: new Map() });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  editBankQueue = grown;
+  return grown;
+}
+
+/** The bank and its local channel for a global EDIT channel, or null when that bank does not exist yet. */
+function editChannel(channel: number): { bank: EditBank; ch: number } | null {
+  const bank = editBanks[bankOfChannel(channel)];
+  return bank ? { bank, ch: localChannel(channel) } : null;
+}
+
+/** Note-on on an EDIT channel, switching its program first if it changed. No-op until its bank exists. */
+export function editNoteOn(channel: number, program: number, midi: number, velocity: number): void {
+  const at = editChannel(channel);
+  if (!at) return;
+  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs);
+  at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))));
+}
+
+/** Note-off on an EDIT channel. No-op until its bank exists. */
+export function editNoteOff(channel: number, midi: number): void {
+  const at = editChannel(channel);
+  if (!at) return;
+  try {
+    at.bank.synth.noteOff(at.ch, Math.round(midi));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Send EDIT channel `channel` to `dest` (a track's gain node), or back to the
+ *  engine master when `dest` is null. No-op until its bank exists. */
+export function routeEditChannel(channel: number, dest: AudioNode | null): void {
+  const at = editChannel(channel);
+  if (!at) return;
   const master = getMasterGain();
-  const current = channelRoutes.get(ch) ?? master;
+  const current = at.bank.routes.get(at.ch) ?? master;
   const next = dest ?? master;
   if (current === next) return;
-  try { synth.disconnectChannel(current, ch); } catch { /* already detached */ }
-  try { synth.connectChannel(next, ch); } catch { /* node gone */ }
-  if (dest) channelRoutes.set(ch, dest);
-  else channelRoutes.delete(ch);
+  try { at.bank.synth.disconnectChannel(current, at.ch); } catch { /* already detached */ }
+  try { at.bank.synth.connectChannel(next, at.ch); } catch { /* node gone */ }
+  if (dest) at.bank.routes.set(at.ch, dest);
+  else at.bank.routes.delete(at.ch);
 }
 
-/** Return every rerouted channel to the engine master. MUST run before the track
- *  nodes it points at are disposed, or channels stay attached to dead nodes. */
-export function resetMidiRouting(): void {
-  const synth = liveSynth;
-  if (!synth) {
-    channelRoutes.clear();
-    return;
-  }
+/** Return every rerouted EDIT channel to the engine master. MUST run before the
+ *  track nodes it points at are disposed, or channels stay attached to dead nodes. */
+export function resetEditRouting(): void {
   const master = getMasterGain();
-  for (const [ch, node] of channelRoutes) {
-    try { synth.disconnectChannel(node, ch); } catch { /* already detached */ }
-    try { synth.connectChannel(master, ch); } catch { /* master always valid */ }
+  for (const bank of editBanks) {
+    for (const [ch, node] of bank.routes) {
+      try { bank.synth.disconnectChannel(node, ch); } catch { /* already detached */ }
+      try { bank.synth.connectChannel(master, ch); } catch { /* master always valid */ }
+    }
+    bank.routes.clear();
   }
-  channelRoutes.clear();
 }
 
-/* ── live multi-channel note API (timeline MIDI scheduler) ─────────────────── */
+/** Stop every note on every EDIT bank (transport stop, seek, restart). The preview synth keeps sounding. */
+export function editAllNotesOff(): void {
+  for (const bank of editBanks) {
+    try {
+      bank.synth.stopAll(true);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
-/** True when the live synth is loaded and ready for immediate scheduling. */
+/* ── live note API on the preview synth (Sway pads, DRAW, the keyboard) ─────── */
+
+/** True when the preview synth is loaded and ready for immediate scheduling. */
 export const isLiveSynthReady = (): boolean => liveSynth !== null;
 
 /**
- * Note-on on a channel, switching that channel's program first if it changed.
- * No-op (and warms the engine) if the synth is not ready yet.
+ * Note-on on a preview-synth channel (0-15, or the keyboard's 16), switching
+ * that channel's program first if it changed. No-op (and warms the engine) if
+ * the synth is not ready yet.
  */
 export function liveNoteOn(channel: number, program: number, midi: number, velocity: number): void {
   const s = liveSynth;
@@ -305,17 +455,17 @@ export function liveNoteOn(channel: number, program: number, midi: number, veloc
     void ensureSoundfontReady();
     return;
   }
-  const ch = channel & 0x0f;
+  const ch = previewChannel(channel);
   setChannelProgram(s, ch, program);
   s.noteOn(ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))));
 }
 
-/** Note-off on a channel. No-op if the synth is not ready. */
+/** Note-off on a preview-synth channel. No-op if the synth is not ready. */
 export function liveNoteOff(channel: number, midi: number): void {
   const s = liveSynth;
   if (!s) return;
   try {
-    s.noteOff(channel & 0x0f, Math.round(midi));
+    s.noteOff(previewChannel(channel), Math.round(midi));
   } catch {
     /* ignore */
   }
@@ -352,7 +502,7 @@ export function sfPitchWheelRange(channel: number, semitones: number, time?: num
   }
 }
 
-/** Panic: stop all notes on all channels (used on transport stop/seek). */
+/** Panic: stop every note on the preview synth (a preview's STOP). EDIT's banks stop through editAllNotesOff. */
 export function liveAllNotesOff(): void {
   const s = liveSynth;
   if (!s) return;

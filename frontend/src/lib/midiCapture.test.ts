@@ -332,7 +332,7 @@ interface Harness {
   undoSteps: () => number;
   /** How many times the soundfont warm-up was awaited. */
   warmups: () => number;
-  rendered: Array<{ notes: StepRenderNote[]; bpm: number; totalSteps: number; program?: number }>;
+  rendered: Array<{ notes: StepRenderNote[]; bpm: number; totalSteps: number; program?: number; percussion?: boolean }>;
   midiSubs: number;
 }
 
@@ -354,7 +354,7 @@ const harness = (opts: {
   const clips: Array<Omit<AudioClip, 'id'> & { id: string }> = [];
   const renders: Array<{ id: string; updates: Partial<AudioClip>; peaks?: Float32Array }> = [];
   const notices: string[] = [];
-  const rendered: Array<{ notes: StepRenderNote[]; bpm: number; totalSteps: number; program?: number }> = [];
+  const rendered: Array<{ notes: StepRenderNote[]; bpm: number; totalSteps: number; program?: number; percussion?: boolean }> = [];
   let nextId = 0;
 
   const h: Harness = {
@@ -392,7 +392,7 @@ const harness = (opts: {
         renders.push({ id, updates, peaks });
       },
       renderStepNotes: async (notes, bpm, totalSteps, o) => {
-        rendered.push({ notes, bpm, totalSteps, program: o?.program });
+        rendered.push({ notes, bpm, totalSteps, program: o?.program, percussion: o?.percussion });
         return { blob: new Blob(['wav'], { type: 'audio/wav' }), duration: totalSteps * stepSeconds(bpm) };
       },
       computePeaks: async (_blob, bins) => ({ peaks: new Float32Array(bins ?? 0), duration: 1 }),
@@ -600,6 +600,31 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   await flush();
   assert.equal(h.rendered[0].program, 0, "the track's own program wins");
   assert.equal(h.renders[0].updates.renderedProgram, 0);
+  h.dispose();
+}
+
+{
+  // An armed drum track with no clips and no program is a MIDI track: the pass
+  // lands on it, renders on the drum channel with the Standard kit (never the
+  // picker's instrument) and is stamped as a drum render. At 8039b45 the drum
+  // key did not exist, and a track like this recorded the mic.
+  resetMidiTakeSeq();
+  const drums: CaptureTrack = { id: 'drums-1', color: '#fa0', isPercussion: true };
+  assert.equal(capturesMidi(drums, []), true);
+  const h = harness({ tracks: [drums], armed: ['drums-1'], globalProgram: 40 });
+  h.setStatus('recording');
+  h.sec(0.5);
+  h.send([0x90, 36, 100]);
+  h.sec(0.6);
+  h.send([0x80, 36, 0]);
+  h.setStatus('stopping');
+  assert.equal(h.clips.length, 1);
+  assert.equal(h.clips[0].instrumentProgram, undefined, 'the kit is the track default, not pinned');
+  await flush();
+  assert.equal(h.rendered[0].program, 0, 'the Standard kit, not the picker');
+  assert.equal(h.rendered[0].percussion, true);
+  assert.equal(h.renders[0].updates.renderedProgram, 0);
+  assert.equal(h.renders[0].updates.renderedPercussion, true);
   h.dispose();
 }
 

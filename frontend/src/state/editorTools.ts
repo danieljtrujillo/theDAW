@@ -90,6 +90,7 @@ import {
 } from '../lib/clipOps';
 import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
 import { encodeWav } from '../lib/wavEncode';
+import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
 
 /* ── result envelope ─────────────────────────────────────────────────────── */
 
@@ -319,11 +320,15 @@ const extractWindow = async (clip: AudioClip, args: RenderArgs): Promise<Blob> =
   return encodeWav(out);
 };
 
-/** The GM program a MIDI clip renders through: its own, else its track's. The
- *  global soundfont pick is deliberately not consulted here — the timeline's
- *  instrument-sync effect owns that fallback and will re-render if it applies. */
-const programFor = (clip: AudioClip): number | undefined =>
-  clip.instrumentProgram ?? store().tracks.find((t) => t.id === clip.trackId)?.instrumentProgram;
+/** The voice a MIDI clip renders through: its own program, else its track's,
+ *  on the drum channel with the Standard kit as the default on a percussion
+ *  track (lib/clipProgram). The global soundfont pick is deliberately not
+ *  consulted here — the timeline's instrument-sync effect owns that fallback
+ *  and will re-render if it applies. */
+const voiceFor = (clip: AudioClip): ClipVoice => {
+  const track = store().tracks.find((t) => t.id === clip.trackId);
+  return clipVoice(clip, track, { useSoundfont: false, activeProgram: 0 });
+};
 
 /**
  * Write a new note list onto a MIDI clip and re-bounce its audio.
@@ -353,10 +358,10 @@ const commitNotes = async (
     sourceTotalSteps: totalSteps,
     ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
   };
-  const program = programFor(next);
+  const voice = voiceFor(next);
   let rendered: { blob: Blob; duration: number };
   try {
-    rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program });
+    rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
   } catch (e) {
     return { ok: false, error: `the edit was not applied: re-rendering "${clip.label}" failed — ${reason(e)}` };
   }
@@ -371,7 +376,7 @@ const commitNotes = async (
     sourceDuration: rendered.duration,
     durationSec: rendered.duration,
     offsetIntoSource: 0,
-    renderedProgram: program,
+    ...renderedVoiceFields(voice),
     // The cached waveform describes the old audio; leaving it would draw the
     // pre-edit shape until something else happened to recompute it.
     peaks: undefined,
@@ -724,7 +729,8 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
 
   let rendered: { blob: Blob; duration: number };
   try {
-    rendered = await stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: programFor(clip) });
+    const voice = voiceFor(clip);
+    rendered = await stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
   } catch (e) {
     return fail(`stretch: ${reason(e)}`);
   }
@@ -736,7 +742,7 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
   // a number the blob no longer matches. (`sourceBpm` is one of the rechecked
   // inputs, so the stale and current values are the same here.)
   const newBpm = (current.value.sourceBpm ?? store().bpm) / plan.value.ratio;
-  commitAudio(current.value, rendered.blob, rendered.duration, { sourceBpm: newBpm, renderedProgram: programFor(current.value) });
+  commitAudio(current.value, rendered.blob, rendered.duration, { sourceBpm: newBpm, ...renderedVoiceFields(voiceFor(current.value)) });
   return done(
     `Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)} — re-rendered at ${newBpm.toFixed(1)} bpm, now ${n2(rendered.duration)}s`,
   );

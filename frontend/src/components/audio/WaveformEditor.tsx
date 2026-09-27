@@ -6,7 +6,7 @@ import {
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
   Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
   Maximize2, Rows3, Keyboard, AudioLines, Spline, FolderOpen, Check,
-  Settings2, ScanSearch, BoxSelect, Ellipsis, AudioWaveform, Bot,
+  Settings2, ScanSearch, BoxSelect, Ellipsis, AudioWaveform, Bot, Drum,
 } from 'lucide-react';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
@@ -61,7 +61,16 @@ import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipRenderInput, clipRollLoad } from '../../lib/rollClip';
 import { midiEventsToMeterMap, roundUpToBar } from '../../lib/meterMap';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
-import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram } from '../../lib/soundfontEngine';
+import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
+import {
+  GM_DRUM_KITS,
+  clipRenderIsStale,
+  clipVoice,
+  drumKitName,
+  isPercussionTrack,
+  renderedVoiceFields,
+  type ClipVoice,
+} from '../../lib/clipProgram';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { parseMidi } from '../../utils/midi';
 import type { PianoNote } from '../../state/pianoRollStore';
@@ -1439,13 +1448,20 @@ const PopoverPortal: React.FC<{
  * Compact per-track instrument selector (channel-rack style). "Default" leaves
  * the track on the global Piano Roll instrument; picking a GM program assigns it
  * to the track, which makes its MIDI clips play that voice live on the timeline.
+ *
+ * The drum key beside it makes the track a percussion track: its MIDI clips
+ * play and render on the General MIDI drum channel, where a note is a drum and
+ * the program picks the kit, so the list offers the kits instead.
  */
 const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
   const updateTrack = useEditorStore((s) => s.updateTrack);
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
+  const drums = isPercussionTrack(track);
   const value = track.instrumentProgram === undefined ? 'default' : String(track.instrumentProgram);
-  const defaultLabel = globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
+  const defaultLabel = drums
+    ? `Default (${drumKitName(0)} kit)`
+    : globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
@@ -1457,23 +1473,42 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
     void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
 
+  // A program means an instrument on a melodic track and a kit on a drum
+  // track, so switching clears it and the track starts on its default.
+  const toggleDrums = () => {
+    updateTrack(track.id, { isPercussion: drums ? undefined : true, instrumentProgram: undefined });
+    void ensureSoundfontReady();
+  };
+
   return (
     <div className="flex items-center gap-1.5">
-      <Piano className="w-2.5 h-2.5 text-emerald-400/70 shrink-0" />
-      <label htmlFor={`editor-track-instrument-${track.id}`} className="sr-only">{`Track ${track.name} instrument`}</label>
+      <button
+        type="button"
+        onClick={toggleDrums}
+        aria-pressed={drums}
+        aria-label={`Track ${track.name} is a drum track`}
+        title={drums ? 'Drum track: notes play drums on the drum channel' : 'Make this a drum track'}
+        className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${drums ? 'bg-amber-500/30 text-amber-300 border-amber-500/60' : 'bg-black/40 text-zinc-500 border-white/10 hover:text-white'}`}
+      >
+        {drums ? <Drum aria-hidden="true" className="w-3 h-3" /> : <Piano aria-hidden="true" className="w-3 h-3" />}
+      </button>
+      <label htmlFor={`editor-track-instrument-${track.id}`} className="sr-only">{`Track ${track.name} ${drums ? 'drum kit' : 'instrument'}`}</label>
       <select
         id={`editor-track-instrument-${track.id}`}
         name={`editor-track-instrument-${track.id}`}
-        aria-label={`Track ${track.name} instrument`}
         value={value}
         onChange={onChange}
-        className="flex-1 min-w-0 form-select px-1 py-0.5 text-[9px]"
+        className="flex-1 min-w-0 form-select px-1 py-0.5 text-xs font-bold"
         style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>
-        {GM_NAMES.map((nm, i) => (
-          <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>
-        ))}
+        {drums
+          ? GM_DRUM_KITS.map((k) => <option key={k.program} value={k.program}>{`${k.name} kit`}</option>)
+          : GM_NAMES.map((nm, i) => <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>)}
+        {/* A program the kit list lacks (set by the assistant) stays listed, so the select shows what the track holds. */}
+        {drums && track.instrumentProgram !== undefined && !GM_DRUM_KITS.some((k) => k.program === track.instrumentProgram) && (
+          <option value={track.instrumentProgram}>{`${drumKitName(track.instrumentProgram)} kit`}</option>
+        )}
       </select>
     </div>
   );
@@ -1483,15 +1518,19 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
  * Per-clip instrument override. "Track default" leaves the clip on its track's
  * instrument (or the global one); picking a GM program assigns it to this clip
  * only, so its MIDI notes play that voice live regardless of the track default.
+ * On a drum track the list is the drum kits.
  */
 const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
   const updateClip = useEditorStore((s) => s.updateClip);
   const track = useEditorStore((s) => s.tracks.find((t) => t.id === clip.trackId));
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
+  const drums = isPercussionTrack(track);
   const value = clip.instrumentProgram === undefined ? 'default' : String(clip.instrumentProgram);
-  const effective = track?.instrumentProgram ?? (globalSoundfont ? globalProgram : undefined);
-  const defaultLabel = effective === undefined ? 'Track default (Basic)' : `Track default (${gmShortName(effective)})`;
+  const effective = clipVoice({}, track, { useSoundfont: globalSoundfont, activeProgram: globalProgram }).program;
+  const defaultLabel = effective === undefined
+    ? 'Track default (Basic)'
+    : `Track default (${drums ? `${drumKitName(effective)} kit` : gmShortName(effective)})`;
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
@@ -1505,21 +1544,24 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
 
   return (
     <div className="flex items-center gap-1.5">
-      <Piano className="w-3 h-3 text-emerald-400/70 shrink-0" />
-      <label htmlFor={`editor-clip-instrument-${clip.id}`} className="sr-only">{`Clip ${clip.label} instrument`}</label>
+      {drums ? <Drum aria-hidden="true" className="w-3 h-3 text-amber-300/80 shrink-0" /> : <Piano aria-hidden="true" className="w-3 h-3 text-emerald-400/70 shrink-0" />}
+      <label htmlFor={`editor-clip-instrument-${clip.id}`} className="sr-only">{`Clip ${clip.label} ${drums ? 'drum kit' : 'instrument'}`}</label>
       <select
         id={`editor-clip-instrument-${clip.id}`}
         name={`editor-clip-instrument-${clip.id}`}
-        aria-label={`Clip ${clip.label} instrument`}
         value={value}
         onChange={onChange}
-        className="flex-1 min-w-0 form-select px-1.5 py-1 text-[10px]"
+        className="flex-1 min-w-0 form-select px-1.5 py-1 text-xs font-bold"
         style={{ colorScheme: 'dark' }}
       >
         <option value="default">{defaultLabel}</option>
-        {GM_NAMES.map((nm, i) => (
-          <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>
-        ))}
+        {drums
+          ? GM_DRUM_KITS.map((k) => <option key={k.program} value={k.program}>{`${k.name} kit`}</option>)
+          : GM_NAMES.map((nm, i) => <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>)}
+        {/* A program set before the track became a drum track stays listed, so the select shows what the clip holds. */}
+        {drums && clip.instrumentProgram !== undefined && !GM_DRUM_KITS.some((k) => k.program === clip.instrumentProgram) && (
+          <option value={clip.instrumentProgram}>{`${drumKitName(clip.instrumentProgram)} kit`}</option>
+        )}
       </select>
     </div>
   );
@@ -2563,13 +2605,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     void explodeClipToStems(modal.clipId, opts);
   }, [stemsModal, explodeClipToStems]);
 
-  /** The GM program a MIDI clip actually sounds with: clip override, else track
-   *  default, else the global instrument — the same precedence liveMixer uses. */
-  const effectiveProgramFor = useCallback((clip: AudioClip): number | undefined => {
-    const st = useEditorStore.getState();
-    const track = st.tracks.find((t) => t.id === clip.trackId);
-    const sf = useSoundfontStore.getState();
-    return clip.instrumentProgram ?? track?.instrumentProgram ?? (sf.useSoundfont ? sf.activeProgram : undefined);
+  /** The voice a MIDI clip actually sounds with (lib/clipProgram): clip
+   *  override, else track default, else the global instrument, on the drum
+   *  channel when its track is percussion — the rule liveMixer plays by. */
+  const clipVoiceOf = useCallback((clip: AudioClip): ClipVoice => {
+    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
+    return clipVoice(clip, track, getGlobalVoice());
+  }, []);
+  /** True when a MIDI clip's bounce was rendered with another voice than it now has. */
+  const renderIsStale = useCallback((clip: AudioClip): boolean => {
+    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
+    return clipRenderIsStale(clip, track, getGlobalVoice());
   }, []);
 
   /** Re-bounce a MIDI clip's audio through its current instrument. Live playback
@@ -2581,8 +2627,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
     const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
     if (!clip || clip.sourceKind !== 'piano-roll' || !clip.sourcePianoRoll?.length) return;
-    const program = effectiveProgramFor(clip);
-    if (program === undefined || program === clip.renderedProgram) return;
+    if (!renderIsStale(clip)) return;
+    const voice = clipVoiceOf(clip);
     try {
       await ensureSoundfontReady();
       const bpm = clip.sourceBpm ?? useEditorStore.getState().bpm;
@@ -2595,18 +2641,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       // A clip whose lanes bend renders each note in its lane, so the bend survives the re-render.
       const input = clipRenderInput(clip, totalSteps);
-      const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, { program, bends: input.bends });
+      const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, {
+        program: voice.program,
+        percussion: voice.percussion,
+        bends: input.bends,
+      });
       const { peaks } = await computePeaks(rendered.blob, 240);
       // Re-read: the user may have deleted or re-assigned the clip mid-render.
       const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
-      if (!live || effectiveProgramFor(live) !== program) return;
+      const now = live ? clipVoiceOf(live) : null;
+      if (!now || now.program !== voice.program || now.percussion !== voice.percussion) return;
       // Derived audio, so no undo step: undo restores clips whose bounce is
       // stale, and this write then follows the undo with the redo stack intact.
-      applyClipRender(clipId, { audioBlob: rendered.blob, mimeType: 'audio/wav', renderedProgram: program }, peaks);
+      applyClipRender(clipId, { audioBlob: rendered.blob, mimeType: 'audio/wav', ...renderedVoiceFields(voice) }, peaks);
     } catch (e) {
       logError('editor', `Instrument re-render failed for "${clip.label}": ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [applyClipRender, effectiveProgramFor]);
+  }, [applyClipRender, clipVoiceOf, renderIsStale]);
 
   // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
   // overrides, track defaults and the global picker in one place, so no individual
@@ -2619,21 +2670,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
   const midiClipProgramSig = useMemo(
     () => clips.filter((c) => c.sourceKind === 'piano-roll')
-      .map((c) => `${c.id}:${effectiveProgramFor(c) ?? 'x'}:${c.renderedProgram ?? 'x'}`)
+      .map((c) => {
+        const v = clipVoiceOf(c);
+        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
+      })
       .join('|'),
-    [clips, tracks, sfActiveProgram, sfEnabled, effectiveProgramFor],
+    [clips, tracks, sfActiveProgram, sfEnabled, clipVoiceOf],
   );
   useEffect(() => {
     const stale = useEditorStore.getState().clips.filter(
-      (c) => c.sourceKind === 'piano-roll'
-        && c.sourcePianoRoll?.length
-        && effectiveProgramFor(c) !== undefined
-        && effectiveProgramFor(c) !== c.renderedProgram,
+      (c) => c.sourceKind === 'piano-roll' && c.sourcePianoRoll?.length && renderIsStale(c),
     );
     for (const c of stale) void rerenderMidiClipAudio(c.id);
-    // midiClipProgramSig collapses the clip list to just the program pairing, so
+    // midiClipProgramSig collapses the clip list to just the voice pairing, so
     // this runs when an instrument assignment changes — not on every clip drag.
-  }, [midiClipProgramSig, effectiveProgramFor, rerenderMidiClipAudio]);
+  }, [midiClipProgramSig, renderIsStale, rerenderMidiClipAudio]);
 
   // Tap tempo. Averages the intervals between recent taps and writes the result to
   // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
@@ -5590,8 +5641,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // An existing track's own instrument wins, the same order
       // `effectiveProgramFor` resolves at playback. Matching it here means the
       // `renderedProgram` written below is already right and the instrument-sync
-      // effect has nothing to re-render.
-      const program = existing?.instrumentProgram ?? globalProgram;
+      // effect has nothing to re-render. A percussion track's clip keeps no
+      // program of its own: the picker's is an instrument, not a drum kit.
+      const program = isPercussionTrack(existing) ? existing?.instrumentProgram : existing?.instrumentProgram ?? globalProgram;
       const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
       const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
       const color = track?.color ?? '#a855f7';
@@ -5613,11 +5665,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         sourcePickupSteps: pickupSteps,
         instrumentProgram: program,
       });
+      const voice = clipVoice({ instrumentProgram: program }, track, getGlobalVoice());
       logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
       void (async () => {
         const started = performance.now();
         try {
-          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps, { program });
+          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps, { program: voice.program, percussion: voice.percussion });
           const { peaks } = await computePeaks(rendered.blob, 240);
           // The bounce is derived from the clip's notes, so it adds no undo step
           // of its own (see applyClipRender).
@@ -5628,7 +5681,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             durationSec: rendered.duration,
             // Record what this bounce actually contains so the instrument-sync
             // effect doesn't immediately re-render a clip that is already correct.
-            renderedProgram: program,
+            ...renderedVoiceFields(voice),
           }, peaks);
           logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
         } catch (renderErr) {
@@ -8153,7 +8206,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             type: 'item',
             label: 'Instrument',
             icon: <Piano className="w-3 h-3" />,
-            hint: clip.instrumentProgram === undefined ? 'track default' : gmShortName(clip.instrumentProgram),
+            hint: clip.instrumentProgram === undefined
+              ? 'track default'
+              : isPercussionTrack(tracks.find((t) => t.id === clip.trackId))
+                ? `${drumKitName(clip.instrumentProgram)} kit`
+                : gmShortName(clip.instrumentProgram),
             onSelect: () => {
               const pos = clipMenu.position;
               setInstrPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
@@ -8315,6 +8372,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               },
             ] satisfies ContextMenuItem[];
           })(),
+          { type: 'separator' },
+          // The drum key of the track header, here too, so an empty track can
+          // become a drum track before a part is recorded onto it. A program
+          // is an instrument on one and a kit on the other, so it is cleared.
+          {
+            type: 'item',
+            icon: isPercussionTrack(t) ? <Piano className="w-3 h-3" /> : <Drum className="w-3 h-3" />,
+            label: isPercussionTrack(t) ? 'Make melodic track' : 'Make drum track',
+            title: isPercussionTrack(t)
+              ? 'MIDI on this track plays its notes as pitches again'
+              : 'MIDI on this track plays drums on the General MIDI drum channel',
+            onSelect: () => {
+              updateTrack(t.id, { isPercussion: isPercussionTrack(t) ? undefined : true, instrumentProgram: undefined });
+              void ensureSoundfontReady();
+            },
+          },
           { type: 'separator' },
           {
             type: 'item',

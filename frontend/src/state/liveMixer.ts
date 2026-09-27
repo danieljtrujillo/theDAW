@@ -59,15 +59,16 @@ import {
 } from './playerStore';
 import { logError, logWarn } from './logStore';
 import {
-  ensureSoundfontReady,
-  isLiveSynthReady,
-  liveNoteOn,
-  liveNoteOff,
-  liveAllNotesOff,
-  routeMidiChannel,
-  resetMidiRouting,
-  useSoundfontStore,
+  ensureEditBanks,
+  editNoteOn,
+  editNoteOff,
+  editAllNotesOff,
+  routeEditChannel,
+  resetEditRouting,
+  getGlobalVoice,
 } from '../lib/soundfontEngine';
+import { effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
 import {
@@ -234,7 +235,9 @@ let midiTimers: number[] = []; // setTimeout handles for scheduled MIDI note on/
 // live, so the editor-store subscription flips these gains mid-playback.
 let clipMuteGains = new Map<string, GainNode>();
 let lastClipMuteSig = '';
-let liveMidiActive = false; // true while MIDI clips play via the live synth (vs their bounce)
+// The MIDI clips this pass synthesises live (planLiveMidi); every other MIDI
+// clip plays its bounced audio.
+let liveMidiPlan: LiveMidiPlan = emptyLiveMidiPlan();
 let autoFxTimer = 0; // setInterval handle for the FX-param automation lookahead
 
 // Session-local master bus + psychoacoustic insert rack. Every track's panner
@@ -2475,9 +2478,9 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
     // Muted clips are not scheduled at all; a mute toggled DURING playback is
     // handled live by the clip's mute gate (see applyClipMutesLive).
     if (clip.muted) continue;
-    // When the live synth drives MIDI, skip the clip's bounced audio so we don't
-    // double up; scheduleMidiClips plays its notes instead.
-    if (liveMidiActive && isMidiClip(clip)) continue;
+    // A clip the live synth plays skips its bounced audio so we don't double
+    // up; scheduleMidiClips plays its notes instead.
+    if (liveMidiPlan.liveClipIds.has(clip.id)) continue;
     const nodes = trackNodes.get(clip.trackId);
     if (!nodes) continue;
     // One resolver per clip. For everything that is not comped it hands over the
@@ -2543,7 +2546,7 @@ function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
     if (!nodes) continue;
     const insts = nodes.fx.instances();
     const trackClips = clips.filter(
-      (c) => c.trackId === t.id && !c.muted && !(liveMidiActive && isMidiClip(c)),
+      (c) => c.trackId === t.id && !c.muted && !liveMidiPlan.liveClipIds.has(c.id),
     );
 
     for (const entry of teleEntries) {
@@ -2957,49 +2960,94 @@ export function automationReleaseNative(target: AutomationTarget): void {
   scheduleLaneNative(lane, currentTransportSec());
 }
 
+/** What EDIT's live MIDI plays in one pass. */
+export interface LiveMidiPlan {
+  /** The clips synthesised live. Every other MIDI clip plays its bounced audio. */
+  liveClipIds: Set<string>;
+  /** The live channel of each track with a live clip (lib/editChannels). */
+  channels: EditChannelPlan;
+}
+
+/** A plan with nothing live: every MIDI clip plays its bounce. */
+export function emptyLiveMidiPlan(): LiveMidiPlan {
+  return { liveClipIds: new Set(), channels: planEditChannels([]) };
+}
+
+/** The fields of a clip the live MIDI plan reads. */
+export type LiveMidiClip = Pick<AudioClip, 'id' | 'trackId' | 'muted' | 'instrumentProgram' | 'sourceKind' | 'sourcePianoRoll' | 'sourceRollNotes'>;
+/** The fields of a track the live MIDI plan reads. */
+export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
+
 /**
- * Schedule live-synth note on/off for every MIDI clip at or after `fromSec`.
- * Notes fire via timers aligned to the transport (preview-accurate); the offline
- * export keeps using the sample-accurate render path. One synth channel per track
- * (16-channel cap); per-track volume/pan are not yet applied to MIDI, but mute and
- * solo are honored by skipping the track.
+ * Decide which MIDI clips play live and on which channel. A clip plays live
+ * when it has a program (lib/clipProgram effectiveProgramFor) and its track gets
+ * a channel; a clip with no program, or on a track past the last channel, plays
+ * the audio it was bounced with. Tracks take channels in track order, melodic
+ * tracks never on a drum channel and percussion tracks always on one.
  */
-function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
-  const ed = useEditorStore.getState();
-  const tracks = ed.tracks;
+export function planLiveMidi(
+  clips: readonly LiveMidiClip[],
+  tracks: readonly LiveMidiTrack[],
+  global: GlobalVoice,
+): LiveMidiPlan {
+  const trackById = new Map(tracks.map((t): [string, LiveMidiTrack] => [t.id, t]));
+  const wanted = new Map<string, string[]>();
+  for (const clip of clips) {
+    if (clip.muted || !isMidiClip(clip)) continue;
+    const track = trackById.get(clip.trackId);
+    if (!track || effectiveProgramFor(clip, track, global) === undefined) continue;
+    const ids = wanted.get(track.id);
+    if (ids) ids.push(clip.id);
+    else wanted.set(track.id, [clip.id]);
+  }
+  const channels = planEditChannels(
+    tracks.filter((t) => wanted.has(t.id)).map((t) => ({ id: t.id, percussion: isPercussionTrack(t) })),
+  );
+  const liveClipIds = new Set<string>();
+  for (const [trackId, ids] of wanted) {
+    if (channels.channelOf.has(trackId)) for (const id of ids) liveClipIds.add(id);
+  }
+  return { liveClipIds, channels };
+}
+
+/** One note EDIT's live MIDI plays, timed in seconds from the pass start. */
+export interface LiveMidiNote {
+  clipId: string;
+  channel: number;
+  program: number;
+  midi: number;
+  velocity: number;
+  onDelaySec: number;
+  offDelaySec: number;
+}
+
+/**
+ * The notes of every live clip (planLiveMidi) at or after `fromSec`, with the
+ * channel and program each plays on. Mute and solo are honoured by skipping the
+ * track; a clip muted during the pass is re-checked when its note fires.
+ */
+export function liveMidiNotes(
+  clips: readonly AudioClip[],
+  tracks: readonly EditorTrack[],
+  plan: LiveMidiPlan,
+  global: GlobalVoice,
+  fromSec: number,
+  projectBpm: number | undefined,
+): LiveMidiNote[] {
   const anySolo = tracks.some((t) => t.solo);
   const trackById = new Map<string, EditorTrack>(tracks.map((t): [string, EditorTrack] => [t.id, t]));
-  const globalProgram = useSoundfontStore.getState().activeProgram;
-
-  // One synth channel per track that has MIDI clips (16-channel cap).
-  const channelOf = new Map<string, number>();
-  let nextCh = 0;
+  const out: LiveMidiNote[] = [];
   for (const clip of clips) {
-    if (clip.muted || !isMidiClip(clip) || channelOf.has(clip.trackId)) continue;
-    if (nextCh > 15) break;
-    channelOf.set(clip.trackId, nextCh++);
-  }
-
-  // Point each of those channels at its track's gain node, so live MIDI runs
-  // through the same fader -> insert FX -> panner -> master rack path its bounced
-  // audio takes on export. Channels with no MIDI track stay on the engine master,
-  // which is what the piano roll and MIDI panel preview through.
-  for (const [trackId, ch] of channelOf) {
-    const node = trackNodes.get(trackId);
-    if (node) routeMidiChannel(ch, node.gain);
-  }
-
-  for (const clip of clips) {
-    if (!isMidiClip(clip)) continue;
+    if (!plan.liveClipIds.has(clip.id)) continue;
     // Clips muted before play schedule no notes; mute is ALSO re-checked at
-    // note-fire time below, so muting a sounding clip lands mid-playback.
+    // note-fire time, so muting a sounding clip lands mid-playback.
     if (clip.muted) continue;
     const track = trackById.get(clip.trackId);
     if (!track || effectiveVol(track, anySolo) <= 0) continue; // honor mute/solo
-    const channel = channelOf.get(clip.trackId);
-    if (channel === undefined) continue; // beyond the 16-instrument cap
-    const program = clip.instrumentProgram ?? track.instrumentProgram ?? globalProgram;
-    const bpm = clip.sourceBpm ?? ed.bpm ?? 120;
+    const channel = plan.channels.channelOf.get(clip.trackId);
+    const program = effectiveProgramFor(clip, track, global);
+    if (channel === undefined || program === undefined) continue;
+    const bpm = clip.sourceBpm ?? projectBpm ?? 120;
     const stepSec = 60 / Math.max(40, bpm) / 4;
     const offsetIntoSource = clip.offsetIntoSource ?? 0;
     for (const n of clip.sourcePianoRoll ?? []) {
@@ -3016,32 +3064,60 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
       // is cut there rather than sustaining beyond the clip.
       const offSec = clip.startSec + Math.min(clip.durationSec, relEnd);
       if (offSec <= fromSec || onSec < fromSec) continue; // finished, or already sounding
-      const onDelay = Math.max(0, (onSec - fromSec) * 1000);
-      const offDelay = Math.max(onDelay + 10, (offSec - fromSec) * 1000);
-      const midi = n.note;
-      const vel = n.velocity;
-      const clipId = clip.id;
-      midiTimers.push(window.setTimeout(() => {
-        // Structural edits (moved/resized/added notes) still need a re-schedule,
-        // but mute is re-read from the editor store at fire time so muting a
-        // sounding MIDI clip lands mid-playback like an audio clip's gate.
-        const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
-        if (live?.muted) return;
-        liveNoteOn(channel, program, midi, vel);
-      }, onDelay));
-      // The note-off always fires: a note-off for a note that was skipped is
-      // harmless, and skipping it would leave a stuck note when the clip is
-      // muted between a note's on and off timers.
-      midiTimers.push(window.setTimeout(() => liveNoteOff(channel, midi), offDelay));
+      const onDelaySec = Math.max(0, onSec - fromSec);
+      out.push({
+        clipId: clip.id,
+        channel,
+        program,
+        midi: n.note,
+        velocity: n.velocity,
+        onDelaySec,
+        offDelaySec: Math.max(onDelaySec + 0.01, offSec - fromSec),
+      });
     }
+  }
+  return out;
+}
+
+/**
+ * Schedule live-synth note on/off for every live MIDI clip at or after
+ * `fromSec`. Notes fire via timers aligned to the transport (preview-accurate);
+ * the offline export keeps using the sample-accurate render path. Each track
+ * plays on a channel of its own on EDIT's synths (lib/editChannels), routed
+ * into that track's strip.
+ */
+function scheduleMidiClips(clips: AudioClip[], fromSec: number, plan: LiveMidiPlan): void {
+  const ed = useEditorStore.getState();
+
+  // Point each track's channel at its track's gain node, so live MIDI runs
+  // through the same fader -> insert FX -> panner -> master rack path its bounced
+  // audio takes on export.
+  for (const [trackId, ch] of plan.channels.channelOf) {
+    const node = trackNodes.get(trackId);
+    if (node) routeEditChannel(ch, node.gain);
+  }
+
+  for (const n of liveMidiNotes(clips, ed.tracks, plan, getGlobalVoice(), fromSec, ed.bpm)) {
+    midiTimers.push(window.setTimeout(() => {
+      // Structural edits (moved/resized/added notes) still need a re-schedule,
+      // but mute is re-read from the editor store at fire time so muting a
+      // sounding MIDI clip lands mid-playback like an audio clip's gate.
+      const live = useEditorStore.getState().clips.find((c) => c.id === n.clipId);
+      if (live?.muted) return;
+      editNoteOn(n.channel, n.program, n.midi, n.velocity);
+    }, n.onDelaySec * 1000));
+    // The note-off always fires: a note-off for a note that was skipped is
+    // harmless, and skipping it would leave a stuck note when the clip is
+    // muted between a note's on and off timers.
+    midiTimers.push(window.setTimeout(() => editNoteOff(n.channel, n.midi), n.offDelaySec * 1000));
   }
 }
 
-/** Cancel pending MIDI note timers and silence the synth. */
+/** Cancel pending MIDI note timers and silence EDIT's synths. The preview synth (the roll, the arpeggiator, the keyboard) keeps sounding. */
 function clearMidiTimers(): void {
   for (const id of midiTimers) clearTimeout(id);
   midiTimers = [];
-  liveAllNotesOff();
+  editAllNotesOff();
 }
 
 /** Stop + disconnect every scheduled source (does not tear down track nodes). */
@@ -3064,7 +3140,7 @@ function clearSources(): void {
   // Release per-channel synth routing while the track nodes it points at are
   // still alive. clearSources() runs at the top of every start() and from
   // stop/pause/dispose, so this is always ahead of disposeTrackNodes().
-  resetMidiRouting();
+  resetEditRouting();
   stopFxAutomation();
 }
 
@@ -3188,20 +3264,21 @@ async function start(fromSec: number): Promise<void> {
   }
   if (token !== playToken) return; // superseded by a newer start()
 
-  // Decide MIDI playback mode. Drive notes through the live synth only when the
-  // user opted into a soundfont (global picker) or assigned an instrument to a
-  // clip/track; otherwise keep playing the clip's bounced audio, so users who
-  // never touch soundfonts see no behavior change or surprise soundfont load.
-  const wantLiveMidi =
-    clips.some(isMidiClip) &&
-    (useSoundfontStore.getState().useSoundfont ||
-      clips.some((c) => isMidiClip(c) && c.instrumentProgram !== undefined) ||
-      ed.tracks.some((t) => t.instrumentProgram !== undefined));
-  if (wantLiveMidi) {
-    liveMidiActive = isLiveSynthReady() ? true : await ensureSoundfontReady();
+  // Decide which MIDI clips play live. A clip with a program (its own, its
+  // track's, or the global picker's while soundfonts are on) is synthesised on
+  // EDIT's synths; a clip with none keeps playing its bounced audio, so users
+  // who never touch soundfonts see no behavior change or surprise soundfont
+  // load. When the synths cannot load, every clip plays its bounce.
+  const plan = planLiveMidi(clips, ed.tracks, getGlobalVoice());
+  if (plan.channels.dropped.length > 0) {
+    logWarn('editor', `${plan.channels.dropped.length} MIDI track(s) past the last live channel play their bounced audio`);
+  }
+  if (plan.liveClipIds.size > 0) {
+    const ready = await ensureEditBanks(plan.channels.banks);
     if (token !== playToken) return;
+    liveMidiPlan = ready ? plan : emptyLiveMidiPlan();
   } else {
-    liveMidiActive = false;
+    liveMidiPlan = plan;
   }
 
   // (Re)assert ourselves as the live transport — a library track played in the
@@ -3229,7 +3306,7 @@ async function start(fromSec: number): Promise<void> {
   scheduleTeleports(clips, begin);
   scheduleAutomation(begin); // native vol/pan envelopes onto their AudioParams
   startFxAutomation();        // ~40 Hz lookahead writer for FX-param lanes
-  if (liveMidiActive) scheduleMidiClips(clips, begin);
+  if (liveMidiPlan.liveClipIds.size > 0) scheduleMidiClips(clips, begin, liveMidiPlan);
 
   playing = true;
   usePlayerStore.setState({

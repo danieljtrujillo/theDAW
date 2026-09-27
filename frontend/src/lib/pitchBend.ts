@@ -86,12 +86,20 @@ export const MAX_BEND_STEP = 4096;
 export const BEND_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
 /**
  * Live soundfont channels the roll plays its lanes on, in the order lanes take
- * them: from 14 down, past the drum channel 9, so EDIT's live MIDI (which takes
- * channels from 0 up) and the arpeggiator keep theirs.
+ * them: from 14 down, past the drum channel 9, so the arpeggiator keeps 15.
+ * These are channels of the preview synth. EDIT's live MIDI plays on synths of
+ * its own (lib/editChannels), so it never shares one with a lane.
  */
 export const LIVE_ROLL_CHANNELS: readonly number[] = Object.freeze([14, 13, 12, 11, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
 /** The live soundfont channel the arpeggiator plays and bends on. No roll lane takes it. */
 export const ARP_LIVE_CHANNEL = 15;
+/**
+ * The live soundfont channel a hardware keyboard sounds on (lib/keyboardMonitor):
+ * a seventeenth channel the preview synth adds for it, so no lane, the
+ * arpeggiator or a preview changes its program under a held note. It shares
+ * channel 0's dry output, and both play to the engine master.
+ */
+export const KEYBOARD_LIVE_CHANNEL = 16;
 /**
  * The most lanes that bend. Each takes a channel of its own and every other lane
  * shares one, so the roll's lanes fit LIVE_ROLL_CHANNELS on the live synth as

@@ -184,6 +184,11 @@ export interface AudioClip {
    *  moment an instrument is reassigned after insert. Recording what the blob
    *  contains lets the editor re-render it on change and keep export == preview. */
   renderedProgram?: number;
+  /** True when `audioBlob` was rendered on the General MIDI drum channel, with
+   *  `renderedProgram` choosing the kit. A write of `renderedProgram` that does
+   *  not name this field clears it (`clipWithUpdates`), so a render that knows
+   *  nothing about drums is recorded as the melodic render it is. */
+  renderedPercussion?: boolean;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
@@ -250,8 +255,12 @@ export interface EditorTrack {
   /** Record-armed: target for mic/vocal recording. Shown as a red dot in the
    *  track header. */
   armed?: boolean;
-  /** Default GM program (0-127) for MIDI clips on this track; undefined = global default. */
+  /** Default GM program (0-127) for MIDI clips on this track; undefined = global default.
+   *  On a percussion track it chooses the drum kit (0 = Standard). */
   instrumentProgram?: number;
+  /** A drum track: its MIDI clips play and render on the General MIDI drum
+   *  channel, where a note is a drum and the program is the kit. */
+  isPercussion?: boolean;
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
    *  the track fader and its panner during live playback and offline bounce. */
   fxChain?: ChainEntry[];
@@ -1362,7 +1371,14 @@ const mirrorOntoTakes = (clip: AudioClip, updates: Partial<AudioClip>): ClipTake
 /** `{ ...clip, ...updates }` with the take list kept in step (`mirrorOntoTakes`). */
 const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioClip => {
   const takes = mirrorOntoTakes(clip, updates);
-  return takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  const next = takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  // A render stamps `renderedProgram`. One that does not say it rendered drums
+  // rendered melodic, so a drum stamp from an earlier render does not survive it.
+  if ('renderedProgram' in updates && !('renderedPercussion' in updates) && next.renderedPercussion !== undefined) {
+    const { renderedPercussion: _drums, ...melodic } = next;
+    return melodic;
+  }
+  return next;
 };
 
 /**
