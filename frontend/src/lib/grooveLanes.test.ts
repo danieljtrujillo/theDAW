@@ -23,7 +23,7 @@ import { buildGrooveFromMidiBytes } from './grooveExtract.ts';
 import { encodeMidi, parseMidi } from './midi.ts';
 import { stepRenderRequest } from './midiSynth.ts';
 import { barAt, laneGridLines, laneTimeOf, meterMapToMidiEvents, normalizeMeterMap, sanitizeTuplet, type MeterSegment, type PolyLane } from './meterMap.ts';
-import { genTarget, laneBarSteps, laneMeterFromText, laneMeterFromValue, laneTimeLabel, stepLaneTuplet, tupletLabel } from './meterFace.ts';
+import { genTarget, laneBarSteps, laneMeterFromText, laneMeterFromValue, laneTimeLabel, canStepLaneTuplet, stepLaneTuplet, tupletLabel } from './meterFace.ts';
 import { clipRollLoad, feelRollNotes, quantizeRollClip, rollClipFields } from './rollClip.ts';
 import { midiFileToRoll, parseLaneMeta, rollToMidiFile } from './rollMidi.ts';
 import { clipMeterToTasmo, tasmoMeterToClip } from './projectClient.ts';
@@ -335,7 +335,18 @@ const fileIn = (num: number, den: number, bars: number, late: (slot: number) => 
   assert.equal(sanitizeTuplet({ n: 17, m: 4 }), undefined);
   assert.equal(sanitizeTuplet({ n: 2.5, m: 4 }), undefined);
   assert.deepEqual(stepLaneTuplet(undefined, 'n', 1), { n: 2, m: 1 });
-  assert.equal(stepLaneTuplet({ n: 3, m: 2 }, 'm', 1), null, 'the sides meet: straight');
+  // In + from 3:2 steps over 3:3 to 3:4, and the lane keeps its 3; In - comes back to 3:2.
+  assert.deepEqual(stepLaneTuplet({ n: 3, m: 2 }, 'm', 1), { n: 3, m: 4 }, 'the press steps over straight');
+  assert.deepEqual(stepLaneTuplet(stepLaneTuplet({ n: 3, m: 2 }, 'm', 1), 'm', 1), { n: 3, m: 5 }, 'the next press keeps the 3');
+  assert.deepEqual(stepLaneTuplet({ n: 3, m: 4 }, 'm', -1), { n: 3, m: 2 });
+  assert.deepEqual(stepLaneTuplet({ n: 4, m: 3 }, 'n', -1), { n: 2, m: 3 });
+  // Nowhere to go: 2:1 cannot lower its 2 past the 1, 16:15 cannot raise its 15 past 16; the arrow is off.
+  assert.deepEqual(stepLaneTuplet({ n: 2, m: 1 }, 'n', -1), { n: 2, m: 1 });
+  assert.equal(canStepLaneTuplet({ n: 2, m: 1 }, 'n', -1), false);
+  assert.deepEqual(stepLaneTuplet({ n: 16, m: 15 }, 'm', 1), { n: 16, m: 15 });
+  assert.equal(canStepLaneTuplet({ n: 16, m: 15 }, 'm', 1), false);
+  assert.equal(canStepLaneTuplet(undefined, 'n', -1), false, 'straight cannot go below 1:1');
+  assert.equal(canStepLaneTuplet({ n: 3, m: 2 }, 'm', 1), true);
   assert.equal(tupletLabel({ n: 3, m: 2 }), '3:2');
   assert.equal(tupletLabel(undefined), 'Straight');
   assert.equal(laneTimeLabel({ ...odd, tuplet: { n: 3, m: 2 } }), '7/8 3+2+2 · 3:2');

@@ -227,13 +227,25 @@ export const tupletLabel = (t: LaneTuplet | null | undefined): string => {
 
 /**
  * One press of the card's Notes (n) or In (m) stepper: that side moves by one
- * within 1..TUPLET_RATIO_MAX, from 1:1 when the lane is straight. Null when the
- * two sides meet (straight again).
+ * within 1..TUPLET_RATIO_MAX, from 1:1 when the lane is straight. A press that
+ * would make the two sides equal steps over that value (3:2, In + gives 3:4), so
+ * the side the user is not stepping always keeps its number; the Straight key
+ * is how a lane goes straight. A press with nowhere to go keeps the ratio.
  */
 export function stepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): LaneTuplet | null {
   const now = sanitizeTuplet(t) ?? { n: 1, m: 1 };
-  const next = { ...now, [side]: clamp(now[side] + dir, 1, TUPLET_RATIO_MAX) };
-  return sanitizeTuplet(next) ?? null;
+  const other = side === 'n' ? now.m : now.n;
+  let value = now[side] + dir;
+  if (value === other) value += dir;
+  if (value < 1 || value > TUPLET_RATIO_MAX) return sanitizeTuplet(t) ?? null;
+  return sanitizeTuplet({ ...now, [side]: value }) ?? null;
+}
+
+/** Whether one press of that stepper changes the ratio: the card disables the arrow when it would not. */
+export function canStepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): boolean {
+  const now = sanitizeTuplet(t);
+  const next = stepLaneTuplet(t, side, dir);
+  return !(now?.n === next?.n && now?.m === next?.m);
 }
 
 /** The card's meter select: "Roll" (the roll's own map), the FORM list, and the lane's first meter when the list lacks it. */

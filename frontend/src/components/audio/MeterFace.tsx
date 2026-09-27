@@ -42,7 +42,7 @@ import {
   BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
   laneMeterValue, lanePitches, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
-  removeChange, segmentAtStep, segmentLabel, setBeats, setGroupingText, setGroups, setUnit, stepLaneTuplet, stepLoop, stepOption, stepPickup,
+  removeChange, segmentAtStep, segmentLabel, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, stepLaneTuplet, stepLoop, stepOption, stepPickup,
   tupletLabel, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
@@ -758,8 +758,8 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
               value={String(ratioNow.n)}
               downLabel="Fewer lane beats"
               upLabel="More lane beats"
-              downDisabled={ratioNow.n <= 1}
-              upDisabled={ratioNow.n >= TUPLET_RATIO_MAX}
+              downDisabled={!canStepLaneTuplet(laneRatio, 'n', -1)}
+              upDisabled={!canStepLaneTuplet(laneRatio, 'n', 1)}
               onStep={(dir) => setLaneTime({ tuplet: stepLaneTuplet(laneRatio, 'n', dir) })}
             />
             <Stepper
@@ -772,8 +772,8 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
               upLabel="More roll beats"
               downIcon={<ArrowLeftToLine className={MINI_GLYPH} />}
               upIcon={<ArrowRightToLine className={MINI_GLYPH} />}
-              downDisabled={ratioNow.m <= 1}
-              upDisabled={ratioNow.m >= TUPLET_RATIO_MAX}
+              downDisabled={!canStepLaneTuplet(laneRatio, 'm', -1)}
+              upDisabled={!canStepLaneTuplet(laneRatio, 'm', 1)}
               onStep={(dir) => setLaneTime({ tuplet: stepLaneTuplet(laneRatio, 'm', dir) })}
             />
           </div>
