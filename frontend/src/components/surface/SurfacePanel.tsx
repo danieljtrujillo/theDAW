@@ -40,7 +40,7 @@ const PanelHeader: React.FC<{
   const [draft, setDraft] = useState(title);
 
   return (
-    <div className="shrink-0 flex items-center gap-1 h-4 px-1 bg-purple-600/85 border-b border-purple-300/40 select-none">
+    <div className="shrink-0 flex items-center gap-1 h-5 px-1 bg-purple-600/85 border-b border-purple-300/40 select-none">
       <div
         draggable
         onDragStart={(e) => {
@@ -73,7 +73,7 @@ const PanelHeader: React.FC<{
                 setEditing(false);
               }
             }}
-            className="flex-1 min-w-0 bg-black/30 text-purple-50 text-[8px] font-black uppercase tracking-wider px-1 rounded focus:outline-none"
+            className="flex-1 min-w-0 bg-black/30 text-purple-50 font-display text-xs font-bold uppercase tracking-wider px-1 rounded focus:outline-none"
             title="Panel name"
           />
         </>
@@ -83,7 +83,7 @@ const PanelHeader: React.FC<{
             setDraft(title);
             setEditing(true);
           }}
-          className="flex-1 min-w-0 truncate text-[8px] font-black uppercase tracking-wider text-purple-50"
+          className="flex-1 min-w-0 truncate font-display text-xs font-bold uppercase tracking-wider text-purple-50"
           title="Double-click to rename"
         >
           {title}
@@ -287,7 +287,7 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
           <div className="flex-1 min-h-0 min-w-0">{pinnedDef.render(bodySize)}</div>
         ) : widgets.length === 0 ? (
           <div className="flex-1 grid place-items-center">
-            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest">
+            <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-600">
               {design ? 'drop controls here' : ''}
             </span>
           </div>
