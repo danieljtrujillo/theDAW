@@ -237,6 +237,12 @@ const readInpaintResultEntry = async (jobId: string): Promise<LibraryEntry | nul
   }
 };
 
+/** Stop an EDIT inpaint job nobody is waiting for any more. */
+const cancelInpaintJob = (jobId: string): void => {
+  void fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+    .catch((e) => logError('editor', `Inpaint cancel failed: ${e instanceof Error ? e.message : e}`));
+};
+
 /**
  * Draw a MIDI clip's notes inside the clip body (FL-style playlist preview).
  * X maps note time (relative to the clip's source offset) to pixels via `zoom`;
@@ -1539,8 +1545,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   type InpaintPhase =
     // `error` carries the reason a previous attempt failed back into the params
     // panel. Without it every failure path just snapped the panel back with no
-    // visible message, which is what made GH-132 undiagnosable.
-    | { kind: 'params'; error?: string }
+    // visible message, which is what made GH-132 undiagnosable. `submitting`
+    // covers the crop and the request, so Generate cannot start a second job.
+    | { kind: 'params'; error?: string; submitting?: boolean }
     // `snapshot` is the clip as the crop was cut from it. The timeline stays
     // editable while the job runs, and Accept checks the clip against it.
     | { kind: 'generating'; jobId: string; snapshot: InpaintSnapshot }
@@ -1711,19 +1718,39 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     };
   }, [inpaintPanel]);
 
+  // INPAINT, Ctrl+P and the clip menu all land here while the selection is
+  // set, which it still is while a job runs and while its result is in review.
+  // An open panel is left as it is: resetting it would drop a running job
+  // without cancelling it, or a finished result without asking.
   const openInpaintPanel = useCallback(() => {
     const sel = useEditorStore.getState().inpaintSelection;
     if (!sel) return;
-    setInpaintPanel({ kind: 'params' });
+    setInpaintPanel((p) => p ?? { kind: 'params' });
   }, []);
 
+  // Numbers each submit. Closing the panel retires the one in flight, and a
+  // retired submit cancels the job it started instead of reopening the panel.
+  const inpaintSubmitSeqRef = useRef(0);
+
   const submitInpaint = async () => {
+    // One submit at a time, and never over a job that is running or in review.
+    const live = inpaintPanelRef.current;
+    if (live && (live.kind !== 'params' || live.submitting)) return;
     const sel = useEditorStore.getState().inpaintSelection;
     if (!sel) return;
     const clip = useEditorStore.getState().clips.find((c) => c.id === sel.clipId);
     if (!clip) return;
     // Taken from the same clip object the crop reads, before any await.
     const snapshot = snapshotInpaintClip(clip);
+    const seq = ++inpaintSubmitSeqRef.current;
+    const current = () => inpaintSubmitSeqRef.current === seq;
+    const fail = (error: string) => {
+      if (current()) setInpaintPanel({ kind: 'params', error });
+    };
+    // Written to the ref too, so a second click before the next render sees it.
+    const submitting: InpaintPhase = { kind: 'params', submitting: true };
+    inpaintPanelRef.current = submitting;
+    setInpaintPanel(submitting);
 
     // Always crop the audio to exactly the visible clip region before sending.
     // This guarantees mask coordinates are relative to the start of the audio
@@ -1734,9 +1761,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logError('editor', `Inpaint: failed to crop audio: ${msg}`);
-      setInpaintPanel({ kind: 'params', error: `Could not read the clip's audio: ${msg}` });
+      fail(`Could not read the clip's audio: ${msg}`);
       return;
     }
+    // Closed while the crop ran: nothing has been sent.
+    if (!current()) return;
 
     // Mask coords are now relative to the start of the cropped (visible) audio.
     const maskStart = sel.startSec - clip.startSec;
@@ -1770,21 +1799,26 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         const msg = `HTTP ${res.status}${detail ? ` — ${detail}` : ''}`;
         logError('editor', `Inpaint submit ${msg}`);
         surfaceInpaintGate(detail || msg);
-        setInpaintPanel({ kind: 'params', error: msg });
+        fail(msg);
         return;
       }
       const data = await res.json() as { job?: { id: string } };
       const jobId = data.job?.id;
       if (!jobId) {
         logError('editor', 'Inpaint submit: no job id in response');
-        setInpaintPanel({ kind: 'params', error: 'The backend accepted the request but returned no job to follow. Generate again.' });
+        fail('The backend accepted the request but returned no job to follow. Generate again.');
+        return;
+      }
+      // Closed while the request was on its way: nobody will see this job.
+      if (!current()) {
+        cancelInpaintJob(jobId);
         return;
       }
       setInpaintPanel({ kind: 'generating', jobId, snapshot });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logError('editor', `Inpaint submit failed: ${msg}`);
-      setInpaintPanel({ kind: 'params', error: `Could not reach the backend: ${msg}` });
+      fail(`Could not reach the backend: ${msg}`);
     }
   };
 
@@ -1846,12 +1880,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const rejectInpaint = () => {
     // Closing while it generates stops the job as well; otherwise the GPU
     // keeps working on a take nobody will see and the next generation queues
-    // behind it.
+    // behind it. A submit still in flight is retired and cancels its own job
+    // once the backend names it.
+    inpaintSubmitSeqRef.current += 1;
     const panel = inpaintPanelRef.current;
-    if (panel?.kind === 'generating') {
-      void fetch(`/api/jobs/${encodeURIComponent(panel.jobId)}/cancel`, { method: 'POST' })
-        .catch((e) => logError('editor', `Inpaint cancel failed: ${e instanceof Error ? e.message : e}`));
-    }
+    if (panel?.kind === 'generating') cancelInpaintJob(panel.jobId);
     setInpaintPanel(null);
   };
 
@@ -5758,10 +5791,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               </div>
               <button
                 onClick={() => void submitInpaint()}
-                disabled={!inpaintPrompt.trim()}
+                disabled={!inpaintPrompt.trim() || !!inpaintPanel.submitting}
                 className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 font-display text-xs font-bold uppercase tracking-wider hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
               >
-                Generate
+                {inpaintPanel.submitting ? 'Sending…' : 'Generate'}
               </button>
             </>
           )}
