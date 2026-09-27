@@ -923,7 +923,7 @@ export const PianoRollFeel: React.FC = () => {
   const grooveFileRef = useRef<HTMLInputElement>(null);
   const builtins = useMemo(() => builtinGrooves(), []);
   // A swing groove the list does not hold, such as the one MATCH reads off a
-  // song ("Swing 8ths 61.5%"): its id names it, so it has an entry of its own.
+  // song ("Group swing 8ths 61.5%"): its id names it, so it has an entry of its own.
   const named = useMemo(
     () => (builtins.some((g) => g.id === grooveId) ? null : swingGrooveById(grooveId)),
     [builtins, grooveId],

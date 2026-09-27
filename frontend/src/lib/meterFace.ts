@@ -561,8 +561,8 @@ const joinParts = (parts: string[]): string =>
 /** A tempo as the status line prints it: up to two decimals, no trailing zeros. */
 export const bpmText = (bpm: number): string => String(Math.round(bpm * 100) / 100);
 
-/** The swing groove's name as the status line prints it: "SWING 8THS 61.5%". */
-export const swingText = (sw: RhythmSwing): string => `SWING ${sw.unit}THS ${sw.pct}%`;
+/** The swing groove's name as the status line prints it: "GROUP SWING 8THS 61.5%". */
+export const swingText = (sw: RhythmSwing): string => `GROUP SWING ${sw.unit}THS ${sw.pct}%`;
 
 /**
  * What MATCH writes from a rhythm analysis, and the status line that says so.

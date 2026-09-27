@@ -126,13 +126,13 @@ const close = (a: number, b: number, tol: number, what: string) => assert.ok(Mat
 {
   const m44 = [{ start_bar: 0, bars: 8, numerator: 4, denominator: 4, grouping: [4], beats_per_bar: 4, beat_unit: 'quarter' }];
   const sw = swingFromRhythm({ status: 'ready', meter_map: m44, syncopation: { swing_ratio: 1.6 } });
-  assert.deepEqual(sw, { ratio: 1.6, pct: 61.5, unit: 8, grooveId: 'swing8:61.5' });
+  assert.deepEqual(sw, { ratio: 1.6, pct: 61.5, unit: 8, grooveId: 'group8:61.5' });
   assert.equal(swingFromRhythm({ status: 'ready', meter_map: m44, syncopation: { swing_ratio: 1.02 } }), null, '50.5% is straight');
   assert.equal(swingFromRhythm({ status: 'ready', meter_map: m44, syncopation: { swing_ratio: null } }), null);
   const fast = [{ ...m44[0], numerator: 7, denominator: 8, beat_unit: 'eighth' }];
-  assert.equal(swingFromRhythm({ status: 'ready', meter_map: fast, syncopation: { swing_ratio: 2 } })?.grooveId, 'swing16:66.7');
+  assert.equal(swingFromRhythm({ status: 'ready', meter_map: fast, syncopation: { swing_ratio: 2 } })?.grooveId, 'group16:66.7');
   assert.equal(swingFromRhythm({ status: 'ready', meter_map: m44, syncopation: { swing_ratio: 9 } })?.pct, 75, 'held to 75%');
-  assert.equal(seedFromRhythm({ ...base, syncopation: { swing_ratio: 1.6 } }, 120)?.swing?.grooveId, 'swing16:61.5', "7/8 at the tracked beat swings its 16ths");
+  assert.equal(seedFromRhythm({ ...base, syncopation: { swing_ratio: 1.6 } }, 120)?.swing?.grooveId, 'group16:61.5', "7/8 at the tracked beat swings its 16ths in each group");
 }
 
 // Lanes cover the segments their loop was heard in: one heard in the middle

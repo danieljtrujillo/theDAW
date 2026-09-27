@@ -178,17 +178,21 @@ export function builtinGrooves(): GrooveTemplate[] {
 
 /**
  * A swing groove by id: `swing8:<pct>` swings the off-8ths and `swing16:<pct>`
- * the off-16ths, the long note taking `pct` percent of the pair (50 straight,
- * 66.7 a triplet feel; 50-75, one decimal kept). These are the ids the named
- * swing feels carry, and MATCH writes a song's own swing the same way, so an
- * id in a saved feel record turns back into its groove after a reload.
+ * the off-16ths of each bar, `group8:<pct>` and `group16:<pct>` the same pairs
+ * counted from each of the bar's groups (7/8 3+2+2 plays long-short-plain,
+ * long-short, long-short). The long note takes `pct` percent of the pair (50
+ * straight, 66.7 a triplet feel; 50-75, one decimal kept). These are the ids
+ * the named swing feels carry, and MATCH writes a song's own swing as a group
+ * swing, so an id in a saved feel record turns back into its groove after a
+ * reload.
  */
 export function swingGrooveById(id: string): GrooveTemplate | null {
-  const m = /^swing(8|16):(\d+(?:\.\d+)?)$/.exec(id.trim());
+  const m = /^(swing|group)(8|16):(\d+(?:\.\d+)?)$/.exec(id.trim());
   if (!m) return null;
-  const pct = Number(m[2]);
+  const pct = Number(m[3]);
   if (!(pct >= 50 && pct <= 75)) return null;
-  return m[1] === '8' ? swing8(pct) : swing16(pct);
+  if (m[1] === 'group') return groupSwing(m[2] === '8' ? 2 : 1, pct);
+  return m[2] === '8' ? swing8(pct) : swing16(pct);
 }
 
 /**

@@ -359,10 +359,10 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   const back = midiFileToRoll(parseMidi(encodeMidi(rollToMidiFile(st()))));
   assert.deepEqual(back.tempoMap.map((e) => [e.beat, e.bpm]), st().tempoMap.map((e) => [e.beat, e.bpm]));
   assert.deepEqual(back.notes.map((n) => n.step), stepsBefore);
-  assert.equal(st().grooveId, 'swing8:61.5');
-  assert.equal(grooveById(st().grooveId)?.name, 'Swing 8ths 61.5%', "the feel's groove list resolves the song's swing");
+  assert.equal(st().grooveId, 'group8:61.5');
+  assert.equal(grooveById(st().grooveId)?.name, 'Group swing 8ths 61.5%', "the feel's groove list resolves the song's swing");
   assert.match(res.status, /120 BPM WITH 2 TEMPO CHANGES/);
-  assert.match(res.status, /SWING 8THS 61\.5%/);
+  assert.match(res.status, /GROUP SWING 8THS 61\.5%/);
   // The roll plays the tempo changes, so nothing drifts.
   assert.doesNotMatch(res.status, /DRIFT/);
   assert.equal(res.level, 'info');

@@ -163,7 +163,9 @@ export function swingFromRhythm(a: RhythmAnalysis): RhythmSwing | null {
   // The engine measures swing on the tracked beat's halves.
   const first = (a.meter_map ?? []).find((s) => s.beat_unit === 'quarter' || s.beat_unit === 'eighth') ?? a.meter_map?.[0];
   const unit: 8 | 16 = first?.beat_unit === 'eighth' || (first?.beat_unit === undefined && first?.denominator === 8) ? 16 : 8;
-  return { ratio, pct, unit, grooveId: `swing${unit}:${pct}` };
+  // A group swing: in 4/4 it is the plain off-8th swing, and in 7/8 3+2+2 it
+  // swings inside each group, so no group's downbeat is played late.
+  return { ratio, pct, unit, grooveId: `group${unit}:${pct}` };
 }
 
 /** Quarter notes in one tracked beat, by the beat's note value. */

@@ -16,6 +16,7 @@ import {
   builtinGrooves,
   fromVirtuosoTemplate,
   groupStartsForPulse,
+  swingGrooveById,
   toVirtuosoTemplate,
   type GrooveTemplate,
 } from './grooveTemplate.ts';
@@ -503,5 +504,32 @@ const fileIn = (num: number, den: number, bars: number, late: (slot: number) => 
 
 // Normalized maps and the store agree on a lane's saved meter.
 assert.deepEqual(normalizeMeterMap([{ bar: 0, meter: M78 }]), [{ bar: 0, meter: M78 }]);
+
+// One lane with a span (MATCH), its own meter and a tuplet ratio (TIME) keeps
+// all three through a .tasmo save and reopen.
+{
+  const lane = { id: 1, name: 'B', cycleSteps: 12, span: { start: 28, end: 56 }, meterMap: [{ bar: 0, meter: { num: 5, den: 8, groups: [3, 2] } }], tuplet: { n: 3, m: 2 } };
+  const tasmo = JSON.parse(JSON.stringify(clipMeterToTasmo({
+    sourceMeterMap: [{ bar: 0, meter: M78 }], sourcePickupSteps: 0, sourceTotalSteps: 56, sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }, lane],
+  })));
+  assert.deepEqual(tasmo.lanes[1], {
+    id: 1, name: 'B', cycle_steps: 12, span_start: 28, span_end: 56, meter_map: [{ bar: 0, meter: { num: 5, den: 8, groups: [3, 2] } }], tuplet: { n: 3, m: 2 },
+  });
+  assert.deepEqual(sanitizeLanes(tasmoMeterToClip(tasmo).sourceLanes)[1], lane);
+}
+
+// MATCH writes a song's swing as a group swing at the song's own ratio, which
+// no built-in lists: its id resolves after a reload, and in 7/8 3+2+2 it keeps
+// every group downbeat where it was.
+{
+  const g = swingGrooveById('group8:61.5');
+  assert.ok(g && g.scope === 'group' && g.pulseSteps === 2, 'group8:61.5 resolves to a group swing of 8ths');
+  assert.equal(g?.name, 'Group swing 8ths 61.5%');
+  assert.equal(swingGrooveById('group16:70')?.pulseSteps, 1);
+  assert.equal(swingGrooveById('group8:80'), null, 'past 75% is not a swing id');
+  const moved = applyGrooveInMeter([0, 2, 4, 6, 8, 10, 12].map((step) => ({ step })), g as GrooveTemplate, 1, [{ bar: 0, meter: M78 }]).map((n) => n.step);
+  assert.deepEqual([moved[0], moved[3], moved[5]], [0, 6, 10], 'the group downbeats stay');
+  assert.ok(moved[1] > 2 && moved[4] > 8 && moved[6] > 12 && moved[2] === 4);
+}
 
 console.log('grooveLanes: ok');
