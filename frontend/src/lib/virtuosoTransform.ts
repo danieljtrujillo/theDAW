@@ -159,11 +159,6 @@ function scaleAt(opts: TransformOpts, pcs: number[], step: number): number[] {
   return opts.scaleSpans?.find((s) => step >= s.start - EPS && step < s.end - EPS)?.pcs ?? pcs;
 }
 
-/** The scale over [from, to): the first scale span it overlaps, else `pcs`. */
-function scaleOver(opts: TransformOpts, pcs: number[], from: number, to: number): number[] {
-  return opts.scaleSpans?.find((s) => from < s.end - EPS && to > s.start + EPS)?.pcs ?? pcs;
-}
-
 /** One ladder per scale for the length of a transform call. */
 function ladderCache(lo?: number, hi?: number): (pcs: number[]) => number[] {
   const memo = new Map<string, number[]>();
@@ -468,6 +463,23 @@ interface RunOpts {
   tuplet?: 0 | 3 | 6;
   /** The bars the run's pulse accents follow (4/4 from step 0 when absent). */
   grid?: Grid;
+  /**
+   * The ladder at a step, for a run that crosses a scale span. A run note off
+   * the ladder of the step it sounds on moves to that ladder's nearest tone,
+   * toward the run's direction on a tie. Absent means `ladder` throughout.
+   */
+  ladderAt?: (step: number) => number[];
+}
+
+/** `m` on `ladder`: itself when on it, else the nearest tone, the one toward `dir` on a tie. */
+function snapToLadder(ladder: number[], m: number, dir: number): number {
+  if (!ladder.length || ladder.includes(m)) return m;
+  let best = ladder[0];
+  for (const t of ladder) {
+    const d = Math.abs(t - m) - Math.abs(best - m);
+    if (d < 0 || (d === 0 && Math.sign(t - m) === dir)) best = t;
+  }
+  return best;
 }
 
 /** Subdivision increments (in 16th steps) for a run's before/after-accel phases. */
@@ -522,6 +534,7 @@ function genRun(
       const idx = i0 + dir * Math.round(t * span);
       pitch = ladder[Math.max(0, Math.min(ladder.length - 1, idx))];
     }
+    if (k !== last && opts.ladderAt) pitch = snapToLadder(opts.ladderAt(slots[k].s), pitch, dir);
     const on = grid.onPosition(Math.round(slots[k].s));
     const pulse = on !== null && on.weight >= pulseWeight(on.b.meter);
     const vel = clampVel(baseVel + Math.round(t * 30) + (pulse ? 10 : 0));
@@ -744,15 +757,17 @@ export function runsAndFlourishes(
     } else {
       // scalar flourish that accelerates and lands on the next anchor (b). Past
       // ~0.75 the runs turn into true triplet flourishes for a virtuosic feel.
-      // A run that crosses a scale span moves in the span's scale.
+      // Each run note takes the scale of the step it sounds on, so a run into a
+      // scale span changes scale where the span starts.
       const tuplet: 0 | 3 | 6 = amount > 0.75 && hash01(gapIndex * 5 + seed * SEED_PRIME) < amount ? 3 : 0;
-      const ladder = ladderOf(scaleOver(opts, pcs, a.step + inc0(gap), b.step));
-      genRun(a.note, b.note, a.step + inc0(gap), b.step, ladder, {
+      const from = a.step + inc0(gap);
+      genRun(a.note, b.note, from, b.step, ladderOf(scaleAt(opts, pcs, from)), {
         baseVel: 74,
         doubleOctave: octaveDouble,
         accelAt: amount > 0.8 ? 0.35 : 0.6,
         tuplet,
         grid,
+        ...(opts.scaleSpans?.length ? { ladderAt: (s: number) => ladderOf(scaleAt(opts, pcs, s)) } : {}),
       }).forEach((n) => out.push(n));
     }
   }

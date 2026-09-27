@@ -451,7 +451,7 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   }
 }
 
-// runsAndFlourishes: a run into a scale span moves in the span's scale.
+// runsAndFlourishes: a run into a scale span moves in the span's scale once inside it.
 {
   const A_HARMONIC = [0, 2, 4, 5, 8, 9, 11];
   const anchors: PianoNote[] = [
@@ -462,6 +462,17 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   assert.ok(run.length > 8, 'the gap is filled');
   assert.ok(run.some((n) => n.note % 12 === 8), 'the run climbs through G sharp');
   assert.ok(!run.some((n) => n.note % 12 === 7), 'no G natural in a run into the raised bar');
+  // A run that starts before the span keeps the key's own scale until the span
+  // starts: coming down from A5 it passes G natural, and G sharp waits for step 12.
+  const down: PianoNote[] = [
+    { id: 'a', note: 81, step: 0, length: 1, velocity: 90 },
+    { id: 'b', note: 69, step: 16, length: 1, velocity: 90 },
+  ];
+  const fall = runsAndFlourishes(down, 1, { key: 'A', mode: 'minor', scaleSpans: [{ start: 12, end: 28, pcs: A_HARMONIC }] }).filter((n) => n.id !== 'a' && n.id !== 'b');
+  const before = fall.filter((n) => n.step < 12);
+  assert.ok(before.some((n) => n.note % 12 === 7), 'the run passes G natural before the span');
+  for (const n of before) assert.notEqual(n.note % 12, 8, `no G sharp at step ${n.step}, before the span`);
+  for (const n of fall.filter((f) => f.step >= 12 && f.step < Math.max(...fall.map((x) => x.step)))) assert.notEqual(n.note % 12, 7, `no G natural at step ${n.step}, inside the span`);
 }
 
 // The arpeggiator's rag counts odd 16ths from each bar start.
