@@ -573,6 +573,52 @@ def test_midi_to_musicxml_end_to_end(tmp_path: Path):
     )
 
 
+def test_abc_writes_the_naturals_the_key_and_the_bar_would_otherwise_alter(
+    tmp_path: Path,
+):
+    """A sheet in E-flat with an E natural, then an F sharp and an F natural in
+    one bar, exported as ABC and read back. An ABC reader applies K:Eb to every
+    E and holds an accidental to the bar line, so both naturals need an ``=``.
+    The writer wrote neither: the E read back as E flat, and the F after the
+    F sharp is an F sharp to any reader that follows the standard."""
+    from music21 import converter as m21converter
+    from music21 import key, meter, note, stream
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(key.Key("E-"))
+    bar.append(meter.TimeSignature("4/4"))
+    for name in ("E-4", "E4", "F#4", "F4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+    sheet = tmp_path / "sheet.musicxml"
+    score.write("musicxml", fp=str(sheet))
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=tmp_path / "notation" / "sheet.abc",
+    )
+    assert result["ok"] is True, result
+    text = Path(result["path"]).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    body = lines[lines.index("K:Eb") + 1]
+    assert body.split()[:4] == ["E2", "=E2", "^F2", "=F2"], body
+    reparsed = m21converter.parse(text, format="abc")
+    assert [n.nameWithOctave for n in reparsed.recurse().notes] == [
+        "E-4",
+        "E4",
+        "F#4",
+        "F4",
+    ]
+
+
 def test_convert_score_to_abc_end_to_end(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})
