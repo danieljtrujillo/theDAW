@@ -412,8 +412,14 @@ export class MetronomeScheduler {
    * and nothing records during the count. Returns a cancel that silences the
    * count and never calls `onDone`. `startSec` is the TRANSPORT second the count
    * leads into; absent, the transport's position now.
+   *
+   * `onDone` receives the context time of the downbeat the count leads into,
+   * when the clicks were scheduled (no argument when the count went straight
+   * in). `releaseLeadSec` calls it that long before the downbeat, so a
+   * transport that needs time to start (a render, a first scheduling window)
+   * can still anchor its first note on the counted downbeat.
    */
-  countIn(bars: number, onDone: () => void, startSec?: number): () => void {
+  countIn(bars: number, onDone: (downbeatAt?: number) => void, startSec?: number, releaseLeadSec = 0): () => void {
     this.cancelCountIn();
     const gen = ++this.countInGen;
     const mine = () => gen === this.countInGen;
@@ -435,14 +441,14 @@ export class MetronomeScheduler {
     const resumable = ctx as { state?: AudioContextState; resume?: () => Promise<void> };
     if (resumable.state === 'suspended' && typeof resumable.resume === 'function') {
       void resumable.resume().then(
-        () => { if (mine()) this.armCountIn(ctx, n, onDone, startSec); },
+        () => { if (mine()) this.armCountIn(ctx, n, onDone, startSec, releaseLeadSec); },
         // The clock could not be started; the count is inaudible either way and
         // waiting on a stopped clock would strand the transport. Go straight in.
         () => { if (mine()) onDone(); },
       );
       return cancel;
     }
-    this.armCountIn(ctx, n, onDone, startSec);
+    this.armCountIn(ctx, n, onDone, startSec, releaseLeadSec);
     return cancel;
   }
 
@@ -457,7 +463,7 @@ export class MetronomeScheduler {
   }
 
   /** Schedule the count's clicks and the release that follows them. */
-  private armCountIn(ctx: BaseAudioContext, bars: number, onDone: () => void, at?: number): void {
+  private armCountIn(ctx: BaseAudioContext, bars: number, onDone: (downbeatAt?: number) => void, at?: number, leadSec = 0): void {
     const settings = this.deps.settings();
     const startSec = at ?? this.deps.transportSec();
     const { clicks, durationSec } = countInClicks(this.deps.tempoMap(), this.deps.meterMap(), startSec, bars, this.deps.clickOpts?.());
@@ -478,6 +484,8 @@ export class MetronomeScheduler {
     // domain the clicks were scheduled in bounds that at one poll interval, and
     // survives a context that resumes in between.
     const releaseAt = t0 + durationSec;
+    // The handover comes `leadSec` early; the downbeat it reports stays put.
+    const openAt = releaseAt - (Number.isFinite(leadSec) ? Math.max(0, leadSec) : 0);
     const setTimer = this.deps.setTimer ?? ((fn: () => void, ms: number) => window.setInterval(fn, ms));
     // Latched: releasing twice would start the transport twice, so one poll
     // that outlives its clear (a reused timer id, a host that keeps firing)
@@ -487,11 +495,14 @@ export class MetronomeScheduler {
       if (released) return;
       const live = this.deps.ctx();
       // No context left to wait on: release rather than strand the transport.
-      if (live && live.currentTime < releaseAt - EPS) return;
+      if (live && live.currentTime < openAt - EPS) return;
       released = true;
       this.clearCountInTimer();
+      // A lead hands over while the count's last clicks may still be queued:
+      // they join the running clicks, so a stop right after still silences them.
+      this.voices = [...this.countInVoices, ...this.voices];
       this.countInVoices = [];
-      onDone();
+      onDone(releaseAt);
     }, COUNT_IN_POLL_MS);
   }
 

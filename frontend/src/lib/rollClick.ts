@@ -57,3 +57,24 @@ export function rollClickPlan(clock: LapClock, origin: number, clicks: readonly 
     .sort((a, b) => a.abs - b.abs)
     .map(({ note, abs }) => ({ beat: abs / 4, sec: lapTimeOf(clock, abs) - origin, accent: note.accent }));
 }
+
+/** PLAY's first step sounds this long after the key is pressed, with no count-in. */
+export const PLAY_LEAD_SEC = 0.06;
+
+/**
+ * How long before the counted downbeat a count-in hands over to PLAY: one
+ * release poll, the render that sets PLAY going and the first scheduling
+ * window all fit before the downbeat sounds.
+ */
+export const COUNT_IN_HANDOFF_SEC = 0.12;
+
+/**
+ * The context time absolute step 0 of PLAY sounds at: the downbeat a count-in
+ * led into while it is still ahead of `now`, so the first note and the running
+ * click land on the counted beat; otherwise PLAY_LEAD_SEC from now (no count,
+ * or a handover so late the downbeat already passed).
+ */
+export function rollPlayOrigin(now: number, countedDownbeat?: number | null): number {
+  if (countedDownbeat != null && Number.isFinite(countedDownbeat) && countedDownbeat > now + EPS) return countedDownbeat;
+  return now + PLAY_LEAD_SEC;
+}

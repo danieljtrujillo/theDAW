@@ -53,7 +53,7 @@ import {
 } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
-import { rollClickPlan, rollClickSteps, type RollClick } from '../../lib/rollClick';
+import { COUNT_IN_HANDOFF_SEC, rollClickPlan, rollClickSteps, rollPlayOrigin, type RollClick } from '../../lib/rollClick';
 import { COUNT_IN_CHOICES, createRollMetronome, useMetronomeStore, type CountInBars } from '../../state/metronomeStore';
 import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
 import {
@@ -275,7 +275,8 @@ export const PianoRollTransport: React.FC<{
   // found in the lap the same way the notes are, so a loop, a seek, a meter
   // change or a tempo point moves the click with the notes. The play effect
   // below starts it, ticks it after each note window and stops it. A count-in
-  // counts into the step PLAY will start on, at the tempo there.
+  // counts into the step PLAY will start on, at the tempo there, and PLAY's
+  // first step sounds on the downbeat it counted.
   const clickOn = useMetronomeStore((s) => s.enabled);
   const toggleClick = useMetronomeStore((s) => s.toggle);
   const clickMode = useMetronomeStore((s) => s.clickMode);
@@ -316,6 +317,8 @@ export const PianoRollTransport: React.FC<{
   }, []);
   const [counting, setCounting] = useState(false);
   const countCancelRef = useRef<(() => void) | null>(null);
+  // The context time of the downbeat a finished count-in led into; the play effect anchors step 0 there.
+  const countedDownbeatRef = useRef<number | null>(null);
   useEffect(() => () => {
     countCancelRef.current?.();
     countCancelRef.current = null;
@@ -357,9 +360,11 @@ export const PianoRollTransport: React.FC<{
     // starts at the playhead, and a seek, a new length or a new loop re-anchors
     // it just past the cursor. The lap's clock (lib/rollTempo) gives every step
     // its seconds under the tempo map; absolute step 0 is where PLAY started,
-    // 60 ms from now, and a new lap or a new map re-anchors the clock keeping the
-    // time of the step it anchors at, so nothing already scheduled moves.
-    const origin = ctx.currentTime + 0.06;
+    // 60 ms from now or on the downbeat a count-in counted, and a new lap or a
+    // new map re-anchors the clock keeping the time of the step it anchors at,
+    // so nothing already scheduled moves.
+    const origin = rollPlayOrigin(ctx.currentTime, countedDownbeatRef.current);
+    countedDownbeatRef.current = null;
     let playState: RollPlayState = startRollPlay(usePianoRollStore.getState(), origin);
     rollPlayRef.current = { state: playState, origin };
     // The click plans the same window as the notes, from the same lap clock, so
@@ -462,6 +467,8 @@ export const PianoRollTransport: React.FC<{
       clicker.tick();
       setCurrentStep(shownStep(lapState, lapAbsAt(lc, now)));
     };
+    // The first window now: a counted downbeat can be closer than one interval.
+    tick();
     playTimerRef.current = window.setInterval(tick, 25);
     return () => {
       if (playTimerRef.current != null) {
@@ -499,24 +506,28 @@ export const PianoRollTransport: React.FC<{
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
     const metronome = useMetronomeStore.getState();
+    countedDownbeatRef.current = null;
     if (!metronome.enabled || metronome.countInBars <= 0) {
       startPlay();
       return;
     }
     // The count-in: whole bars of the meter at the step PLAY starts on, ending
-    // on that step's time under the roll's tempo map; PLAY starts when it ends.
-    // The key reads STOP meanwhile, and pressing it cancels the count.
+    // on that step's time under the roll's tempo map. It hands over to PLAY a
+    // little before its downbeat with that downbeat's context time, and PLAY's
+    // first step sounds on it. The key reads STOP meanwhile, and pressing it
+    // cancels the count.
     const roll = usePianoRollStore.getState();
     const startStep = rollStepAt(playStartLap(roll).lap, 0);
     const startSec = stepClock(roll.bpm, roll.tempoMap).at(startStep);
     let done = false;
     setCounting(true);
-    const cancel = click().countIn(metronome.countInBars, () => {
+    const cancel = click().countIn(metronome.countInBars, (downbeatAt) => {
       done = true;
       countCancelRef.current = null;
+      countedDownbeatRef.current = downbeatAt ?? null;
       setCounting(false);
       startPlay();
-    }, startSec);
+    }, startSec, COUNT_IN_HANDOFF_SEC);
     if (!done) countCancelRef.current = cancel;
   };
   // PLAY starts the transport at the playhead; the count-in above calls it when the count ends.
