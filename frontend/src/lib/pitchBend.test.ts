@@ -125,6 +125,12 @@ const view = (points: readonly BendPoint[]) => points.map((p) => [p.step, p.valu
   // A lane that does not loop, or loops no shorter than the roll, keeps its points.
   assert.deepEqual(unrollBend(points, null, 40), points);
   assert.deepEqual(unrollBend(points, 40, 40), points);
+  // A lane with a span counts its cycles from the span's first step and repeats them to its end:
+  // the same curve as the unspanned lane, moved to start at step 16 and stopped at step 40.
+  const spanned = unrollBend(points.map((p) => ({ ...p, step: p.step + 16 })), 12, 64, { start: 16, end: 40 });
+  for (let s = 16; s < 40; s += 0.125) near(bendValueAt(spanned, s), bendValueAt(local, (s - 16) % 12), 1e-12, `spanned step ${s}`);
+  assert.ok(spanned.every((p) => p.step >= 16 && p.step <= 40), 'no point outside the span');
+  assert.deepEqual(unrollBend(points, 12, 64, { start: 16, end: 24 }), points, 'a span no longer than the loop does not loop');
 }
 
 // A looping lane whose ramp ends on the cycle's length ramps every cycle and starts over: a point at the cycle's end

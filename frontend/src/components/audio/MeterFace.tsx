@@ -10,9 +10,14 @@
  *   LANES   one key per lane in its roll look (a menu past five lanes); + adds
  *           a lane, the trash key removes the active one
  *   LOOP    the active lane's loop in steps (Shift steps a bar)
+ *   SPAN    the active lane played only in the selected change's bars, or
+ *           over the whole roll again
  *   SYNC / ACCENT  the Virtuoso amounts, their ranges widening into spare width
  *   GEN     LOOM's rules written into the active lane, from a flyout
- *   MATCH   the meter map, pickup, tempo and lanes of the song in the strip
+ *   MATCH   the meter map, pickup, tempo, tempo changes, swing and lanes of
+ *           the song in the strip
+ *   TEMPO   the tempo changes MATCH wrote, lowest to highest, and a key that
+ *           clears them (shown only while the roll has some)
  *
  * The logic is lib/meterFace.ts. Meter and lane edits write the store through
  * applyMeter, which ends the roll on a bar line. Map edits pass merge off:
@@ -23,8 +28,8 @@
 import React from 'react';
 import { create } from 'zustand';
 import {
-  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, DiamondMinus, DiamondPlus, Dices, ListPlus, ListX, Minus,
-  Plus, Send,
+  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, DiamondMinus, DiamondPlus, Dices, Eraser, ListPlus, ListX,
+  Minus, Plus, Scissors, Send,
 } from 'lucide-react';
 import { laneName, usePianoRollStore } from '../../state/pianoRollStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
@@ -34,10 +39,10 @@ import { GEN_RULES } from '../../lib/rollLoom';
 import { GEN_DEFAULT_OPTS, GEN_KINDS, type GenKind, type GenOpts } from '../../lib/loomGen';
 import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
-  BEATS_MAX, BEATS_MIN, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
-  genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneForms, lanePitches, matchApply, matchError,
-  meterLabel, newLaneCycle, parseGroupsValue, removeChange, segmentAtStep, segmentLabel, setBeats, setGroups, setUnit,
-  stepLoop, stepOption, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  BEATS_MAX, BEATS_MIN, UNITS, addChange, addChangeBar, addChangePastEnd, bpmText, clampSelection, formatOption, genOptionSpecs,
+  genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneForms, laneSpanLabel, lanePitches, matchApply, matchError,
+  meterLabel, newLaneCycle, parseGroupsValue, removeChange, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroups, setUnit,
+  spanIsSegment, stepLoop, stepOption, toggleLaneSpan, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
@@ -185,6 +190,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const totalSteps = usePianoRollStore((s) => s.totalSteps);
   const lanes = usePianoRollStore((s) => s.lanes);
   const activeLane = usePianoRollStore((s) => s.activeLane);
+  const tempoMap = usePianoRollStore((s) => s.tempoMap);
   // Numbers, so the playhead re-renders the face only when ADD's bar changes.
   const addBar = usePianoRollStore((s) => addChangeBar(s.meterMap, s.currentStep, s.pickupSteps));
   const addPastEnd = usePianoRollStore((s) => addChangePastEnd(s.meterMap, s.currentStep, s.pickupSteps, s.totalSteps));
@@ -247,6 +253,11 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, stepsPerBar(meter), r.totalSteps);
     r.applyMeter({ lanes: r.lanes.map((x) => (x.id === l.id ? { ...x, cycleSteps } : x)) });
   };
+  const onSpan = (): void => {
+    const r = usePianoRollStore.getState();
+    if (r.activeLane === 0) return;
+    r.applyMeter({ lanes: toggleLaneSpan(r.meterMap, r.lanes, selected, r.activeLane, r.pickupSteps) });
+  };
 
   /* GEN */
   const genKeyRef = React.useRef<HTMLButtonElement>(null);
@@ -296,9 +307,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       const r = usePianoRollStore.getState();
       const res = matchApply(r, analysis);
       if (res.apply) {
-        const { meterMap: map, pickupSteps: pickup, bpm, lanes: songLanes } = res.apply;
-        if (bpm != null) r.setBpm(bpm);
-        r.applyMeter({ meterMap: map, pickupSteps: pickup, ...(songLanes ? { lanes: songLanes } : {}) });
+        writeMatch(r, res.apply);
         const after = usePianoRollStore.getState();
         setSel(segmentAtStep(after.meterMap, after.currentStep, after.pickupSteps));
       }
@@ -314,6 +323,12 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const groupsNow = groupsValue(meter.groups);
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
   const barLen = Math.round(stepsPerBar(meter));
+  const spanOn = spanIsSegment(segs, selected, lane.span, pickupSteps);
+  const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
+  const selSpan = segmentSpan(segs, selected, pickupSteps);
+  const selWhole = selSpan.start <= 1e-9 && selSpan.end === null;
+  const tempoLow = tempoMap.reduce((m, e) => Math.min(m, e.bpm), Infinity);
+  const tempoHigh = tempoMap.reduce((m, e) => Math.max(m, e.bpm), 0);
 
   return (
     <>
@@ -443,7 +458,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
               key={l.id}
               aria-pressed={l.id === activeLane}
               aria-label={`Lane ${l.name}`}
-              description={`Lane ${l.name}: ${l.cycleSteps ? `loops every ${l.cycleSteps} steps` : 'runs the whole roll'}. New notes go into the pressed lane.`}
+              description={`Lane ${l.name}: ${l.cycleSteps ? `loops every ${l.cycleSteps} steps` : 'runs the whole roll'}${l.span ? ` in bars ${laneSpanLabel(segs, l.span, pickupSteps)}` : ''}. New notes go into the pressed lane.`}
               on={l.id === activeLane}
               onClick={() => usePianoRollStore.getState().setActiveLane(l.id)}
               icon={<LaneSwatch form={forms.get(l.id) ?? 'solid'} />}
@@ -500,6 +515,50 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         upDisabled={lane.id === 0 || lane.cycleSteps == null}
         onStep={onLoop}
       />
+      {/* The legend shows the bars the lane plays in, so the span reads without a hover. */}
+      <StripKey
+        onClick={onSpan}
+        disabled={lane.id === 0 || (selWhole && !lane.span)}
+        passFocusOnDisable
+        aria-pressed={spanOn}
+        on={spanOn}
+        aria-label={`Span: lane ${lane.name} only in bars ${segmentLabel(segs, selected, totalSteps, pickupSteps)}`}
+        description={
+          lane.id === 0
+            ? 'Lane A always runs the whole roll'
+            : spanOn
+              ? `Lane ${lane.name} plays only in bars ${spanNow}. Press to play it over the whole roll again.`
+              : selWhole && !lane.span
+                ? 'The selected meter change covers the whole roll. Add a change to give the lane part of it.'
+                : `${spanNow ? `Lane ${lane.name} plays in bars ${spanNow}. ` : ''}Press to play lane ${lane.name} only in bars ${segmentLabel(segs, selected, totalSteps, pickupSteps)}, its loop starting at the first of them.`
+        }
+        icon={<Scissors className={STRIP_GLYPH} />}
+        legend={spanNow ? `Bars ${spanNow}` : 'Span'}
+      />
+
+      {tempoMap.length > 0 && (
+        <div className={FIELD}>
+          <span className={FIELD_LEGEND} title="Tempo changes in the roll, written by MATCH from the song's downbeats">Tempo</span>
+          <span
+            id="mf-tempo-value"
+            aria-live="polite"
+            title={`${tempoMap.length} tempo changes from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM`}
+            className={`${FIELD_VALUE} min-w-10`}
+          >
+            {bpmText(tempoLow)}-{bpmText(tempoHigh)}
+          </span>
+          <StripKey
+            mini
+            iconOnly
+            aria-label="Clear the tempo changes"
+            aria-describedby="mf-tempo-value"
+            description="Clear the tempo changes; the roll runs at its BPM throughout"
+            onClick={() => usePianoRollStore.getState().setTempoMap([])}
+            icon={<Eraser className={MINI_GLYPH} />}
+            legend="Clear the tempo changes"
+          />
+        </div>
+      )}
 
       <Sep />
 
@@ -548,7 +607,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         aria-label="Match the meter to the song"
         description={
           songEntryId
-            ? "Match: take the meter map, pickup, tempo and lanes from the song's rhythm analysis (analyzing it first when needed)"
+            ? "Match: take the meter map, pickup, tempo, tempo changes, swing and lanes from the song's rhythm analysis (analyzing it first when needed)"
             : "Choose a song from the song field's list to match its meter"
         }
         icon={<AudioWaveform className={`${STRIP_GLYPH} ${matchBusy ? 'animate-pulse' : ''}`} />}

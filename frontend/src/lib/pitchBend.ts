@@ -18,7 +18,7 @@
  *
  * Everything here is pure, so node tests load it.
  */
-import type { PolyLane } from './meterMap';
+import { laneLoop, type LaneSpan, type PolyLane } from './meterMap';
 
 export type BendShape = 'linear' | 'hold' | 'smooth';
 
@@ -367,16 +367,22 @@ export function repeatBend(local: readonly BendPoint[], period: number, until: n
  * step, a point at the cycle's length ends the cycle (a ramp drawn across the
  * cycle arrives there before the next cycle starts over), and a point past the
  * cycle wraps into it as unrollLanes wraps notes, the later point winning a
- * step. A lane that does not loop keeps its points.
+ * step. A lane that does not loop keeps its points. A lane with a `span`
+ * counts its cycles from the span's first step and repeats them to its end,
+ * as unrollLanes does with the lane's notes.
  */
-export function unrollBend(points: readonly BendPoint[], cycleSteps: number | null | undefined, totalSteps: number): BendPoint[] {
-  const cyc = cycleSteps;
-  if (!points.length || !cyc || cyc <= 0 || cyc >= totalSteps) return points.map((p) => ({ ...p }));
-  const atEnd = (p: BendPoint) => Math.abs(p.step - cyc) <= EPS;
-  const local = sanitizeBendPoints(points.filter((p) => !atEnd(p)).map((p) => ({ ...p, step: ((p.step % cyc) + cyc) % cyc })));
+export function unrollBend(
+  points: readonly BendPoint[], cycleSteps: number | null | undefined, totalSteps: number, span?: LaneSpan | null,
+): BendPoint[] {
+  const loop = laneLoop({ id: -1, name: '', cycleSteps: cycleSteps ?? null, span }, totalSteps);
+  if (!points.length || !loop) return points.map((p) => ({ ...p }));
+  const { cycle: cyc, origin, end: stop } = loop;
+  const atEnd = (p: BendPoint) => Math.abs(p.step - origin - cyc) <= EPS;
+  const local = sanitizeBendPoints(points.filter((p) => !atEnd(p)).map((p) => ({ ...p, step: ((((p.step - origin) % cyc) + cyc) % cyc) })));
   const end = points.filter(atEnd).pop();
   if (end) local.push({ ...end, step: cyc, shape: 'hold' });
-  return repeatBend(local, cyc, totalSteps);
+  const rolled = repeatBend(local, cyc, stop - origin);
+  return origin > 0 ? rolled.map((p) => ({ ...p, step: p.step + origin })) : rolled;
 }
 
 /**
@@ -479,12 +485,13 @@ export function capBentLanes(bends: readonly LaneBend[], lanes: readonly PolyLan
 
 /** Each lane's curve as the roll plays it, by lane id: only the lanes that bend (bentLanes). */
 export function playedRollBends(bends: readonly LaneBend[], lanes: readonly PolyLane[], totalSteps: number): Map<number, PlayedBend> {
-  const cycles = new Map(lanes.map((l) => [l.id, l.cycleSteps]));
+  const byId = new Map(lanes.map((l) => [l.id, l]));
   const bent = bentLanes(lanes, bends);
   const out = new Map<number, PlayedBend>();
   for (const b of bends) {
     if (!bent.has(b.lane)) continue;
-    out.set(b.lane, { range: b.range, points: unrollBend(b.points, cycles.get(b.lane), totalSteps) });
+    const lane = byId.get(b.lane);
+    out.set(b.lane, { range: b.range, points: unrollBend(b.points, lane?.cycleSteps, totalSteps, lane?.span) });
   }
   return out;
 }

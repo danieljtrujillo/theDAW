@@ -8,8 +8,11 @@ import {
   addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs, genPreview, genStatus, genTarget, genWrite,
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
-  setUnit, stepLoop, stepOption, type GenSettings,
+  setUnit, stepLoop, stepOption, laneSpanLabel, spanIsSegment, toggleLaneSpan, writeMatch, type GenSettings,
 } from './meterFace.ts';
+import { beatToTime } from './tempoMap.ts';
+import { grooveById } from './grooveTemplate.ts';
+import { playedRollNotes } from './rollClip.ts';
 
 const M44 = { num: 4, den: 4, groups: [] };
 const M78 = { num: 7, den: 8, groups: [3, 2, 2] };
@@ -21,6 +24,23 @@ const LANE_A = { id: 0, name: 'A', cycleSteps: null };
 const C_MAJOR = [60, 62, 64, 65, 67, 69, 71];
 const euclid = (hits: number, steps: number, seed = 1): GenSettings =>
   ({ kind: 'euclid', opts: { ...GEN_DEFAULT_OPTS.euclid, hits }, steps, gate: { kind: 'open' }, seed });
+
+/**
+ * One undo step whose snapshot is the state as it stands, undone: the stacks
+ * are empty and the coalesce clock is reset, so the next edit starts a step of
+ * its own (the store folds edits closer than 300 ms into one).
+ */
+const freshStep = () => {
+  const s = st();
+  usePianoRollStore.setState({
+    _undo: [{
+      notes: s.notes, bpm: s.bpm, totalSteps: s.totalSteps, lowestNote: s.lowestNote, highestNote: s.highestNote,
+      meterMap: s.meterMap, pickupSteps: s.pickupSteps, lanes: s.lanes, bends: s.bends, tempoMap: s.tempoMap,
+    }],
+    _redo: [],
+  });
+  st().undo();
+};
 
 // The example song: 7/8 3+2+2 for bars 1-4 (14 steps), 5/4 2+3 for bars 5-6 (20), 4/4 from bar 7.
 const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { bar: 6, meter: M44 }];
@@ -206,20 +226,117 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
     meterMap: [{ bar: 0, meter: M78 }, { bar: 4, meter: { num: 6, den: 8, groups: [3, 3] } }],
     pickupSteps: 2,
     bpm: 120,
-    lanes: [LANE_A, { id: 1, name: 'Low', cycleSteps: 20 }, { id: 2, name: 'High', cycleSteps: 6 }],
+    tempoMap: [],
+    swing: null,
+    // Both loops were heard in bars 1-4 only: the pickup and four 14-step bars.
+    lanes: [LANE_A, { id: 1, name: 'Low', cycleSteps: 20, span: { start: 0, end: 58 } }, { id: 2, name: 'High', cycleSteps: 6, span: { start: 0, end: 58 } }],
   });
-  assert.equal(alone.status, 'MATCH SET 2 METERS, A 2-STEP PICKUP, 120 BPM AND 2 LANES. 2 BARS ARE UNCERTAIN.');
+  assert.equal(
+    alone.status,
+    'MATCH SET 2 METERS, A 2-STEP PICKUP, 120 BPM AND 2 LANES. A LANE HEARD IN PART OF THE SONG PLAYS ONLY THERE. 2 BARS ARE UNCERTAIN.',
+  );
   assert.equal(alone.level, 'info');
-  const kept = matchApply({ lanes: [LANE_A, { id: 1, name: 'B', cycleSteps: 12 }], bpm: 90 }, { ...analysis, tempo: { bpm: 97.333, stable: false } });
+  // The tempo keeps its fraction: bars of 3.5 quarters that last 60 * 3.5 / 97.333 seconds.
+  const slow = { ...analysis, tempo: { bpm: 97.333, stable: false }, downbeats: [0.25, 0.25 + (60 * 3.5) / 97.333] };
+  const kept = matchApply({ lanes: [LANE_A, { id: 1, name: 'B', cycleSteps: 12 }], bpm: 90 }, slow);
   assert.equal(kept.apply?.lanes, null);
-  assert.equal(kept.apply?.bpm, 97, 'the tempo lands on a whole BPM');
-  assert.equal(matchApply({ lanes: [LANE_A], bpm: 90 }, { ...analysis, tempo: { bpm: 101.456, stable: false } }).apply?.bpm, 101);
-  assert.equal(kept.level, 'warn');
-  assert.match(kept.status, /THE ROLL KEPT ITS OWN LANES\. 2 BARS ARE UNCERTAIN\. THE SONG'S TEMPO MOVES, SO BAR LINES DRIFT FROM THE NOTES\.$/);
+  assert.ok(Math.abs((kept.apply?.bpm ?? 0) - 97.333) < 1e-9, `the tempo keeps its fraction: ${kept.apply?.bpm}`);
+  assert.equal(kept.level, 'info', 'the downbeats carry the tempo, so nothing drifts');
+  assert.match(kept.status, /97\.33 BPM/);
+  assert.match(kept.status, /THE ROLL KEPT ITS OWN LANES\. 2 BARS ARE UNCERTAIN\.$/);
+  // No downbeats to read a moving tempo from: the tracked tempo with its fraction, and the drift warning.
+  const blind = matchApply({ lanes: [LANE_A], bpm: 90 }, { ...analysis, downbeats: undefined, tempo: { bpm: 101.456, stable: false } });
+  assert.equal(blind.apply?.bpm, 101.456);
+  assert.equal(blind.apply?.tempoMap, null, 'no tempo read off downbeats, so the roll keeps its own tempo changes');
+  assert.equal(blind.level, 'warn');
+  assert.match(blind.status, /101\.46 BPM/);
+  assert.match(blind.status, /THE SONG'S TEMPO MOVES, SO BAR LINES DRIFT FROM THE NOTES\.$/);
   assert.equal(matchApply({ lanes: [LANE_A], bpm: 120 }, { status: 'pending' }).apply, null);
   assert.equal(matchApply({ lanes: [LANE_A], bpm: 120 }, { status: 'ready', meter_map: [] }).level, 'warn');
   const plain = matchApply({ lanes: [LANE_A], bpm: 120 }, { status: 'ready', meter_map: [analysis.meter_map![0]] });
   assert.equal(plain.status, 'MATCH SET 7/8 3+2+2 THROUGHOUT AND NO PICKUP.');
+}
+
+// MATCH on a song that slows down, run the way the METER face runs it: the
+// analysis, matchApply, writeMatch into the piano roll store. The ritardando
+// becomes tempo changes, the notes keep their steps, each bar line plays when
+// the song's downbeat does, the swing lands in the feel's groove, and one undo
+// takes the whole MATCH back.
+{
+  const durs = [2, 2, 2, 2, 2.4, 2.8, 2.8, 2.8];
+  const downbeats = [0];
+  for (const d of durs) downbeats.push(Math.round((downbeats[downbeats.length - 1] + d) * 1e6) / 1e6);
+  const rit: RhythmAnalysis = {
+    status: 'ready',
+    tempo: { bpm: 110, stable: false },
+    downbeats,
+    meter_map: [{ start_bar: 0, bars: downbeats.length, numerator: 4, denominator: 4, grouping: [4], beats_per_bar: 4, beat_unit: 'quarter' }],
+    syncopation: { swing_ratio: 1.6, swing_confidence: 1 },
+  };
+  usePianoRollStore.setState({
+    meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0, lanes: [LANE_A], activeLane: 0, totalSteps: 160, bpm: 120, tempoMap: [], grooveId: 'swing',
+  });
+  st().replaceAll([note('bar1', 0), note('bar5', 64), note('bar7', 96)]);
+  freshStep();
+  const stepsBefore = st().notes.map((n) => n.step);
+
+  const res = matchApply(st(), rit);
+  assert.ok(res.apply);
+  writeMatch(st(), res.apply);
+  assert.deepEqual(st().tempoMap, [
+    { beat: 0, bpm: 120 },
+    { beat: 16, bpm: 100 },
+    { beat: 20, bpm: 85.714 },
+  ]);
+  assert.deepEqual(st().notes.map((n) => n.step), stepsBefore, 'MATCH moves no note');
+  // Onsets through the tempo map: bar 5 at 8 s, bar 7 at 8 + 2.4 + 2.8 s, as the song plays them.
+  for (const n of st().notes) {
+    const onset = beatToTime(st().tempoMap, n.step / 4);
+    const bar = n.step / 16;
+    assert.ok(Math.abs(onset - downbeats[bar]) < 1e-3, `the note on bar ${bar + 1} sounds at ${onset}, the downbeat is ${downbeats[bar]}`);
+  }
+  assert.equal(st().grooveId, 'swing8:61.5');
+  assert.equal(grooveById(st().grooveId)?.name, 'Swing 8ths 61.5%', "the feel's groove list resolves the song's swing");
+  assert.match(res.status, /3 TEMPO CHANGES/);
+  assert.match(res.status, /SWING 8THS 61\.5%/);
+  assert.equal(res.level, 'info');
+  assert.equal(st()._undo.length, 1, 'MATCH is one undo step');
+  st().undo();
+  assert.deepEqual(st().tempoMap, [], 'undo takes the tempo changes back');
+  assert.equal(st().bpm, 120);
+  st().redo();
+  assert.equal(st().tempoMap.length, 3, 'redo brings them back');
+  // A MATCH on a song that holds one tempo clears tempo changes an earlier MATCH wrote.
+  writeMatch(st(), matchApply(st(), { ...rit, downbeats: [0, 2, 4, 6], syncopation: undefined }).apply!);
+  assert.deepEqual(st().tempoMap, []);
+  assert.equal(st().bpm, 120);
+  usePianoRollStore.setState({ grooveId: 'swing' });
+}
+
+// SPAN, as the METER face runs it: lane B limited to the selected change's bars,
+// its repeats written out only there, its loop starting at the first of them;
+// GEN writes that first cycle; pressing SPAN again gives the whole roll back.
+{
+  usePianoRollStore.setState({ meterMap: SONG, pickupSteps: 0, lanes: [LANE_A, { id: 1, name: 'B', cycleSteps: 6 }], activeLane: 1, totalSteps: 160 });
+  st().replaceAll([note('b0', 56, 1)]);
+  const sel = 1; // 5/4 in bars 5-6: steps 56 to 96
+  let lanes = toggleLaneSpan(st().meterMap, st().lanes, sel, 1, st().pickupSteps);
+  st().applyMeter({ lanes });
+  assert.deepEqual(st().lanes[1], { id: 1, name: 'B', cycleSteps: 6, span: { start: 56, end: 96 } });
+  assert.equal(spanIsSegment(st().meterMap, sel, st().lanes[1].span, 0), true);
+  assert.equal(laneSpanLabel(st().meterMap, st().lanes[1].span!, 0), '5-6');
+  const played = playedRollNotes(st().notes, st().lanes, st().totalSteps).map((n) => n.step);
+  assert.deepEqual(played, [56, 62, 68, 74, 80, 86, 92], 'the lane loops from bar 5 and stops where bar 7 starts');
+  const target = genTarget(st(), sel);
+  assert.deepEqual([target.start, target.end, target.cycle], [56, 62, 6], "GEN writes the lane's first cycle inside its span");
+  const written = genWrite(st(), sel, euclid(2, 6), C_MAJOR, 'sp');
+  assert.deepEqual(written.notes.filter((n) => n.lane === 1).map((n) => n.step).sort((a, b) => a - b), [56, 59], "GEN's cycle replaced the old note");
+  freshStep();
+  lanes = toggleLaneSpan(st().meterMap, st().lanes, sel, 1, st().pickupSteps);
+  st().applyMeter({ lanes });
+  assert.deepEqual(st().lanes[1], { id: 1, name: 'B', cycleSteps: 6 }, 'SPAN again: the whole roll');
+  st().undo();
+  assert.deepEqual(st().lanes[1].span, { start: 56, end: 96 }, 'undo brings the span back');
 }
 
 // FORM section meters: the list, round trips, and a section's own meter the list lacks.

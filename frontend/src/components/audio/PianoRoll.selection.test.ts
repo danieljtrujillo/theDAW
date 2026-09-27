@@ -64,6 +64,7 @@ const beginBlock = () => {
         pickupSteps: s.pickupSteps,
         lanes: s.lanes,
         bends: s.bends,
+        tempoMap: s.tempoMap,
       },
     ],
     _redo: [],

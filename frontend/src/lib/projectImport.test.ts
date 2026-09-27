@@ -65,6 +65,29 @@ const withoutIds = (notes: readonly PianoNote[] = []) => notes.map(({ id: _id, .
   assert.notEqual(saved.meter_map?.[1].meter.groups, MAP[1].meter.groups);
 }
 
+// A lane limited to part of the clip (MATCH's span, the METER face's SPAN) saves
+// its span and loads it back; one that runs to the clip's end saves a null end;
+// a file from before spans loads its lanes with none.
+{
+  const spanned: PolyLane[] = [
+    { id: 0, name: 'A', cycleSteps: null },
+    { id: 1, name: 'Low', cycleSteps: 20, span: { start: 58, end: 114 } },
+    { id: 2, name: 'High', cycleSteps: 6, span: { start: 64, end: null } },
+  ];
+  const saved = clipMeterToTasmo({ sourceLanes: spanned });
+  assert.deepEqual(saved.lanes, [
+    { id: 0, name: 'A', cycle_steps: null },
+    { id: 1, name: 'Low', cycle_steps: 20, span_start: 58, span_end: 114 },
+    { id: 2, name: 'High', cycle_steps: 6, span_start: 64, span_end: null },
+  ]);
+  assert.deepEqual(tasmoMeterToClip(JSON.parse(JSON.stringify(saved))).sourceLanes, spanned);
+  const older = tasmoMeterToClip({ lanes: [{ id: 0, name: 'A', cycle_steps: null }, { id: 1, name: 'B', cycle_steps: 12 }] });
+  assert.deepEqual(older.sourceLanes, LANES);
+  // A span that ends before it starts is no span.
+  const broken = tasmoMeterToClip({ lanes: [{ id: 1, name: 'B', cycle_steps: 12, span_start: 40, span_end: 20 }] });
+  assert.deepEqual(broken.sourceLanes, [{ id: 1, name: 'B', cycleSteps: 12 }]);
+}
+
 // The roll's own notes round-trip with their lanes. The file stores no ids, so loaded notes get new ones.
 {
   const rollNotes: PianoNote[] = [

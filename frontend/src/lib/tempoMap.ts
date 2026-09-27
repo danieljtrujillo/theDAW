@@ -154,6 +154,33 @@ export function getBeatLength(m: Meter): number {
   return 4 / m.den;
 }
 
+/** The tempo range a document's tempo map holds, the app clock's own (beatClock). */
+export const TEMPO_MIN_BPM = 20;
+export const TEMPO_MAX_BPM = 300;
+
+/**
+ * A tempo map as a document stores it: events with a finite beat at or after
+ * 0 and a positive tempo, tempos held to TEMPO_MIN_BPM-TEMPO_MAX_BPM with their
+ * fraction kept, sorted by beat, one event per beat (the later one wins), a
+ * `'linear'` curve kept and every `timeSec` dropped. A map being edited stores
+ * no seconds (see normalizeTempoMap's precondition), so none survive here.
+ * Anything that is not an array reads as the empty map.
+ */
+export function sanitizeTempoEvents(map: unknown): TempoEvent[] {
+  if (!Array.isArray(map)) return [];
+  const byBeat = new Map<number, TempoEvent>();
+  for (const e of map as unknown[]) {
+    if (!e || typeof e !== 'object') continue;
+    const beat = Number((e as TempoEvent).beat);
+    const bpm = Number((e as TempoEvent).bpm);
+    if (!Number.isFinite(beat) || beat < 0 || !Number.isFinite(bpm) || bpm <= 0) continue;
+    const clean: TempoEvent = { beat, bpm: Math.max(TEMPO_MIN_BPM, Math.min(TEMPO_MAX_BPM, bpm)) };
+    if ((e as TempoEvent).curve === 'linear') clean.curve = 'linear';
+    byBeat.set(beat, clean);
+  }
+  return [...byBeat.values()].sort((a, b) => a.beat - b.beat);
+}
+
 /**
  * Sorted by beat, one event per beat (the later one wins), every `timeSec` and
  * `secPerBeat` filled in. Events with a non-finite beat or a bpm that is not

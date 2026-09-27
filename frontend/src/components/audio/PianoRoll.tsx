@@ -18,6 +18,7 @@ import {
   barAt,
   bars as meterBars,
   gridLines,
+  laneLoop,
   meterEquals,
   normalizeMeterMap,
   roundUpToBar,
@@ -39,6 +40,7 @@ import {
   type PlayedBend,
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
+import { laneSpanLabel } from '../../lib/meterFace';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
 import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
 import {
@@ -77,6 +79,7 @@ import { syncopationByBar } from '../../lib/syncopation';
 import {
   builtinGrooves,
   fromVirtuosoTemplate,
+  swingGrooveById,
   swingToGroove,
   type GrooveTemplate,
 } from '../../lib/grooveTemplate';
@@ -660,6 +663,12 @@ export const PianoRollFeel: React.FC = () => {
   const [imported, setImported] = useState<GrooveTemplate | null>(null);
   const grooveFileRef = useRef<HTMLInputElement>(null);
   const builtins = useMemo(() => builtinGrooves(), []);
+  // A swing groove the list does not hold, such as the one MATCH reads off a
+  // song ("Swing 8ths 61.5%"): its id names it, so it has an entry of its own.
+  const named = useMemo(
+    () => (builtins.some((g) => g.id === grooveId) ? null : swingGrooveById(grooveId)),
+    [builtins, grooveId],
+  );
 
   const loadGrooveFile = async (file: File | undefined) => {
     if (!file) return;
@@ -690,7 +699,7 @@ export const PianoRollFeel: React.FC = () => {
     const picked =
       grooveId === SLIDER_GROOVE_ID
         ? null
-        : ((imported && imported.id === grooveId ? imported : builtins.find((g) => g.id === grooveId)) ?? null);
+        : ((imported && imported.id === grooveId ? imported : builtins.find((g) => g.id === grooveId) ?? named) ?? null);
     const groove = picked ?? swingToGroove(swingPct);
     // Quantize each note's start toward the nearest 16th at strength `q`
     // (`rollClip.quantizeRollClip`, which is `clipNotes.quantizeNotes` — the
@@ -756,7 +765,7 @@ export const PianoRollFeel: React.FC = () => {
           name="piano-roll-groove"
           // An id nothing answers to shows as the slider entry, which is what it applies as.
           value={
-            grooveId === imported?.id || builtins.some((g) => g.id === grooveId) ? grooveId : SLIDER_GROOVE_ID
+            grooveId === imported?.id || grooveId === named?.id || builtins.some((g) => g.id === grooveId) ? grooveId : SLIDER_GROOVE_ID
           }
           onChange={(e) => setGrooveId(e.target.value)}
           className={`${FIELD_SELECT} max-w-28`}
@@ -765,6 +774,7 @@ export const PianoRollFeel: React.FC = () => {
           {builtins.map((g) => (
             <option key={g.id} value={g.id}>{g.name}</option>
           ))}
+          {named && named.id !== imported?.id && <option value={named.id}>{named.name}</option>}
           {imported && <option value={imported.id}>{imported.name}</option>}
         </select>
         <label htmlFor="piano-roll-groove-file" className="sr-only">Groove from a MIDI file</label>
@@ -1717,7 +1727,7 @@ export const PianoRoll: React.FC<{
   // changes, so an edit in a lane that does not loop leaves the repeats alone.
   const loopNotesRef = useRef<PianoNote[]>([]);
   const loopNotes = useMemo(() => {
-    const looping = new Set(lanes.filter((l) => l.cycleSteps != null && l.cycleSteps > 0 && l.cycleSteps < totalSteps).map((l) => l.id));
+    const looping = new Set(lanes.filter((l) => laneLoop(l, totalSteps)).map((l) => l.id));
     const next = looping.size ? notes.filter((n) => n.lane !== undefined && looping.has(n.lane)) : [];
     const prev = loopNotesRef.current;
     if (prev.length === next.length && prev.every((n, i) => n === next[i])) return prev;
@@ -1736,8 +1746,13 @@ export const PianoRoll: React.FC<{
     });
   }, [loopNotes, lanes, totalSteps]);
 
+  // Where each looping lane's first cycle ends: its loop from step 0, or from
+  // its span's first step when it plays in part of the roll only.
   const loopEnds = useMemo(
-    () => lanes.filter((l): l is PolyLane & { cycleSteps: number } => l.cycleSteps != null && l.cycleSteps > 0 && l.cycleSteps < totalSteps),
+    () => lanes.flatMap((l) => {
+      const loop = laneLoop(l, totalSteps);
+      return loop ? [{ id: l.id, name: l.name, cycleSteps: loop.cycle, at: loop.origin + loop.cycle, span: l.span ?? null }] : [];
+    }),
     [lanes, totalSteps],
   );
 
@@ -2228,17 +2243,17 @@ export const PianoRoll: React.FC<{
                 accessible name say it in words. */}
             {loopEnds.map((l, i) => {
               const { form } = laneOf(l.id);
-              const name = `Lane ${l.name} loops every ${l.cycleSteps} steps`;
+              const name = `Lane ${l.name} loops every ${l.cycleSteps} steps${l.span ? ` in bars ${laneSpanLabel(meterMap, l.span, pickupSteps)}` : ''}`;
               const tagPx = 18 + 7.5 * String(l.cycleSteps).length;
-              const others = loopEnds.map((o) => o.cycleSteps);
-              const roomRight = (Math.min(totalSteps, ...others.filter((c) => c > l.cycleSteps)) - l.cycleSteps) * stepPx;
-              const roomLeft = (l.cycleSteps - Math.max(0, ...others.filter((c) => c < l.cycleSteps))) * stepPx;
+              const others = loopEnds.map((o) => o.at);
+              const roomRight = (Math.min(totalSteps, ...others.filter((c) => c > l.at)) - l.at) * stepPx;
+              const roomLeft = (l.at - Math.max(0, ...others.filter((c) => c < l.at))) * stepPx;
               const onLeft = roomRight < tagPx && roomLeft >= tagPx;
               return (
                 <div
                   key={l.id}
                   className="absolute top-0 bottom-0 w-0 border-l border-dashed border-[rgb(var(--et-ink)/0.5)] z-15 pointer-events-none"
-                  style={{ left: l.cycleSteps * stepPx }}
+                  style={{ left: l.at * stepPx }}
                 >
                   <span
                     role="img"

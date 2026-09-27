@@ -12,7 +12,9 @@
  *
  * A note's `lane` names a PolyLane. A lane with a `cycleSteps` loops its notes
  * at that length; unrollLanes writes the repeats out for playback, bounce and
- * export.
+ * export. A lane with a `span` loops only inside it: its first cycle starts at
+ * the span's first step and its repeats stop at the span's end (MATCH gives a
+ * song's polymeter layer the bars of the meter segment it was heard in).
  *
  * Everything here is pure.
  */
@@ -20,7 +22,15 @@ import { DEFAULT_METER, groupStarts, type Meter } from './colony';
 import type { PianoNote } from '../state/pianoRollStore';
 
 export interface MeterSegment { bar: number; meter: Meter }
-export interface PolyLane { id: number; name: string; cycleSteps: number | null }
+/** Where a looping lane plays: from step `start` to step `end` (null = the roll's end). */
+export interface LaneSpan { start: number; end: number | null }
+export interface PolyLane {
+  id: number;
+  name: string;
+  cycleSteps: number | null;
+  /** Left out (or null), a looping lane runs from step 0 to the roll's end. */
+  span?: LaneSpan | null;
+}
 export interface BarSpan { bar: number; start: number; len: number; meter: Meter }
 /** `pickupSteps` rides on theDAW's tick-0 signature: the roll's pickup, so a reader never has to guess it. */
 export interface MeterEvent { tick: number; num: number; den: number; groups?: number[]; pickupSteps?: number }
@@ -353,16 +363,17 @@ const perStepOf = (n: LaneNote): number | null => {
  * first one.
  */
 export function unrollLanes<T extends LaneNote>(notes: readonly T[], lanes: readonly PolyLane[], totalSteps: number): T[] {
-  const cycles = new Map(lanes.map((l) => [l.id, l.cycleSteps]));
+  const loops = new Map(lanes.map((l) => [l.id, laneLoop(l, totalSteps)]));
   const out: T[] = [];
   for (const n of notes) {
-    const cyc = n.lane === undefined ? null : cycles.get(n.lane) ?? null;
-    if (!cyc || cyc <= 0 || cyc >= totalSteps) { out.push(n); continue; }
-    const base = ((n.step % cyc) + cyc) % cyc;
+    const loop = n.lane === undefined ? null : loops.get(n.lane) ?? null;
+    if (!loop) { out.push(n); continue; }
+    const { cycle: cyc, origin, end } = loop;
+    const base = origin + ((((n.step - origin) % cyc) + cyc) % cyc);
     const per = perStepOf(n);
-    for (let k = 0; base + k * cyc < totalSteps - EPS; k += 1) {
+    for (let k = 0; base + k * cyc < end - EPS; k += 1) {
       const step = base + k * cyc;
-      const length = Math.min(n.length, totalSteps - step);
+      const length = Math.min(n.length, end - step);
       out.push({
         ...n,
         id: k === 0 ? n.id : `${n.id}~${k}`,
@@ -378,6 +389,19 @@ export function unrollLanes<T extends LaneNote>(notes: readonly T[], lanes: read
     }
   }
   return out.sort((a, b) => a.step - b.step || a.note - b.note);
+}
+
+/**
+ * How lane `l` loops in a roll of `totalSteps`: its cycle, the step its first
+ * cycle starts on and the step its repeats stop at. Null for a lane that does
+ * not loop: no cycle, or a cycle that fills the room it plays in.
+ */
+export function laneLoop(l: PolyLane | undefined, totalSteps: number): { cycle: number; origin: number; end: number } | null {
+  const cyc = l?.cycleSteps;
+  if (!l || !cyc || cyc <= 0) return null;
+  const origin = Math.max(0, Math.min(totalSteps, l.span?.start ?? 0));
+  const end = Math.max(origin, Math.min(totalSteps, l.span?.end ?? totalSteps));
+  return cyc >= end - origin ? null : { cycle: cyc, origin, end };
 }
 
 /** Steps until every looping lane starts together again (the least common multiple of their cycles). */
