@@ -55,12 +55,18 @@ def is_midi(path: Path) -> bool:
 def read_score(path: Path, *, cache: bool = True) -> Any:
     """``path`` as a music21 score: :func:`read_midi` for a MIDI file,
     ``converter.parse`` for anything else. ``cache=False`` keeps music21 from
-    reading or writing its parse cache (for a file about to be deleted)."""
+    reading or writing its parse cache (for a file about to be deleted). A
+    sheet an older build wrote at sounding pitch is marked as such
+    (:func:`.sheet_pitch.mark_legacy_sounding_pitch`)."""
     from music21 import converter  # type: ignore[import]
+
+    from .sheet_pitch import mark_legacy_sounding_pitch
 
     if is_midi(path):
         return read_midi(path, cache=cache)
-    return converter.parse(str(path), forceSource=not cache)
+    score = converter.parse(str(path), forceSource=not cache)
+    mark_legacy_sounding_pitch(score, Path(path))
+    return score
 
 
 def read_midi(path: Path, *, cache: bool = True) -> Any:
@@ -164,7 +170,7 @@ def carry_chord_velocity(element: Any) -> None:
     chord here too. A single note, or a chord whose heads carry no velocity, is
     left as it is.
     """
-    from music21 import chord  # type: ignore[import]
+    from music21 import chord
 
     if not isinstance(element, chord.ChordBase):
         return

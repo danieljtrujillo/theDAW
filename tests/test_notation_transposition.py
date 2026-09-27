@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pretty_midi
-import pytest  # type: ignore[import]
+import pytest
 
 from backend.modules.library.db import LibraryDB
 from backend.modules.notation.engine import convert_score, midi_to_arrangement
@@ -230,7 +230,7 @@ def test_note_chart_agrees_with_the_sheet_made_from_the_same_midi(tmp_path: Path
 def test_note_chart_keeps_an_8va_passage_at_the_pitch_it_sounds(tmp_path: Path):
     """A piano sheet with an 8va line: MusicXML stores those notes at the pitch
     they sound, and the chart plays them there."""
-    from music21 import instrument, note, spanner, stream  # type: ignore[import]
+    from music21 import instrument, note, spanner, stream
 
     score = stream.Score()
     part = stream.Part()
@@ -310,3 +310,172 @@ def test_arrangement_of_a_clarinet_sheet_is_at_concert_pitch(tmp_path: Path):
     pitch = root.find(".//note/pitch")
     assert pitch is not None
     assert (pitch.findtext("step"), pitch.findtext("octave")) == ("C", "4")
+
+
+def _clarinet_scale_midi(path: Path) -> Path:
+    """A General MIDI clarinet (program 71) playing C4 D4 E4 F4 at sounding
+    pitch, as a transcription or a DAW writes it."""
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120)
+    inst = pretty_midi.Instrument(program=71)
+    for i, pitch in enumerate((60, 62, 64, 65)):
+        inst.notes.append(pretty_midi.Note(90, pitch, i * 0.5, i * 0.5 + 0.5))
+    pm.instruments.append(inst)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pm.write(str(path))
+    return path
+
+
+def _older_build_sheet(midi: Path, sheet: Path) -> Path:
+    """MAKE SHEET as the build before the pitch fix wrote it: ``read_midi``
+    left each part at music21's ``'unknown'`` pitch state, so the writer printed
+    it at the pitch it sounds under the clarinet's ``<transpose>``, and nothing
+    stamped the sheet."""
+    from backend.modules.notation.midi_read import read_midi
+
+    score = read_midi(midi)
+    score.atSoundingPitch = "unknown"
+    for part in score.parts:
+        part.atSoundingPitch = "unknown"
+    score = score.quantize((4, 3), inPlace=False, recurse=True)
+    sheet.parent.mkdir(parents=True, exist_ok=True)
+    score.write("musicxml", fp=str(sheet))
+    return sheet
+
+
+def _printed(root: ET.Element) -> list[tuple[str, int, int]]:
+    """``(step, alter, octave)`` of every pitched note the sheet prints."""
+    return [
+        (
+            pitch.findtext("step") or "",
+            int(float(pitch.findtext("alter") or 0)),
+            int(pitch.findtext("octave") or 0),
+        )
+        for pitch in root.iter("pitch")
+    ]
+
+
+def test_a_sheet_an_older_build_made_still_reads_at_the_pitch_it_sounds(
+    tmp_path: Path,
+):
+    """A clarinet sheet an older build made from a MIDI holds sounding pitch
+    under its <transpose>. Opened in this build: the import and the note chart
+    give the MIDI's pitches, the chart pairs every recorded onset, the chart
+    places the written notes, and MAKE SHEET of it prints written pitch."""
+    midi = _clarinet_scale_midi(tmp_path / "midi" / "clarinet.mid")
+    sheet = _older_build_sheet(midi, tmp_path / "notation" / "clarinet.musicxml")
+    old = sheet.read_bytes()
+    assert b"<transpose>" in old and b"thedaw-pitch" not in old
+    assert _printed(ET.parse(sheet).getroot()) == [
+        ("C", 0, 4),
+        ("D", 0, 4),
+        ("E", 0, 4),
+        ("F", 0, 4),
+    ]
+
+    imported = parse_score_path(str(sheet))
+    assert [n["pitch"] for n in imported["tracks"][0]["notes"]] == [60, 62, 64, 65]
+
+    chart = build_notechart(
+        sheet, title="t", artist="a", entry_id="song", raw_midi_path=midi
+    )
+    notes = [e for e in chart["parts"][0]["events"] if not e["isRest"]]
+    assert [e["midi"] for e in notes] == [60, 62, 64, 65]
+    assert [(e["step"], e["alter"], e["octave"]) for e in notes] == [
+        ("D", 0, 4),
+        ("E", 0, 4),
+        ("F", 1, 4),
+        ("G", 0, 4),
+    ]
+    assert chart["quantization"]["matchedRawEvents"] == 4
+
+    remade = convert_score(
+        _db(tmp_path),
+        entry_id="song",
+        source_path=sheet,
+        fmt="musicxml",
+        output_path=tmp_path / "notation" / "clarinet__remade.musicxml",
+    )
+    assert remade["ok"] is True, remade
+    root = ET.parse(remade["path"]).getroot()
+    assert _printed(root) == [("D", 0, 4), ("E", 0, 4), ("F", 1, 4), ("G", 0, 4)]
+    back = parse_score_path(str(remade["path"]))
+    assert [n["pitch"] for n in back["tracks"][0]["notes"]] == [60, 62, 64, 65]
+
+
+def test_every_sheet_this_build_writes_is_stamped_once_even_one_part_of_it(
+    tmp_path: Path,
+):
+    """MAKE SHEET stamps the sheet as written pitch; MAKE SHEET of that sheet
+    keeps one stamp; the one-part XML cut from it keeps the stamp, so the part
+    still imports at the pitch it sounds."""
+    midi = _clarinet_scale_midi(tmp_path / "midi" / "clarinet.mid")
+    sheet = _make_sheet(tmp_path, midi)
+    assert sheet.read_bytes().count(b'name="thedaw-pitch"') == 1
+
+    remade = convert_score(
+        _db(tmp_path),
+        entry_id="song",
+        source_path=sheet,
+        fmt="musicxml",
+        output_path=tmp_path / "notation" / "clarinet__remade.musicxml",
+    )
+    assert remade["ok"] is True, remade
+    assert Path(remade["path"]).read_bytes().count(b'name="thedaw-pitch"') == 1
+
+    one_part = convert_score(
+        _db(tmp_path),
+        entry_id="song",
+        source_path=sheet,
+        fmt="musicxml",
+        output_path=tmp_path / "notation" / "clarinet__part.musicxml",
+        options={"parts": [0]},
+    )
+    assert one_part["ok"] is True, one_part
+    cut = Path(one_part["path"])
+    assert b'name="thedaw-pitch"' in cut.read_bytes()
+    back = parse_score_path(str(cut))
+    assert [n["pitch"] for n in back["tracks"][0]["notes"]] == [60, 62, 64, 65]
+
+
+def test_chord_track_of_a_clarinet_lead_sheet_is_at_concert_pitch(tmp_path: Path):
+    """A B-flat clarinet lead sheet prints D major over its written D4; the
+    chord track, which sounds with the audio, reads the C major it sounds."""
+    from backend.modules.notation.exporters.chordtrack import build_chordtrack
+
+    sheet = tmp_path / "clarinet_lead.musicxml"
+    sheet.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Clarinet in B-flat</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>2</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+        <transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose>
+      </attributes>
+      <harmony><root><root-step>D</root-step></root><kind>major</kind></harmony>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>
+    </measure>
+    <measure number="2">
+      <harmony><root><root-step>A</root-step></root><kind>major</kind></harmony>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>
+    </measure>
+  </part>
+</score-partwise>
+""",
+        encoding="utf-8",
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=sheet,
+        method="harmony",
+    )
+    assert [c["symbol"] for c in doc["chords"]] == ["C", "G"]
+    assert [c["rootPc"] for c in doc["chords"]] == [0, 7]

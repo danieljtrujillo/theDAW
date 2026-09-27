@@ -60,6 +60,7 @@ from backend.modules.library.db import LibraryDB, normalize_artifact_path
 
 from . import pdf_render
 from .midi_read import is_midi, read_score
+from .sheet_pitch import stamp_written_pitch
 from .tempo_marks import engrave_tempo_marks, restore_sounding_tempi
 from backend.lib.atomic import atomic_replace
 from backend.lib.launch_token import child_env
@@ -281,7 +282,10 @@ def _write_musicxml(score: Any, path: Path, *, what: str) -> Path:
     Strips every source-derived string that becomes XML text (part /
     instrument names via :func:`_strip_score_part_names`, lyric text via
     :func:`_strip_score_lyrics`, metadata text via
-    :func:`_strip_score_metadata`), then writes to a uuid-suffixed temp file
+    :func:`_strip_score_metadata`), stamps the sheet as holding written pitch
+    (:func:`.sheet_pitch.stamp_written_pitch`, which tells this sheet apart
+    from one an older build wrote at sounding pitch), then writes to a
+    uuid-suffixed temp file
     beside the real destination (never into ``path`` itself) and
     parse-validates that temp file. Only once validation passes is the temp
     file atomically replaced onto ``path`` (or ``path`` with ``.musicxml``
@@ -295,6 +299,7 @@ def _write_musicxml(score: Any, path: Path, *, what: str) -> Path:
     _strip_score_part_names(score)
     _strip_score_lyrics(score)
     _strip_score_metadata(score)
+    stamp_written_pitch(score)
     final_path = path if path.suffix else path.with_suffix(".musicxml")
     final_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = final_path.with_name(

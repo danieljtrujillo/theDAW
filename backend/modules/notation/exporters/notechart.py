@@ -25,8 +25,9 @@ almost every decision here:
     written note while ``midi`` is that note plus the transposition of the
     instrument in force, the part's ``transposeSemitones``. The raw-onset
     pairing matches ``midi`` against the recorded MIDI, which is sounding
-    pitch. A MIDI source is moved to written pitch first, as the sheet writer
-    moves it, so a chart and the sheet engraved from the same MIDI agree. A
+    pitch. A MIDI source, and a sheet an older build wrote at sounding pitch,
+    is moved to written pitch first, as the sheet writer moves it, so a chart
+    and the sheet engraved from the same MIDI agree. A
     note under an 8va or 8vb line keeps its sounding pitch for both, as
     MusicXML stores it.
   - **Rests are first-class and share the event array with notes**, so a spawner
@@ -75,7 +76,7 @@ from ..arrangers.percussion import (
     gm_pitch_for_display,
     is_drum_midi,
 )
-from ..midi_read import read_midi
+from ..midi_read import read_midi, read_score
 from ..tempo_marks import restore_sounding_tempi
 from . import beatsaber_map
 
@@ -1241,7 +1242,7 @@ def _written_to_sounding(part: Any) -> Callable[[float], int]:
     piccolo, 0 before the first instrument. A part at sounding pitch, or one
     music21 cannot place, sounds as printed.
     """
-    from music21 import instrument as m21instrument  # type: ignore[import]
+    from music21 import instrument as m21instrument
 
     if getattr(part, "atSoundingPitch", "unknown") is not False:
         return lambda _beats: 0
@@ -1442,8 +1443,6 @@ def build_notechart(
     ``audio_duration_sec``. Raises ``ValueError`` when the score carries no
     notes, so a caller never registers an empty chart as a success.
     """
-    from music21 import converter  # type: ignore[import]
-
     source_format = (
         "midi" if source_path.suffix.lower() in _MIDI_SUFFIXES else "musicxml"
     )
@@ -1456,7 +1455,7 @@ def build_notechart(
     elif source_format == "midi":
         score = read_midi(source_path)
     else:
-        score = converter.parse(str(source_path))
+        score = read_score(source_path)
     if score is None:
         raise ValueError(f"music21 could not parse {source_path}")
     # An engraved sheet prints a whole-number tempo; the tempo map needs the
@@ -1474,7 +1473,8 @@ def build_notechart(
         # A MIDI reads as unbarred parts; bar them as the sheet writer does.
         score.makeNotation(inPlace=True)
     # A MIDI holds sounding pitch and the sheet writer prints a transposing part
-    # at written pitch; a MusicXML source already holds written pitch. The notes
+    # at written pitch; a MusicXML source holds written pitch, except a sheet an
+    # older build wrote at sounding pitch, which ``read_score`` marks. The notes
     # under an 8va line stay at the pitch they sound, as MusicXML stores them
     # and as the sheet writer leaves them (``m21ToXml`` passes the same flag).
     score.toWrittenPitch(inPlace=True, ottavasToSounding=True)
