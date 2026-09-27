@@ -137,4 +137,26 @@ const ROLL = { notes, lanes: LANE, totalSteps: 96, bpm: 54, meterMap: M44, picku
   assert.equal(tempoMicros(7.5), 8_000_000);
 }
 
+// A roll with more than lane A writes one track per lane; its tempo map rides
+// with them and comes back on import with every lane, ramp and fermata.
+{
+  const map: TempoEvent[] = [
+    { beat: 0, bpm: 96, curve: 'step' },
+    { beat: 4, bpm: 96, curve: 'linear' },
+    { beat: 12, bpm: 72, curve: 'step' },
+    { beat: 14, bpm: 72, fermata: { beats: 1, stretch: 3 } },
+  ];
+  const lanes = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 6 }];
+  const notes: PianoNote[] = [
+    { id: 'a', note: 60, step: 0, length: 4, velocity: 100 },
+    { id: 'b', note: 67, step: 0, length: 2, velocity: 100, lane: 1 } as PianoNote,
+  ];
+  const file = rollToMidiFile({ notes, bpm: 96, tempoMap: map, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0, lanes, bends: [], totalSteps: 64 });
+  assert.equal(file.tracks.length, 2, 'one track per lane');
+  const back = midiFileToRoll(parseMidi(encodeMidi(file)));
+  assert.deepEqual(back.meter.lanes.map((l) => [l.id, l.cycleSteps]), [[0, null], [1, 6]], 'both lanes come back');
+  assert.equal(shape(back.tempoMap), shape(map), 'the lanes file keeps its tempo map');
+  assert.equal(back.bpm, 96);
+}
+
 console.log('rollMidiTempo: ok');
