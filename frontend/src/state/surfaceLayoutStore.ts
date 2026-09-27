@@ -1086,8 +1086,17 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
     ),
   );
   // localStorage hydrates inside create(), so an upgrade `merge` made is known
-  // here. Writing it back stores the new rev, and the upgrade runs once.
-  if (upgradedOnLoad) store.setState({ layout: store.getState().layout });
+  // here. Writing it back stores the new rev, and the upgrade runs once. This
+  // runs while ControlSurface renders and persist writes localStorage
+  // synchronously, so a full or blocked storage must not throw out of it: the
+  // upgraded layout is already in memory, and the upgrade runs again next load.
+  if (upgradedOnLoad) {
+    try {
+      store.setState({ layout: store.getState().layout });
+    } catch {
+      /* storage full / blocked */
+    }
+  }
   return store;
 }
 

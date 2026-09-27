@@ -18,9 +18,14 @@ import { LAYOUT_REV, createLayoutStore, displayOrder, upgradeLayout } from './su
 import type { ColumnOrderFix, PanelNode, SurfaceLayout } from './surfaceLayoutStore.ts';
 
 const saved = new Map<string, string>();
+/** When set, every write throws the way a full localStorage does. */
+let storageFull = false;
 const localStorage = {
   getItem: (k: string) => (saved.has(k) ? (saved.get(k) as string) : null),
-  setItem: (k: string, v: string) => void saved.set(k, String(v)),
+  setItem: (k: string, v: string) => {
+    if (storageFull) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    saved.set(k, String(v));
+  },
   removeItem: (k: string) => void saved.delete(k),
 };
 const g = globalThis as unknown as Record<string, unknown>;
@@ -137,6 +142,15 @@ for (const id of ['eqAP', 'pdA-mode', 'panel-7-cc']) {
 const LIVE_KEY = 'thedaw.surface.dj.v1';
 const DEFAULT_KEY = 'thedaw.surface.dj.default.v24';
 saved.set(LIVE_KEY, JSON.stringify({ state: { layout: OLD }, version: 24 }));
+
+// With storage full the DJ surface still opens (this runs during render), with
+// the layout upgraded in memory. Nothing is written, so the next load upgrades
+// it again.
+storageFull = true;
+const onFullStorage = createLayoutStore('dj', NEW_DEFAULT, FIX);
+storageFull = false;
+assert.deepEqual(stored(onFullStorage.getState().layout), expected, 'a full storage still loads the layout upgraded');
+assert.deepEqual(JSON.parse(saved.get(LIVE_KEY) as string).state.layout, OLD, 'a full storage keeps the old layout on disk');
 
 const first = createLayoutStore('dj', NEW_DEFAULT, FIX);
 assert.deepEqual(stored(first.getState().layout), expected, 'the saved layout loads upgraded');
