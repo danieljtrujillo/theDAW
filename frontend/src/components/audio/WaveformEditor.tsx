@@ -1627,30 +1627,49 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   useEffect(() => {
     if (inpaintPanel?.kind !== 'generating') return;
     const { jobId, snapshot } = inpaintPanel;
+    // A response that lands after the panel closed or moved on (a slow poll,
+    // two in flight) must not reopen it or put up a second result.
+    let active = true;
+    const settle = (next: InpaintPhase) => {
+      active = false;
+      setInpaintPanel(next);
+    };
     const intervalId = setInterval(() => {
       void (async () => {
         try {
           const r = await fetch(`/api/jobs/${jobId}`);
+          if (!active) return;
+          if (r.status === 404) {
+            logError('editor', `Inpaint job ${jobId} is not on the backend any more`);
+            settle({ kind: 'params', error: 'The backend no longer has this job (it restarted, or cleared old jobs). Generate again.' });
+            return;
+          }
           const job = await r.json() as { status: string; result?: { item?: { audio_base64: string; mime_type: string } }; error?: string };
+          if (!active) return;
           if (job.status === 'completed' && job.result?.item) {
             const { audio_base64, mime_type } = job.result.item;
             const bytes = atob(audio_base64);
             const arr = new Uint8Array(bytes.length);
             for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
             const blob = new Blob([arr], { type: mime_type });
-            setInpaintPanel({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob), snapshot });
+            settle({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob), snapshot });
           } else if (job.status === 'failed') {
             const msg = job.error ?? 'unknown';
             logError('editor', `Inpaint job failed: ${msg}`);
             surfaceInpaintGate(msg);
-            setInpaintPanel({ kind: 'params', error: msg });
+            settle({ kind: 'params', error: msg });
+          } else if (job.status === 'cancelled') {
+            settle({ kind: 'params', error: 'The job was cancelled before it finished. Generate again.' });
           }
         } catch (e) {
           logError('editor', `Inpaint poll error: ${e instanceof Error ? e.message : e}`);
         }
       })();
     }, 1500);
-    return () => clearInterval(intervalId);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
   }, [inpaintPanel]);
 
   const openInpaintPanel = useCallback(() => {
@@ -1798,7 +1817,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     setInpaintPanel(null);
   };
 
-  const rejectInpaint = () => setInpaintPanel(null);
+  const rejectInpaint = () => {
+    // Closing while it generates stops the job as well; otherwise the GPU
+    // keeps working on a take nobody will see and the next generation queues
+    // behind it.
+    const panel = inpaintPanelRef.current;
+    if (panel?.kind === 'generating') {
+      void fetch(`/api/jobs/${encodeURIComponent(panel.jobId)}/cancel`, { method: 'POST' })
+        .catch((e) => logError('editor', `Inpaint cancel failed: ${e instanceof Error ? e.message : e}`));
+    }
+    setInpaintPanel(null);
+  };
 
   const totalDuration = getTotalDurationSec();
   const timelineWidthPx = Math.max(totalDuration * zoom, 1000);
