@@ -11,12 +11,26 @@
  *
  * Settings are persisted like the app's other small preference stores
  * (`drawModeStore`, `layoutPrefsStore`): `persist` + a `partialize` that saves
- * only the four values, never the actions.
+ * only the five values, never the actions. One set of settings serves every
+ * transport: the footer's click on the EDIT timeline and the piano roll's
+ * CLICK key read and write the same switch, level, count-in and click mode.
+ *
+ * The piano roll runs its own scheduler (`createRollMetronome`): its PLAY loops
+ * over roll steps on its own clock, so it hands the scheduler a click planner
+ * and a lookahead of its own, and only borrows the context, the output and
+ * these settings from here.
  */
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { MetronomeScheduler, METRONOME_TICK_MS, type MetronomeSettings } from '../lib/metronome';
+import {
+  MetronomeScheduler,
+  METRONOME_TICK_MS,
+  asClickMode,
+  type ClickMode,
+  type MetronomeDeps,
+  type MetronomeSettings,
+} from '../lib/metronome';
 import { beatClock } from '../lib/beatClock';
 import type { TempoEvent } from '../lib/tempoMap';
 import type { MeterSegment } from '../lib/meterMap';
@@ -31,15 +45,18 @@ export type CountInBars = (typeof COUNT_IN_CHOICES)[number];
 
 interface MetronomeState extends MetronomeSettings {
   countInBars: CountInBars;
+  /** What each bar's clicks fall on: quarters, group starts, or dotted quarters. */
+  clickMode: ClickMode;
   setEnabled: (on: boolean) => void;
   toggle: () => void;
   setVolume: (v: number) => void;
   setAccent: (on: boolean) => void;
   setCountInBars: (bars: CountInBars) => void;
+  setClickMode: (mode: ClickMode) => void;
 }
 
-const asCountIn = (n: number): CountInBars =>
-  (COUNT_IN_CHOICES as readonly number[]).includes(n) ? (n as CountInBars) : 0;
+const asCountIn = (n: unknown): CountInBars =>
+  (COUNT_IN_CHOICES as readonly unknown[]).includes(n) ? (n as CountInBars) : 0;
 
 export const useMetronomeStore = create<MetronomeState>()(
   persist(
@@ -48,20 +65,29 @@ export const useMetronomeStore = create<MetronomeState>()(
       volume: 0.7,
       accent: true,
       countInBars: 0,
+      clickMode: 'quarter',
       setEnabled: (on) => set({ enabled: !!on }),
       toggle: () => set((s) => ({ enabled: !s.enabled })),
       setVolume: (v) => set({ volume: Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0 }),
       setAccent: (on) => set({ accent: !!on }),
       setCountInBars: (bars) => set({ countInBars: asCountIn(bars) }),
+      setClickMode: (mode) => set({ clickMode: asClickMode(mode) }),
     }),
     {
       name: 'thedaw-metronome',
       version: 1,
+      // Settings saved before the click mode existed load with quarters; a
+      // stored count-in or mode the UI does not offer loads as its default.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<MetronomeState>;
+        return { ...current, ...p, countInBars: asCountIn(p.countInBars ?? current.countInBars), clickMode: asClickMode(p.clickMode) };
+      },
       partialize: (s) => ({
         enabled: s.enabled,
         volume: s.volume,
         accent: s.accent,
         countInBars: s.countInBars,
+        clickMode: s.clickMode,
       }),
     },
   ),
@@ -126,8 +152,34 @@ function ensureScheduler(): MetronomeScheduler {
     // One meter owner: the shared clock's map (4/4 until something sets one).
     meterMap: editMeterMap,
     settings: () => useMetronomeStore.getState(),
+    clickOpts: () => ({ mode: useMetronomeStore.getState().clickMode }),
   });
   return scheduler;
+}
+
+/** What the piano roll hands its scheduler: its own position, maps, grid and planner. */
+export type RollMetronomeDeps = Pick<MetronomeDeps, 'transportSec' | 'tempoMap' | 'meterMap' | 'plan' | 'lookaheadSec'> & {
+  /** Steps before the roll's bar 0. */
+  pickupSteps: () => number;
+};
+
+/**
+ * A scheduler for the piano roll's transport: the engine context and output
+ * and these settings, with the roll's position, tempo and meter maps and click
+ * planner. The roll owns it, ticks it from its own scheduler and disposes it.
+ */
+export function createRollMetronome(deps: RollMetronomeDeps): MetronomeScheduler {
+  return new MetronomeScheduler({
+    ctx: () => { try { return getEngineCtx(); } catch { return null; } },
+    destination: () => { try { return getMasterGain(); } catch { return null; } },
+    settings: () => useMetronomeStore.getState(),
+    clickOpts: () => ({ mode: useMetronomeStore.getState().clickMode, pickupSteps: deps.pickupSteps() }),
+    transportSec: deps.transportSec,
+    tempoMap: deps.tempoMap,
+    meterMap: deps.meterMap,
+    plan: deps.plan,
+    lookaheadSec: deps.lookaheadSec,
+  });
 }
 
 function runWindow(): void {

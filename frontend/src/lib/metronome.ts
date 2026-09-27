@@ -19,6 +19,17 @@
  * accent) on every downbeat, 3.5 beats apart, and drops the ragged remainder at
  * the bar line instead.
  *
+ * That is the `'quarter'` CLICK MODE, the default. Two more count the bar the
+ * way odd and compound meters are felt (`barClicks`):
+ *   - `'group'` sounds each group start, so 7/8 grouped 3+2+2 clicks three
+ *     times, unevenly, on the bar's own accents; 12/8 without groups clicks its
+ *     four dotted quarters, and a simple meter without groups its written beat.
+ *   - `'dotted'` sounds dotted quarters from each bar line (6/8 twice, 4/4 on
+ *     beats 1, 2-and and 4), for practising a dotted-quarter pulse or a metric
+ *     modulation.
+ * A roll with a pickup counts the pickup's clicks back from its end, as its
+ * grid does, and gives it no accent: it has no downbeat.
+ *
  * The scheduler
  * -------------
  * A rolling lookahead, not a pre-schedule of the song: every `METRONOME_TICK_MS`
@@ -66,8 +77,9 @@
  * The click primitive (a few-ms sine with a ramped gain envelope, started at an
  * absolute context time) is theDAW's own, from `LatencyCalibrator.tsx`.
  */
-import { getBarAtBeat, beatToTime, timeToBeat, type TempoEvent } from './tempoMap';
-import type { MeterSegment } from './meterMap';
+import { beatToTime, timeToBeat, type TempoEvent } from './tempoMap';
+import { barAt, normalizeMeterMap, stepsPerBar, type BarSpan, type MeterSegment } from './meterMap';
+import type { Meter } from './colony';
 
 /** How far ahead of `ctx.currentTime` a tick schedules. */
 export const METRONOME_LOOKAHEAD_SEC = 0.25;
@@ -107,6 +119,79 @@ export interface ClickPlan {
   accent: boolean;
 }
 
+/** What a bar's clicks fall on. See the header. */
+export type ClickMode = 'quarter' | 'group' | 'dotted';
+export const CLICK_MODES: readonly ClickMode[] = ['quarter', 'group', 'dotted'];
+export const CLICK_MODE_LABEL: Record<ClickMode, string> = { quarter: 'Quarters', group: 'Groups', dotted: 'Dotted quarters' };
+export const CLICK_MODE_TITLE: Record<ClickMode, string> = {
+  quarter: 'A click on every quarter note from each bar line',
+  group: 'A click on each group start: 7/8 3+2+2 clicks three times, 12/8 on its dotted quarters',
+  dotted: 'A click on every dotted quarter from each bar line',
+};
+/** A stored click mode, or the default for anything else. */
+export const asClickMode = (v: unknown): ClickMode => ((CLICK_MODES as readonly unknown[]).includes(v) ? (v as ClickMode) : 'quarter');
+
+/** How the grid is counted: the mode, and the steps before bar 0 (a pickup). */
+export interface ClickOpts {
+  mode?: ClickMode;
+  pickupSteps?: number;
+}
+
+/** One click inside a full bar: its 16th-note step from the bar line, and whether it is the downbeat. */
+export interface BarClick {
+  at: number;
+  accent: boolean;
+}
+
+const barClickCache = new Map<string, BarClick[]>();
+
+/**
+ * The clicks of one full bar of `m` in `mode`, in 16th-note steps from the bar
+ * line (a 7/8 bar is 14 steps). Group starts are exact: a group of `g` units of
+ * `1/den` starts `16 / den` steps per unit in. A meter counts as compound when
+ * it has no groups, a unit of an 8th or shorter and a numerator that is a
+ * multiple of 3 above 3 (6/8, 9/8, 12/8, 12/16).
+ */
+export function barClicks(m: Meter, mode: ClickMode = 'quarter'): BarClick[] {
+  const key = `${m.num}/${m.den}:${m.groups.join('+')}:${mode}`;
+  const hit = barClickCache.get(key);
+  if (hit) return hit;
+  const len = stepsPerBar(m);
+  const unit = 16 / m.den;
+  const at: number[] = [];
+  if (mode === 'group') {
+    if (m.groups.length > 1) {
+      let acc = 0;
+      for (const g of m.groups) {
+        at.push(acc * unit);
+        acc += g;
+      }
+    } else {
+      const compound = m.den >= 8 && m.num > 3 && m.num % 3 === 0;
+      const pulse = compound ? 3 * unit : unit;
+      for (let t = 0; t < len - EPS; t += pulse) at.push(t);
+    }
+  } else {
+    const pulse = mode === 'dotted' ? 6 : 4;
+    for (let t = 0; t < len - EPS; t += pulse) at.push(t);
+  }
+  const out = at.filter((t) => t < len - EPS).map((t, i) => ({ at: t, accent: i === 0 }));
+  barClickCache.set(key, out);
+  return out;
+}
+
+/** The clicks of `span` (a bar of the map) as steps from its start; a pickup keeps the ones in its tail, unaccented. */
+export function spanClicks(span: BarSpan, mode: ClickMode): BarClick[] {
+  const shift = span.bar < 0 ? stepsPerBar(span.meter) - span.len : 0;
+  const out: BarClick[] = [];
+  for (const c of barClicks(span.meter, mode)) {
+    const at = c.at - shift;
+    if (at < -EPS || at >= span.len - EPS) continue;
+    out.push({ at: Math.max(0, at), accent: c.accent && span.bar >= 0 });
+  }
+  return out;
+}
+
 /** Everything the scheduler reads from the outside. All are called per tick, so
  *  the caller can hand over live store reads without the scheduler subscribing. */
 export interface MetronomeDeps {
@@ -116,6 +201,17 @@ export interface MetronomeDeps {
   tempoMap: () => readonly TempoEvent[];
   meterMap: () => readonly MeterSegment[];
   settings: () => MetronomeSettings;
+  /** The click mode and pickup the grid is counted with. Absent: quarters, no pickup. */
+  clickOpts?: () => ClickOpts;
+  /**
+   * The clicks between two TRANSPORT seconds, in place of `clicksInWindow`
+   * over `tempoMap` and `meterMap`. A transport that loops (the piano roll's)
+   * plans its own clicks, because its bars repeat while its seconds run on.
+   * Each click's `beat` must rise with its seconds: it is the scheduler's cursor.
+   */
+  plan?: (fromSec: number, untilSec: number) => ClickPlan[];
+  /** Seconds each tick schedules ahead. Absent: METRONOME_LOOKAHEAD_SEC. */
+  lookaheadSec?: number;
   /** REPEATING timer (setInterval-shaped), used to poll the count-in's release
    *  against the audio clock. Injectable for tests; defaults to the window's. */
   setTimer?: (fn: () => void, ms: number) => number;
@@ -124,62 +220,65 @@ export interface MetronomeDeps {
 
 /**
  * Every click between `fromSec` and `untilSec` (both TRANSPORT seconds, both
- * ends inclusive), on the per-bar quarter-note grid described at the top of the
- * file. Pure: same inputs, same array.
+ * ends inclusive), on the per-bar grid described at the top of the file, in
+ * `opts.mode` (quarters by default). Pure: same inputs, same array.
  */
 export function clicksInWindow(
   tempo: readonly TempoEvent[] | null | undefined,
   meter: readonly MeterSegment[] | null | undefined,
   fromSec: number,
   untilSec: number,
+  opts: ClickOpts = {},
 ): ClickPlan[] {
   const out: ClickPlan[] = [];
   if (!(untilSec >= fromSec)) return out;
+  const mode = opts.mode ?? 'quarter';
+  const pickup = Math.max(0, opts.pickupSteps ?? 0);
+  const map = normalizeMeterMap(meter, false);
   const fromBeat = timeToBeat(tempo, fromSec);
-  let pos = getBarAtBeat(meter, Math.max(0, fromBeat));
-  let barStart = pos.startBeat;
-  let barLen = pos.lengthBeats;
+  let span = barAt(map, Math.max(0, fromBeat) * 4, pickup);
   for (let guard = 0; guard < MAX_CLICKS_PER_WINDOW; guard += 1) {
-    if (!(barLen > EPS)) return out;
-    for (let k = 0; k < barLen - EPS; k += 1) {
-      const beat = barStart + k;
+    if (!(span.len > EPS)) return out;
+    for (const c of spanClicks(span, mode)) {
+      const beat = (span.start + c.at) / 4;
       if (beat < fromBeat - EPS) continue;
       const sec = beatToTime(tempo, beat);
       if (sec > untilSec + EPS) return out;
-      if (sec >= fromSec - EPS) out.push({ beat, sec, accent: k === 0 });
+      if (sec >= fromSec - EPS) out.push({ beat, sec, accent: c.accent });
       if (out.length >= MAX_CLICKS_PER_WINDOW) return out;
     }
-    barStart += barLen;
-    pos = getBarAtBeat(meter, barStart);
-    barLen = pos.lengthBeats;
+    span = barAt(map, span.start + span.len, pickup);
   }
   return out;
 }
 
 /**
  * The `bars` bars of clicks that run up to `startSec` and end exactly on it,
- * plus how long they last. The bar length is the one in force at the start
- * point, and the grid runs BACKWARDS from there — through beat 0 and into
- * negative beats when the playhead is near the top, so counting in from 0 is
- * still a whole bar rather than a clamped stub.
+ * plus how long they last. The bar is a full bar of the meter in force at the
+ * start point, clicked in `opts.mode`, and the grid runs BACKWARDS from there —
+ * through beat 0 and into negative beats when the playhead is near the top, so
+ * counting in from 0 is still a whole bar rather than a clamped stub.
  */
 export function countInClicks(
   tempo: readonly TempoEvent[] | null | undefined,
   meter: readonly MeterSegment[] | null | undefined,
   startSec: number,
   bars: number,
+  opts: ClickOpts = {},
 ): { clicks: ClickPlan[]; durationSec: number } {
   const n = Math.max(0, Math.floor(bars));
   if (n === 0) return { clicks: [], durationSec: 0 };
   const startBeat = timeToBeat(tempo, startSec);
-  const barLen = getBarAtBeat(meter, Math.max(0, startBeat)).lengthBeats;
+  const m = barAt(normalizeMeterMap(meter, false), Math.max(0, startBeat) * 4, Math.max(0, opts.pickupSteps ?? 0)).meter;
+  const barLen = stepsPerBar(m) / 4;
   if (!(barLen > EPS)) return { clicks: [], durationSec: 0 };
+  const inBar = barClicks(m, opts.mode ?? 'quarter');
   const clicks: ClickPlan[] = [];
   for (let b = 0; b < n; b += 1) {
     const barStart = startBeat - (n - b) * barLen;
-    for (let k = 0; k < barLen - EPS; k += 1) {
-      const beat = barStart + k;
-      clicks.push({ beat, sec: beatToTime(tempo, beat), accent: k === 0 });
+    for (const c of inBar) {
+      const beat = barStart + c.at / 4;
+      clicks.push({ beat, sec: beatToTime(tempo, beat), accent: c.accent });
     }
   }
   const firstBeat = startBeat - n * barLen;
@@ -290,8 +389,10 @@ export class MetronomeScheduler {
     if (!settings.enabled) return;
 
     const from = this.anchorTransport + (now - this.anchorCtx);
-    const until = from + METRONOME_LOOKAHEAD_SEC;
-    const clicks = clicksInWindow(this.deps.tempoMap(), this.deps.meterMap(), from, until);
+    const until = from + (this.deps.lookaheadSec ?? METRONOME_LOOKAHEAD_SEC);
+    const clicks = this.deps.plan
+      ? this.deps.plan(from, until)
+      : clicksInWindow(this.deps.tempoMap(), this.deps.meterMap(), from, until, this.deps.clickOpts?.());
     for (const c of clicks) {
       if (this.lastBeat !== null && c.beat <= this.lastBeat + EPS) continue;
       this.lastBeat = c.beat;
@@ -309,9 +410,10 @@ export class MetronomeScheduler {
    * Play `bars` bars of clicks, then call `onDone`. Nothing else happens — the
    * caller releases the transport from `onDone`, so the playhead never advances
    * and nothing records during the count. Returns a cancel that silences the
-   * count and never calls `onDone`.
+   * count and never calls `onDone`. `startSec` is the TRANSPORT second the count
+   * leads into; absent, the transport's position now.
    */
-  countIn(bars: number, onDone: () => void): () => void {
+  countIn(bars: number, onDone: () => void, startSec?: number): () => void {
     this.cancelCountIn();
     const gen = ++this.countInGen;
     const mine = () => gen === this.countInGen;
@@ -333,14 +435,14 @@ export class MetronomeScheduler {
     const resumable = ctx as { state?: AudioContextState; resume?: () => Promise<void> };
     if (resumable.state === 'suspended' && typeof resumable.resume === 'function') {
       void resumable.resume().then(
-        () => { if (mine()) this.armCountIn(ctx, n, onDone); },
+        () => { if (mine()) this.armCountIn(ctx, n, onDone, startSec); },
         // The clock could not be started; the count is inaudible either way and
         // waiting on a stopped clock would strand the transport. Go straight in.
         () => { if (mine()) onDone(); },
       );
       return cancel;
     }
-    this.armCountIn(ctx, n, onDone);
+    this.armCountIn(ctx, n, onDone, startSec);
     return cancel;
   }
 
@@ -355,10 +457,10 @@ export class MetronomeScheduler {
   }
 
   /** Schedule the count's clicks and the release that follows them. */
-  private armCountIn(ctx: BaseAudioContext, bars: number, onDone: () => void): void {
+  private armCountIn(ctx: BaseAudioContext, bars: number, onDone: () => void, at?: number): void {
     const settings = this.deps.settings();
-    const startSec = this.deps.transportSec();
-    const { clicks, durationSec } = countInClicks(this.deps.tempoMap(), this.deps.meterMap(), startSec, bars);
+    const startSec = at ?? this.deps.transportSec();
+    const { clicks, durationSec } = countInClicks(this.deps.tempoMap(), this.deps.meterMap(), startSec, bars, this.deps.clickOpts?.());
     if (!clicks.length || !(durationSec > 0)) {
       onDone();
       return;

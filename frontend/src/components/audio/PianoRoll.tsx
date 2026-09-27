@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Check, Gauge, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   DEFAULT_LANES,
@@ -47,14 +47,20 @@ import {
   lapTimeOf,
   spanSec,
   startRollPlay,
+  stepClock,
   stepsIn,
   type RollPlayState,
 } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
+import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
+import { rollClickPlan, rollClickSteps, type RollClick } from '../../lib/rollClick';
+import { COUNT_IN_CHOICES, createRollMetronome, useMetronomeStore, type CountInBars } from '../../state/metronomeStore';
 import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
   loopLabel,
+  playStartLap,
+  rollStepAt,
   rulerKeyStep,
   rulerLoop,
   rulerSeekStep,
@@ -228,6 +234,9 @@ const Glyph: React.FC<{ d: string }> = ({ d }) => (
 const GLYPH_PLAY = 'M3 1.5 12.5 7 3 12.5Z';
 const GLYPH_STOP = 'M2.5 2.5h9v9h-9z';
 
+/** Seconds the roll's scheduler plans ahead each tick: its notes, and its click. */
+const ROLL_LOOKAHEAD_SEC = 0.12;
+
 /**
  * PLAY / STOP, BPM and STEPS. Hosts the roll's playback scheduler: this key is
  * mounted whenever the MIDI tab is, exactly as the roll is. It is the tab's one
@@ -260,6 +269,60 @@ export const PianoRollTransport: React.FC<{
     setPlaying(false);
   }, [setPlaying]);
 
+  // CLICK: the roll's own click track (lib/rollClick), on the metronome's
+  // settings (state/metronomeStore). Its scheduler's transport is PLAY's
+  // seconds, and its clicks are the roll's bars laid out in the click mode and
+  // found in the lap the same way the notes are, so a loop, a seek, a meter
+  // change or a tempo point moves the click with the notes. The play effect
+  // below starts it, ticks it after each note window and stops it. A count-in
+  // counts into the step PLAY will start on, at the tempo there.
+  const clickOn = useMetronomeStore((s) => s.enabled);
+  const toggleClick = useMetronomeStore((s) => s.toggle);
+  const clickMode = useMetronomeStore((s) => s.clickMode);
+  const setClickMode = useMetronomeStore((s) => s.setClickMode);
+  const countInBars = useMetronomeStore((s) => s.countInBars);
+  const setCountInBars = useMetronomeStore((s) => s.setCountInBars);
+  const rollPlayRef = useRef<{ state: RollPlayState; origin: number } | null>(null);
+  const clickStepsRef = useRef<{ of: readonly unknown[]; clicks: RollClick[] } | null>(null);
+  const clickRef = useRef<MetronomeScheduler | null>(null);
+  const click = useCallback((): MetronomeScheduler => {
+    clickRef.current ??= createRollMetronome({
+      transportSec: () => {
+        const p = rollPlayRef.current;
+        return p ? getEngineCtx().currentTime - p.origin : 0;
+      },
+      // The count-in reads the roll's own maps; while PLAY runs, `plan` does.
+      tempoMap: () => {
+        const r = usePianoRollStore.getState();
+        return stepClock(r.bpm, r.tempoMap).map;
+      },
+      meterMap: () => usePianoRollStore.getState().meterMap,
+      pickupSteps: () => usePianoRollStore.getState().pickupSteps,
+      lookaheadSec: ROLL_LOOKAHEAD_SEC,
+      plan: (from, until) => {
+        const p = rollPlayRef.current;
+        if (!p) return [];
+        const r = usePianoRollStore.getState();
+        const mode = useMetronomeStore.getState().clickMode;
+        const of = [r.meterMap, r.pickupSteps, r.totalSteps, mode];
+        const cached = clickStepsRef.current;
+        if (!cached || cached.of.some((v, i) => v !== of[i])) {
+          clickStepsRef.current = { of, clicks: rollClickSteps(r.meterMap, r.pickupSteps, Math.max(1, r.totalSteps), mode) };
+        }
+        return rollClickPlan(p.state.clock, p.origin, clickStepsRef.current?.clicks ?? [], from, until);
+      },
+    });
+    return clickRef.current;
+  }, []);
+  const [counting, setCounting] = useState(false);
+  const countCancelRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    countCancelRef.current?.();
+    countCancelRef.current = null;
+    clickRef.current?.dispose();
+    clickRef.current = null;
+  }, []);
+
   // Time-based lookahead scheduler: notes fire at their exact time (the
   // roll's tempo map gives every step its seconds, lib/rollTempo), so
   // FRACTIONAL step positions (32nd/64th notes and micro-timing offsets) play —
@@ -289,14 +352,20 @@ export const PianoRollTransport: React.FC<{
     if (!isPlaying) return;
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
-    const lookahead = 0.12; // seconds scheduled ahead each tick
+    const lookahead = ROLL_LOOKAHEAD_SEC; // seconds scheduled ahead each tick
     // Absolute steps map onto roll steps through the lap (lib/rollTransport): it
     // starts at the playhead, and a seek, a new length or a new loop re-anchors
     // it just past the cursor. The lap's clock (lib/rollTempo) gives every step
     // its seconds under the tempo map; absolute step 0 is where PLAY started,
     // 60 ms from now, and a new lap or a new map re-anchors the clock keeping the
     // time of the step it anchors at, so nothing already scheduled moves.
-    let playState: RollPlayState = startRollPlay(usePianoRollStore.getState(), ctx.currentTime + 0.06);
+    const origin = ctx.currentTime + 0.06;
+    let playState: RollPlayState = startRollPlay(usePianoRollStore.getState(), origin);
+    rollPlayRef.current = { state: playState, origin };
+    // The click plans the same window as the notes, from the same lap clock, so
+    // after a seek it never sounds a click the notes have left behind.
+    const clicker = click();
+    clicker.start();
     let cursor = -REANCHOR_STEPS; // absolute step scheduled up to (inclusive)
     // Unroll once per note, lane, length or bend edit, not once per tick.
     let source: { notes: PianoNote[]; lanes: PolyLane[]; total: number; bends: LaneBend[] } | null = null;
@@ -329,6 +398,7 @@ export const PianoRollTransport: React.FC<{
       // A re-anchored lap sends every bent channel where its curve is at the new place.
       if (followed.lapState !== playState.lapState) wheelFresh = true;
       playState = followed;
+      rollPlayRef.current = { state: playState, origin };
       const { lapState, steps, clock: lc } = playState;
       const { lap } = lapState;
       if (!source || source.notes !== notes || source.lanes !== lanes || source.total !== total || source.bends !== bends) {
@@ -389,6 +459,7 @@ export const PianoRollTransport: React.FC<{
         });
       }
       cursor = Math.max(cursor, targetAbs);
+      clicker.tick();
       setCurrentStep(shownStep(lapState, lapAbsAt(lc, now)));
     };
     playTimerRef.current = window.setInterval(tick, 25);
@@ -398,14 +469,21 @@ export const PianoRollTransport: React.FC<{
         playTimerRef.current = null;
       }
       for (const ch of [...wheelRanges.keys()]) releaseWheel(ch);
+      clicker.stop();
+      rollPlayRef.current = null;
     };
-  }, [isPlaying, setCurrentStep, masterRef]);
+  }, [isPlaying, setCurrentStep, masterRef, click]);
 
   // The arpeggiator keeps running behind the roll face, so the key stops
   // whichever of the two is sounding before it starts either.
-  const sounding = isPlaying || arpPlaying;
+  const sounding = isPlaying || arpPlaying || counting;
   const handlePlayToggle = () => {
     if (sounding) {
+      if (counting) {
+        countCancelRef.current?.();
+        countCancelRef.current = null;
+        setCounting(false);
+      }
       if (isPlaying) stopPlayback();
       if (arpPlaying) onArpPlayingChange?.(false);
       return;
@@ -420,6 +498,29 @@ export const PianoRollTransport: React.FC<{
     // above) fires notes, the first step included, at their exact times.
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
+    const metronome = useMetronomeStore.getState();
+    if (!metronome.enabled || metronome.countInBars <= 0) {
+      startPlay();
+      return;
+    }
+    // The count-in: whole bars of the meter at the step PLAY starts on, ending
+    // on that step's time under the roll's tempo map; PLAY starts when it ends.
+    // The key reads STOP meanwhile, and pressing it cancels the count.
+    const roll = usePianoRollStore.getState();
+    const startStep = rollStepAt(playStartLap(roll).lap, 0);
+    const startSec = stepClock(roll.bpm, roll.tempoMap).at(startStep);
+    let done = false;
+    setCounting(true);
+    const cancel = click().countIn(metronome.countInBars, () => {
+      done = true;
+      countCancelRef.current = null;
+      setCounting(false);
+      startPlay();
+    }, startSec);
+    if (!done) countCancelRef.current = cancel;
+  };
+  // PLAY starts the transport at the playhead; the count-in above calls it when the count ends.
+  const startPlay = () => {
     play();
     const roll = usePianoRollStore.getState();
     logInfo('piano-roll', `Playing ${roll.notes.length} notes at ${bpm} BPM from step ${Math.floor(roll.currentStep) + 1}`);
@@ -572,6 +673,46 @@ export const PianoRollTransport: React.FC<{
           }}
           className={`${FIELD_VALUE} w-11 bg-transparent border-none outline-none`}
         />
+      </div>
+      <StripKey
+        on={clickOn}
+        aria-pressed={clickOn}
+        onClick={toggleClick}
+        legend="Click"
+        icon={<Triangle className={STRIP_GLYPH} strokeWidth={2} />}
+        description={
+          clickOn
+            ? `The click sounds while the roll plays, on ${CLICK_MODE_LABEL[clickMode].toLowerCase()}. The footer's click is the same switch.`
+            : 'Turn the click on: it follows the roll\'s tempo map and time signatures'
+        }
+      />
+      <div className={FIELD} title={CLICK_MODE_TITLE[clickMode]}>
+        <label htmlFor="piano-roll-click-mode" className={FIELD_LEGEND}>Beat</label>
+        <select
+          id="piano-roll-click-mode"
+          name="piano-roll-click-mode"
+          value={clickMode}
+          onChange={(e) => setClickMode(asClickMode(e.target.value))}
+          className={FIELD_SELECT}
+        >
+          {CLICK_MODES.map((m) => (
+            <option key={m} value={m} title={CLICK_MODE_TITLE[m]}>{CLICK_MODE_LABEL[m]}</option>
+          ))}
+        </select>
+      </div>
+      <div className={FIELD} title="Bars of clicks before PLAY starts, with the click on">
+        <label htmlFor="piano-roll-count-in" className={FIELD_LEGEND}>Count</label>
+        <select
+          id="piano-roll-count-in"
+          name="piano-roll-count-in"
+          value={countInBars}
+          onChange={(e) => setCountInBars(Number(e.target.value) as CountInBars)}
+          className={FIELD_SELECT}
+        >
+          {COUNT_IN_CHOICES.map((n) => (
+            <option key={n} value={n}>{n === 0 ? 'Off' : `${n} bar${n === 1 ? '' : 's'}`}</option>
+          ))}
+        </select>
       </div>
     </>
   );
