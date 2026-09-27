@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Check, Info, Minus, Plus, Save, Scissors, Trash2, Unlink, Waves } from 'lucide-react';
+import { Check, Info, Minus, Plus, Save, Scissors, Trash2, Unlink, Waves, X } from 'lucide-react';
 import { DEFAULT_GROOVE_ID, DEFAULT_LANES, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx } from '../../state/playerStore';
@@ -65,6 +65,7 @@ import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
 import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
 import { rollVoice, type ClipVoice } from '../../lib/clipProgram';
+import { gmShortName } from '../../lib/gmInstruments';
 import { bounceRollToEditor } from '../../lib/rollBounce';
 import { parseSheetFile } from '../../lib/sheetImportClient';
 import { ownsKey } from '../../lib/keyScope';
@@ -166,10 +167,12 @@ const PIANO_MIDI_PARAMS = [
   { key: 'totalSteps' as const, label: 'Total Steps', min: 16,  max: 256, autoCc: 15, integer: true },
 ];
 
-/** The voice the roll plays with now: its linked EDIT clip's, else the global picker's (lib/clipProgram rollVoice). */
+/** The voice the roll plays with now: its linked EDIT clip's, else its own
+ *  program, else the global picker's (lib/clipProgram rollVoice). */
 const currentRollVoice = (): ClipVoice => {
   const { clips, tracks } = useEditorStore.getState();
-  return rollVoice(usePianoRollStore.getState().editingClipId, clips, tracks, getGlobalVoice());
+  const { editingClipId, voiceProgram } = usePianoRollStore.getState();
+  return rollVoice(editingClipId, clips, tracks, getGlobalVoice(), voiceProgram);
 };
 
 const useMasterGainRef = () => {
@@ -474,6 +477,29 @@ export const PianoRollBendKey: React.FC<{ on: boolean; onChange: (on: boolean) =
           ? `Pitch bend: the lane under the grid. ${bent} lane${bent === 1 ? '' : 's'} bend${bent === 1 ? 's' : ''} in this roll.`
           : 'Pitch bend: open the lane under the grid and click to add a point'
       }
+    />
+  );
+};
+
+/**
+ * The roll's own voice, shown while an unlinked roll plays one (the Vocal2MIDI
+ * panel's voice): the roll auditions and bounces with it in place of the
+ * instrument picker. Pressing it returns the roll to the picker.
+ */
+export const PianoRollVoiceKey: React.FC = () => {
+  const voiceProgram = usePianoRollStore((s) => s.voiceProgram);
+  const linked = usePianoRollStore((s) => s.editingClipId !== null);
+  const setVoiceProgram = usePianoRollStore((s) => s.setVoiceProgram);
+  if (voiceProgram === null || linked) return null;
+  const name = gmShortName(voiceProgram);
+  return (
+    <StripKey
+      on
+      onClick={() => setVoiceProgram(null)}
+      aria-label={`Roll voice ${name}. Press to follow the instrument picker`}
+      legend={`Roll: ${name}`}
+      icon={<X className={STRIP_GLYPH} />}
+      description={`The roll plays and bounces as ${name}, set by Vocal2MIDI. Press to follow the instrument picker.`}
     />
   );
 };

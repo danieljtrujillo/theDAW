@@ -74,16 +74,18 @@ export function clipVoice(clip: ProgramClip, track: ProgramTrack | null | undefi
  * The voice the piano roll auditions and renders with. A roll linked to an
  * EDIT clip (`editingClipId`) plays through that clip's voice, so what the roll
  * sounds is what EDIT plays. An unlinked roll, or one whose clip is gone, plays
- * the global picker's program (none on Basic or a synth voice).
+ * its own program (`rollProgram`, the roll store's voiceProgram) when it has
+ * one, else the global picker's (none on Basic or a synth voice).
  */
 export function rollVoice(
   editingClipId: string | null,
   clips: ReadonlyArray<ProgramClip & Pick<AudioClip, 'id' | 'trackId'>>,
   tracks: ReadonlyArray<ProgramTrack & Pick<EditorTrack, 'id'>>,
   global: GlobalVoice,
+  rollProgram: number | null = null,
 ): ClipVoice {
   const clip = editingClipId ? clips.find((c) => c.id === editingClipId) : undefined;
-  if (!clip) return { program: global.useSoundfont ? global.activeProgram : undefined, percussion: false };
+  if (!clip) return { program: rollProgram ?? (global.useSoundfont ? global.activeProgram : undefined), percussion: false };
   return clipVoice(clip, tracks.find((t) => t.id === clip.trackId), global);
 }
 

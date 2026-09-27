@@ -4,9 +4,9 @@
  *
  * A roll linked to an EDIT clip (`editingClipId`) re-renders that clip in place
  * through the clip's own voice (lib/clipProgram rollVoice). An unlinked roll,
- * or one whose clip is gone, renders through the global picker's program and
- * lands on a new track that holds that program, so changing the picker later
- * does not re-voice the part. Either way the clip records the voice its audio
+ * or one whose clip is gone, renders through its own program (the Vocal2MIDI
+ * panel's voice) or else the global picker's, and lands on a new track that
+ * holds that program, so changing the picker later does not re-voice the part. Either way the clip records the voice its audio
  * was rendered with (`renderedProgram`, `renderedPercussion`), so EDIT's
  * instrument sync sees the audio is current.
  *
@@ -53,7 +53,7 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   const fields = rollClipFields(roll);
   const noteCount = fields.sourcePianoRoll.length;
   const before = useEditorStore.getState();
-  const voice = rollVoice(editingClipId, before.clips, before.tracks, deps.global());
+  const voice = rollVoice(editingClipId, before.clips, before.tracks, deps.global(), roll.voiceProgram);
   // Each note renders in its own lane, so a lane's pitch bend bends its notes in the audio too.
   const { blob, duration } = await deps.render(unrollLanes(roll.notes, roll.lanes, totalSteps), bpm, totalSteps, {
     program: voice.program,
@@ -84,7 +84,7 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
     usePianoRollStore.getState().setEditingClip(null);
   }
 
-  // Here the voice is the picker's (rollVoice found no linked clip).
+  // Here the voice is the roll's own or the picker's (rollVoice found no linked clip).
   const trackId = editor.addTrack({ name: `Piano ${bpm} BPM`, instrumentProgram: voice.program });
   const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
   const clipId = editor.addClipToTrack({

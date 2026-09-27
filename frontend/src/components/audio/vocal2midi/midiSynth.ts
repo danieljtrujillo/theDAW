@@ -7,13 +7,16 @@
  * compact panel also exposes theDAW's own instrument picker for the full 128-program
  * range. WAV export uses theDAW's offline soundfont render.
  *
- * The panel's preview voice is its own (`useVocalVoiceStore`): the assistant's
- * instrument choice and the panel's PREVIEW VOICE select set it, and it never
- * writes the global picker, whose program every EDIT clip without one of its
- * own follows. Left unset, the preview plays the global picker's program.
+ * The panel's voice is the piano roll's own voice (pianoRollStore
+ * `voiceProgram`): the assistant's instrument choice and the panel's ROLL VOICE
+ * select set it, the panel previews and exports with it, and the roll it fills
+ * auditions and bounces with it while no EDIT clip is linked (lib/clipProgram
+ * rollVoice). It never writes the global picker, whose program every EDIT clip
+ * without one of its own follows. Left unset, all of them play the picker's
+ * program.
  */
-import { create } from 'zustand';
 import type { NoteEvent } from './types';
+import { usePianoRollStore } from '../../../state/pianoRollStore';
 import {
   getActiveProgram,
   previewNoteSF,
@@ -39,14 +42,8 @@ const INSTRUMENT_GM: Record<InstrumentType, { name: string; program: number }> =
   organ: { name: 'Rock Organ', program: 18 },
 };
 
-/** The panel's own preview program; null follows the global instrument picker. */
-export const useVocalVoiceStore = create<{ program: number | null; setProgram: (p: number | null) => void }>((set) => ({
-  program: null,
-  setProgram: (p) => set({ program: p === null ? null : Math.max(0, Math.min(127, Math.round(p))) }),
-}));
-
-/** The program the panel previews and renders with. */
-export const vocalVoiceProgram = (): number => useVocalVoiceStore.getState().program ?? getActiveProgram();
+/** The program the panel previews and renders with: the roll's own, else the picker's. */
+export const vocalVoiceProgram = (): number => usePianoRollStore.getState().voiceProgram ?? getActiveProgram();
 
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -69,7 +66,7 @@ export class MidiSynth {
 
   setInstrument(instrument: InstrumentType): Promise<void> {
     this.instrument = instrument;
-    useVocalVoiceStore.getState().setProgram(INSTRUMENT_GM[instrument].program);
+    usePianoRollStore.getState().setVoiceProgram(INSTRUMENT_GM[instrument].program);
     return Promise.resolve();
   }
 

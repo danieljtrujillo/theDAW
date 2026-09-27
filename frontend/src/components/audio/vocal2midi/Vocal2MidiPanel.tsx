@@ -32,7 +32,7 @@ import {
 } from './audioProcessing';
 import { quantizeNotes, transposeNotes, snapNotesToScale, changeKey, getKeyName } from './midiEditor';
 import { detectKeyAndScale, getRelatedKeys } from './musicTheory';
-import { getMidiSynth, useVocalVoiceStore } from './midiSynth';
+import { getMidiSynth } from './midiSynth';
 import { GM_NAMES } from '../../../lib/gmInstruments';
 import { analyzeAudioWithGemini, smartCleanupMidi, type AnalysisContext } from './geminiService';
 import { Visualizer } from './Visualizer';
@@ -127,8 +127,8 @@ const chipOn = KEY_ON;
 export const Vocal2MidiPanel: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [config, setConfig] = useState<ProcessingConfig>({ ...DEFAULT_CONFIG });
-  const previewProgram = useVocalVoiceStore((st) => st.program);
-  const setPreviewProgram = useVocalVoiceStore((st) => st.setProgram);
+  const previewProgram = usePianoRollStore((st) => st.voiceProgram);
+  const setPreviewProgram = usePianoRollStore((st) => st.setVoiceProgram);
   const [capturedNotes, setCapturedNotes] = useState<NoteEvent[]>([]);
   const [processedNotes, setProcessedNotes] = useState<NoteEvent[]>([]);
   const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysisResult | null>(null);
@@ -662,10 +662,11 @@ export const Vocal2MidiPanel: React.FC = () => {
             <div className="mt-0.5"><InstrumentPicker idPrefix="v2m-instrument" /></div>
           </div>
           <div>
-            {/* The panel's own voice for PLAY and WAV export. The assistant's
-                instrument choice lands here, never on the picker above, whose
-                program every EDIT clip without its own follows. */}
-            <label htmlFor="v2m-preview-voice" className={labelCls}>Preview voice</label>
+            {/* The roll's own voice: PLAY, WAV export, and the roll these
+                notes go to (while no EDIT clip is linked) all use it. The
+                assistant's instrument choice lands here, never on the picker
+                above, whose program every EDIT clip without its own follows. */}
+            <label htmlFor="v2m-preview-voice" className={labelCls}>Roll voice</label>
             <select
               id="v2m-preview-voice"
               name="v2m-preview-voice"
