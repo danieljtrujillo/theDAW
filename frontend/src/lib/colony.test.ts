@@ -134,6 +134,7 @@ pulse -> seven on=0
   assert.equal(new Set(sixteen.map((g) => g.join('+'))).size, sixteen.length);
   assert.equal(partitions(32).length, PARTITIONS_MAX, 'a long bar stops at the cap without enumerating every grouping');
   assert.deepEqual(partitions(16, 3), [[], [2, 2, 2, 2, 2, 2, 2, 2], [4, 4, 4, 4]], 'a caller can ask for fewer');
+  assert.equal(partitions(16, 9).length, 9, 'the LOOM meter card keeps its nine grouping chips');
 }
 
 // Group starts: whole steps for a rule, exact positions for the roll's /32 bars.
