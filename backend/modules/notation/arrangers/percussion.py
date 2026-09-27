@@ -154,16 +154,23 @@ def _drum_instruments(pm: Any) -> list[Any]:
     return flagged or list(pm.instruments)
 
 
-def _time_signature(pm: Any) -> str:
-    try:
-        changes = pm.time_signature_changes
-        if changes:
-            ts = changes[0]
-            if ts.numerator > 0 and ts.denominator > 0:
-                return f"{int(ts.numerator)}/{int(ts.denominator)}"
-    except Exception:  # noqa: BLE001
-        pass
-    return "4/4"
+def _time_signatures(pm: Any, bpm: Optional[float] = None) -> list[tuple[float, str]]:
+    """Every time signature of ``pm`` as ``(offset in quarters, "n/d")``, in
+    order, each offset on the 1/16 grid the hits are quantised to; ``[(0.0,
+    "4/4")]`` when the file states none. With ``bpm`` the offsets count beats of
+    ``bpm``, as the hits' do (:func:`_quarters`). A signature restating the one
+    in force is dropped, and of two at one offset the later stands."""
+    out: list[tuple[float, str]] = []
+    for ts in sorted(pm.time_signature_changes, key=lambda change: change.time):
+        if ts.numerator <= 0 or ts.denominator <= 0:
+            continue
+        offset = _quantise(_quarters(pm, ts.time, bpm))
+        ratio = f"{int(ts.numerator)}/{int(ts.denominator)}"
+        if out and abs(out[-1][0] - offset) < 1e-9:
+            out.pop()
+        if not out or out[-1][1] != ratio:
+            out.append((offset, ratio))
+    return out or [(0.0, "4/4")]
 
 
 def _initial_tempo(pm: Any) -> float:
@@ -193,20 +200,22 @@ def _quantise(ql: float) -> float:
     return round(ql / _QUANT) * _QUANT
 
 
-def _hit_events(pm: Any, bpm: Optional[float] = None) -> list[tuple[float, float, int]]:
-    """(quantised offset, quantised duration, canonical pitch) per hit."""
-    events: list[tuple[float, float, int]] = []
+def _hit_events(
+    pm: Any, bpm: Optional[float] = None
+) -> list[tuple[float, float, int, int]]:
+    """(quantised offset, quantised duration, canonical pitch, velocity) per hit."""
+    events: list[tuple[float, float, int, int]] = []
     for inst in _drum_instruments(pm):
         for n in inst.notes:
             start = _quantise(_quarters(pm, n.start, bpm))
             end = _quantise(_quarters(pm, max(n.end, n.start), bpm))
             dur = max(_MIN_QL, end - start)
-            events.append((start, dur, canonical_drum_pitch(n.pitch)))
+            events.append((start, dur, canonical_drum_pitch(n.pitch), int(n.velocity)))
     events.sort(key=lambda e: (e[0], e[2]))
     return events
 
 
-def _make_unpitched(pitch: int) -> Any:
+def _make_unpitched(pitch: int, velocity: Optional[int] = None) -> Any:
     from music21 import note  # type: ignore[import]
 
     step, octave, head = DRUM_STAFF[pitch]
@@ -215,27 +224,41 @@ def _make_unpitched(pitch: int) -> Any:
     element.displayOctave = octave
     if head != "normal":
         element.notehead = head
+    if velocity is not None:
+        element.volume.velocity = velocity
     return element
 
 
 def build_percussion_part(
-    midi_path: Path, *, title: str = "Drums", bpm: Optional[float] = None
+    midi_path: Path,
+    *,
+    title: str = "Drums",
+    bpm: Optional[float] = None,
+    time_signatures: Optional[list[tuple[float, str]]] = None,
+    shows_tempo: bool = True,
 ) -> Any:
     """Build a ``music21.stream.Part`` percussion staff from a drum MIDI.
 
-    PercussionClef + UnpitchedPercussion instrument, the file's first time
-    signature (default 4/4) and initial tempo. With ``bpm`` the staff is laid
-    out at that tempo instead: each hit sits at ``seconds * bpm / 60`` quarters
-    and the mark sounds at ``bpm``, so a band score can put the kit on the same
-    beat grid as its other staves. Every hit becomes a
+    PercussionClef + UnpitchedPercussion instrument, every time signature of
+    the file at its offset (4/4 when it states none) and its initial tempo.
+    With ``bpm`` the staff is laid out at that tempo instead: each hit sits at
+    ``seconds * bpm / 60`` quarters and the mark sounds at ``bpm``, so a band
+    score can put the kit on the same beat grid as its other staves.
+    ``time_signatures`` (``(offset, "n/d")`` pairs on that grid) bars the staff
+    by a band score's shared meter map in place of the file's own. With
+    ``shows_tempo`` False the mark sounds but is not printed, for a staff that
+    is not the one carrying the score's tempo. Every hit becomes a
     ``note.Unpitched`` at its DRUM_STAFF position (x / circle-x heads for
     cymbals), start/end quantised to 1/16 (min 0.25 QL, clipped to the next
     onset so nothing overlaps), simultaneous hits merged into a
-    ``percussion.PercussionChord``. The part is barred (``makeMeasures``).
+    ``percussion.PercussionChord``. Each head carries the velocity of its hit,
+    the loudest where several hits land on one staff position. The part is
+    barred (``makeMeasures``).
     """
     import pretty_midi  # type: ignore[import]
     from music21 import clef, instrument, meter, percussion, stream  # type: ignore[import]
 
+    from ..midi_read import carry_chord_velocity
     from ..tempo_marks import metronome_mark
 
     pm = pretty_midi.PrettyMIDI(str(midi_path))
@@ -245,32 +268,39 @@ def build_percussion_part(
     part.partAbbreviation = (title or "Drums")[:6]
     part.insert(0, clef.PercussionClef())
     part.insert(0, instrument.UnpitchedPercussion())
-    part.insert(0, meter.TimeSignature(_time_signature(pm)))
+    grid_bpm = float(bpm) if bpm is not None and bpm > 0 else None
+    for offset, ratio in time_signatures or _time_signatures(pm, grid_bpm):
+        part.insert(offset, meter.TimeSignature(ratio))
     # The sheet prints the tempo as a whole number. The exact tempo every hit's
     # offset below is worked out at is the sounding tempo.
-    grid_bpm = float(bpm) if bpm is not None and bpm > 0 else None
-    part.insert(0, metronome_mark(grid_bpm or _initial_tempo(pm)))
+    mark = metronome_mark(grid_bpm or _initial_tempo(pm))
+    if not shows_tempo:
+        mark.numberImplicit = True
+        mark.style.hideObjectOnPrint = True
+    part.insert(0, mark)
 
     events = _hit_events(pm, grid_bpm)
-    # Group simultaneous hits; dedupe identical staff positions in a group.
-    groups: list[tuple[float, float, list[int]]] = []
-    for start, dur, pitch in events:
+    # Group simultaneous hits; dedupe identical staff positions in a group, the
+    # head as loud as the loudest hit it stands for.
+    groups: list[tuple[float, float, dict[int, int]]] = []
+    for start, dur, pitch, velocity in events:
         if groups and abs(groups[-1][0] - start) < 1e-9:
-            if pitch not in groups[-1][2]:
-                groups[-1][2].append(pitch)
-            groups[-1] = (groups[-1][0], max(groups[-1][1], dur), groups[-1][2])
+            heads_at = groups[-1][2]
+            heads_at[pitch] = max(heads_at.get(pitch, 0), velocity)
+            groups[-1] = (groups[-1][0], max(groups[-1][1], dur), heads_at)
         else:
-            groups.append((start, dur, [pitch]))
+            groups.append((start, dur, {pitch: velocity}))
 
     for index, (start, dur, pitches) in enumerate(groups):
         if index + 1 < len(groups):
             gap = groups[index + 1][0] - start
             dur = max(_MIN_QL, min(dur, gap))
-        heads = [_make_unpitched(p) for p in pitches]
+        heads = [_make_unpitched(p, v) for p, v in pitches.items()]
         if len(heads) == 1:
             element = heads[0]
         else:
             element = percussion.PercussionChord(heads)
+            carry_chord_velocity(element)
         element.duration.quarterLength = dur
         part.insert(start, element)
 

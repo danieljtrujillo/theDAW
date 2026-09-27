@@ -134,11 +134,36 @@ def _flat_part(part: Any) -> Any:
                 head.volume.velocity = velocity
             heads.append(head)
         element = heads[0] if len(heads) == 1 else chord.Chord(heads)
+        carry_chord_velocity(element)
         element.duration.quarterLength = common.opFrac(end - offset)
         for lyric in members[0][5]:
             element.lyrics.append(copy.deepcopy(lyric))
         out.insert(offset, element)
     return out
+
+
+def carry_chord_velocity(element: Any) -> None:
+    """Give a chord the mean velocity of its heads as its own.
+
+    MusicXML writes one ``dynamics`` value for all the heads of a chord, and
+    music21 takes it from the chord's own volume (``m21ToXml`` reads the chord
+    passed as ``chordParent``). A chord built from notes has no volume of its
+    own, so its heads' velocities never reach the sheet. The heads keep their
+    own velocities for anything that plays the score. A percussion chord is a
+    chord here too. A single note, or a chord whose heads carry no velocity, is
+    left as it is.
+    """
+    from music21 import chord  # type: ignore[import]
+
+    if not isinstance(element, chord.ChordBase):
+        return
+    velocities = [
+        head.volume.velocity
+        for head in element.notes
+        if head.hasVolumeInformation() and head.volume.velocity is not None
+    ]
+    if velocities:
+        element.volume.velocity = int(round(sum(velocities) / len(velocities)))
 
 
 def _join_tied(pieces: list[list[Any]]) -> list[list[Any]]:

@@ -2703,7 +2703,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
     allowlist = {
         (
             "arrangers/score_arrange.py",
-            457,
+            623,
             "out",
             "write",
         ): "pretty_midi.write (MIDI, not MusicXML)",
