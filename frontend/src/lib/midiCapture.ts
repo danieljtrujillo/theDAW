@@ -21,10 +21,12 @@
  * Shape
  * -----
  * A PURE CORE — `parseMidiMessage`, `createNoteCapture`, `cropNotesToWindow`,
- * `notesToRoll` — with no imports that run at load: every store, clock, render
- * and notice the runtime needs is a `MidiCaptureDeps` entry supplied by the one
- * `startMidiCapture()` mount in `App.tsx`. The only imports here are `import
- * type`, erased at compile, so the core is testable under plain `tsx` with no
+ * and `lib/takeNotes.takeToRoll` for the seconds-to-ticks step — with no
+ * imports that load a store: every store, clock, render and notice the runtime
+ * needs is a `MidiCaptureDeps` entry supplied by the one `startMidiCapture()`
+ * mount in `App.tsx`. The one runtime import is `lib/takeNotes`, a pure module
+ * whose only import is `lib/noteClock`, which has none; the rest are `import
+ * type`, erased at compile. So the core is testable under plain `tsx` with no
  * DOM, no store graph and — the point — no real MIDI device.
  *
  * Design source
@@ -40,6 +42,7 @@
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import type { MidiBusMessage } from '../state/midiBus';
 import type { PianoNote } from '../state/pianoRollStore';
+import { takeToRoll } from './takeNotes';
 
 /* -------------------------------------------------------------------------- */
 /*                                  parsing                                   */
@@ -190,7 +193,7 @@ export interface PunchWindow {
  * no sounding time inside is dropped entirely.
  *
  * A zero-length note (a tap whose on and off landed in the same transport
- * frame) INSIDE the window survives — `notesToRoll` gives it its one-step
+ * frame) INSIDE the window survives — `takeToRoll` gives it its one-tick
  * minimum. A note that merely grazes an edge does not: it has real length and
  * none of it is inside.
  */
@@ -214,6 +217,13 @@ export function cropNotesToWindow(
 /*                            seconds -> roll steps                           */
 /* -------------------------------------------------------------------------- */
 
+// A pass becomes notes through `lib/takeNotes.takeToRoll`, the converter every
+// take shares: each edge at the tick it was played on (960 to the quarter at
+// the project BPM, relative to the clip's start), nothing quantised, at least
+// one tick long. Snapping each edge to the nearest 16th with a one-step floor
+// took a played part's timing away on the way in; quantising a take is the
+// roll's APPLY, a step the player chooses.
+
 /**
  * Steps per beat on the piano roll's grid. A step is a 16th note and a beat is
  * a quarter everywhere in the app, so this is 4 — the same divisor
@@ -221,54 +231,6 @@ export function cropNotesToWindow(
  * owner: the BPM is handed in.
  */
 export const STEPS_PER_BEAT = 4;
-
-export interface RollConversionOptions {
-  bpm: number;
-  /** Defaults to `STEPS_PER_BEAT`. */
-  stepsPerBeat?: number;
-  /** The transport second step 0 sits at — the clip's own start. */
-  startSec: number;
-  /** Prefix for the generated `PianoNote.id`s. */
-  idPrefix?: string;
-}
-
-export interface RollConversion {
-  rollNotes: PianoNote[];
-  /** Grid length in steps: the last note's end, or 0 when there are no notes. */
-  totalSteps: number;
-}
-
-/**
- * Seconds -> the roll's step grid, relative to `startSec`. Both edges snap to
- * the NEAREST step (a note played a hair early reads as on the beat, which is
- * what a player means) and every note is at least one step long, so a tap is
- * still audible.
- */
-export function notesToRoll(
-  notes: readonly CapturedNote[],
-  opts: RollConversionOptions,
-): RollConversion {
-  const stepsPerBeat = Math.max(1, Math.round(opts.stepsPerBeat ?? STEPS_PER_BEAT));
-  const bpm = Number.isFinite(opts.bpm) && opts.bpm > 0 ? opts.bpm : 120;
-  const stepSec = 60 / bpm / stepsPerBeat;
-  const prefix = opts.idPrefix ?? 'mc';
-  const rollNotes: PianoNote[] = [];
-  let totalSteps = 0;
-  for (const n of notes) {
-    const step = Math.max(0, Math.round((n.startSec - opts.startSec) / stepSec));
-    const rawEnd = Math.round((n.endSec - opts.startSec) / stepSec);
-    const length = Math.max(1, rawEnd - step);
-    rollNotes.push({
-      id: `${prefix}-${rollNotes.length}`,
-      note: Math.max(0, Math.min(127, Math.round(n.note))),
-      step,
-      length,
-      velocity: Math.max(1, Math.min(127, Math.round(n.velocity))),
-    });
-    if (step + length > totalSteps) totalSteps = step + length;
-  }
-  return { rollNotes, totalSteps };
-}
 
 /** Seconds one step lasts at `bpm`. */
 export function stepSeconds(bpm: number, stepsPerBeat: number = STEPS_PER_BEAT): number {
@@ -533,7 +495,7 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
       // The clip begins where the pass did, pushed forward if the punch window
       // opens later — the same origin `placeTakes` gives a cropped take.
       const startSec = win ? Math.max(pass.openedAt, win.from) : pass.openedAt;
-      const { rollNotes, totalSteps } = notesToRoll(notes, { bpm, startSec });
+      const { rollNotes, totalSteps } = takeToRoll(notes, { bpm, originSec: startSec, idPrefix: 'mc' });
       if (rollNotes.length === 0 || totalSteps <= 0) continue;
       landing.push({
         pass,

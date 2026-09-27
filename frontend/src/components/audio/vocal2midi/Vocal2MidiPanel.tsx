@@ -28,8 +28,8 @@ import {
 import { NOTE_NAMES, SOUND_PROFILES, GENRE_PROFILES } from './constants';
 import {
   detectPitch, frequencyToMidi, cleanupNotes, snapToScale, processNotesWithProfile, generateMidiFile,
-  slideBendPoints, V2M_BEND_RANGE,
 } from './audioProcessing';
+import { applyVocalNotesToRoll } from './rollBridge';
 import { quantizeNotes, transposeNotes, snapNotesToScale, changeKey, getKeyName } from './midiEditor';
 import { detectKeyAndScale, getRelatedKeys } from './musicTheory';
 import { getMidiSynth } from './midiSynth';
@@ -40,7 +40,7 @@ import { RecordingHistory } from './RecordingHistory';
 import { AssistantOrb } from './AssistantOrb';
 import { saveFile, type SaveFileResult } from '../../../lib/saveFile';
 
-import { usePianoRollStore, type PianoNote } from '../../../state/pianoRollStore';
+import { usePianoRollStore } from '../../../state/pianoRollStore';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
 import { describeMicFailure } from '../../../lib/micErrors';
@@ -68,20 +68,6 @@ const DEFAULT_CONFIG: ProcessingConfig = {
 };
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
-
-const stepSec = (bpm: number): number => 60 / Math.max(1, bpm) / 4;
-
-/** Bridge: vocal2midi NoteEvent[] (absolute seconds) -> theDAW step-based notes. */
-const toPianoNotes = (notes: NoteEvent[], bpm: number): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `v2m-${i}-${n.startTime.toFixed(3)}-${n.midiNote}`,
-    note: Math.max(0, Math.min(127, Math.round(n.midiNote))),
-    step: Math.max(0, Math.round(n.startTime / ss)),
-    length: Math.max(1, Math.round(n.duration / ss)),
-    velocity: Math.max(1, Math.min(127, Math.round(n.velocity))),
-  }));
-};
 
 /** gemini-3.5-flash accepts wav/mp3/ogg/flac (not webm) — convert before AI. */
 async function toWavBlob(blob: Blob): Promise<Blob> {
@@ -199,20 +185,13 @@ export const Vocal2MidiPanel: React.FC = () => {
   const bpm = audioAnalysis?.detectedBpm || config.manualBpm || 120;
 
   // With Pitch bend on, the slides the MIDI export writes go to the roll's lane
-  // A at the range that export assumes. A write replaces every note in the roll,
-  // so every other lane's points go and keep their range; with no slides,
-  // importNotes clears every lane's points itself.
+  // A too (rollBridge.applyVocalNotesToRoll).
   const pitchBendRef = useRef(config.experimentalPitchBend);
   useEffect(() => { pitchBendRef.current = config.experimentalPitchBend; }, [config.experimentalPitchBend]);
 
-  /** Write notes into theDAW's existing piano roll. */
+  /** Write notes into theDAW's existing piano roll, at the ticks they arrive on. */
   const applyToRoll = useCallback((notes: NoteEvent[], atBpm: number) => {
-    const roll = usePianoRollStore.getState();
-    const points = pitchBendRef.current ? slideBendPoints(notes, atBpm) : [];
-    const bends = points.length
-      ? [...roll.bends.filter((b) => b.lane !== 0).map((b) => ({ ...b, points: [] })), { lane: 0, range: V2M_BEND_RANGE, points }]
-      : undefined;
-    roll.importNotes(toPianoNotes(notes, atBpm), atBpm, undefined, bends);
+    applyVocalNotesToRoll(notes, atBpm, pitchBendRef.current);
   }, []);
 
   /* ── recorder (ported YIN capture) ─────────────────────────────────────── */
@@ -428,8 +407,7 @@ export const Vocal2MidiPanel: React.FC = () => {
     const finalNotes = processNotesWithProfile(scaled, b, q, profile);
     setProcessedNotes(finalNotes);
     applyToRoll(finalNotes, b);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.rootNote, config.scale, config.quantizeMode, config.manualQuantizeValue, config.activeProfileId, capturedNotes, audioAnalysis]);
+  }, [config.rootNote, config.scale, config.quantizeMode, config.manualQuantizeValue, config.activeProfileId, capturedNotes, audioAnalysis, applyToRoll]);
 
   /* ── editor tools (operate on processedNotes -> roll) ──────────────────── */
   const pushNotes = useCallback((notes: NoteEvent[], atBpm = bpm) => {

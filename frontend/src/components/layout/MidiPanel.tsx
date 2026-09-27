@@ -59,7 +59,8 @@ import { useLibraryStore } from '../../state/libraryStore';
 import { isAudioEntry } from '../../state/libraryEntry';
 import { logInfo, logWarn } from '../../state/logStore';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { importedRollBpm, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { artifactToRoll } from '../../lib/takeNotes';
 import { usePlayerStore } from '../../state/playerStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import {
@@ -144,17 +145,6 @@ const stepSec = (bpm: number): number => 60 / bpm / 4;
 
 /** Where the VOICE key remembers whether the Vocal2MIDI column is shown. */
 const VOICE_COLUMN_KEY = 'thedaw-midi-voice-column-v1';
-
-const artifactToPiano = (notes: ArtifactNote[], bpm: number): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `art-${i}-${n.start_ms}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.start_ms / 1000 / ss)),
-    length: Math.max(1, Math.round((n.end_ms - n.start_ms) / 1000 / ss)),
-    velocity: n.velocity,
-  }));
-};
 
 const pianoToArtifact = (notes: PianoNote[], bpm: number): ArtifactNote[] => {
   const ss = stepSec(bpm);
@@ -415,8 +405,10 @@ export const MidiPanel: React.FC = () => {
       return;
     }
     setArtifact(doc);
-    const bpm = doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm;
-    usePianoRollStore.getState().importNotes(artifactToPiano(doc.notes, bpm), bpm);
+    // Converted at the tempo importNotes gives the roll (a whole BPM), so each
+    // note plays at the second it was sung at, not at the song's own tempo.
+    const bpm = importedRollBpm(doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm);
+    usePianoRollStore.getState().importNotes(artifactToRoll(doc.notes, bpm, 'art').rollNotes, bpm);
     setStatus(`loaded ${doc.notes.length} notes`);
   }, []);
 
@@ -454,8 +446,11 @@ export const MidiPanel: React.FC = () => {
           const res = await fetch('/api/vocal/audio-to-notes', { method: 'POST', body: fd });
           const data = await res.json();
           const notes: ArtifactNote[] = data.notes ?? [];
+          // At the ticks basic-pitch heard each note on, never snapped to 16ths
+          // (APPLY quantises). placeRecording keeps the roll's tempo, so the
+          // take converts at it.
           const bpm = usePianoRollStore.getState().bpm;
-          const piano = artifactToPiano(notes, bpm);
+          const piano = artifactToRoll(notes, bpm, 'art').rollNotes;
           const endStep = Math.max(1, Math.ceil(elapsedSec / stepSec(bpm)));
           usePianoRollStore.getState().placeRecording(piano, { startStep: 0, endStep });
           setStatus(`recorded ${piano.length} notes (${elapsedSec.toFixed(1)}s)`);

@@ -5,6 +5,7 @@ import { useStatusBarStore } from '../state/statusBarStore';
 import { logError, logInfo } from '../state/logStore';
 import { renderNotesToBlob, type RenderNote } from './midiSynth';
 import type { PianoNote } from '../state/pianoRollStore';
+import { takeToRoll } from './takeNotes';
 import { validTimeSignature } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
 
@@ -48,19 +49,21 @@ const notesFromDawClip = (clip: DawClip): RenderNote[] => {
   });
 };
 
-const pianoNotesFromRenderNotes = (notes: RenderNote[], bpm: number): PianoNote[] => {
-  const stepSec = 60 / Math.max(40, bpm || 120) / 4;
-  return notes.map((note, index) => ({
-    id: `als-note-${index}-${Math.round(note.startSec * 1000)}`,
-    note: note.midi,
-    step: Math.max(0, Math.round(note.startSec / stepSec)),
-    length: Math.max(1, Math.round(note.durationSec / stepSec)),
-    // PianoNote.velocity is MIDI 0-127 (pianoRollStore seeds notes at 90 and
-    // notesToSmf clamps to 1..127). notesFromDawClip has already normalised up to
-    // that range, so dividing by 127 here pushed every imported note into 0..1 —
-    // which the downstream Math.max(1, …) then floored to velocity 1, i.e. silence.
-    velocity: Math.max(1, Math.min(127, Math.round(note.velocity))),
-  }));
+/**
+ * An imported DAW clip's notes as piano-roll notes at `bpm`, each at the tick
+ * it sits on in the project (lib/takeNotes), never snapped to a 16th: a swung
+ * or triplet part opens in the roll as it was written, and the roll's APPLY
+ * quantises it when the player asks. The grid is at least 16 steps long.
+ *
+ * Velocity is MIDI 1-127 here: notesFromDawClip has already normalised it up to
+ * that range, and dividing by 127 again pushed every note to velocity 1.
+ */
+export const pianoNotesFromRenderNotes = (notes: RenderNote[], bpm: number): { rollNotes: PianoNote[]; totalSteps: number } => {
+  const { rollNotes, totalSteps } = takeToRoll(
+    notes.map((n) => ({ note: n.midi, velocity: n.velocity, startSec: n.startSec, endSec: n.startSec + n.durationSec })),
+    { bpm: Math.max(40, bpm || 120), idPrefix: 'als-note' },
+  );
+  return { rollNotes, totalSteps: Math.max(16, totalSteps) };
 };
 
 const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
@@ -87,14 +90,14 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   const notes = notesFromDawClip(clip);
   if (notes.length === 0) throw new Error(`Clip has no audio or MIDI notes: ${clip.name}`);
   const rendered = await renderNotesToBlob(notes, { tailSec: 0.2 });
-  const pianoNotes = pianoNotesFromRenderNotes(notes, project.tempo);
+  const { rollNotes, totalSteps } = pianoNotesFromRenderNotes(notes, project.tempo);
   return {
     blob: rendered.blob,
     mimeType: 'audio/wav',
     duration: rendered.duration,
     sourceKind: 'piano-roll',
-    sourcePianoRoll: pianoNotes,
-    sourceTotalSteps: Math.max(16, ...pianoNotes.map((note) => note.step + note.length)),
+    sourcePianoRoll: rollNotes,
+    sourceTotalSteps: totalSteps,
   };
 };
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { normalizeMeterMap, roundUpToBar, type MeterSegment, type PolyLane } from '../lib/meterMap';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
   DEFAULT_BEND_RANGE,
   MAX_BENT_LANES,
@@ -448,18 +449,18 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 // The same split here: `tick`/`ticks` are the note, `step`/`length` are the
 // 16th-note view of it, and quantise never becomes the stored truth.
 
+// PPQ (960 ticks to the quarter), ROLL_STEPS_PER_BEAT (16ths) and
+// MIN_NOTE_TICKS (one tick) live in lib/noteClock, a module with no imports,
+// so a pure module can read them without loading this store.
+export { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT };
+
 /**
- * Ticks to the quarter note. 960 is divisible by 3, 4, 5, 6, 8, 12, 16, 32 and
- * 64, so triplets, quintuplets and 64ths all land on whole ticks — which is why
- * finer quantise does not need another model change.
+ * The BPM importNotes gives the roll for a finite `bpm`: a whole number from 40
+ * to 240 (any other `bpm` leaves the roll's tempo as it is). A take converted
+ * to ticks at this tempo plays back at the seconds it was played or detected
+ * at; one converted at the unrounded tempo drifts against its audio.
  */
-export const PPQ = 960;
-
-/** The roll's own grid: sixteenths, so four steps to the beat. */
-export const ROLL_STEPS_PER_BEAT = 4;
-
-/** The shortest note the model holds at all: one tick. */
-export const MIN_NOTE_TICKS = 1;
+export const importedRollBpm = (bpm: number): number => Math.max(40, Math.min(240, Math.round(bpm)));
 
 const validStepsPerBeat = (stepsPerBeat?: number): number =>
   isNum(stepsPerBeat) && stepsPerBeat > 0 ? stepsPerBeat : ROLL_STEPS_PER_BEAT;
@@ -862,9 +863,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         currentStep: 0,
         isPlaying: false,
         recordedRange: null,
-        ...(typeof bpm === 'number' && Number.isFinite(bpm)
-          ? { bpm: Math.max(40, Math.min(240, Math.round(bpm))) }
-          : {}),
+        ...(typeof bpm === 'number' && Number.isFinite(bpm) ? { bpm: importedRollBpm(bpm) } : {}),
       };
     }),
 

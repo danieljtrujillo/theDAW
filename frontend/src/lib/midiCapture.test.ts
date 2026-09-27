@@ -10,6 +10,7 @@
  *     the difference;
  *   - a note-on with velocity 0 is a note-off (and a note held through STOP is
  *     still a note);
+ *   - a pass lands at the ticks it was played on, not snapped to 16ths;
  *   - an armed AUDIO track captures nothing — the mic engine keeps it.
  */
 import assert from 'node:assert/strict';
@@ -21,7 +22,6 @@ import {
   createNoteCapture,
   cropNotesToWindow,
   isMidiCaptureClip,
-  notesToRoll,
   parseMidiMessage,
   resetMidiTakeSeq,
   silentWavBlob,
@@ -166,44 +166,11 @@ const flush = async (): Promise<void> => {
 
 /* --------------------------- seconds -> roll steps ------------------------- */
 {
+  // The conversion itself is lib/takeNotes (takeNotes.test.ts); a landed pass
+  // below checks the capture hands it the clip's start and the project BPM.
   assert.equal(STEPS_PER_BEAT, 4, 'a step is a 16th — midiSynth renders 60/bpm/4');
   near(stepSeconds(120), 0.125, 'a 16th at 120 BPM');
-  // At 120 BPM a step is 0.125 s. startSec 4 is step 0.
-  const notes: CapturedNote[] = [
-    { note: 60, velocity: 100, startSec: 4, endSec: 4.5 }, // step 0, 4 steps
-    { note: 64, velocity: 80, startSec: 4.26, endSec: 4.3 }, // 2.08 -> step 2, 0.32 -> 1 step min
-    { note: 67, velocity: 64, startSec: 5, endSec: 5 }, // a tap: zero length
-  ];
-  const { rollNotes, totalSteps } = notesToRoll(notes, { bpm: 120, startSec: 4 });
-  assert.equal(rollNotes.length, 3);
-  assert.deepEqual(
-    rollNotes.map((n) => [n.note, n.step, n.length, n.velocity]),
-    [
-      [60, 0, 4, 100],
-      [64, 2, 1, 80],
-      [67, 8, 1, 64],
-    ],
-    'nearest-step rounding, one-step minimum, relative to startSec',
-  );
-  assert.deepEqual(rollNotes.map((n) => n.id), ['mc-0', 'mc-1', 'mc-2'], 'ids are unique in the roll');
-  assert.equal(totalSteps, 9, 'the grid is as long as the last note ends');
-  assert.deepEqual(notesToRoll([], { bpm: 120, startSec: 0 }), { rollNotes: [], totalSteps: 0 });
-  // A note before startSec cannot land on a negative step.
-  const early = notesToRoll([{ note: 60, velocity: 1, startSec: -1, endSec: 0.1 }], { bpm: 120, startSec: 0 });
-  assert.equal(early.rollNotes[0].step, 0, 'clamped to the grid origin');
-  // The divisor follows the BPM handed in; no second tempo owner.
-  const fast = notesToRoll([{ note: 60, velocity: 100, startSec: 0, endSec: 0.25 }], { bpm: 240, startSec: 0 });
-  assert.equal(fast.rollNotes[0].length, 4, 'the same half second is 4 steps at 240 BPM');
-  const eighths = notesToRoll([{ note: 60, velocity: 100, startSec: 0, endSec: 0.5 }], {
-    bpm: 120,
-    startSec: 0,
-    stepsPerBeat: 2,
-  });
-  assert.equal(eighths.rollNotes[0].length, 2, 'stepsPerBeat is honoured');
-  // Out-of-range values are clamped rather than written onto the roll raw.
-  const clamped = notesToRoll([{ note: 300, velocity: 0, startSec: 0, endSec: 1 }], { bpm: 120, startSec: 0 });
-  assert.equal(clamped.rollNotes[0].note, 127);
-  assert.equal(clamped.rollNotes[0].velocity, 1);
+  near(stepSeconds(90), 60 / 90 / 4, 'the divisor follows the BPM handed in');
 }
 
 /* ---------------------------------- punch --------------------------------- */
@@ -487,6 +454,65 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   assert.equal(h.renders[0].updates.renderedProgram, 0, 'stamped with the program it was rendered with');
   assert.equal(h.renders[0].peaks?.length, 240, 'and its peaks');
   assert.deepEqual(h.notices, [], 'nothing to say about a pass that landed');
+  h.dispose();
+}
+
+{
+  // A pass played off the grid lands where it was played. At 100 BPM a tick is
+  // 1/1600 s and a 16th is 0.15 s. Snapped to the nearest 16th with a one-step
+  // floor (the capture's old conversion), the late note, the short one and the
+  // tap all moved and the take lost its timing. Quantising is the roll's APPLY.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], bpm: 100 });
+  h.sec(10);
+  h.setStatus('recording');
+  h.sec(10.2); // 320 ticks in: a third of a 16th late
+  h.send([0x90, 60, 100]);
+  h.sec(10.25); // 400 ticks in, overlapping the first note
+  h.send([0x90, 64, 90]);
+  h.sec(10.29); // the first note is 144 ticks long, shorter than a 16th
+  h.send([0x80, 60, 0]);
+  h.sec(10.8);
+  h.send([0x80, 64, 0]);
+  h.sec(11); // a tap: on and off at one transport second
+  h.send([0x90, 67, 70]);
+  h.send([0x80, 67, 0]);
+  h.sec(11.5);
+  h.setStatus('stopping');
+
+  assert.equal(h.clips.length, 1);
+  const clip = h.clips[0];
+  assert.deepEqual(
+    clip.sourceRollNotes?.map((n) => [n.note, n.step, n.length]),
+    [
+      [60, 320 / 240, 144 / 240],
+      [64, 400 / 240, 880 / 240],
+      [67, 1600 / 240, 1 / 240],
+    ],
+    'each note at the 16th it was played on, fraction kept',
+  );
+  assert.deepEqual(
+    clip.sourceRollNotes?.map((n) => [n.tick, n.ticks]),
+    [
+      [320, 144],
+      [400, 880],
+      [1600, 1],
+    ],
+    'and its ticks written with it, at least one tick long',
+  );
+  assert.deepEqual(clip.sourcePianoRoll, clip.sourceRollNotes, 'the sounding copy holds the same timing');
+  assert.equal(clip.sourceTotalSteps, 7, 'the grid runs to the 16th after the last note ends');
+  near(clip.durationSec, 7 * 0.15, 'and the clip is as long as its grid');
+  await flush();
+  assert.deepEqual(
+    h.rendered[0].notes.map((n) => [n.note, n.step, n.length]),
+    [
+      [60, 320 / 240, 144 / 240],
+      [64, 400 / 240, 880 / 240],
+      [67, 1600 / 240, 1 / 240],
+    ],
+    'the bounce renders the notes as played',
+  );
   h.dispose();
 }
 
