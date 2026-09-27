@@ -17,7 +17,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

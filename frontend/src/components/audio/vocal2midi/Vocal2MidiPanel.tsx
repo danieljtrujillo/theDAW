@@ -42,6 +42,9 @@ import { AssistantOrb } from './AssistantOrb';
 import { saveFile, type SaveFileResult } from '../../../lib/saveFile';
 
 import { usePianoRollStore } from '../../../state/pianoRollStore';
+import { useEditorStore } from '../../../state/editorStore';
+import { chooseRollVoice, rollVoiceChoice } from '../../../lib/rollVoiceChoice';
+import { GM_DRUM_KITS, drumKitName } from '../../../lib/clipProgram';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
 import { describeMicFailure } from '../../../lib/micErrors';
@@ -113,8 +116,15 @@ const chipOn = KEY_ON;
 export const Vocal2MidiPanel: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [config, setConfig] = useState<ProcessingConfig>({ ...DEFAULT_CONFIG });
-  const previewProgram = usePianoRollStore((st) => st.voiceProgram);
-  const setPreviewProgram = usePianoRollStore((st) => st.setVoiceProgram);
+  // The voice the roll plays: its linked EDIT clip's (set on the clip's track),
+  // else its own. Both are chosen here and by the assistant (lib/rollVoiceChoice).
+  const rollProgram = usePianoRollStore((st) => st.voiceProgram);
+  const editingClipId = usePianoRollStore((st) => st.editingClipId);
+  // Only the linked clip and its track: selecting every clip would re-render
+  // this panel on each frame of an EDIT drag.
+  const linkedClip = useEditorStore((st) => (editingClipId ? st.clips.find((c) => c.id === editingClipId) : undefined));
+  const linkedTrack = useEditorStore((st) => (linkedClip ? st.tracks.find((t) => t.id === linkedClip.trackId) : undefined));
+  const voiceChoice = rollVoiceChoice(editingClipId, linkedClip ? [linkedClip] : [], linkedTrack ? [linkedTrack] : [], rollProgram);
   const [capturedNotes, setCapturedNotes] = useState<NoteEvent[]>([]);
   const [processedNotes, setProcessedNotes] = useState<NoteEvent[]>([]);
   const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysisResult | null>(null);
@@ -640,23 +650,36 @@ export const Vocal2MidiPanel: React.FC = () => {
             <div className="mt-0.5"><InstrumentPicker idPrefix="v2m-instrument" /></div>
           </div>
           <div>
-            {/* The roll's own voice: PLAY, WAV export, and the roll these
-                notes go to (while no EDIT clip is linked) all use it. The
-                assistant's instrument choice lands here, never on the picker
-                above, whose program every EDIT clip without its own follows. */}
-            <label htmlFor="v2m-preview-voice" className={labelCls}>Roll voice</label>
+            {/* The voice the roll plays: PLAY, WAV export, and the roll these
+                notes go to all use it. On a roll linked to an EDIT clip it is
+                that clip's track instrument; otherwise the roll's own. The
+                assistant's instrument choice lands here too, never on the
+                picker above, whose program every EDIT clip without its own
+                follows. */}
+            <label htmlFor="v2m-preview-voice" className={labelCls}>
+              {voiceChoice.track ? `Roll voice: track ${voiceChoice.track.name}` : 'Roll voice'}
+            </label>
             <select
               id="v2m-preview-voice"
               name="v2m-preview-voice"
-              value={previewProgram === null ? 'picker' : String(previewProgram)}
-              onChange={(e) => setPreviewProgram(e.target.value === 'picker' ? null : Number(e.target.value))}
+              value={voiceChoice.program === null ? 'picker' : String(voiceChoice.program)}
+              onChange={(e) => chooseRollVoice(e.target.value === 'picker' ? null : Number(e.target.value))}
+              title={voiceChoice.track
+                ? `The roll is linked to an EDIT clip on track ${voiceChoice.track.name}: the choice sets that track's ${voiceChoice.drums ? 'drum kit' : 'instrument'}.`
+                : 'The voice this roll auditions and bounces with while no EDIT clip is linked.'}
               className="mt-0.5 block form-select px-2 py-1 text-xs font-semibold max-w-44"
               style={{ colorScheme: 'dark' }}
             >
               <option value="picker">Same as the instrument</option>
-              {GM_NAMES.map((n, i) => (
-                <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
-              ))}
+              {voiceChoice.drums
+                ? GM_DRUM_KITS.map((k) => <option key={k.program} value={k.program}>{`${k.name} kit`}</option>)
+                : GM_NAMES.map((n, i) => (
+                  <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
+                ))}
+              {/* A program the kit list lacks stays listed, so the select shows what the track holds. */}
+              {voiceChoice.drums && voiceChoice.program !== null && !GM_DRUM_KITS.some((k) => k.program === voiceChoice.program) && (
+                <option value={voiceChoice.program}>{`${drumKitName(voiceChoice.program)} kit`}</option>
+              )}
             </select>
           </div>
         </Section>

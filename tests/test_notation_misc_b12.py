@@ -24,7 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 
 from backend.modules.library.store import LibraryStore
 from backend.modules.notation import engine as _engine

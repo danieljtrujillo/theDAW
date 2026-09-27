@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import mido  # type: ignore[import]
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 
 from backend.modules.library.db import LibraryDB
@@ -1057,7 +1057,7 @@ def test_part_scoped_notechart_source_path_is_not_the_staging_scratch_name(
 
 
 def _write_two_part_musicxml_file(path: Path) -> None:
-    from music21 import clef, meter, note, stream  # type: ignore[import]
+    from music21 import clef, meter, note, stream
 
     score = stream.Score()
     for index, (name, pitches, part_clef) in enumerate(
@@ -2742,7 +2742,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (ABC export, plain text -- not MusicXML)",
         (
             "engine.py",
-            2534,
+            2625,
             "output_path",
             "write_text",
         ): "Path.write_text (alphaTex export, plain text -- not MusicXML)",
@@ -2789,7 +2789,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (note-chart JSON export, not MusicXML)",
         (
             "router.py",
-            1045,
+            1090,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (chords route XML patch)",
@@ -2964,8 +2964,8 @@ def test_strip_score_metadata_cleans_every_text_field_before_writing(
     caller stamps movementName/movementNumber/lyricist/copyright itself
     (only title/composer are ever set); the audit set them directly on
     ``score.metadata`` to verify the strip covers the whole field set."""
-    import music21  # type: ignore[import]
-    from music21.metadata import Metadata  # type: ignore[import]
+    import music21
+    from music21.metadata import Metadata
 
     score = music21.stream.Score()
     part = music21.stream.Part()
@@ -3081,7 +3081,7 @@ def test_write_musicxml_atomic_replace_failure_leaves_no_leaked_temp(
     leave the artifact directory with NO file at all (no destination, since
     none existed yet, and no leftover ``.<uuid>.musicxml`` temp) -- not a
     leaked temp that a later scan could pick up as a real artifact."""
-    import music21  # type: ignore[import]
+    import music21
 
     score = music21.stream.Score()
     part = music21.stream.Part()
@@ -3109,7 +3109,7 @@ def test_write_musicxml_score_write_failure_leaves_no_leaked_temp(
     raising must not leave a leaked temp file (there is nothing to unlink
     from music21's own writer in this case, but the guard must not choke
     when ``written_path`` was never reassigned from ``tmp``)."""
-    import music21  # type: ignore[import]
+    import music21
 
     score = music21.stream.Score()
     part = music21.stream.Part()

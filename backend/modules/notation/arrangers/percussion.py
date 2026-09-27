@@ -134,7 +134,7 @@ def is_drum_midi(path: Path) -> bool:
     Never raises — unreadable files are simply not drums.
     """
     try:
-        import pretty_midi  # type: ignore[import]
+        import pretty_midi
 
         pm = pretty_midi.PrettyMIDI(str(path))
     except Exception as exc:  # noqa: BLE001 - not a MIDI we can read
@@ -236,7 +236,7 @@ def _hit_events(
 
 
 def _make_unpitched(pitch: int, velocity: Optional[int] = None) -> Any:
-    from music21 import note  # type: ignore[import]
+    from music21 import note
 
     step, octave, head = DRUM_STAFF[pitch]
     element = note.Unpitched(displayName=f"{step}{octave}")
@@ -276,8 +276,8 @@ def build_percussion_part(
     the loudest where several hits land on one staff position. The part is
     barred (``makeMeasures``).
     """
-    import pretty_midi  # type: ignore[import]
-    from music21 import clef, instrument, meter, percussion, stream  # type: ignore[import]
+    import pretty_midi
+    from music21 import clef, instrument, meter, percussion, stream
 
     from ..midi_read import carry_chord_velocity
     from ..tempo_marks import metronome_mark
@@ -334,7 +334,7 @@ def build_percussion_part(
 def build_percussion_score(midi_path: Path, *, title: str = "") -> Any:
     """A one-part ``music21.stream.Score`` wrapping :func:`build_percussion_part`
     (what ``midi_to_musicxml`` writes for a drum MIDI)."""
-    from music21 import metadata, stream  # type: ignore[import]
+    from music21 import metadata, stream
 
     score = stream.Score()
     score.insert(0, metadata.Metadata())

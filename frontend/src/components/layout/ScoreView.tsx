@@ -115,6 +115,7 @@ import {
 } from '../../state/playAlongStore';
 import { ModeSwitch } from './score/playAlong/ModeSwitch';
 import { ExportMenu } from './score/ExportMenu';
+import { LegacySheetNotice } from './score/LegacySheetNotice';
 import { PlayAlongTransportCompact } from './score/playAlong/PlayAlongTransport';
 import { usePlayAlong } from './score/playAlong/usePlayAlongClock';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -149,7 +150,7 @@ const KINDS_WITHOUT_ENTRY = ['musicxml', 'alphatex', 'notechart', 'chordtrack'];
 const NO_FRAME = (): void => {};
 
 const LazyFallback: React.FC = () => (
-  <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">Loading…</div>
+  <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">Loading…</div>
 );
 
 export const ScoreView: React.FC = () => {
@@ -235,6 +236,9 @@ export const ScoreView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [caps, setCaps] = useState<NotationCapabilities | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  // Bumped when a sheet is rewritten in place (same artifact id, new bytes),
+  // so the preview, keyed by it, reads the file again.
+  const [previewRevision, setPreviewRevision] = useState(0);
   // METER MAP popover: the same RhythmBlock the library menu (save-meter-map)
   // and DETAILS embed, reached here so a track opened straight into SCORE (or
   // the SING split) does not need a trip back to DETAILS just to read it.
@@ -401,6 +405,14 @@ export const ScoreView: React.FC = () => {
 
   // ---- Play-along integration ---------------------------------------------
 
+  /** "Rewrite from MIDI" wrote the selected sheet again over the same file:
+   *  list it (dropping its cached text) and read it again. */
+  const onSheetRewritten = async (artifact: NotationArtifact | null) => {
+    await loadArtifacts();
+    if (artifact?.id) setSelectedArtifactId(artifact.id);
+    setPreviewRevision((r) => r + 1);
+  };
+
   /** The maker made something: list it, open it, and open a chord track in
    *  the CHORDS view. */
   const onMade = async (artifact: NotationArtifact | null, way: string) => {
@@ -564,7 +576,7 @@ export const ScoreView: React.FC = () => {
   const renderPreview = (): React.ReactNode => {
     if (!selectedArtifact) {
       return (
-        <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-600">
+        <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">
           Select a score artifact to preview.
         </div>
       );
@@ -620,7 +632,7 @@ export const ScoreView: React.FC = () => {
       default:
         if (effectiveMode === 'chords' && entry) return chords();
         return (
-          <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">
+          <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">
             {selectedArtifact.kind.toUpperCase()} artifact selected. Download or send it to MIDI/Score tools.
           </div>
         );
@@ -697,6 +709,10 @@ export const ScoreView: React.FC = () => {
                         {artifact.kind}
                         {artifact.engine ? ` · ${artifact.engine}` : ''}
                       </div>
+                      {/* A sheet an older build wrote at sounding pitch; the bar over its preview rewrites it. */}
+                      {artifact.legacy_sounding_pitch && (
+                        <div className="truncate text-amber-300">Older sheet: sounding pitch</div>
+                      )}
                     </button>
                   );
                 })}
@@ -730,7 +746,7 @@ export const ScoreView: React.FC = () => {
                 title={transportLabel}
               />
               <span
-                className={`shrink-0 whitespace-nowrap text-[9px] font-mono text-amber-300/90 ${playAlong.otherTrackLoaded ? '' : 'invisible'}`}
+                className={`shrink-0 whitespace-nowrap font-display text-xs font-bold text-amber-300 ${playAlong.otherTrackLoaded ? '' : 'invisible'}`}
                 aria-hidden={playAlong.otherTrackLoaded ? undefined : true}
                 title={playAlong.otherTrackLoaded
                   ? 'The player is holding a different track, so the score is parked. Press play here to load this track.'
@@ -740,7 +756,7 @@ export const ScoreView: React.FC = () => {
               </span>
             </>
           )}
-          <span className="text-[9px] font-mono text-zinc-500 truncate flex-1">
+          <span className="text-xs font-bold text-zinc-400 truncate flex-1">
             {selectedArtifact
               ? `${describeArtifact(selectedArtifact)} · ${selectedArtifact.kind} · ${selectedArtifact.id}`
               : 'No artifact selected'}
@@ -763,7 +779,7 @@ export const ScoreView: React.FC = () => {
           <select
             id="score-instrument"
             name="score-instrument"
-            className="form-select text-[8px] px-1 py-0.5 shrink-0"
+            className="form-select text-xs font-bold px-1 py-0.5 shrink-0"
             value={instrument}
             disabled={!selectedArtifact}
             onChange={(e) => onPlayAlongInstrument(e.target.value)}
@@ -836,7 +852,10 @@ export const ScoreView: React.FC = () => {
             )}
           </ExportMenu>
         </div>
-        <div className="relative flex-1 min-h-0 bg-[#0b0810]">
+        {selectedEntryId && selectedArtifact && (
+          <LegacySheetNotice key={selectedArtifact.id} entryId={selectedEntryId} artifact={selectedArtifact} onRewritten={onSheetRewritten} />
+        )}
+        <div key={previewRevision} className="relative flex-1 min-h-0 bg-[#0b0810]">
           {renderPreview()}
         </div>
       </div>
@@ -1561,10 +1580,10 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   return (
     <div className="relative h-full flex flex-col bg-[#23222a]">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto p-4">
-        {status && <div className="p-4 text-xs font-mono text-zinc-300">{status}</div>}
+        {status && <div className="p-4 text-xs font-bold text-zinc-300">{status}</div>}
         {heavy && (
           <div className="p-4 grid place-items-center">
-            <div className="max-w-md rounded border border-amber-400/30 bg-amber-400/5 p-4 text-[11px] font-mono text-zinc-300">
+            <div className="max-w-md rounded border border-amber-400/30 bg-amber-400/5 p-4 text-xs font-bold text-zinc-300">
               <p className="mb-2 font-black uppercase tracking-[0.18em] text-amber-300">Large score</p>
               <p className="mb-3 leading-relaxed">
                 {`${heavy.measures} measures across ${heavy.parts} ${heavy.parts === 1 ? 'part' : 'parts'} `}
@@ -1616,7 +1635,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
           falls back to flex-start the moment the content stops fitting, so
           the row only ever overflows to the right. Identical to
           justify-center while it fits. */}
-      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center-safe gap-1.5 px-2 text-[10px] font-mono text-zinc-300">
+      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center-safe gap-1.5 px-2 text-xs font-bold text-zinc-300">
         <input
           id="score-follow"
           name="score-follow"
@@ -1835,7 +1854,7 @@ const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | n
   return (
     <div className="relative h-full">
       <div ref={scrollRef} className="h-full overflow-auto bg-white text-black">
-        {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
+        {status && <div className="p-4 text-xs font-bold text-zinc-600">{status}</div>}
         <div ref={containerRef} className="min-h-full" />
       </div>
       {/* Follow toggle — mirrors the sheet's checkbox. */}
@@ -1848,11 +1867,11 @@ const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | n
           onChange={(e) => setFollow(e.target.checked)}
           className="h-3 w-3 accent-emerald-500"
         />
-        <label htmlFor="tab-follow" className="text-[9px] font-mono uppercase tracking-wider text-zinc-700">
+        <label htmlFor="tab-follow" className="font-display text-xs font-bold uppercase tracking-wider text-zinc-700">
           Follow
         </label>
         {follow && entryId && !isSameTrack && (
-          <span className="text-[8px] font-mono uppercase tracking-wider text-amber-600">other track</span>
+          <span className="font-display text-xs font-bold uppercase tracking-wider text-amber-700">other track</span>
         )}
       </div>
       <ZoomControls

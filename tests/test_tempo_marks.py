@@ -13,7 +13,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 
 from backend.modules.library.db import LibraryDB

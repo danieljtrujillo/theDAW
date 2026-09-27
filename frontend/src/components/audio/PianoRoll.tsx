@@ -88,7 +88,8 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/Context
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
 import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
-import { rollVoice, type ClipVoice } from '../../lib/clipProgram';
+import { drumKitName, rollVoice, type ClipVoice } from '../../lib/clipProgram';
+import { chooseRollVoice, rollVoiceChoice } from '../../lib/rollVoiceChoice';
 import { gmShortName } from '../../lib/gmInstruments';
 import { bounceRollToEditor } from '../../lib/rollBounce';
 import { parseSheetFile } from '../../lib/sheetImportClient';
@@ -569,20 +570,38 @@ export const PianoRollBendKey: React.FC<{ on: boolean; onChange: (on: boolean) =
 };
 
 /**
- * The roll's own voice, shown while an unlinked roll plays one (the Vocal2MIDI
- * panel's voice): the roll auditions and bounces with it in place of the
- * instrument picker. Pressing it returns the roll to the picker.
+ * The voice the roll plays when it is not the instrument picker's. An unlinked
+ * roll shows its own voice (the Vocal2MIDI panel's), and pressing the key puts
+ * the roll back on the picker. A roll linked to an EDIT clip plays that clip's
+ * voice: the key shows the program its track (or the clip itself) holds, which
+ * the Vocal2MIDI voice choice sets, and pressing it puts the track back on the
+ * picker (one EDIT undo step).
  */
 export const PianoRollVoiceKey: React.FC = () => {
   const voiceProgram = usePianoRollStore((s) => s.voiceProgram);
-  const linked = usePianoRollStore((s) => s.editingClipId !== null);
-  const setVoiceProgram = usePianoRollStore((s) => s.setVoiceProgram);
-  if (voiceProgram === null || linked) return null;
-  const name = gmShortName(voiceProgram);
+  const editingClipId = usePianoRollStore((s) => s.editingClipId);
+  const linkedClip = useEditorStore((s) => (editingClipId ? s.clips.find((c) => c.id === editingClipId) : undefined));
+  const linkedTrack = useEditorStore((s) => (linkedClip ? s.tracks.find((t) => t.id === linkedClip.trackId) : undefined));
+  const choice = rollVoiceChoice(editingClipId, linkedClip ? [linkedClip] : [], linkedTrack ? [linkedTrack] : [], voiceProgram);
+  if (choice.program === null) return null;
+  const name = choice.drums ? `${drumKitName(choice.program)} kit` : gmShortName(choice.program);
+  if (choice.track) {
+    const trackName = choice.track.name;
+    return (
+      <StripKey
+        on
+        onClick={() => chooseRollVoice(null)}
+        aria-label={`Roll voice ${name}, from track ${trackName}. Press to put the track on the instrument picker`}
+        legend={`Track: ${name}`}
+        icon={<X className={STRIP_GLYPH} />}
+        description={`The roll plays and bounces as ${name}, the instrument of its EDIT clip's track ${trackName}. Vocal2MIDI's voice choice sets it. Press to put the track on the instrument picker.`}
+      />
+    );
+  }
   return (
     <StripKey
       on
-      onClick={() => setVoiceProgram(null)}
+      onClick={() => chooseRollVoice(null)}
       aria-label={`Roll voice ${name}. Press to follow the instrument picker`}
       legend={`Roll: ${name}`}
       icon={<X className={STRIP_GLYPH} />}

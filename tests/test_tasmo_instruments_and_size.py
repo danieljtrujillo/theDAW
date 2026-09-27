@@ -23,6 +23,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import msgpack
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -174,6 +175,65 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     assert clip.bpm is None
     assert clip.library_entry_id is None
     assert clip.roll_notes is None
+    project = TasmoProject.model_validate({"project_name": "old"})
+    assert project.roll_voice is None
+
+
+def test_the_roll_voice_round_trips_through_the_archive(tmp_path: Path) -> None:
+    """The piano roll's own voice (the Vocal2MIDI panel's Roll voice) was not
+    part of the model, so pydantic dropped it and a reopened project's roll
+    played on the picker's program."""
+    project = TasmoProject.model_validate(
+        {**_project([_note(0)]), "roll_voice": {"program": 48}}
+    )
+    out = tmp_path / "voice.tasmo"
+    TasmoFile.save(project, str(out))
+    loaded, _ = TasmoFile.load(str(out))
+    assert loaded.roll_voice is not None
+    assert loaded.roll_voice.program == 48
+    picker = TasmoProject.model_validate({"roll_voice": {"program": None}})
+    assert picker.roll_voice is not None
+    assert picker.roll_voice.program is None
+
+
+def test_a_hand_edited_roll_voice_opens_the_project_on_the_picker(
+    tmp_path: Path,
+) -> None:
+    """A roll_voice program that is not a whole GM number failed TasmoProject
+    validation, so one damaged setting refused the whole file. It now reads as
+    None (follow the picker), the reading the frontend gives it."""
+    tracks = len(_project([_note(0)])["tracks"])
+    for bad in (40.5, 200, -1, "strings", True):
+        project = TasmoProject.model_validate(
+            {**_project([_note(0)]), "roll_voice": {"program": bad}}
+        )
+        assert project.roll_voice is not None
+        assert project.roll_voice.program is None, bad
+        assert len(project.tracks) == tracks
+    whole = TasmoProject.model_validate({"roll_voice": {"program": 48.0}})
+    assert whole.roll_voice is not None
+    assert whole.roll_voice.program == 48
+
+    # A file on disk whose project record was edited by hand still opens.
+    out = tmp_path / "hand.tasmo"
+    TasmoFile.save(
+        TasmoProject.model_validate(
+            {**_project([_note(0)]), "roll_voice": {"program": 71}}
+        ),
+        str(out),
+    )
+    with zipfile.ZipFile(out) as zf:
+        entries = {name: zf.read(name) for name in zf.namelist()}
+    record = msgpack.unpackb(entries["project.msgpack"], raw=False)
+    record["roll_voice"] = {"program": 40.5}
+    entries["project.msgpack"] = msgpack.packb(record, use_bin_type=True)
+    with zipfile.ZipFile(out, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    loaded, _ = TasmoFile.load(str(out))
+    assert loaded.roll_voice is not None
+    assert loaded.roll_voice.program is None
+    assert len(loaded.tracks) == tracks
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +325,9 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["tagged"]["source_bpm"] == 92
     assert clips["tagged"]["bpm"] == 124
     assert clips["tagged"]["library_entry_id"] == "lib-7"
-    assert clips["looped"]["midi_notes"] is None
+    # A looping lane keeps its roll notes and writes the notes it plays as
+    # midi_notes, the list a build older than roll_notes reads.
+    assert [n["step"] for n in clips["looped"]["midi_notes"]] == [0, 4, 8, 12]
     assert clips["looped"]["roll_notes"][0]["lane"] == 1
     assert clips["plain"]["midi_notes"][1]["channel"] == 3
     assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
@@ -274,6 +336,8 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert drums["is_percussion"] is True
     assert drums["instrument_program"] == 25
     assert clips["kit"]["rendered_percussion"] is True
+    # The piano roll's own voice rides at the top level.
+    assert back["roll_voice"] == sent["roll_voice"] == {"program": None}
 
 
 # ---------------------------------------------------------------------------

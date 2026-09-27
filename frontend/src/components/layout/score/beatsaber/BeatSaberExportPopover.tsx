@@ -147,14 +147,14 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
       id={BEATSABER_POPOVER_ID}
       role="dialog"
       aria-labelledby="score-bs-title"
-      className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] text-[10px] font-mono text-zinc-300 flex flex-col gap-2"
+      className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] text-xs font-bold text-zinc-300 flex flex-col gap-2"
     >
-      <h3 id="score-bs-title" className="text-[9px] font-black uppercase tracking-widest text-rose-200">
+      <h3 id="score-bs-title" className="text-xs font-black uppercase tracking-widest text-rose-200">
         Beat Saber export
       </h3>
 
       <fieldset className="flex flex-col gap-1">
-        <legend className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Difficulties</legend>
+        <legend className="text-xs font-bold uppercase tracking-widest text-zinc-500">Difficulties</legend>
         <div className="grid grid-cols-3 gap-x-2 gap-y-1">
           {DIFFICULTY_ORDER.map((d, i) => {
             const id = DIFFICULTY_IDS[d];
@@ -178,13 +178,13 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
 
       <div className="grid grid-cols-2 gap-2">
         <div className="flex flex-col gap-1">
-          <label htmlFor="score-bs-bpm" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">BPM</label>
+          <label htmlFor="score-bs-bpm" className="text-xs font-bold uppercase tracking-widest text-zinc-500">BPM</label>
           <select
             id="score-bs-bpm"
             name="score-bs-bpm"
             value={bpmSource}
             onChange={(e) => setBpmSource(e.target.value === 'chart' ? 'chart' : 'analysis')}
-            className="form-select text-[9px] px-1 py-0.5"
+            className="form-select text-xs px-1 py-0.5"
             title="Which BPM Info.dat states: the audio analysis (the in-game grid matches the recording) or the chart's own tempo"
           >
             <option value="analysis">{bpmLabel}</option>
@@ -192,13 +192,13 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
           </select>
         </div>
         <div className="flex flex-col gap-1">
-          <label htmlFor="score-bs-version" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Format</label>
+          <label htmlFor="score-bs-version" className="text-xs font-bold uppercase tracking-widest text-zinc-500">Format</label>
           <select
             id="score-bs-version"
             name="score-bs-version"
             value={version}
             onChange={(e) => setVersion(e.target.value === '3' ? 3 : 2)}
-            className="form-select text-[9px] px-1 py-0.5"
+            className="form-select text-xs px-1 py-0.5"
             title="Map format version; v2 has the widest tool support"
           >
             <option value={2}>v2 (2.0.0)</option>
@@ -220,7 +220,7 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
         <label htmlFor="score-bs-audio" className={`select-none ${ffmpegMissing ? 'text-zinc-500' : 'cursor-pointer'}`}>
           Include song.ogg
           {ffmpegMissing && (
-            <span className="block text-[9px] text-amber-300/90">
+            <span className="block text-xs text-amber-300/90">
               No ffmpeg on the backend machine: the pack ships a README instead; encode the track to Vorbis and add song.ogg yourself.
             </span>
           )}
@@ -229,7 +229,7 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
 
       {parts && parts.length > 0 && (
         <fieldset className="flex flex-col gap-1">
-          <legend className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Parts to map</legend>
+          <legend className="text-xs font-bold uppercase tracking-widest text-zinc-500">Parts to map</legend>
           <div className="flex flex-wrap gap-x-2 gap-y-1">
             {parts.map((name, i) => {
               const id = `score-bs-part-${i}`;
@@ -252,7 +252,7 @@ export const BeatSaberExportPopover: React.FC<BeatSaberExportPopoverProps> = ({
               );
             })}
           </div>
-          <span className="text-[9px] text-zinc-500">Percussion parts are never mapped to blocks.</span>
+          <span className="text-xs text-zinc-500">Percussion parts are never mapped to blocks.</span>
         </fieldset>
       )}
 

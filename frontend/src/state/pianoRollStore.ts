@@ -120,7 +120,11 @@ interface PianoRollState {
   /** The GM program a roll with no linked clip auditions and bounces with;
    *  null follows the global instrument picker. A roll linked to an EDIT clip
    *  plays its clip's voice (lib/clipProgram rollVoice). Set by the Vocal2MIDI
-   *  panel's voice and cleared from the roll's strip. A setting, not an edit. */
+   *  panel's voice and cleared from the roll's strip. It rides in the feel
+   *  record (localStorage), so a reload keeps it, and a .tasmo saves it as
+   *  `roll_voice`, which makes it a document field: choosing it is an undo step
+   *  of its own (see RollHistorySnapshot), and opening a project sets it with
+   *  restoreVoiceProgram, which records nothing. */
   voiceProgram: number | null;
   /** Step span of the most recent live recording, highlighted in the grid; null
    *  when no recording has been placed. */
@@ -214,8 +218,13 @@ interface PianoRollState {
   appendNotes: (notes: PianoNote[]) => void;
   clear: () => void;
   setEditingClip: (id: string | null) => void;
-  /** Set the unlinked roll's own program (0-127), or null to follow the picker. */
+  /** Set the unlinked roll's own program (0-127), or null to follow the picker.
+   *  One undo step. */
   setVoiceProgram: (program: number | null) => void;
+  /** Put the roll on the voice a project opened with. Records no undo step, and
+   *  the steps already in the history take it as their voice too, so stepping
+   *  back over an earlier note edit keeps the project's voice. */
+  restoreVoiceProgram: (program: number | null) => void;
   /** Load an editor clip. A `meter` field left out keeps the roll's current value.
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
@@ -297,7 +306,11 @@ interface PianoRollState {
  *  notes come back, and SAVE keeps writing those notes into their own clip. A
  *  link change on its own (a bounce binding a new clip, UNLINK) is not a step.
  *  Opening a clip (loadFromClip) is a step that always carries the link, so
- *  undoing it relinks the clip whose notes come back. */
+ *  undoing it relinks the clip whose notes come back.
+ *
+ *  The roll's own voice is here because a .tasmo saves it (`roll_voice`): a
+ *  choice from the Vocal2MIDI panel is a step, and undo puts the voice before
+ *  it back. */
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
@@ -308,6 +321,7 @@ interface RollHistorySnapshot {
   pickupSteps: number;
   lanes: PolyLane[];
   bends: LaneBend[];
+  voiceProgram: number | null;
   /** The linked clip before the step, present only when the step's write changed it. */
   editingClipId?: string | null;
 }
@@ -675,7 +689,9 @@ const DEFAULT_SWING_PCT = 0;
 /** The feel's groove before anyone picks one: the roll's own swing. */
 export const DEFAULT_GROOVE_ID = 'swing';
 
-type RollFeel = { quantizePct: number; swingPct: number; grooveId: string };
+/** The feel record. `voiceProgram` joined it after the others, so a record
+ *  written before it has none and the roll follows the picker. */
+type RollFeel = { quantizePct: number; swingPct: number; grooveId: string; voiceProgram: number | null };
 
 const clampQuantizePct = (v: number): number =>
   Math.max(0, Math.min(100, Math.round(isNum(v) ? v : DEFAULT_QUANTIZE_PCT)));
@@ -683,6 +699,9 @@ const clampSwingPct = (v: number): number => Math.max(-50, Math.min(50, Math.rou
 /** Any non-blank string is a groove id — the templates live elsewhere, and an id
  *  for a groove this session does not have simply finds nothing. */
 const cleanGrooveId = (v: unknown): string => (typeof v === 'string' && v.trim() ? v.trim() : DEFAULT_GROOVE_ID);
+/** A GM program 0-127, rounded, or null (follow the picker) for anything else. */
+export const cleanVoiceProgram = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(127, Math.round(v))) : null;
 
 const loadFeel = (): RollFeel => {
   try {
@@ -697,9 +716,10 @@ const loadFeel = (): RollFeel => {
       swingPct: clampSwingPct(o.swingPct as number),
       // A record written before grooves had a home has no id; the default fills in.
       grooveId: cleanGrooveId(o.grooveId),
+      voiceProgram: cleanVoiceProgram(o.voiceProgram),
     };
   } catch {
-    return { quantizePct: DEFAULT_QUANTIZE_PCT, swingPct: DEFAULT_SWING_PCT, grooveId: DEFAULT_GROOVE_ID };
+    return { quantizePct: DEFAULT_QUANTIZE_PCT, swingPct: DEFAULT_SWING_PCT, grooveId: DEFAULT_GROOVE_ID, voiceProgram: null };
   }
 };
 
@@ -728,7 +748,12 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   pickupSteps: s.pickupSteps,
   lanes: s.lanes,
   bends: s.bends,
+  voiceProgram: s.voiceProgram,
 });
+
+/** Write the feel record from the store, after a write that moved one of its fields. */
+const saveFeelOf = (s: PianoRollState): void =>
+  saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId: s.grooveId, voiceProgram: s.voiceProgram });
 
 /** `snap` carrying `link` when `step` carries a link, so the opposite stack's step puts the link back too. */
 const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: string | null): RollHistorySnapshot =>
@@ -748,7 +773,6 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   loopOn: false,
   seekId: 0,
   editingClipId: null,
-  voiceProgram: null,
   recordedRange: null,
   meterMap: normalizeMeterMap(null),
   pickupSteps: 0,
@@ -859,19 +883,19 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   setQuantizePct: (pct) =>
     set((s) => {
       const quantizePct = clampQuantizePct(pct);
-      saveFeel({ quantizePct, swingPct: s.swingPct, grooveId: s.grooveId });
+      saveFeel({ quantizePct, swingPct: s.swingPct, grooveId: s.grooveId, voiceProgram: s.voiceProgram });
       return { quantizePct };
     }),
   setSwingPct: (pct) =>
     set((s) => {
       const swingPct = clampSwingPct(pct);
-      saveFeel({ quantizePct: s.quantizePct, swingPct, grooveId: s.grooveId });
+      saveFeel({ quantizePct: s.quantizePct, swingPct, grooveId: s.grooveId, voiceProgram: s.voiceProgram });
       return { swingPct };
     }),
   setGrooveId: (id) =>
     set((s) => {
       const grooveId = cleanGrooveId(id);
-      saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId });
+      saveFeel({ quantizePct: s.quantizePct, swingPct: s.swingPct, grooveId, voiceProgram: s.voiceProgram });
       return { grooveId };
     }),
 
@@ -905,8 +929,24 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
-  setVoiceProgram: (program) =>
-    set({ voiceProgram: program === null || !Number.isFinite(program) ? null : Math.max(0, Math.min(127, Math.round(program))) }),
+  setVoiceProgram: (program) => {
+    set({ voiceProgram: cleanVoiceProgram(program) });
+    saveFeelOf(get());
+  },
+  restoreVoiceProgram: (program) => {
+    const voiceProgram = cleanVoiceProgram(program);
+    historyApplying = true;
+    try {
+      set((s) => ({
+        voiceProgram,
+        _undo: s._undo.map((step) => ({ ...step, voiceProgram })),
+        _redo: s._redo.map((step) => ({ ...step, voiceProgram })),
+      }));
+    } finally {
+      historyApplying = false;
+    }
+    saveFeelOf(get());
+  },
   loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved
@@ -1114,6 +1154,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     });
     historyApplying = false;
     lastDocChangeAt = -Infinity; // the next real edit starts a fresh undo step
+    if (prev.voiceProgram !== s.voiceProgram) saveFeelOf(get());
   },
 
   redo: () => {
@@ -1132,6 +1173,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     });
     historyApplying = false;
     lastDocChangeAt = -Infinity;
+    if (next.voiceProgram !== s.voiceProgram) saveFeelOf(get());
   },
 }));
 
@@ -1141,7 +1183,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 // Selection, the playhead, the loop, transport, the active lane and the
 // recorded range don't touch these slices, so they never pollute history. A
 // write that changes the linked clip WITH the document (CLEAR) always starts
-// its own step, and the step keeps the link it replaced. undo/redo and
+// its own step, and the step keeps the link it replaced. A voice choice is a
+// click, never a gesture, so it too always starts its own step. undo/redo and
 // loadFromClip set historyApplying so their own writes aren't recorded here
 // (loadFromClip pushes its own linked step).
 usePianoRollStore.subscribe((state, prev) => {
@@ -1155,12 +1198,15 @@ usePianoRollStore.subscribe((state, prev) => {
     state.meterMap === prev.meterMap &&
     state.pickupSteps === prev.pickupSteps &&
     state.lanes === prev.lanes &&
-    state.bends === prev.bends
+    state.bends === prev.bends &&
+    state.voiceProgram === prev.voiceProgram
   ) return;
   const relinked = state.editingClipId !== prev.editingClipId;
+  const revoiced = state.voiceProgram !== prev.voiceProgram;
   const now = performance.now();
-  const coalesce = !relinked && now - lastDocChangeAt < HISTORY_COALESCE_MS;
-  lastDocChangeAt = now;
+  const coalesce = !relinked && !revoiced && now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  // A voice step is whole: the next edit, however soon, starts a step of its own.
+  lastDocChangeAt = revoiced ? -Infinity : now;
   if (coalesce) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   usePianoRollStore.setState((s) => {

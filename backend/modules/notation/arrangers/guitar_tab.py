@@ -81,7 +81,7 @@ def _resolve_tuning(
 
 
 def _read_events(midi_path: Path) -> list[_Event]:
-    from music21 import chord, note  # type: ignore[import]
+    from music21 import chord, note
 
     from ..midi_read import read_score
 
@@ -369,7 +369,7 @@ def arrange_tabs(
     if not midi_path.is_file():
         return {"ok": False, "error": f"midi not found: {midi_path}"}
     try:
-        import music21  # type: ignore[import] # noqa: F401
+        import music21  # noqa: F401
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
 

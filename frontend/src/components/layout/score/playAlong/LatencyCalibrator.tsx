@@ -417,10 +417,10 @@ export const LatencyCalibrator: React.FC<LatencyCalibratorProps> = ({ open, onCl
       aria-labelledby="score-latency-title"
       aria-modal="false"
       tabIndex={-1}
-      className="absolute bottom-full right-0 mb-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] text-[10px] font-mono text-zinc-300 outline-none focus:border-emerald-500/40"
+      className="absolute bottom-full right-0 mb-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] text-xs font-bold text-zinc-300 outline-none focus:border-emerald-500/40"
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 id="score-latency-title" className="text-[9px] font-black uppercase tracking-widest text-emerald-200">
+        <h3 id="score-latency-title" className="text-xs font-black uppercase tracking-widest text-emerald-200">
           Latency calibration
         </h3>
         {mode === 'tap' && (
@@ -451,7 +451,7 @@ export const LatencyCalibrator: React.FC<LatencyCalibratorProps> = ({ open, onCl
               type="button"
               onClick={() => void start()}
               disabled={running}
-              className="btn-ghost text-[9px] py-1 px-2 disabled:opacity-40"
+              className="btn-ghost text-xs py-1 px-2 disabled:opacity-40"
               title="Play twelve clicks through the master output"
             >
               {running ? 'RUNNING…' : tapCount > 0 ? 'AGAIN' : 'START'}
@@ -460,7 +460,7 @@ export const LatencyCalibrator: React.FC<LatencyCalibratorProps> = ({ open, onCl
               <button
                 type="button"
                 onClick={stopClicks}
-                className="btn-ghost text-[9px] py-1 px-2"
+                className="btn-ghost text-xs py-1 px-2"
                 title="Stop the clicks"
               >
                 STOP
@@ -501,7 +501,7 @@ export const LatencyCalibrator: React.FC<LatencyCalibratorProps> = ({ open, onCl
               type="button"
               onClick={() => void startProbe()}
               disabled={probing}
-              className="btn-ghost text-[9px] py-1 px-2 disabled:opacity-40"
+              className="btn-ghost text-xs py-1 px-2 disabled:opacity-40"
               title={`Play a probe through the master output and listen for it on the microphone. Searches the first ${Math.round(
                 PROBE_UI_MAX_LAG_SEC * 1000,
               )} ms; the match runs on the main thread, so the interface pauses briefly at the end.`}
@@ -512,7 +512,7 @@ export const LatencyCalibrator: React.FC<LatencyCalibratorProps> = ({ open, onCl
               <button
                 type="button"
                 onClick={stopProbe}
-                className="btn-ghost text-[9px] py-1 px-2"
+                className="btn-ghost text-xs py-1 px-2"
                 title="Stop the measurement"
               >
                 STOP

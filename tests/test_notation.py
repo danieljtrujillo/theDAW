@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -856,7 +856,7 @@ def _write_six_staff_musicxml(path: Path) -> None:
     for (OSMD cannot split a system across pages and would otherwise draw it
     straight off the sheet).
     """
-    from music21 import chord, clef, meter, stream, tempo  # type: ignore[import]
+    from music21 import chord, clef, meter, stream, tempo
 
     score = stream.Score()
     for index in range(6):
@@ -880,7 +880,7 @@ def _write_six_staff_musicxml(path: Path) -> None:
 def _write_lead_sheet_musicxml(path: Path) -> None:
     """A single-staff melody long enough for several pages: the ordinary sheet
     the auto-fit must leave exactly as it was."""
-    from music21 import clef, meter, note, stream, tempo  # type: ignore[import]
+    from music21 import clef, meter, note, stream, tempo
 
     part = stream.Part(id="P1")
     part.partName = "Lead"
@@ -975,7 +975,7 @@ def test_pdf_render_leaves_a_lead_sheet_unchanged(tmp_path: Path):
 def _write_two_part_musicxml(path: Path) -> None:
     """Two named parts, Lead (treble) then Bass (bass clef), a few notes each,
     in that ``<part-list>`` order."""
-    from music21 import clef, meter, note, stream  # type: ignore[import]
+    from music21 import clef, meter, note, stream
 
     score = stream.Score()
     for index, (name, pitches, part_clef) in enumerate(

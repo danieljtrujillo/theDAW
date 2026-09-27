@@ -162,6 +162,40 @@
                 "cycle_steps": 4
               }
             ],
+            "midi_notes": [
+              {
+                "note": 36,
+                "step": 0,
+                "length": 1,
+                "velocity": 100,
+                "tick": 0,
+                "ticks": 240
+              },
+              {
+                "note": 36,
+                "step": 4,
+                "length": 1,
+                "velocity": 100,
+                "tick": 960,
+                "ticks": 240
+              },
+              {
+                "note": 36,
+                "step": 8,
+                "length": 1,
+                "velocity": 100,
+                "tick": 1920,
+                "ticks": 240
+              },
+              {
+                "note": 36,
+                "step": 12,
+                "length": 1,
+                "velocity": 100,
+                "tick": 2880,
+                "ticks": 240
+              }
+            ],
             "instrument_program": null,
             "rendered_program": null,
             "rendered_percussion": false,
@@ -375,7 +409,10 @@
     "master_fx_chain": [],
     "master_vst_chain": [],
     "automation_lanes": [],
-    "controller_mappings": null
+    "controller_mappings": null,
+    "roll_voice": {
+      "program": null
+    }
   },
   "files": [
     "plain.wav",

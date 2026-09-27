@@ -34,12 +34,13 @@ import {
   type RoutingGraph,
 } from '../state/routingGraph';
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
-import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
+import { MIN_NOTE_STEPS, usePianoRollStore, type PianoNote } from '../state/pianoRollStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
 import {
   projectApi,
   type TasmoProjectLoaded,
+  type TasmoRollVoice,
   type TasmoLoadedClip,
   type TasmoLoadedTrack,
   type TasmoTrackInput,
@@ -420,10 +421,10 @@ const buildClip = async (
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
-  // file written before roll_notes became the single copy, an imported DAW
-  // clip, and a clip whose played notes were edited apart from its roll
-  // notes); otherwise the roll notes unrolled across the clip's lanes, the way
-  // the bounce that wrote them unrolled them.
+  // roll clip this build saves, and an imported DAW clip); otherwise, for a
+  // clip an earlier build saved with only its roll notes, the roll notes
+  // unrolled across the clip's lanes, the way the bounce that wrote them
+  // unrolled them.
   if (c.midi_notes && c.midi_notes.length) {
     const pianoNotes = tasmoMidiNotesToPiano(c.midi_notes, bpm);
     if (pianoNotes.length) sourcePianoRoll = pianoNotes;
@@ -1221,6 +1222,8 @@ export async function loadProjectIntoEditor(
     useSwayImportStore.getState().clear();
   }
 
+  applyTasmoRollVoice(project);
+
   // Open the project in EVERY surface it applies to, not just EDIT. The Perform
   // grid gets the same loaded payload converted to a session view (grid clips —
   // the ones EDIT filters out above — land here), and the project's Perform
@@ -1254,6 +1257,32 @@ export async function loadProjectIntoEditor(
   );
   return { tracks: outTracks.length, clips: outClips.length, skipped, effects, effectsLive };
 }
+
+/**
+ * Put the piano roll on the voice a project saved (`roll_voice`): its program,
+ * or the picker when the file says the roll follows it. A file written before
+ * the roll voice was saved says nothing, and the roll keeps the voice it has.
+ */
+export function applyTasmoRollVoice(project: Pick<TasmoProjectLoaded, 'roll_voice'>): void {
+  const voice = project.roll_voice;
+  if (!voice || typeof voice !== 'object') return;
+  openingRollVoice = true;
+  try {
+    usePianoRollStore.getState().restoreVoiceProgram(gmProgramOf(voice.program) ?? null);
+  } finally {
+    openingRollVoice = false;
+  }
+}
+
+// The roll's own voice is saved in the project (`roll_voice`), so choosing it,
+// or undoing or redoing that choice in the roll, changes what SAVE would write:
+// the project is dirty, and closing it asks first. Opening a project sets the
+// voice without that (applyTasmoRollVoice).
+let openingRollVoice = false;
+usePianoRollStore.subscribe((state, prev) => {
+  if (openingRollVoice || state.voiceProgram === prev.voiceProgram) return;
+  if (!useEditorStore.getState().dirty) useEditorStore.setState({ dirty: true });
+});
 
 // ── Saving the live session ──────────────────────────────────────────────────
 
@@ -1348,6 +1377,9 @@ export interface CapturedDocument {
   masterVstChain: TasmoChainEntry[];
   /** The automation lanes, minus any naming a track the payload will not have. */
   automationLanes: TasmoAutomationLane[];
+  /** The piano roll's own voice, as the file's `roll_voice`. Always written, so
+   *  a project whose roll follows the picker says so. */
+  rollVoice: TasmoRollVoice;
 }
 
 export interface CapturedSession extends CapturedDocument {
@@ -1397,6 +1429,9 @@ export function captureProjectDocument(trackIds?: readonly string[]): CapturedDo
       editor.automationLanes,
       trackIds ? new Set(trackIds) : undefined,
     ),
+    // The roll's own voice (the Vocal2MIDI panel's instrument). Without it a
+    // reopened project's roll auditioned and bounced on the picker's program.
+    rollVoice: { program: gmProgramOf(usePianoRollStore.getState().voiceProgram) ?? null },
   };
 }
 

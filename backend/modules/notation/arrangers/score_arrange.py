@@ -92,7 +92,7 @@ def arrange(
     if style not in STYLES:
         return {"ok": False, "error": f"unknown arrangement style: {style!r}"}
     try:
-        import music21  # type: ignore[import] # noqa: F401 - availability check
+        import music21  # noqa: F401 - availability check
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
 
@@ -156,7 +156,7 @@ def arrange(
 
 def _skyline_chords(base: Any) -> list[Any]:
     """Collapse a score to vertical sonorities with absolute offsets."""
-    from music21 import chord  # type: ignore[import]
+    from music21 import chord
 
     flat = base.chordify().flatten()
     return list(flat.getElementsByClass(chord.Chord))
@@ -368,7 +368,7 @@ def _voice(
     heads: list[tuple[Any, Optional[str], Optional[int]]], quarter_length: float
 ) -> Any:
     """A note or chord of ``(pitch, tie type, velocity)`` heads."""
-    from music21 import chord, note, tie  # type: ignore[import]
+    from music21 import chord, note, tie
 
     from ..midi_read import carry_chord_velocity
 
@@ -396,7 +396,7 @@ def _mend_ties(part: Any) -> None:
     so it never reads as a new note. A tie out of a head that no head
     continues is released.
     """
-    from music21 import chord, common, harmony, note, tie  # type: ignore[import]
+    from music21 import chord, common, harmony, note, tie
 
     heads: list[tuple[Any, Any, int, Any, Any]] = []
     for element in part.getElementsByClass((note.Note, chord.Chord)):
@@ -454,7 +454,7 @@ def _mend_ties(part: Any) -> None:
 
 
 def _new_score(title: str, fallback: str) -> Any:
-    from music21 import metadata, stream  # type: ignore[import]
+    from music21 import metadata, stream
 
     score = stream.Score()
     score.insert(0, metadata.Metadata())
@@ -463,7 +463,7 @@ def _new_score(title: str, fallback: str) -> Any:
 
 
 def _piano_reduction(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+    from music21 import clef, stream
 
     treble = stream.Part()
     treble.partName = "Piano R.H."
@@ -496,7 +496,7 @@ def _piano_reduction(base: Any, title: str, context: list[tuple[Any, Any]]) -> A
 
 
 def _simplified(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+    from music21 import clef, stream
 
     melody = stream.Part()
     melody.partName = "Melody"
@@ -523,7 +523,7 @@ def _safe_chord_symbol(sonority: Any) -> Any:
     chords it can't name, and inserting one crashes MusicXML export with
     "no pitches in chord". This rebuilds from the figure and verifies it.
     """
-    from music21 import harmony  # type: ignore[import]
+    from music21 import harmony
 
     try:
         figure = getattr(harmony.chordSymbolFromChord(sonority), "figure", "") or ""
@@ -539,7 +539,7 @@ def _safe_chord_symbol(sonority: Any) -> Any:
 
 
 def _lead_sheet(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+    from music21 import clef, stream
 
     lead = stream.Part()
     lead.partName = "Lead"
@@ -613,7 +613,7 @@ def _band_voice(
     three), each head tied as the notes it stands for are and as loud as the
     loudest of them. Returns the element and the number of pitches that were
     folded."""
-    from music21 import pitch as m21pitch  # type: ignore[import]
+    from music21 import pitch as m21pitch
 
     low, high = window
     folded = 0
@@ -643,7 +643,7 @@ def _grid_bpm(
     first drum-kit MIDI, because the drum transcriber writes the song's
     analysed tempo; otherwise the first staff's own tempo.
     """
-    import pretty_midi  # type: ignore[import]
+    import pretty_midi
 
     from .percussion import _DEFAULT_TEMPO, _initial_tempo
 
@@ -732,7 +732,7 @@ def _conform_midi(source: Path, bpm: float, target: Path) -> Path:
     key signature at the second it sounds in ``source``, and ``target`` is
     returned. Its quarter-note offsets then count beats of ``bpm``.
     """
-    import pretty_midi  # type: ignore[import]
+    import pretty_midi
 
     from .percussion import _initial_tempo
 

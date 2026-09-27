@@ -197,7 +197,7 @@ def _element_token(element: Any, unit: Fraction, accidentals: _Accidentals) -> s
     durations music21 rejected on re-parse with "Unknown type: complex".
     Sounding lengths round-trip cleanly and carry the same rhythm.
     """
-    from music21 import chord, note  # type: ignore[import]
+    from music21 import chord, note
 
     quarter_length = getattr(getattr(element, "duration", None), "quarterLength", 1)
     length = _abc_duration(quarter_length, unit)
@@ -222,7 +222,7 @@ def _voice_body(part: Any, unit: Fraction, key_alters: dict[str, int]) -> str:
     """The ABC body for a single part: measures separated by bar lines, each
     accidental written against ``key_alters`` (the ``K:`` line's) and the ones
     already written in its bar."""
-    from music21 import chord, note, stream  # type: ignore[import]
+    from music21 import chord, note, stream
 
     measures = list(part.getElementsByClass(stream.Measure))
     if not measures:
@@ -256,10 +256,10 @@ def score_to_abc(
     Returns the ABC text. Raises ValueError when the score carries no notes,
     so a caller never registers an empty export as a success.
     """
-    from music21 import key as m21key  # type: ignore[import]
-    from music21 import meter as m21meter  # type: ignore[import]
-    from music21 import stream as m21stream  # type: ignore[import]
-    from music21 import tempo as m21tempo  # type: ignore[import]
+    from music21 import key as m21key
+    from music21 import meter as m21meter
+    from music21 import stream as m21stream
+    from music21 import tempo as m21tempo
 
     if len(list(score.recurse().notes)) == 0:
         raise ValueError("score contains no notes")

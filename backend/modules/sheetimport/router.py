@@ -33,7 +33,7 @@ def capabilities():
     ok = False
     version = "unknown"
     try:
-        import music21  # type: ignore[import]
+        import music21
 
         ok = True
         version = str(getattr(music21, "__version__", "unknown"))

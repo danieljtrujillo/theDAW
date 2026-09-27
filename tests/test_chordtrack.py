@@ -62,7 +62,7 @@ def _write_lead_sheet(
 ) -> Path:
     """A one-part lead sheet: ``quarters`` quarter notes plus chord symbols at
     the given quarter offsets (music21 figures, ``-`` spells flats)."""
-    from music21 import harmony, key, meter, note, stream, tempo  # type: ignore[import]
+    from music21 import harmony, key, meter, note, stream, tempo
 
     score = stream.Score()
     part = stream.Part()

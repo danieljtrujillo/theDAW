@@ -25,6 +25,7 @@ import {
   ROLES,
   ROLE_LABELS,
   defaultSections,
+  harmonyDescription,
   type VirtuosoAmounts,
   type StyleName,
   type Role,
@@ -274,22 +275,29 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
         {/* A short row gives up width in order: the groove name first (96px to 48px,
             by the row's container width), then the five ranges (48px to 32px).
             1366x768 with a groove loaded lands at a 48px name and ranges of 40px. */}
-        {SLIDERS.map(({ k, legend, label }) => (
-          <div key={k} className={FIELD_SHRINK} title={`${label} amount`}>
-            <label htmlFor={`vt-${k}`} className={FIELD_LEGEND}>{legend}</label>
-            <input
-              id={`vt-${k}`}
-              name={`vt-${k}`}
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(amounts[k] * 100)}
-              onChange={(e) => setAmount(k, (parseInt(e.target.value, 10) || 0) / 100)}
-              className={RANGE_FILL}
-            />
-            <span className={`${FIELD_VALUE} w-5.5`}>{Math.round(amounts[k] * 100)}</span>
-          </div>
-        ))}
+        {SLIDERS.map(({ k, legend, label }) => {
+          // Harmony says what each range does; its description is also the
+          // range's accessible description.
+          const tip = k === 'harmony' ? harmonyDescription(amounts[k]) : `${label} amount`;
+          return (
+            <div key={k} className={FIELD_SHRINK} title={tip}>
+              <label htmlFor={`vt-${k}`} className={FIELD_LEGEND}>{legend}</label>
+              <input
+                id={`vt-${k}`}
+                name={`vt-${k}`}
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(amounts[k] * 100)}
+                onChange={(e) => setAmount(k, (parseInt(e.target.value, 10) || 0) / 100)}
+                aria-describedby={k === 'harmony' ? 'vt-harmony-desc' : undefined}
+                className={RANGE_FILL}
+              />
+              {k === 'harmony' && <span id="vt-harmony-desc" className="sr-only">{tip}</span>}
+              <span className={`${FIELD_VALUE} w-5.5`}>{Math.round(amounts[k] * 100)}</span>
+            </div>
+          );
+        })}
 
         <Sep />
 

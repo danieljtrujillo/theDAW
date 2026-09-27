@@ -43,7 +43,7 @@ export const LookControls: React.FC = () => {
       <select
         id={nowId}
         name={nowId}
-        className="form-select text-[10px] px-1 py-0.5"
+        className="form-select text-xs font-bold px-1 py-0.5"
         value={nowLine}
         onChange={(e) => setNowLine(e.target.value as NowLinePos)}
       >
@@ -57,7 +57,7 @@ export const LookControls: React.FC = () => {
       <select
         id={inkId}
         name={inkId}
-        className="form-select text-[10px] px-1 py-0.5"
+        className="form-select text-xs font-bold px-1 py-0.5"
         value={ink}
         onChange={(e) => setInk(e.target.value as HighlightInk)}
         style={{ borderColor: HIGHLIGHT_INKS[ink].color }}
@@ -76,7 +76,7 @@ export const LookControls: React.FC = () => {
       <select
         id={trailId}
         name={trailId}
-        className="form-select text-[10px] px-1 py-0.5"
+        className="form-select text-xs font-bold px-1 py-0.5"
         value={inkTrail}
         onChange={(e) => setInkTrail(e.target.value as InkTrail)}
         title={INK_TRAILS[inkTrail].title}

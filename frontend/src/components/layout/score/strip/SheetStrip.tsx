@@ -611,7 +611,7 @@ export const SheetStrip: React.FC<SheetStripProps> = ({ artifact, entry }) => {
   return (
     <div className="h-full flex flex-col bg-[#23222a]">
       {(showFilter || sizeNotice || status) && (
-        <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 border-b border-white/10 bg-[#0a080f] text-[10px] font-mono text-zinc-300">
+        <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 border-b border-white/10 bg-[#0a080f] text-xs font-bold text-zinc-300">
           {showFilter && <PartFilter artifactId={artifact.id} parts={parts} />}
           {sizeNotice && (
             <span className="text-amber-300/90" title={`${measureCount} measures × ${visibleCount} parts`}>

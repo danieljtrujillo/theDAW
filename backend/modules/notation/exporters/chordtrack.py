@@ -261,7 +261,7 @@ def _generator_string(method: str) -> str:
     parts = [f"theDAW chordtrack {SCHEMA_VERSION}"]
     try:
         if method == "harmony":
-            import music21  # type: ignore[import]
+            import music21
 
             parts.append(f"music21 {getattr(music21, '__version__', 'unknown')}")
         else:
@@ -416,7 +416,7 @@ def _display_figure(figure: str) -> str:
 
 def _score_key(score: Any) -> tuple[int, str, float]:
     """(tonic pc, mode, confidence) from the first key signature; (-1, '', 0) if none."""
-    from music21 import key as m21key  # type: ignore[import]
+    from music21 import key as m21key
 
     for element in score.flatten().getElementsByClass(m21key.KeySignature):
         try:
@@ -434,7 +434,7 @@ def _score_key(score: Any) -> tuple[int, str, float]:
 
 
 def _beats_per_bar(score: Any) -> int:
-    from music21 import meter as m21meter  # type: ignore[import]
+    from music21 import meter as m21meter
 
     for ts in score.flatten().getElementsByClass(m21meter.TimeSignature):
         try:

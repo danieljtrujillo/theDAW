@@ -7,7 +7,9 @@
  * Phrase transforms (each amount 0..1, optionally seeded per instance):
  *   harmony  — a diatonic third below a share of the top-line notes equal to the
  *              amount, moving in parallel with the line; past 0.66 about three
- *              in ten of those thirds drop a semitone for a borrowed/modal tone.
+ *              in ten of those thirds drop a semitone for a borrowed/modal tone,
+ *              unless the lowered note would sound a semitone (or a major
+ *              seventh or minor ninth) against a melody note sounding with it.
  *   ragtime  — Joplin stride: oom-pah LH under syncopated, accented RH stabs.
  *   runs     — Rudess scalar/chromatic flourishes that LAND on chord tones.
  *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents.
@@ -650,11 +652,63 @@ function genMelodyLine(
 
 // --- phrase transforms (amount 0..1, optional per-instance seed) ------------- //
 
+/** The amount past which harmonize lowers some of its thirds a semitone. */
+export const HARMONY_BORROW_FROM = 0.66;
+
+/**
+ * What the Harmony slider does, range by range, for its tooltip, and what it
+ * does at `amount` (0..1) now. The ranges are harmonize's own thresholds.
+ */
+export function harmonyDescription(amount: number): string {
+  const v = Math.round(Math.max(0, Math.min(1, Number.isFinite(amount) ? amount : 0)) * 100);
+  const cut = Math.round(HARMONY_BORROW_FROM * 100);
+  const now =
+    v === 0
+      ? 'Now 0: off, the melody plays alone.'
+      : v <= cut
+        ? `Now ${v}: a scale third under about ${v} in 100 top notes.`
+        : `Now ${v}: a third under about ${v} in 100 top notes, up to about three in ten of them a semitone lower where that does not clash with the melody.`;
+  return [
+    "Harmony adds a second line a third below the melody's top notes, each as long as its note.",
+    '0: off.',
+    `1 to ${cut}: that share of the top notes gets the third below it in the key's scale.`,
+    `${cut + 1} to 100: about three in ten of those thirds drop a semitone for a borrowed or modal colour; a drop that would sit a semitone from a melody note sounding with it keeps the scale third.`,
+    now,
+  ].join('\n');
+}
+
+/**
+ * Whether `pitch`, sounding from `start` to `end`, is a semitone from any note
+ * of `sorted` (sorted by step; `maxLen` its longest length) that sounds with
+ * it, counted by pitch class: a minor second, a major seventh or a minor ninth.
+ */
+function clashesWithMelody(sorted: readonly PianoNote[], maxLen: number, pitch: number, start: number, end: number): boolean {
+  // The first note that can still be sounding at `start`.
+  let lo = 0;
+  let hi = sorted.length;
+  const from = start - maxLen;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].step < from) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < sorted.length && sorted[i].step < end - EPS; i += 1) {
+    const m = sorted[i];
+    if (m.step + m.length <= start + EPS) continue;
+    const pc = (((m.note - pitch) % 12) + 12) % 12;
+    if (pc === 1 || pc === 11) return true;
+  }
+  return false;
+}
+
 /**
  * A diatonic third below a share of the top-line notes equal to `amount`, each
  * as long as its note, so the added line moves in parallel with the melody.
- * Past 0.66 about three in ten of those thirds drop a semitone, a borrowed or
- * modal tone. A note inside a scale span takes its third from that span's scale.
+ * Past HARMONY_BORROW_FROM (0.66) about three in ten of those thirds drop a
+ * semitone, a borrowed or modal tone, except where the lowered note would clash
+ * with the melody: a semitone, major seventh or minor ninth against any note
+ * of the input sounding while it sounds. Those keep the diatonic third. A note
+ * inside a scale span takes its third from that span's scale.
  */
 export function harmonize(
   notes: PianoNote[],
@@ -668,16 +722,25 @@ export function harmonize(
   const ladderOf = ladderCache(0, 127);
   const out = notes.map(clone);
   const top = topLine(notes);
+  const melody = [...notes].sort((a, b) => a.step - b.step);
+  const maxLen = melody.reduce((m, n) => Math.max(m, n.length), 0);
   top.forEach((n, i) => {
     if (hash01(i * 7 + 101 + seed * SEED_PRIME) > amount) return;
     const ladder = ladderOf(scaleAt(opts, pcs, n.step));
     const idx = nearestIndex(ladder, n.note);
     if (idx < 2) return;
     let counter = ladder[idx - 2];
-    if (amount > 0.66 && hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3) counter -= 1;
+    const length = Math.max(MIN_NOTE_STEPS, n.length);
+    if (
+      amount > HARMONY_BORROW_FROM &&
+      hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3 &&
+      !clashesWithMelody(melody, maxLen, counter - 1, n.step, n.step + length)
+    ) {
+      counter -= 1;
+    }
     // The counter note takes the melody note's own length, so a run shorter
     // than a 16th gets a counter run that stays detached.
-    out.push(mk(counter, n.step, Math.max(MIN_NOTE_STEPS, n.length), Math.max(1, n.velocity - 18)));
+    out.push(mk(counter, n.step, length, Math.max(1, n.velocity - 18)));
   });
   return out.sort(byStepThenNote);
 }

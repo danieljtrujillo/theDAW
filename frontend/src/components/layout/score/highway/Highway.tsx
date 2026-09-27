@@ -355,7 +355,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
 
   return (
     <div className="h-full flex flex-col bg-[#0b0e14]">
-      <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 border-b border-white/10 bg-[#0a080f] text-[10px] font-mono text-zinc-300">
+      <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1 border-b border-white/10 bg-[#0a080f] text-xs font-bold text-zinc-300">
         <span className="flex items-center gap-1">
           <label htmlFor="score-hw-speed" className="text-zinc-500 select-none" title="How fast notes approach the hit line">
             SPEED
@@ -406,7 +406,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
                 title={enabled ? s.title : 'No percussion part in this chart'}
                 onClick={() => { if (enabled) setSkin(s.id); }}
                 onKeyDown={(e) => onSkinKey(e, i)}
-                className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                className={`px-1.5 py-0.5 rounded font-display text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                   checked
                     ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-500/40'
                     : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
@@ -428,7 +428,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
             disabled={effectiveSkin !== 'blocks'}
             title={difficultyTitle}
             onChange={(e) => setDifficulty(Number(e.target.value) as HighwayDifficulty)}
-            className="form-select text-[9px] px-1 py-0.5 disabled:opacity-40"
+            className="form-select text-xs px-1 py-0.5 disabled:opacity-40"
           >
             {DIFFICULTIES.map((d) => (
               <option key={d.value} value={d.value}>{d.label}</option>
@@ -442,21 +442,21 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
       <div ref={wrapRef} className="relative flex-1 min-h-0 overflow-hidden bg-[#0b0e14]">
         {webglFallback ? (
           <div className="h-full grid place-items-center p-4">
-            <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-[10px] font-mono text-zinc-300 space-y-2">
-              <div className="text-[9px] font-black uppercase tracking-widest text-amber-300">{webglFallback.title}</div>
+            <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-xs font-bold text-zinc-300 space-y-2">
+              <div className="text-xs font-black uppercase tracking-widest text-amber-300">{webglFallback.title}</div>
               <p className="leading-relaxed text-zinc-400 wrap-break-word">{webglFallback.detail}</p>
               <div className="flex flex-wrap gap-1.5">
                 {canStrip && (
                   <button
                     type="button"
                     onClick={() => setMode('strip')}
-                    className="btn-ghost text-[9px] py-1 px-2"
+                    className="btn-ghost text-xs py-1 px-2"
                     title="Read the score as a scrolling strip instead"
                   >
                     SWITCH TO STRIP
                   </button>
                 )}
-                <button type="button" onClick={retryScene} className="btn-ghost text-[9px] py-1 px-2" title="Try the WebGL renderer again">
+                <button type="button" onClick={retryScene} className="btn-ghost text-xs py-1 px-2" title="Try the WebGL renderer again">
                   RETRY
                 </button>
               </div>
@@ -464,13 +464,13 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
           </div>
         ) : chartError ? (
           <div className="h-full grid place-items-center p-4">
-            <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-[10px] font-mono text-zinc-300 space-y-2">
-              <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">Note chart unavailable</div>
+            <div className="max-w-sm rounded-lg border border-white/10 bg-black/40 p-4 text-xs font-bold text-zinc-300 space-y-2">
+              <div className="text-xs font-black uppercase tracking-widest text-rose-300">Note chart unavailable</div>
               <p className="leading-relaxed text-zinc-400 wrap-break-word">{chartError}</p>
               <p className="text-zinc-500">
                 The highway reads the same gantasmo.notechart the Unity scene does; it is exported through the NOTECHART route from the selected sheet.
               </p>
-              <button type="button" onClick={retryChart} className="btn-ghost text-[9px] py-1 px-2">
+              <button type="button" onClick={retryChart} className="btn-ghost text-xs py-1 px-2">
                 RETRY
               </button>
             </div>
@@ -487,7 +487,7 @@ export const Highway: React.FC<HighwayProps> = ({ entry, artifact, artifacts, on
             )}
             {status && (
               <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <span className="flex items-center gap-1.5 rounded border border-white/10 bg-black/60 px-2 py-1 text-[10px] font-mono text-zinc-300">
+                <span className="flex items-center gap-1.5 rounded border border-white/10 bg-black/60 px-2 py-1 text-xs font-bold text-zinc-300">
                   <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
                   {status}
                 </span>
