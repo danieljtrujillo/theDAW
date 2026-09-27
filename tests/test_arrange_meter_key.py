@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pretty_midi
-import pytest  # type: ignore[import]
+import pytest
 
 from backend.modules.library.db import LibraryDB
 from backend.modules.notation.arrangers.percussion import build_percussion_part
@@ -188,7 +188,7 @@ def test_band_score_bars_every_staff_by_the_drum_meter_map(tmp_path: Path):
 
 
 def test_percussion_staff_takes_every_time_signature(tmp_path: Path):
-    from music21 import meter  # type: ignore[import]
+    from music21 import meter
 
     drums = tmp_path / "kit.mid"
     _write_meter_midi(drums, drums=True)
@@ -268,3 +268,229 @@ def test_plain_sheet_writes_the_velocity_of_a_chord(tmp_path: Path):
         f"{75 / 90 * 100:.2f}",
         f"{70 / 90 * 100:.2f}",
     ]
+
+
+def _measure_layout(part: ET.Element) -> list[tuple[str, str, float]]:
+    """``(number, "n/d" or "", quarters the notes fill)`` for each measure."""
+    out = []
+    divisions = 1
+    for measure in part.findall("measure"):
+        found = measure.find("attributes/divisions")
+        if found is not None and found.text:
+            divisions = int(found.text)
+        time = measure.find("attributes/time")
+        ratio = (
+            f"{time.findtext('beats')}/{time.findtext('beat-type')}"
+            if time is not None
+            else ""
+        )
+        filled = sum(
+            int(n.findtext("duration") or 0)
+            for n in measure.findall("note")
+            if n.find("chord") is None
+        )
+        out.append((measure.get("number") or "", ratio, filled / divisions))
+    return out
+
+
+_QUARTER = "<duration>1</duration><type>quarter</type></note>"
+_F4 = f"<note><pitch><step>F</step><octave>4</octave></pitch>{_QUARTER}"
+_B_FLAT4 = (
+    f"<note><pitch><step>B</step><alter>-1</alter><octave>4</octave></pitch>{_QUARTER}"
+)
+_D5 = f"<note><pitch><step>D</step><octave>5</octave></pitch>{_QUARTER}"
+
+
+def _pickup_sheet(path: Path) -> Path:
+    """A B-flat major melody at 100 BPM in 3/4 that opens with a one-beat
+    pickup and changes to 4/4 at bar 4, as an engraver writes it."""
+    opening = (
+        '<measure number="0" implicit="yes"><attributes><divisions>1</divisions>'
+        "<key><fifths>-2</fifths></key>"
+        "<time><beats>3</beats><beat-type>4</beat-type></time>"
+        "<clef><sign>G</sign><line>2</line></clef></attributes>"
+        '<direction placement="above"><direction-type><metronome>'
+        "<beat-unit>quarter</beat-unit><per-minute>100</per-minute></metronome>"
+        f'</direction-type><sound tempo="100"/></direction>{_F4}</measure>'
+    )
+    measures = [opening]
+    for number in range(1, 6):
+        beats = 4 if number >= 4 else 3
+        change = (
+            "<attributes><time><beats>4</beats><beat-type>4</beat-type></time>"
+            "</attributes>"
+            if number == 4
+            else ""
+        )
+        heads = _B_FLAT4 + _D5 * (beats - 1)
+        measures.append(f'<measure number="{number}">{change}{heads}</measure>')
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">'
+        '<part-list><score-part id="P1"><part-name>Flute</part-name></score-part>'
+        f'</part-list><part id="P1">{"".join(measures)}</part></score-partwise>\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+PICKUP_LAYOUT = [
+    ("0", "3/4", 1.0),
+    ("1", "", 3.0),
+    ("2", "", 3.0),
+    ("3", "", 3.0),
+    ("4", "4/4", 4.0),
+    ("5", "", 4.0),
+]
+
+
+@pytest.mark.parametrize(
+    ("style", "n_parts"),
+    [("lead-sheet", 1), ("simplified", 1), ("piano-reduction", 2)],
+)
+def test_arrangement_of_a_sheet_with_a_pickup_keeps_its_bars(
+    tmp_path: Path, style: str, n_parts: int
+):
+    """A sheet opening with a pickup and changing meter at bar 4 -> ARRANGE:
+    every staff opens with the same pickup, and each bar holds the meter it
+    prints, so the 4/4 lands on bar 4 as in the source."""
+    sheet = _pickup_sheet(tmp_path / "pickup.musicxml")
+    parts = _parts(_arrange(tmp_path, style, [sheet]))
+    assert len(parts) == n_parts
+    for part in parts:
+        assert _measure_layout(part) == PICKUP_LAYOUT
+        assert _fifths(part) == ["-2"]
+        assert _sound_tempi(part) == [100.0]
+    pickup = parts[0].find("measure/note/pitch")
+    assert pickup is not None
+    assert (pickup.findtext("step"), pickup.findtext("octave")) == ("F", "4")
+    downbeat = parts[0].findall("measure")[1].find("note/pitch")
+    assert downbeat is not None
+    assert (downbeat.findtext("step"), downbeat.findtext("alter")) == ("B", "-1")
+
+
+def _midi_with_meter_change_mid_bar(path: Path, *, drums: bool = False) -> Path:
+    """A MIDI in 3/4 that states 4/4 at quarter 4, in the middle of its second
+    bar, with a note on every quarter for twelve quarters."""
+    pm = pretty_midi.PrettyMIDI(initial_tempo=BPM)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(3, 4, 0.0))
+    pm.time_signature_changes.append(
+        pretty_midi.TimeSignature(4, 4, 4 * SECONDS_PER_QUARTER)
+    )
+    inst = pretty_midi.Instrument(program=0, is_drum=drums, name=path.stem)
+    for quarter in range(12):
+        on = quarter * SECONDS_PER_QUARTER
+        inst.notes.append(
+            pretty_midi.Note(90, 38 if drums else 72, on, on + SECONDS_PER_QUARTER / 2)
+        )
+    pm.instruments.append(inst)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pm.write(str(path))
+    return path
+
+
+def _meters_and_first_bars(part: ET.Element) -> tuple[list[tuple[int, str]], list]:
+    layout = _measure_layout(part)
+    meters = [(index, ratio) for index, (_n, ratio, _q) in enumerate(layout) if ratio]
+    return meters, [quarters for _n, _r, quarters in layout[:3]]
+
+
+def test_meter_change_between_bar_lines_prints_on_the_bar_it_takes(tmp_path: Path):
+    """A MIDI states 4/4 mid-bar -> ARRANGE and the band score: the 4/4 prints
+    on the bar line where the barring changes, and every full bar holds the
+    meter it prints."""
+    source = _midi_with_meter_change_mid_bar(tmp_path / "midi" / "lead.mid")
+    lead = _parts(_arrange(tmp_path, "lead-sheet", [source]))[0]
+    assert _meters_and_first_bars(lead) == ([(0, "3/4"), (2, "4/4")], [3.0, 3.0, 4.0])
+
+    drums = _midi_with_meter_change_mid_bar(
+        tmp_path / "midi" / "song__drums.mid", drums=True
+    )
+    keys = _midi_with_meter_change_mid_bar(tmp_path / "midi" / "song__keys.mid")
+    band = _parts(_arrange(tmp_path, "band-score", [drums, keys]))
+    assert len(band) == 2
+    for part in band:
+        assert _meters_and_first_bars(part) == (
+            [(0, "3/4"), (2, "4/4")],
+            [3.0, 3.0, 4.0],
+        )
+
+
+def test_percussion_staff_puts_a_mid_bar_meter_on_its_bar_line(tmp_path: Path):
+    from music21 import meter
+
+    drums = _midi_with_meter_change_mid_bar(tmp_path / "kit.mid", drums=True)
+    flat = build_percussion_part(drums, title="Kit").flatten()
+    stated = [
+        (float(ts.getOffsetBySite(flat)), ts.ratioString)
+        for ts in flat.getElementsByClass(meter.TimeSignature)
+    ]
+    assert stated == [(0.0, "3/4"), (6.0, "4/4")]
+
+
+def test_drum_sheet_keeps_every_tempo_of_the_file(tmp_path: Path):
+    """MAKE SHEET on a drum MIDI at 90 BPM that moves to 140 at bar 3: the
+    percussion staff sounds and prints both tempi, each at its bar."""
+    import mido
+
+    ticks = 480
+    conductor = mido.MidiTrack()
+    conductor.append(mido.MetaMessage("time_signature", numerator=4, denominator=4))
+    conductor.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(90)))
+    conductor.append(
+        mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(140), time=8 * ticks)
+    )
+    kit = mido.MidiTrack()
+    for _quarter in range(16):
+        kit.append(mido.Message("note_on", channel=9, note=38, velocity=90, time=0))
+        kit.append(mido.Message("note_off", channel=9, note=38, velocity=0, time=ticks))
+    drums = tmp_path / "midi" / "kit.mid"
+    drums.parent.mkdir(parents=True, exist_ok=True)
+    mido.MidiFile(ticks_per_beat=ticks, tracks=[conductor, kit]).save(str(drums))
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "song"})
+    result = convert_score(
+        db,
+        entry_id="song",
+        source_path=drums,
+        fmt="musicxml",
+        output_path=tmp_path / "notation" / "kit.musicxml",
+    )
+    assert result["ok"] is True, result
+    part = _parts(Path(result["path"]))[0]
+    tempi = [
+        (index, float(sound.get("tempo") or 0))
+        for index, measure in enumerate(part.findall("measure"))
+        for sound in measure.iter("sound")
+        if sound.get("tempo")
+    ]
+    assert [index for index, _bpm in tempi] == [0, 2]
+    assert [bpm for _index, bpm in tempi] == pytest.approx([90.0, 140.0], abs=1e-3)
+    assert _printed_tempi(part) == ["90", "140"]
+
+
+def test_a_rest_reaching_past_the_pickup_keeps_the_part_after_it():
+    """A staff silent through the pickup and into bar 1 is barred with one rest
+    across the pickup's bar line; made a pickup bar, it keeps the rest's part
+    after the pickup, so the bar still fills its pickup beat."""
+    from music21 import meter, note, stream
+
+    from backend.modules.notation.arrangers.score_arrange import (
+        _open_with_pickup,
+        _pickup_bar_fits,
+    )
+
+    part = stream.Part()
+    first = stream.Measure(number=1)
+    first.insert(0, meter.TimeSignature("3/4"))
+    first.insert(0, note.Rest(quarterLength=3.0))
+    second = stream.Measure(number=2)
+    second.insert(0, note.Note("C4", quarterLength=3.0))
+    part.insert(0, first)
+    part.insert(3, second)
+    assert _pickup_bar_fits(part, 2.0)
+    _open_with_pickup(part, 2.0)
+    rests = list(first.notesAndRests)
+    assert [(r.offset, r.quarterLength) for r in rests] == [(0.0, 1.0)]
+    assert (first.number, first.paddingLeft) == (0, 2.0)
+    assert (second.number, second.getOffsetBySite(part)) == (1, 1.0)

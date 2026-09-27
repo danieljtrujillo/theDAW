@@ -17,8 +17,11 @@ OpenSheetMusicDisplay viewer.
 Every builder writes fresh parts, so each one copies the source's meter, key
 and tempo into them: every time signature, key signature and metronome mark at
 the offset where the source states it (a band score takes one meter and key
-map for all its staves, see :func:`_band_marks`). Each head keeps the velocity
-of the notes it stands for. An arrangement is at concert pitch.
+map for all its staves, see :func:`_band_marks`). Each time signature sits on
+the bar line where it takes effect, and a source that opens with a pickup bar
+gives the arrangement the same pickup (:func:`_bar_like_source`). Each head
+keeps the velocity of the notes it stands for. An arrangement is at concert
+pitch.
 """
 
 from __future__ import annotations
@@ -65,6 +68,8 @@ _MIX_STEM_NAMES = frozenset({"full", "mix", "master"})
 # A band-score meter or key change read in seconds is put on the beat grid at
 # the nearest 64th note, which every bar line of a standard meter lies on.
 _MARK_STEPS_PER_QUARTER = 16
+# Offsets closer than this many quarters are one offset.
+_EPS = 1e-6
 
 
 def arrange(
@@ -110,6 +115,7 @@ def arrange(
             # arrangement, its notes and its key are at concert pitch.
             base.toSoundingPitch(inPlace=True)
             context = _source_context(base)
+            pickup = _pickup(base)
             try:
                 base = base.quantize((4, 3), inPlace=False, recurse=True)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
@@ -135,6 +141,7 @@ def arrange(
                 score = score.quantize((4, 3), inPlace=False, recurse=True)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: post-merge quantize skipped for %s: %s", style, exc)
+            _bar_like_source(score, pickup)
     except Exception as exc:  # noqa: BLE001
         log.warning("arrange: %s failed: %s", style, exc)
         return {"ok": False, "error": repr(exc)}
@@ -170,7 +177,7 @@ def _source_context(base: Any) -> list[tuple[Any, Any]]:
     hidden one. Parts with pitched notes are read first, because a percussion
     part states no key of the music.
     """
-    from music21 import common, key, meter, tempo  # type: ignore[import]
+    from music21 import common, key, meter, tempo
 
     kinds = (meter.TimeSignature, key.KeySignature, tempo.MetronomeMark)
     flats = [part.flatten() for part in (list(getattr(base, "parts", ())) or [base])]
@@ -184,6 +191,120 @@ def _source_context(base: Any) -> list[tuple[Any, Any]]:
             if held is None or (_is_hidden(held) and not _is_hidden(mark)):
                 found[at] = mark
     return [(offset, found[(offset, kind)]) for offset, kind in sorted(found)]
+
+
+def _pickup(base: Any) -> float:
+    """How far into its first bar a source that opens with a pickup starts:
+    the quarters music21 pads its first measure by (``paddingLeft``, which the
+    MusicXML reader sets on a short first measure), 0 without a pickup or for
+    a source read without measures, as a MIDI is."""
+    from music21 import stream
+
+    for part in list(getattr(base, "parts", ())) or [base]:
+        first = part.getElementsByClass(stream.Measure).first()
+        if first is None:
+            continue
+        padding = float(first.paddingLeft or 0.0)
+        bar = float(first.barDuration.quarterLength)
+        return padding if _EPS < padding < bar - _EPS else 0.0
+    return 0.0
+
+
+def _snap_meters(part: Any) -> None:
+    """Move each time signature of the unbarred ``part`` to the bar line where
+    ``makeMeasures`` puts it in force (:mod:`..bar_lines`), so no bar prints a
+    meter its contents do not fill."""
+    from music21 import meter
+
+    from ..bar_lines import snap_meters_to_bar_lines
+
+    stated = list(part.getElementsByClass(meter.TimeSignature))
+    at = [(float(ts.getOffsetBySite(part)), ts.ratioString) for ts in stated]
+    for ts in stated:
+        part.remove(ts)
+    for offset, ratio, index in snap_meters_to_bar_lines(at):
+        part.insert(
+            offset, stated[index] if index is not None else meter.TimeSignature(ratio)
+        )
+
+
+def _pickup_bar_fits(part: Any, pickup: float) -> bool:
+    """Whether the first bar of the barred ``part`` can become a pickup of
+    ``pickup`` quarters short: it has no voices and nothing but rests starts
+    before ``pickup``."""
+    from music21 import stream
+
+    first = part.getElementsByClass(stream.Measure).first()
+    if first is None or first.hasVoices():
+        return False
+    return all(
+        el.isRest
+        for el in first.notesAndRests
+        if el.getOffsetBySite(first) < pickup - _EPS
+    )
+
+
+def _open_with_pickup(part: Any, pickup: float) -> None:
+    """Turn the first bar of the barred ``part``, whose music starts ``pickup``
+    quarters in, into a pickup bar (:func:`_pickup_bar_fits` must hold): the
+    rests before the music go, a rest reaching past ``pickup`` keeping its
+    part after it, the rest of the bar moves back by ``pickup`` with
+    ``paddingLeft`` set, and every later bar moves back and is numbered one
+    lower, so the pickup is bar 0 as in the source."""
+    from music21 import common, note, stream
+
+    measures = list(part.getElementsByClass(stream.Measure))
+    first = measures[0]
+    for el in list(first.notesAndRests):
+        offset = el.getOffsetBySite(first)
+        if offset < pickup - _EPS:
+            first.remove(el)
+            end = offset + el.quarterLength
+            if end > pickup + _EPS:
+                first.insert(pickup, note.Rest(quarterLength=end - pickup))
+    for el in list(first.elements):
+        offset = el.getOffsetBySite(first)
+        if offset >= pickup - _EPS:
+            first.setElementOffset(el, common.opFrac(offset - pickup))
+    first.paddingLeft = pickup
+    first.number = 0
+    for measure in measures[1:]:
+        part.setElementOffset(
+            measure, common.opFrac(measure.getOffsetBySite(part) - pickup)
+        )
+        measure.number = measure.number - 1
+
+
+def _bar_like_source(score: Any, pickup: float) -> None:
+    """Bar the unbarred parts of a single-source arrangement as the source is.
+
+    Each time signature moves to the bar line it takes effect on
+    (:func:`_snap_meters`). With a ``pickup`` (:func:`_pickup`) every note and
+    every mark after offset 0 moves ``pickup`` later, so the source's bar lines
+    fall on the arrangement's; the parts are then barred and each first bar
+    becomes the pickup (:func:`_open_with_pickup`). Without one the writer
+    bars the parts.
+    """
+    from music21 import common, note
+
+    for part in score.parts:
+        if pickup:
+            for element in list(part.elements):
+                offset = element.getOffsetBySite(part)
+                if offset > 0 or isinstance(element, note.GeneralNote):
+                    part.setElementOffset(element, common.opFrac(offset + pickup))
+        _snap_meters(part)
+    if pickup:
+        # As music21's writer bars a score: every part to the end of the
+        # longest, so a staff that falls silent keeps its bars.
+        end = [0.0, float(score.highestTime)]
+        for part in score.parts:
+            part.makeNotation(refStreamOrTimeRange=end, inPlace=True)
+        # Every staff opens with the pickup, or none does and each first bar
+        # opens on rests, so the staves keep one bar grid.
+        if all(_pickup_bar_fits(part, pickup) for part in score.parts):
+            for part in score.parts:
+                _open_with_pickup(part, pickup)
 
 
 def _hidden_tempo(mark: Any) -> Any:
@@ -204,7 +325,7 @@ def _carry_context(
     part carries each one hidden, so a part extracted on its own still plays
     at its tempo.
     """
-    from music21 import tempo  # type: ignore[import]
+    from music21 import tempo
 
     for offset, mark in context:
         if isinstance(mark, tempo.MetronomeMark) and not shows_tempo:
@@ -536,7 +657,7 @@ def _grid_bpm(
 
 def _grid_offset(seconds: float, bpm: float) -> Any:
     """``seconds`` as quarters of ``bpm``, at the nearest 64th note."""
-    from music21 import common  # type: ignore[import]
+    from music21 import common
 
     steps = round(float(seconds) * bpm / 60.0 * _MARK_STEPS_PER_QUARTER)
     return common.opFrac(steps / _MARK_STEPS_PER_QUARTER)
@@ -559,7 +680,8 @@ def _band_marks(
 ) -> tuple[list[tuple[Any, str]], list[tuple[Any, Any]]]:
     """The one meter map and the one key map every staff of a band score is
     barred and keyed by: ``([(offset, "n/d")], [(offset, Key)])``, each offset
-    on the ``bpm`` grid.
+    on the ``bpm`` grid and each meter on the bar line it takes effect on
+    (:func:`..bar_lines.snap_meters_to_bar_lines`).
 
     The stems of one song are separate files, and a staff barred by its own
     file disagrees with its neighbours wherever the files do (basic-pitch
@@ -569,8 +691,10 @@ def _band_marks(
     Stems that state neither leave the score in music21's default 4/4 with no
     key signature.
     """
-    import pretty_midi  # type: ignore[import]
-    from music21 import key  # type: ignore[import]
+    import pretty_midi
+    from music21 import common, key
+
+    from ..bar_lines import snap_meters_to_bar_lines
 
     files = {path: pretty_midi.PrettyMIDI(str(path)) for path, _name, _drum in staves}
     meters: list[tuple[Any, str]] = []
@@ -581,7 +705,10 @@ def _band_marks(
             if ts.numerator > 0 and ts.denominator > 0
         ]
         if stated:
-            meters = _changes_only(stated)
+            meters = [
+                (common.opFrac(offset), ratio)
+                for offset, ratio, _i in snap_meters_to_bar_lines(stated)
+            ]
             break
     keys: list[tuple[Any, Any]] = []
     for path, _name, drum_kit in staves:
@@ -650,7 +777,7 @@ def _band_score(
     Returns ``(score, stats)`` with ``stats = {skipped, skip_reasons, clefs,
     folded_notes}``.
     """
-    from music21 import chord, clef, meter, stream  # type: ignore[import]
+    from music21 import chord, clef, meter, stream
 
     from ..midi_read import read_score
     from ..tempo_marks import metronome_mark

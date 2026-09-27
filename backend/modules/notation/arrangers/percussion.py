@@ -156,21 +156,41 @@ def _drum_instruments(pm: Any) -> list[Any]:
 
 def _time_signatures(pm: Any, bpm: Optional[float] = None) -> list[tuple[float, str]]:
     """Every time signature of ``pm`` as ``(offset in quarters, "n/d")``, in
-    order, each offset on the 1/16 grid the hits are quantised to; ``[(0.0,
+    order, each at the bar line where it takes effect
+    (:func:`..bar_lines.snap_meters_to_bar_lines`: 4/4 until the file states a
+    meter, the later of two on one bar line, no restatements); ``[(0.0,
     "4/4")]`` when the file states none. With ``bpm`` the offsets count beats of
-    ``bpm``, as the hits' do (:func:`_quarters`). A signature restating the one
-    in force is dropped, and of two at one offset the later stands."""
-    out: list[tuple[float, str]] = []
-    for ts in sorted(pm.time_signature_changes, key=lambda change: change.time):
-        if ts.numerator <= 0 or ts.denominator <= 0:
-            continue
-        offset = _quantise(_quarters(pm, ts.time, bpm))
-        ratio = f"{int(ts.numerator)}/{int(ts.denominator)}"
+    ``bpm``, as the hits' do (:func:`_quarters`)."""
+    from ..bar_lines import snap_meters_to_bar_lines
+
+    stated = [
+        (
+            _quantise(_quarters(pm, ts.time, bpm)),
+            f"{int(ts.numerator)}/{int(ts.denominator)}",
+        )
+        for ts in pm.time_signature_changes
+        if ts.numerator > 0 and ts.denominator > 0
+    ]
+    return [(offset, ratio) for offset, ratio, _i in snap_meters_to_bar_lines(stated)]
+
+
+def _tempo_changes(pm: Any) -> list[tuple[float, float]]:
+    """Every tempo of ``pm`` as ``(offset in quarters, bpm)`` through its own
+    tempo map, each offset on the 1/16 grid the hits are quantised to; the
+    initial tempo at 0 when the file states none. Of two at one offset the
+    later stands, and a tempo restating the one in force is dropped."""
+    out: list[tuple[float, float]] = []
+    times, tempi = pm.get_tempo_changes()
+    changes = [(float(t), float(b)) for t, b in zip(times, tempi) if b > 0]
+    for seconds, bpm in sorted(changes, key=lambda change: change[0]):
+        offset = _quantise(_quarters(pm, seconds))
         if out and abs(out[-1][0] - offset) < 1e-9:
             out.pop()
-        if not out or out[-1][1] != ratio:
-            out.append((offset, ratio))
-    return out or [(0.0, "4/4")]
+        if not out or out[-1][1] != bpm:
+            out.append((offset, bpm))
+    if not out or out[0][0] > 0:
+        out.insert(0, (0.0, _initial_tempo(pm)))
+    return out
 
 
 def _initial_tempo(pm: Any) -> float:
@@ -240,10 +260,11 @@ def build_percussion_part(
     """Build a ``music21.stream.Part`` percussion staff from a drum MIDI.
 
     PercussionClef + UnpitchedPercussion instrument, every time signature of
-    the file at its offset (4/4 when it states none) and its initial tempo.
-    With ``bpm`` the staff is laid out at that tempo instead: each hit sits at
-    ``seconds * bpm / 60`` quarters and the mark sounds at ``bpm``, so a band
-    score can put the kit on the same beat grid as its other staves.
+    the file at the bar line it takes effect on (4/4 when it states none) and
+    every tempo of its tempo map at its offset. With ``bpm`` the staff is laid
+    out at that tempo instead: each hit sits at ``seconds * bpm / 60`` quarters
+    and one mark sounds at ``bpm``, so a band score can put the kit on the same
+    beat grid as its other staves.
     ``time_signatures`` (``(offset, "n/d")`` pairs on that grid) bars the staff
     by a band score's shared meter map in place of the file's own. With
     ``shows_tempo`` False the mark sounds but is not printed, for a staff that
@@ -271,13 +292,15 @@ def build_percussion_part(
     grid_bpm = float(bpm) if bpm is not None and bpm > 0 else None
     for offset, ratio in time_signatures or _time_signatures(pm, grid_bpm):
         part.insert(offset, meter.TimeSignature(ratio))
-    # The sheet prints the tempo as a whole number. The exact tempo every hit's
-    # offset below is worked out at is the sounding tempo.
-    mark = metronome_mark(grid_bpm or _initial_tempo(pm))
-    if not shows_tempo:
-        mark.numberImplicit = True
-        mark.style.hideObjectOnPrint = True
-    part.insert(0, mark)
+    # The sheet prints each tempo as a whole number. The exact tempo every hit's
+    # offset below is worked out at is the sounding tempo: the one grid tempo,
+    # or every tempo of the file's own map at the offset it takes effect.
+    for offset, sounding in [(0.0, grid_bpm)] if grid_bpm else _tempo_changes(pm):
+        mark = metronome_mark(sounding)
+        if not shows_tempo:
+            mark.numberImplicit = True
+            mark.style.hideObjectOnPrint = True
+        part.insert(offset, mark)
 
     events = _hit_events(pm, grid_bpm)
     # Group simultaneous hits; dedupe identical staff positions in a group, the
