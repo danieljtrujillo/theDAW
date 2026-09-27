@@ -25,7 +25,7 @@ import { addWorkletModule } from './audioWorkletSupport';
 import { notesToSmf, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
-import { KEYBOARD_LIVE_CHANNEL } from './pitchBend';
+import { PREVIEW_CHANNEL_COUNT } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
   RENDER_TAIL_CAP_SEC,
@@ -155,8 +155,10 @@ function getLiveSynth(): Promise<WorkletSynthesizer> {
   if (!liveSynthPromise) {
     liveSynthPromise = (async () => {
       const synth = await createLiveSynth();
-      // Channel 16 is the hardware keyboard's (KEYBOARD_LIVE_CHANNEL).
-      synth.addNewChannel();
+      // Channel 16 is the hardware keyboard's (KEYBOARD_LIVE_CHANNEL) and 17-24
+      // are DRAW's (DRAW_LIVE_CHANNELS). The preview synth plays every channel
+      // to the engine master, so sharing a dry output with channel n % 16 changes nothing.
+      for (let ch = 16; ch < PREVIEW_CHANNEL_COUNT; ch += 1) synth.addNewChannel();
       liveSynth = synth;
       channelProgram.clear();
       useSoundfontStore.setState({ ready: true });
@@ -169,9 +171,9 @@ function getLiveSynth(): Promise<WorkletSynthesizer> {
   return liveSynthPromise;
 }
 
-/** A preview-synth channel: 0-15, or the keyboard's 16. */
+/** A preview-synth channel: 0-15, the keyboard's 16 or DRAW's 17-24. */
 const previewChannel = (channel: number): number =>
-  Math.max(0, Math.min(KEYBOARD_LIVE_CHANNEL, Number.isFinite(channel) ? Math.round(channel) : 0));
+  Math.max(0, Math.min(PREVIEW_CHANNEL_COUNT - 1, Number.isFinite(channel) ? Math.round(channel) : 0));
 
 /**
  * Warm up the engine (worklet + soundfont) ahead of first use so the first note
@@ -447,7 +449,7 @@ export function editAllNotesOff(): void {
 export const isLiveSynthReady = (): boolean => liveSynth !== null;
 
 /**
- * Note-on on a preview-synth channel (0-15, or the keyboard's 16), switching
+ * Note-on on a preview-synth channel (0-15, the keyboard's 16 or DRAW's 17-24), switching
  * that channel's program first if it changed. No-op (and warms the engine) if
  * the synth is not ready yet.
  */

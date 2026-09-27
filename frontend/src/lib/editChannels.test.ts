@@ -1,5 +1,6 @@
 /**
- * lib/editChannels: the live channel pool EDIT's tracks take. Run from `frontend/`:
+ * lib/editChannels: the live channel pool EDIT's tracks take, and the preview
+ * synth's channels beside it (lib/pitchBend). Run from `frontend/`:
  *   npx tsx src/lib/editChannels.test.ts
  */
 import assert from 'node:assert/strict';
@@ -11,7 +12,14 @@ import {
   localChannel,
   planEditChannels,
 } from './editChannels.ts';
-import { ARP_LIVE_CHANNEL, KEYBOARD_LIVE_CHANNEL, LIVE_ROLL_CHANNELS } from './pitchBend.ts';
+import {
+  ARP_LIVE_CHANNEL,
+  DRAW_LIVE_CHANNELS,
+  KEYBOARD_LIVE_CHANNEL,
+  LIVE_ROLL_CHANNELS,
+  PREVIEW_CHANNEL_COUNT,
+  drawStrokeChannel,
+} from './pitchBend.ts';
 
 function run(name: string, fn: () => void): void {
   fn();
@@ -61,6 +69,20 @@ run('the preview synth keeps the roll lanes, the arpeggiator and the keyboard on
   assert.equal(LIVE_ROLL_CHANNELS.includes(DRUM_CHANNEL), false);
   assert.equal(KEYBOARD_LIVE_CHANNEL % 16 === DRUM_CHANNEL, false, 'the keyboard channel is melodic');
   assert.equal(LIVE_ROLL_CHANNELS.includes(KEYBOARD_LIVE_CHANNEL), false);
+});
+
+run('DRAW strokes one after another never play on a drum channel or a lane, arpeggiator or keyboard channel', () => {
+  // At 8039b45 DRAW cycled (seq % 15) + 1 over the preview synth: the ninth
+  // stroke took channel 9 and played a drum kit, and the cycle crossed the
+  // roll's lanes and the arpeggiator's 15.
+  const taken = new Set([...LIVE_ROLL_CHANNELS, ARP_LIVE_CHANNEL, KEYBOARD_LIVE_CHANNEL]);
+  const strokes = Array.from({ length: 40 }, (_, i) => drawStrokeChannel(i));
+  for (const [i, ch] of strokes.entries()) {
+    assert.notEqual(ch % 16, DRUM_CHANNEL, `stroke ${i + 1} is melodic (channel ${ch})`);
+    assert.equal(taken.has(ch), false, `stroke ${i + 1} has a channel of its own (channel ${ch})`);
+    assert.ok(ch < PREVIEW_CHANNEL_COUNT, 'the preview synth has the channel');
+  }
+  assert.equal(new Set(strokes.slice(0, DRAW_LIVE_CHANNELS.length)).size, DRAW_LIVE_CHANNELS.length, 'consecutive strokes take different channels');
 });
 
 console.log('editChannels: ok');

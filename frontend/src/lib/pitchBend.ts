@@ -101,6 +101,19 @@ export const ARP_LIVE_CHANNEL = 15;
  */
 export const KEYBOARD_LIVE_CHANNEL = 16;
 /**
+ * The live soundfont channels DRAW's soundfont mode plays its strokes on, one
+ * after another: eight more channels the preview synth adds past the keyboard's,
+ * none a drum channel (SpessaSynth makes every channel n with n % 16 === 9 a
+ * drum channel), so a stroke never plays a kit and never takes a roll lane's,
+ * the arpeggiator's or the keyboard's channel.
+ */
+export const DRAW_LIVE_CHANNELS: readonly number[] = Object.freeze([17, 18, 19, 20, 21, 22, 23, 24]);
+/** How many channels the preview synth has: 0-15, the keyboard's and DRAW's. */
+export const PREVIEW_CHANNEL_COUNT = DRAW_LIVE_CHANNELS[DRAW_LIVE_CHANNELS.length - 1] + 1;
+/** The channel DRAW's `stroke`-th soundfont stroke (counting from 0) plays on. */
+export const drawStrokeChannel = (stroke: number): number =>
+  DRAW_LIVE_CHANNELS[((Math.round(stroke) % DRAW_LIVE_CHANNELS.length) + DRAW_LIVE_CHANNELS.length) % DRAW_LIVE_CHANNELS.length];
+/**
  * The most lanes that bend. Each takes a channel of its own and every other lane
  * shares one, so the roll's lanes fit LIVE_ROLL_CHANNELS on the live synth as
  * they fit BEND_CHANNELS in a file.
