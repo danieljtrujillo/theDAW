@@ -29,10 +29,10 @@ def test_backend_resolves_to_this_checkout():
 
 def test_frontend_mirror_is_generated_from_the_backend():
     mirror = REPO / reg.FRONTEND_MIRROR
-    assert mirror.is_file(), "run: python -m backend.modules.notation.instruments"
+    assert mirror.is_file(), "run: python scripts/gen_orchestra_mirror.py"
     assert mirror.read_text(encoding="utf-8") == reg.frontend_module_text(), (
         "frontend/src/lib/orchestraData.ts differs from the backend registry; "
-        "regenerate it with: python -m backend.modules.notation.instruments"
+        "regenerate it with: python scripts/gen_orchestra_mirror.py"
     )
 
 
