@@ -291,8 +291,9 @@ class Clip(BaseModel):
     # Piano-roll clips: the grid length in 16th-note steps, the time signatures
     # by bar ([{bar, meter: {num, den, groups}}]), the steps before bar 0 and
     # the polymeter lanes ([{id, name, cycle_steps}]) the clip was bounced with.
-    # Defaulted, so .tasmo files written before the roll had a meter still
-    # validate and load with all four as None.
+    # A lane limited to part of the clip adds span_start and span_end (steps;
+    # span_end None = the clip's end). Defaulted, so .tasmo files written
+    # before the roll had a meter still validate and load with all four as None.
     total_steps: float | None = None
     meter_map: list[dict] | None = None
     pickup_steps: float | None = None

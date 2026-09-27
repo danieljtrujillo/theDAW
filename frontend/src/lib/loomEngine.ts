@@ -29,6 +29,7 @@ import { logInfo } from '../state/logStore';
 import { serializeQuery, type LoomLane, type LoomQuery, type LoomScore, type LoomTile, type LockParam } from './loomScore';
 import { genAlphabet, genCell, unit, type GenCell, type GenTile } from './loomGen';
 import type { ShardRow } from '../state/shardIndexStore';
+import type { MeterSegment } from './meterMap';
 import * as shards from './shardEngine';
 
 export type ShardTile = Extract<LoomTile, { kind: 'shard' }>;
@@ -93,6 +94,8 @@ export class LoomEngine {
   private genResolved = new Map<string, Resolved>();
   private crossLocks: CrossLock[] = [];
   private cursorsDirty = false;
+  /** The clock's meter from before a score's `meter` line set its own; given back when no score line holds it. */
+  private meterBefore: MeterSegment[] | null = null;
   running = false;
 
   constructor(private hooks: LoomEngineHooks) {}
@@ -108,7 +111,26 @@ export class LoomEngine {
     this.score = score;
     this.queued = null;
     this.preResolve(score);
-    if (this.running) this.rebuildRunners(beatClock.nextGrid('bar'));
+    if (this.running) {
+      this.clockMeter(score);
+      this.rebuildRunners(beatClock.nextGrid('bar'));
+    }
+  }
+
+  /**
+   * `meter 7/8 2+2+3`: the clock counts the score's own bar while it plays,
+   * so the start lands on its bar line and a click follows its groups. A
+   * score without the line gives the clock back the meter it had before one
+   * set it, so deleting the line leaves no 7/8 behind.
+   */
+  private clockMeter(score: LoomScore | null): void {
+    if (score?.meter) {
+      if (!this.meterBefore) this.meterBefore = beatClock.meterMap;
+      beatClock.setMeterMap([{ bar: 0, meter: score.meter }]);
+    } else if (this.meterBefore) {
+      beatClock.setMeterMap(this.meterBefore);
+      this.meterBefore = null;
+    }
   }
 
   get hasQueued(): boolean { return this.queued != null; }
@@ -121,6 +143,7 @@ export class LoomEngine {
     if (ctx.state === 'suspended') void ctx.resume();
     const bpm0 = this.score.ramp ? this.score.ramp.from : this.score.bpm;
     if (bpm0) beatClock.setBpm(bpm0, 'loom');
+    this.clockMeter(this.score);
     const t0 = beatClock.nextGrid('bar');
     this.rebuildRunners(t0);
     this.running = true;
@@ -134,6 +157,8 @@ export class LoomEngine {
     this.running = false;
     this.crossLocks = [];
     shards.stopAll();
+    // The score's meter holds only while it plays.
+    this.clockMeter(null);
     this.emitCursors(true);
   }
 
@@ -416,6 +441,7 @@ export class LoomEngine {
           this.score = next;
           if (next.ramp) beatClock.setBpm(next.ramp.from, 'loom');
           else if (next.bpm) beatClock.setBpm(next.bpm, 'loom');
+          this.clockMeter(next);
           this.rebuildRunners(r.nextTime);
           logInfo('loom', 'Score swapped at the master wrap');
         }

@@ -14,9 +14,11 @@
  * Edges carry triggers: `pulse -> kick`, `swarm -> bass on=0`,
  * `pulse -> maybe -> dark -> bass`. A trigger into a colony starts its bar.
  *
- * Meters are free: `meter 7/8 groups=3+2+2`, `meter 11/8 groups=3+3+3+2`,
- * `meter 5/4`. A colony's bar is num/den whole notes at its tempo; groups
- * accent the downbeats of each group and shape the drawing.
+ * Meters are free: `meter 7/8 groups=3+2+2` (or `meter 7/8 3+2+2`),
+ * `meter 11/8 groups=3+3+3+2`, `meter 5/4`. A colony's bar is num/den whole
+ * notes at its tempo; groups accent the downbeats of each group and shape the
+ * drawing. The root colony's meter is the bar the beat clock counts while it
+ * plays (colonyClockMeter).
  *
  * The text is the colony, as with the plane. Everything here is pure: the
  * parser, the serializer, and the bar arithmetic.
@@ -112,6 +114,11 @@ export function groupStarts(meter: Meter, steps: number): number[] {
     acc += g;
   }
   return out;
+}
+
+/** The beat clock's meter map for a root colony's meter: its own numerator, denominator and groups, so 7/8 is 3.5 quarters. */
+export function colonyClockMeter(meter: Meter): Array<{ bar: number; meter: Meter }> {
+  return [{ bar: 0, meter: { num: meter.num, den: meter.den, groups: [...meter.groups] } }];
 }
 
 export function meterText(m: Meter): string {
@@ -289,10 +296,10 @@ export function parseColony(text: string): { score: ColonyScore; errors: LoomPar
     }
     if (h === 'meter') {
       const m = parseMeter(rest[0] ?? '');
-      if (!m) { err(lineNo, 'meter looks like 7/8 (optionally groups=3+2+2)'); continue; }
+      if (!m) { err(lineNo, 'meter looks like 7/8 (optionally groups=3+2+2, or 3+2+2)'); continue; }
       for (const a of rest.slice(1)) {
-        const gm = /^groups=(.+)$/.exec(a);
-        if (!gm) { err(lineNo, `meter option looks like groups=3+2+2 — got "${a}"`); continue; }
+        const gm = /^groups=(.+)$/.exec(a) ?? /^(\d+(?:\+\d+)+)$/.exec(a);
+        if (!gm) { err(lineNo, `meter option looks like groups=3+2+2 or 3+2+2 — got "${a}"`); continue; }
         const groups = parseGroups(gm[1], m.num);
         if (!groups) err(lineNo, `groups must add up to ${m.num}`); else m.groups = groups;
       }

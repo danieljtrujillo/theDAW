@@ -5,7 +5,7 @@ import { dawDeviceToEffectNode } from './dawEffectMap';
 import type { SwayBinding, SwayUnattached } from './swayImportResolve';
 import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
+import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
 import { normalizeMeterMap, roundUpToBar } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
@@ -19,11 +19,15 @@ export interface TasmoMeterSegment {
   meter: { num: number; den: number; groups: number[] };
 }
 
-/** A polymeter lane; `cycle_steps` null means the lane spans the whole clip. */
+/** A polymeter lane; `cycle_steps` null means the lane spans the whole clip.
+ *  `span_start` / `span_end` (steps; `span_end` null = the clip's end) limit a
+ *  looping lane to part of the clip, and are written only when it has a span. */
 export interface TasmoPolyLane {
   id: number;
   name: string;
   cycle_steps: number | null;
+  span_start?: number;
+  span_end?: number | null;
 }
 
 /** A note's expression as the file carries it: the roll's `NoteExpression`, keys in the file's snake_case. */
@@ -598,7 +602,16 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
     ? { meter_map: c.sourceMeterMap.map((s) => ({ bar: s.bar, meter: { num: s.meter.num, den: s.meter.den, groups: [...s.meter.groups] } })) }
     : {}),
   ...(c.sourcePickupSteps !== undefined ? { pickup_steps: c.sourcePickupSteps } : {}),
-  ...(c.sourceLanes ? { lanes: c.sourceLanes.map((l) => ({ id: l.id, name: l.name, cycle_steps: l.cycleSteps })) } : {}),
+  ...(c.sourceLanes
+    ? {
+        lanes: c.sourceLanes.map((l) => ({
+          id: l.id,
+          name: l.name,
+          cycle_steps: l.cycleSteps,
+          ...(l.span ? { span_start: l.span.start, span_end: l.span.end } : {}),
+        })),
+      }
+    : {}),
   ...(c.sourceBends?.length
     ? {
         roll_bends: c.sourceBends.map((b) => ({
@@ -687,7 +700,11 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
   if (Array.isArray(c.lanes) && c.lanes.length) {
     out.sourceLanes = c.lanes
       .filter((l) => l && Number.isInteger(l.id) && l.id >= 0)
-      .map((l) => ({ id: l.id, name: String(l.name ?? ''), cycleSteps: numberAtLeast(l.cycle_steps, 1) ?? null }));
+      .map((l) => {
+        const start = numberAtLeast(l.span_start, 0);
+        const span = start === undefined ? null : clampLaneSpan({ start, end: numberAtLeast(l.span_end, 0) ?? null });
+        return { id: l.id, name: String(l.name ?? ''), cycleSteps: numberAtLeast(l.cycle_steps, 1) ?? null, ...(span ? { span } : {}) };
+      });
   }
   if (Array.isArray(c.roll_bends) && c.roll_bends.length) {
     // The file stores no point ids, so loaded points get `rb<lane>-<index>`.

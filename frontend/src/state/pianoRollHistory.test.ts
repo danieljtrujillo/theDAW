@@ -37,6 +37,7 @@ const beginBlock = () => {
         lanes: s.lanes,
         bends: s.bends,
         voiceProgram: s.voiceProgram,
+        tempoMap: s.tempoMap,
       },
     ],
     _redo: [],
@@ -302,6 +303,60 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
   st().setLoop({ start: 4, end: 8 });
   st().seek(12);
   assert.equal(st()._undo.length, 0);
+}
+
+// The tempo map is part of the document: a write is one step, an equal write is
+// none, it is stored clean (sorted, one per beat, 20-300 BPM, no seconds), notes
+// that bring their own BPM leave it behind, and undo brings it back.
+{
+  usePianoRollStore.setState({ notes: [note(0)], tempoMap: [], bpm: 120 });
+  beginBlock();
+  st().setTempoMap([
+    { beat: 16, bpm: 96.5, timeSec: 9 },
+    { beat: 0, bpm: 120 },
+    { beat: 8, bpm: 400, curve: 'linear' },
+    { beat: -1, bpm: 90 },
+    { beat: 4, bpm: 0 },
+    { beat: 16, bpm: 97.25 },
+  ]);
+  assert.deepEqual(st().tempoMap, [{ beat: 0, bpm: 120 }, { beat: 8, bpm: 300, curve: 'linear' }, { beat: 16, bpm: 97.25 }]);
+  assert.equal(st()._undo.length, 1);
+  const held = st().tempoMap;
+  st().setTempoMap([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 300, curve: 'linear' }, { beat: 16, bpm: 97.25 }]);
+  assert.equal(st().tempoMap, held, 'an equal map keeps the same array, so it adds no step');
+  st().undo();
+  assert.deepEqual(st().tempoMap, []);
+  st().redo();
+  assert.deepEqual(st().tempoMap.map((e) => e.bpm), [120, 300, 97.25]);
+  beginBlock();
+  st().importNotes([note(4)]);
+  assert.equal(st().tempoMap.length, 3, 'notes with no BPM of their own keep the tempo map');
+  beginBlock();
+  st().importNotes([note(8)], 100);
+  assert.deepEqual(st().tempoMap, [], 'notes at their own BPM leave the tempo map behind');
+  st().undo();
+  assert.equal(st().tempoMap.length, 3, 'undo brings it back with the notes');
+  usePianoRollStore.setState({ tempoMap: [] });
+}
+
+// A lane span is kept when it is valid and dropped when it is not; lane A never takes one.
+{
+  assert.deepEqual(
+    sanitizeLanes([
+      { id: 0, name: 'A', cycleSteps: null, span: { start: 16, end: 32 } },
+      { id: 1, name: 'B', cycleSteps: 12, span: { start: 16, end: null } },
+      { id: 2, name: 'C', cycleSteps: 6, span: { start: 0, end: null } },
+      { id: 3, name: 'D', cycleSteps: 6, span: { start: 40, end: 20 } },
+      { id: 4, name: 'E', cycleSteps: 6, span: { start: 8.5, end: 64 } },
+    ]),
+    [
+      { id: 0, name: 'A', cycleSteps: null },
+      { id: 1, name: 'B', cycleSteps: 12, span: { start: 16, end: null } },
+      { id: 2, name: 'C', cycleSteps: 6 },
+      { id: 3, name: 'D', cycleSteps: 6 },
+      { id: 4, name: 'E', cycleSteps: 6, span: { start: 8.5, end: 64 } },
+    ],
+  );
 }
 
 console.log('pianoRollHistory: ok');

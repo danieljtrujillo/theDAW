@@ -233,6 +233,8 @@ export const MidiPanel: React.FC = () => {
   const [songMenuOpen, setSongMenuOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const rollBpm = usePianoRollStore((s) => s.bpm);
+  const rollMeterMap = usePianoRollStore((s) => s.meterMap);
+  const rollPickup = usePianoRollStore((s) => s.pickupSteps);
   // The device comes from the global I/O menu (Settings -> Inputs & outputs),
   // with a per-surface override in the REC key's input menu. It used to be a
   // useState seeded from localStorage with NO try/catch — which threw during
@@ -907,7 +909,12 @@ export const MidiPanel: React.FC = () => {
 
               <AiComposePopover
                 currentBpm={rollBpm}
-                onGenerated={(result) => usePianoRollStore.getState().importNotes(result.notes, result.bpm)}
+                meterMap={rollMeterMap}
+                pickupSteps={rollPickup}
+                // The part comes back in the meter it was asked for, whatever the roll holds by then.
+                onGenerated={(result) =>
+                  usePianoRollStore.getState().importNotes(result.notes, result.bpm, { meterMap: result.meterMap, pickupSteps: result.pickupSteps })
+                }
               />
 
               <RailKey

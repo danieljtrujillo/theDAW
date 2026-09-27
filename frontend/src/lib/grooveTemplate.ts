@@ -106,6 +106,30 @@ export function builtinGrooves(): GrooveTemplate[] {
   ];
 }
 
+/**
+ * A swing groove by id: `swing8:<pct>` swings the off-8ths and `swing16:<pct>`
+ * the off-16ths, the long note taking `pct` percent of the pair (50 straight,
+ * 66.7 a triplet feel; 50-75, one decimal kept). These are the ids the named
+ * swing feels carry, and MATCH writes a song's own swing the same way, so an
+ * id in a saved feel record turns back into its groove after a reload.
+ */
+export function swingGrooveById(id: string): GrooveTemplate | null {
+  const m = /^swing(8|16):(\d+(?:\.\d+)?)$/.exec(id.trim());
+  if (!m) return null;
+  const pct = Number(m[2]);
+  if (!(pct >= 50 && pct <= 75)) return null;
+  return m[1] === '8' ? swing8(pct) : swing16(pct);
+}
+
+/**
+ * The groove an id names: a built-in feel, or any swing id `swingGrooveById`
+ * reads. Null for an id nothing answers to (the SWING slider's own id, or the
+ * MIDI groove of a previous session).
+ */
+export function grooveById(id: string): GrooveTemplate | null {
+  return builtinGrooves().find((g) => g.id === id) ?? swingGrooveById(id);
+}
+
 /** Virtuoso's extracted pocket (16 timing offsets in step units) as a groove template. */
 export function fromVirtuosoTemplate(t: VirtuosoGroove, id = `midi:${t.name}`): GrooveTemplate {
   return makeGroove(id, t.name, 16, t.timing ?? []);

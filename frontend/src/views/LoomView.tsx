@@ -20,7 +20,7 @@ import { useLoomStore, type EdgeSel } from '../state/loomStore';
 import { useShardIndexStore, type ShardRow } from '../state/shardIndexStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { LOOM_TEMPLATES } from '../data/loomTemplates';
-import { LOOM_ROLES, type LockParam, type LoomRole } from '../lib/loomScore';
+import { LOOM_ROLES, tupletGrids, type LockParam, type LoomRole } from '../lib/loomScore';
 import { beatClock } from '../lib/beatClock';
 import * as shards from '../lib/shardEngine';
 import { GEN_BLURB, GEN_GLYPH, GEN_KINDS, type GenKind } from '../lib/loomGen';
@@ -339,7 +339,7 @@ const NodeInspector: React.FC<{ nodeKey: string; node: ColonyNode; path: string[
       </div>
 
       {node.kind === 'loop' && <LoopEditor id={id} node={node} set={set} />}
-      {node.kind === 'rule' && <RuleEditor id={id} node={node} set={set} />}
+      {node.kind === 'rule' && <RuleEditor id={id} node={node} meter={graph?.meter ?? null} set={set} />}
       {node.kind === 'gate' && <GateEditor id={id} node={node} set={set} />}
       {node.kind === 'mod' && <ModEditor id={id} node={node} set={set} />}
       {node.kind === 'colony' && (
@@ -467,8 +467,10 @@ const LoopEditor: React.FC<{ id: string; node: LoopNode; set: (n: ColonyNode) =>
 
 const STEP_CHOICES = [3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 16, 24, 32];
 
-const RuleEditor: React.FC<{ id: string; node: RuleNode; set: (n: ColonyNode) => void }> = ({ id, node, set }) => {
+const RuleEditor: React.FC<{ id: string; node: RuleNode; meter: Meter | null; set: (n: ColonyNode) => void }> = ({ id, node, meter, set }) => {
   const o = node.opts;
+  const grids = meter ? tupletGrids(meter) : [];
+  const gridNow = grids.find((g) => g.steps === node.steps)?.div ?? 0;
   const num = (k: string, d: number) => { const v = Number(o[k]); return Number.isFinite(v) ? v : d; };
   const setOpt = (k: string, v: number | string) => set({ ...node, opts: { ...node.opts, [k]: v } });
   return (
@@ -476,6 +478,19 @@ const RuleEditor: React.FC<{ id: string; node: RuleNode; set: (n: ColonyNode) =>
       <Chips id={`${id}-gen`} label="rule" value={node.gen} options={GEN_KINDS.map((g) => ({ v: g, t: `${GEN_GLYPH[g]} ${g}`, title: GEN_BLURB[g] }))} onChange={(g: GenKind) => set({ ...node, gen: g, opts: { ...(g === node.gen ? node.opts : {}) } })} />
       <p className="text-xs et-ink-2 leading-snug">{GEN_BLURB[node.gen]}</p>
       <Chips id={`${id}-steps`} label="steps per bar" value={node.steps} options={STEP_CHOICES.includes(node.steps) ? STEP_CHOICES.map((v) => ({ v })) : [...STEP_CHOICES, node.steps].sort((a, b) => a - b).map((v) => ({ v }))} onChange={(v) => set({ ...node, steps: v })} />
+      {meter && grids.length > 0 && (
+        <Chips
+          id={`${id}-grid`}
+          label="tuplet grid"
+          hint={`Sets the steps per bar to a tuplet grid of the ${meter.num}/${meter.den} bar`}
+          value={gridNow}
+          options={grids.map((g) => ({ v: g.div, t: `1/${g.div}`, title: `${g.name}: ${g.steps} steps in a ${meter.num}/${meter.den} bar` }))}
+          onChange={(div) => {
+            const g = grids.find((x) => x.div === div);
+            if (g) set({ ...node, steps: g.steps });
+          }}
+        />
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Stepper id={`${id}-symbols`} label="symbols" value={node.symbols} min={1} max={8} onChange={(v) => set({ ...node, symbols: v })} hint="Distinct symbols the rule can emit; a wire's ON picks one" />
         {node.gen === 'euclid' && <Stepper id={`${id}-rotate`} label="rotate per bar" value={Math.round(num('rotate', 1))} min={-8} max={8} onChange={(v) => setOpt('rotate', v)} />}

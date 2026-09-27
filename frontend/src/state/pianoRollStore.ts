@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { normalizeMeterMap, roundUpToBar, type MeterSegment, type PolyLane } from '../lib/meterMap';
+import { normalizeMeterMap, roundUpToBar, type LaneSpan, type MeterSegment, type PolyLane } from '../lib/meterMap';
+import { sanitizeTempoEvents, type TempoEvent } from '../lib/tempoMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
   DEFAULT_BEND_RANGE,
@@ -138,6 +139,14 @@ interface PianoRollState {
   /** The lane new notes go into. */
   activeLane: number;
   /**
+   * Tempo changes (lib/tempoMap), keyed by quarter-note beat from step 0:
+   * sorted, one per beat, 20-300 BPM, no seconds stored. Empty means the roll
+   * runs at `bpm` throughout. MATCH writes a song's tempo here so its bar
+   * lines stay on the song's downbeats while the notes keep their steps. It is
+   * part of the document, so undo covers it.
+   */
+  tempoMap: TempoEvent[];
+  /**
    * Pitch bend by lane (lib/pitchBend): each lane's points and range, sorted by
    * lane. A lane with no points and the default range has no entry. A bend
    * moves with its lane and keeps its steps through meter and length changes,
@@ -164,6 +173,8 @@ interface PianoRollState {
   grooveId: string;
 
   setBpm: (bpm: number) => void;
+  /** Replace the tempo map (sanitizeTempoEvents); an empty map runs the roll at `bpm` throughout. */
+  setTempoMap: (map: readonly TempoEvent[]) => void;
   setTotalSteps: (s: number) => void;
   setRange: (lo: number, hi: number) => void;
   addNote: (note: Omit<PianoNote, 'id'>) => string;
@@ -322,6 +333,7 @@ interface RollHistorySnapshot {
   lanes: PolyLane[];
   bends: LaneBend[];
   voiceProgram: number | null;
+  tempoMap: TempoEvent[];
   /** The linked clip before the step, present only when the step's write changed it. */
   editingClipId?: string | null;
 }
@@ -352,14 +364,36 @@ export const laneName = (index: number): string => {
 const clampCycle = (steps: number | null | undefined): number | null =>
   typeof steps === 'number' && Number.isFinite(steps) && steps >= 1 ? Math.min(MAX_STEPS, Math.round(steps)) : null;
 
-/** Lane 0 first and never looping, unique ids, cycles clamped to whole steps. */
+/**
+ * A lane's span with a start at or after 0 and an end after it (null = the
+ * roll's end), both inside the roll's longest length; null for no span, a
+ * malformed one, or one that covers the whole roll anyway.
+ */
+export const clampLaneSpan = (span: Partial<LaneSpan> | null | undefined): LaneSpan | null => {
+  if (!span || typeof span !== 'object') return null;
+  const start = Number(span.start);
+  if (!Number.isFinite(start) || start < 0) return null;
+  const from = Math.min(MAX_STEPS, start);
+  const end = span.end == null ? null : Number(span.end);
+  if (end !== null && (!Number.isFinite(end) || end <= from + EPS)) return null;
+  if (from <= EPS && end === null) return null;
+  return { start: from, end: end === null ? null : Math.min(MAX_STEPS, end) };
+};
+
+/** Lane 0 first and never looping, unique ids, cycles clamped to whole steps, spans kept when valid. */
 export const sanitizeLanes = (lanes: readonly PolyLane[] | null | undefined): PolyLane[] => {
   const seen = new Set<number>();
   const out: PolyLane[] = [];
   for (const l of lanes ?? []) {
     if (!l || !Number.isInteger(l.id) || l.id < 0 || seen.has(l.id)) continue;
     seen.add(l.id);
-    out.push({ id: l.id, name: String(l.name || laneName(l.id)), cycleSteps: l.id === 0 ? null : clampCycle(l.cycleSteps) });
+    const span = l.id === 0 ? null : clampLaneSpan(l.span);
+    out.push({
+      id: l.id,
+      name: String(l.name || laneName(l.id)),
+      cycleSteps: l.id === 0 ? null : clampCycle(l.cycleSteps),
+      ...(span ? { span } : {}),
+    });
   }
   if (!seen.has(0)) out.unshift({ id: 0, name: 'A', cycleSteps: null });
   return out.sort((a, b) => a.id - b.id);
@@ -749,6 +783,7 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   lanes: s.lanes,
   bends: s.bends,
   voiceProgram: s.voiceProgram,
+  tempoMap: s.tempoMap,
 });
 
 /** Write the feel record from the store, after a write that moved one of its fields. */
@@ -779,11 +814,20 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   lanes: sanitizeLanes(DEFAULT_LANES),
   activeLane: 0,
   bends: [],
+  tempoMap: [],
   ...loadFeel(),
   _undo: [],
   _redo: [],
 
   setBpm: (bpm) => set({ bpm: Math.max(40, Math.min(240, bpm)) }),
+  setTempoMap: (map) =>
+    set((s) => {
+      const next = sanitizeTempoEvents(map);
+      // The same array when nothing changed, so an equal write adds no undo step.
+      const same = next.length === s.tempoMap.length
+        && next.every((e, i) => e.beat === s.tempoMap[i].beat && e.bpm === s.tempoMap[i].bpm && e.curve === s.tempoMap[i].curve);
+      return same ? {} : { tempoMap: next };
+    }),
   setTotalSteps: (totalSteps) =>
     set((s) => ({ totalSteps: Math.min(MAX_STEPS, roundUpToBar(s.meterMap, Math.max(MIN_STEPS, totalSteps), s.pickupSteps)) })),
   setRange: (lo, hi) => set({ lowestNote: Math.max(0, lo), highestNote: Math.min(127, hi) }),
@@ -967,6 +1011,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ...m,
           bends: replacedBends(s, m.lanes, incomingBends),
           bpm: Math.max(40, Math.min(240, bpm)),
+          // The clip plays at its own BPM, so a tempo map written for the roll's
+          // previous notes does not come with it.
+          tempoMap: s.tempoMap.length ? [] : s.tempoMap,
           totalSteps: Math.min(
             MAX_STEPS,
             roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
@@ -1006,7 +1053,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         currentStep: 0,
         isPlaying: false,
         recordedRange: null,
-        ...(typeof bpm === 'number' && Number.isFinite(bpm) ? { bpm: importedRollBpm(bpm) } : {}),
+        // Notes that bring their own BPM bring their own tempo: a tempo map
+        // written for the roll's previous notes does not stay behind.
+        ...(typeof bpm === 'number' && Number.isFinite(bpm) ? { bpm: importedRollBpm(bpm), tempoMap: s.tempoMap.length ? [] : s.tempoMap } : {}),
       };
     }),
 
@@ -1199,7 +1248,8 @@ usePianoRollStore.subscribe((state, prev) => {
     state.pickupSteps === prev.pickupSteps &&
     state.lanes === prev.lanes &&
     state.bends === prev.bends &&
-    state.voiceProgram === prev.voiceProgram
+    state.voiceProgram === prev.voiceProgram &&
+    state.tempoMap === prev.tempoMap
   ) return;
   const relinked = state.editingClipId !== prev.editingClipId;
   const revoiced = state.voiceProgram !== prev.voiceProgram;

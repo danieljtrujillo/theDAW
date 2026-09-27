@@ -65,6 +65,7 @@ const beginBlock = () => {
         lanes: s.lanes,
         bends: s.bends,
         voiceProgram: s.voiceProgram,
+        tempoMap: s.tempoMap,
       },
     ],
     _redo: [],
