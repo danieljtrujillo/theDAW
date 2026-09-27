@@ -24,6 +24,8 @@
  *   - Delete, Backspace or an Alt-click removes the selected point; the
  *     arrows move it, Shift for a coarse step; CLEAR removes every point but
  *     the starting tempo
+ *   - MODULATE (MetricModulation.tsx) puts a metric modulation on a bar line:
+ *     "dotted quarter = quarter" and the tempo it gives from the one in force
  * Every edit is a document edit: undo takes it back.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -56,6 +58,7 @@ import {
 } from '../../lib/tempoLane';
 import { FERMATA_STRETCH_MAX, FERMATA_STRETCH_MIN, TEMPO_BPM_MAX, TEMPO_BPM_MIN, getTempoAtBeat, type TempoEvent } from '../../lib/tempoMap';
 import { FIELD, FIELD_LEGEND, FIELD_VALUE, MINI_GLYPH, MINI_ICON_KEY, StripKey } from './midiDockKit';
+import { MetricModulationKey } from './MetricModulation';
 
 /** Steps a key press moves a point by, and the coarse step under Shift. */
 const KEY_STEP = 1;
@@ -347,6 +350,7 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
 
         <span className="flex-1" />
 
+        <MetricModulationKey idBase="tempo-lane-mod" mini />
         <StripKey
           mini
           iconOnly

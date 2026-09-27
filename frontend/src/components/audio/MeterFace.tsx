@@ -6,7 +6,9 @@
  *   BEATS   its numerator; the /4 /8 /16 keys its unit; GROUPS its grouping,
  *           as keys for three choices or fewer and a menu for more
  *   ADD     a change at the playhead's bar (off when that bar starts after the
- *           roll ends); the trash key removes the selected one
+ *           roll ends); the trash key removes the selected one; MODULATE puts
+ *           a metric modulation on the selected change's bar line
+ *           (MetricModulation.tsx)
  *   LANES   one key per lane in its roll look (a menu past five lanes); + adds
  *           a lane, the trash key removes the active one
  *   LOOP    the active lane's loop in steps (Shift steps a bar)
@@ -43,6 +45,7 @@ import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
   MINI_GLYPH, MINI_ICON_KEY, MINI_KEY, RANGE_FILL, STRIP_GLYPH, Sep, StripKey, keyTone,
 } from './midiDockKit';
+import { MetricModulationKey } from './MetricModulation';
 
 type Level = 'info' | 'warn' | 'error';
 
@@ -433,6 +436,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         icon={<DiamondMinus className={STRIP_GLYPH} />}
         legend="Remove"
       />
+      <MetricModulationKey idBase="mf-mod" bar={seg.bar} onStatus={onStatus} />
 
       <Sep />
 
