@@ -1,12 +1,14 @@
 /**
  * The EDIT inpaint request (lib/editInpaintForm): the field names and values
- * /api/generate-jobs reads for the composite and its seam tuning.
+ * /api/generate-jobs reads for the composite and its seam tuning, and the
+ * crop's float encoding.
  */
 import assert from 'node:assert/strict';
 import {
   INPAINT_FEATHER_DEFAULT_SEC,
   INPAINT_FEATHER_MAX_SEC,
   buildEditInpaintForm,
+  encodeEditInpaintCrop,
   type EditInpaintRequest,
 } from './editInpaintForm';
 
@@ -62,4 +64,26 @@ const request: EditInpaintRequest = {
   assert.equal(fd.get('mask_end'), '8');
 }
 
-console.log('editInpaintForm: all tests passed');
+// The crop the request carries is float, so the samples the backend puts back
+// outside the selection are the clip's own, bit for bit, overs included.
+const cropRoundTrip = async () => {
+  const left = new Float32Array([0.1234567, -0.7654321, 1.5, 3e-6]);
+  const right = new Float32Array([-0.25, 0.3333333, -1.25, 0]);
+  // encodeWav reads only these four members of an AudioBuffer.
+  const clipWindow = {
+    numberOfChannels: 2,
+    sampleRate: 44100,
+    length: left.length,
+    getChannelData: (c: number) => (c === 0 ? left : right),
+  } as unknown as AudioBuffer;
+  const wav = new DataView(await encodeEditInpaintCrop(clipWindow).arrayBuffer());
+  assert.equal(wav.getUint16(20, true), 3, 'WAVE_FORMAT_IEEE_FLOAT');
+  assert.equal(wav.getUint16(34, true), 32, '32 bits per sample');
+  const dataAt = 58; // float WAV header (lib/wavEncode)
+  for (let i = 0; i < left.length; i += 1) {
+    assert.equal(wav.getFloat32(dataAt + i * 8, true), left[i]);
+    assert.equal(wav.getFloat32(dataAt + i * 8 + 4, true), right[i]);
+  }
+};
+
+void cropRoundTrip().then(() => console.log('editInpaintForm: all tests passed'));

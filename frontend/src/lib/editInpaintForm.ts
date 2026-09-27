@@ -2,8 +2,16 @@
  * editInpaintForm — the /api/generate-jobs request the EDIT inpaint panel
  * sends. Kept out of WaveformEditor so the field names the backend reads are
  * pinned by a test (editInpaintForm.test.ts): a misspelt one is silently
- * ignored by the endpoint and the feature quietly turns off.
+ * ignored by the endpoint and the feature quietly turns off. The crop's
+ * encoding is here for the same reason.
  */
+import { encodeWav } from './wavEncode';
+
+/** Encode the clip window the request carries. Float WAV: the backend puts
+ *  these samples back outside the selection (composite_original) and answers
+ *  in float (wav_bit_depth=32f), so what the model is sent is what the clip
+ *  keeps. A 16-bit crop would requantize the whole clip on every inpaint. */
+export const encodeEditInpaintCrop = (rendered: AudioBuffer): Blob => encodeWav(rendered, { float32: true });
 
 /** The inpaint seam feather: the backend's default and its accepted range
  *  (mask_feather_sec). Below ~0.09 s the fade sits inside the ~93 ms the

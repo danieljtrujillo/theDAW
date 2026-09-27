@@ -38,7 +38,7 @@ import {
   timePitchSource,
 } from '../../lib/clipAudioSource';
 import { getStorageProvider } from '../../lib/backendLocalProvider';
-import { INPAINT_FEATHER_DEFAULT_SEC, INPAINT_FEATHER_MAX_SEC, buildEditInpaintForm } from '../../lib/editInpaintForm';
+import { INPAINT_FEATHER_DEFAULT_SEC, INPAINT_FEATHER_MAX_SEC, buildEditInpaintForm, encodeEditInpaintCrop } from '../../lib/editInpaintForm';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, sampleLane, clipPeakGain, snapStepSec, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
@@ -187,9 +187,9 @@ const silentWavBlob = (): Blob => {
  * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
  * exactly the visible clip region, with mask coords relative to its start.
  *
- * Float WAV: the backend puts these samples back outside the region
- * (composite_original), so what the model is sent is what the clip keeps. A
- * 16-bit crop would requantize the whole clip on every inpaint.
+ * Encoded as float WAV by encodeEditInpaintCrop (lib/editInpaintForm): the
+ * backend puts these samples back outside the region, so they must survive the
+ * trip unrequantized.
  */
 const cropAudioBlob = async (
   blob: Blob,
@@ -213,7 +213,7 @@ const cropAudioBlob = async (
     src.connect(offline.destination);
     src.start(0, safeOffset, safeDur);
     const rendered = await offline.startRendering();
-    return encodeWav(rendered, { float32: true });
+    return encodeEditInpaintCrop(rendered);
   } finally {
     tmpCtx.close().catch(() => {});
   }
