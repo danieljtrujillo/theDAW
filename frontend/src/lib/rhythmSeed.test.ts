@@ -133,6 +133,12 @@ const close = (a: number, b: number, tol: number, what: string) => assert.ok(Mat
   assert.equal(swingFromRhythm({ status: 'ready', meter_map: fast, syncopation: { swing_ratio: 2 } })?.grooveId, 'group16:66.7');
   assert.equal(swingFromRhythm({ status: 'ready', meter_map: m44, syncopation: { swing_ratio: 9 } })?.pct, 75, 'held to 75%');
   assert.equal(seedFromRhythm({ ...base, syncopation: { swing_ratio: 1.6 } }, 120)?.swing?.grooveId, 'group16:61.5', "7/8 at the tracked beat swings its 16ths in each group");
+  // 6/8 tracked at the dotted quarter swings 8ths, counted from each dotted
+  // beat (grooveLanes.test pins which 8ths that moves); tracked at the 8th it
+  // swings 16ths, which six-step groups pair the same as the bar does.
+  const m68 = [{ start_bar: 0, bars: 8, numerator: 6, denominator: 8, grouping: [3, 3], beats_per_bar: 2, beat_unit: 'dotted-quarter' }];
+  assert.equal(swingFromRhythm({ status: 'ready', meter_map: m68, syncopation: { swing_ratio: 2 } })?.grooveId, 'group8:66.7');
+  assert.equal(swingFromRhythm({ status: 'ready', meter_map: [{ ...m68[0], beats_per_bar: 6, beat_unit: 'eighth' }], syncopation: { swing_ratio: 2 } })?.grooveId, 'group16:66.7');
 }
 
 // Lanes cover the segments their loop was heard in: one heard in the middle

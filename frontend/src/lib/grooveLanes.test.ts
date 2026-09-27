@@ -532,4 +532,30 @@ assert.deepEqual(normalizeMeterMap([{ bar: 0, meter: M78 }]), [{ bar: 0, meter: 
   assert.ok(moved[1] > 2 && moved[4] > 8 && moved[6] > 12 && moved[2] === 4);
 }
 
+// What MATCH's move from the bar swing (swing8, up to cb4f3e20's parent) to
+// the group swing changed, meter by meter. 4/4, 3/4 and a bare 7/8 swing the
+// same 8ths as before. 6/8 and 12/8 now swing inside each dotted beat: the
+// 8th after each dotted-beat downbeat lays back, and the dotted-beat downbeat
+// at step 6 (and 18) stays on time where the bar swing played it late.
+{
+  const eighthsOf = (steps: number) => Array.from({ length: steps / 2 }, (_, i) => ({ step: i * 2 }));
+  const play = (id: string, meter: MeterSegment['meter'], steps: number) =>
+    applyGrooveInMeter(eighthsOf(steps), grooveById(id), 1, [{ bar: 0, meter }]).map((n) => Math.round(n.step * 100) / 100);
+  for (const [name, meter, steps] of [
+    ['4/4', M44, 16],
+    ['3/4', M34, 12],
+    ['bare 7/8', { num: 7, den: 8, groups: [] as number[] }, 14],
+  ] as const) {
+    assert.deepEqual(play('group8:66', meter, steps), play('swing8:66', meter, steps), `${name}: MATCH swings the same 8ths as before`);
+  }
+  assert.deepEqual(play('swing8:66', M68, 12), [0, 2.64, 4, 6.64, 8, 10.64], '6/8 bar swing: every off 8th of the bar');
+  assert.deepEqual(play('group8:66', M68, 12), [0, 2.64, 4, 6, 8.64, 10], '6/8 group swing: long-short-plain in each dotted beat');
+  const twelve = play('group8:66', { num: 12, den: 8, groups: [] }, 24);
+  assert.deepEqual(twelve, [0, 2.64, 4, 6, 8.64, 10, 12, 14.64, 16, 18, 20.64, 22], '12/8: the same in each of the four dotted beats');
+  assert.notDeepEqual(twelve, play('swing8:66', { num: 12, den: 8, groups: [] }, 24), '12/8 swings different 8ths than the bar swing did');
+  // A 6/8 tracked at the 8th swings 16ths; its six-step groups pair them as the bar does.
+  const sixteenths = (id: string) => applyGrooveInMeter(Array.from({ length: 12 }, (_, step) => ({ step })), grooveById(id), 1, [{ bar: 0, meter: M68 }]).map((n) => n.step);
+  assert.deepEqual(sixteenths('group16:66'), sixteenths('swing16:66'), '6/8 16ths: MATCH swings the same notes as before');
+}
+
 console.log('grooveLanes: ok');
