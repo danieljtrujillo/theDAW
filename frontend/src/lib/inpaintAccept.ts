@@ -16,11 +16,15 @@
  * changed since or the clip is gone. Moving the clip along the timeline or to
  * another lane keeps its window and its audio, so the result still fits it.
  *
- * The component decodes the result, this module decides; which library entry
- * the clip points at afterwards is lib/clipAudioSource's.
+ * The backend saves every generate job's result as the library entry
+ * `<job id>_00` before it reports the job done, so the accepted clip points at
+ * that entry (inpaintResultEntryId) and nothing is imported a second time.
+ *
+ * The component decodes the result and reads the entry, this module decides;
+ * what a library entry means to a clip is lib/clipAudioSource's.
  * Tested in inpaintAccept.test.ts.
  */
-import { unsavedAudioSource, type ClipAudioSource } from './clipAudioSource';
+import { savedEntrySource, unsavedAudioSource, type ClipAudioSource } from './clipAudioSource';
 
 /** The parts of a timeline clip the accept decision reads. */
 export interface InpaintClipLike {
@@ -74,10 +78,17 @@ export type InpaintAcceptResolution =
   | { ok: true; patch: InpaintAcceptPatch }
   | { ok: false; reason: string };
 
+/** The library entry id the backend saves a single-take generate job's result
+ *  under (server.py, the post-save library sync; MAKE reads the same id). */
+export const inpaintResultEntryId = (jobId: string): string => `${jobId}_00`;
+
+/** `savedEntryId` is the library entry holding the result, or null when the
+ *  backend has none for it. */
 export function resolveInpaintAccept(
   clipNow: InpaintClipLike | undefined,
   snapshot: InpaintSnapshot,
   decodedDurationSec: number,
+  savedEntryId: string | null,
 ): InpaintAcceptResolution {
   if (!clipNow || clipNow.id !== snapshot.clipId) {
     return {
@@ -107,17 +118,10 @@ export function resolveInpaintAccept(
   if (!(decodedDurationSec > 0)) {
     return { ok: false, reason: 'The result decoded to no audio. Reject it and generate again.' };
   }
-  // No entry holds the result until its save lands, so the clip is marked as
-  // playing a render of its entry meanwhile: Split to stems then separates the
+  // The saved entry holds the result, so its analysis and its stems are the
+  // clip's. Without one the clip keeps its entry as provenance, marked as
+  // playing audio that entry does not hold: Split to stems then separates the
   // result itself, never the entry's audio from before the inpaint.
-  return { ok: true, patch: { ...renderedWindowGeometry(decodedDurationSec), ...unsavedAudioSource() } };
+  const source = savedEntryId ? savedEntrySource(savedEntryId) : unsavedAudioSource();
+  return { ok: true, patch: { ...renderedWindowGeometry(decodedDurationSec), ...source } };
 }
-
-/** Whether the library entry the accepted result was saved as may be written
- *  onto the clip. The save resolves after the accept, and by then an undo or a
- *  later edit may have put different audio on the clip; that audio keeps the
- *  entry it has. */
-export const keepsAcceptedAudio = (
-  clipNow: Pick<InpaintClipLike, 'audioBlob'> | undefined,
-  acceptedBlob: unknown,
-): boolean => !!clipNow && clipNow.audioBlob === acceptedBlob;

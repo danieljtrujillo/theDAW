@@ -23,7 +23,7 @@ import { effectiveZoom } from '../../lib/canvasScale';
 import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import {
-  keepsAcceptedAudio,
+  inpaintResultEntryId,
   renderedWindowGeometry,
   resolveInpaintAccept,
   snapshotInpaintClip,
@@ -33,11 +33,11 @@ import {
   entryBeatsFit,
   entryBpmForClip,
   entryKeyForClip,
-  savedEntrySource,
   stemsEntryIdOf,
   stemsEntryPatch,
   timePitchSource,
 } from '../../lib/clipAudioSource';
+import { getStorageProvider } from '../../lib/backendLocalProvider';
 import { INPAINT_FEATHER_DEFAULT_SEC, INPAINT_FEATHER_MAX_SEC, buildEditInpaintForm } from '../../lib/editInpaintForm';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
@@ -216,6 +216,24 @@ const cropAudioBlob = async (
     return encodeWav(rendered, { float32: true });
   } finally {
     tmpCtx.close().catch(() => {});
+  }
+};
+
+/**
+ * The library entry the backend saved an EDIT inpaint job's result as, put into
+ * the library store so the clip's readout and the track header find it. The
+ * backend writes it before it reports the job done; null when it has none.
+ */
+const readInpaintResultEntry = async (jobId: string): Promise<LibraryEntry | null> => {
+  const id = inpaintResultEntryId(jobId);
+  try {
+    const entry = await getStorageProvider().get(id);
+    if (entry) useLibraryStore.getState().upsertEntry(entry);
+    else logError('editor', `Inpaint accept: the library has no entry ${id}; the clip keeps its own`);
+    return entry;
+  } catch (e) {
+    logError('editor', `Inpaint accept: reading library entry ${id} failed: ${e instanceof Error ? e.message : e}`);
+    return null;
   }
 };
 
@@ -1528,7 +1546,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     | { kind: 'generating'; jobId: string; snapshot: InpaintSnapshot }
     // `error` is why Accept refused or could not decode the result, shown in
     // the panel; `accepting` covers the decode, so a second click waits.
-    | { kind: 'review'; blob: Blob; blobUrl: string; snapshot: InpaintSnapshot; error?: string; accepting?: boolean };
+    // `jobId` names the library entry the backend saved the result as.
+    | { kind: 'review'; jobId: string; blob: Blob; blobUrl: string; snapshot: InpaintSnapshot; error?: string; accepting?: boolean };
   const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
   // Read after an await, where the render's `inpaintPanel` may be stale.
   const inpaintPanelRef = useRef(inpaintPanel);
@@ -1672,7 +1691,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             const arr = new Uint8Array(bytes.length);
             for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
             const blob = new Blob([arr], { type: mime_type });
-            settle({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob), snapshot });
+            settle({ kind: 'review', jobId, blob, blobUrl: URL.createObjectURL(blob), snapshot });
           } else if (job.status === 'failed') {
             const msg = job.error ?? 'unknown';
             logError('editor', `Inpaint job failed: ${msg}`);
@@ -1772,7 +1791,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   retryInpaintRef.current = () => { void submitInpaint(); };
 
   const acceptInpaint = async (review: Extract<InpaintPhase, { kind: 'review' }>) => {
-    const { blob, blobUrl, snapshot } = review;
+    const { jobId, blob, blobUrl, snapshot } = review;
     // Every outcome below lands in the panel it was clicked in. If the panel
     // closed or moved on meanwhile, the click no longer applies.
     const stillReviewing = () => {
@@ -1783,6 +1802,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       setInpaintPanel((p) => (p?.kind === 'review' && p.blobUrl === blobUrl ? { ...p, error, accepting: false } : p));
     };
     setInpaintPanel((p) => (p?.kind === 'review' && p.blobUrl === blobUrl ? { ...p, error: undefined, accepting: true } : p));
+
+    // The library entry the backend saved the result as, read while the result
+    // decodes. The clip points at it, so its bpm/key readout and Split to stems
+    // read the new audio.
+    const savedEntryRead = readInpaintResultEntry(jobId);
 
     // Decode for the result's true length and its waveform. The request asked
     // for the clip's length, but the model truncates to whole samples.
@@ -1795,10 +1819,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       refuse(`The result could not be decoded (${msg}). Reject it and generate again.`);
       return;
     }
+    const savedEntry = await savedEntryRead;
     if (!stillReviewing()) return;
 
     const clipNow = useEditorStore.getState().clips.find((c) => c.id === snapshot.clipId);
-    const resolution = resolveInpaintAccept(clipNow, snapshot, decoded.duration);
+    const resolution = resolveInpaintAccept(clipNow, snapshot, decoded.duration, savedEntry?.id ?? null);
     if (resolution.ok === false) {
       logError('editor', `Inpaint accept refused: ${resolution.reason}`);
       refuse(resolution.reason);
@@ -1808,30 +1833,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const mimeType = blob.type || 'audio/wav';
     updateClip(snapshot.clipId, { audioBlob: blob, mimeType, peaks: decoded.peaks, ...resolution.patch });
 
-    // Save the accepted result to the library and point the clip at that
-    // entry, so its bpm/key readout and Split to stems read the new audio.
-    const label = `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`;
-    void useLibraryStore.getState().importEntry({
-      blob,
-      filename: label,
-      mimeType,
-      metadata: {
-        title: label,
-        prompt: inpaintPrompt,
-        model: 'inpaint',
-        duration: decoded.duration,
-        steps: inpaintSteps,
-        cfg: 1.0,
-        seed: inpaintSeed,
-        source: 'generate',
-        tags: ['inpaint'],
-      },
-    }).then((entry) => {
-      // The repoint follows the accept, so it adds no undo step of its own:
-      // undoing the accept restores the entry the clip had before it.
-      const live = useEditorStore.getState().clips.find((c) => c.id === snapshot.clipId);
-      if (keepsAcceptedAudio(live, blob)) applyClipRender(snapshot.clipId, savedEntrySource(entry.id));
-    }).catch((e) => logError('editor', `Inpaint library save failed: ${e}`));
+    // The entry carries the tag the library's own import of an accepted
+    // inpaint used to, so the library can still tell inpaints apart.
+    if (savedEntry && !(savedEntry.tags ?? []).includes('inpaint')) {
+      void useLibraryStore.getState().updateEntry(savedEntry.id, { tags: [...(savedEntry.tags ?? []), 'inpaint'] });
+    }
 
     clearInpaintSelection();
     setInpaintPanel(null);
