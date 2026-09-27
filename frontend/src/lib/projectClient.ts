@@ -7,6 +7,7 @@ import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
 import type { PianoNote } from '../state/pianoRollStore';
 import { normalizeMeterMap } from './meterMap';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
@@ -23,13 +24,20 @@ export interface TasmoPolyLane {
   cycle_steps: number | null;
 }
 
-/** A piano-roll note as a MIDI clip stores it; `lane` only when the note sits in one. */
+/**
+ * A piano-roll note as a MIDI clip stores it; `lane` only when the note sits in
+ * one. `tick` and `ticks` are the note's own position and length at 960 to the
+ * quarter (the roll's PPQ), written when the note has them; `step` and `length`
+ * are always written too, so a build that reads only those opens the file.
+ */
 export interface TasmoStepNote {
   note: number;
   step: number;
   length: number;
   velocity: number;
   lane?: number;
+  tick?: number;
+  ticks?: number;
 }
 
 /** A pitch bend point as a piano-roll clip stores it; `shape` only when it is not `linear`. */
@@ -457,14 +465,37 @@ export interface RecentItem {
 type ClipMeterFields = Pick<AudioClip, 'sourceRollNotes' | 'sourceTotalSteps' | 'sourceMeterMap' | 'sourcePickupSteps' | 'sourceLanes' | 'sourceBends'>;
 type TasmoMeterFields = Pick<TasmoClipInput, 'roll_notes' | 'total_steps' | 'meter_map' | 'pickup_steps' | 'lanes' | 'roll_bends'>;
 
-/** A piano-roll note in the .tasmo shape, carrying `lane` when the note has one. */
-export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => ({
-  note: n.note,
-  step: n.step,
-  length: n.length,
-  velocity: n.velocity,
-  ...(n.lane !== undefined ? { lane: n.lane } : {}),
-});
+const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
+
+/**
+ * `ticks` when it is a whole number of at least `min` that is `steps` 16ths to
+ * within half a tick, else undefined: a note's stored ticks, kept only while
+ * they still agree with the step view written beside them.
+ */
+export const ticksMatching = (ticks: unknown, steps: number, min: number): number | undefined =>
+  typeof ticks === 'number' && Number.isInteger(ticks) && ticks >= min && Number.isFinite(steps) && Math.abs(ticks - steps * TICKS_PER_STEP) < 0.5
+    ? ticks
+    : undefined;
+
+/**
+ * A piano-roll note in the .tasmo shape, carrying `lane` when the note has one,
+ * and `tick` / `ticks` when the note has them and they still agree with its
+ * `step` / `length`. Without the ticks a recorded note shorter than a 16th came
+ * back from the file a whole 16th long, since a length in steps floors at one step.
+ */
+export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
+  const tick = ticksMatching(n.tick, n.step, 0);
+  const ticks = ticksMatching(n.ticks, n.length, MIN_NOTE_TICKS);
+  return {
+    note: n.note,
+    step: n.step,
+    length: n.length,
+    velocity: n.velocity,
+    ...(n.lane !== undefined ? { lane: n.lane } : {}),
+    ...(tick !== undefined ? { tick } : {}),
+    ...(ticks !== undefined ? { ticks } : {}),
+  };
+};
 
 /** A piano-roll clip's own notes, grid length and meter in the .tasmo shape. Fields the clip lacks are left out. */
 export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
@@ -493,7 +524,9 @@ const numberAtLeast = (v: unknown, min: number): number | undefined =>
  * The inverse of pianoNoteToTasmo for a list. A note needs a pitch 0-127, a step
  * of 0 or more and a length above 0, or it is left out; velocity clamps to
  * 1-127 (100 when missing) and a lane that is not a whole number 0 or more is
- * dropped. The file stores no ids, so each note gets `<idPrefix>-<index>`.
+ * dropped. `tick` / `ticks` come back when they are whole and agree with the
+ * step / length beside them. The file stores no ids, so each note gets
+ * `<idPrefix>-<index>`.
  */
 export const tasmoNotesToPiano = (raw: readonly unknown[] | null | undefined, idPrefix = 'rn'): PianoNote[] => {
   const out: PianoNote[] = [];
@@ -506,6 +539,8 @@ export const tasmoNotesToPiano = (raw: readonly unknown[] | null | undefined, id
     if (note === undefined || note > 127 || step === undefined || length === undefined) continue;
     const velocity = typeof n.velocity === 'number' && Number.isFinite(n.velocity) ? Math.max(1, Math.min(127, n.velocity)) : 100;
     const lane = n.lane;
+    const tick = ticksMatching(n.tick, step, 0);
+    const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
     out.push({
       id: `${idPrefix}-${out.length}`,
       note: Math.round(note),
@@ -513,6 +548,8 @@ export const tasmoNotesToPiano = (raw: readonly unknown[] | null | undefined, id
       length,
       velocity,
       ...(typeof lane === 'number' && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
+      ...(tick !== undefined ? { tick } : {}),
+      ...(ticks !== undefined ? { ticks } : {}),
     });
   }
   return out;

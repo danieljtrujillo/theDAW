@@ -270,8 +270,9 @@ class Clip(BaseModel):
     sample_rate: int = 48000
     channels: int = 2
     # Each note is a dict. A piano-roll clip's midi_notes are the notes as they
-    # sound (note, step, length, velocity), each looping lane's repeats written
-    # out, which playback renders once.
+    # sound (note, step, length, velocity, and tick / ticks at 960 to the
+    # quarter when the note has them), each looping lane's repeats written out,
+    # which playback renders once.
     midi_notes: list[dict] | None = None
     midi_file: str | None = None
     # A piano-roll clip's own notes, the same keys plus "lane" when a note sits

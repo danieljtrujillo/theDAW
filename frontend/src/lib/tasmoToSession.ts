@@ -11,7 +11,8 @@
 // seconds-based shape the grid renders.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import type { TasmoProjectLoaded } from './projectClient';
+import { ticksMatching, type TasmoProjectLoaded } from './projectClient';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
@@ -33,12 +34,18 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         end_time: c.end_time ?? 0,
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
-          ? (c.midi_notes ?? []).map((n) => ({
-              pitch: Number(n.note ?? n.pitch ?? 60),
-              start: Number(n.step ?? 0) * stepSec,
-              duration: Math.max(1, Number(n.length ?? 1)) * stepSec,
-              velocity: Number(n.velocity ?? 100),
-            }))
+          ? (c.midi_notes ?? []).map((n) => {
+              const length = Number(n.length ?? 1);
+              // The note's own ticks when the file carries them (a note shorter
+              // than a 16th keeps its length); a length in steps alone floors at one step.
+              const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
+              return {
+                pitch: Number(n.note ?? n.pitch ?? 60),
+                start: Number(n.step ?? 0) * stepSec,
+                duration: (ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : Math.max(1, length)) * stepSec,
+                velocity: Number(n.velocity ?? 100),
+              };
+            })
           : null,
         track_index: c.track_index ?? ti,
         scene_index: c.scene_index ?? (hasGrid ? null : ci),

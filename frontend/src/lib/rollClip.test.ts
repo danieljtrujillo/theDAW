@@ -57,15 +57,11 @@ const assertLoad = (args: RollLoadArgs, clipId: string, source: 'roll' | 'tasmo'
   assert.equal(bpm, BPM);
   assert.equal(total, TOTAL);
   assert.deepEqual(meter, original.meter);
-  // migrateNotes because one of the two callers loads a clip that came back out
-  // of .tasmo JSON, whose note shape carries step and length but no ticks. It is
-  // a no-op for the clip that never left memory (ticks that agree are kept).
-  assert.deepEqual(withoutIds(migrateNotes(notes)), withoutIds(original.notes));
-  // …so the wrap alone cannot tell a preserved tick from a reconstructed one.
-  // These two say which side is which: the in-memory clip arrives ticked, and
-  // the .tasmo reload arrives with no ticks at all for loadFromClip to migrate.
-  if (source === 'roll') for (const n of notes) assert.equal(n.tick, tickOfStep(n.step), `${n.id} reached the roll un-ticked`);
-  else assert.ok(notes.some((n) => n.tick === undefined), 'a .tasmo reload carries no ticks');
+  // Both callers hand the notes over ticked: the clip that never left memory
+  // holds its ticks, and a clip that came back out of .tasmo JSON carries the
+  // ticks pianoNoteToTasmo wrote beside each step and length.
+  assert.deepEqual(withoutIds(notes), withoutIds(original.notes));
+  for (const n of notes) assert.equal(n.tick, tickOfStep(n.step), `${n.id} reached the roll un-ticked (${source})`);
   assert.deepEqual(withoutPointIds(bends), withoutPointIds(original.bends));
 };
 
@@ -147,11 +143,14 @@ const reloaded: RollClipInput = {
   sourcePianoRoll: tasmoNotesToPiano(saved.midi_notes, 'pn'),
   ...tasmoMeterToClip(saved),
 };
-// The .tasmo note shape carries no ticks — `pianoNoteToTasmo` writes step and
-// length — so the reloaded notes are migrated for the comparison, exactly as the
-// store migrates them when the clip is opened in step 7 below.
-assert.deepEqual(withoutIds(migrateNotes(reloaded.sourcePianoRoll ?? [])), withoutIds(played));
-assert.ok((reloaded.sourcePianoRoll ?? []).some((n) => n.tick === undefined), 'the reload really is tick-less');
+// `pianoNoteToTasmo` writes each note's ticks beside its step and length, so
+// the reloaded notes come back with the ticks they were saved with.
+assert.deepEqual(withoutIds(reloaded.sourcePianoRoll ?? []), withoutIds(played));
+assert.ok((reloaded.sourcePianoRoll ?? []).every((n) => typeof n.tick === 'number' && typeof n.ticks === 'number'), 'the reload carries its ticks');
+// A file written before the ticks (step and length only) migrates to the same
+// notes, exactly as the store migrates them when the clip is opened in step 7.
+const tickless = saved.midi_notes.map(({ tick: _t, ticks: _ts, ...n }) => n);
+assert.deepEqual(withoutIds(migrateNotes(tasmoNotesToPiano(tickless, 'pn'))), withoutIds(played));
 assert.equal(reloaded.sourcePianoRoll?.some((n) => 'lane' in n), false);
 
 // 7. Open the reloaded clip in the roll.
