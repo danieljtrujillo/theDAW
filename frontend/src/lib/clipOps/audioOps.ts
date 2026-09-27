@@ -336,7 +336,7 @@ const tempoOf = (clip: AudioClip, fallback: number | undefined): number => {
  *  note, floored at one bar of 16ths — the same fallback the editor uses when
  *  it re-renders a MIDI clip after an instrument change. */
 const stepsOf = (clip: AudioClip, notes: StepNote[]): number =>
-  clip.sourceTotalSteps ?? Math.max(16, ...notes.map((n) => n.step + n.length));
+  clip.sourceTotalSteps ?? notes.reduce((end, n) => Math.max(end, n.step + n.length), 16);
 
 /**
  * Render a piano-roll clip's notes to audio at its own tempo — the "bounce"

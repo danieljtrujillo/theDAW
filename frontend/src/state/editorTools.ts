@@ -346,7 +346,7 @@ const commitNotes = async (
   if (notes.length === 0) {
     return { ok: false, error: `refusing: that would leave "${clip.label}" with no notes at all` };
   }
-  const totalSteps = Math.max(16, ...notes.map((n) => n.step + n.length));
+  const totalSteps = notes.reduce((end, n) => Math.max(end, n.step + n.length), 16);
   const next: AudioClip = {
     ...clip,
     sourcePianoRoll: notes,

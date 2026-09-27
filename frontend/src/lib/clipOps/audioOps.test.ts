@@ -294,6 +294,13 @@ const run = async () => {
     assert.equal(calls[2].totalSteps, 16, 'short pattern floors at one bar of 16ths');
     await bounceMidiClip({ ...noSteps, sourcePianoRoll: [{ id: 'n', note: 60, step: 20, length: 4, velocity: 90 }] } as AudioClip, { render });
     assert.equal(calls[3].totalSteps, 24, 'longer pattern uses the last note end');
+    // A roll clip of 130,000 notes with no stored grid length (an imported
+    // symphony): the fallback used to spread every note into Math.max, which
+    // throws "Maximum call stack size exceeded" past about 125,000 arguments.
+    const big = Array.from({ length: 130_000 }, (_, i) => ({ id: `b${i}`, note: 60 + (i % 24), step: i * 0.5, length: 1, velocity: 90 }));
+    await bounceMidiClip({ ...noSteps, sourcePianoRoll: big } as AudioClip, { render });
+    assert.equal(calls[calls.length - 1].totalSteps, 130_000 * 0.5 - 0.5 + 1, 'a huge pattern runs to its last note end');
+    calls.splice(4);
 
     // 99 → 120 BPM is ratio 0.825, and a stretch re-renders at sourceBpm/ratio.
     const stretched = await stretchMidiClip(midi, 99 / 120, { render });

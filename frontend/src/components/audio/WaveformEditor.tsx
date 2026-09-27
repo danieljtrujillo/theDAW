@@ -2589,7 +2589,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const totalSteps = clip.sourceTotalSteps
         ?? roundUpToBar(
           clip.sourceMeterMap ?? [],
-          Math.max(1, ...clip.sourcePianoRoll.map((n) => n.step + n.length)),
+          clip.sourcePianoRoll.reduce((end, n) => Math.max(end, n.step + n.length), 1),
           clip.sourcePickupSteps ?? 0,
         );
       // A clip whose lanes bend renders each note in its lane, so the bend survives the re-render.

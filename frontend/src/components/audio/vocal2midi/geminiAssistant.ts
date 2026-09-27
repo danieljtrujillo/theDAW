@@ -254,7 +254,7 @@ Piano Roll State:
 - Key: ${currentKeyName}
 - Genre: ${context.config.genre}
 - Notes: ${getNotesDescription(context.pianoRoll.notes)}
-- Total Duration: ${context.pianoRoll.notes.length > 0 ? Math.max(...context.pianoRoll.notes.map(n => n.startTime + n.duration)).toFixed(2) : 0}s
+- Total Duration: ${context.pianoRoll.notes.length > 0 ? context.pianoRoll.notes.reduce((end, n) => Math.max(end, n.startTime + n.duration), 0).toFixed(2) : 0}s
 - Playing: ${context.pianoRoll.isPlaying}
 
 === YOUR CAPABILITIES ===
