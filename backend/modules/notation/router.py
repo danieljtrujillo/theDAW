@@ -29,14 +29,17 @@ from .engine import (
     capabilities,
     drop_superseded_recovery_rows,
     convert_score,
+    legacy_sheet_midi,
     midi_to_arrangement,
     midi_to_musicxml,
     midi_to_tabs,
     part_names,
     register_on_disk_artifacts,
+    rewrite_sheet_from_midi,
     sheet_output_path,
     stage_parts,
 )
+from .sheet_pitch import legacy_sounding_pitch
 
 log = logging.getLogger(__name__)
 
@@ -271,6 +274,17 @@ def list_artifacts(entry_id: str, kind: Optional[str] = None) -> dict[str, Any]:
     )
     if kind:
         artifacts = [a for a in artifacts if a.get("kind") == kind]
+    # A sheet an older build wrote at sounding pitch says so, and whether the
+    # MIDI it came from is here to rewrite it (POST .../rewrite-from-midi).
+    # Both are reads of the sheet's own bytes and the rows above.
+    for artifact in artifacts:
+        if artifact.get("kind") != "musicxml":
+            continue
+        legacy = legacy_sounding_pitch(Path(str(artifact.get("path") or "")))
+        artifact["legacy_sounding_pitch"] = legacy
+        artifact["rewrite_from_midi"] = (
+            legacy and legacy_sheet_midi(store.db, artifact) is not None
+        )
     return {"entry_id": entry_id, "artifacts": artifacts, "count": len(artifacts)}
 
 
@@ -400,6 +414,37 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
     )
     if not result.get("ok"):
         raise HTTPException(501, result)
+    return result
+
+
+@router.post("/{entry_id}/rewrite-from-midi/{artifact_id}")
+def rewrite_legacy_sheet(entry_id: str, artifact_id: str) -> dict[str, Any]:
+    """Engrave a sheet an older build wrote at sounding pitch again from its
+    MIDI, at written pitch, over the same file (the SCORE tab's "Rewrite from
+    MIDI"). The old file is kept until the new one is written; see
+    :func:`.engine.rewrite_sheet_from_midi`."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    artifact = store.db.get_notation_artifact(artifact_id)
+    if artifact is None or artifact.get("entry_id") != entry_id:
+        raise HTTPException(404, f"artifact {artifact_id!r} not found for entry")
+    if artifact.get("kind") != "musicxml":
+        raise HTTPException(400, f"artifact {artifact_id!r} is not a MusicXML sheet")
+    result = rewrite_sheet_from_midi(
+        store.db, artifact, title=_entry_title(store, entry_id)
+    )
+    if not result.get("ok"):
+        reason = result.get("reason")
+        status = (
+            409
+            if reason == "not-legacy"
+            else 404
+            if reason in ("no-midi", "not-a-sheet")
+            else 500
+        )
+        raise HTTPException(status, result)
+    log.info("notation: rewrote %s from its MIDI at written pitch", artifact_id)
     return result
 
 

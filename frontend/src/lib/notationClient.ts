@@ -21,6 +21,12 @@ export interface NotationArtifact {
   engine_version: string;
   metadata_json?: string;
   created_at: number;
+  /** MusicXML only: the sheet is one an older build wrote with its transposing
+   *  parts at the pitch they sound (backend notation/sheet_pitch.py). */
+  legacy_sounding_pitch?: boolean;
+  /** MusicXML only: that sheet's MIDI is in the library, so "Rewrite from
+   *  MIDI" (rewriteSheetFromMidi) can engrave it again at written pitch. */
+  rewrite_from_midi?: boolean;
 }
 
 export async function listNotationArtifacts(entryId: string, kind?: string): Promise<NotationArtifact[]> {
@@ -42,6 +48,27 @@ export async function convertMidiToMusicXml(entryId: string, midiId: string): Pr
     const message = typeof detail === 'object' && detail && 'error' in detail
       ? String((detail as { error?: unknown }).error)
       : `notation conversion HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
+}
+
+/**
+ * Engrave a sheet an older build wrote at sounding pitch again from its MIDI,
+ * at written pitch, over the same file and artifact id. The backend keeps the
+ * old file until the new one is written.
+ */
+export async function rewriteSheetFromMidi(entryId: string, artifactId: string): Promise<NotationArtifact | null> {
+  const res = await fetch(
+    `/api/notation/${encodeURIComponent(entryId)}/rewrite-from-midi/${encodeURIComponent(artifactId)}`,
+    { method: 'POST' },
+  );
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : `sheet rewrite HTTP ${res.status}`;
     throw new Error(message);
   }
   return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;

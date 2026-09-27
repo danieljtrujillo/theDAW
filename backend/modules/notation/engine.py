@@ -60,7 +60,7 @@ from backend.modules.library.db import LibraryDB, normalize_artifact_path
 
 from . import pdf_render
 from .midi_read import is_midi, read_score
-from .sheet_pitch import stamp_written_pitch
+from .sheet_pitch import legacy_sounding_pitch, stamp_written_pitch
 from .tempo_marks import engrave_tempo_marks, restore_sounding_tempi
 from backend.lib.atomic import atomic_replace
 from backend.lib.launch_token import child_env
@@ -2489,6 +2489,97 @@ def midi_to_musicxml(
         source_ref=source_ref,
         artifact_id=artifact_id,
         title=title,
+    )
+
+
+def _artifact_meta(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        meta = json.loads(str(artifact.get("metadata_json") or "{}"))
+    except ValueError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def legacy_sheet_midi(db: LibraryDB, artifact: Mapping[str, Any]) -> Optional[Path]:
+    """The MIDI a library sheet was engraved from, when the sheet is one an
+    older build wrote at sounding pitch (:func:`.sheet_pitch.legacy_sounding_pitch`)
+    and that MIDI is still on disk; else None.
+
+    Looked for where the writers recorded it: the artifact's
+    ``metadata.source`` (the file the converter read), then its ``source_ref``
+    as a ``midi`` notation artifact, then as a row of the legacy ``midis``
+    table (the ``/from-midi`` route's id).
+    """
+    if artifact.get("kind") != "musicxml":
+        return None
+    sheet = Path(str(artifact.get("path") or ""))
+    if not sheet.is_file() or not legacy_sounding_pitch(sheet):
+        return None
+    candidates: list[Path] = []
+    source = _artifact_meta(artifact).get("source")
+    if isinstance(source, str) and source:
+        candidates.append(Path(source))
+    ref = str(artifact.get("source_ref") or "")
+    if ref:
+        midi_art = db.get_notation_artifact(ref)
+        if midi_art and midi_art.get("kind") == "midi":
+            candidates.append(Path(str(midi_art.get("path") or "")))
+        midi_row = db.get_midi(ref)
+        if midi_row:
+            candidates.append(Path(str(midi_row.get("midi_path") or "")))
+    for path in candidates:
+        if str(path) and path.is_file() and is_midi(path):
+            return path
+    return None
+
+
+def rewrite_sheet_from_midi(
+    db: LibraryDB, artifact: Mapping[str, Any], *, title: str = ""
+) -> dict[str, Any]:
+    """Engrave a sheet an older build wrote at sounding pitch again from the
+    MIDI it came from, at written pitch, over the same file and artifact id.
+
+    Such a sheet put a clarinet, horn, trumpet, saxophone, English horn,
+    piccolo, contrabass or banjo part at the pitch it sounds under a
+    ``<transpose>`` that says it is written pitch. The rewrite goes through
+    :func:`convert_score`, which moves a MIDI's transposing parts to written
+    pitch and stamps the sheet; a part-scoped sheet keeps its parts. The old
+    file stays as it is until the new one is written and validated
+    (:func:`_write_musicxml` replaces it atomically), so a failed rewrite
+    leaves it untouched. Returns ``convert_score``'s result, or ``ok=False``
+    with ``reason`` ``not-legacy`` / ``no-midi``.
+    """
+    sheet = Path(str(artifact.get("path") or ""))
+    if artifact.get("kind") != "musicxml" or not sheet.is_file():
+        return {"ok": False, "reason": "not-a-sheet", "error": f"no sheet at {sheet}"}
+    if not legacy_sounding_pitch(sheet):
+        return {
+            "ok": False,
+            "reason": "not-legacy",
+            "error": "this sheet already holds written pitch",
+        }
+    midi = legacy_sheet_midi(db, artifact)
+    if midi is None:
+        return {
+            "ok": False,
+            "reason": "no-midi",
+            "error": "the MIDI this sheet was made from is not in the library",
+        }
+    parts = [
+        p["index"]
+        for p in _artifact_meta(artifact).get("parts") or []
+        if isinstance(p, dict) and isinstance(p.get("index"), int)
+    ]
+    return convert_score(
+        db,
+        entry_id=str(artifact.get("entry_id") or ""),
+        source_path=midi,
+        fmt="musicxml",
+        output_path=sheet,
+        source_ref=str(artifact.get("source_ref") or "") or None,
+        artifact_id=str(artifact.get("id") or "") or None,
+        title=title,
+        options={"parts": parts} if parts else None,
     )
 
 

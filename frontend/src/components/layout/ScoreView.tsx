@@ -115,6 +115,7 @@ import {
 } from '../../state/playAlongStore';
 import { ModeSwitch } from './score/playAlong/ModeSwitch';
 import { ExportMenu } from './score/ExportMenu';
+import { LegacySheetNotice } from './score/LegacySheetNotice';
 import { PlayAlongTransportCompact } from './score/playAlong/PlayAlongTransport';
 import { usePlayAlong } from './score/playAlong/usePlayAlongClock';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -235,6 +236,9 @@ export const ScoreView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [caps, setCaps] = useState<NotationCapabilities | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  // Bumped when a sheet is rewritten in place (same artifact id, new bytes),
+  // so the preview, keyed by it, reads the file again.
+  const [previewRevision, setPreviewRevision] = useState(0);
   // METER MAP popover: the same RhythmBlock the library menu (save-meter-map)
   // and DETAILS embed, reached here so a track opened straight into SCORE (or
   // the SING split) does not need a trip back to DETAILS just to read it.
@@ -400,6 +404,14 @@ export const ScoreView: React.FC = () => {
   };
 
   // ---- Play-along integration ---------------------------------------------
+
+  /** "Rewrite from MIDI" wrote the selected sheet again over the same file:
+   *  list it (dropping its cached text) and read it again. */
+  const onSheetRewritten = async (artifact: NotationArtifact | null) => {
+    await loadArtifacts();
+    if (artifact?.id) setSelectedArtifactId(artifact.id);
+    setPreviewRevision((r) => r + 1);
+  };
 
   /** The maker made something: list it, open it, and open a chord track in
    *  the CHORDS view. */
@@ -697,6 +709,10 @@ export const ScoreView: React.FC = () => {
                         {artifact.kind}
                         {artifact.engine ? ` · ${artifact.engine}` : ''}
                       </div>
+                      {/* A sheet an older build wrote at sounding pitch; the bar over its preview rewrites it. */}
+                      {artifact.legacy_sounding_pitch && (
+                        <div className="truncate text-amber-300">Older sheet: sounding pitch</div>
+                      )}
                     </button>
                   );
                 })}
@@ -836,7 +852,10 @@ export const ScoreView: React.FC = () => {
             )}
           </ExportMenu>
         </div>
-        <div className="relative flex-1 min-h-0 bg-[#0b0810]">
+        {selectedEntryId && selectedArtifact && (
+          <LegacySheetNotice key={selectedArtifact.id} entryId={selectedEntryId} artifact={selectedArtifact} onRewritten={onSheetRewritten} />
+        )}
+        <div key={previewRevision} className="relative flex-1 min-h-0 bg-[#0b0810]">
           {renderPreview()}
         </div>
       </div>
