@@ -1476,9 +1476,11 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
   };
 
   // A program means an instrument on a melodic track and a kit on a drum
-  // track, so switching clears it and the track starts on its default.
+  // track, so switching clears the track's and its clips' programs and they
+  // start on their defaults (editorStore setTrackPercussion).
+  const setTrackPercussion = useEditorStore((s) => s.setTrackPercussion);
   const toggleDrums = () => {
-    updateTrack(track.id, { isPercussion: drums ? undefined : true, instrumentProgram: undefined });
+    setTrackPercussion(track.id, !drums);
     void ensureSoundfontReady();
   };
 
@@ -8355,7 +8357,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           { type: 'separator' },
           // The drum key of the track header, here too, so an empty track can
           // become a drum track before a part is recorded onto it. A program
-          // is an instrument on one and a kit on the other, so it is cleared.
+          // is an instrument on one and a kit on the other, so the track's and
+          // its clips' programs are cleared (editorStore setTrackPercussion).
           {
             type: 'item',
             icon: isPercussionTrack(t) ? <Piano className="w-3 h-3" /> : <Drum className="w-3 h-3" />,
@@ -8364,7 +8367,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               ? 'MIDI on this track plays its notes as pitches again'
               : 'MIDI on this track plays drums on the General MIDI drum channel',
             onSelect: () => {
-              updateTrack(t.id, { isPercussion: isPercussionTrack(t) ? undefined : true, instrumentProgram: undefined });
+              useEditorStore.getState().setTrackPercussion(t.id, !isPercussionTrack(t));
               void ensureSoundfontReady();
             },
           },

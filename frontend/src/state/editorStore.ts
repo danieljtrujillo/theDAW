@@ -656,6 +656,11 @@ interface EditorStoreState {
   insertTrack: (index: number, overrides?: Partial<EditorTrack>) => string;
   removeTrack: (id: string) => void;
   updateTrack: (id: string, updates: Partial<EditorTrack>) => void;
+  /** Make a track a drum track (`on`) or a melodic one. A program is an
+   *  instrument on one and a kit on the other, so the track's program and every
+   *  program its clips hold are cleared with the flag, and the track and its
+   *  clips start on their defaults. One undo step; a flag already set writes nothing. */
+  setTrackPercussion: (id: string, on: boolean) => void;
   /** Put `orderedIds` at the top in the order given; every track not named keeps
    *  its relative position after them. Unknown ids are ignored, so a partial or
    *  stale list can reorder but never drop a track. */
@@ -1802,6 +1807,16 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     coalesceAs(params ? `track:${id}:${params.join('+')}` : null);
     set((s) => ({
       tracks: s.tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    }));
+  },
+
+  setTrackPercussion: (id, on) => {
+    const track = get().tracks.find((t) => t.id === id);
+    if (!track || (track.isPercussion === true) === on) return;
+    coalesceAs(null);
+    set((s) => ({
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: on ? true : undefined, instrumentProgram: undefined } : t)),
+      clips: s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)),
     }));
   },
 
