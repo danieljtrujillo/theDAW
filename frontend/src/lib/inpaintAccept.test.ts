@@ -6,11 +6,12 @@
 import assert from 'node:assert/strict';
 import {
   keepsAcceptedAudio,
-  renderedWindowPatch,
+  renderedWindowGeometry,
   resolveInpaintAccept,
   snapshotInpaintClip,
   type InpaintClipLike,
 } from './inpaintAccept';
+import { stemsEntryIdOf } from './clipAudioSource';
 
 const source = { name: 'take 1' };
 const replaced = { name: 'stretched take 1' };
@@ -35,10 +36,14 @@ const rightHalf: InpaintClipLike & { startSec: number; trackId: string } = {
   assert.equal(res.patch.offsetIntoSource, 0);
   assert.equal(res.patch.sourceDuration, decoded);
   assert.equal(res.patch.durationSec, decoded);
-  // The old entry holds the audio from before the inpaint; it is dropped until
-  // the save of the result lands.
-  assert.ok('libraryEntryId' in res.patch);
-  assert.equal(res.patch.libraryEntryId, undefined);
+  // Until the save of the result lands, the clip keeps its entry as provenance
+  // and is marked as playing audio that entry does not hold, so Split to stems
+  // separates the result and not the audio from before the inpaint.
+  assert.equal('libraryEntryId' in res.patch, false);
+  assert.equal(res.patch.audioRendered, true);
+  const accepted = { ...rightHalf, libraryEntryId: 'take-1', stemsEntryId: 'stale', ...res.patch };
+  assert.equal(accepted.libraryEntryId, 'take-1');
+  assert.equal(stemsEntryIdOf(accepted), null);
 }
 
 // Trimmed from the right while the job ran: refused, and the reason says why.
@@ -127,8 +132,8 @@ const rightHalf: InpaintClipLike & { startSec: number; trackId: string } = {
 // Time/Pitch writes the same geometry: a stretched 8 s window of a 20 s take
 // becomes a 6.4 s clip that plays its own render from 0.
 {
-  const patch = renderedWindowPatch(6.4);
-  assert.deepEqual(patch, { offsetIntoSource: 0, sourceDuration: 6.4, durationSec: 6.4, libraryEntryId: undefined });
+  const patch = renderedWindowGeometry(6.4);
+  assert.deepEqual(patch, { offsetIntoSource: 0, sourceDuration: 6.4, durationSec: 6.4 });
 }
 
 console.log('inpaintAccept: all tests passed');

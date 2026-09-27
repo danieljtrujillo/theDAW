@@ -16,9 +16,11 @@
  * changed since or the clip is gone. Moving the clip along the timeline or to
  * another lane keeps its window and its audio, so the result still fits it.
  *
- * No imports: the component decodes the result, this module decides.
+ * The component decodes the result, this module decides; which library entry
+ * the clip points at afterwards is lib/clipAudioSource's.
  * Tested in inpaintAccept.test.ts.
  */
+import { unsavedAudioSource, type ClipAudioSource } from './clipAudioSource';
 
 /** The parts of a timeline clip the accept decision reads. */
 export interface InpaintClipLike {
@@ -48,30 +50,28 @@ export const snapshotInpaintClip = (clip: InpaintClipLike): InpaintSnapshot => (
   audioBlob: clip.audioBlob,
 });
 
-export interface RenderedWindowPatch {
+export interface RenderedWindowGeometry {
   offsetIntoSource: 0;
   sourceDuration: number;
   durationSec: number;
-  libraryEntryId: undefined;
 }
 
 /** Geometry for a clip whose audio was just replaced by a render of its own
  *  window. The render starts at the window's first sample and is the whole
- *  source now, so the offset resets and both lengths are the render's. The
- *  library entry is dropped because no entry holds the new audio yet: Split to
- *  stems separates the clip's library entry, and the old entry would hand it the
- *  audio from before the render. Shared by the inpaint accept and Time/Pitch. */
-export const renderedWindowPatch = (durationSec: number): RenderedWindowPatch => ({
+ *  source now, so the offset resets and both lengths are the render's. Shared
+ *  by the inpaint accept and Time/Pitch. */
+export const renderedWindowGeometry = (durationSec: number): RenderedWindowGeometry => ({
   offsetIntoSource: 0,
   sourceDuration: durationSec,
   durationSec,
-  libraryEntryId: undefined,
 });
+
+export type InpaintAcceptPatch = RenderedWindowGeometry & Partial<ClipAudioSource>;
 
 /** Narrow with `ok === true` / `ok === false`: the app's tsconfig is not
  *  strict, and a bare `!res.ok` does not narrow the union there. */
 export type InpaintAcceptResolution =
-  | { ok: true; patch: RenderedWindowPatch }
+  | { ok: true; patch: InpaintAcceptPatch }
   | { ok: false; reason: string };
 
 export function resolveInpaintAccept(
@@ -107,7 +107,10 @@ export function resolveInpaintAccept(
   if (!(decodedDurationSec > 0)) {
     return { ok: false, reason: 'The result decoded to no audio. Reject it and generate again.' };
   }
-  return { ok: true, patch: renderedWindowPatch(decodedDurationSec) };
+  // No entry holds the result until its save lands, so the clip is marked as
+  // playing a render of its entry meanwhile: Split to stems then separates the
+  // result itself, never the entry's audio from before the inpaint.
+  return { ok: true, patch: { ...renderedWindowGeometry(decodedDurationSec), ...unsavedAudioSource() } };
 }
 
 /** Whether the library entry the accepted result was saved as may be written

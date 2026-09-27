@@ -81,6 +81,19 @@ export interface AudioClip {
   peaks?: Float32Array;
   /** Optional reference back to a Library entry id, if dropped from the library. */
   libraryEntryId?: string;
+  /** Set once Time/Pitch (or an inpaint no entry holds) replaced the clip's
+   *  audio: `libraryEntryId` still describes the take but no longer holds what
+   *  the clip plays (lib/clipAudioSource). */
+  audioRendered?: boolean;
+  /** For a rendered clip, the library entry its own audio was imported as for
+   *  Split to stems, so a re-run hits the stems cache. */
+  stemsEntryId?: string;
+  /** For a rendered clip, its tempo relative to `libraryEntryId`'s audio (the
+   *  product of every Time/Pitch stretch since). */
+  renderTempo?: number;
+  /** For a rendered clip, its transpose from `libraryEntryId`'s audio in
+   *  semitones (the sum of every Time/Pitch shift since). */
+  renderSemitones?: number;
   /** How this clip was produced — informs "Edit in Piano Roll" availability. */
   sourceKind?: ClipSourceKind;
   /** When sourceKind === 'piano-roll', the note list that produced the audio, as it

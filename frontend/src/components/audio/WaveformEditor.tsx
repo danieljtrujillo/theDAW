@@ -24,11 +24,20 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import {
   keepsAcceptedAudio,
-  renderedWindowPatch,
+  renderedWindowGeometry,
   resolveInpaintAccept,
   snapshotInpaintClip,
   type InpaintSnapshot,
 } from '../../lib/inpaintAccept';
+import {
+  entryBeatsFit,
+  entryBpmForClip,
+  entryKeyForClip,
+  savedEntrySource,
+  stemsEntryIdOf,
+  stemsEntryPatch,
+  timePitchSource,
+} from '../../lib/clipAudioSource';
 import { INPAINT_FEATHER_DEFAULT_SEC, INPAINT_FEATHER_MAX_SEC, buildEditInpaintForm } from '../../lib/editInpaintForm';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
@@ -1138,9 +1147,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [timePitchPanel]);
 
   // ── Stem separation on a timeline clip → explode to tracks. The Demucs
-  // sidecar is keyed on library entries, so a clip without a libraryEntryId is
-  // first imported as one (the id is written back onto the clip so a re-run
-  // hits the cache). ensureStems() returns cached stems or runs separation
+  // sidecar is keyed on library entries, so a clip with no entry holding its
+  // audio (none at all, or a Time/Pitch render of its entry) is first imported
+  // as one (the id is written back onto the clip so a re-run hits the cache;
+  // see lib/clipAudioSource). ensureStems() returns cached stems or runs separation
   // with progress; each stem becomes its own track whose clip keeps the source
   // clip's timeline placement + trim, and the source clip is muted (not
   // deleted) so the explosion is reversible.
@@ -1162,8 +1172,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!src) return;
     setStemsJob({ clipId, entryId: null, phase: 'preparing', pct: 0 });
     try {
-      // 1. A library entry to key the stems backend on.
-      let entryId = src.libraryEntryId ?? null;
+      // 1. A library entry holding the clip's own audio, to key the stems backend on.
+      let entryId = stemsEntryIdOf(src);
       if (!entryId) {
         const entry = await useLibraryStore.getState().importEntry({
           blob: src.audioBlob,
@@ -1172,7 +1182,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           metadata: { title: `${src.label || 'EDIT clip'} (EDIT)`, source: 'import' },
         });
         entryId = entry.id;
-        useEditorStore.getState().updateClip(clipId, { libraryEntryId: entryId });
+        // Derived from the clip's audio, so no undo step of its own; and only
+        // while the clip still plays the audio that was imported.
+        const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
+        if (live && live.audioBlob === src.audioBlob) applyClipRender(clipId, stemsEntryPatch(live, entryId));
       }
       setStemsJob({ clipId, entryId, phase: 'separating', pct: 0 });
       // 2. Cached stems, or a fresh separation run with live progress.
@@ -1228,7 +1241,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         setStemsJob((j) => (j && j.clipId === clipId && j.phase.startsWith('failed') ? null : j));
       }, 6000);
     }
-  }, []);
+  }, [applyClipRender]);
 
   const onConfirmStemsModal = useCallback((opts: StemsRunOptions) => {
     const modal = stemsModal;
@@ -1401,7 +1414,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (clip.sourceKind === 'piano-roll') return null;
     if (clip.bpm && clip.bpm > 0) return clip.bpm;
     const d = clip.libraryEntryId ? useDjAnalysisStore.getState().byId[clip.libraryEntryId]?.data : undefined;
-    return d?.bpm && d.bpm > 0 ? d.bpm : null;
+    // A render's tempo is the source's times every stretch since.
+    return entryBpmForClip(clip, d?.bpm);
   }, []);
 
   const applyTimePitch = useCallback(async (clipId: string, tempo: number, semitones: number) => {
@@ -1425,9 +1439,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         audioBlob: blob, mimeType: 'audio/wav', peaks,
         // The render is the whole source now: offset 0, and sourceDuration
         // follows it so the trim handles and the waveform window stop at its
-        // end. It also drops the library entry, which holds the unstretched
-        // take, so Split to stems separates this render (see renderedWindowPatch).
-        ...renderedWindowPatch(duration),
+        // end.
+        ...renderedWindowGeometry(duration),
+        // The library entry stays (its key, style and lyrics still describe
+        // the take), marked as no longer holding the clip's audio: Split to
+        // stems separates this render, and the key readout moves by the
+        // transpose (lib/clipAudioSource).
+        ...timePitchSource(clip, tempo, semitones),
         // The readout follows the stretch: a 120 clip at 1.05x plays at 126.
         bpm: known ? known * tempo : clip.bpm,
       });
@@ -1467,7 +1485,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const tempo = tempoById.get(clip.id) ?? 1;
       // The beat list describes the library source. A clip whose audio a
       // stretch already rendered has lost that mapping, so it gets the tempo only.
-      const beats = !clip.bpm && clip.libraryEntryId ? useDjAnalysisStore.getState().byId[clip.libraryEntryId]?.data?.beats : null;
+      const beats = !clip.bpm && entryBeatsFit(clip) && clip.libraryEntryId
+        ? useDjAnalysisStore.getState().byId[clip.libraryEntryId]?.data?.beats
+        : null;
       const first = firstBeatInClip(beats, clip.offsetIntoSource, clip.durationSec, tempo);
       if (tempo !== 1) {
         await applyTimePitch(clip.id, tempo, 0);
@@ -1810,7 +1830,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // The repoint follows the accept, so it adds no undo step of its own:
       // undoing the accept restores the entry the clip had before it.
       const live = useEditorStore.getState().clips.find((c) => c.id === snapshot.clipId);
-      if (keepsAcceptedAudio(live, blob)) applyClipRender(snapshot.clipId, { libraryEntryId: entry.id });
+      if (keepsAcceptedAudio(live, blob)) applyClipRender(snapshot.clipId, savedEntrySource(entry.id));
     }).catch((e) => logError('editor', `Inpaint library save failed: ${e}`));
 
     clearInpaintSelection();
@@ -4955,7 +4975,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               const selected = selectedClipIdSet.has(clip.id) || clip.id === selectedClipId;
               const isMidi = clip.sourceKind === 'piano-roll' && !!clip.sourcePianoRoll && clip.sourcePianoRoll.length > 0;
               // Compact BPM/key readout: MIDI clips carry their render BPM; audio
-              // clips resolve through the DJ analysis cache. Hidden entirely on
+              // clips resolve through the DJ analysis cache, moved by any
+              // Time/Pitch render since (lib/clipAudioSource). Hidden entirely on
               // narrow clips or when neither value is known.
               let bpmText: string | null = null;
               let keyText: string | null = null;
@@ -4964,11 +4985,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               } else if (clip.bpm) {
                 bpmText = String(Math.round(clip.bpm));
                 const d = clip.libraryEntryId ? djAnalysisById[clip.libraryEntryId]?.data : undefined;
-                if (d?.key) keyText = `${d.key}${(d.scale ?? '').toLowerCase().startsWith('min') ? 'm' : ''}`;
+                keyText = entryKeyForClip(clip, d?.key, d?.scale);
               } else if (clip.libraryEntryId) {
                 const d = djAnalysisById[clip.libraryEntryId]?.data;
-                if (d?.bpm) bpmText = String(Math.round(d.bpm));
-                if (d?.key) keyText = `${d.key}${(d.scale ?? '').toLowerCase().startsWith('min') ? 'm' : ''}`;
+                const bpm = entryBpmForClip(clip, d?.bpm);
+                if (bpm) bpmText = String(Math.round(bpm));
+                keyText = entryKeyForClip(clip, d?.key, d?.scale);
               }
               const bpmKeyReadout =
                 width >= 120 && (bpmText || keyText) ? [bpmText, keyText].filter(Boolean).join(' . ') : null;
