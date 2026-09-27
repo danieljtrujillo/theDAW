@@ -9,6 +9,7 @@
 // No timers are involved anywhere.
 import assert from 'node:assert/strict';
 import { DEFAULT_LANES, sanitizeLanes, usePianoRollStore, type PianoNote } from './pianoRollStore.ts';
+import { clipRollLoad, rollClipFields, type RollClipInput } from '../lib/rollClip.ts';
 
 const st = () => usePianoRollStore.getState();
 const note = (step: number, id = `n${step}`): PianoNote => ({ id, note: 60, step, length: 2, velocity: 90 });
@@ -193,6 +194,113 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
   st().replaceAll([note(16, 'z16')]);
   assert.equal(st()._redo.length, 0, 'a new edit drops the redo stack');
   st().undo();
+}
+
+// Open EDIT clip A, edit it, open clip B, undo: the sequence WaveformEditor's
+// double-click (clipRollLoad -> loadFromClip) and the roll's Ctrl/Cmd+Z make.
+// Opening a clip is one step that carries the link it replaced. Undoing the
+// open of B brings back A's notes, the unsaved edit included, linked to A, so
+// SAVE (rollClipFields, what the SAVE key writes into the linked clip) writes
+// them into A. The undo used to bring A's notes back while the roll stayed
+// linked to B, and SAVE then wrote A's notes into B.
+{
+  const clip = (id: string, steps: number[]): RollClipInput => ({
+    id,
+    sourceRollNotes: steps.map((st, i) => ({ id: `${id}-${i}`, note: 60 + i, step: st, length: 2, velocity: 90 })),
+    sourceBpm: 120,
+    sourceTotalSteps: 32,
+    sourceMeterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
+    sourcePickupSteps: 0,
+    sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
+    sourceBends: [],
+  });
+  usePianoRollStore.setState({ notes: [note(0, 'scratch')], editingClipId: null, selectedNoteId: null });
+  beginBlock();
+  st().loadFromClip(...clipRollLoad(clip('A', [0, 4, 8])));
+  assert.equal(st()._undo.length, 1, 'opening a clip is one step');
+  const edited = st().addNote({ note: 72, step: 12, length: 2, velocity: 90 });
+  assert.equal(st()._undo.length, 2, 'an edit in clip A is its own step, never folded into the open');
+  st().loadFromClip(...clipRollLoad(clip('B', [2, 6])));
+  assert.deepEqual([st()._undo.length, st()._redo.length], [3, 0], 'opening clip B is one more step');
+  assert.equal(st().editingClipId, 'B');
+
+  st().undo();
+  assert.equal(st().editingClipId, 'A', 'undoing the open of B relinks A');
+  assert.deepEqual(
+    st().notes.map((n) => n.id),
+    ['A-0', 'A-1', 'A-2', edited],
+    "undoing the open of B brings back A's notes and the unsaved edit",
+  );
+  const saved = rollClipFields(st());
+  assert.deepEqual(saved.sourceRollNotes.map((n) => n.id), ['A-0', 'A-1', 'A-2', edited], "SAVE writes A's notes, into A");
+
+  st().redo();
+  assert.equal(st().editingClipId, 'B', 'redo opens B again, linked to B');
+  assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1']);
+  assert.deepEqual(rollClipFields(st()).sourceRollNotes.map((n) => n.id), ['B-0', 'B-1'], "SAVE writes B's own notes into B");
+
+  // The first edit in B is a fresh step, and undoing it lands on B as opened.
+  st().addNote({ note: 50, step: 20, length: 2, velocity: 90 });
+  assert.equal(st()._undo.length, 4);
+  st().undo();
+  assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1']);
+  assert.equal(st().editingClipId, 'B');
+
+  // Back through the edit in A and the open of A: the scratch roll comes back unlinked.
+  st().undo();
+  st().undo();
+  assert.deepEqual([st().notes.map((n) => n.id), st().editingClipId], [['A-0', 'A-1', 'A-2'], 'A']);
+  st().undo();
+  assert.deepEqual([st().notes.map((n) => n.id), st().editingClipId], [['scratch'], null], 'undoing the open of A brings back the unlinked scratch roll');
+}
+
+// CLEAR unlinks the clip in the same write that empties the roll. Its undo
+// brings the notes back AND the link, so SAVE writes them into their own clip;
+// redo clears and unlinks again. A bounce after CLEAR binds a new clip without
+// a step of its own, and undoing back past CLEAR relinks the first clip.
+{
+  usePianoRollStore.setState({ notes: [note(0), note(4)], editingClipId: 'A', selectedNoteId: null });
+  beginBlock();
+  st().clear();
+  assert.deepEqual([st().notes.length, st().editingClipId], [0, null]);
+  st().undo();
+  assert.deepEqual(st().notes.map((n) => n.id), ['n0', 'n4']);
+  assert.equal(st().editingClipId, 'A', 'undoing CLEAR relinks the clip its notes came from');
+  st().redo();
+  assert.deepEqual([st().notes.length, st().editingClipId], [0, null], 'redo clears and unlinks again');
+  st().undo();
+  assert.equal(st().editingClipId, 'A');
+
+  // CLEAR, draw, bounce (links C), undo twice.
+  st().clear();
+  // Undo and redo leave CLEAR in place and reset the coalesce clock, so the draw is its own step.
+  st().undo();
+  st().redo();
+  st().addNote({ note: 64, step: 2, length: 2, velocity: 90 });
+  st().setEditingClip('C');
+  assert.equal(st()._undo.length, 2);
+  st().undo();
+  assert.deepEqual([st().notes.length, st().editingClipId], [0, 'C'], 'undoing the draw keeps the bounced link');
+  st().undo();
+  assert.deepEqual(st().notes.map((n) => n.id), ['n0', 'n4']);
+  assert.equal(st().editingClipId, 'A', "clip A's notes come back linked to A, never to C");
+}
+
+// A paste past the roll's end (appendNotes) grows the roll in the same write,
+// so one undo takes back the notes and the length together.
+{
+  usePianoRollStore.setState({ notes: [note(0)], totalSteps: 32, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0, selectedNoteId: null });
+  beginBlock();
+  st().appendNotes([note(30, 'p30'), note(40, 'p40')]);
+  assert.equal(st().totalSteps, 48, 'the roll grows to the bar line after the last pasted note');
+  assert.deepEqual([...st().selectedIds], ['p30', 'p40']);
+  assert.equal(st()._undo.length, 1);
+  st().undo();
+  assert.deepEqual([st().notes.length, st().totalSteps], [1, 32]);
+  // The loop and the playhead are transport state: never a step.
+  st().setLoop({ start: 4, end: 8 });
+  st().seek(12);
+  assert.equal(st()._undo.length, 0);
 }
 
 console.log('pianoRollHistory: ok');

@@ -11,7 +11,7 @@
  * No Vite-only imports, so node tests load it.
  */
 import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
+import { DEFAULT_LANES, MIN_NOTE_STEPS, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
 import { STEPS_PER_BEAT, quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGroove, type GrooveTemplate } from './grooveTemplate';
 import { barAt, normalizeMeterMap, roundUpToBar, unrollLanes, type PolyLane } from './meterMap';
@@ -41,9 +41,24 @@ export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys>;
 /** The arguments of pianoRollStore's loadFromClip. */
 export type RollLoadArgs = [clipId: string, notes: PianoNote[], bpm: number, totalSteps: number, meter: RollMeter, bends: LaneBend[]];
 
+/**
+ * Where a clip's note sounds, in seconds from the clip's left edge: `relStart`
+ * to `relEnd`. `offsetSec` is the clip's trim into its source. The note keeps
+ * its own length, floored at the roll's one tick, so a run shorter than a 16th
+ * plays and draws in EDIT at the length it has in the roll.
+ */
+export const clipNoteSpan = (
+  n: Pick<PianoNote, 'step' | 'length'>,
+  stepSec: number,
+  offsetSec: number,
+): { relStart: number; relEnd: number } => {
+  const relStart = n.step * stepSec - offsetSec;
+  return { relStart, relEnd: relStart + Math.max(MIN_NOTE_STEPS, n.length) * stepSec };
+};
+
 /** The step just past the last note's end — the grid length a note list implies when nothing else says otherwise. */
 const noteEndSteps = (notes: readonly PianoNote[]): number =>
-  notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
 
 /**
  * The notes as they sound: each looping lane's repeats written out across the
@@ -193,4 +208,17 @@ export function quantizeRollClip(
   if (legacy) return { sourceRollNotes: [], sourcePianoRoll: result };
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
   return { sourceRollNotes: result, sourcePianoRoll: playedRollNotes(result, lanes, totalSteps) };
+}
+
+/**
+ * A note's length after the roll's APPLY at quantize strength `q` (0-1):
+ * pulled from its own length toward the nearest whole number of steps (at
+ * least one), `q` of the way. At 0 the length stays as it was, a sub-step
+ * triplet 16th included, so a swing-only APPLY moves starts and leaves lengths
+ * alone; at 1 it lands on whole steps, APPLY's 1/16 grid.
+ */
+export function feelLength(length: number, q: number): number {
+  const strength = Math.max(0, Math.min(1, Number.isFinite(q) ? q : 0));
+  const whole = Math.max(1, Math.round(length));
+  return length + (whole - length) * strength;
 }

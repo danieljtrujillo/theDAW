@@ -14,6 +14,7 @@ import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient
 import { ticksMatching, type TasmoProjectLoaded } from './projectClient';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
+import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
@@ -36,13 +37,14 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         midi_notes: isMidi
           ? (c.midi_notes ?? []).map((n) => {
               const length = Number(n.length ?? 1);
-              // The note's own ticks when the file carries them (a note shorter
-              // than a 16th keeps its length); a length in steps alone floors at one step.
+              // The note's own ticks when the file carries them; a length in
+              // steps alone keeps its length down to the roll's one tick, so a
+              // note shorter than a 16th keeps its length either way.
               const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
               return {
                 pitch: Number(n.note ?? n.pitch ?? 60),
                 start: Number(n.step ?? 0) * stepSec,
-                duration: (ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : Math.max(1, length)) * stepSec,
+                duration: (ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : Math.max(MIN_NOTE_STEPS, length)) * stepSec,
                 velocity: Number(n.velocity ?? 100),
               };
             })

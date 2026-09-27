@@ -16,6 +16,7 @@ import {
 // lib/rollSelection imports only the PianoNote TYPE back from here, which is
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
+import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -98,7 +99,22 @@ interface PianoRollState {
    */
   selectedNoteId: string | null;
   isPlaying: boolean;
+  /**
+   * The playhead, in steps. PLAY starts here, the scheduler writes it as the
+   * roll sounds, and it stays where playback stopped; a click on the ruler
+   * (`seek`) moves it. The METER face's ADD starts a change in its bar.
+   */
   currentStep: number;
+  /**
+   * The loop range in steps, or null when none is set. `loopOn` says whether
+   * PLAY loops it; a range that is off stays set, so the LOOP key turns it back
+   * on. Both are transport state, like the playhead: not undo history, and not
+   * saved with a clip.
+   */
+  loop: RollLoop | null;
+  loopOn: boolean;
+  /** Counts seeks, so a scheduler that is playing re-anchors at the new playhead. */
+  seekId: number;
   /** If set, the roll is editing an existing editor clip — next "send to editor" updates that clip in place. */
   editingClipId: string | null;
   /** Step span of the most recent live recording, highlighted in the grid; null
@@ -173,14 +189,33 @@ interface PianoRollState {
   /** The groove template id the feel applies; persisted. Blank falls back to the default. */
   setGrooveId: (id: string) => void;
   setPlaying: (playing: boolean) => void;
+  /** PLAY: start the roll where the playhead is. The playhead, the seek and the
+   *  loop stay as they are; the scheduler's lap starts from them (playStartLap). */
+  play: () => void;
   setCurrentStep: (s: number) => void;
+  /** Move the playhead to `step`, held inside the roll. While the roll plays, playback jumps there. */
+  seek: (step: number) => void;
+  /** Set the loop range (see `sanitizeLoop`) and turn the loop on; null clears the range and turns it off. */
+  setLoop: (loop: RollLoop | null) => void;
+  /** Turn the loop on or off. With no range set it stays off: the caller sets a range first. */
+  setLoopOn: (on: boolean) => void;
   replaceAll: (notes: PianoNote[]) => void;
+  /**
+   * Add `notes` in one write (one undo step) and select them, the first as the
+   * primary. A note that runs past the roll's end grows the roll to the bar
+   * line after it, up to MAX_ROLL_STEPS: a paste or a duplicate near the end
+   * lands whole.
+   */
+  appendNotes: (notes: PianoNote[]) => void;
   clear: () => void;
   setEditingClip: (id: string | null) => void;
   /** Load an editor clip. A `meter` field left out keeps the roll's current value.
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
-   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone. */
+   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
+   *  Opening a clip is one undo step that carries the link it replaced: undoing it
+   *  brings back the previous notes linked to the clip they came from, so an undo
+   *  can never bring another clip's notes into this one. The loop clears. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -245,9 +280,17 @@ interface PianoRollState {
 
 /** The document slices tracked by undo / redo.
  *  The meter, the lanes and the bends are part of what the roll IS, so they
- *  belong here. Selection, the playhead, transport, the active lane, the linked
- *  clip and the recorded range deliberately do NOT — they are view and transport
- *  state, and putting them in the stack makes undo unusable mid-session. */
+ *  belong here. Selection, the playhead, the loop, transport, the active lane
+ *  and the recorded range deliberately do NOT — they are view and transport
+ *  state, and putting them in the stack makes undo unusable mid-session.
+ *
+ *  The linked clip rides along on one kind of step only: a write that changed
+ *  the link together with the document (CLEAR empties the roll and unlinks).
+ *  That step carries the link it replaced, so undoing it relinks the clip whose
+ *  notes come back, and SAVE keeps writing those notes into their own clip. A
+ *  link change on its own (a bounce binding a new clip, UNLINK) is not a step.
+ *  Opening a clip (loadFromClip) is a step that always carries the link, so
+ *  undoing it relinks the clip whose notes come back. */
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
@@ -258,12 +301,17 @@ interface RollHistorySnapshot {
   pickupSteps: number;
   lanes: PolyLane[];
   bends: LaneBend[];
+  /** The linked clip before the step, present only when the step's write changed it. */
+  editingClipId?: string | null;
 }
 
 const DEFAULT_STEPS = 256;
 
 const MIN_STEPS = 16;
 const MAX_STEPS = 4096; // ~256 bars; enough for full-song MIDI imports
+/** The longest the roll grows: a paste past it leaves out the notes that start beyond it. */
+export const MAX_ROLL_STEPS = MAX_STEPS;
+const EPS = 1e-9;
 const FULL_LOW = 21; // A0 — the full 88-key piano stays in view so the roll scrolls
 const FULL_HIGH = 108; // C8
 
@@ -370,7 +418,7 @@ const fitToNotes = (
   meterMap: MeterSegment[],
   pickupSteps: number,
 ): { totalSteps: number; lowestNote: number; highestNote: number } => {
-  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
   const totalSteps = Math.min(MAX_STEPS, roundUpToBar(meterMap, Math.max(MIN_STEPS, lastStep), pickupSteps));
   const lo = Math.max(0, Math.min(FULL_LOW, notes.reduce((m, n) => Math.min(m, n.note), 127) - 2));
   const hi = Math.min(127, Math.max(FULL_HIGH, notes.reduce((m, n) => Math.max(m, n.note), 0) + 2));
@@ -415,26 +463,16 @@ const noSelection = (): SelectionSlice => ({ selectedIds: new Set<string>(), sel
 // ── Note validation ──────────────────────────────────────────────────────────
 
 /**
- * The shortest note the 16th grid holds when a caller gives a LENGTH IN STEPS.
+ * The shortest note a GESTURE makes, in steps: a click on an empty cell, a
+ * resize drag, the note menu's Shorten. The grid cannot draw or grab a note
+ * thinner than one cell by hand, so those gestures stop at one step.
  *
- * The model has TWO length floors on purpose, and they are deliberately
- * different:
- *
- *   • a length in STEPS floors at one step (this constant). A step length is
- *     something the GRID drew — a drawn, dragged or resized note, an import
- *     counted in steps — and the roll cannot draw, hit-test or hand back a note
- *     thinner than one cell, so a sub-step step-length is a rounding artefact,
- *     not an intention. Rounding it up to a cell is what keeps a dragged note
- *     visible and grabbable.
- *   • a length in TICKS floors at one tick (`MIN_NOTE_TICKS`). A tick length
- *     came from the model's own clock — a recorded take, a bend-laden import,
- *     an off-grid paste — where a 32nd-of-a-step flam IS the intention. Floors
- *     of a whole step there would quantise exactly the material the tick model
- *     exists to preserve; one tick is only the "this is still a note, not a
- *     note-off" bound.
- *
- * So a caller that gives `ticks` may go far shorter than a caller that gives
- * `length`, and `timingOf` applies whichever floor matches the field it used.
+ * The MODEL's floor is one tick (`MIN_NOTE_TICKS`), however a length arrives:
+ * as `ticks`, or as a `length` in steps from a caller that builds notes without
+ * ticks — GEN, Virtuoso, sheet import, audio-to-notes, AI COMPOSE, a paste. A
+ * two-thirds-step 16th triplet or a half-step 32nd is the intention there, and
+ * raising it to a whole step would make every such run overlap the note after
+ * it. A length missing altogether (not a number) is taken as one step.
  */
 export const MIN_NOTE_LENGTH = 1;
 
@@ -462,6 +500,9 @@ export { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT };
  * at a fractional tempo (97.3) keeps every note on its grid line.
  */
 export const importedRollBpm = (bpm: number): number => Math.max(40, Math.min(240, bpm));
+
+/** One tick as a length in the roll's steps: the model's floor for a `length`. */
+export const MIN_NOTE_STEPS = MIN_NOTE_TICKS / (PPQ / ROLL_STEPS_PER_BEAT);
 
 const validStepsPerBeat = (stepsPerBeat?: number): number =>
   isNum(stepsPerBeat) && stepsPerBeat > 0 ? stepsPerBeat : ROLL_STEPS_PER_BEAT;
@@ -502,9 +543,11 @@ const timingOf = (n: Partial<PianoNote>, stepsPerBeat?: number): { tick: number;
   const keepTick = isNum(n.tick) && (!isNum(n.step) || Math.abs(n.tick - n.step * per) < 0.5);
   const tick = keepTick ? Math.max(0, Math.round(n.tick as number)) : tickOfStep(isNum(n.step) ? n.step : 0, stepsPerBeat);
   const keepTicks = isNum(n.ticks) && (!isNum(n.length) || Math.abs(n.ticks - n.length * per) < 0.5);
+  // A tick-less length keeps its own size down to one tick; only a length that
+  // is not a number at all falls back to one step (see MIN_NOTE_LENGTH).
   const ticks = keepTicks
     ? Math.max(MIN_NOTE_TICKS, Math.round(n.ticks as number))
-    : Math.max(MIN_NOTE_TICKS, tickOfStep(Math.max(MIN_NOTE_LENGTH, isNum(n.length) ? n.length : MIN_NOTE_LENGTH), stepsPerBeat));
+    : Math.max(MIN_NOTE_TICKS, tickOfStep(isNum(n.length) ? n.length : MIN_NOTE_LENGTH, stepsPerBeat));
   return { tick, ticks };
 };
 
@@ -565,8 +608,8 @@ export const migrateNotes = (notes: readonly PianoNote[], stepsPerBeat?: number)
 /**
  * A note's fields brought inside the model's bounds: a whole MIDI note 0-127, a
  * whole velocity 1-127 (0 is a note-off, never a note), a start at or after the
- * roll's beginning and a length of at least one step, a whole tick at or after
- * 0, a length of at least one tick, a channel 1-16 and expression in range.
+ * roll's beginning and a length of at least one tick (in steps or in ticks), a
+ * whole tick at or after 0, a channel 1-16 and expression in range.
  *
  * `step` keeps its FRACTION on purpose — swing, micro-timing and an imported
  * off-grid take all place notes between 16ths, and the scheduler fires them at
@@ -579,7 +622,7 @@ const validNote = <T extends Partial<PianoNote>>(patch: T): Omit<T, 'id'> => {
   if ('note' in out) out.note = Math.max(0, Math.min(127, Math.round(isNum(out.note) ? out.note : 0)));
   if ('velocity' in out) out.velocity = clampVelocity(out.velocity as number);
   if ('step' in out) out.step = Math.max(0, isNum(out.step) ? out.step : 0);
-  if ('length' in out) out.length = Math.max(MIN_NOTE_LENGTH, isNum(out.length) ? out.length : MIN_NOTE_LENGTH);
+  if ('length' in out) out.length = isNum(out.length) ? Math.max(MIN_NOTE_STEPS, out.length) : MIN_NOTE_LENGTH;
   if ('tick' in out) out.tick = Math.max(0, Math.round(isNum(out.tick) ? out.tick : 0));
   if ('ticks' in out) out.ticks = Math.max(MIN_NOTE_TICKS, Math.round(isNum(out.ticks) ? out.ticks : MIN_NOTE_TICKS));
   if ('channel' in out) {
@@ -680,6 +723,10 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   bends: s.bends,
 });
 
+/** `snap` carrying `link` when `step` carries a link, so the opposite stack's step puts the link back too. */
+const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: string | null): RollHistorySnapshot =>
+  'editingClipId' in step ? { ...snap, editingClipId: link } : snap;
+
 export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   notes: seed(),
   bpm: 120,
@@ -690,6 +737,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   selectedNoteId: null,
   isPlaying: false,
   currentStep: 0,
+  loop: null,
+  loopOn: false,
+  seekId: 0,
   editingClipId: null,
   recordedRange: null,
   meterMap: normalizeMeterMap(null),
@@ -818,34 +868,76 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }),
 
   setPlaying: (isPlaying) => set({ isPlaying }),
+  play: () => set({ isPlaying: true }),
   setCurrentStep: (currentStep) => set({ currentStep }),
+  seek: (step) =>
+    set((s) => ({
+      currentStep: Math.max(0, Math.min(Math.max(0, s.totalSteps - 1), isNum(step) ? step : 0)),
+      seekId: s.seekId + 1,
+    })),
+  setLoop: (loop) =>
+    set(() => {
+      const next = sanitizeLoop(loop);
+      return { loop: next, loopOn: next !== null };
+    }),
+  setLoopOn: (on) => set((s) => ({ loopOn: on && s.loop !== null })),
   replaceAll: (notes) => set({ notes: migrateNotes(notes), ...noSelection() }),
+  appendNotes: (incoming) =>
+    set((s) => {
+      if (incoming.length === 0) return {};
+      const added = migrateNotes(incoming);
+      const notes = [...s.notes, ...added];
+      const end = added.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+      const totalSteps = end > s.totalSteps + EPS
+        ? Math.min(MAX_STEPS, roundUpToBar(s.meterMap, end, s.pickupSteps))
+        : s.totalSteps;
+      return { notes, totalSteps, ...selectionOf(notes, added.map((n) => n.id), added[0].id) };
+    }),
   clear: () =>
     set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
-  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) =>
-    set((s) => {
-      const notes = migrateNotes(incoming);
-      const m = mergeMeter(s, meter);
-      const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
-      return {
-        notes,
-        ...m,
-        bends: replacedBends(s, m.lanes, incomingBends),
-        bpm: Math.max(40, Math.min(240, bpm)),
-        totalSteps: Math.min(
-          MAX_STEPS,
-          roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
-        ),
-        ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
-        editingClipId: clipId,
-        ...noSelection(),
-        isPlaying: false,
-        currentStep: 0,
-        recordedRange: null,
-      };
-    }),
+  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
+    // Opening a clip is one undo step of its own, and the step carries the link
+    // it replaced: undoing it brings back the roll's previous notes (unsaved
+    // work included) linked to the clip they came from, so SAVE writes them
+    // there and never into the clip just opened. The step is written here, not
+    // by the recorder, so it never folds into the burst before it, and the next
+    // edit starts a fresh step.
+    historyApplying = true;
+    try {
+      set((s) => {
+        const undo = [...s._undo, { ...docSnapshot(s), editingClipId: s.editingClipId }];
+        if (undo.length > HISTORY_LIMIT) undo.shift();
+        const notes = migrateNotes(incoming);
+        const m = mergeMeter(s, meter);
+        const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
+        return {
+          notes,
+          ...m,
+          bends: replacedBends(s, m.lanes, incomingBends),
+          bpm: Math.max(40, Math.min(240, bpm)),
+          totalSteps: Math.min(
+            MAX_STEPS,
+            roundUpToBar(m.meterMap, Math.max(MIN_STEPS, totalSteps, fit?.totalSteps ?? MIN_STEPS), m.pickupSteps),
+          ),
+          ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
+          editingClipId: clipId,
+          ...noSelection(),
+          isPlaying: false,
+          currentStep: 0,
+          loop: null,
+          loopOn: false,
+          recordedRange: null,
+          _undo: undo,
+          _redo: [],
+        };
+      });
+    } finally {
+      historyApplying = false;
+    }
+    lastDocChangeAt = -Infinity;
+  },
 
   importNotes: (incoming, bpm, meter, incomingBends) =>
     set((s) => {
@@ -995,7 +1087,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const s = get();
     if (s._undo.length === 0) return;
     const prev = s._undo[s._undo.length - 1];
-    const current = docSnapshot(s);
+    // A step that carries the link restores it (spread from `prev` below), and
+    // its redo carries the link it replaces.
+    const current = withLink(docSnapshot(s), prev, s.editingClipId);
     historyApplying = true;
     set({
       ...prev,
@@ -1016,7 +1110,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const s = get();
     if (s._redo.length === 0) return;
     const next = s._redo[s._redo.length - 1];
-    const current = docSnapshot(s);
+    const current = withLink(docSnapshot(s), next, s.editingClipId);
     historyApplying = true;
     set({
       ...next,
@@ -1034,9 +1128,12 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 // Record undo history whenever a tracked document slice changes. Only the FIRST
 // change of a burst captures the pre-change snapshot, so a continuous gesture (a
 // note drag, a resize, a bend-point drag) collapses into a single undo step.
-// Selection, the playhead, transport, the active lane and the recorded range
-// don't touch these slices, so they never pollute history. undo/redo set
-// historyApplying so their own writes aren't recorded.
+// Selection, the playhead, the loop, transport, the active lane and the
+// recorded range don't touch these slices, so they never pollute history. A
+// write that changes the linked clip WITH the document (CLEAR) always starts
+// its own step, and the step keeps the link it replaced. undo/redo and
+// loadFromClip set historyApplying so their own writes aren't recorded here
+// (loadFromClip pushes its own linked step).
 usePianoRollStore.subscribe((state, prev) => {
   if (historyApplying) return;
   if (
@@ -1050,13 +1147,15 @@ usePianoRollStore.subscribe((state, prev) => {
     state.lanes === prev.lanes &&
     state.bends === prev.bends
   ) return;
+  const relinked = state.editingClipId !== prev.editingClipId;
   const now = performance.now();
-  const coalesce = now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  const coalesce = !relinked && now - lastDocChangeAt < HISTORY_COALESCE_MS;
   lastDocChangeAt = now;
   if (coalesce) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   usePianoRollStore.setState((s) => {
-    const undo = [...s._undo, docSnapshot(prev)];
+    const snap = docSnapshot(prev);
+    const undo = [...s._undo, relinked ? { ...snap, editingClipId: prev.editingClipId } : snap];
     if (undo.length > HISTORY_LIMIT) undo.shift();
     return { _undo: undo, _redo: [] };
   });

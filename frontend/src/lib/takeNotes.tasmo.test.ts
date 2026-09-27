@@ -3,7 +3,7 @@
  *
  * A take converted at its ticks (lib/takeNotes) holds notes shorter than a 16th
  * and notes between 16ths. The .tasmo wrote each note as step / length only,
- * and a length in steps floors at one step when it comes back, so a 32nd or a
+ * and a length in steps floored at one step when it came back, so a 32nd or a
  * flam note reopened a whole 16th long, and the sounding copy (midi_notes)
  * rounded the same way. The file now carries `tick` / `ticks` beside the steps.
  *
@@ -134,8 +134,8 @@ assert.deepEqual(timing(usePianoRollStore.getState().notes), timing(rollNotes), 
   );
 }
 
-// A file written before the ticks (step / length only) opens as it always did:
-// a length in steps floors at one step.
+// A file written before the ticks (step / length only) keeps its lengths: the
+// roll floors a length in steps at its one tick, so the 32nd stays a 32nd.
 {
   const legacy = saved.roll_notes.map(({ tick: _t, ticks: _ts, ...n }) => n);
   const notes = tasmoNotesToPiano(legacy);
@@ -143,8 +143,8 @@ assert.deepEqual(timing(usePianoRollStore.getState().notes), timing(rollNotes), 
   usePianoRollStore.getState().loadFromClip('legacy', notes, 120, 16);
   assert.deepEqual(
     usePianoRollStore.getState().notes.map((n) => [n.step, n.length]),
-    [[0, 2], [38 / 240, 442 / 240], [4, 1]],
-    'the 32nd in an old file reads as one step, as before',
+    [[0, 2], [38 / 240, 442 / 240], [4, 0.5]],
+    'the 32nd in an old file keeps its length',
   );
 }
 

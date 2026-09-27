@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
+import { genWrite, type GenSettings } from '../lib/meterFace.ts';
+import { GEN_DEFAULT_OPTS } from '../lib/loomGen.ts';
+import { unrollLanes } from '../lib/meterMap.ts';
+import { feelLength, quantizeRollClip } from '../lib/rollClip.ts';
+import { swingToGroove } from '../lib/grooveTemplate.ts';
 import {
   DEFAULT_GROOVE_ID,
+  MIN_NOTE_LENGTH,
+  MIN_NOTE_STEPS,
   MIN_NOTE_TICKS,
   PPQ,
   ROLL_STEPS_PER_BEAT,
@@ -297,20 +304,28 @@ const fill = (...steps: number[]) => {
 }
 
 // addNote / updateNote validate: MIDI note and velocity in range and whole, no
-// negative start, no zero length — and a patched id is ignored.
+// negative start, no zero length (the floor is one tick) — and a patched id is ignored.
 {
   st().importNotes([note(0)]);
   const id = st().addNote({ note: 300.4, step: -5, length: 0, velocity: 999 });
   const added = () => st().notes.find((n) => n.id === id)!;
   assert.deepEqual(
-    { note: added().note, step: added().step, length: added().length, velocity: added().velocity },
-    { note: 127, step: 0, length: 1, velocity: 127 },
+    { note: added().note, step: added().step, length: added().length, ticks: added().ticks, velocity: added().velocity },
+    { note: 127, step: 0, length: MIN_NOTE_STEPS, ticks: MIN_NOTE_TICKS, velocity: 127 },
   );
   st().updateNote(id, { note: -3, velocity: -1, length: -9, step: -2 });
   assert.deepEqual(
-    { note: added().note, step: added().step, length: added().length, velocity: added().velocity },
-    { note: 0, step: 0, length: 1, velocity: 1 },
+    { note: added().note, step: added().step, length: added().length, ticks: added().ticks, velocity: added().velocity },
+    { note: 0, step: 0, length: MIN_NOTE_STEPS, ticks: MIN_NOTE_TICKS, velocity: 1 },
   );
+  // A length that is not a number at all is one step.
+  st().updateNote(id, { length: Number.NaN });
+  assert.equal(added().length, MIN_NOTE_LENGTH);
+  // A sub-step length stays what it was: a 32nd, a 16th triplet.
+  st().updateNote(id, { length: 0.5 });
+  assert.deepEqual([added().length, added().ticks], [0.5, 120]);
+  st().updateNote(id, { length: 2 / 3 });
+  assert.equal(added().ticks, 160);
   // A fractional STEP survives on purpose: swing and micro-timing live there.
   st().updateNote(id, { step: 3.5 });
   assert.equal(added().step, 3.5);
@@ -463,7 +478,16 @@ const fill = (...steps: number[]) => {
   const native = withTicks({ id: 'n', note: 60, velocity: 90, tick: 605, ticks: 60 } as PianoNote);
   assert.deepEqual([native.tick, native.ticks], [605, 60]);
   assert.equal(native.step, 605 / 240);
-  assert.equal(native.length, 0.25, 'ticks reach below one step; a length in STEPS still cannot');
+  assert.equal(native.length, 0.25, 'ticks reach below one step');
+  // So does a tick-less length in steps: a half-step 32nd is 120 ticks, not a whole step.
+  const thirtySecond = withTicks({ id: 'h', note: 60, step: 3, length: 0.5, velocity: 90 });
+  assert.deepEqual([thirtySecond.ticks, thirtySecond.length], [120, 0.5]);
+  const triplet = withTicks({ id: 't', note: 60, step: 0, length: 2 / 3, velocity: 90 });
+  assert.equal(triplet.ticks, 160);
+  // Zero, negative and missing lengths: one tick, one tick, one step.
+  assert.equal(noteTicks({ step: 0, length: 0 }), MIN_NOTE_TICKS);
+  assert.equal(noteTicks({ step: 0, length: -3 }), MIN_NOTE_TICKS);
+  assert.equal(noteTicks({ step: 0 }), ticksPerStep());
 
   // Bounds: no negative tick, no zero-length note, a whole channel 1-16, expression in range.
   const bad = withTicks({ id: 'b', note: 60, velocity: 90, tick: -30.7, ticks: 0.2, channel: 99, expr: { pressure: 4, timbre: -1, pitchBend: -8 } } as PianoNote);
@@ -525,7 +549,7 @@ const fill = (...steps: number[]) => {
   // hand the result straight back) working without any of them knowing about ticks.
   st().replaceAll([note(3, 1), { id: 'swung', note: 62, step: 4.5, length: 0.5, velocity: 90 }]);
   assert.deepEqual(st().notes.map((n) => n.tick), [720, 1080]);
-  assert.deepEqual(st().notes.map((n) => n.ticks), [240, 240], 'a sub-step LENGTH still floors at one step');
+  assert.deepEqual(st().notes.map((n) => n.ticks), [240, 120], 'a sub-step LENGTH keeps its size');
   consistent('replaceAll');
 
   // A note carrying ticks that still agree keeps them exactly.
@@ -608,6 +632,56 @@ const fill = (...steps: number[]) => {
   assert.deepEqual([st().grooveId, st().quantizePct, st().swingPct], ['pocket:a', 55, -8]);
   st().loadFromClip('c-groove', [note(0)], 120, 32);
   assert.equal(st().grooveId, 'pocket:a', 'a clip load leaves the feel alone');
+}
+
+// GEN writes a bar of 24 rule steps into a 4/4 bar of 16 roll steps: every
+// cell is 16/24 = 0.667 steps long. The store takes the write (replaceAll, as
+// the METER face's WRITE does), then the scheduler unrolls the notes to play
+// them. Every note keeps its 0.667-step length the whole way, so the run plays
+// detached: no note reaches the start of the next. The store used to raise
+// each one to a full 16th, so every note overlapped the one after it.
+{
+  const third = 16 / 24;
+  st().importNotes([], 120, { meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0, lanes: [{ id: 0, name: 'A', cycleSteps: null }] }, []);
+  st().setTotalSteps(16);
+  const gen: GenSettings = { kind: 'euclid', opts: { ...GEN_DEFAULT_OPTS.euclid, hits: 24 }, steps: 24, gate: { kind: 'open' }, seed: 1 };
+  const res = genWrite(st(), 0, gen, [60, 62, 64], 'g24');
+  assert.equal(res.written, 24);
+  st().replaceAll(res.notes);
+  const held = [...st().notes].sort((a, b) => a.step - b.step);
+  assert.equal(held.length, 24);
+  for (const n of held) {
+    assert.ok(Math.abs(n.length - third) < 1 / 240, `a GEN note keeps ${third.toFixed(3)} steps, got ${n.length}`);
+    assert.equal(n.ticks, 160, 'two thirds of a 16th is 160 ticks');
+  }
+  for (let i = 1; i < held.length; i += 1) {
+    assert.ok(held[i - 1].step + held[i - 1].length <= held[i].step + 1e-9, `note ${i - 1} ends before note ${i} starts`);
+  }
+  const played = unrollLanes(st().notes, st().lanes, st().totalSteps);
+  assert.ok(played.every((n) => Math.abs(n.length - third) < 1 / 240), 'the notes play at their own length');
+  // The bar still fits in one bar: the last note ends on the bar line, not past it.
+  assert.equal(st().totalSteps, 16);
+
+  // APPLY with QUANT 0 and the swing slider (a swing-only pass): starts move,
+  // lengths stay. APPLY used to floor every length at one step here too.
+  const notes = st().notes;
+  const { sourceRollNotes: swung } = quantizeRollClip(
+    { sourceRollNotes: notes, sourcePianoRoll: [], sourceLanes: st().lanes, sourceMeterMap: st().meterMap, sourcePickupSteps: 0, sourceTotalSteps: st().totalSteps },
+    { grid: '1/16', strength: 0, groove: swingToGroove(20), grooveStrength: 1 },
+  );
+  st().replaceAll(swung.map((n, i) => ({ ...n, length: feelLength(notes[i].length, 0) })));
+  assert.ok(st().notes.every((n) => n.ticks === 160), 'a swing-only APPLY leaves the lengths alone');
+  // At QUANT 100 APPLY lands lengths on whole steps, as it always has.
+  assert.equal(feelLength(third, 1), 1);
+  assert.equal(feelLength(2.4, 1), 2);
+  assert.ok(Math.abs(feelLength(third, 0.5) - (third + (1 - third) / 2)) < 1e-12);
+}
+
+// A clip or import whose last note is shorter than a step fits the roll to the
+// bar that note ends in, not to the bar after it.
+{
+  st().importNotes([{ id: 'end', note: 60, step: 15.5, length: 0.25, velocity: 90 }], 120, { meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0 });
+  assert.equal(st().totalSteps, 16);
 }
 
 console.log('pianoRollStore: ok');

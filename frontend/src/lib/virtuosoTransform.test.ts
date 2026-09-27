@@ -123,7 +123,11 @@ function captureToday(): Record<string, string> {
 // from the transforms before they took a meter map. The buildSong digests were
 // captured again once chord degrees counted from the key's tonic, a minor mode's
 // cadential V took the leading tone, and a chord tone leaving its register moved
-// by an octave; every other digest stayed the same.
+// by an octave; every other digest stayed the same. The five 'buildSong <style>'
+// digests were captured once more when harmonize's counter notes took their
+// melody note's own length: only the LENGTHS of counter notes under sub-16th
+// melody notes changed (1 step became 0.667, 0.5 or 0.333, 0.5 became 0.25, and
+// a humanized 1.5 became 1); every note's pitch, step and velocity is unchanged.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
@@ -162,15 +166,15 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:5864d9d6037e16cfd4f5f206',
+  'buildSong romantic': '528:e8a572b7e88d574ccfb11438',
   'buildSong romantic sections': '436:db07635e8dc042be7adfa745',
-  'buildSong baroque': '670:16e60a8952c18c31b8a97c16',
+  'buildSong baroque': '670:1e36b785cff3ae4fef7daf6c',
   'buildSong baroque sections': '436:40efba6d357ad37b29f8d70e',
-  'buildSong mussorgsky': '770:f650239f3e0aaa6f6d62d6a5',
+  'buildSong mussorgsky': '770:06c848cbb6736c122b27ccee',
   'buildSong mussorgsky sections': '436:b4d4fcdf2ecd86efab5bb95f',
-  'buildSong flamenco': '900:c8f748c835ad85665914c0e2',
+  'buildSong flamenco': '900:a44c7157d80aecb379a4037b',
   'buildSong flamenco sections': '436:9eaaa0ded270ee9d73d3de3d',
-  'buildSong ragtime': '593:f326a6c36f1a41f95ff541c5',
+  'buildSong ragtime': '593:9bc918861360fdcec400b44b',
   'buildSong ragtime sections': '439:f5252283cafd10a638533549',
   'buildSong default': '1265:f58af45dcac84e47886d362c',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
@@ -595,6 +599,43 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   assert.ok(five.some((n) => n.note % 12 === 1), 'the V has C sharp');
   assert.ok(!five.some((n) => n.note % 12 === 0), 'no C natural sounds in the V bar');
   v().resetToSource();
+}
+
+// HARMONY on a 16th-triplet melody, the way the Virtuoso panel runs it: the
+// roll holds the run, the panel captures it, HARMONY goes to full, and the
+// render lands back in the roll (replaceAll). Every counter note takes its
+// melody note's 0.667-step length, so the counter run stays detached like the
+// melody. Harmonize used to raise each counter note to a full 16th, so every
+// one overlapped the next.
+{
+  const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
+  const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
+  const roll = usePianoRollStore.getState;
+  const third = 2 / 3;
+  const melody: PianoNote[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `t${i}`, note: [72, 74, 76][i % 3], step: i * third, length: third, velocity: 96,
+  }));
+  roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0 });
+  useVirtuosoStore.setState({ amounts: { ...ZERO_AMOUNTS }, songMode: false, sections: null, groove: null, key: 'C', mode: 'major' });
+  roll().replaceAll(melody);
+  useVirtuosoStore.getState().captureSource();
+  useVirtuosoStore.getState().setAmount('harmony', 1);
+  const byTick = new Map<number, { note: number; tick: number; ticks: number }[]>();
+  for (const n of roll().notes) {
+    const at = byTick.get(n.tick!) ?? [];
+    at.push({ note: n.note, tick: n.tick!, ticks: n.ticks! });
+    byTick.set(n.tick!, at);
+  }
+  const counter = [...byTick.values()]
+    .map((at) => at.reduce((lo, n) => (n.note < lo.note ? n : lo)))
+    .sort((a, b) => a.tick - b.tick);
+  assert.equal(roll().notes.length, 48, 'every melody note gets a counter note at full HARMONY');
+  assert.equal(counter.length, 24);
+  for (const n of counter) assert.equal(n.ticks, 160, 'a counter note keeps two thirds of a 16th (160 ticks)');
+  for (let i = 1; i < counter.length; i += 1) {
+    assert.ok(counter[i - 1].tick + counter[i - 1].ticks <= counter[i].tick, `counter note ${i - 1} ends before counter note ${i} starts`);
+  }
+  useVirtuosoStore.getState().resetToSource();
 }
 
 console.log('virtuosoTransform: ok');

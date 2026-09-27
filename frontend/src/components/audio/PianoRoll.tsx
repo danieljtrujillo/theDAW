@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Check, Info, Minus, Plus, Save, Scissors, Trash2, Unlink, Waves } from 'lucide-react';
-import { DEFAULT_GROOVE_ID, DEFAULT_LANES, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { Check, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Unlink, Waves, X } from 'lucide-react';
+import {
+  DEFAULT_GROOVE_ID,
+  DEFAULT_LANES,
+  MAX_ROLL_STEPS,
+  MIN_NOTE_LENGTH,
+  usePianoRollStore,
+  type PianoNote,
+} from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
-import { logError, logInfo } from '../../state/logStore';
+import { logError, logInfo, logWarn } from '../../state/logStore';
 import type { Meter } from '../../lib/colony';
 import {
   barAt,
@@ -16,6 +23,7 @@ import {
   roundUpToBar,
   unrollLanes,
   type BarSpan,
+  type MeterSegment,
   type PolyLane,
 } from '../../lib/meterMap';
 import {
@@ -27,12 +35,27 @@ import {
   playedRollBends,
   playingLane,
   rollRenderBends,
+  shiftPlayedBends,
   type LaneBend,
   type PlayedBend,
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
-import { playedRollNotes, quantizeRollClip, rollClipFields } from '../../lib/rollClip';
+import { feelLength, playedRollNotes, quantizeRollClip, rollClipFields } from '../../lib/rollClip';
+import {
+  REANCHOR_STEPS,
+  followLap,
+  loopLabel,
+  playRange,
+  rulerKeyStep,
+  rulerLoop,
+  rulerSeekStep,
+  shownStep,
+  playStartLap,
+  windowOnsets,
+  type LapState,
+  type RollLoop,
+} from '../../lib/rollTransport';
 import { copyNotes, duplicateNotes, pasteNotes, type NoteClipboardPayload } from '../../lib/noteClipboard';
 import {
   MARQUEE_MIN_PX,
@@ -60,6 +83,7 @@ import {
 } from '../../lib/grooveTemplate';
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
+import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
@@ -144,7 +168,7 @@ const LANE_FORMS: readonly LaneForm[] = [
 ];
 
 const ROLL_HELP =
-  'Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Arrows nudge the selection (Shift = 4 steps / an octave) · Drag right edge = resize · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
+  'Click the ruler = move the playhead (PLAY starts there) · Drag along the ruler = loop those steps (LOOP turns it on and off) · Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Arrows nudge the selection (Shift = 4 steps / an octave) · Drag right edge = resize · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
 
 /**
  * The roll's note clipboard: module-level, so it survives a remount and is
@@ -204,6 +228,7 @@ export const PianoRollTransport: React.FC<{
   const setBpm = usePianoRollStore((s) => s.setBpm);
   const setTotalSteps = usePianoRollStore((s) => s.setTotalSteps);
   const setPlaying = usePianoRollStore((s) => s.setPlaying);
+  const play = usePianoRollStore((s) => s.play);
   const setCurrentStep = usePianoRollStore((s) => s.setCurrentStep);
   const masterRef = useMasterGainRef();
   const playTimerRef = useRef<number | null>(null);
@@ -218,40 +243,51 @@ export const PianoRollTransport: React.FC<{
 
   // Time-based lookahead scheduler: notes fire at their exact time
   // (step * stepSec), so FRACTIONAL step positions (32nd/64th notes and
-  // micro-timing offsets) play — not just integer 16ths. Loops seamlessly by
-  // scheduling each note's next occurrence every `total` steps. It resumes from
-  // the store's current step, which every tick writes. It plays the lanes
-  // unrolled. Each tick reads the notes, lanes, length, BPM and bends from the
-  // store, so an edit while playing (a note, a meter, a lane's loop, a bend)
-  // changes what plays next without a restart, and a step already scheduled is
-  // never scheduled again.
+  // micro-timing offsets) play — not just integer 16ths. It counts absolute
+  // steps from the moment PLAY starts, and a lap (lib/rollTransport) maps them
+  // onto roll steps over and over: the whole roll, or the loop range while the
+  // loop is on. It starts at the playhead (the store's current step, which
+  // every tick writes); with the loop on and the playhead outside it, at the
+  // loop's start. It plays the lanes unrolled, and a note at or past the roll's
+  // end (or outside the loop) stays silent. Each tick reads the notes, lanes,
+  // length, BPM, loop and bends from the store, so an edit while playing (a
+  // note, a meter, a lane's loop, a bend, the loop range) changes what plays
+  // next without a restart, and a step already scheduled is never scheduled
+  // again. A seek (the ruler) re-anchors the lap at the new playhead.
   //
   // Pitch bend: a built-in voice follows its lane's curve through automation
   // scheduled with the note (lib/pitchBendVoice). A soundfont wheel bends a
   // whole channel, so each bent lane plays on its own channel and each tick
   // sends that channel's wheel messages for the window it schedules notes in.
-  // The roll's soundfont channels count down from 14 (lib/pitchBend
-  // liveLaneChannels), clear of EDIT's live MIDI and the arpeggiator.
+  // A loop that starts past step 0 plays each curve re-based to its start
+  // (lib/pitchBend shiftBend). The roll's soundfont channels count down from 14
+  // (lib/pitchBend liveLaneChannels), clear of EDIT's live MIDI and the
+  // arpeggiator.
   useEffect(() => {
     if (!isPlaying) return;
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
     const lookahead = 0.12; // seconds scheduled ahead each tick
-    const startStep = usePianoRollStore.getState().currentStep;
-    // Absolute step `clock.step` sounds at `clock.time`; a tempo change re-anchors the clock at the cursor.
-    const clock = { step: startStep, time: ctx.currentTime + 0.06, stepSec: 0 };
-    // Absolute step s is roll step (s - lap.base) mod lap.total; a length change re-anchors the lap at the cursor.
-    const lap = { base: 0, total: 0 };
-    let cursor = startStep - 1e-4; // absolute step scheduled up to (inclusive)
+    // Absolute step `clock.step` sounds at `clock.time`; absolute step 0 is where
+    // PLAY started. A tempo change re-anchors the clock at the cursor.
+    const clock = { step: 0, time: ctx.currentTime + 0.06, stepSec: 0 };
+    // Absolute steps map onto roll steps through the lap (lib/rollTransport): it
+    // starts at the playhead, and a seek, a new length or a new loop re-anchors
+    // it just past the cursor.
+    let lapState: LapState = playStartLap(usePianoRollStore.getState());
+    let cursor = -REANCHOR_STEPS; // absolute step scheduled up to (inclusive)
     // Unroll once per note, lane, length or bend edit, not once per tick.
     let source: { notes: PianoNote[]; lanes: PolyLane[]; total: number; bends: LaneBend[] } | null = null;
     let played: PianoNote[] = [];
     let bent = new Map<number, PlayedBend>();
     let channels = new Map<number, number>();
+    // Each bent lane's curve as the lap plays it, and what it was built from.
+    let lapCurves = bent;
+    let lapCurvesOf: { bent: Map<number, PlayedBend>; start: number } | null = null;
     // Soundfont channels this playback has bent, with the range last sent, and the latest wheel message time.
     const wheelRanges = new Map<number, number>();
     let lastWheelTime = 0;
-    // The next tick first sends each bent channel where its curve is: at the start, and after a bend, lane or length edit.
+    // The next tick first sends each bent channel where its curve is: at the start, and after a bend, lane, length, loop or seek.
     let wheelFresh = true;
 
     /** A channel's wheel back at the centre and the default range, after every message already sent to it. */
@@ -264,7 +300,8 @@ export const PianoRollTransport: React.FC<{
 
     const tick = () => {
       const now = ctx.currentTime;
-      const { notes, lanes, totalSteps: steps, bpm: tempo, bends } = usePianoRollStore.getState();
+      const roll = usePianoRollStore.getState();
+      const { notes, lanes, totalSteps: steps, bpm: tempo, bends } = roll;
       const total = Math.max(1, steps);
       const stepSec = 60 / Math.max(40, tempo) / 4;
       if (clock.stepSec === 0) clock.stepSec = stepSec;
@@ -273,13 +310,15 @@ export const PianoRollTransport: React.FC<{
         clock.step = cursor;
         clock.stepSec = stepSec;
       }
-      if (lap.total === 0) lap.total = total;
-      else if (total !== lap.total) {
-        // The playhead keeps its place, or starts over when the roll now ends before it.
-        const pos = (((cursor - lap.base) % lap.total) + lap.total) % lap.total;
-        lap.base = pos < total ? cursor - pos : cursor + 1e-4;
-        lap.total = total;
-      }
+      const followed = followLap(
+        lapState,
+        { range: playRange(roll.loop, roll.loopOn, total), seekId: roll.seekId, playhead: roll.currentStep },
+        cursor,
+      );
+      // A re-anchored lap sends every bent channel where its curve is at the new place.
+      if (followed !== lapState) wheelFresh = true;
+      lapState = followed;
+      const { lap } = lapState;
       if (!source || source.notes !== notes || source.lanes !== lanes || source.total !== total || source.bends !== bends) {
         if (source && (source.lanes !== lanes || source.total !== total || source.bends !== bends)) wheelFresh = true;
         source = { notes, lanes, total, bends };
@@ -287,19 +326,23 @@ export const PianoRollTransport: React.FC<{
         bent = playedRollBends(bends, lanes, total);
         channels = liveLaneChannels(lanes, bends);
       }
+      if (!lapCurvesOf || lapCurvesOf.bent !== bent || lapCurvesOf.start !== lap.start) {
+        lapCurvesOf = { bent, start: lap.start };
+        lapCurves = shiftPlayedBends(bent, lap.start);
+      }
       const targetAbs = clock.step + (now + lookahead - clock.time) / stepSec;
       const soundfont = isSoundfontActive();
       if (soundfont) {
         // A channel whose lane stopped bending goes back to the centre.
-        const bentChannels = new Set([...bent.keys()].map((lane) => channels.get(lane) ?? 0));
+        const bentChannels = new Set([...lapCurves.keys()].map((lane) => channels.get(lane) ?? 0));
         for (const ch of [...wheelRanges.keys()]) if (!bentChannels.has(ch)) releaseWheel(ch);
-        for (const [lane, curve] of bent) {
+        for (const [lane, curve] of lapCurves) {
           const ch = channels.get(lane) ?? 0;
           if (wheelRanges.get(ch) !== curve.range) {
             sfPitchWheelRange(ch, curve.range);
             wheelRanges.set(ch, curve.range);
           }
-          for (const e of loopedWheelEvents(curve.points, total, cursor - lap.base, targetAbs - lap.base, wheelFresh, curve.range)) {
+          for (const e of loopedWheelEvents(curve.points, lap.len, cursor - lap.base, targetAbs - lap.base, wheelFresh, curve.range)) {
             const at = Math.max(now, clock.time + (e.abs + lap.base - clock.step) * stepSec);
             sfPitchWheel(ch, e.raw, at);
             lastWheelTime = Math.max(lastWheelTime, at);
@@ -307,30 +350,23 @@ export const PianoRollTransport: React.FC<{
         }
         wheelFresh = false;
       }
-      for (const n of played) {
-        const first = lap.base + n.step;
-        let occ = first + Math.ceil((cursor - first) / total) * total;
-        if (occ <= cursor) occ += total;
-        if (occ > targetAbs) continue;
+      for (const { note: n, abs: occ } of windowOnsets(played, lap, cursor, targetAbs)) {
         const lane = playingLane(n.lane, lanes);
         const channel = channels.get(lane) ?? 0;
-        const curve = soundfont ? undefined : bent.get(lane);
-        while (occ <= targetAbs) {
-          const when = clock.time + (occ - clock.step) * stepSec;
-          const at = Math.max(now, when);
-          let bend: VoiceBend | undefined;
-          if (curve) {
-            // A note that starts late picks its curve up where the curve is by then.
-            const { events, originStep } = loopedBendAutomation(curve, total, n.step + (at - when) / stepSec, n.length + BEND_TAIL_SEC / stepSec);
-            bend = { events, originStep, stepSec };
-          }
-          triggerPianoNote(n.note, n.velocity, at, n.length * stepSec, masterRef.current, { channel, bend });
-          occ += total;
+        const curve = soundfont ? undefined : lapCurves.get(lane);
+        const when = clock.time + (occ - clock.step) * stepSec;
+        const at = Math.max(now, when);
+        let bend: VoiceBend | undefined;
+        if (curve) {
+          // A note that starts late picks its curve up where the curve is by then.
+          const { events, originStep } = loopedBendAutomation(curve, lap.len, n.step - lap.start + (at - when) / stepSec, n.length + BEND_TAIL_SEC / stepSec);
+          bend = { events, originStep, stepSec };
         }
+        triggerPianoNote(n.note, n.velocity, at, n.length * stepSec, masterRef.current, { channel, bend });
       }
       cursor = Math.max(cursor, targetAbs);
       const elapsedAbs = clock.step + (now - clock.time) / stepSec;
-      setCurrentStep((((elapsedAbs - lap.base) % total) + total) % total);
+      setCurrentStep(shownStep(lapState, elapsedAbs));
     };
     playTimerRef.current = window.setInterval(tick, 25);
     return () => {
@@ -355,14 +391,35 @@ export const PianoRollTransport: React.FC<{
       onArpPlayingChange?.(true);
       return;
     }
-    // Start from the top; the lookahead scheduler (effect above) fires notes,
-    // including step 0, at their exact times.
+    // Start from the playhead (a click on the ruler puts it anywhere, and it
+    // stays where the last playback stopped), or from the loop's start when the
+    // loop is on and leaves the playhead out. The lookahead scheduler (effect
+    // above) fires notes, the first step included, at their exact times.
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
-    setCurrentStep(0);
-    setPlaying(true);
-    logInfo('piano-roll', `Playing ${usePianoRollStore.getState().notes.length} notes at ${bpm} BPM`);
+    play();
+    const roll = usePianoRollStore.getState();
+    logInfo('piano-roll', `Playing ${roll.notes.length} notes at ${bpm} BPM from step ${Math.floor(roll.currentStep) + 1}`);
   };
+
+  // LOOP: turns the loop range on and off. With no range set it loops the bar
+  // under the playhead; a drag along the ruler sets any range, and the corner
+  // key clears it.
+  const loopRange = usePianoRollStore((s) => s.loop);
+  const loopOn = usePianoRollStore((s) => s.loopOn);
+  const setLoop = usePianoRollStore((s) => s.setLoop);
+  const setLoopOn = usePianoRollStore((s) => s.setLoopOn);
+  const toggleLoop = () => {
+    if (loopRange) {
+      setLoopOn(!loopOn);
+      return;
+    }
+    const r = usePianoRollStore.getState();
+    const bar = barAt(r.meterMap, Math.min(Math.max(0, r.currentStep), Math.max(0, r.totalSteps - 1e-6)), r.pickupSteps);
+    setLoop({ start: Math.max(0, bar.start), end: Math.min(r.totalSteps, bar.start + bar.len) });
+  };
+  const loopText = loopRange ? loopLabel(loopRange, meterMap, pickupSteps) : null;
+  const clearLoopTip = useDockTip({ word: 'Clear loop', description: 'Remove the loop range', label: 'Clear the loop range' });
   const playName = sounding ? 'Stop' : arpShowing ? 'Play the arpeggiator' : 'Play';
   const playTip = useDockTip({ word: sounding ? 'Stop' : 'Play', description: arpShowing && !sounding ? 'Play the arpeggiator' : undefined, label: playName });
 
@@ -396,6 +453,33 @@ export const PianoRollTransport: React.FC<{
         <Glyph d={sounding ? GLYPH_STOP : GLYPH_PLAY} />
       </button>
       {playTip.tip}
+      <div className="relative">
+        <StripKey
+          on={loopOn}
+          aria-pressed={loopOn}
+          onClick={toggleLoop}
+          legend="Loop"
+          icon={<Repeat className={STRIP_GLYPH} />}
+          description={
+            loopText
+              ? `${loopOn ? 'Looping' : 'Loop off:'} ${loopText}. Drag along the ruler to loop other steps.`
+              : 'Loop the bar under the playhead. Drag along the ruler to loop any steps.'
+          }
+        />
+        {loopRange && (
+          <button
+            ref={clearLoopTip.anchorRef}
+            type="button"
+            onClick={() => setLoop(null)}
+            aria-label="Clear the loop range"
+            aria-describedby={clearLoopTip.describedBy}
+            className={CORNER_KEY}
+          >
+            <X aria-hidden="true" className="w-3 h-3" strokeWidth={2.5} />
+          </button>
+        )}
+        {loopRange && clearLoopTip.tip}
+      </div>
       <div className={FIELD}>
         <label htmlFor="piano-roll-bpm" className={FIELD_LEGEND}>BPM</label>
         <input
@@ -572,9 +656,10 @@ export const PianoRollFeel: React.FC = () => {
     // (`rollClip.quantizeRollClip`, which is `clipNotes.quantizeNotes` — the
     // arithmetic is not reimplemented here), then lay the groove over it
     // (`grooveTemplate.applyGroove`, same as before). Lengths are handled
-    // separately, unchanged: a note's DURATION rounds toward the nearest whole
-    // step, which is not what `quantizeEnds` computes (that snaps the note's
-    // END POSITION to the grid, a different quantity).
+    // separately (`rollClip.feelLength`): a note's DURATION moves toward the
+    // nearest whole step by QUANT, which is not what `quantizeEnds` computes
+    // (that snaps the note's END POSITION to the grid, a different quantity).
+    // At QUANT 0 a length stays as it was, a sub-step one included.
     const { sourceRollNotes: quantizedSteps } = quantizeRollClip(
       {
         sourceRollNotes: notes,
@@ -586,11 +671,7 @@ export const PianoRollFeel: React.FC = () => {
       },
       { grid: '1/16', strength: q, groove, grooveStrength: picked ? q : 1 },
     );
-    const adjusted = quantizedSteps.map((note, i) => {
-      const originalLength = notes[i].length;
-      const quantizedLength = Math.max(1, Math.round(originalLength));
-      return { ...note, length: Math.max(1, originalLength + (quantizedLength - originalLength) * q) };
-    });
+    const adjusted = quantizedSteps.map((note, i) => ({ ...note, length: feelLength(notes[i].length, q) }));
     replaceAll(adjusted);
     logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% · groove ${groove.name}`);
   };
@@ -1026,8 +1107,8 @@ const RollRuler = React.memo(function RollRuler({
 
   return (
     // An opaque ground in the theme's canvas: notes and loop lines scrolled under the ruler stay off its ticks and text.
-    // data-dock-ceiling: the SHAPE row's above cards (GEN, FORM) keep their tops below this line.
-    <div data-dock-ceiling="" className="sticky top-0 z-20 bg-[#07050a] border-b border-white/5" style={{ height: HEADER_HEIGHT, width, minWidth: '100%' }}>
+    // It fills RollSeek, which sticks to the top of the grid and takes the clicks.
+    <div className="absolute inset-0 bg-[#07050a] border-b border-white/5">
       {spans.map((b, i) => {
         const prev = i > 0 ? spans[i - 1] : null;
         const change = b.bar >= 0 && (!prev || prev.bar < 0 || !meterEquals(prev.meter, b.meter));
@@ -1069,6 +1150,150 @@ const RollRuler = React.memo(function RollRuler({
     </div>
   );
 });
+
+/**
+ * The ruler's transport layer: it sticks to the top of the grid, holds the
+ * ruler (RollRuler, which only re-renders when the bars change) and takes the
+ * pointer and the keys.
+ *
+ *   - a click moves the playhead to the step under the pointer (`seek`): PLAY
+ *     starts there, a paste lands there, and the METER face's ADD starts a
+ *     change in its bar; while the roll plays, playback jumps there
+ *   - a drag along it sets the loop to the steps it covers and turns it on
+ *   - it is a slider for the keyboard: the arrows move the playhead a step,
+ *     Shift+arrows a bar, Home and End to the roll's ends
+ *
+ * It draws the loop range (full strength while the loop is on) and the
+ * playhead's mark.
+ */
+function RollSeek({
+  stepPx,
+  totalSteps,
+  meterMap,
+  pickupSteps,
+  onSeek,
+  children,
+}: {
+  stepPx: number;
+  totalSteps: number;
+  meterMap: MeterSegment[];
+  pickupSteps: number;
+  onSeek: (step: number) => void;
+  children: React.ReactNode;
+}) {
+  const width = totalSteps * stepPx;
+  const step = usePianoRollStore((s) => Math.floor(Math.max(0, s.currentStep)));
+  const loop = usePianoRollStore((s) => s.loop);
+  const loopOn = usePianoRollStore((s) => s.loopOn);
+  const [draft, setDraft] = useState<RollLoop | null>(null);
+  const pressRef = useRef<{ downStep: number; startX: number; dragging: boolean } | null>(null);
+
+  const stepAtClient = (el: HTMLElement, clientX: number): number => (clientX - el.getBoundingClientRect().left) / stepPx;
+  const seekTo = (to: number) => {
+    const next = rulerSeekStep(to, totalSteps);
+    usePianoRollStore.getState().seek(next);
+    onSeek(next);
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    pressRef.current = { downStep: stepAtClient(e.currentTarget, e.clientX), startX: e.clientX, dragging: false };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const press = pressRef.current;
+    if (!press) return;
+    e.stopPropagation();
+    if (!press.dragging && Math.abs(e.clientX - press.startX) < MARQUEE_MIN_PX) return;
+    press.dragging = true;
+    setDraft(rulerLoop(press.downStep, stepAtClient(e.currentTarget, e.clientX), totalSteps));
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    if (!press) return;
+    e.stopPropagation();
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    setDraft(null);
+    if (!press.dragging) {
+      seekTo(stepAtClient(e.currentTarget, e.clientX));
+      return;
+    }
+    // A drag that came back to the step line it started on sets nothing.
+    const next = rulerLoop(press.downStep, stepAtClient(e.currentTarget, e.clientX), totalSteps);
+    if (next) usePianoRollStore.getState().setLoop(next);
+  };
+  const onPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pressRef.current) return;
+    pressRef.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    setDraft(null);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const to = rulerKeyStep(e.key, e.shiftKey, step, totalSteps, meterMap, pickupSteps);
+    if (to === null) return;
+    // The ruler keeps the key, so an arrow here never also moves an EDIT clip.
+    e.preventDefault();
+    e.stopPropagation();
+    seekTo(to);
+  };
+
+  const shown = draft ?? loop;
+  const at = Math.min(step, Math.max(0, totalSteps - 1));
+  const bar = barAt(meterMap, at, pickupSteps);
+  return (
+    // data-dock-ceiling: the SHAPE row's above cards (GEN, FORM) keep their tops below this line.
+    <div
+      data-dock-ceiling=""
+      data-roll-ruler=""
+      role="slider"
+      tabIndex={0}
+      aria-label="Playhead: click the ruler to move it, drag along it to set the loop"
+      aria-valuemin={1}
+      aria-valuemax={Math.max(1, totalSteps)}
+      aria-valuenow={at + 1}
+      aria-valuetext={`Step ${at + 1}, ${bar.bar < 0 ? 'the pickup' : `bar ${bar.bar + 1}`}`}
+      className="sticky top-0 z-20 cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_1px_rgb(var(--et-accent))]"
+      style={{ height: HEADER_HEIGHT, width, minWidth: '100%' }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onPointerCancel}
+      onKeyDown={onKeyDown}
+    >
+      {children}
+      {shown && (
+        <div
+          aria-hidden="true"
+          data-loop-range="1"
+          className={`absolute bottom-0 h-1.5 border-x pointer-events-none ${
+            draft || loopOn
+              ? 'bg-[rgb(var(--et-accent)/0.7)] border-[rgb(var(--et-accent))]'
+              : 'bg-[rgb(var(--et-accent)/0.2)] border-[rgb(var(--et-accent)/0.5)]'
+          }`}
+          style={{ left: shown.start * stepPx, width: (shown.end - shown.start) * stepPx }}
+        />
+      )}
+      <RulerPlayhead stepPx={stepPx} totalSteps={totalSteps} />
+    </div>
+  );
+}
+
+/** The playhead's mark on the ruler, level with the grid's playhead line. */
+const RulerPlayhead: React.FC<{ stepPx: number; totalSteps: number }> = ({ stepPx, totalSteps }) => {
+  const currentStep = usePianoRollStore((s) => s.currentStep);
+  const isPlaying = usePianoRollStore((s) => s.isPlaying);
+  return (
+    <div
+      aria-hidden="true"
+      className={`absolute top-0 bottom-0 w-0.5 -ml-px pointer-events-none bg-[rgb(var(--et-ink))] ${isPlaying ? '' : 'opacity-60'}`}
+      style={{ left: Math.min(Math.max(0, currentStep), totalSteps) * stepPx }}
+    />
+  );
+};
 
 /**
  * The step range the grid shows, widened by the overscan on each side and
@@ -1209,21 +1434,6 @@ const RowBackgrounds = React.memo(function RowBackgrounds({ lowestNote, highestN
     </>
   );
 });
-
-/** The playhead: a 1px line in the theme's primary ink, which holds contrast on
- *  the grid and across the accent-filled notes. No glow. Only this re-renders
- *  as the roll plays. */
-const RollPlayhead: React.FC<{ stepPx: number }> = ({ stepPx }) => {
-  const isPlaying = usePianoRollStore((s) => s.isPlaying);
-  const currentStep = usePianoRollStore((s) => s.currentStep);
-  if (!isPlaying) return null;
-  return (
-    <div
-      className="absolute top-0 bottom-0 w-px bg-[rgb(var(--et-ink))] z-30 pointer-events-none"
-      style={{ left: currentStep * stepPx + stepPx / 2 }}
-    />
-  );
-};
 
 /** How much an arrow key moves the selected notes' velocity, and under Shift. */
 const VELOCITY_KEY_STEP = 1;
@@ -1618,7 +1828,7 @@ export const PianoRoll: React.FC<{
       }
       return;
     }
-    // Otherwise add a 1-step note.
+    // Otherwise add a 2-step note (an 8th) on the clicked cell.
     addNote({ note: targetNote, step: targetStep, length: 2, velocity: 96 });
     triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current);
   };
@@ -1640,15 +1850,15 @@ export const PianoRoll: React.FC<{
     { origin: RollPoint; startX: number; startY: number; shift: boolean; rect: MarqueeRect | null } | null
   >(null);
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
-  // Where a paste lands. The roll has NO edit cursor — its only step marker is
-  // the transport playhead (`currentStep`), which is reset to 0 on play and is
-  // stale once playback stops — so the insertion point is the playhead while the
-  // roll is sounding and the last clicked step otherwise (an empty cell, or the
-  // step a clicked note starts on), which is the roll's own "last click
-  // position". A clip load replaces every note, so the point goes back to the
-  // top with them — the step it held belonged to the roll that just left.
+  // Where a paste lands: the playhead while the roll is sounding, and otherwise
+  // the last step clicked (an empty cell, the step a clicked note starts on, or
+  // a step clicked on the ruler, which moves the playhead there too), which is
+  // the roll's own "last click position". A clip load replaces every note, so
+  // the point goes back to the top with them — the step it held belonged to the
+  // roll that just left.
   const insertStepRef = useRef(0);
   useEffect(() => { insertStepRef.current = 0; }, [editingClipId]);
+  const onRulerSeek = useCallback((step: number) => { insertStepRef.current = step; }, []);
   // Right-drag a note to extend its length.
   const resizeRef = useRef<{ id: string; startX: number; initialLength: number } | null>(null);
   const onNotePointerDown = (e: React.PointerEvent, note: PianoNote, edge: 'right' | 'body') => {
@@ -1697,9 +1907,12 @@ export const PianoRoll: React.FC<{
     if (op) {
       const dx = e.clientX - op.startX;
       if (Math.abs(dx) >= 3 && pressRef.current?.id === op.id) pressRef.current.wasSelected = false;
+      // Whole steps, stopping at one step (MIN_NOTE_LENGTH: the grid cannot grab
+      // a thinner note by hand). A note already shorter than a step, a triplet
+      // 16th out of GEN, keeps its length until the drag makes it longer.
       const deltaSteps = Math.round(dx / stepPx);
-      const newLen = Math.max(1, op.initialLength + deltaSteps);
-      updateNote(op.id, { length: newLen });
+      const newLen = Math.max(Math.min(MIN_NOTE_LENGTH, op.initialLength), op.initialLength + deltaSteps);
+      if (newLen !== usePianoRollStore.getState().notes.find((n) => n.id === op.id)?.length) updateNote(op.id, { length: newLen });
       return;
     }
     const mq = marqueeRef.current;
@@ -1780,15 +1993,16 @@ export const PianoRoll: React.FC<{
   // in the bubble phase with no `ownsKey` gate, so one press would nudge a
   // roll note AND a timeline clip. Once the roll owns the key it swallows the
   // arrow whether or not it had anything to move. The bend and velocity lanes
-  // are excluded: both take the arrows for their own points and bars, and a
-  // window capture listener runs before their element handlers can stop it.
+  // and the ruler are excluded: each takes the arrows for itself (points, bars,
+  // the playhead), and a window capture listener runs before their element
+  // handlers can stop it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
-      if (t?.closest('[data-bend-lane], [data-velocity-lane]')) return;
+      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-roll-ruler]')) return;
       if (inPortalledOverlay(e.target, rootRef.current)) return;
       if (!ownsKey('piano-roll')) return;
       if (rootRef.current?.offsetParent === null) return; // roll hidden (ARP face showing)
@@ -1813,11 +2027,11 @@ export const PianoRoll: React.FC<{
   // window listener runs — otherwise one Ctrl+Z would step both the timeline's
   // history and the roll's, since both surfaces are mounted at once.
   //
-  // Each clipboard edit is ONE write of `notes` (replaceAll), which is one undo
-  // step: the store's history subscriber snapshots the pre-change document on
-  // the first change of a burst, so a cut (copy + delete) and a paste each
-  // record exactly one step. The selection write that follows a paste touches no
-  // tracked slice, so it adds no step of its own.
+  // Each clipboard edit is ONE write (replaceAll for a cut, appendNotes for a
+  // paste or a duplicate), which is one undo step: the store's history
+  // subscriber snapshots the pre-change document on the first change of a
+  // burst, so a cut (copy + delete) and a paste each record exactly one step. A
+  // paste that runs past the roll's end grows the roll in that same write.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1858,7 +2072,8 @@ export const PianoRoll: React.FC<{
       // The whole selection — the helpers have always taken a set of ids, so the
       // marquee needed no change here beyond handing them the real one.
       const picked = s.selectedIds;
-      const range = { lowestNote: s.lowestNote, highestNote: s.highestNote, totalSteps: s.totalSteps };
+      // The roll grows to hold a paste, up to its longest length.
+      const range = { lowestNote: s.lowestNote, highestNote: s.highestNote, totalSteps: s.totalSteps, maxSteps: MAX_ROLL_STEPS };
       if (k === 'c' || k === 'x') {
         const payload = copyNotes(s.notes, picked);
         if (!payload) return; // nothing selected: the clipboard keeps what it had
@@ -1869,15 +2084,22 @@ export const PianoRoll: React.FC<{
         }
         return;
       }
+      const wanted = k === 'v' ? (noteClipboard?.notes.length ?? 0) : picked.size;
       const added = k === 'v'
         ? (noteClipboard ? pasteNotes(noteClipboard, s.isPlaying ? Math.floor(s.currentStep) : insertStepRef.current, range) : [])
         : duplicateNotes(s.notes, picked, range);
+      if (added.length < wanted) {
+        const left = wanted - added.length;
+        logWarn(
+          'piano-roll',
+          `${left} note${left === 1 ? '' : 's'} would start past step ${MAX_ROLL_STEPS}, the roll's longest length, and ${left === 1 ? 'was' : 'were'} left out`,
+        );
+      }
       if (added.length === 0) return;
-      s.replaceAll([...s.notes, ...added]);
-      // The block that just landed IS the selection, so a repeated Ctrl/Cmd+D
-      // marches forward instead of stacking copies on the original, and the
-      // earliest of them is the primary.
-      s.setSelection(added.map((n) => n.id), added[0].id);
+      // The block that just landed IS the selection (appendNotes selects it), so
+      // a repeated Ctrl/Cmd+D marches forward instead of stacking copies on the
+      // original, and the earliest of them is the primary.
+      s.appendNotes(added);
       // A paste moves the insertion point PAST the block it just wrote, so a
       // second Ctrl/Cmd+V lands after it instead of stacking an identical set in
       // place. A duplicate leaves the point on the copy it selected.
@@ -1963,7 +2185,15 @@ export const PianoRoll: React.FC<{
           onWheel={handleGridWheel}
         >
           {/* Ruler */}
-          <RollRuler spans={barSpans} lhl={barLhl} tiers={tiers} stepPx={stepPx} totalSteps={totalSteps} />
+          <RollSeek
+            stepPx={stepPx}
+            totalSteps={totalSteps}
+            meterMap={meterMap}
+            pickupSteps={pickupSteps}
+            onSeek={onRulerSeek}
+          >
+            <RollRuler spans={barSpans} lhl={barLhl} tiers={tiers} stepPx={stepPx} totalSteps={totalSteps} />
+          </RollSeek>
 
           <div
             ref={gridRef}
@@ -2034,7 +2264,7 @@ export const PianoRoll: React.FC<{
                 </div>
               );
             })}
-            <RollPlayhead stepPx={stepPx} />
+            <RollPlayhead stepPx={stepPx} totalSteps={totalSteps} />
             <LaneRepeats
               repeats={repeats}
               laneOf={laneOf}
@@ -2146,8 +2376,8 @@ export const PianoRoll: React.FC<{
           {
             type: 'item',
             label: 'Shorten (−1 step)',
-            disabled: n.length <= 1,
-            onSelect: () => updateNote(n.id, { length: Math.max(1, n.length - 1) }),
+            disabled: n.length <= MIN_NOTE_LENGTH,
+            onSelect: () => updateNote(n.id, { length: Math.max(MIN_NOTE_LENGTH, n.length - 1) }),
           },
           {
             type: 'item',

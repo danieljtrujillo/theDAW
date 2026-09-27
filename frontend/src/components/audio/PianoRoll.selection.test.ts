@@ -28,7 +28,7 @@ import {
   type RollGeometry,
 } from '../../lib/rollSelection.ts';
 import { copyNotes, duplicateNotes } from '../../lib/noteClipboard.ts';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore.ts';
+import { MAX_ROLL_STEPS, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore.ts';
 
 const st = () => usePianoRollStore.getState();
 const ids = () => [...st().selectedIds];
@@ -196,15 +196,24 @@ const modifierSelect = (mods: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?:
   assert.deepEqual(payload?.notes.map((n) => n.id), ['c', 'e'], 'a copy takes both, not just the primary');
   assert.equal(payload?.anchorStep, 0);
 
-  const range = { lowestNote: st().lowestNote, highestNote: st().highestNote, totalSteps: st().totalSteps };
+  const range = { lowestNote: st().lowestNote, highestNote: st().highestNote, totalSteps: st().totalSteps, maxSteps: MAX_ROLL_STEPS };
   const added = duplicateNotes(st().notes, st().selectedIds, range);
   assert.equal(added.length, 2, 'and a duplicate copies both');
   assert.deepEqual(added.map((n) => n.note), [60, 64]);
-  // The block that lands is the selection, the earliest of it the primary.
-  st().replaceAll([...st().notes, ...added]);
-  st().setSelection(added.map((n) => n.id), added[0].id);
-  assert.equal(st().selectedIds.size, 2);
-  assert.equal(st().selectedNoteId, added[0].id);
+  // The block lands in one write (appendNotes), which selects it, the earliest
+  // of it the primary.
+  beginBlock();
+  st().appendNotes(added);
+  assert.equal(st()._undo.length, 1, 'a duplicate is one undo step');
+  assert.deepEqual(st().notes.map((n) => n.id), ['c', 'e', 'g', ...added.map((n) => n.id)]);
+  assert.deepEqual(ids(), added.map((n) => n.id), 'the copy is the selection');
+  assert.equal(st().selectedNoteId, added[0].id, 'and its earliest note the primary');
+  // So a second Ctrl/Cmd+D copies the copy and marches forward.
+  const again = duplicateNotes(st().notes, st().selectedIds, { ...range, totalSteps: st().totalSteps });
+  assert.ok(again[0].step > added[0].step, 'the second duplicate lands after the first');
+  st().appendNotes(again);
+  assert.deepEqual(ids(), again.map((n) => n.id));
+  assert.equal(st().selectedNoteId, again[0].id);
 }
 
 // ── The velocity lane: a press, a sweep, and the keyboard nudge ──────────────

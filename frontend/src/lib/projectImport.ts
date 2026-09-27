@@ -34,7 +34,7 @@ import {
   type RoutingGraph,
 } from '../state/routingGraph';
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
-import type { PianoNote } from '../state/pianoRollStore';
+import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { renderNotesToBlob, type RenderNote } from './midiSynth';
 import {
@@ -120,14 +120,15 @@ const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderN
 };
 
 /**
- * The piano-roll view of the same notes, for "Edit in Piano Roll" and the
- * clip's own playback. An edge in seconds lands on its tick at `bpm` (PPQ to
- * the quarter), never snapped to a 16th. An edge in steps keeps its fraction,
- * with the `tick` / `ticks` the file writes beside it (pianoNoteToTasmo), so a
- * recorded note shorter than a 16th reopens at its own length. A length in
- * steps with no ticks beside it floors at one step, as the roll floors it.
+ * The piano-roll view of the same notes, for "Edit in Piano Roll" and EDIT's
+ * playback of the clip. An edge in seconds (a set saved from the Session grid)
+ * lands on its tick at `bpm` (PPQ to the quarter), never snapped to a 16th. An
+ * edge in steps (theDAW's own save) keeps its fraction, with the `tick` /
+ * `ticks` the file writes beside it (pianoNoteToTasmo), so a note shorter than
+ * a 16th reopens at its own length. A length in steps with no ticks beside it
+ * (a file an older build wrote) keeps its length down to the roll's one tick.
  */
-const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
+export const tasmoMidiNotesToPiano = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
   const ticksPerSec = (Math.max(40, bpm) / 60) * PPQ;
   const ticksPerStep = PPQ / ROLL_STEPS_PER_BEAT;
   return raw
@@ -150,7 +151,8 @@ const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNot
         id: uid('pn'),
         note: Math.round(note),
         step: tick !== undefined ? tick / ticksPerStep : stepIn,
-        length: ticks !== undefined ? ticks / ticksPerStep : Math.max(1, lengthIn ?? 1),
+        // A length of 0 or less (a hand-edited file) still loads as one step.
+        length: ticks !== undefined ? ticks / ticksPerStep : lengthIn !== undefined && lengthIn > 0 ? Math.max(MIN_NOTE_STEPS, lengthIn) : 1,
         velocity: clamp(pick(n, 'velocity', 'vel'), 1, 127, 100),
         ...(lane !== undefined && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
         ...(tick !== undefined ? { tick } : {}),
@@ -397,7 +399,7 @@ const buildClip = async (
   // A piano-roll clip saved from EDIT carries its bounce as audio_file AND its
   // notes; the notes make it a roll clip again whichever one supplied the audio.
   if (c.midi_notes && c.midi_notes.length) {
-    const pianoNotes = toPianoNotes(c.midi_notes, bpm);
+    const pianoNotes = tasmoMidiNotesToPiano(c.midi_notes, bpm);
     if (pianoNotes.length) {
       sourceKind = 'piano-roll';
       sourcePianoRoll = pianoNotes;

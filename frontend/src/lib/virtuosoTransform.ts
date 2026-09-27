@@ -50,7 +50,7 @@ import {
   type MeterSegment,
 } from './meterMap';
 import { metricalWeights, stepsPerBeat } from './syncopation';
-import type { PianoNote } from '../state/pianoRollStore';
+import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
 
 const RH_FLOOR = 60; // C4 — right-hand register floor
 const MEL_CENTER = 74; // D5 — melodic register center
@@ -674,7 +674,9 @@ export function harmonize(
     if (idx < 2) return;
     let counter = ladder[idx - 2];
     if (amount > 0.66 && hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3) counter -= 1;
-    out.push(mk(counter, n.step, Math.max(1, n.length), Math.max(1, n.velocity - 18)));
+    // The counter note takes the melody note's own length, so a run shorter
+    // than a 16th gets a counter run that stays detached.
+    out.push(mk(counter, n.step, Math.max(MIN_NOTE_STEPS, n.length), Math.max(1, n.velocity - 18)));
   });
   return out.sort(byStepThenNote);
 }
@@ -688,7 +690,7 @@ export function ragtimeStride(
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
   const grid = gridOf(opts);
-  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
   const out: PianoNote[] = [];
   let prev: Voicing | null = null;
   for (const b of bars(grid.map, lastStep, grid.pickup)) {

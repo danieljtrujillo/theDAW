@@ -480,8 +480,9 @@ export const ticksMatching = (ticks: unknown, steps: number, min: number): numbe
 /**
  * A piano-roll note in the .tasmo shape, carrying `lane` when the note has one,
  * and `tick` / `ticks` when the note has them and they still agree with its
- * `step` / `length`. Without the ticks a recorded note shorter than a 16th came
- * back from the file a whole 16th long, since a length in steps floors at one step.
+ * `step` / `length`. The ticks keep a triplet edge exact, and before this build
+ * a note shorter than a 16th with no ticks reopened a whole 16th long, since a
+ * length in steps floored at one step.
  */
 export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
   const tick = ticksMatching(n.tick, n.step, 0);
