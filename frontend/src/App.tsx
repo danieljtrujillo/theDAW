@@ -430,6 +430,7 @@ export default function App() {
         beginUndoStep,
         addClipToTrack: (clip) => useEditorStore.getState().addClipToTrack(clip),
         applyClipRender: (id, updates, peaks) => useEditorStore.getState().applyClipRender(id, updates, peaks),
+        clipWindow: (id) => useEditorStore.getState().clips.find((c) => c.id === id),
         renderStepNotes: (notes, bpm, totalSteps, opts) => renderStepNotesToBlob(notes, bpm, totalSteps, opts),
         computePeaks,
         postStatus,

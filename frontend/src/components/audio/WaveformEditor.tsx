@@ -72,6 +72,8 @@ import {
   type ClipVoice,
 } from '../../lib/clipProgram';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
+import { renderedWindowFields } from '../../lib/clipRenderWindow';
+import { rerenderStaleMidiClip } from '../../lib/clipRerender';
 import { parseMidi } from '../../utils/midi';
 import type { PianoNote } from '../../state/pianoRollStore';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
@@ -2618,46 +2620,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     return clipRenderIsStale(clip, track, getGlobalVoice());
   }, []);
 
-  /** Re-bounce a MIDI clip's audio through its current instrument. Live playback
-   *  synthesises from the note list and already honours the program, but the three
-   *  offline bounce paths read `audioBlob` — so without this, assigning "Cello" to
-   *  a clip made it PLAY cello and EXPORT whatever was selected when it was
-   *  inserted. Re-rendering on change keeps the blob and the program in step, which
-   *  fixes every export path at once instead of patching each bounce. */
+  /** Re-bounce a stale MIDI clip's audio through its current instrument
+   *  (lib/clipRerender), so every export plays what live playback does. */
   const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
-    const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
-    if (!clip || clip.sourceKind !== 'piano-roll' || !clip.sourcePianoRoll?.length) return;
-    if (!renderIsStale(clip)) return;
-    const voice = clipVoiceOf(clip);
     try {
-      await ensureSoundfontReady();
-      const bpm = clip.sourceBpm ?? useEditorStore.getState().bpm;
-      // A clip with no grid length renders to the bar line after its last note.
-      const totalSteps = clip.sourceTotalSteps
-        ?? roundUpToBar(
-          clip.sourceMeterMap ?? [],
-          Math.max(1, ...clip.sourcePianoRoll.map((n) => n.step + n.length)),
-          clip.sourcePickupSteps ?? 0,
-        );
-      // A clip whose lanes bend renders each note in its lane, so the bend survives the re-render.
-      const input = clipRenderInput(clip, totalSteps);
-      const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, {
-        program: voice.program,
-        percussion: voice.percussion,
-        bends: input.bends,
+      await rerenderStaleMidiClip(clipId, {
+        render: renderStepNotesToBlob,
+        computePeaks,
+        global: getGlobalVoice,
+        ensureReady: ensureSoundfontReady,
       });
-      const { peaks } = await computePeaks(rendered.blob, 240);
-      // Re-read: the user may have deleted or re-assigned the clip mid-render.
-      const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
-      const now = live ? clipVoiceOf(live) : null;
-      if (!now || now.program !== voice.program || now.percussion !== voice.percussion) return;
-      // Derived audio, so no undo step: undo restores clips whose bounce is
-      // stale, and this write then follows the undo with the redo stack intact.
-      applyClipRender(clipId, { audioBlob: rendered.blob, mimeType: 'audio/wav', ...renderedVoiceFields(voice) }, peaks);
     } catch (e) {
-      logError('editor', `Instrument re-render failed for "${clip.label}": ${e instanceof Error ? e.message : String(e)}`);
+      const label = useEditorStore.getState().clips.find((c) => c.id === clipId)?.label ?? clipId;
+      logError('editor', `Instrument re-render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [applyClipRender, clipVoiceOf, renderIsStale]);
+  }, []);
 
   // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
   // overrides, track defaults and the global picker in one place, so no individual
@@ -5672,13 +5649,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         try {
           const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps, { program: voice.program, percussion: voice.percussion });
           const { peaks } = await computePeaks(rendered.blob, 240);
+          // Re-read: the clip may have been trimmed or deleted mid-render.
+          const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
+          if (!live) return;
           // The bounce is derived from the clip's notes, so it adds no undo step
-          // of its own (see applyClipRender).
+          // of its own (see applyClipRender). An untrimmed clip takes the
+          // render's length, ring-out included (lib/clipRenderWindow).
           applyClipRender(clipId, {
             audioBlob: rendered.blob,
             mimeType: 'audio/wav',
-            sourceDuration: rendered.duration,
-            durationSec: rendered.duration,
+            ...renderedWindowFields(live, rendered.duration),
             // Record what this bounce actually contains so the instrument-sync
             // effect doesn't immediately re-render a clip that is already correct.
             ...renderedVoiceFields(voice),

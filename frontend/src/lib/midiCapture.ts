@@ -24,8 +24,9 @@
  * `notesToRoll` — with no store imports: every store, clock, render and notice
  * the runtime needs is a `MidiCaptureDeps` entry supplied by the one
  * `startMidiCapture()` mount in `App.tsx`. The only imports here are `import
- * type` and the pure lib/clipProgram, so the core is testable under plain
- * `tsx` with no DOM, no store graph and — the point — no real MIDI device.
+ * type` and the pure lib/clipProgram and lib/clipRenderWindow, so the core is
+ * testable under plain `tsx` with no DOM, no store graph and — the point — no
+ * real MIDI device.
  *
  * Design source
  * -------------
@@ -39,6 +40,7 @@
 
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from './clipProgram';
+import { renderedWindowFields, type RenderWindowClip } from './clipRenderWindow';
 import type { MidiBusMessage } from '../state/midiBus';
 import type { PianoNote } from '../state/pianoRollStore';
 
@@ -429,6 +431,9 @@ export interface MidiCaptureDeps {
   addClipToTrack: (clip: Omit<AudioClip, 'id'> & { id?: string }) => string;
   /** `useEditorStore.getState().applyClipRender` — history-exempt. */
   applyClipRender: (id: string, updates: Partial<AudioClip>, peaks?: Float32Array) => void;
+  /** The clip with this id as the editor holds it now, read when its render
+   *  lands so a take the user trimmed meanwhile keeps its window. */
+  clipWindow: (id: string) => RenderWindowClip | undefined;
   /** `midiSynth.renderStepNotesToBlob`. */
   renderStepNotes: (
     notes: StepRenderNote[],
@@ -623,12 +628,15 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         } catch {
           /* a clip that draws flat is still a clip; the notes are on it */
         }
+        // The render rings out past the last note-off, so an untrimmed take
+        // grows to hold the release and export plays what live playback does.
+        const now = deps.clipWindow(clipId);
         deps.applyClipRender(
           clipId,
           {
             audioBlob: blob,
             mimeType: 'audio/wav',
-            sourceDuration: duration,
+            ...(now ? renderedWindowFields(now, duration) : { sourceDuration: duration }),
             // What the blob actually contains, so WaveformEditor's
             // instrument-sync pass does not immediately re-render it. This is
             // the RESOLVED program (track's own, else the global picker's) —

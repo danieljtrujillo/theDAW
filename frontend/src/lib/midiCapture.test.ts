@@ -344,6 +344,9 @@ const harness = (opts: {
   punch?: { from: number; to: number } | null;
   /** The soundfont picker's program, when soundfonts are on. */
   globalProgram?: number;
+  /** Seconds the render rings past the take's nominal length, as a soundfont
+   *  render of a held chord does. */
+  ringSec?: number;
 }): Harness => {
   let sec = 0;
   let status = 'idle';
@@ -391,9 +394,10 @@ const harness = (opts: {
       applyClipRender: (id, updates, peaks) => {
         renders.push({ id, updates, peaks });
       },
+      clipWindow: (id) => clips.find((c) => c.id === id),
       renderStepNotes: async (notes, bpm, totalSteps, o) => {
         rendered.push({ notes, bpm, totalSteps, program: o?.program, percussion: o?.percussion });
-        return { blob: new Blob(['wav'], { type: 'audio/wav' }), duration: totalSteps * stepSeconds(bpm) };
+        return { blob: new Blob(['wav'], { type: 'audio/wav' }), duration: totalSteps * stepSeconds(bpm) + (opts.ringSec ?? 0) };
       },
       computePeaks: async (_blob, bins) => ({ peaks: new Float32Array(bins ?? 0), duration: 1 }),
       postStatus: (text) => {
@@ -741,6 +745,50 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   assert.equal(h.midiSubs, 0, 'the bus subscription is gone');
   h.setStatus('idle');
   assert.equal(h.clips.length, 0, 'a disposed mount lands nothing');
+}
+
+{
+  // A take that ends on a held chord: the pass closes at the chord's note-off,
+  // the clip lands as long as its notes, and the render rings 1.5 s past them
+  // (a string section's release). At 8039b45 applyClipRender wrote only
+  // sourceDuration, so the clip still ended at the note-off and EDIT playback
+  // and export cut the release there.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], ringSec: 1.5 });
+  h.sec(0);
+  h.setStatus('recording');
+  h.sec(0.5);
+  for (const k of [60, 64, 67]) h.send([0x90, k, 100]);
+  h.sec(2.5);
+  for (const k of [60, 64, 67]) h.send([0x80, k, 0]);
+  h.setStatus('stopping');
+  const clip = h.clips[0];
+  const nominal = clip.durationSec;
+  near(nominal, 20 * 0.125, 'the clip lands ending at the note-off');
+  await flush();
+  assert.equal(h.renders.length, 1);
+  near(h.renders[0].updates.sourceDuration ?? 0, nominal + 1.5, 'the source is the whole render');
+  near(h.renders[0].updates.durationSec ?? 0, nominal + 1.5, 'and the clip grows to hold the ring-out');
+  h.dispose();
+}
+
+{
+  // The same take trimmed by the user while it rendered keeps the window the
+  // user gave it; only the source length follows the render.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], ringSec: 1.5 });
+  h.sec(0);
+  h.setStatus('recording');
+  h.sec(0.5);
+  h.send([0x90, 60, 100]);
+  h.sec(2.5);
+  h.send([0x80, 60, 0]);
+  h.setStatus('stopping');
+  h.clips[0].durationSec = 1;
+  await flush();
+  near(h.renders[0].updates.sourceDuration ?? 0, 20 * 0.125 + 1.5, 'the source is the whole render');
+  assert.equal(h.renders[0].updates.durationSec, undefined, 'the trimmed window is left alone');
+  h.dispose();
 }
 
 console.log('midiCapture: ok');
