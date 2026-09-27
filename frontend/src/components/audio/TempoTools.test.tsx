@@ -11,7 +11,8 @@
  *   4. CLICK: the key, the click mode (Groups) and the count-in (1 bar), then
  *      PLAY over a 7/8 3+2+2 roll: the count-in sounds the bar's three group
  *      starts while the key reads STOP, PLAY starts when the bar ends, and the
- *      running click lands on the group starts too.
+ *      running click lands on the group starts too, its first on the counted
+ *      downbeat.
  *
  * Client-rendered (createRoot on jsdom), in the TempoLane.test.tsx pattern, with
  * a fake AudioContext whose clock the test moves.
@@ -237,16 +238,22 @@ const t0 = 20.02; // CLICK_LEAD_SEC ahead of the press
 assert.deepEqual(oscs.map((o) => round(o.startedAt ?? NaN)), [t0, t0 + 0.75, t0 + 1.25].map(round), 'the count-in clicks 3+2+2');
 assert.deepEqual(oscs.map((o) => o.frequency.value > 1200), [true, false, false]);
 const counted = oscs.length;
-ctx.currentTime = t0 + 1.75;
+const downbeat = t0 + 1.75;
+// The count hands over to PLAY a little before its downbeat (COUNT_IN_HANDOFF_SEC).
+ctx.currentTime = downbeat - 0.2;
 await wait(40);
-assert.equal(roll().isPlaying, true, 'PLAY starts when the counted bar ends');
+assert.equal(roll().isPlaying, false, 'PLAY waits for the handover');
+ctx.currentTime = downbeat - 0.1;
+await wait(40);
+assert.equal(roll().isPlaying, true, 'PLAY starts as the counted bar ends');
 // The roll's scheduler ticks every 25 ms; walk the audio clock through bar 1.
 const playFrom = ctx.currentTime;
 for (let k = 1; k <= 60; k += 1) {
   ctx.currentTime = round(playFrom + k * 0.03);
   await wait(26);
 }
-const origin = playFrom + 0.06;
+// PLAY's step 0 is the downbeat the count counted, not 60 ms after the handover.
+const origin = downbeat;
 const clicked = oscs.slice(counted).map((o) => round((o.startedAt ?? NaN) - origin));
 assert.deepEqual(clicked.slice(0, 4), [0, 0.75, 1.25, 1.75], `the running click lands on the group starts (${clicked.join(', ')})`);
 await step(() => button('Stop').click());
