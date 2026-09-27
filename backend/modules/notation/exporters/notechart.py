@@ -349,7 +349,7 @@ def _tempo_map(score: Any, ticks_per_quarter: int) -> list[dict[str, Any]]:
     than read from music21's ``secondsMap``, so the Unity side reproduces every
     onset with the same two lines of arithmetic.
     """
-    from music21 import tempo as m21tempo  # type: ignore[import]
+    from music21 import tempo as m21tempo
 
     marks: dict[float, float] = {}
     for mark in score.flatten().getElementsByClass(m21tempo.MetronomeMark):
@@ -413,7 +413,7 @@ def _measure_grid(score: Any) -> list[tuple[int, float, float, Any]]:
     Parts can disagree on bar count when one of them ends early, so the grid
     comes from whichever part carries the most measures.
     """
-    from music21 import stream as m21stream  # type: ignore[import]
+    from music21 import stream as m21stream
 
     best: list[Any] = []
     for part in _parts_of(score):
@@ -483,7 +483,7 @@ def _measures_block(
     grid: list[tuple[int, float, float, Any]],
     to_seconds: Callable[[float], float],
 ) -> list[dict[str, Any]]:
-    from music21 import bar as m21bar  # type: ignore[import]
+    from music21 import bar as m21bar
 
     out: list[dict[str, Any]] = []
     for index, (number, offset, length, measure) in enumerate(grid):
@@ -518,7 +518,7 @@ def _time_signature_map(
     to_seconds: Callable[[float], float],
     to_measure: Callable[[float], int],
 ) -> list[dict[str, Any]]:
-    from music21 import meter as m21meter  # type: ignore[import]
+    from music21 import meter as m21meter
 
     seen: dict[float, Any] = {}
     for ts in score.flatten().getElementsByClass(m21meter.TimeSignature):
@@ -563,7 +563,7 @@ def _key_signature_map(
     to_seconds: Callable[[float], float],
     to_measure: Callable[[float], int],
 ) -> list[dict[str, Any]]:
-    from music21 import key as m21key  # type: ignore[import]
+    from music21 import key as m21key
 
     seen: dict[float, Any] = {}
     for ks in score.flatten().getElementsByClass(m21key.KeySignature):
@@ -603,7 +603,7 @@ def _key_signature_map(
 
 def _parts_of(score: Any) -> list[Any]:
     """The score's parts, or the score itself when it carries notes directly."""
-    from music21 import stream as m21stream  # type: ignore[import]
+    from music21 import stream as m21stream
 
     parts = list(score.getElementsByClass(m21stream.Part))
     return parts or [score]
@@ -639,7 +639,7 @@ def _clef_at(clefs: list[tuple[float, Any]], beats: float) -> Any:
 
 
 def _part_clefs(part: Any) -> list[tuple[float, Any]]:
-    from music21 import clef as m21clef  # type: ignore[import]
+    from music21 import clef as m21clef
 
     found: list[tuple[float, Any]] = []
     for obj in part.recurse().getElementsByClass(m21clef.Clef):
@@ -898,8 +898,8 @@ def _emit_element(
     pitch it sounds at this element (see :func:`_written_to_sounding`); it moves
     each pitched head's ``midi`` and nothing that places the head.
     """
-    from music21 import chord as m21chord  # type: ignore[import]
-    from music21 import note as m21note  # type: ignore[import]
+    from music21 import chord as m21chord
+    from music21 import note as m21note
 
     dur = element.duration
     quarters = _f(getattr(dur, "quarterLength", 0.0))
@@ -1056,9 +1056,9 @@ def _sounding_heads(element: Any) -> list[tuple[Any, int, str, str]]:
     position and head shape through ``DRUM_STAFF`` (0 when unknown), and the
     voice is the coarse highway lane name (``perc`` when unknown).
     """
-    from music21 import chord as m21chord  # type: ignore[import]
-    from music21 import note as m21note  # type: ignore[import]
-    from music21 import percussion as m21percussion  # type: ignore[import]
+    from music21 import chord as m21chord
+    from music21 import note as m21note
+    from music21 import percussion as m21percussion
 
     def head_shape(obj: Any) -> str:
         return _s(getattr(obj, "notehead", "normal")).lower() or "normal"
@@ -1071,7 +1071,7 @@ def _sounding_heads(element: Any) -> list[tuple[Any, int, str, str]]:
         step = _s(getattr(obj, "displayStep", "")) or _s(getattr(display, "step", ""))
         octave = _i(getattr(obj, "displayOctave", None), 4)
         if display is None:
-            from music21 import pitch as m21pitch  # type: ignore[import]
+            from music21 import pitch as m21pitch
 
             display = m21pitch.Pitch(f"{step or 'B'}{octave}")
         shape = head_shape(obj)
@@ -1135,10 +1135,10 @@ def _walk_part(
     """Every event of ``part``. ``to_sounding`` gives the semitones from written
     to sounding pitch at an offset (:func:`_written_to_sounding`); none means
     the part holds sounding pitch."""
-    from music21 import chord as m21chord  # type: ignore[import]
-    from music21 import note as m21note  # type: ignore[import]
-    from music21 import percussion as m21percussion  # type: ignore[import]
-    from music21 import stream as m21stream  # type: ignore[import]
+    from music21 import chord as m21chord
+    from music21 import note as m21note
+    from music21 import percussion as m21percussion
+    from music21 import stream as m21stream
 
     # Unpitched is a NotRest, not a Note; PercussionChord is a ChordBase, not a
     # Chord. Both have to be named or a drum staff walks as an empty part.
@@ -1210,10 +1210,10 @@ def _walk_part(
 def _part_is_percussion(part: Any, instrument: Any) -> bool:
     """A part is percussion when its instrument says so, when it opens on a
     percussion clef, or when it carries any unpitched note at all."""
-    from music21 import clef as m21clef  # type: ignore[import]
-    from music21 import instrument as m21instrument  # type: ignore[import]
-    from music21 import note as m21note  # type: ignore[import]
-    from music21 import percussion as m21percussion  # type: ignore[import]
+    from music21 import clef as m21clef
+    from music21 import instrument as m21instrument
+    from music21 import note as m21note
+    from music21 import percussion as m21percussion
 
     if isinstance(instrument, m21instrument.UnpitchedPercussion):
         return True
@@ -1317,7 +1317,7 @@ def _pair_raw_onsets(
     did. Pairing is greedy in ascending onset order on identical pitch, nearest
     first, each MIDI note consumable once.
     """
-    import pretty_midi  # type: ignore[import]
+    import pretty_midi
 
     midi = pretty_midi.PrettyMIDI(str(raw_midi_path))
     by_pitch: dict[int, list[list[Any]]] = {}
@@ -1704,7 +1704,7 @@ def write_notechart(
 
 def _music21_version() -> str:
     try:
-        import music21  # type: ignore[import]
+        import music21
 
         return f"music21 {getattr(music21, '__version__', 'unknown')}"
     except ImportError:
@@ -1720,7 +1720,7 @@ def _expand_repeats(score: Any) -> Any:
     raise, and an unexpanded chart is still readable (measures carry
     startsRepeat / endsRepeat so the scene can tell).
     """
-    from music21 import bar as m21bar  # type: ignore[import]
+    from music21 import bar as m21bar
 
     try:
         if not list(score.recurse().getElementsByClass(m21bar.Repeat)):

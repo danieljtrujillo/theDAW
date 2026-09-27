@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 import soundfile as sf  # type: ignore[import]
 

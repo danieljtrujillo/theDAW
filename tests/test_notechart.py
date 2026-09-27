@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterator
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 
 from backend.modules.notation.exporters.notechart import (
     DRUM_VOICES,
@@ -229,7 +229,7 @@ def test_missing_raw_midi_is_reported_not_faked(tmp_path: Path):
 def test_grace_notes_and_rests_survive_the_walk(tmp_path: Path):
     """Grace notes are quarterLength 0 and rests have no ``.beams`` attribute;
     both used to be able to take the walk down."""
-    from music21 import metadata, note, stream  # type: ignore[import]
+    from music21 import metadata, note, stream
 
     part = stream.Part()
     measure = stream.Measure(number=1)
@@ -267,7 +267,7 @@ def test_grace_notes_and_rests_survive_the_walk(tmp_path: Path):
 
 
 def test_empty_source_never_reports_success(tmp_path: Path):
-    from music21 import stream  # type: ignore[import]
+    from music21 import stream
 
     source = tmp_path / "notation" / "silence.musicxml"
     source.parent.mkdir(parents=True, exist_ok=True)

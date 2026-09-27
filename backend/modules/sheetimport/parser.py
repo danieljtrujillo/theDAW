@@ -74,11 +74,11 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         raise FileNotFoundError(f"Score not found: {path}")
 
     try:
-        from music21 import chord as m21chord  # type: ignore[import]
-        from music21 import converter  # type: ignore[import]
-        from music21 import key as m21key  # type: ignore[import]
-        from music21 import note as m21note  # type: ignore[import]
-        from music21 import tempo as m21tempo  # type: ignore[import]
+        from music21 import chord as m21chord
+        from music21 import converter
+        from music21 import key as m21key
+        from music21 import note as m21note
+        from music21 import tempo as m21tempo
     except ImportError as e:  # pragma: no cover - music21 is a declared dependency
         raise RuntimeError("music21 is not installed") from e
 

@@ -1138,7 +1138,7 @@ def _stage_musicxml(
     clean = clean_title(title)
     if clean:
         try:
-            from music21.metadata import Metadata  # type: ignore[import]
+            from music21.metadata import Metadata
 
             if staged_score.metadata is None:
                 staged_score.insert(0, Metadata())
@@ -1603,7 +1603,7 @@ def convert_score(
 
 def _music21_version() -> str:
     try:
-        import music21  # type: ignore[import]
+        import music21
 
         return str(getattr(music21, "__version__", "unknown"))
     except ImportError:
@@ -2261,7 +2261,7 @@ def _convert_with_music21(
     artist: str = "",
 ) -> dict[str, Any]:
     try:
-        import music21  # type: ignore[import]
+        import music21
     except ImportError:
         return {
             "ok": False,
@@ -2305,7 +2305,7 @@ def _convert_with_music21(
         clean = clean_title(title)
         composer = artist or artist_name()
         try:
-            from music21.metadata import Metadata  # type: ignore[import]
+            from music21.metadata import Metadata
 
             md = score.metadata
             if md is None:
@@ -2590,7 +2590,7 @@ def midi_to_arrangement(
         return result
 
     try:
-        import music21  # type: ignore[import]
+        import music21
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
 
@@ -2602,7 +2602,7 @@ def midi_to_arrangement(
     clean = clean_title(title)
     composer = _chart_artist(entry)
     try:
-        from music21.metadata import Metadata  # type: ignore[import]
+        from music21.metadata import Metadata
 
         sc = result["score"]
         md = sc.metadata

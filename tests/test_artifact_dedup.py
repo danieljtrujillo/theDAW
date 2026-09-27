@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
 
 from backend.modules.library.db import LibraryDB

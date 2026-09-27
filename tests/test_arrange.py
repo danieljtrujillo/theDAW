@@ -388,7 +388,7 @@ def test_build_percussion_part_quantises_and_merges(tmp_path: Path):
     # Kick + open hat together at t=0, crash alone at t=1.0 (beat 3).
     _write_drum_midi(drums, [(0.0, 36), (0.0, 46), (1.0, 49)])
     part = build_percussion_part(drums, title="Kit")
-    from music21 import clef, percussion  # type: ignore[import]
+    from music21 import clef, percussion
 
     assert part.partName == "Kit"
     assert part.recurse().getElementsByClass(clef.PercussionClef)
@@ -559,7 +559,7 @@ def _sounding_bpms(sheet: Path) -> set[float]:
 def _onset_bars(sheet: Path) -> dict[str, tuple[set[float], list[tuple[int, float]]]]:
     """Part name -> (bar lengths in quarters, sorted ``(bar number, quarters
     into the bar)`` of every onset)."""
-    from music21 import converter, stream  # type: ignore[import]
+    from music21 import converter, stream
 
     out: dict[str, tuple[set[float], list[tuple[int, float]]]] = {}
     for part in converter.parse(str(sheet), forceSource=True).parts:

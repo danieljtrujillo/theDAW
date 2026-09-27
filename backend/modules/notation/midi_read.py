@@ -58,7 +58,7 @@ def read_score(path: Path, *, cache: bool = True) -> Any:
     reading or writing its parse cache (for a file about to be deleted). A
     sheet an older build wrote at sounding pitch is marked as such
     (:func:`.sheet_pitch.mark_legacy_sounding_pitch`)."""
-    from music21 import converter  # type: ignore[import]
+    from music21 import converter
 
     from .sheet_pitch import mark_legacy_sounding_pitch
 
@@ -71,7 +71,7 @@ def read_score(path: Path, *, cache: bool = True) -> Any:
 
 def read_midi(path: Path, *, cache: bool = True) -> Any:
     """A MIDI file as a ``Score`` of flat parts, each note at its own offset."""
-    from music21 import converter, stream  # type: ignore[import]
+    from music21 import converter, stream
 
     parsed = converter.parse(str(path), forceSource=not cache)
     score = stream.Score()
@@ -86,7 +86,7 @@ def read_midi(path: Path, *, cache: bool = True) -> Any:
 
 def _place_measures(part: Any) -> None:
     """Put each measure at the sum of the bar durations before it."""
-    from music21 import common, stream  # type: ignore[import]
+    from music21 import common, stream
 
     at = 0.0
     for measure in part.getElementsByClass(stream.Measure):
@@ -96,7 +96,7 @@ def _place_measures(part: Any) -> None:
 
 
 def _flat_part(part: Any) -> Any:
-    from music21 import chord, common, note, stream  # type: ignore[import]
+    from music21 import chord, common, note, stream
 
     _place_measures(part)
     flat = part.flatten()
