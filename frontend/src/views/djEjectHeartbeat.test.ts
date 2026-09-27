@@ -65,6 +65,14 @@ assert.equal(edgeOf(light), floorStep('[data-et-light="1"]'), 'light themes draw
 
 const reduced = blocks.find((b) => b.prelude.startsWith('@media (prefers-reduced-motion: reduce)') && b.body.includes('.dj-eject-heartbeat'));
 assert.ok(reduced, 'reduced motion has a rule for the pad');
-assert.match(reduced.body, /animation(-play-state)?:\s*(paused|none)/, 'reduced motion holds the pad still');
+// It must hold the resting frame even when reduced motion turns on mid-pulse,
+// which pausing would not: pausing freezes whatever frame is showing.
+assert.doesNotMatch(reduced.body, /animation-play-state\s*:\s*paused/, 'reduced motion does not freeze the pad mid-beat');
+assert.match(reduced.body, /animation-iteration-count\s*:\s*1\b/, 'reduced motion plays the heartbeat once');
+assert.match(reduced.body, /animation-fill-mode\s*:\s*forwards\b/, 'reduced motion holds the last frame');
+assert.match(reduced.body, /animation-duration\s*:\s*1ms\b/, 'reduced motion reaches the last frame at once');
+/** Each keyframe's selector list, e.g. ['0%', '48%', '100%']. */
+const frameSelectors = [...frames.body.matchAll(/([^{}]+)\{/g)].map((m) => m[1].split(',').map((s) => s.trim()));
+assert.ok(frameSelectors.find((s) => s.includes('100%'))?.includes('0%'), 'the last frame is the resting frame');
 
 console.log('dj eject heartbeat: defined, unlayered, unscaled, still under reduced motion');

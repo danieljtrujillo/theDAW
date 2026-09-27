@@ -861,5 +861,10 @@ select optgroup {
     box-shadow: 0 0 7px color-mix(in srgb, var(--eject-red) 55%, transparent), 0 0 16px color-mix(in srgb, var(--eject-red) 30%, transparent);
   }
 }
-/* Reduced motion holds the resting frame: the pad stays red and still. */
-@media (prefers-reduced-motion: reduce) { .dj-eject-heartbeat { animation-play-state: paused; } }
+/* Reduced motion plays the heartbeat once in 1ms and holds its last frame,
+ * which is the resting frame, even when reduced motion turns on mid-pulse. The
+ * pad stays red and still, and its colours stay in the animation, so the
+ * utilities still cannot grey it out. */
+@media (prefers-reduced-motion: reduce) {
+  .dj-eject-heartbeat { animation-duration: 1ms; animation-iteration-count: 1; animation-fill-mode: forwards; }
+}
