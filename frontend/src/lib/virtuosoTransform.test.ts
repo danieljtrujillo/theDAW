@@ -159,15 +159,20 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:00667665f355a8be5489a913',
+  // The five 'buildSong <style>' entries below were re-captured when
+  // harmonize's counter notes took their melody note's own length. Only the
+  // LENGTHS of counter notes under sub-16th melody notes changed (1 step became
+  // 0.667, 0.5, 0.333 or 0.25, and a humanized 1.5 became 1); every note's
+  // pitch, step and velocity, and every other note, is unchanged.
+  'buildSong romantic': '528:cf363ccff146f5e613c7ae84',
   'buildSong romantic sections': '436:2970824bac829e1decdc2b11',
-  'buildSong baroque': '670:d8e45136a307c9ee0a6c2a1f',
+  'buildSong baroque': '670:75b36cf03f160e4c437b5751',
   'buildSong baroque sections': '436:77327e4f20db5e6c37600d81',
-  'buildSong mussorgsky': '770:1890bd0c8fc3cffa5350a578',
+  'buildSong mussorgsky': '770:68c6f5293bc2f7881ea56349',
   'buildSong mussorgsky sections': '436:94d9043cb35d824aba5de12d',
-  'buildSong flamenco': '900:f5e68d940ecc03a40d1a2ef4',
+  'buildSong flamenco': '900:68b15d6167198e402b3528ee',
   'buildSong flamenco sections': '436:b092c60150c3f404917fa9ec',
-  'buildSong ragtime': '593:1b5cb3d1838d0c02acc5dde2',
+  'buildSong ragtime': '593:423902bca3de78064068d230',
   'buildSong ragtime sections': '439:318828506c418694b88543f1',
   'buildSong default': '1265:1a9155be9f515a82568fd5c7',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
@@ -419,6 +424,43 @@ const byPitch = (notes: PianoNote[]): Map<number, PianoNote> => new Map(notes.ma
   useVirtuosoStore.getState().setSectionMeter(0, null);
   await settle();
   assert.deepEqual(roll().meterMap, [{ bar: 0, meter: M44 }, { bar: firstBars, meter: M34 }], "section 1's bars follow the roll again once its meter is gone");
+  useVirtuosoStore.getState().resetToSource();
+}
+
+// HARMONY on a 16th-triplet melody, the way the Virtuoso panel runs it: the
+// roll holds the run, the panel captures it, HARMONY goes to full, and the
+// render lands back in the roll (replaceAll). Every counter note takes its
+// melody note's 0.667-step length, so the counter run stays detached like the
+// melody. Harmonize used to raise each counter note to a full 16th, so every
+// one overlapped the next.
+{
+  const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
+  const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
+  const roll = usePianoRollStore.getState;
+  const third = 2 / 3;
+  const melody: PianoNote[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `t${i}`, note: [72, 74, 76][i % 3], step: i * third, length: third, velocity: 96,
+  }));
+  roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0 });
+  useVirtuosoStore.setState({ amounts: { ...ZERO_AMOUNTS }, songMode: false, sections: null, groove: null, key: 'C', mode: 'major' });
+  roll().replaceAll(melody);
+  useVirtuosoStore.getState().captureSource();
+  useVirtuosoStore.getState().setAmount('harmony', 1);
+  const byTick = new Map<number, { note: number; tick: number; ticks: number }[]>();
+  for (const n of roll().notes) {
+    const at = byTick.get(n.tick!) ?? [];
+    at.push({ note: n.note, tick: n.tick!, ticks: n.ticks! });
+    byTick.set(n.tick!, at);
+  }
+  const counter = [...byTick.values()]
+    .map((at) => at.reduce((lo, n) => (n.note < lo.note ? n : lo)))
+    .sort((a, b) => a.tick - b.tick);
+  assert.equal(roll().notes.length, 48, 'every melody note gets a counter note at full HARMONY');
+  assert.equal(counter.length, 24);
+  for (const n of counter) assert.equal(n.ticks, 160, 'a counter note keeps two thirds of a 16th (160 ticks)');
+  for (let i = 1; i < counter.length; i += 1) {
+    assert.ok(counter[i - 1].tick + counter[i - 1].ticks <= counter[i].tick, `counter note ${i - 1} ends before counter note ${i} starts`);
+  }
   useVirtuosoStore.getState().resetToSource();
 }
 
