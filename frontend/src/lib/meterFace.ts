@@ -392,10 +392,12 @@ export const swingText = (sw: RhythmSwing): string => `SWING ${sw.unit}THS ${sw.
  * The roll's `bpm` places the pickup when the analysis has no tempo.
  *
  * The tempo keeps its fraction. When it was read off the downbeats, MATCH
- * also writes the tempo map (empty for a song that holds one BPM), so a song
- * whose tempo moves gets tempo changes and its bar lines stay on its
- * downbeats; only a song with a moving tempo and no downbeats to read it from
- * still warns that bar lines drift.
+ * also writes the tempo map (empty for a song that holds one BPM), placed so
+ * each bar line sits on the song's downbeat. The roll's playback, bounce and
+ * MIDI export still run at the one BPM, and a save does not keep the map, so
+ * a song whose tempo moves still warns that bar lines drift: with tempo
+ * changes the warning says they are not played yet, and with no downbeats to
+ * read the tempo from it says the song's tempo moves.
  */
 export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, analysis: RhythmAnalysis): MatchResult {
   if (analysis.status !== 'ready') {
@@ -427,7 +429,12 @@ export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, an
   if (seed.swing) status += ' APPLY IN THE FEEL KEYS SWINGS THE NOTES.';
   if (seed.uncertainBars > 0) status += ` ${seed.uncertainBars} BAR${seed.uncertainBars === 1 ? ' IS' : 'S ARE'} UNCERTAIN.`;
   let level: MatchResult['level'] = 'info';
-  if (!seed.tempoStable && !seed.tempoFromDownbeats) {
+  if (seed.tempoFromDownbeats && seed.tempoMap.length > 1) {
+    status += bpm != null
+      ? ` THE ROLL STILL PLAYS AND SAVES ONE TEMPO, ${bpmText(bpm)} BPM, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES.`
+      : ' THE ROLL STILL PLAYS AND SAVES ONE TEMPO, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES.';
+    level = 'warn';
+  } else if (!seed.tempoStable && !seed.tempoFromDownbeats) {
     status += " THE SONG'S TEMPO MOVES, SO BAR LINES DRIFT FROM THE NOTES.";
     level = 'warn';
   }

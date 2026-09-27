@@ -259,9 +259,13 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
 
 // MATCH on a song that slows down, run the way the METER face runs it: the
 // analysis, matchApply, writeMatch into the piano roll store. The ritardando
-// becomes tempo changes, the notes keep their steps, each bar line plays when
-// the song's downbeat does, the swing lands in the feel's groove, and one undo
-// takes the whole MATCH back.
+// becomes tempo changes, the notes keep their steps, the swing lands in the
+// feel's groove, and one undo takes the whole MATCH back.
+//
+// A DATA check of the tempo map: it reads each bar line's time through
+// lib/tempoMap beatToTime, the way a player that follows the map will. The
+// roll's scheduler, bounce and MIDI export still play at the one BPM, which
+// is why the status line warns that bar lines drift.
 {
   const durs = [2, 2, 2, 2, 2.4, 2.8, 2.8, 2.8];
   const downbeats = [0];
@@ -289,7 +293,7 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
     { beat: 20, bpm: 85.714 },
   ]);
   assert.deepEqual(st().notes.map((n) => n.step), stepsBefore, 'MATCH moves no note');
-  // Onsets through the tempo map: bar 5 at 8 s, bar 7 at 8 + 2.4 + 2.8 s, as the song plays them.
+  // Times through the tempo map: bar 5 at 8 s, bar 7 at 8 + 2.4 + 2.8 s, the song's downbeats.
   for (const n of st().notes) {
     const onset = beatToTime(st().tempoMap, n.step / 4);
     const bar = n.step / 16;
@@ -299,7 +303,9 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.equal(grooveById(st().grooveId)?.name, 'Swing 8ths 61.5%', "the feel's groove list resolves the song's swing");
   assert.match(res.status, /3 TEMPO CHANGES/);
   assert.match(res.status, /SWING 8THS 61\.5%/);
-  assert.equal(res.level, 'info');
+  // The roll still plays one tempo, so MATCH says the bar lines drift.
+  assert.match(res.status, /THE ROLL STILL PLAYS AND SAVES ONE TEMPO, 102\.13 BPM, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES\.$/);
+  assert.equal(res.level, 'warn');
   assert.equal(st()._undo.length, 1, 'MATCH is one undo step');
   st().undo();
   assert.deepEqual(st().tempoMap, [], 'undo takes the tempo changes back');

@@ -191,6 +191,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const lanes = usePianoRollStore((s) => s.lanes);
   const activeLane = usePianoRollStore((s) => s.activeLane);
   const tempoMap = usePianoRollStore((s) => s.tempoMap);
+  const rollBpm = usePianoRollStore((s) => s.bpm);
   // Numbers, so the playhead re-renders the face only when ADD's bar changes.
   const addBar = usePianoRollStore((s) => addChangeBar(s.meterMap, s.currentStep, s.pickupSteps));
   const addPastEnd = usePianoRollStore((s) => addChangePastEnd(s.meterMap, s.currentStep, s.pickupSteps, s.totalSteps));
@@ -538,11 +539,16 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
 
       {tempoMap.length > 0 && (
         <div className={FIELD}>
-          <span className={FIELD_LEGEND} title="Tempo changes in the roll, written by MATCH from the song's downbeats">Tempo</span>
+          <span
+            className={FIELD_LEGEND}
+            title="The song's tempo changes, written by MATCH from its downbeats. The roll still plays, bounces, exports and saves at its one BPM."
+          >
+            Tempo
+          </span>
           <span
             id="mf-tempo-value"
             aria-live="polite"
-            title={`${tempoMap.length} tempo changes from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM`}
+            title={`${tempoMap.length} tempo changes from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM, shown here; the roll plays at ${bpmText(rollBpm)} BPM throughout`}
             className={`${FIELD_VALUE} min-w-10`}
           >
             {bpmText(tempoLow)}-{bpmText(tempoHigh)}
