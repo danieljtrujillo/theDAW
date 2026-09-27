@@ -234,6 +234,15 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
   const holdId = 'tempo-lane-hold';
   const stretchId = 'tempo-lane-stretch';
   const isStart = picked?.kind === 'tempo' && selected?.beat === 0;
+  // The strip is a slider over the selected point: its tempo (a fermata's is
+  // the written tempo in force where it holds, before the hold slows it), or
+  // the starting tempo with none picked.
+  const pointBpm = selected ? (selected.fermata ? getTempoAtBeat(tempi, selected.beat) : selected.bpm) : tempi[0]?.bpm ?? 120;
+  const pointText = selected
+    ? selected.fermata
+      ? `Fermata at ${barOf(selected.beat)}, ${fermataReading(selected.fermata)}, at ${tempoText(pointBpm)} BPM`
+      : `${tempoText(pointBpm)} BPM, ${isStart ? 'the start' : selected.curve === 'linear' ? 'a ramp' : 'a step'} at ${barOf(selected.beat)}`
+    : `No point selected; the tempo starts at ${tempoText(pointBpm)} BPM`;
 
   return (
     <div className="shrink-0 border-t border-white/8 bg-black/30" data-tempo-lane>
@@ -373,13 +382,18 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
         />
       </div>
 
-      {/* The strip. role="application": the arrow keys move a point here, and a
-          screen reader must send them through rather than move its own cursor. */}
+      {/* The strip: a slider whose value is the selected point's tempo. The arrow
+          keys move that point (up and down its tempo, left and right its beat),
+          and a screen reader announces its tempo and bar as it moves. */}
       <div
         ref={surfaceRef}
-        role="application"
+        role="slider"
         tabIndex={0}
         aria-label={`Tempo map, ${tempi.length} tempo point${tempi.length === 1 ? '' : 's'} and ${marks.length} fermata${marks.length === 1 ? '' : 's'}, starting at ${tempoText(tempi[0]?.bpm ?? 120)} BPM`}
+        aria-valuemin={TEMPO_BPM_MIN}
+        aria-valuemax={TEMPO_BPM_MAX}
+        aria-valuenow={Math.round(pointBpm * 100) / 100}
+        aria-valuetext={pointText}
         aria-describedby="tempo-lane-help"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -441,7 +455,7 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
       <p id="tempo-lane-help" className="sr-only">
         Click to add a point of the kind the mode key shows: a step, a ramp or a fermata. Drag a point to move it,
         Alt-click to remove it, Alt while dragging places it off the grid. The arrow keys move the selected point,
-        Shift for a coarser step, Delete removes it.
+        Shift for a coarser step, Delete removes it. Home and End select the first and last point.
       </p>
     </div>
   );

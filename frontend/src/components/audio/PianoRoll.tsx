@@ -73,6 +73,7 @@ import {
   MARQUEE_MIN_PX,
   VELOCITY_LANE_HEIGHT,
   VELOCITY_MAX,
+  VELOCITY_MIN,
   gridPointAt,
   marqueeBox,
   marqueeRect,
@@ -1692,6 +1693,22 @@ const VelocityLane: React.FC<{
     const hi = picked.reduce((m, n) => Math.max(m, n.velocity), 1);
     return lo === hi ? String(lo) : `${lo}–${hi}`;
   }, [notes, selectedIds]);
+  // The strip is a slider: its value is the selected notes' velocity (the
+  // lowest of a range, which the arrow keys move together), or with none
+  // selected the notes' average, which a drag draws over.
+  const laneValue = useMemo(() => {
+    const picked = notes.filter((n) => selectedIds.has(n.id));
+    const pool = picked.length ? picked : notes;
+    if (!pool.length) return { now: VELOCITY_MIN, text: 'No notes' };
+    if (picked.length) {
+      const lo = picked.reduce((m, n) => Math.min(m, n.velocity), VELOCITY_MAX);
+      const hi = picked.reduce((m, n) => Math.max(m, n.velocity), VELOCITY_MIN);
+      const count = `${picked.length} selected`;
+      return { now: lo, text: lo === hi ? `Velocity ${lo}, ${count}` : `Velocity ${lo} to ${hi}, ${count}` };
+    }
+    const mean = Math.round(pool.reduce((sum, n) => sum + n.velocity, 0) / pool.length);
+    return { now: mean, text: `None selected; the notes average velocity ${mean}` };
+  }, [notes, selectedIds]);
 
   // Every write reads the store rather than this render's props: a sweep fires
   // faster than React re-renders, and each sample must see the note list the
@@ -1763,12 +1780,17 @@ const VelocityLane: React.FC<{
           {selectedIds.size > 0 ? `${selectedIds.size} selected` : `${notes.length} note${notes.length === 1 ? '' : 's'}`}
         </span>
       </div>
-      {/* role="application": the arrow keys set velocity here, so a screen
-          reader must send them through instead of moving its own cursor. */}
+      {/* A slider over the selected notes' velocity: the up and down arrow keys
+          move it, and a screen reader announces the value as it moves. */}
       <div
         ref={surfaceRef}
-        role="application"
+        role="slider"
         tabIndex={0}
+        aria-orientation="vertical"
+        aria-valuemin={VELOCITY_MIN}
+        aria-valuemax={VELOCITY_MAX}
+        aria-valuenow={laneValue.now}
+        aria-valuetext={laneValue.text}
         aria-label={`Velocity lane, ${notes.length} note${notes.length === 1 ? '' : 's'}, ${
           selectedIds.size > 0 ? `${selectedIds.size} selected at velocity ${reading}` : 'none selected'
         }`}
@@ -2195,9 +2217,9 @@ export const PianoRoll: React.FC<{
   // clipboard keys below use it: `WaveformEditor` binds the arrows on `window`
   // in the bubble phase with no `ownsKey` gate, so one press would nudge a
   // roll note AND a timeline clip. Once the roll owns the key it swallows the
-  // arrow whether or not it had anything to move. The bend and velocity lanes
-  // and the ruler are excluded: each takes the arrows for itself (points, bars,
-  // the playhead), and a window capture listener runs before their element
+  // arrow whether or not it had anything to move. The bend, velocity and tempo
+  // lanes and the ruler are excluded: each takes the arrows for itself (points,
+  // bars, the playhead), and a window capture listener runs before their element
   // handlers can stop it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2205,7 +2227,7 @@ export const PianoRoll: React.FC<{
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
-      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-roll-ruler]')) return;
+      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-tempo-lane], [data-roll-ruler]')) return;
       if (inPortalledOverlay(e.target, rootRef.current)) return;
       if (!ownsKey('piano-roll')) return;
       if (rootRef.current?.offsetParent === null) return; // roll hidden (ARP face showing)

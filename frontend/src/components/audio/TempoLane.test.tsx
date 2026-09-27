@@ -9,7 +9,9 @@
  * it; Delete removes it and undo brings it back; CLEAR leaves only the starting
  * tempo. In the header, typing 140 into BPM gives 140: at 30a3edf the first
  * digit was clamped as it was typed (the "1" of 140 became 40), and the field
- * stopped at 40-240.
+ * stopped at 40-240. The TEMPO, BEND and VELOCITY strips are sliders whose
+ * value (aria-valuenow, aria-valuetext) is the selected point or notes, and
+ * follows the arrow keys.
  *
  * Client-rendered (createRoot on jsdom), in the MidiPanel.test.tsx pattern.
  *
@@ -29,6 +31,8 @@ const globals: Record<string, unknown> = {
   document: win.document,
   navigator: win.navigator,
   HTMLElement: win.HTMLElement,
+  // The roll's window key listeners test `instanceof Element`; without it they throw and never run.
+  Element: win.Element,
   Node: win.Node,
   localStorage: win.localStorage,
   getComputedStyle: win.getComputedStyle.bind(win),
@@ -39,6 +43,9 @@ const globals: Record<string, unknown> = {
 for (const [key, value] of Object.entries(globals)) {
   Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
 }
+// jsdom lays nothing out, so every offsetParent is null and the roll's key
+// listeners would take the roll for hidden; a mounted element has a parent here.
+Object.defineProperty(win.HTMLElement.prototype, 'offsetParent', { get(this: HTMLElement) { return this.parentElement; }, configurable: true });
 
 const React = await import('react');
 const { act } = React;
@@ -55,7 +62,7 @@ const button = (name: string): HTMLButtonElement => {
 };
 const shape = () =>
   roll().tempoMap.map((e) => (e.fermata ? `f${e.beat}:${e.fermata.beats}x${e.fermata.stretch}` : `${e.beat}:${e.bpm}${e.curve === 'linear' ? 'r' : ''}`)).join(' ');
-const strip = () => win.document.querySelector('[data-tempo-lane] [role="application"]') as HTMLElement | null;
+const strip = () => win.document.querySelector('[data-tempo-lane] [role="slider"]') as HTMLElement | null;
 const input = (id: string) => win.document.getElementById(id) as HTMLInputElement | null;
 const valueSetter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!;
 /** Typing: the value changes and an InputEvent says it was typed. */
@@ -93,9 +100,26 @@ await step(() => tempoKey.click());
 assert.equal(tempoKey.getAttribute('aria-pressed'), 'true');
 assert.ok(strip(), 'the lane is under the grid');
 assert.match(strip()!.getAttribute('aria-label') ?? '', /starting at 120 BPM/);
+// The strip is a slider over the selected point's tempo, in the app's 20-300 range.
+assert.equal(strip()!.getAttribute('aria-valuemin'), '20');
+assert.equal(strip()!.getAttribute('aria-valuemax'), '300');
+assert.equal(strip()!.getAttribute('aria-valuenow'), '120', 'with nothing picked, the starting tempo');
+assert.equal(strip()!.getAttribute('aria-valuetext'), 'No point selected; the tempo starts at 120 BPM');
 
 // A click adds a tempo change on bar 3's line (step 32, beat 8), at 90.
 await step(() => clickAt(32, 90));
+assert.equal(shape(), '0:120 8:90');
+assert.equal(strip()!.getAttribute('aria-valuenow'), '90', 'the new point is selected, and its tempo is the value');
+assert.equal(strip()!.getAttribute('aria-valuetext'), '90 BPM, a step at bar 3');
+// The arrow keys move it, and the value follows. The strip has the focus, so
+// the roll owns the key (lib/keyScope) and its capture listener must let the
+// lane have the arrows, as it does for BEND and VELOCITY.
+await step(() => { strip()!.focus(); });
+assert.equal(win.document.activeElement, strip());
+await step(() => { key(strip()!, 'ArrowUp'); });
+assert.equal(strip()!.getAttribute('aria-valuenow'), '91');
+assert.equal(shape(), '0:120 8:91');
+await step(() => { key(strip()!, 'ArrowDown'); });
 assert.equal(shape(), '0:120 8:90');
 
 // RAMP: a click adds a point that slides to the next one.
@@ -112,6 +136,9 @@ assert.equal(modeKey().getAttribute('aria-label'), 'What a click adds: HOLD');
 await step(() => clickAt(56, 90));
 assert.equal(shape(), '0:120 8:90 12:90r f14:1x2 15:60r');
 assert.ok(input('tempo-lane-hold'), 'the fermata is selected and its HOLD field shows');
+// A fermata's value is the tempo in force where it holds: the ramp from 90 at beat 12 to 60 at beat 15, at beat 14.
+assert.equal(strip()!.getAttribute('aria-valuenow'), '70');
+assert.equal(strip()!.getAttribute('aria-valuetext'), 'Fermata at bar 4, holds 1 beat x2, at 70 BPM');
 await step(() => {
   const hold = input('tempo-lane-hold')!;
   valueSetter.call(hold, '2');
@@ -162,6 +189,34 @@ assert.equal(roll().bpm, 24.25, 'a slow introduction below the old 40 floor, wit
 // CLEAR keeps only the starting tempo.
 await step(() => button('Clear tempo').click());
 assert.equal(shape(), '0:24.25');
+
+// The BEND strip is a slider too: the selected point's bend in semitones at the lane's range.
+await step(() => button('Bend').click());
+const bendStrip = () => win.document.querySelector('[data-bend-lane] [role="slider"]') as HTMLElement | null;
+assert.ok(bendStrip(), 'the bend lane is a slider');
+assert.equal(bendStrip()!.getAttribute('aria-valuemin'), '-2');
+assert.equal(bendStrip()!.getAttribute('aria-valuemax'), '2');
+assert.equal(bendStrip()!.getAttribute('aria-valuenow'), '0');
+assert.equal(bendStrip()!.getAttribute('aria-valuetext'), 'No point selected');
+await step(() => { roll().addBendPoint(roll().activeLane, { step: 18, value: 0.5, shape: 'linear' }); });
+await step(() => { key(bendStrip()!, 'Home'); });
+assert.equal(bendStrip()!.getAttribute('aria-valuenow'), '1', 'half the 2-semitone range');
+assert.equal(bendStrip()!.getAttribute('aria-valuetext'), '+1.00 st at bar 2, step 3, LINE');
+await step(() => { key(bendStrip()!, 'ArrowUp'); });
+assert.equal(bendStrip()!.getAttribute('aria-valuenow'), '1.1', 'the arrow key moves it, and the value follows');
+
+// The VELOCITY strip is a vertical slider over the selected notes' velocity.
+const velStrip = win.document.querySelector('[data-velocity-lane] [role="slider"]') as HTMLElement;
+assert.ok(velStrip, 'the velocity lane is a slider');
+assert.equal(velStrip.getAttribute('aria-orientation'), 'vertical');
+assert.equal(velStrip.getAttribute('aria-valuemin'), '1');
+assert.equal(velStrip.getAttribute('aria-valuemax'), '127');
+assert.equal(velStrip.getAttribute('aria-valuenow'), '90');
+assert.equal(velStrip.getAttribute('aria-valuetext'), 'None selected; the notes average velocity 90');
+await step(() => roll().setSelection(['a']));
+assert.equal(velStrip.getAttribute('aria-valuetext'), 'Velocity 90, 1 selected');
+await step(() => { key(velStrip, 'ArrowUp'); });
+assert.equal(velStrip.getAttribute('aria-valuenow'), '91', 'the arrow key moves it, and the value follows');
 
 await step(() => root.unmount());
 console.log('TempoLane: ok');
