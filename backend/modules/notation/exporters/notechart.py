@@ -19,6 +19,17 @@ almost every decision here:
   - **Spelled pitch is mandatory.** MIDI 63 is D#4 or Eb4; those are different
     glyphs at different staff positions, and the spelling is exactly what a raw
     MIDI pitch discarded.
+  - **A head is placed where the sheet prints it; ``midi`` is what sounds.** A
+    part for a transposing instrument prints written pitch (a B-flat clarinet
+    a whole step above the sound), so its spelling and staff position are the
+    written note while ``midi`` is that note plus the transposition of the
+    instrument in force, the part's ``transposeSemitones``. The raw-onset
+    pairing matches ``midi`` against the recorded MIDI, which is sounding
+    pitch. A MIDI source, and a sheet an older build wrote at sounding pitch,
+    is moved to written pitch first, as the sheet writer moves it, so a chart
+    and the sheet engraved from the same MIDI agree. A
+    note under an 8va or 8vb line keeps its sounding pitch for both, as
+    MusicXML stores it.
   - **Rests are first-class and share the event array with notes**, so a spawner
     walks one monotonic cursor and no merge can reorder the rhythm.
 
@@ -65,7 +76,7 @@ from ..arrangers.percussion import (
     gm_pitch_for_display,
     is_drum_midi,
 )
-from ..midi_read import read_midi
+from ..midi_read import read_midi, read_score
 from ..tempo_marks import restore_sounding_tempi
 from . import beatsaber_map
 
@@ -879,8 +890,14 @@ def _emit_element(
     is_percussion: bool,
     chord_id: int,
     counters: _Counters,
+    sounding_shift: int = 0,
 ) -> list[dict[str, Any]]:
-    """One music21 element as one event (a chord becomes one event per pitch)."""
+    """One music21 element as one event (a chord becomes one event per pitch).
+
+    ``sounding_shift`` is the semitones from the pitch the part prints to the
+    pitch it sounds at this element (see :func:`_written_to_sounding`); it moves
+    each pitched head's ``midi`` and nothing that places the head.
+    """
     from music21 import chord as m21chord  # type: ignore[import]
     from music21 import note as m21note  # type: ignore[import]
 
@@ -988,7 +1005,7 @@ def _emit_element(
             {
                 "isRest": False,
                 "tie": head_tie,
-                "midi": midi,
+                "midi": midi if unpitched else midi + sounding_shift,
                 "drumVoice": drum_voice,
                 "velocity": velocity,
                 "step": _s(getattr(pitch, "step", "")),
@@ -1031,7 +1048,9 @@ def _emit_element(
 def _sounding_heads(element: Any) -> list[tuple[Any, int, str, str]]:
     """``(placement pitch, midi, notehead, drumVoice)`` per head, low to high.
 
-    Pitched notes and chords report their own pitch and ``""`` for the voice.
+    Pitched notes and chords report their own pitch and ``""`` for the voice;
+    on a part at written pitch that is the written note, and
+    :func:`_emit_element` moves ``midi`` to the sounding pitch.
     ``Unpitched`` heads (and ``PercussionChord`` members) place by their display
     pitch; ``midi`` is the General MIDI kit pitch recovered from the staff
     position and head shape through ``DRUM_STAFF`` (0 when unknown), and the
@@ -1111,7 +1130,11 @@ def _walk_part(
     is_percussion: bool,
     counters: _Counters,
     chord_counter: list[int],
+    to_sounding: Optional[Callable[[float], int]] = None,
 ) -> list[dict[str, Any]]:
+    """Every event of ``part``. ``to_sounding`` gives the semitones from written
+    to sounding pitch at an offset (:func:`_written_to_sounding`); none means
+    the part holds sounding pitch."""
     from music21 import chord as m21chord  # type: ignore[import]
     from music21 import note as m21note  # type: ignore[import]
     from music21 import percussion as m21percussion  # type: ignore[import]
@@ -1162,6 +1185,7 @@ def _walk_part(
                         is_percussion=is_percussion,
                         chord_id=chord_counter[0] if is_chord else -1,
                         counters=counters,
+                        sounding_shift=to_sounding(onset) if to_sounding else 0,
                     )
                 )
 
@@ -1206,6 +1230,41 @@ def _part_is_percussion(part: Any, instrument: Any) -> bool:
     except Exception:  # noqa: BLE001 - classification is metadata only
         return False
     return False
+
+
+def _written_to_sounding(part: Any) -> Callable[[float], int]:
+    """Semitones from the pitch ``part`` prints to the pitch it sounds, at an
+    offset in quarters.
+
+    On a part that holds written pitch (music21's ``atSoundingPitch`` False)
+    that is the transposition of the instrument in force at the offset, as
+    ``toSoundingPitch`` would apply it: -2 for a B-flat clarinet, +12 for a
+    piccolo, 0 before the first instrument. A part at sounding pitch, or one
+    music21 cannot place, sounds as printed.
+    """
+    from music21 import instrument as m21instrument
+
+    if getattr(part, "atSoundingPitch", "unknown") is not False:
+        return lambda _beats: 0
+    changes: list[tuple[float, int]] = []
+    for inst in part.recurse().getElementsByClass(m21instrument.Instrument):
+        transposition = getattr(inst, "transposition", None)
+        semitones = (
+            _i(getattr(transposition, "semitones", 0))
+            if transposition is not None
+            else 0
+        )
+        changes.append((_f(inst.getOffsetInHierarchy(part)), semitones))
+    if not changes:
+        return lambda _beats: 0
+    changes.sort(key=lambda change: change[0])
+    offsets = [offset for offset, _semitones in changes]
+
+    def at(beats: float) -> int:
+        index = bisect_right(offsets, beats + 1e-9) - 1
+        return changes[index][1] if index >= 0 else 0
+
+    return at
 
 
 def _part_block(part: Any, index: int) -> dict[str, Any]:
@@ -1384,8 +1443,6 @@ def build_notechart(
     ``audio_duration_sec``. Raises ``ValueError`` when the score carries no
     notes, so a caller never registers an empty chart as a success.
     """
-    from music21 import converter  # type: ignore[import]
-
     source_format = (
         "midi" if source_path.suffix.lower() in _MIDI_SUFFIXES else "musicxml"
     )
@@ -1398,7 +1455,7 @@ def build_notechart(
     elif source_format == "midi":
         score = read_midi(source_path)
     else:
-        score = converter.parse(str(source_path))
+        score = read_score(source_path)
     if score is None:
         raise ValueError(f"music21 could not parse {source_path}")
     # An engraved sheet prints a whole-number tempo; the tempo map needs the
@@ -1415,6 +1472,12 @@ def build_notechart(
             log.debug("notechart: quantize skipped for %s: %s", source_path, exc)
         # A MIDI reads as unbarred parts; bar them as the sheet writer does.
         score.makeNotation(inPlace=True)
+    # A MIDI holds sounding pitch and the sheet writer prints a transposing part
+    # at written pitch; a MusicXML source holds written pitch, except a sheet an
+    # older build wrote at sounding pitch, which ``read_score`` marks. The notes
+    # under an 8va line stay at the pitch they sound, as MusicXML stores them
+    # and as the sheet writer leaves them (``m21ToXml`` passes the same flag).
+    score.toWrittenPitch(inPlace=True, ottavasToSounding=True)
 
     score = _expand_repeats(score)
 
@@ -1441,6 +1504,7 @@ def build_notechart(
             is_percussion=bool(block["isPercussion"]),
             counters=counters,
             chord_counter=chord_counter,
+            to_sounding=_written_to_sounding(part),
         )
         parts.append(block)
 

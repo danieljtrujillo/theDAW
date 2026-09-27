@@ -10,6 +10,14 @@ Because music21 offsets/durations are in quarter-note units (tempo-independent),
 the resulting grid lines up regardless of the score's metronome mark. The
 returned ``bpm`` is a hint the caller can apply to the roll so playback speed
 matches the score.
+
+Every pitch is the pitch that sounds. A part for a transposing instrument is
+written at the pitch its player reads, which its ``<transpose>`` puts a whole
+step above the sound for a B-flat clarinet or trumpet, a minor third above for
+a clarinet in A, a fifth above for a horn in F, an octave below for a piccolo
+and an octave above for a contrabass. A sheet an older build of the app wrote
+holds those parts at the pitch they sound (see
+:mod:`backend.modules.notation.sheet_pitch`). The roll plays what it holds.
 """
 
 from __future__ import annotations
@@ -77,9 +85,17 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
     score = converter.parse(str(src))
     # A sheet engraved here prints its tempo as a whole number and carries the
     # exact tempo in <sound tempo>, which music21 does not read back.
+    from backend.modules.notation.sheet_pitch import mark_legacy_sounding_pitch
     from backend.modules.notation.tempo_marks import restore_sounding_tempi
 
     restore_sounding_tempi(score, src)
+
+    # music21 marks a part that carries a <transpose> as written pitch; move its
+    # notes, and its key signatures, to the pitch they sound. A sheet an older
+    # build of the app wrote holds sounding pitch under its <transpose>, and is
+    # marked so the move leaves it alone.
+    mark_legacy_sounding_pitch(score, src)
+    score.toSoundingPitch(inPlace=True)
 
     # Play out repeats / D.C. / D.S. so the imported roll matches the full piece.
     try:

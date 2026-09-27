@@ -46,6 +46,7 @@ from .notechart import (
     _seconds_from_beats,
     _tempo_map,
 )
+from ..midi_read import read_score
 from ..tempo_marks import restore_sounding_tempi
 
 log = logging.getLogger(__name__)
@@ -450,10 +451,13 @@ def _beats_per_bar(score: Any) -> int:
 def _from_harmony(
     lead_sheet_path: Path, analysis: dict[str, Any], resolution: str
 ) -> dict[str, Any]:
-    from music21 import converter, harmony  # type: ignore[import]
+    from music21 import harmony
 
-    score = converter.parse(str(lead_sheet_path))
+    score = read_score(lead_sheet_path)
     restore_sounding_tempi(score, lead_sheet_path)
+    # A lead sheet for a transposing instrument prints its chord symbols in the
+    # written key; the track sounds with the audio, at concert pitch.
+    score.toSoundingPitch(inPlace=True)
     score = _expand_repeats(score)
     tempo_entries = _tempo_map(score, 480)
     to_sec = _seconds_from_beats(tempo_entries)
