@@ -667,7 +667,7 @@ export function harmonyDescription(amount: number): string {
       ? 'Now 0: off, the melody plays alone.'
       : v <= cut
         ? `Now ${v}: a scale third under about ${v} in 100 top notes.`
-        : `Now ${v}: a third under about ${v} in 100 top notes, about three in ten of them a semitone lower.`;
+        : `Now ${v}: a third under about ${v} in 100 top notes, up to about three in ten of them a semitone lower where that does not clash with the melody.`;
   return [
     "Harmony adds a second line a third below the melody's top notes, each as long as its note.",
     '0: off.',

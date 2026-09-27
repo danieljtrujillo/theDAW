@@ -728,7 +728,12 @@ for (const amount of [0.6, 1]) {
   assert.equal(ranges.at(-1), 'Now 0: off, the melody plays alone.');
   assert.equal(lines(0.4).at(-1), 'Now 40: a scale third under about 40 in 100 top notes.');
   assert.equal(lines(0.66).at(-1), 'Now 66: a scale third under about 66 in 100 top notes.');
-  assert.match(lines(0.9).at(-1) ?? '', /^Now 90: .*a semitone lower\.$/);
+  // The clash guard keeps many candidate drops on the scale third, so the line
+  // gives three in ten as a ceiling, never as the share the user will hear.
+  assert.equal(
+    lines(0.9).at(-1),
+    'Now 90: a third under about 90 in 100 top notes, up to about three in ten of them a semitone lower where that does not clash with the melody.',
+  );
 }
 
 console.log('virtuosoTransform: ok');
