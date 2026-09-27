@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
-import { parseLoom, serializeLoom, STARTER_SCORE, type LoomTile } from './loomScore.ts';
+import { parseLoom, serializeLoom, STARTER_SCORE, tupletGrids, type LoomTile } from './loomScore.ts';
+import { parseColony } from './colony.ts';
 
 const shardAt = (tiles: (LoomTile | null)[], i: number) => {
   const t = tiles[i];
@@ -178,6 +179,21 @@ const shardAt = (tiles: (LoomTile | null)[], i: number) => {
   // A score written before the directive has no meter and writes none.
   assert.equal(parseLoom(STARTER_SCORE).score.meter, undefined);
   assert.equal(serializeLoom(parseLoom(STARTER_SCORE).score).includes('meter'), false);
+}
+
+// TUPLET GRID in the colony's rule inspector: the tuplet grids a bar holds a
+// whole number of steps of, as the steps per bar a rule takes.
+{
+  assert.deepEqual(tupletGrids({ num: 4, den: 4, groups: [] }).map((g) => [g.div, g.steps]), [[12, 12], [20, 20], [24, 24], [28, 28]]);
+  assert.deepEqual(tupletGrids({ num: 7, den: 8, groups: [2, 2, 3] }).map((g) => [g.div, g.steps]), [[24, 21]], 'in 7/8 only the 16th triplets come out whole');
+  assert.deepEqual(tupletGrids({ num: 5, den: 8, groups: [] }).map((g) => g.steps), [15], 'in 5/8 only the 16th triplets come out whole');
+  assert.deepEqual(tupletGrids({ num: 5, den: 4, groups: [] }).map((g) => g.steps), [15, 25, 30, 35]);
+  assert.equal(tupletGrids({ num: 3, den: 4, groups: [] }).find((g) => g.div === 20)?.name, '16th quintuplets');
+  // The steps a grid gives are steps a colony rule keeps through the CODE pane.
+  const { score, errors } = parseColony(`meter 5/4\nrule q = euclid(hits=5 steps=${tupletGrids({ num: 5, den: 4, groups: [] })[1].steps})\n`);
+  assert.deepEqual(errors, []);
+  const rule = score.root.nodes.find((n) => n.id === 'q');
+  assert.equal(rule?.kind === 'rule' ? rule.steps : null, 25);
 }
 
 console.log('loomScore: all assertions passed');

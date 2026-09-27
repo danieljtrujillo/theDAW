@@ -214,6 +214,27 @@ export function laneBarSteps(lane: Pick<LoomLane, 'div'>, meter: Meter | undefin
   return Number.isInteger(steps) && steps > 0 ? steps : null;
 }
 
+/** The tuplet lane grids, in steps per whole note, with their names. */
+export const TUPLET_DIVS: ReadonlyArray<{ div: number; name: string }> = [
+  { div: 12, name: '8th triplets' },
+  { div: 20, name: '16th quintuplets' },
+  { div: 24, name: '16th triplets' },
+  { div: 28, name: '16th septuplets' },
+];
+
+/**
+ * The tuplet grids a bar of `meter` holds a whole number of steps of, with
+ * that number: what the colony's rule inspector offers as TUPLET GRID (a rule
+ * plays its steps evenly across the bar, so 10 steps in 5/8 are 16th
+ * quintuplets). A rule holds 256 steps at most.
+ */
+export function tupletGrids(meter: Meter): Array<{ div: number; name: string; steps: number }> {
+  return TUPLET_DIVS.flatMap((g) => {
+    const steps = laneBarSteps(g, meter);
+    return steps && steps <= 256 ? [{ ...g, steps }] : [];
+  });
+}
+
 function parseLockParams(body: string, line: number, errors: LoomParseError[]): Partial<Record<LockParam, number>> {
   const out: Partial<Record<LockParam, number>> = {};
   for (const part of body.split(',')) {
