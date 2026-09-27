@@ -18,6 +18,7 @@ import {
   barAt, barStartStep, laneLoop, normalizeMeterMap, removeChangeAt, segmentBars, segmentIndexAt, setMeterAt, stepsPerBar,
   type LaneSpan, type MeterSegment, type PolyLane,
 } from './meterMap';
+import { sanitizeBendPoints, type LaneBend } from './pitchBend';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
 import { seedFromRhythm, type RhythmAnalysis, type RhythmSwing } from './rhythmSeed';
 import type { TempoEvent } from './tempoMap';
@@ -279,8 +280,9 @@ export function genTarget(roll: RollShape, selected: number): GenTarget {
   const lane = roll.lanes.find((l) => l.id === roll.activeLane) ?? roll.lanes[0] ?? { id: 0, name: 'A', cycleSteps: null };
   const loop = lane.id !== 0 ? laneLoop(lane, roll.totalSteps) : null;
   if (loop) {
-    const { cycle, origin } = loop;
-    return { lane: lane.id, name: lane.name, start: origin, end: origin + cycle, passLen: cycle, passes: 1, cycle, origin, bars: null, meter: null };
+    // A span shorter than the cycle ends the pass where the span ends.
+    const { cycle, origin, end } = loop;
+    return { lane: lane.id, name: lane.name, start: origin, end: Math.min(origin + cycle, end), passLen: cycle, passes: 1, cycle, origin, bars: null, meter: null };
   }
   const segs = normalizeMeterMap(roll.meterMap, false);
   const i = clampSelection(segs, selected);
@@ -499,6 +501,46 @@ export function toggleLaneSpan(map: readonly MeterSegment[], lanes: readonly Pol
     if (spanIsSegment(map, selected, l.span, pickupSteps) || (seg.start <= EPS && seg.end === null)) return rest;
     return { ...rest, span: seg };
   });
+}
+
+/** The step a lane's first cycle starts on: its span's first step, or step 0. */
+const laneOrigin = (l: PolyLane, totalSteps: number): number => Math.max(0, Math.min(totalSteps, l.span?.start ?? 0));
+
+/**
+ * SPAN as the roll writes it: the lanes toggleLaneSpan gives, with lane
+ * `laneId`'s notes and bend points moved from the cycle its loop started on
+ * to the cycle it starts on now, each keeping its place in the cycle. A lane
+ * written from step 0 therefore starts its loop on the span's first step, and
+ * the roll draws its notes inside the span. `notes` and `bends` are null when
+ * nothing moved (no loop, or a loop that starts where it did).
+ */
+export function respanLane<N extends PianoNote>(
+  roll: { meterMap: readonly MeterSegment[]; pickupSteps: number; lanes: readonly PolyLane[]; notes: readonly N[]; bends: readonly LaneBend[]; totalSteps: number },
+  selected: number,
+  laneId: number,
+): { lanes: PolyLane[]; notes: N[] | null; bends: LaneBend[] | null } {
+  const lanes = toggleLaneSpan(roll.meterMap, roll.lanes, selected, laneId, roll.pickupSteps);
+  const before = roll.lanes.find((l) => l.id === laneId);
+  const after = lanes.find((l) => l.id === laneId);
+  const cyc = after?.cycleSteps;
+  if (!before || !after || !cyc || cyc <= 0) return { lanes, notes: null, bends: null };
+  const from = laneOrigin(before, roll.totalSteps);
+  const to = laneOrigin(after, roll.totalSteps);
+  if (Math.abs(from - to) < EPS) return { lanes, notes: null, bends: null };
+  const fold = (step: number): number => to + ((((step - from) % cyc) + cyc) % cyc);
+  const notes = roll.notes.map((n) => {
+    if ((n.lane ?? 0) !== laneId) return n;
+    // The store ticks the note again from its new step.
+    const { tick: _tick, ...rest } = n;
+    return { ...rest, step: fold(n.step) } as N;
+  });
+  const bends = roll.bends.map((b) => {
+    if (b.lane !== laneId || !b.points.length) return b;
+    // A point on the cycle's end stays on it; the rest fold in, the later winning a step.
+    const moved = b.points.map((p) => ({ ...p, step: Math.abs(p.step - from - cyc) <= EPS ? to + cyc : fold(p.step) }));
+    return { ...b, points: sanitizeBendPoints(moved.sort((x, y) => x.step - y.step)) };
+  });
+  return { lanes, notes, bends };
 }
 
 /**

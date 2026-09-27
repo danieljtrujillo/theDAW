@@ -42,7 +42,7 @@ import {
   BEATS_MAX, BEATS_MIN, UNITS, addChange, addChangeBar, addChangePastEnd, bpmText, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneForms, laneSpanLabel, lanePitches, matchApply, matchError,
   meterLabel, newLaneCycle, parseGroupsValue, removeChange, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroups, setUnit,
-  spanIsSegment, stepLoop, stepOption, toggleLaneSpan, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  respanLane, spanIsSegment, stepLoop, stepOption, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
@@ -254,10 +254,14 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, stepsPerBar(meter), r.totalSteps);
     r.applyMeter({ lanes: r.lanes.map((x) => (x.id === l.id ? { ...x, cycleSteps } : x)) });
   };
+  // The lane's notes and bends move with its loop's first cycle; the writes fold into one undo step.
   const onSpan = (): void => {
     const r = usePianoRollStore.getState();
     if (r.activeLane === 0) return;
-    r.applyMeter({ lanes: toggleLaneSpan(r.meterMap, r.lanes, selected, r.activeLane, r.pickupSteps) });
+    const next = respanLane(r, selected, r.activeLane);
+    r.applyMeter({ lanes: next.lanes });
+    if (next.notes) r.replaceAll(next.notes);
+    if (next.bends) r.setBends(next.bends);
   };
 
   /* GEN */

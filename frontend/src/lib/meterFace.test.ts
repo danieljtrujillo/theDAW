@@ -3,12 +3,12 @@ import { euclidPattern, GEN_DEFAULT_OPTS, GEN_KINDS } from './loomGen.ts';
 import { dbToVelocity } from './rollLoom.ts';
 import { roundUpToBar, type MeterSegment } from './meterMap.ts';
 import type { RhythmAnalysis } from './rhythmSeed.ts';
-import { migrateNotes, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
+import { migrateNotes, PPQ, ROLL_STEPS_PER_BEAT, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 import {
   addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs, genPreview, genStatus, genTarget, genWrite,
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
-  setUnit, stepLoop, stepOption, laneSpanLabel, spanIsSegment, toggleLaneSpan, writeMatch, type GenSettings,
+  setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, type GenSettings,
 } from './meterFace.ts';
 import { beatToTime } from './tempoMap.ts';
 import { grooveById } from './grooveTemplate.ts';
@@ -343,6 +343,46 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.deepEqual(st().lanes[1], { id: 1, name: 'B', cycleSteps: 6 }, 'SPAN again: the whole roll');
   st().undo();
   assert.deepEqual(st().lanes[1].span, { start: 56, end: 96 }, 'undo brings the span back');
+}
+
+// SPAN on a lane already written from step 0: its notes and bend points move
+// into the span's first cycle, each keeping its place in the cycle, so the
+// downbeat note still starts every cycle. One undo takes all three back.
+{
+  usePianoRollStore.setState({ meterMap: SONG, pickupSteps: 0, lanes: [LANE_A, { id: 1, name: 'B', cycleSteps: 6 }], activeLane: 1, totalSteps: 160 });
+  st().replaceAll([{ ...note('down', 0, 1), note: 60 }, { ...note('off', 3, 1), note: 62 }, note('a', 5)]);
+  st().setBends([{ lane: 1, range: 2, points: [
+    { id: 'p0', step: 0, value: 0, shape: 'linear' },
+    { id: 'p1', step: 3, value: 0.5, shape: 'linear' },
+    { id: 'p2', step: 6, value: 0, shape: 'hold' },
+  ] }]);
+  freshStep();
+  const sel = 1; // 5/4 in bars 5-6: steps 56 to 96
+  const next = respanLane(st(), sel, 1);
+  st().applyMeter({ lanes: next.lanes });
+  if (next.notes) st().replaceAll(next.notes);
+  if (next.bends) st().setBends(next.bends);
+  assert.deepEqual(st().lanes[1].span, { start: 56, end: 96 });
+  const played = playedRollNotes(st().notes, st().lanes, st().totalSteps).filter((n) => n.note !== 50).map((n) => `${n.note}@${n.step}`);
+  assert.deepEqual(played.slice(0, 4), ['60@56', '62@59', '60@62', '62@65'], 'the downbeat note starts every cycle from the span');
+  assert.equal(st().notes.find((n) => n.id === 'a')?.step, 5, "lane A's note stays");
+  assert.equal(st().notes.find((n) => n.id === 'down')?.tick, 56 * (PPQ / ROLL_STEPS_PER_BEAT), 'the moved note is ticked from its new step');
+  assert.deepEqual(st().bends[0].points.map((p) => [p.step, p.value]), [[56, 0], [59, 0.5], [62, 0]], 'the bend moved with its notes, its cycle end kept');
+  assert.equal(st()._undo.length, 1, 'SPAN is one undo step');
+  st().undo();
+  assert.deepEqual(st().notes.filter((n) => n.lane === 1).map((n) => n.step), [0, 3]);
+  assert.deepEqual(st().bends[0].points.map((p) => p.step), [0, 3, 6]);
+  assert.equal(st().lanes[1].span, undefined);
+  // SPAN off moves them back to step 0.
+  st().redo();
+  const back = respanLane(st(), sel, 1);
+  assert.equal(back.lanes[1].span, undefined);
+  assert.deepEqual(back.notes?.filter((n) => n.lane === 1).map((n) => n.step), [0, 3]);
+  // A lane whose cycle is longer than its span still plays only inside it.
+  usePianoRollStore.setState({ lanes: [LANE_A, { id: 1, name: 'B', cycleSteps: 48, span: { start: 56, end: 96 } }] });
+  st().replaceAll([{ ...note('x', 56, 1), note: 60 }, { ...note('y', 100, 1), note: 62 }]);
+  assert.deepEqual(playedRollNotes(st().notes, st().lanes, st().totalSteps).map((n) => n.step), [56], 'a note that folds past the span end is not played');
+  assert.deepEqual(genTarget(st(), sel).end, 96, 'GEN writes up to the span end');
 }
 
 // FORM section meters: the list, round trips, and a section's own meter the list lacks.

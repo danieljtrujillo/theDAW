@@ -394,14 +394,17 @@ export function unrollLanes<T extends LaneNote>(notes: readonly T[], lanes: read
 /**
  * How lane `l` loops in a roll of `totalSteps`: its cycle, the step its first
  * cycle starts on and the step its repeats stop at. Null for a lane that does
- * not loop: no cycle, or a cycle that fills the room it plays in.
+ * not loop: no cycle, or, for a lane without a span, a cycle that fills the
+ * roll. A lane with a span keeps its loop even when the cycle is longer than
+ * the span (or the span starts past the roll's end), so its notes play from
+ * the span's first step and stop at its end, or not at all.
  */
 export function laneLoop(l: PolyLane | undefined, totalSteps: number): { cycle: number; origin: number; end: number } | null {
   const cyc = l?.cycleSteps;
   if (!l || !cyc || cyc <= 0) return null;
   const origin = Math.max(0, Math.min(totalSteps, l.span?.start ?? 0));
   const end = Math.max(origin, Math.min(totalSteps, l.span?.end ?? totalSteps));
-  return cyc >= end - origin ? null : { cycle: cyc, origin, end };
+  return cyc >= end - origin && !l.span ? null : { cycle: cyc, origin, end };
 }
 
 /** Steps until every looping lane starts together again (the least common multiple of their cycles). */

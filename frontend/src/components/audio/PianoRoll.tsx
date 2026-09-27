@@ -1747,11 +1747,12 @@ export const PianoRoll: React.FC<{
   }, [loopNotes, lanes, totalSteps]);
 
   // Where each looping lane's first cycle ends: its loop from step 0, or from
-  // its span's first step when it plays in part of the roll only.
+  // its span's first step when it plays in part of the roll only (at the
+  // span's end when the span is shorter than the cycle).
   const loopEnds = useMemo(
     () => lanes.flatMap((l) => {
       const loop = laneLoop(l, totalSteps);
-      return loop ? [{ id: l.id, name: l.name, cycleSteps: loop.cycle, at: loop.origin + loop.cycle, span: l.span ?? null }] : [];
+      return loop ? [{ id: l.id, name: l.name, cycleSteps: loop.cycle, at: Math.min(loop.origin + loop.cycle, loop.end), span: l.span ?? null }] : [];
     }),
     [lanes, totalSteps],
   );
