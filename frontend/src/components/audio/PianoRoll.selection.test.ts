@@ -66,6 +66,7 @@ const beginBlock = () => {
         lanes: s.lanes,
         bends: s.bends,
         voiceProgram: s.voiceProgram,
+        markers: s.markers,
       },
     ],
     _redo: [],

@@ -86,6 +86,27 @@
                 }
               }
             ],
+            "roll_markers": [
+              {
+                "id": "mk-1",
+                "tick": 0,
+                "name": "I. Allegro",
+                "kind": "movement"
+              },
+              {
+                "id": "form-0",
+                "tick": 960,
+                "name": "Intro",
+                "kind": "section",
+                "origin": "form"
+              },
+              {
+                "id": "mk-2",
+                "tick": 3840,
+                "name": "B",
+                "kind": "section"
+              }
+            ],
             "midi_notes": [
               {
                 "note": 60,

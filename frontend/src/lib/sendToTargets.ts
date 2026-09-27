@@ -180,7 +180,8 @@ export function loadMidiIntoPianoRoll(
     }
     const piano = usePianoRollStore.getState();
     // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
-    piano.importNotes(notes, bpm, meter, bends, tempoMap);
+    // A new file is a new document: the markers of the previous one go.
+    piano.importNotes(notes, bpm, meter, bends, tempoMap, []);
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
     logInfo(

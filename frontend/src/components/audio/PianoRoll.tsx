@@ -120,6 +120,7 @@ import {
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
 import { TempoLane } from './TempoLane';
+import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers';
 import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
@@ -213,7 +214,7 @@ const LANE_FORMS: readonly LaneForm[] = [
 ];
 
 const ROLL_HELP =
-  'Click the ruler = move the playhead (PLAY starts there) · Drag along the ruler = loop those steps (LOOP turns it on and off) · Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Drag a note = move the selection on the snap grid · Arrows nudge the selection a snap cell (Shift = 4 cells / an octave) · Drag right edge = resize to the snap grid · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
+  'Click the ruler = move the playhead (PLAY starts there) · Drag along the ruler = loop those steps (LOOP turns it on and off) · Marker row under the ruler: double-click = add a section, click a flag = jump there, drag a flag = move it to a bar line, F2 = rename, MARKS = the jump list · Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Drag a note = move the selection on the snap grid · Arrows nudge the selection a snap cell (Shift = 4 cells / an octave) · Drag right edge = resize to the snap grid · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
 
 /**
  * The roll's note clipboard: module-level, so it survives a remount and is
@@ -1269,7 +1270,8 @@ export const importMidiFileToRoll = (file: File): void => {
         return;
       }
       // importNotes auto-fits the grid length (to a bar line of that map) AND pitch range to the import.
-      usePianoRollStore.getState().importNotes(flat, bpm, meter, bends, tempoMap);
+      // A new file is a new document: the markers of the previous one go.
+      usePianoRollStore.getState().importNotes(flat, bpm, meter, bends, tempoMap, []);
       const bent = bends.filter((b) => b.points.length).length;
       const changes = tempoMap.length - 1;
       logInfo(
@@ -1310,7 +1312,7 @@ export const importSheetFileToRoll = (file: File): void => {
       // carry no lanes or bends, so the roll's lanes reset to lane A alone, unbent.
       const [num, den] = score.time_signature ?? [];
       const meterMap = normalizeMeterMap([{ bar: 0, meter: { num: Number(num), den: Number(den), groups: [] } }]);
-      usePianoRollStore.getState().importNotes(flat, score.bpm, { meterMap, pickupSteps: 0, lanes: [...DEFAULT_LANES] }, []);
+      usePianoRollStore.getState().importNotes(flat, score.bpm, { meterMap, pickupSteps: 0, lanes: [...DEFAULT_LANES] }, [], undefined, []);
       logInfo(
         'piano-roll',
         `Imported ${flat.length} notes from score "${file.name}" (${score.format}) at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meterMap[0].meter)}`,
@@ -2173,6 +2175,19 @@ export const PianoRoll: React.FC<{
   const insertStepRef = useRef(0);
   useEffect(() => { insertStepRef.current = 0; }, [editingClipId]);
   const onRulerSeek = useCallback((step: number) => { insertStepRef.current = step; }, []);
+  // A marker's jump (its flag, or the MARKS list): the playhead moves there, a
+  // paste lands there, and the grid scrolls so the marker sits an eighth of the
+  // view in from the left when it is out of view.
+  const jumpToStep = useCallback((step: number) => {
+    const s = usePianoRollStore.getState();
+    s.seek(step);
+    const at = usePianoRollStore.getState().currentStep;
+    insertStepRef.current = at;
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const x = at * stepPx;
+    if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - 24) el.scrollLeft = Math.max(0, x - el.clientWidth / 8);
+  }, [stepPx]);
   // Drag a note's right edge to change its length on the snap grid.
   const resizeRef = useRef<{ id: string; startX: number; tick: number; initialTicks: number } | null>(null);
   /**
@@ -2340,6 +2355,9 @@ export const PianoRoll: React.FC<{
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // A marker flag takes Delete for itself, and a key in a portalled card
+      // (the MARKS list, a menu) is never a note edit.
+      if (t?.closest?.('[data-roll-markers]') || inPortalledOverlay(e.target, rootRef.current)) return;
       // Only delete a note when the piano roll is the surface the user is on;
       // otherwise Delete in the EDIT timeline removed a clip AND a note. The
       // scope is the whole MIDI tab (MidiPanel), so a hidden roll (the ARP face
@@ -2374,7 +2392,7 @@ export const PianoRoll: React.FC<{
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
-      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-tempo-lane], [data-roll-ruler]')) return;
+      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-tempo-lane], [data-roll-ruler], [data-roll-markers]')) return;
       if (inPortalledOverlay(e.target, rootRef.current)) return;
       if (!ownsKey('piano-roll')) return;
       if (rootRef.current?.offsetParent === null) return; // roll hidden (ARP face showing)
@@ -2546,7 +2564,11 @@ export const PianoRoll: React.FC<{
             <Info aria-hidden="true" className="w-3 h-3 et-ink-3" />
             <span className="sr-only">{ROLL_HELP}</span>
           </div>
-          <div ref={keyboardRowsRef} className="overflow-hidden" style={{ height: `calc(100% - ${HEADER_HEIGHT}px)` }}>
+          {/* Level with the marker row: MARKS opens the jump list. */}
+          <div className="bg-black/40 border-b border-white/5" style={{ height: MARKER_ROW_HEIGHT }}>
+            <RollMarkerJump onJump={jumpToStep} />
+          </div>
+          <div ref={keyboardRowsRef} className="overflow-hidden" style={{ height: `calc(100% - ${HEADER_HEIGHT + MARKER_ROW_HEIGHT}px)` }}>
             <div style={{ height: gridHeight }}>
               <KeyboardKeys lowestNote={lowestNote} highestNote={highestNote} masterRef={masterRef} />
             </div>
@@ -2574,6 +2596,15 @@ export const PianoRoll: React.FC<{
           >
             <RollRuler spans={barSpans} lhl={barLhl} tiers={tiers} stepPx={stepPx} totalSteps={totalSteps} />
           </RollSeek>
+          {/* Named markers (sections, movements), sticking under the ruler. */}
+          <RollMarkerRow
+            top={HEADER_HEIGHT}
+            stepPx={stepPx}
+            totalSteps={totalSteps}
+            meterMap={meterMap}
+            pickupSteps={pickupSteps}
+            onJump={jumpToStep}
+          />
 
           <div
             ref={gridRef}
@@ -2638,7 +2669,7 @@ export const PianoRoll: React.FC<{
                     title={name}
                     data-loop-tag="1"
                     className={`sticky flex w-max items-center gap-0.5 ${onLeft ? '-ml-0.5 -translate-x-full' : 'ml-0.5'} px-0.5 py-0.5 rounded-xs bg-[#0a080f] text-[12px] leading-none font-bold et-ink tabular-nums whitespace-nowrap pointer-events-auto`}
-                    style={{ top: HEADER_HEIGHT + 4 + i * 18, marginTop: 4 + i * 18 }}
+                    style={{ top: HEADER_HEIGHT + MARKER_ROW_HEIGHT + 4 + i * 18, marginTop: 4 + i * 18 }}
                   >
                     <span className={`w-2 h-2 rounded-xs border ${form.fill} ${form.edge}`} style={form.style} />
                     {l.cycleSteps}

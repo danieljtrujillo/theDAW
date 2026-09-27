@@ -9,7 +9,9 @@
  * its meter map, pickup, each lane's pitch bend and its tempo map travel beside
  * them. A clip's tempo map (`sourceTempoMap`) is written only when the roll
  * changes tempo; EDIT plays, draws and renders the clip's notes through it
- * (lib/rollTempo stepClock), and a clip without one holds `sourceBpm`.
+ * (lib/rollTempo stepClock), and a clip without one holds `sourceBpm`. The
+ * roll's named markers (lib/rollMarkers) travel as `sourceMarkers`, written
+ * only when the roll has some.
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -22,16 +24,18 @@ import { TICKS_PER_STEP, feelNoteTicks, laneSnapGrid, snapGrid, type RollSnapId,
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
 import type { MidiFileData } from './midi';
 import { midiFileToRoll } from './rollMidi';
+import { copyRollMarkers, sanitizeRollMarkers, type RollMarker } from './rollMarkers';
 import { copyTempoMap, hasTempoChanges, playedTempoMap, type StepClock } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 
-/** The roll state a bounce reads. `tempoMap` left out is one tempo at `bpm`. */
+/** The roll state a bounce reads. `tempoMap` left out is one tempo at `bpm`; `markers` left out is none. */
 export type RollClipSource = RollMeter & {
   notes: readonly PianoNote[];
   bpm: number;
   totalSteps: number;
   bends: readonly LaneBend[];
   tempoMap?: readonly TempoEvent[];
+  markers?: readonly RollMarker[];
 };
 
 type RollClipKeys =
@@ -47,12 +51,17 @@ type RollClipKeys =
 /**
  * The clip fields a bounce writes. `sourceTempoMap` is always named, and
  * undefined for a roll at one tempo, so a re-bounce after the last tempo
- * change is removed clears the map the clip had.
+ * change is removed clears the map the clip had. `sourceMarkers` is named the
+ * same way: undefined for a roll with no markers, so removing the last marker
+ * and saving clears the clip's.
  */
-export type RollClipFields = Required<Pick<AudioClip, RollClipKeys>> & { sourceTempoMap: TempoEvent[] | undefined };
+export type RollClipFields = Required<Pick<AudioClip, RollClipKeys>> & {
+  sourceTempoMap: TempoEvent[] | undefined;
+  sourceMarkers: RollMarker[] | undefined;
+};
 
 /** The clip fields clipRollLoad reads. */
-export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys | 'sourceTempoMap'>;
+export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys | 'sourceTempoMap' | 'sourceMarkers'>;
 
 /** The arguments of pianoRollStore's loadFromClip. */
 export type RollLoadArgs = [
@@ -63,6 +72,7 @@ export type RollLoadArgs = [
   meter: RollMeter,
   bends: LaneBend[],
   tempoMap: TempoEvent[] | undefined,
+  markers: RollMarker[],
 ];
 
 /**
@@ -114,6 +124,7 @@ export function rollClipFields(s: RollClipSource): RollClipFields {
     sourceLanes: meter.lanes,
     sourceBends: copyBends(s.bends),
     sourceTempoMap: hasTempoChanges(s.tempoMap) ? copyTempoMap(s.tempoMap as TempoEvent[]) : undefined,
+    sourceMarkers: s.markers?.length ? copyRollMarkers(s.markers) : undefined,
   };
 }
 
@@ -159,7 +170,8 @@ export function clipRenderInput(clip: ClipRenderSource, totalSteps: number): { n
  * them, else the notes it plays, its meter and its lanes' bends (none when it
  * has none). A clip with no meter map was bounced before the roll had one, so
  * it loads as 4/4 with no pickup and lane A only, and its grid length rounds up
- * to a bar line.
+ * to a bar line. Its markers come back on the ruler; a clip with none (or one
+ * bounced before the roll had markers) opens with none.
  */
 export function clipRollLoad(clip: RollClipInput): RollLoadArgs {
   const stored = clip.sourceRollNotes?.length ? clip.sourceRollNotes : clip.sourcePianoRoll ?? [];
@@ -177,7 +189,8 @@ export function clipRollLoad(clip: RollClipInput): RollLoadArgs {
   // retag or a stretch rewrites without touching the map.
   const bpm = clip.sourceBpm ?? 120;
   const tempoMap = hasTempoChanges(clip.sourceTempoMap) ? copyTempoMap(playedTempoMap(bpm, clip.sourceTempoMap)) : undefined;
-  return [clip.id, notes, bpm, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? []), tempoMap];
+  const markers = sanitizeRollMarkers(clip.sourceMarkers ?? []);
+  return [clip.id, notes, bpm, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? []), tempoMap, markers];
 }
 
 /**

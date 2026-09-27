@@ -270,6 +270,7 @@ _KEPT_CLIP = (
     "meter_map",
     "pickup_steps",
     "tempo_map",
+    "roll_markers",
 )
 
 
@@ -336,6 +337,19 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["plain"]["tempo_map"][1] == {"beat": 2, "bpm": 90, "curve": "linear"}
     assert clips["plain"]["tempo_map"][3]["fermata"] == {"beats": 1, "stretch": 2}
     assert clips["looped"]["tempo_map"] is None
+    # A roll clip's ruler markers: a movement, a FORM section, the user's own.
+    assert clips["plain"]["roll_markers"] == [
+        {"id": "mk-1", "tick": 0, "name": "I. Allegro", "kind": "movement"},
+        {
+            "id": "form-0",
+            "tick": 960,
+            "name": "Intro",
+            "kind": "section",
+            "origin": "form",
+        },
+        {"id": "mk-2", "tick": 3840, "name": "B", "kind": "section"},
+    ]
+    assert clips["looped"]["roll_markers"] is None
     # A drum track keeps its flag and its kit, and its clip's kit render.
     drums = next(t for t in back["tracks"] if t["id"] == "d1")
     assert drums["is_percussion"] is True

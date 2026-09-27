@@ -315,6 +315,13 @@ class Clip(BaseModel):
     # tempo; source_bpm is its first tempo. Defaulted, so .tasmo files written
     # before the roll had a tempo map still validate and load with None.
     tempo_map: list[dict] | None = None
+    # Piano-roll clips: the ruler's named markers ([{id, tick, name, kind,
+    # origin}], tick in 960ths of a quarter note from the clip's first step,
+    # kind "section" or "movement", origin "form" only on a marker a FORM
+    # section wrote at a song build). Written only when the clip has markers.
+    # Defaulted, so .tasmo files written before the roll had markers still
+    # validate and load with None.
+    roll_markers: list[dict] | None = None
     # MIDI clips: the GM program (0-127) the clip plays through when it has one
     # of its own (None = its track's, then the global instrument) and the
     # program its embedded audio was rendered with. source_bpm, on any clip: the

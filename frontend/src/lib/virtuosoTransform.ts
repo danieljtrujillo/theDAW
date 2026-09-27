@@ -1403,6 +1403,12 @@ export interface BuiltSong {
    * bars, and a ritardando over each section's last bar (songTempoMap).
    */
   tempoMap: TempoEvent[];
+  /**
+   * Each FORM section in order: its role and the roll step its first bar line
+   * is on (after the pickup). The virtuoso store writes a section marker on
+   * the ruler at each one. Empty for an empty source.
+   */
+  sections: Array<{ role: Role; step: number }>;
 }
 
 /** How much slower a section's last bar ends than it starts: 6% with Humanize at 0, up to 24% at 1. */
@@ -1533,7 +1539,7 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
 export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const rollMap = normalizeMeterMap(opts.meterMap);
   const startBpm = clampTempoBpm(opts.bpm > 0 ? opts.bpm : 120);
-  if (!source.length) return { notes: [], meterMap: rollMap, tempoMap: sanitizeRollTempoMap(opts.tempoMap, startBpm) };
+  if (!source.length) return { notes: [], meterMap: rollMap, tempoMap: sanitizeRollTempoMap(opts.tempoMap, startBpm), sections: [] };
   const style = STYLES[opts.style] ?? STYLES.romantic;
   // Degrees count from the key's tonic; the sorted set feeds the ladders.
   const degrees = scaleDegrees(opts.key, opts.mode);
@@ -1590,6 +1596,7 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const state: SectionState = { voicing: null, cursor: MEL_CENTER };
   const out: PianoNote[] = [];
   const sectionBeats: SectionBeats[] = [];
+  const sectionStarts: BuiltSong['sections'] = [];
   const humAmt = clamp01(style.humanize * 0.6 + opts.amounts.humanize);
 
   let cursorBar = 0;
@@ -1615,6 +1622,7 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
     }
     // Where the section and its last bar sit, for its ritardando in the tempo map.
     sectionBeats.push({ start: spans[0].start / 4, lastBar: spans[spans.length - 1].start / 4, end: cursorStep / 4, bpm: sec.bpm });
+    sectionStarts.push({ role: sec.role, step: spans[0].start });
     cursorBar += sec.bars;
   });
 
@@ -1630,5 +1638,5 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
 
   // The phrasing: a ritardando into each section end, written as tempo.
   const tempo = songTempoMap(opts.tempoMap ?? [], startBpm, sectionBeats, opts.amounts.humanize);
-  return { notes: notes.sort(byStepThenNote), meterMap, tempoMap: tempo };
+  return { notes: notes.sort(byStepThenNote), meterMap, tempoMap: tempo, sections: sectionStarts };
 }

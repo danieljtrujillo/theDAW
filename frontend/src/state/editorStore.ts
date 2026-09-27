@@ -3,6 +3,7 @@ import { logError, logInfo, logWarn } from './logStore';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
+import { withClipTimelineMarkers, type RollMarker } from '../lib/rollMarkers';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import {
@@ -203,6 +204,11 @@ export interface AudioClip {
    *  playback, drawing and every re-render time the notes through it. Absent on a clip
    *  at one tempo, and on clips bounced before the roll had a tempo map. */
   sourceTempoMap?: TempoEvent[];
+  /** When sourceKind === 'piano-roll', the roll's named markers at render time
+   *  (lib/rollMarkers): sections and movements by tick, which "Edit in Piano
+   *  Roll" puts back on the ruler. Absent on a clip with none, and on clips
+   *  bounced before the roll had markers. */
+  sourceMarkers?: RollMarker[];
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;
@@ -1029,6 +1035,13 @@ interface EditorStoreState {
   removeMarker: (id: string) => void;
   renameMarker: (id: string, label: string) => void;
   moveMarker: (id: string, t: number) => void;
+  /**
+   * Replace the timeline markers a roll clip wrote (ids `roll:<clipId>:…`,
+   * lib/rollMarkers) with `markers`; every other marker stays. The piano roll's
+   * bounce calls it with the roll's markers at their seconds in the clip, so a
+   * second bounce moves and renames them and never doubles them.
+   */
+  setClipRollMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
 
   // Undo / redo (Phase D). Snapshots capture the document slices below; because
   // every mutation replaces arrays immutably, a snapshot just references the prior
@@ -3185,6 +3198,14 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     })),
   removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
   renameMarker: (id, label) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, label } : m)) })),
+  setClipRollMarkers: (clipId, incoming) =>
+    set((s) => {
+      const markers = withClipTimelineMarkers(s.markers, clipId, incoming);
+      // Nothing written when the clip's markers are already these, so a re-bounce with no marker edit is no marker change.
+      const same = markers.length === s.markers.length
+        && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
+      return same ? {} : { markers };
+    }),
   moveMarker: (id, t) => {
     coalesceAs(`marker:${id}`); // a marker DRAG, one step per marker moved
     set((s) => ({
