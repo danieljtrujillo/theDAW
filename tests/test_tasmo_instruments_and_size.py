@@ -7,6 +7,8 @@ Three defects, each replayed in the order the app hits it:
   ``rendered_program``, ``source_bpm``, ``parent_track_id`` or ``is_folder``,
   so pydantic dropped whatever the frontend sent and a reopened project put
   every part on the default instrument, at the project tempo, at the root.
+  An audio clip's beat-matched ``bpm`` and ``library_entry_id`` were dropped
+  the same way.
 - ``/save-session`` read the project JSON as a multipart TEXT field, which
   Starlette holds to 1 MB, so a project of about 9,000 notes failed with "Part
   exceeded maximum size" before the handler ran. It also accepted at most 1000
@@ -167,7 +169,97 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     assert clip.instrument_program is None
     assert clip.rendered_program is None
     assert clip.source_bpm is None
+    assert clip.bpm is None
+    assert clip.library_entry_id is None
     assert clip.roll_notes is None
+
+
+# ---------------------------------------------------------------------------
+# The payload the frontend really sends
+# ---------------------------------------------------------------------------
+
+# Written by frontend/src/lib/projectImport.instruments.test.ts from the SAVE
+# button's own action (projectStore.save): the project part it posted and the
+# names of the audio files beside it. That test fails when the payload stops
+# matching this file, so the two suites check the same bytes.
+FRONTEND_PAYLOAD = (
+    Path(__file__).parent / "fixtures" / "tasmo_session_from_frontend.json"
+)
+
+# What a reopen must hand back exactly as the frontend wrote it.
+_KEPT_TRACK = ("instrument_program", "parent_track_id", "is_folder", "collapsed")
+_KEPT_CLIP = (
+    "instrument_program",
+    "rendered_program",
+    "source_bpm",
+    "bpm",
+    "library_entry_id",
+    "midi_notes",
+    "roll_notes",
+    "lanes",
+    "total_steps",
+    "meter_map",
+    "pickup_steps",
+)
+
+
+def test_the_frontend_payload_saves_and_reopens_with_every_field(
+    tmp_path: Path,
+) -> None:
+    """The models ignore keys they do not know, so a key the frontend renamed
+    was dropped without an error, and a value of the wrong type (a program of
+    40.5) refused the whole save with 400. Both are checked on the payload the
+    app sends: every key is one the models keep, the save goes through, and a
+    reopen returns each instrument, folder, tempo and note list unchanged."""
+    fixture = json.loads(FRONTEND_PAYLOAD.read_text(encoding="utf-8"))
+    sent = fixture["project"]
+    assert set(sent) <= set(TasmoProject.model_fields), set(sent) - set(
+        TasmoProject.model_fields
+    )
+    for track in sent["tracks"]:
+        assert set(track) <= set(Track.model_fields), set(track) - set(
+            Track.model_fields
+        )
+        for clip in track["clips"]:
+            assert set(clip) <= set(Clip.model_fields), set(clip) - set(
+                Clip.model_fields
+            )
+
+    out = tmp_path / "fixture.tasmo"
+    client = _client()
+    resp = client.post(
+        "/api/project/save-session",
+        data={"path": str(out)},
+        files=[
+            ("project", ("project.json", json.dumps(sent).encode(), "application/json"))
+        ]
+        + [("files", (name, b"RIFF", "audio/wav")) for name in fixture["files"]],
+    )
+    assert resp.status_code == 200, resp.text
+
+    back = _load(client, out)
+    assert len(back["tracks"]) == len(sent["tracks"])
+    for t_sent, t_back in zip(sent["tracks"], back["tracks"], strict=True):
+        for key in _KEPT_TRACK:
+            assert t_back[key] == t_sent[key], (t_sent["id"], key)
+        assert len(t_back["clips"]) == len(t_sent["clips"])
+        for c_sent, c_back in zip(t_sent["clips"], t_back["clips"], strict=True):
+            for key in _KEPT_CLIP:
+                if key in c_sent:
+                    assert c_back[key] == c_sent[key], (c_sent["id"], key)
+    # The fixture covers what the check is for: a folder, a program, an audio
+    # clip's tempo tag, beat-matched tempo and library entry, a roll-only clip
+    # and a note with channel and expression.
+    clips = {c["id"]: c for t in back["tracks"] for c in t["clips"]}
+    assert back["tracks"][0]["is_folder"] is True
+    assert back["tracks"][1]["instrument_program"] == 40
+    assert clips["tagged"]["source_bpm"] == 92
+    assert clips["tagged"]["bpm"] == 124
+    assert clips["tagged"]["library_entry_id"] == "lib-7"
+    assert clips["looped"]["midi_notes"] is None
+    assert clips["looped"]["roll_notes"][0]["lane"] == 1
+    assert clips["plain"]["midi_notes"][1]["channel"] == 3
+    assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
 
 
 # ---------------------------------------------------------------------------

@@ -12,10 +12,21 @@
 // captureEditorSession builds the payload, projectApi.saveSession posts it,
 // the JSON comes back from the backend, and loadProjectIntoEditor opens it.
 import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { captureEditorSession, loadProjectIntoEditor, tasmoTrackTree } from './projectImport.ts';
 import { projectApi, type TasmoProjectInput, type TasmoProjectLoaded } from './projectClient.ts';
 import { clipRollLoad } from './rollClip.ts';
+import { stretchPlan } from './clipOps/timeline.ts';
+import { beatMatchPlan } from './beatMatch.ts';
+import { bounceMidiClip } from './clipOps/audioOps.ts';
+import { noteEndStep } from './clipNotes/units.ts';
+import { tasmoLoadedToDawProject } from './tasmoToSession.ts';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
+import * as tools from '../state/editorTools.ts';
+import { useProjectStore } from '../state/projectStore.ts';
+import { useLogStore } from '../state/logStore.ts';
 import { tickOfStep, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 
 // computePeaks needs an AudioContext. The fake decodes any blob to one second.
@@ -59,6 +70,17 @@ const rollClip = (id: string, trackId: string, extra: Partial<AudioClip>): Audio
   sourceMeterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
   sourcePickupSteps: 0,
   sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
+  ...extra,
+});
+
+/** A plain audio clip: no notes, no roll fields. */
+const audioClip = (id: string, trackId: string, extra: Partial<AudioClip> = {}): AudioClip => ({
+  ...rollClip(id, trackId, {}),
+  sourceKind: undefined,
+  sourceTotalSteps: undefined,
+  sourceMeterMap: undefined,
+  sourcePickupSteps: undefined,
+  sourceLanes: undefined,
   ...extra,
 });
 
@@ -135,10 +157,15 @@ const st = () => useEditorStore.getState();
       rollClip('c1', 't1', { sourcePianoRoll: strings, sourceRollNotes: strings, instrumentProgram: 42, renderedProgram: 42, sourceBpm: 90 }),
       // No program of its own: its track's (71) is what it was rendered with.
       rollClip('c2', 't2', { sourcePianoRoll: [note('w0', 72, 0, 2)], renderedProgram: 71, sourceBpm: 120 }),
-      // An audio clip carries none of the MIDI fields.
-      { ...rollClip('c3', 't3', {}), sourceKind: undefined, sourceTotalSteps: undefined, sourceMeterMap: undefined, sourcePickupSteps: undefined, sourceLanes: undefined },
+      // Audio clips carry none of the MIDI fields. c3 gets a tempo tag below;
+      // c4 was dropped from the library and beat-matched to 124.
+      audioClip('c3', 't3'),
+      audioClip('c4', 't3', { startSec: 1, libraryEntryId: 'lib-7', bpm: 124 }),
     ],
   });
+  // The user tags the audio loop as 92 bpm, the way the assistant's
+  // editor_set_clip_source_bpm does, so it can be stretched to a tempo later.
+  assert.ok(tools.setClipSourceBpm({ clip_id: 'c3', bpm: 92 }).ok);
   const { form, files } = await saveThroughTheWire();
   const project = await projectFrom(form);
 
@@ -152,8 +179,14 @@ const st = () => useEditorStore.getState();
   assert.equal(c1?.instrument_program, 42);
   assert.equal(c1?.rendered_program, 42);
   assert.equal(c1?.source_bpm, 90);
-  const c3 = byTrack.get('t3')?.clips[0];
-  assert.ok(c3 && !('instrument_program' in c3) && !('source_bpm' in c3), 'an audio clip writes no MIDI fields');
+  const [c3, c4] = byTrack.get('t3')?.clips ?? [];
+  assert.ok(c3 && !('instrument_program' in c3) && !('rendered_program' in c3), 'an audio clip writes no program');
+  assert.equal(c3.source_bpm, 92, "the audio clip's tempo tag is saved");
+  assert.equal(c4?.source_bpm, null, 'an untagged audio clip saves no tempo');
+  assert.equal(c4?.bpm, 124, 'the beat-matched tempo is saved');
+  assert.equal(c4?.library_entry_id, 'lib-7');
+  assert.equal(c3.bpm, null);
+  assert.equal(c3.library_entry_id, null);
 
   // Reopen over a different session, so nothing is left over from the save.
   useEditorStore.setState({ bpm: 100, tracks: [track('other')], clips: [] });
@@ -178,6 +211,24 @@ const st = () => useEditorStore.getState();
   const r2 = clips.get('c2');
   assert.equal(r2?.instrumentProgram, undefined);
   assert.equal(r2?.renderedProgram, 71);
+  // The tagged loop reopens tagged, so stretch-to-tempo still has its source
+  // tempo; the untagged one stays untagged.
+  const a3 = clips.get('c3') as AudioClip;
+  assert.equal(a3.sourceKind, undefined);
+  assert.equal(a3.sourceBpm, 92, 'the audio clip keeps its tempo tag');
+  const plan = stretchPlan(a3, { targetBpm: 115 });
+  assert.ok(plan.ok, `stretch-to-tempo works after a reopen: ${plan.ok ? '' : plan.error}`);
+  assert.equal(plan.value.ratio, 92 / 115);
+  assert.equal(clips.get('c4')?.sourceBpm, undefined, 'an untagged audio clip gets no tempo from the project');
+  // The beat-matched clip reopens at 124 with its library entry, so SYNC to a
+  // new tempo stretches it from 124; with neither it had no tempo and SYNC
+  // skipped it.
+  const a4 = clips.get('c4') as AudioClip;
+  assert.equal(a4.bpm, 124);
+  assert.equal(a4.libraryEntryId, 'lib-7');
+  assert.deepEqual(beatMatchPlan([{ id: a4.id, bpm: a4.bpm ?? null }], 128).map((s) => s.bpm), [128]);
+  assert.equal(a3.bpm, undefined);
+  assert.equal(a3.libraryEntryId, undefined);
   // EDIT's instrument sync re-renders a roll clip whose effective program is not
   // the one its audio holds. After a reopen none of them is stale.
   for (const c of st().clips.filter((x) => x.sourceKind === 'piano-roll')) {
@@ -238,6 +289,10 @@ const st = () => useEditorStore.getState();
   assert.equal(parents.c, null, 'a parent that is not in the project');
   assert.equal(parents.d, null, 'a parent that is not a folder');
   assert.equal(parents.e, 'a', 'a good link is kept');
+  // The LOG names what was wrong with each cut link.
+  const warned = useLogStore.getState().entries.filter((e) => e.level === 'warn').map((e) => e.msg);
+  assert.ok(warned.includes('Track "c" names a folder that is not in this project; placed at the root'), warned.join('\n'));
+  assert.ok(warned.includes('Track "d" sits under "c", a track that is not a folder; placed at the root'), warned.join('\n'));
   // Nothing to cut: the same array.
   const clean = [track('f', { isFolder: true }), track('g', { parentTrackId: 'f' })];
   assert.equal(tasmoTrackTree(clean), clean);
@@ -320,11 +375,14 @@ const st = () => useEditorStore.getState();
   const l = clips.get('looped');
   assert.equal(l?.sourceKind, 'piano-roll');
   const sortKey = (n: Omit<PianoNote, 'id'>) => `${n.step}|${n.note}`;
+  // Each rebuilt note with the tick it came back with: a repeat carrying the
+  // first cycle's tick would open in the roll at the wrong place.
   assert.deepEqual(
-    withoutIds(l?.sourcePianoRoll).map((n) => ({ ...n, tick: tickOfStep(n.step) })).sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
+    withoutIds(l?.sourcePianoRoll).sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
     withoutIds(loopedPlayed).sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
     'the repeats come back from the roll notes',
   );
+  for (const n of l?.sourcePianoRoll ?? []) assert.equal(n.tick, tickOfStep(n.step), `the repeat at step ${n.step} keeps its own tick`);
   assert.deepEqual(withoutIds(l?.sourceRollNotes), withoutIds(looped));
 
   const e = clips.get('edited');
@@ -364,6 +422,154 @@ const st = () => useEditorStore.getState();
   assert.equal(back.sourcePianoRoll?.filter((n) => n.channel !== undefined).length, big.filter((n) => n.channel !== undefined).length);
   assert.equal(back.renderedProgram, 48);
   assert.equal(st().tracks[0].instrumentProgram, 48);
+}
+
+// ── PERFORM opens the same save: roll-only clips, own tempo, sub-step lengths ─
+{
+  // Lane B loops every 4 steps across 16 at 90 BPM; both notes are triplet
+  // sixteenths, 2/3 of a step. The file stores only the two roll notes.
+  const lanes = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 4 }];
+  const T = 2 / 3;
+  const roll: PianoNote[] = [note('g0', 60, 1, T), note('g1', 38, 0, T, { lane: 1 })];
+  const played: PianoNote[] = [
+    note('h0', 38, 0, T),
+    note('h1', 60, 1, T),
+    note('h2', 38, 4, T),
+    note('h3', 38, 8, T),
+    note('h4', 38, 12, T),
+  ];
+  useEditorStore.setState({
+    bpm: 120,
+    tracks: [track('g')],
+    clips: [rollClip('grid', 'g', { sourcePianoRoll: played, sourceRollNotes: roll, sourceLanes: lanes, sourceBpm: 90 })],
+  });
+  const { form } = await saveThroughTheWire();
+  const project = await projectFrom(form);
+  const saved = project.tracks[0].clips[0];
+  assert.equal(saved.midi_notes, undefined, 'only the roll notes are in the file');
+  assert.equal(saved.roll_notes?.length, 2);
+
+  const grid = tasmoLoadedToDawProject(project).tracks[0].clips[0];
+  assert.equal(grid.file_path, null, 'PERFORM opens the clip as MIDI, not as its bounce');
+  // Steps are sixteenths at the clip's own 90 BPM, not the project's 120.
+  const stepSec = 60 / 90 / 4;
+  // The grid clip's notes, in the seconds shape tasmoLoadedToDawProject writes.
+  const gridNotes = (grid.midi_notes ?? []) as Array<{ pitch: number; start: number; duration: number }>;
+  const got = gridNotes.map((n) => [n.pitch, n.start, n.duration]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const want = played.map((n) => [n.note, n.step * stepSec, T * stepSec]);
+  assert.equal(got.length, want.length, 'every repeat of the looped lane is in the grid clip');
+  got.forEach((g, i) => {
+    assert.equal(g[0], want[i][0]);
+    assert.ok(Math.abs(g[1] - want[i][1]) < 1e-9, `note ${i} starts at ${want[i][1]}s, got ${g[1]}s`);
+    assert.ok(Math.abs(g[2] - want[i][2]) < 1e-9, `note ${i} lasts 2/3 of a step, got ${g[2]}s`);
+  });
+}
+
+// ── A symphony-sized part: saved, reopened, then edited by EDIT's note tools ─
+{
+  // Past the ~125,000 arguments `Math.max(...notes)` can take.
+  const N = 200_000;
+  const huge: PianoNote[] = [];
+  for (let i = 0; i < N; i += 1) huge.push(note(`s${i}`, 36 + (i % 60), i / 4, 1 / 4));
+  useEditorStore.setState({
+    bpm: 120,
+    tracks: [track('sym')],
+    clips: [rollClip('sym', 'sym', { sourcePianoRoll: huge, sourceRollNotes: huge, sourceTotalSteps: N / 4, renderedProgram: 0, sourceBpm: 120 })],
+  });
+  const { form, files } = await saveThroughTheWire();
+  const project = await projectFrom(form);
+  useEditorStore.setState({ tracks: [track('other')], clips: [] });
+  await openWithFiles(project, files);
+  assert.equal(st().clips[0].sourcePianoRoll?.length, N);
+
+  // set_clip_instrument re-renders through commitNotes, which measured the
+  // clip with a spread over every note and threw a RangeError.
+  const renders: number[] = [];
+  const render = async (_notes: readonly unknown[], _bpm: number, totalSteps: number) => {
+    renders.push(totalSteps);
+    return { blob: blob(), duration: 1 };
+  };
+  const r = await tools.setClipInstrument({ clip_id: 'sym', program: 48, render });
+  assert.ok(r.ok, `the note tool runs on a 200,000-note part: ${r.ok ? '' : r.error}`);
+  assert.equal(st().clips[0].instrumentProgram, 48);
+  assert.equal(st().clips[0].sourceTotalSteps, N / 4);
+  assert.equal(renders.at(-1), N / 4);
+  // The render fallback for a clip with no grid length of its own.
+  await bounceMidiClip({ ...st().clips[0], sourceTotalSteps: undefined }, { render });
+  assert.equal(renders.at(-1), N / 4, 'the render fallback measures the clip without a spread');
+  assert.equal(noteEndStep([], 16), 16);
+}
+
+// ── The payload the backend validates is the one the app really sends ────────
+// The save runs through projectStore.save, the SAVE button's own action. The
+// parsed project part and the file names are compared with
+// tests/fixtures/tasmo_session_from_frontend.json, which
+// tests/test_tasmo_instruments_and_size.py posts to /save-session and reads
+// back through the Track and Clip models. A field this writer renames, or
+// writes in a shape the models refuse, fails one side or the other. After an
+// intended change to the payload, rewrite the fixture with
+// WRITE_TASMO_FIXTURE=1 npx tsx src/lib/projectImport.instruments.test.ts
+{
+  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'tests', 'fixtures', 'tasmo_session_from_frontend.json');
+  const lanes = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 4 }];
+  const plain: PianoNote[] = [note('p0', 60, 0, 2 / 3), note('p1', 64, 2 / 3, 2 / 3, { channel: 3, expr: { pressure: 0.25, timbre: 0.75, pitchBend: -0.5 } })];
+  useEditorStore.setState({
+    bpm: 120,
+    tracks: [
+      track('f1', { isFolder: true, collapsed: true, name: 'Strings' }),
+      track('t1', { parentTrackId: 'f1', instrumentProgram: 40 }),
+      // A program the store should never hold: written as none, so the save
+      // is not refused over it.
+      track('t2', { instrumentProgram: 40.5 as number }),
+      track('t3'),
+    ],
+    clips: [
+      rollClip('plain', 't1', { sourcePianoRoll: plain, sourceRollNotes: plain, instrumentProgram: 42, renderedProgram: 42, sourceBpm: 90 }),
+      rollClip('looped', 't2', {
+        sourcePianoRoll: [note('q0', 36, 0, 1), note('q1', 36, 4, 1), note('q2', 36, 8, 1), note('q3', 36, 12, 1)],
+        sourceRollNotes: [note('l0', 36, 0, 1, { lane: 1 })],
+        sourceLanes: lanes,
+        renderedProgram: 7.5 as number,
+        sourceBpm: 120,
+      }),
+      rollClip('edited', 't2', { sourcePianoRoll: [note('e0', 60, 0, 1, { velocity: 30 })], sourceRollNotes: [note('r0', 60, 0, 1)], startSec: 2 }),
+      audioClip('tagged', 't3', { sourceBpm: 92, bpm: 124, libraryEntryId: 'lib-7' }),
+      audioClip('untagged', 't3', { startSec: 1 }),
+    ],
+  });
+  useProjectStore.setState({ projectName: 'Fixture', savePath: 'S.tasmo', pendingTracks: [] });
+  let posted: FormData | null = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes('/api/project/save-session')) {
+      posted = init?.body as FormData;
+      return new Response(JSON.stringify({ status: 'saved', path: 'S.tasmo', manifest: { audio_mode: 'embedded' } }), { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  }) as typeof fetch;
+  try {
+    await useProjectStore.getState().save();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(useProjectStore.getState().error, null, 'the save went through');
+  assert.ok(posted, 'the SAVE action posted to /save-session');
+  const form = posted as FormData;
+  const payload = {
+    project: await projectFrom(form),
+    files: form.getAll('files').map((f) => (f as File).name),
+  };
+  const byTrack = new Map(payload.project.tracks.map((t) => [t.id, t]));
+  assert.equal(byTrack.get('t2')?.instrument_program, null, 'a program outside 0-127 is written as none');
+  assert.equal(byTrack.get('t2')?.clips.find((c) => c.id === 'looped')?.rendered_program, null);
+  if (process.env.WRITE_TASMO_FIXTURE) {
+    writeFileSync(fixturePath, `${JSON.stringify(payload, null, 2)}\n`);
+  }
+  assert.deepEqual(
+    payload,
+    JSON.parse(readFileSync(fixturePath, 'utf8')),
+    'the payload changed: check tests/test_tasmo_instruments_and_size.py, then rewrite the fixture',
+  );
 }
 
 console.log('projectImport.instruments: ok');

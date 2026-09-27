@@ -302,14 +302,23 @@ class Clip(BaseModel):
     # validate and load with None.
     roll_bends: list[dict] | None = None
     # MIDI clips: the GM program (0-127) the clip plays through when it has one
-    # of its own (None = its track's, then the global instrument), the program
-    # its embedded audio was rendered with, and the tempo its notes were written
-    # at. Without them a saved arrangement reopened with every part on the
-    # global instrument and every clip at the project tempo. Defaulted, so .tasmo
-    # files written before these existed still validate and load with None.
+    # of its own (None = its track's, then the global instrument) and the
+    # program its embedded audio was rendered with. source_bpm, on any clip: the
+    # tempo a MIDI clip's notes were written at, or the tempo an audio clip was
+    # tagged with (stretch-to-tempo reads it). Without them a saved arrangement
+    # reopened with every part on the global instrument and every clip at the
+    # project tempo. Defaulted, so .tasmo files written before these existed
+    # still validate and load with None.
     instrument_program: int | None = None
     rendered_program: int | None = None
     source_bpm: float | None = None
+    # Audio clips: the tempo the audio plays at after a beat match or a
+    # stretch (EDIT's SYNC and BPM readout read it), and the library entry the
+    # clip was dropped from (its analysis, beats and stems are keyed on it).
+    # Without them a reopened clip lost its tempo and SYNC skipped it.
+    # Defaulted, so older .tasmo files still validate.
+    bpm: float | None = None
+    library_entry_id: str | None = None
     # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
     # .tasmo files written before this field existed still validate.
     muted: bool = False

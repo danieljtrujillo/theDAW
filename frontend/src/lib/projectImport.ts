@@ -60,6 +60,7 @@ import {
   tasmoClipBpm,
   tasmoMeterToClip,
   tasmoNoteExtras,
+  tasmoOwnBpm,
 } from './projectClient';
 import { assertTree } from './timeline/trackOrder';
 import { toTreeTracks } from './timeline/folderOps';
@@ -463,7 +464,14 @@ const buildClip = async (
     peaks,
     sourceKind,
     sourcePianoRoll,
-    sourceBpm: sourceKind ? bpm : undefined,
+    // A roll clip's notes are read at `bpm`. An audio clip keeps the tempo it
+    // was tagged with (editor_set_clip_source_bpm, a stretch), which
+    // stretch-to-tempo needs; one with none stays untagged.
+    sourceBpm: sourceKind ? bpm : tasmoOwnBpm(c),
+    // What the audio plays at after a beat match, and its library entry; left
+    // out when the file has none, as for a clip that never had them.
+    ...(typeof c.bpm === 'number' && Number.isFinite(c.bpm) && c.bpm > 0 ? { bpm: c.bpm } : {}),
+    ...(typeof c.library_entry_id === 'string' && c.library_entry_id ? { libraryEntryId: c.library_entry_id } : {}),
     // The clip's own instrument and the one its audio holds. With the second
     // missing, EDIT's instrument sync saw every reopened roll clip as stale and
     // rendered them all again through whatever program was active.
@@ -1000,7 +1008,13 @@ export function tasmoTrackTree(tracks: readonly EditorTrack[]): EditorTrack[] {
   for (const t of tracks) {
     const p = t.parentTrackId ?? null;
     if (p !== null && byId.get(p)?.isFolder !== true) {
-      logWarn('project', `Track "${t.name}" names a folder that is not in this project; placed at the root`);
+      const parent = byId.get(p);
+      logWarn(
+        'project',
+        parent
+          ? `Track "${t.name}" sits under "${parent.name}", a track that is not a folder; placed at the root`
+          : `Track "${t.name}" names a folder that is not in this project; placed at the root`,
+      );
       parentOf.set(t.id, null);
     } else {
       parentOf.set(t.id, p);
@@ -1384,16 +1398,24 @@ export function captureEditorSession(): CapturedSession {
           // length, meter map, pickup and lanes, so the clip plays what it
           // played and "Edit in Piano Roll" after a reload opens the same bars.
           ...(isMidi ? clipNotesToTasmo(c) : { midi_notes: null }),
-          // The clip's own instrument, the one its embedded audio was rendered
-          // with, and the tempo its notes were written at. Without them a
-          // reopened project put every part on the global instrument.
+          // The clip's own instrument and the one its embedded audio was
+          // rendered with, each only as a GM program the backend accepts.
+          // Without them a reopened project put every part on the global
+          // instrument.
           ...(isMidi
             ? {
-                instrument_program: c.instrumentProgram ?? null,
-                rendered_program: c.renderedProgram ?? null,
-                source_bpm: c.sourceBpm ?? null,
+                instrument_program: gmProgramOf(c.instrumentProgram) ?? null,
+                rendered_program: gmProgramOf(c.renderedProgram) ?? null,
               }
             : {}),
+          // The tempo a roll clip's notes were written at, or the tempo an
+          // audio clip was tagged with, which stretch-to-tempo reads.
+          source_bpm: c.sourceBpm ?? null,
+          // The tempo the audio plays at after a beat match or a stretch, and
+          // the library entry it came from: SYNC and the BPM readout read the
+          // first, and the second finds the clip's analysis, beats and stems.
+          bpm: c.bpm ?? null,
+          library_entry_id: c.libraryEntryId ?? null,
           // Per-clip mute, gain, fades and the trim point all survive the .tasmo
           // round-trip. offset_into_source is the load-bearing one: the embedded
           // audio is the FULL untrimmed source, so without it a split clip reloads
@@ -1426,7 +1448,9 @@ export function captureEditorSession(): CapturedSession {
       // The instrument this track's MIDI clips play through, and its place in
       // the arrangement folders. Before these were written a reopened project
       // had every part on the global instrument and every track at the root.
-      instrument_program: t.instrumentProgram ?? null,
+      // A program is written only as the whole number 0-127 the backend
+      // accepts: one stray value would otherwise refuse the whole save.
+      instrument_program: gmProgramOf(t.instrumentProgram) ?? null,
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

@@ -9,6 +9,7 @@ import { DEFAULT_LANES, sanitizeLanes, ticksPerStep, type NoteExpression, type P
 import { normalizeMeterMap, roundUpToBar } from './meterMap';
 import { sanitizeBends, type BendShape } from './pitchBend';
 import { playedRollNotes } from './rollClip';
+import { noteEndStep } from './clipNotes/units';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
 /** A time-signature change: the meter from `bar` until the next change. */
@@ -282,12 +283,17 @@ export interface TasmoClipInput {
   takes?: TasmoTake[] | null;
   comp?: TasmoCompRegion[] | null;
   active_take_index?: number | null;
-  /** MIDI clips: the clip's own GM program (0-127), the program its embedded
-   *  audio was rendered with, and the tempo its notes were written at. Optional
-   *  so a payload built before they were written still validates. */
+  /** MIDI clips: the clip's own GM program (0-127) and the program its
+   *  embedded audio was rendered with. Any clip: `source_bpm`, the tempo a MIDI
+   *  clip's notes were written at or an audio clip was tagged with. Optional so
+   *  a payload built before they were written still validates. */
   instrument_program?: number | null;
   rendered_program?: number | null;
   source_bpm?: number | null;
+  /** The tempo the audio plays at after a beat match or a stretch, and the
+   *  library entry the clip came from. Optional for the same reason. */
+  bpm?: number | null;
+  library_entry_id?: string | null;
 }
 
 export interface TasmoTrackInput {
@@ -386,11 +392,16 @@ export interface TasmoLoadedClip {
    *  written before the roll had lanes. */
   roll_notes?: TasmoStepNote[] | null;
   /** The clip's own GM program, the program its audio was rendered with, and
-   *  the tempo its notes were written at; null or absent in files written
-   *  before they were saved, and only as trustworthy as the file. */
+   *  its tempo (a MIDI clip's notes, or an audio clip's tag); null or absent in
+   *  files written before they were saved, and only as trustworthy as the file. */
   instrument_program?: number | null;
   rendered_program?: number | null;
   source_bpm?: number | null;
+  /** An audio clip's tempo after a beat match or a stretch, and the library
+   *  entry it came from; null or absent in files written before they were
+   *  saved. */
+  bpm?: number | null;
+  library_entry_id?: string | null;
   /** Per-clip mute; absent in .tasmo files written before the field existed. */
   muted?: boolean;
   /** Linear clip gain (1 = unity) and fade lengths in seconds; absent in .tasmo
@@ -658,18 +669,10 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
   return out;
 };
 
-/** The step just past the last note's end. A loop, not `Math.max(...list)`,
- *  which throws past about 125,000 arguments. */
-const noteEndSteps = (notes: readonly PianoNote[]): number => {
-  let end = 0;
-  for (const n of notes) end = Math.max(end, n.step + n.length);
-  return end;
-};
-
 /** The grid length a piano-roll clip plays over: its own, else the end of
  *  `notes` rounded up to a bar line of its meter map (4/4 when it has none). */
 export const clipTotalSteps = (meter: ClipMeterFields, notes: readonly PianoNote[]): number =>
-  meter.sourceTotalSteps ?? roundUpToBar(meter.sourceMeterMap ?? [], Math.max(1, noteEndSteps(notes)), meter.sourcePickupSteps ?? 0);
+  meter.sourceTotalSteps ?? roundUpToBar(meter.sourceMeterMap ?? [], noteEndStep(notes, 1), meter.sourcePickupSteps ?? 0);
 
 /**
  * A piano-roll clip's played notes rebuilt from its roll notes: unrolled across
@@ -736,10 +739,15 @@ export const clipNotesToTasmo = (
 export const gmProgramOf = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 127 ? v : undefined;
 
+/** A clip's own tempo from a file: a positive finite `source_bpm`, else
+ *  undefined (a file written before source_bpm existed, or a clip with none). */
+export const tasmoOwnBpm = (c: Pick<TasmoLoadedClip, 'source_bpm'>): number | undefined =>
+  typeof c.source_bpm === 'number' && Number.isFinite(c.source_bpm) && c.source_bpm > 0 ? c.source_bpm : undefined;
+
 /** The tempo a MIDI clip's notes were written at: its own `source_bpm` when the
  *  file has a usable one, else the project tempo. */
 export const tasmoClipBpm = (c: Pick<TasmoLoadedClip, 'source_bpm'>, projectBpm: number): number =>
-  typeof c.source_bpm === 'number' && Number.isFinite(c.source_bpm) && c.source_bpm > 0 ? c.source_bpm : projectBpm;
+  tasmoOwnBpm(c) ?? projectBpm;
 
 export const projectApi = {
   save: (project: TasmoProjectInput, path: string, embed_audio: boolean) =>
