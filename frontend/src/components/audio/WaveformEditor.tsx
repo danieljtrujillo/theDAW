@@ -22,6 +22,13 @@ import { sliceChunks } from '../../lib/audioAnalysis';
 import { effectiveZoom } from '../../lib/canvasScale';
 import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
+import {
+  keepsAcceptedAudio,
+  renderedWindowPatch,
+  resolveInpaintAccept,
+  snapshotInpaintClip,
+  type InpaintSnapshot,
+} from '../../lib/inpaintAccept';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
 import { useEditorStore, computePeaks, sampleLane, clipPeakGain, snapStepSec, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
@@ -1410,7 +1417,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const blob = new Blob([await res.arrayBuffer()], { type: 'audio/wav' });
       const { peaks, duration } = await computePeaks(blob, 240);
       updateClip(clipId, {
-        audioBlob: blob, mimeType: 'audio/wav', offsetIntoSource: 0, durationSec: duration, peaks,
+        audioBlob: blob, mimeType: 'audio/wav', peaks,
+        // The render is the whole source now: offset 0, and sourceDuration
+        // follows it so the trim handles and the waveform window stop at its
+        // end. It also drops the library entry, which holds the unstretched
+        // take, so Split to stems separates this render (see renderedWindowPatch).
+        ...renderedWindowPatch(duration),
         // The readout follows the stretch: a 120 clip at 1.05x plays at 126.
         bpm: known ? known * tempo : clip.bpm,
       });
@@ -1486,9 +1498,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     // panel. Without it every failure path just snapped the panel back with no
     // visible message, which is what made GH-132 undiagnosable.
     | { kind: 'params'; error?: string }
-    | { kind: 'generating'; jobId: string }
-    | { kind: 'review'; blob: Blob; blobUrl: string };
+    // `snapshot` is the clip as the crop was cut from it. The timeline stays
+    // editable while the job runs, and Accept checks the clip against it.
+    | { kind: 'generating'; jobId: string; snapshot: InpaintSnapshot }
+    // `error` is why Accept refused or could not decode the result, shown in
+    // the panel; `accepting` covers the decode, so a second click waits.
+    | { kind: 'review'; blob: Blob; blobUrl: string; snapshot: InpaintSnapshot; error?: string; accepting?: boolean };
   const [inpaintPanel, setInpaintPanel] = useState<InpaintPhase | null>(null);
+  // Read after an await, where the render's `inpaintPanel` may be stale.
+  const inpaintPanelRef = useRef(inpaintPanel);
+  inpaintPanelRef.current = inpaintPanel;
   // When set, the LibraryPicker is open: which tab it opens on, where the pick
   // lands (`trackId` null = make a new track, matching a drop below all lanes),
   // and the viewport point to anchor the popover at.
@@ -1533,11 +1552,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [undo, redo]);
 
   // Revoke the object URL when the review phase ends or the panel closes.
+  // Keyed on the URL alone: the review phase is rewritten in place (an accept
+  // refusal adds its reason) and must keep playing the same URL.
+  const inpaintReviewUrl = inpaintPanel?.kind === 'review' ? inpaintPanel.blobUrl : null;
   useEffect(() => {
     return () => {
-      if (inpaintPanel?.kind === 'review') URL.revokeObjectURL(inpaintPanel.blobUrl);
+      if (inpaintReviewUrl) URL.revokeObjectURL(inpaintReviewUrl);
     };
-  }, [inpaintPanel]);
+  }, [inpaintReviewUrl]);
 
   // The inpaint retry the gate cards call back into. A ref because the cards
   // are raised from the poll effect above submitInpaint's definition.
@@ -1594,7 +1616,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Drive polling reactively: starts when phase is 'generating', stops on cleanup.
   useEffect(() => {
     if (inpaintPanel?.kind !== 'generating') return;
-    const { jobId } = inpaintPanel;
+    const { jobId, snapshot } = inpaintPanel;
     const intervalId = setInterval(() => {
       void (async () => {
         try {
@@ -1606,7 +1628,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             const arr = new Uint8Array(bytes.length);
             for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
             const blob = new Blob([arr], { type: mime_type });
-            setInpaintPanel({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob) });
+            setInpaintPanel({ kind: 'review', blob, blobUrl: URL.createObjectURL(blob), snapshot });
           } else if (job.status === 'failed') {
             const msg = job.error ?? 'unknown';
             logError('editor', `Inpaint job failed: ${msg}`);
@@ -1632,6 +1654,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!sel) return;
     const clip = useEditorStore.getState().clips.find((c) => c.id === sel.clipId);
     if (!clip) return;
+    // Taken from the same clip object the crop reads, before any await.
+    const snapshot = snapshotInpaintClip(clip);
 
     // Always crop the audio to exactly the visible clip region before sending.
     // This guarantees mask coordinates are relative to the start of the audio
@@ -1686,37 +1710,79 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const jobId = data.job?.id;
       if (!jobId) {
         logError('editor', 'Inpaint submit: no job id in response');
+        setInpaintPanel({ kind: 'params', error: 'The backend accepted the request but returned no job to follow. Generate again.' });
         return;
       }
-      setInpaintPanel({ kind: 'generating', jobId });
+      setInpaintPanel({ kind: 'generating', jobId, snapshot });
     } catch (e) {
-      logError('editor', `Inpaint submit failed: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      logError('editor', `Inpaint submit failed: ${msg}`);
+      setInpaintPanel({ kind: 'params', error: `Could not reach the backend: ${msg}` });
     }
   };
 
   retryInpaintRef.current = () => { void submitInpaint(); };
 
-  const acceptInpaint = (blob: Blob) => {
-    const sel = useEditorStore.getState().inpaintSelection;
-    if (!sel) return;
-    updateClip(sel.clipId, { audioBlob: blob, mimeType: 'audio/wav', peaks: undefined });
-    
-    // Auto-save the accepted inpaint to the library (via the storage provider).
+  const acceptInpaint = async (review: Extract<InpaintPhase, { kind: 'review' }>) => {
+    const { blob, blobUrl, snapshot } = review;
+    // Every outcome below lands in the panel it was clicked in. If the panel
+    // closed or moved on meanwhile, the click no longer applies.
+    const stillReviewing = () => {
+      const live = inpaintPanelRef.current;
+      return live?.kind === 'review' && live.blobUrl === blobUrl;
+    };
+    const refuse = (error: string) => {
+      setInpaintPanel((p) => (p?.kind === 'review' && p.blobUrl === blobUrl ? { ...p, error, accepting: false } : p));
+    };
+    setInpaintPanel((p) => (p?.kind === 'review' && p.blobUrl === blobUrl ? { ...p, error: undefined, accepting: true } : p));
+
+    // Decode for the result's true length and its waveform. The request asked
+    // for the clip's length, but the model truncates to whole samples.
+    let decoded: { peaks: Float32Array; duration: number };
+    try {
+      decoded = await computePeaks(blob, 240);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logError('editor', `Inpaint accept: the result could not be decoded: ${msg}`);
+      refuse(`The result could not be decoded (${msg}). Reject it and generate again.`);
+      return;
+    }
+    if (!stillReviewing()) return;
+
+    const clipNow = useEditorStore.getState().clips.find((c) => c.id === snapshot.clipId);
+    const resolution = resolveInpaintAccept(clipNow, snapshot, decoded.duration);
+    if (resolution.ok === false) {
+      logError('editor', `Inpaint accept refused: ${resolution.reason}`);
+      refuse(resolution.reason);
+      return;
+    }
+
+    const mimeType = blob.type || 'audio/wav';
+    updateClip(snapshot.clipId, { audioBlob: blob, mimeType, peaks: decoded.peaks, ...resolution.patch });
+
+    // Save the accepted result to the library and point the clip at that
+    // entry, so its bpm/key readout and Split to stems read the new audio.
+    const label = `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`;
     void useLibraryStore.getState().importEntry({
       blob,
-      filename: `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`,
-      mimeType: 'audio/wav',
+      filename: label,
+      mimeType,
       metadata: {
-        title: `inpaint_${inpaintPrompt.slice(0, 15) || 'result'}.wav`,
+        title: label,
         prompt: inpaintPrompt,
         model: 'inpaint',
-        duration: sel.endSec - sel.startSec,
+        duration: decoded.duration,
         steps: inpaintSteps,
         cfg: 1.0,
         seed: inpaintSeed,
         source: 'generate',
         tags: ['inpaint'],
       },
+    }).then((entry) => {
+      // The repoint follows the accept, so it adds no undo step of its own:
+      // undoing the accept restores the entry the clip had before it.
+      const live = useEditorStore.getState().clips.find((c) => c.id === snapshot.clipId);
+      if (keepsAcceptedAudio(live, blob)) applyClipRender(snapshot.clipId, { libraryEntryId: entry.id });
     }).catch((e) => logError('editor', `Inpaint library save failed: ${e}`));
 
     clearInpaintSelection();
@@ -5605,16 +5671,25 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               {/* Outside the shared graph, so it follows the 'preview' surface
                   output rather than the main mix. */}
               <SurfaceAudio surface="preview" controls src={inpaintPanel.blobUrl} className="w-full h-8 mt-1" />
+              {inpaintPanel.error && (
+                <p
+                  role="alert"
+                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 font-sans text-xs font-bold leading-relaxed text-rose-200 wrap-break-word"
+                >
+                  {inpaintPanel.error}
+                </p>
+              )}
               <div className="flex gap-2">
                 <button
-                  onClick={() => acceptInpaint(inpaintPanel.blob)}
-                  className="flex-1 py-1.5 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600/50 transition-colors"
+                  onClick={() => void acceptInpaint(inpaintPanel)}
+                  disabled={inpaintPanel.accepting}
+                  className="flex-1 py-1.5 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 font-display text-xs font-bold uppercase tracking-wider hover:bg-emerald-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   Accept
                 </button>
                 <button
                   onClick={rejectInpaint}
-                  className="flex-1 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-600/40 transition-colors"
+                  className="flex-1 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-300 font-display text-xs font-bold uppercase tracking-wider hover:bg-red-600/40 transition-colors"
                 >
                   Reject
                 </button>
