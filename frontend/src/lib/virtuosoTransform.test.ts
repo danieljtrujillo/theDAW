@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { register } from 'node:module';
 import type { PianoNote } from '../state/pianoRollStore.ts';
 import type { Meter } from './colony.ts';
-import type { ChordSpan, GrooveTemplate, Voicing } from './virtuosoTransform.ts';
+import type { ChordSpan, GrooveTemplate, SectionSpec, Voicing } from './virtuosoTransform.ts';
 
 const assetStub = `export async function resolve(s, c, next) { return s.endsWith('?url') ? { url: 'data:text/javascript,export default ""', shortCircuit: true } : next(s, c); }`;
 register(`data:text/javascript,${encodeURIComponent(assetStub)}`);
@@ -33,7 +33,7 @@ const {
   STYLE_NAMES,
   ZERO_AMOUNTS,
 } = await import('./virtuosoTransform.ts');
-const { ArpPlayerEngine, ragOffsetSteps } = await import('./arpEngine.ts');
+const { ArpPlayerEngine, MusicalScale, ragOffsetSteps } = await import('./arpEngine.ts');
 
 // --- 4/4 outputs captured before the meter map existed ---------------------- //
 
@@ -120,7 +120,10 @@ function captureToday(): Record<string, string> {
 }
 
 // Note count and a hash of [note, step, length, velocity] per note, captured
-// from the transforms before they took a meter map.
+// from the transforms before they took a meter map. The buildSong digests were
+// captured again once chord degrees counted from the key's tonic, a minor mode's
+// cadential V took the leading tone, and a chord tone leaving its register moved
+// by an octave; every other digest stayed the same.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
@@ -159,17 +162,17 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:00667665f355a8be5489a913',
-  'buildSong romantic sections': '436:2970824bac829e1decdc2b11',
-  'buildSong baroque': '670:d8e45136a307c9ee0a6c2a1f',
-  'buildSong baroque sections': '436:77327e4f20db5e6c37600d81',
-  'buildSong mussorgsky': '770:1890bd0c8fc3cffa5350a578',
-  'buildSong mussorgsky sections': '436:94d9043cb35d824aba5de12d',
-  'buildSong flamenco': '900:f5e68d940ecc03a40d1a2ef4',
-  'buildSong flamenco sections': '436:b092c60150c3f404917fa9ec',
-  'buildSong ragtime': '593:1b5cb3d1838d0c02acc5dde2',
-  'buildSong ragtime sections': '439:318828506c418694b88543f1',
-  'buildSong default': '1265:1a9155be9f515a82568fd5c7',
+  'buildSong romantic': '528:5864d9d6037e16cfd4f5f206',
+  'buildSong romantic sections': '436:db07635e8dc042be7adfa745',
+  'buildSong baroque': '670:16e60a8952c18c31b8a97c16',
+  'buildSong baroque sections': '436:40efba6d357ad37b29f8d70e',
+  'buildSong mussorgsky': '770:f650239f3e0aaa6f6d62d6a5',
+  'buildSong mussorgsky sections': '436:b4d4fcdf2ecd86efab5bb95f',
+  'buildSong flamenco': '900:c8f748c835ad85665914c0e2',
+  'buildSong flamenco sections': '436:9eaaa0ded270ee9d73d3de3d',
+  'buildSong ragtime': '593:f326a6c36f1a41f95ff541c5',
+  'buildSong ragtime sections': '439:f5252283cafd10a638533549',
+  'buildSong default': '1265:f58af45dcac84e47886d362c',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
   'arp renderProgression looped': '125:a71e91c7fafa6d3c59992cca',
 };
@@ -331,6 +334,147 @@ const byPitch = (notes: PianoNote[]): Map<number, PianoNote> => new Map(notes.ma
   assert.ok(buildSong(src, { ...base, amounts: { ...ZERO_AMOUNTS, sync: 1, accent: 1 }, sections: [{ role: 'chorus', bars: 2, meter: M78 }] }).notes.length > 0);
 }
 
+// --- cadences: chord degrees count from the key's tonic ----------------------- //
+
+const NAMES = 'C C# D D# E F F# G G# A A# B'.split(' ');
+const ALL_MODES = ['ionian', 'dorian', 'phrygian', 'lydian', 'mixolydian', 'aeolian', 'locrian', 'major', 'minor', 'melodic', 'harmonic'];
+// The minor modes whose 7th sits a whole step under the tonic. A cadential V
+// there takes the leading tone, and in Phrygian the natural 2nd as its fifth.
+const SUBTONIC_MODES = new Set(['dorian', 'phrygian', 'aeolian', 'minor']);
+const pcSet = (pcs: Iterable<number>): number[] => [...new Set([...pcs].map((p) => ((p % 12) + 12) % 12))].sort((a, b) => a - b);
+
+/** The chord struck at `at`: the notes starting there that hold 12 steps or more, as its lowest pitch class and its pitch-class set. */
+function chordOn(notes: readonly PianoNote[], at: number, label: string): { root: number; pcs: number[] } {
+  const held = notes.filter((n) => Math.abs(n.step - at) < 0.2 && n.length >= 12);
+  assert.ok(held.length >= 3, `${label}: a sustained chord at step ${at}`);
+  const low = held.reduce((lo, n) => (n.note < lo.note ? n : lo));
+  return { root: low.note % 12, pcs: pcSet(held.map((n) => n.note)) };
+}
+const startingIn = (notes: readonly PianoNote[], start: number, end: number): PianoNote[] =>
+  notes.filter((n) => n.step >= start - 0.2 && n.step < end - 0.2);
+
+// Every key and mode: one three-bar outro plays I, V, I, each bar one held
+// chord, and rubato moves only the last bar, so the V holds steps 16-32 and the
+// last chord starts at 32. The last chord is the key's own tonic triad, the V
+// sits on the 5th degree, and a minor mode's V is a major triad with the leading
+// tone. Every note over the V bar comes from its scale, and with the Harmony and
+// Ragtime sliders up (Ragtime rewrites the V bar with this seed) no lowered tone
+// sounds against it.
+{
+  const src = phrase(20260913);
+  const sections: SectionSpec[] = [{ role: 'outro', bars: 3 }];
+  const RUN_FORMS: SectionSpec[][] = [[{ role: 'solo', bars: 3 }], [{ role: 'build', bars: 2 }, { role: 'outro', bars: 1 }]];
+  for (const key of NAMES) {
+    const k = NAMES.indexOf(key);
+    for (const mode of ALL_MODES) {
+      const label = `${key} ${mode}`;
+      const scale = new MusicalScale({ key, mode }).notes;
+      const triadAt = (deg: number): number[] => pcSet(scale[deg].triad.notes.map((t) => NAMES.indexOf(t.note)));
+      const minor = SUBTONIC_MODES.has(mode);
+      const lowered = minor ? pcSet(mode === 'phrygian' ? [k + 10, k + 1] : [k + 10]) : [];
+      const raise = (p: number): number => (p === (k + 10) % 12 && minor ? k + 11 : p === (k + 1) % 12 && mode === 'phrygian' ? k + 2 : p);
+      const vScale = pcSet(scale.map((s) => raise(NAMES.indexOf(s.note))));
+
+      const song = buildSong(src, { key, mode, style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 120, sections }).notes;
+      const last = chordOn(song, 32, label);
+      assert.equal(last.root, k, `${label}: the last chord's root is the key`);
+      assert.deepEqual(last.pcs, triadAt(0), `${label}: the last chord is the tonic triad`);
+      const five = chordOn(song, 16, label);
+      assert.equal(five.root, NAMES.indexOf(scale[4].note), `${label}: the V's root is the 5th degree`);
+      assert.deepEqual(five.pcs, minor ? pcSet([k + 7, k + 11, k + 2]) : triadAt(4), `${label}: the cadential V`);
+      for (const n of startingIn(song, 16, 32)) assert.ok(vScale.includes(n.note % 12), `${label}: ${NAMES[n.note % 12]} at step ${n.step} is outside the V bar's scale`);
+
+      const shaped = buildSong(src, { key, mode, style: 'romantic', amounts: { ...ZERO_AMOUNTS, harmony: 1, ragtime: 1 }, bpm: 120, sections }).notes;
+      assert.ok(startingIn(shaped, 16, 32).some((n) => n.length === 1.5), `${label}: Ragtime rewrote the V bar`);
+      for (const n of startingIn(shaped, 16, 32)) assert.ok(!lowered.includes(n.note % 12), `${label}: ${NAMES[n.note % 12]} at step ${n.step} sounds against the raised V`);
+
+      // A solo's runs and a build's closing run over the V bar move in its
+      // scale up to their last note, the chromatic step into the next one. The
+      // V bar ends where the last held chord starts.
+      for (const form of RUN_FORMS) {
+        const notes = buildSong(src, { key, mode, style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 120, sections: form }).notes;
+        const tonicAt = Math.max(...notes.filter((n) => n.length >= 12).map((n) => n.step));
+        const bar = startingIn(notes, 16, tonicAt);
+        const close = Math.max(...bar.map((n) => n.step));
+        for (const n of bar) {
+          if (n.step < close - 0.15) assert.ok(vScale.includes(n.note % 12), `${label} ${form[0].role}: ${NAMES[n.note % 12]} at step ${n.step} is outside the V bar's scale`);
+        }
+      }
+    }
+  }
+}
+
+// Which Vs are cadential, in A minor: the V that closes the intro (a half
+// cadence) takes G sharp, and so does the V before the final tonic, while a V
+// inside a section keeps the mode's own E minor. One eight-bar outro has rubato
+// only in its last bar, so its held chords start on the bar lines.
+{
+  const src = phrase(20260913);
+  const opts = { key: 'A', mode: 'minor', style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 120 } as const;
+  const half = buildSong(src, { ...opts, sections: [{ role: 'intro', bars: 2 }, { role: 'outro', bars: 3 }] }).notes;
+  const outroAt = Math.min(...half.filter((n) => n.length >= 12).map((n) => n.step));
+  const introV = startingIn(half, 16, outroAt);
+  assert.ok(introV.some((n) => n.note % 12 === 8), "the intro's half cadence has G sharp");
+  assert.ok(!introV.some((n) => n.note % 12 === 7), "no G natural in the intro's half cadence");
+  const inner = buildSong(src, { ...opts, sections: [{ role: 'outro', bars: 8 }] }).notes;
+  assert.deepEqual(chordOn(inner, 48, 'A minor bar 3'), { root: 4, pcs: [4, 7, 11] }, 'a V inside a section is E minor');
+  assert.deepEqual(chordOn(inner, 96, 'A minor bar 6'), { root: 4, pcs: [4, 8, 11] }, 'the V before the final tonic is E major');
+}
+
+// Voice-leading: a bass that walks down by tritones comes back up an octave and
+// keeps its pitch class. Eight interlude bars alternate F# diminished and C
+// major, the I and V of F# Locrian; each bar holds its own chord over its root.
+{
+  const triads = [[6, 9, 0], [0, 4, 7]];
+  const spans: ChordSpan[] = Array.from({ length: 8 }, (_, b) => ({ triad: triads[b % 2], start: b * 16, len: 16 }));
+  const notes = renderSection('interlude', spans, { voicing: null, cursor: 74 }, { ladder: LADDER, chorusTexture: 'octaves', seed: 2 });
+  for (const sp of spans) {
+    const chord = chordOn(notes, sp.start, `interlude bar at ${sp.start}`);
+    assert.equal(chord.root, sp.triad[0], `the bass at step ${sp.start} is the chord's root`);
+    assert.deepEqual(chord.pcs, pcSet(sp.triad), `the chord at step ${sp.start}`);
+    const low = Math.min(...notes.filter((n) => n.step === sp.start && n.length >= 12).map((n) => n.note));
+    assert.ok(low >= 24 && low <= 52, `the bass at step ${sp.start} stays in its register: ${low}`);
+  }
+}
+
+// harmonize: a note inside a scale span takes its third from the span's scale,
+// and a line above C7 or below A1 gets the third below it.
+{
+  const A_HARMONIC = [0, 2, 4, 5, 8, 9, 11];
+  const note = (n: number, step = 0): PianoNote => ({ id: `h${n}`, note: n, step, length: 2, velocity: 90 });
+  const added = (out: PianoNote[], src: PianoNote[]): number[] => out.filter((n) => !src.some((s) => s.note === n.note && s.step === n.step)).map((n) => n.note);
+  const inSpan = [note(71, 0), note(71, 16)];
+  const spanned = harmonize(inSpan, 1, { key: 'A', mode: 'minor', scaleSpans: [{ start: 0, end: 16, pcs: A_HARMONIC }] });
+  assert.deepEqual(added(spanned, inSpan), [68, 67], 'B takes G sharp below it inside the span and G after it');
+  for (const [top, third] of [[108, 105], [100, 96], [31, 28], [26, 23]]) {
+    assert.deepEqual(added(harmonize([note(top)], 0.5, OPTS), [note(top)]), [third], `the third below MIDI ${top} in C major`);
+  }
+}
+
+// runsAndFlourishes: a run into a scale span moves in the span's scale once inside it.
+{
+  const A_HARMONIC = [0, 2, 4, 5, 8, 9, 11];
+  const anchors: PianoNote[] = [
+    { id: 'a', note: 69, step: 0, length: 1, velocity: 90 },
+    { id: 'b', note: 81, step: 16, length: 1, velocity: 90 },
+  ];
+  const run = runsAndFlourishes(anchors, 1, { key: 'A', mode: 'minor', scaleSpans: [{ start: 12, end: 28, pcs: A_HARMONIC }] }).filter((n) => n.id !== 'a' && n.id !== 'b');
+  assert.ok(run.length > 8, 'the gap is filled');
+  assert.ok(run.some((n) => n.note % 12 === 8), 'the run climbs through G sharp');
+  assert.ok(!run.some((n) => n.note % 12 === 7), 'no G natural in a run into the raised bar');
+  // A run that starts before the span keeps the key's own scale until the span
+  // starts: coming down from A5 it passes G natural, and G sharp waits for step 12.
+  const down: PianoNote[] = [
+    { id: 'a', note: 81, step: 0, length: 1, velocity: 90 },
+    { id: 'b', note: 69, step: 16, length: 1, velocity: 90 },
+  ];
+  const fall = runsAndFlourishes(down, 1, { key: 'A', mode: 'minor', scaleSpans: [{ start: 12, end: 28, pcs: A_HARMONIC }] }).filter((n) => n.id !== 'a' && n.id !== 'b');
+  const before = fall.filter((n) => n.step < 12);
+  assert.ok(before.some((n) => n.note % 12 === 7), 'the run passes G natural before the span');
+  for (const n of before) assert.notEqual(n.note % 12, 8, `no G sharp at step ${n.step}, before the span`);
+  for (const n of fall.filter((f) => f.step >= 12 && f.step < Math.max(...fall.map((x) => x.step)))) assert.notEqual(n.note % 12, 7, `no G natural at step ${n.step}, inside the span`);
+}
+
 // The arpeggiator's rag counts odd 16ths from each bar start.
 {
   for (let s = 0; s < 64; s += 1) assert.equal(ragOffsetSteps(s, 0.3), s % 2 === 1 ? 0.3 : 0, `rag at step ${s} with no meter`);
@@ -420,6 +564,37 @@ const byPitch = (notes: PianoNote[]): Map<number, PianoNote> => new Map(notes.ma
   await settle();
   assert.deepEqual(roll().meterMap, [{ bar: 0, meter: M44 }, { bar: firstBars, meter: M34 }], "section 1's bars follow the roll again once its meter is gone");
   useVirtuosoStore.getState().resetToSource();
+}
+
+// The UI's order: notes in the roll, CAPTURE, the Rachmaninoff style (minor),
+// FORM cut to one three-bar outro, key D, Harmony and Ragtime up, SONG. The
+// roll then ends on D minor after an A major V with C sharp and no C natural.
+{
+  const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
+  const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
+  const v = useVirtuosoStore.getState;
+  const roll = usePianoRollStore.getState;
+  roll().applyMeter({ meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0 });
+  roll().importNotes(phrase(11));
+  v().captureSource();
+  v().setStyle('romantic');
+  assert.equal(v().mode, 'minor');
+  while (v().effectiveSections().length > 1) v().removeSection(1);
+  v().setSectionRole(0, 'outro');
+  v().setSectionBars(0, 3);
+  v().setKey('D');
+  v().setAmount('harmony', 1);
+  v().setAmount('ragtime', 1);
+  v().buildSong();
+  const notes = roll().notes;
+  const last = chordOn(notes, 32, 'D minor in the roll');
+  assert.equal(last.root, 2, 'the song ends on D');
+  assert.deepEqual(last.pcs, [2, 5, 9], 'the last chord is D minor');
+  const five = startingIn(notes, 16, 32);
+  assert.equal(five.reduce((lo, n) => (n.note < lo.note ? n : lo)).note % 12, 9, 'the V bar stands on A');
+  assert.ok(five.some((n) => n.note % 12 === 1), 'the V has C sharp');
+  assert.ok(!five.some((n) => n.note % 12 === 0), 'no C natural sounds in the V bar');
+  v().resetToSource();
 }
 
 console.log('virtuosoTransform: ok');

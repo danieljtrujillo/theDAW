@@ -5,7 +5,9 @@
  * assemble those into full, developing, stylistic arrangements.
  *
  * Phrase transforms (each amount 0..1, optionally seeded per instance):
- *   harmony  — diatonic counter-line (contrary motion) + borrowed/modal tones.
+ *   harmony  — a diatonic third below a share of the top-line notes equal to the
+ *              amount, moving in parallel with the line; past 0.66 about three
+ *              in ten of those thirds drop a semitone for a borrowed/modal tone.
  *   ragtime  — Joplin stride: oom-pah LH under syncopated, accented RH stabs.
  *   runs     — Rudess scalar/chromatic flourishes that LAND on chord tones.
  *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents.
@@ -14,7 +16,8 @@
  *   accent   — group and bar starts louder, every other note softer.
  *
  * `buildSong` composes rather than repeats. It (1) lays out a chord plan from the
- * style's degree progression with real cadences, (2) voices every chord by
+ * style's degree progression, counted from the key's tonic, with real cadences
+ * (in a minor mode a cadential V takes the leading tone), (2) voices every chord by
  * nearest-neighbor VOICE-LEADING (so inner voices move minimally, not in parallel
  * blocks), (3) writes an actual MELODY over it (stepwise motion, passing/neighbor
  * tones, appoggiaturas, an arch contour), and (4) renders each section with its
@@ -56,6 +59,14 @@ const BASS_CENTER = 36; // C2 — bass register center
 const SEED_PRIME = 1009;
 const EPS = 1e-9;
 
+/** Steps that take their own scale, such as a cadential V with a raised leading tone. */
+export interface ScaleSpan {
+  start: number;
+  end: number;
+  /** The span's pitch classes, sorted. */
+  pcs: number[];
+}
+
 export interface TransformOpts {
   key: string;
   mode: string;
@@ -63,6 +74,8 @@ export interface TransformOpts {
   meterMap?: MeterSegment[];
   /** Steps before bar 0. Absent means bar 0 starts at step 0. */
   pickupSteps?: number;
+  /** Steps whose notes come from their own scale. Outside them, and when absent, the key's scale. */
+  scaleSpans?: ScaleSpan[];
 }
 
 /** The meter fields of TransformOpts. */
@@ -124,10 +137,14 @@ const mk = (note: number, step: number, length: number, velocity: number): Piano
 const pcOf = (name: string): number => noteNameToMidi(name, 0) % 12;
 const pcToMidi = (pc: number, octave: number): number => (octave + 1) * 12 + (((pc % 12) + 12) % 12);
 
+/** The scale's pitch classes from the tonic up, so index 0 is the tonic and each index is a scale degree. */
+function scaleDegrees(key: string, mode: string): number[] {
+  return new MusicalScale({ key, mode }).notes.map((n) => pcOf(n.note));
+}
+
+/** The scale's pitch classes as a set sorted from C, for ladders and chord lookups by pitch. */
 function scalePitchClasses(key: string, mode: string): number[] {
-  const ms = new MusicalScale({ key, mode });
-  const pcs = ms.notes.map((n) => pcOf(n.note));
-  return Array.from(new Set(pcs)).sort((a, b) => a - b);
+  return Array.from(new Set(scaleDegrees(key, mode))).sort((a, b) => a - b);
 }
 
 function scaleLadder(pcs: number[], lo = 33, hi = 96): number[] {
@@ -135,6 +152,42 @@ function scaleLadder(pcs: number[], lo = 33, hi = 96): number[] {
   const out: number[] = [];
   for (let m = lo; m <= hi; m += 1) if (set.has(((m % 12) + 12) % 12)) out.push(m);
   return out;
+}
+
+/** The scale at `step`: the first scale span holding it, else `pcs`. */
+function scaleAt(opts: TransformOpts, pcs: number[], step: number): number[] {
+  return opts.scaleSpans?.find((s) => step >= s.start - EPS && step < s.end - EPS)?.pcs ?? pcs;
+}
+
+/** One ladder per scale for the length of a transform call. */
+function ladderCache(lo?: number, hi?: number): (pcs: number[]) => number[] {
+  const memo = new Map<string, number[]>();
+  return (pcs) => {
+    const k = pcs.join(',');
+    let l = memo.get(k);
+    if (!l) {
+      l = scaleLadder(pcs, lo, hi);
+      memo.set(k, l);
+    }
+    return l;
+  };
+}
+
+/**
+ * The tones a minor mode raises on a cadential V, as scale tone -> raised tone:
+ * the subtonic becomes the leading tone, and in Phrygian the flat 2nd becomes the
+ * natural 2nd, so the V is a major triad that leads to the tonic. Empty when the
+ * tonic triad is not minor with a perfect fifth (major modes, Locrian) or the 7th
+ * already leads (harmonic and melodic minor).
+ */
+function cadentialRaises(degrees: number[]): Map<number, number> {
+  const raises = new Map<number, number>();
+  if (degrees.length < 7) return raises;
+  const rel = (i: number): number => (((degrees[i] - degrees[0]) % 12) + 12) % 12;
+  if (rel(2) !== 3 || rel(4) !== 7 || rel(6) !== 10) return raises;
+  raises.set(degrees[6], (degrees[0] + 11) % 12);
+  if (rel(1) === 1) raises.set(degrees[1], (degrees[0] + 2) % 12);
+  return raises;
 }
 
 function topLine(notes: PianoNote[]): PianoNote[] {
@@ -172,10 +225,10 @@ function triadFromScale(rootPc: number, pcs: number[]): number[] {
   return [pcs[i], pcs[(i + 2) % pcs.length], pcs[(i + 4) % pcs.length]];
 }
 
-/** Diatonic triad pitch classes seated on a scale DEGREE (0-indexed). */
-function chordAtDegree(deg: number, pcs: number[]): number[] {
-  const i = ((deg % pcs.length) + pcs.length) % pcs.length;
-  return [pcs[i], pcs[(i + 2) % pcs.length], pcs[(i + 4) % pcs.length]];
+/** Diatonic triad pitch classes seated on a scale DEGREE (0 = the tonic) of a tonic-first scale from `scaleDegrees`. */
+function chordAtDegree(deg: number, degrees: number[]): number[] {
+  const i = ((deg % degrees.length) + degrees.length) % degrees.length;
+  return [degrees[i], degrees[(i + 2) % degrees.length], degrees[(i + 4) % degrees.length]];
 }
 
 /** The MIDI note with pitch class `pc` nearest to `target`. */
@@ -367,19 +420,28 @@ export interface Voicing {
   voices: number[];
 }
 
+/** `m` moved by whole octaves into [lo, hi], so it keeps its pitch class. */
+function inRange(m: number, lo: number, hi: number): number {
+  let x = m;
+  while (x < lo) x += 12;
+  while (x > hi) x -= 12;
+  return x;
+}
+
 /**
  * Voice a triad so each tone moves to its nearest neighbour from the previous
  * voicing (smooth inner-voice motion, inversions chosen implicitly) rather than
  * jumping in parallel root-position blocks. The bass tracks the root register.
+ * A tone that walks out of its register comes back by an octave.
  */
 function voiceChord(triad: number[], prev: Voicing | null, center = VOICE_CENTER): Voicing {
   const voices = triad.map((pc, i) => {
     const target = prev ? (prev.voices[i] ?? center) : center + (i - 1) * 4;
-    return Math.max(30, Math.min(84, pcNearest(pc, target)));
+    return inRange(pcNearest(pc, target), 30, 84);
   });
   voices.sort((a, b) => a - b);
   const bassTarget = prev ? prev.bass : BASS_CENTER;
-  const bass = Math.max(24, Math.min(52, pcNearest(triad[0], bassTarget)));
+  const bass = inRange(pcNearest(triad[0], bassTarget), 24, 52);
   return { bass, voices };
 }
 
@@ -401,6 +463,23 @@ interface RunOpts {
   tuplet?: 0 | 3 | 6;
   /** The bars the run's pulse accents follow (4/4 from step 0 when absent). */
   grid?: Grid;
+  /**
+   * The ladder at a step, for a run that crosses a scale span. A run note off
+   * the ladder of the step it sounds on moves to that ladder's nearest tone,
+   * toward the run's direction on a tie. Absent means `ladder` throughout.
+   */
+  ladderAt?: (step: number) => number[];
+}
+
+/** `m` on `ladder`: itself when on it, else the nearest tone, the one toward `dir` on a tie. */
+function snapToLadder(ladder: number[], m: number, dir: number): number {
+  if (!ladder.length || ladder.includes(m)) return m;
+  let best = ladder[0];
+  for (const t of ladder) {
+    const d = Math.abs(t - m) - Math.abs(best - m);
+    if (d < 0 || (d === 0 && Math.sign(t - m) === dir)) best = t;
+  }
+  return best;
 }
 
 /** Subdivision increments (in 16th steps) for a run's before/after-accel phases. */
@@ -455,6 +534,7 @@ function genRun(
       const idx = i0 + dir * Math.round(t * span);
       pitch = ladder[Math.max(0, Math.min(ladder.length - 1, idx))];
     }
+    if (k !== last && opts.ladderAt) pitch = snapToLadder(opts.ladderAt(slots[k].s), pitch, dir);
     const on = grid.onPosition(Math.round(slots[k].s));
     const pulse = on !== null && on.weight >= pulseWeight(on.b.meter);
     const vel = clampVel(baseVel + Math.round(t * 30) + (pulse ? 10 : 0));
@@ -472,6 +552,8 @@ export interface ChordSpan {
   len: number;
   /** The bar's time signature; absent means 4/4. */
   meter?: Meter;
+  /** The scale the bar's melody and runs move in; absent means the section's ladder. */
+  ladder?: number[];
 }
 
 interface MelodyOpts {
@@ -509,10 +591,11 @@ function genMelodyLine(
   const inc = 4 / Math.max(1, opts.density);
 
   // 1. anchors: a chord tone on each group start and each quarter inside the
-  // group, near the cursor + arch bias.
-  const anchors: Array<{ step: number; midi: number; end: number }> = [];
+  // group, near the cursor + arch bias. Each anchor keeps its bar's ladder.
+  const anchors: Array<{ step: number; midi: number; end: number; ladder: number[] }> = [];
   for (const sp of spans) {
-    const chordTones = ladder.filter((m) => sp.triad.includes(((m % 12) + 12) % 12) && m >= RH_FLOOR - 5);
+    const barLadder = sp.ladder ?? ladder;
+    const chordTones = barLadder.filter((m) => sp.triad.includes(((m % 12) + 12) % 12) && m >= RH_FLOOR - 5);
     if (!chordTones.length) continue;
     const slotsInBar = anchorSlots(sp.meter ?? DEFAULT_METER);
     slotsInBar.forEach((q, j) => {
@@ -530,19 +613,21 @@ function genMelodyLine(
           best = m;
         }
       }
-      anchors.push({ step, midi: best, end: sp.start + (slotsInBar[j + 1] ?? sp.len) });
+      anchors.push({ step, midi: best, end: sp.start + (slotsInBar[j + 1] ?? sp.len), ladder: barLadder });
       cur = best;
     });
   }
   if (!anchors.length) return { notes, cursor: cur };
 
-  // 2. connect anchors with stepwise passing motion at the chosen density.
+  // 2. connect anchors with stepwise passing motion at the chosen density, in
+  // the scale of the bar the passing notes sound in.
   for (let a = 0; a < anchors.length; a += 1) {
     const cs = anchors[a].step;
     const cm = anchors[a].midi;
     const ns = a + 1 < anchors.length ? anchors[a + 1].step : anchors[a].end;
     const nm = a + 1 < anchors.length ? anchors[a + 1].midi : cm;
-    const path = ladderPath(ladder, cm, nm);
+    const barLadder = anchors[a].ladder;
+    const path = ladderPath(barLadder, cm, nm);
     const slots = Math.max(1, Math.round((ns - cs) / inc));
     for (let k = 0; k < slots; k += 1) {
       const step = cs + k * inc;
@@ -552,7 +637,7 @@ function genMelodyLine(
       const vel = opts.baseVel + (onBeat ? 12 : 0) - (k % 2 === 1 ? 6 : 0);
       if (onBeat && opts.ornament && hash01(step + opts.seed * 7) < 0.16) {
         // appoggiatura: an upper neighbour on the beat resolving down to the anchor.
-        notes.push(mk(stepUp(ladder, pitch), step, inc * 0.5, clampVel(vel - 4)));
+        notes.push(mk(stepUp(barLadder, pitch), step, inc * 0.5, clampVel(vel - 4)));
         notes.push(mk(pitch, step + inc * 0.5, inc * 0.5, clampVel(vel)));
       } else {
         notes.push(mk(pitch, step, inc, clampVel(vel)));
@@ -564,6 +649,12 @@ function genMelodyLine(
 
 // --- phrase transforms (amount 0..1, optional per-instance seed) ------------- //
 
+/**
+ * A diatonic third below a share of the top-line notes equal to `amount`, each
+ * as long as its note, so the added line moves in parallel with the melody.
+ * Past 0.66 about three in ten of those thirds drop a semitone, a borrowed or
+ * modal tone. A note inside a scale span takes its third from that span's scale.
+ */
 export function harmonize(
   notes: PianoNote[],
   amount: number,
@@ -572,13 +663,16 @@ export function harmonize(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
-  const ladder = scaleLadder(pcs);
+  // Every MIDI note is on the ladder, so a line above C7 or below A1 still gets the third below it.
+  const ladderOf = ladderCache(0, 127);
   const out = notes.map(clone);
   const top = topLine(notes);
   top.forEach((n, i) => {
     if (hash01(i * 7 + 101 + seed * SEED_PRIME) > amount) return;
+    const ladder = ladderOf(scaleAt(opts, pcs, n.step));
     const idx = nearestIndex(ladder, n.note);
-    let counter = ladder[Math.max(0, idx - 2)];
+    if (idx < 2) return;
+    let counter = ladder[idx - 2];
     if (amount > 0.66 && hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3) counter -= 1;
     out.push(mk(counter, n.step, Math.max(1, n.length), Math.max(1, n.velocity - 18)));
   });
@@ -606,7 +700,7 @@ export function ragtimeStride(
       continue;
     }
     const rootPc = inBar.reduce((lo, n) => (n.note < lo.note ? n : lo)).note % 12;
-    const triad = triadFromScale(rootPc, pcs);
+    const triad = triadFromScale(rootPc, scaleAt(opts, pcs, b.start));
     const voicing = voiceChord(triad, prev);
     prev = voicing;
     // Oom-pah left hand: bass then chord on the bar's pulse, alternating root/fifth low note.
@@ -638,7 +732,7 @@ export function runsAndFlourishes(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
-  const ladder = scaleLadder(pcs);
+  const ladderOf = ladderCache();
   const grid = gridOf(opts);
   const anchors = topLine(notes);
   const out = notes.map(clone);
@@ -663,13 +757,17 @@ export function runsAndFlourishes(
     } else {
       // scalar flourish that accelerates and lands on the next anchor (b). Past
       // ~0.75 the runs turn into true triplet flourishes for a virtuosic feel.
+      // Each run note takes the scale of the step it sounds on, so a run into a
+      // scale span changes scale where the span starts.
       const tuplet: 0 | 3 | 6 = amount > 0.75 && hash01(gapIndex * 5 + seed * SEED_PRIME) < amount ? 3 : 0;
-      genRun(a.note, b.note, a.step + inc0(gap), b.step, ladder, {
+      const from = a.step + inc0(gap);
+      genRun(a.note, b.note, from, b.step, ladderOf(scaleAt(opts, pcs, from)), {
         baseVel: 74,
         doubleOctave: octaveDouble,
         accelAt: amount > 0.8 ? 0.35 : 0.6,
         tuplet,
         grid,
+        ...(opts.scaleSpans?.length ? { ladderAt: (s: number) => ladderOf(scaleAt(opts, pcs, s)) } : {}),
       }).forEach((n) => out.push(n));
     }
   }
@@ -990,7 +1088,7 @@ export function renderSection(
       const tuplet: 0 | 3 | 6 = role === 'climax'
         ? roll < 0.5 ? 6 : 3
         : roll < 0.4 ? 3 : 0;
-      genRun(cursor, nextTone, sp.start, sp.start + sp.len, ctx.ladder, {
+      genRun(cursor, nextTone, sp.start, sp.start + sp.len, sp.ladder ?? ctx.ladder, {
         baseVel: role === 'climax' ? 98 : 84,
         doubleOctave: true,
         accelAt: 0.4,
@@ -1029,7 +1127,7 @@ export function renderSection(
     if (role === 'build' && spans.length) {
       const lastSp = spans[spans.length - 1];
       const target = pcNearest(lastSp.triad[2], MEL_CENTER + 7);
-      genRun(state.cursor, target, lastSp.start + midPulse(lastSp.meter ?? DEFAULT_METER), lastSp.start + lastSp.len, ctx.ladder, {
+      genRun(state.cursor, target, lastSp.start + midPulse(lastSp.meter ?? DEFAULT_METER), lastSp.start + lastSp.len, lastSp.ladder ?? ctx.ladder, {
         baseVel: 86, accelAt: 0.3, grid,
       }).forEach((n) => out.push(n));
       state.cursor = target;
@@ -1044,7 +1142,7 @@ interface Style {
   mode: string;
   climaxAt: number;
   humanize: number;
-  /** Chord progression as scale degrees (0-indexed) — the harmonic movement. */
+  /** Chord progression as scale degrees counted from the key's tonic (0 = I, 4 = V) — the harmonic movement. */
   progression: number[];
   /** Ordered arrangement of section roles, cycled to the target length. */
   arrangement: Role[];
@@ -1173,6 +1271,8 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const rollMap = normalizeMeterMap(opts.meterMap);
   if (!source.length) return { notes: [], meterMap: rollMap };
   const style = STYLES[opts.style] ?? STYLES.romantic;
+  // Degrees count from the key's tonic; the sorted set feeds the ladders.
+  const degrees = scaleDegrees(opts.key, opts.mode);
   const pcs = scalePitchClasses(opts.key, opts.mode);
   const ladder = scaleLadder(pcs);
   const sections = resolveSections(opts);
@@ -1184,7 +1284,12 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   }
   const meterMap = normalizeMeterMap(barMeters.map((meter, bar) => ({ bar, meter })));
   const songStart = Math.max(0, opts.pickupSteps ?? 0);
-  const songEnd = barMeters.reduce((s, m) => s + stepsPerBar(m), songStart);
+  const barStart: number[] = [];
+  let songEnd = songStart;
+  for (const m of barMeters) {
+    barStart.push(songEnd);
+    songEnd += stepsPerBar(m);
+  }
 
   // Chord plan: cycle the degree progression bar by bar across the whole song,
   // then impose cadences — a half cadence (V) to end the intro, and an authentic
@@ -1198,7 +1303,25 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
     degSeq[totalBars - 2] = 4; // dominant
   }
 
-  const o: TransformOpts = { key: opts.key, mode: opts.mode, meterMap, pickupSteps: songStart };
+  // A cadential V is a V that ends a section (the intro's half cadence among
+  // them) or leads into the final tonic. In a minor mode it takes the leading
+  // tone, in its chord and in every note written over its bar.
+  const cadential = new Set<number>();
+  let sectionEnd = 0;
+  for (const sec of sections) {
+    sectionEnd += sec.bars;
+    if (degSeq[sectionEnd - 1] === 4) cadential.add(sectionEnd - 1);
+  }
+  if (totalBars >= 2) cadential.add(totalBars - 2);
+  const raises = cadentialRaises(degrees);
+  const raise = (pc: number): number => raises.get(pc) ?? pc;
+  const cadPcs = Array.from(new Set(pcs.map(raise))).sort((a, b) => a - b);
+  const cadLadder = scaleLadder(cadPcs);
+  const scaleSpans: ScaleSpan[] = raises.size
+    ? [...cadential].sort((a, b) => a - b).map((bar) => ({ start: barStart[bar], end: barStart[bar] + stepsPerBar(barMeters[bar]), pcs: cadPcs }))
+    : [];
+
+  const o: TransformOpts = { key: opts.key, mode: opts.mode, meterMap, pickupSteps: songStart, ...(scaleSpans.length ? { scaleSpans } : {}) };
   const ctx: RenderCtx = { ladder, chorusTexture: style.chorusTexture, seed: 1, meter: o };
   const state: SectionState = { voicing: null, cursor: MEL_CENTER };
   const out: PianoNote[] = [];
@@ -1215,7 +1338,9 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
       const bar = cursorBar + b;
       const meter = barMeters[bar];
       const len = stepsPerBar(meter);
-      spans.push({ triad: chordAtDegree(degSeq[bar] ?? 0, pcs), start: cursorStep, len, meter });
+      const triad = chordAtDegree(degSeq[bar] ?? 0, degrees);
+      if (raises.size && cadential.has(bar)) spans.push({ triad: triad.map(raise), start: cursorStep, len, meter, ladder: cadLadder });
+      else spans.push({ triad, start: cursorStep, len, meter });
       cursorStep += len;
     }
     const notes = renderSection(sec.role, spans, state, ctx);
