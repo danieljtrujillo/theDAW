@@ -781,6 +781,35 @@ const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
 let historyApplying = false;     // true while undo/redo writes, so it doesn't self-record
 let lastDocChangeAt = -Infinity;
+// A pointer gesture in progress (beginRollGesture .. endRollGesture): every
+// change inside it folds into the step its first change recorded, however long
+// the pointer pauses between moves.
+let gestureOpen = false;
+let gestureRecorded = false;
+
+/** The next document change records its own undo step. */
+const cutHistoryBurst = (): void => {
+  lastDocChangeAt = -Infinity;
+  gestureRecorded = false;
+};
+
+/**
+ * Open one undo step for a pointer gesture: a note drag, a resize, a velocity
+ * sweep or a bend-point drag. The gesture's first change records the step and
+ * every later change folds into it until endRollGesture, so a slow drag that
+ * crosses snap lines seconds apart is still one Ctrl+Z. It also cuts the burst
+ * before it, so a drag started right after another edit is its own step.
+ */
+export const beginRollGesture = (): void => {
+  cutHistoryBurst();
+  gestureOpen = true;
+};
+
+/** Close the gesture beginRollGesture opened; the next change starts a new step. */
+export const endRollGesture = (): void => {
+  gestureOpen = false;
+  cutHistoryBurst();
+};
 
 const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   notes: s.notes,
@@ -1035,7 +1064,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     } finally {
       historyApplying = false;
     }
-    lastDocChangeAt = -Infinity;
+    cutHistoryBurst();
   },
 
   importNotes: (incoming, bpm, meter, incomingBends) =>
@@ -1222,7 +1251,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       _redo: [...s._redo, current],
     });
     historyApplying = false;
-    lastDocChangeAt = -Infinity; // the next real edit starts a fresh undo step
+    cutHistoryBurst(); // the next real edit starts a fresh undo step
   },
 
   redo: () => {
@@ -1240,7 +1269,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       _redo: s._redo.slice(0, -1),
     });
     historyApplying = false;
-    lastDocChangeAt = -Infinity;
+    cutHistoryBurst();
   },
 }));
 
@@ -1268,8 +1297,10 @@ usePianoRollStore.subscribe((state, prev) => {
   ) return;
   const relinked = state.editingClipId !== prev.editingClipId;
   const now = performance.now();
-  const coalesce = !relinked && now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  // Inside a pointer gesture time does not end the step; the gesture's end does.
+  const coalesce = !relinked && (gestureOpen ? gestureRecorded : now - lastDocChangeAt < HISTORY_COALESCE_MS);
   lastDocChangeAt = now;
+  if (gestureOpen) gestureRecorded = true;
   if (coalesce) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   usePianoRollStore.setState((s) => {

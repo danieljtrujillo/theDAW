@@ -4,6 +4,8 @@ import {
   DEFAULT_GROOVE_ID,
   DEFAULT_LANES,
   MAX_ROLL_STEPS,
+  beginRollGesture,
+  endRollGesture,
   usePianoRollStore,
   type PianoNote,
 } from '../../state/pianoRollStore';
@@ -1524,6 +1526,8 @@ const VelocityLane: React.FC<{
     const { x, y } = localPoint(e);
     const step = x / Math.max(1e-6, stepPx);
     dragRef.current = step;
+    // The whole sweep is one undo step, however long it pauses.
+    beginRollGesture();
     writeAt(step, step, y);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     // preventDefault below suppresses the compatibility mousedown, and with it
@@ -1545,6 +1549,7 @@ const VelocityLane: React.FC<{
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (dragRef.current === null) return;
     dragRef.current = null;
+    endRollGesture();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
 
@@ -1920,10 +1925,14 @@ export const PianoRoll: React.FC<{
     if (edge === 'right') {
       const tick = note.tick ?? Math.round(note.step * TICKS_PER_STEP);
       resizeRef.current = { id: note.id, startX: e.clientX, tick, initialTicks: note.ticks ?? Math.round(note.length * TICKS_PER_STEP) };
+      // The whole resize is one undo step, however slowly it crosses the lines.
+      beginRollGesture();
       (e.target as Element).setPointerCapture?.(e.pointerId);
       return;
     }
     if (e.button !== 0) return;
+    // The whole drag is one undo step, however slowly it crosses the lines.
+    beginRollGesture();
     dragRef.current = { id: note.id, startX: e.clientX, startY: e.clientY, origins: null };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   };
@@ -2005,10 +2014,12 @@ export const PianoRoll: React.FC<{
     if (resizeRef.current) {
       (e.target as Element).releasePointerCapture?.(e.pointerId);
       resizeRef.current = null;
+      endRollGesture();
     }
     const drag = dragRef.current;
     dragRef.current = null;
     if (drag) {
+      endRollGesture();
       (e.target as Element).releasePointerCapture?.(e.pointerId);
       if (drag.origins) {
         // The click that ends a drag neither selects nor deletes; the moved notes stay selected.
@@ -2040,8 +2051,11 @@ export const PianoRoll: React.FC<{
    * a cancelled marquee never stated one.
    */
   const cancelMarquee = (e: React.PointerEvent) => {
-    // A cancelled note drag keeps the notes where the last move put them.
+    // A cancelled note drag or resize keeps the notes where the last move put
+    // them, as the one undo step the gesture recorded.
+    if (dragRef.current || resizeRef.current) endRollGesture();
     dragRef.current = null;
+    resizeRef.current = null;
     if (!marqueeRef.current) return;
     marqueeRef.current = null;
     (e.target as Element).releasePointerCapture?.(e.pointerId);

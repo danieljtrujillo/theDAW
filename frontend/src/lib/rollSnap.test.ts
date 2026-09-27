@@ -35,7 +35,7 @@ import {
   snapLineSteps,
   tupletUpdates,
 } from './rollSnap.ts';
-import { usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
+import { beginRollGesture, endRollGesture, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 
 const st = () => usePianoRollStore.getState();
 const M44 = { num: 4, den: 4, groups: [] };
@@ -183,6 +183,7 @@ const ticksOf = (ids: string[]) => ids.map((id) => st().notes.find((n) => n.id =
 }
 
 // A note drag moves the selection on the grid as one block; each move measures from the origins.
+// The moves come half a second apart, a slow drag, and the gesture is still one undo step.
 {
   freshRoll([{ bar: 0, meter: M78 }], 28);
   st().setSnap('1/8T');
@@ -192,20 +193,48 @@ const ticksOf = (ids: string[]) => ids.map((id) => st().notes.find((n) => n.id =
   const g = snapGrid(st().meterMap, 0, st().totalSteps, '1/8T');
   const origins = st().notes.map((n) => ({ id: n.id, tick: n.tick!, note: n.note }));
   resetClock();
+  const realNow = performance.now;
+  let clock = 10_000;
+  performance.now = () => clock;
   const bounds = { endTick: g.end, lowestNote: 21, highestNote: 108 };
+  beginRollGesture();
   // 330 ticks right (22px at 16px a step) and one row up: the primary lands on 320, b keeps its 320 offset.
   st().setNoteTimes(moveBlock(g, origins, a, (330 / TICKS_PER_STEP) * STEP_PX, -NOTE_HEIGHT, STEP_PX, NOTE_HEIGHT, bounds));
   assert.deepEqual(st().notes.map((n) => [n.tick, n.note]), [[320, 61], [640, 65]]);
+  clock += 500;
   // Past the group start at 1440 the primary rides the next group's grid.
   st().setNoteTimes(moveBlock(g, origins, a, (1500 / TICKS_PER_STEP) * STEP_PX, 0, STEP_PX, NOTE_HEIGHT, bounds));
   assert.equal(st().notes[0].tick, 1440);
+  clock += 500;
   // Left past the roll's start: the block stops at 0 without losing its shape.
   st().setNoteTimes(moveBlock(g, origins, b, -40 * STEP_PX, 0, STEP_PX, NOTE_HEIGHT, bounds));
   assert.deepEqual(st().notes.map((n) => n.tick), [0, 320]);
   assert.deepEqual([...st().selectedIds], [a, b], 'the dragged notes stay selected');
-  assert.equal(st()._undo.length, 1, 'a drag (moves inside one burst) is one undo step');
+  endRollGesture();
+  assert.equal(st()._undo.length, 1, 'a drag is one undo step however long it pauses between lines');
+  // The next edit, even inside 300 ms of the drop, is a step of its own.
+  clock += 50;
+  st().nudgeSelected(1, 0);
+  assert.equal(st()._undo.length, 2, 'an edit right after the drop is its own step');
+  st().undo();
   st().undo();
   assert.deepEqual(st().notes.map((n) => [n.tick, n.note]), [[0, 60], [320, 64]], 'undo puts the notes back where the drag found them');
+  // A slow resize, the note's end crossing two lines a second apart: one step too.
+  resetClock();
+  beginRollGesture();
+  st().setNoteTimes([{ id: a, ticks: 320 }]);
+  clock += 1000;
+  st().setNoteTimes([{ id: a, ticks: 480 }]);
+  endRollGesture();
+  assert.equal(st()._undo.length, 1, 'a slow resize is one undo step');
+  // The same writes a second apart with no gesture open are two steps, which is what the gesture changes.
+  resetClock();
+  clock += 1000;
+  st().setNoteTimes([{ id: a, ticks: 160 }]);
+  clock += 1000;
+  st().setNoteTimes([{ id: a, ticks: 320 }]);
+  assert.equal(st()._undo.length, 2, 'writes a second apart outside a gesture are separate steps');
+  performance.now = realNow;
   st().setSnap('1/16');
 }
 

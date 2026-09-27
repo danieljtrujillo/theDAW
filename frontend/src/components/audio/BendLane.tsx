@@ -28,7 +28,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eraser, Minus, Plus } from 'lucide-react';
-import { usePianoRollStore } from '../../state/pianoRollStore';
+import { beginRollGesture, endRollGesture, usePianoRollStore } from '../../state/pianoRollStore';
 import {
   BEND_LANE_HEIGHT,
   BEND_POINT_R,
@@ -128,6 +128,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
       e.preventDefault();
       return;
     }
+    // Placing a point and dragging it is one undo step, however long the drag pauses.
+    beginRollGesture();
     const id =
       hit?.id ??
       addBendPoint(activeLane, {
@@ -135,7 +137,10 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
         value: snapBendValue(bendYToValue(y, height), e.altKey),
         shape: 'linear',
       });
-    if (!id) return; // no channel left for this lane
+    if (!id) {
+      endRollGesture();
+      return; // no channel left for this lane
+    }
     setSelectedId(id);
     dragRef.current = { id, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -156,6 +161,7 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragRef.current) return;
     dragRef.current = null;
+    endRollGesture();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
 
