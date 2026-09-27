@@ -40,7 +40,7 @@ import {
   type PlayedBend,
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
-import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
+import { midiFileNoteCount, midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
 import { feelRollNotes, playedRollNotes } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
@@ -1007,7 +1007,8 @@ export const exportRollMidi = async (): Promise<void> => {
     return;
   }
   const file = rollToMidiFile(roll);
-  const count = file.tracks[0]?.notes.length ?? 0;
+  // One track per lane when the roll has more than lane A: the count is every track's notes.
+  const count = midiFileNoteCount(file);
   const result = await downloadMidi(file, 'piano-roll');
   // A cancelled or failed save exported nothing; saveFile already logged a failure.
   if (result.path) logInfo('piano-roll', `Exported ${count} notes as MIDI to ${result.path}`);

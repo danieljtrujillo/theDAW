@@ -7,7 +7,7 @@ import { meterMapToMidiEvents, normalizeMeterMap, unrollLanes, type MeterSegment
 import { notesToSmf } from './midiWrite.ts';
 import { MAX_BENT_LANES, bendValueAt, unrollBend, type BendPoint, type BendShape, type LaneBend } from './pitchBend.ts';
 import { playedRollNotes } from './rollClip.ts';
-import { ROLL_PPQ, midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
+import { ROLL_PPQ, midiFileNoteCount, midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
 import { PPQ, migrateNotes, pianoNotesToMidiNotes, usePianoRollStore, withTicks, type PianoNote } from '../state/pianoRollStore.ts';
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
@@ -149,6 +149,8 @@ const bytes = encodeMidi(file);
   const notes = file.tracks.flatMap((t) => t.notes);
   assert.deepEqual([0, 1, 2].map((ch) => notes.filter((n) => n.channel === ch).length), [2, 8, 2]);
   assert.deepEqual(file.tracks.map((t) => t.notes.length), [2, 8, 2], 'each lane in its own track, lane B written out');
+  // The export's LOG line reports every lane's notes, not lane A's track alone.
+  assert.equal(midiFileNoteCount(file), 12, 'the exported count is every track');
   assert.deepEqual(file.tracks.flatMap((t) => t.bendRanges ?? []), [{ tick: 0, channel: 0, semitones: 2 }, { tick: 0, channel: 1, semitones: 12 }]);
   assert.ok(hasBytes(bytes, [0xb0, 6, 2]) && hasBytes(bytes, [0xb1, 6, 12]));
   // Lane A at full up on channel 0, lane B at full down on channel 1.
@@ -429,6 +431,25 @@ const bytes = encodeMidi(file);
   for (const bpm of [60, 97, 120, 133, 240]) {
     assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} BPM reads back as ${bpm}`);
   }
+}
+
+// Export count: one note in lane A and two in lane B is three notes exported, though lane A's track holds one.
+{
+  const two = rollToMidiFile({
+    notes: [
+      { id: 'x0', note: 60, step: 0, length: 2, velocity: 100 },
+      { id: 'x1', note: 40, step: 2, length: 2, velocity: 100, lane: 1 },
+      { id: 'x2', note: 41, step: 4, length: 2, velocity: 100, lane: 1 },
+    ],
+    lanes: [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: null }],
+    totalSteps: 16,
+    bpm: 120,
+    meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
+    pickupSteps: 0,
+    bends: [],
+  });
+  assert.equal(two.tracks[0].notes.length, 1);
+  assert.equal(midiFileNoteCount(two), 3, 'a two-lane export reports 3 notes');
 }
 
 console.log('rollMidi: ok');

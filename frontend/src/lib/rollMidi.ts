@@ -168,6 +168,9 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   return { ...header, tracks };
 }
 
+/** Every note the file carries, across all its tracks: what an export reports it wrote. */
+export const midiFileNoteCount = (file: MidiFileData): number => file.tracks.reduce((sum, t) => sum + t.notes.length, 0);
+
 /** The range in force on a channel at `tick` (`ranges` sorted by tick): the last range set at or before it, else the channel's first range, else 2. */
 const rangeAt = (ranges: readonly MidiBendRange[], tick: number): number => {
   if (!ranges.length) return DEFAULT_BEND_RANGE;
