@@ -3,6 +3,7 @@ import { Check, Info, Minus, Plus, Save, Scissors, Trash2, Unlink, Waves } from 
 import {
   DEFAULT_GROOVE_ID,
   DEFAULT_LANES,
+  MAX_ROLL_STEPS,
   MIN_NOTE_LENGTH,
   usePianoRollStore,
   type PianoNote,
@@ -11,7 +12,7 @@ import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
-import { logError, logInfo } from '../../state/logStore';
+import { logError, logInfo, logWarn } from '../../state/logStore';
 import type { Meter } from '../../lib/colony';
 import {
   barAt,
@@ -1816,11 +1817,11 @@ export const PianoRoll: React.FC<{
   // window listener runs — otherwise one Ctrl+Z would step both the timeline's
   // history and the roll's, since both surfaces are mounted at once.
   //
-  // Each clipboard edit is ONE write of `notes` (replaceAll), which is one undo
-  // step: the store's history subscriber snapshots the pre-change document on
-  // the first change of a burst, so a cut (copy + delete) and a paste each
-  // record exactly one step. The selection write that follows a paste touches no
-  // tracked slice, so it adds no step of its own.
+  // Each clipboard edit is ONE write (replaceAll for a cut, appendNotes for a
+  // paste or a duplicate), which is one undo step: the store's history
+  // subscriber snapshots the pre-change document on the first change of a
+  // burst, so a cut (copy + delete) and a paste each record exactly one step. A
+  // paste that runs past the roll's end grows the roll in that same write.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1861,7 +1862,8 @@ export const PianoRoll: React.FC<{
       // The whole selection — the helpers have always taken a set of ids, so the
       // marquee needed no change here beyond handing them the real one.
       const picked = s.selectedIds;
-      const range = { lowestNote: s.lowestNote, highestNote: s.highestNote, totalSteps: s.totalSteps };
+      // The roll grows to hold a paste, up to its longest length.
+      const range = { lowestNote: s.lowestNote, highestNote: s.highestNote, totalSteps: s.totalSteps, maxSteps: MAX_ROLL_STEPS };
       if (k === 'c' || k === 'x') {
         const payload = copyNotes(s.notes, picked);
         if (!payload) return; // nothing selected: the clipboard keeps what it had
@@ -1872,15 +1874,22 @@ export const PianoRoll: React.FC<{
         }
         return;
       }
+      const wanted = k === 'v' ? (noteClipboard?.notes.length ?? 0) : picked.size;
       const added = k === 'v'
         ? (noteClipboard ? pasteNotes(noteClipboard, s.isPlaying ? Math.floor(s.currentStep) : insertStepRef.current, range) : [])
         : duplicateNotes(s.notes, picked, range);
+      if (added.length < wanted) {
+        const left = wanted - added.length;
+        logWarn(
+          'piano-roll',
+          `${left} note${left === 1 ? '' : 's'} would start past step ${MAX_ROLL_STEPS}, the roll's longest length, and ${left === 1 ? 'was' : 'were'} left out`,
+        );
+      }
       if (added.length === 0) return;
-      s.replaceAll([...s.notes, ...added]);
-      // The block that just landed IS the selection, so a repeated Ctrl/Cmd+D
-      // marches forward instead of stacking copies on the original, and the
-      // earliest of them is the primary.
-      s.setSelection(added.map((n) => n.id), added[0].id);
+      // The block that just landed IS the selection (appendNotes selects it), so
+      // a repeated Ctrl/Cmd+D marches forward instead of stacking copies on the
+      // original, and the earliest of them is the primary.
+      s.appendNotes(added);
       // A paste moves the insertion point PAST the block it just wrote, so a
       // second Ctrl/Cmd+V lands after it instead of stacking an identical set in
       // place. A duplicate leaves the point on the copy it selected.

@@ -85,11 +85,12 @@ const ids = () => {
   const early = pasteNotes(payload, -6, range, ids());
   assert.deepEqual(early.map((x) => x.step), [0, 4]);
 
-  // Right edge: a paste past the end clamps to the last step, and the length
-  // is trimmed so no note runs off the grid.
+  // Right edge: the insertion point is held on the last step; a note that
+  // would start at or past the roll's end is left out, never piled onto the
+  // last step, and the length of one that runs past it is trimmed.
   const late = pasteNotes(payload, 70, range, ids());
-  assert.deepEqual(late.map((x) => x.step), [63, 63]);
-  assert.deepEqual(late.map((x) => x.length), [1, 1]);
+  assert.deepEqual(late.map((x) => x.step), [63]);
+  assert.deepEqual(late.map((x) => x.length), [1]);
   // A note that only partly overruns keeps its start and loses the overhang.
   const edge = pasteNotes(copyNotes([n({ id: 'a', step: 0, length: 8 })], ['a'])!, 60, range, ids());
   assert.deepEqual(edge.map((x) => [x.step, x.length]), [[60, 4]]);
@@ -103,9 +104,29 @@ const ids = () => {
   );
   assert.deepEqual(pitched.map((x) => x.note), [48, 72]);
 
-  // A one-step grid still produces a legal note.
+  // A one-step grid still produces a legal note; the second starts past it.
   const tiny = pasteNotes(payload, 5, { lowestNote: 60, highestNote: 60, totalSteps: 1 }, ids());
-  assert.deepEqual(tiny.map((x) => [x.step, x.length, x.note]), [[0, 1, 60], [0, 1, 60]]);
+  assert.deepEqual(tiny.map((x) => [x.step, x.length, x.note]), [[0, 1, 60]]);
+
+  // With room to grow (the roll passes maxSteps), a paste past the end lands
+  // whole, and only what starts past maxSteps is left out.
+  const grown = pasteNotes(payload, 70, { ...range, maxSteps: 4096 }, ids());
+  assert.deepEqual(grown.map((x) => [x.step, x.length]), [[70, 2], [74, 2]]);
+  const capped = pasteNotes(payload, 4094, { ...range, maxSteps: 4096 }, ids());
+  assert.deepEqual(capped.map((x) => [x.step, x.length]), [[4094, 2]], 'the note that would start at 4098 is left out');
+}
+
+// ── pasteNotes / duplicateNotes: a sub-step length pastes as it was copied ──
+{
+  const third = 2 / 3;
+  const run = [0, 1, 2].map((i) => n({ id: `t${i}`, step: 8 + i * third, length: third, note: 60 + i }));
+  const pasted = pasteNotes(copyNotes(run, ['t0', 't1', 't2'])!, 20, range, ids());
+  assert.deepEqual(pasted.map((x) => x.length), [third, third, third], 'a 16th-triplet run keeps its lengths');
+  assert.ok(Math.abs(pasted[2].step - (20 + 2 * third)) < 1e-9);
+  // A duplicate lands at the run's real end (8 + 3 x 2/3 = 10), not a step later.
+  const dup = duplicateNotes(run, ['t0', 't1', 't2'], range, ids());
+  assert.equal(dup[0].step, 10);
+  assert.deepEqual(dup.map((x) => x.length), [third, third, third]);
 }
 
 // ── duplicateNotes: lands after the selection's end ─────────────────────────
@@ -148,7 +169,7 @@ const ids = () => {
     n({ id: 'C', step: 8, note: 67 }),
   ];
   const rollRange = (): RollRange => ({
-    lowestNote: st().lowestNote, highestNote: st().highestNote, totalSteps: st().totalSteps,
+    lowestNote: st().lowestNote, highestNote: st().highestNote, totalSteps: st().totalSteps, maxSteps: 4096,
   });
 
   st().replaceAll(three.map((x) => ({ ...x })));
@@ -168,13 +189,16 @@ const ids = () => {
 
   await settle();
 
-  // PASTE = one write of the roll's notes plus the new ones.
+  // PASTE = one write (appendNotes, as the roll's Ctrl/Cmd+V makes it), which
+  // also selects the pasted block.
   const beforePaste = st()._undo.length;
   const pasted = pasteNotes(payload, 32, rollRange());
   assert.equal(pasted.length, 3);
-  st().replaceAll([...st().notes, ...pasted]);
+  st().appendNotes(pasted);
   assert.equal(st().notes.length, 6);
   assert.equal(st()._undo.length, beforePaste + 1, 'a paste of three notes is exactly one undo step');
+  assert.deepEqual([...st().selectedIds], pasted.map((p) => p.id), 'the paste is the selection');
+  assert.equal(st().selectedNoteId, pasted[0].id);
   // Selecting the pasted note afterwards touches no tracked slice, so it adds no step.
   st().setSelectedNote(pasted[0].id);
   assert.equal(st()._undo.length, beforePaste + 1, 'selecting the paste adds no undo step');
@@ -182,6 +206,26 @@ const ids = () => {
   st().undo();
   assert.equal(st().notes.length, 3, 'one undo removes all three pasted notes');
   assert.equal(st().notes.some((x) => pasted.some((p) => p.id === x.id)), false);
+
+  await settle();
+
+  // A paste that runs past the roll's end, as the roll makes it: copy two
+  // notes, paste at step 62 of a 64-step roll. The overflow used to pile onto
+  // step 63; now both notes keep their spacing and the roll grows to the next
+  // bar line, in the same one undo step.
+  usePianoRollStore.setState({ totalSteps: 64 });
+  await settle();
+  const pair = copyNotes(st().notes, ['A', 'B'])!;
+  const beforeGrow = st()._undo.length;
+  const over = pasteNotes(pair, 62, rollRange());
+  st().appendNotes(over);
+  const landed = st().notes.filter((x) => over.some((o) => o.id === x.id));
+  assert.deepEqual(landed.map((x) => [x.step, x.length]), [[62, 2], [66, 2]], 'no note piles onto the last step');
+  assert.equal(st().totalSteps, 80, 'the roll grows to the bar line after the paste');
+  assert.equal(st()._undo.length, beforeGrow + 1, 'the paste and the growth are one undo step');
+  st().undo();
+  assert.equal(st().totalSteps, 64, 'undo takes the growth back with the notes');
+  assert.equal(st().notes.length, 3);
 }
 
 console.log('noteClipboard: ok');

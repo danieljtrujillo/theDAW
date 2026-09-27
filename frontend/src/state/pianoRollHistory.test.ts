@@ -269,4 +269,17 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
   assert.equal(st().editingClipId, 'A', "clip A's notes come back linked to A, never to C");
 }
 
+// A paste past the roll's end (appendNotes) grows the roll in the same write,
+// so one undo takes back the notes and the length together.
+{
+  usePianoRollStore.setState({ notes: [note(0)], totalSteps: 32, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0, selectedNoteId: null });
+  beginBlock();
+  st().appendNotes([note(30, 'p30'), note(40, 'p40')]);
+  assert.equal(st().totalSteps, 48, 'the roll grows to the bar line after the last pasted note');
+  assert.deepEqual([...st().selectedIds], ['p30', 'p40']);
+  assert.equal(st()._undo.length, 1);
+  st().undo();
+  assert.deepEqual([st().notes.length, st().totalSteps], [1, 32]);
+}
+
 console.log('pianoRollHistory: ok');

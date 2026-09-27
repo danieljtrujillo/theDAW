@@ -174,6 +174,13 @@ interface PianoRollState {
   setPlaying: (playing: boolean) => void;
   setCurrentStep: (s: number) => void;
   replaceAll: (notes: PianoNote[]) => void;
+  /**
+   * Add `notes` in one write (one undo step) and select them, the first as the
+   * primary. A note that runs past the roll's end grows the roll to the bar
+   * line after it, up to MAX_ROLL_STEPS: a paste or a duplicate near the end
+   * lands whole.
+   */
+  appendNotes: (notes: PianoNote[]) => void;
   clear: () => void;
   setEditingClip: (id: string | null) => void;
   /** Load an editor clip. A `meter` field left out keeps the roll's current value.
@@ -274,6 +281,9 @@ const DEFAULT_STEPS = 256;
 
 const MIN_STEPS = 16;
 const MAX_STEPS = 4096; // ~256 bars; enough for full-song MIDI imports
+/** The longest the roll grows: a paste past it leaves out the notes that start beyond it. */
+export const MAX_ROLL_STEPS = MAX_STEPS;
+const EPS = 1e-9;
 const FULL_LOW = 21; // A0 — the full 88-key piano stays in view so the roll scrolls
 const FULL_HIGH = 108; // C8
 
@@ -828,6 +838,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   setPlaying: (isPlaying) => set({ isPlaying }),
   setCurrentStep: (currentStep) => set({ currentStep }),
   replaceAll: (notes) => set({ notes: migrateNotes(notes), ...noSelection() }),
+  appendNotes: (incoming) =>
+    set((s) => {
+      if (incoming.length === 0) return {};
+      const added = migrateNotes(incoming);
+      const notes = [...s.notes, ...added];
+      const end = added.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+      const totalSteps = end > s.totalSteps + EPS
+        ? Math.min(MAX_STEPS, roundUpToBar(s.meterMap, end, s.pickupSteps))
+        : s.totalSteps;
+      return { notes, totalSteps, ...selectionOf(notes, added.map((n) => n.id), added[0].id) };
+    }),
   clear: () =>
     set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
 
