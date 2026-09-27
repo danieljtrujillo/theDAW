@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
 import { generatePianoFromParams, type AiComposeResult } from '../../lib/aiComposeClient';
+import { COMPOSE_MAX_BARS, composeMeterSummary } from '../../lib/aiComposeGrid';
+import type { MeterSegment } from '../../lib/meterMap';
 import { logError, logInfo } from '../../state/logStore';
 import { DockFlyout, FLYOUT_CARD, KEY_REST, RAIL_GLYPH, RailKey } from './midiDockKit';
 
@@ -39,12 +41,17 @@ const fieldCls =
  * AI COMPOSE control for the Piano Roll. The AI key in the MIDI dock's action
  * rail opens a parameter form to its right, asks a Gemini model (through
  * theDAW's server-side proxy) to write a two-hand piano part, and hands the
- * resulting notes back to the roll.
+ * resulting notes back to the roll. The request is written on the roll's own
+ * meter map and pickup, which the card names above GENERATE, and the result
+ * carries that meter back with its notes.
  */
 export const AiComposePopover: React.FC<{
   currentBpm: number;
+  /** The roll's time signatures by bar and its pickup: the grid the part is written on. */
+  meterMap: MeterSegment[];
+  pickupSteps: number;
   onGenerated: (result: AiComposeResult) => void;
-}> = ({ currentBpm, onGenerated }) => {
+}> = ({ currentBpm, meterMap, pickupSteps, onGenerated }) => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -66,6 +73,8 @@ export const AiComposePopover: React.FC<{
         mode,
         bars,
         bpm,
+        meterMap,
+        pickupSteps,
         style: style === 'None' ? undefined : style,
         complexity,
         withBass,
@@ -173,9 +182,9 @@ export const AiComposePopover: React.FC<{
               name="ai-compose-bars"
               type="number"
               min={1}
-              max={32}
+              max={COMPOSE_MAX_BARS}
               value={bars}
-              onChange={(e) => setBars(Math.max(1, Math.min(32, parseInt(e.target.value) || 8)))}
+              onChange={(e) => setBars(Math.max(1, Math.min(COMPOSE_MAX_BARS, parseInt(e.target.value) || 8)))}
               className={fieldCls}
             />
           </div>
@@ -189,8 +198,9 @@ export const AiComposePopover: React.FC<{
               type="number"
               min={40}
               max={240}
+              step="any"
               value={bpm}
-              onChange={(e) => setBpm(Math.max(40, Math.min(240, parseInt(e.target.value) || 120)))}
+              onChange={(e) => setBpm(Math.max(40, Math.min(240, parseFloat(e.target.value) || 120)))}
               className={fieldCls}
             />
           </div>
@@ -233,6 +243,16 @@ export const AiComposePopover: React.FC<{
           </span>
         </div>
 
+        <div className="flex flex-col gap-1">
+          <span className={legendCls}>Meter</span>
+          <p
+            className="text-[12px] font-bold et-ink leading-snug"
+            title="The part is written on the roll's meter map and pickup, bar by bar, and comes back with them"
+          >
+            {composeMeterSummary(meterMap, pickupSteps)} (the roll&apos;s)
+          </p>
+        </div>
+
         <label htmlFor="ai-compose-bass" className="flex items-center gap-2 text-[12px] font-semibold text-zinc-300 cursor-pointer">
           <input
             id="ai-compose-bass"
@@ -266,7 +286,7 @@ export const AiComposePopover: React.FC<{
           )}
         </button>
         <p className="text-[12px] font-semibold et-ink-3 leading-snug">
-          Replaces the roll with the generated part. Needs a Gemini API key set in Settings.
+          Replaces the roll with the generated part, in the roll&apos;s meter. Needs a Gemini API key set in Settings.
         </p>
       </DockFlyout>
     </>
