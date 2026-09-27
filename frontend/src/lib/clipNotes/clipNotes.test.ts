@@ -77,7 +77,17 @@ close(divisionToSteps('1/16T'), 2 / 3, '');
 close(divisionToSteps('1/4D'), 6, 'dotted are 3/2');
 close(divisionToSteps('1/8D'), 3, '');
 close(divisionToSteps('1/16D'), 1.5, '');
+close(divisionToSteps('1/64'), 0.25, 'a 64th is a quarter step');
+close(divisionToSteps('1/32T'), 1 / 3, '');
+close(divisionToSteps('1/16Q'), 4 / 5, 'quintuplet 16ths: five in a beat');
+close(divisionToSteps('1/16S'), 4 / 7, 'septuplet 16ths: seven in a beat');
 close(divisionToSteps('off'), 0, 'off has no grid');
+{
+  // A quintuplet run quantized to its own grid lands on it: 0, 0.8, 1.6, 2.4, 3.2 steps.
+  const run = [0.05, 0.83, 1.58, 2.41, 3.22].map((step, i) => n(`q${i}`, 60, step, 0.5));
+  const out = quantizeNotes(run, { grid: '1/16Q', strength: 1 });
+  out.forEach((x, i) => close(x.step, i * 0.8, `quintuplet ${i}`));
+}
 
 // ------------------------------------------------------------- quantize
 

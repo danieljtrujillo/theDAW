@@ -26,6 +26,8 @@ const {
   HARMONY_BORROW_FROM,
   humanize,
   polyrhythm,
+  crossSpans,
+  CROSS_ID_SUFFIX,
   ragtimeStride,
   renderSection,
   renderVirtuoso,
@@ -139,23 +141,29 @@ function captureToday(): Record<string, string> {
 // the melody: compared note by note with the previous build, two counter notes
 // changed and nothing else. At step 14 a B (71) under a sounding C (72) is the
 // diatonic C again, and at step 15 an E (64) under a sounding F (65) is the F.
+// The two polyrhythm digests, renderVirtuoso and the five 'buildSong <style>'
+// digests (the ones with a rhythm amount) were captured again when polyrhythm
+// began writing real 3:2, 4:3 and 5:4 notes: polyrhythm keeps every note it
+// wrote before, unchanged (POLYRHYTHM_BEFORE below checks it), and adds the
+// cross-rhythm notes; downstream, humanize's per-note draw is keyed on a
+// note's index, so the notes after an added one take the next draw.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
-  'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
+  'polyrhythm 0.35': '27:6775a468085c1026db374779',
   'humanize 0.35': '25:54bd3cdcb11e7fca9d17377b',
   'humanize groove 0.35': '25:d519f532176b6ee42837aa24',
   'ragtimeStride 0.35': '35:159a4fe588d18a871839ee7b',
   'runs 0.35': '41:8c588298096919b43e2691ee',
   'runs chromatic 0.35': '37:f5611cfe00c22c8615cb057e',
   'harmonize 0.35': '32:e6f55e8692ec5fc5483196e3',
-  'polyrhythm 1': '25:7a27bd58b95d65b2470e772d',
+  'polyrhythm 1': '29:a4814a34a0dac2b7b7db5a1f',
   'humanize 1': '25:a9018508535e978edc61283b',
   'humanize groove 1': '25:e2ddb1bfd93be2bc067375bd',
   'ragtimeStride 1': '39:e783ab510ddcab64e12d8182',
   'runs 1': '95:18aeac70e431b83a881eb2e7',
   'runs chromatic 1': '87:d136961088e33c44e5a1b546',
   'harmonize 1': '44:8f64f15a557341d9eb14dbc1',
-  renderVirtuoso: '98:1bb1a34f8e3481b302ed5a40',
+  renderVirtuoso: '106:23ea916a243ded57cec68b1c',
   accSustain: '4:8266445a9a3b6b8614559cf0',
   accArpeggio: '8:b22ac046619609734aecdacd',
   accAlberti: '8:cc406571a99a243117c57f25',
@@ -177,15 +185,15 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:f2aca0d9de2d06a3cdf40e8b',
+  'buildSong romantic': '558:29eae8e39880c97ee1bcafb1',
   'buildSong romantic sections': '436:a9272268720f395b38e58769',
-  'buildSong baroque': '670:7cbb03d702d6d64d43735aa7',
+  'buildSong baroque': '700:9296cb5c9cc9e7c05e139ccb',
   'buildSong baroque sections': '436:252c517b6e5b1ade7f8c43da',
-  'buildSong mussorgsky': '770:277e2e66eec33e9555b7dff9',
+  'buildSong mussorgsky': '800:f88ce1cce4a1e5b2b6abc0ed',
   'buildSong mussorgsky sections': '436:f9c999cd10a0078c7ebd0d26',
-  'buildSong flamenco': '900:9c66866d270f9aa27f26a979',
+  'buildSong flamenco': '930:a17815874fc13a095edf76ce',
   'buildSong flamenco sections': '436:1bf1fe7257deb14c7110e61c',
-  'buildSong ragtime': '593:966d15a9aa14db640e232e7b',
+  'buildSong ragtime': '623:394d6bd083a8aa8b07be7931',
   'buildSong ragtime sections': '439:903b44200d9a49f9c2c78817',
   'buildSong default': '1265:b754a6aabf3190e54d41d7b3',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
@@ -196,6 +204,17 @@ const FIXTURES: Record<string, string> = {
   const now = captureToday();
   assert.deepEqual(Object.keys(now).sort(), Object.keys(FIXTURES).sort());
   for (const [name, want] of Object.entries(FIXTURES)) assert.equal(now[name], want, `4/4 output changed: ${name}`);
+}
+
+// polyrhythm keeps every note it wrote before the cross-rhythm notes, as it wrote them.
+const POLYRHYTHM_BEFORE: Record<string, string> = { '0.35': '25:e611c06845901cd3be920cfc', '1': '25:7a27bd58b95d65b2470e772d' };
+{
+  const src = phrase(20260913);
+  for (const [a, want] of Object.entries(POLYRHYTHM_BEFORE)) {
+    const out = polyrhythm(src, Number(a), OPTS, 3);
+    assert.equal(digest(out.filter((n) => !n.id.endsWith(CROSS_ID_SUFFIX))), want, `polyrhythm ${a} kept its own notes`);
+    assert.ok(out.some((n) => n.id.endsWith(CROSS_ID_SUFFIX)), `polyrhythm ${a} wrote cross-rhythm notes`);
+  }
 }
 
 // --- meter maps ---------------------------------------------------------------- //
@@ -231,7 +250,8 @@ const byPitch = (notes: PianoNote[]): Map<number, PianoNote> => new Map(notes.ma
   const cases: Array<[typeof IN_78, number, number[]]> = [[IN_78, 14, [0, 6, 10]], [IN_516, 5, [0]]];
   for (const [opts, len, accented] of cases) {
     const src = everyStep(Math.min(len * 8, 90));
-    const out = byPitch(polyrhythm(src, 1, opts, 3));
+    // The source's own notes; the cross-rhythm notes polyrhythm adds are tested below.
+    const out = byPitch(polyrhythm(src, 1, opts, 3).filter((n) => !n.id.endsWith(CROSS_ID_SUFFIX)));
     let evenFromZero = 0;
     for (const n of src) {
       const got = out.get(n.note)!;

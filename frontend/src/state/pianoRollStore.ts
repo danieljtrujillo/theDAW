@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { normalizeMeterMap, roundUpToBar, type LaneSpan, type MeterSegment, type PolyLane } from '../lib/meterMap';
+import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type LaneSpan, type MeterSegment, type PolyLane } from '../lib/meterMap';
 import { sanitizeTempoEvents, type TempoEvent } from '../lib/tempoMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
@@ -18,6 +18,8 @@ import {
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
 import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
+// lib/rollSnap imports only the PianoNote TYPE back from here, as rollSelection does.
+import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -71,6 +73,12 @@ export interface PianoNote {
   channel?: number;
   /** Per-note expression; absent when the note carries none. */
   expr?: NoteExpression;
+}
+
+/** A lane's own time as setLaneTime takes it: a field left out stays, null clears it. */
+export interface LaneTimePatch {
+  meterMap?: MeterSegment[] | null;
+  tuplet?: { n: number; m: number } | null;
 }
 
 /** The roll's meter: time signatures by bar, the pickup before bar 0, and the polymeter lanes. */
@@ -171,6 +179,12 @@ interface PianoRollState {
    * reload comes back to the feel someone chose.
    */
   grooveId: string;
+  /**
+   * The grid a click, a drag, a resize, an arrow nudge, the note menu and a
+   * paste land on (lib/rollSnap), and the subdivision the grid draws. A
+   * setting like the feel: persisted, never undo history.
+   */
+  snap: RollSnapId;
 
   setBpm: (bpm: number) => void;
   /** Replace the tempo map (sanitizeTempoEvents); an empty map runs the roll at `bpm` throughout. */
@@ -208,6 +222,15 @@ interface PianoRollState {
   setSwingPct: (pct: number) => void;
   /** The groove template id the feel applies; persisted. Blank falls back to the default. */
   setGrooveId: (id: string) => void;
+  /** The snap grid; persisted. An id the roll does not know leaves it as it is. */
+  setSnap: (snap: RollSnapId) => void;
+  /**
+   * Retime and repitch notes in ONE write (one undo step), keeping the
+   * selection: a drag of note bodies, TUPLET, and the note menu's steps. Each
+   * update names a note's new `tick`, `ticks` and `note`; a field left out
+   * stays, and an id with no note is skipped.
+   */
+  setNoteTimes: (updates: ReadonlyArray<{ id: string; tick?: number; ticks?: number; note?: number }>) => void;
   setPlaying: (playing: boolean) => void;
   /** PLAY: start the roll where the playhead is. The playhead, the seek and the
    *  loop stay as they are; the scheduler's lap starts from them (playStartLap). */
@@ -268,6 +291,12 @@ interface PianoRollState {
   addLane: (cycleSteps?: number | null) => number;
   /** Set a lane's loop length; lane 0 never loops. */
   setLaneCycle: (id: number, cycleSteps: number | null) => void;
+  /**
+   * Set a lane's own time: `meterMap` (null or empty reads the roll's) and
+   * `tuplet` (null, or n equal to m, is straight). A field left out stays.
+   * Lane A keeps the roll's time. One undo step, as any lane edit.
+   */
+  setLaneTime: (id: number, time: LaneTimePatch) => void;
   /** Remove a lane; its notes move to lane 0, and its bend too when lane 0 has no points. Lane 0 cannot be removed. */
   removeLane: (id: number) => void;
   /** Replace every lane's bend. A bend for a lane the roll does not have is dropped, and lanes past MAX_BENT_LANES lose their points. */
@@ -380,7 +409,12 @@ export const clampLaneSpan = (span: Partial<LaneSpan> | null | undefined): LaneS
   return { start: from, end: end === null ? null : Math.min(MAX_STEPS, end) };
 };
 
-/** Lane 0 first and never looping, unique ids, cycles clamped to whole steps, spans kept when valid. */
+/**
+ * Lane 0 first and never looping, unique ids, cycles clamped to whole steps,
+ * spans kept when valid. A lane after A keeps its own meter map (normalized)
+ * and tuplet ratio (sanitizeTuplet) when it has them; lane A always reads the
+ * roll's meter, so it keeps neither.
+ */
 export const sanitizeLanes = (lanes: readonly PolyLane[] | null | undefined): PolyLane[] => {
   const seen = new Set<number>();
   const out: PolyLane[] = [];
@@ -388,12 +422,18 @@ export const sanitizeLanes = (lanes: readonly PolyLane[] | null | undefined): Po
     if (!l || !Number.isInteger(l.id) || l.id < 0 || seen.has(l.id)) continue;
     seen.add(l.id);
     const span = l.id === 0 ? null : clampLaneSpan(l.span);
-    out.push({
+    const lane: PolyLane = {
       id: l.id,
       name: String(l.name || laneName(l.id)),
       cycleSteps: l.id === 0 ? null : clampCycle(l.cycleSteps),
       ...(span ? { span } : {}),
-    });
+    };
+    if (l.id !== 0) {
+      if (Array.isArray(l.meterMap) && l.meterMap.length) lane.meterMap = normalizeMeterMap(l.meterMap);
+      const tuplet = sanitizeTuplet(l.tuplet);
+      if (tuplet) lane.tuplet = tuplet;
+    }
+    out.push(lane);
   }
   if (!seen.has(0)) out.unshift({ id: 0, name: 'A', cycleSteps: null });
   return out.sort((a, b) => a.id - b.id);
@@ -518,9 +558,10 @@ const noSelection = (): SelectionSlice => ({ selectedIds: new Set<string>(), sel
 // ── Note validation ──────────────────────────────────────────────────────────
 
 /**
- * The shortest note a GESTURE makes, in steps: a click on an empty cell, a
- * resize drag, the note menu's Shorten. The grid cannot draw or grab a note
- * thinner than one cell by hand, so those gestures stop at one step.
+ * The length, in steps, a note gets when its `length` is missing altogether.
+ * The hand gestures (a click on an empty cell, a resize drag, the note menu's
+ * Shorten) stop at one cell of the snap grid instead (lib/rollSnap), so a
+ * quintuplet or a 64th drawn by hand keeps its own size.
  *
  * The MODEL's floor is one tick (`MIN_NOTE_TICKS`), however a length arrives:
  * as `ticks`, or as a `length` in steps from a caller that builds notes without
@@ -766,11 +807,63 @@ const saveFeel = (feel: RollFeel): void => {
   }
 };
 
+// ── The snap grid, persisted ─────────────────────────────────────────────────
+
+const SNAP_KEY = 'thedaw.roll.snap.v1';
+
+const loadSnap = (): RollSnapId => {
+  try {
+    if (typeof localStorage === 'undefined') return DEFAULT_ROLL_SNAP;
+    const raw = localStorage.getItem(SNAP_KEY);
+    return isRollSnapId(raw) ? raw : DEFAULT_ROLL_SNAP;
+  } catch {
+    return DEFAULT_ROLL_SNAP;
+  }
+};
+
+const saveSnap = (snap: RollSnapId): void => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(SNAP_KEY, snap);
+  } catch {
+    /* private mode / quota: the grid just does not survive the reload */
+  }
+};
+
 // ── Undo / redo plumbing (module-scoped) ─────────────────────────────────────
 const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
 let historyApplying = false;     // true while undo/redo writes, so it doesn't self-record
 let lastDocChangeAt = -Infinity;
+// A pointer gesture in progress (beginRollGesture .. endRollGesture): every
+// change inside it folds into the step its first change recorded, however long
+// the pointer pauses between moves.
+let gestureOpen = false;
+let gestureRecorded = false;
+
+/** The next document change records its own undo step. */
+const cutHistoryBurst = (): void => {
+  lastDocChangeAt = -Infinity;
+  gestureRecorded = false;
+};
+
+/**
+ * Open one undo step for a pointer gesture: a note drag, a resize, a velocity
+ * sweep or a bend-point drag. The gesture's first change records the step and
+ * every later change folds into it until endRollGesture, so a slow drag that
+ * crosses snap lines seconds apart is still one Ctrl+Z. It also cuts the burst
+ * before it, so a drag started right after another edit is its own step.
+ */
+export const beginRollGesture = (): void => {
+  cutHistoryBurst();
+  gestureOpen = true;
+};
+
+/** Close the gesture beginRollGesture opened; the next change starts a new step. */
+export const endRollGesture = (): void => {
+  gestureOpen = false;
+  cutHistoryBurst();
+};
 
 const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   notes: s.notes,
@@ -816,6 +909,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   bends: [],
   tempoMap: [],
   ...loadFeel(),
+  snap: loadSnap(),
   _undo: [],
   _redo: [],
 
@@ -943,6 +1037,30 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return { grooveId };
     }),
 
+  setSnap: (snap) => {
+    if (!isRollSnapId(snap)) return;
+    saveSnap(snap);
+    set({ snap });
+  },
+  setNoteTimes: (updates) =>
+    set((s) => {
+      const byId = new Map(updates.map((u) => [u.id, u]));
+      let changed = false;
+      const notes = s.notes.map((n) => {
+        const u = byId.get(n.id);
+        if (!u) return n;
+        const patch: Partial<PianoNote> = {};
+        if (isNum(u.tick) && u.tick !== n.tick) patch.tick = u.tick;
+        if (isNum(u.ticks) && u.ticks !== n.ticks) patch.ticks = u.ticks;
+        if (isNum(u.note) && u.note !== n.note) patch.note = u.note;
+        if (Object.keys(patch).length === 0) return n;
+        changed = true;
+        return patchedNote(n, patch);
+      });
+      // No write when nothing moved, so a held drag records no undo step of its own.
+      return changed ? { notes } : {};
+    }),
+
   setPlaying: (isPlaying) => set({ isPlaying }),
   play: () => set({ isPlaying: true }),
   setCurrentStep: (currentStep) => set({ currentStep }),
@@ -1033,7 +1151,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     } finally {
       historyApplying = false;
     }
-    lastDocChangeAt = -Infinity;
+    cutHistoryBurst();
   },
 
   importNotes: (incoming, bpm, meter, incomingBends) =>
@@ -1119,6 +1237,26 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   },
   setLaneCycle: (id, cycleSteps) =>
     set((s) => ({ lanes: s.lanes.map((l) => (l.id === id && id !== 0 ? { ...l, cycleSteps: clampCycle(cycleSteps) } : l)) })),
+  setLaneTime: (id, time) =>
+    set((s) => {
+      if (id === 0 || !s.lanes.some((l) => l.id === id)) return {};
+      const lanes = sanitizeLanes(
+        s.lanes.map((l) => {
+          if (l.id !== id) return l;
+          const next: PolyLane = { ...l };
+          if ('meterMap' in time) {
+            if (time.meterMap?.length) next.meterMap = time.meterMap;
+            else delete next.meterMap;
+          }
+          if ('tuplet' in time) {
+            if (time.tuplet) next.tuplet = time.tuplet;
+            else delete next.tuplet;
+          }
+          return next;
+        }),
+      );
+      return { lanes };
+    }),
   removeLane: (id) =>
     set((s) => {
       if (id === 0 || !s.lanes.some((l) => l.id === id)) return {};
@@ -1202,7 +1340,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       _redo: [...s._redo, current],
     });
     historyApplying = false;
-    lastDocChangeAt = -Infinity; // the next real edit starts a fresh undo step
+    cutHistoryBurst(); // the next real edit starts a fresh undo step
     if (prev.voiceProgram !== s.voiceProgram) saveFeelOf(get());
   },
 
@@ -1221,7 +1359,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       _redo: s._redo.slice(0, -1),
     });
     historyApplying = false;
-    lastDocChangeAt = -Infinity;
+    cutHistoryBurst();
     if (next.voiceProgram !== s.voiceProgram) saveFeelOf(get());
   },
 }));
@@ -1254,9 +1392,12 @@ usePianoRollStore.subscribe((state, prev) => {
   const relinked = state.editingClipId !== prev.editingClipId;
   const revoiced = state.voiceProgram !== prev.voiceProgram;
   const now = performance.now();
-  const coalesce = !relinked && !revoiced && now - lastDocChangeAt < HISTORY_COALESCE_MS;
+  // Inside a pointer gesture time does not end the step; the gesture's end does.
+  const coalesce = !relinked && !revoiced && (gestureOpen ? gestureRecorded : now - lastDocChangeAt < HISTORY_COALESCE_MS);
+  lastDocChangeAt = now;
+  if (gestureOpen) gestureRecorded = true;
   // A voice step is whole: the next edit, however soon, starts a step of its own.
-  lastDocChangeAt = revoiced ? -Infinity : now;
+  if (revoiced) cutHistoryBurst();
   if (coalesce) return; // mid-burst; the burst start captured the undo point
   historyApplying = true;
   usePianoRollStore.setState((s) => {
@@ -1272,7 +1413,11 @@ usePianoRollStore.subscribe((state, prev) => {
 export const rollMeterOf = (s: Pick<PianoRollState, 'meterMap' | 'pickupSteps' | 'lanes'>): RollMeter => ({
   meterMap: s.meterMap.map((seg) => ({ bar: seg.bar, meter: { ...seg.meter, groups: [...seg.meter.groups] } })),
   pickupSteps: s.pickupSteps,
-  lanes: s.lanes.map((l) => ({ ...l })),
+  lanes: s.lanes.map((l) => ({
+    ...l,
+    ...(l.meterMap ? { meterMap: l.meterMap.map((seg) => ({ bar: seg.bar, meter: { ...seg.meter, groups: [...seg.meter.groups] } })) } : {}),
+    ...(l.tuplet ? { tuplet: { ...l.tuplet } } : {}),
+  })),
 });
 
 /**

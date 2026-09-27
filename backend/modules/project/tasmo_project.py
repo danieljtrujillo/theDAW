@@ -292,8 +292,13 @@ class Clip(BaseModel):
     # by bar ([{bar, meter: {num, den, groups}}]), the steps before bar 0 and
     # the polymeter lanes ([{id, name, cycle_steps}]) the clip was bounced with.
     # A lane limited to part of the clip adds span_start and span_end (steps;
-    # span_end None = the clip's end). Defaulted, so .tasmo files written
-    # before the roll had a meter still validate and load with all four as None.
+    # span_end None = the clip's end). A lane after A may also carry its own
+    # time: "meter_map" (the same shape as the clip's, from the lane's bar 1)
+    # and "tuplet" ({n, m}: n of its notes in the time of m of the roll's).
+    # All of these are optional keys of the lane dict, so a lane written
+    # before them loads in the roll's time over the whole clip.
+    # Defaulted, so .tasmo files written before the roll had a meter still
+    # validate and load with all four as None.
     total_steps: float | None = None
     meter_map: list[dict] | None = None
     pickup_steps: float | None = None

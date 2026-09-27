@@ -67,7 +67,9 @@ export const copyNotes = (
 /**
  * The payload placed at `atStep`: relative timing, pitch, length, velocity and
  * lane preserved, ids fresh, pitch clamped into `range`. The insertion point is
- * clamped FIRST so the set keeps its shape when it lands off the left edge.
+ * clamped FIRST so the set keeps its shape when it lands off the left edge, and
+ * it keeps its fraction: a paste at a triplet or a quintuplet line (the snap
+ * grid's insertion point) lands there, not on the 16th before it.
  *
  * The right edge is `range.maxSteps` (the roll grows up to it), or the roll's
  * own length without one. A note that starts at or past that edge is left out,
@@ -83,7 +85,7 @@ export const pasteNotes = (
 ): PianoNote[] => {
   if (payload.notes.length === 0) return [];
   const limit = Math.max(1, range.totalSteps, range.maxSteps ?? 0);
-  const base = clamp(Math.round(atStep), 0, Math.ceil(limit) - 1);
+  const base = clamp(Number.isFinite(atStep) ? atStep : 0, 0, Math.ceil(limit) - 1);
   const lo = Math.min(range.lowestNote, range.highestNote);
   const hi = Math.max(range.lowestNote, range.highestNote);
   const out: PianoNote[] = [];

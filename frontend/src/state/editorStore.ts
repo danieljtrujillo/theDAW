@@ -65,14 +65,16 @@ export type { ClipTake, CompRegion } from '../lib/clipComp';
 
 export type ToolMode = 'move' | 'cut' | 'split';
 
-/** Grid divisions for snapping. Straight notes, plus triplet (T) and dotted (D)
+/** Grid divisions for snapping. Straight notes, plus triplet (T), quintuplet
+ *  (Q: five in a beat), septuplet (S: seven in a beat) and dotted (D)
  *  variants. The four original values ('off' | '1/4' | '1/8' | '1/16') are all
  *  still members, so projects and prefs saved before the grid was widened keep
  *  resolving to the same step. */
 export type SnapDivision =
   | 'off'
-  | '1/1' | '1/2' | '1/4' | '1/8' | '1/16' | '1/32'
-  | '1/4T' | '1/8T' | '1/16T'
+  | '1/1' | '1/2' | '1/4' | '1/8' | '1/16' | '1/32' | '1/64'
+  | '1/4T' | '1/8T' | '1/16T' | '1/32T'
+  | '1/16Q' | '1/16S'
   | '1/4D' | '1/8D' | '1/16D';
 
 /** Grid step for each division, in beats (a beat = one 1/4 note). Triplets are
@@ -85,21 +87,41 @@ const SNAP_BEATS: Record<Exclude<SnapDivision, 'off'>, number> = {
   '1/8': 0.5,
   '1/16': 0.25,
   '1/32': 0.125,
+  '1/64': 0.0625,
   '1/4T': 2 / 3,
   '1/8T': 1 / 3,
   '1/16T': 1 / 6,
+  '1/32T': 1 / 12,
+  '1/16Q': 1 / 5,
+  '1/16S': 1 / 7,
   '1/4D': 1.5,
   '1/8D': 0.75,
   '1/16D': 0.375,
 };
 
-/** Ordered for the toolbar picker: straight, then triplets, then dotted. */
+/** Ordered for the toolbar picker: straight, then triplets, quintuplets and septuplets, then dotted. */
 export const SNAP_DIVISIONS: SnapDivision[] = [
   'off',
-  '1/1', '1/2', '1/4', '1/8', '1/16', '1/32',
-  '1/4T', '1/8T', '1/16T',
+  '1/1', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64',
+  '1/4T', '1/8T', '1/16T', '1/32T',
+  '1/16Q', '1/16S',
   '1/4D', '1/8D', '1/16D',
 ];
+
+/** A division as the EDIT snap menu words it: "Snap off", "Bar", "1/8 triplet",
+ *  "Quintuplet 1/16", "Dotted 1/8", or the plain fraction. */
+export const snapDivisionLabel = (d: SnapDivision): string => {
+  if (d === 'off') return 'Snap off';
+  if (d === '1/1') return 'Bar';
+  const base = d.replace(/[TQSD]$/, '');
+  switch (d.slice(-1)) {
+    case 'T': return `${base} triplet`;
+    case 'Q': return `Quintuplet ${base}`;
+    case 'S': return `Septuplet ${base}`;
+    case 'D': return `Dotted ${base}`;
+    default: return d;
+  }
+};
 
 /** The grid step in seconds, or null when snapping is off (or the stored value
  *  is not a division we know — e.g. a hand-edited project file). */

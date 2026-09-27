@@ -12,7 +12,8 @@
  *              seventh or minor ninth) against a melody note sounding with it.
  *   ragtime  — Joplin stride: oom-pah LH under syncopated, accented RH stabs.
  *   runs     — Rudess scalar/chromatic flourishes that LAND on chord tones.
- *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents.
+ *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents, and real
+ *              3:2, 4:3 and 5:4 notes over the spans each bar's groups give.
  *   humanize — velocity dynamics, beat accents, and phrase-shaped rubato.
  *   sync     — anticipations: strong onsets move to the weak position before them.
  *   accent   — group and bar starts louder, every other note softer.
@@ -39,10 +40,10 @@
 import { MusicalScale, noteNameToMidi } from './arpEngine';
 import { barSeconds, DEFAULT_METER, type Meter } from './colony';
 import {
+  accentLines,
   barAt,
   bars,
   barStartStep,
-  groupLines,
   meterAtBar,
   normalizeMeterMap,
   sanitizeMeter,
@@ -105,10 +106,16 @@ export const ZERO_AMOUNTS: VirtuosoAmounts = { harmony: 0, ragtime: 0, runs: 0, 
  */
 export interface GrooveTemplate {
   name: string;
-  /** 16 timing offsets, one per 16th slot, in step units (roughly -0.5..0.5). */
+  /**
+   * Timing offsets, one per slot of the reference bar, in step units (roughly
+   * -0.5..0.5). An older pocket holds 16, one per 16th of a 4/4 bar; one
+   * extracted from a 7/8 file holds 14.
+   */
   timing: number[];
-  /** 16 relative-emphasis weights, one per 16th slot, 0..1. */
+  /** Relative-emphasis weights, one per slot, 0..1. */
   accent: number[];
+  /** Steps in one slot: 1 (a 16th) when absent, 0.5 for a bar of 32nds such as 7/32. */
+  slotSteps?: number;
 }
 
 let _seq = 0;
@@ -334,10 +341,10 @@ function gridOf(o?: MeterOpts): Grid {
   return { map, pickup, bar, inBar, segmentStart, onPosition };
 }
 
-/** Each group of `m` as a start and a length in steps; a meter without groups is one group. */
+/** Each group of `m` as a start and a length in steps; a compound meter without groups is one group per dotted beat, any other meter without groups one group. */
 function groupSpans(m: Meter): Array<{ start: number; len: number }> {
   const len = stepsPerBar(m);
-  const starts = groupLines(m);
+  const starts = accentLines(m);
   return starts.map((start, i) => ({ start, len: (starts[i + 1] ?? len) - start }));
 }
 
@@ -856,6 +863,40 @@ function crossAccent(grid: Grid, step: number): boolean {
   return on !== null && on.weight >= 3;
 }
 
+/** A span a cross-rhythm is written over: steps from the bar line, its length, and the beats it holds. */
+export interface CrossSpan { start: number; len: number; beats: number }
+
+/**
+ * The spans of one bar of `m` that take a cross-rhythm, chosen from its
+ * groups: each accent group when the bar has more than one (7/8 3+2+2 gives a
+ * 3 and two 2s, 6/8 its two dotted beats), otherwise its beats, two or three to
+ * a span (4/4 gives two half bars, 3/4 one span of 3, 5/4 a 2 and a 3). A span
+ * of 2, 3 or 4 beats plays 3:2, 4:3 or 5:4; any other span holds none.
+ */
+export function crossSpans(m: Meter): CrossSpan[] {
+  const unit = 16 / m.den;
+  const len = stepsPerBar(m);
+  const accents = accentLines(m);
+  const starts: number[] = [];
+  if (accents.length > 1) starts.push(...accents);
+  else if (m.num <= 3) starts.push(0);
+  else {
+    // Pairs of beats; an odd count ends on a 3 (5 = 2+3, 7 = 2+2+3).
+    const pairsEnd = m.num % 2 === 1 ? m.num - 3 : m.num;
+    for (let b = 0; b + 2 <= pairsEnd; b += 2) starts.push(b * unit);
+    if (m.num % 2 === 1) starts.push(pairsEnd * unit);
+  }
+  return starts
+    .map((start, i) => {
+      const end = i + 1 < starts.length ? starts[i + 1] : len;
+      return { start, len: end - start, beats: Math.round((end - start) / unit) };
+    })
+    .filter((s) => s.beats >= 2 && s.beats <= 4 && Math.abs(s.len - s.beats * unit) < EPS);
+}
+
+/** The id ending that marks a note the polyrhythm transform wrote. */
+export const CROSS_ID_SUFFIX = '-x';
+
 export function polyrhythm(
   notes: PianoNote[],
   amount: number,
@@ -864,23 +905,57 @@ export function polyrhythm(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const grid = gridOf(opts);
-  return notes
-    .map((n) => {
-      let vel = n.velocity;
-      if (crossAccent(grid, n.step)) vel = Math.min(127, vel + Math.round(34 * amount));
-      else vel = Math.max(1, vel - Math.round(10 * amount));
-      let step = n.step;
-      // Push some odd 16ths (counted from the bar start) onto the next 16th.
-      if (odd(grid.inBar(n.step)) && hash01(n.step * 9 + 17 + seed * SEED_PRIME) < amount * 0.5) step = n.step + 1;
-      return mk(n.note, step, n.length, vel);
-    })
-    .sort(byStepThenNote);
+  const out = notes.map((n) => {
+    let vel = n.velocity;
+    if (crossAccent(grid, n.step)) vel = Math.min(127, vel + Math.round(34 * amount));
+    else vel = Math.max(1, vel - Math.round(10 * amount));
+    let step = n.step;
+    // Push some odd 16ths (counted from the bar start) onto the next 16th.
+    if (odd(grid.inBar(n.step)) && hash01(n.step * 9 + 17 + seed * SEED_PRIME) < amount * 0.5) step = n.step + 1;
+    return mk(n.note, step, n.length, vel);
+  });
+  // Real cross-rhythms: over a seeded share `amount` of the spans each bar's
+  // groups give (crossSpans), n notes in the time of the span's m beats, 3:2,
+  // 4:3 or 5:4, spaced evenly one cell of span/n apart. The span's
+  // first note is the chord already there; the rest take the chord's tones in
+  // turn an octave up (the bass left out when there is more than one).
+  const end = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+  const cross = clampVel(56 + Math.round(30 * amount));
+  let spanIndex = 0;
+  for (const b of bars(grid.map, end, grid.pickup)) {
+    if (b.bar < 0) continue;
+    for (const span of crossSpans(b.meter)) {
+      const index = spanIndex++;
+      const start = b.start + span.start;
+      if (start + span.len > end + EPS || hash01(index * 13 + 7 + seed * SEED_PRIME) >= amount) continue;
+      const sounding = notes
+        .filter((n) => n.step <= start + EPS && n.step + n.length > start + EPS)
+        .map((n) => n.note)
+        .sort((a, b2) => a - b2);
+      if (!sounding.length) continue;
+      const tones = sounding.length > 1 ? sounding.slice(1) : sounding;
+      const count = span.beats + 1;
+      const cell = span.len / count;
+      for (let i = 1; i < count; i += 1) {
+        const tone = tones[(i - 1) % tones.length];
+        const pitch = tone + 12 <= 108 ? tone + 12 : tone;
+        out.push({ ...mk(pitch, start + i * cell, cell, cross), id: `${uid()}${CROSS_ID_SUFFIX}` });
+      }
+    }
+  }
+  return out.sort(byStepThenNote);
 }
 
-/** The groove slot of a step: its 16th inside its bar, wrapped to the template's 16 slots. */
-const slotOf = (grid: Grid, step: number): number => {
-  const r = Math.round(step);
-  return ((Math.round(grid.inBar(r)) % 16) + 16) % 16;
+/**
+ * The groove slot of a step: its slot inside its bar (a 16th, or the pocket's
+ * own `slotSteps`), wrapped to the pocket's length, which is its reference
+ * bar's (16 for a 4/4 pocket, 14 for one learned from 7/8).
+ */
+const slotOf = (grid: Grid, step: number, groove: GrooveTemplate): number => {
+  const len = Math.max(1, groove.timing.length);
+  const unit = groove.slotSteps && groove.slotSteps > 0 ? groove.slotSteps : 1;
+  const r = Math.round(step / unit) * unit;
+  return ((Math.round(grid.inBar(r) / unit) % len) + len) % len;
 };
 const avg = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 
@@ -903,9 +978,9 @@ export function humanize(
   const grid = gridOf(meter);
   const meanAccent = groove ? avg(groove.accent) : 0;
   return notes.map((n, i) => {
-    const slot = slotOf(grid, n.step);
+    const slot = groove ? slotOf(grid, n.step, groove) : 0;
     let vel = n.velocity;
-    if (groove) vel += Math.round((groove.accent[slot] - meanAccent) * 44 * amount);
+    if (groove) vel += Math.round(((groove.accent[slot] ?? meanAccent) - meanAccent) * 44 * amount);
     else vel += Math.round((hash01(i + seed * 131) - 0.5) * 2 * 20 * amount);
     const on = grid.onPosition(n.step);
     if (on && on.weight >= 4) vel += Math.round(12 * amount);
@@ -919,7 +994,7 @@ export function humanize(
     }
     let micro: number;
     if (groove) {
-      micro = groove.timing[slot] * amount + (hash01(i * 3 + seed * 131 + 5) - 0.5) * amount * 0.03;
+      micro = (groove.timing[slot] ?? 0) * amount + (hash01(i * 3 + seed * 131 + 5) - 0.5) * amount * 0.03;
     } else {
       const laid = odd(grid.inBar(n.step)) ? 1 : -1;
       micro = (hash01(i * 3 + seed * 131 + 5) - 0.5 + laid * 0.4) * amount * 0.14;

@@ -9,7 +9,7 @@
  * the share of onset salience on positions weaker than a beat.
  */
 import type { Meter } from './colony';
-import { bars, groupLines, stepsPerBar, type MeterSegment } from './meterMap';
+import { accentLines, bars, stepsPerBar, type MeterSegment } from './meterMap';
 
 const EPS = 1e-9;
 
@@ -21,8 +21,11 @@ export const stepsPerBeat = (m: Meter): number => 16 / m.den;
 
 /**
  * Weights per step of one bar of `m`: 4 bar start, 3 group start, 2 beat,
- * 1 the beat's main subdivision, 0 the rest. A bar of fractional length (an
- * odd numerator over 32) gets a weight for each step it starts.
+ * 1 the beat's main subdivision, 0 the rest. A compound meter with no groups
+ * (6/8, 12/8) gives its dotted beats the group tier, so it counts in two or
+ * four and never as six or twelve even beats. A bar of fractional length (an
+ * odd numerator over 32) gets a weight for each step it starts, and a group
+ * that starts on a half step weighs the step it rounds to.
  */
 export function metricalWeights(m: Meter): number[] {
   const q = stepsPerBeat(m);
@@ -31,7 +34,10 @@ export function metricalWeights(m: Meter): number[] {
   if (Number.isInteger(q) && q >= 2) for (let i = q / 2; i < n; i += q) w[i] = 1;
   const beat = Math.max(1, q);
   for (let i = 0; i < n; i += beat) w[i] = 2;
-  for (const g of groupLines(m)) if (g < n) w[g] = 3;
+  for (const g of accentLines(m)) {
+    const i = Math.round(g);
+    if (i < n) w[i] = 3;
+  }
   w[0] = 4;
   return w;
 }

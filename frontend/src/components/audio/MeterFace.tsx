@@ -3,12 +3,17 @@
  * polymeter lanes and the syncopation amounts, inline on one row.
  *
  *   BARS    the selected meter change's bars, stepped change to change
- *   BEATS   its numerator; the /4 /8 /16 keys its unit; GROUPS its grouping,
- *           as keys for three choices or fewer and a menu for more
+ *   BEATS   its numerator (a compound meter starts in threes); the /1 to /32
+ *           keys its unit; GROUPS its grouping, as keys for three choices or
+ *           fewer and a menu for more; the grouping field takes any grouping
+ *           typed as 3+3+2+1
  *   ADD     a change at the playhead's bar (off when that bar starts after the
  *           roll ends); the trash key removes the selected one
+ *   PICKUP  the steps before bar 1, a unit of the first meter at a time
  *   LANES   one key per lane in its roll look (a menu past five lanes); + adds
- *           a lane, the trash key removes the active one
+ *           a lane, the trash key removes the active one; TIME opens the
+ *           active lane's own meter and tuplet ratio, whose bars and groups the
+ *           grid draws and snaps to while the lane is active
  *   LOOP    the active lane's loop in steps (Shift steps a bar)
  *   SPAN    the active lane played only in the selected change's bars, or
  *           over the whole roll again
@@ -28,10 +33,10 @@
 import React from 'react';
 import { create } from 'zustand';
 import {
-  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, DiamondMinus, DiamondPlus, Dices, Eraser, ListPlus, ListX,
-  Minus, Plus, Scissors, Send,
+  ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, DiamondMinus, DiamondPlus, Dices,
+  Eraser, ListPlus, ListX, Minus, Plus, Scissors, Send, Timer,
 } from 'lucide-react';
-import { laneName, usePianoRollStore } from '../../state/pianoRollStore';
+import { laneName, usePianoRollStore, type LaneTimePatch } from '../../state/pianoRollStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
 import { logError, logInfo, logWarn } from '../../state/logStore';
 import { fetchRhythm } from '../../lib/rhythmSeed';
@@ -39,11 +44,13 @@ import { GEN_RULES } from '../../lib/rollLoom';
 import { GEN_DEFAULT_OPTS, GEN_KINDS, type GenKind, type GenOpts } from '../../lib/loomGen';
 import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
-  BEATS_MAX, BEATS_MIN, UNITS, addChange, addChangeBar, addChangePastEnd, bpmText, clampSelection, formatOption, genOptionSpecs,
-  genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneForms, laneSpanLabel, lanePitches, matchApply, matchError,
-  meterLabel, newLaneCycle, parseGroupsValue, removeChange, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroups, setUnit,
-  respanLane, spanIsSegment, stepLoop, stepOption, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, bpmText, clampSelection, formatOption, genOptionSpecs,
+  genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
+  laneMeterValue, lanePitches, laneSpanLabel, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
+  removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
+  stepLaneTuplet, stepLoop, stepOption, stepPickup, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
+import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
 import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
   MINI_GLYPH, MINI_ICON_KEY, MINI_KEY, RANGE_FILL, STRIP_GLYPH, Sep, StripKey, keyTone,
@@ -106,7 +113,7 @@ interface StepperProps {
 /** The −/+ keys are one control with the readout between them, named by their
  *  own DockTips; the field carries no title, so no key shows two tooltips. A key
  *  its press takes to the limit passes keyboard focus to its pair. */
-const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
+export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
   <div className={FIELD}>
     {legend && <span className={flyout ? FLYOUT_LEGEND : FIELD_LEGEND} title={title}>{legend}</span>}
     <StripKey
@@ -173,7 +180,14 @@ const GATE_KEYS: Array<{ kind: GateKind; legend: string; title: string }> = [
 ];
 
 /** What each unit key means; its accessible name is the printed "/4" followed by this. */
-const UNIT_NAMES: Record<number, string> = { 4: 'Quarter-note beat', 8: 'Eighth-note beat', 16: 'Sixteenth-note beat' };
+const UNIT_NAMES: Record<number, string> = {
+  1: 'Whole-note beat',
+  2: 'Half-note beat',
+  4: 'Quarter-note beat',
+  8: 'Eighth-note beat',
+  16: 'Sixteenth-note beat',
+  32: 'Thirty-second-note beat',
+};
 
 const barsText = (first: number, last: number): string => (first === last ? `${first + 1}` : `${first + 1}-${last + 1}`);
 
@@ -247,11 +261,41 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     const r = usePianoRollStore.getState();
     if (r.activeLane !== 0) r.removeLane(r.activeLane);
   };
+  /* TIME: the active lane's own meter and tuplet ratio. */
+  const timeKeyRef = React.useRef<HTMLButtonElement>(null);
+  const [timeOpen, setTimeOpen] = React.useState(false);
+  const laneRatio = sanitizeTuplet(lane.tuplet);
+  const ratioNow = laneRatio ?? { n: 1, m: 1 };
+  const laneBar = laneBarSteps(lane, segs, pickupSteps);
+  const setLaneTime = (time: LaneTimePatch): void => {
+    const r = usePianoRollStore.getState();
+    if (r.activeLane === 0) return;
+    r.setLaneTime(r.activeLane, time);
+  };
+  // The typed lane meter: a draft while typed, applied on Enter or when it loses focus.
+  const [laneMeterDraft, setLaneMeterDraft] = React.useState<string | null>(null);
+  React.useEffect(() => setLaneMeterDraft(null), [lane]);
+  const commitLaneMeter = (): void => {
+    if (laneMeterDraft === null) return;
+    const map = laneMeterFromText(laneMeterDraft);
+    if (map === undefined) {
+      post(`"${laneMeterDraft}" IS NOT A METER. TYPE BEATS/UNIT, SUCH AS 11/16, WITH GROUPS AFTER A SPACE, SUCH AS 11/16 3+3+3+2.`, 'warn');
+      return;
+    }
+    setLaneMeterDraft(null);
+    setLaneTime({ meterMap: map });
+  };
+  // Lane A has no time of its own, so the card closes when A becomes the active lane.
+  React.useEffect(() => {
+    if (activeLane === 0) setTimeOpen(false);
+  }, [activeLane]);
+
   const onLoop = (dir: -1 | 1, byBar: boolean): void => {
     const r = usePianoRollStore.getState();
     const l = r.lanes.find((x) => x.id === r.activeLane);
     if (!l || l.id === 0) return;
-    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, stepsPerBar(meter), r.totalSteps);
+    // Shift steps one bar: the lane's own bar when it keeps a time of its own.
+    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, laneBarSteps(l, r.meterMap, r.pickupSteps) ?? stepsPerBar(meter), r.totalSteps);
     r.applyMeter({ lanes: r.lanes.map((x) => (x.id === l.id ? { ...x, cycleSteps } : x)) });
   };
   // The lane's notes and bends move with its loop's first cycle; the writes fold into one undo step.
@@ -324,10 +368,32 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     }
   };
 
+  /* GROUPING field: a draft while typed, applied on Enter or when it loses focus. */
+  const [groupDraft, setGroupDraft] = React.useState<string | null>(null);
+  // Another segment, or an edit from elsewhere (UNIT, the GROUPS keys, undo), drops a draft that no longer describes it.
+  React.useEffect(() => setGroupDraft(null), [selected, meter]);
+  const commitGrouping = (): void => {
+    if (groupDraft === null) return;
+    const edit = setGroupingText(usePianoRollStore.getState().meterMap, selected, groupDraft);
+    if (!edit) {
+      post(`"${groupDraft}" IS NOT A GROUPING. TYPE WHOLE NUMBERS JOINED BY +, SUCH AS 3+3+2, UP TO ${BEATS_MAX} BEATS.`, 'warn');
+      return;
+    }
+    setGroupDraft(null);
+    writeMap(edit);
+  };
+
+  const onPickup = (dir: -1 | 1, fine: boolean): void => {
+    const r = usePianoRollStore.getState();
+    r.applyMeter({ pickupSteps: stepPickup(r.meterMap, r.pickupSteps, dir, fine) });
+  };
+  const pickupTop = pickupMax(segs);
+  const firstUnit = segs[0].meter.den;
+
   const groups = groupChoices(meter);
   const groupsNow = groupsValue(meter.groups);
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
-  const barLen = Math.round(stepsPerBar(meter));
+  const barLen = Math.round(laneBar ?? stepsPerBar(meter));
   const spanOn = spanIsSegment(segs, selected, lane.span, pickupSteps);
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
   const selSpan = segmentSpan(segs, selected, pickupSteps);
@@ -371,7 +437,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       <Stepper
         id="mf-beats"
         legend="Beats"
-        title="Beats in a bar of the selected change (1-32). A new count clears the groups."
+        title="Beats in a bar of the selected change (1-32). A new count clears the groups; 6/8, 9/8 and 12/8 start in threes."
         value={String(meter.num)}
         downLabel="Fewer beats"
         upLabel="More beats"
@@ -429,6 +495,25 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
           </select>
         </div>
       )}
+      <div className={FIELD} title="Grouping: type any grouping, such as 3+3+2+1, and press Enter. A sum that differs from the beats sets the beats too.">
+        <label htmlFor="mf-grouping" className={FIELD_LEGEND}>Grouping</label>
+        <input
+          id="mf-grouping"
+          name="mf-grouping"
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          value={groupDraft ?? groupsValue(meter.groups)}
+          placeholder="Even"
+          onChange={(e) => setGroupDraft(e.target.value)}
+          onBlur={commitGrouping}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitGrouping();
+            else if (e.key === 'Escape') setGroupDraft(null);
+          }}
+          className={`${FIELD_VALUE} w-16 text-left bg-transparent border-none outline-none`}
+        />
+      </div>
 
       <StripKey
         iconOnly
@@ -454,6 +539,21 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         legend="Remove"
       />
 
+      <Stepper
+        id="mf-pickup"
+        legend="Pickup"
+        title={`Pickup: the notes before bar 1, a 1/${firstUnit} at a time; Shift-click steps half a 16th. Off starts the roll on a downbeat.`}
+        value={pickupLabel(pickupSteps)}
+        valueClass="min-w-7"
+        downLabel="Shorter pickup"
+        upLabel="Longer pickup"
+        downIcon={<ChevronsLeft className={MINI_GLYPH} />}
+        upIcon={<ChevronsRight className={MINI_GLYPH} />}
+        downDisabled={pickupSteps <= 0}
+        upDisabled={pickupSteps >= pickupTop}
+        onStep={onPickup}
+      />
+
       <Sep />
 
       {lanes.length <= LANE_KEYS_MAX ? (
@@ -463,7 +563,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
               key={l.id}
               aria-pressed={l.id === activeLane}
               aria-label={`Lane ${l.name}`}
-              description={`Lane ${l.name}: ${l.cycleSteps ? `loops every ${l.cycleSteps} steps` : 'runs the whole roll'}${l.span ? ` in bars ${laneSpanLabel(segs, l.span, pickupSteps)}` : ''}. New notes go into the pressed lane.`}
+              description={`Lane ${l.name}: ${l.cycleSteps ? `loops every ${l.cycleSteps} steps` : 'runs the whole roll'}${l.span ? ` in bars ${laneSpanLabel(segs, l.span, pickupSteps)}` : ''}${l.id !== 0 && (l.meterMap || l.tuplet) ? `, in ${laneTimeLabel(l)}` : ''}. New notes go into the pressed lane.`}
               on={l.id === activeLane}
               onClick={() => usePianoRollStore.getState().setActiveLane(l.id)}
               icon={<LaneSwatch form={forms.get(l.id) ?? 'solid'} />}
@@ -504,6 +604,25 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         description={activeLane === 0 ? 'Lane A always stays' : `Remove lane ${lane.name}; its notes move to lane A`}
         icon={<ListX className={STRIP_GLYPH} />}
         legend="Remove lane"
+      />
+      <StripKey
+        ref={timeKeyRef}
+        iconOnly
+        onClick={() => setTimeOpen((v) => !v)}
+        disabled={activeLane === 0}
+        passFocusOnDisable
+        aria-haspopup="dialog"
+        aria-expanded={timeOpen}
+        aria-controls="mf-lane-time"
+        aria-label={`Lane ${lane.name} time: ${laneTimeLabel(lane)}`}
+        description={
+          activeLane === 0
+            ? "Lane A keeps the roll's meter. Add a lane to give it a meter or a tuplet ratio of its own."
+            : `Lane ${lane.name}'s own meter and tuplet ratio (${laneTimeLabel(lane)}); the grid draws and snaps to its bars while it is the active lane`
+        }
+        on={timeOpen}
+        icon={<Timer className={STRIP_GLYPH} />}
+        legend="Time"
       />
 
       <Stepper
@@ -623,6 +742,117 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         icon={<AudioWaveform className={`${STRIP_GLYPH} ${matchBusy ? 'animate-pulse' : ''}`} />}
         legend="Match"
       />
+
+      <DockFlyout
+        open={timeOpen && activeLane !== 0}
+        anchorRef={timeKeyRef}
+        onClose={() => setTimeOpen(false)}
+        placement="above"
+        align="start"
+        ceilingSelector="[data-dock-ceiling]"
+        floorSelector="[data-dock-floor]"
+        id="mf-lane-time"
+        role="dialog"
+        aria-label={`Lane ${lane.name} time`}
+        className={`w-96 max-w-[92vw] ${FLYOUT_CARD}`}
+      >
+        <div className="flex flex-col gap-1.5 px-1.5 pt-1 pb-1.5">
+          <div className="flex items-center gap-2 pb-1 border-b border-white/8">
+            <span className="text-[12px] font-display font-extrabold uppercase et-ink">Lane {lane.name} time</span>
+            <span className="inline-flex items-center gap-1 text-[12px] font-semibold et-ink-2 tabular-nums">
+              <LaneSwatch form={forms.get(lane.id) ?? 'solid'} />
+              <span>{laneTimeLabel(lane)}</span>
+              {laneBar !== null && <span className="et-ink-3">bar {laneBar} steps</span>}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <label htmlFor="mf-lane-meter" className={`${FLYOUT_LEGEND} w-12 shrink-0`}>Meter</label>
+            <select
+              id="mf-lane-meter"
+              name="mf-lane-meter"
+              value={laneMeterValue(lane)}
+              onChange={(e) => setLaneTime({ meterMap: laneMeterFromValue(e.target.value) })}
+              className={`${FIELD_SELECT} max-w-36`}
+            >
+              {laneMeterChoices(lane).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+            <label htmlFor="mf-lane-meter-text" className={FLYOUT_LEGEND}>Typed</label>
+            <input
+              id="mf-lane-meter-text"
+              name="mf-lane-meter-text"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              value={laneMeterDraft ?? laneMeterValue(lane)}
+              placeholder="11/16 3+3+3+2"
+              title="Type any meter, such as 11/16 or 11/16 3+3+3+2, and press Enter. Empty reads the roll's meter."
+              onChange={(e) => setLaneMeterDraft(e.target.value)}
+              onBlur={commitLaneMeter}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitLaneMeter();
+                else if (e.key === 'Escape') setLaneMeterDraft(null);
+              }}
+              className={`${FLYOUT_VALUE} w-28 text-left bg-transparent border-none outline-none`}
+            />
+          </div>
+
+          <div className="flex items-center gap-1 flex-wrap">
+            <span id="mf-lane-ratio-legend" className={`${FLYOUT_LEGEND} w-12 shrink-0`}>Ratio</span>
+            <div role="group" aria-labelledby="mf-lane-ratio-legend" className="flex flex-wrap gap-px">
+              {[null, ...LANE_TUPLET_PRESETS].map((t) => {
+                const on = t === null ? !laneRatio : !!laneRatio && laneRatio.n === t.n && laneRatio.m === t.m;
+                return (
+                  <button
+                    key={tupletLabel(t)}
+                    type="button"
+                    aria-pressed={on}
+                    title={t === null ? 'Straight: one lane beat to one roll beat' : `${t.n} lane beats in the time of ${t.m} roll beats`}
+                    className={`${FLYOUT_KEY} ${keyTone({ on })}`}
+                    onClick={() => setLaneTime({ tuplet: t })}
+                  >
+                    <span>{tupletLabel(t)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap pl-13">
+            <Stepper
+              flyout
+              id="mf-lane-ratio-n"
+              legend="Notes"
+              title={`Lane beats in the ratio (1-${TUPLET_RATIO_MAX})`}
+              value={String(ratioNow.n)}
+              downLabel="Fewer lane beats"
+              upLabel="More lane beats"
+              downDisabled={!canStepLaneTuplet(laneRatio, 'n', -1)}
+              upDisabled={!canStepLaneTuplet(laneRatio, 'n', 1)}
+              onStep={(dir) => setLaneTime({ tuplet: stepLaneTuplet(laneRatio, 'n', dir) })}
+            />
+            <Stepper
+              flyout
+              id="mf-lane-ratio-m"
+              legend="In"
+              title={`Roll beats the lane's beats fill (1-${TUPLET_RATIO_MAX})`}
+              value={String(ratioNow.m)}
+              downLabel="Fewer roll beats"
+              upLabel="More roll beats"
+              downIcon={<ArrowLeftToLine className={MINI_GLYPH} />}
+              upIcon={<ArrowRightToLine className={MINI_GLYPH} />}
+              downDisabled={!canStepLaneTuplet(laneRatio, 'm', -1)}
+              upDisabled={!canStepLaneTuplet(laneRatio, 'm', 1)}
+              onStep={(dir) => setLaneTime({ tuplet: stepLaneTuplet(laneRatio, 'm', dir) })}
+            />
+          </div>
+
+          <p className="text-[12px] font-semibold et-ink-2">
+            Notes stay where they sound. While lane {lane.name} is the active lane the grid draws its bars in the accent, and a click, a drag,
+            the arrow keys, TUPLET and APPLY land on its own beats and groups. A MIDI export keeps the lane's time.
+          </p>
+        </div>
+      </DockFlyout>
 
       <DockFlyout
         open={genOpen}

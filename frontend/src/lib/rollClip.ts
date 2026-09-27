@@ -11,10 +11,11 @@
  * No Vite-only imports, so node tests load it.
  */
 import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, MIN_NOTE_STEPS, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
-import { STEPS_PER_BEAT, quantizeNotes, type QuantizeOptions } from './clipNotes';
-import { applyGroove, type GrooveTemplate } from './grooveTemplate';
-import { barAt, normalizeMeterMap, roundUpToBar, unrollLanes, type PolyLane } from './meterMap';
+import { DEFAULT_LANES, MIN_NOTE_STEPS, noteTick, noteTicks, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
+import { quantizeNotes, type QuantizeOptions } from './clipNotes';
+import { applyGrooveInMeter, grooveLateness, type GrooveTemplate } from './grooveTemplate';
+import { barAt, laneTimeOf, normalizeMeterMap, roundUpToBar, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
+import { TICKS_PER_STEP, feelNoteTicks, laneSnapGrid, snapGrid, type RollSnapId, type SnapGrid } from './rollSnap';
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
 import type { MidiFileData } from './midi';
 import { midiFileToRoll } from './rollMidi';
@@ -180,7 +181,10 @@ export type RollClipNoteInput = Pick<
  * never authored.
  *
  * The math is not reimplemented here: quantize/strength/swing is
- * `clipNotes.quantizeNotes`, the groove pass is `grooveTemplate.applyGroove`.
+ * `clipNotes.quantizeNotes`, whose grid restarts on every bar line of the
+ * clip's meter (a half-step pickup or a 7/32 bar keeps its own lines), and the
+ * groove pass is `grooveTemplate.applyGrooveInMeter`, which follows each bar's
+ * groups for a group groove.
  */
 export function quantizeRollClip(
   clip: RollClipNoteInput,
@@ -190,24 +194,77 @@ export function quantizeRollClip(
   const own = legacy ? (clip.sourcePianoRoll ?? []) : (clip.sourceRollNotes as PianoNote[]);
   const totalSteps = clip.sourceTotalSteps ?? noteEndSteps(own);
 
-  const quantized = quantizeNotes(own, options);
+  const meterMap = normalizeMeterMap(options.meterMap ?? clip.sourceMeterMap);
+  const pickupSteps = options.pickupSteps ?? clip.sourcePickupSteps ?? 0;
+  const quantized = quantizeNotes(own, { ...options, meterMap, pickupSteps });
   let result = quantized;
   if (options.groove) {
-    const meterMap = normalizeMeterMap(clip.sourceMeterMap);
-    const pickupSteps = clip.sourcePickupSteps ?? 0;
-    result = applyGroove(
-      quantized,
-      options.groove,
-      STEPS_PER_BEAT,
-      options.grooveStrength ?? 1,
-      (step) => barAt(meterMap, step, pickupSteps).start,
-      Math.max(0, totalSteps - 1),
-    );
+    result = applyGrooveInMeter(quantized, options.groove, options.grooveStrength ?? 1, meterMap, pickupSteps, Math.max(0, totalSteps - 1));
   }
 
   if (legacy) return { sourceRollNotes: [], sourcePianoRoll: result };
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
   return { sourceRollNotes: result, sourcePianoRoll: playedRollNotes(result, lanes, totalSteps) };
+}
+
+/** What the roll's APPLY reads besides the notes: its meter, lanes and length. */
+export interface RollFeelShape {
+  meterMap: readonly MeterSegment[];
+  pickupSteps: number;
+  lanes: readonly PolyLane[];
+  totalSteps: number;
+}
+
+export interface RollFeelOptions {
+  /** The roll's snap: the grid starts and lengths move toward (lib/rollSnap). */
+  snap: RollSnapId;
+  /** Quantize strength, 0..1. */
+  strength: number;
+  /** The feel laid over the grid; omit for quantize alone. */
+  groove?: GrooveTemplate;
+  /** How far into the groove, 0..1 (the slider's own swing groove applies whole). */
+  grooveStrength?: number;
+}
+
+/**
+ * The roll's APPLY as a pure function: each note's start moves toward the
+ * nearest line of the SNAP grid and its length toward a whole number of cells
+ * (rollSnap feelNoteTicks), both `strength` of the way, then the groove moves
+ * the start (grooveLateness), held inside the roll. A note in a lane with its
+ * own time (meterMap laneTimeOf) lands on the lane's grid and takes the groove
+ * in the lane's bars, so a 3:2 lane keeps its triplets. Ticks are written with
+ * the steps, whole, so nothing is rounded to a 16th on the way back in.
+ */
+export function feelRollNotes(notes: readonly PianoNote[], roll: RollFeelShape, opts: RollFeelOptions): PianoNote[] {
+  const map = normalizeMeterMap(roll.meterMap);
+  const pickup = Math.max(0, roll.pickupSteps);
+  const lastStep = Math.max(0, roll.totalSteps - 1);
+  const grooveAmount = Math.max(0, Math.min(1, opts.grooveStrength ?? 1));
+  const grids = new Map<number, { grid: SnapGrid; map: MeterSegment[]; pickup: number; scale: number }>();
+  const gridOf = (laneId: number) => {
+    let hit = grids.get(laneId);
+    if (!hit) {
+      const lt = laneTimeOf(roll.lanes.find((l) => l.id === laneId), map, pickup);
+      hit = lt
+        ? { grid: laneSnapGrid(lt, roll.totalSteps, opts.snap), map: lt.map, pickup: lt.pickup, scale: lt.scale }
+        : { grid: snapGrid(map, pickup, roll.totalSteps, opts.snap), map, pickup, scale: 1 };
+      grids.set(laneId, hit);
+    }
+    return hit;
+  };
+  return notes.map((n) => {
+    const g = gridOf(roll.lanes.some((l) => l.id === n.lane) ? (n.lane as number) : 0);
+    const placed = feelNoteTicks(g.grid, noteTick(n), noteTicks(n), opts.strength);
+    let step = placed.tick / TICKS_PER_STEP;
+    if (opts.groove && grooveAmount > 0) {
+      const own = step / g.scale;
+      const b = barAt(g.map, own, g.pickup);
+      const late = grooveLateness(opts.groove, own, { start: b.start, len: b.len, meter: b.meter, bar: b.bar }) * grooveAmount * g.scale;
+      step = Math.min(lastStep, Math.max(0, step + late));
+    }
+    const tick = Math.max(0, Math.round(step * TICKS_PER_STEP));
+    return { ...n, tick, ticks: placed.ticks, step: tick / TICKS_PER_STEP, length: placed.ticks / TICKS_PER_STEP };
+  });
 }
 
 /**

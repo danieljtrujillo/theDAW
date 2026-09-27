@@ -6,7 +6,9 @@
  * what the sequencer's drum-pattern export and the piano roll's note grid both
  * need. A signature's additive grouping (3+2+2) has no field in FF 58, so it
  * travels in a text event `theDAW:groups=3+2+2` at the signature's tick, which
- * only this parser reads back.
+ * only this parser reads back. A track may carry `theDAW:lane=<json>` at tick 0:
+ * the piano roll's polymeter lane it holds (lib/rollMidi), handed back as
+ * `laneMeta` for the roll to read.
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -51,6 +53,13 @@ export interface MidiTrack {
   bends?: MidiBend[];
   /** Bend ranges the track sets, sorted by tick. Parsed: absent when the track sets none. */
   bendRanges?: MidiBendRange[];
+  /**
+   * The text of the track's `theDAW:lane=` event (what follows the `=`),
+   * written at tick 0 before its notes. Parsed: absent when the track has
+   * none. A track that carries one is kept even with no notes, so an empty lane
+   * survives a round trip.
+   */
+  laneMeta?: string;
 }
 
 export interface MidiTempo {
@@ -160,6 +169,13 @@ export const pitchWheelMessage = (channel: number, value: number): number[] => {
  * that starts there starts bent. A track with neither writes the notes' bytes alone.
  */
 const trackEvents = (t: MidiTrack): RawEvent[] => {
+  const lane: RawEvent[] = t.laneMeta ? [{ tick: 0, bytes: textBytes(`${LANE_TEXT}${asciiJson(t.laneMeta)}`) }] : [];
+  const events = trackBody(t);
+  return lane.length ? [...lane, ...events] : events;
+};
+
+/** A track's notes, ranges and wheel messages (trackEvents less its lane text). */
+const trackBody = (t: MidiTrack): RawEvent[] => {
   const notes = notesToEvents(t.notes);
   const wheel: RankedEvent[] = [];
   for (const r of t.bendRanges ?? []) {
@@ -232,17 +248,32 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
 
 const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
+const LANE_TEXT = 'theDAW:lane=';
+
+/** Text as 7-bit ASCII: every character past it written as a JSON \u escape, which JSON.parse reads back. */
+const asciiJson = (text: string): string =>
+  text.replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 const tempoBytes = (bpm: number): number[] => {
   const microsPerQuarter = Math.min(0xffffff, Math.round(60_000_000 / Math.max(20, bpm)));
   return [0xff, 0x51, 0x03, (microsPerQuarter >>> 16) & 0xff, (microsPerQuarter >>> 8) & 0xff, microsPerQuarter & 0xff];
 };
 
-/** FF 58 04 nn dd cc bb: numerator, log2 of the denominator, 96/den MIDI clocks per click, eight 32nds per quarter. */
-const signatureBytes = (num: number, den: number): number[] => {
+/**
+ * MIDI clocks per click for a signature: one group when every group is the
+ * same size (6/8 3+3 clicks the dotted quarter, 36; 12/16 3+3+3+3 the dotted
+ * 8th, 18), otherwise one unit of the denominator (96/den: 24 a quarter).
+ */
+export const signatureClocks = (num: number, den: number, groups: readonly number[] = []): number => {
+  const unit = 96 / Math.max(1, den);
+  const even = groups.length > 1 && groups.every((g) => g === groups[0]) ? groups[0] : 1;
+  return Math.max(1, Math.min(255, Math.round(unit * even)));
+};
+
+/** FF 58 04 nn dd cc bb: numerator, log2 of the denominator, MIDI clocks per click (signatureClocks), eight 32nds per quarter. */
+const signatureBytes = (num: number, den: number, groups: readonly number[] = []): number[] => {
   const dd = Math.max(0, Math.min(7, Math.round(Math.log2(Math.max(1, den)))));
-  const clocks = Math.max(1, Math.round(96 / 2 ** dd));
-  return [0xff, 0x58, 0x04, Math.max(1, Math.min(255, Math.round(num))), dd, clocks, 8];
+  return [0xff, 0x58, 0x04, Math.max(1, Math.min(255, Math.round(num))), dd, signatureClocks(num, 2 ** dd, groups), 8];
 };
 
 const textBytes = (text: string): number[] => [0xff, 0x01, ...writeVLQ(text.length), ...ascii(text)];
@@ -254,7 +285,7 @@ const tickOf = (tick: number): number => (Number.isFinite(tick) ? Math.max(0, Ma
  * its groups text, then its pickup text. midiWrite's writer uses the same bytes.
  */
 export const meterEventMetas = (s: MeterEvent): number[][] => {
-  const out = [signatureBytes(s.num, s.den)];
+  const out = [signatureBytes(s.num, s.den, s.groups ?? [])];
   if (s.groups?.length) out.push(textBytes(`${GROUPS_TEXT}${s.groups.join('+')}`));
   if (typeof s.pickupSteps === 'number' && Number.isFinite(s.pickupSteps) && s.pickupSteps >= 0) out.push(textBytes(`${PICKUP_TEXT}${s.pickupSteps}`));
   return out;
@@ -348,6 +379,8 @@ interface DecodedTrack {
   pickups: Array<{ tick: number; steps: number }>;
   bends: MidiBend[];
   ranges: MidiBendRange[];
+  /** The track's `theDAW:lane=` text, the last one when it has several. */
+  laneMeta: string | null;
 }
 
 const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
@@ -355,6 +388,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let runningStatus = 0;
   let tick = 0;
   let name = '';
+  let laneMeta: string | null = null;
   const tempos: MidiTempo[] = [];
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
@@ -399,13 +433,20 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         } else if (text.startsWith(PICKUP_TEXT)) {
           const steps = Number(text.slice(PICKUP_TEXT.length));
           if (Number.isFinite(steps) && steps >= 0) pickups.push({ tick, steps });
+        } else if (text.startsWith(LANE_TEXT)) {
+          laneMeta = text.slice(LANE_TEXT.length);
         }
       } else if (meta === 0x51 && data.length === 3) {
         const microsPerQuarter = (data[0] << 16) | (data[1] << 8) | data[2];
         // Three decimals: the microsecond rounding of FF 51 reads 97 back as 96.99995.
         if (microsPerQuarter > 0) tempos.push({ tick, bpm: Math.round(60_000_000_000 / microsPerQuarter) / 1000 });
       } else if (meta === 0x58 && data.length >= 2) {
-        if (data[0] > 0) signatures.push({ tick, num: data[0], den: 2 ** data[1] });
+        if (data[0] > 0) {
+          const den = 2 ** data[1];
+          // The click rides along only when it is not one unit of the denominator (36 for a dotted-quarter 6/8).
+          const clocks = data.length >= 3 && data[2] > 0 && data[2] !== Math.max(1, Math.round(96 / den)) ? { clocks: data[2] } : {};
+          signatures.push({ tick, num: data[0], den, ...clocks });
+        }
       } else if (meta === 0x2f) {
         break;
       }
@@ -488,7 +529,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, bends, ranges };
+  return { name, notes: finished, tempos, signatures, groups, pickups, bends, ranges, laneMeta };
 };
 
 export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
@@ -521,13 +562,15 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     for (const e of t.signatures) signatures.push(e);
     for (const e of t.groups) groups.push(e);
     for (const e of t.pickups) pickups.push(e);
-    // A track that only bends is kept: its channel's wheel bends notes another track holds.
-    if (t.notes.length > 0 || t.bends.length > 0) {
+    // A track that only bends is kept: its channel's wheel bends notes another
+    // track holds. So is a lane's track with no notes, so the lane comes back.
+    if (t.notes.length > 0 || t.bends.length > 0 || t.laneMeta !== null) {
       tracks.push({
         name: t.name || `Track ${i}`,
         notes: t.notes,
         ...(t.bends.length ? { bends: t.bends } : {}),
         ...(t.ranges.length ? { bendRanges: t.ranges } : {}),
+        ...(t.laneMeta !== null ? { laneMeta: t.laneMeta } : {}),
       });
     }
   }

@@ -685,9 +685,13 @@ _SNAP_DIVISIONS = [
     "1/8",
     "1/16",
     "1/32",
+    "1/64",
     "1/4T",
     "1/8T",
     "1/16T",
+    "1/32T",
+    "1/16Q",
+    "1/16S",
     "1/4D",
     "1/8D",
     "1/16D",
@@ -713,7 +717,7 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             "grid": {
                 "type": "string",
                 "enum": _GRID_DIVISIONS,
-                "description": "Grid to snap to. T = triplet, D = dotted.",
+                "description": "Grid to snap to. T = triplet, Q = quintuplet (five in a beat), S = septuplet (seven in a beat), D = dotted.",
             },
             "strength": {
                 "type": "number",
@@ -1187,7 +1191,7 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
     _fn(
         "editor_set_snap",
         "Set the grid that timeline clip edits snap to. 'off' disables "
-        "snapping. T = triplet, D = dotted.",
+        "snapping. T = triplet, Q = quintuplet, S = septuplet, D = dotted.",
         {"snap": {"type": "string", "enum": _SNAP_DIVISIONS}},
         ["snap"],
     ),

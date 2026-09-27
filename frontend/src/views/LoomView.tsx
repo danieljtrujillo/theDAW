@@ -292,9 +292,13 @@ const Legend: React.FC = () => (
   </div>
 );
 
+/** The most grouping chips the LOOM meter card shows. */
+const LOOM_GROUPINGS_MAX = 9;
+
 /** Meter + tempo, by buttons. */
 const MeterEditor: React.FC<{ id: string; meter: Meter; tempo: number; onChange: (m: Meter, tempo: number) => void; isRoot?: boolean }> = ({ id, meter, tempo, onChange, isRoot }) => {
-  const groupings = useMemo(() => partitions(meter.num), [meter.num]);
+  // The card lists nine groupings at most, as it always has; the METER face lists more for the roll.
+  const groupings = useMemo(() => partitions(meter.num, LOOM_GROUPINGS_MAX), [meter.num]);
   const groupsKey = meter.groups.join('+');
   return (
     <div className="flex flex-col gap-2 rounded-md border border-white/15 p-2">

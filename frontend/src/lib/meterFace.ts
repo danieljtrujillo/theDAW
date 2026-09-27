@@ -2,8 +2,9 @@
  * meterFace — the logic behind the SHAPE row's METER face
  * (components/audio/MeterFace.tsx): the bar range a meter segment prints, the
  * selection as segments come and go, where ADD starts a change, the loop
- * stepper, the pitches GEN plays, the GEN write into a lane, what MATCH
- * applies from a song's rhythm analysis, and the FORM editor's section meters.
+ * stepper, a lane's own time (its meter and tuplet ratio, the lane TIME card),
+ * the pitches GEN plays, the GEN write into a lane, what MATCH applies from a
+ * song's rhythm analysis, and the FORM editor's section meters.
  *
  * Meter edits keep a segment that repeats its neighbour's meter (setMeterAt
  * with merge off), so stepping BEATS through the meter before it never takes
@@ -11,12 +12,12 @@
  *
  * Everything here is pure.
  */
-import { partitions, type Meter, type RuleNode } from './colony';
+import { parseGroups, partitions, type Meter, type RuleNode } from './colony';
 import { GEN_DEFAULT_OPTS, type GenKind, type GenOpts } from './loomGen';
 import { pitchClass } from './loomKey';
 import {
-  barAt, barStartStep, laneLoop, normalizeMeterMap, removeChangeAt, segmentBars, segmentIndexAt, setMeterAt, stepsPerBar,
-  type LaneSpan, type MeterSegment, type PolyLane,
+  TUPLET_RATIO_MAX, barAt, barStartStep, defaultGroups, laneBars, laneLoop, laneTimeOf, normalizeMeterMap, removeChangeAt, sanitizeMeter, sanitizeTuplet,
+  segmentBars, segmentIndexAt, setMeterAt, stepsPerBar, type LaneSpan, type LaneTuplet, type MeterSegment, type PolyLane,
 } from './meterMap';
 import { sanitizeBendPoints, type LaneBend } from './pitchBend';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
@@ -28,7 +29,8 @@ const EPS = 1e-9;
 
 export const BEATS_MIN = 1;
 export const BEATS_MAX = 32;
-export const UNITS = [4, 8, 16] as const;
+/** The unit keys: whole, half, quarter, 8th, 16th and 32nd notes (2/2, 3/2 and 7/32 are all choosable). */
+export const UNITS = [1, 2, 4, 8, 16, 32] as const;
 /** Velocity of a GEN note at 0 dB; the rule's gain and the group accent move it. */
 export const GEN_VELOCITY = 96;
 
@@ -94,12 +96,23 @@ export function editMeter(map: readonly MeterSegment[], selected: number, patch:
   return { meterMap, selected: i };
 }
 
-/** BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears them. */
-export const setBeats = (map: readonly MeterSegment[], selected: number, num: number): MeterEdit =>
-  editMeter(map, selected, { num: clamp(Math.round(num), BEATS_MIN, BEATS_MAX), groups: [] });
+/**
+ * BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears
+ * them, except that a compound meter starts in threes (6/8 is 3+3), so its
+ * accents land on the dotted beats.
+ */
+export function setBeats(map: readonly MeterSegment[], selected: number, num: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const n = clamp(Math.round(num), BEATS_MIN, BEATS_MAX);
+  return editMeter(segs, selected, { num: n, groups: defaultGroups(n, segs[clampSelection(segs, selected)].meter.den) });
+}
 
-export const setUnit = (map: readonly MeterSegment[], selected: number, den: number): MeterEdit =>
-  editMeter(map, selected, { den });
+/** UNIT: the denominator. Groups the meter has stay; a meter with none that becomes compound starts in threes. */
+export function setUnit(map: readonly MeterSegment[], selected: number, den: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const meter = segs[clampSelection(segs, selected)].meter;
+  return editMeter(segs, selected, { den, ...(meter.groups.length > 1 ? {} : { groups: defaultGroups(meter.num, den) }) });
+}
 
 export const setGroups = (map: readonly MeterSegment[], selected: number, groups: readonly number[]): MeterEdit =>
   editMeter(map, selected, { groups: [...groups] });
@@ -116,6 +129,62 @@ export function removeChange(map: readonly MeterSegment[], selected: number): Me
 /** The select's value for a grouping: "3+2+2", or "" for even. */
 export const groupsValue = (groups: readonly number[]): string => (groups.length > 1 ? groups.join('+') : '');
 export const parseGroupsValue = (value: string): number[] => (value ? value.split('+').map(Number) : []);
+
+/**
+ * The grouping field's text as groups for `meter`: "3+3+2+1" gives the
+ * groups, and a sum that differs from the numerator gives the numerator with
+ * them (typing 2+2+3 into 4/8 makes 7/8 2+2+3). "" or one number is Even.
+ * Null for text that is not whole numbers joined by "+", or that sums past
+ * BEATS_MAX.
+ */
+export function parseGroupingText(text: string, meter: Meter): { num: number; groups: number[] } | null {
+  const t = text.replace(/\s+/g, '');
+  if (!t) return { num: meter.num, groups: [] };
+  if (!/^\d+(\+\d+)*$/.test(t)) return null;
+  const parts = t.split('+').map(Number);
+  const sum = parts.reduce((a, b) => a + b, 0);
+  if (sum < BEATS_MIN || sum > BEATS_MAX || !parseGroups(t, sum)) return null;
+  return { num: sum, groups: parts.length > 1 ? parts : [] };
+}
+
+/** GROUPING field: the typed grouping applied to the selected segment, or null (the text is kept for the user to fix). */
+export function setGroupingText(map: readonly MeterSegment[], selected: number, text: string): MeterEdit | null {
+  const segs = normalizeMeterMap(map, false);
+  const parsed = parseGroupingText(text, segs[clampSelection(segs, selected)].meter);
+  return parsed ? editMeter(segs, selected, parsed) : null;
+}
+
+/* ── the pickup ─────────────────────────────────────────────────────────── */
+
+/**
+ * PICKUP steps by one unit of the first meter (an 8th in 6/8, a quarter in
+ * 4/4), and by a half step with Shift, from none up to one unit short of a
+ * full bar, the store's half-step grid and its 64-step cap. Returns the new
+ * pickup in steps.
+ */
+export function stepPickup(map: readonly MeterSegment[], pickupSteps: number, dir: -1 | 1, fine: boolean): number {
+  const first = normalizeMeterMap(map, false)[0].meter;
+  const unit = fine ? 0.5 : Math.max(0.5, 16 / first.den);
+  const max = pickupMax(map);
+  const now = clamp(Number.isFinite(pickupSteps) ? pickupSteps : 0, 0, max);
+  // From an off-unit pickup the first press lands on the unit grid.
+  const next = dir > 0 ? Math.floor(now / unit + EPS) * unit + unit : Math.ceil(now / unit - EPS) * unit - unit;
+  return clamp(Math.round(next * 2) / 2, 0, max);
+}
+
+/** The longest pickup: half a step short of a full bar of the first meter, and at most 64 steps. */
+export const pickupMax = (map: readonly MeterSegment[]): number =>
+  Math.max(0, Math.min(64, stepsPerBar(normalizeMeterMap(map, false)[0].meter) - 0.5));
+
+/** The PICKUP readout: "Off", or the pickup as a fraction of a whole note in lowest terms ("1/2", "3/8", "5/32"). */
+export function pickupLabel(pickupSteps: number): string {
+  if (!(pickupSteps > EPS)) return 'Off';
+  // Steps are 16ths and the store keeps half steps, so the pickup is a whole number of 32nds.
+  const num = Math.round(pickupSteps * 2);
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const g = gcd(num, 32);
+  return `${num / g}/${32 / g}`;
+}
 
 /** GROUPS: Even plus LOOM's partitions of the numerator, and the meter's own grouping when those miss it. */
 export function groupChoices(meter: Meter): Array<{ value: string; label: string }> {
@@ -143,6 +212,86 @@ export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barS
   if (dir < 0) return clamp(Math.min(Math.round(cycle ?? total), total) - by, 1, Math.max(1, total - 1));
   const next = clamp(Math.round(cycle ?? total) + by, 1, total);
   return next >= total ? null : next;
+}
+
+/* ── a lane's own time ─────────────────────────────────────────────────── */
+
+/** The ratios the lane TIME card offers as keys: three in two, four in three, five in four, and their inverses. */
+export const LANE_TUPLET_PRESETS: readonly LaneTuplet[] = [
+  { n: 3, m: 2 }, { n: 4, m: 3 }, { n: 5, m: 4 }, { n: 2, m: 3 }, { n: 3, m: 4 },
+];
+
+/** A ratio as the card prints it: "3:2", or "Straight". */
+export const tupletLabel = (t: LaneTuplet | null | undefined): string => {
+  const clean = sanitizeTuplet(t);
+  return clean ? `${clean.n}:${clean.m}` : 'Straight';
+};
+
+/**
+ * One press of the card's Notes (n) or In (m) stepper: that side moves by one
+ * within 1..TUPLET_RATIO_MAX, from 1:1 when the lane is straight. A press that
+ * would make the two sides equal steps over that value (3:2, In + gives 3:4), so
+ * the side the user is not stepping always keeps its number; the Straight key
+ * is how a lane goes straight. A press with nowhere to go keeps the ratio.
+ */
+export function stepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): LaneTuplet | null {
+  const now = sanitizeTuplet(t) ?? { n: 1, m: 1 };
+  const other = side === 'n' ? now.m : now.n;
+  let value = now[side] + dir;
+  if (value === other) value += dir;
+  if (value < 1 || value > TUPLET_RATIO_MAX) return sanitizeTuplet(t) ?? null;
+  return sanitizeTuplet({ ...now, [side]: value }) ?? null;
+}
+
+/** Whether one press of that stepper changes the ratio: the card disables the arrow when it would not. */
+export function canStepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): boolean {
+  const now = sanitizeTuplet(t);
+  const next = stepLaneTuplet(t, side, dir);
+  return !(now?.n === next?.n && now?.m === next?.m);
+}
+
+/** The card's meter select: "Roll" (the roll's own map), the FORM list, and the lane's first meter when the list lacks it. */
+export function laneMeterChoices(lane: PolyLane | null | undefined): Array<{ value: string; label: string }> {
+  return [{ value: '', label: 'Roll' }, ...sectionMeterChoices(lane?.meterMap?.[0]?.meter)];
+}
+
+/** The select's value for a lane: its first meter's label, or "" for the roll's. */
+export const laneMeterValue = (lane: PolyLane | null | undefined): string => (lane?.meterMap?.length ? meterLabel(lane.meterMap[0].meter) : '');
+
+/** A select value as the lane's meter map: that meter from its bar 1, or null for the roll's map. */
+export function laneMeterFromValue(value: string): MeterSegment[] | null {
+  const meter = parseMeterLabel(value);
+  return meter ? [{ bar: 0, meter }] : null;
+}
+
+/**
+ * The card's typed meter ("11/16", "11/16 3+3+3+2") as the lane's meter map,
+ * checked as the roll's own meters are (sanitizeMeter: numerator 1-64, unit
+ * 1 to 32, groups that sum to the numerator); "" is the roll's map. Undefined
+ * for text that is not a meter, which the card reports and keeps.
+ */
+export function laneMeterFromText(text: string): MeterSegment[] | null | undefined {
+  const t = text.trim().replace(/\s+/g, ' ');
+  if (!t) return null;
+  const parsed = parseMeterLabel(t);
+  const meter = parsed ? sanitizeMeter(parsed) : null;
+  if (!meter || (parsed && parsed.groups.length > 1 && meter.groups.length === 0)) return undefined;
+  return [{ bar: 0, meter }];
+}
+
+/** A lane's time in words: "7/8 3+2+2 · 3:2", "Roll meter · 3:2", "7/8 3+2+2", or "Roll time". */
+export function laneTimeLabel(lane: PolyLane | null | undefined): string {
+  const meter = lane?.meterMap?.length ? meterLabel(lane.meterMap[0].meter) : null;
+  const ratio = sanitizeTuplet(lane?.tuplet);
+  if (!meter && !ratio) return 'Roll time';
+  return [meter ?? 'Roll meter', ratio ? tupletLabel(ratio) : null].filter(Boolean).join(' · ');
+}
+
+/** The length of a lane's first bar in roll steps, to two decimals, or null when the lane reads the roll's time. */
+export function laneBarSteps(lane: PolyLane | null | undefined, map: readonly MeterSegment[], pickupSteps = 0): number | null {
+  const lt = laneTimeOf(lane, map, pickupSteps);
+  if (!lt) return null;
+  return Math.round(stepsPerBar(lt.map[0].meter) * lt.scale * 100) / 100;
 }
 
 export type LaneForm = 'solid' | 'outline' | 'stripe' | 'hatch' | 'stripe45';
@@ -272,9 +421,13 @@ export interface GenTarget {
 type RollShape = { meterMap: MeterSegment[]; pickupSteps: number; lanes: PolyLane[]; activeLane: number; totalSteps: number };
 
 /**
+/**
  * A looping lane gets one cycle from the step its loop starts on (step 0, or
  * its span's first step); any other lane gets the selected segment's bars, one
- * pass per bar.
+ * pass per bar. A lane with its own time (a meter, a tuplet ratio) gets its own
+ * bars that start inside those, one pass per lane bar, as long as they keep the
+ * first one's meter, so a 3:2 lane's pass is its own bar, two thirds as long;
+ * `bars` then counts the lane's bars.
  */
 export function genTarget(roll: RollShape, selected: number): GenTarget {
   const lane = roll.lanes.find((l) => l.id === roll.activeLane) ?? roll.lanes[0] ?? { id: 0, name: 'A', cycleSteps: null };
@@ -282,12 +435,30 @@ export function genTarget(roll: RollShape, selected: number): GenTarget {
   if (loop) {
     // A span shorter than the cycle ends the pass where the span ends.
     const { cycle, origin, end } = loop;
-    return { lane: lane.id, name: lane.name, start: origin, end: Math.min(origin + cycle, end), passLen: cycle, passes: 1, cycle, origin, bars: null, meter: null };
+    const lt = laneTimeOf(lane, roll.meterMap, roll.pickupSteps);
+    return {
+      lane: lane.id, name: lane.name, start: origin, end: Math.min(origin + cycle, end), passLen: cycle, passes: 1, cycle, origin, bars: null,
+      meter: lt ? lt.map[0].meter : null,
+    };
   }
   const segs = normalizeMeterMap(roll.meterMap, false);
   const i = clampSelection(segs, selected);
   const bars = segmentBars(segs, i, roll.totalSteps, roll.pickupSteps);
   const start = barStartStep(segs, bars.first, roll.pickupSteps);
+  const lt = laneTimeOf(lane, segs, roll.pickupSteps);
+  if (lt) {
+    const segEnd = Math.min(roll.totalSteps, barStartStep(segs, bars.last + 1, roll.pickupSteps));
+    const inside = laneBars(lt, roll.totalSteps).filter((b) => b.bar >= 0 && b.start >= start - EPS && b.start < segEnd - EPS);
+    if (inside.length) {
+      const first = inside[0];
+      let n = 1;
+      while (n < inside.length && inside[n].meter === first.meter) n += 1;
+      return {
+        lane: lane.id, name: lane.name, start: first.start, end: first.start + n * first.len, passLen: first.len, passes: n,
+        cycle: null, bars: { first: first.bar, last: first.bar + n - 1 }, meter: first.meter,
+      };
+    }
+  }
   const passLen = stepsPerBar(segs[i].meter);
   const passes = bars.last - bars.first + 1;
   return { lane: lane.id, name: lane.name, start, end: start + passes * passLen, passLen, passes, cycle: null, bars, meter: segs[i].meter };
@@ -566,8 +737,8 @@ const m = (num: number, den: number, groups: number[] = []): Meter => ({ num, de
 
 /** The meters the FORM editor offers a section; "" is the roll's own map. */
 export const SECTION_METERS: readonly Meter[] = [
-  m(4, 4), m(3, 4), m(2, 4), m(6, 8), m(5, 4), m(5, 8),
-  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8),
+  m(4, 4), m(3, 4), m(2, 4), m(2, 2), m(3, 2), m(6, 8, [3, 3]), m(9, 8, [3, 3, 3]), m(5, 4), m(5, 8),
+  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8, [3, 3, 3, 3]),
 ];
 
 /** The FORM select's options for a section: the list, plus the section's own meter when the list lacks it. */

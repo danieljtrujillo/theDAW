@@ -18,7 +18,7 @@
  * Run: `npx tsx src/state/editorStore.test.ts`
  */
 import assert from 'node:assert/strict';
-import { beginUndoStep, clipSourceSpanSec, freezeSignature, useEditorStore, type AudioClip, type EditorTrack } from './editorStore.ts';
+import { SNAP_DIVISIONS, beginUndoStep, clipSourceSpanSec, freezeSignature, snapDivisionLabel, useEditorStore, type AudioClip, type EditorTrack } from './editorStore.ts';
 import type { ChainEntry } from './effectChainStore.ts';
 
 const st = () => useEditorStore.getState();
@@ -780,6 +780,17 @@ const label = (id: string) => useEditorStore.getState().clips.find((c) => c.id =
     busIds.add(useEditorStore.getState().addBus(`b${i}`));
   }
   assert.equal(busIds.size, 1000, '1000 synchronous addBus calls produce 1000 distinct ids');
+}
+
+// The EDIT snap menu words every division; none shows a raw id such as 1/16Q.
+{
+  assert.deepEqual(SNAP_DIVISIONS.map(snapDivisionLabel), [
+    'Snap off',
+    'Bar', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64',
+    '1/4 triplet', '1/8 triplet', '1/16 triplet', '1/32 triplet',
+    'Quintuplet 1/16', 'Septuplet 1/16',
+    'Dotted 1/4', 'Dotted 1/8', 'Dotted 1/16',
+  ]);
 }
 
 console.log('editorStore extensions: ok');

@@ -8,7 +8,8 @@ import {
   addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs, genPreview, genStatus, genTarget, genWrite,
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
-  setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, type GenSettings,
+  setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
+  setGroupingText, stepPickup, UNITS, type GenSettings,
 } from './meterFace.ts';
 import { beatToTime } from './tempoMap.ts';
 import { grooveById } from './grooveTemplate.ts';
@@ -35,7 +36,7 @@ const freshStep = () => {
   usePianoRollStore.setState({
     _undo: [{
       notes: s.notes, bpm: s.bpm, totalSteps: s.totalSteps, lowestNote: s.lowestNote, highestNote: s.highestNote,
-      meterMap: s.meterMap, pickupSteps: s.pickupSteps, lanes: s.lanes, bends: s.bends, tempoMap: s.tempoMap,
+      meterMap: s.meterMap, pickupSteps: s.pickupSteps, lanes: s.lanes, bends: s.bends, voiceProgram: s.voiceProgram, tempoMap: s.tempoMap,
     }],
     _redo: [],
   });
@@ -98,10 +99,62 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.deepEqual(groupChoices(M54), [{ value: '', label: 'Even' }, { value: '3+2', label: '3+2' }, { value: '2+3', label: '2+3' }]);
   const seven = groupChoices(M78).map((c) => c.value);
   assert.ok(seven.includes('3+2+2') && seven.includes('2+2+3') && seven[0] === '');
-  assert.deepEqual(groupChoices({ num: 3, den: 4, groups: [] }), [{ value: '', label: 'Even' }]);
+  assert.deepEqual(groupChoices({ num: 3, den: 4, groups: [] }).map((c) => c.value), ['', '2+1', '1+2'], 'three beats can lean 2+1 or 1+2');
+  assert.deepEqual(groupChoices({ num: 2, den: 4, groups: [] }), [{ value: '', label: 'Even' }]);
   assert.deepEqual(groupChoices({ num: 12, den: 8, groups: [5, 7] }).at(-1), { value: '5+7', label: '5+7' });
   assert.deepEqual(parseGroupsValue('3+2+2'), [3, 2, 2]);
   assert.deepEqual(parseGroupsValue(''), []);
+}
+
+// UNIT runs /1 to /32; a compound meter starts in threes from BEATS and from UNIT, and groups a meter has stay.
+{
+  assert.deepEqual([...UNITS], [1, 2, 4, 8, 16, 32]);
+  const cut = [{ bar: 0, meter: M44 }];
+  assert.deepEqual(setUnit(cut, 0, 2).meterMap[0].meter, { num: 4, den: 2, groups: [] }, '4/2');
+  assert.deepEqual(setBeats(setUnit(cut, 0, 2).meterMap, 0, 2).meterMap[0].meter, { num: 2, den: 2, groups: [] }, '2/2, cut time');
+  assert.deepEqual(setUnit(cut, 0, 32).meterMap[0].meter, { num: 4, den: 32, groups: [] });
+  const six8 = setBeats([{ bar: 0, meter: { num: 5, den: 8, groups: [] } }], 0, 6).meterMap[0].meter;
+  assert.deepEqual(six8, { num: 6, den: 8, groups: [3, 3] }, 'BEATS to 6 over 8 counts in two');
+  assert.deepEqual(setBeats([{ bar: 0, meter: six8 }], 0, 9).meterMap[0].meter, { num: 9, den: 8, groups: [3, 3, 3] });
+  assert.deepEqual(setBeats([{ bar: 0, meter: six8 }], 0, 12).meterMap[0].meter, { num: 12, den: 8, groups: [3, 3, 3, 3] });
+  assert.deepEqual(setBeats([{ bar: 0, meter: six8 }], 0, 7).meterMap[0].meter, { num: 7, den: 8, groups: [] }, '7/8 is not compound');
+  assert.deepEqual(setBeats([{ bar: 0, meter: { num: 5, den: 4, groups: [] } }], 0, 6).meterMap[0].meter, { num: 6, den: 4, groups: [] }, '6/4 keeps its choice open');
+  assert.deepEqual(setUnit([{ bar: 0, meter: { num: 6, den: 4, groups: [] } }], 0, 8).meterMap[0].meter, { num: 6, den: 8, groups: [3, 3] }, '6/4 to /8 starts in threes');
+  assert.deepEqual(setUnit([{ bar: 0, meter: { num: 6, den: 8, groups: [2, 2, 2] } }], 0, 16).meterMap[0].meter, { num: 6, den: 16, groups: [2, 2, 2] }, 'chosen groups stay');
+}
+
+// The GROUPING field: any grouping typed, a new sum sets the beats, bad text changes nothing.
+{
+  assert.deepEqual(parseGroupingText('3+3+2+1', { num: 9, den: 8, groups: [] }), { num: 9, groups: [3, 3, 2, 1] });
+  assert.deepEqual(parseGroupingText(' 2 + 2 + 3 ', { num: 4, den: 8, groups: [] }), { num: 7, groups: [2, 2, 3] }, 'the sum sets the beats');
+  assert.deepEqual(parseGroupingText('', M78), { num: 7, groups: [] }, 'empty is Even');
+  assert.deepEqual(parseGroupingText('5', M78), { num: 5, groups: [] }, 'one number is Even at that many beats');
+  assert.equal(parseGroupingText('3+x', M78), null);
+  assert.equal(parseGroupingText('3+0+4', M78), null, 'a group of none');
+  assert.equal(parseGroupingText('16+17', M78), null, 'past 32 beats');
+  const typed = setGroupingText(SONG, 1, '2+2+2+2+2');
+  assert.deepEqual(typed?.meterMap[1], { bar: 4, meter: { num: 10, den: 4, groups: [2, 2, 2, 2, 2] } }, 'five parts, typed');
+  assert.equal(setGroupingText(SONG, 1, '2++2'), null);
+}
+
+// PICKUP: a unit of the first meter a time, a half step with Shift, up to half a step short of a bar.
+{
+  const six8 = [{ bar: 0, meter: { num: 6, den: 8, groups: [3, 3] } }];
+  assert.equal(stepPickup(six8, 0, 1, false), 2, 'an 8th');
+  assert.equal(stepPickup(six8, 2, 1, false), 4);
+  assert.equal(stepPickup(six8, 2, -1, false), 0);
+  assert.equal(stepPickup(six8, 0, -1, false), 0, 'no pickup is the floor');
+  assert.equal(stepPickup(six8, 3, 1, false), 4, 'an off-unit pickup lands on the unit grid');
+  assert.equal(stepPickup(six8, 3, -1, false), 2);
+  assert.equal(stepPickup(six8, 2, 1, true), 2.5, 'Shift: half a step');
+  assert.equal(pickupMax(six8), 11.5);
+  assert.equal(stepPickup(six8, 10, 1, false), 11.5, 'never a full bar');
+  assert.equal(stepPickup([{ bar: 0, meter: M44 }], 0, 1, false), 4, 'a quarter in 4/4');
+  assert.equal(stepPickup([{ bar: 0, meter: { num: 7, den: 32, groups: [] } }], 0, 1, false), 0.5, 'a 32nd');
+  assert.equal(pickupLabel(0), 'Off');
+  assert.equal(pickupLabel(6), '3/8');
+  assert.equal(pickupLabel(4), '1/4');
+  assert.equal(pickupLabel(2.5), '5/32');
 }
 
 // Lanes: a new lane loops one bar of the first meter; LOOP steps, Shift steps a bar, the roll's length stops the loop.
@@ -387,7 +440,13 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
 
 // FORM section meters: the list, round trips, and a section's own meter the list lacks.
 {
-  assert.deepEqual(SECTION_METERS.map(meterLabel), ['4/4', '3/4', '2/4', '6/8', '5/4', '5/8', '7/8 3+2+2', '7/8 2+2+3', '9/8 2+2+2+3', '11/8 3+3+3+2', '12/8']);
+  // 6/8, 9/8 and 12/8 carry their threes, so Virtuoso's oom-pah lands on the dotted beats; 2/2 and 3/2 are choosable.
+  assert.deepEqual(SECTION_METERS.map(meterLabel), [
+    '4/4', '3/4', '2/4', '2/2', '3/2', '6/8 3+3', '9/8 3+3+3', '5/4', '5/8', '7/8 3+2+2', '7/8 2+2+3', '9/8 2+2+2+3', '11/8 3+3+3+2', '12/8 3+3+3+3',
+  ]);
+  // A section saved with a bare "6/8" by an older build still opens, as its own option.
+  assert.deepEqual(parseMeterLabel('6/8'), { num: 6, den: 8, groups: [] });
+  assert.deepEqual(sectionMeterChoices({ num: 6, den: 8, groups: [] }).at(-1), { value: '6/8', label: '6/8' });
   for (const x of SECTION_METERS) assert.deepEqual(parseMeterLabel(meterLabel(x)), x);
   assert.equal(parseMeterLabel(''), null);
   assert.deepEqual(sectionMeterChoices({ num: 13, den: 8, groups: [] }).at(-1), { value: '13/8', label: '13/8' });

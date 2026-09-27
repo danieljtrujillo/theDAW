@@ -482,11 +482,15 @@ export async function quantizeClip(args: QuantizeArgs): Promise<ToolResult> {
   if (swing < -1 || swing > 1) return fail('quantize: swing must be between -1 and 1');
 
   const clip = found.value;
+  // A clip bounced from the roll carries its meter, so the grid restarts on its
+  // bar lines (a pickup or a 7/32 bar keeps its own lines); one without a meter
+  // keeps the grid from step 0.
   const notes = quantizeNotes(clip.sourcePianoRoll, {
     grid,
     strength,
     swing,
     quantizeEnds: boolArg(args.quantize_ends) ?? false,
+    ...(clip.sourceMeterMap?.length ? { meterMap: clip.sourceMeterMap, pickupSteps: clip.sourcePickupSteps ?? 0 } : {}),
   });
   const written = await commitNotes(clip, notes, args);
   if (!written.ok) return fail(written.error);

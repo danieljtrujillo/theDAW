@@ -4,7 +4,8 @@ import {
   DEFAULT_GROOVE_ID,
   DEFAULT_LANES,
   MAX_ROLL_STEPS,
-  MIN_NOTE_LENGTH,
+  beginRollGesture,
+  endRollGesture,
   usePianoRollStore,
   type PianoNote,
 } from '../../state/pianoRollStore';
@@ -18,7 +19,9 @@ import {
   barAt,
   bars as meterBars,
   gridLines,
+  laneGridLines,
   laneLoop,
+  laneTimeOf,
   meterEquals,
   normalizeMeterMap,
   roundUpToBar,
@@ -41,8 +44,8 @@ import {
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { laneSpanLabel } from '../../lib/meterFace';
-import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
-import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
+import { midiFileNoteCount, midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
+import { feelRollNotes, playedRollNotes } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
   followLap,
@@ -58,6 +61,23 @@ import {
   type RollLoop,
 } from '../../lib/rollTransport';
 import { copyNotes, duplicateNotes, pasteNotes, type NoteClipboardPayload } from '../../lib/noteClipboard';
+import {
+  TICKS_PER_STEP,
+  clickPlacement,
+  floorLine,
+  laneSnapGrid,
+  lengthenTicks,
+  menuNudgeTick,
+  moveBlock,
+  nudgeTicks,
+  resizeTicks,
+  rollSnapDef,
+  shortenTicks,
+  snapGrid,
+  snapLineSteps,
+  type NoteOrigin,
+  type SnapGrid,
+} from '../../lib/rollSnap';
 import {
   MARQUEE_MIN_PX,
   VELOCITY_LANE_HEIGHT,
@@ -124,8 +144,12 @@ const KEYBOARD_WIDTH = 64;
 const STEP_PX_MIN = 6;
 const STEP_PX_MAX_BUTTON = 48;
 const STEP_PX_MAX_WHEEL = 64;
-/** Step lines draw only from this step width up; below it the bar, group and beat tiers carry the grid. */
+/** The snap grid's lines draw only where a cell is at least this wide; below it the bar, group and beat tiers carry the grid. */
 const STEP_LINES_MIN_PX = 10;
+/** A press on a note body moves the selection once the pointer has travelled this far (px). */
+const NOTE_DRAG_MIN_PX = 3;
+/** A step position as the note title prints it: whole steps as they are, a tuplet position to the hundredth. */
+const stepText = (step: number): string => String(Math.round(step * 100) / 100);
 /** The pickup cell prints its legend from this width (px) up; a narrower one keeps it in its title. */
 const PICKUP_LEGEND_MIN_PX = 38;
 /** Notes and lane repeats draw this far (px) past each side of the view, so a scroll redraws them only after crossing it. */
@@ -174,7 +198,7 @@ const LANE_FORMS: readonly LaneForm[] = [
 ];
 
 const ROLL_HELP =
-  'Click the ruler = move the playhead (PLAY starts there) · Drag along the ruler = loop those steps (LOOP turns it on and off) · Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Arrows nudge the selection (Shift = 4 steps / an octave) · Drag right edge = resize · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
+  'Click the ruler = move the playhead (PLAY starts there) · Drag along the ruler = loop those steps (LOOP turns it on and off) · Click empty cell = add · Click note = select / second click on the only selected note = delete · Drag empty grid = marquee (Shift adds to the selection) · Shift-click note = add to the selection · Ctrl/Cmd-click note = in or out · Ctrl/Cmd+A = select all · Drag a note = move the selection on the snap grid · Arrows nudge the selection a snap cell (Shift = 4 cells / an octave) · Drag right edge = resize to the snap grid · Delete key removes the selection · Ctrl/Cmd+C = copy · Ctrl/Cmd+X = cut · Ctrl/Cmd+V = paste at the insertion point (the playhead while playing, otherwise the last step you clicked) · Ctrl/Cmd+D = duplicate after the selection · Velocity lane under the grid: drag a bar, or sweep across bars to draw · Right-click note for actions · Ctrl+wheel = zoom · Shift+wheel = scroll';
 
 /**
  * The roll's note clipboard: module-level, so it survives a remount and is
@@ -656,7 +680,12 @@ const GROOVE_FILE_ACCEPT = '.mid,.midi,audio/midi';
  * Both amounts live in the roll's store, not in this key: they were component
  * state, so switching to the ARP face and back — or a reload — put them back to
  * 100 / 0 and silently threw away what had been dialled in. The store persists
- * them (localStorage). APPLY is unchanged: one `replaceAll`, one undo step.
+ * them (localStorage). APPLY is one `replaceAll`, one undo step.
+ *
+ * APPLY quantizes onto the roll's SNAP grid (lib/rollSnap), the grid a click
+ * lands on: starts toward its nearest line and lengths toward whole cells, so a
+ * quintuplet snap keeps quintuplets and a 7/8 3+2+2 grid restarts on each
+ * group. A note in a lane with its own time lands on the lane's grid.
  *
  * The feel is a groove template (`lib/grooveTemplate.ts`): lateness per slot of
  * the bar rather than one scalar on every odd 16th. The picker's first entry IS
@@ -679,6 +708,7 @@ export const PianoRollFeel: React.FC = () => {
   const setSwingPct = usePianoRollStore((s) => s.setSwingPct);
   const grooveId = usePianoRollStore((s) => s.grooveId);
   const setGrooveId = usePianoRollStore((s) => s.setGrooveId);
+  const snapLabel = usePianoRollStore((s) => rollSnapDef(s.snap).label);
   const [imported, setImported] = useState<GrooveTemplate | null>(null);
   const grooveFileRef = useRef<HTMLInputElement>(null);
   const builtins = useMemo(() => builtinGrooves(), []);
@@ -707,7 +737,7 @@ export const PianoRollFeel: React.FC = () => {
   };
 
   const applyTimingFeel = () => {
-    const { notes, replaceAll, meterMap, pickupSteps, totalSteps, lanes } = usePianoRollStore.getState();
+    const { notes, replaceAll, meterMap, pickupSteps, totalSteps, lanes, snap } = usePianoRollStore.getState();
     if (notes.length === 0) return;
     const q = Math.max(0, Math.min(1, quantizePct / 100));
     // An id that resolves to nothing — a stale one out of the persisted feel
@@ -720,33 +750,23 @@ export const PianoRollFeel: React.FC = () => {
         ? null
         : ((imported && imported.id === grooveId ? imported : builtins.find((g) => g.id === grooveId) ?? named) ?? null);
     const groove = picked ?? swingToGroove(swingPct);
-    // Quantize each note's start toward the nearest 16th at strength `q`
-    // (`rollClip.quantizeRollClip`, which is `clipNotes.quantizeNotes` — the
-    // arithmetic is not reimplemented here), then lay the groove over it
-    // (`grooveTemplate.applyGroove`, same as before). Lengths are handled
-    // separately (`rollClip.feelLength`): a note's DURATION moves toward the
-    // nearest whole step by QUANT, which is not what `quantizeEnds` computes
-    // (that snaps the note's END POSITION to the grid, a different quantity).
-    // At QUANT 0 a length stays as it was, a sub-step one included.
-    const { sourceRollNotes: quantizedSteps } = quantizeRollClip(
-      {
-        sourceRollNotes: notes,
-        sourcePianoRoll: [],
-        sourceLanes: lanes,
-        sourceMeterMap: meterMap,
-        sourcePickupSteps: pickupSteps,
-        sourceTotalSteps: totalSteps,
-      },
-      { grid: '1/16', strength: q, groove, grooveStrength: picked ? q : 1 },
+    // Each start moves toward the nearest line of the SNAP grid at strength
+    // `q` and each DURATION toward a whole number of its cells (at QUANT 0 a
+    // length stays as it was), then the groove lays over it, a group groove
+    // following each bar's groups (`rollClip.feelRollNotes`). A lane with its
+    // own time quantizes on its own grid.
+    const adjusted = feelRollNotes(
+      notes,
+      { meterMap, pickupSteps, lanes, totalSteps },
+      { snap, strength: q, groove, grooveStrength: picked ? q : 1 },
     );
-    const adjusted = quantizedSteps.map((note, i) => ({ ...note, length: feelLength(notes[i].length, q) }));
     replaceAll(adjusted);
-    logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% · groove ${groove.name}`);
+    logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% to ${rollSnapDef(snap).label} · groove ${groove.name}`);
   };
 
   return (
     <>
-      <div className={FIELD} title="Quantize: pulls notes toward the grid (100 = dead on)">
+      <div className={FIELD} title={`Quantize: pulls notes toward the ${snapLabel} snap grid, and lengths toward whole cells (100 = dead on)`}>
         <label htmlFor="piano-roll-quantize" className={FIELD_LEGEND}>Quant</label>
         <input
           id="piano-roll-quantize"
@@ -776,7 +796,7 @@ export const PianoRollFeel: React.FC = () => {
       </div>
       <div
         className={FIELD}
-        title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT."
+        title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT. The Group grooves, Notes inégales and Double-dotted follow each bar's groups, so 7/8 3+2+2 swings inside each group."
       >
         <label htmlFor="piano-roll-groove" className={FIELD_LEGEND}>Groove</label>
         <select
@@ -822,7 +842,7 @@ export const PianoRollFeel: React.FC = () => {
         onClick={applyTimingFeel}
         disabled={noteCount === 0}
         aria-label="Apply timing feel"
-        description="Apply the quantize and swing amounts to every note"
+        description={`Apply the quantize amount on the ${snapLabel} snap grid and the groove to every note`}
         icon={<Check className={STRIP_GLYPH} />}
         legend="Apply"
       />
@@ -1018,7 +1038,8 @@ export const exportRollMidi = async (): Promise<void> => {
     return;
   }
   const file = rollToMidiFile(roll);
-  const count = file.tracks[0]?.notes.length ?? 0;
+  // One track per lane when the roll has more than lane A: the count is every track's notes.
+  const count = midiFileNoteCount(file);
   const result = await downloadMidi(file, 'piano-roll');
   // A cancelled or failed save exported nothing; saveFile already logged a failure.
   if (result.path) logInfo('piano-roll', `Exported ${count} notes as MIDI to ${result.path}`);
@@ -1534,6 +1555,8 @@ const VelocityLane: React.FC<{
     const { x, y } = localPoint(e);
     const step = x / Math.max(1e-6, stepPx);
     dragRef.current = step;
+    // The whole sweep is one undo step, however long it pauses.
+    beginRollGesture();
     writeAt(step, step, y);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     // preventDefault below suppresses the compatibility mousedown, and with it
@@ -1555,6 +1578,7 @@ const VelocityLane: React.FC<{
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (dragRef.current === null) return;
     dragRef.current = null;
+    endRollGesture();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
 
@@ -1678,6 +1702,7 @@ export const PianoRoll: React.FC<{
   const lanes = usePianoRollStore((s) => s.lanes);
   const activeLane = usePianoRollStore((s) => s.activeLane);
   const editingClipId = usePianoRollStore((s) => s.editingClipId);
+  const snap = usePianoRollStore((s) => s.snap);
 
   const addNote = usePianoRollStore((s) => s.addNote);
   const removeNote = usePianoRollStore((s) => s.removeNote);
@@ -1706,6 +1731,22 @@ export const PianoRoll: React.FC<{
   // they play (lane repeats written out) and each bar's syncopation score.
   const barSpans = useMemo(() => meterBars(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
   const tiers = useMemo(() => gridLines(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
+  // The active lane's own time (a meter of its own, a tuplet ratio), or null
+  // when it reads the roll's: then the grid draws the lane's bars, groups and
+  // beats and every gesture snaps to them, while the roll's bar lines stay.
+  const activeLaneDef = lanes.find((l) => l.id === activeLane);
+  const laneTime = useMemo(() => laneTimeOf(activeLaneDef, meterMap, pickupSteps), [activeLaneDef, meterMap, pickupSteps]);
+  const laneTiers = useMemo(() => (laneTime ? laneGridLines(laneTime, totalSteps) : null), [laneTime, totalSteps]);
+  // The snap grid (lib/rollSnap): where a click, a drag, a resize, a nudge and
+  // the note menu land, restarting at every group of every bar (of the active
+  // lane's own bars when it has them). The key handlers read it through the
+  // ref, so they need no re-binding.
+  const snapLines = useMemo(
+    () => (laneTime ? laneSnapGrid(laneTime, totalSteps, snap) : snapGrid(meterMap, pickupSteps, totalSteps, snap)),
+    [laneTime, meterMap, pickupSteps, totalSteps, snap],
+  );
+  const snapRef = useRef<SnapGrid>(snapLines);
+  snapRef.current = snapLines;
   // The scores read only each note's step, velocity and lane, so an edit that
   // changes none of them (a resize, a pitch move) keeps the previous note list
   // here and skips the unroll and the scoring.
@@ -1731,16 +1772,23 @@ export const PianoRoll: React.FC<{
   // Each tier is one SVG path, so the grid's node count stays flat at any
   // length. Step lines skip the steps a stronger tier already draws.
   const gridPaths = useMemo(() => {
-    const drawn = new Set([...tiers.bar, ...tiers.group, ...tiers.beat]);
-    const steps: number[] = [];
-    if (stepPx >= STEP_LINES_MIN_PX) for (let i = 0; i <= totalSteps; i += 1) if (!drawn.has(i)) steps.push(i);
+    // An active lane with its own time draws its groups and beats in place of
+    // the roll's, and its bar lines in the accent; the roll's bar lines stay.
+    const near = (xs: readonly number[], x: number) => xs.some((b) => Math.abs(b - x) < 1e-6);
+    const laneBar = laneTiers ? laneTiers.bar.filter((x) => !near(tiers.bar, x)) : [];
+    const group = laneTiers ? laneTiers.group.filter((x) => !near(tiers.bar, x)) : tiers.group;
+    const beat = laneTiers ? laneTiers.beat.filter((x) => !near(tiers.bar, x)) : tiers.beat;
+    const drawn = new Set([...tiers.bar, ...group, ...beat, ...laneBar]);
+    // The snap's own subdivision: 16ths, triplets, quintuplets, each restarting on its group.
+    const steps = snapLineSteps(snapLines, stepPx, drawn, STEP_LINES_MIN_PX);
     return {
       step: linesPath(steps, stepPx, 0, gridHeight),
-      beat: linesPath(tiers.beat, stepPx, 0, gridHeight),
-      group: linesPath(tiers.group, stepPx, 0, gridHeight),
+      beat: linesPath(beat, stepPx, 0, gridHeight),
+      group: linesPath(group, stepPx, 0, gridHeight),
+      laneBar: laneBar.length ? linesPath(laneBar, stepPx, 0, gridHeight) : '',
       bar: linesPath(tiers.bar, stepPx, 0, gridHeight),
     };
-  }, [tiers, stepPx, totalSteps, gridHeight]);
+  }, [tiers, laneTiers, snapLines, stepPx, gridHeight]);
 
   // The notes in looping lanes, kept as the same array while none of them
   // changes, so an edit in a lane that does not loop leaves the repeats alone.
@@ -1795,7 +1843,6 @@ export const PianoRoll: React.FC<{
     (y: number): number => highestNote - Math.floor(y / NOTE_HEIGHT),
     [highestNote],
   );
-  const xToStep = useCallback((x: number): number => Math.floor(x / stepPx), [stepPx]);
   /** What lib/rollSelection needs to turn grid pixels into steps and notes. */
   const geo: RollGeometry = useMemo(
     () => ({ stepPx, noteHeight: NOTE_HEIGHT, highestNote }),
@@ -1830,15 +1877,14 @@ export const PianoRoll: React.FC<{
     const y = e.clientY - rect.top;
     if (x < 0 || y < 0) return;
     const targetNote = yToNote(y);
-    const targetStep = xToStep(x);
-    if (targetStep < 0 || targetStep >= totalSteps) return;
-    insertStepRef.current = targetStep;
+    const at = x / stepPx;
+    const placed = clickPlacement(snapLines, x, stepPx);
+    if (!placed) return;
+    insertStepRef.current = placed.tick / TICKS_PER_STEP;
     // If clicked on an existing note → select it, or remove it when it was the
     // one selected note before this press. Only stored notes count; a lane
     // repeat is drawn, not stored, and clicks pass through it.
-    const hit = notes.find(
-      (n) => n.note === targetNote && targetStep >= n.step && targetStep < n.step + n.length,
-    );
+    const hit = notes.find((n) => n.note === targetNote && at >= n.step && at < n.step + n.length);
     if (hit) {
       const press = pressRef.current;
       pressRef.current = null;
@@ -1853,8 +1899,16 @@ export const PianoRoll: React.FC<{
       }
       return;
     }
-    // Otherwise add a 2-step note (an 8th) on the clicked cell.
-    addNote({ note: targetNote, step: targetStep, length: 2, velocity: 96 });
+    // Otherwise add a note on the snap cell under the pointer: one cell long,
+    // or an 8th on the 1/16 grid, as the roll has always drawn.
+    addNote({
+      note: targetNote,
+      step: placed.tick / TICKS_PER_STEP,
+      length: placed.ticks / TICKS_PER_STEP,
+      tick: placed.tick,
+      ticks: placed.ticks,
+      velocity: 96,
+    });
     triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
   };
 
@@ -1884,8 +1938,14 @@ export const PianoRoll: React.FC<{
   const insertStepRef = useRef(0);
   useEffect(() => { insertStepRef.current = 0; }, [editingClipId]);
   const onRulerSeek = useCallback((step: number) => { insertStepRef.current = step; }, []);
-  // Right-drag a note to extend its length.
-  const resizeRef = useRef<{ id: string; startX: number; initialLength: number } | null>(null);
+  // Drag a note's right edge to change its length on the snap grid.
+  const resizeRef = useRef<{ id: string; startX: number; tick: number; initialTicks: number } | null>(null);
+  /**
+   * A press on a note body: where it started, and once the pointer has moved
+   * NOTE_DRAG_MIN_PX, every selected note's start and pitch at that moment.
+   * Each move places the notes from those origins (lib/rollSnap moveBlock).
+   */
+  const dragRef = useRef<{ id: string; startX: number; startY: number; origins: NoteOrigin[] | null } | null>(null);
   const onNotePointerDown = (e: React.PointerEvent, note: PianoNote, edge: 'right' | 'body') => {
     e.stopPropagation();
     // A press on a note is never a marquee.
@@ -1898,9 +1958,18 @@ export const PianoRoll: React.FC<{
     // whole selection, so grabbing one bar of a chord does not collapse it.
     if (!(e.shiftKey || e.ctrlKey || e.metaKey) && !picked.has(note.id)) setSelectedNote(note.id);
     if (edge === 'right') {
-      resizeRef.current = { id: note.id, startX: e.clientX, initialLength: note.length };
+      const tick = note.tick ?? Math.round(note.step * TICKS_PER_STEP);
+      resizeRef.current = { id: note.id, startX: e.clientX, tick, initialTicks: note.ticks ?? Math.round(note.length * TICKS_PER_STEP) };
+      // The whole resize is one undo step, however slowly it crosses the lines.
+      beginRollGesture();
       (e.target as Element).setPointerCapture?.(e.pointerId);
+      return;
     }
+    if (e.button !== 0) return;
+    // The whole drag is one undo step, however slowly it crosses the lines.
+    beginRollGesture();
+    dragRef.current = { id: note.id, startX: e.clientX, startY: e.clientY, origins: null };
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   };
 
   /** A press on empty grid opens a marquee; the drag is only confirmed on the move. */
@@ -1931,13 +2000,37 @@ export const PianoRoll: React.FC<{
     const op = resizeRef.current;
     if (op) {
       const dx = e.clientX - op.startX;
-      if (Math.abs(dx) >= 3 && pressRef.current?.id === op.id) pressRef.current.wasSelected = false;
-      // Whole steps, stopping at one step (MIN_NOTE_LENGTH: the grid cannot grab
-      // a thinner note by hand). A note already shorter than a step, a triplet
-      // 16th out of GEN, keeps its length until the drag makes it longer.
-      const deltaSteps = Math.round(dx / stepPx);
-      const newLen = Math.max(Math.min(MIN_NOTE_LENGTH, op.initialLength), op.initialLength + deltaSteps);
-      if (newLen !== usePianoRollStore.getState().notes.find((n) => n.id === op.id)?.length) updateNote(op.id, { length: newLen });
+      // Under the drag threshold the press is still a click and the length stays.
+      if (Math.abs(dx) < NOTE_DRAG_MIN_PX) return;
+      if (pressRef.current?.id === op.id) pressRef.current.wasSelected = false;
+      // The end lands on the nearest snap line, stopping one cell after the
+      // start. A note already shorter than a cell, a 32nd on the 1/16 grid,
+      // keeps its length until the drag makes it longer.
+      const ticks = resizeTicks(snapLines, op.tick, op.initialTicks, dx, stepPx);
+      const s = usePianoRollStore.getState();
+      if (ticks !== s.notes.find((n) => n.id === op.id)?.ticks) s.setNoteTimes([{ id: op.id, ticks }]);
+      return;
+    }
+    const drag = dragRef.current;
+    if (drag) {
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (!drag.origins) {
+        if (Math.abs(dx) < NOTE_DRAG_MIN_PX && Math.abs(dy) < NOTE_DRAG_MIN_PX) return;
+        const s = usePianoRollStore.getState();
+        const moving = new Set([...s.selectedIds, drag.id]);
+        drag.origins = s.notes
+          .filter((n) => moving.has(n.id))
+          .map((n) => ({ id: n.id, tick: n.tick ?? Math.round(n.step * TICKS_PER_STEP), note: n.note }));
+        // A drag is never the second click that deletes the note.
+        if (pressRef.current?.id === drag.id) pressRef.current.wasSelected = false;
+      }
+      const s = usePianoRollStore.getState();
+      s.setNoteTimes(moveBlock(snapLines, drag.origins, drag.id, dx, dy, stepPx, NOTE_HEIGHT, {
+        endTick: snapLines.end,
+        lowestNote: s.lowestNote,
+        highestNote: s.highestNote,
+      }));
       return;
     }
     const mq = marqueeRef.current;
@@ -1956,6 +2049,20 @@ export const PianoRoll: React.FC<{
     if (resizeRef.current) {
       (e.target as Element).releasePointerCapture?.(e.pointerId);
       resizeRef.current = null;
+      endRollGesture();
+    }
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (drag) {
+      endRollGesture();
+      (e.target as Element).releasePointerCapture?.(e.pointerId);
+      if (drag.origins) {
+        // The click that ends a drag neither selects nor deletes; the moved notes stay selected.
+        suppressClickRef.current = true;
+        const moved = usePianoRollStore.getState().notes.find((n) => n.id === drag.id);
+        if (moved) insertStepRef.current = moved.step;
+      }
+      return;
     }
     const mq = marqueeRef.current;
     marqueeRef.current = null;
@@ -1979,6 +2086,11 @@ export const PianoRoll: React.FC<{
    * a cancelled marquee never stated one.
    */
   const cancelMarquee = (e: React.PointerEvent) => {
+    // A cancelled note drag or resize keeps the notes where the last move put
+    // them, as the one undo step the gesture recorded.
+    if (dragRef.current || resizeRef.current) endRollGesture();
+    dragRef.current = null;
+    resizeRef.current = null;
     if (!marqueeRef.current) return;
     marqueeRef.current = null;
     (e.target as Element).releasePointerCapture?.(e.pointerId);
@@ -2036,9 +2148,15 @@ export const PianoRoll: React.FC<{
       const s = usePianoRollStore.getState();
       if (s.selectedIds.size === 0) return;
       const coarse = e.shiftKey;
-      if (e.key === 'ArrowLeft') s.nudgeSelected(coarse ? -4 : -1, 0);
-      else if (e.key === 'ArrowRight') s.nudgeSelected(coarse ? 4 : 1, 0);
-      else if (e.key === 'ArrowUp') s.nudgeSelected(0, coarse ? 12 : 1);
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        // Sideways by snap cells, measured on the primary note, so a tuplet
+        // figure steps along its own grid; the whole selection moves with it.
+        const primary = s.notes.find((n) => n.id === s.selectedNoteId);
+        if (!primary) return;
+        const dir = e.key === 'ArrowLeft' ? -1 : 1;
+        const dt = nudgeTicks(snapRef.current, primary.tick ?? Math.round(primary.step * TICKS_PER_STEP), dir, coarse ? 4 : 1);
+        if (dt !== 0) s.nudgeSelected(dt / TICKS_PER_STEP, 0);
+      } else if (e.key === 'ArrowUp') s.nudgeSelected(0, coarse ? 12 : 1);
       else s.nudgeSelected(0, coarse ? -12 : -1);
     };
     window.addEventListener('keydown', onKey, true);
@@ -2111,7 +2229,9 @@ export const PianoRoll: React.FC<{
       }
       const wanted = k === 'v' ? (noteClipboard?.notes.length ?? 0) : picked.size;
       const added = k === 'v'
-        ? (noteClipboard ? pasteNotes(noteClipboard, s.isPlaying ? Math.floor(s.currentStep) : insertStepRef.current, range) : [])
+        ? (noteClipboard
+          ? pasteNotes(noteClipboard, s.isPlaying ? floorLine(snapRef.current, s.currentStep * TICKS_PER_STEP) / TICKS_PER_STEP : insertStepRef.current, range)
+          : [])
         : duplicateNotes(s.notes, picked, range);
       if (added.length < wanted) {
         const left = wanted - added.length;
@@ -2229,7 +2349,8 @@ export const PianoRoll: React.FC<{
           >
             <RowBackgrounds lowestNote={lowestNote} highestNote={highestNote} />
             {/* Vertical lines: bar lines strongest, then group starts, beats and
-                (when a step is wide enough) steps. */}
+                (when a step is wide enough) steps. An active lane with its own
+                time adds its bar lines in the accent. */}
             <svg
               aria-hidden="true"
               focusable="false"
@@ -2241,6 +2362,7 @@ export const PianoRoll: React.FC<{
               {gridPaths.step && <path d={gridPaths.step} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.03)]" />}
               <path d={gridPaths.beat} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.06)]" />
               <path d={gridPaths.group} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.12)]" />
+              {gridPaths.laneBar && <path d={gridPaths.laneBar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-accent)/0.45)]" />}
               <path d={gridPaths.bar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.2)]" />
             </svg>
             {/* Recorded-region highlight: marks the last live take without
@@ -2335,7 +2457,7 @@ export const PianoRoll: React.FC<{
                   }}
                   className={`absolute rounded-sm border z-10 transition-[filter] ${lane.form.fill} ${selected ? 'border-white brightness-125' : `${lane.form.edge} hover:brightness-110`}`}
                   style={{ ...lane.form.style, left, width, top: top + 1, height: NOTE_HEIGHT - 2 }}
-                  title={`${noteLabel(n.note)} · step ${n.step + 1} · ${n.length} step${n.length === 1 ? '' : 's'}${lanes.length > 1 ? ` · lane ${lane.name}` : ''}`}
+                  title={`${noteLabel(n.note)} · step ${stepText(n.step + 1)} · ${stepText(n.length)} step${n.length === 1 ? '' : 's'}${lanes.length > 1 ? ` · lane ${lane.name}` : ''}`}
                 >
                   <div
                     onPointerDown={(e) => onNotePointerDown(e, n, 'right')}
@@ -2369,6 +2491,14 @@ export const PianoRoll: React.FC<{
         const n = noteMenu.payload;
         if (!n) return null;
         const clampVel = (v: number) => Math.max(1, Math.min(127, v));
+        // Lengthen, Shorten and the nudges move to the snap grid's neighbouring
+        // lines, measured from the note's bar or group (lib/rollSnap).
+        const timing = { tick: n.tick ?? Math.round(n.step * TICKS_PER_STEP), ticks: n.ticks ?? Math.round(n.length * TICKS_PER_STEP) };
+        const snapWord = rollSnapDef(snap).label;
+        const longer = lengthenTicks(snapLines, timing);
+        const shorter = shortenTicks(snapLines, timing);
+        const left = menuNudgeTick(snapLines, timing.tick, -1);
+        const right = menuNudgeTick(snapLines, timing.tick, 1);
         const items: ContextMenuItem[] = [
           {
             type: 'item',
@@ -2395,25 +2525,31 @@ export const PianoRoll: React.FC<{
           },
           {
             type: 'item',
-            label: 'Lengthen (+1 step)',
-            onSelect: () => updateNote(n.id, { length: n.length + 1 }),
+            label: `Lengthen (+${snapWord})`,
+            hint: 'to the next line',
+            disabled: longer === null,
+            onSelect: () => longer !== null && updateNote(n.id, { ticks: longer }),
           },
           {
             type: 'item',
-            label: 'Shorten (−1 step)',
-            disabled: n.length <= MIN_NOTE_LENGTH,
-            onSelect: () => updateNote(n.id, { length: Math.max(MIN_NOTE_LENGTH, n.length - 1) }),
+            label: `Shorten (−${snapWord})`,
+            hint: 'to the line before',
+            disabled: shorter === null,
+            onSelect: () => shorter !== null && updateNote(n.id, { ticks: shorter }),
           },
           {
             type: 'item',
             label: 'Nudge left',
-            disabled: n.step <= 0,
-            onSelect: () => updateNote(n.id, { step: Math.max(0, n.step - 1) }),
+            hint: snapWord,
+            disabled: left === null,
+            onSelect: () => left !== null && updateNote(n.id, { tick: left }),
           },
           {
             type: 'item',
             label: 'Nudge right',
-            onSelect: () => updateNote(n.id, { step: n.step + 1 }),
+            hint: snapWord,
+            disabled: right === null,
+            onSelect: () => right !== null && updateNote(n.id, { tick: right }),
           },
           { type: 'separator' },
           {
@@ -2436,7 +2572,7 @@ export const PianoRoll: React.FC<{
             position={noteMenu.position}
             onClose={noteMenu.close}
             items={items}
-            title={`${noteLabel(n.note)} · step ${n.step + 1}`}
+            title={`${noteLabel(n.note)} · step ${stepText(n.step + 1)}`}
             minWidth="12rem"
           />
         );
