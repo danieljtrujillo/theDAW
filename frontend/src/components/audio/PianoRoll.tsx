@@ -404,9 +404,12 @@ export const PianoRollTransport: React.FC<{
           name="piano-roll-bpm"
           min={40}
           max={240}
-          value={bpm}
-          onChange={(e) => setBpm(parseInt(e.target.value) || 120)}
-          className={`${FIELD_VALUE} w-9 bg-transparent border-none outline-none`}
+          step="any"
+          // A take imported at a detected tempo keeps its fraction (97.3), so
+          // the field shows it to the hundredth and takes a typed fraction.
+          value={Math.round(bpm * 100) / 100}
+          onChange={(e) => setBpm(Number.parseFloat(e.target.value) || 120)}
+          className={`${FIELD_VALUE} w-12 bg-transparent border-none outline-none`}
         />
       </div>
       <div className={FIELD}>
@@ -939,7 +942,7 @@ export const importMidiFileToRoll = (file: File): void => {
       const bent = bends.filter((b) => b.points.length).length;
       logInfo(
         'piano-roll',
-        `Imported ${flat.length} notes from "${file.name}" at ${Math.round(bpm)} BPM in ${meterLabel(meter.meterMap[0].meter)}${bent ? `, pitch bend in ${bent} lane${bent === 1 ? '' : 's'}` : ''}`,
+        `Imported ${flat.length} notes from "${file.name}" at ${Math.round(bpm * 100) / 100} BPM in ${meterLabel(meter.meterMap[0].meter)}${bent ? `, pitch bend in ${bent} lane${bent === 1 ? '' : 's'}` : ''}`,
       );
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -978,7 +981,7 @@ export const importSheetFileToRoll = (file: File): void => {
       usePianoRollStore.getState().importNotes(flat, score.bpm, { meterMap, pickupSteps: 0, lanes: [...DEFAULT_LANES] }, []);
       logInfo(
         'piano-roll',
-        `Imported ${flat.length} notes from score "${file.name}" (${score.format}) at ${Math.round(score.bpm)} BPM in ${meterLabel(meterMap[0].meter)}`,
+        `Imported ${flat.length} notes from score "${file.name}" (${score.format}) at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meterMap[0].meter)}`,
       );
     } catch (e) {
       logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);

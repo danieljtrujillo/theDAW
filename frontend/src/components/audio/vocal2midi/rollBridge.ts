@@ -2,14 +2,16 @@
  * The vocal2midi column's notes into theDAW's piano roll (pianoRollStore).
  *
  * vocal2midi keeps its notes in seconds and quantises them itself when its
- * Quantize setting asks (1/4 to 1/32, or off), so the roll takes them at the
- * ticks they arrive on (lib/takeNotes), never snapped to 16ths: a 1/32 or an
- * unquantised take stays one in the roll, and APPLY there quantises further.
- * The notes and the slides convert at the tempo importNotes gives the roll (a
- * whole BPM), so each note plays at the second it was sung at.
+ * Quantize setting asks (1/4 to 1/32, or off), at its own BPM, so the roll
+ * takes them at the ticks they arrive on (lib/rollTakes), never snapped to
+ * 16ths: a 1/32 or an unquantised take stays one in the roll, and APPLY there
+ * quantises further. The roll takes the column's BPM with its fraction (a
+ * detected 97.3 stays 97.3), so each note plays at the second it was sung at
+ * and a quantised note sits on its grid line.
  */
-import { importedRollBpm, usePianoRollStore } from '../../../state/pianoRollStore';
-import { takeToRoll, type TakeNote } from '../../../lib/takeNotes';
+import { usePianoRollStore } from '../../../state/pianoRollStore';
+import { importTake, takeRollBpm } from '../../../lib/rollTakes';
+import type { TakeNote } from '../../../lib/takeNotes';
 import { V2M_BEND_RANGE, slideBendPoints } from './audioProcessing';
 import type { NoteEvent } from './types';
 
@@ -27,11 +29,10 @@ export const noteEventTake = (notes: readonly NoteEvent[]): TakeNote[] =>
  */
 export function applyVocalNotesToRoll(notes: readonly NoteEvent[], atBpm: number, withSlides: boolean): number {
   const roll = usePianoRollStore.getState();
-  const bpm = importedRollBpm(Number.isFinite(atBpm) && atBpm > 0 ? atBpm : roll.bpm);
+  const bpm = takeRollBpm(atBpm);
   const points = withSlides ? slideBendPoints([...notes], bpm) : [];
   const bends = points.length
     ? [...roll.bends.filter((b) => b.lane !== 0).map((b) => ({ ...b, points: [] })), { lane: 0, range: V2M_BEND_RANGE, points }]
     : undefined;
-  roll.importNotes(takeToRoll(noteEventTake(notes), { bpm, idPrefix: 'v2m' }).rollNotes, bpm, undefined, bends);
-  return bpm;
+  return importTake(noteEventTake(notes), bpm, 'v2m', bends);
 }

@@ -63,8 +63,9 @@ export interface MidiFileData {
   ppq: number;
   /**
    * Beats per minute. Parsed: the tempo at tick 0, or the first tempo when none
-   * sits at tick 0, rounded; 120 when the file has no tempo. Encoded: written
-   * at tick 0 unless `tempos` holds a tick-0 entry.
+   * sits at tick 0, to three decimals as `tempos` holds it (97.3 stays 97.3, a
+   * written 97 reads 97); 120 when the file has no tempo. Encoded: written at
+   * tick 0 unless `tempos` holds a tick-0 entry.
    */
   bpm: number;
   tracks: MidiTrack[];
@@ -543,7 +544,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   const bpm = atZero.length ? atZero[atZero.length - 1].bpm : tempos.length ? tempos[0].bpm : 120;
   return {
     ppq,
-    bpm: Math.round(bpm),
+    bpm,
     tracks,
     ...(signatures.length ? { timeSignatures: signatures } : {}),
     ...(tempos.length ? { tempos } : {}),

@@ -3,12 +3,13 @@
  *
  * Every take the app turns into notes arrives in seconds: a pass played on a
  * MIDI keyboard (lib/midiCapture), the notes basic-pitch detects in a mic
- * recording or a library track (the MIDI tab's REC and ANALYZE, the track
- * menu's note detection and vocal melody rows), and the vocal2midi column's
- * notes. All of them convert here. Each edge becomes a whole tick at PPQ (960)
- * ticks to the quarter at the BPM handed in, and `step` / `length` are those
- * ticks counted in 16ths with the fraction kept, so the store's `withTicks`
- * keeps the ticks as they are.
+ * recording or a library track (the MIDI tab's REC and LOAD, the track
+ * menu's note detection and vocal melody rows), the vocal2midi column's notes
+ * and the notes a vocal capture hears (lib/vocalToMidi). All of them convert
+ * here, and lib/rollTakes hands them to the roll. Each edge becomes a whole
+ * tick at PPQ (960) ticks to the quarter at the BPM handed in, and `step` /
+ * `length` are those ticks counted in 16ths with the fraction kept, so the
+ * store's `withTicks` keeps the ticks as they are.
  *
  * Nothing is quantised: a played note stays where it was played. The roll's
  * APPLY (Q, SWING and the groove) is where a take is pulled to a grid, and the
@@ -83,7 +84,3 @@ export function takeToRoll(notes: readonly TakeNote[], opts: TakeOptions): TakeR
 /** Artifact notes (basic-pitch's answer, a vocal artifact's melody) as a take: milliseconds to seconds. */
 export const artifactTake = (notes: readonly ArtifactNote[]): TakeNote[] =>
   notes.map((n) => ({ note: n.pitch, velocity: n.velocity, startSec: n.start_ms / 1000, endSec: n.end_ms / 1000 }));
-
-/** Artifact notes as roll notes at `bpm`, from 0 ms. */
-export const artifactToRoll = (notes: readonly ArtifactNote[], bpm: number, idPrefix: string): TakeRoll =>
-  takeToRoll(artifactTake(notes), { bpm, idPrefix });

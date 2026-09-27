@@ -91,13 +91,13 @@ const assertAsHeard = (what: string, bpm: number): void => {
 }
 
 // Vocal melody to roll, from an artifact detected at 97.6 BPM: the roll takes
-// 98, and the notes convert at 98 so each plays at the second it was sung at.
+// 97.6, and the notes convert at it so each plays at the second it was sung at.
 {
   const entry = { id: 'e1', title: 'Song' } as LibraryEntry;
   const subject: TrackMenuSubject = { kind: 'library', label: 'Song', entry, loadedUrl: null };
   await runTrackMenuRow(row('melody-roll'), subject, ctx);
-  assert.equal(usePianoRollStore.getState().bpm, 98);
-  assertAsHeard('melody', 98);
+  assert.equal(usePianoRollStore.getState().bpm, 97.6);
+  assertAsHeard('melody', 97.6);
 }
 
 console.log('trackMenuActions takes tests passed');

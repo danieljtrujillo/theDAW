@@ -22,8 +22,9 @@ import { useShardIndexStore } from '../../state/shardIndexStore';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
-import { importedRollBpm, usePianoRollStore } from '../../state/pianoRollStore';
-import { artifactToRoll } from '../../lib/takeNotes';
+import { usePianoRollStore } from '../../state/pianoRollStore';
+import { artifactTake } from '../../lib/takeNotes';
+import { importTake } from '../../lib/rollTakes';
 import { useMidiSongBoxRequest } from '../../state/midiSongBoxStore';
 import { useDjSideList } from '../../state/djSideListStore';
 import { useDjSampler } from '../../state/djSamplerStore';
@@ -184,14 +185,13 @@ async function copyText(text: string, what: string): Promise<void> {
 }
 
 /**
- * Notes in milliseconds into the piano roll (importNotes), at the ticks they
+ * Notes in milliseconds into the piano roll (lib/rollTakes), at the ticks they
  * were heard on: never snapped to 16ths, since APPLY is where the roll
- * quantises. They convert at the tempo importNotes gives the roll (a whole
- * BPM), so each note plays at the second it sits at in the track.
+ * quantises. The roll takes the track's tempo with its fraction, so each note
+ * plays at the second it sits at in the track.
  */
 const importTakeToRoll = (notes: ArtifactNote[], bpm: number, prefix: string): void => {
-  const rollBpm = importedRollBpm(bpm);
-  usePianoRollStore.getState().importNotes(artifactToRoll(notes, rollBpm, prefix).rollNotes, rollBpm);
+  importTake(artifactTake(notes), bpm, prefix);
 };
 
 /** A playlist that flows by key and BPM from the entry, the entry first. */

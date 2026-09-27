@@ -52,13 +52,39 @@ const secondsInRoll = (): Array<[number, number]> => {
   assert.deepEqual(laneA?.points.map((p) => p.step), slideBendPoints(quantised, 120).map((p) => p.step));
 }
 
-// Quantize off at a detected 97.3 BPM: the roll takes 97 and the notes convert
-// at 97, so each plays at the second it was sung at.
+// A 1/32 take at a detected 97.3 BPM: the column quantises at 97.3, and the
+// roll takes 97.3 with its fraction, so every note sits on a 32nd (120 ticks)
+// however far into the take it is. The roll used to take a whole 97 and
+// convert at it, so only 3 of 400 notes sat on a 32nd, up to 60 ticks off.
+{
+  const long: NoteEvent[] = Array.from({ length: 400 }, (_, i) => ({
+    midiNote: 60 + (i % 12),
+    startTime: i * 0.4513 + 0.017,
+    duration: 0.09 + (i % 5) * 0.05,
+    velocity: 90,
+  }));
+  const quantised = quantizeNotes(long, 97.3, QuantizeValue.Q_1_32);
+  const bpm = applyVocalNotesToRoll(quantised, 97.3, false);
+  const notes = usePianoRollStore.getState().notes;
+  assert.equal(notes.length, 400);
+  const off = notes.filter((n) => (n.tick ?? -1) % 120 !== 0 || (n.ticks ?? -1) % 120 !== 0);
+  assert.equal(off.length, 0, `every note starts and ends on a 32nd (${off.length} off the grid)`);
+  assert.equal(bpm, 97.3);
+  assert.equal(usePianoRollStore.getState().bpm, 97.3, 'the roll plays at the tempo the column quantised at');
+  // And plays at the second the column put it on.
+  const halfTick = 60 / 97.3 / PPQ / 2;
+  secondsInRoll().forEach(([start], i) => {
+    assert.ok(Math.abs(start - quantised[i].startTime) <= halfTick, `note ${i} plays at its quantised second (${start} s)`);
+  });
+}
+
+// Quantize off at a detected 97.3 BPM: the roll takes 97.3 and the notes
+// convert at it, so each plays at the second it was sung at.
 {
   const bpm = applyVocalNotesToRoll(sung, 97.3, false);
-  assert.equal(bpm, 97);
-  assert.equal(usePianoRollStore.getState().bpm, 97);
-  const halfTick = 60 / 97 / PPQ / 2;
+  assert.equal(bpm, 97.3);
+  assert.equal(usePianoRollStore.getState().bpm, 97.3);
+  const halfTick = 60 / 97.3 / PPQ / 2;
   secondsInRoll().forEach(([start, dur], i) => {
     assert.ok(Math.abs(start - sung[i].startTime) <= halfTick, `note ${i} starts where it was sung (${start} s)`);
     assert.ok(Math.abs(dur - sung[i].duration) <= 2 * halfTick, `note ${i} lasts as long as it was sung (${dur} s)`);

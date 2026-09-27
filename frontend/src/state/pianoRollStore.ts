@@ -455,12 +455,13 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 export { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT };
 
 /**
- * The BPM importNotes gives the roll for a finite `bpm`: a whole number from 40
- * to 240 (any other `bpm` leaves the roll's tempo as it is). A take converted
- * to ticks at this tempo plays back at the seconds it was played or detected
- * at; one converted at the unrounded tempo drifts against its audio.
+ * The BPM importNotes gives the roll for a finite `bpm`: `bpm` held to 40-240
+ * with its fraction kept, as loadFromClip and setBpm keep it (any other `bpm`
+ * leaves the roll's tempo as it is). A take converted to ticks at this tempo
+ * plays back at the seconds it was played or detected at, and a take quantised
+ * at a fractional tempo (97.3) keeps every note on its grid line.
  */
-export const importedRollBpm = (bpm: number): number => Math.max(40, Math.min(240, Math.round(bpm)));
+export const importedRollBpm = (bpm: number): number => Math.max(40, Math.min(240, bpm));
 
 const validStepsPerBeat = (stepsPerBeat?: number): number =>
   isNum(stepsPerBeat) && stepsPerBeat > 0 ? stepsPerBeat : ROLL_STEPS_PER_BEAT;
