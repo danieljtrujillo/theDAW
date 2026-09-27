@@ -8,6 +8,7 @@ import { ColonyEngine } from './colonyEngine.ts';
 import { LoomEngine } from './loomEngine.ts';
 import { parseColony } from './colony.ts';
 import { parseLoom } from './loomScore.ts';
+import { getEngineCtx } from '../state/playerStore.ts';
 
 class FakeNode {
   gain = { value: 1 };
@@ -92,6 +93,41 @@ const hooks = { resolve: () => null, semitonesFor: () => 0 };
   } finally {
     e2.stop();
   }
+}
+
+// A lane score's meter holds only while a score line says so: a score swapped
+// in without the line (at once, or queued to the master wrap) gives the clock
+// back the meter it had before, and so does STOP.
+{
+  const M44 = [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }];
+  const M78 = [{ bar: 0, meter: { num: 7, den: 8, groups: [2, 2, 3] } }];
+  beatClock.setMeterMap(M44);
+  const withMeter = parseLoom('bpm 120\nmeter 7/8 2+2+3\nlane d 1/16 x14\n  k . . . s . . . k . . . s .\n').score;
+  const plain = parseLoom('bpm 120\nlane d 1/16 x16\n  k . . . s . . . k . . . s . . .\n').score;
+  const eng = new LoomEngine(hooks);
+  eng.setScore(withMeter, { immediate: true });
+  eng.start();
+  try {
+    assert.deepEqual(beatClock.meterMap, M78);
+    eng.setScore(plain, { immediate: true });
+    assert.deepEqual(beatClock.meterMap, M44, 'the meter line deleted: the clock counts 4/4 again');
+    eng.setScore(withMeter, { immediate: true });
+    assert.deepEqual(beatClock.meterMap, M78);
+    // Queued: the swap waits for the master lane to wrap.
+    eng.setScore(plain);
+    assert.deepEqual(beatClock.meterMap, M78, 'a queued score changes nothing before the wrap');
+    // A minute past the master lane's next step, so it wraps inside one tick.
+    const master = (eng as unknown as { runners: Array<{ nextTime: number }> }).runners[0];
+    (getEngineCtx() as unknown as FakeCtx).currentTime = master.nextTime + 60;
+    (eng as unknown as { tick: () => void }).tick();
+    assert.equal(eng.hasQueued, false, 'the queued score swapped in at the wrap');
+    assert.deepEqual(beatClock.meterMap, M44, 'the swapped score has no meter line: 4/4 again');
+    eng.setScore(withMeter, { immediate: true });
+    assert.deepEqual(beatClock.meterMap, M78);
+  } finally {
+    eng.stop();
+  }
+  assert.deepEqual(beatClock.meterMap, M44, 'STOP gives the clock its meter back');
 }
 
 console.log('loomClockMeter: ok');
