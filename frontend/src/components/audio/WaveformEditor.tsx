@@ -5121,9 +5121,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                         background: 'rgba(168, 85, 247, 0.18)',
                       }}
                     >
-                      <span className="absolute top-0.5 left-1 text-[8px] font-mono text-purple-300 pointer-events-none leading-none">
-                        {(inpaintSelection.endSec - inpaintSelection.startSec).toFixed(2)}s
-                      </span>
+                      {/* The selection's length, below the clip header so the
+                          tempo/key readout stays visible; drawn only when the
+                          selection is wide enough to hold it. */}
+                      {(inpaintSelection.endSec - inpaintSelection.startSec) * zoom >= 48 && (
+                        <span className="absolute top-4 left-1 rounded bg-black/60 px-1 py-0.5 font-sans text-xs font-bold leading-none text-purple-200 tabular-nums whitespace-nowrap pointer-events-none">
+                          {(inpaintSelection.endSec - inpaintSelection.startSec).toFixed(2)}s
+                        </span>
+                      )}
                     </div>
                   )}
                   {/* Resize handles — z-20 to stay above inpaint drag target */}
