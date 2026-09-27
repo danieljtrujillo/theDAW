@@ -63,6 +63,7 @@ import {
   filterNotes as filterNotesPure,
   fixOverlaps as fixOverlapsPure,
   humanizeNotes,
+  noteEndStep,
   nudgeNotes as nudgeNotesPure,
   quantizeNotes,
   scaleVelocity as scaleVelocityPure,
@@ -346,7 +347,7 @@ const commitNotes = async (
   if (notes.length === 0) {
     return { ok: false, error: `refusing: that would leave "${clip.label}" with no notes at all` };
   }
-  const totalSteps = notes.reduce((end, n) => Math.max(end, n.step + n.length), 16);
+  const totalSteps = noteEndStep(notes, 16);
   const next: AudioClip = {
     ...clip,
     sourcePianoRoll: notes,

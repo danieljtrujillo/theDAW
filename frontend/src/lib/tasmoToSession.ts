@@ -11,14 +11,13 @@
 // seconds-based shape the grid renders.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import { ticksMatching, type TasmoProjectLoaded } from './projectClient';
+import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
-  const stepSec = 60 / Math.max(40, bpm) / 4; // one 16th-note step in seconds
 
   const tracks: DawTrack[] = loaded.tracks.map((t, ti) => {
     // A file written from a real grid already knows where every clip goes.
@@ -27,24 +26,36 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       ? [...t.clips]
       : [...t.clips].sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
     const clips: DawClip[] = sorted.map((c, ci) => {
-      const isMidi =
-        c.clip_type === 'midi' && Array.isArray(c.midi_notes) && c.midi_notes.length > 0;
+      // The notes as they sound: `midi_notes` when the file carries them, else
+      // the roll notes unrolled across the clip's lanes, which is all a
+      // piano-roll clip saved with only its roll notes has (clipNotesToTasmo).
+      const stepNotes: Array<Record<string, number>> =
+        Array.isArray(c.midi_notes) && c.midi_notes.length > 0
+          ? c.midi_notes
+          : c.clip_type === 'midi'
+            ? playedNotesFromRoll(tasmoMeterToClip(c)).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity }))
+            : [];
+      const isMidi = c.clip_type === 'midi' && stepNotes.length > 0;
+      // Steps are 16ths at the tempo the clip's notes were written at.
+      const clipStepSec = 60 / Math.max(40, tasmoClipBpm(c, bpm)) / 4;
       return {
         name: c.name || `Clip ${ci + 1}`,
         start_time: c.start_time ?? 0,
         end_time: c.end_time ?? 0,
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
-          ? (c.midi_notes ?? []).map((n) => {
+          ? stepNotes.map((n) => {
               const length = Number(n.length ?? 1);
-              // The note's own ticks when the file carries them; a length in
-              // steps alone keeps its length down to the roll's one tick, so a
-              // note shorter than a 16th keeps its length either way.
+              // The note's own ticks when the file carries them, else its own
+              // length in steps down to the roll's one tick (a missing or
+              // non-positive one reads as one step): flooring it to a step
+              // turned a saved triplet sixteenth into a full sixteenth.
               const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
+              const steps = ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : length > 0 ? Math.max(MIN_NOTE_STEPS, length) : 1;
               return {
                 pitch: Number(n.note ?? n.pitch ?? 60),
-                start: Number(n.step ?? 0) * stepSec,
-                duration: (ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : Math.max(MIN_NOTE_STEPS, length)) * stepSec,
+                start: Number(n.step ?? 0) * clipStepSec,
+                duration: steps * clipStepSec,
                 velocity: Number(n.velocity ?? 100),
               };
             })

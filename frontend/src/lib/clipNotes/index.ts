@@ -16,6 +16,7 @@ export {
   STEPS_PER_BEAT,
   divisionToSteps,
   msToSteps,
+  noteEndStep,
   secToStep,
   stepToSec,
   stepsToMs,

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import msgpack
 
+from backend.lib.atomic import atomic_replace, temp_sibling
 from backend.modules.project.tasmo_project import TasmoProject
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,14 @@ class TasmoFile:
         into the archive and every one of those ``audio_file`` references is
         rewritten to a portable in-zip path (``audio/<name>``), so the project,
         including its comps, round-trips on another machine.
+
+        The archive is written beside ``path`` and moved over it only once it
+        is complete, so a save that fails part way (a disk that fills, an
+        unreadable upload) leaves the file that was there before untouched.
+        Writing straight into ``path`` truncated it on open, and a failure
+        after that left the user's project replaced by a partial archive.
+        ``atomic_write`` is not used because it takes the whole payload as one
+        value, and an embedded-audio archive can be hundreds of megabytes.
         """
         project.modified_at = datetime.now(timezone.utc).isoformat()
         if embed_audio and audio_files is None:
@@ -57,19 +66,28 @@ class TasmoFile:
         }
 
         total_size = len(project_bytes)
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.comment = TASMO_COMMENT
-            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            zf.writestr("project.msgpack", project_bytes)
+        tmp = temp_sibling(path)
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.comment = TASMO_COMMENT
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                zf.writestr("project.msgpack", project_bytes)
 
-            if audio_files:
-                for name, data in audio_files.items():
-                    zf.writestr(f"audio/{name}", data)
-                    total_size += len(data)
+                if audio_files:
+                    for name, data in audio_files.items():
+                        zf.writestr(f"audio/{name}", data)
+                        total_size += len(data)
 
-            if vst_presets:
-                for name, data in vst_presets.items():
-                    zf.writestr(f"vst_presets/{name}", data)
+                if vst_presets:
+                    for name, data in vst_presets.items():
+                        zf.writestr(f"vst_presets/{name}", data)
+            atomic_replace(tmp, path)
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                log.debug("TasmoFile.save: leftover temp file %s", tmp)
+            raise
 
         if total_size > SOFT_SIZE_WARN_BYTES:
             log.warning(

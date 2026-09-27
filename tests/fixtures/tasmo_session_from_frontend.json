@@ -1,0 +1,311 @@
+{
+  "project": {
+    "project_name": "Fixture",
+    "tempo": 120,
+    "time_signature": [
+      4,
+      4
+    ],
+    "tracks": [
+      {
+        "id": "f1",
+        "name": "Strings",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#fff",
+        "clips": [],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": null,
+        "parent_track_id": null,
+        "is_folder": true,
+        "collapsed": true
+      },
+      {
+        "id": "t1",
+        "name": "t1",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#fff",
+        "clips": [
+          {
+            "id": "plain",
+            "name": "plain",
+            "clip_type": "midi",
+            "track_id": "t1",
+            "start_time": 0,
+            "end_time": 1,
+            "audio_file": "audio/plain.wav",
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              }
+            ],
+            "midi_notes": [
+              {
+                "note": 60,
+                "step": 0,
+                "length": 0.6666666666666666,
+                "velocity": 100,
+                "tick": 0,
+                "ticks": 160
+              },
+              {
+                "note": 64,
+                "step": 0.6666666666666666,
+                "length": 0.6666666666666666,
+                "velocity": 100,
+                "tick": 160,
+                "ticks": 160,
+                "channel": 3,
+                "expr": {
+                  "pressure": 0.25,
+                  "timbre": 0.75,
+                  "pitch_bend": -0.5
+                }
+              }
+            ],
+            "instrument_program": 42,
+            "rendered_program": 42,
+            "source_bpm": 90,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": 40,
+        "parent_track_id": "f1",
+        "is_folder": false,
+        "collapsed": false
+      },
+      {
+        "id": "t2",
+        "name": "t2",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#fff",
+        "clips": [
+          {
+            "id": "looped",
+            "name": "looped",
+            "clip_type": "midi",
+            "track_id": "t2",
+            "start_time": 0,
+            "end_time": 1,
+            "audio_file": "audio/looped.wav",
+            "roll_notes": [
+              {
+                "note": 36,
+                "step": 0,
+                "length": 1,
+                "velocity": 100,
+                "lane": 1,
+                "tick": 0,
+                "ticks": 240
+              }
+            ],
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              },
+              {
+                "id": 1,
+                "name": "B",
+                "cycle_steps": 4
+              }
+            ],
+            "instrument_program": null,
+            "rendered_program": null,
+            "source_bpm": 120,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          },
+          {
+            "id": "edited",
+            "name": "edited",
+            "clip_type": "midi",
+            "track_id": "t2",
+            "start_time": 2,
+            "end_time": 3,
+            "audio_file": "audio/edited.wav",
+            "roll_notes": [
+              {
+                "note": 60,
+                "step": 0,
+                "length": 1,
+                "velocity": 100,
+                "tick": 0,
+                "ticks": 240
+              }
+            ],
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              }
+            ],
+            "midi_notes": [
+              {
+                "note": 60,
+                "step": 0,
+                "length": 1,
+                "velocity": 30,
+                "tick": 0,
+                "ticks": 240
+              }
+            ],
+            "instrument_program": null,
+            "rendered_program": null,
+            "source_bpm": null,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": null,
+        "parent_track_id": null,
+        "is_folder": false,
+        "collapsed": false
+      },
+      {
+        "id": "t3",
+        "name": "t3",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#fff",
+        "clips": [
+          {
+            "id": "tagged",
+            "name": "tagged",
+            "clip_type": "audio",
+            "track_id": "t3",
+            "start_time": 0,
+            "end_time": 1,
+            "audio_file": "audio/tagged.wav",
+            "midi_notes": null,
+            "source_bpm": 92,
+            "bpm": 124,
+            "library_entry_id": "lib-7",
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          },
+          {
+            "id": "untagged",
+            "name": "untagged",
+            "clip_type": "audio",
+            "track_id": "t3",
+            "start_time": 1,
+            "end_time": 2,
+            "audio_file": "audio/untagged.wav",
+            "midi_notes": null,
+            "source_bpm": null,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": null,
+        "parent_track_id": null,
+        "is_folder": false,
+        "collapsed": false
+      }
+    ],
+    "buses": [],
+    "locators": [],
+    "loop": null,
+    "master_fx_chain": [],
+    "master_vst_chain": [],
+    "automation_lanes": [],
+    "controller_mappings": null
+  },
+  "files": [
+    "plain.wav",
+    "looped.wav",
+    "edited.wav",
+    "tagged.wav",
+    "untagged.wav"
+  ]
+}

@@ -44,6 +44,17 @@ export const stepsToTicks = (steps: number): number =>
   (steps / STEPS_PER_BEAT) * PPQ;
 
 /**
+ * The step just past the last note's end, or `floor` when that is later (0 by
+ * default). A loop: `Math.max(...notes.map(...))` passes one argument per note
+ * and throws "Maximum call stack size exceeded" at symphony-sized clips.
+ */
+export const noteEndStep = (notes: readonly { step: number; length: number }[], floor = 0): number => {
+  let end = floor;
+  for (const n of notes) end = Math.max(end, n.step + n.length);
+  return end;
+};
+
+/**
  * Grid step for each snap division, in beats. Mirrors the table the timeline
  * editor snaps to (`SNAP_BEATS` in `state/editorStore.ts`) so the assistant and
  * the toolbar agree on what "1/8T" means. Triplets are 2/3 of the straight

@@ -5,10 +5,12 @@ import { dawDeviceToEffectNode } from './dawEffectMap';
 import type { SwayBinding, SwayUnattached } from './swayImportResolve';
 import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
-import type { PianoNote } from '../state/pianoRollStore';
-import { normalizeMeterMap } from './meterMap';
+import { DEFAULT_LANES, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
+import { normalizeMeterMap, roundUpToBar } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
+import { playedRollNotes } from './rollClip';
+import { noteEndStep } from './clipNotes/units';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
 /** A time-signature change: the meter from `bar` until the next change. */
@@ -24,11 +26,19 @@ export interface TasmoPolyLane {
   cycle_steps: number | null;
 }
 
+/** A note's expression as the file carries it: the roll's `NoteExpression`, keys in the file's snake_case. */
+export interface TasmoNoteExpression {
+  pressure?: number;
+  timbre?: number;
+  pitch_bend?: number;
+}
+
 /**
- * A piano-roll note as a MIDI clip stores it; `lane` only when the note sits in
- * one. `tick` and `ticks` are the note's own position and length at 960 to the
- * quarter (the roll's PPQ), written when the note has them; `step` and `length`
- * are always written too, so a build that reads only those opens the file.
+ * A piano-roll note as a MIDI clip stores it. `lane` only when the note sits in
+ * one. `tick`/`ticks` are the note itself at 960 PPQ (the roll's clock), written
+ * while they agree with `step`/`length`, the 16th-step view of them that older
+ * readers know. `channel` (1-16) and `expr` only when the note has them. A
+ * reader that knows only the first four keys still gets a playable note.
  */
 export interface TasmoStepNote {
   note: number;
@@ -38,6 +48,8 @@ export interface TasmoStepNote {
   lane?: number;
   tick?: number;
   ticks?: number;
+  channel?: number;
+  expr?: TasmoNoteExpression;
 }
 
 /** A pitch bend point as a piano-roll clip stores it; `shape` only when it is not `linear`. */
@@ -230,9 +242,11 @@ export interface TasmoClipInput {
   audio_file?: string | null;
   /** Carried so MIDI clips survive the round-trip (the backend Clip model keeps
    *  these). The shape is whatever the importer produced; the loader is tolerant.
-   *  A piano-roll clip writes the notes as they sound, lane repeats written out. */
+   *  A piano-roll clip writes the notes as they sound, lane repeats written out,
+   *  unless its roll notes alone rebuild them (see clipNotesToTasmo). */
   midi_notes?: unknown[] | null;
-  /** A piano-roll clip's own notes with their lanes, which the roll loads. */
+  /** A piano-roll clip's own notes with their lanes, which the roll loads.
+   *  Left out when they are the played notes as written (see clipNotesToTasmo). */
   roll_notes?: TasmoStepNote[] | null;
   loop_start?: number | null;
   loop_end?: number | null;
@@ -270,6 +284,17 @@ export interface TasmoClipInput {
   takes?: TasmoTake[] | null;
   comp?: TasmoCompRegion[] | null;
   active_take_index?: number | null;
+  /** MIDI clips: the clip's own GM program (0-127) and the program its
+   *  embedded audio was rendered with. Any clip: `source_bpm`, the tempo a MIDI
+   *  clip's notes were written at or an audio clip was tagged with. Optional so
+   *  a payload built before they were written still validates. */
+  instrument_program?: number | null;
+  rendered_program?: number | null;
+  source_bpm?: number | null;
+  /** The tempo the audio plays at after a beat match or a stretch, and the
+   *  library entry the clip came from. Optional for the same reason. */
+  bpm?: number | null;
+  library_entry_id?: string | null;
 }
 
 export interface TasmoTrackInput {
@@ -289,6 +314,14 @@ export interface TasmoTrackInput {
   output_routing?: string | null;
   /** Bus id -> linear send gain. */
   send_amounts?: Record<string, number>;
+  /** The GM program (0-127) this track's MIDI clips play through when a clip
+   *  has none of its own. */
+  instrument_program?: number | null;
+  /** Arrangement folders: the folder this track sits in (absent = the root),
+   *  whether this track is a folder, and whether that folder shows its rows. */
+  parent_track_id?: string | null;
+  is_folder?: boolean;
+  collapsed?: boolean;
 }
 
 /**
@@ -353,11 +386,23 @@ export interface TasmoLoadedClip {
   start_time?: number;
   end_time?: number;
   audio_file: string | null;
+  /** The notes as they sound. Absent from a piano-roll clip saved with only its
+   *  roll notes (see clipNotesToTasmo), and from every audio clip. */
   midi_notes?: Array<Record<string, number>> | null;
   /** A piano-roll clip's own notes with their lanes; absent in .tasmo files
    *  written before the roll had lanes. */
   roll_notes?: TasmoStepNote[] | null;
-  instrument_program?: number;
+  /** The clip's own GM program, the program its audio was rendered with, and
+   *  its tempo (a MIDI clip's notes, or an audio clip's tag); null or absent in
+   *  files written before they were saved, and only as trustworthy as the file. */
+  instrument_program?: number | null;
+  rendered_program?: number | null;
+  source_bpm?: number | null;
+  /** An audio clip's tempo after a beat match or a stretch, and the library
+   *  entry it came from; null or absent in files written before they were
+   *  saved. */
+  bpm?: number | null;
+  library_entry_id?: string | null;
   /** Per-clip mute; absent in .tasmo files written before the field existed. */
   muted?: boolean;
   /** Linear clip gain (1 = unity) and fade lengths in seconds; absent in .tasmo
@@ -406,7 +451,8 @@ export interface TasmoLoadedTrack {
   mute?: boolean;
   solo?: boolean;
   color?: string | null;
-  instrument_program?: number;
+  /** The track's GM program; null or absent in files written before it was saved. */
+  instrument_program?: number | null;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in
@@ -414,6 +460,11 @@ export interface TasmoLoadedTrack {
   output_routing?: string | null;
   /** Bus id -> linear send gain; absent in those same older files. */
   send_amounts?: Record<string, number>;
+  /** Arrangement folders; absent in files written before folders were saved,
+   *  which load flat. The reader resets a parent that names no folder. */
+  parent_track_id?: string | null;
+  is_folder?: boolean;
+  collapsed?: boolean;
 }
 
 export interface TasmoProjectLoaded {
@@ -472,21 +523,37 @@ const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
  * within half a tick, else undefined: a note's stored ticks, kept only while
  * they still agree with the step view written beside them.
  */
-export const ticksMatching = (ticks: unknown, steps: number, min: number): number | undefined =>
-  typeof ticks === 'number' && Number.isInteger(ticks) && ticks >= min && Number.isFinite(steps) && Math.abs(ticks - steps * TICKS_PER_STEP) < 0.5
+export const ticksMatching = (ticks: unknown, steps: unknown, min: number): number | undefined =>
+  typeof ticks === 'number' && Number.isInteger(ticks) && ticks >= min && typeof steps === 'number' && Number.isFinite(steps) && Math.abs(ticks - steps * TICKS_PER_STEP) < 0.5
     ? ticks
     : undefined;
 
+/** A note's expression in the file shape, or undefined when it has none. */
+const exprToTasmo = (e: NoteExpression | undefined): TasmoNoteExpression | undefined => {
+  if (!e) return undefined;
+  const out: TasmoNoteExpression = {
+    ...(e.pressure !== undefined ? { pressure: e.pressure } : {}),
+    ...(e.timbre !== undefined ? { timbre: e.timbre } : {}),
+    ...(e.pitchBend !== undefined ? { pitch_bend: e.pitchBend } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
+};
+
 /**
- * A piano-roll note in the .tasmo shape, carrying `lane` when the note has one,
- * and `tick` / `ticks` when the note has them and they still agree with its
- * `step` / `length`. The ticks keep a triplet edge exact, and before this build
- * a note shorter than a 16th with no ticks reopened a whole 16th long, since a
- * length in steps floored at one step.
+ * A piano-roll note in the .tasmo shape, carrying `lane`, `channel` and `expr`
+ * when the note has them.
+ *
+ * `tick` and `ticks` are written only while each agrees with the step view
+ * (within half a tick, the rule the roll's `timingOf` keeps). They keep a
+ * triplet edge exact, and a reader that has them never floors a note shorter
+ * than a 16th. A helper that rewrites `step` on a copy of a note, as EDIT's
+ * quantize does to a clip's played notes, leaves the old `tick` behind; writing
+ * it would put the note back where it was before the edit.
  */
 export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
   const tick = ticksMatching(n.tick, n.step, 0);
   const ticks = ticksMatching(n.ticks, n.length, MIN_NOTE_TICKS);
+  const expr = exprToTasmo(n.expr);
   return {
     note: n.note,
     step: n.step,
@@ -495,6 +562,8 @@ export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
     ...(n.lane !== undefined ? { lane: n.lane } : {}),
     ...(tick !== undefined ? { tick } : {}),
     ...(ticks !== undefined ? { ticks } : {}),
+    ...(n.channel !== undefined ? { channel: n.channel } : {}),
+    ...(expr ? { expr } : {}),
   };
 };
 
@@ -521,12 +590,42 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
 const numberAtLeast = (v: unknown, min: number): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) && v >= min ? v : undefined;
 
+const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
+
+/**
+ * The optional per-note fields of a file note, in the roll's shape: `lane` (a
+ * whole number 0 or more), `tick` and `ticks` (whole, and only while they agree
+ * with the note's `step` / `length` to within half a tick: `ticksMatching`),
+ * `channel` (brought into 1-16 and rounded) and `expr` (each dimension clamped
+ * to its range). Anything else is left out. Channel and expression follow the
+ * roll's own ingest rule (`withTicks` in pianoRollStore). Ticks that disagree
+ * with the steps beside them (a hand-edited file) are dropped, so the steps win.
+ */
+export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> => {
+  const out: Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> = {};
+  const { lane, channel } = n;
+  const tick = ticksMatching(n.tick, n.step, 0);
+  const ticks = ticksMatching(n.ticks, n.length, MIN_NOTE_TICKS);
+  if (typeof lane === 'number' && Number.isInteger(lane) && lane >= 0) out.lane = lane;
+  if (tick !== undefined) out.tick = tick;
+  if (ticks !== undefined) out.ticks = ticks;
+  if (typeof channel === 'number' && Number.isFinite(channel)) out.channel = Math.max(1, Math.min(16, Math.round(channel)));
+  if (n.expr && typeof n.expr === 'object') {
+    const e = n.expr as Record<string, unknown>;
+    const expr: NoteExpression = {};
+    if (typeof e.pressure === 'number' && Number.isFinite(e.pressure)) expr.pressure = clampUnit(e.pressure);
+    if (typeof e.timbre === 'number' && Number.isFinite(e.timbre)) expr.timbre = clampUnit(e.timbre);
+    if (typeof e.pitch_bend === 'number' && Number.isFinite(e.pitch_bend)) expr.pitchBend = Math.max(-1, Math.min(1, e.pitch_bend));
+    if (Object.keys(expr).length) out.expr = expr;
+  }
+  return out;
+};
+
 /**
  * The inverse of pianoNoteToTasmo for a list. A note needs a pitch 0-127, a step
  * of 0 or more and a length above 0, or it is left out; velocity clamps to
- * 1-127 (100 when missing) and a lane that is not a whole number 0 or more is
- * dropped. `tick` / `ticks` come back when they are whole and agree with the
- * step / length beside them. The file stores no ids, so each note gets
+ * 1-127 (100 when missing), and the optional fields are read by
+ * `tasmoNoteExtras`. The file stores no ids, so each note gets
  * `<idPrefix>-<index>`.
  */
 export const tasmoNotesToPiano = (raw: readonly unknown[] | null | undefined, idPrefix = 'rn'): PianoNote[] => {
@@ -539,18 +638,13 @@ export const tasmoNotesToPiano = (raw: readonly unknown[] | null | undefined, id
     const length = numberAtLeast(n.length, Number.MIN_VALUE);
     if (note === undefined || note > 127 || step === undefined || length === undefined) continue;
     const velocity = typeof n.velocity === 'number' && Number.isFinite(n.velocity) ? Math.max(1, Math.min(127, n.velocity)) : 100;
-    const lane = n.lane;
-    const tick = ticksMatching(n.tick, step, 0);
-    const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
     out.push({
       id: `${idPrefix}-${out.length}`,
       note: Math.round(note),
       step,
       length,
       velocity,
-      ...(typeof lane === 'number' && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
-      ...(tick !== undefined ? { tick } : {}),
-      ...(ticks !== undefined ? { ticks } : {}),
+      ...tasmoNoteExtras(n),
     });
   }
   return out;
@@ -590,6 +684,86 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
   return out;
 };
 
+/** The grid length a piano-roll clip plays over: its own, else the end of
+ *  `notes` rounded up to a bar line of its meter map (4/4 when it has none). */
+export const clipTotalSteps = (meter: ClipMeterFields, notes: readonly PianoNote[]): number =>
+  meter.sourceTotalSteps ?? roundUpToBar(meter.sourceMeterMap ?? [], noteEndStep(notes, 1), meter.sourcePickupSteps ?? 0);
+
+/**
+ * A piano-roll clip's played notes rebuilt from its roll notes: unrolled across
+ * its lanes over its grid length, lane ids dropped. It is `playedRollNotes`, the
+ * call a bounce writes `sourcePianoRoll` with, so a clip saved with only its
+ * roll notes reloads playing what it played. [] when there are no roll notes.
+ */
+export const playedNotesFromRoll = (meter: ClipMeterFields): PianoNote[] => {
+  const own = meter.sourceRollNotes ?? [];
+  if (!own.length) return [];
+  const lanes = sanitizeLanes(meter.sourceLanes?.length ? meter.sourceLanes : DEFAULT_LANES);
+  return playedRollNotes(own, lanes, clipTotalSteps(meter, own));
+};
+
+/** What a note sounds like, as one comparable string; ids and ticks left out. */
+const soundingKey = (n: PianoNote): string =>
+  `${n.note}|${n.step}|${n.length}|${n.velocity}|${n.lane ?? ''}|${n.channel ?? ''}|` +
+  `${n.expr?.pressure ?? ''}|${n.expr?.timbre ?? ''}|${n.expr?.pitchBend ?? ''}`;
+
+/** Whether two note lists sound the same, in any order. */
+const sameSounding = (a: readonly PianoNote[], b: readonly PianoNote[]): boolean => {
+  if (a.length !== b.length) return false;
+  const ka = a.map(soundingKey).sort();
+  const kb = b.map(soundingKey).sort();
+  return ka.every((k, i) => k === kb[i]);
+};
+
+/**
+ * A piano-roll clip's notes, grid length and meter in the .tasmo shape, each
+ * note stored once where the file allows it. Three cases, checked in order on
+ * the file shape through the reader's own mapper, so each approves only what a
+ * reload really reproduces:
+ *
+ * 1. The roll notes play exactly as written (no note in a lane, no lane bend):
+ *    they are the played notes, so only `midi_notes` is written. Every build
+ *    reads `midi_notes`, so a build older than this one still opens the clip as
+ *    a roll clip, and this one loads it the way it loads any clip without roll
+ *    notes (`clipRollLoad` then opens the roll on the played notes).
+ * 2. Unrolling the roll notes across the clip's lanes gives exactly the played
+ *    notes: only `roll_notes` is written, and the reader rebuilds the played
+ *    notes with `playedNotesFromRoll`, the call the bounce used.
+ * 3. Anything else (played notes edited apart from the roll notes, as EDIT's
+ *    note tools do, or no roll notes at all) writes both, so nothing the clip
+ *    plays is lost.
+ */
+export const clipNotesToTasmo = (
+  c: ClipMeterFields & Pick<AudioClip, 'sourcePianoRoll'>,
+): TasmoMeterFields & Pick<TasmoClipInput, 'midi_notes'> => {
+  const meter = clipMeterToTasmo(c);
+  const played = c.sourcePianoRoll;
+  const midiNotes = played ? played.map(pianoNoteToTasmo) : null;
+  const reloaded = meter.roll_notes?.length ? tasmoMeterToClip(meter) : undefined;
+  if (played?.length && reloaded?.sourceRollNotes?.length) {
+    if (!reloaded.sourceBends?.length && sameSounding(reloaded.sourceRollNotes, played)) {
+      const { roll_notes: _once, ...rest } = meter;
+      return { ...rest, midi_notes: midiNotes };
+    }
+    if (sameSounding(playedNotesFromRoll(reloaded), played)) return meter;
+  }
+  return { ...meter, midi_notes: midiNotes };
+};
+
+/** A GM program from a file: a whole number 0-127, else undefined. */
+export const gmProgramOf = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 127 ? v : undefined;
+
+/** A clip's own tempo from a file: a positive finite `source_bpm`, else
+ *  undefined (a file written before source_bpm existed, or a clip with none). */
+export const tasmoOwnBpm = (c: Pick<TasmoLoadedClip, 'source_bpm'>): number | undefined =>
+  typeof c.source_bpm === 'number' && Number.isFinite(c.source_bpm) && c.source_bpm > 0 ? c.source_bpm : undefined;
+
+/** The tempo a MIDI clip's notes were written at: its own `source_bpm` when the
+ *  file has a usable one, else the project tempo. */
+export const tasmoClipBpm = (c: Pick<TasmoLoadedClip, 'source_bpm'>, projectBpm: number): number =>
+  tasmoOwnBpm(c) ?? projectBpm;
+
 export const projectApi = {
   save: (project: TasmoProjectInput, path: string, embed_audio: boolean) =>
     postJson<{ status: string; path: string; manifest: ProjectManifest }>('/api/project/save', {
@@ -606,7 +780,9 @@ export const projectApi = {
     files: Array<{ name: string; blob: Blob }>,
   ) => {
     const form = new FormData();
-    form.append('project', JSON.stringify(project));
+    // A FILE part, not a text field: the backend's form parser holds a text
+    // part to 1 MB, which about 9,000 notes filled, and the save failed.
+    form.append('project', new Blob([JSON.stringify(project)], { type: 'application/json' }), 'project.json');
     form.append('path', path);
     for (const f of files) form.append('files', f.blob, f.name);
     return postForm<{ status: string; path: string; manifest: ProjectManifest }>(

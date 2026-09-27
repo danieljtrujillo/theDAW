@@ -1138,13 +1138,17 @@ const migrateRouting = (
   if (!g.nodes.some((n) => n.id === MASTER_ID)) {
     g = { nodes: [...emptyGraph().nodes, ...g.nodes], edges: g.edges };
   }
+  // A folder is an arrangement row with no audio node (`addFolderFromSelectedTracks`
+  // and `addTrack` give it none), so a loaded one gets none either, and a node a
+  // saved graph holds for one is pruned with the other dead nodes.
+  const audioTracks = tracks.filter((t) => !t.isFolder);
   const live = new Set<string>([MASTER_ID]);
-  for (const t of tracks) live.add(t.id);
+  for (const t of audioTracks) live.add(t.id);
   for (const b of buses) live.add(b.id);
   for (const id of g.nodes.map((n) => n.id)) {
     if (!live.has(id)) g = graphRemoveNode(g, id);
   }
-  for (const t of tracks) g = ensureTrackNode(g, t.id, t.name);
+  for (const t of audioTracks) g = ensureTrackNode(g, t.id, t.name);
   for (const b of buses) g = graphAddBus(g, b.id, b.name);
   return g;
 };

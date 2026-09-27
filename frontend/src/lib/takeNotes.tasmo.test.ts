@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { takeToRoll } from './takeNotes.ts';
 import { captureEditorSession, loadProjectIntoEditor } from './projectImport.ts';
 import { tasmoNotesToPiano } from './projectClient.ts';
+import { clipRollLoad } from './rollClip.ts';
 import { tasmoLoadedToDawProject } from './tasmoToSession.ts';
 import { useEditorStore } from '../state/editorStore.ts';
 import { usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
@@ -73,20 +74,20 @@ useEditorStore.setState({
   loopEnd: 0,
 });
 
-// SAVE: both note lists carry the ticks, and the steps a build that reads only
-// steps would use.
+// SAVE: the take has no lanes and no bends, so its roll notes are the notes it
+// plays and the file keeps them once, as midi_notes (clipNotesToTasmo). Each
+// carries its ticks, and the steps a build that reads only steps would use.
 const session = captureEditorSession();
 const saved = JSON.parse(JSON.stringify(session.tracks[0].clips![0])) as {
   midi_notes: Array<Record<string, number>>;
-  roll_notes: Array<Record<string, number>>;
+  roll_notes?: Array<Record<string, number>>;
 };
-for (const list of [saved.midi_notes, saved.roll_notes]) {
-  assert.deepEqual(
-    list.map((n) => [n.note, n.tick, n.ticks, n.step, n.length]),
-    timing(rollNotes),
-    'each note is written with its ticks and the steps they make',
-  );
-}
+assert.equal(saved.roll_notes, undefined, 'the notes are not stored twice');
+assert.deepEqual(
+  saved.midi_notes.map((n) => [n.note, n.tick, n.ticks, n.step, n.length]),
+  timing(rollNotes),
+  'each note is written with its ticks and the steps they make',
+);
 
 // OPEN: serve the embedded audio back the way /clip-audio does.
 const realFetch = globalThis.fetch;
@@ -107,11 +108,11 @@ try {
 }
 const loaded = useEditorStore.getState().clips[0];
 assert.ok(loaded, 'the clip opened');
-assert.deepEqual(timing(loaded.sourceRollNotes), timing(rollNotes), 'the roll notes come back at their ticks');
-assert.deepEqual(timing(loaded.sourcePianoRoll), timing(rollNotes), 'and so does the sounding copy');
+assert.deepEqual(timing(loaded.sourcePianoRoll), timing(rollNotes), 'the notes come back at their ticks');
 
-// Edit in Piano Roll: the roll holds the 32nd and the flam as they were played.
-usePianoRollStore.getState().loadFromClip(loaded.id, loaded.sourceRollNotes ?? [], loaded.sourceBpm ?? 120, loaded.sourceTotalSteps ?? 16);
+// Edit in Piano Roll (clipRollLoad opens a clip with no roll notes of its own on
+// its played notes): the roll holds the 32nd and the flam as they were played.
+usePianoRollStore.getState().loadFromClip(...clipRollLoad(loaded));
 assert.deepEqual(timing(usePianoRollStore.getState().notes), timing(rollNotes), 'the roll opens the take as it was played');
 
 // The Session tab plays the same file's notes at their own lengths: the 32nd
@@ -137,7 +138,7 @@ assert.deepEqual(timing(usePianoRollStore.getState().notes), timing(rollNotes), 
 // A file written before the ticks (step / length only) keeps its lengths: the
 // roll floors a length in steps at its one tick, so the 32nd stays a 32nd.
 {
-  const legacy = saved.roll_notes.map(({ tick: _t, ticks: _ts, ...n }) => n);
+  const legacy = saved.midi_notes.map(({ tick: _t, ticks: _ts, ...n }) => n);
   const notes = tasmoNotesToPiano(legacy);
   assert.deepEqual(notes.map((n) => [n.tick, n.ticks]), [[undefined, undefined], [undefined, undefined], [undefined, undefined]]);
   usePianoRollStore.getState().loadFromClip('legacy', notes, 120, 16);
