@@ -102,6 +102,7 @@ import {
   type CompRegion,
 } from '../lib/clipComp';
 import { isMidiClip } from '../lib/clipEditTarget';
+import { clipNoteSpan } from '../lib/rollClip';
 import type { ChainEntry } from './effectChainStore';
 import {
   CONN_SIDECHAIN,
@@ -2957,12 +2958,52 @@ export function automationReleaseNative(target: AutomationTarget): void {
   scheduleLaneNative(lane, currentTransportSec());
 }
 
+/** One note of a MIDI clip on the transport, in seconds. */
+export interface MidiNoteTime {
+  note: number;
+  velocity: number;
+  onSec: number;
+  offSec: number;
+}
+
+/**
+ * When each note of a MIDI clip sounds on the transport, for playback from
+ * `fromSec`. Notes are positioned in SOURCE time; the clip is a window onto that
+ * source, so the trim offset is subtracted and the note-off clamps to the clip's
+ * length, exactly as MidiClipNotes draws them. Without this, splitClipAt (which
+ * copies the whole sourcePianoRoll into BOTH halves) made a split MIDI clip play
+ * its entire pattern twice, while the on-screen notes showed it once. A note that
+ * has finished, or is already sounding at `fromSec`, is left out. Each note keeps
+ * its own length (clipNoteSpan), so a run shorter than a 16th stays detached.
+ */
+export function midiClipNoteTimes(
+  clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourcePianoRoll' | 'sourceBpm'>,
+  fallbackBpm: number | undefined,
+  fromSec: number,
+): MidiNoteTime[] {
+  const bpm = clip.sourceBpm ?? fallbackBpm ?? 120;
+  const stepSec = 60 / Math.max(40, bpm) / 4;
+  const offsetIntoSource = clip.offsetIntoSource ?? 0;
+  const out: MidiNoteTime[] = [];
+  for (const n of clip.sourcePianoRoll ?? []) {
+    const { relStart, relEnd } = clipNoteSpan(n, stepSec, offsetIntoSource);
+    if (relEnd <= 0 || relStart >= clip.durationSec) continue; // outside this clip's window
+    const onSec = clip.startSec + Math.max(0, relStart);
+    // Clamp the note-off to the clip edge so a note running past the trim point
+    // is cut there rather than sustaining beyond the clip.
+    const offSec = clip.startSec + Math.min(clip.durationSec, relEnd);
+    if (offSec <= fromSec || onSec < fromSec) continue; // finished, or already sounding
+    out.push({ note: n.note, velocity: n.velocity, onSec, offSec });
+  }
+  return out;
+}
+
 /**
  * Schedule live-synth note on/off for every MIDI clip at or after `fromSec`.
  * Notes fire via timers aligned to the transport (preview-accurate); the offline
  * export keeps using the sample-accurate render path. One synth channel per track
- * (16-channel cap); per-track volume/pan are not yet applied to MIDI, but mute and
- * solo are honored by skipping the track.
+ * (16-channel cap), routed through that track's gain node; mute and solo are
+ * honored by skipping the track.
  */
 function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
   const ed = useEditorStore.getState();
@@ -2999,27 +3040,9 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number): void {
     const channel = channelOf.get(clip.trackId);
     if (channel === undefined) continue; // beyond the 16-instrument cap
     const program = clip.instrumentProgram ?? track.instrumentProgram ?? globalProgram;
-    const bpm = clip.sourceBpm ?? ed.bpm ?? 120;
-    const stepSec = 60 / Math.max(40, bpm) / 4;
-    const offsetIntoSource = clip.offsetIntoSource ?? 0;
-    for (const n of clip.sourcePianoRoll ?? []) {
-      // Notes are positioned in SOURCE time; the clip is a window onto that
-      // source. Subtract the trim offset and clamp to the clip's length, exactly
-      // as MidiClipNotes does when drawing them. Without this, splitClipAt — which
-      // copies the whole sourcePianoRoll into BOTH halves — made a split MIDI clip
-      // play its entire pattern twice, while the on-screen notes showed it once.
-      const relStart = n.step * stepSec - offsetIntoSource;
-      const relEnd = relStart + Math.max(1, n.length) * stepSec;
-      if (relEnd <= 0 || relStart >= clip.durationSec) continue; // outside this clip's window
-      const onSec = clip.startSec + Math.max(0, relStart);
-      // Clamp the note-off to the clip edge so a note running past the trim point
-      // is cut there rather than sustaining beyond the clip.
-      const offSec = clip.startSec + Math.min(clip.durationSec, relEnd);
-      if (offSec <= fromSec || onSec < fromSec) continue; // finished, or already sounding
+    for (const { note: midi, velocity: vel, onSec, offSec } of midiClipNoteTimes(clip, ed.bpm, fromSec)) {
       const onDelay = Math.max(0, (onSec - fromSec) * 1000);
       const offDelay = Math.max(onDelay + 10, (offSec - fromSec) * 1000);
-      const midi = n.note;
-      const vel = n.velocity;
       const clipId = clip.id;
       midiTimers.push(window.setTimeout(() => {
         // Structural edits (moved/resized/added notes) still need a re-schedule,

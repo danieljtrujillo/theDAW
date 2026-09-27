@@ -34,7 +34,7 @@ import {
   type RoutingGraph,
 } from '../state/routingGraph';
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
-import type { PianoNote } from '../state/pianoRollStore';
+import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { renderNotesToBlob, type RenderNote } from './midiSynth';
 import {
@@ -117,8 +117,14 @@ const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderN
   return notes;
 };
 
-/** Best-effort step-grid view of the same notes for "Edit in Piano Roll". */
-const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
+/**
+ * Best-effort step-grid view of the same notes for "Edit in Piano Roll" and for
+ * EDIT's playback of the clip. Seconds-based notes (a set saved from the
+ * Session grid) snap to whole steps. Step-based notes (theDAW's own save) keep
+ * their step and length, a length floored at the roll's one tick, so a run
+ * shorter than a 16th reopens at its own length.
+ */
+export const tasmoMidiNotesToPiano = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
   const stepSec = 60 / Math.max(40, bpm) / 4;
   return raw
     .map((n): PianoNote | null => {
@@ -133,7 +139,8 @@ const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNot
         id: uid('pn'),
         note: Math.round(note),
         step: Math.max(0, step),
-        length: Math.max(1, length),
+        // A length of 0 or less (a hand-edited file) still loads as one step.
+        length: length > 0 ? Math.max(MIN_NOTE_STEPS, length) : 1,
         velocity: clamp(pick(n, 'velocity', 'vel'), 1, 127, 100),
         ...(lane !== undefined && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
       };
@@ -378,7 +385,7 @@ const buildClip = async (
   // A piano-roll clip saved from EDIT carries its bounce as audio_file AND its
   // notes; the notes make it a roll clip again whichever one supplied the audio.
   if (c.midi_notes && c.midi_notes.length) {
-    const pianoNotes = toPianoNotes(c.midi_notes, bpm);
+    const pianoNotes = tasmoMidiNotesToPiano(c.midi_notes, bpm);
     if (pianoNotes.length) {
       sourceKind = 'piano-roll';
       sourcePianoRoll = pianoNotes;

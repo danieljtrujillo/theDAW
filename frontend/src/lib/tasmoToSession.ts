@@ -13,6 +13,7 @@
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
 import type { TasmoProjectLoaded } from './projectClient';
 import { parseFollowAction } from './followAction';
+import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
@@ -36,7 +37,7 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
           ? (c.midi_notes ?? []).map((n) => ({
               pitch: Number(n.note ?? n.pitch ?? 60),
               start: Number(n.step ?? 0) * stepSec,
-              duration: Math.max(1, Number(n.length ?? 1)) * stepSec,
+              duration: Math.max(MIN_NOTE_STEPS, Number(n.length ?? 1)) * stepSec,
               velocity: Number(n.velocity ?? 100),
             }))
           : null,

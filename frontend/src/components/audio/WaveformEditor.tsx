@@ -58,7 +58,7 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipRenderInput, clipRollLoad } from '../../lib/rollClip';
+import { clipNoteSpan, clipRenderInput, clipRollLoad } from '../../lib/rollClip';
 import { midiEventsToMeterMap, roundUpToBar } from '../../lib/meterMap';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram } from '../../lib/soundfontEngine';
@@ -1345,8 +1345,7 @@ const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean
   return (
     <div className="absolute inset-x-0 bottom-0 top-3.5 overflow-hidden pointer-events-none">
       {notes.map((n) => {
-        const relStart = n.step * stepSec - offset;
-        const relEnd = relStart + Math.max(1, n.length) * stepSec;
+        const { relStart, relEnd } = clipNoteSpan(n, stepSec, offset);
         if (relEnd <= 0 || relStart >= clipDur) return null; // outside the visible window
         const vStart = Math.max(0, relStart);
         const vEnd = Math.min(clipDur, relEnd);

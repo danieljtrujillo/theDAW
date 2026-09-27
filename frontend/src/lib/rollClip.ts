@@ -11,7 +11,7 @@
  * No Vite-only imports, so node tests load it.
  */
 import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
+import { DEFAULT_LANES, MIN_NOTE_STEPS, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
 import { STEPS_PER_BEAT, quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGroove, type GrooveTemplate } from './grooveTemplate';
 import { barAt, normalizeMeterMap, roundUpToBar, unrollLanes, type PolyLane } from './meterMap';
@@ -38,6 +38,21 @@ export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys>;
 
 /** The arguments of pianoRollStore's loadFromClip. */
 export type RollLoadArgs = [clipId: string, notes: PianoNote[], bpm: number, totalSteps: number, meter: RollMeter, bends: LaneBend[]];
+
+/**
+ * Where a clip's note sounds, in seconds from the clip's left edge: `relStart`
+ * to `relEnd`. `offsetSec` is the clip's trim into its source. The note keeps
+ * its own length, floored at the roll's one tick, so a run shorter than a 16th
+ * plays and draws in EDIT at the length it has in the roll.
+ */
+export const clipNoteSpan = (
+  n: Pick<PianoNote, 'step' | 'length'>,
+  stepSec: number,
+  offsetSec: number,
+): { relStart: number; relEnd: number } => {
+  const relStart = n.step * stepSec - offsetSec;
+  return { relStart, relEnd: relStart + Math.max(MIN_NOTE_STEPS, n.length) * stepSec };
+};
 
 /** The step just past the last note's end — the grid length a note list implies when nothing else says otherwise. */
 const noteEndSteps = (notes: readonly PianoNote[]): number =>
