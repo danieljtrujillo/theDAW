@@ -7,6 +7,7 @@ import { renderNotesToBlob, type RenderNote } from './midiSynth';
 import type { PianoNote } from '../state/pianoRollStore';
 import { validTimeSignature } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
+import { noteEndStep } from './clipNotes/units';
 
 const DEFAULT_CLIP_SECONDS = 4;
 
@@ -94,7 +95,7 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
     duration: rendered.duration,
     sourceKind: 'piano-roll',
     sourcePianoRoll: pianoNotes,
-    sourceTotalSteps: Math.max(16, ...pianoNotes.map((note) => note.step + note.length)),
+    sourceTotalSteps: noteEndStep(pianoNotes, 16),
   };
 };
 
