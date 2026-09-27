@@ -398,6 +398,47 @@ export function loopBend(points: readonly BendPoint[], period: number, laps: num
   return out;
 }
 
+/**
+ * The curve re-based so `from` is its step 0, for the roll's transport looping
+ * a range that starts at `from`: the points after `from` moved back by `from`,
+ * led by a point at 0 where the curve is at `from`. The segment `from` falls
+ * inside keeps its course: a hold and a ramp carry on exactly, and an ease
+ * carries on as straight pieces at its own SMOOTH_SEGMENTS divisions (the ones
+ * bendAutomation plays an ease with). A `from` at or before 0 gives a copy.
+ */
+export function shiftBend(points: readonly BendPoint[], from: number): BendPoint[] {
+  if (!(from > EPS) || !points.length) return points.map((p) => ({ ...p }));
+  const i = pointIndexAt(points, from);
+  const p = i >= 0 ? points[i] : null;
+  const q = points[i + 1];
+  const onPoint = !!p && Math.abs(p.step - from) <= EPS;
+  const out: BendPoint[] = [];
+  if (!p) {
+    // Before the first point the curve is at the centre until that point.
+    out.push({ id: `${points[0].id}~from`, step: 0, value: 0, shape: 'hold' });
+  } else if (!onPoint) {
+    if (!q || p.shape === 'hold') out.push({ id: `${p.id}~from`, step: 0, value: p.value, shape: 'hold' });
+    else {
+      out.push({ id: `${p.id}~from`, step: 0, value: bendValueAt(points, from), shape: 'linear' });
+      if (p.shape === 'smooth') {
+        for (let m = 1; m < SMOOTH_SEGMENTS; m += 1) {
+          const s = p.step + ((q.step - p.step) * m) / SMOOTH_SEGMENTS;
+          if (s <= from + EPS) continue;
+          out.push({ id: `${p.id}~from${m}`, step: s - from, value: segmentValue(p, q, m / SMOOTH_SEGMENTS), shape: 'linear' });
+        }
+      }
+    }
+  }
+  for (let j = onPoint ? i : i + 1; j < points.length; j += 1) out.push({ ...points[j], step: points[j].step - from });
+  return out;
+}
+
+/** Each lane's played curve re-based so `from` is its step 0 (shiftBend); a `from` at or before 0 gives `played` itself. */
+export function shiftPlayedBends(played: Map<number, PlayedBend>, from: number): Map<number, PlayedBend> {
+  if (!(from > EPS)) return played;
+  return new Map([...played].map(([lane, c]) => [lane, { range: c.range, points: shiftBend(c.points, from) }]));
+}
+
 /** The lane a note plays in: its own when the roll has that lane, else lane 0 (unrollLanes plays such a note as lane 0). */
 export const playingLane = (lane: number | undefined, lanes: readonly PolyLane[]): number =>
   lane !== undefined && lanes.some((l) => l.id === lane) ? lane : 0;

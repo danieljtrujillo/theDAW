@@ -15,6 +15,7 @@ import {
 // lib/rollSelection imports only the PianoNote TYPE back from here, which is
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
+import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -97,7 +98,22 @@ interface PianoRollState {
    */
   selectedNoteId: string | null;
   isPlaying: boolean;
+  /**
+   * The playhead, in steps. PLAY starts here, the scheduler writes it as the
+   * roll sounds, and it stays where playback stopped; a click on the ruler
+   * (`seek`) moves it. The METER face's ADD starts a change in its bar.
+   */
   currentStep: number;
+  /**
+   * The loop range in steps, or null when none is set. `loopOn` says whether
+   * PLAY loops it; a range that is off stays set, so the LOOP key turns it back
+   * on. Both are transport state, like the playhead: not undo history, and not
+   * saved with a clip.
+   */
+  loop: RollLoop | null;
+  loopOn: boolean;
+  /** Counts seeks, so a scheduler that is playing re-anchors at the new playhead. */
+  seekId: number;
   /** If set, the roll is editing an existing editor clip — next "send to editor" updates that clip in place. */
   editingClipId: string | null;
   /** Step span of the most recent live recording, highlighted in the grid; null
@@ -173,6 +189,12 @@ interface PianoRollState {
   setGrooveId: (id: string) => void;
   setPlaying: (playing: boolean) => void;
   setCurrentStep: (s: number) => void;
+  /** Move the playhead to `step`, held inside the roll. While the roll plays, playback jumps there. */
+  seek: (step: number) => void;
+  /** Set the loop range (see `sanitizeLoop`) and turn the loop on; null clears the range and turns it off. */
+  setLoop: (loop: RollLoop | null) => void;
+  /** Turn the loop on or off. With no range set it stays off: the caller sets a range first. */
+  setLoopOn: (on: boolean) => void;
   replaceAll: (notes: PianoNote[]) => void;
   /**
    * Add `notes` in one write (one undo step) and select them, the first as the
@@ -188,7 +210,7 @@ interface PianoRollState {
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
    *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
    *  Opening a clip starts a new document: the undo and redo stacks empty, so an
-   *  undo can never bring another clip's notes into this one. */
+   *  undo can never bring another clip's notes into this one, and the loop clears. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -253,8 +275,8 @@ interface PianoRollState {
 
 /** The document slices tracked by undo / redo.
  *  The meter, the lanes and the bends are part of what the roll IS, so they
- *  belong here. Selection, the playhead, transport, the active lane and the
- *  recorded range deliberately do NOT — they are view and transport
+ *  belong here. Selection, the playhead, the loop, transport, the active lane
+ *  and the recorded range deliberately do NOT — they are view and transport
  *  state, and putting them in the stack makes undo unusable mid-session.
  *
  *  The linked clip rides along on one kind of step only: a write that changed
@@ -708,6 +730,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   selectedNoteId: null,
   isPlaying: false,
   currentStep: 0,
+  loop: null,
+  loopOn: false,
+  seekId: 0,
   editingClipId: null,
   recordedRange: null,
   meterMap: normalizeMeterMap(null),
@@ -837,6 +862,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 
   setPlaying: (isPlaying) => set({ isPlaying }),
   setCurrentStep: (currentStep) => set({ currentStep }),
+  seek: (step) =>
+    set((s) => ({
+      currentStep: Math.max(0, Math.min(Math.max(0, s.totalSteps - 1), isNum(step) ? step : 0)),
+      seekId: s.seekId + 1,
+    })),
+  setLoop: (loop) =>
+    set(() => {
+      const next = sanitizeLoop(loop);
+      return { loop: next, loopOn: next !== null };
+    }),
+  setLoopOn: (on) => set((s) => ({ loopOn: on && s.loop !== null })),
   replaceAll: (notes) => set({ notes: migrateNotes(notes), ...noSelection() }),
   appendNotes: (incoming) =>
     set((s) => {
@@ -878,6 +914,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ...noSelection(),
           isPlaying: false,
           currentStep: 0,
+          loop: null,
+          loopOn: false,
           recordedRange: null,
           _undo: [],
           _redo: [],
@@ -1080,8 +1118,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 // Record undo history whenever a tracked document slice changes. Only the FIRST
 // change of a burst captures the pre-change snapshot, so a continuous gesture (a
 // note drag, a resize, a bend-point drag) collapses into a single undo step.
-// Selection, the playhead, transport, the active lane and the recorded
-// range don't touch these slices, so they never pollute history. A
+// Selection, the playhead, the loop, transport, the active lane and the
+// recorded range don't touch these slices, so they never pollute history. A
 // write that changes the linked clip WITH the document (CLEAR) always starts
 // its own step, and the step keeps the link it replaced. undo/redo and
 // loadFromClip set historyApplying so their own writes aren't recorded.

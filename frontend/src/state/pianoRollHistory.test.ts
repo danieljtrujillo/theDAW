@@ -280,6 +280,10 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
   assert.equal(st()._undo.length, 1);
   st().undo();
   assert.deepEqual([st().notes.length, st().totalSteps], [1, 32]);
+  // The loop and the playhead are transport state: never a step.
+  st().setLoop({ start: 4, end: 8 });
+  st().seek(12);
+  assert.equal(st()._undo.length, 0);
 }
 
 console.log('pianoRollHistory: ok');
