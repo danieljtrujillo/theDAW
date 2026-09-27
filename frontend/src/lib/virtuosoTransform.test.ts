@@ -22,6 +22,8 @@ const {
   accSustain,
   buildSong,
   harmonize,
+  harmonyDescription,
+  HARMONY_BORROW_FROM,
   humanize,
   polyrhythm,
   ragtimeStride,
@@ -133,6 +135,10 @@ function captureToday(): Record<string, string> {
 // lengths changed (a 0.5-step note humanize lengthened became 0.75 in place of
 // 1, a shortened 0.667 became 0.334 in place of the 0.25 floor), compared note
 // by note against the previous build's output.
+// 'harmonize 1' was captured again when a lowered third stopped clashing with
+// the melody: compared note by note with the previous build, two counter notes
+// changed and nothing else. At step 14 a B (71) under a sounding C (72) is the
+// diatonic C again, and at step 15 an E (64) under a sounding F (65) is the F.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
@@ -148,7 +154,7 @@ const FIXTURES: Record<string, string> = {
   'ragtimeStride 1': '39:e783ab510ddcab64e12d8182',
   'runs 1': '95:18aeac70e431b83a881eb2e7',
   'runs chromatic 1': '87:d136961088e33c44e5a1b546',
-  'harmonize 1': '44:3cb5d0ec11c809e339b31a33',
+  'harmonize 1': '44:8f64f15a557341d9eb14dbc1',
   renderVirtuoso: '98:1bb1a34f8e3481b302ed5a40',
   accSustain: '4:8266445a9a3b6b8614559cf0',
   accArpeggio: '8:b22ac046619609734aecdacd',
@@ -668,6 +674,61 @@ for (const amount of [0.6, 1]) {
   assert.ok(ticks.some((t) => t !== 30), `HUMANIZE ${amount}: some note length moves, so the jitter runs (${ticks.join(',')})`);
   for (const t of ticks) assert.ok(t >= 15 && t <= 45, `HUMANIZE ${amount}: a 30-tick note comes back ${t} ticks, outside half its length`);
   useVirtuosoStore.getState().resetToSource();
+}
+
+// HARMONY past 0.66, the way the Virtuoso panel runs it: the roll holds a
+// melody over held chord tones, the panel captures it, the Harmony slider goes
+// to 90, and the render lands back in the roll. Past 0.66 about three in ten
+// thirds drop a semitone; each one used to drop whatever sounded with it, so a
+// lowered B landed under a sounding C and an E under a sounding F, a semitone
+// against the melody. No added note may sit a semitone, major seventh or minor
+// ninth from a melody note sounding with it, where the diatonic third did not.
+{
+  const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
+  const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
+  const roll = usePianoRollStore.getState;
+  const semitone = (a: number, b: number): boolean => [1, 11].includes((((a - b) % 12) + 12) % 12);
+  let lowered = 0;
+  let clashes = 0;
+  for (let seed = 1; seed <= 40; seed += 1) {
+    const src = phrase(seed * 101);
+    roll().applyMeter({ meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0 });
+    useVirtuosoStore.setState({ amounts: { ...ZERO_AMOUNTS }, songMode: false, sections: null, groove: null, key: 'C', mode: 'major' });
+    roll().replaceAll(src);
+    useVirtuosoStore.getState().captureSource();
+    useVirtuosoStore.getState().setAmount('harmony', 0.9);
+    const key = (n: { note: number; step: number }) => `${n.note}@${n.step}`;
+    const own = new Set(src.map(key));
+    const added = roll().notes.filter((n) => !own.has(key(n)));
+    for (const a of added) {
+      if (C_MAJOR.includes(a.note % 12)) continue;
+      lowered += 1;
+      const sounding = src.filter((m) => m.step < a.step + a.length - 1e-9 && m.step + m.length > a.step + 1e-9);
+      if (sounding.some((m) => semitone(m.note, a.note))) clashes += 1;
+    }
+    useVirtuosoStore.getState().resetToSource();
+  }
+  assert.ok(lowered > 0, 'past 0.66 some thirds still take a borrowed tone');
+  assert.equal(clashes, 0, `${clashes} lowered thirds clash with the melody`);
+  // At or under 0.66 every added note is diatonic.
+  const plain = phrase(7);
+  const under = harmonize(plain, 0.66, OPTS, 3).filter((n) => !plain.some((m) => m.note === n.note && m.step === n.step));
+  assert.ok(under.length > 0 && under.every((n) => C_MAJOR.includes(n.note % 12)), 'no borrowed tone at 0.66');
+}
+
+// The Harmony slider's tooltip names each range at harmonize's own threshold,
+// and says what the slider does where it stands. It used to say only "Harmony amount".
+{
+  assert.equal(HARMONY_BORROW_FROM, 0.66);
+  const lines = (amount: number): string[] => harmonyDescription(amount).split('\n');
+  const ranges = lines(0);
+  assert.ok(ranges.includes('0: off.'));
+  assert.ok(ranges.some((l) => l.startsWith('1 to 66: ')), 'the scale-third range ends at 66');
+  assert.ok(ranges.some((l) => l.startsWith('67 to 100: ') && l.includes('semitone')), 'the borrowed-tone range starts at 67');
+  assert.equal(ranges.at(-1), 'Now 0: off, the melody plays alone.');
+  assert.equal(lines(0.4).at(-1), 'Now 40: a scale third under about 40 in 100 top notes.');
+  assert.equal(lines(0.66).at(-1), 'Now 66: a scale third under about 66 in 100 top notes.');
+  assert.match(lines(0.9).at(-1) ?? '', /^Now 90: .*a semitone lower\.$/);
 }
 
 console.log('virtuosoTransform: ok');
