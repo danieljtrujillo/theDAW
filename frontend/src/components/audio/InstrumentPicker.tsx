@@ -1,15 +1,33 @@
 import React from 'react';
+import { create } from 'zustand';
 import { Loader2, Piano, TriangleAlert } from 'lucide-react';
 import { useSoundfontStore, ensureSoundfontReady } from '../../lib/soundfontEngine';
 import { GM_NAMES } from '../../lib/gmInstruments';
+import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../lib/orchestra';
 import { SYNTH_VOICES } from '../../lib/synthVoices';
 import { DOCK_SELECT } from './midiDockKit';
 
 const VOICE_GROUPS = Array.from(new Set(SYNTH_VOICES.map((v) => v.group)));
 
+// The orchestral registry's pitched instruments by family, in score order.
+// An unpitched percussion record plays one key of the drum kit on the drum
+// channel, and this picker sets one melodic program for the preview voice, so
+// those records are left to parts that carry a drum channel.
+const ORCHESTRA_GROUPS = orchestraByFamily((i) => !i.percussion);
+
+// The orchestral instrument last picked, shared by every mounted picker so a
+// second picker shows the same choice. It shows while the active program is
+// still that instrument's program; any other choice clears it.
+const useOrchestraPick = create<{ id: string | null; setId: (id: string | null) => void }>((set) => ({
+  id: null,
+  setId: (id) => set({ id }),
+}));
+
 /**
  * Single dropdown that picks the MIDI voice: the built-in sawtooth ("Basic") or
- * a General MIDI soundfont program. Drives the shared soundfont store, so the
+ * a General MIDI soundfont program, or an orchestral instrument from the
+ * registry (lib/orchestra.ts), listed by family in score order, which sets that
+ * instrument's GM program. Drives the shared soundfont store, so the
  * choice applies to live preview, playback, and offline WAV bounce alike.
  *
  * `idPrefix` exists because the id used to be hardcoded `pr-instrument`: any
@@ -38,10 +56,24 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
   const setActiveProgram = useSoundfontStore((s) => s.setActiveProgram);
   const setActiveSynthVoice = useSoundfontStore((s) => s.setActiveSynthVoice);
 
-  const value = activeSynthVoice ? `v:${activeSynthVoice}` : useSoundfont ? String(activeProgram) : 'basic';
+  const orchestraPick = useOrchestraPick((s) => s.id);
+  const remember = useOrchestraPick((s) => s.setId);
+  const picked = orchestraInstrument(orchestraPick);
+  const soundfontValue = picked && picked.program === activeProgram ? `o:${picked.id}` : String(activeProgram);
+  const value = activeSynthVoice ? `v:${activeSynthVoice}` : useSoundfont ? soundfontValue : 'basic';
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
+    if (v.startsWith('o:')) {
+      const inst = orchestraInstrument(v.slice(2));
+      if (!inst) return;
+      remember(inst.id);
+      setActiveProgram(inst.program);
+      setUseSoundfont(true); // clears any synth voice
+      void ensureSoundfontReady(); // warm the worklet + soundfont while the user looks
+      return;
+    }
+    remember(null);
     if (v === 'basic') {
       setUseSoundfont(false);
       setActiveSynthVoice(null);
@@ -63,6 +95,15 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
         <optgroup key={g} label={`Synth · ${g}`}>
           {SYNTH_VOICES.filter((vv) => vv.group === g).map((vv) => (
             <option key={vv.id} value={`v:${vv.id}`}>{vv.name}</option>
+          ))}
+        </optgroup>
+      ))}
+      {ORCHESTRA_GROUPS.map((g) => (
+        <optgroup key={g.family.id} label={`Orchestra · ${g.family.label}`}>
+          {g.instruments.map((inst) => (
+            <option key={inst.id} value={`o:${inst.id}`} title={describeInstrument(inst)}>
+              {inst.name}
+            </option>
           ))}
         </optgroup>
       ))}

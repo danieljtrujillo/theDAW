@@ -196,6 +196,10 @@ class ArrangeRequest(BaseModel):
     source_artifact_id: Optional[str] = None
     source_artifact_ids: Optional[list[str]] = None
     midi_id: Optional[str] = None
+    # Band score: source artifact id -> orchestral registry instrument id
+    # (backend/modules/notation/instruments.py). A source left out keeps the
+    # staff named and clefed from its file.
+    instruments: Optional[dict[str, str]] = None
 
 
 def _resolve_midi_artifact_path(store: Any, entry_id: str, artifact_id: str) -> Path:
@@ -825,6 +829,23 @@ def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
     else:
         raise HTTPException(422, "source_artifact_id(s) or midi_id is required")
 
+    staff_instruments: Optional[list[Optional[str]]] = None
+    if body.instruments:
+        from .instruments import by_id
+
+        ids = body.source_artifact_ids or []
+        stray = sorted(set(body.instruments) - set(ids))
+        if stray:
+            raise HTTPException(
+                422, f"instruments name artifacts that are not sources: {stray}"
+            )
+        unknown = sorted(
+            {v for v in body.instruments.values() if v and by_id(v) is None}
+        )
+        if unknown:
+            raise HTTPException(422, f"unknown instrument(s): {unknown}")
+        staff_instruments = [body.instruments.get(i) or None for i in ids]
+
     entry_dir = store._dir_for(entry_id)  # noqa: SLF001 - existing module convention
     if entry_dir is None:
         raise HTTPException(500, f"entry directory missing for {entry_id!r}")
@@ -846,6 +867,7 @@ def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
         # A band score lays every staff out at the song's tempo, so its bars
         # line up with the audio whatever tempo each stem MIDI was written at.
         reference_bpm=_analysis_bpm(store, entry_id),
+        instruments=staff_instruments,
     )
     if not result.get("ok"):
         raise HTTPException(501, result)

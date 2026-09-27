@@ -2668,15 +2668,24 @@ def midi_to_arrangement(
     artifact_id: Optional[str] = None,
     title: str = "",
     reference_bpm: Optional[float] = None,
+    instruments: Optional[list[Optional[str]]] = None,
 ) -> dict[str, Any]:
     """Arrange one or more source MIDIs into a MusicXML score of ``style`` and
     register it as a ``musicxml`` notation artifact.
 
     ``reference_bpm`` is the song's analysed tempo; a band score lays every
-    staff out at it (see :func:`.arrangers.score_arrange.arrange`)."""
+    staff out at it. ``instruments`` gives a band score's staves their
+    registry instruments, one per source (see
+    :func:`.arrangers.score_arrange.arrange`)."""
     from .arrangers.score_arrange import arrange
 
-    result = arrange(sources, style=style, title=title, reference_bpm=reference_bpm)
+    result = arrange(
+        sources,
+        style=style,
+        title=title,
+        reference_bpm=reference_bpm,
+        instruments=instruments,
+    )
     if not result.get("ok"):
         return result
 
