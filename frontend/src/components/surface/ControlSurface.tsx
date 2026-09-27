@@ -18,7 +18,7 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/Context
 import { useLayoutPrefs } from '../../state/layoutPrefsStore';
 import { useEditLayoutStore } from '../../state/editLayoutStore';
 import { createLayoutStore, companionOf, absorbableSibling } from '../../state/surfaceLayoutStore';
-import type { SurfaceLayout, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
+import type { ColumnOrderFix, SurfaceLayout, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 import type { WidgetRegistry, BindableTarget, ButtonShape } from './widgetTypes';
 
 const NO_TARGETS: BindableTarget[] = [];
@@ -26,10 +26,10 @@ const SHAPE_ORDER: ButtonShape[] = ['default', 'square', 'rect', 'circle', 'tri-
 
 // One persisted store instance per surface id, reused across (re)mounts + HMR.
 const storeCache = new Map<string, SurfaceStoreApi>();
-function getStore(surfaceId: string, defaultLayout: SurfaceLayout): SurfaceStoreApi {
+function getStore(surfaceId: string, defaultLayout: SurfaceLayout, columnOrderFix?: ColumnOrderFix): SurfaceStoreApi {
   let s = storeCache.get(surfaceId);
   if (!s) {
-    s = createLayoutStore(surfaceId, defaultLayout);
+    s = createLayoutStore(surfaceId, defaultLayout, columnOrderFix);
     storeCache.set(surfaceId, s);
   }
   return s;
@@ -99,8 +99,11 @@ export const ControlSurface: React.FC<{
   targets?: BindableTarget[];
   /** A stale localStorage key to clear once (migration cleanup). */
   legacyKeyToClear?: string;
-}> = ({ surfaceId, registry, defaultLayout, className, targets, legacyKeyToClear }) => {
-  const store = getStore(surfaceId, defaultLayout);
+  /** Panels whose saved order the rev-1 layout upgrade corrects (see
+   *  upgradeColumnMirror). */
+  columnOrderFix?: ColumnOrderFix;
+}> = ({ surfaceId, registry, defaultLayout, className, targets, legacyKeyToClear, columnOrderFix }) => {
+  const store = getStore(surfaceId, defaultLayout, columnOrderFix);
   const tgts = targets ?? NO_TARGETS;
   const root = store((s) => s.layout.root);
   const design = store((s) => s.designMode);

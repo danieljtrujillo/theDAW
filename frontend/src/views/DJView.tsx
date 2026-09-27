@@ -40,7 +40,7 @@ import { ControlSurface } from '../components/surface/ControlSurface';
 import { InfiNightCredit } from '../components/ui/Credit';
 import { DJ_TARGETS } from '../state/bindableTargets';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
-import type { SurfaceLayout } from '../state/surfaceLayoutStore';
+import type { ColumnOrderFix, SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
 import { useDjAutomix } from '../state/djAutomixStore';
@@ -422,7 +422,10 @@ function EditableBpmField({
  * Reproduces the console arrangement as a structured rows/columns tree. Pinned
  * panels (hero waveforms, sampler, FX racks, Next lane, source tree, library)
  * host a whole component; every mixer + deck control is an individual widget the
- * user can relocate in Design Mode. Nothing moves until the user drags. */
+ * user can relocate in Design Mode. Nothing moves until the user drags.
+ * A DJ_LAYOUT_VERSION bump replaces every saved DJ layout (and a saved default)
+ * with this tree; a change saved layouts can carry goes in a LAYOUT_REV upgrade
+ * in surfaceLayoutStore instead. */
 const DJ_LAYOUT_VERSION = 24;
 
 const defaultDjLayout: SurfaceLayout = {
@@ -467,7 +470,7 @@ const defaultDjLayout: SurfaceLayout = {
     mixChans: { id: 'mixChans', type: 'container', axis: 'row', children: ['eqAP', 'chAP', 'chBP', 'eqBP'], fr: { eqAP: 1.35, chAP: 1.15, chBP: 1.15, eqBP: 1.35 } },
     pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'], widgetMargins: { pitchA: { t: 3, r: 4, b: 3, l: 4 } }, mirror: true },
     eqAP: { id: 'eqAP', type: 'panel', title: 'EQ A', flow: 'column', widgets: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'], mirror: true },
-    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['volA', 'gainA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 0, b: 8, l: 24 } }, mirror: true },
+    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['gainA', 'volA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 0, b: 8, l: 24 } }, mirror: true },
     chBP: { id: 'chBP', type: 'panel', title: 'Ch B', flow: 'column', widgets: ['gainB', 'volB'], widgetFr: { gainB: 1, volB: 3 }, widgetMargins: { volB: { t: 8, r: 24, b: 8, l: 0 } } },
     eqBP: { id: 'eqBP', type: 'panel', title: 'EQ B', flow: 'column', widgets: ['eqB.hi', 'eqB.mid', 'eqB.lo', 'fltB'] },
     pchBP: { id: 'pchBP', type: 'panel', title: 'Pitch B', flow: 'column', widgets: ['pitchB'], widgetMargins: { pitchB: { t: 3, r: 4, b: 3, l: 4 } }, uniform: false },
@@ -509,6 +512,15 @@ const defaultDjLayout: SurfaceLayout = {
     'panel-17-44cba1fb': { id: 'panel-17-44cba1fb', type: 'panel', title: 'Panel', flow: 'row', widgets: ['spacer:s-27-8799ff7e'] },
     'cont-18-cd01de17': { id: 'cont-18-cd01de17', type: 'container', axis: 'row', children: ['panel-17-44cba1fb', 'pdA-perf'], fr: { 'pdA-perf': 1.4885496183206104, 'panel-17-44cba1fb': 0.5114503816793893 } },
   },
+};
+
+/* DJ layouts saved before layout rev 1 were drawn with EQ A bottom to top (FLT,
+ * LO, MID, HI) and hold Ch A as [volA, gainA]. The rev-1 upgrade keeps every
+ * other mirrored column as the user saw it; these two panels take deck B's
+ * top-to-bottom order, EQ A reading HI to LO and Ch A's gain above its fader. */
+const DJ_COLUMN_ORDER_FIX: ColumnOrderFix = {
+  eqAP: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'],
+  chAP: ['gainA', 'volA'],
 };
 
 /* ═══════════════════════════════ DJView ════════════════════════════════════ */
@@ -1056,6 +1068,7 @@ export const DJView: React.FC = () => {
             defaultLayout={defaultDjLayout}
             targets={DJ_TARGETS}
             legacyKeyToClear="thedaw.dj.layout.v1"
+            columnOrderFix={DJ_COLUMN_ORDER_FIX}
             className="p-1.5"
           />
         </div>

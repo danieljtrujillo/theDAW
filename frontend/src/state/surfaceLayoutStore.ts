@@ -14,7 +14,8 @@ import type { WidgetId, CustomWidgetDef, ButtonShape, FrameShape } from '../comp
  * between panels, add/remove panels, and split a panel into a row/column. The
  * layout persists per-surface (localStorage `thedaw.surface.<id>.v1`); a
  * `merge`/`version` guard falls back to the default on schema mismatch or
- * corruption, and an auto-prune keeps the tree minimal (no empty/▢single-child
+ * corruption, a `rev` upgrade carries an older saved layout forward in place
+ * (LAYOUT_REV), and an auto-prune keeps the tree minimal (no empty/▢single-child
  * containers) so the grid is always valid and nothing overlaps.
  *
  * This supersedes the DJ-only `djLayoutStore` + `DesignLayout`; the DJ tab is
@@ -68,8 +69,9 @@ export interface PanelNode {
   widgetMargins?: Record<WidgetId, { t: number; r: number; b: number; l: number }>;
   /** Per-widget pad/button shape override. */
   widgetShapes?: Record<WidgetId, ButtonShape>;
-  /** Mirror this panel: reverse widget order + flip composite controls/icons
-   *  (left/right deck symmetry). */
+  /** Mirror this panel for left/right deck symmetry: a row shows its widgets
+   *  right to left, a column keeps its top-to-bottom order, and composite
+   *  controls/icons flip sides in both. */
   mirror?: boolean;
   /** Uniform control sizing: match same-kind control sizes (fill + equalize)
    *  within this panel. */
@@ -89,6 +91,8 @@ export type LayoutNode = ContainerNode | PanelNode;
 
 export interface SurfaceLayout {
   version: number;
+  /** Data revision (see LAYOUT_REV). Absent on layouts saved before rev 1. */
+  rev?: number;
   root: NodeId;
   nodes: Record<NodeId, LayoutNode>;
   /** User-created controls (Add-Control picker), keyed by their widget id. They
@@ -132,7 +136,57 @@ export function cloneLayout(l: SurfaceLayout): SurfaceLayout {
   const customWidgets = l.customWidgets
     ? Object.fromEntries(Object.entries(l.customWidgets).map(([k, v]) => [k, { ...v }]))
     : undefined;
-  return { version: l.version, root: l.root, nodes, customWidgets };
+  return { version: l.version, rev: l.rev, root: l.root, nodes, customWidgets };
+}
+
+/* ── panel order + saved-layout upgrades ──────────────────────────────────── */
+
+/** The revision of the stored layout data. A `version` bump replaces a saved
+ *  layout with the default; a rev bump upgrades it in place (upgradeLayout),
+ *  so what the user built in Design Mode survives.
+ *  rev 1: a mirrored column keeps its top-to-bottom order. */
+export const LAYOUT_REV = 1;
+
+/** Per-surface input to the rev-1 upgrade: panel id -> widget ids that take
+ *  this top-to-bottom order in place of the order the user saw before. */
+export type ColumnOrderFix = Record<NodeId, WidgetId[]>;
+
+/** The order a panel shows its widgets in. Mirror is a left/right flip, so a
+ *  row reads right to left; a column keeps its top-to-bottom order. */
+export function displayOrder(p: Pick<PanelNode, 'widgets' | 'mirror' | 'flow'>): WidgetId[] {
+  return p.mirror && p.flow === 'row' ? [...p.widgets].reverse() : p.widgets;
+}
+
+/** rev 0 -> 1. Before rev 1 a mirrored column showed its widgets bottom to
+ *  top. Each such panel's stored order is reversed, so it shows what it showed
+ *  before. In a panel `fix` names, the listed widgets instead fill the slots
+ *  they occupy in the listed order; its other widgets keep their places.
+ *  Returns a new layout; the input is not touched. */
+export function upgradeColumnMirror(layout: SurfaceLayout, fix: ColumnOrderFix = {}): SurfaceLayout {
+  const out = cloneLayout(layout);
+  for (const id in out.nodes) {
+    const n = out.nodes[id];
+    if (n.type !== 'panel' || n.pinned || !n.mirror || n.flow !== 'column') continue;
+    const shown = [...n.widgets].reverse();
+    const order = fix[id];
+    if (order) {
+      const listed = shown.filter((w) => order.includes(w)).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+      let k = 0;
+      n.widgets = shown.map((w) => (order.includes(w) ? listed[k++] : w));
+    } else {
+      n.widgets = shown;
+    }
+  }
+  out.rev = 1;
+  return out;
+}
+
+/** Bring a saved layout up to LAYOUT_REV. Returns the same object when it is
+ *  already current, so each upgrade runs once per saved layout. */
+export function upgradeLayout(layout: SurfaceLayout, fix?: ColumnOrderFix): SurfaceLayout {
+  let l = layout;
+  if ((l.rev ?? 0) < 1) l = upgradeColumnMirror(l, fix);
+  return l;
 }
 
 export function findParentId(nodes: Record<NodeId, LayoutNode>, childId: NodeId): NodeId | null {
@@ -465,7 +519,9 @@ const withHistory =
     };
   };
 
-export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayout) {
+export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayout, columnOrderFix?: ColumnOrderFix) {
+  // The code's own default is always current data.
+  const freshDefault = (): SurfaceLayout => ({ ...cloneLayout(defaultLayout), rev: LAYOUT_REV });
   // A user "Save as default" target, separate from the live persisted layout.
   // Versioned so a default-tree bump invalidates a stale saved default.
   const defaultKey = `thedaw.surface.${surfaceId}.default.v${defaultLayout.version}`;
@@ -474,18 +530,30 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
       const raw = localStorage.getItem(defaultKey);
       if (!raw) return null;
       const l = JSON.parse(raw) as SurfaceLayout;
-      if (l && l.nodes && l.root && l.nodes[l.root] && l.version === defaultLayout.version) return l;
+      if (l && l.nodes && l.root && l.nodes[l.root] && l.version === defaultLayout.version) {
+        const up = upgradeLayout(l, columnOrderFix);
+        // Store the upgraded default so its upgrade runs once.
+        if (up !== l) {
+          try {
+            localStorage.setItem(defaultKey, JSON.stringify(up));
+          } catch {
+            /* storage full: the same upgrade runs on the next reset */
+          }
+        }
+        return up;
+      }
     } catch {
       /* ignore corrupt saved default */
     }
     return null;
   };
+  let upgradedOnLoad = false;
 
-  return create<SurfaceStore>()(
+  const store = create<SurfaceStore>()(
     persist(
       withHistory((set, get) => ({
         designMode: false,
-        layout: cloneLayout(defaultLayout),
+        layout: freshDefault(),
         highlightId: null,
         hoverNodeId: null,
 
@@ -983,7 +1051,7 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
             return { layout: prune(layout) };
           }),
 
-        reset: () => set({ layout: readUserDefault() ?? cloneLayout(defaultLayout) }),
+        reset: () => set({ layout: readUserDefault() ?? freshDefault() }),
         saveAsDefault: () => {
           try {
             localStorage.setItem(defaultKey, JSON.stringify(get().layout));
@@ -1002,18 +1070,25 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
         // version/shape validation and falls back to the default. Without this
         // a `version` bump logs "no migrate function was provided".
         migrate: (persisted) => persisted as { layout: SurfaceLayout },
-        // Fall back to the default on schema mismatch / corruption / missing root.
+        // Fall back to the default on schema mismatch / corruption / missing root;
+        // bring an older revision of the saved layout up to date.
         merge: (persisted, current) => {
           const p = (persisted ?? {}) as Partial<SurfaceStore>;
           const pl = p.layout;
           if (!pl || !pl.nodes || !pl.root || !pl.nodes[pl.root] || pl.version !== current.layout.version) {
             return current;
           }
-          return { ...current, layout: pl };
+          const layout = upgradeLayout(pl, columnOrderFix);
+          upgradedOnLoad = layout !== pl;
+          return { ...current, layout };
         },
       },
     ),
   );
+  // localStorage hydrates inside create(), so an upgrade `merge` made is known
+  // here. Writing it back stores the new rev, and the upgrade runs once.
+  if (upgradedOnLoad) store.setState({ layout: store.getState().layout });
+  return store;
 }
 
 export type SurfaceStoreApi = ReturnType<typeof createLayoutStore>;

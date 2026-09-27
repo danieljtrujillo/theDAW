@@ -9,7 +9,8 @@
  * Uniform chrome: widget panels adopt the hardware-card border/bg so every
  * panel edge reads the same; pinned panels stay transparent (their hosted
  * component supplies its own card). Per-panel padding (padPx) and mirror
- * (reversed widget order + per-widget mirror opt) come from the layout store.
+ * (a row's widget order reversed, a column's kept, + per-widget mirror opt)
+ * come from the layout store.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { GripVertical, FlipHorizontal, Rows3, Columns3, SeparatorHorizontal, SplitSquareHorizontal, SplitSquareVertical, Grid2x2, CirclePlus, Link2, Combine, X } from 'lucide-react';
@@ -19,7 +20,7 @@ import { Splitter } from './Splitter';
 import { WidgetCell } from './WidgetCell';
 import { AddControlModal } from './AddControlModal';
 import { PANEL_MIME, WIDGET_MIME, encode, decodeWidget, decodePanel } from './dnd';
-import { companionOf, absorbableSibling } from '../../state/surfaceLayoutStore';
+import { companionOf, absorbableSibling, displayOrder } from '../../state/surfaceLayoutStore';
 import type { Axis, EdgeDir, NodeId, PanelNode, SurfaceStoreApi } from '../../state/surfaceLayoutStore';
 
 const PanelHeader: React.FC<{
@@ -53,25 +54,29 @@ const PanelHeader: React.FC<{
       </div>
 
       {editing ? (
-        <input
-          autoFocus
-          name="surface-panel-rename"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => {
-            store.getState().renamePanel(nodeId, draft.trim() || 'Panel');
-            setEditing(false);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-            if (e.key === 'Escape') {
-              setDraft(title);
+        <>
+          <label htmlFor={`surface-panel-rename-${surfaceId}-${nodeId}`} className="sr-only">Panel name</label>
+          <input
+            autoFocus
+            id={`surface-panel-rename-${surfaceId}-${nodeId}`}
+            name="surface-panel-rename"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              store.getState().renamePanel(nodeId, draft.trim() || 'Panel');
               setEditing(false);
-            }
-          }}
-          className="flex-1 min-w-0 bg-black/30 text-purple-50 text-[8px] font-black uppercase tracking-wider px-1 rounded focus:outline-none"
-          title="Panel name"
-        />
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              if (e.key === 'Escape') {
+                setDraft(title);
+                setEditing(false);
+              }
+            }}
+            className="flex-1 min-w-0 bg-black/30 text-purple-50 text-[8px] font-black uppercase tracking-wider px-1 rounded focus:outline-none"
+            title="Panel name"
+          />
+        </>
       ) : (
         <span
           onDoubleClick={() => {
@@ -108,6 +113,8 @@ const PanelHeader: React.FC<{
       </button>
       <button
         onClick={() => store.getState().togglePanelUniform(nodeId)}
+        aria-label="Uniform control sizing"
+        aria-pressed={uniform}
         title={uniform ? 'Uniform sizing ON — click for free sizing' : 'Uniform control sizing (equal size for every control here)'}
         className={uniform ? 'text-amber-200' : 'text-purple-50/80 hover:text-white'}
       >
@@ -115,7 +122,9 @@ const PanelHeader: React.FC<{
       </button>
       <button
         onClick={() => store.getState().togglePanelMirror(nodeId)}
-        title={mirror ? 'Mirrored — click to un-mirror' : 'Mirror this panel (reverse order, flip icons)'}
+        aria-label="Mirror this panel"
+        aria-pressed={mirror}
+        title={mirror ? 'Mirrored — click to un-mirror' : 'Mirror this panel (flip icons and sides; a row reverses, a column keeps its order)'}
         className={mirror ? 'text-amber-200' : 'text-purple-50/80 hover:text-white'}
       >
         <FlipHorizontal className="w-3 h-3" />
@@ -219,10 +228,12 @@ export const SurfacePanel: React.FC<{ nodeId: NodeId }> = ({ nodeId }) => {
   // (empty) gap instead of being clipped at the panel edge.
   const clip = isPinned ? 'overflow-hidden' : 'overflow-visible';
 
-  // Mirror reverses the visible widget order; the true store index is still
-  // passed to each cell so drag-reorder + resize stay correct.
+  // Mirror reverses a row's visible widget order; a column keeps its
+  // top-to-bottom order (deck A's EQ reads HI to LO like deck B's). The true
+  // store index is still passed to each cell so drag-reorder + resize stay
+  // correct.
   const widgets = node.widgets;
-  const displayIds = node.mirror ? [...widgets].reverse() : widgets;
+  const displayIds = displayOrder(node);
 
   // Which edge a dragged panel/row is hovering, for directional docking.
   const computeEdge = (e: React.DragEvent): EdgeDir => {
