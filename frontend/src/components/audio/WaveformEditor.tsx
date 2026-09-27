@@ -41,7 +41,7 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSec, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSec, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
@@ -6209,7 +6209,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <button
               onClick={tapTempo}
               aria-label="Tap tempo"
-              className="px-1 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider text-zinc-500 hover:text-purple-300 hover:bg-white/5"
+              className="px-1 py-0.5 rounded text-xs font-bold uppercase tracking-wider text-zinc-400 hover:text-purple-300 hover:bg-white/5"
               title="Tap tempo — tap in time to set the BPM"
             >
               tap
@@ -6221,13 +6221,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               name="editor-snap-division"
               value={snap}
               onChange={(e) => setSnap(e.target.value as SnapDivision)}
-              className="bg-transparent border-none outline-none text-[9px] font-mono uppercase text-zinc-100 cursor-pointer"
+              className="bg-transparent border-none outline-none text-xs font-bold text-zinc-100 cursor-pointer"
               style={{ colorScheme: 'dark' }}
               title="Snap divisions are relative to the editor BPM"
             >
               {SNAP_DIVISIONS.map((d) => (
                 <option key={d} value={d}>
-                  {d === 'off' ? 'Snap off' : d === '1/1' ? 'Bar' : d}
+                  {snapDivisionLabel(d)}
                 </option>
               ))}
             </select>

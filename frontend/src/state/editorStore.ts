@@ -108,6 +108,21 @@ export const SNAP_DIVISIONS: SnapDivision[] = [
   '1/4D', '1/8D', '1/16D',
 ];
 
+/** A division as the EDIT snap menu words it: "Snap off", "Bar", "1/8 triplet",
+ *  "Quintuplet 1/16", "Dotted 1/8", or the plain fraction. */
+export const snapDivisionLabel = (d: SnapDivision): string => {
+  if (d === 'off') return 'Snap off';
+  if (d === '1/1') return 'Bar';
+  const base = d.replace(/[TQSD]$/, '');
+  switch (d.slice(-1)) {
+    case 'T': return `${base} triplet`;
+    case 'Q': return `Quintuplet ${base}`;
+    case 'S': return `Septuplet ${base}`;
+    case 'D': return `Dotted ${base}`;
+    default: return d;
+  }
+};
+
 /** The grid step in seconds, or null when snapping is off (or the stored value
  *  is not a division we know — e.g. a hand-edited project file). */
 export const snapStepSec = (snap: SnapDivision, bpm: number): number | null => {
