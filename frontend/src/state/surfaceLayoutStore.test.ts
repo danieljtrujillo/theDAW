@@ -5,17 +5,23 @@
  * every mirrored column bottom to top. The rev-1 upgrade keeps what the user
  * saw in each such column, except EQ A and Ch A, which take deck B's order.
  *
- * The store half replays what the app does: a layout the old renderer saved
- * sits in localStorage, the DJ surface store is created over it, the app is
- * launched again, a saved default is restored with reset, and Ch A is synced
- * onto Ch B.
+ * Everything runs on the DJ default and the column-order fix the app ships
+ * (views/djLayout.ts), and SurfacePanel is checked to draw through
+ * displayOrder. The store half replays what the app does: a layout the old
+ * renderer saved sits in localStorage, the DJ surface store is created over it
+ * (once with storage full), the app is launched again, a saved default is
+ * restored with reset, and Ch A is synced onto Ch B.
  *
  * Run: npx tsx src/state/surfaceLayoutStore.test.ts
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { LAYOUT_REV, createLayoutStore, displayOrder, upgradeLayout } from './surfaceLayoutStore.ts';
-import type { ColumnOrderFix, PanelNode, SurfaceLayout } from './surfaceLayoutStore.ts';
+import type { PanelNode, SurfaceLayout } from './surfaceLayoutStore.ts';
+import { DJ_COLUMN_ORDER_FIX, DJ_LAYOUT_VERSION, defaultDjLayout } from '../views/djLayout.ts';
 
 const saved = new Map<string, string>();
 /** When set, every write throws the way a full localStorage does. */
@@ -32,43 +38,8 @@ const g = globalThis as unknown as Record<string, unknown>;
 g.window = { localStorage };
 g.localStorage = localStorage;
 
-/** The DJ mixer and deck panels as the v24 default stored them before rev 1:
- *  Ch A held [volA, gainA] so the reversed column showed gain on top. */
-const OLD: SurfaceLayout = {
-  version: 24,
-  root: 'root',
-  nodes: {
-    root: {
-      id: 'root',
-      type: 'container',
-      axis: 'row',
-      children: ['pdA-mode', 'pchAP', 'eqAP', 'chAP', 'chBP', 'eqBP', 'pdB-mode', 'pdA-trans', 'pdB-trans', 'waveAOverview'],
-      fr: {},
-    },
-    'pdA-mode': { id: 'pdA-mode', type: 'panel', title: 'A · Mode', flow: 'column', widgets: ['syncLockA', 'headCueA'], mirror: true, uniform: true },
-    pchAP: { id: 'pchAP', type: 'panel', title: 'Pitch A', flow: 'column', widgets: ['pitchA'], widgetMargins: { pitchA: { t: 3, r: 4, b: 3, l: 4 } }, mirror: true },
-    eqAP: { id: 'eqAP', type: 'panel', title: 'EQ A', flow: 'column', widgets: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'], mirror: true },
-    chAP: { id: 'chAP', type: 'panel', title: 'Ch A', flow: 'column', widgets: ['volA', 'gainA'], widgetFr: { gainA: 1, volA: 3 }, widgetMargins: { volA: { t: 8, r: 0, b: 8, l: 24 } }, mirror: true },
-    chBP: { id: 'chBP', type: 'panel', title: 'Ch B', flow: 'column', widgets: ['gainB', 'volB'], widgetFr: { gainB: 1, volB: 3 }, widgetMargins: { volB: { t: 8, r: 24, b: 8, l: 0 } } },
-    eqBP: { id: 'eqBP', type: 'panel', title: 'EQ B', flow: 'column', widgets: ['eqB.hi', 'eqB.mid', 'eqB.lo', 'fltB'] },
-    'pdB-mode': { id: 'pdB-mode', type: 'panel', title: 'B · Mode', flow: 'column', widgets: ['syncLockB', 'headCueB'], uniform: true },
-    'pdA-trans': { id: 'pdA-trans', type: 'panel', title: 'A · Transport', flow: 'row', widgets: ['cueA', 'playA', 'stopA', 'ejectA', 'syncA'], uniform: true, mirror: true },
-    'pdB-trans': { id: 'pdB-trans', type: 'panel', title: 'B · Transport', flow: 'row', widgets: ['cueB', 'playB', 'stopB', 'ejectB', 'syncB'], uniform: true },
-    waveAOverview: { id: 'waveAOverview', type: 'panel', title: 'A · Overview', flow: 'row', widgets: [], pinned: 'waveAOverview', mirror: true },
-  },
-};
-
-/** The same panels as DJView's default now ships them (Ch A as [gainA, volA]). */
-const NEW_DEFAULT: SurfaceLayout = JSON.parse(JSON.stringify(OLD));
-(NEW_DEFAULT.nodes.chAP as PanelNode).widgets = ['gainA', 'volA'];
-
-/** DJView's DJ_COLUMN_ORDER_FIX. */
-const FIX: ColumnOrderFix = {
-  eqAP: ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'],
-  chAP: ['gainA', 'volA'],
-};
-
 const panel = (l: SurfaceLayout, id: string) => l.nodes[id] as PanelNode;
+const panelIds = (l: SurfaceLayout) => Object.keys(l.nodes).filter((id) => l.nodes[id].type === 'panel');
 /** What the renderer drew before rev 1: every mirrored panel reversed. */
 const oldDisplay = (p: PanelNode) => (p.mirror ? [...p.widgets].reverse() : p.widgets);
 /** Deck A ids spelled as their deck B companions. */
@@ -76,7 +47,23 @@ const asB = (ids: string[]) => ids.map((w) => w.replace('A', 'B'));
 /** A layout as it round-trips through storage (undefined keys dropped). */
 const stored = (l: SurfaceLayout) => JSON.parse(JSON.stringify(l)) as SurfaceLayout;
 
+/** The DJ default as the app ships it, and its fix map. */
+const NEW_DEFAULT = defaultDjLayout;
+const FIX = DJ_COLUMN_ORDER_FIX;
+
+/** The same default as the old renderer stored it before rev 1: Ch A held
+ *  [volA, gainA] so the reversed column showed gain on top. */
+const OLD: SurfaceLayout = stored(NEW_DEFAULT);
+panel(OLD, 'chAP').widgets = ['volA', 'gainA'];
+
 /* ── the renderer order rule ─────────────────────────────────────────────── */
+
+// SurfacePanel draws a panel's widgets in displayOrder, and nowhere reverses
+// them itself.
+const surfacePanel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'surface', 'SurfacePanel.tsx'), 'utf8');
+assert.match(surfacePanel, /const displayIds = displayOrder\(node\);/, 'SurfacePanel orders its widgets with displayOrder');
+assert.match(surfacePanel, /<FrGrid[^>]*?\bids=\{displayIds\}/, "SurfacePanel's FrGrid draws that order");
+assert.doesNotMatch(surfacePanel, /\.reverse\(\)/, 'SurfacePanel reverses nothing on its own');
 
 assert.deepEqual(
   displayOrder(panel(NEW_DEFAULT, 'pdA-trans')),
@@ -89,10 +76,15 @@ assert.deepEqual(
   ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'],
   'a mirrored column keeps its top-to-bottom order: EQ A reads HI to LO, then FLT',
 );
-assert.deepEqual(asB(displayOrder(panel(NEW_DEFAULT, 'eqAP'))), displayOrder(panel(NEW_DEFAULT, 'eqBP')), 'EQ A reads like EQ B');
-assert.deepEqual(asB(displayOrder(panel(NEW_DEFAULT, 'chAP'))), displayOrder(panel(NEW_DEFAULT, 'chBP')), 'Ch A reads like Ch B, gain above the fader');
-assert.deepEqual(asB(displayOrder(panel(NEW_DEFAULT, 'pdA-mode'))), displayOrder(panel(NEW_DEFAULT, 'pdB-mode')), 'A · Mode reads like B · Mode');
 assert.deepEqual(displayOrder(panel(NEW_DEFAULT, 'eqBP')), ['eqB.hi', 'eqB.mid', 'eqB.lo', 'fltB'], 'a plain column reads top to bottom');
+for (const [a, b] of [['eqAP', 'eqBP'], ['chAP', 'chBP'], ['pdA-mode', 'pdB-mode']]) {
+  assert.deepEqual(asB(displayOrder(panel(NEW_DEFAULT, a))), displayOrder(panel(NEW_DEFAULT, b)), `the default ${a} reads like ${b}`);
+}
+assert.equal(panel(NEW_DEFAULT, 'chAP').widgets[0], 'gainA', 'the default Ch A lists gain first, like Ch B, so Sync pairs gain with gain');
+for (const id of panelIds(NEW_DEFAULT)) {
+  const p = panel(NEW_DEFAULT, id);
+  if (p.mirror && p.flow === 'column') assert.deepEqual(displayOrder(p), p.widgets, `the mirrored column ${id} shows its stored order`);
+}
 
 /* ── the rev-1 upgrade: old layout in, expected layout out ───────────────── */
 
@@ -103,14 +95,22 @@ assert.equal(LAYOUT_REV, 1);
 
 const expected: SurfaceLayout = JSON.parse(before);
 expected.rev = 1;
-(expected.nodes.eqAP as PanelNode).widgets = ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'];
-(expected.nodes.chAP as PanelNode).widgets = ['gainA', 'volA'];
-(expected.nodes['pdA-mode'] as PanelNode).widgets = ['headCueA', 'syncLockA'];
+panel(expected, 'eqAP').widgets = ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'];
+panel(expected, 'chAP').widgets = ['gainA', 'volA'];
+panel(expected, 'pdA-mode').widgets = ['headCueA', 'syncLockA'];
 assert.deepEqual(stored(up), expected, 'EQ A and Ch A take the corrected order, A · Mode keeps what it showed, the rest is untouched');
 
+// An old saved default comes out as the shipped default, except A · Mode,
+// which keeps HP Cue on top as the user saw it.
+const shipped = stored({ ...NEW_DEFAULT, rev: LAYOUT_REV });
+panel(shipped, 'pdA-mode').widgets = ['headCueA', 'syncLockA'];
+assert.deepEqual(stored(up), shipped, 'an untouched old default upgrades to the shipped default but for A · Mode');
+
 assert.deepEqual(displayOrder(panel(up, 'eqAP')), ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA'], 'an upgraded EQ A reads HI to LO');
-assert.deepEqual(displayOrder(panel(up, 'chAP')), oldDisplay(panel(OLD, 'chAP')), 'Ch A shows gain above the fader, as before');
-for (const id of ['pdA-mode', 'pchAP', 'pdA-trans', 'chBP', 'eqBP', 'pdB-mode', 'pdB-trans']) {
+assert.deepEqual(asB(displayOrder(panel(up, 'eqAP'))), displayOrder(panel(up, 'eqBP')), 'an upgraded EQ A reads like EQ B');
+assert.deepEqual(asB(displayOrder(panel(up, 'chAP'))), displayOrder(panel(up, 'chBP')), 'an upgraded Ch A reads like Ch B');
+for (const id of panelIds(OLD)) {
+  if (id === 'eqAP') continue;
   assert.deepEqual(displayOrder(panel(up, id)), oldDisplay(panel(OLD, id)), `${id} shows what it showed before the upgrade`);
 }
 assert.equal(upgradeLayout(up, FIX), up, 'a rev-1 layout is not upgraded again');
@@ -140,8 +140,8 @@ for (const id of ['eqAP', 'pdA-mode', 'panel-7-cc']) {
 /* ── the store: load, relaunch, reset, sync ──────────────────────────────── */
 
 const LIVE_KEY = 'thedaw.surface.dj.v1';
-const DEFAULT_KEY = 'thedaw.surface.dj.default.v24';
-saved.set(LIVE_KEY, JSON.stringify({ state: { layout: OLD }, version: 24 }));
+const DEFAULT_KEY = `thedaw.surface.dj.default.v${DJ_LAYOUT_VERSION}`;
+saved.set(LIVE_KEY, JSON.stringify({ state: { layout: OLD }, version: DJ_LAYOUT_VERSION }));
 
 // With storage full the DJ surface still opens (this runs during render), with
 // the layout upgraded in memory. Nothing is written, so the next load upgrades
@@ -155,7 +155,7 @@ assert.deepEqual(JSON.parse(saved.get(LIVE_KEY) as string).state.layout, OLD, 'a
 const first = createLayoutStore('dj', NEW_DEFAULT, FIX);
 assert.deepEqual(stored(first.getState().layout), expected, 'the saved layout loads upgraded');
 const written = JSON.parse(saved.get(LIVE_KEY) as string) as { state: { layout: SurfaceLayout }; version: number };
-assert.equal(written.version, 24, 'the layout version is unchanged, so nothing is discarded');
+assert.equal(written.version, DJ_LAYOUT_VERSION, 'the layout version is unchanged, so nothing is discarded');
 assert.deepEqual(written.state.layout, expected, 'the upgrade is written back at load');
 
 const relaunch = createLayoutStore('dj', NEW_DEFAULT, FIX);
@@ -183,5 +183,9 @@ const fresh = createLayoutStore('dj', NEW_DEFAULT, FIX);
 assert.equal(fresh.getState().layout.rev, LAYOUT_REV);
 assert.deepEqual(displayOrder(panel(fresh.getState().layout, 'eqAP')), ['eqA.hi', 'eqA.mid', 'eqA.lo', 'fltA']);
 assert.deepEqual(displayOrder(panel(fresh.getState().layout, 'pdA-mode')), ['syncLockA', 'headCueA'], 'a fresh A · Mode reads like B · Mode');
+
+// Sync on a fresh install pairs gain with gain too.
+fresh.getState().mirrorToCompanion('chAP');
+assert.deepEqual(panel(fresh.getState().layout, 'chBP').widgetFr, { gainB: 1, volB: 3 }, 'a fresh Sync keeps the fader size on the fader');
 
 console.log('surfaceLayoutStore: mirror order and rev-1 upgrade ok');
