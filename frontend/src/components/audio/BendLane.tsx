@@ -29,6 +29,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eraser, Minus, Plus } from 'lucide-react';
 import { beginRollGesture, endRollGesture, usePianoRollStore } from '../../state/pianoRollStore';
+import { barAt } from '../../lib/meterMap';
 import {
   BEND_LANE_HEIGHT,
   BEND_POINT_R,
@@ -84,6 +85,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   const removeBendPoint = usePianoRollStore((s) => s.removeBendPoint);
   const clearBend = usePianoRollStore((s) => s.clearBend);
   const setBendRange = usePianoRollStore((s) => s.setBendRange);
+  const meterMap = usePianoRollStore((s) => s.meterMap);
+  const pickupSteps = usePianoRollStore((s) => s.pickupSteps);
 
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null);
@@ -215,6 +218,16 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   };
 
   const rangeId = `bend-range-${activeLane}`;
+  // The strip is a slider over the selected point: its bend in semitones at
+  // the lane's range, or the centre with none picked.
+  const pointSemis = selected ? Math.round(bendCents(selected.value, range)) / 100 : 0;
+  const pointText = selected
+    ? (() => {
+        const b = barAt(meterMap, Math.max(0, selected.step), pickupSteps);
+        const where = b.bar < 0 ? 'the pickup' : `bar ${b.bar + 1}, step ${Math.round((selected.step - b.start) * 100) / 100 + 1}`;
+        return `${bendReading(selected.value, range)} at ${where}, ${BEND_SHAPE_LABEL[selected.shape]}`;
+      })()
+    : 'No point selected';
 
   return (
     <div className="shrink-0 border-t border-white/8 bg-black/30" data-bend-lane>
@@ -283,13 +296,18 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
         />
       </div>
 
-      {/* The strip. role="application": the arrow keys move a point here, and a
-          screen reader must send them through rather than move its own cursor. */}
+      {/* The strip: a slider whose value is the selected point's bend in
+          semitones. The arrow keys move that point (up and down its bend, left
+          and right its step), and a screen reader announces the bend and where. */}
       <div
         ref={surfaceRef}
-        role="application"
+        role="slider"
         tabIndex={0}
         aria-label={`Pitch bend for lane ${laneName}, ${points.length} point${points.length === 1 ? '' : 's'}, range ${range} semitones`}
+        aria-valuemin={-range}
+        aria-valuemax={range}
+        aria-valuenow={pointSemis}
+        aria-valuetext={pointText}
         aria-describedby="bend-lane-help"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -338,7 +356,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
       </div>
       <p id="bend-lane-help" className="sr-only">
         Click to add a point, drag to move it, Alt-click to remove it. Alt while dragging places it off the grid.
-        The arrow keys move the selected point, Shift for a coarser step, Delete removes it.
+        The arrow keys move the selected point, Shift for a coarser step, Delete removes it. Home and End select
+        the first and last point.
       </p>
     </div>
   );

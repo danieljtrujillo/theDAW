@@ -50,7 +50,8 @@ import { getEngineCtx } from '../state/playerStore';
 import { DEFAULT_METER } from './colony';
 import { meterAtBar, normalizeMeterMap, stepsPerBar, type MeterSegment } from './meterMap';
 import {
-  beatToTime, getBarAtBeat, getBarLength, getBeatAtBar, getTempoAtBeat, timeToBeat, type TempoEvent,
+  TEMPO_BPM_MAX, TEMPO_BPM_MIN, beatToTime, clampTempoBpm, getBarAtBeat, getBarLength, getBeatAtBar, getTempoAtBeat,
+  timeToBeat, type TempoEvent,
 } from './tempoMap';
 
 export type ClockGrid = 'now' | '16th' | '8th' | 'beat' | 'half' | 'bar' | '2bar' | '4bar';
@@ -81,13 +82,15 @@ type Listener = (s: BeatClockState) => void;
 export const CLOCK_LEAD_SEC = 0.01;
 
 /**
- * The app's ONE tempo clamp. It lives here because the clock is the tempo
- * owner; `state/tempoStore.ts` imports `clampClockBpm` rather than writing a
- * second range, which is how tempo used to end up with three of them.
+ * The app's ONE tempo clamp, read from `tempoMap.ts` (TEMPO_BPM_MIN..MAX), the
+ * pure module the piano roll's store also reads it from. The clock re-exports
+ * it because it is the tempo owner; `state/tempoStore.ts` imports
+ * `clampClockBpm` rather than writing a second range, which is how tempo used
+ * to end up with three of them.
  */
-export const CLOCK_BPM_MIN = 20;
-export const CLOCK_BPM_MAX = 300;
-export const clampClockBpm = (bpm: number): number => Math.max(CLOCK_BPM_MIN, Math.min(CLOCK_BPM_MAX, bpm));
+export const CLOCK_BPM_MIN = TEMPO_BPM_MIN;
+export const CLOCK_BPM_MAX = TEMPO_BPM_MAX;
+export const clampClockBpm = (bpm: number): number => clampTempoBpm(bpm);
 
 const state: BeatClockState = { bpm: 120, beatsPerBar: 4, anchor: null, source: 'internal' };
 const listeners = new Set<Listener>();
@@ -174,6 +177,8 @@ function clampEvents(events: readonly TempoEvent[] | null | undefined): readonly
     changed = true;
     const copy: TempoEvent = { beat: e.beat, bpm };
     if (e.curve) copy.curve = e.curve;
+    // A fermata marker is kept with its hold, or the clock would read it as a tempo change.
+    if (e.fermata) copy.fermata = { ...e.fermata };
     out.push(copy);
   }
   return changed ? out : events;

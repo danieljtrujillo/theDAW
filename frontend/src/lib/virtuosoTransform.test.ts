@@ -147,6 +147,15 @@ function captureToday(): Record<string, string> {
 // wrote before, unchanged (POLYRHYTHM_BEFORE below checks it), and adds the
 // cross-rhythm notes; downstream, humanize's per-note draw is keyed on a
 // note's index, so the notes after an added one take the next draw.
+// Every buildSong digest was
+// captured again when the ritardando moved from note positions into the song's
+// tempo map: each of the eleven outputs is identical, note for note, to the
+// previous build's output taken just before its rubato warp.
+// With polyrhythm's cross-rhythm notes and the tempo-map ritardando together,
+// the five 'buildSong <style>' digests were captured once more: each output has
+// the polyrhythm build's notes in the same order with the same pitch, length
+// and velocity, only their steps un-warped, and the six digests without a
+// rhythm amount are the tempo-map build's own.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '27:6775a468085c1026db374779',
@@ -185,17 +194,17 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '558:29eae8e39880c97ee1bcafb1',
-  'buildSong romantic sections': '436:a9272268720f395b38e58769',
-  'buildSong baroque': '700:9296cb5c9cc9e7c05e139ccb',
-  'buildSong baroque sections': '436:252c517b6e5b1ade7f8c43da',
-  'buildSong mussorgsky': '800:f88ce1cce4a1e5b2b6abc0ed',
-  'buildSong mussorgsky sections': '436:f9c999cd10a0078c7ebd0d26',
-  'buildSong flamenco': '930:a17815874fc13a095edf76ce',
-  'buildSong flamenco sections': '436:1bf1fe7257deb14c7110e61c',
-  'buildSong ragtime': '623:394d6bd083a8aa8b07be7931',
-  'buildSong ragtime sections': '439:903b44200d9a49f9c2c78817',
-  'buildSong default': '1265:b754a6aabf3190e54d41d7b3',
+  'buildSong romantic': '558:01a1779aa5c0520e0d82a6fe',
+  'buildSong romantic sections': '436:5784c3e25fdf898b2c2fb2b8',
+  'buildSong baroque': '700:d0be393eb01184ae260f6050',
+  'buildSong baroque sections': '436:1b2135ba90dafae24df48e70',
+  'buildSong mussorgsky': '800:7999348de641aa744383c4c9',
+  'buildSong mussorgsky sections': '436:375b00d6e2ad0b95829fbb0f',
+  'buildSong flamenco': '930:12a32d5ec27d86a45a24f554',
+  'buildSong flamenco sections': '436:6862e5c69c052b40de1d99ab',
+  'buildSong ragtime': '623:765fbc9464389c325d581d35',
+  'buildSong ragtime sections': '439:1c76309492510a90d22f8920',
+  'buildSong default': '1265:30a6e7d83beae841ead25820',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
   'arp renderProgression looped': '125:a71e91c7fafa6d3c59992cca',
 };
@@ -389,8 +398,8 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   notes.filter((n) => n.step >= start - 0.2 && n.step < end - 0.2);
 
 // Every key and mode: one three-bar outro plays I, V, I, each bar one held
-// chord, and rubato moves only the last bar, so the V holds steps 16-32 and the
-// last chord starts at 32. The last chord is the key's own tonic triad, the V
+// chord on its bar line (the ritardando is tempo, so no note moves), so the V
+// holds steps 16-32 and the last chord starts at 32. The last chord is the key's own tonic triad, the V
 // sits on the 5th degree, and a minor mode's V is a major triad with the leading
 // tone. Every note over the V bar comes from its scale, and with the Harmony and
 // Ragtime sliders up (Ragtime rewrites the V bar with this seed) no lowered tone
@@ -441,8 +450,8 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
 
 // Which Vs are cadential, in A minor: the V that closes the intro (a half
 // cadence) takes G sharp, and so does the V before the final tonic, while a V
-// inside a section keeps the mode's own E minor. One eight-bar outro has rubato
-// only in its last bar, so its held chords start on the bar lines.
+// inside a section keeps the mode's own E minor. One eight-bar outro holds its
+// chords on the bar lines.
 {
   const src = phrase(20260913);
   const opts = { key: 'A', mode: 'minor', style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 120 } as const;

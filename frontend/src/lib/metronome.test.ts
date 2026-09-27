@@ -13,8 +13,11 @@ import {
   MetronomeScheduler,
   METRONOME_LOOKAHEAD_SEC,
   METRONOME_RESYNC_SEC,
+  asClickMode,
+  barClicks,
   clicksInWindow,
   countInClicks,
+  type ClickMode,
   type MetronomeSettings,
 } from './metronome.ts';
 import type { MeterSegment } from './meterMap.ts';
@@ -125,6 +128,59 @@ const accents = (cs: { accent: boolean }[]): boolean[] => cs.map((c) => c.accent
   const { clicks, durationSec } = countInClicks(T120, MAP_44, 4, 0);
   assert.deepEqual(clicks, []);
   assert.equal(durationSec, 0);
+}
+
+/* ------------------------------- click modes ------------------------------- */
+
+// Each bar's clicks in steps from its bar line: quarters, group starts, dotted quarters.
+{
+  const at = (m: { num: number; den: number; groups: number[] }, mode: ClickMode) => barClicks(m, mode).map((c) => c.at);
+  assert.deepEqual(at(M78, 'group'), [0, 6, 10], '7/8 3+2+2 clicks its three group starts');
+  assert.deepEqual(at({ num: 11, den: 16, groups: [3, 3, 3, 2] }, 'group'), [0, 3, 6, 9], '11/16 3+3+3+2');
+  assert.deepEqual(at({ num: 5, den: 4, groups: [2, 3] }, 'group'), [0, 8], '5/4 2+3');
+  assert.deepEqual(at({ num: 12, den: 8, groups: [] }, 'group'), [0, 6, 12, 18], '12/8 without groups clicks its dotted quarters');
+  assert.deepEqual(at({ num: 7, den: 32, groups: [3, 2, 2] }, 'group'), [0, 1.5, 2.5], '7/32 groups land between steps, exactly');
+  assert.deepEqual(at(M44, 'group'), [0, 4, 8, 12], 'a simple meter without groups clicks its written beat');
+  assert.deepEqual(at({ num: 7, den: 8, groups: [] }, 'group'), [0, 2, 4, 6, 8, 10, 12], '7/8 without groups clicks its 8ths');
+  assert.deepEqual(at(M44, 'dotted'), [0, 6, 12], '4/4 in dotted quarters: 1, 2-and, 4');
+  assert.deepEqual(at({ num: 6, den: 8, groups: [] }, 'dotted'), [0, 6], '6/8 in dotted quarters');
+  assert.deepEqual(at(M78, 'quarter'), [0, 4, 8, 12], 'quarters from the bar line');
+  assert.deepEqual(barClicks(M78, 'group').map((c) => c.accent), [true, false, false], 'the downbeat is the accent');
+  assert.equal(asClickMode('group'), 'group');
+  assert.equal(asClickMode('swing'), 'quarter', 'a mode the app does not have reads as quarters');
+}
+
+// The window in group mode: 3+2+2 at 120 is 0.75 s, 0.5 s, 0.5 s, and the next downbeat.
+{
+  const cs = clicksInWindow(T120, MAP_78, 0, 1.75, { mode: 'group' });
+  assert.deepEqual(beats(cs), [0, 1.5, 2.5, 3.5]);
+  assert.deepEqual(times(cs), [0, 0.75, 1.25, 1.75]);
+  assert.deepEqual(accents(cs), [true, false, false, true]);
+  // Across the 4/4 -> 7/8 change the grid changes with the bar.
+  const change = clicksInWindow(T120, MAP_CHANGE, 3.5, 6, { mode: 'group' });
+  assert.deepEqual(beats(change), [7, 8, 9.5, 10.5, 11.5]);
+  // Dotted quarters in 4/4: every bar line starts them again.
+  assert.deepEqual(beats(clicksInWindow(T120, MAP_44, 0, 2.75, { mode: 'dotted' })), [0, 1.5, 3, 4, 5.5]);
+}
+
+// A pickup: its clicks count back from its end, unaccented, and bar 1 starts after it.
+{
+  const cs = clicksInWindow(T120, MAP_44, 0, 2.5, { pickupSteps: 4 });
+  assert.deepEqual(beats(cs), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(accents(cs), [false, true, false, false, false, true]);
+  // The pickup is the last four steps of a 7/8 bar, which start its second 2-group.
+  const grouped = clicksInWindow(T120, MAP_78, 0, 1.5, { mode: 'group', pickupSteps: 4 });
+  assert.deepEqual(beats(grouped), [0, 1, 2.5]);
+  assert.deepEqual(accents(grouped), [false, true, false]);
+}
+
+// A count-in in group mode is whole bars of the meter at the start point, in its groups.
+{
+  const { clicks, durationSec } = countInClicks(T120, MAP_78, 4, 1, { mode: 'group' });
+  assert.equal(round(durationSec), 1.75);
+  assert.deepEqual(beats(clicks), [4.5, 6, 7]);
+  assert.deepEqual(times(clicks), [2.25, 3, 3.5]);
+  assert.deepEqual(accents(clicks), [true, false, false]);
 }
 
 /* ---------------------- a fake AudioContext for the rest ------------------- */

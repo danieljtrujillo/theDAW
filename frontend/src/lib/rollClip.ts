@@ -6,7 +6,10 @@
  * sound: each looping lane's repeats written out and the lane ids dropped. EDIT
  * plays and draws that list once. `sourceRollNotes` holds the roll's own notes
  * with their lanes, so the clip reopens in the roll with the same lanes, and
- * its meter map, pickup and each lane's pitch bend travel beside them.
+ * its meter map, pickup, each lane's pitch bend and its tempo map travel beside
+ * them. A clip's tempo map (`sourceTempoMap`) is written only when the roll
+ * changes tempo; EDIT plays, draws and renders the clip's notes through it
+ * (lib/rollTempo stepClock), and a clip without one holds `sourceBpm`.
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -19,9 +22,17 @@ import { TICKS_PER_STEP, feelNoteTicks, laneSnapGrid, snapGrid, type RollSnapId,
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
 import type { MidiFileData } from './midi';
 import { midiFileToRoll } from './rollMidi';
+import { copyTempoMap, hasTempoChanges, playedTempoMap, type StepClock } from './rollTempo';
+import type { TempoEvent } from './tempoMap';
 
-/** The roll state a bounce reads. */
-export type RollClipSource = RollMeter & { notes: readonly PianoNote[]; bpm: number; totalSteps: number; bends: readonly LaneBend[] };
+/** The roll state a bounce reads. `tempoMap` left out is one tempo at `bpm`. */
+export type RollClipSource = RollMeter & {
+  notes: readonly PianoNote[];
+  bpm: number;
+  totalSteps: number;
+  bends: readonly LaneBend[];
+  tempoMap?: readonly TempoEvent[];
+};
 
 type RollClipKeys =
   | 'sourcePianoRoll'
@@ -33,28 +44,48 @@ type RollClipKeys =
   | 'sourceLanes'
   | 'sourceBends';
 
-/** The clip fields a bounce writes. */
-export type RollClipFields = Required<Pick<AudioClip, RollClipKeys>>;
+/**
+ * The clip fields a bounce writes. `sourceTempoMap` is always named, and
+ * undefined for a roll at one tempo, so a re-bounce after the last tempo
+ * change is removed clears the map the clip had.
+ */
+export type RollClipFields = Required<Pick<AudioClip, RollClipKeys>> & { sourceTempoMap: TempoEvent[] | undefined };
 
 /** The clip fields clipRollLoad reads. */
-export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys>;
+export type RollClipInput = Pick<AudioClip, 'id' | RollClipKeys | 'sourceTempoMap'>;
 
 /** The arguments of pianoRollStore's loadFromClip. */
-export type RollLoadArgs = [clipId: string, notes: PianoNote[], bpm: number, totalSteps: number, meter: RollMeter, bends: LaneBend[]];
+export type RollLoadArgs = [
+  clipId: string,
+  notes: PianoNote[],
+  bpm: number,
+  totalSteps: number,
+  meter: RollMeter,
+  bends: LaneBend[],
+  tempoMap: TempoEvent[] | undefined,
+];
 
 /**
  * Where a clip's note sounds, in seconds from the clip's left edge: `relStart`
- * to `relEnd`. `offsetSec` is the clip's trim into its source. The note keeps
- * its own length, floored at the roll's one tick, so a run shorter than a 16th
- * plays and draws in EDIT at the length it has in the roll.
+ * to `relEnd`. `timing` is a 16th's seconds, or the clip's StepClock
+ * (lib/rollTempo) when its tempo map changes tempo. `offsetSec` is the clip's
+ * trim into its source. The note keeps its own length, floored at the roll's
+ * one tick, so a run shorter than a 16th plays and draws in EDIT at the length
+ * it has in the roll.
  */
 export const clipNoteSpan = (
   n: Pick<PianoNote, 'step' | 'length'>,
-  stepSec: number,
+  timing: number | StepClock,
   offsetSec: number,
 ): { relStart: number; relEnd: number } => {
-  const relStart = n.step * stepSec - offsetSec;
-  return { relStart, relEnd: relStart + Math.max(MIN_NOTE_STEPS, n.length) * stepSec };
+  const length = Math.max(MIN_NOTE_STEPS, n.length);
+  const stepSec = typeof timing === 'number' ? timing : timing.stepSec;
+  if (stepSec !== undefined) {
+    const relStart = n.step * stepSec - offsetSec;
+    return { relStart, relEnd: relStart + length * stepSec };
+  }
+  const clock = timing as StepClock;
+  return { relStart: clock.at(n.step) - offsetSec, relEnd: clock.at(n.step + length) - offsetSec };
 };
 
 /** The step just past the last note's end — the grid length a note list implies when nothing else says otherwise. */
@@ -82,6 +113,7 @@ export function rollClipFields(s: RollClipSource): RollClipFields {
     sourcePickupSteps: meter.pickupSteps,
     sourceLanes: meter.lanes,
     sourceBends: copyBends(s.bends),
+    sourceTempoMap: hasTempoChanges(s.tempoMap) ? copyTempoMap(s.tempoMap as TempoEvent[]) : undefined,
   };
 }
 
@@ -102,6 +134,7 @@ export function midiFileClipFields(data: MidiFileData, idPrefix = 'imp'): RollCl
     bpm: Number.isFinite(file.bpm) && file.bpm > 0 ? file.bpm : 120,
     totalSteps: roundUpToBar(meterMap, Math.max(1, noteEnd), pickupSteps),
     bends: file.bends,
+    tempoMap: file.tempoMap,
   });
 }
 
@@ -139,7 +172,12 @@ export function clipRollLoad(clip: RollClipInput): RollLoadArgs {
     clip.sourceMeterMap && clip.sourceTotalSteps !== undefined
       ? clip.sourceTotalSteps
       : roundUpToBar(meterMap, Math.max(1, clip.sourceTotalSteps ?? noteEnd), pickupSteps);
-  return [clip.id, notes, clip.sourceBpm ?? 120, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? [])];
+  // A clip with no tempo map (one tempo, or bounced before maps existed) opens at its one tempo.
+  // A mapped clip opens at the map EDIT plays: scaled to its sourceBpm, which a
+  // retag or a stretch rewrites without touching the map.
+  const bpm = clip.sourceBpm ?? 120;
+  const tempoMap = hasTempoChanges(clip.sourceTempoMap) ? copyTempoMap(playedTempoMap(bpm, clip.sourceTempoMap)) : undefined;
+  return [clip.id, notes, bpm, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? []), tempoMap];
 }
 
 /**

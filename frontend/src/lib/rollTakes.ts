@@ -14,10 +14,11 @@
 import { importedRollBpm, usePianoRollStore } from '../state/pianoRollStore';
 import type { LaneBend } from './pitchBend';
 import { takeToRoll, type TakeNote } from './takeNotes';
+import { stepClock } from './rollTempo';
 
 /**
  * The tempo importTake gives the roll for a take at `bpm`: `bpm` held to
- * 40-240, or the roll's own tempo when `bpm` is not a positive number.
+ * 20-300 (the app tempo range), or the roll's own tempo when `bpm` is not a positive number.
  */
 export const takeRollBpm = (bpm: number): number =>
   importedRollBpm(Number.isFinite(bpm) && bpm > 0 ? bpm : usePianoRollStore.getState().bpm);
@@ -34,15 +35,16 @@ export function importTake(take: readonly TakeNote[], bpm: number, idPrefix: str
 }
 
 /**
- * Place a recorded take `elapsedSec` long at the roll's own tempo, marking the
- * recorded span from step 0 to the 16th the recording stopped in, without
- * shrinking the grid (placeRecording). Returns the number of notes placed.
+ * Place a recorded take `elapsedSec` long at the roll's own tempo, through its
+ * tempo map when it changes tempo, marking the recorded span from step 0 to
+ * the 16th the recording stopped in, without shrinking the grid
+ * (placeRecording). Returns the number of notes placed.
  */
 export function placeTake(take: readonly TakeNote[], elapsedSec: number, idPrefix: string): number {
   const roll = usePianoRollStore.getState();
-  const notes = takeToRoll(take, { bpm: roll.bpm, idPrefix }).rollNotes;
-  const stepSec = 60 / roll.bpm / 4;
-  const endStep = Math.max(1, Math.ceil((Number.isFinite(elapsedSec) ? elapsedSec : 0) / stepSec));
+  const clock = stepClock(roll.bpm, roll.tempoMap);
+  const notes = takeToRoll(take, { bpm: roll.bpm, idPrefix, tempoMap: clock.map }).rollNotes;
+  const endStep = Math.max(1, Math.ceil(clock.stepAt(Number.isFinite(elapsedSec) ? elapsedSec : 0)));
   roll.placeRecording(notes, { startStep: 0, endStep });
   return notes.length;
 }

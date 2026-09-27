@@ -39,7 +39,7 @@
 import { computePeaks, useEditorStore } from '../state/editorStore';
 import type { AudioClip } from '../state/editorStore';
 import type { ToolResult } from '../state/editorTools';
-import { stepToSec } from '../lib/clipNotes';
+import { stepClock } from '../lib/rollTempo';
 import { logInfo } from '../state/logStore';
 
 const BASE = '/api/editor-tools';
@@ -325,12 +325,14 @@ export async function compareTiming(args: CompareTimingArgs, deps: BridgeDeps = 
   const maxMatchSec = numArg(args.max_match_sec) ?? DEFAULT_MAX_MATCH_SEC;
   if (maxMatchSec < 0) return fail('compare_timing: max_match_sec must not be negative');
 
-  const midiBpm = midi.sourceBpm ?? store().bpm;
+  // The MIDI clip's clock, through its tempo map when it has one, so a
+  // ritardando or an Adagio-into-Allegro times its notes as EDIT plays them.
+  const midiClock = stepClock(midi.sourceBpm ?? store().bpm, midi.sourceTempoMap);
   const midiOffset = midi.offsetIntoSource ?? 0;
   const audioOffset = audio.offsetIntoSource ?? 0;
   // Note start -> timeline seconds -> the audio clip's own source seconds.
   const toAudioSource = (step: number): number =>
-    stepToSec(step, midiBpm) - midiOffset + midi.startSec - audio.startSec + audioOffset;
+    midiClock.at(step) - midiOffset + midi.startSec - audio.startSec + audioOffset;
 
   const windowStart = audioOffset;
   const windowEnd = audioOffset + audio.durationSec;

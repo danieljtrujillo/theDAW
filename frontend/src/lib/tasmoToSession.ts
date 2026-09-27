@@ -15,6 +15,7 @@ import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, typ
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
+import { spanSec, stepClock } from './rollTempo';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
@@ -36,8 +37,9 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
             ? playedNotesFromRoll(tasmoMeterToClip(c)).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity }))
             : [];
       const isMidi = c.clip_type === 'midi' && stepNotes.length > 0;
-      // Steps are 16ths at the tempo the clip's notes were written at.
-      const clipStepSec = 60 / Math.max(40, tasmoClipBpm(c, bpm)) / 4;
+      // Steps are 16ths at the tempo the clip's notes were written at, through
+      // its tempo map when it has one (lib/rollTempo stepClock).
+      const clock = stepClock(tasmoClipBpm(c, bpm), isMidi ? tasmoMeterToClip(c).sourceTempoMap : undefined);
       return {
         name: c.name || `Clip ${ci + 1}`,
         start_time: c.start_time ?? 0,
@@ -54,8 +56,8 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
               const steps = ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : length > 0 ? Math.max(MIN_NOTE_STEPS, length) : 1;
               return {
                 pitch: Number(n.note ?? n.pitch ?? 60),
-                start: Number(n.step ?? 0) * clipStepSec,
-                duration: steps * clipStepSec,
+                start: clock.at(Number(n.step ?? 0)),
+                duration: spanSec(clock, Number(n.step ?? 0), steps),
                 velocity: Number(n.velocity ?? 100),
               };
             })

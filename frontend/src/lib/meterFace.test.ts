@@ -11,7 +11,9 @@ import {
   setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
   setGroupingText, stepPickup, UNITS, type GenSettings,
 } from './meterFace.ts';
-import { beatToTime } from './tempoMap.ts';
+import { stepRenderRequest } from './midiSynth.ts';
+import { encodeMidi, parseMidi } from './midi.ts';
+import { midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
 import { grooveById } from './grooveTemplate.ts';
 import { playedRollNotes } from './rollClip.ts';
 
@@ -315,10 +317,9 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
 // becomes tempo changes, the notes keep their steps, the swing lands in the
 // feel's groove, and one undo takes the whole MATCH back.
 //
-// A DATA check of the tempo map: it reads each bar line's time through
-// lib/tempoMap beatToTime, the way a player that follows the map will. The
-// roll's scheduler, bounce and MIDI export still play at the one BPM, which
-// is why the status line warns that bar lines drift.
+// The notes are timed through the render request a bounce makes
+// (midiSynth.stepRenderRequest with the roll's map, as rollBounce passes it),
+// and the map goes through a MIDI file and back.
 {
   const durs = [2, 2, 2, 2, 2.4, 2.8, 2.8, 2.8];
   const downbeats = [0];
@@ -331,7 +332,7 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
     syncopation: { swing_ratio: 1.6, swing_confidence: 1 },
   };
   usePianoRollStore.setState({
-    meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0, lanes: [LANE_A], activeLane: 0, totalSteps: 160, bpm: 120, tempoMap: [], grooveId: 'swing',
+    meterMap: [{ bar: 0, meter: M44 }], pickupSteps: 0, lanes: [LANE_A], activeLane: 0, totalSteps: 160, bpm: 120, tempoMap: [{ beat: 0, bpm: 120, curve: 'step' }], grooveId: 'swing',
   });
   st().replaceAll([note('bar1', 0), note('bar5', 64), note('bar7', 96)]);
   freshStep();
@@ -341,33 +342,39 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.ok(res.apply);
   writeMatch(st(), res.apply);
   assert.deepEqual(st().tempoMap, [
-    { beat: 0, bpm: 120 },
-    { beat: 16, bpm: 100 },
-    { beat: 20, bpm: 85.714 },
+    { beat: 0, bpm: 120, curve: 'step' },
+    { beat: 16, bpm: 100, curve: 'step' },
+    { beat: 20, bpm: 85.714, curve: 'step' },
   ]);
+  assert.equal(st().bpm, 120, "the roll's BPM reads the song's opening tempo");
   assert.deepEqual(st().notes.map((n) => n.step), stepsBefore, 'MATCH moves no note');
-  // Times through the tempo map: bar 5 at 8 s, bar 7 at 8 + 2.4 + 2.8 s, the song's downbeats.
-  for (const n of st().notes) {
-    const onset = beatToTime(st().tempoMap, n.step / 4);
+  // Bounced: bar 5 at 8 s, bar 7 at 8 + 2.4 + 2.8 s, the song's downbeats.
+  const req = stepRenderRequest(st().notes, st().bpm, st().totalSteps, { tempoMap: st().tempoMap });
+  st().notes.forEach((n, i) => {
+    const onset = req.notes[i].startSec;
     const bar = n.step / 16;
-    assert.ok(Math.abs(onset - downbeats[bar]) < 1e-3, `the note on bar ${bar + 1} sounds at ${onset}, the downbeat is ${downbeats[bar]}`);
-  }
+    assert.ok(Math.abs(onset - downbeats[bar]) < 1e-3, `the note on bar ${bar + 1} bounces at ${onset}, the downbeat is ${downbeats[bar]}`);
+  });
+  // Exported and read back, the map and the notes' steps come back.
+  const back = midiFileToRoll(parseMidi(encodeMidi(rollToMidiFile(st()))));
+  assert.deepEqual(back.tempoMap.map((e) => [e.beat, e.bpm]), st().tempoMap.map((e) => [e.beat, e.bpm]));
+  assert.deepEqual(back.notes.map((n) => n.step), stepsBefore);
   assert.equal(st().grooveId, 'swing8:61.5');
   assert.equal(grooveById(st().grooveId)?.name, 'Swing 8ths 61.5%', "the feel's groove list resolves the song's swing");
-  assert.match(res.status, /3 TEMPO CHANGES/);
+  assert.match(res.status, /120 BPM WITH 2 TEMPO CHANGES/);
   assert.match(res.status, /SWING 8THS 61\.5%/);
-  // The roll still plays one tempo, so MATCH says the bar lines drift.
-  assert.match(res.status, /THE ROLL STILL PLAYS AND SAVES ONE TEMPO, 102\.13 BPM, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES\.$/);
-  assert.equal(res.level, 'warn');
+  // The roll plays the tempo changes, so nothing drifts.
+  assert.doesNotMatch(res.status, /DRIFT/);
+  assert.equal(res.level, 'info');
   assert.equal(st()._undo.length, 1, 'MATCH is one undo step');
   st().undo();
-  assert.deepEqual(st().tempoMap, [], 'undo takes the tempo changes back');
+  assert.deepEqual(st().tempoMap, [{ beat: 0, bpm: 120, curve: 'step' }], 'undo takes the tempo changes back');
   assert.equal(st().bpm, 120);
   st().redo();
   assert.equal(st().tempoMap.length, 3, 'redo brings them back');
   // A MATCH on a song that holds one tempo clears tempo changes an earlier MATCH wrote.
   writeMatch(st(), matchApply(st(), { ...rit, downbeats: [0, 2, 4, 6], syncopation: undefined }).apply!);
-  assert.deepEqual(st().tempoMap, []);
+  assert.deepEqual(st().tempoMap, [{ beat: 0, bpm: 120, curve: 'step' }]);
   assert.equal(st().bpm, 120);
   usePianoRollStore.setState({ grooveId: 'swing' });
 }

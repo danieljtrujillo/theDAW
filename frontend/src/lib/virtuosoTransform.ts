@@ -14,7 +14,7 @@
  *   runs     — Rudess scalar/chromatic flourishes that LAND on chord tones.
  *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents, and real
  *              3:2, 4:3 and 5:4 notes over the spans each bar's groups give.
- *   humanize — velocity dynamics, beat accents, and phrase-shaped rubato.
+ *   humanize — velocity dynamics, beat accents, and small per-note micro-timing.
  *   sync     — anticipations: strong onsets move to the weak position before them.
  *   accent   — group and bar starts louder, every other note softer.
  *
@@ -25,12 +25,18 @@
  * blocks), (3) writes an actual MELODY over it (stepwise motion, passing/neighbor
  * tones, appoggiaturas, an arch contour), and (4) renders each section with its
  * own accompaniment + right-hand behaviour (sustained, Alberti, arpeggio, stride,
- * octave stabs, or continuous runs). A song-long crescendo, phrase-shaped
- * rubato, and the global sliders shape the finished result.
+ * octave stabs, or continuous runs). A song-long crescendo and the global
+ * sliders shape the finished result.
+ *
+ * Phrasing is written as TEMPO, not as notes moved late: the song carries a
+ * tempo map (lib/tempoMap) with a linear ritardando over each section's last
+ * bar, deeper at the final cadence, and a section can hold a tempo of its own.
+ * Every note stays on its bar line, so the roll, a bounce and a MIDI file all
+ * agree on where the bars are while the music still slows into each cadence.
  *
  * Positions live on a 16th grid but allow fractional steps (32nd = 0.5, 64th =
  * 0.25, plus micro-timing), which the time-based preview scheduler plays and the
- * bounce path rounds — so runs and rubato both preview and render.
+ * bounce path rounds — so runs and micro-timing both preview and render.
  *
  * Bars follow the roll's meter map (lib/meterMap) when the opts carry one, and
  * are 4/4 from step 0 when they do not. Accents come from the metrical weights
@@ -53,6 +59,9 @@ import {
   type MeterSegment,
 } from './meterMap';
 import { metricalWeights, stepsPerBeat } from './syncopation';
+import { PPQ } from './noteClock';
+import { sanitizeRollTempoMap } from './rollTempo';
+import { clampTempoBpm, getTempoAtBeat, type TempoCurve, type TempoEvent } from './tempoMap';
 import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
 
 const RH_FLOOR = 60; // C4 — right-hand register floor
@@ -1352,7 +1361,13 @@ export interface SectionSpec {
   bars: number;
   /** The section's time signature; absent follows the roll's meter map. */
   meter?: Meter;
+  /** The section's tempo in quarter notes a minute; absent follows the roll's tempo map. */
+  bpm?: number;
 }
+
+/** A section tempo the song can hold: inside the app's 20..300, to the hundredth, or undefined. */
+export const sanitizeSectionTempo = (bpm: unknown): number | undefined =>
+  typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0 ? clampTempoBpm(Math.round(bpm * 100) / 100) : undefined;
 
 /** The default section layout for a style, one full harmonic cycle per section. */
 export function defaultSections(style: StyleName): SectionSpec[] {
@@ -1372,12 +1387,111 @@ export interface BuildSongOpts extends TransformOpts {
   sections?: SectionSpec[];
   /** Reference groove pocket applied by the final humanize pass. */
   groove?: GrooveTemplate;
+  /**
+   * The roll's tempo map (lib/rollTempo), which sections without a tempo of
+   * their own follow. Absent means one tempo at `bpm`.
+   */
+  tempoMap?: readonly TempoEvent[];
 }
 
 export interface BuiltSong {
   notes: PianoNote[];
   /** The song's time signatures by bar: each section's meter, else the roll's map at that bar. */
   meterMap: MeterSegment[];
+  /**
+   * The song's tempo map: the roll's map, each section's own tempo over its
+   * bars, and a ritardando over each section's last bar (songTempoMap).
+   */
+  tempoMap: TempoEvent[];
+}
+
+/** How much slower a section's last bar ends than it starts: 6% with Humanize at 0, up to 24% at 1. */
+export const RIT_DEPTH_BASE = 0.06;
+export const RIT_DEPTH_HUMANIZE = 0.18;
+/** The final cadence's ritardando is this many times deeper than a section's. */
+export const RIT_FINAL_MULT = 2.2;
+/** The deepest ritardando: the last bar ends at half its tempo. */
+export const RIT_DEPTH_MAX = 0.5;
+
+/** The share of its tempo a section's last bar gives up by its end. */
+export const ritDepth = (humanize: number, final: boolean): number =>
+  Math.min(RIT_DEPTH_MAX, (RIT_DEPTH_BASE + RIT_DEPTH_HUMANIZE * clamp01(humanize)) * (final ? RIT_FINAL_MULT : 1));
+
+/** One section's place in quarter-note beats from the roll's first step, and its own tempo. */
+export interface SectionBeats {
+  start: number;
+  /** Where its last bar starts. */
+  lastBar: number;
+  end: number;
+  bpm?: number;
+}
+
+/** A ritardando ends one tick before its section does, so the next section's tempo starts on the bar line. */
+const RIT_END_BEATS = 1 / PPQ;
+
+/**
+ * The song's tempo map. `base` is the roll's map, which sections without a
+ * tempo of their own follow. A section with a tempo holds it from its first
+ * bar line to its end, where the roll's map takes over again. Then each
+ * section's last bar ramps linearly from the tempo in force at its bar line to
+ * `1 - ritDepth` of the tempo in force at its end, reached one tick before the
+ * end, and the next section starts at the tempo the ramp interrupted ("a
+ * tempo"). The final section's ramp is deeper, and its slowed tempo holds after
+ * the song. The roll's fermatas stay where they are.
+ */
+export function songTempoMap(
+  base: readonly TempoEvent[],
+  startBpm: number,
+  sections: readonly SectionBeats[],
+  humanize: number,
+): TempoEvent[] {
+  const own = sanitizeRollTempoMap(base, startBpm);
+  const holds = own.filter((e) => !!e.fermata);
+  const baseTempi = own.filter((e) => !e.fermata);
+  const tempos = new Map<number, TempoEvent>(baseTempi.map((e) => [e.beat, e]));
+  const list = (): TempoEvent[] => [...tempos.values()].sort((a, b) => a.beat - b.beat);
+  /** The curve of the tempo point that owns `beat`. */
+  const curveAt = (events: readonly TempoEvent[], beat: number): TempoCurve => {
+    let curve: TempoCurve = 'step';
+    for (const e of events) if (e.beat <= beat) curve = e.curve === 'linear' ? 'linear' : 'step';
+    return curve;
+  };
+  const put = (beat: number, bpm: number, curve: TempoCurve): void => {
+    tempos.set(beat, { beat, bpm: clampTempoBpm(bpm), curve });
+  };
+  /** Removes the tempo points in [from, to), or in (from, to) when `fromIncluded` is false. */
+  const dropInside = (from: number, to: number, fromIncluded: boolean): void => {
+    for (const beat of [...tempos.keys()]) if ((fromIncluded ? beat >= from : beat > from) && beat < to) tempos.delete(beat);
+  };
+
+  // Each section's own tempo over its bars; the roll's map resumes at its end.
+  for (const sec of sections) {
+    const bpm = sanitizeSectionTempo(sec.bpm);
+    if (bpm === undefined || !(sec.end > sec.start)) continue;
+    const resume = { bpm: getTempoAtBeat(baseTempi, sec.end), curve: curveAt(baseTempi, sec.end) };
+    dropInside(sec.start, sec.end, true);
+    put(sec.start, bpm, 'step');
+    if (!tempos.has(sec.end)) put(sec.end, resume.bpm, resume.curve);
+  }
+
+  // A ritardando over each section's last bar.
+  sections.forEach((sec, i) => {
+    const final = i === sections.length - 1;
+    const from = sec.lastBar;
+    const until = sec.end - RIT_END_BEATS;
+    if (!(until > from)) return;
+    const now = list();
+    const startTempo = getTempoAtBeat(now, from);
+    const endTempo = getTempoAtBeat(now, until);
+    // "A tempo": the tempo the ramp interrupts, unless a point already starts the next section.
+    const aTempo = { bpm: getTempoAtBeat(now, sec.end), curve: curveAt(now, sec.end) };
+    dropInside(from, sec.end, false);
+    put(from, startTempo, 'linear');
+    put(until, endTempo * (1 - ritDepth(humanize, final)), 'step');
+    if (!final && !tempos.has(sec.end)) put(sec.end, aTempo.bpm, aTempo.curve);
+  });
+
+  return sanitizeRollTempoMap([...list(), ...holds], startBpm);
 }
 
 /** Build the ordered section list, either explicit or derived from the style. */
@@ -1385,7 +1499,8 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
   if (opts.sections && opts.sections.length) {
     return opts.sections.map((s) => {
       const meter = sanitizeMeter(s.meter);
-      return { role: s.role, bars: Math.max(1, Math.round(s.bars)), ...(meter ? { meter } : {}) };
+      const bpm = sanitizeSectionTempo(s.bpm);
+      return { role: s.role, bars: Math.max(1, Math.round(s.bars)), ...(meter ? { meter } : {}), ...(bpm !== undefined ? { bpm } : {}) };
     });
   }
   const style = STYLES[opts.style] ?? STYLES.romantic;
@@ -1408,14 +1523,17 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
 /**
  * Build a full, developing arrangement. Lay out a voice-led chord plan (with
  * cadences), render each section with its own texture + real melody, shape it with
- * a crescendo arc and phrase-shaped rubato, then bias with the global sliders.
- * Sections come from the configurator when given, else from the style. Bar 0
- * starts after the roll's pickup, and each bar takes its section's meter or the
- * roll's meter at that bar; the result carries the meter map that follows.
+ * a crescendo arc, then bias with the global sliders. Sections come from the
+ * configurator when given, else from the style. Bar 0 starts after the roll's
+ * pickup, and each bar takes its section's meter or the roll's meter at that
+ * bar; the result carries the meter map that follows. The phrasing is the
+ * result's tempo map (songTempoMap): every note stays on its step, and only
+ * humanize's small micro-timing moves it.
  */
 export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const rollMap = normalizeMeterMap(opts.meterMap);
-  if (!source.length) return { notes: [], meterMap: rollMap };
+  const startBpm = clampTempoBpm(opts.bpm > 0 ? opts.bpm : 120);
+  if (!source.length) return { notes: [], meterMap: rollMap, tempoMap: sanitizeRollTempoMap(opts.tempoMap, startBpm) };
   const style = STYLES[opts.style] ?? STYLES.romantic;
   // Degrees count from the key's tonic; the sorted set feeds the ladders.
   const degrees = scaleDegrees(opts.key, opts.mode);
@@ -1471,9 +1589,8 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const ctx: RenderCtx = { ladder, chorusTexture: style.chorusTexture, seed: 1, meter: o };
   const state: SectionState = { voicing: null, cursor: MEL_CENTER };
   const out: PianoNote[] = [];
-  const ritPoints: Array<{ end: number; span: number; depth: number }> = [];
+  const sectionBeats: SectionBeats[] = [];
   const humAmt = clamp01(style.humanize * 0.6 + opts.amounts.humanize);
-  const rubatoDepth = 0.5 + opts.amounts.humanize * 2.5;
 
   let cursorBar = 0;
   let cursorStep = songStart;
@@ -1496,9 +1613,8 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
       const dyn = crescendoMult(pos, style.climaxAt) * ROLE_DYN[sec.role];
       out.push(mk(n.note, n.step, n.length, n.velocity * dyn));
     }
-    // ritardando into each section end; strongest at the final cadence.
-    const isFinal = si === sections.length - 1;
-    ritPoints.push({ end: cursorStep, span: spans[spans.length - 1].len, depth: rubatoDepth * (isFinal ? 2.2 : 1) });
+    // Where the section and its last bar sit, for its ritardando in the tempo map.
+    sectionBeats.push({ start: spans[0].start / 4, lastBar: spans[spans.length - 1].start / 4, end: cursorStep / 4, bpm: sec.bpm });
     cursorBar += sec.bars;
   });
 
@@ -1512,20 +1628,7 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   if (opts.amounts.sync > 0) notes = syncopate(notes, opts.amounts.sync, o, 15);
   if (opts.amounts.accent > 0) notes = accentGroups(notes, opts.amounts.accent, o);
 
-  // Phrase-shaped rubato: a monotonic time-warp that eases each note later as it
-  // approaches a section end (ritardando), pushing subsequent material too. It
-  // eases over the last bar of each section.
-  notes = notes.map((n) => {
-    let shift = 0;
-    for (const rp of ritPoints) {
-      if (n.step >= rp.end) shift += rp.depth;
-      else if (n.step >= rp.end - rp.span) {
-        const e = (n.step - (rp.end - rp.span)) / rp.span;
-        shift += rp.depth * (e * e); // ease-in for a natural slow-down
-      }
-    }
-    return mk(n.note, n.step + shift, n.length, n.velocity);
-  });
-
-  return { notes: notes.sort(byStepThenNote), meterMap };
+  // The phrasing: a ritardando into each section end, written as tempo.
+  const tempo = songTempoMap(opts.tempoMap ?? [], startBpm, sectionBeats, opts.amounts.humanize);
+  return { notes: notes.sort(byStepThenNote), meterMap, tempoMap: tempo };
 }

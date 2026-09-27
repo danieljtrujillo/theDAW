@@ -22,7 +22,7 @@ import {
 import { sanitizeBendPoints, type LaneBend } from './pitchBend';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
 import { seedFromRhythm, type RhythmAnalysis, type RhythmSwing } from './rhythmSeed';
-import type { TempoEvent } from './tempoMap';
+import { clampTempoBpm, type TempoEvent } from './tempoMap';
 import type { PianoNote } from '../state/pianoRollStore';
 
 const EPS = 1e-9;
@@ -539,9 +539,13 @@ export const genStatus = (written: number, laneName: string): string =>
 export interface MatchApply {
   meterMap: MeterSegment[];
   pickupSteps: number;
-  /** The song's quarter-note tempo with its fraction, held to the roll's 40-240; null when the analysis has none. */
+  /** The song's quarter-note tempo with its fraction, held to the roll's 20-300; null when the analysis has none. */
   bpm: number | null;
-  /** The song's tempo changes (empty when one BPM holds it) when the tempo was read off the downbeats; null otherwise. */
+  /**
+   * The song's tempo map from its first downbeat (empty when one BPM holds it)
+   * when the tempo was read off the downbeats; null otherwise. The roll's map
+   * starts at its first tempo, so the roll's BPM reads the song's opening tempo.
+   */
   tempoMap: TempoEvent[] | null;
   /** The song's swing as the feel's groove, or null when the song plays straight. */
   swing: RhythmSwing | null;
@@ -566,11 +570,10 @@ export const swingText = (sw: RhythmSwing): string => `SWING ${sw.unit}THS ${sw.
  *
  * The tempo keeps its fraction. When it was read off the downbeats, MATCH
  * also writes the tempo map (empty for a song that holds one BPM), placed so
- * each bar line sits on the song's downbeat. The roll's playback, bounce and
- * MIDI export still run at the one BPM, and a save does not keep the map, so
- * a song whose tempo moves still warns that bar lines drift: with tempo
- * changes the warning says they are not played yet, and with no downbeats to
- * read the tempo from it says the song's tempo moves.
+ * each bar line sits on the song's downbeat; the roll plays, bounces, exports
+ * and saves that map, so the status names the opening tempo and the changes.
+ * With no downbeats to read the tempo from, a song whose tempo moves warns
+ * that bar lines drift from the notes.
  */
 export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, analysis: RhythmAnalysis): MatchResult {
   if (analysis.status !== 'ready') {
@@ -578,7 +581,7 @@ export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, an
   }
   const seed = seedFromRhythm(analysis, roll.bpm);
   if (!seed) return { apply: null, status: 'THE RHYTHM ANALYSIS HAS NO METER. ANALYZE THE SONG AGAIN, THEN PRESS MATCH.', level: 'warn' };
-  const bpm = seed.bpm != null ? clamp(seed.bpm, 40, 240) : null;
+  const bpm = seed.bpm != null ? clampTempoBpm(seed.bpm) : null;
   const addLanes = roll.lanes.length <= 1 && seed.lanes.length > 1;
   const apply: MatchApply = {
     meterMap: seed.meterMap,
@@ -592,8 +595,11 @@ export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, an
   const changes = seed.meterMap.length;
   const parts = [changes === 1 ? `${meterLabel(seed.meterMap[0].meter)} THROUGHOUT` : `${changes} METERS`];
   parts.push(seed.pickupSteps > 0 ? `A ${seed.pickupSteps}-STEP PICKUP` : 'NO PICKUP');
-  if (bpm != null) parts.push(`${bpmText(bpm)} BPM`);
-  if (seed.tempoFromDownbeats && seed.tempoMap.length > 1) parts.push(`${seed.tempoMap.length} TEMPO CHANGES`);
+  const moves = seed.tempoFromDownbeats && seed.tempoMap.length > 1;
+  if (moves) {
+    const changes = seed.tempoMap.length - 1;
+    parts.push(`${bpmText(clampTempoBpm(seed.tempoMap[0].bpm))} BPM WITH ${changes} TEMPO CHANGE${changes === 1 ? '' : 'S'}`);
+  } else if (bpm != null) parts.push(`${bpmText(bpm)} BPM`);
   if (addLanes) parts.push(`${seed.lanes.length - 1} LANE${seed.lanes.length === 2 ? '' : 'S'}`);
   if (seed.swing) parts.push(swingText(seed.swing));
   let status = `MATCH SET ${joinParts(parts)}.`;
@@ -602,12 +608,7 @@ export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, an
   if (seed.swing) status += ' APPLY IN THE FEEL KEYS SWINGS THE NOTES.';
   if (seed.uncertainBars > 0) status += ` ${seed.uncertainBars} BAR${seed.uncertainBars === 1 ? ' IS' : 'S ARE'} UNCERTAIN.`;
   let level: MatchResult['level'] = 'info';
-  if (seed.tempoFromDownbeats && seed.tempoMap.length > 1) {
-    status += bpm != null
-      ? ` THE ROLL STILL PLAYS AND SAVES ONE TEMPO, ${bpmText(bpm)} BPM, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES.`
-      : ' THE ROLL STILL PLAYS AND SAVES ONE TEMPO, SO BAR LINES DRIFT FROM THE SONG WHERE ITS TEMPO MOVES.';
-    level = 'warn';
-  } else if (!seed.tempoStable && !seed.tempoFromDownbeats) {
+  if (!seed.tempoStable && !seed.tempoFromDownbeats) {
     status += " THE SONG'S TEMPO MOVES, SO BAR LINES DRIFT FROM THE NOTES.";
     level = 'warn';
   }
@@ -624,8 +625,9 @@ export interface MatchWriter {
 
 /**
  * MATCH's writes, in one go so they fold into one undo step: the BPM, the
- * tempo changes (a map that is empty clears any the roll had), the meter map
- * with the pickup and the song's lanes, then the swing as the feel's groove.
+ * tempo map (whose first tempo then starts the roll; an empty map clears any
+ * changes the roll had and keeps the BPM), the meter map with the pickup and
+ * the song's lanes, then the swing as the feel's groove.
  */
 export function writeMatch(r: MatchWriter, apply: MatchApply): void {
   if (apply.bpm != null) r.setBpm(apply.bpm);

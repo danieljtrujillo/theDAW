@@ -269,6 +269,7 @@ _KEPT_CLIP = (
     "total_steps",
     "meter_map",
     "pickup_steps",
+    "tempo_map",
 )
 
 
@@ -331,6 +332,10 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["looped"]["roll_notes"][0]["lane"] == 1
     assert clips["plain"]["midi_notes"][1]["channel"] == 3
     assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
+    # A roll clip's tempo map: a ramp and a fermata on the tempo it ramps to.
+    assert clips["plain"]["tempo_map"][1] == {"beat": 2, "bpm": 90, "curve": "linear"}
+    assert clips["plain"]["tempo_map"][3]["fermata"] == {"beats": 1, "stretch": 2}
+    assert clips["looped"]["tempo_map"] is None
     # A drum track keeps its flag and its kit, and its clip's kit render.
     drums = next(t for t in back["tracks"] if t["id"] == "d1")
     assert drums["is_percussion"] is True

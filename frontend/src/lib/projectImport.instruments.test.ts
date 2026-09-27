@@ -613,7 +613,20 @@ const st = () => useEditorStore.getState();
       track('d1', { isPercussion: true, instrumentProgram: 25 }),
     ],
     clips: [
-      rollClip('plain', 't1', { sourcePianoRoll: plain, sourceRollNotes: plain, instrumentProgram: 42, renderedProgram: 42, sourceBpm: 90 }),
+      rollClip('plain', 't1', {
+        sourcePianoRoll: plain,
+        sourceRollNotes: plain,
+        instrumentProgram: 42,
+        renderedProgram: 42,
+        sourceBpm: 90,
+        // A tempo change, a ramp and a fermata: the clip's tempo map goes out as `tempo_map`.
+        sourceTempoMap: [
+          { beat: 0, bpm: 90, curve: 'step' },
+          { beat: 2, bpm: 90, curve: 'linear' },
+          { beat: 4, bpm: 60, curve: 'step' },
+          { beat: 4, bpm: 60, fermata: { beats: 1, stretch: 2 } },
+        ],
+      }),
       rollClip('looped', 't2', {
         sourcePianoRoll: [note('q0', 36, 0, 1), note('q1', 36, 4, 1), note('q2', 36, 8, 1), note('q3', 36, 12, 1)],
         sourceRollNotes: [note('l0', 36, 0, 1, { lane: 1 })],

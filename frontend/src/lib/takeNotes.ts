@@ -17,10 +17,16 @@
  * here. The only floor is one tick of length (MIN_NOTE_TICKS), so a tap whose
  * note-on and note-off land in the same instant is still a note.
  *
- * Pure. Its only runtime import is lib/noteClock, which has none, so
- * lib/midiCapture's store-free core can use it.
+ * A take recorded against a roll that changes tempo converts through the
+ * roll's tempo map (`tempoMap`), so a note played in a ritardando lands on the
+ * beat it was played on, not where the starting tempo would put it.
+ *
+ * Pure. Its runtime imports are lib/noteClock, which has none, and
+ * lib/tempoMap, which is pure arithmetic, so lib/midiCapture's store-free core
+ * can use it.
  */
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
+import { timeToBeat, type TempoEvent } from './tempoMap';
 import type { PianoNote } from '../state/pianoRollStore';
 import type { ArtifactNote } from './vocalExport';
 
@@ -41,6 +47,11 @@ export interface TakeOptions {
   originSec?: number;
   /** Prefix for the notes' ids, which are `<prefix>-<index>`. Defaults to `take`. */
   idPrefix?: string;
+  /**
+   * The roll's tempo map (lib/rollTempo playedTempoMap), when it changes tempo:
+   * each second converts through it. Left out, every second converts at `bpm`.
+   */
+  tempoMap?: readonly TempoEvent[];
 }
 
 export interface TakeRoll {
@@ -59,14 +70,16 @@ const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
 export function takeToRoll(notes: readonly TakeNote[], opts: TakeOptions): TakeRoll {
   const bpm = Number.isFinite(opts.bpm) && opts.bpm > 0 ? opts.bpm : 120;
   const ticksPerSec = (bpm / 60) * PPQ;
+  const map = opts.tempoMap && opts.tempoMap.length > 1 ? opts.tempoMap : null;
+  const ticksAt = (sec: number): number => (map ? timeToBeat(map, sec) * PPQ : sec * ticksPerSec);
   const origin = opts.originSec !== undefined && Number.isFinite(opts.originSec) ? opts.originSec : 0;
   const prefix = opts.idPrefix ?? 'take';
   const rollNotes: PianoNote[] = [];
   let endTick = 0;
   for (const n of notes) {
     if (!Number.isFinite(n.note) || !Number.isFinite(n.startSec) || !Number.isFinite(n.endSec)) continue;
-    const tick = Math.max(0, Math.round((n.startSec - origin) * ticksPerSec));
-    const ticks = Math.max(MIN_NOTE_TICKS, Math.round((n.endSec - origin) * ticksPerSec) - tick);
+    const tick = Math.max(0, Math.round(ticksAt(n.startSec - origin)));
+    const ticks = Math.max(MIN_NOTE_TICKS, Math.round(ticksAt(n.endSec - origin)) - tick);
     rollNotes.push({
       id: `${prefix}-${rollNotes.length}`,
       note: Math.max(0, Math.min(127, Math.round(n.note))),

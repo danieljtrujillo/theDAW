@@ -282,6 +282,19 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, ...seams }), 'nudge ms');
   assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[0].step - 2.3) < 1e-9);
 
+  // A clip with a tempo map moves each note by the ms at its own place: 60 bpm
+  // to beat 1 (step 4), then 240. 250 ms is one step at 60 and four at 240.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { sourceBpm: 60, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 240 }] });
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, ...seams }), 'nudge ms through a tempo map');
+  const mapped = clipOf('midi1').sourcePianoRoll.map((n) => n.step);
+  [1.3, 8.2, 8.2, 12.1].forEach((want, i) => assert.ok(Math.abs(mapped[i] - want) < 1e-9, `mapped nudge note ${i}: ${mapped[i]} vs ${want}`));
+  // An explicit bpm keeps the one-tempo conversion.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { sourceBpm: 60, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 240 }] });
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, bpm: 120, ...seams }), 'nudge ms at a named bpm');
+  assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[1].step - 6.2) < 1e-9);
+
   // `clipNotes.nudgeNotes` THROWS on an ambiguous unit; the tool must turn that
   // into a sentence, not let it escape into the assistant's turn.
   seed();

@@ -23,6 +23,7 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import type { RollRenderBends } from './pitchBend';
 import { clipRenderInput } from './rollClip';
+import type { TempoEvent } from './tempoMap';
 
 export interface ClipRerenderDeps {
   /** lib/midiSynth renderStepNotesToBlob. */
@@ -30,7 +31,7 @@ export interface ClipRerenderDeps {
     notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
     bpm: number,
     totalSteps: number,
-    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends },
+    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array }>;
@@ -73,6 +74,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
     program: voice.program,
     percussion: voice.percussion,
     bends: input.bends,
+    // The clip's tempo changes, ramps and fermatas, so the new voice plays them too.
+    ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
   });
   const { peaks } = await deps.computePeaks(rendered.blob, 240);
   // Re-read: the user may have deleted, trimmed or re-assigned the clip mid-render.

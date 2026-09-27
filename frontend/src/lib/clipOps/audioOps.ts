@@ -33,6 +33,7 @@ import type { AudioClip } from '../../state/editorStore';
 import { encodeWav } from '../wavEncode';
 import { noteEndStep } from '../clipNotes/units';
 import { MAX_BPM, MIN_BPM } from './timeline';
+import type { TempoEvent } from '../tempoMap';
 
 /** The app's working rate; also `encodeWav`'s and the editor's. */
 export const DEFAULT_SAMPLE_RATE = 44100;
@@ -293,7 +294,8 @@ export type StepNoteRenderer = (
   notes: StepNote[],
   bpm: number,
   totalSteps: number,
-  opts?: { program?: number; percussion?: boolean },
+  /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`. */
+  opts?: { program?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[] },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -335,6 +337,10 @@ const tempoOf = (clip: AudioClip, fallback: number | undefined): number => {
   return bpm;
 };
 
+/** The clip's tempo map as a render option, or nothing for a clip at one tempo. */
+const tempoOpt = (clip: AudioClip): { tempoMap?: readonly TempoEvent[] } =>
+  clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {};
+
 /** The grid length the clip was written on. Falls back to the end of the last
  *  note, floored at one bar of 16ths — the same fallback the editor uses when
  *  it re-renders a MIDI clip after an instrument change. */
@@ -353,7 +359,7 @@ export async function bounceMidiClip(
   const notes = notesOf(clip);
   const bpm = tempoOf(clip, opts.bpm);
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion });
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
 }
 
 /**
@@ -382,5 +388,6 @@ export async function stretchMidiClip(
     );
   }
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion });
+  // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo.
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
 }

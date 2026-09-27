@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { DEFAULT_LANES, sanitizeLanes, usePianoRollStore, type PianoNote } from './pianoRollStore.ts';
 import { clipRollLoad, rollClipFields, type RollClipInput } from '../lib/rollClip.ts';
+import type { TempoEvent } from '../lib/tempoMap.ts';
 
 const st = () => usePianoRollStore.getState();
 const note = (step: number, id = `n${step}`): PianoNote => ({ id, note: 60, step, length: 2, velocity: 90 });
@@ -29,6 +30,7 @@ const beginBlock = () => {
       {
         notes: s.notes,
         bpm: s.bpm,
+        tempoMap: s.tempoMap,
         totalSteps: s.totalSteps,
         lowestNote: s.lowestNote,
         highestNote: s.highestNote,
@@ -37,7 +39,6 @@ const beginBlock = () => {
         lanes: s.lanes,
         bends: s.bends,
         voiceProgram: s.voiceProgram,
-        tempoMap: s.tempoMap,
       },
     ],
     _redo: [],
@@ -306,10 +307,12 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
 }
 
 // The tempo map is part of the document: a write is one step, an equal write is
-// none, it is stored clean (sorted, one per beat, 20-300 BPM, no seconds), notes
-// that bring their own BPM leave it behind, and undo brings it back.
+// none, it is stored clean (sorted, one per beat, 20-300 BPM, no seconds, an
+// event before beat 0 dropped), notes that bring their own BPM leave one tempo
+// at that BPM, and undo brings the map back.
 {
-  usePianoRollStore.setState({ notes: [note(0)], tempoMap: [], bpm: 120 });
+  const one = (bpm: number): TempoEvent[] => [{ beat: 0, bpm, curve: 'step' }];
+  usePianoRollStore.setState({ notes: [note(0)], tempoMap: one(120), bpm: 120 });
   beginBlock();
   st().setTempoMap([
     { beat: 16, bpm: 96.5, timeSec: 9 },
@@ -319,13 +322,14 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
     { beat: 4, bpm: 0 },
     { beat: 16, bpm: 97.25 },
   ]);
-  assert.deepEqual(st().tempoMap, [{ beat: 0, bpm: 120 }, { beat: 8, bpm: 300, curve: 'linear' }, { beat: 16, bpm: 97.25 }]);
+  const clean: TempoEvent[] = [{ beat: 0, bpm: 120, curve: 'step' }, { beat: 8, bpm: 300, curve: 'linear' }, { beat: 16, bpm: 97.25, curve: 'step' }];
+  assert.deepEqual(st().tempoMap, clean);
   assert.equal(st()._undo.length, 1);
   const held = st().tempoMap;
   st().setTempoMap([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 300, curve: 'linear' }, { beat: 16, bpm: 97.25 }]);
   assert.equal(st().tempoMap, held, 'an equal map keeps the same array, so it adds no step');
   st().undo();
-  assert.deepEqual(st().tempoMap, []);
+  assert.deepEqual(st().tempoMap, one(120));
   st().redo();
   assert.deepEqual(st().tempoMap.map((e) => e.bpm), [120, 300, 97.25]);
   beginBlock();
@@ -333,10 +337,10 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
   assert.equal(st().tempoMap.length, 3, 'notes with no BPM of their own keep the tempo map');
   beginBlock();
   st().importNotes([note(8)], 100);
-  assert.deepEqual(st().tempoMap, [], 'notes at their own BPM leave the tempo map behind');
+  assert.deepEqual(st().tempoMap, one(100), 'notes at their own BPM leave one tempo, theirs');
   st().undo();
   assert.equal(st().tempoMap.length, 3, 'undo brings it back with the notes');
-  usePianoRollStore.setState({ tempoMap: [] });
+  usePianoRollStore.setState({ tempoMap: one(120), bpm: 120 });
 }
 
 // A lane span is kept when it is valid and dropped when it is not; lane A never takes one.

@@ -8,7 +8,9 @@
  *           fewer and a menu for more; the grouping field takes any grouping
  *           typed as 3+3+2+1
  *   ADD     a change at the playhead's bar (off when that bar starts after the
- *           roll ends); the trash key removes the selected one
+ *           roll ends); the trash key removes the selected one; MODULATE puts
+ *           a metric modulation on the selected change's bar line
+ *           (MetricModulation.tsx)
  *   PICKUP  the steps before bar 1, a unit of the first meter at a time
  *   LANES   one key per lane in its roll look (a menu past five lanes); + adds
  *           a lane, the trash key removes the active one; TIME opens the
@@ -51,10 +53,12 @@ import {
   stepLaneTuplet, stepLoop, stepOption, stepPickup, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
+import { hasTempoChanges } from '../../lib/rollTempo';
 import {
   DockFlyout, FIELD, FIELD_GROW, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, FLYOUT_CARD, FLYOUT_KEY, FLYOUT_LEGEND, FLYOUT_VALUE, KEY_REST,
   MINI_GLYPH, MINI_ICON_KEY, MINI_KEY, RANGE_FILL, STRIP_GLYPH, Sep, StripKey, keyTone,
 } from './midiDockKit';
+import { MetricModulationKey } from './MetricModulation';
 
 type Level = 'info' | 'warn' | 'error';
 
@@ -398,8 +402,11 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
   const selSpan = segmentSpan(segs, selected, pickupSteps);
   const selWhole = selSpan.start <= 1e-9 && selSpan.end === null;
-  const tempoLow = tempoMap.reduce((m, e) => Math.min(m, e.bpm), Infinity);
-  const tempoHigh = tempoMap.reduce((m, e) => Math.max(m, e.bpm), 0);
+  // The tempos the map moves between; a fermata is a hold, not a tempo.
+  const tempos = tempoMap.filter((e) => !e.fermata);
+  const tempoLow = tempos.reduce((m, e) => Math.min(m, e.bpm), Infinity);
+  const tempoHigh = tempos.reduce((m, e) => Math.max(m, e.bpm), 0);
+  const tempoChanges = tempoMap.length - 1;
 
   return (
     <>
@@ -538,6 +545,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         icon={<DiamondMinus className={STRIP_GLYPH} />}
         legend="Remove"
       />
+      <MetricModulationKey idBase="mf-mod" bar={seg.bar} onStatus={onStatus} />
 
       <Stepper
         id="mf-pickup"
@@ -660,18 +668,18 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         legend={spanNow ? `Bars ${spanNow}` : 'Span'}
       />
 
-      {tempoMap.length > 0 && (
+      {hasTempoChanges(tempoMap) && (
         <div className={FIELD}>
           <span
             className={FIELD_LEGEND}
-            title="The song's tempo changes, written by MATCH from its downbeats. The roll still plays, bounces, exports and saves at its one BPM."
+            title="The roll's tempo changes, which MATCH writes from the song's downbeats and the TEMPO lane edits. The roll plays, bounces, exports and saves them."
           >
             Tempo
           </span>
           <span
             id="mf-tempo-value"
             aria-live="polite"
-            title={`${tempoMap.length} tempo changes from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM, shown here; the roll plays at ${bpmText(rollBpm)} BPM throughout`}
+            title={`${tempoChanges} tempo point${tempoChanges === 1 ? '' : 's'} after the ${bpmText(rollBpm)} BPM start, from ${bpmText(tempoLow)} to ${bpmText(tempoHigh)} BPM`}
             className={`${FIELD_VALUE} min-w-10`}
           >
             {bpmText(tempoLow)}-{bpmText(tempoHigh)}
@@ -681,7 +689,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
             iconOnly
             aria-label="Clear the tempo changes"
             aria-describedby="mf-tempo-value"
-            description="Clear the tempo changes; the roll runs at its BPM throughout"
+            description={`Clear the tempo changes; the roll runs at ${bpmText(rollBpm)} BPM throughout`}
             onClick={() => usePianoRollStore.getState().setTempoMap([])}
             icon={<Eraser className={MINI_GLYPH} />}
             legend="Clear the tempo changes"

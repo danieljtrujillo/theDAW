@@ -48,6 +48,15 @@
  * The map can never be empty: an empty, null or all-junk map is read as a
  * single 120 bpm event at beat 0, so every caller gets an answer.
  *
+ * FERMATAS
+ * --------
+ * An event carrying `fermata: { beats, stretch }` holds the music from its
+ * beat: each of those `beats` quarter notes lasts `stretch` times as long as
+ * the tempo underneath, and the tempo after the hold is the one before it.
+ * Normalization splits the segments at the hold's edges and divides the tempo
+ * (and a ramp's slope) inside it, so a fermata is two more points to every
+ * conversion here and costs a map without one nothing.
+ *
  * When the map CHANGES, `remapOnTempoChange` gives beat-anchored material its
  * new seconds and leaves seconds-anchored material alone; its doc comment
  * carries the recipe for deriving a beat from seconds under the OLD map, which
@@ -80,6 +89,19 @@ import type { Meter } from './colony';
  */
 export type TempoCurve = 'step' | 'linear';
 
+/**
+ * A FERMATA: from its event's beat, `beats` quarter notes each last `stretch`
+ * times as long as the tempo underneath them, and then the music goes on at
+ * that tempo. It is a hold, not a tempo change, so it moves no bar line and
+ * the tempo after it is the one that was in force before it.
+ */
+export interface TempoFermata {
+  /** How long the hold is, in quarter notes (the length of the held note). */
+  beats: number;
+  /** How many times longer each held beat lasts; 2 holds a note twice its length. */
+  stretch: number;
+}
+
 /** One tempo change. `beat` is a quarter-note position; `bpm` is quarter notes per minute. */
 export interface TempoEvent {
   beat: number;
@@ -92,6 +114,12 @@ export interface TempoEvent {
   timeSec?: number;
   /** Defaults to `'step'`. See the ramp section in the module header. */
   curve?: TempoCurve;
+  /**
+   * Present, the event is a fermata marker (see `TempoFermata`) and not a tempo
+   * change: its `bpm` and `curve` are not read. A fermata and a tempo change can
+   * sit on the same beat. See the fermata section of `normalizeTempoMap`.
+   */
+  fermata?: TempoFermata;
 }
 
 /**
@@ -123,6 +151,19 @@ export interface BarPosition {
 }
 
 export const DEFAULT_BPM = 120;
+
+/**
+ * The app's ONE tempo range, 20..300 quarter notes a minute. It lives in this
+ * pure module so a store or a node test can read it without loading the audio
+ * engine; `beatClock` takes its clamp from here.
+ */
+export const TEMPO_BPM_MIN = 20;
+export const TEMPO_BPM_MAX = 300;
+export const clampTempoBpm = (bpm: number): number => Math.max(TEMPO_BPM_MIN, Math.min(TEMPO_BPM_MAX, bpm));
+
+/** The least a fermata stretches a held beat (1 is no hold at all), and the most. */
+export const FERMATA_STRETCH_MIN = 1;
+export const FERMATA_STRETCH_MAX = 8;
 /** The seeded default: a map is never empty, so a conversion always has an answer. */
 export const DEFAULT_TEMPO_MAP: readonly TempoEvent[] = Object.freeze([{ beat: 0, bpm: DEFAULT_BPM, timeSec: 0 }]);
 
@@ -152,33 +193,6 @@ export function getBarLength(m: Meter): number {
 /** Quarter notes in one notated beat of `m` (an 8th in x/8). */
 export function getBeatLength(m: Meter): number {
   return 4 / m.den;
-}
-
-/** The tempo range a document's tempo map holds, the app clock's own (beatClock). */
-export const TEMPO_MIN_BPM = 20;
-export const TEMPO_MAX_BPM = 300;
-
-/**
- * A tempo map as a document stores it: events with a finite beat at or after
- * 0 and a positive tempo, tempos held to TEMPO_MIN_BPM-TEMPO_MAX_BPM with their
- * fraction kept, sorted by beat, one event per beat (the later one wins), a
- * `'linear'` curve kept and every `timeSec` dropped. A map being edited stores
- * no seconds (see normalizeTempoMap's precondition), so none survive here.
- * Anything that is not an array reads as the empty map.
- */
-export function sanitizeTempoEvents(map: unknown): TempoEvent[] {
-  if (!Array.isArray(map)) return [];
-  const byBeat = new Map<number, TempoEvent>();
-  for (const e of map as unknown[]) {
-    if (!e || typeof e !== 'object') continue;
-    const beat = Number((e as TempoEvent).beat);
-    const bpm = Number((e as TempoEvent).bpm);
-    if (!Number.isFinite(beat) || beat < 0 || !Number.isFinite(bpm) || bpm <= 0) continue;
-    const clean: TempoEvent = { beat, bpm: Math.max(TEMPO_MIN_BPM, Math.min(TEMPO_MAX_BPM, bpm)) };
-    if ((e as TempoEvent).curve === 'linear') clean.curve = 'linear';
-    byBeat.set(beat, clean);
-  }
-  return [...byBeat.values()].sort((a, b) => a.beat - b.beat);
 }
 
 /**
@@ -256,14 +270,76 @@ function tempoInSegment(p: TempoPoint, beat: number): number {
   return p.slope === 0 || db <= 0 ? p.bpm : p.bpm + p.slope * db;
 }
 
+/** A fermata that can hold: a finite beat, a hold longer than 0 and a stretch above 1. */
+const holdsOn = (e: TempoEvent): e is TempoEvent & { fermata: TempoFermata } =>
+  !!e.fermata && Number.isFinite(e.beat) && Number.isFinite(e.fermata.beats) && e.fermata.beats > 0
+  && Number.isFinite(e.fermata.stretch) && e.fermata.stretch > 1;
+
 function buildPoints(map: readonly TempoEvent[]): TempoPoint[] {
   const byBeat = new Map<number, TempoEvent>();
+  const holds = new Map<number, TempoFermata>();
   for (const e of map) {
-    if (!e || !Number.isFinite(e.beat) || !Number.isFinite(e.bpm) || e.bpm <= 0) continue;
+    if (!e) continue;
+    // A fermata marker is not a tempo change: it goes to the overlay below and
+    // never takes a tempo event's place on its beat.
+    if (e.fermata) {
+      if (holdsOn(e)) holds.set(e.beat, e.fermata);
+      continue;
+    }
+    if (!Number.isFinite(e.beat) || !Number.isFinite(e.bpm) || e.bpm <= 0) continue;
     byBeat.set(e.beat, e);
   }
   const sorted = [...byBeat.entries()].sort((a, b) => a[0] - b[0]).map(([, e]) => e);
   if (!sorted.length) return DEFAULT_POINTS;
+  const base = basePoints(sorted);
+  return holds.size ? Object.freeze(withFermatas(base, holds)) as unknown as TempoPoint[] : base;
+}
+
+/**
+ * The FERMATA overlay. A hold of `stretch` over `[b, b + beats)` divides the
+ * tempo there by `stretch` — on a ramp too, where both the tempo and its slope
+ * are divided, so the ramp keeps its shape underneath the hold — and leaves the
+ * tempo on either side alone. The segments are split at every hold's edges and
+ * every second is integrated again from the start, so everything after a hold
+ * lands later by exactly the time the hold added, and nothing before it moves.
+ *
+ * Holds are taken in beat order; one that starts inside an earlier hold is cut
+ * to start where that one ends. A hold before the first tempo event starts at
+ * it. Explicit `timeSec` values are not read on this path: a map that holds is
+ * a map being edited, which stores no seconds (see `tempoStore`).
+ */
+function withFermatas(base: readonly TempoPoint[], holds: ReadonlyMap<number, TempoFermata>): TempoPoint[] {
+  const first = base[0].beat;
+  const windows: Array<{ start: number; end: number; stretch: number }> = [];
+  for (const [beat, f] of [...holds.entries()].sort((a, b) => a[0] - b[0])) {
+    const end = beat + f.beats;
+    const start = Math.max(beat, first, windows.length ? windows[windows.length - 1].end : -Infinity);
+    if (end > start) windows.push({ start, end, stretch: f.stretch });
+  }
+  if (!windows.length) return base as TempoPoint[];
+  const cuts = new Set<number>(base.map((p) => p.beat));
+  for (const w of windows) {
+    cuts.add(w.start);
+    cuts.add(w.end);
+  }
+  const beats = [...cuts].sort((a, b) => a - b);
+  const out: TempoPoint[] = [];
+  let w = 0;
+  for (const beat of beats) {
+    while (w < windows.length && windows[w].end <= beat) w += 1;
+    const inHold = w < windows.length && windows[w].start <= beat;
+    const s = inHold ? windows[w].stretch : 1;
+    const under = pointAtBeat(base, beat);
+    const bpm = tempoInSegment(under, beat) / s;
+    const slope = under.slope / s;
+    const timeSec = out.length ? timeInSegment(out[out.length - 1], beat) : under.timeSec + (beat - under.beat) * under.secPerBeat;
+    out.push(Object.freeze({ beat, bpm, timeSec, secPerBeat: 60 / bpm, slope }));
+  }
+  return out;
+}
+
+/** The tempo events (sorted, deduped, at least one) as points, with no fermata. */
+function basePoints(sorted: readonly TempoEvent[]): TempoPoint[] {
   const out: TempoPoint[] = [];
   for (let i = 0; i < sorted.length; i += 1) {
     const e = sorted[i];
