@@ -36,7 +36,6 @@
  * of its bar, so 7/8 3+2+2 accents its group starts and 5/16 swings by its bar.
  */
 import { MusicalScale, noteNameToMidi } from './arpEngine';
-import { euclidPattern } from './loomGen';
 import { barSeconds, DEFAULT_METER, type Meter } from './colony';
 import {
   accentLines,
@@ -854,8 +853,7 @@ export function polyrhythm(
   });
   // Real cross-rhythms: over a seeded share `amount` of the spans each bar's
   // groups give (crossSpans), n notes in the time of the span's m beats, 3:2,
-  // 4:3 or 5:4, spread the way GEN spreads a rule's steps across its pass
-  // (every hit of euclidPattern(n, n), one cell of span/n apart). The span's
+  // 4:3 or 5:4, spaced evenly one cell of span/n apart. The span's
   // first note is the chord already there; the rest take the chord's tones in
   // turn an octave up (the bass left out when there is more than one).
   const end = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
@@ -875,9 +873,7 @@ export function polyrhythm(
       const tones = sounding.length > 1 ? sounding.slice(1) : sounding;
       const count = span.beats + 1;
       const cell = span.len / count;
-      const hits = euclidPattern(count, count);
       for (let i = 1; i < count; i += 1) {
-        if (!hits[i]) continue;
         const tone = tones[(i - 1) % tones.length];
         const pitch = tone + 12 <= 108 ? tone + 12 : tone;
         out.push({ ...mk(pitch, start + i * cell, cell, cross), id: `${uid()}${CROSS_ID_SUFFIX}` });

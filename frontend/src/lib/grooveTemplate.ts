@@ -304,7 +304,7 @@ export function grooveLateness(g: GrooveTemplate, step: number, bar: GrooveBar, 
  * at step 0; `maxStep` is the last step of the grid, so a deep groove cannot
  * drag the roll's final notes off the end of it (omit it for no ceiling).
  *
- * The slot is read from the note's exact place (grooveLateness), and a place
+ * The slot is read from the note's place measured from its own bar line, to the nearer of a 16th and a slot (grooveLateness), and a place
  * that rounds onto a later bar's start takes that bar's first slot. With no
  * meter to read, a group groove counts its groups in 4/4 bars;
  * applyGrooveInMeter reads each bar's own meter.
