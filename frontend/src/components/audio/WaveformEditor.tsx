@@ -58,13 +58,12 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipRenderInput, clipRollLoad } from '../../lib/rollClip';
-import { midiEventsToMeterMap, roundUpToBar } from '../../lib/meterMap';
+import { clipRenderInput, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { roundUpToBar } from '../../lib/meterMap';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram } from '../../lib/soundfontEngine';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { parseMidi } from '../../utils/midi';
-import type { PianoNote } from '../../state/pianoRollStore';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
 import {
   addToTrackGroupLabel,
@@ -2590,7 +2589,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const totalSteps = clip.sourceTotalSteps
         ?? roundUpToBar(
           clip.sourceMeterMap ?? [],
-          Math.max(1, ...clip.sourcePianoRoll.map((n) => n.step + n.length)),
+          clip.sourcePianoRoll.reduce((end, n) => Math.max(end, n.step + n.length), 1),
           clip.sourcePickupSteps ?? 0,
         );
       // A clip whose lanes bend renders each note in its lane, so the bend survives the re-render.
@@ -5554,30 +5553,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     targetTrackId?: string | null,
   ) => {
     try {
-      const data = parseMidi(new Uint8Array(bytes));
-      const stepTicks = (data.ppq || 480) / 4;
-      const notes: PianoNote[] = [];
-      for (const tr of data.tracks) {
-        for (const n of tr.notes) {
-          notes.push({
-            id: `imp-${Math.random().toString(36).slice(2)}-${notes.length}`,
-            note: n.note,
-            step: Math.round(n.tick / stepTicks),
-            length: Math.max(1, Math.round(n.durationTicks / stepTicks)),
-            velocity: n.velocity,
-          });
-        }
-      }
+      // The file as the roll reads it: each note at its own ticks, each bending
+      // channel in its own lane with its curve, the file's time signatures and
+      // pickup (4/4 when it has none) and its tempo; the clip ends on the bar
+      // line after its last note.
+      const fields = midiFileClipFields(parseMidi(new Uint8Array(bytes)), 'imp');
+      const notes = fields.sourcePianoRoll;
       if (notes.length === 0) {
         logError('editor', `No notes in "${label}"`);
         return;
       }
-      const bpm = Math.round(data.bpm) || 120;
-      // The file's time signatures and pickup (4/4 when it has none); the clip
-      // ends on the bar line after its last note.
-      const { map: meterMap, pickupSteps } = midiEventsToMeterMap(data.timeSignatures ?? [], data.ppq || 480);
-      const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
-      const totalSteps = roundUpToBar(meterMap, Math.max(1, lastStep), pickupSteps);
+      const bpm = fields.sourceBpm;
+      const totalSteps = fields.sourceTotalSteps;
       const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
       const nominalDuration = totalSteps * (60 / Math.max(40, bpm) / 4);
       const blob = silentWavBlob();
@@ -5606,18 +5593,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         startSec: Math.max(0, startSec),
         color,
         sourceKind: 'piano-roll',
-        sourcePianoRoll: notes,
-        sourceBpm: bpm,
-        sourceTotalSteps: totalSteps,
-        sourceMeterMap: meterMap,
-        sourcePickupSteps: pickupSteps,
+        ...fields,
         instrumentProgram: program,
       });
       logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
       void (async () => {
         const started = performance.now();
         try {
-          const rendered = await renderStepNotesToBlob(notes, bpm, totalSteps, { program });
+          // A bending lane renders its notes along its curve (clipRenderInput).
+          const input = clipRenderInput(fields, totalSteps);
+          const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, { program, ...(input.bends ? { bends: input.bends } : {}) });
           const { peaks } = await computePeaks(rendered.blob, 240);
           // The bounce is derived from the clip's notes, so it adds no undo step
           // of its own (see applyClipRender).

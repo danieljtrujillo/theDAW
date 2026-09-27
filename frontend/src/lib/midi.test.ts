@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { encodeMidi, parseMidi, type MidiFileData } from './midi.ts';
 import { meterMapToMidiEvents, midiEventsToMeterMap, normalizeMeterMap, type MeterSegment } from './meterMap.ts';
 import { notesToRollSmf, notesToSmf } from './midiWrite.ts';
+import { midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
+import { DEFAULT_LANES, usePianoRollStore, withTicks, type PianoNote } from '../state/pianoRollStore.ts';
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 
@@ -217,6 +219,108 @@ const KIT = [
     assert.ok(Math.abs(n.tick * secPerTick - r.startSec) <= secPerTick / 2);
     assert.ok(Math.abs((n.tick + n.durationTicks) * secPerTick - (r.startSec + r.durationSec)) <= secPerTick / 2);
   }
+}
+
+/** The roll's EXPORT then IMPORT, as PianoRoll's keys run them: the roll's
+ *  state through rollToMidiFile and encodeMidi (what downloadMidi writes), the
+ *  bytes back through parseMidi and midiFileToRoll into importNotes. */
+const exportThenImport = (notes: PianoNote[]): { bytes: Uint8Array; back: PianoNote[] } => {
+  usePianoRollStore.getState().importNotes(notes, 120, { meterMap: normalizeMeterMap(null), pickupSteps: 0, lanes: [...DEFAULT_LANES] }, []);
+  const bytes = encodeMidi(rollToMidiFile(usePianoRollStore.getState()));
+  const { notes: imported, bpm, meter, bends } = midiFileToRoll(parseMidi(bytes), 'imp');
+  usePianoRollStore.getState().importNotes(imported, bpm, meter, bends);
+  return { bytes, back: usePianoRollStore.getState().notes };
+};
+const timing = (notes: readonly PianoNote[]) => notes.map((n) => [n.note, n.step, n.length, n.velocity]);
+
+// Two notes of one pitch that overlap on one channel (a unison between two
+// voices, a repeated note played legato) both survive EXPORT then IMPORT. The
+// parser pairs each note-off with the OLDEST held note of its channel and
+// pitch. Keyed to one open note, the second note-on replaced the first, which
+// was lost, and the first note-off ended the second one early.
+{
+  const roll = [
+    withTicks({ id: 'a', note: 60, step: 0, length: 4, velocity: 100 }),
+    withTicks({ id: 'b', note: 60, step: 2, length: 4, velocity: 70 }),
+    withTicks({ id: 'c', note: 64, step: 8, length: 2, velocity: 90 }),
+  ];
+  const { back } = exportThenImport(roll);
+  assert.deepEqual(timing(back), timing(roll), 'both unison notes come back at their own steps and lengths');
+}
+
+// A repeated note from a writer that puts the new note-on before the old
+// note-off at one tick (on 0, on 480, off 480, off 960) is two whole notes.
+{
+  const parsed = parseMidi(smf(480, [0x00, 0x90, 60, 100, 0x83, 0x60, 0x90, 60, 80, 0x00, 0x80, 60, 0, 0x83, 0x60, 0x80, 60, 0]));
+  assert.deepEqual(parsed.tracks[0].notes, [
+    { tick: 0, note: 60, velocity: 100, channel: 0, durationTicks: 480 },
+    { tick: 480, note: 60, velocity: 80, channel: 0, durationTicks: 480 },
+  ]);
+}
+
+// A note still held when its track ends lasts to the track's last tick, the
+// tick of its end-of-track event. It used to get a quarter note (ppq ticks)
+// wherever the track ended.
+{
+  // On 60 at 0; at 960 on 64 and two 67s; at 1440 one off for 67 (the older
+  // one); a text event at 1920 and the end of the track right after it.
+  const parsed = parseMidi(
+    smf(
+      480,
+      [0x00, 0x90, 60, 100, 0x87, 0x40, 0x90, 64, 90, 0x00, 0x90, 67, 80, 0x00, 0x90, 67, 81, 0x83, 0x60, 0x80, 67, 0, 0x83, 0x60, 0xff, 0x01, 0x00],
+    ),
+  );
+  assert.deepEqual(parsed.tracks[0].notes, [
+    { tick: 0, note: 60, velocity: 100, channel: 0, durationTicks: 1920 },
+    { tick: 960, note: 67, velocity: 80, channel: 0, durationTicks: 480 },
+    { tick: 960, note: 64, velocity: 90, channel: 0, durationTicks: 960 },
+    { tick: 960, note: 67, velocity: 81, channel: 0, durationTicks: 960 },
+  ]);
+  // A note that starts on the last tick still has its one tick.
+  const last = parseMidi(smf(480, [0x00, 0x90, 60, 100]));
+  assert.equal(last.tracks[0].notes[0].durationTicks, 1);
+}
+
+// A roll of 20,000 notes exports and imports. encodeMidi appended each track
+// chunk with out.push(...chunk), which passes every byte as an argument, and V8
+// throws a RangeError past about 125,000 of them, so a one-track roll of about
+// 13,000 notes or more failed to export. The bytes now grow in one buffer.
+{
+  const roll: PianoNote[] = [];
+  for (let i = 0; i < 20_000; i += 1) {
+    roll.push(withTicks({ id: `n${i}`, note: 36 + (i % 48), step: i, length: 1 + (i % 3), velocity: 1 + (i % 127) }));
+  }
+  const { bytes, back } = exportThenImport(roll);
+  assert.ok(bytes.length > 160_000, `one track chunk of ${bytes.length} bytes, past the old limit`);
+  assert.deepEqual(timing(back), timing(roll), 'every note comes back');
+}
+
+// With tempos, signatures, groups, a pickup, bends and ranges, the writer's
+// bytes are the ones it wrote before it grew a buffer (captured from the
+// unmodified encoder at 8039b45).
+{
+  const file: MidiFileData = {
+    ppq: 480,
+    bpm: 120,
+    tracks: [
+      {
+        name: 'Lead',
+        notes: NOTES,
+        bends: [{ tick: 0, channel: 0, value: 12000 }, { tick: 480, channel: 0, value: 8192 }],
+        bendRanges: [{ tick: 0, channel: 0, semitones: 12 }],
+      },
+      { name: 'Kit', notes: KIT },
+    ],
+    timeSignatures: [{ tick: 0, num: 7, den: 8, groups: [3, 2, 2], pickupSteps: 2 }, { tick: 1680, num: 4, den: 4 }],
+    tempos: [{ tick: 0, bpm: 120 }, { tick: 960, bpm: 96.5 }],
+  };
+  const BEFORE_RICH =
+    '4d546864000000060001000301e04d54726b0000005700ff030554656d706f00ff510307a12000ff580407030c0800ff0113746865444157' +
+    '3a67726f7570733d332b322b3200ff010f7468654441573a7069636b75703d328740ff5103097cc28550ff58040402180800ff2f00' +
+    '4d54726b0000005300ff03044c65616400b0650000b0640000b0060c00b0260000b0657f00b0647f00e0605d00903c648170803c000090405a' +
+    '8170e000408170804000817090437f788043008c9208904832836080480000ff2f00' +
+    '4d54726b0000001c00ff03034b69740099246e3c89240083249926503c89260000ff2f00';
+  assert.equal(hex(encodeMidi(file)), BEFORE_RICH);
 }
 
 console.log('midi tests passed');

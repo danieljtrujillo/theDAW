@@ -16,6 +16,8 @@ import { STEPS_PER_BEAT, quantizeNotes, type QuantizeOptions } from './clipNotes
 import { applyGroove, type GrooveTemplate } from './grooveTemplate';
 import { barAt, normalizeMeterMap, roundUpToBar, unrollLanes, type PolyLane } from './meterMap';
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
+import type { MidiFileData } from './midi';
+import { midiFileToRoll } from './rollMidi';
 
 /** The roll state a bounce reads. */
 export type RollClipSource = RollMeter & { notes: readonly PianoNote[]; bpm: number; totalSteps: number; bends: readonly LaneBend[] };
@@ -65,6 +67,26 @@ export function rollClipFields(s: RollClipSource): RollClipFields {
     sourceLanes: meter.lanes,
     sourceBends: copyBends(s.bends),
   };
+}
+
+/**
+ * The clip fields of a MIDI file dropped into EDIT: the file as the roll reads
+ * it (midiFileToRoll: each note at its own ticks, each bending channel in its
+ * own lane with its curve, the file's meter and pickup, its tempo with its
+ * fraction), ending on the bar line after its last note. Nothing is snapped to
+ * 16ths, so the clip plays and reopens in the roll as the file was written.
+ */
+export function midiFileClipFields(data: MidiFileData, idPrefix = 'imp'): RollClipFields {
+  const file = midiFileToRoll(data, idPrefix);
+  const { meterMap, pickupSteps } = file.meter;
+  const noteEnd = file.notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+  return rollClipFields({
+    ...file.meter,
+    notes: file.notes,
+    bpm: Number.isFinite(file.bpm) && file.bpm > 0 ? file.bpm : 120,
+    totalSteps: roundUpToBar(meterMap, Math.max(1, noteEnd), pickupSteps),
+    bends: file.bends,
+  });
 }
 
 /** The clip fields a render of a roll clip reads. */

@@ -22,7 +22,9 @@ import { useShardIndexStore } from '../../state/shardIndexStore';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { usePianoRollStore } from '../../state/pianoRollStore';
+import { artifactTake } from '../../lib/takeNotes';
+import { importTake } from '../../lib/rollTakes';
 import { useMidiSongBoxRequest } from '../../state/midiSongBoxStore';
 import { useDjSideList } from '../../state/djSideListStore';
 import { useDjSampler } from '../../state/djSamplerStore';
@@ -182,16 +184,14 @@ async function copyText(text: string, what: string): Promise<void> {
   logInfo(SRC, `Copied the ${what}`);
 }
 
-/** Notes in milliseconds on the piano roll's sixteenth-note grid at `bpm`. */
-const toRollNotes = (notes: ArtifactNote[], bpm: number, prefix: string): PianoNote[] => {
-  const stepSec = 60 / bpm / 4;
-  return notes.map((n, i) => ({
-    id: `${prefix}-${i}-${n.start_ms}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.start_ms / 1000 / stepSec)),
-    length: Math.max(1, Math.round((n.end_ms - n.start_ms) / 1000 / stepSec)),
-    velocity: n.velocity,
-  }));
+/**
+ * Notes in milliseconds into the piano roll (lib/rollTakes), at the ticks they
+ * were heard on: never snapped to 16ths, since APPLY is where the roll
+ * quantises. The roll takes the track's tempo with its fraction, so each note
+ * plays at the second it sits at in the track.
+ */
+const importTakeToRoll = (notes: ArtifactNote[], bpm: number, prefix: string): void => {
+  importTake(artifactTake(notes), bpm, prefix);
 };
 
 /** A playlist that flows by key and BPM from the entry, the entry first. */
@@ -616,10 +616,9 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       const body = (await res.json()) as { notes?: ArtifactNote[] };
       const notes = body.notes ?? [];
       if (notes.length === 0) throw new Error('no notes were detected');
-      const bpm = usePianoRollStore.getState().bpm || 120;
       // importNotes, not placeRecording: a whole track is longer than the
       // roll's default grid, and importNotes fits the grid to the notes.
-      usePianoRollStore.getState().importNotes(toRollNotes(notes, bpm, 'detect'), bpm);
+      importTakeToRoll(notes, usePianoRollStore.getState().bpm || 120, 'detect');
       openDock('midi');
       logInfo(SRC, `Put ${notes.length} notes detected in "${title}" in the piano roll (${usePianoRollStore.getState().totalSteps} steps)`);
       return;
@@ -629,8 +628,7 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       const doc = await fetchVocalArtifact(entry.id);
       if (!doc) throw new Error('it has no vocal melody yet');
       if (doc.notes.length === 0) throw new Error('its vocal melody has no notes');
-      const bpm = doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm || 120;
-      usePianoRollStore.getState().importNotes(toRollNotes(doc.notes, bpm, 'melody'), bpm);
+      importTakeToRoll(doc.notes, doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm || 120, 'melody');
       openDock('midi');
       logInfo(SRC, `Put the ${doc.notes.length} notes of the vocal melody of "${title}" in the piano roll`);
       return;

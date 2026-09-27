@@ -1011,6 +1011,24 @@ const until = async (cond: () => boolean, what: string) => {
   assert.equal(useEditorStore.getState().clips.length, 2, 'undo of the restore lands on the post-delete state');
 }
 
+/* ── a clip the size of a symphony ───────────────────────────────────────── */
+{
+  // The assistant transposes a roll clip of 130,000 notes. commitNotes used to
+  // spread every note into Math.max for the grid length, which throws
+  // "Maximum call stack size exceeded" past about 125,000 arguments, so the
+  // edit failed as a crash.
+  seed();
+  const big: PianoNote[] = Array.from({ length: 130_000 }, (_, i) => ({ id: `b${i}`, note: 48 + (i % 24), step: i * 0.25, length: 1, velocity: 90 }));
+  useEditorStore.getState().updateClip('midi1', { sourcePianoRoll: big });
+  await settle();
+  const r = okOf(await tools.transposeClip({ clip_id: 'bass', semitones: 1, ...seams }), 'transpose a huge clip');
+  assert.match(r.message, /1 semitone/);
+  const after = clipOf('midi1');
+  assert.equal(after.sourcePianoRoll.length, 130_000);
+  assert.equal(after.sourcePianoRoll[0].note, 49);
+  assert.equal(after.sourceTotalSteps, 130_000 * 0.25 - 0.25 + 1, 'the grid runs to the last note end');
+}
+
 /* ── the operations this layer refuses to fake ───────────────────────────── */
 {
   const unsupported = Object.keys(tools.UNSUPPORTED_OPERATIONS);

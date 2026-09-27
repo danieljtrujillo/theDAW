@@ -379,4 +379,39 @@ const bytes = encodeMidi(file);
   assert.ok(Math.abs(atDefault - 605) <= 1, `default ppq put tick 605 at ${atDefault}`);
 }
 
+// A roll at a fractional tempo (a take imported at a detected 97.3) goes out
+// as a .mid and comes back through the roll's IMPORT at 97.3, every note at
+// the second it played at. parseMidi used to round the file's tempo to 97 and
+// importNotes rounded again, so the file came back 0.3 % slow; a whole BPM
+// still reads back whole, so a file an older build wrote opens as it did.
+{
+  const played: PianoNote[] = migrateNotes([
+    { id: 'a', note: 60, step: 0, length: 1, velocity: 100, tick: 0, ticks: 170 },
+    { id: 'b', note: 62, step: 0, length: 1, velocity: 90, tick: 38, ticks: 119 },
+    { id: 'c', note: 64, step: 0, length: 1, velocity: 80, tick: 96_037, ticks: 480 },
+  ]);
+  const roll = usePianoRollStore.getState();
+  roll.importNotes(played, 97.3);
+  const s = usePianoRollStore.getState();
+  assert.equal(s.bpm, 97.3, 'the roll keeps the tempo it was handed');
+  const bytes = encodeMidi(rollToMidiFile({ ...s, totalSteps: s.totalSteps }));
+  const parsed = parseMidi(bytes);
+  assert.equal(parsed.bpm, 97.3, 'the file reads back at 97.3');
+  const back = midiFileToRoll(parsed, 'rt');
+  usePianoRollStore.getState().importNotes(back.notes, back.bpm, back.meter, back.bends);
+  const again = usePianoRollStore.getState();
+  assert.equal(again.bpm, 97.3, 'IMPORT puts the roll back at 97.3');
+  const secs = (tick: number, bpm: number) => (tick / PPQ) * (60 / bpm);
+  const sorted = [...again.notes].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0));
+  sorted.forEach((n, i) => {
+    assert.equal(n.tick, played[i].tick, `note ${i} keeps its tick`);
+    assert.equal(n.ticks, played[i].ticks, `note ${i} keeps its length`);
+    near(secs(n.tick ?? 0, again.bpm), secs(played[i].tick ?? 0, 97.3), 1e-9, `note ${i} plays at its second`);
+  });
+  // Whole BPMs, the only tempos an older build's roll wrote, read back whole.
+  for (const bpm of [60, 97, 120, 133, 240]) {
+    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} BPM reads back as ${bpm}`);
+  }
+}
+
 console.log('rollMidi: ok');

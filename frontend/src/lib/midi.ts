@@ -18,7 +18,11 @@ export interface MidiNote {
   note: number;
   /** Velocity 1-127. */
   velocity: number;
-  /** Length in ticks (0 = a "stuck" note; parser sets this from matching offs). */
+  /**
+   * Length in ticks. Encoded: at least 1 (a 0 is written as 1). Parsed: to the
+   * note-off that ends it, which ends the oldest held note of its channel and
+   * pitch, or to the track's last tick when no note-off comes.
+   */
   durationTicks: number;
   /** Channel 0-15. Drum sounds are conventionally channel 9. */
   channel: number;
@@ -59,8 +63,9 @@ export interface MidiFileData {
   ppq: number;
   /**
    * Beats per minute. Parsed: the tempo at tick 0, or the first tempo when none
-   * sits at tick 0, rounded; 120 when the file has no tempo. Encoded: written
-   * at tick 0 unless `tempos` holds a tick-0 entry.
+   * sits at tick 0, to three decimals as `tempos` holds it (97.3 stays 97.3, a
+   * written 97 reads 97); 120 when the file has no tempo. Encoded: written at
+   * tick 0 unless `tempos` holds a tick-0 entry.
    */
   bpm: number;
   tracks: MidiTrack[];
@@ -166,16 +171,63 @@ const trackEvents = (t: MidiTrack): RawEvent[] => {
   return [...wheel, ...notes].sort(byTickAndRank);
 };
 
-const serializeTrackChunk = (events: RawEvent[], name: string): number[] => {
-  const body: number[] = [];
-  body.push(...writeVLQ(0), 0xff, 0x03, ...writeVLQ(name.length), ...ascii(name));
+/**
+ * The file's bytes, in one buffer that doubles when it fills. Every byte the
+ * encoder writes goes through it: appending a whole chunk to a plain array with
+ * `push(...chunk)` passes each byte as an argument, and V8 throws a RangeError
+ * past about 125,000 of them, which one roll track reaches at around 13,000 notes.
+ */
+class ByteSink {
+  private buf = new Uint8Array(4096);
+  private len = 0;
+
+  get length(): number {
+    return this.len;
+  }
+
+  private reserve(n: number): void {
+    if (this.len + n <= this.buf.length) return;
+    let size = this.buf.length * 2;
+    while (size < this.len + n) size *= 2;
+    const next = new Uint8Array(size);
+    next.set(this.buf.subarray(0, this.len));
+    this.buf = next;
+  }
+
+  bytes(values: readonly number[]): void {
+    this.reserve(values.length);
+    for (const v of values) this.buf[this.len++] = v & 0xff;
+  }
+
+  /** Overwrite four bytes at `at` with `v`, big-endian: a chunk's length once its body is written. */
+  u32At(at: number, v: number): void {
+    const b = u32be(v);
+    for (let i = 0; i < 4; i += 1) this.buf[at + i] = b[i];
+  }
+
+  /** The bytes written so far, in an array of their own. */
+  take(): Uint8Array {
+    return this.buf.slice(0, this.len);
+  }
+}
+
+/** One MTrk chunk: its name, its events at their ticks, the end of track, and the length patched in once the body is written. */
+const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: string): void => {
+  out.bytes(ascii('MTrk'));
+  const lengthAt = out.length;
+  out.bytes([0, 0, 0, 0]);
+  out.bytes(writeVLQ(0));
+  out.bytes([0xff, 0x03]);
+  out.bytes(writeVLQ(name.length));
+  out.bytes(ascii(name));
   let last = 0;
   for (const ev of events) {
-    body.push(...writeVLQ(ev.tick - last), ...ev.bytes);
+    out.bytes(writeVLQ(ev.tick - last));
+    out.bytes(ev.bytes);
     last = ev.tick;
   }
-  body.push(0, 0xff, 0x2f, 0x00);
-  return [...ascii('MTrk'), ...u32be(body.length), ...body];
+  out.bytes([0, 0xff, 0x2f, 0x00]);
+  out.u32At(lengthAt, out.length - lengthAt - 4);
 };
 
 const GROUPS_TEXT = 'theDAW:groups=';
@@ -209,45 +261,35 @@ export const meterEventMetas = (s: MeterEvent): number[][] => {
 };
 
 /**
- * The conductor track: every tempo and time signature at its own tick. At one
- * tick the tempo comes first, then the signature, its groups text and its
- * pickup text. With no lists it holds one tempo and a 4/4 at tick 0.
+ * The conductor track's events: every tempo and time signature at its own tick.
+ * At one tick the tempo comes first, then the signature, its groups text and
+ * its pickup text. With no lists it holds one tempo and a 4/4 at tick 0.
  */
-const buildConductor = (file: MidiFileData): number[] => {
+const conductorEvents = (file: MidiFileData): RankedEvent[] => {
   const tempos = (file.tempos ?? []).map((t) => ({ tick: tickOf(t.tick), bpm: t.bpm }));
   if (!tempos.some((t) => t.tick === 0)) tempos.unshift({ tick: 0, bpm: file.bpm });
   const signatures = file.timeSignatures?.length ? file.timeSignatures : [{ tick: 0, num: 4, den: 4 }];
-  const events: Array<RawEvent & { rank: number }> = [];
+  const events: RankedEvent[] = [];
   for (const t of tempos) events.push({ tick: t.tick, rank: 0, bytes: tempoBytes(t.bpm) });
   for (const s of signatures) {
     const tick = tickOf(s.tick);
     meterEventMetas(s).forEach((bytes, i) => events.push({ tick, rank: 1 + i, bytes }));
   }
-  events.sort((a, b) => a.tick - b.tick || a.rank - b.rank);
-  const body: number[] = [];
-  body.push(...writeVLQ(0), 0xff, 0x03, ...writeVLQ(5), ...ascii('Tempo'));
-  let last = 0;
-  for (const ev of events) {
-    body.push(...writeVLQ(ev.tick - last), ...ev.bytes);
-    last = ev.tick;
-  }
-  body.push(0, 0xff, 0x2f, 0x00);
-  return [...ascii('MTrk'), ...u32be(body.length), ...body];
+  events.sort(byTickAndRank);
+  return events;
 };
 
+/** A format-1 file: the header, the conductor track ("Tempo"), then one chunk per track. */
 export const encodeMidi = (file: MidiFileData): Uint8Array => {
-  const tracks = file.tracks.map((t) => serializeTrackChunk(trackEvents(t), t.name));
-  const ntrks = 1 + tracks.length;
-  const header = [
-    ...ascii('MThd'),
-    ...u32be(6),
-    ...u16be(1),
-    ...u16be(ntrks),
-    ...u16be(file.ppq),
-  ];
-  const out: number[] = [...header, ...buildConductor(file)];
-  for (const c of tracks) out.push(...c);
-  return new Uint8Array(out);
+  const out = new ByteSink();
+  out.bytes(ascii('MThd'));
+  out.bytes(u32be(6));
+  out.bytes(u16be(1));
+  out.bytes(u16be(1 + file.tracks.length));
+  out.bytes(u16be(file.ppq));
+  writeTrackChunk(out, conductorEvents(file), 'Tempo');
+  for (const t of file.tracks) writeTrackChunk(out, trackEvents(t), t.name);
+  return out.take();
 };
 
 /** Save the file as `<baseName>-<timestamp>.mid` through saveFile, which
@@ -308,7 +350,7 @@ interface DecodedTrack {
   ranges: MidiBendRange[];
 }
 
-const decodeTrack = (chunk: Uint8Array, ppq: number): DecodedTrack => {
+const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   const r = new Reader(chunk);
   let runningStatus = 0;
   let tick = 0;
@@ -317,7 +359,11 @@ const decodeTrack = (chunk: Uint8Array, ppq: number): DecodedTrack => {
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
   const pickups: DecodedTrack['pickups'] = [];
-  const open = new Map<string, NotePartial>(); // key = `${ch}:${note}`
+  // The notes held down, by `${ch}:${note}`, oldest first. A note-off ends the
+  // OLDEST held note of its channel and pitch, so two notes of one pitch that
+  // overlap (a unison between two voices, a repeated note played legato) are
+  // both kept, each with its own length.
+  const open = new Map<string, NotePartial[]>();
   const finished: MidiNote[] = [];
   const bends: MidiBend[] = [];
   const ranges: MidiBendRange[] = [];
@@ -379,11 +425,15 @@ const decodeTrack = (chunk: Uint8Array, ppq: number): DecodedTrack => {
       if (type === 0x90 && d2 > 0) {
         // Note On with velocity > 0
         const key = `${ch}:${d1}`;
-        open.set(key, { tick, note: d1, velocity: d2, channel: ch });
+        const partial = { tick, note: d1, velocity: d2, channel: ch };
+        const held = open.get(key);
+        if (held) held.push(partial);
+        else open.set(key, [partial]);
       } else if (type === 0x80 || (type === 0x90 && d2 === 0)) {
-        // Note Off (or Note On vel=0)
+        // Note Off (or Note On vel=0): the oldest held note of this channel and pitch ends here.
         const key = `${ch}:${d1}`;
-        const partial = open.get(key);
+        const held = open.get(key);
+        const partial = held?.shift();
         if (partial) {
           finished.push({
             tick: partial.tick,
@@ -392,7 +442,7 @@ const decodeTrack = (chunk: Uint8Array, ppq: number): DecodedTrack => {
             channel: partial.channel,
             durationTicks: Math.max(1, tick - partial.tick),
           });
-          open.delete(key);
+          if (held?.length === 0) open.delete(key);
         }
       } else if (type === 0xe0) {
         bends.push({ tick, channel: ch, value: d1 | (d2 << 7) });
@@ -422,15 +472,19 @@ const decodeTrack = (chunk: Uint8Array, ppq: number): DecodedTrack => {
     }
   }
 
-  // Any notes left open at end-of-track get a 1-tick duration so they're not lost.
-  for (const partial of open.values()) {
-    finished.push({
-      tick: partial.tick,
-      note: partial.note,
-      velocity: partial.velocity,
-      channel: partial.channel,
-      durationTicks: ppq,
-    });
+  // A note still held when the track ends lasts to the track's last tick: its
+  // end-of-track event's, or its last event's when the chunk has none. A note
+  // that starts on that tick keeps one tick, so it is not lost.
+  for (const held of open.values()) {
+    for (const partial of held) {
+      finished.push({
+        tick: partial.tick,
+        note: partial.note,
+        velocity: partial.velocity,
+        channel: partial.channel,
+        durationTicks: Math.max(1, tick - partial.tick),
+      });
+    }
   }
 
   finished.sort((a, b) => a.tick - b.tick);
@@ -460,11 +514,13 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     if (r.str(4) !== 'MTrk') throw new Error(`Track ${i} missing MTrk marker`);
     const len = r.u32();
     const chunk = r.bytes(len);
-    const t = decodeTrack(chunk, ppq);
-    tempos.push(...t.tempos);
-    signatures.push(...t.signatures);
-    groups.push(...t.groups);
-    pickups.push(...t.pickups);
+    const t = decodeTrack(chunk);
+    // One push per event: a spread passes every event as an argument, which V8
+    // refuses past about 125,000 of them.
+    for (const e of t.tempos) tempos.push(e);
+    for (const e of t.signatures) signatures.push(e);
+    for (const e of t.groups) groups.push(e);
+    for (const e of t.pickups) pickups.push(e);
     // A track that only bends is kept: its channel's wheel bends notes another track holds.
     if (t.notes.length > 0 || t.bends.length > 0) {
       tracks.push({
@@ -488,7 +544,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   const bpm = atZero.length ? atZero[atZero.length - 1].bpm : tempos.length ? tempos[0].bpm : 120;
   return {
     ppq,
-    bpm: Math.round(bpm),
+    bpm,
     tracks,
     ...(signatures.length ? { timeSignatures: signatures } : {}),
     ...(tempos.length ? { tempos } : {}),

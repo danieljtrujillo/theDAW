@@ -56,8 +56,10 @@ import {
   clipMeterToTasmo,
   pianoNoteToTasmo,
   tasmoMeterToClip,
+  ticksMatching,
 } from './projectClient';
 import { roundUpToBar } from './meterMap';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
 import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
@@ -117,25 +119,42 @@ const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderN
   return notes;
 };
 
-/** Best-effort step-grid view of the same notes for "Edit in Piano Roll". */
+/**
+ * The piano-roll view of the same notes, for "Edit in Piano Roll" and the
+ * clip's own playback. An edge in seconds lands on its tick at `bpm` (PPQ to
+ * the quarter), never snapped to a 16th. An edge in steps keeps its fraction,
+ * with the `tick` / `ticks` the file writes beside it (pianoNoteToTasmo), so a
+ * recorded note shorter than a 16th reopens at its own length. A length in
+ * steps with no ticks beside it floors at one step, as the roll floors it.
+ */
 const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
-  const stepSec = 60 / Math.max(40, bpm) / 4;
+  const ticksPerSec = (Math.max(40, bpm) / 60) * PPQ;
+  const ticksPerStep = PPQ / ROLL_STEPS_PER_BEAT;
   return raw
     .map((n): PianoNote | null => {
       const note = pick(n, 'note', 'pitch', 'midi', 'key');
       if (note === undefined) return null;
       const startSec = pick(n, 'start', 'startSec', 'start_time', 'time');
-      const step = startSec !== undefined ? Math.round(startSec / stepSec) : (pick(n, 'step') ?? 0);
       const durSec = pick(n, 'duration', 'durationSec', 'dur', 'length_sec');
-      const length = durSec !== undefined ? Math.max(1, Math.round(durSec / stepSec)) : (pick(n, 'length') ?? 1);
+      const stepIn = Math.max(0, pick(n, 'step') ?? 0);
+      const lengthIn = pick(n, 'length');
+      const tick = startSec !== undefined ? Math.max(0, Math.round(startSec * ticksPerSec)) : ticksMatching(n.tick, stepIn, 0);
+      const ticks =
+        durSec !== undefined
+          ? Math.max(MIN_NOTE_TICKS, Math.round(durSec * ticksPerSec))
+          : lengthIn !== undefined
+            ? ticksMatching(n.ticks, lengthIn, MIN_NOTE_TICKS)
+            : undefined;
       const lane = pick(n, 'lane');
       return {
         id: uid('pn'),
         note: Math.round(note),
-        step: Math.max(0, step),
-        length: Math.max(1, length),
+        step: tick !== undefined ? tick / ticksPerStep : stepIn,
+        length: ticks !== undefined ? ticks / ticksPerStep : Math.max(1, lengthIn ?? 1),
         velocity: clamp(pick(n, 'velocity', 'vel'), 1, 127, 100),
         ...(lane !== undefined && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
+        ...(tick !== undefined ? { tick } : {}),
+        ...(ticks !== undefined ? { ticks } : {}),
       };
     })
     .filter((n): n is PianoNote => n !== null);
@@ -386,10 +405,15 @@ const buildClip = async (
   }
   const meter = sourcePianoRoll ? tasmoMeterToClip(c) : {};
   // Files written before total_steps existed: the notes' end, up to a bar line
-  // of the clip's meter map (4/4 when it has none).
+  // of the clip's meter map (4/4 when it has none). A reduce, since a spread
+  // passes every note as an argument and V8 refuses past about 125,000.
   const sourceTotalSteps = sourcePianoRoll
     ? meter.sourceTotalSteps ??
-      roundUpToBar(meter.sourceMeterMap ?? [], Math.max(1, ...sourcePianoRoll.map((n) => n.step + n.length)), meter.sourcePickupSteps ?? 0)
+      roundUpToBar(
+        meter.sourceMeterMap ?? [],
+        sourcePianoRoll.reduce((end, n) => Math.max(end, n.step + n.length), 1),
+        meter.sourcePickupSteps ?? 0,
+      )
     : undefined;
 
   const { peaks, duration } = await computePeaks(blob, 240);

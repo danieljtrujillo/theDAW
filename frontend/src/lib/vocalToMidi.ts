@@ -16,6 +16,7 @@ import { getEngineCtx } from '../state/playerStore';
 import { addWorkletModule } from './audioWorkletSupport';
 import type { PianoNote } from '../state/pianoRollStore';
 import type { RenderNote } from './midiSynth';
+import { takeToRoll } from './takeNotes';
 
 export interface F0Frame {
   tSec: number; // capture-relative seconds
@@ -359,18 +360,9 @@ export const captureNotesToRenderNotes = (notes: CaptureNote[]): RenderNote[] =>
     velocity: n.velocity,
   }));
 
-const stepSec = (bpm: number): number => 60 / bpm / 4; // one 16th note
-
-export const captureNotesToPianoNotes = (
-  notes: CaptureNote[],
-  bpm: number,
-): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `vox-${i}-${n.startMs}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.startMs / 1000 / ss)),
-    length: Math.max(1, Math.round((n.endMs - n.startMs) / 1000 / ss)),
-    velocity: n.velocity,
-  }));
-};
+/** Captured notes as roll notes at `bpm`, at the ticks they were sung on (lib/takeNotes); APPLY quantises. */
+export const captureNotesToPianoNotes = (notes: CaptureNote[], bpm: number): PianoNote[] =>
+  takeToRoll(
+    notes.map((n) => ({ note: n.pitch, velocity: n.velocity, startSec: n.startMs / 1000, endSec: n.endMs / 1000 })),
+    { bpm, idPrefix: 'vox' },
+  ).rollNotes;
