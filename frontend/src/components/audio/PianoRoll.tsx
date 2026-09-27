@@ -51,7 +51,7 @@ import {
   rulerLoop,
   rulerSeekStep,
   shownStep,
-  startLap,
+  playStartLap,
   windowOnsets,
   type LapState,
   type RollLoop,
@@ -83,6 +83,7 @@ import {
 } from '../../lib/grooveTemplate';
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
+import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
@@ -227,6 +228,7 @@ export const PianoRollTransport: React.FC<{
   const setBpm = usePianoRollStore((s) => s.setBpm);
   const setTotalSteps = usePianoRollStore((s) => s.setTotalSteps);
   const setPlaying = usePianoRollStore((s) => s.setPlaying);
+  const play = usePianoRollStore((s) => s.play);
   const setCurrentStep = usePianoRollStore((s) => s.setCurrentStep);
   const masterRef = useMasterGainRef();
   const playTimerRef = useRef<number | null>(null);
@@ -272,12 +274,7 @@ export const PianoRollTransport: React.FC<{
     // Absolute steps map onto roll steps through the lap (lib/rollTransport): it
     // starts at the playhead, and a seek, a new length or a new loop re-anchors
     // it just past the cursor.
-    const start = usePianoRollStore.getState();
-    let lapState: LapState = startLap(
-      start.currentStep,
-      start.seekId,
-      playRange(start.loop, start.loopOn, Math.max(1, start.totalSteps)),
-    );
+    let lapState: LapState = playStartLap(usePianoRollStore.getState());
     let cursor = -REANCHOR_STEPS; // absolute step scheduled up to (inclusive)
     // Unroll once per note, lane, length or bend edit, not once per tick.
     let source: { notes: PianoNote[]; lanes: PolyLane[]; total: number; bends: LaneBend[] } | null = null;
@@ -400,7 +397,7 @@ export const PianoRollTransport: React.FC<{
     // above) fires notes, the first step included, at their exact times.
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
-    setPlaying(true);
+    play();
     const roll = usePianoRollStore.getState();
     logInfo('piano-roll', `Playing ${roll.notes.length} notes at ${bpm} BPM from step ${Math.floor(roll.currentStep) + 1}`);
   };
@@ -1434,23 +1431,6 @@ const RowBackgrounds = React.memo(function RowBackgrounds({ lowestNote, highestN
     </>
   );
 });
-
-/** The playhead: a 1px line in the theme's primary ink, which holds contrast on
- *  the grid and across the accent-filled notes. No glow. Only this re-renders
- *  as the roll plays. It sits on the step line where the step it marks starts,
- *  so the line meets a note as the note sounds, and it stays in view, fainter,
- *  while the roll is stopped: that is where PLAY starts. */
-const RollPlayhead: React.FC<{ stepPx: number; totalSteps: number }> = ({ stepPx, totalSteps }) => {
-  const isPlaying = usePianoRollStore((s) => s.isPlaying);
-  const currentStep = usePianoRollStore((s) => s.currentStep);
-  return (
-    <div
-      aria-hidden="true"
-      className={`absolute top-0 bottom-0 w-px bg-[rgb(var(--et-ink))] z-30 pointer-events-none ${isPlaying ? '' : 'opacity-40'}`}
-      style={{ left: Math.min(Math.max(0, currentStep), totalSteps) * stepPx }}
-    />
-  );
-};
 
 /** How much an arrow key moves the selected notes' velocity, and under Shift. */
 const VELOCITY_KEY_STEP = 1;

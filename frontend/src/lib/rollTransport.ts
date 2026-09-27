@@ -122,6 +122,19 @@ export function startLap(playhead: number, seekId: number, range: PlayRange): La
   return { lap: lapAt(0, playhead, range), range, seekId, shownFrom: 0 };
 }
 
+/** The roll fields PLAY starts from. */
+export interface PlayStart {
+  currentStep: number;
+  seekId: number;
+  loop: RollLoop | null;
+  loopOn: boolean;
+  totalSteps: number;
+}
+
+/** The lap PLAY starts with, read from the roll: at its playhead, over the loop while the loop is on. */
+export const playStartLap = (roll: PlayStart): LapState =>
+  startLap(roll.currentStep, roll.seekId, playRange(roll.loop, roll.loopOn, Math.max(1, roll.totalSteps)));
+
 /**
  * The lap after a tick reads the store, with `cursor` the absolute step
  * scheduled up to. A new seek re-anchors at the new playhead; a new range (a

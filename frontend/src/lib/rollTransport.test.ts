@@ -4,8 +4,10 @@
 // write the playhead back with shownStep. The component itself is not mounted
 // (its module graph reads `import.meta.env`, which a node test cannot load), so
 // the JSX wiring (the ruler's pointer handlers, the LOOP key) is what the
-// browser pass covers; everything they call is driven here.
+// browser pass covers; everything they call is driven here, and a source pin
+// below holds PLAY's key to the store action this file drives.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   REANCHOR_STEPS,
   followLap,
@@ -13,6 +15,7 @@ import {
   loopLabel,
   noteOnsets,
   playRange,
+  playStartLap,
   rulerKeyStep,
   rulerLoop,
   rulerSeekStep,
@@ -40,16 +43,17 @@ const roll = (total: number, notes: PianoNote[]) => {
 interface Heard { id: string; step: number; abs: number }
 
 /**
- * PLAY, as PianoRollTransport runs it: the lap starts at the store's playhead,
- * then each tick reads the store, follows it (a seek, a new length, a new
+ * PLAY, as PianoRollTransport runs it: the PLAY key calls the store's play(),
+ * the scheduler's lap starts from the store (playStartLap), then each tick reads the store, follows it (a seek, a new length, a new
  * loop), schedules the starts in its window, and writes the playhead back.
  * `window` steps are scheduled per tick; the playhead shown lags the cursor by
  * half a window, as the audio clock lags the lookahead. `onTick` runs before
  * tick `i` reads the store: an edit, a seek, a loop change while playing.
  */
 function play(ticks: number, window = 1, onTick?: (i: number) => void): { heard: Heard[]; shown: number[] } {
-  const s0 = st();
-  let lap = startLap(s0.currentStep, s0.seekId, playRange(s0.loop, s0.loopOn, Math.max(1, s0.totalSteps)));
+  st().play();
+  assert.equal(st().isPlaying, true);
+  let lap = playStartLap(st());
   let cursor = -REANCHOR_STEPS;
   const heard: Heard[] = [];
   const shown: number[] = [];
@@ -77,8 +81,23 @@ function play(ticks: number, window = 1, onTick?: (i: number) => void): { heard:
   roll(128, [note(0), note(64), note(96)]);
   st().seek(64);
   assert.equal(st().currentStep, 64);
+  // play() starts the transport and leaves the playhead where the seek put it.
+  const seekId = st().seekId;
+  st().play();
+  assert.deepEqual([st().isPlaying, st().currentStep, st().seekId], [true, 64, seekId], 'PLAY leaves the playhead at 64');
+  assert.equal(windowOnsets(unrollLanes(st().notes, st().lanes, 128), playStartLap(st()).lap, -REANCHOR_STEPS, 0.5)[0]?.note.step, 64, "the scheduler's first onset is the note at 64");
+  usePianoRollStore.setState({ isPlaying: false });
   const { heard } = play(80);
   assert.deepEqual(heard.slice(0, 3).map((h) => [h.step, h.abs]), [[64, 0], [96, 32], [0, 64]]);
+
+  // The PLAY key and the scheduler in PianoRoll.tsx run exactly these two calls:
+  // the key starts the transport with play() and never moves the playhead, and
+  // the scheduler's lap starts from playStartLap(the store).
+  const src = readFileSync(new URL('../components/audio/PianoRoll.tsx', import.meta.url), 'utf8');
+  const toggle = src.slice(src.indexOf('const handlePlayToggle = () => {'), src.indexOf('// LOOP: turns the loop range on and off.'));
+  assert.ok(toggle.length > 0 && /(?<![.\w])play\(\);/.test(toggle), 'the PLAY key calls the store action play()');
+  assert.equal(/setCurrentStep\(|seek\(|setPlaying\(true\)/.test(toggle), false, 'the PLAY key never moves the playhead');
+  assert.ok(src.includes('let lapState: LapState = playStartLap(usePianoRollStore.getState());'), "the scheduler's lap starts from the store");
 }
 
 // The playhead stays where playback stopped, so PLAY after STOP carries on

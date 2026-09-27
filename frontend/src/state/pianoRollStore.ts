@@ -188,6 +188,9 @@ interface PianoRollState {
   /** The groove template id the feel applies; persisted. Blank falls back to the default. */
   setGrooveId: (id: string) => void;
   setPlaying: (playing: boolean) => void;
+  /** PLAY: start the roll where the playhead is. The playhead, the seek and the
+   *  loop stay as they are; the scheduler's lap starts from them (playStartLap). */
+  play: () => void;
   setCurrentStep: (s: number) => void;
   /** Move the playhead to `step`, held inside the roll. While the roll plays, playback jumps there. */
   seek: (step: number) => void;
@@ -863,6 +866,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }),
 
   setPlaying: (isPlaying) => set({ isPlaying }),
+  play: () => set({ isPlaying: true }),
   setCurrentStep: (currentStep) => set({ currentStep }),
   seek: (step) =>
     set((s) => ({
