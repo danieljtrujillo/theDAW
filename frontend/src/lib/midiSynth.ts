@@ -176,19 +176,33 @@ export const renderStepNotesToBlob = async (
   totalSteps: number,
   opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
 ): Promise<{ blob: Blob; duration: number }> => {
+  const request = stepRenderRequest(notes, bpm, totalSteps, opts);
+  const result = await renderNotesToBlob(request.notes, request.options);
+  return { blob: result.blob, duration: Math.max(result.duration, request.nominalSec) };
+};
+
+/** The notes and options renderStepNotesToBlob renders a step pattern with,
+ *  and the pattern's nominal length in seconds. The options carry no fixed
+ *  tail, so a soundfont render rings out (RenderOptions.tailSec). */
+export function stepRenderRequest(
+  notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
+  bpm: number,
+  totalSteps: number,
+  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends } = {},
+): { notes: RenderNote[]; options: RenderOptions; nominalSec: number } {
   const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
   const render = stepNotesToRender(notes, stepSec, opts.percussion ? undefined : opts.bends);
-  const nominal = totalSteps * stepSec;
-  const result = await renderNotesToBlob(
-    opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes,
-    {
-      minDurationSec: nominal,
+  const nominalSec = totalSteps * stepSec;
+  return {
+    notes: opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes,
+    options: {
+      minDurationSec: nominalSec,
       program: opts.percussion ? (opts.program ?? GM_STANDARD_KIT) : opts.program,
       ...(render.wheel.length ? { wheel: render.wheel } : {}),
     },
-  );
-  return { blob: result.blob, duration: Math.max(result.duration, nominal) };
-};
+    nominalSec,
+  };
+}
 
 /**
  * Parse a Standard MIDI File buffer and render it to a WAV Blob. Uses the active

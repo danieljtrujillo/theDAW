@@ -139,3 +139,38 @@ export function audibleFrames(channels: readonly Float32Array[], floorFrames: nu
   const keep = last + 1 + Math.ceil(SILENCE_MARGIN_SEC * sampleRate);
   return Math.min(length, Math.max(Math.ceil(floorFrames), keep));
 }
+
+/** Render lengths: `minDurationSec` is the least the audio lasts (a clip's
+ *  nominal length). `tailSec` rings a fixed time past the last event; left out,
+ *  the render rings for the longest release among the presets it plays and is
+ *  cut where it falls silent, never before its last event or `minDurationSec`. */
+export interface RenderLength {
+  tailSec?: number;
+  minDurationSec?: number;
+}
+
+/** What a soundfont render of a MIDI file covers. */
+export interface RenderSpan {
+  /** The least the kept audio lasts: the file's last event, or `minDurationSec` when longer. */
+  floorSec: number;
+  /** How long the synth renders. */
+  renderSec: number;
+  /** True when the render rings out and is cut where it falls silent (no fixed `tailSec`). */
+  ringsOut: boolean;
+}
+
+/** The span a render of a file lasting `midiDurationSec` covers under `opts`.
+ *  `ringTailSec` gives the ring-out (renderTailSec) and is read only when there is no fixed tail. */
+export function renderSpan(midiDurationSec: number, opts: RenderLength, ringTailSec: () => number): RenderSpan {
+  const floorSec = Math.max(midiDurationSec, opts.minDurationSec ?? 0);
+  const ringsOut = opts.tailSec === undefined;
+  const tail = opts.tailSec ?? ringTailSec();
+  return { floorSec, ringsOut, renderSec: Math.max(floorSec, midiDurationSec + tail) };
+}
+
+/** The frames of a finished render to keep: a ring-out is cut where it falls
+ *  silent (audibleFrames), never before the span's floor; a fixed tail is kept whole. */
+export function keptRenderFrames(span: RenderSpan, channels: readonly Float32Array[], sampleRate: number): number {
+  const length = channels.reduce((m, c) => Math.max(m, c.length), 0);
+  return span.ringsOut ? audibleFrames(channels, span.floorSec * sampleRate, sampleRate) : length;
+}

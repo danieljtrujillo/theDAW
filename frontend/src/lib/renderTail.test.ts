@@ -2,13 +2,14 @@
  * The render tail of a soundfont bounce (lib/renderTail), checked against the
  * bundled General MIDI soundfont and SpessaSynth's own processor.
  *
- * Replays what a bounce does with a final chord: the clip's notes become a
- * MIDI file (notesToSmf, as renderNotesToBlobSF builds it), the chord is
- * played and released, and the synth keeps rendering. At 8039b45 the render
- * stopped 0.6 s after the last note-off. Here the processor shows the string
- * chord still sounding at that point, and the tail the render now takes
- * (renderTailSec over the presets the file plays) reaches past the moment the
- * chord falls under the 16-bit floor. Run from `frontend/`:
+ * Checks the release math on a final chord: the notes become a MIDI file
+ * (notesToSmf), the chord is played and released, and the synth keeps
+ * rendering. At 8039b45 the render stopped 0.6 s after the last note-off.
+ * Here the processor shows the string chord still sounding at that point, and
+ * the tail renderTailSec takes over the presets the file plays reaches past
+ * the moment the chord falls under the 16-bit floor. The bounce path itself
+ * (the request a roll, EDIT or DAWproject clip renders with, the span and the
+ * silence cut) is replayed in renderLength.test.ts. Run from `frontend/`:
  *   npx tsx src/lib/renderTail.test.ts
  */
 import assert from 'node:assert/strict';

@@ -29,11 +29,13 @@ import { KEYBOARD_LIVE_CHANNEL } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
   RENDER_TAIL_CAP_SEC,
-  audibleFrames,
+  keptRenderFrames,
   midiPresetKeys,
   releaseLookupFromBank,
+  renderSpan,
   renderTailSec,
   type ReleaseLookup,
+  type RenderLength,
 } from './renderTail';
 
 /** Bundled default General MIDI soundfont, served from frontend/public. */
@@ -251,15 +253,6 @@ function getReleaseLookup(sf: ArrayBuffer): Promise<ReleaseLookup> {
   return releaseLookupPromise;
 }
 
-/** Render lengths: `minDurationSec` is the least the audio lasts (a clip's
- *  nominal length). `tailSec` rings a fixed time past the last event; left out,
- *  the render rings for the longest release among the presets it plays and is
- *  cut where it falls silent, never before its last event or `minDurationSec`. */
-interface RenderLength {
-  tailSec?: number;
-  minDurationSec?: number;
-}
-
 /** The first `frames` of `buffer`, or `buffer` itself when that is all of it. */
 function leadingFrames(buffer: AudioBuffer, frames: number): AudioBuffer {
   if (frames >= buffer.length) return buffer;
@@ -275,10 +268,11 @@ async function renderMidiToBlob(
 ): Promise<{ blob: Blob; duration: number }> {
   const sf = await loadDefaultSoundfont();
   const midi = BasicMIDI.fromArrayBuffer(midiBytes, 'render');
-  const floorSec = Math.max(midi.duration, opts.minDurationSec ?? 0);
-  const ringsOut = opts.tailSec === undefined;
-  const tailSec = opts.tailSec ?? renderTailSec(midiPresetKeys(midi), await getReleaseLookup(sf));
-  const length = Math.max(1, Math.ceil(sampleRate * Math.max(floorSec, midi.duration + tailSec)));
+  // The span (lib/renderTail renderSpan): at least the last event and
+  // minDurationSec, and past the last event a fixed tail or the ring-out.
+  const lookup = opts.tailSec === undefined ? await getReleaseLookup(sf) : null;
+  const span = renderSpan(midi.duration, opts, () => (lookup ? renderTailSec(midiPresetKeys(midi), lookup) : RENDER_TAIL_CAP_SEC));
+  const length = Math.max(1, Math.ceil(sampleRate * span.renderSec));
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, sampleRate, length });
   await addWorkletModule(ctx, await getProcessorUrl());
   const synth = new WorkletSynthesizer(ctx, { eventsEnabled: false });
@@ -292,12 +286,22 @@ async function renderMidiToBlob(
   });
   await synth.isReady;
   const rendered = await ctx.startRendering();
-  const out = ringsOut
-    ? leadingFrames(rendered, audibleFrames(Array.from({ length: rendered.numberOfChannels }, (_, c) => rendered.getChannelData(c)), floorSec * sampleRate, sampleRate))
-    : rendered;
+  const out = leadingFrames(
+    rendered,
+    keptRenderFrames(span, Array.from({ length: rendered.numberOfChannels }, (_, c) => rendered.getChannelData(c)), sampleRate),
+  );
   const wav: unknown = audioBufferToWav(out);
   const blob = wav instanceof Blob ? wav : new Blob([wav as ArrayBuffer], { type: 'audio/wav' });
   return { blob, duration: out.duration };
+}
+
+/**
+ * The MIDI file a soundfont render of absolute-seconds notes plays. Honors an
+ * explicit program when the caller knows the clip's instrument; only falls
+ * back to the global picker when it doesn't. Pitch wheels ride in the same file.
+ */
+export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[] } = {}): Uint8Array {
+  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? []);
 }
 
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
@@ -305,9 +309,7 @@ export async function renderNotesToBlobSF(
   notes: RenderNote[],
   opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[] } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
-  // Honor an explicit program when the caller knows the clip's instrument; only
-  // fall back to the global picker when it doesn't. Pitch wheels ride in the same file.
-  const smf = notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? []);
+  const smf = notesRenderSmf(notes, opts);
   return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts);
 }
 

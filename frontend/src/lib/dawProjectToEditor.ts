@@ -3,7 +3,7 @@ import { computePeaks, useEditorStore } from '../state/editorStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { logError, logInfo } from '../state/logStore';
-import { renderNotesToBlob, type RenderNote } from './midiSynth';
+import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
 import type { PianoNote } from '../state/pianoRollStore';
 import { validTimeSignature } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
@@ -63,6 +63,35 @@ const pianoNotesFromRenderNotes = (notes: RenderNote[], bpm: number): PianoNote[
   }));
 };
 
+/** Where an imported clip's window starts in its source: the trim point
+ *  ableton.py stores as the clip's loop_start. */
+const trimPointSec = (clip: DawClip): number => Math.max(0, clip.loop_start ?? 0);
+
+/**
+ * How a DAW MIDI clip renders: at least to the end of its own window (trim
+ * point plus length), so the rests after its last note are in the audio, and
+ * with no fixed tail, so the soundfont render rings for the longest release
+ * among the instruments it plays (lib/renderTail).
+ */
+export const dawMidiRenderOptions = (clip: DawClip): RenderOptions => ({
+  minDurationSec: trimPointSec(clip) + clipDuration(clip),
+});
+
+/**
+ * An arrangement MIDI clip's length on the EDIT timeline: its own length, and
+ * past it the ring-out of its last notes when every note starts inside the
+ * window (so the audio past the window is release and nothing else), as a
+ * DAW lets a released note ring after its clip ends. Never longer than the
+ * render from the trim point.
+ */
+export const dawMidiWindowSec = (clip: DawClip, notes: readonly RenderNote[], sourceDuration: number): number => {
+  const own = clipDuration(clip);
+  const available = Math.max(0, sourceDuration - trimPointSec(clip));
+  const windowEnd = trimPointSec(clip) + own;
+  const allInside = notes.every((n) => n.startSec < windowEnd);
+  return Math.min(available, allInside ? Math.max(own, available) : own);
+};
+
 const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   blob: Blob;
   mimeType: string;
@@ -70,6 +99,8 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   sourceKind?: 'audio' | 'piano-roll';
   sourcePianoRoll?: PianoNote[];
   sourceTotalSteps?: number;
+  /** A MIDI clip's notes as they were rendered. */
+  renderNotes?: RenderNote[];
 }> => {
   if (clip.file_path) {
     const response = await fetch(dawImportAudioUrl(clip.file_path), { headers: pairingHeader() });
@@ -86,15 +117,24 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
 
   const notes = notesFromDawClip(clip);
   if (notes.length === 0) throw new Error(`Clip has no audio or MIDI notes: ${clip.name}`);
-  const rendered = await renderNotesToBlob(notes, { tailSec: 0.2 });
+  const options = dawMidiRenderOptions(clip);
+  const rendered = await renderNotesToBlob(notes, options);
   const pianoNotes = pianoNotesFromRenderNotes(notes, project.tempo);
+  // The grid covers the whole window too, so a later re-render (an instrument
+  // change in EDIT) keeps the rests after the last note.
+  const stepSec = 60 / Math.max(40, project.tempo || 120) / 4;
   return {
     blob: rendered.blob,
     mimeType: 'audio/wav',
     duration: rendered.duration,
     sourceKind: 'piano-roll',
     sourcePianoRoll: pianoNotes,
-    sourceTotalSteps: Math.max(16, ...pianoNotes.map((note) => note.step + note.length)),
+    sourceTotalSteps: Math.max(
+      16,
+      Math.ceil((options.minDurationSec ?? 0) / stepSec - 1e-6),
+      ...pianoNotes.map((note) => note.step + note.length),
+    ),
+    renderNotes: notes,
   };
 };
 
@@ -135,7 +175,9 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
         const sourceDuration = loaded.duration || duration || clipDuration(clip);
         const startSec = hasArrangement ? Math.max(0, clip.start_time || 0) : sceneStartSec(clip, project);
         const durationSec = hasArrangement
-          ? Math.min(sourceDuration, clipDuration(clip) || sourceDuration)
+          ? loaded.renderNotes
+            ? dawMidiWindowSec(clip, loaded.renderNotes, sourceDuration)
+            : Math.min(sourceDuration, clipDuration(clip) || sourceDuration)
           : sourceDuration || DEFAULT_CLIP_SECONDS;
         const clipId = useEditorStore.getState().addClipToTrack({
           trackId,
@@ -147,7 +189,7 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
           // loop_start (it handles the attribute, child and Loop/LoopStart forms).
           // Hardcoding 0 here made every trimmed clip play the head of its source
           // instead of the region the user actually kept.
-          offsetIntoSource: Math.max(0, Math.min(clip.loop_start ?? 0, Math.max(0, sourceDuration - 0.01))),
+          offsetIntoSource: Math.max(0, Math.min(trimPointSec(clip), Math.max(0, sourceDuration - 0.01))),
           durationSec,
           startSec,
           color: trackColor,

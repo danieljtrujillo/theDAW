@@ -36,7 +36,7 @@ import {
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
 import type { PianoNote } from '../state/pianoRollStore';
 import { useAppUiStore } from '../state/appUiStore';
-import { renderNotesToBlob, type RenderNote } from './midiSynth';
+import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
 import {
   projectApi,
   type TasmoProjectLoaded,
@@ -350,6 +350,14 @@ const loadTakes = async (
 
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
  *  playable (missing audio file on disk, or a MIDI clip with no notes). */
+/** How a saved MIDI clip with no audio file renders: at least to the end of
+ *  its window (trim point plus length), so the rests after its last note keep
+ *  the length the file gives it, and with no fixed tail, so a soundfont render
+ *  rings out (lib/renderTail). */
+export const tasmoMidiRenderOptions = (c: Pick<TasmoLoadedClip, 'offset_into_source' | 'start_time' | 'end_time'>): RenderOptions => ({
+  minDurationSec: Math.max(0, c.offset_into_source ?? 0) + Math.max(0, (c.end_time ?? 0) - (c.start_time ?? 0)),
+});
+
 const buildClip = async (
   c: TasmoLoadedClip,
   trackId: string,
@@ -370,7 +378,7 @@ const buildClip = async (
   } else if (c.midi_notes && c.midi_notes.length) {
     const notes = toRenderNotes(c.midi_notes, bpm);
     if (notes.length === 0) return null;
-    const rendered = await renderNotesToBlob(notes);
+    const rendered = await renderNotesToBlob(notes, tasmoMidiRenderOptions(c));
     blob = rendered.blob;
   } else {
     return null;
