@@ -30,7 +30,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eraser } from 'lucide-react';
-import { usePianoRollStore, type TempoEventKind } from '../../state/pianoRollStore';
+import { beginRollGesture, endRollGesture, usePianoRollStore, type TempoEventKind } from '../../state/pianoRollStore';
 import { barAt } from '../../lib/meterMap';
 import { PPQ } from '../../lib/noteClock';
 import { tickBeat } from '../../lib/rollTempo';
@@ -113,6 +113,14 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
   useEffect(() => {
     if (picked && !selected) setPicked(null);
   }, [picked, selected]);
+  // The lane closed under a drag: the drag's undo step ends with it, so the
+  // next edit anywhere in the roll is a step of its own.
+  useEffect(
+    () => () => {
+      if (dragRef.current) endRollGesture();
+    },
+    [],
+  );
 
   const width = Math.max(1, totalSteps * stepPx);
   const height = TEMPO_LANE_HEIGHT;
@@ -137,6 +145,8 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
       e.preventDefault();
       return;
     }
+    // Placing a point and dragging it is one undo step, however long the drag pauses.
+    beginRollGesture();
     let target: Picked;
     if (hit) target = { beat: hit.beat, kind: kindOf(hit) };
     else {
@@ -179,6 +189,7 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
     if (!dragRef.current) return;
     dragRef.current = null;
     setDragRange(null);
+    endRollGesture();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
 

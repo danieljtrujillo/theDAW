@@ -110,6 +110,14 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
     if (selectedId && !points.some((p) => p.id === selectedId)) setSelectedId(null);
   }, [points, selectedId]);
   useEffect(() => setSelectedId(null), [activeLane]);
+  // The lane closed under a drag: the drag's undo step ends with it, so the
+  // next edit anywhere in the roll is a step of its own.
+  useEffect(
+    () => () => {
+      if (dragRef.current) endRollGesture();
+    },
+    [],
+  );
 
   const width = Math.max(1, totalSteps * stepPx);
   const height = BEND_LANE_HEIGHT;

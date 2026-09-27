@@ -186,6 +186,55 @@ await step(() => type(bpmField, '24.25'));
 await step(() => { blur(bpmField); });
 assert.equal(roll().bpm, 24.25, 'a slow introduction below the old 40 floor, with its fraction');
 
+// A click that adds a point and a slow drag of it are one undo step, however
+// long the pointer pauses over each position. Up to cb4f3e20 the lane opened
+// no roll gesture, so five pauses past the 300 ms burst left five steps and
+// Ctrl+Z walked back through every drag position.
+{
+  await step(() => modeKey().click()); // HOLD -> STEP
+  assert.equal(modeKey().getAttribute('aria-label'), 'What a click adds: STEP');
+  const realNow = performance.now.bind(performance);
+  let clock = realNow() + 10_000;
+  performance.now = () => clock;
+  try {
+    const before = roll()._undo.length;
+    const el = strip()!;
+    const at = (s: number, bpm: number) => ({ clientX: s * 16, clientY: tempoToY(bpm, tempoLaneRange(roll().tempoMap), TEMPO_LANE_HEIGHT) });
+    await step(() => { el.dispatchEvent(new win.MouseEvent('pointerdown', { bubbles: true, button: 0, ...at(40, 100) })); });
+    assert.equal(shape(), '0:24.25 8:66.5r 10:100 12:90r f14:2x2 15:60r', 'the click adds a step at beat 10');
+    for (const s of [41, 42, 43, 44, 45]) {
+      clock += 400;
+      await step(() => { el.dispatchEvent(new win.MouseEvent('pointermove', { bubbles: true, button: 0, ...at(s, 100) })); });
+    }
+    clock += 400;
+    await step(() => { el.dispatchEvent(new win.MouseEvent('pointerup', { bubbles: true, button: 0, ...at(45, 100) })); });
+    assert.ok(roll().tempoMap.some((e) => !e.fermata && e.beat === 11.25), `the drag carried the point to step 45: ${shape()}`);
+    assert.equal(roll()._undo.length, before + 1, 'the click and the whole drag are one undo step');
+    await step(() => roll().undo());
+    assert.equal(shape(), '0:24.25 8:66.5r 12:90r f14:2x2 15:60r', 'one Ctrl+Z takes back the click and the drag');
+    // The lane closed under a drag (the TEMPO key) ends the drag's step: two
+    // later edits past the burst are two steps, not folded into the drag.
+    const beforeClose = roll()._undo.length;
+    await step(() => { el.dispatchEvent(new win.MouseEvent('pointerdown', { bubbles: true, button: 0, ...at(40, 100) })); });
+    await step(() => tempoKey.click());
+    assert.equal(strip(), null, 'the lane closed mid-drag');
+    clock += 400;
+    await step(() => roll().setBpm(96));
+    clock += 400;
+    await step(() => roll().setBpm(92));
+    assert.equal(roll()._undo.length, beforeClose + 3, 'the click, then each later edit, one step apiece');
+    await step(() => roll().undo());
+    assert.equal(roll().bpm, 96, 'undo takes back only the last edit');
+    await step(() => roll().undo());
+    await step(() => roll().undo());
+    assert.equal(shape(), '0:24.25 8:66.5r 12:90r f14:2x2 15:60r');
+    await step(() => tempoKey.click());
+    assert.ok(strip(), 'the lane opens again');
+  } finally {
+    performance.now = realNow;
+  }
+}
+
 // CLEAR keeps only the starting tempo.
 await step(() => button('Clear tempo').click());
 assert.equal(shape(), '0:24.25');
