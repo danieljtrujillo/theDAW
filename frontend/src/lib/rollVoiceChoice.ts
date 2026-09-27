@@ -8,7 +8,8 @@
  * EDIT's instrument sync re-renders the clip through it. A clip that carries a
  * program of its own sounds that one over its track's, so the choice sets it
  * too. Both writes are one EDIT undo step. An unlinked roll, or one whose clip
- * is gone, keeps the choice as its own voice (pianoRollStore voiceProgram).
+ * is gone, keeps the choice as its own voice (pianoRollStore voiceProgram), one
+ * roll undo step, and the project turns dirty since a .tasmo saves it.
  * `null` is "follow the instrument picker" either way.
  */
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore';

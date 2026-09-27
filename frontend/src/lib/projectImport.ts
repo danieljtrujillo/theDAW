@@ -1266,8 +1266,23 @@ export async function loadProjectIntoEditor(
 export function applyTasmoRollVoice(project: Pick<TasmoProjectLoaded, 'roll_voice'>): void {
   const voice = project.roll_voice;
   if (!voice || typeof voice !== 'object') return;
-  usePianoRollStore.getState().setVoiceProgram(gmProgramOf(voice.program) ?? null);
+  openingRollVoice = true;
+  try {
+    usePianoRollStore.getState().restoreVoiceProgram(gmProgramOf(voice.program) ?? null);
+  } finally {
+    openingRollVoice = false;
+  }
 }
+
+// The roll's own voice is saved in the project (`roll_voice`), so choosing it,
+// or undoing or redoing that choice in the roll, changes what SAVE would write:
+// the project is dirty, and closing it asks first. Opening a project sets the
+// voice without that (applyTasmoRollVoice).
+let openingRollVoice = false;
+usePianoRollStore.subscribe((state, prev) => {
+  if (openingRollVoice || state.voiceProgram === prev.voiceProgram) return;
+  if (!useEditorStore.getState().dirty) useEditorStore.setState({ dirty: true });
+});
 
 // ── Saving the live session ──────────────────────────────────────────────────
 

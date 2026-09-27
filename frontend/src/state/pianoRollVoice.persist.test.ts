@@ -45,6 +45,25 @@ const load = async (): Promise<Store> => (await import(`./pianoRollStore.ts?relo
   assert.equal(third.usePianoRollStore.getState().voiceProgram, null, 'following the picker is saved too');
 }
 
+// Undo and redo of a voice choice write the record too: a reload after an undo
+// comes back on the voice the undo put back, and restoring a project's voice
+// saves it the same way.
+{
+  saved.delete(FEEL_KEY);
+  const page = await load();
+  const st = () => page.usePianoRollStore.getState();
+  st().setVoiceProgram(40);
+  st().setVoiceProgram(48);
+  st().undo();
+  assert.equal(st().voiceProgram, 40);
+  assert.equal((await load()).usePianoRollStore.getState().voiceProgram, 40, 'the undone voice is the saved one');
+  st().redo();
+  assert.equal((await load()).usePianoRollStore.getState().voiceProgram, 48, 'and the redone one after a redo');
+  st().restoreVoiceProgram(24);
+  assert.equal(st()._undo.every((step) => step.voiceProgram === 24), true, 'the history takes the opened voice');
+  assert.equal((await load()).usePianoRollStore.getState().voiceProgram, 24, 'a project voice is saved as well');
+}
+
 // A record an earlier build wrote: its feel loads, and the roll follows the picker.
 {
   saved.set(FEEL_KEY, JSON.stringify({ quantizePct: 40, swingPct: -6, grooveId: 'pocket:a' }));

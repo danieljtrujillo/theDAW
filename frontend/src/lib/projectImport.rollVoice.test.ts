@@ -10,6 +10,7 @@
 // would store comes back, and loadProjectIntoEditor opens it.
 import assert from 'node:assert/strict';
 import { applyTasmoRollVoice, loadProjectIntoEditor } from './projectImport.ts';
+import { chooseRollVoice } from './rollVoiceChoice.ts';
 import type { TasmoProjectLoaded } from './projectClient.ts';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
 import { useProjectStore } from '../state/projectStore.ts';
@@ -112,7 +113,57 @@ async function open(project: TasmoProjectLoaded, files: File[]): Promise<void> {
   assert.equal(roll().voiceProgram, 24);
 }
 
-// A hand-edited program outside 0-127 reads as following the picker, as a track's does.
+// Choosing the voice is an edit: the project turns dirty, the roll's undo puts
+// the voice before it back, and redo brings the choice again. Opening the
+// project sets the voice without either.
+{
+  roll().setVoiceProgram(0);
+  const { project, files } = await save();
+  project.roll_voice = { program: 0 };
+  await open(project, files);
+  assert.equal(roll().voiceProgram, 0);
+  assert.equal(useEditorStore.getState().dirty, false, 'a project just opened is clean');
+  const depth = roll()._undo.length;
+
+  // The Vocal2MIDI panel's Roll voice select, on an unlinked roll.
+  chooseRollVoice(48);
+  assert.equal(roll().voiceProgram, 48);
+  assert.equal(useEditorStore.getState().dirty, true, 'the roll voice change makes the project dirty');
+  assert.equal(roll()._undo.length, depth + 1, 'the choice is one roll undo step');
+
+  roll().undo();
+  assert.equal(roll().voiceProgram, 0, 'undo puts Piano back');
+  roll().redo();
+  assert.equal(roll().voiceProgram, 48, 'redo brings Strings back');
+
+  // A note drawn right after the choice is a step of its own: undoing it keeps the voice.
+  roll().addNote({ note: 60, step: 0, length: 4, velocity: 100 });
+  roll().undo();
+  assert.equal(roll().voiceProgram, 48, 'undoing the note leaves the voice alone');
+  roll().undo();
+  assert.equal(roll().voiceProgram, 0);
+
+  // Opening the project again records no step and leaves it clean, and the
+  // steps already in the history take the opened voice: undoing the note drawn
+  // before the open keeps Pad, never the Strings the roll had then.
+  roll().redo();
+  assert.equal(roll().voiceProgram, 48);
+  roll().addNote({ note: 62, step: 4, length: 4, velocity: 100 });
+  project.roll_voice = { program: 24 };
+  const before = roll()._undo.length;
+  await open(project, files);
+  assert.equal(roll().voiceProgram, 24);
+  assert.equal(roll()._undo.length, before, 'opening records no roll step');
+  assert.equal(useEditorStore.getState().dirty, false, 'opening leaves the project clean');
+  roll().undo();
+  assert.equal(roll().voiceProgram, 24, 'stepping back over the note keeps the opened voice');
+  roll().setEditingClip(null);
+}
+
+// A hand-edited program outside 0-127 reads as following the picker, as a
+// track's does. The backend reads such a file the same way (RollVoice), so the
+// project opens; the reader holds the line for a record that reaches it by any
+// other route.
 {
   roll().setVoiceProgram(24);
   applyTasmoRollVoice({ roll_voice: { program: 200 } });
