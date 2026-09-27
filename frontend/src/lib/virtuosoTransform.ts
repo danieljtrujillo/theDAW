@@ -847,8 +847,13 @@ export function humanize(
     const on = grid.onPosition(n.step);
     if (on && on.weight >= 4) vel += Math.round(12 * amount);
     else if (on && on.weight >= pulseWeight(on.b.meter)) vel += Math.round(6 * amount);
+    // Some notes grow or shrink by a 32nd (0.5 steps), or by half their own
+    // length when that is less, so a note shorter than a 16th changes in
+    // proportion to its length and never floors above the roll's one tick.
     let len = n.length;
-    if (hash01(i + seed * 257) < amount * 0.3) len = Math.max(0.25, len + (hash01(i) > 0.5 ? 0.5 : -0.5));
+    if (hash01(i + seed * 257) < amount * 0.3) {
+      len = Math.max(MIN_NOTE_STEPS, len + (hash01(i) > 0.5 ? 1 : -1) * Math.min(0.5, len / 2));
+    }
     let micro: number;
     if (groove) {
       micro = groove.timing[slot] * amount + (hash01(i * 3 + seed * 131 + 5) - 0.5) * amount * 0.03;

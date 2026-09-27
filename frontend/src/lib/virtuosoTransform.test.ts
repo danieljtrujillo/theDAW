@@ -128,6 +128,11 @@ function captureToday(): Record<string, string> {
 // melody note's own length: only the LENGTHS of counter notes under sub-16th
 // melody notes changed (1 step became 0.667, 0.5 or 0.333, 0.5 became 0.25, and
 // a humanized 1.5 became 1); every note's pitch, step and velocity is unchanged.
+// renderVirtuoso and every buildSong digest were captured again when humanize's
+// length change took half a note's own length for a note under a 16th: only
+// lengths changed (a 0.5-step note humanize lengthened became 0.75 in place of
+// 1, a shortened 0.667 became 0.334 in place of the 0.25 floor), compared note
+// by note against the previous build's output.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
@@ -144,7 +149,7 @@ const FIXTURES: Record<string, string> = {
   'runs 1': '95:18aeac70e431b83a881eb2e7',
   'runs chromatic 1': '87:d136961088e33c44e5a1b546',
   'harmonize 1': '44:3cb5d0ec11c809e339b31a33',
-  renderVirtuoso: '98:0e20d12b5f50f2d9e3682f48',
+  renderVirtuoso: '98:1bb1a34f8e3481b302ed5a40',
   accSustain: '4:8266445a9a3b6b8614559cf0',
   accArpeggio: '8:b22ac046619609734aecdacd',
   accAlberti: '8:cc406571a99a243117c57f25',
@@ -166,17 +171,17 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:e8a572b7e88d574ccfb11438',
-  'buildSong romantic sections': '436:db07635e8dc042be7adfa745',
-  'buildSong baroque': '670:1e36b785cff3ae4fef7daf6c',
-  'buildSong baroque sections': '436:40efba6d357ad37b29f8d70e',
-  'buildSong mussorgsky': '770:06c848cbb6736c122b27ccee',
-  'buildSong mussorgsky sections': '436:b4d4fcdf2ecd86efab5bb95f',
-  'buildSong flamenco': '900:a44c7157d80aecb379a4037b',
-  'buildSong flamenco sections': '436:9eaaa0ded270ee9d73d3de3d',
-  'buildSong ragtime': '593:9bc918861360fdcec400b44b',
-  'buildSong ragtime sections': '439:f5252283cafd10a638533549',
-  'buildSong default': '1265:f58af45dcac84e47886d362c',
+  'buildSong romantic': '528:f2aca0d9de2d06a3cdf40e8b',
+  'buildSong romantic sections': '436:a9272268720f395b38e58769',
+  'buildSong baroque': '670:7cbb03d702d6d64d43735aa7',
+  'buildSong baroque sections': '436:252c517b6e5b1ade7f8c43da',
+  'buildSong mussorgsky': '770:277e2e66eec33e9555b7dff9',
+  'buildSong mussorgsky sections': '436:f9c999cd10a0078c7ebd0d26',
+  'buildSong flamenco': '900:9c66866d270f9aa27f26a979',
+  'buildSong flamenco sections': '436:1bf1fe7257deb14c7110e61c',
+  'buildSong ragtime': '593:966d15a9aa14db640e232e7b',
+  'buildSong ragtime sections': '439:903b44200d9a49f9c2c78817',
+  'buildSong default': '1265:b754a6aabf3190e54d41d7b3',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
   'arp renderProgression looped': '125:a71e91c7fafa6d3c59992cca',
 };
@@ -635,6 +640,33 @@ for (const [name, len, ticks] of [['16th triplets', 2 / 3, 160], ['128th notes',
   for (let i = 1; i < counter.length; i += 1) {
     assert.ok(counter[i - 1].tick + counter[i - 1].ticks <= counter[i].tick, `${name}: counter note ${i - 1} ends before counter note ${i} starts`);
   }
+  useVirtuosoStore.getState().resetToSource();
+}
+
+// HUMANIZE on a 128th-note run, the way the Virtuoso panel runs it: the roll
+// holds the run, the panel captures it, HUMANIZE goes up, and the render lands
+// back in the roll. A note humanize lengthens or shortens changes by half its
+// own length at most, so every 30-tick note comes back between 15 and 45 ticks.
+// Humanize used to add or take a fixed 0.5 steps and floor at 0.25 steps, so a
+// shortened note came back a 64th (60 ticks) and a lengthened one 0.625 steps
+// (150 ticks), running over the next four notes.
+for (const amount of [0.6, 1]) {
+  const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
+  const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
+  const roll = usePianoRollStore.getState;
+  const len = 1 / 8;
+  const melody: PianoNote[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `h${i}`, note: [72, 74, 76][i % 3], step: i * len, length: len, velocity: 96,
+  }));
+  roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0 });
+  useVirtuosoStore.setState({ amounts: { ...ZERO_AMOUNTS }, songMode: false, sections: null, groove: null, key: 'C', mode: 'major' });
+  roll().replaceAll(melody);
+  useVirtuosoStore.getState().captureSource();
+  useVirtuosoStore.getState().setAmount('humanize', amount);
+  const ticks = roll().notes.map((n) => n.ticks!);
+  assert.equal(ticks.length, 24, `HUMANIZE ${amount}: every note stays in the roll`);
+  assert.ok(ticks.some((t) => t !== 30), `HUMANIZE ${amount}: some note length moves, so the jitter runs (${ticks.join(',')})`);
+  for (const t of ticks) assert.ok(t >= 15 && t <= 45, `HUMANIZE ${amount}: a 30-tick note comes back ${t} ticks, outside half its length`);
   useVirtuosoStore.getState().resetToSource();
 }
 
