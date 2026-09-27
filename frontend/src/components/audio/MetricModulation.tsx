@@ -49,6 +49,8 @@ export const MetricModulationKey: React.FC<MetricModulationKeyProps> = ({ idBase
   const [before, setBefore] = React.useState(lastBefore);
   const [after, setAfter] = React.useState(lastAfter);
   const [pickedBar, setPickedBar] = React.useState<number>(() => bar ?? playheadBar());
+  // Typed digits wait for Enter or blur, so the "1" of a typed 12 is never clamped first.
+  const [barDraft, setBarDraft] = React.useState<string | null>(null);
   const tempoMap = usePianoRollStore((s) => s.tempoMap);
   const meterMap = usePianoRollStore((s) => s.meterMap);
   const pickupSteps = usePianoRollStore((s) => s.pickupSteps);
@@ -75,7 +77,19 @@ export const MetricModulationKey: React.FC<MetricModulationKeyProps> = ({ idBase
 
   const openCard = (): void => {
     if (!open && bar === undefined) setPickedBar(playheadBar());
+    setBarDraft(null);
     setOpen((v) => !v);
+  };
+
+  /** A typed bar number (1-based), held to bar 2 through the roll's last bar. */
+  const pickBar = (text: string): void => {
+    const v = Number.parseInt(text, 10);
+    if (Number.isFinite(v)) setPickedBar(Math.max(1, Math.min(lastBar, v - 1)));
+  };
+  const commitBarDraft = (): void => {
+    if (barDraft === null) return;
+    setBarDraft(null);
+    pickBar(barDraft);
   };
 
   const apply = (): void => {
@@ -134,10 +148,21 @@ export const MetricModulationKey: React.FC<MetricModulationKeyProps> = ({ idBase
                 min={2}
                 max={lastBar + 1}
                 step={1}
-                value={pickedBar + 1}
+                value={barDraft ?? pickedBar + 1}
                 onChange={(e) => {
-                  const v = Number.parseInt(e.target.value, 10);
-                  if (Number.isFinite(v)) setPickedBar(Math.max(1, Math.min(lastBar, v - 1)));
+                  // Typing arrives as an InputEvent and applies on Enter or blur;
+                  // a step from the arrows or the spin buttons applies at once.
+                  if ('inputType' in e.nativeEvent) {
+                    setBarDraft(e.target.value);
+                    return;
+                  }
+                  setBarDraft(null);
+                  pickBar(e.target.value);
+                }}
+                onBlur={commitBarDraft}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitBarDraft();
+                  else if (e.key === 'Escape') setBarDraft(null);
                 }}
                 className={`${selectClass} w-14`}
               />

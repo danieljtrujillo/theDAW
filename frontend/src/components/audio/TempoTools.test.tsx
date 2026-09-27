@@ -115,6 +115,12 @@ const choose = (el: HTMLSelectElement, value: string) => {
   el.dispatchEvent(new win.Event('change', { bubbles: true }));
 };
 const blur = (el: HTMLElement) => el.dispatchEvent(new win.FocusEvent('focusout', { bubbles: true }));
+/** Typing: the value changes and an InputEvent says it was typed. */
+const type = (el: HTMLInputElement, text: string) => {
+  valueSetter.call(el, text);
+  el.dispatchEvent(new win.InputEvent('input', { bubbles: true, inputType: 'insertText', data: text.slice(-1) }));
+};
+const key = (el: HTMLElement, k: string) => el.dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true }));
 const labelFor = (id: string) => win.document.querySelector(`label[for="${id}"]`)?.textContent ?? '';
 const tempoShape = () => roll().tempoMap.filter((e) => !e.fermata).map((e) => `${e.beat}:${e.bpm}${e.curve === 'linear' ? 'r' : ''}`);
 const M44 = { num: 4, den: 4, groups: [] as number[] };
@@ -155,13 +161,26 @@ await step(() => button('Reset to the captured source').click());
 assert.deepEqual(tempoShape(), ['0:120'], 'RESET puts the map from before the song back');
 
 /* 2. TEMPO lane: MODULATE at the playhead's bar. */
-await step(() => usePianoRollStore.setState({ currentStep: 34 }));
+await step(() => usePianoRollStore.setState({ currentStep: 34, totalSteps: 256 }));
 await step(() => button('Tempo').click());
 const laneRow = win.document.querySelector('[data-tempo-lane]') as HTMLElement;
 await wait(350);
 await step(() => button('Metric modulation', laneRow).click());
 const laneBar = byId<HTMLInputElement>('tempo-lane-mod-bar');
 assert.equal(laneBar.value, '3', 'the card opens on the bar under the playhead');
+// Typing 12 into the Bar field: the "1" waits, so it is never clamped to bar 2.
+await step(() => type(laneBar, '1'));
+assert.equal(laneBar.value, '1', 'the typed digit shows as typed');
+assert.match(byId('tempo-lane-mod-card').textContent ?? '', /at bar 3/, 'and the bar stays until Enter');
+await step(() => type(laneBar, '12'));
+await step(() => key(laneBar, 'Enter'));
+assert.equal(laneBar.value, '12');
+assert.match(byId('tempo-lane-mod-card').textContent ?? '', /at bar 12/, 'Enter picks bar 12');
+// Blur applies a typed bar too, and a bar past the end is held to the last bar.
+await step(() => { type(laneBar, '99'); blur(laneBar); });
+assert.equal(laneBar.value, '16', 'the roll has 16 bars');
+await step(() => { type(laneBar, '3'); blur(laneBar); });
+assert.equal(laneBar.value, '3');
 assert.equal(labelFor('tempo-lane-mod-before'), 'Before');
 assert.equal(labelFor('tempo-lane-mod-after'), 'After');
 await step(() => choose(byId<HTMLSelectElement>('tempo-lane-mod-before'), 'quarter'));
