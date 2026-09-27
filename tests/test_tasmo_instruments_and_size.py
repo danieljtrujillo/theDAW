@@ -160,6 +160,7 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
         {"id": "t", "name": "Piano", "type": "audio", "clips": []}
     )
     assert track.instrument_program is None
+    assert track.is_percussion is False
     assert track.parent_track_id is None
     assert track.is_folder is False
     assert track.collapsed is False
@@ -168,6 +169,7 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     )
     assert clip.instrument_program is None
     assert clip.rendered_program is None
+    assert clip.rendered_percussion is False
     assert clip.source_bpm is None
     assert clip.bpm is None
     assert clip.library_entry_id is None
@@ -187,10 +189,17 @@ FRONTEND_PAYLOAD = (
 )
 
 # What a reopen must hand back exactly as the frontend wrote it.
-_KEPT_TRACK = ("instrument_program", "parent_track_id", "is_folder", "collapsed")
+_KEPT_TRACK = (
+    "instrument_program",
+    "is_percussion",
+    "parent_track_id",
+    "is_folder",
+    "collapsed",
+)
 _KEPT_CLIP = (
     "instrument_program",
     "rendered_program",
+    "rendered_percussion",
     "source_bpm",
     "bpm",
     "library_entry_id",
@@ -260,6 +269,11 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["looped"]["roll_notes"][0]["lane"] == 1
     assert clips["plain"]["midi_notes"][1]["channel"] == 3
     assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
+    # A drum track keeps its flag and its kit, and its clip's kit render.
+    drums = next(t for t in back["tracks"] if t["id"] == "d1")
+    assert drums["is_percussion"] is True
+    assert drums["instrument_program"] == 25
+    assert clips["kit"]["rendered_percussion"] is True
 
 
 # ---------------------------------------------------------------------------

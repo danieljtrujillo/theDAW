@@ -312,6 +312,10 @@ class Clip(BaseModel):
     # still validate and load with None.
     instrument_program: int | None = None
     rendered_program: int | None = None
+    # MIDI clips: whether the embedded audio was rendered on the General MIDI
+    # drum channel (rendered_program then names the kit). Defaulted, so older
+    # files load as rendered on a melodic channel.
+    rendered_percussion: bool = False
     source_bpm: float | None = None
     # Audio clips: the tempo the audio plays at after a beat match or a
     # stretch (EDIT's SYNC and BPM readout read it), and the library entry the
@@ -441,6 +445,10 @@ class Track(BaseModel):
     # The GM program (0-127) this track's MIDI clips play through when a clip
     # has none of its own; None = the global instrument.
     instrument_program: int | None = None
+    # A drum track: its MIDI clips play and render on the General MIDI drum
+    # channel, and instrument_program picks the kit. Defaulted, so .tasmo files
+    # written before it existed load every track as melodic.
+    is_percussion: bool = False
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is

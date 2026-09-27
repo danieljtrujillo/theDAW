@@ -23,6 +23,7 @@ import { beatMatchPlan } from './beatMatch.ts';
 import { bounceMidiClip } from './clipOps/audioOps.ts';
 import { noteEndStep } from './clipNotes/units.ts';
 import { tasmoLoadedToDawProject } from './tasmoToSession.ts';
+import { clipRenderIsStale, clipVoice, renderedVoiceFields } from './clipProgram.ts';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
 import * as tools from '../state/editorTools.ts';
 import { useProjectStore } from '../state/projectStore.ts';
@@ -500,6 +501,45 @@ const st = () => useEditorStore.getState();
   assert.equal(noteEndStep([], 16), 16);
 }
 
+// ── A drum track reopens as a drum track, on its kit ─────────────────────────
+// The drum key (setTrackPercussion) puts a track on the drum channel, the
+// track's program becomes its kit, and its clip is rendered on that kit. The
+// file wrote neither flag, so the reopened track was melodic: live playback put
+// the kit's program on a melodic channel and the clip's bounce read as stale.
+{
+  const hits: PianoNote[] = [note('k0', 36, 0, 1), note('k1', 38, 4, 1), note('k2', 42, 2, 0.5)];
+  useEditorStore.setState({ bpm: 120, tracks: [track('d1', { name: 'Drums' })], clips: [rollClip('kit', 'd1', { sourcePianoRoll: hits })] });
+  st().setTrackPercussion('d1', true);
+  st().updateTrack('d1', { instrumentProgram: 25 });
+  const voiceBefore = clipVoice(st().clips[0], st().tracks[0], { useSoundfont: true, activeProgram: 0 });
+  assert.deepEqual(voiceBefore, { program: 25, percussion: true });
+  useEditorStore.setState({ clips: st().clips.map((c) => ({ ...c, ...renderedVoiceFields(voiceBefore) })) });
+
+  const { form, files } = await saveThroughTheWire();
+  const project = await projectFrom(form);
+  assert.equal(project.tracks[0].is_percussion, true, 'the drum flag is written');
+  assert.equal(project.tracks[0].instrument_program, 25, 'and the kit');
+  assert.equal(project.tracks[0].clips[0].rendered_percussion, true, "the clip's render is marked as a kit render");
+
+  useEditorStore.setState({ bpm: 100, tracks: [track('other')], clips: [] });
+  await openWithFiles(project, files);
+  const drums = st().tracks.find((t) => t.id === 'd1');
+  const kit = st().clips.find((c) => c.id === 'kit');
+  assert.equal(drums?.isPercussion, true, 'the track reopens as a drum track');
+  assert.equal(drums?.instrumentProgram, 25);
+  assert.ok(kit);
+  const global = { useSoundfont: true, activeProgram: 0 };
+  assert.deepEqual(clipVoice(kit, drums, global), { program: 25, percussion: true }, 'the clip plays its kit on the drum channel');
+  assert.equal(clipRenderIsStale(kit, drums, global), false, 'the reopened bounce is not rendered again');
+
+  // A file written before the flag reads every track as melodic, as it did.
+  const { is_percussion: _flag, ...older } = project.tracks[0];
+  const olderClips = older.clips.map(({ rendered_percussion: _r, ...c }) => c);
+  useEditorStore.setState({ bpm: 100, tracks: [track('other')], clips: [] });
+  await openWithFiles({ ...project, tracks: [{ ...older, clips: olderClips }] }, files);
+  assert.equal(st().tracks.find((t) => t.id === 'd1')?.isPercussion, undefined, 'an older file opens the track melodic');
+}
+
 // ── The payload the backend validates is the one the app really sends ────────
 // The save runs through projectStore.save, the SAVE button's own action. The
 // parsed project part and the file names are compared with
@@ -522,6 +562,7 @@ const st = () => useEditorStore.getState();
       // is not refused over it.
       track('t2', { instrumentProgram: 40.5 as number }),
       track('t3'),
+      track('d1', { isPercussion: true, instrumentProgram: 25 }),
     ],
     clips: [
       rollClip('plain', 't1', { sourcePianoRoll: plain, sourceRollNotes: plain, instrumentProgram: 42, renderedProgram: 42, sourceBpm: 90 }),
@@ -535,6 +576,7 @@ const st = () => useEditorStore.getState();
       rollClip('edited', 't2', { sourcePianoRoll: [note('e0', 60, 0, 1, { velocity: 30 })], sourceRollNotes: [note('r0', 60, 0, 1)], startSec: 2 }),
       audioClip('tagged', 't3', { sourceBpm: 92, bpm: 124, libraryEntryId: 'lib-7' }),
       audioClip('untagged', 't3', { startSec: 1 }),
+      rollClip('kit', 'd1', { sourcePianoRoll: [note('k0', 36, 0, 1)], renderedProgram: 25, renderedPercussion: true }),
     ],
   });
   useProjectStore.setState({ projectName: 'Fixture', savePath: 'S.tasmo', pendingTracks: [] });

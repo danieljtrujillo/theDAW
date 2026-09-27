@@ -72,6 +72,8 @@ import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
 import { tasmoLoadedToDawProject } from './tasmoToSession';
+import { GM_STANDARD_KIT } from './clipProgram';
+import { DRUM_CHANNEL } from './editChannels';
 import { meterFromTasmo } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
 
@@ -395,13 +397,16 @@ export const tasmoMidiRenderOptions = (c: Pick<TasmoLoadedClip, 'offset_into_sou
  *  playable (missing audio file on disk, or a MIDI clip with no notes).
  *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
  *  at; `trackProgram` is the track's GM program, which a clip with no audio
- *  file of its own renders through when it has no program of its own. */
+ *  file of its own renders through when it has no program of its own, and
+ *  `trackPercussion` puts that render on the drum channel, where the program
+ *  is the kit (the Standard kit when neither names one). */
 const buildClip = async (
   c: TasmoLoadedClip,
   trackId: string,
   color: string,
   projectBpm: number,
   trackProgram?: number,
+  trackPercussion = false,
 ): Promise<AudioClip | null> => {
   let blob: Blob | null = null;
   let sourceKind: AudioClip['sourceKind'];
@@ -411,6 +416,7 @@ const buildClip = async (
   const bpm = tasmoClipBpm(c, projectBpm);
   const instrumentProgram = gmProgramOf(c.instrument_program);
   let renderedProgram = gmProgramOf(c.rendered_program);
+  let renderedPercussion = c.rendered_percussion === true;
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
@@ -443,10 +449,14 @@ const buildClip = async (
       bpm,
     );
     if (notes.length === 0) return null;
-    const program = instrumentProgram ?? trackProgram;
-    const rendered = await renderNotesToBlob(notes, { ...tasmoMidiRenderOptions(c), ...(program === undefined ? {} : { program }) });
+    const program = trackPercussion ? (instrumentProgram ?? trackProgram ?? GM_STANDARD_KIT) : instrumentProgram ?? trackProgram;
+    const rendered = await renderNotesToBlob(
+      trackPercussion ? notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : notes,
+      { ...tasmoMidiRenderOptions(c), ...(program === undefined ? {} : { program }) },
+    );
     blob = rendered.blob;
     renderedProgram = program;
+    renderedPercussion = trackPercussion;
   } else {
     return null;
   }
@@ -498,6 +508,7 @@ const buildClip = async (
     // rendered them all again through whatever program was active.
     ...(sourceKind && instrumentProgram !== undefined ? { instrumentProgram } : {}),
     ...(sourceKind && renderedProgram !== undefined ? { renderedProgram } : {}),
+    ...(sourceKind && renderedPercussion ? { renderedPercussion: true } : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
     sourceMeterMap: rollMeter.sourceMeterMap,
@@ -1130,6 +1141,8 @@ export async function loadProjectIntoEditor(
       // A whole program 0-127 only: the file is hand-editable, and a program
       // outside the GM range names no instrument.
       ...(trackProgram !== undefined ? { instrumentProgram: trackProgram } : {}),
+      // A drum track plays its clips on the drum channel, the program its kit.
+      ...(t.is_percussion === true ? { isPercussion: true } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1147,7 +1160,7 @@ export async function loadProjectIntoEditor(
         continue;
       }
       try {
-        const clip = await buildClip(c, trackId, color, bpm, trackProgram);
+        const clip = await buildClip(c, trackId, color, bpm, trackProgram, t.is_percussion === true);
         if (clip) outClips.push(clip);
         else skipped += 1;
       } catch (e) {
@@ -1427,6 +1440,7 @@ export function captureEditorSession(): CapturedSession {
             ? {
                 instrument_program: gmProgramOf(c.instrumentProgram) ?? null,
                 rendered_program: gmProgramOf(c.renderedProgram) ?? null,
+                rendered_percussion: c.renderedPercussion === true,
               }
             : {}),
           // The tempo a roll clip's notes were written at, or the tempo an
@@ -1472,6 +1486,9 @@ export function captureEditorSession(): CapturedSession {
       // A program is written only as the whole number 0-127 the backend
       // accepts: one stray value would otherwise refuse the whole save.
       instrument_program: gmProgramOf(t.instrumentProgram) ?? null,
+      // A drum track, whose program above is its kit. Without it a reopened
+      // drum part played its kit's program as a melodic instrument.
+      is_percussion: t.isPercussion === true,
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

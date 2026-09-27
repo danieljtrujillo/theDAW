@@ -21,6 +21,7 @@
         "output_routing": null,
         "send_amounts": {},
         "instrument_program": null,
+        "is_percussion": false,
         "parent_track_id": null,
         "is_folder": true,
         "collapsed": true
@@ -88,6 +89,7 @@
             ],
             "instrument_program": 42,
             "rendered_program": 42,
+            "rendered_percussion": false,
             "source_bpm": 90,
             "bpm": null,
             "library_entry_id": null,
@@ -102,6 +104,7 @@
         "output_routing": null,
         "send_amounts": {},
         "instrument_program": 40,
+        "is_percussion": false,
         "parent_track_id": "f1",
         "is_folder": false,
         "collapsed": false
@@ -161,6 +164,7 @@
             ],
             "instrument_program": null,
             "rendered_program": null,
+            "rendered_percussion": false,
             "source_bpm": 120,
             "bpm": null,
             "library_entry_id": null,
@@ -219,6 +223,7 @@
             ],
             "instrument_program": null,
             "rendered_program": null,
+            "rendered_percussion": false,
             "source_bpm": null,
             "bpm": null,
             "library_entry_id": null,
@@ -233,6 +238,7 @@
         "output_routing": null,
         "send_amounts": {},
         "instrument_program": null,
+        "is_percussion": false,
         "parent_track_id": null,
         "is_folder": false,
         "collapsed": false
@@ -288,6 +294,76 @@
         "output_routing": null,
         "send_amounts": {},
         "instrument_program": null,
+        "is_percussion": false,
+        "parent_track_id": null,
+        "is_folder": false,
+        "collapsed": false
+      },
+      {
+        "id": "d1",
+        "name": "d1",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#fff",
+        "clips": [
+          {
+            "id": "kit",
+            "name": "kit",
+            "clip_type": "midi",
+            "track_id": "d1",
+            "start_time": 0,
+            "end_time": 1,
+            "audio_file": "audio/kit.wav",
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              }
+            ],
+            "midi_notes": [
+              {
+                "note": 36,
+                "step": 0,
+                "length": 1,
+                "velocity": 100,
+                "tick": 0,
+                "ticks": 240
+              }
+            ],
+            "instrument_program": null,
+            "rendered_program": 25,
+            "rendered_percussion": true,
+            "source_bpm": null,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": 25,
+        "is_percussion": true,
         "parent_track_id": null,
         "is_folder": false,
         "collapsed": false
@@ -306,6 +382,7 @@
     "looped.wav",
     "edited.wav",
     "tagged.wav",
-    "untagged.wav"
+    "untagged.wav",
+    "kit.wav"
   ]
 }

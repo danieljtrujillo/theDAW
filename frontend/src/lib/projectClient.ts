@@ -290,6 +290,8 @@ export interface TasmoClipInput {
    *  a payload built before they were written still validates. */
   instrument_program?: number | null;
   rendered_program?: number | null;
+  /** MIDI clips: whether the embedded audio was rendered on the drum channel. */
+  rendered_percussion?: boolean;
   source_bpm?: number | null;
   /** The tempo the audio plays at after a beat match or a stretch, and the
    *  library entry the clip came from. Optional for the same reason. */
@@ -317,6 +319,8 @@ export interface TasmoTrackInput {
   /** The GM program (0-127) this track's MIDI clips play through when a clip
    *  has none of its own. */
   instrument_program?: number | null;
+  /** A drum track: its MIDI clips play on the drum channel and the program is the kit. */
+  is_percussion?: boolean;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -397,6 +401,9 @@ export interface TasmoLoadedClip {
    *  files written before they were saved, and only as trustworthy as the file. */
   instrument_program?: number | null;
   rendered_program?: number | null;
+  /** Whether the clip's audio was rendered on the drum channel; absent in files
+   *  written before it was saved. */
+  rendered_percussion?: boolean;
   source_bpm?: number | null;
   /** An audio clip's tempo after a beat match or a stretch, and the library
    *  entry it came from; null or absent in files written before they were
@@ -453,6 +460,8 @@ export interface TasmoLoadedTrack {
   color?: string | null;
   /** The track's GM program; null or absent in files written before it was saved. */
   instrument_program?: number | null;
+  /** A drum track; absent in files written before it was saved, which load melodic. */
+  is_percussion?: boolean;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in
