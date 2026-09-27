@@ -75,6 +75,7 @@ import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { renderedWindowFields } from '../../lib/clipRenderWindow';
 import { rerenderStaleMidiClip } from '../../lib/clipRerender';
 import { parseMidi } from '../../utils/midi';
+import { EditorBpmField } from './EditorBpmField';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
 import {
   addToTrackGroupLabel,
@@ -6176,19 +6177,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             {/* BPM lives next to the snap picker because the grid divisions are
                 defined in terms of it — a bar/triplet grid is meaningless without
                 a tempo the user can actually set. */}
-            <label htmlFor="editor-bpm" className="text-[9px] font-mono uppercase text-zinc-500">bpm</label>
-            <input
-              id="editor-bpm"
-              name="editor-bpm"
-              type="number"
-              min={40}
-              max={240}
-              step={1}
-              value={Math.round(projectBpm)}
-              onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) setBpm(v); }}
-              className="w-10 bg-transparent border-none outline-none text-[9px] font-mono text-zinc-100 tabular-nums"
-              title="Project tempo — defines the snap grid (40-240)"
-            />
+            <EditorBpmField bpm={projectBpm} onChange={setBpm} />
             <button
               type="button"
               onClick={() => {
@@ -6247,7 +6236,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             >
               <ZoomOut className="w-3 h-3" />
             </button>
-            <span className="text-[9px] font-mono text-zinc-400 w-14 text-center">{zoom.toFixed(2)}px/s</span>
+            <span className="text-xs font-bold text-zinc-400 w-20 text-center tabular-nums">{zoom.toFixed(2)}px/s</span>
             <button
               type="button"
               onClick={() => zoomStepBy('in')}

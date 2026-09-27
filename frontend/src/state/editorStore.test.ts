@@ -546,6 +546,25 @@ const seed = () => {
   assert.deepEqual(useEditorStore.getState().timeSignature, { num: 3, den: 4 });
 }
 
+/* ── the project tempo spans the app's 20-300 BPM, fraction kept ─────────── */
+// A slow introduction saved at 24.25 BPM reopens at 24.25, and the toolbar's
+// BPM takes it. Up to cb4f3e20 EDIT clamped to 40-240, so the song reopened
+// at 40 while the roll and the beat clock played it at 24.25.
+{
+  useEditorStore.getState().loadProject({ tracks: [seedTrack('t1')], clips: [], bpm: 24.25 });
+  assert.equal(useEditorStore.getState().bpm, 24.25, 'a slow introduction reopens at its own tempo');
+  useEditorStore.getState().loadProject({ tracks: [seedTrack('t1')], clips: [], bpm: 288 });
+  assert.equal(useEditorStore.getState().bpm, 288);
+  useEditorStore.getState().setBpm(22.5);
+  assert.equal(useEditorStore.getState().bpm, 22.5);
+  useEditorStore.getState().setBpm(1);
+  assert.equal(useEditorStore.getState().bpm, 20, 'held to the 20 BPM floor');
+  useEditorStore.getState().setBpm(900);
+  assert.equal(useEditorStore.getState().bpm, 300, 'held to the 300 BPM ceiling');
+  useEditorStore.getState().setBpm(Number.NaN);
+  assert.equal(useEditorStore.getState().bpm, 300, 'a non-number changes nothing');
+}
+
 /* ── reorderTracks ───────────────────────────────────────────────────────── */
 {
   seed();

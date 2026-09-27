@@ -3,7 +3,7 @@ import { logError, logInfo, logWarn } from './logStore';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
-import type { TempoEvent } from '../lib/tempoMap';
+import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import {
   compDigest,
@@ -826,6 +826,7 @@ interface EditorStoreState {
   setPlayhead: (s: number) => void;
   setPlaying: (p: boolean) => void;
   setSnap: (s: SnapDivision) => void;
+  /** Set the project tempo, clamped to the app's 20-300 BPM with its fraction kept; non-finite is ignored. */
   setBpm: (b: number) => void;
   /** Set the project meter. A meter the editor cannot bar out is refused (no-op)
    *  rather than clamped — see {@link validTimeSignature}. */
@@ -1725,7 +1726,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       playheadSec: 0,
       scrollSec: 0,
       isPlaying: false,
-      bpm: bpm && Number.isFinite(bpm) ? Math.max(40, Math.min(240, bpm)) : get().bpm,
+      bpm: bpm && Number.isFinite(bpm) ? clampTempoBpm(bpm) : get().bpm,
       // Same rule as bpm: a project that carries a meter sets it, one that does
       // not leaves the session's alone rather than silently forcing 4/4.
       timeSignature: (timeSignature && validTimeSignature(timeSignature.num, timeSignature.den)) || get().timeSignature,
@@ -2491,7 +2492,11 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   setSnap: (s) => set({ snap: s }),
   // The tempo field is a continuous control (a spinner held down, a typed edit
   // one digit at a time), so its writes share one key and fold into one step.
-  setBpm: (b) => { coalesceAs('bpm'); set({ bpm: Math.max(40, Math.min(240, b)) }); },
+  setBpm: (b) => {
+    if (!Number.isFinite(b)) return;
+    coalesceAs('bpm');
+    set({ bpm: clampTempoBpm(b) });
+  },
   setTimeSignature: (num, den) => {
     const next = validTimeSignature(num, den);
     // A refused meter and a meter that is already set are both non-edits, and a

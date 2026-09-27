@@ -67,4 +67,16 @@ opened.forEach((n, i) => {
   assert.equal(big.totalSteps, Math.ceil(end / 240), 'the grid runs to the 16th after the last note ends');
 }
 
+// A slow introduction at 30 BPM: the triplet sits a third of a beat apart at
+// 30, the tempo EDIT now keeps. Up to cb4f3e20 the import floored the tempo at
+// 40, so each note landed a third further along the grid than it plays.
+{
+  const slowBeat = 60 / 30;
+  const slow = pianoNotesFromRenderNotes(
+    [0, 1, 2].map((i) => ({ midi: 60 + i, velocity: 100, startSec: (i * slowBeat) / 3, durationSec: slowBeat / 3 })),
+    30,
+  );
+  assert.deepEqual(slow.rollNotes.map((n) => [n.tick, n.ticks]), [[0, 320], [320, 320], [640, 320]], 'a triplet at 30 BPM');
+}
+
 console.log('dawProjectToEditor tests passed');

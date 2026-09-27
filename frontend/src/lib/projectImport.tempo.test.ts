@@ -137,6 +137,18 @@ async function main(): Promise<void> {
   roll().loadFromClip(...clipRollLoad(plain));
   assert.equal(shape(roll().tempoMap), '0:50', 'the roll opens at the clip\'s one tempo');
 
+  // ── The project tempo of a slow introduction survives a save and open ─────
+  // EDIT's BPM at 24.25 goes into the file as the project tempo and comes back
+  // at 24.25. Up to cb4f3e20 EDIT held its tempo to 40-240, so it reopened at 40.
+  ed().loadProject({ tracks: [], clips: [] });
+  await openWithFiles(project, files);
+  ed().setBpm(24.25);
+  const slow = await saveThroughTheWire();
+  assert.equal(slow.project.tempo, 24.25, 'the file holds the project tempo with its fraction');
+  ed().loadProject({ tracks: [], clips: [], bpm: 120 });
+  await openWithFiles(slow.project, slow.files);
+  assert.equal(ed().bpm, 24.25, 'and the song reopens at it');
+
   // ── The file shape, both ways, and what a damaged one does ────────────────
   assert.deepEqual(clipMeterToTasmo({ sourceTempoMap: [{ beat: 0, bpm: 90 }] }), {}, 'a clip at one tempo writes no map');
   const read = tasmoMeterToClip({

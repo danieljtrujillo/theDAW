@@ -6,6 +6,7 @@ import { logError, logInfo } from '../state/logStore';
 import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
 import type { PianoNote } from '../state/pianoRollStore';
 import { takeToRoll } from './takeNotes';
+import { clampTempoBpm } from './tempoMap';
 import { validTimeSignature } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
 
@@ -22,9 +23,13 @@ const clipDuration = (clip: DawClip): number =>
 const isArrangementClip = (clip: DawClip): boolean =>
   clip.scene_index == null && clip.slot_index == null && (clip.start_time > 0 || clip.end_time > 0);
 
+/** The project's tempo as EDIT holds it (20-300 BPM, 120 when the file has
+ *  none), so every note and clip lands where EDIT's grid and clock put it. */
+const dawBpm = (tempo: number | undefined): number => clampTempoBpm(tempo || 120);
+
 const sceneStartSec = (clip: DawClip, project: DawProject): number => {
   const sceneIndex = clip.scene_index ?? clip.slot_index ?? 0;
-  const beatSec = 60 / Math.max(40, project.tempo || 120);
+  const beatSec = 60 / dawBpm(project.tempo);
   return sceneIndex * 4 * beatSec;
 };
 
@@ -61,7 +66,7 @@ const notesFromDawClip = (clip: DawClip): RenderNote[] => {
 export const pianoNotesFromRenderNotes = (notes: RenderNote[], bpm: number): { rollNotes: PianoNote[]; totalSteps: number } => {
   const { rollNotes, totalSteps } = takeToRoll(
     notes.map((n) => ({ note: n.midi, velocity: n.velocity, startSec: n.startSec, endSec: n.startSec + n.durationSec })),
-    { bpm: Math.max(40, bpm || 120), idPrefix: 'als-note' },
+    { bpm: dawBpm(bpm), idPrefix: 'als-note' },
   );
   return { rollNotes, totalSteps: Math.max(16, totalSteps) };
 };
@@ -125,7 +130,7 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   const { rollNotes, totalSteps } = pianoNotesFromRenderNotes(notes, project.tempo);
   // The grid covers the whole window too, so a later re-render (an instrument
   // change in EDIT) keeps the rests after the last note.
-  const stepSec = 60 / Math.max(40, project.tempo || 120) / 4;
+  const stepSec = 60 / dawBpm(project.tempo) / 4;
   return {
     blob: rendered.blob,
     mimeType: 'audio/wav',
@@ -139,7 +144,7 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
 
 export async function importDawProjectToEditor(project: DawProject): Promise<number> {
   const editor = useEditorStore.getState();
-  editor.setBpm(project.tempo);
+  editor.setBpm(dawBpm(project.tempo));
   // The source DAW's meter comes across with its tempo. This is a merge into
   // the open session, not a document load, so an unreported or unusable pair
   // leaves the session's meter alone instead of forcing 4/4.
@@ -194,7 +199,7 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
           color: trackColor,
           sourceKind: loaded.sourceKind,
           sourcePianoRoll: loaded.sourcePianoRoll,
-          sourceBpm: loaded.sourceKind === 'piano-roll' ? project.tempo : undefined,
+          sourceBpm: loaded.sourceKind === 'piano-roll' ? dawBpm(project.tempo) : undefined,
           sourceTotalSteps: loaded.sourceTotalSteps,
         });
         useEditorStore.getState().cachePeaks(clipId, peaks);
