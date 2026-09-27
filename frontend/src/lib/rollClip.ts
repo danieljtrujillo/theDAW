@@ -21,7 +21,7 @@ import { barAt, normalizeMeterMap, roundUpToBar, unrollLanes, type PolyLane } fr
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
 import type { MidiFileData } from './midi';
 import { midiFileToRoll } from './rollMidi';
-import { copyTempoMap, hasTempoChanges, type StepClock } from './rollTempo';
+import { copyTempoMap, hasTempoChanges, playedTempoMap, type StepClock } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 
 /** The roll state a bounce reads. `tempoMap` left out is one tempo at `bpm`. */
@@ -172,8 +172,11 @@ export function clipRollLoad(clip: RollClipInput): RollLoadArgs {
       ? clip.sourceTotalSteps
       : roundUpToBar(meterMap, Math.max(1, clip.sourceTotalSteps ?? noteEnd), pickupSteps);
   // A clip with no tempo map (one tempo, or bounced before maps existed) opens at its one tempo.
-  const tempoMap = hasTempoChanges(clip.sourceTempoMap) ? copyTempoMap(clip.sourceTempoMap as TempoEvent[]) : undefined;
-  return [clip.id, notes, clip.sourceBpm ?? 120, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? []), tempoMap];
+  // A mapped clip opens at the map EDIT plays: scaled to its sourceBpm, which a
+  // retag or a stretch rewrites without touching the map.
+  const bpm = clip.sourceBpm ?? 120;
+  const tempoMap = hasTempoChanges(clip.sourceTempoMap) ? copyTempoMap(playedTempoMap(bpm, clip.sourceTempoMap)) : undefined;
+  return [clip.id, notes, bpm, totalSteps, { meterMap, pickupSteps, lanes }, sanitizeBends(clip.sourceBends ?? []), tempoMap];
 }
 
 /**

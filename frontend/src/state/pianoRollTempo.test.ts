@@ -196,6 +196,21 @@ async function main(): Promise<void> {
   // Twice as fast: the whole map scales, so every note lands at half its second.
   opsRenders[1].notes.forEach((r, i) => near(r.startSec, opsRenders[0].notes[i].startSec / 2, 1e-9, `stretched note ${i}`));
 
+  // ── A stretched or retagged clip opens at the tempo EDIT plays ──────────
+  // The assistant's stretch rewrites sourceBpm (60 -> 120) and keeps the map;
+  // the roll must open at 120 with every change scaled, never at the map's 60.
+  ed().updateClip(done.clipId, { sourceBpm: 120 });
+  const stretched = ed().clips.find((c) => c.id === done.clipId)!;
+  const plays = midiClipNoteTimes({ ...stretched, startSec: 0, durationSec: 60 }, 120, 0);
+  st().loadFromClip(...clipRollLoad(stretched));
+  assert.equal(st().bpm, 120, 'the roll opens at the clip\'s sourceBpm');
+  assert.equal(shape(st().tempoMap), '0:120 8:264 12:264r 16:132', 'with every change scaled with it');
+  const opened = stepClock(st().bpm, st().tempoMap);
+  stretched.sourcePianoRoll!.forEach((n, i) => near(opened.at(n.step), plays[i].onSec, 1e-9, `reopened note ${i} plays where EDIT plays it`));
+  near(opened.at(32), 4, 1e-9, 'step 32 at 4 s, as EDIT plays it');
+  // A SAVE back to the clip writes the stretched tempo, so the stretch survives.
+  assert.equal(clipRollLoad(stretched)[2], 120);
+
   console.log('pianoRollTempo: ok');
 }
 
