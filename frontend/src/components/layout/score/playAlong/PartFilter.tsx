@@ -52,7 +52,7 @@ export const PartFilter: React.FC<PartFilterProps> = ({ artifactId, parts, onCha
   if (parts.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-mono text-zinc-300" aria-label="Visible parts">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-bold text-zinc-300" aria-label="Visible parts">
       <span className="text-zinc-500 select-none">PARTS</span>
       {parts.map((part, i) => {
         const id = `score-part-${slug}-${i}`;

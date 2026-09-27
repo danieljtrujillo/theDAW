@@ -54,12 +54,12 @@ export const BeatSaberPackView: React.FC<BeatSaberPackViewProps> = ({ artifact, 
     })`;
 
   return (
-    <div className="h-full overflow-auto grid place-items-center p-4 text-[10px] font-mono text-zinc-300">
+    <div className="h-full overflow-auto grid place-items-center p-4 text-xs font-bold text-zinc-300">
       <div className="w-full max-w-md rounded-lg border border-white/10 bg-black/40 p-4 space-y-3">
         <header className="flex items-center gap-2">
           <Gamepad2 className="w-4 h-4 text-rose-300" aria-hidden="true" />
           <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-widest text-rose-200">Beat Saber pack</div>
+            <div className="text-xs font-black uppercase tracking-widest text-rose-200">Beat Saber pack</div>
             <div className="text-zinc-500 truncate" title={source?.id ?? artifact.source_ref ?? ''}>
               {source ? `from ${describeArtifact(source)}` : 'source sheet not in this list'}
             </div>
@@ -93,7 +93,7 @@ export const BeatSaberPackView: React.FC<BeatSaberPackViewProps> = ({ artifact, 
         <table className="w-full text-left border-t border-white/10">
           <caption className="sr-only">Notes per difficulty</caption>
           <thead>
-            <tr className="text-[8px] uppercase tracking-widest text-zinc-500">
+            <tr className="text-xs uppercase tracking-widest text-zinc-500">
               <th scope="col" className="py-1 font-normal">Difficulty</th>
               <th scope="col" className="py-1 font-normal text-right">Notes</th>
             </tr>
@@ -123,7 +123,7 @@ export const BeatSaberPackView: React.FC<BeatSaberPackViewProps> = ({ artifact, 
 
         <div className="flex flex-wrap gap-1.5">
           <a
-            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1"
+            className="btn-ghost text-xs py-1 px-2 flex items-center gap-1"
             href={notationArtifactUrl(artifact.id)}
             download
             onClick={(e) => {
@@ -138,7 +138,7 @@ export const BeatSaberPackView: React.FC<BeatSaberPackViewProps> = ({ artifact, 
             type="button"
             onClick={openHighway}
             disabled={!sourceCanHighway}
-            className="btn-ghost text-[9px] py-1 px-2 flex items-center gap-1 disabled:opacity-40"
+            className="btn-ghost text-xs py-1 px-2 flex items-center gap-1 disabled:opacity-40"
             title={sourceCanHighway
               ? 'Show these notes as Beat Saber blocks in the browser highway'
               : 'The sheet this pack was mapped from is not in the artifact list'}

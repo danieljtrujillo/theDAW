@@ -84,7 +84,7 @@ export const ModeSwitch: React.FC<ModeSwitchProps> = ({ allowed, value, onChange
               title={isAllowed ? MODE_TITLES[mode] : DISABLED_TITLES[mode]}
               onClick={() => { if (isAllowed) onChange(mode); }}
               onKeyDown={(e) => onKeyDown(e, mode)}
-              className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+              className={`px-1.5 py-0.5 rounded font-display text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
                 checked
                   ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-500/40'
                   : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
@@ -95,7 +95,7 @@ export const ModeSwitch: React.FC<ModeSwitchProps> = ({ allowed, value, onChange
           );
         })}
       </div>
-      {hint && <span className="text-[8px] font-mono text-zinc-500 truncate">{hint}</span>}
+      {hint && <span className="text-xs font-bold text-zinc-400 truncate">{hint}</span>}
     </div>
   );
 };

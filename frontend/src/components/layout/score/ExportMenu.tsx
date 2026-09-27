@@ -70,9 +70,9 @@ export interface ExportMenuProps {
 }
 
 const ITEM_CLS =
-  'w-full flex items-center gap-1 px-1.5 py-1 rounded text-left text-[9px] text-zinc-300 hover:bg-white/10 hover:text-zinc-100 transition-colors outline-none focus-visible:bg-white/10 focus-visible:text-zinc-100 focus-visible:ring-1 focus-visible:ring-purple-400/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent';
+  'w-full flex items-center gap-1 px-1.5 py-1 rounded text-left text-xs text-zinc-300 hover:bg-white/10 hover:text-zinc-100 transition-colors outline-none focus-visible:bg-white/10 focus-visible:text-zinc-100 focus-visible:ring-1 focus-visible:ring-purple-400/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent';
 
-const HEADING_CLS = 'text-[8px] font-mono uppercase tracking-widest text-zinc-600 px-1.5 pb-0.5';
+const HEADING_CLS = 'text-xs font-bold uppercase tracking-widest text-zinc-600 px-1.5 pb-0.5';
 
 /** A focusable entry that is not disabled; disabled buttons and
  *  aria-disabled spans are skipped by the arrow keys. */
@@ -277,7 +277,7 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
         id={EXPORT_TRIGGER_ID}
         data-tour="score-export"
         ref={triggerRef}
-        className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
+        className="btn-ghost text-xs py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
         aria-label="Export"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
@@ -312,7 +312,7 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
           role="menu"
           aria-labelledby={EXPORT_TRIGGER_ID}
           onKeyDown={onMenuKeyDown}
-          className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] grid grid-cols-[auto_1fr] gap-1 font-mono text-zinc-300"
+          className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-white/10 bg-[#0a080f] p-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.75)] grid grid-cols-[auto_1fr] gap-1 font-bold text-zinc-300"
         >
           <div role="group" aria-label="Part" className="flex flex-col gap-0.5 w-28 border-r border-white/10 pr-1">
             <span aria-hidden="true" className={HEADING_CLS}>Part</span>
@@ -340,7 +340,7 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                 >
                   <span className="flex-1 min-w-0 truncate">{part.label}</span>
                   {part.isPercussion && (
-                    <span className="shrink-0 text-[8px] text-zinc-600" aria-hidden="true">perc</span>
+                    <span className="shrink-0 text-xs text-zinc-600" aria-hidden="true">perc</span>
                   )}
                 </button>
               );
@@ -348,7 +348,7 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
             {partsLoading && (
               // Not a menu item: no ref, so the arrow keys never land here;
               // the sr-only role="status" above carries the announcement.
-              <span aria-hidden="true" className="text-[8px] text-zinc-500 px-1.5 py-1">Reading parts…</span>
+              <span aria-hidden="true" className="text-xs text-zinc-500 px-1.5 py-1">Reading parts…</span>
             )}
           </div>
 

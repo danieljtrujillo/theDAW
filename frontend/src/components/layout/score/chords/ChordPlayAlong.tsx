@@ -263,11 +263,11 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#0a080f] text-zinc-300">
       {/* Header: source badge, instrument / tuning / capo, rebuild. */}
-      <div className="h-8 shrink-0 border-b border-white/5 bg-black/30 flex items-center gap-2 px-2 text-[9px] font-mono">
+      <div className="h-8 shrink-0 border-b border-white/5 bg-black/30 flex items-center gap-2 px-2 text-xs font-bold">
         <Music2 className="w-3 h-3 text-emerald-300 shrink-0" aria-hidden="true" />
-        <span className="text-[8px] font-black uppercase tracking-widest text-emerald-200">Chords</span>
+        <span className="text-xs font-black uppercase tracking-widest text-emerald-200">Chords</span>
         {sourceBadge && (
-          <span className={`px-1.5 py-0.5 rounded border text-[8px] ${sourceBadge.className}`} title="How this chord track was derived">
+          <span className={`px-1.5 py-0.5 rounded border text-xs ${sourceBadge.className}`} title="How this chord track was derived">
             {sourceBadge.text}
           </span>
         )}
@@ -276,7 +276,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
         <select
           id="score-chord-instrument"
           name="score-chord-instrument"
-          className="form-select text-[8px] px-1 py-0.5"
+          className="form-select text-xs px-1 py-0.5"
           value={chordInstrument}
           onChange={(e) => setChordInstrument(e.target.value as ChordInstrument)}
         >
@@ -288,7 +288,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
         <select
           id="score-chord-tuning"
           name="score-chord-tuning"
-          className="form-select text-[8px] px-1 py-0.5"
+          className="form-select text-xs px-1 py-0.5"
           value={tuningId}
           onChange={(e) => setChordTuning(e.target.value)}
           disabled={tuningOptions.length === 0}
@@ -307,13 +307,13 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
           step={1}
           value={capo}
           onChange={(e) => setCapo(Math.min(CAPO_MAX, Math.max(0, Number(e.target.value) || 0)))}
-          className="w-10 form-select text-[8px] px-1 py-0.5 tabular-nums"
+          className="w-14 form-select text-xs px-1 py-0.5 tabular-nums"
         />
         <span className="flex-1" />
         {entry && chordArtifact && (
           <button
             type="button"
-            className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
+            className="btn-ghost text-xs py-1 px-1.5 flex items-center gap-1 disabled:opacity-40"
             onClick={() => void buildChords('chroma')}
             disabled={busy !== null}
             title="Estimate the chords again from the audio (chroma + Viterbi), replacing this chord track"
@@ -326,12 +326,12 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
 
       {/* Body. */}
       {!entry ? (
-        <div className="flex-1 min-h-0 flex items-center justify-center text-[9px] font-mono text-zinc-600 p-3">
+        <div className="flex-1 min-h-0 flex items-center justify-center text-xs font-bold text-zinc-600 p-3">
           Select a track in the library to read its chords.
         </div>
       ) : !chordArtifact ? (
         <div className="flex-1 min-h-0 flex items-center justify-center p-3">
-          <div className="max-w-sm text-[9px] font-mono text-zinc-500 leading-relaxed p-3 border border-dashed border-white/10 rounded space-y-2">
+          <div className="max-w-sm text-xs font-bold text-zinc-500 leading-relaxed p-3 border border-dashed border-white/10 rounded space-y-2">
             <div className="text-zinc-300">No chord track yet.</div>
             <div>
               MAKE CHORDS reads the lead sheet&apos;s harmony when one exists, otherwise it estimates chords from the audio.
@@ -339,7 +339,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
                 type="button"
-                className="btn-ghost text-[8px] py-1 px-2 flex items-center gap-1 disabled:opacity-40"
+                className="btn-ghost text-xs py-1 px-2 flex items-center gap-1 disabled:opacity-40"
                 onClick={() => void buildChords('auto')}
                 disabled={busy !== null}
                 title="Build the chord track for this entry"
@@ -350,7 +350,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
               {!hasLeadSheet && (
                 <button
                   type="button"
-                  className="btn-ghost text-[8px] py-1 px-2 flex items-center gap-1 disabled:opacity-40"
+                  className="btn-ghost text-xs py-1 px-2 flex items-center gap-1 disabled:opacity-40"
                   onClick={() => void buildLeadSheet()}
                   disabled={busy !== null || !newestMidi}
                   title={newestMidi ? 'Arrange a lead sheet from the newest MIDI so the chords come from written harmony' : 'Needs a MIDI artifact (Convert to MIDI first)'}
@@ -363,17 +363,17 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
           </div>
         </div>
       ) : loading || (!track && !loadError) ? (
-        <div className="flex-1 min-h-0 flex items-center justify-center text-[9px] font-mono text-zinc-500 gap-2">
+        <div className="flex-1 min-h-0 flex items-center justify-center text-xs font-bold text-zinc-500 gap-2">
           <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
           Loading chord track…
         </div>
       ) : loadError || !track ? (
         <div className="flex-1 min-h-0 flex items-center justify-center p-3">
-          <div className="max-w-sm text-[9px] font-mono text-rose-200/90 leading-relaxed p-3 border border-dashed border-rose-500/30 rounded space-y-2">
+          <div className="max-w-sm text-xs font-bold text-rose-200/90 leading-relaxed p-3 border border-dashed border-rose-500/30 rounded space-y-2">
             <div>Could not load the chord track: {loadError ?? 'unknown error'}</div>
             <button
               type="button"
-              className="btn-ghost text-[8px] py-1 px-2 disabled:opacity-40"
+              className="btn-ghost text-xs py-1 px-2 disabled:opacity-40"
               onClick={() => void buildChords('auto')}
               disabled={busy !== null}
             >
@@ -385,7 +385,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
         <div className="flex-1 min-h-0 min-w-0 flex">
           {/* Diagram rail. */}
           <div className="w-44 shrink-0 border-r border-white/5 bg-black/20 flex flex-col items-center gap-2 p-2 overflow-y-auto">
-            <div className="text-[8px] font-black uppercase tracking-widest text-zinc-500 self-start">Now</div>
+            <div className="text-xs font-black uppercase tracking-widest text-zinc-500 self-start">Now</div>
             {currentSpan ? (
               <>
                 <div className="text-base font-black tracking-wide text-emerald-100 leading-none" aria-live="off">
@@ -394,11 +394,11 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
                 {currentShape ? (
                   <ChordDiagram shape={currentShape} strings={tuningMidi.length} label={currentSpan.symbol} size="lg" />
                 ) : (
-                  <div className="h-40 flex items-center text-[8px] font-mono text-zinc-600 text-center px-2">
+                  <div className="h-40 flex items-center text-xs font-bold text-zinc-600 text-center px-2">
                     {currentSpan.pitchClasses.length === 0 ? 'no chord' : 'no playable shape'}
                   </div>
                 )}
-                <div className="flex items-center gap-1 text-[8px] font-mono text-zinc-400">
+                <div className="flex items-center gap-1 text-xs font-bold text-zinc-400">
                   <button
                     type="button"
                     className="p-1 rounded hover:bg-white/10 disabled:opacity-30"
@@ -426,21 +426,21 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
                 </div>
               </>
             ) : (
-              <div className="text-[8px] font-mono text-zinc-600">No chords in this track.</div>
+              <div className="text-xs font-bold text-zinc-600">No chords in this track.</div>
             )}
             {upcoming.length > 0 && (
               <>
-                <div className="text-[8px] font-black uppercase tracking-widest text-zinc-500 self-start pt-1">Next</div>
+                <div className="text-xs font-black uppercase tracking-widest text-zinc-500 self-start pt-1">Next</div>
                 <div className="flex items-start gap-2">
                   {upcoming.map((span, i) => {
                     const shape = shapesFor(span)[0];
                     return (
                       <div key={`${span.id}-${i}`} className="flex flex-col items-center gap-0.5">
-                        <div className="text-[10px] font-bold text-zinc-200 leading-none">{span.symbol}</div>
+                        <div className="text-xs font-bold text-zinc-200 leading-none">{span.symbol}</div>
                         {shape ? (
                           <ChordDiagram shape={shape} strings={tuningMidi.length} label={span.symbol} size="sm" />
                         ) : (
-                          <div className="w-16 h-20 flex items-center justify-center text-[8px] font-mono text-zinc-600">—</div>
+                          <div className="w-16 h-20 flex items-center justify-center text-xs font-bold text-zinc-600">—</div>
                         )}
                       </div>
                     );

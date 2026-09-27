@@ -216,7 +216,7 @@ export const TabStrip: React.FC<TabStripProps> = ({ artifact, entry }) => {
           role="region"
           aria-label="Tab strip"
         >
-          {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
+          {status && <div className="p-4 text-xs font-bold text-zinc-600">{status}</div>}
           {/* A tab shorter than the pane sits vertically centred; a taller one
               starts at the top and scrolls (safe centring). The left pad is
               the run-up bar 1 needs to sit under the now-position. */}
