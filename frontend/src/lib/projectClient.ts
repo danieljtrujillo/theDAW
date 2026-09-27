@@ -6,7 +6,7 @@ import type { SwayBinding, SwayUnattached } from './swayImportResolve';
 import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
-import { normalizeMeterMap, roundUpToBar } from './meterMap';
+import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type PolyLane } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
 import { playedRollNotes } from './rollClip';
@@ -19,11 +19,18 @@ export interface TasmoMeterSegment {
   meter: { num: number; den: number; groups: number[] };
 }
 
-/** A polymeter lane; `cycle_steps` null means the lane spans the whole clip. */
+/**
+ * A polymeter lane; `cycle_steps` null means the lane spans the whole clip.
+ * `meter_map` and `tuplet` only when the lane keeps a time of its own (its
+ * meter from its bar 1, and n of its notes in the time of m of the roll's);
+ * a file written before lanes had them loads the lane in the roll's time.
+ */
 export interface TasmoPolyLane {
   id: number;
   name: string;
   cycle_steps: number | null;
+  meter_map?: TasmoMeterSegment[];
+  tuplet?: { n: number; m: number };
 }
 
 /** A note's expression as the file carries it: the roll's `NoteExpression`, keys in the file's snake_case. */
@@ -584,7 +591,19 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
     ? { meter_map: c.sourceMeterMap.map((s) => ({ bar: s.bar, meter: { num: s.meter.num, den: s.meter.den, groups: [...s.meter.groups] } })) }
     : {}),
   ...(c.sourcePickupSteps !== undefined ? { pickup_steps: c.sourcePickupSteps } : {}),
-  ...(c.sourceLanes ? { lanes: c.sourceLanes.map((l) => ({ id: l.id, name: l.name, cycle_steps: l.cycleSteps })) } : {}),
+  ...(c.sourceLanes
+    ? {
+        lanes: c.sourceLanes.map((l) => ({
+          id: l.id,
+          name: l.name,
+          cycle_steps: l.cycleSteps,
+          ...(l.meterMap?.length
+            ? { meter_map: l.meterMap.map((s) => ({ bar: s.bar, meter: { num: s.meter.num, den: s.meter.den, groups: [...s.meter.groups] } })) }
+            : {}),
+          ...(l.tuplet ? { tuplet: { n: l.tuplet.n, m: l.tuplet.m } } : {}),
+        })),
+      }
+    : {}),
   ...(c.sourceBends?.length
     ? {
         roll_bends: c.sourceBends.map((b) => ({
@@ -673,7 +692,14 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
   if (Array.isArray(c.lanes) && c.lanes.length) {
     out.sourceLanes = c.lanes
       .filter((l) => l && Number.isInteger(l.id) && l.id >= 0)
-      .map((l) => ({ id: l.id, name: String(l.name ?? ''), cycleSteps: numberAtLeast(l.cycle_steps, 1) ?? null }));
+      .map((l) => {
+        const lane: PolyLane = { id: l.id, name: String(l.name ?? ''), cycleSteps: numberAtLeast(l.cycle_steps, 1) ?? null };
+        // A lane's own time: a malformed one is dropped (sanitizeLanes checks it again on load).
+        if (Array.isArray(l.meter_map) && l.meter_map.length) lane.meterMap = normalizeMeterMap(l.meter_map);
+        const tuplet = sanitizeTuplet(l.tuplet);
+        if (tuplet) lane.tuplet = tuplet;
+        return lane;
+      });
   }
   if (Array.isArray(c.roll_bends) && c.roll_bends.length) {
     // The file stores no point ids, so loaded points get `rb<lane>-<index>`.

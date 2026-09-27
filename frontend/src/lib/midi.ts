@@ -6,7 +6,9 @@
  * what the sequencer's drum-pattern export and the piano roll's note grid both
  * need. A signature's additive grouping (3+2+2) has no field in FF 58, so it
  * travels in a text event `theDAW:groups=3+2+2` at the signature's tick, which
- * only this parser reads back.
+ * only this parser reads back. A track may carry `theDAW:lane=<json>` at tick 0:
+ * the piano roll's polymeter lane it holds (lib/rollMidi), handed back as
+ * `laneMeta` for the roll to read.
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -51,6 +53,13 @@ export interface MidiTrack {
   bends?: MidiBend[];
   /** Bend ranges the track sets, sorted by tick. Parsed: absent when the track sets none. */
   bendRanges?: MidiBendRange[];
+  /**
+   * The text of the track's `theDAW:lane=` event (what follows the `=`),
+   * written at tick 0 before its notes. Parsed: absent when the track has
+   * none. A track that carries one is kept even with no notes, so an empty lane
+   * survives a round trip.
+   */
+  laneMeta?: string;
 }
 
 export interface MidiTempo {
@@ -160,6 +169,13 @@ export const pitchWheelMessage = (channel: number, value: number): number[] => {
  * that starts there starts bent. A track with neither writes the notes' bytes alone.
  */
 const trackEvents = (t: MidiTrack): RawEvent[] => {
+  const lane: RawEvent[] = t.laneMeta ? [{ tick: 0, bytes: textBytes(`${LANE_TEXT}${asciiJson(t.laneMeta)}`) }] : [];
+  const events = trackBody(t);
+  return lane.length ? [...lane, ...events] : events;
+};
+
+/** A track's notes, ranges and wheel messages (trackEvents less its lane text). */
+const trackBody = (t: MidiTrack): RawEvent[] => {
   const notes = notesToEvents(t.notes);
   const wheel: RankedEvent[] = [];
   for (const r of t.bendRanges ?? []) {
@@ -232,6 +248,11 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
 
 const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
+const LANE_TEXT = 'theDAW:lane=';
+
+/** Text as 7-bit ASCII: every character past it written as a JSON \u escape, which JSON.parse reads back. */
+const asciiJson = (text: string): string =>
+  text.replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 const tempoBytes = (bpm: number): number[] => {
   const microsPerQuarter = Math.min(0xffffff, Math.round(60_000_000 / Math.max(20, bpm)));
@@ -358,6 +379,8 @@ interface DecodedTrack {
   pickups: Array<{ tick: number; steps: number }>;
   bends: MidiBend[];
   ranges: MidiBendRange[];
+  /** The track's `theDAW:lane=` text, the last one when it has several. */
+  laneMeta: string | null;
 }
 
 const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
@@ -365,6 +388,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let runningStatus = 0;
   let tick = 0;
   let name = '';
+  let laneMeta: string | null = null;
   const tempos: MidiTempo[] = [];
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
@@ -409,6 +433,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         } else if (text.startsWith(PICKUP_TEXT)) {
           const steps = Number(text.slice(PICKUP_TEXT.length));
           if (Number.isFinite(steps) && steps >= 0) pickups.push({ tick, steps });
+        } else if (text.startsWith(LANE_TEXT)) {
+          laneMeta = text.slice(LANE_TEXT.length);
         }
       } else if (meta === 0x51 && data.length === 3) {
         const microsPerQuarter = (data[0] << 16) | (data[1] << 8) | data[2];
@@ -503,7 +529,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, bends, ranges };
+  return { name, notes: finished, tempos, signatures, groups, pickups, bends, ranges, laneMeta };
 };
 
 export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
@@ -536,13 +562,15 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     for (const e of t.signatures) signatures.push(e);
     for (const e of t.groups) groups.push(e);
     for (const e of t.pickups) pickups.push(e);
-    // A track that only bends is kept: its channel's wheel bends notes another track holds.
-    if (t.notes.length > 0 || t.bends.length > 0) {
+    // A track that only bends is kept: its channel's wheel bends notes another
+    // track holds. So is a lane's track with no notes, so the lane comes back.
+    if (t.notes.length > 0 || t.bends.length > 0 || t.laneMeta !== null) {
       tracks.push({
         name: t.name || `Track ${i}`,
         notes: t.notes,
         ...(t.bends.length ? { bends: t.bends } : {}),
         ...(t.ranges.length ? { bendRanges: t.ranges } : {}),
+        ...(t.laneMeta !== null ? { laneMeta: t.laneMeta } : {}),
       });
     }
   }

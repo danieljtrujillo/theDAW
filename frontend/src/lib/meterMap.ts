@@ -12,7 +12,11 @@
  *
  * A note's `lane` names a PolyLane. A lane with a `cycleSteps` loops its notes
  * at that length; unrollLanes writes the repeats out for playback, bounce and
- * export.
+ * export. A lane after A may keep its own time: a meter map of its own, and a
+ * tuplet ratio (3:2 plays three of its beats in the time of two of the roll's).
+ * Its notes stay where they sound, in the roll's steps; only the grid the roll
+ * draws and snaps to while the lane is active follows the lane's time
+ * (laneTimeOf, laneGridLines).
  *
  * Everything here is pure.
  */
@@ -20,7 +24,17 @@ import { DEFAULT_METER, groupStarts, type Meter } from './colony';
 import type { PianoNote } from '../state/pianoRollStore';
 
 export interface MeterSegment { bar: number; meter: Meter }
-export interface PolyLane { id: number; name: string; cycleSteps: number | null }
+/** A lane's tuplet ratio: `n` of the lane's notes in the time of `m` of the roll's. */
+export interface LaneTuplet { n: number; m: number }
+export interface PolyLane {
+  id: number;
+  name: string;
+  cycleSteps: number | null;
+  /** The lane's own time signatures by bar, its bar 1 on the roll's bar 1. Absent: the roll's meter map. */
+  meterMap?: MeterSegment[];
+  /** The lane's tuplet ratio. Absent: straight, one lane step to one roll step. */
+  tuplet?: LaneTuplet;
+}
 export interface BarSpan { bar: number; start: number; len: number; meter: Meter }
 /**
  * `pickupSteps` rides on theDAW's tick-0 signature: the roll's pickup, so a
@@ -423,6 +437,49 @@ export function unrollLanes<T extends LaneNote>(notes: readonly T[], lanes: read
     }
   }
   return out.sort((a, b) => a.step - b.step || a.note - b.note);
+}
+
+/** The largest tuplet number either side of a lane's ratio. */
+export const TUPLET_RATIO_MAX = 16;
+
+/** A lane's ratio with whole n and m in 1..TUPLET_RATIO_MAX, or undefined for none (n equal to m is straight). */
+export function sanitizeTuplet(t: Partial<LaneTuplet> | null | undefined): LaneTuplet | undefined {
+  if (!t) return undefined;
+  const n = Number(t.n);
+  const m = Number(t.m);
+  const ok = (v: number): boolean => Number.isInteger(v) && v >= 1 && v <= TUPLET_RATIO_MAX;
+  if (!ok(n) || !ok(m) || n === m) return undefined;
+  return { n, m };
+}
+
+/**
+ * A lane's own time, for drawing and snapping: its meter map (or the roll's),
+ * the steps before its bar 1 in its own steps, and how many roll steps one of
+ * its steps lasts (`scale`, m/n: 2/3 for 3:2). Its bar 1 sits on the roll's
+ * bar 1, so a pickup in the roll is a pickup in the lane. Null for lane A and
+ * for a lane with neither a meter nor a ratio of its own.
+ */
+export interface LaneTime { map: MeterSegment[]; pickup: number; scale: number }
+
+export function laneTimeOf(lane: PolyLane | null | undefined, rollMap: readonly MeterSegment[], rollPickup = 0): LaneTime | null {
+  if (!lane || lane.id === 0) return null;
+  const tuplet = sanitizeTuplet(lane.tuplet);
+  const own = lane.meterMap?.length ? normalizeMeterMap(lane.meterMap) : null;
+  if (!tuplet && !own) return null;
+  const scale = tuplet ? tuplet.m / tuplet.n : 1;
+  return { map: own ?? normalizeMeterMap(rollMap), pickup: Math.max(0, rollPickup) / scale, scale };
+}
+
+/** The lane's bars before the roll's `totalSteps`, in roll steps. */
+export function laneBars(lt: LaneTime, totalSteps: number): BarSpan[] {
+  return bars(lt.map, totalSteps / lt.scale, lt.pickup).map((b) => ({ ...b, start: b.start * lt.scale, len: b.len * lt.scale }));
+}
+
+/** gridLines in the lane's time, in roll steps: its bar lines, group starts and beats. */
+export function laneGridLines(lt: LaneTime, totalSteps: number): { bar: number[]; group: number[]; beat: number[] } {
+  const g = gridLines(lt.map, totalSteps / lt.scale, lt.pickup);
+  const scaled = (xs: number[]): number[] => xs.map((x) => x * lt.scale);
+  return { bar: scaled(g.bar), group: scaled(g.group), beat: scaled(g.beat) };
 }
 
 /** Steps until every looping lane starts together again (the least common multiple of their cycles). */

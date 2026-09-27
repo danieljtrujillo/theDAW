@@ -60,12 +60,12 @@ const MODES = [
 ];
 
 /** Legend = the one printed word, which names the range through its <label>;
- *  label = the full name, in the field's tooltip. */
-const SLIDERS: Array<{ k: keyof VirtuosoAmounts; legend: string; label: string }> = [
+ *  label = the full name, in the field's tooltip, with `more` after it when set. */
+const SLIDERS: Array<{ k: keyof VirtuosoAmounts; legend: string; label: string; more?: string }> = [
   { k: 'harmony', legend: 'Harmony', label: 'Harmony' },
   { k: 'ragtime', legend: 'Ragtime', label: 'Ragtime' },
   { k: 'runs', legend: 'Runs', label: 'Runs' },
-  { k: 'rhythm', legend: 'Poly', label: 'Polyrhythm' },
+  { k: 'rhythm', legend: 'Poly', label: 'Polyrhythm', more: "cross-accents, and real 3:2, 4:3 and 5:4 notes over a share of each bar's groups" },
   { k: 'humanize', legend: 'Humanize', label: 'Humanize' },
 ];
 
@@ -274,8 +274,8 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
         {/* A short row gives up width in order: the groove name first (96px to 48px,
             by the row's container width), then the five ranges (48px to 32px).
             1366x768 with a groove loaded lands at a 48px name and ranges of 40px. */}
-        {SLIDERS.map(({ k, legend, label }) => (
-          <div key={k} className={FIELD_SHRINK} title={`${label} amount`}>
+        {SLIDERS.map(({ k, legend, label, more }) => (
+          <div key={k} className={FIELD_SHRINK} title={`${label} amount${more ? `: ${more}` : ''}`}>
             <label htmlFor={`vt-${k}`} className={FIELD_LEGEND}>{legend}</label>
             <input
               id={`vt-${k}`}

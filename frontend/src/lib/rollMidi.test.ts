@@ -139,13 +139,17 @@ const ROLL = { notes: NOTES, lanes: LANES, totalSteps: TOTAL, bpm: 100, meterMap
 const canonical = (notes: readonly PianoNote[]) =>
   notes.map((n) => [n.step, n.note, n.length, n.velocity, n.lane ?? 0]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 
-// Export: each bent lane on its own channel with its range and wheel, the unbent lane on the next channel.
+// Export: one track per lane with its lane text, each bent lane on its own channel with its range and wheel, the
+// unbent lane on the next channel.
 const file = rollToMidiFile(ROLL);
 const bytes = encodeMidi(file);
 {
-  const notes = file.tracks[0].notes;
+  assert.deepEqual(file.tracks.map((t) => t.name), ['Lane A', 'Lane B', 'Lane C']);
+  assert.deepEqual(file.tracks.map((t) => JSON.parse(t.laneMeta ?? 'null')), LANES);
+  const notes = file.tracks.flatMap((t) => t.notes);
   assert.deepEqual([0, 1, 2].map((ch) => notes.filter((n) => n.channel === ch).length), [2, 8, 2]);
-  assert.deepEqual(file.tracks[0].bendRanges, [{ tick: 0, channel: 0, semitones: 2 }, { tick: 0, channel: 1, semitones: 12 }]);
+  assert.deepEqual(file.tracks.map((t) => t.notes.length), [2, 8, 2], 'each lane in its own track, lane B written out');
+  assert.deepEqual(file.tracks.flatMap((t) => t.bendRanges ?? []), [{ tick: 0, channel: 0, semitones: 2 }, { tick: 0, channel: 1, semitones: 12 }]);
   assert.ok(hasBytes(bytes, [0xb0, 6, 2]) && hasBytes(bytes, [0xb1, 6, 12]));
   // Lane A at full up on channel 0, lane B at full down on channel 1.
   assert.ok(hasBytes(bytes, [0xe0, 0x7f, 0x7f]) && hasBytes(bytes, [0xe1, 0x00, 0x00]));
@@ -157,13 +161,17 @@ const bytes = encodeMidi(file);
   assert.equal(back.bpm, 100);
   assert.deepEqual(back.meter.meterMap, normalizeMeterMap(MAP));
   assert.equal(back.meter.pickupSteps, 0);
-  // The file holds the notes as they sound, so lane B's repeats come back written out and its lane no longer loops.
-  assert.deepEqual(back.meter.lanes, [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: null }, { id: 2, name: 'C', cycleSteps: null }]);
-  assert.deepEqual(canonical(back.notes), canonical(unrollLanes(NOTES, LANES, TOTAL)));
+  // The lane texts bring every lane back, lane B still looping every 8 steps, and each lane's notes: the file holds
+  // lane B's repeats written out, and the import keeps its first cycle, so the roll plays what it played.
+  assert.deepEqual(back.meter.lanes, LANES);
+  assert.deepEqual(canonical(back.notes), canonical(NOTES));
+  assert.deepEqual(canonical(unrollLanes(back.notes, back.meter.lanes, TOTAL)), canonical(unrollLanes(NOTES, LANES, TOTAL)));
   assert.deepEqual(back.bends.map((b) => [b.lane, b.range]), [[0, 2], [1, 12]]);
   for (const original of BENDS) {
     const played = unrollBend(original.points, LANES[original.lane].cycleSteps, TOTAL);
-    const curve = back.bends.find((b) => b.lane === original.lane)?.points ?? [];
+    // Lane B's curve comes back as one cycle, which loops with the lane.
+    const own = back.bends.find((b) => b.lane === original.lane)?.points ?? [];
+    const curve = unrollBend(own, LANES[original.lane].cycleSteps, TOTAL);
     for (let s = 0; s <= TOTAL + 2; s += 1 / 16) {
       const want = bendValueAt(played, s);
       assert.ok(Math.abs(bendValueAt(curve, s) - want) <= 0.04, `lane ${original.lane} at step ${s}: ${bendValueAt(curve, s)} vs ${want}`);
@@ -189,8 +197,18 @@ const bytes = encodeMidi(file);
   }
 }
 
-// With no bend the export is the file the roll wrote before it had bends, and it imports into lane A alone.
+// A roll with lane A alone and no bend exports the file the roll wrote before it had bends or lanes; a file an older
+// build wrote for a roll with lanes (one track, the lanes written out, no lane texts) imports into lane A alone.
 {
+  const laneA = NOTES.filter((n) => n.lane === undefined);
+  const single = encodeMidi({
+    ppq: 480,
+    bpm: 100,
+    tempos: [{ tick: 0, bpm: 100 }],
+    timeSignatures: meterMapToMidiEvents(MAP, 480, 0),
+    tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(laneA, 480) }],
+  });
+  assert.equal(hex(encodeMidi(rollToMidiFile({ ...ROLL, notes: laneA, lanes: [LANES[0]], bends: [] }))), hex(single));
   const legacy = encodeMidi({
     ppq: 480,
     bpm: 100,
@@ -198,7 +216,6 @@ const bytes = encodeMidi(file);
     timeSignatures: meterMapToMidiEvents(MAP, 480, 0),
     tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(playedRollNotes(NOTES, LANES, TOTAL), 480) }],
   });
-  assert.equal(hex(encodeMidi(rollToMidiFile({ ...ROLL, bends: [] }))), hex(legacy));
   const back = midiFileToRoll(parseMidi(legacy));
   assert.deepEqual(back.bends, []);
   assert.deepEqual(back.meter.lanes, [{ id: 0, name: 'A', cycleSteps: null }]);
@@ -368,14 +385,14 @@ const bytes = encodeMidi(file);
     pickupSteps: 0,
     bends: [],
   };
-  const out = rollToMidiFile(roll, PPQ).tracks[0].notes;
+  const out = rollToMidiFile(roll, PPQ).tracks.find((t) => t.name === 'Lane B')?.notes ?? [];
   // 8 steps = 1920 ticks a pass, and the 5-tick offset off the grid rides along.
   assert.deepEqual(out.map((n) => n.tick), [605, 2525, 4445, 6365]);
   assert.deepEqual([...new Set(out.map((n) => n.durationTicks))], [60]);
   // The SHIPPED export (PianoRoll's .mid button) takes the default ppq, 480,
   // where an odd model tick has no exact home: it rounds by at most half a file
   // tick, which is one model tick. Nothing quantises to the grid.
-  const atDefault = rollToMidiFile(roll).tracks[0].notes[0].tick * (PPQ / ROLL_PPQ);
+  const atDefault = (rollToMidiFile(roll).tracks.find((t) => t.name === 'Lane B')?.notes[0].tick ?? Number.NaN) * (PPQ / ROLL_PPQ);
   assert.ok(Math.abs(atDefault - 605) <= 1, `default ppq put tick 605 at ${atDefault}`);
 }
 

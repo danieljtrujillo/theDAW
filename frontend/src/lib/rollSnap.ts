@@ -16,10 +16,18 @@
  * quintuplet 16th is 192 ticks and lands exactly; a septuplet cell is 960/7
  * and each line is rounded from its group start, never accumulated.
  *
+ * A lane with its own time (meterMap laneTimeOf: a meter of its own, a tuplet
+ * ratio) has its own grid, laneSnapGrid: the same lines in the lane's bars,
+ * scaled into the roll's ticks, so a 3:2 lane snaps to its own triplet beats.
+ *
+ * APPLY lands on the same grid (feelNoteTicks): a start moves toward the
+ * nearest line and a length toward a whole number of cells, so a quintuplet
+ * snap keeps quintuplets.
+ *
  * Everything here is pure: the roll's component calls it with pixels, and the
  * node tests replay the same calls.
  */
-import { accentLines, bars, pulseLines, stepsPerBar, type MeterSegment } from './meterMap';
+import { accentLines, bars, pulseLines, stepsPerBar, type LaneTime, type MeterSegment } from './meterMap';
 import { PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import type { PianoNote } from '../state/pianoRollStore';
 
@@ -75,6 +83,8 @@ export interface SnapGrid {
   lines: number[];
   /** The roll's end in ticks. */
   end: number;
+  /** Roll ticks per tick of the grid's own time: 1 for the roll, m/n for a lane with a tuplet ratio. */
+  scale?: number;
 }
 
 const toTick = (step: number): number => Math.round(step * TICKS_PER_STEP);
@@ -119,6 +129,23 @@ export function snapGrid(map: readonly MeterSegment[], pickupSteps: number, tota
   const lines: number[] = [];
   for (const t of kept) if (!lines.length || t !== lines[lines.length - 1]) lines.push(t);
   return { def, lines, end };
+}
+
+/**
+ * The grid of `snap` in a lane's own time (meterMap laneTimeOf) over a roll of
+ * `totalSteps` steps: snapGrid in the lane's bars, each line scaled into roll
+ * ticks and rounded from its own place, so a 3:2 lane's lines never drift. The
+ * roll's start and end stay lines.
+ */
+export function laneSnapGrid(lt: LaneTime, totalSteps: number, snap: RollSnapId): SnapGrid {
+  const inner = snapGrid(lt.map, lt.pickup, Math.max(0, totalSteps) / lt.scale, snap);
+  const end = toTick(Math.max(0, totalSteps));
+  const scaled = inner.lines.map((t) => Math.min(end, Math.round(t * lt.scale)));
+  scaled.push(0, end);
+  scaled.sort((a, b) => a - b);
+  const lines: number[] = [];
+  for (const t of scaled) if (!lines.length || t !== lines[lines.length - 1]) lines.push(t);
+  return { def: inner.def, lines, end, scale: lt.scale };
 }
 
 /** Index of the last line at or before `tick` (0 when `tick` is before the first). */
@@ -171,7 +198,8 @@ export function clickPlacement(g: SnapGrid, x: number, stepPx: number): { tick: 
   const tick = pxToTick(x, stepPx);
   if (!(tick >= 0) || tick >= g.end) return null;
   const cell = cellAt(g, tick);
-  return { tick: cell.start, ticks: Math.max(1, g.def.draw ?? cell.end - cell.start) };
+  const draw = g.def.draw === undefined ? undefined : Math.round(g.def.draw * (g.scale ?? 1));
+  return { tick: cell.start, ticks: Math.max(1, draw ?? cell.end - cell.start) };
 }
 
 /**
@@ -247,6 +275,29 @@ export function menuNudgeTick(g: SnapGrid, tick: number, dir: -1 | 1): number | 
   return next === null || next >= g.end ? null : next;
 }
 
+/* ── APPLY ────────────────────────────────────────────────────────────────── */
+
+/**
+ * APPLY's quantize on grid `g` at strength `q` (0-1): the start moves toward
+ * the nearest line, `q` of the way; the length moves toward a whole number of
+ * the grid's cells (at least one), `q` of the way, so a quintuplet 16th stays a
+ * quintuplet 16th on the quintuplet snap. On the GROUP snap, whose cells vary,
+ * the end moves toward the nearest line after the new start. At 0 nothing
+ * moves; lengths keep any size they had, a sub-cell one included.
+ */
+export function feelNoteTicks(g: SnapGrid, tick: number, ticks: number, q: number): { tick: number; ticks: number } {
+  const s = Math.max(0, Math.min(1, Number.isFinite(q) ? q : 0));
+  const start = Math.max(0, Math.round(tick + (nearestLine(g, tick) - tick) * s));
+  const cell = cellTicks(g.def) * (g.scale ?? 1);
+  let want: number;
+  if (cell > 0) want = Math.max(1, Math.round(ticks / cell)) * cell;
+  else {
+    const snappedEnd = nearestLine(g, start + ticks);
+    want = snappedEnd > start ? snappedEnd - start : (nextLine(g, start, 1) ?? g.end) - start;
+  }
+  return { tick: start, ticks: Math.max(1, Math.round(ticks + (want - ticks) * s)) };
+}
+
 /* ── TUPLET ───────────────────────────────────────────────────────────────── */
 
 export const TUPLET_N_MIN = 2;
@@ -309,7 +360,7 @@ export function tupletUpdates(notes: readonly PianoNote[], ids: ReadonlySet<stri
  * `minPx` at `stepPx`. GROUP draws only the pulses the tiers miss.
  */
 export function snapLineSteps(g: SnapGrid, stepPx: number, skip: ReadonlySet<number>, minPx: number): number[] {
-  const cell = cellTicks(g.def);
+  const cell = cellTicks(g.def) * (g.scale ?? 1);
   if (cell > 0 && (cell / TICKS_PER_STEP) * stepPx < minPx) return [];
   const key = (s: number): number => Math.round(s * 1e6) / 1e6;
   const skipped = new Set([...skip].map(key));

@@ -8,13 +8,15 @@
  *           bar (lib/rollSnap).
  *   TUPLET  respaces the selected notes N in the time of M straight notes of
  *           the snap's unit (5 in 4 16ths), from the first selected note, in
- *           one undo step.
+ *           one undo step. In a lane with a tuplet ratio of its own the unit
+ *           is the lane's (a 16th of a 3:2 lane is two thirds of the roll's).
  *
  * The snap is a roll setting, persisted with the store's other settings.
  */
 import React from 'react';
 import { ArrowLeftToLine, ArrowRightToLine, Divide, Send } from 'lucide-react';
 import { usePianoRollStore } from '../../state/pianoRollStore';
+import { laneTimeOf } from '../../lib/meterMap';
 import { logInfo, logWarn } from '../../state/logStore';
 import {
   ROLL_SNAPS,
@@ -48,6 +50,9 @@ export const RollSnapControls: React.FC = () => {
   const snap = usePianoRollStore((s) => s.snap);
   const setSnap = usePianoRollStore((s) => s.setSnap);
   const def = rollSnapDef(snap);
+  // The active lane's ratio scales TUPLET's unit (1 for a lane in the roll's time).
+  const laneScale = usePianoRollStore((s) => laneTimeOf(s.lanes.find((l) => l.id === s.activeLane), s.meterMap, s.pickupSteps)?.scale ?? 1);
+  const laneName = usePianoRollStore((s) => s.lanes.find((l) => l.id === s.activeLane)?.name ?? 'A');
   // The selection's onsets: TUPLET's default N, and whether it has anything to respace.
   // Counted from the two slices, so the playhead's writes never recount them.
   const notes = usePianoRollStore((s) => s.notes);
@@ -61,11 +66,11 @@ export const RollSnapControls: React.FC = () => {
   const [mSet, setM] = React.useState<number | null>(null);
   const n = nSet ?? clampInt(Math.max(onsetCount, 3), TUPLET_N_MIN, TUPLET_N_MAX);
   const m = mSet ?? defaultTupletM(n);
-  const units = unitWord(def.unit);
+  const units = laneScale === 1 ? unitWord(def.unit) : `${unitWord(def.unit)} of lane ${laneName}`;
 
   const apply = (): void => {
     const s = usePianoRollStore.getState();
-    const updates = tupletUpdates(s.notes, s.selectedIds, n, m, def.unit);
+    const updates = tupletUpdates(s.notes, s.selectedIds, n, m, def.unit * laneScale);
     if (updates.length === 0) {
       logWarn('piano-roll', 'Tuplet: select the notes to respace first');
       return;

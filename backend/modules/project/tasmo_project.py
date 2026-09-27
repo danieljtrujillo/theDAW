@@ -291,6 +291,10 @@ class Clip(BaseModel):
     # Piano-roll clips: the grid length in 16th-note steps, the time signatures
     # by bar ([{bar, meter: {num, den, groups}}]), the steps before bar 0 and
     # the polymeter lanes ([{id, name, cycle_steps}]) the clip was bounced with.
+    # A lane after A may also carry its own time: "meter_map" (the same shape
+    # as the clip's, from the lane's bar 1) and "tuplet" ({n, m}: n of its
+    # notes in the time of m of the roll's). Both are optional keys of the
+    # lane dict, so a lane written before them loads in the roll's time.
     # Defaulted, so .tasmo files written before the roll had a meter still
     # validate and load with all four as None.
     total_steps: float | None = None

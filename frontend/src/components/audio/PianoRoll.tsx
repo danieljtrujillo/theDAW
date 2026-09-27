@@ -17,6 +17,8 @@ import {
   barAt,
   bars as meterBars,
   gridLines,
+  laneGridLines,
+  laneTimeOf,
   meterEquals,
   normalizeMeterMap,
   roundUpToBar,
@@ -39,7 +41,7 @@ import {
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
 import { midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
-import { feelLength, playedRollNotes, quantizeRollClip } from '../../lib/rollClip';
+import { feelRollNotes, playedRollNotes } from '../../lib/rollClip';
 import {
   REANCHOR_STEPS,
   followLap,
@@ -59,6 +61,7 @@ import {
   TICKS_PER_STEP,
   clickPlacement,
   floorLine,
+  laneSnapGrid,
   lengthenTicks,
   menuNudgeTick,
   moveBlock,
@@ -653,7 +656,12 @@ const GROOVE_FILE_ACCEPT = '.mid,.midi,audio/midi';
  * Both amounts live in the roll's store, not in this key: they were component
  * state, so switching to the ARP face and back — or a reload — put them back to
  * 100 / 0 and silently threw away what had been dialled in. The store persists
- * them (localStorage). APPLY is unchanged: one `replaceAll`, one undo step.
+ * them (localStorage). APPLY is one `replaceAll`, one undo step.
+ *
+ * APPLY quantizes onto the roll's SNAP grid (lib/rollSnap), the grid a click
+ * lands on: starts toward its nearest line and lengths toward whole cells, so a
+ * quintuplet snap keeps quintuplets and a 7/8 3+2+2 grid restarts on each
+ * group. A note in a lane with its own time lands on the lane's grid.
  *
  * The feel is a groove template (`lib/grooveTemplate.ts`): lateness per slot of
  * the bar rather than one scalar on every odd 16th. The picker's first entry IS
@@ -676,6 +684,7 @@ export const PianoRollFeel: React.FC = () => {
   const setSwingPct = usePianoRollStore((s) => s.setSwingPct);
   const grooveId = usePianoRollStore((s) => s.grooveId);
   const setGrooveId = usePianoRollStore((s) => s.setGrooveId);
+  const snapLabel = usePianoRollStore((s) => rollSnapDef(s.snap).label);
   const [imported, setImported] = useState<GrooveTemplate | null>(null);
   const grooveFileRef = useRef<HTMLInputElement>(null);
   const builtins = useMemo(() => builtinGrooves(), []);
@@ -698,7 +707,7 @@ export const PianoRollFeel: React.FC = () => {
   };
 
   const applyTimingFeel = () => {
-    const { notes, replaceAll, meterMap, pickupSteps, totalSteps, lanes } = usePianoRollStore.getState();
+    const { notes, replaceAll, meterMap, pickupSteps, totalSteps, lanes, snap } = usePianoRollStore.getState();
     if (notes.length === 0) return;
     const q = Math.max(0, Math.min(1, quantizePct / 100));
     // An id that resolves to nothing — a stale one out of the persisted feel
@@ -711,33 +720,23 @@ export const PianoRollFeel: React.FC = () => {
         ? null
         : ((imported && imported.id === grooveId ? imported : builtins.find((g) => g.id === grooveId)) ?? null);
     const groove = picked ?? swingToGroove(swingPct);
-    // Quantize each note's start toward the nearest 16th at strength `q`
-    // (`rollClip.quantizeRollClip`, which is `clipNotes.quantizeNotes` — the
-    // arithmetic is not reimplemented here), then lay the groove over it
-    // (`grooveTemplate.applyGroove`, same as before). Lengths are handled
-    // separately (`rollClip.feelLength`): a note's DURATION moves toward the
-    // nearest whole step by QUANT, which is not what `quantizeEnds` computes
-    // (that snaps the note's END POSITION to the grid, a different quantity).
-    // At QUANT 0 a length stays as it was, a sub-step one included.
-    const { sourceRollNotes: quantizedSteps } = quantizeRollClip(
-      {
-        sourceRollNotes: notes,
-        sourcePianoRoll: [],
-        sourceLanes: lanes,
-        sourceMeterMap: meterMap,
-        sourcePickupSteps: pickupSteps,
-        sourceTotalSteps: totalSteps,
-      },
-      { grid: '1/16', strength: q, groove, grooveStrength: picked ? q : 1 },
+    // Each start moves toward the nearest line of the SNAP grid at strength
+    // `q` and each DURATION toward a whole number of its cells (at QUANT 0 a
+    // length stays as it was), then the groove lays over it, a group groove
+    // following each bar's groups (`rollClip.feelRollNotes`). A lane with its
+    // own time quantizes on its own grid.
+    const adjusted = feelRollNotes(
+      notes,
+      { meterMap, pickupSteps, lanes, totalSteps },
+      { snap, strength: q, groove, grooveStrength: picked ? q : 1 },
     );
-    const adjusted = quantizedSteps.map((note, i) => ({ ...note, length: feelLength(notes[i].length, q) }));
     replaceAll(adjusted);
-    logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% · groove ${groove.name}`);
+    logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% to ${rollSnapDef(snap).label} · groove ${groove.name}`);
   };
 
   return (
     <>
-      <div className={FIELD} title="Quantize: pulls notes toward the grid (100 = dead on)">
+      <div className={FIELD} title={`Quantize: pulls notes toward the ${snapLabel} snap grid, and lengths toward whole cells (100 = dead on)`}>
         <label htmlFor="piano-roll-quantize" className={FIELD_LEGEND}>Quant</label>
         <input
           id="piano-roll-quantize"
@@ -767,7 +766,7 @@ export const PianoRollFeel: React.FC = () => {
       </div>
       <div
         className={FIELD}
-        title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT."
+        title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT. The Group grooves, Notes inégales and Double-dotted follow each bar's groups, so 7/8 3+2+2 swings inside each group."
       >
         <label htmlFor="piano-roll-groove" className={FIELD_LEGEND}>Groove</label>
         <select
@@ -812,7 +811,7 @@ export const PianoRollFeel: React.FC = () => {
         onClick={applyTimingFeel}
         disabled={noteCount === 0}
         aria-label="Apply timing feel"
-        description="Apply the quantize and swing amounts to every note"
+        description={`Apply the quantize amount on the ${snapLabel} snap grid and the groove to every note`}
         icon={<Check className={STRIP_GLYPH} />}
         legend="Apply"
       />
@@ -1697,10 +1696,20 @@ export const PianoRoll: React.FC<{
   // they play (lane repeats written out) and each bar's syncopation score.
   const barSpans = useMemo(() => meterBars(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
   const tiers = useMemo(() => gridLines(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
+  // The active lane's own time (a meter of its own, a tuplet ratio), or null
+  // when it reads the roll's: then the grid draws the lane's bars, groups and
+  // beats and every gesture snaps to them, while the roll's bar lines stay.
+  const activeLaneDef = lanes.find((l) => l.id === activeLane);
+  const laneTime = useMemo(() => laneTimeOf(activeLaneDef, meterMap, pickupSteps), [activeLaneDef, meterMap, pickupSteps]);
+  const laneTiers = useMemo(() => (laneTime ? laneGridLines(laneTime, totalSteps) : null), [laneTime, totalSteps]);
   // The snap grid (lib/rollSnap): where a click, a drag, a resize, a nudge and
-  // the note menu land, restarting at every group of every bar. The key
-  // handlers read it through the ref, so they need no re-binding.
-  const snapLines = useMemo(() => snapGrid(meterMap, pickupSteps, totalSteps, snap), [meterMap, pickupSteps, totalSteps, snap]);
+  // the note menu land, restarting at every group of every bar (of the active
+  // lane's own bars when it has them). The key handlers read it through the
+  // ref, so they need no re-binding.
+  const snapLines = useMemo(
+    () => (laneTime ? laneSnapGrid(laneTime, totalSteps, snap) : snapGrid(meterMap, pickupSteps, totalSteps, snap)),
+    [laneTime, meterMap, pickupSteps, totalSteps, snap],
+  );
   const snapRef = useRef<SnapGrid>(snapLines);
   snapRef.current = snapLines;
   // The scores read only each note's step, velocity and lane, so an edit that
@@ -1728,16 +1737,23 @@ export const PianoRoll: React.FC<{
   // Each tier is one SVG path, so the grid's node count stays flat at any
   // length. Step lines skip the steps a stronger tier already draws.
   const gridPaths = useMemo(() => {
-    const drawn = new Set([...tiers.bar, ...tiers.group, ...tiers.beat]);
+    // An active lane with its own time draws its groups and beats in place of
+    // the roll's, and its bar lines in the accent; the roll's bar lines stay.
+    const near = (xs: readonly number[], x: number) => xs.some((b) => Math.abs(b - x) < 1e-6);
+    const laneBar = laneTiers ? laneTiers.bar.filter((x) => !near(tiers.bar, x)) : [];
+    const group = laneTiers ? laneTiers.group.filter((x) => !near(tiers.bar, x)) : tiers.group;
+    const beat = laneTiers ? laneTiers.beat.filter((x) => !near(tiers.bar, x)) : tiers.beat;
+    const drawn = new Set([...tiers.bar, ...group, ...beat, ...laneBar]);
     // The snap's own subdivision: 16ths, triplets, quintuplets, each restarting on its group.
     const steps = snapLineSteps(snapLines, stepPx, drawn, STEP_LINES_MIN_PX);
     return {
       step: linesPath(steps, stepPx, 0, gridHeight),
-      beat: linesPath(tiers.beat, stepPx, 0, gridHeight),
-      group: linesPath(tiers.group, stepPx, 0, gridHeight),
+      beat: linesPath(beat, stepPx, 0, gridHeight),
+      group: linesPath(group, stepPx, 0, gridHeight),
+      laneBar: laneBar.length ? linesPath(laneBar, stepPx, 0, gridHeight) : '',
       bar: linesPath(tiers.bar, stepPx, 0, gridHeight),
     };
-  }, [tiers, snapLines, stepPx, gridHeight]);
+  }, [tiers, laneTiers, snapLines, stepPx, gridHeight]);
 
   // The notes in looping lanes, kept as the same array while none of them
   // changes, so an edit in a lane that does not loop leaves the repeats alone.
@@ -2283,7 +2299,8 @@ export const PianoRoll: React.FC<{
           >
             <RowBackgrounds lowestNote={lowestNote} highestNote={highestNote} />
             {/* Vertical lines: bar lines strongest, then group starts, beats and
-                (when a step is wide enough) steps. */}
+                (when a step is wide enough) steps. An active lane with its own
+                time adds its bar lines in the accent. */}
             <svg
               aria-hidden="true"
               focusable="false"
@@ -2295,6 +2312,7 @@ export const PianoRoll: React.FC<{
               {gridPaths.step && <path d={gridPaths.step} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.03)]" />}
               <path d={gridPaths.beat} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.06)]" />
               <path d={gridPaths.group} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.12)]" />
+              {gridPaths.laneBar && <path d={gridPaths.laneBar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-accent)/0.45)]" />}
               <path d={gridPaths.bar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.2)]" />
             </svg>
             {/* Recorded-region highlight: marks the last live take without

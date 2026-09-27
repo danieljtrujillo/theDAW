@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { normalizeMeterMap, roundUpToBar, type MeterSegment, type PolyLane } from '../lib/meterMap';
+import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type MeterSegment, type PolyLane } from '../lib/meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
   DEFAULT_BEND_RANGE,
@@ -72,6 +72,12 @@ export interface PianoNote {
   channel?: number;
   /** Per-note expression; absent when the note carries none. */
   expr?: NoteExpression;
+}
+
+/** A lane's own time as setLaneTime takes it: a field left out stays, null clears it. */
+export interface LaneTimePatch {
+  meterMap?: MeterSegment[] | null;
+  tuplet?: { n: number; m: number } | null;
 }
 
 /** The roll's meter: time signatures by bar, the pickup before bar 0, and the polymeter lanes. */
@@ -265,6 +271,12 @@ interface PianoRollState {
   addLane: (cycleSteps?: number | null) => number;
   /** Set a lane's loop length; lane 0 never loops. */
   setLaneCycle: (id: number, cycleSteps: number | null) => void;
+  /**
+   * Set a lane's own time: `meterMap` (null or empty reads the roll's) and
+   * `tuplet` (null, or n equal to m, is straight). A field left out stays.
+   * Lane A keeps the roll's time. One undo step, as any lane edit.
+   */
+  setLaneTime: (id: number, time: LaneTimePatch) => void;
   /** Remove a lane; its notes move to lane 0, and its bend too when lane 0 has no points. Lane 0 cannot be removed. */
   removeLane: (id: number) => void;
   /** Replace every lane's bend. A bend for a lane the roll does not have is dropped, and lanes past MAX_BENT_LANES lose their points. */
@@ -355,14 +367,25 @@ export const laneName = (index: number): string => {
 const clampCycle = (steps: number | null | undefined): number | null =>
   typeof steps === 'number' && Number.isFinite(steps) && steps >= 1 ? Math.min(MAX_STEPS, Math.round(steps)) : null;
 
-/** Lane 0 first and never looping, unique ids, cycles clamped to whole steps. */
+/**
+ * Lane 0 first and never looping, unique ids, cycles clamped to whole steps.
+ * A lane after A keeps its own meter map (normalized) and tuplet ratio
+ * (sanitizeTuplet) when it has them; lane A always reads the roll's meter, so
+ * it keeps neither.
+ */
 export const sanitizeLanes = (lanes: readonly PolyLane[] | null | undefined): PolyLane[] => {
   const seen = new Set<number>();
   const out: PolyLane[] = [];
   for (const l of lanes ?? []) {
     if (!l || !Number.isInteger(l.id) || l.id < 0 || seen.has(l.id)) continue;
     seen.add(l.id);
-    out.push({ id: l.id, name: String(l.name || laneName(l.id)), cycleSteps: l.id === 0 ? null : clampCycle(l.cycleSteps) });
+    const lane: PolyLane = { id: l.id, name: String(l.name || laneName(l.id)), cycleSteps: l.id === 0 ? null : clampCycle(l.cycleSteps) };
+    if (l.id !== 0) {
+      if (Array.isArray(l.meterMap) && l.meterMap.length) lane.meterMap = normalizeMeterMap(l.meterMap);
+      const tuplet = sanitizeTuplet(l.tuplet);
+      if (tuplet) lane.tuplet = tuplet;
+    }
+    out.push(lane);
   }
   if (!seen.has(0)) out.unshift({ id: 0, name: 'A', cycleSteps: null });
   return out.sort((a, b) => a.id - b.id);
@@ -1096,6 +1119,26 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   },
   setLaneCycle: (id, cycleSteps) =>
     set((s) => ({ lanes: s.lanes.map((l) => (l.id === id && id !== 0 ? { ...l, cycleSteps: clampCycle(cycleSteps) } : l)) })),
+  setLaneTime: (id, time) =>
+    set((s) => {
+      if (id === 0 || !s.lanes.some((l) => l.id === id)) return {};
+      const lanes = sanitizeLanes(
+        s.lanes.map((l) => {
+          if (l.id !== id) return l;
+          const next: PolyLane = { ...l };
+          if ('meterMap' in time) {
+            if (time.meterMap?.length) next.meterMap = time.meterMap;
+            else delete next.meterMap;
+          }
+          if ('tuplet' in time) {
+            if (time.tuplet) next.tuplet = time.tuplet;
+            else delete next.tuplet;
+          }
+          return next;
+        }),
+      );
+      return { lanes };
+    }),
   removeLane: (id) =>
     set((s) => {
       if (id === 0 || !s.lanes.some((l) => l.id === id)) return {};
@@ -1242,7 +1285,11 @@ usePianoRollStore.subscribe((state, prev) => {
 export const rollMeterOf = (s: Pick<PianoRollState, 'meterMap' | 'pickupSteps' | 'lanes'>): RollMeter => ({
   meterMap: s.meterMap.map((seg) => ({ bar: seg.bar, meter: { ...seg.meter, groups: [...seg.meter.groups] } })),
   pickupSteps: s.pickupSteps,
-  lanes: s.lanes.map((l) => ({ ...l })),
+  lanes: s.lanes.map((l) => ({
+    ...l,
+    ...(l.meterMap ? { meterMap: l.meterMap.map((seg) => ({ bar: seg.bar, meter: { ...seg.meter, groups: [...seg.meter.groups] } })) } : {}),
+    ...(l.tuplet ? { tuplet: { ...l.tuplet } } : {}),
+  })),
 });
 
 /**
