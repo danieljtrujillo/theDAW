@@ -8,6 +8,10 @@
  *  - song mode (after Build Song): the source phrase is grown into a full
  *    multi-section arrangement; the SAME sliders now reshape the whole song
  *    (rebuilt, debounced) instead of collapsing it back to the short phrase.
+ *
+ * A song also writes the roll's tempo map: each section's own tempo and a
+ * ritardando over each section's last bar (lib/virtuosoTransform songTempoMap),
+ * on top of the map the roll had before the song. RESET puts that map back.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -18,6 +22,7 @@ import {
   STYLES,
   ZERO_AMOUNTS,
   defaultSections,
+  sanitizeSectionTempo,
   type VirtuosoAmounts,
   type StyleName,
   type SectionSpec,
@@ -27,17 +32,20 @@ import {
 import { buildGrooveFromMidiBytes } from '../lib/grooveExtract';
 import type { Meter } from '../lib/colony';
 import { meterEquals, normalizeMeterMap, sanitizeMeter, takeBarsFrom, type MeterSegment } from '../lib/meterMap';
+import { sanitizeRollTempoMap, startTempoOf } from '../lib/rollTempo';
+import type { TempoEvent } from '../lib/tempoMap';
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 const cloneNotes = (notes: PianoNote[]): PianoNote[] => notes.map((n) => ({ ...n }));
 const sameMeterMap = (a: readonly MeterSegment[], b: readonly MeterSegment[]): boolean =>
   a.length === b.length && a.every((s, i) => s.bar === b[i].bar && meterEquals(s.meter, b[i].meter));
 
-/** A stored section with its meter kept only when it is a valid time signature. */
+/** A stored section with its meter kept only when it is a valid time signature, and its tempo only inside 20..300. */
 const sectionFromStorage = (s: SectionSpec): SectionSpec => {
   const meter = sanitizeMeter(s.meter);
-  const { meter: _drop, ...rest } = s;
-  return meter ? { ...rest, meter } : rest;
+  const bpm = sanitizeSectionTempo(s.bpm);
+  const { meter: _dropMeter, bpm: _dropBpm, ...rest } = s;
+  return { ...rest, ...(meter ? { meter } : {}), ...(bpm !== undefined ? { bpm } : {}) };
 };
 
 interface VirtuosoState {
@@ -66,6 +74,8 @@ interface VirtuosoState {
   setSectionBars: (index: number, bars: number) => void;
   /** Give a section its own time signature, or null to follow the roll's meter map. */
   setSectionMeter: (index: number, meter: Meter | null) => void;
+  /** Give a section its own tempo (20..300), or null to follow the roll's tempo map. */
+  setSectionTempo: (index: number, bpm: number | null) => void;
   addSection: () => void;
   removeSection: (index: number) => void;
   moveSection: (index: number, dir: -1 | 1) => void;
@@ -88,6 +98,48 @@ let _rebuildTimer: number | null = null;
 let _songBase: MeterSegment[] | null = null;
 let _songMap: MeterSegment[] | null = null;
 let _songOwned: number[] = [];
+
+// The tempo half. `_tempoBase` is the roll's tempo map from before the song
+// (sections without a tempo follow it) and `_tempoMap` the map the last build
+// wrote (the store's own array, so identity says whether the roll still shows
+// it). When the roll no longer shows `_tempoMap` (the header's BPM, a point
+// drawn, moved or removed in the TEMPO lane), a rebuild carries those edits
+// into the base (adoptTempo), so the next song follows them and a ritardando is
+// never laid over the previous song's ritardando.
+let _tempoBase: readonly TempoEvent[] | null = null;
+let _tempoMap: readonly TempoEvent[] | null = null;
+
+const kindOf = (e: TempoEvent): string => (e.fermata ? 'f' : 't');
+const samePoint = (a: TempoEvent, b: TempoEvent): boolean =>
+  a.beat === b.beat
+  && kindOf(a) === kindOf(b)
+  && a.bpm === b.bpm
+  && (a.curve ?? 'step') === (b.curve ?? 'step')
+  && a.fermata?.beats === b.fermata?.beats
+  && a.fermata?.stretch === b.fermata?.stretch;
+
+/**
+ * `base` with the edits made to the song's map since the last build: a point
+ * the roll holds and the song did not write is added (replacing the base's
+ * point of its kind on that beat), and a point the song wrote that the roll no
+ * longer holds is taken out of the base too. The base's points a section tempo
+ * covered in the song stay in it, so they come back when that tempo is removed.
+ */
+const adoptTempo = (roll: readonly TempoEvent[], song: readonly TempoEvent[], base: readonly TempoEvent[]): TempoEvent[] => {
+  const added = roll.filter((e) => !song.some((s) => samePoint(s, e)));
+  const removed = song.filter((s) => !roll.some((e) => samePoint(s, e)));
+  const touched = (e: TempoEvent): boolean => [...added, ...removed].some((x) => x.beat === e.beat && kindOf(x) === kindOf(e));
+  const next = [...base.filter((e) => !touched(e)), ...added];
+  return sanitizeRollTempoMap(next, startTempoOf(next) ?? startTempoOf(base) ?? 120);
+};
+
+const clearSongMaps = (): void => {
+  _songBase = null;
+  _songMap = null;
+  _songOwned = [];
+  _tempoBase = null;
+  _tempoMap = null;
+};
 
 /** The bars (0-based) whose meter a section wrote: explicit sections laid end to end, as buildSong lays them. */
 const sectionMeterBars = (sections: SectionSpec[] | null): number[] => {
@@ -134,21 +186,32 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         const roll = usePianoRollStore.getState();
         if (!_songBase || !_songMap) _songBase = roll.meterMap;
         else if (!sameMeterMap(roll.meterMap, _songMap)) _songBase = takeBarsFrom(roll.meterMap, _songBase, _songOwned);
+        if (!_tempoBase || !_tempoMap) _tempoBase = roll.tempoMap;
+        else if (roll.tempoMap !== _tempoMap) _tempoBase = adoptTempo(roll.tempoMap, _tempoMap, _tempoBase);
+        const baseBpm = startTempoOf(_tempoBase) ?? roll.bpm;
         const song = buildSongNotes(s.source, {
           key: s.key,
           mode: s.mode,
           style: s.style,
           amounts: s.amounts,
-          bpm: roll.bpm,
+          bpm: baseBpm,
           sections: s.sections ?? undefined,
           groove: s.groove ?? undefined,
           meterMap: _songBase,
           pickupSteps: roll.pickupSteps,
+          tempoMap: _tempoBase,
         });
         _songMap = normalizeMeterMap(song.meterMap);
         _songOwned = sectionMeterBars(s.sections);
-        // The song is built at the roll's tempo, so the roll keeps its tempo map as it is.
-        roll.importNotes(song.notes, roll.bpm, { meterMap: song.meterMap }, keepBends ? roll.bends : undefined, roll.tempoMap);
+        // The song's tempo map goes in with its notes, so one undo takes back both.
+        roll.importNotes(
+          song.notes,
+          startTempoOf(song.tempoMap) ?? baseBpm,
+          { meterMap: song.meterMap },
+          keepBends ? roll.bends : undefined,
+          song.tempoMap,
+        );
+        _tempoMap = usePianoRollStore.getState().tempoMap;
       };
 
       const scheduleSongRebuild = (): void => {
@@ -177,9 +240,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         groove: null,
 
         captureSource: () => {
-          _songBase = null;
-          _songMap = null;
-          _songOwned = [];
+          clearSongMaps();
           set({ source: cloneNotes(usePianoRollStore.getState().notes), songMode: false });
           renderPhrase(get().source, get().amounts, get().key, get().mode);
         },
@@ -215,11 +276,10 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           const s = get();
           const roll = usePianoRollStore.getState();
           if (s.source) roll.replaceAll(cloneNotes(s.source));
-          // The source phrase goes back under the map it had before the song.
+          // The source phrase goes back under the maps it had before the song.
           if (_songBase && _songMap && sameMeterMap(roll.meterMap, _songMap)) roll.setMeterMap(_songBase);
-          _songBase = null;
-          _songMap = null;
-          _songOwned = [];
+          if (_tempoBase && _tempoMap && usePianoRollStore.getState().tempoMap === _tempoMap) roll.setTempoMap(_tempoBase);
+          clearSongMaps();
         },
 
         buildSong: () => {
@@ -254,6 +314,16 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           const clean = sanitizeMeter(meter);
           if (clean) secs[index].meter = clean;
           else delete secs[index].meter;
+          set({ sections: secs });
+          if (get().songMode) scheduleSongRebuild();
+        },
+
+        setSectionTempo: (index, bpm) => {
+          const secs = get().effectiveSections().map((x) => ({ ...x }));
+          if (!secs[index]) return;
+          const clean = sanitizeSectionTempo(bpm);
+          if (clean !== undefined) secs[index].bpm = clean;
+          else delete secs[index].bpm;
           set({ sections: secs });
           if (get().songMode) scheduleSongRebuild();
         },

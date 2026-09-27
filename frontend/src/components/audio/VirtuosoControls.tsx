@@ -6,7 +6,7 @@
  * captured source. Key, scale, style and the groove reference sit beside them.
  * CAPTURE snapshots the current roll as the morph base; SONG assembles a full
  * multi-section arrangement; FORM opens the song-structure editor above the row,
- * which lays out the sections (role, bar count, meter) the build uses.
+ * which lays out the sections (role, bar count, meter, tempo) the build uses.
  *
  * A SHAPE | METER switch at the row's left end flips it to the METER face
  * (MeterFace.tsx), remembered across sessions; the row keeps its height, its
@@ -19,6 +19,7 @@ import { LibraryPicker, MIDI_ONLY_TABS } from './LibraryPicker';
 import { MeterFace } from './MeterFace';
 import { logError } from '../../state/logStore';
 import { meterLabel, parseMeterLabel, sectionMeterChoices } from '../../lib/meterFace';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import {
   STYLES,
   STYLE_NAMES,
@@ -81,6 +82,7 @@ const SongStructure: React.FC = () => {
   const setSectionRole = useVirtuosoStore((s) => s.setSectionRole);
   const setSectionBars = useVirtuosoStore((s) => s.setSectionBars);
   const setSectionMeter = useVirtuosoStore((s) => s.setSectionMeter);
+  const setSectionTempo = useVirtuosoStore((s) => s.setSectionTempo);
   const addSection = useVirtuosoStore((s) => s.addSection);
   const removeSection = useVirtuosoStore((s) => s.removeSection);
   const moveSection = useVirtuosoStore((s) => s.moveSection);
@@ -179,6 +181,33 @@ const SongStructure: React.FC = () => {
                 <option key={c.value} value={c.value}>{c.label}</option>
               ))}
             </select>
+            {/* The section's tempo. Empty follows the roll's tempo map; a typed
+                tempo applies on Enter or when the field loses focus, so the "1"
+                of a typed 132 is never taken as a tempo of its own. */}
+            <label htmlFor={`vt-sec-bpm-${i}`} className="sr-only">{`Section ${i + 1} tempo in BPM`}</label>
+            <input
+              key={`${i}:${sec.bpm ?? ''}`}
+              id={`vt-sec-bpm-${i}`}
+              name={`vt-sec-bpm-${i}`}
+              type="number"
+              min={TEMPO_BPM_MIN}
+              max={TEMPO_BPM_MAX}
+              step="any"
+              placeholder="BPM"
+              defaultValue={sec.bpm ?? ''}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+              onBlur={(e) => {
+                const text = e.target.value.trim();
+                const v = Number.parseFloat(text);
+                if (text === '') setSectionTempo(i, null);
+                else if (Number.isFinite(v) && v > 0) setSectionTempo(i, v);
+                else e.target.value = sec.bpm === undefined ? '' : String(sec.bpm);
+              }}
+              title="The section's tempo; empty follows the piano roll's tempo map. The build slows into each section's last bar."
+              className={`${sectionField} w-13`}
+            />
             <button
               type="button"
               className={`${MINI_ICON_KEY} ${KEY_REST}`}
@@ -396,7 +425,7 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
             onClick={buildSong}
             aria-pressed={songMode}
             aria-label="Song: build a full arrangement"
-            description="Build a full, developing arrangement from the source in the chosen style/structure, with voice-leading, a melody, a crescendo, and rubato. While built, the sliders reshape the whole song; Reset returns to the phrase."
+            description="Build a full, developing arrangement from the source in the chosen style/structure, with voice-leading, a melody, a crescendo, and a ritardando into each section end written into the tempo map. While built, the sliders reshape the whole song; Reset returns to the phrase."
             on={songMode}
             icon={<ListMusic className={STRIP_GLYPH} />}
             legend="Song"

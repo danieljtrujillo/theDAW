@@ -132,7 +132,10 @@ function captureToday(): Record<string, string> {
 // length change took half a note's own length for a note under a 16th: only
 // lengths changed (a 0.5-step note humanize lengthened became 0.75 in place of
 // 1, a shortened 0.667 became 0.334 in place of the 0.25 floor), compared note
-// by note against the previous build's output.
+// by note against the previous build's output. Every buildSong digest was
+// captured again when the ritardando moved from note positions into the song's
+// tempo map: each of the eleven outputs is identical, note for note, to the
+// previous build's output taken just before its rubato warp.
 const FIXTURES: Record<string, string> = {
   input: '25:b1ec0ffc70a86b37af9cb6e7',
   'polyrhythm 0.35': '25:e611c06845901cd3be920cfc',
@@ -171,17 +174,17 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '528:f2aca0d9de2d06a3cdf40e8b',
-  'buildSong romantic sections': '436:a9272268720f395b38e58769',
-  'buildSong baroque': '670:7cbb03d702d6d64d43735aa7',
-  'buildSong baroque sections': '436:252c517b6e5b1ade7f8c43da',
-  'buildSong mussorgsky': '770:277e2e66eec33e9555b7dff9',
-  'buildSong mussorgsky sections': '436:f9c999cd10a0078c7ebd0d26',
-  'buildSong flamenco': '900:9c66866d270f9aa27f26a979',
-  'buildSong flamenco sections': '436:1bf1fe7257deb14c7110e61c',
-  'buildSong ragtime': '593:966d15a9aa14db640e232e7b',
-  'buildSong ragtime sections': '439:903b44200d9a49f9c2c78817',
-  'buildSong default': '1265:b754a6aabf3190e54d41d7b3',
+  'buildSong romantic': '528:b09aa14fb455c8343c398aec',
+  'buildSong romantic sections': '436:5784c3e25fdf898b2c2fb2b8',
+  'buildSong baroque': '670:db5374de322f0d049d164715',
+  'buildSong baroque sections': '436:1b2135ba90dafae24df48e70',
+  'buildSong mussorgsky': '770:33657c02a66d8bd632eea4eb',
+  'buildSong mussorgsky sections': '436:375b00d6e2ad0b95829fbb0f',
+  'buildSong flamenco': '900:53f0f044b6c8a6fa6d2128e3',
+  'buildSong flamenco sections': '436:6862e5c69c052b40de1d99ab',
+  'buildSong ragtime': '593:57eea0b00a15025d84598a5a',
+  'buildSong ragtime sections': '439:1c76309492510a90d22f8920',
+  'buildSong default': '1265:30a6e7d83beae841ead25820',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
   'arp renderProgression looped': '125:a71e91c7fafa6d3c59992cca',
 };
@@ -363,8 +366,8 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   notes.filter((n) => n.step >= start - 0.2 && n.step < end - 0.2);
 
 // Every key and mode: one three-bar outro plays I, V, I, each bar one held
-// chord, and rubato moves only the last bar, so the V holds steps 16-32 and the
-// last chord starts at 32. The last chord is the key's own tonic triad, the V
+// chord on its bar line (the ritardando is tempo, so no note moves), so the V
+// holds steps 16-32 and the last chord starts at 32. The last chord is the key's own tonic triad, the V
 // sits on the 5th degree, and a minor mode's V is a major triad with the leading
 // tone. Every note over the V bar comes from its scale, and with the Harmony and
 // Ragtime sliders up (Ragtime rewrites the V bar with this seed) no lowered tone
@@ -415,8 +418,8 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
 
 // Which Vs are cadential, in A minor: the V that closes the intro (a half
 // cadence) takes G sharp, and so does the V before the final tonic, while a V
-// inside a section keeps the mode's own E minor. One eight-bar outro has rubato
-// only in its last bar, so its held chords start on the bar lines.
+// inside a section keeps the mode's own E minor. One eight-bar outro holds its
+// chords on the bar lines.
 {
   const src = phrase(20260913);
   const opts = { key: 'A', mode: 'minor', style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 120 } as const;
