@@ -99,11 +99,8 @@ def _key_alters(key_obj: Any) -> dict[str, int]:
     out: dict[str, int] = {}
     if key_obj is None:
         return out
-    try:
-        for altered in key_obj.alteredPitches:
-            out[str(altered.step)] = int(altered.alter)
-    except Exception:  # noqa: BLE001 - music21 raises broadly on odd keys
-        return {}
+    for altered in key_obj.alteredPitches:
+        out[str(altered.step)] = int(altered.alter)
     return out
 
 
@@ -186,11 +183,7 @@ def _key_token(key_obj: Any) -> str:
 
 def _first(stream_obj: Any, cls: Any) -> Any:
     """The first element of a class anywhere in a stream, or None."""
-    try:
-        found = list(stream_obj.recurse().getElementsByClass(cls))
-        return found[0] if found else None
-    except Exception:  # noqa: BLE001 - music21 raises broadly on odd streams
-        return None
+    return next(iter(stream_obj.recurse().getElementsByClass(cls)), None)
 
 
 def _element_token(element: Any, unit: Fraction, accidentals: _Accidentals) -> str:
@@ -289,12 +282,20 @@ def score_to_abc(
         header.append(f"C:{composer.strip()}")
     marking = _first(score, m21tempo.MetronomeMark)
     if marking is not None:
+        # A mark of 0 beats per minute, or one whose referent has no length,
+        # has no quarter-note tempo (music21 divides by both); the tune is
+        # written without Q: and the log names the mark.
         try:
             bpm = int(round(float(marking.getQuarterBPM() or 0)))
-            if bpm > 0:
-                header.append(f"Q:1/4={bpm}")
-        except Exception:  # noqa: BLE001 - tempo is decorative here
-            pass
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            log.warning(
+                "ABC export: tempo mark %r has no quarter-note tempo (%s); Q: left out",
+                marking,
+                exc,
+            )
+            bpm = 0
+        if bpm > 0:
+            header.append(f"Q:1/4={bpm}")
     header.append(f"M:{meter_token}")
     header.append(f"L:{unit.numerator * 1}/{unit.denominator * 4}")
 

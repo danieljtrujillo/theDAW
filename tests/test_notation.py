@@ -619,6 +619,81 @@ def test_abc_writes_the_naturals_the_key_and_the_bar_would_otherwise_alter(
     ]
 
 
+def _write_e_flat_sheet(path: Path) -> None:
+    """One 4/4 bar in E-flat holding an E flat and an E natural, as MusicXML."""
+    from music21 import key, meter, note, stream
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(key.Key("E-"))
+    bar.append(meter.TimeSignature("4/4"))
+    for name in ("E-4", "E4", "G4", "B-4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+    score.write("musicxml", fp=str(path))
+
+
+def test_abc_export_reports_a_key_it_cannot_read(tmp_path: Path, monkeypatch):
+    """A sheet in E-flat exported as ABC while music21 fails to list the key's
+    altered pitches. The writer caught that failure and carried on with no key
+    alterations, so it wrote K:Eb over a body spelled as if in C (a redundant
+    flat on every E flat and B flat) and the export reported success. The
+    export now fails and says why."""
+    from music21 import key
+
+    def _raise(self):
+        raise RuntimeError("altered pitches unavailable")
+
+    sheet = tmp_path / "sheet.musicxml"
+    _write_e_flat_sheet(sheet)
+    monkeypatch.setattr(key.KeySignature, "alteredPitches", property(_raise))
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=tmp_path / "notation" / "sheet.abc",
+    )
+    assert result["ok"] is False, result
+    assert "altered pitches unavailable" in result["error"]
+    assert not (tmp_path / "notation" / "sheet.abc").exists()
+    assert db.list_notation_artifacts("track", kind="abc") == []
+
+
+def test_abc_export_logs_a_tempo_mark_it_cannot_write(caplog):
+    """A score whose tempo mark reads 0 beats per minute, written as ABC.
+    music21 raises ZeroDivisionError converting it to a quarter-note tempo.
+    The writer dropped the Q: line with no word in the log; it still writes
+    the tune without Q:, and the log now says which mark was left out."""
+    import logging
+
+    from music21 import meter, note, stream, tempo
+
+    from backend.modules.notation.exporters.abc_writer import score_to_abc
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(meter.TimeSignature("4/4"))
+    bar.append(tempo.MetronomeMark(number=0))
+    for name in ("C4", "D4", "E4", "F4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+
+    with caplog.at_level(
+        logging.WARNING, logger="backend.modules.notation.exporters.abc_writer"
+    ):
+        text = score_to_abc(score, title="Tempo")
+    assert not any(line.startswith("Q:") for line in text.splitlines()), text
+    assert "C2 D2 E2 F2" in text, text
+    assert any("Q: left out" in r.getMessage() for r in caplog.records), caplog.text
+
+
 def test_convert_score_to_abc_end_to_end(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})
