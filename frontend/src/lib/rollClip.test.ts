@@ -1,10 +1,10 @@
 // The sequence a roll in 7/8 with a looping lane goes through, in the order the
 // app runs it: bounce to EDIT, open the clip in the roll, save the project
-// (.tasmo JSON), reload, open in the roll again. projectImport.ts does not load
-// under node, so the save and the reload replay its projectClient mappers.
+// (.tasmo JSON), reload, open in the roll again. The save and the reload replay
+// the projectClient mappers projectImport.ts writes and reads a clip's notes with.
 import assert from 'node:assert/strict';
 import { clipRenderInput, clipRollLoad, playedRollNotes, quantizeRollClip, rollClipFields, type RollClipInput, type RollLoadArgs } from './rollClip.ts';
-import { clipMeterToTasmo, pianoNoteToTasmo, tasmoMeterToClip, tasmoNotesToPiano, type TasmoStepNote } from './projectClient.ts';
+import { clipNotesToTasmo, playedNotesFromRoll, tasmoMeterToClip } from './projectClient.ts';
 import { migrateNotes, rollMeterOf, tickOfStep, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 import { unrollLanes, type MeterSegment } from './meterMap.ts';
 import { copyBends, type LaneBend } from './pitchBend.ts';
@@ -57,15 +57,16 @@ const assertLoad = (args: RollLoadArgs, clipId: string, source: 'roll' | 'tasmo'
   assert.equal(bpm, BPM);
   assert.equal(total, TOTAL);
   assert.deepEqual(meter, original.meter);
-  // migrateNotes because one of the two callers loads a clip that came back out
-  // of .tasmo JSON, whose note shape carries step and length but no ticks. It is
-  // a no-op for the clip that never left memory (ticks that agree are kept).
+  // migrateNotes is a no-op for a note whose ticks agree with its steps, so the
+  // wrap alone cannot tell a preserved tick from a reconstructed one.
   assert.deepEqual(withoutIds(migrateNotes(notes)), withoutIds(original.notes));
-  // …so the wrap alone cannot tell a preserved tick from a reconstructed one.
-  // These two say which side is which: the in-memory clip arrives ticked, and
-  // the .tasmo reload arrives with no ticks at all for loadFromClip to migrate.
-  if (source === 'roll') for (const n of notes) assert.equal(n.tick, tickOfStep(n.step), `${n.id} reached the roll un-ticked`);
-  else assert.ok(notes.some((n) => n.tick === undefined), 'a .tasmo reload carries no ticks');
+  // This says it: the in-memory clip arrives ticked, and so does the .tasmo
+  // reload, whose notes carry `tick`/`ticks` (pianoNoteToTasmo). A reload that
+  // lost them would re-derive a length under one step as a whole step.
+  for (const n of notes) {
+    assert.equal(n.tick, tickOfStep(n.step), `${n.id} reached the roll un-ticked (${source})`);
+    assert.equal(n.ticks, tickOfStep(n.length), `${n.id} reached the roll without its length in ticks (${source})`);
+  }
   assert.deepEqual(withoutPointIds(bends), withoutPointIds(original.bends));
 };
 
@@ -131,27 +132,26 @@ assertRoll('clip-1');
 // A second bounce writes the same clip.
 assert.deepEqual(rollClipFields(st()), fields);
 
-// 5. Save the project: captureEditorSession writes these keys, and the file goes out and back as JSON.
-const saved: { midi_notes: TasmoStepNote[] } & ReturnType<typeof clipMeterToTasmo> = JSON.parse(
-  JSON.stringify({ midi_notes: clip.sourcePianoRoll?.map(pianoNoteToTasmo), ...clipMeterToTasmo(clip) }),
-);
-assert.equal(saved.midi_notes.length, played.length);
-assert.equal(saved.midi_notes.some((n) => 'lane' in n), false);
+// 5. Save the project: captureEditorSession writes these keys through clipNotesToTasmo, and the file
+// goes out and back as JSON. Lane B loops and both lanes bend, so the roll notes are what the file keeps:
+// the played notes are their unroll, and are not written a second time.
+const saved: ReturnType<typeof clipNotesToTasmo> = JSON.parse(JSON.stringify(clipNotesToTasmo(clip)));
+assert.equal(saved.midi_notes, undefined, 'the played notes are not stored twice');
 assert.deepEqual(saved.roll_notes?.map((n) => n.lane), [undefined, undefined, 1, 1]);
 assert.deepEqual(saved.roll_bends?.map((b) => [b.lane, b.range, b.points.length]), [[0, 2, 2], [1, 12, 2]]);
+// Each roll note carries its ticks, which agree with its steps.
+assert.ok(saved.roll_notes?.every((n) => n.tick === tickOfStep(n.step) && n.ticks === tickOfStep(n.length)));
 
-// 6. Reload: buildClip takes the project tempo and the mapped fields.
+// 6. Reload: buildClip takes the project tempo and the mapped fields, and rebuilds the played notes
+// from the roll notes the way the bounce built them.
+const reloadedMeter = tasmoMeterToClip(saved);
 const reloaded: RollClipInput = {
   id: 'clip-1',
   sourceBpm: BPM,
-  sourcePianoRoll: tasmoNotesToPiano(saved.midi_notes, 'pn'),
-  ...tasmoMeterToClip(saved),
+  sourcePianoRoll: playedNotesFromRoll(reloadedMeter),
+  ...reloadedMeter,
 };
-// The .tasmo note shape carries no ticks — `pianoNoteToTasmo` writes step and
-// length — so the reloaded notes are migrated for the comparison, exactly as the
-// store migrates them when the clip is opened in step 7 below.
 assert.deepEqual(withoutIds(migrateNotes(reloaded.sourcePianoRoll ?? [])), withoutIds(played));
-assert.ok((reloaded.sourcePianoRoll ?? []).some((n) => n.tick === undefined), 'the reload really is tick-less');
 assert.equal(reloaded.sourcePianoRoll?.some((n) => 'lane' in n), false);
 
 // 7. Open the reloaded clip in the roll.

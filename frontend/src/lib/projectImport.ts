@@ -53,11 +53,16 @@ import {
   type TasmoTake,
   type TasmoChainEntry,
   type TasmoAutomationLane,
-  clipMeterToTasmo,
-  pianoNoteToTasmo,
+  clipNotesToTasmo,
+  clipTotalSteps,
+  gmProgramOf,
+  playedNotesFromRoll,
+  tasmoClipBpm,
   tasmoMeterToClip,
+  tasmoNoteExtras,
 } from './projectClient';
-import { roundUpToBar } from './meterMap';
+import { assertTree } from './timeline/trackOrder';
+import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
 import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
@@ -117,7 +122,15 @@ const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderN
   return notes;
 };
 
-/** Best-effort step-grid view of the same notes for "Edit in Piano Roll". */
+/**
+ * Best-effort step-grid view of the same notes for "Edit in Piano Roll".
+ *
+ * A seconds-based note (a DAW importer's) is put on the 16th grid and given at
+ * least one step. A step-based note (theDAW's own) keeps its length as written
+ * (a missing or non-positive one reads as one step) and its lane, ticks,
+ * channel and expression (`tasmoNoteExtras`): flooring every length to a step
+ * turned a saved triplet sixteenth into a full sixteenth on reload.
+ */
 const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
   const stepSec = 60 / Math.max(40, bpm) / 4;
   return raw
@@ -127,15 +140,23 @@ const toPianoNotes = (raw: Array<Record<string, number>>, bpm: number): PianoNot
       const startSec = pick(n, 'start', 'startSec', 'start_time', 'time');
       const step = startSec !== undefined ? Math.round(startSec / stepSec) : (pick(n, 'step') ?? 0);
       const durSec = pick(n, 'duration', 'durationSec', 'dur', 'length_sec');
-      const length = durSec !== undefined ? Math.max(1, Math.round(durSec / stepSec)) : (pick(n, 'length') ?? 1);
+      const stepLength = pick(n, 'length');
+      const length = durSec !== undefined
+        ? Math.max(1, Math.round(durSec / stepSec))
+        : stepLength !== undefined && stepLength > 0 ? stepLength : 1;
+      // A seconds-based note comes from an importer and carries no roll fields;
+      // only its lane is read, as it always was.
       const lane = pick(n, 'lane');
+      const extras = startSec !== undefined || durSec !== undefined
+        ? lane !== undefined && Number.isInteger(lane) && lane >= 0 ? { lane } : {}
+        : tasmoNoteExtras(n);
       return {
         id: uid('pn'),
         note: Math.round(note),
         step: Math.max(0, step),
-        length: Math.max(1, length),
+        length,
         velocity: clamp(pick(n, 'velocity', 'vel'), 1, 127, 100),
-        ...(lane !== undefined && Number.isInteger(lane) && lane >= 0 ? { lane } : {}),
+        ...extras,
       };
     })
     .filter((n): n is PianoNote => n !== null);
@@ -349,16 +370,38 @@ const loadTakes = async (
 };
 
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
- *  playable (missing audio file on disk, or a MIDI clip with no notes). */
+ *  playable (missing audio file on disk, or a MIDI clip with no notes).
+ *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
+ *  at; `trackProgram` is the track's GM program, which a clip with no audio
+ *  file of its own renders through when it has no program of its own. */
 const buildClip = async (
   c: TasmoLoadedClip,
   trackId: string,
   color: string,
-  bpm: number,
+  projectBpm: number,
+  trackProgram?: number,
 ): Promise<AudioClip | null> => {
   let blob: Blob | null = null;
   let sourceKind: AudioClip['sourceKind'];
   let sourcePianoRoll: PianoNote[] | undefined;
+  // The tempo this clip's notes were written at. A file written before
+  // source_bpm existed gives every clip the project tempo, as it always did.
+  const bpm = tasmoClipBpm(c, projectBpm);
+  const instrumentProgram = gmProgramOf(c.instrument_program);
+  let renderedProgram = gmProgramOf(c.rendered_program);
+  const meter = tasmoMeterToClip(c);
+
+  // The notes the clip plays. `midi_notes` when the file carries them (every
+  // file written before roll_notes became the single copy, an imported DAW
+  // clip, and a clip whose played notes were edited apart from its roll
+  // notes); otherwise the roll notes unrolled across the clip's lanes, the way
+  // the bounce that wrote them unrolled them.
+  if (c.midi_notes && c.midi_notes.length) {
+    const pianoNotes = toPianoNotes(c.midi_notes, bpm);
+    if (pianoNotes.length) sourcePianoRoll = pianoNotes;
+  } else if (meter.sourceRollNotes?.length) {
+    sourcePianoRoll = playedNotesFromRoll(meter);
+  }
 
   if (c.audio_file) {
     const res = await fetch(projectApi.clipAudioUrl(c.audio_file), { headers: pairingHeader() });
@@ -367,30 +410,32 @@ const buildClip = async (
       return null;
     }
     blob = await res.blob();
-  } else if (c.midi_notes && c.midi_notes.length) {
-    const notes = toRenderNotes(c.midi_notes, bpm);
+  } else if (c.midi_notes?.length || sourcePianoRoll?.length) {
+    // No audio of its own: render the notes, through the clip's program, else
+    // its track's, else the global instrument (no program given). The program
+    // used is recorded, so EDIT does not render the clip a second time.
+    const notes = toRenderNotes(
+      c.midi_notes?.length
+        ? c.midi_notes
+        : (sourcePianoRoll ?? []).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity })),
+      bpm,
+    );
     if (notes.length === 0) return null;
-    const rendered = await renderNotesToBlob(notes);
+    const program = instrumentProgram ?? trackProgram;
+    const rendered = await renderNotesToBlob(notes, program === undefined ? {} : { program });
     blob = rendered.blob;
+    renderedProgram = program;
   } else {
     return null;
   }
   // A piano-roll clip saved from EDIT carries its bounce as audio_file AND its
   // notes; the notes make it a roll clip again whichever one supplied the audio.
-  if (c.midi_notes && c.midi_notes.length) {
-    const pianoNotes = toPianoNotes(c.midi_notes, bpm);
-    if (pianoNotes.length) {
-      sourceKind = 'piano-roll';
-      sourcePianoRoll = pianoNotes;
-    }
-  }
-  const meter = sourcePianoRoll ? tasmoMeterToClip(c) : {};
+  if (sourcePianoRoll) sourceKind = 'piano-roll';
   // Files written before total_steps existed: the notes' end, up to a bar line
   // of the clip's meter map (4/4 when it has none).
-  const sourceTotalSteps = sourcePianoRoll
-    ? meter.sourceTotalSteps ??
-      roundUpToBar(meter.sourceMeterMap ?? [], Math.max(1, ...sourcePianoRoll.map((n) => n.step + n.length)), meter.sourcePickupSteps ?? 0)
-    : undefined;
+  // The roll's fields belong to a roll clip only, as they always have.
+  const rollMeter = sourcePianoRoll ? meter : {};
+  const sourceTotalSteps = sourcePianoRoll ? clipTotalSteps(rollMeter, sourcePianoRoll) : undefined;
 
   const { peaks, duration } = await computePeaks(blob, 240);
   // Respect the clip's real timeline length when the importer provides it
@@ -419,12 +464,17 @@ const buildClip = async (
     sourceKind,
     sourcePianoRoll,
     sourceBpm: sourceKind ? bpm : undefined,
+    // The clip's own instrument and the one its audio holds. With the second
+    // missing, EDIT's instrument sync saw every reopened roll clip as stale and
+    // rendered them all again through whatever program was active.
+    ...(sourceKind && instrumentProgram !== undefined ? { instrumentProgram } : {}),
+    ...(sourceKind && renderedProgram !== undefined ? { renderedProgram } : {}),
     sourceTotalSteps,
-    sourceRollNotes: meter.sourceRollNotes,
-    sourceMeterMap: meter.sourceMeterMap,
-    sourcePickupSteps: meter.sourcePickupSteps,
-    sourceLanes: meter.sourceLanes,
-    sourceBends: meter.sourceBends,
+    sourceRollNotes: rollMeter.sourceRollNotes,
+    sourceMeterMap: rollMeter.sourceMeterMap,
+    sourcePickupSteps: rollMeter.sourcePickupSteps,
+    sourceLanes: rollMeter.sourceLanes,
+    sourceBends: rollMeter.sourceBends,
     // Restore the per-clip mute; omit the field entirely for unmuted clips so
     // pre-mute projects hydrate exactly as before. Gain and fades follow the same
     // rule: a unity/zero value stays `undefined` rather than being written back.
@@ -937,6 +987,63 @@ export function tasmoToRouting(
 }
 
 /**
+ * A loaded track list with its folder hierarchy made valid. The file is not a
+ * store-vetted tree: a hand edit, or a save from a build that dropped a folder,
+ * can leave a track whose parent names no track, names a track that is not a
+ * folder, or closes a loop. Each such link is logged and cut, and the track sits
+ * at the root, the same never-throw rule the routing reader follows; every
+ * other link is kept. Returns the same array when nothing needed cutting.
+ */
+export function tasmoTrackTree(tracks: readonly EditorTrack[]): EditorTrack[] {
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+  const parentOf = new Map<string, string | null>();
+  for (const t of tracks) {
+    const p = t.parentTrackId ?? null;
+    if (p !== null && byId.get(p)?.isFolder !== true) {
+      logWarn('project', `Track "${t.name}" names a folder that is not in this project; placed at the root`);
+      parentOf.set(t.id, null);
+    } else {
+      parentOf.set(t.id, p);
+    }
+  }
+  // A loop: walk up from each track and cut the link that closes it.
+  for (const t of tracks) {
+    const seen = new Set<string>([t.id]);
+    let cur = t.id;
+    for (;;) {
+      const p = parentOf.get(cur) ?? null;
+      if (p === null) break;
+      if (seen.has(p)) {
+        logWarn('project', `Folder "${byId.get(cur)?.name ?? cur}" sits inside itself; placed at the root`);
+        parentOf.set(cur, null);
+        break;
+      }
+      seen.add(p);
+      cur = p;
+    }
+  }
+  let changed = false;
+  const out = tracks.map((t): EditorTrack => {
+    const p = parentOf.get(t.id) ?? null;
+    if (p === (t.parentTrackId ?? null)) return t;
+    changed = true;
+    const { parentTrackId: _cut, ...rest } = t;
+    return rest;
+  });
+  const result = changed ? out : (tracks as EditorTrack[]);
+  // The tree module's own check, so this and the folder edits agree on what a
+  // valid tree is. It cannot fail after the cuts above; if it ever does, the
+  // folders are dropped flat rather than the project failing to open.
+  try {
+    assertTree(toTreeTracks(result));
+    return result;
+  } catch (e) {
+    logWarn('project', `Folder hierarchy unusable (${e instanceof Error ? e.message : String(e)}); tracks loaded flat`);
+    return result.map(({ parentTrackId: _cut, ...rest }) => rest);
+  }
+}
+
+/**
  * Load a project into the EDIT timeline (replacing the current session), switch
  * to the EDIT tab, and return a summary. Throws only on a catastrophic failure;
  * individual unloadable clips are skipped and counted.
@@ -961,14 +1068,21 @@ export async function loadProjectIntoEditor(
     const trackId = t.id || uid('t');
     const color = t.color || TRACK_COLORS[i % TRACK_COLORS.length];
     const fxChain = (t.effect_chain ?? []).map(effectNodeToChainEntry);
-    routedTracks.push({
-      id: trackId,
-      name: t.name || `Track ${i + 1}`,
-      output_routing: t.output_routing,
-      send_amounts: t.send_amounts,
-    });
+    const isFolder = t.is_folder === true;
+    // A folder is an arrangement row with no audio node, the rule
+    // `addFolderFromSelectedTracks` keeps, so it takes no part in routing.
+    if (!isFolder) {
+      routedTracks.push({
+        id: trackId,
+        name: t.name || `Track ${i + 1}`,
+        output_routing: t.output_routing,
+        send_amounts: t.send_amounts,
+      });
+    }
     effects += t.effect_chain?.length ?? 0;
     effectsLive += liveFxCount(t.effect_chain);
+    const trackProgram = gmProgramOf(t.instrument_program);
+    const parentTrackId = nonEmpty(t.parent_track_id) ?? null;
     outTracks.push({
       id: trackId,
       name: t.name || `Track ${i + 1}`,
@@ -978,8 +1092,14 @@ export async function loadProjectIntoEditor(
       mute: !!t.mute,
       solo: !!t.solo,
       color,
-      instrumentProgram: t.instrument_program,
+      // A whole program 0-127 only: the file is hand-editable, and a program
+      // outside the GM range names no instrument.
+      ...(trackProgram !== undefined ? { instrumentProgram: trackProgram } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
+      // The arrangement folders. Checked against the whole track list below,
+      // once every track is known.
+      ...(parentTrackId !== null ? { parentTrackId } : {}),
+      ...(isFolder ? { isFolder: true, collapsed: t.collapsed === true } : {}),
     });
     for (const c of t.clips || []) {
       // Session (Perform grid) clips live in the same clips array now that the
@@ -992,7 +1112,7 @@ export async function loadProjectIntoEditor(
         continue;
       }
       try {
-        const clip = await buildClip(c, trackId, color, bpm);
+        const clip = await buildClip(c, trackId, color, bpm, trackProgram);
         if (clip) outClips.push(clip);
         else skipped += 1;
       } catch (e) {
@@ -1010,7 +1130,7 @@ export async function loadProjectIntoEditor(
   // written in rather than the one the outgoing session happened to hold.
   const { routing, buses } = tasmoToRouting(routedTracks, project.buses);
   useEditorStore.getState().loadProject({
-    tracks: outTracks,
+    tracks: tasmoTrackTree(outTracks),
     clips: outClips,
     bpm,
     timeSignature: meterFromTasmo(project.time_signature),
@@ -1259,12 +1379,21 @@ export function captureEditorSession(): CapturedSession {
           start_time: c.startSec,
           end_time: c.startSec + c.durationSec,
           audio_file: `audio/${fname}`,
-          // The notes as they sound, lane repeats written out, for playback.
-          midi_notes: isMidi && c.sourcePianoRoll ? c.sourcePianoRoll.map(pianoNoteToTasmo) : null,
-          // The roll's own notes with their lanes (roll_notes), its grid length,
-          // meter map, pickup and lanes, so "Edit in Piano Roll" after a reload
-          // opens the same bars.
-          ...(isMidi ? clipMeterToTasmo(c) : {}),
+          // The notes (each stored once: the played notes, the roll's own notes
+          // with their lanes, or both when neither rebuilds the other), the grid
+          // length, meter map, pickup and lanes, so the clip plays what it
+          // played and "Edit in Piano Roll" after a reload opens the same bars.
+          ...(isMidi ? clipNotesToTasmo(c) : { midi_notes: null }),
+          // The clip's own instrument, the one its embedded audio was rendered
+          // with, and the tempo its notes were written at. Without them a
+          // reopened project put every part on the global instrument.
+          ...(isMidi
+            ? {
+                instrument_program: c.instrumentProgram ?? null,
+                rendered_program: c.renderedProgram ?? null,
+                source_bpm: c.sourceBpm ?? null,
+              }
+            : {}),
           // Per-clip mute, gain, fades and the trim point all survive the .tasmo
           // round-trip. offset_into_source is the load-bearing one: the embedded
           // audio is the FULL untrimmed source, so without it a split clip reloads
@@ -1294,6 +1423,13 @@ export function captureEditorSession(): CapturedSession {
       // nothing about routing at all, so a saved session reopened with every
       // track collapsed onto the master and every send gone.
       ...trackRoutingToTasmo(editor.routing, t.id),
+      // The instrument this track's MIDI clips play through, and its place in
+      // the arrangement folders. Before these were written a reopened project
+      // had every part on the global instrument and every track at the root.
+      instrument_program: t.instrumentProgram ?? null,
+      parent_track_id: t.parentTrackId ?? null,
+      is_folder: t.isFolder === true,
+      collapsed: t.collapsed === true,
     };
   });
 

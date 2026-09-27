@@ -11,12 +11,11 @@
 // seconds-based shape the grid renders.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import type { TasmoProjectLoaded } from './projectClient';
+import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, type TasmoProjectLoaded } from './projectClient';
 import { parseFollowAction } from './followAction';
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
-  const stepSec = 60 / Math.max(40, bpm) / 4; // one 16th-note step in seconds
 
   const tracks: DawTrack[] = loaded.tracks.map((t, ti) => {
     // A file written from a real grid already knows where every clip goes.
@@ -25,18 +24,30 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       ? [...t.clips]
       : [...t.clips].sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
     const clips: DawClip[] = sorted.map((c, ci) => {
-      const isMidi =
-        c.clip_type === 'midi' && Array.isArray(c.midi_notes) && c.midi_notes.length > 0;
+      // The notes as they sound: `midi_notes` when the file carries them, else
+      // the roll notes unrolled across the clip's lanes, which is all a
+      // piano-roll clip saved with only its roll notes has (clipNotesToTasmo).
+      const stepNotes: Array<Record<string, number>> =
+        Array.isArray(c.midi_notes) && c.midi_notes.length > 0
+          ? c.midi_notes
+          : c.clip_type === 'midi'
+            ? playedNotesFromRoll(tasmoMeterToClip(c)).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity }))
+            : [];
+      const isMidi = c.clip_type === 'midi' && stepNotes.length > 0;
+      // Steps are 16ths at the tempo the clip's notes were written at.
+      const clipStepSec = 60 / Math.max(40, tasmoClipBpm(c, bpm)) / 4;
       return {
         name: c.name || `Clip ${ci + 1}`,
         start_time: c.start_time ?? 0,
         end_time: c.end_time ?? 0,
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
-          ? (c.midi_notes ?? []).map((n) => ({
+          ? stepNotes.map((n) => ({
               pitch: Number(n.note ?? n.pitch ?? 60),
-              start: Number(n.step ?? 0) * stepSec,
-              duration: Math.max(1, Number(n.length ?? 1)) * stepSec,
+              start: Number(n.step ?? 0) * clipStepSec,
+              // A note's own length: flooring it to a step turned a saved
+              // triplet sixteenth into a full sixteenth in the grid.
+              duration: (Number(n.length) > 0 ? Number(n.length) : 1) * clipStepSec,
               velocity: Number(n.velocity ?? 100),
             }))
           : null,
