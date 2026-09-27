@@ -8,6 +8,10 @@
  */
 import type { PianoNote } from '../../state/pianoRollStore';
 import { MIN_NOTE_STEPS } from './quantize';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../noteClock';
+
+/** The roll's shortest note, one tick, in steps. */
+const ONE_TICK_STEPS = MIN_NOTE_TICKS / (PPQ / ROLL_STEPS_PER_BEAT);
 
 export type OverlapMode =
   /** Extend (or shorten) each note so it runs exactly into the next of its pitch. */
@@ -63,8 +67,10 @@ const dedupe = (notes: readonly PianoNote[]): PianoNote[] => {
 
 /**
  * Returns a new array of new notes in the input order, ids preserved. 'legato'
- * and 'trim' keep every note (a note is never shortened below
- * {@link MIN_NOTE_STEPS}); only 'dedupe' removes any.
+ * and 'trim' keep every note and run it exactly into the next onset of its
+ * pitch, however close that onset is (down to the roll's one tick), so a fast
+ * repeated-note run comes out with no overlap; only an exact stack, with no gap
+ * at all, leaves {@link MIN_NOTE_STEPS}. Only 'dedupe' removes notes.
  */
 export function fixOverlaps(
   notes: readonly PianoNote[],
@@ -79,6 +85,7 @@ export function fixOverlaps(
     if (options.mode === 'trim' && note.step + note.length <= onset) {
       return { ...note };
     }
-    return { ...note, length: Math.max(MIN_NOTE_STEPS, onset - note.step) };
+    const gap = onset - note.step;
+    return { ...note, length: gap > 0 ? Math.max(ONE_TICK_STEPS, gap) : MIN_NOTE_STEPS };
   });
 }

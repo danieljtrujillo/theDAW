@@ -316,6 +316,23 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[0].length - 3.9) < 1e-9);
   assert.match(errOf(await tools.fixOverlaps({ clip_id: 'bass', mode: 'glue', ...seams }), 'bad mode'), /mode must be one of legato, trim, dedupe/);
 
+  // A repeated-note run 0.125 steps apart (128ths), each note held half a step
+  // into the next ones, the way a sustain-pedal take records. TRIM and LEGATO
+  // each end every note where the next begins. Both used to raise any gap under
+  // 0.25 steps to 0.25, so every note still overlapped the next.
+  for (const mode of ['trim', 'legato'] as const) {
+    seed();
+    const run: PianoNote[] = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, note: 72, step: i * 0.125, length: 0.5, velocity: 90 }));
+    useEditorStore.setState({ clips: useEditorStore.getState().clips.map((c) => (c.id === 'midi1' ? { ...c, sourcePianoRoll: run } : c)) });
+    okOf(await tools.fixOverlaps({ clip_id: 'bass', mode, ...seams }), `${mode} a fast run`);
+    const out = [...clipOf('midi1').sourcePianoRoll].sort((a, b) => a.step - b.step);
+    for (let i = 0; i < out.length - 1; i += 1) {
+      assert.ok(Math.abs(out[i].length - 0.125) < 1e-9, `${mode}: note ${i} runs into the next onset (got ${out[i].length})`);
+      assert.ok(out[i].step + out[i].length <= out[i + 1].step + 1e-9, `${mode}: note ${i} ends before note ${i + 1} starts`);
+    }
+    assert.equal(out[out.length - 1].length, 0.5, `${mode}: the last note of the run keeps its length`);
+  }
+
   seed();
   const filtered = okOf(await tools.filterNotes({ clip_id: 'bass', min_length_steps: 0.5, min_velocity: 20, ...seams }), 'filter');
   assert.match(filtered.message, /Removed 1 junk note\(s\).*3 kept/);
