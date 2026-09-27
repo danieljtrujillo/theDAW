@@ -7,23 +7,28 @@
  * compact panel also exposes theDAW's own instrument picker for the full 128-program
  * range. WAV export uses theDAW's offline soundfont render.
  *
- * The panel's voice is the piano roll's own voice (pianoRollStore
- * `voiceProgram`): the assistant's instrument choice and the panel's ROLL VOICE
- * select set it, the panel previews and exports with it, and the roll it fills
- * auditions and bounces with it while no EDIT clip is linked (lib/clipProgram
- * rollVoice). It never writes the global picker, whose program every EDIT clip
- * without one of its own follows. Left unset, all of them play the picker's
- * program.
+ * The panel's voice is the voice the piano roll plays (lib/clipProgram
+ * rollVoice). The assistant's instrument choice and the panel's ROLL VOICE
+ * select set it through lib/rollVoiceChoice: on a roll linked to an EDIT clip
+ * they set that clip's track instrument, and on an unlinked roll the roll's own
+ * voice (pianoRollStore `voiceProgram`). The panel previews and exports with
+ * it. It never writes the global picker, whose program every EDIT clip without
+ * one of its own follows. Left unset, all of them play the picker's program.
  */
 import type { NoteEvent } from './types';
 import { usePianoRollStore } from '../../../state/pianoRollStore';
+import { useEditorStore } from '../../../state/editorStore';
 import {
   getActiveProgram,
+  getGlobalVoice,
   previewNoteSF,
   renderNotesToBlobSF,
   liveAllNotesOff,
 } from '../../../lib/soundfontEngine';
 import type { RenderNote } from '../../../lib/midiSynth';
+import { rollVoice, type ClipVoice } from '../../../lib/clipProgram';
+import { chooseRollVoice } from '../../../lib/rollVoiceChoice';
+import { DRUM_CHANNEL } from '../../../lib/editChannels';
 import { getEngineCtx } from '../../../state/playerStore';
 
 export type InstrumentType = 'synth' | 'piano' | 'kick' | 'bass' | 'guitar' | 'strings' | 'organ';
@@ -42,8 +47,17 @@ const INSTRUMENT_GM: Record<InstrumentType, { name: string; program: number }> =
   organ: { name: 'Rock Organ', program: 18 },
 };
 
-/** The program the panel previews and renders with: the roll's own, else the picker's. */
-export const vocalVoiceProgram = (): number => usePianoRollStore.getState().voiceProgram ?? getActiveProgram();
+/** The voice the panel previews and renders with: the roll's (its linked
+ *  clip's, else its own), with the picker's program when that has none. */
+export const vocalVoice = (): ClipVoice => {
+  const { clips, tracks } = useEditorStore.getState();
+  const { editingClipId, voiceProgram } = usePianoRollStore.getState();
+  const voice = rollVoice(editingClipId, clips, tracks, getGlobalVoice(), voiceProgram);
+  return { program: voice.program ?? getActiveProgram(), percussion: voice.percussion };
+};
+
+/** The program the panel previews and renders with (see vocalVoice). */
+export const vocalVoiceProgram = (): number => vocalVoice().program ?? getActiveProgram();
 
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -66,7 +80,7 @@ export class MidiSynth {
 
   setInstrument(instrument: InstrumentType): Promise<void> {
     this.instrument = instrument;
-    usePianoRollStore.getState().setVoiceProgram(INSTRUMENT_GM[instrument].program);
+    chooseRollVoice(INSTRUMENT_GM[instrument].program);
     return Promise.resolve();
   }
 
@@ -98,7 +112,8 @@ export class MidiSynth {
       if (at < 0) continue;
       const vel = Math.max(1, Math.min(127, Math.round(n.velocity * (0.4 + this.volume * 0.6))));
       const id = window.setTimeout(() => {
-        void previewNoteSF(n.midiNote, vel, n.duration, 0, undefined, vocalVoiceProgram());
+        const voice = vocalVoice();
+        void previewNoteSF(n.midiNote, vel, n.duration, voice.percussion ? DRUM_CHANNEL : 0, undefined, voice.program);
       }, Math.max(0, at * 1000));
       this.timers.push(id);
     }
@@ -142,7 +157,9 @@ export class MidiSynth {
 
   /** Render the notes to a WAV Blob through theDAW's offline soundfont render. */
   async renderToWav(notes: NoteEvent[]): Promise<Blob> {
-    const { blob } = await renderNotesToBlobSF(toRenderNotes(notes), { program: vocalVoiceProgram() });
+    const voice = vocalVoice();
+    const render = toRenderNotes(notes);
+    const { blob } = await renderNotesToBlobSF(voice.percussion ? render.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render, { program: voice.program });
     return blob;
   }
 
