@@ -34,10 +34,16 @@
  * `frag(k s; size=1)`, `echo(v; every=3)`, `accel(k; from=1 to=2)`,
  * `gliss(v; from=-12 to=12)` — a rule that owns `span` rail cells.
  * Score directives: `seed 7` (reproducible dice), `form AABA` (song
- * structure by lap), `ramp bpm 120 150 8` (tempo ramp over laps).
+ * structure by lap), `ramp bpm 120 150 8` (tempo ramp over laps),
+ * `meter 7/8 2+2+3` (the bar the beat clock counts while the score plays;
+ * `groups=2+2+3` reads the same).
+ * Lane steps: `1/16` sixteenths (steps per whole note), and the tuplet grids
+ * `1/12` (8th triplets), `1/20` (16th quintuplets), `1/24` (16th triplets)
+ * and `1/28` (16th septuplets) beside the straight 1/1-1/64.
  * `;` starts a comment.
  */
 import { GEN_KINDS, GEN_DEFAULT_OPTS, serializeGenOpts, type GenKind, type GenOpts, type GenTile } from './loomGen';
+import type { Meter } from './colony';
 
 export type LoomRole =
   | 'drums' | 'kick' | 'snare' | 'hihat' | 'cymbals' | 'toms'
@@ -137,6 +143,8 @@ export interface LoomScore {
   form?: string;
   /** Tempo ramp applied at the master wrap. */
   ramp?: LoomRamp;
+  /** The bar the beat clock counts while the score plays (`meter 7/8 2+2+3`); left out, the clock keeps its own. */
+  meter?: Meter;
   lanes: LoomLane[];
 }
 
@@ -171,9 +179,39 @@ function parseKey(s: string): { key?: string; scale?: 'major' | 'minor' } | null
   return { key: m[1].toUpperCase() + acc, scale };
 }
 
+/** Lane step sizes, in steps per whole note: the straight grids and the tuplet grids. */
+export const LANE_DIVS = [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 64] as const;
+
 function parseDiv(tok: string): number | null {
-  const m = /^1\/(1|2|4|8|16|32|64)$/.exec(tok);
-  return m ? Number(m[1]) : null;
+  const m = /^1\/(\d+)$/.exec(tok);
+  const div = m ? Number(m[1]) : NaN;
+  return (LANE_DIVS as readonly number[]).includes(div) ? div : null;
+}
+
+const METER_DENS = [1, 2, 4, 8, 16, 32];
+
+/** `7/8 2+2+3` or `7/8 groups=2+2+3` as a meter, or an error message. */
+function parseMeterDirective(args: string[]): Meter | string {
+  const m = /^(\d+)\/(\d+)$/.exec(args[0] ?? '');
+  const shape = 'meter looks like 7/8, 7/8 2+2+3 or 7/8 groups=2+2+3';
+  if (!m) return shape;
+  const num = Number(m[1]);
+  const den = Number(m[2]);
+  if (num < 1 || num > 64 || !METER_DENS.includes(den)) return 'meter is 1-64 over 1, 2, 4, 8, 16 or 32';
+  if (args.length > 2) return shape;
+  if (args.length === 1) return { num, den, groups: [] };
+  const g = /^(?:groups=)?(\d+(?:\+\d+)+)$/.exec(args[1]);
+  if (!g) return shape;
+  const groups = g[1].split('+').map(Number);
+  if (groups.some((x) => x < 1) || groups.reduce((a, b) => a + b, 0) !== num) return `meter groups must add up to ${num}`;
+  return { num, den, groups };
+}
+
+/** Steps one bar of `meter` holds in `lane`, when that is a whole number (a 1/12 lane in 7/8 holds 10.5, which is not). */
+export function laneBarSteps(lane: Pick<LoomLane, 'div'>, meter: Meter | undefined): number | null {
+  if (!meter) return lane.div;
+  const steps = (lane.div * meter.num) / meter.den;
+  return Number.isInteger(steps) && steps > 0 ? steps : null;
 }
 
 function parseLockParams(body: string, line: number, errors: LoomParseError[]): Partial<Record<LockParam, number>> {
@@ -439,6 +477,11 @@ export function parseLoom(text: string): { score: LoomScore; errors: LoomParseEr
         if (from < 20 || from > 300 || to < 20 || to > 300) errors.push({ line: lineNo, message: 'ramp bpm is 20–300' });
         else score.ramp = { param: 'bpm', from, to, laps: Math.max(1, Number(m[3])), curve: m[4] ? Number(m[4]) : undefined };
       }
+    } else if (h === 'meter') {
+      flushLane();
+      const m = parseMeterDirective(rest);
+      if (typeof m === 'string') errors.push({ line: lineNo, message: m });
+      else score.meter = m;
     } else if (h === 'lane') {
       flushLane();
       const name = rest[0];
@@ -456,7 +499,7 @@ export function parseLoom(text: string): { score: LoomScore; errors: LoomParseEr
       if (score.lanes.some((x) => x.name === name)) errors.push({ line: lineNo, message: `lane "${name}" is defined twice` });
       lane = l;
     } else {
-      errors.push({ line: lineNo, message: `unknown directive "${head}" (bpm, key, seed, form, ramp, lane)` });
+      errors.push({ line: lineNo, message: `unknown directive "${head}" (bpm, key, seed, form, ramp, meter, lane)` });
     }
   }
   flushLane();
@@ -532,6 +575,7 @@ export function serializeLoom(score: LoomScore): string {
   if (score.seed != null) out.push(`seed ${score.seed}`);
   if (score.form) out.push(`form ${score.form}`);
   if (score.ramp) out.push(`ramp bpm ${num(score.ramp.from)} ${num(score.ramp.to)} ${score.ramp.laps}${score.ramp.curve != null ? ` ${num(score.ramp.curve)}` : ''}`);
+  if (score.meter) out.push(`meter ${score.meter.num}/${score.meter.den}${score.meter.groups.length > 1 ? ` ${score.meter.groups.join('+')}` : ''}`);
   for (const lane of score.lanes) {
     if (out.length) out.push('');
     const opts = [`1/${lane.div}`, `x${lane.length}`];
@@ -562,7 +606,10 @@ export function serializeLoom(score: LoomScore): string {
     // Pad per column (not to the widest token in the lane) so one long
     // generator does not push every other cell of the block out of view.
     const widths = Array.from({ length: lane.length }, (_, i) => Math.max(1, ...cells.map((toks) => toks[i].length)));
-    const barEvery = lane.length > lane.div ? lane.div : 0;
+    // A bar line every bar of the score's meter (a whole note without one),
+    // when a bar holds a whole number of the lane's steps.
+    const barSteps = laneBarSteps(lane, score.meter);
+    const barEvery = barSteps && lane.length > barSteps ? barSteps : 0;
     for (const toks of cells) {
       const line = toks.map((c, i) => c.padEnd(widths[i]) + (barEvery && i > 0 && (i + 1) % barEvery === 0 && i < lane.length - 1 ? ' |' : '')).join(' ').trimEnd();
       out.push(`  ${line}`);

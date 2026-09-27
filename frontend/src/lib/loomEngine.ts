@@ -121,6 +121,9 @@ export class LoomEngine {
     if (ctx.state === 'suspended') void ctx.resume();
     const bpm0 = this.score.ramp ? this.score.ramp.from : this.score.bpm;
     if (bpm0) beatClock.setBpm(bpm0, 'loom');
+    // `meter 7/8 2+2+3`: the clock counts the score's own bar, so the start
+    // lands on its bar line and a click follows its groups.
+    if (this.score.meter) beatClock.setMeterMap([{ bar: 0, meter: this.score.meter }]);
     const t0 = beatClock.nextGrid('bar');
     this.rebuildRunners(t0);
     this.running = true;
@@ -416,6 +419,7 @@ export class LoomEngine {
           this.score = next;
           if (next.ramp) beatClock.setBpm(next.ramp.from, 'loom');
           else if (next.bpm) beatClock.setBpm(next.bpm, 'loom');
+          if (next.meter) beatClock.setMeterMap([{ bar: 0, meter: next.meter }]);
           this.rebuildRunners(r.nextTime);
           logInfo('loom', 'Score swapped at the master wrap');
         }

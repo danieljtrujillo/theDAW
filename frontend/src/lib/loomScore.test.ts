@@ -138,4 +138,46 @@ const shardAt = (tiles: (LoomTile | null)[], i: number) => {
   }
 }
 
+// Tuplet lane grids: 1/12, 1/20, 1/24 and 1/28 read, write back, and play at
+// that many steps to the whole note; a grid the list lacks is still an error.
+{
+  const { score, errors } = parseLoom('lane trip 1/12 x12\n  k . . s . . k . . s . .\nlane quint 1/20 x5\n  h h h h h\nlane six 1/24 x6\n  h . h . h .\nlane sept 1/28 x7\n  h h h h h h h\n');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(score.lanes.map((l) => l.div), [12, 20, 24, 28]);
+  assert.match(serializeLoom(score), /lane trip 1\/12 x12\n/);
+  assert.equal(serializeLoom(parseLoom(serializeLoom(score)).score), serializeLoom(score));
+  // One quarter note (4 / div of a whole note per step): 3 steps of 1/12, 5 of 1/20, 7 of 1/28.
+  assert.deepEqual(score.lanes.map((l) => (4 / l.div) * ({ 12: 3, 20: 5, 24: 6, 28: 7 } as Record<number, number>)[l.div]), [1, 1, 1, 1]);
+  for (const bad of ['1/3', '1/10', '1/48', '1/0']) {
+    const r = parseLoom(`lane x ${bad} x4\n  k . . .`);
+    assert.ok(r.errors.some((e) => /unknown option/.test(e.message)), `${bad} is not a lane grid`);
+  }
+}
+
+// `meter 7/8 2+2+3` (and `groups=2+2+3`) sets the score's bar; it round-trips,
+// and the bar lines in the written rows follow it where a bar holds whole steps.
+{
+  const { score, errors } = parseLoom('bpm 132\nmeter 7/8 2+2+3\nlane drums 1/16 x28\n  k . . . s . . . k . . . s . k . . . s . . . k . . . s .\n');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(score.meter, { num: 7, den: 8, groups: [2, 2, 3] });
+  const text = serializeLoom(score);
+  assert.match(text, /^bpm 132\nmeter 7\/8 2\+2\+3\n/);
+  // A 7/8 bar is 14 sixteenths: one bar line, after step 14.
+  const rail = text.trimEnd().split('\n').at(-1) ?? '';
+  assert.equal(rail.split('|').length, 2);
+  assert.equal(rail.split('|')[0].trim().split(/\s+/).length, 14);
+  assert.deepEqual(parseLoom(text).score.meter, score.meter);
+  assert.deepEqual(parseLoom('meter 7/8 groups=2+2+3').score.meter, { num: 7, den: 8, groups: [2, 2, 3] });
+  assert.deepEqual(parseLoom('meter 5/4').score.meter, { num: 5, den: 4, groups: [] });
+  assert.match(parseLoom('meter 7/8 2+2+2').errors[0]?.message ?? '', /add up to 7/);
+  assert.match(parseLoom('meter 7/6').errors[0]?.message ?? '', /1, 2, 4, 8, 16 or 32/);
+  assert.match(parseLoom('meter seven').errors[0]?.message ?? '', /meter looks like/);
+  // A 1/12 lane in 7/8 holds 10.5 steps a bar, so it draws no bar lines.
+  const trip = serializeLoom(parseLoom('meter 7/8\nlane t 1/12 x21\n  k . . . . . . . . . . . . . . . . . . . .').score);
+  assert.equal(trip.includes('|'), false);
+  // A score written before the directive has no meter and writes none.
+  assert.equal(parseLoom(STARTER_SCORE).score.meter, undefined);
+  assert.equal(serializeLoom(parseLoom(STARTER_SCORE).score).includes('meter'), false);
+}
+
 console.log('loomScore: all assertions passed');

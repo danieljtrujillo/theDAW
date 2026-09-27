@@ -33,7 +33,7 @@
 import { beatClock } from './beatClock';
 import { getEngineCtx } from '../state/playerStore';
 import { logInfo } from '../state/logStore';
-import { barSeconds, groupStarts, ruleTile, symbolIndex, type ColonyEdge, type ColonyGraph, type ColonyNode, type ColonyScore, type LoopNode, type RuleNode } from './colony';
+import { barSeconds, colonyClockMeter, groupStarts, ruleTile, symbolIndex, type ColonyEdge, type ColonyGraph, type ColonyNode, type ColonyScore, type LoopNode, type RuleNode } from './colony';
 import { genCell, unit } from './loomGen';
 import { serializeQuery, type LockParam, type LoomQuery } from './loomScore';
 import type { ShardRow } from '../state/shardIndexStore';
@@ -144,7 +144,9 @@ export class ColonyEngine {
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
     if (this.score.bpm) beatClock.setBpm(this.score.bpm, 'loom');
-    beatClock.setBeatsPerBar(Math.max(1, Math.min(16, Math.round(this.score.root.meter.num * 4 / this.score.root.meter.den))));
+    // The root colony's own meter, groups and all: a 7/8 bar is 3.5 quarters
+    // on the clock, where rounding it to whole quarters counted 4/4.
+    beatClock.setMeterMap(colonyClockMeter(this.score.root.meter));
     const t0 = beatClock.nextGrid('bar');
     this.root = this.instance(this.score.root, [], t0, true, 60 / beatClock.bpm);
     this.running = true;
@@ -235,6 +237,7 @@ export class ColonyEngine {
       this.queued = null;
       this.score = next;
       if (next.bpm) beatClock.setBpm(next.bpm, 'loom');
+      beatClock.setMeterMap(colonyClockMeter(next.root.meter));
       // Play the rest of the outgoing bar first.
       this.stepRules(inst, inst.armed);
       this.flushPending(inst, inst.armed);
