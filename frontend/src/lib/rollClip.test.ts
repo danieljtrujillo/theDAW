@@ -3,7 +3,8 @@
 // (.tasmo JSON), reload, open in the roll again. projectImport.ts does not load
 // under node, so the save and the reload replay its projectClient mappers.
 import assert from 'node:assert/strict';
-import { clipRenderInput, clipRollLoad, playedRollNotes, quantizeRollClip, rollClipFields, type RollClipInput, type RollLoadArgs } from './rollClip.ts';
+import { clipRenderInput, clipRollLoad, midiFileClipFields, playedRollNotes, quantizeRollClip, rollClipFields, type RollClipInput, type RollLoadArgs } from './rollClip.ts';
+import { encodeMidi, parseMidi } from './midi.ts';
 import { clipMeterToTasmo, pianoNoteToTasmo, tasmoMeterToClip, tasmoNotesToPiano, type TasmoStepNote } from './projectClient.ts';
 import { migrateNotes, rollMeterOf, tickOfStep, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 import { unrollLanes, type MeterSegment } from './meterMap.ts';
@@ -249,6 +250,61 @@ assertRoll('clip-1');
   // An empty roll's own notes (never any lane document) quantize to nothing and stay that way.
   const emptyOut = quantizeRollClip({}, { grid: '1/16', strength: 1 });
   assert.deepEqual(emptyOut, { sourceRollNotes: [], sourcePianoRoll: [] });
+}
+
+// A .mid dropped into EDIT (addMidiClipFromBytes): the bytes are parsed, the
+// clip takes midiFileClipFields, the clip renders (clipRenderInput) and then
+// opens in the roll (clipRollLoad -> loadFromClip). The file is 480 PPQ at
+// 97.3 BPM in 7/8, with a flam, a 32nd and a slide on channel 1. EDIT used to
+// round each note to the nearest 16th with a one-step floor, round the tempo
+// to 97 and drop the slide, so the clip neither played nor reopened as written.
+{
+  const bytes = encodeMidi({
+    ppq: 480,
+    bpm: 97.3,
+    timeSignatures: [{ tick: 0, num: 7, den: 8, groups: [3, 2, 2] }],
+    tracks: [
+      {
+        name: 'Lead',
+        notes: [
+          { tick: 0, note: 60, velocity: 100, durationTicks: 480, channel: 0 },
+          { tick: 19, note: 64, velocity: 90, durationTicks: 461, channel: 0 }, // a flam
+          { tick: 540, note: 67, velocity: 80, durationTicks: 60, channel: 0 }, // a 32nd, off the grid
+          { tick: 960, note: 55, velocity: 85, durationTicks: 480, channel: 1 }, // the slide's note
+        ],
+        bends: [
+          { tick: 960, channel: 1, value: 8192 },
+          { tick: 1200, channel: 1, value: 12288 },
+          { tick: 1440, channel: 1, value: 8192 },
+        ],
+        bendRanges: [{ tick: 0, channel: 1, semitones: 2 }],
+      },
+    ],
+  });
+  const fields = midiFileClipFields(parseMidi(bytes), 'imp');
+  assert.equal(fields.sourceBpm, 97.3, 'the clip plays at the file tempo');
+  // 960 PPQ in the model: every file tick doubles, nothing snaps.
+  const byTick = [...fields.sourcePianoRoll].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note);
+  assert.deepEqual(byTick.map((n) => [n.note, n.tick, n.ticks]), [[60, 0, 960], [64, 38, 922], [67, 1080, 120], [55, 1920, 960]]);
+  assert.equal(byTick[2].length, 0.5, 'the 32nd is half a 16th long');
+  assert.deepEqual(fields.sourceMeterMap, M78, 'the clip keeps the 7/8');
+  // The last note ends at step 12; the clip ends on the bar line after it.
+  assert.equal(fields.sourceTotalSteps, 14);
+  // The slide rides its own lane with its curve, and the render bends that lane.
+  assert.equal(fields.sourceLanes.length, 2, 'the bending channel has its own lane');
+  const bent = fields.sourceBends.find((b) => b.points.length > 0);
+  assert.ok(bent && bent.lane === 1, 'lane B carries the slide');
+  const render = clipRenderInput(fields, fields.sourceTotalSteps);
+  assert.ok(render.bends, 'the clip audio renders the slide');
+  // Open the clip in the roll: the same ticks, tempo, meter and slide.
+  usePianoRollStore.getState().loadFromClip(...clipRollLoad({ id: 'mid-clip', ...fields }));
+  const roll = st();
+  assert.equal(roll.bpm, 97.3);
+  assert.deepEqual(
+    [...roll.notes].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note).map((n) => [n.note, n.tick, n.ticks, n.lane ?? 0]),
+    [[60, 0, 960, 0], [64, 38, 922, 0], [67, 1080, 120, 0], [55, 1920, 960, 1]],
+  );
+  assert.ok(roll.bends.some((b) => b.lane === 1 && b.points.length > 0), 'the roll bends lane B');
 }
 
 console.log('rollClip: ok');
