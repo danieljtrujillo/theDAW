@@ -209,8 +209,9 @@ interface PianoRollState {
    *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
    *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
    *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
-   *  Opening a clip starts a new document: the undo and redo stacks empty, so an
-   *  undo can never bring another clip's notes into this one, and the loop clears. */
+   *  Opening a clip is one undo step that carries the link it replaced: undoing it
+   *  brings back the previous notes linked to the clip they came from, so an undo
+   *  can never bring another clip's notes into this one. The loop clears. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -283,8 +284,9 @@ interface PianoRollState {
  *  the link together with the document (CLEAR empties the roll and unlinks).
  *  That step carries the link it replaced, so undoing it relinks the clip whose
  *  notes come back, and SAVE keeps writing those notes into their own clip. A
- *  link change on its own (a bounce binding a new clip, UNLINK) is not a step,
- *  and opening a clip empties both stacks (loadFromClip). */
+ *  link change on its own (a bounce binding a new clip, UNLINK) is not a step.
+ *  Opening a clip (loadFromClip) is a step that always carries the link, so
+ *  undoing it relinks the clip whose notes come back. */
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
@@ -890,13 +892,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
   loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends) => {
-    // A new document: its history starts empty. The write is not recorded (an
-    // undo of it would hand back the previous clip's notes while the roll is
-    // linked to this one, and SAVE would write them here), and the next edit
-    // starts a fresh step instead of folding into whatever came before.
+    // Opening a clip is one undo step of its own, and the step carries the link
+    // it replaced: undoing it brings back the roll's previous notes (unsaved
+    // work included) linked to the clip they came from, so SAVE writes them
+    // there and never into the clip just opened. The step is written here, not
+    // by the recorder, so it never folds into the burst before it, and the next
+    // edit starts a fresh step.
     historyApplying = true;
     try {
       set((s) => {
+        const undo = [...s._undo, { ...docSnapshot(s), editingClipId: s.editingClipId }];
+        if (undo.length > HISTORY_LIMIT) undo.shift();
         const notes = migrateNotes(incoming);
         const m = mergeMeter(s, meter);
         const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
@@ -917,7 +923,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           loop: null,
           loopOn: false,
           recordedRange: null,
-          _undo: [],
+          _undo: undo,
           _redo: [],
         };
       });
@@ -1122,7 +1128,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
 // recorded range don't touch these slices, so they never pollute history. A
 // write that changes the linked clip WITH the document (CLEAR) always starts
 // its own step, and the step keeps the link it replaced. undo/redo and
-// loadFromClip set historyApplying so their own writes aren't recorded.
+// loadFromClip set historyApplying so their own writes aren't recorded here
+// (loadFromClip pushes its own linked step).
 usePianoRollStore.subscribe((state, prev) => {
   if (historyApplying) return;
   if (

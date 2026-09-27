@@ -198,11 +198,11 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
 
 // Open EDIT clip A, edit it, open clip B, undo: the sequence WaveformEditor's
 // double-click (clipRollLoad -> loadFromClip) and the roll's Ctrl/Cmd+Z make.
-// Opening B starts a new document, so the undo has nothing to take back: B's
-// notes stay, the roll stays linked to B, and SAVE (rollClipFields, what the
-// SAVE key writes into the linked clip) writes B's own notes into B. The undo
-// used to bring A's notes back while the roll stayed linked to B, and SAVE then
-// wrote A's notes into B.
+// Opening a clip is one step that carries the link it replaced. Undoing the
+// open of B brings back A's notes, the unsaved edit included, linked to A, so
+// SAVE (rollClipFields, what the SAVE key writes into the linked clip) writes
+// them into A. The undo used to bring A's notes back while the roll stayed
+// linked to B, and SAVE then wrote A's notes into B.
 {
   const clip = (id: string, steps: number[]): RollClipInput => ({
     id,
@@ -214,27 +214,44 @@ const freshLanes = () => ({ lanes: sanitizeLanes(DEFAULT_LANES), activeLane: 0, 
     sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
     sourceBends: [],
   });
-  usePianoRollStore.setState({ notes: [note(0)], selectedNoteId: null });
+  usePianoRollStore.setState({ notes: [note(0, 'scratch')], editingClipId: null, selectedNoteId: null });
   beginBlock();
   st().loadFromClip(...clipRollLoad(clip('A', [0, 4, 8])));
-  assert.equal(st()._undo.length, 0, 'opening a clip leaves no step to undo');
-  st().addNote({ note: 72, step: 12, length: 2, velocity: 90 });
-  assert.equal(st()._undo.length, 1, 'an edit in clip A is one step');
+  assert.equal(st()._undo.length, 1, 'opening a clip is one step');
+  const edited = st().addNote({ note: 72, step: 12, length: 2, velocity: 90 });
+  assert.equal(st()._undo.length, 2, 'an edit in clip A is its own step, never folded into the open');
   st().loadFromClip(...clipRollLoad(clip('B', [2, 6])));
-  assert.deepEqual([st()._undo.length, st()._redo.length], [0, 0], 'opening clip B empties both stacks');
-  st().undo();
+  assert.deepEqual([st()._undo.length, st()._redo.length], [3, 0], 'opening clip B is one more step');
   assert.equal(st().editingClipId, 'B');
-  assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1'], "undo after opening B leaves B's notes");
+
+  st().undo();
+  assert.equal(st().editingClipId, 'A', 'undoing the open of B relinks A');
+  assert.deepEqual(
+    st().notes.map((n) => n.id),
+    ['A-0', 'A-1', 'A-2', edited],
+    "undoing the open of B brings back A's notes and the unsaved edit",
+  );
   const saved = rollClipFields(st());
-  assert.deepEqual(saved.sourceRollNotes.map((n) => n.id), ['B-0', 'B-1'], "SAVE writes B's own notes into B");
+  assert.deepEqual(saved.sourceRollNotes.map((n) => n.id), ['A-0', 'A-1', 'A-2', edited], "SAVE writes A's notes, into A");
+
   st().redo();
-  assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1'], 'redo has nothing of A to bring back');
+  assert.equal(st().editingClipId, 'B', 'redo opens B again, linked to B');
+  assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1']);
+  assert.deepEqual(rollClipFields(st()).sourceRollNotes.map((n) => n.id), ['B-0', 'B-1'], "SAVE writes B's own notes into B");
+
   // The first edit in B is a fresh step, and undoing it lands on B as opened.
   st().addNote({ note: 50, step: 20, length: 2, velocity: 90 });
-  assert.equal(st()._undo.length, 1);
+  assert.equal(st()._undo.length, 4);
   st().undo();
   assert.deepEqual(st().notes.map((n) => n.id), ['B-0', 'B-1']);
   assert.equal(st().editingClipId, 'B');
+
+  // Back through the edit in A and the open of A: the scratch roll comes back unlinked.
+  st().undo();
+  st().undo();
+  assert.deepEqual([st().notes.map((n) => n.id), st().editingClipId], [['A-0', 'A-1', 'A-2'], 'A']);
+  st().undo();
+  assert.deepEqual([st().notes.map((n) => n.id), st().editingClipId], [['scratch'], null], 'undoing the open of A brings back the unlinked scratch roll');
 }
 
 // CLEAR unlinks the clip in the same write that empties the roll. Its undo
