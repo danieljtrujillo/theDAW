@@ -23,6 +23,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import msgpack
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -193,6 +194,46 @@ def test_the_roll_voice_round_trips_through_the_archive(tmp_path: Path) -> None:
     picker = TasmoProject.model_validate({"roll_voice": {"program": None}})
     assert picker.roll_voice is not None
     assert picker.roll_voice.program is None
+
+
+def test_a_hand_edited_roll_voice_opens_the_project_on_the_picker(
+    tmp_path: Path,
+) -> None:
+    """A roll_voice program that is not a whole GM number failed TasmoProject
+    validation, so one damaged setting refused the whole file. It now reads as
+    None (follow the picker), the reading the frontend gives it."""
+    tracks = len(_project([_note(0)])["tracks"])
+    for bad in (40.5, 200, -1, "strings", True):
+        project = TasmoProject.model_validate(
+            {**_project([_note(0)]), "roll_voice": {"program": bad}}
+        )
+        assert project.roll_voice is not None
+        assert project.roll_voice.program is None, bad
+        assert len(project.tracks) == tracks
+    whole = TasmoProject.model_validate({"roll_voice": {"program": 48.0}})
+    assert whole.roll_voice is not None
+    assert whole.roll_voice.program == 48
+
+    # A file on disk whose project record was edited by hand still opens.
+    out = tmp_path / "hand.tasmo"
+    TasmoFile.save(
+        TasmoProject.model_validate(
+            {**_project([_note(0)]), "roll_voice": {"program": 71}}
+        ),
+        str(out),
+    )
+    with zipfile.ZipFile(out) as zf:
+        entries = {name: zf.read(name) for name in zf.namelist()}
+    record = msgpack.unpackb(entries["project.msgpack"], raw=False)
+    record["roll_voice"] = {"program": 40.5}
+    entries["project.msgpack"] = msgpack.packb(record, use_bin_type=True)
+    with zipfile.ZipFile(out, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    loaded, _ = TasmoFile.load(str(out))
+    assert loaded.roll_voice is not None
+    assert loaded.roll_voice.program is None
+    assert len(loaded.tracks) == tracks
 
 
 # ---------------------------------------------------------------------------

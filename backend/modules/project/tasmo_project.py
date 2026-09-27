@@ -3,7 +3,7 @@
 from __future__ import annotations
 import math
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class VstPluginState(BaseModel):
@@ -494,6 +494,24 @@ class RollVoice(BaseModel):
     0-127 and reads anything else as None."""
 
     program: int | None = None
+
+    @field_validator("program", mode="before")
+    @classmethod
+    def _whole_gm_program(cls, v: object) -> int | None:
+        """A whole number 0-127 (a JSON 48.0 is 48), else None.
+
+        A hand-edited or damaged ``program`` (40.5, 200, "strings", true) is a
+        roll that follows the picker, the same reading the frontend gives it
+        (projectClient gmProgramOf). Rejecting it would refuse the whole
+        project over one setting.
+        """
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)
+        if isinstance(v, int) and 0 <= v <= 127:
+            return v
+        return None
 
 
 class TasmoProject(BaseModel):
