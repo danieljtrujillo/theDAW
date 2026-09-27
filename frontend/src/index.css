@@ -816,3 +816,46 @@ select optgroup {
 }
 .loom-live { animation: loom-breathe 0.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .loom-live { animation: none; } }
+
+/* DJ Eject pad on a loaded deck (DJView gives it `dj-eject-heartbeat`): a red
+ * heartbeat in its glow, fill and edge. The pad keeps its size, so it never
+ * grows past its cell. Unlayered, and the colours ride in the keyframes: an
+ * animation's values win over every normal declaration, so neither SlidePad's
+ * unlit utilities (border-white/12, bg-black/40, text-zinc-400) nor the theme
+ * remaps of those utilities above can grey it out. The red is SlidePad's DANGER
+ * (rose-500); light themes take the darker rose steps the rose text and border
+ * rules above use. Hover brightens the edge and the ink through the variables. */
+.dj-eject-heartbeat {
+  --eject-red: var(--color-rose-500, #f43f5e);
+  --eject-ink: var(--color-rose-200, #fecdd3);
+  --eject-edge: 58%;
+  animation: dj-eject-heartbeat 1.45s ease-in-out infinite;
+}
+.dj-eject-heartbeat:hover { --eject-ink: var(--color-white, #fff); --eject-edge: 88%; }
+.edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat {
+  --eject-red: var(--color-rose-700, #be123c);
+  --eject-ink: var(--color-rose-900, #881337);
+}
+.edit-theme-scope[data-et-light="1"] .dj-eject-heartbeat:hover { --eject-ink: var(--color-rose-950, #4c0519); }
+@keyframes dj-eject-heartbeat {
+  0%, 48%, 100% {
+    color: var(--eject-ink);
+    border-color: color-mix(in srgb, var(--eject-red) var(--eject-edge), transparent);
+    background-color: color-mix(in srgb, var(--eject-red) 12%, transparent);
+    box-shadow: 0 0 0 transparent, 0 0 0 transparent;
+  }
+  14% {
+    background-color: color-mix(in srgb, var(--eject-red) 30%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--eject-red) 72%, transparent), 0 0 22px color-mix(in srgb, var(--eject-red) 42%, transparent);
+  }
+  24% {
+    background-color: color-mix(in srgb, var(--eject-red) 18%, transparent);
+    box-shadow: 0 0 4px color-mix(in srgb, var(--eject-red) 30%, transparent), 0 0 8px color-mix(in srgb, var(--eject-red) 14%, transparent);
+  }
+  34% {
+    background-color: color-mix(in srgb, var(--eject-red) 26%, transparent);
+    box-shadow: 0 0 7px color-mix(in srgb, var(--eject-red) 55%, transparent), 0 0 16px color-mix(in srgb, var(--eject-red) 30%, transparent);
+  }
+}
+/* Reduced motion holds the resting frame: the pad stays red and still. */
+@media (prefers-reduced-motion: reduce) { .dj-eject-heartbeat { animation-play-state: paused; } }
