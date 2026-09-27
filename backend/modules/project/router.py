@@ -9,9 +9,11 @@ import tempfile
 import threading
 import zipfile
 from pathlib import Path
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from backend.modules.genaiproxy.access import caller_is_loopback
 from backend.modules.project import media_access
@@ -281,13 +283,51 @@ def save_project(req: SaveRequest, request: Request):
     return {"status": "saved", "path": path, "manifest": manifest}
 
 
-@router.post("/save-session")
-async def save_session(
-    request: Request,
-    project: str = Form(...),
-    path: str = Form(...),
-    files: list[UploadFile] = File(default=[]),
-):
+# A session save uploads one file part per clip and one per take. Starlette's
+# multipart default of 1000 file parts is sized for a web form, and an
+# arrangement with more than 1000 clips and takes failed against it with "Too
+# many files". This ceiling is far above what a browser tab can hold in memory
+# as clip audio, and still bounds the temp files one request can open. It is
+# applied only after the caller has passed the token gate.
+SESSION_MAX_FILES = 50_000
+
+_SAVE_SESSION_BODY = {
+    "required": True,
+    "content": {
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "required": ["project", "path"],
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": (
+                            "The TasmoProject JSON as a file part. A plain text "
+                            "field is also read, up to Starlette's 1 MB limit "
+                            "for a non-file part."
+                        ),
+                    },
+                    "path": {"type": "string"},
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string", "format": "binary"},
+                        "description": "One upload per clip and per take.",
+                    },
+                },
+            }
+        }
+    },
+}
+
+
+def _parse_project(text: str | bytes) -> TasmoProject:
+    """The project JSON of a session save, validated as a TasmoProject."""
+    return TasmoProject.model_validate(json.loads(text))
+
+
+@router.post("/save-session", openapi_extra={"requestBody": _SAVE_SESSION_BODY})
+async def save_session(request: Request):
     """Save the LIVE session (the EDIT timeline) to a .tasmo, embedding each
     clip's audio bytes uploaded alongside the project JSON.
 
@@ -297,22 +337,49 @@ async def save_session(
     filename — each ``audio_file`` points at ``audio/<filename>`` and the
     matching upload is written into the archive.
 
+    The project JSON arrives as a FILE part (``project``). Starlette holds a
+    plain text part to 1 MB, and a project of about 9,000 notes filled that, so
+    the save failed with "Part exceeded maximum size" before this handler ran.
+    A file part has no such limit; a small text field is still read for callers
+    that post one. The form is parsed here rather than through FastAPI's
+    ``Form``/``File`` parameters so the file-part ceiling can be raised (see
+    ``SESSION_MAX_FILES``) and so the token gate runs before any of the body is
+    read.
+
     Always embeds (unconditionally, unlike ``/save``): gated the same way
     every other write/read on this router is."""
     require_loopback_launch_or_pairing_token(request)
-    _require_known_root_for_lan(path, request, what="path")
-    try:
-        project_data = json.loads(project)
-        tasmo = TasmoProject.model_validate(project_data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid project data: {e}")
+    async with request.form(max_files=SESSION_MAX_FILES) as form:
+        path = form.get("path")
+        if not isinstance(path, str) or not path:
+            raise HTTPException(status_code=422, detail="path is required")
+        _require_known_root_for_lan(path, request, what="path")
+        raw_project = form.get("project")
+        if raw_project is None:
+            raise HTTPException(status_code=422, detail="project is required")
+        try:
+            project_text = (
+                await raw_project.read()
+                if isinstance(raw_project, StarletteUploadFile)
+                else raw_project
+            )
+            # Off the event loop, like the archive write below: a large
+            # arrangement is megabytes of JSON.
+            tasmo = await run_in_threadpool(_parse_project, project_text)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid project data: {e}")
 
-    audio_files: dict[str, bytes] = {}
-    for f in files:
-        name = Path(f.filename or "").name
-        if not name:
-            continue
-        audio_files[name] = await f.read()
+        audio_files: dict[str, bytes] = {}
+        for f in form.getlist("files"):
+            # Starlette's class, not FastAPI's subclass: ``request.form()``
+            # builds the Starlette one. A text value under "files" names no
+            # upload, so it is passed over like a nameless one.
+            if not isinstance(f, StarletteUploadFile):
+                continue
+            name = Path(f.filename or "").name
+            if not name:
+                continue
+            audio_files[name] = await f.read()
 
     out_path = path if path.endswith(".tasmo") else path + ".tasmo"
     try:
@@ -321,7 +388,12 @@ async def save_session(
         pass
 
     try:
-        manifest = TasmoFile.save(tasmo, out_path, audio_files=audio_files or None)
+        # On the threadpool: compressing a large archive takes seconds, and on
+        # the event loop it stalled every other request (playback streams
+        # included) until the save finished.
+        manifest = await run_in_threadpool(
+            TasmoFile.save, tasmo, out_path, audio_files=audio_files or None
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save .tasmo: {e}")
 

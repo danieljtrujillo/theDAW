@@ -269,14 +269,23 @@ class Clip(BaseModel):
     audio_file_checksum: str | None = None
     sample_rate: int = 48000
     channels: int = 2
-    # Each note is a dict. A piano-roll clip's midi_notes are the notes as they
-    # sound (note, step, length, velocity), each looping lane's repeats written
-    # out, which playback renders once.
+    # Each note is a dict. midi_notes are the notes as they sound (note, step,
+    # length, velocity), each looping lane's repeats written out, which playback
+    # renders once. An imported DAW clip carries only these. A piano-roll clip
+    # saved by theDAW stores each note once where it can: only midi_notes when
+    # its roll notes play as written (no lanes, no bends), only roll_notes when
+    # unrolling them across the clip's lanes gives the played notes (the reader
+    # then rebuilds midi_notes), and both when neither rebuilds the other.
     midi_notes: list[dict] | None = None
     midi_file: str | None = None
     # A piano-roll clip's own notes, the same keys plus "lane" when a note sits
-    # in one of the clip's polymeter lanes; the roll loads these. Defaulted, so
-    # .tasmo files written before lanes existed still validate, with None.
+    # in one of the clip's polymeter lanes; the roll loads these. A note in
+    # either list may also carry "tick"/"ticks" (its place and length at 960
+    # PPQ, written while they agree with step/length), "channel" (1-16) and
+    # "expr" ({pressure, timbre, pitch_bend}). Every key past the first four is
+    # optional, so .tasmo files written before lanes existed still validate,
+    # with None, and a reader that knows only the first four still gets a
+    # playable note.
     roll_notes: list[dict] | None = None
     # Piano-roll clips: the grid length in 16th-note steps, the time signatures
     # by bar ([{bar, meter: {num, den, groups}}]), the steps before bar 0 and
@@ -292,6 +301,15 @@ class Clip(BaseModel):
     # Defaulted, so .tasmo files written before the roll had pitch bend still
     # validate and load with None.
     roll_bends: list[dict] | None = None
+    # MIDI clips: the GM program (0-127) the clip plays through when it has one
+    # of its own (None = its track's, then the global instrument), the program
+    # its embedded audio was rendered with, and the tempo its notes were written
+    # at. Without them a saved arrangement reopened with every part on the
+    # global instrument and every clip at the project tempo. Defaulted, so .tasmo
+    # files written before these existed still validate and load with None.
+    instrument_program: int | None = None
+    rendered_program: int | None = None
+    source_bpm: float | None = None
     # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
     # .tasmo files written before this field existed still validate.
     muted: bool = False
@@ -410,6 +428,18 @@ class Track(BaseModel):
     input_routing: str | None = None
     output_routing: str | None = None
     send_amounts: dict[str, float] = {}
+    # The GM program (0-127) this track's MIDI clips play through when a clip
+    # has none of its own; None = the global instrument.
+    instrument_program: int | None = None
+    # Arrangement folders: the folder track this track sits in (None = the
+    # root), whether this track IS a folder (a row that holds no clips), and
+    # whether a folder shows its children. Hierarchy only; routing is
+    # output_routing's. Not validated here, exactly as FollowAction is not: the
+    # reader resets a parent that names no folder or closes a loop. All
+    # defaulted, so .tasmo files written before these existed load flat.
+    parent_track_id: str | None = None
+    is_folder: bool = False
+    collapsed: bool = False
 
 
 class Bus(BaseModel):
