@@ -800,8 +800,10 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             "ms": {
                 "type": "number",
                 "description": (
-                    "Milliseconds, converted at the clip's source BPM. This is "
-                    "the unit editor_compare_timing's answer is given in."
+                    "Milliseconds, converted at the clip's source BPM, or at "
+                    "each note's place in the clip's tempo map when it has "
+                    "one. This is the unit editor_compare_timing's answer is "
+                    "given in."
                 ),
             },
             "ticks": {"type": "number", "description": "MIDI ticks at 480 PPQ"},

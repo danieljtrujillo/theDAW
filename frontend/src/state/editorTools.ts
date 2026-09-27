@@ -93,6 +93,7 @@ import {
 import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
 import { encodeWav } from '../lib/wavEncode';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
+import { stepClock } from '../lib/rollTempo';
 
 /* ── result envelope ─────────────────────────────────────────────────────── */
 
@@ -513,6 +514,18 @@ export async function nudgeNotes(args: NudgeNotesArgs): Promise<ToolResult> {
     ticks: numArg(args.ticks),
   };
   const given = Object.keys(units).filter((k) => units[k] !== undefined);
+
+  // A clip with a tempo map moves each note by the milliseconds at its own
+  // place in the map (what compare_timing measured), so a note in the Allegro
+  // moves as many ms as one in the Adagio. An explicit bpm keeps one tempo.
+  const clock = stepClock(clip.sourceBpm ?? store().bpm, clip.sourceTempoMap);
+  const ms = units.ms;
+  if (given.length === 1 && ms !== undefined && numArg(args.bpm) === undefined && clock.stepSec === undefined) {
+    const moved = clip.sourcePianoRoll.map((n) => ({ ...n, step: Math.max(0, clock.stepAt(clock.at(n.step) + ms / 1000)) }));
+    const written = await commitNotes(clip, moved, args);
+    if (!written.ok) return fail(written.error);
+    return done(`Nudged ${moved.length} notes by ${ms} ms through the clip's tempo map on "${clip.label}"${written.value.lengthNote}`);
+  }
 
   let notes: PianoNote[];
   try {
