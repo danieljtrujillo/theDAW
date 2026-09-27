@@ -124,13 +124,14 @@ const hash01 = (i: number): number => {
 
 // Quantize to 1/1000 of a step to tame float noise while allowing sub-16th
 // positions (32nd = 0.5, 64th = 0.25) and micro-timing offsets. Integer callers
-// are unaffected (round-trips exactly).
+// are unaffected (round-trips exactly). A length floors at the roll's one tick
+// (MIN_NOTE_STEPS), so a note shorter than a 64th keeps its length.
 const q3 = (v: number): number => Math.round(v * 1000) / 1000;
 const mk = (note: number, step: number, length: number, velocity: number): PianoNote => ({
   id: uid(),
   note: clampMidi(note),
   step: Math.max(0, q3(step)),
-  length: Math.max(0.25, q3(length)),
+  length: Math.max(MIN_NOTE_STEPS, q3(length)),
   velocity: clampVel(velocity),
 });
 

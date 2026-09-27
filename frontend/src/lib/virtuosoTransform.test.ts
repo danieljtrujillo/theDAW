@@ -601,19 +601,19 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   v().resetToSource();
 }
 
-// HARMONY on a 16th-triplet melody, the way the Virtuoso panel runs it: the
-// roll holds the run, the panel captures it, HARMONY goes to full, and the
-// render lands back in the roll (replaceAll). Every counter note takes its
-// melody note's 0.667-step length, so the counter run stays detached like the
-// melody. Harmonize used to raise each counter note to a full 16th, so every
-// one overlapped the next.
-{
+// HARMONY on a fast run, the way the Virtuoso panel runs it: the roll holds
+// the run, the panel captures it, HARMONY goes to full, and the render lands
+// back in the roll (replaceAll). Every counter note takes its melody note's own
+// length, so the counter run stays detached like the melody. Harmonize used to
+// raise each counter note to a full 16th, and every transform's note builder
+// raised a note under a 64th (0.25 steps) to a 64th, so a 16th-triplet run and
+// a 128th-note run each came back with every counter note overlapping the next.
+for (const [name, len, ticks] of [['16th triplets', 2 / 3, 160], ['128th notes', 1 / 8, 30]] as const) {
   const { useVirtuosoStore } = await import('../state/virtuosoStore.ts');
   const { usePianoRollStore } = await import('../state/pianoRollStore.ts');
   const roll = usePianoRollStore.getState;
-  const third = 2 / 3;
   const melody: PianoNote[] = Array.from({ length: 24 }, (_, i) => ({
-    id: `t${i}`, note: [72, 74, 76][i % 3], step: i * third, length: third, velocity: 96,
+    id: `t${i}`, note: [72, 74, 76][i % 3], step: i * len, length: len, velocity: 96,
   }));
   roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0 });
   useVirtuosoStore.setState({ amounts: { ...ZERO_AMOUNTS }, songMode: false, sections: null, groove: null, key: 'C', mode: 'major' });
@@ -629,11 +629,11 @@ const startingIn = (notes: readonly PianoNote[], start: number, end: number): Pi
   const counter = [...byTick.values()]
     .map((at) => at.reduce((lo, n) => (n.note < lo.note ? n : lo)))
     .sort((a, b) => a.tick - b.tick);
-  assert.equal(roll().notes.length, 48, 'every melody note gets a counter note at full HARMONY');
+  assert.equal(roll().notes.length, 48, `${name}: every melody note gets a counter note at full HARMONY`);
   assert.equal(counter.length, 24);
-  for (const n of counter) assert.equal(n.ticks, 160, 'a counter note keeps two thirds of a 16th (160 ticks)');
+  for (const n of counter) assert.equal(n.ticks, ticks, `${name}: a counter note keeps its melody note's ${ticks} ticks`);
   for (let i = 1; i < counter.length; i += 1) {
-    assert.ok(counter[i - 1].tick + counter[i - 1].ticks <= counter[i].tick, `counter note ${i - 1} ends before counter note ${i} starts`);
+    assert.ok(counter[i - 1].tick + counter[i - 1].ticks <= counter[i].tick, `${name}: counter note ${i - 1} ends before counter note ${i} starts`);
   }
   useVirtuosoStore.getState().resetToSource();
 }
