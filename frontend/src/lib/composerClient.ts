@@ -1,12 +1,14 @@
 // Composer client -- typed calls to /api/composer (backend/modules/composer).
 //
-// Five actions: plan a roman-numeral phrase voiced in soprano, alto, tenor
+// Nine actions: plan a roman-numeral phrase voiced in soprano, alto, tenor
 // and bass (optionally in a composer's style); check parts for voice-leading
 // faults; realize a figured bass in four parts; plan a whole form (sonata,
 // rondo, theme and variations, minuet and trio, scherzo, a four-movement
-// symphony) as sections with keys, tempi, meters and harmonic plans; and
-// realize that form in four parts per section. Style profiles list, load and
-// count through styles(), style() and profile(). Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
+// symphony) and realize it in four parts per section; write species
+// counterpoint (first to fifth) against a cantus firmus; check a two-voice
+// pair for invertible counterpoint; write a canon at an interval and lag;
+// build a fugue exposition with its episodes and stretto search. Style
+// profiles list, load and count through styles(), style() and profile(). Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
 // (lib/noteClock), and meter maps in the roll's shape (lib/meterMap), so a
 // roll clip's notes and meter go in as they are and the answer's notes can go
 // straight back.
@@ -413,6 +415,226 @@ export interface ComposerCapabilities {
   ranges: Record<ComposerPart, [number, number]>;
   forms: FormName[];
   rondo_patterns: RondoPattern[];
+  species: Species[];
+  modes: ModalMode[];
+  invertible_at: InvertibleInterval[];
+  /** Fux's cantus firmi: MIDI notes, one a bar, and the mode they are in. */
+  cantus_firmi: Record<CantusPreset, { key: string; notes: number[] }>;
+  /** Voice names by voice count: `{'3': ['soprano', 'alto', 'bass']}`. */
+  fugue_voices: Record<string, string[]>;
+  counterpoint_rules: CounterpointRule[];
+}
+
+// ── counterpoint, canon and fugue ───────────────────────────────────────────
+
+export type Species = 1 | 2 | 3 | 4 | 5;
+export type ModalMode = KeyMode | 'ionian' | 'dorian' | 'phrygian' | 'lydian' | 'mixolydian' | 'aeolian';
+export type CantusPreset = 'fux_dorian' | 'fux_phrygian' | 'fux_mixolydian' | 'fux_aeolian' | 'fux_ionian';
+/** Invertible counterpoint at the octave, tenth or twelfth. */
+export type InvertibleInterval = 8 | 10 | 12;
+
+export type CounterpointRule =
+  | 'dissonance'
+  | 'parallel_fifths'
+  | 'parallel_octaves'
+  | 'direct_perfect'
+  | 'hidden_fifths'
+  | 'hidden_octaves'
+  | 'accented_parallels'
+  | 'voice_crossing'
+  | 'voice_overlap'
+  | 'spacing'
+  | 'unison'
+  | 'parallel_imperfect'
+  | 'melodic_interval'
+  | 'repeated_note'
+  | 'leap_recovery'
+  | 'consecutive_leaps'
+  | 'eighths'
+  | 'ficta'
+  | 'line_range'
+  | 'climax'
+  | 'opening'
+  | 'cadence'
+  | 'rhythm'
+  | 'broken_ties';
+
+/** A counterpoint rule broken at a place, shaped like the checker's flags. */
+export interface CounterpointFlag {
+  bar: number;
+  beat: number;
+  tick: number;
+  parts: string[];
+  rule: CounterpointRule;
+  message: string;
+}
+
+export interface SpeciesRequest {
+  /** The cantus firmus, one note a bar in time order; it comes back re-timed as whole notes. */
+  cantus?: readonly NoteLike[];
+  /** One of Fux's cantus firmi instead of `cantus`. */
+  preset?: CantusPreset;
+  /** 'D dorian', 'A', 'c'. Without it the mode is read from the cantus and its final. */
+  key?: string;
+  mode?: ModalMode;
+  species?: Species;
+  position?: 'above' | 'below';
+  seed?: number;
+  /** Accept only a line that also inverts cleanly at this interval. */
+  invertible?: InvertibleInterval;
+  /** Where the cantus starts (floored to a bar); a sent cantus starts at its first note. */
+  startTick?: number;
+}
+
+export interface Suspension {
+  bar: number;
+  beat: number;
+  tick: number;
+  figure: '7-6' | '4-3' | '9-8' | '2-3' | null;
+}
+
+export interface InvertibleVersion {
+  violations: CounterpointFlag[];
+  flags: VoiceLeadingFlag[];
+}
+
+export interface InvertibleResult {
+  ok: boolean;
+  interval: InvertibleInterval;
+  key: string;
+  original: InvertibleVersion;
+  inverted: InvertibleVersion & { parts: Record<string, ComposerNote[]>; order: string[] };
+}
+
+export interface SpeciesResult {
+  species: Species;
+  position: 'above' | 'below';
+  key: string;
+  ppq: number;
+  bar_ticks: number;
+  seed: number;
+  invertible: InvertibleInterval | null;
+  /** Part names top voice first. */
+  order: string[];
+  parts: { counterpoint: ComposerNote[]; cantus: ComposerNote[] };
+  suspensions: Suspension[];
+  /** The fifth species' bar patterns; the second's 'whole_penultimate' when it closes on a whole note. */
+  rhythm: string[];
+  violations: CounterpointFlag[];
+  flags: VoiceLeadingFlag[];
+  inversion?: InvertibleResult;
+}
+
+export interface InvertibleRequest {
+  upper: readonly NoteLike[];
+  lower: readonly NoteLike[];
+  interval?: InvertibleInterval;
+  key?: string;
+  mode?: ModalMode;
+}
+
+export interface CanonRequest {
+  key: string;
+  mode?: ModalMode;
+  /** The follower's generic interval: 1 unison, 5 a fifth above, -4 a fourth below, 8 an octave above. */
+  interval?: number;
+  /** The follower's delay in ticks, a whole number of quarters. */
+  lag?: number;
+  bars?: number;
+  seed?: number;
+  /** 'diatonic' stays in the key; 'real' moves by the exact interval. */
+  transposition?: 'diatonic' | 'real';
+  rhythm?: 'mixed' | 'halves' | 'quarters';
+  startTick?: number;
+}
+
+export interface CanonResult {
+  key: string;
+  ppq: number;
+  bar_ticks: number;
+  interval: number;
+  transposition: 'diatonic' | 'real';
+  lag: number;
+  bars: number;
+  seed: number;
+  /** The follower imitates strictly before this tick; the cadence follows. */
+  canonic_until: number;
+  rhythm: string[];
+  order: string[];
+  parts: { leader: ComposerNote[]; follower: ComposerNote[] };
+  violations: CounterpointFlag[];
+  flags: VoiceLeadingFlag[];
+}
+
+export interface FugueRequest {
+  key: string;
+  mode?: ModalMode;
+  voices?: 2 | 3 | 4;
+  /** The subject; without it one is written, two bars long. */
+  subject?: readonly NoteLike[];
+  /** Where a written subject starts: the tonic or the dominant. */
+  subjectStart?: 'tonic' | 'dominant';
+  seed?: number;
+  episodes?: 0 | 1 | 2;
+  countersubject?: boolean;
+  startTick?: number;
+}
+
+export interface FugueEntry {
+  voice: string;
+  form: 'subject' | 'answer';
+  tick: number;
+  ticks: number;
+  /** Semitones from the subject as given. */
+  transpose: number;
+}
+
+export interface FugueEpisode {
+  tick: number;
+  ticks: number;
+  /** The voice that sequences the subject fragment. */
+  voice: string;
+  fragment_notes: number;
+  /** Ticks of one statement of the sequence. */
+  model: number;
+  reps: number;
+  direction: 'down' | 'up';
+  voices: string[];
+  /** The voices that follow the sequence; the rest play free counterpoint. */
+  sequential: string[];
+}
+
+export interface Stretto {
+  lag: number;
+  lag_beats: number;
+  interval: number;
+  follower: 'above' | 'below' | 'unison';
+}
+
+export interface FugueResult {
+  key: string;
+  ppq: number;
+  bar_ticks: number;
+  /** Voice names, top first. */
+  voices: string[];
+  seed: number;
+  subject: ComposerNote[];
+  answer: { kind: 'tonal' | 'real'; mutations: number[]; head: number; notes: ComposerNote[] };
+  countersubject: ComposerNote[];
+  countersubject_inversion: InvertibleResult | null;
+  /** The countersubject accompanies entries 1 to this one (0: none). */
+  countersubject_entries: number;
+  /** Ticks of rest before the countersubject starts. */
+  countersubject_rest: number;
+  resting: { voice: string; tick: number; ticks: number }[];
+  entries: FugueEntry[];
+  episodes: FugueEpisode[];
+  strettos: Stretto[];
+  exposition_end: number;
+  parts: Record<string, ComposerNote[]>;
+  ranges: Record<string, [number, number]>;
+  violations: CounterpointFlag[];
+  flags: VoiceLeadingFlag[];
 }
 
 const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
@@ -504,6 +726,58 @@ export function formBody(req: FormRequest): Record<string, unknown> {
   });
 }
 
+export function speciesBody(req: SpeciesRequest): Record<string, unknown> {
+  return compact({
+    cantus: req.cantus ? req.cantus.map(toComposerNote) : undefined,
+    preset: req.preset,
+    key: req.key,
+    mode: req.mode,
+    species: req.species,
+    position: req.position,
+    seed: req.seed,
+    invertible: req.invertible,
+    start_tick: req.startTick,
+  });
+}
+
+export function invertibleBody(req: InvertibleRequest): Record<string, unknown> {
+  return compact({
+    upper: req.upper.map(toComposerNote),
+    lower: req.lower.map(toComposerNote),
+    interval: req.interval,
+    key: req.key,
+    mode: req.mode,
+  });
+}
+
+export function canonBody(req: CanonRequest): Record<string, unknown> {
+  return compact({
+    key: req.key,
+    mode: req.mode,
+    interval: req.interval,
+    lag: req.lag,
+    bars: req.bars,
+    seed: req.seed,
+    transposition: req.transposition,
+    rhythm: req.rhythm,
+    start_tick: req.startTick,
+  });
+}
+
+export function fugueBody(req: FugueRequest): Record<string, unknown> {
+  return compact({
+    key: req.key,
+    mode: req.mode,
+    voices: req.voices,
+    subject: req.subject ? req.subject.map(toComposerNote) : undefined,
+    subject_start: req.subjectStart,
+    seed: req.seed,
+    episodes: req.episodes,
+    countersubject: req.countersubject,
+    start_tick: req.startTick,
+  });
+}
+
 export const composerApi = {
   /** Cadences, chord kinds, rules and default SATB ranges the backend knows. */
   capabilities(): Promise<ComposerCapabilities> {
@@ -549,5 +823,25 @@ export const composerApi = {
   /** A style profile counted from corpus pieces or a library composition. */
   profile(req: ProfileRequest): Promise<StyleProfile> {
     return postJson<StyleProfile>('/api/composer/profile', profileBody(req));
+  },
+
+  /** A species counterpoint above or below a cantus firmus, with no rule broken. */
+  species(req: SpeciesRequest): Promise<SpeciesResult> {
+    return postJson<SpeciesResult>('/api/composer/species', speciesBody(req));
+  },
+
+  /** A two-voice pair checked as written and inverted at the octave, tenth or twelfth. */
+  invertibleCheck(req: InvertibleRequest): Promise<InvertibleResult> {
+    return postJson<InvertibleResult>('/api/composer/invertible-check', invertibleBody(req));
+  },
+
+  /** A two-voice canon at an interval and lag, closed with a cadence. */
+  canon(req: CanonRequest): Promise<CanonResult> {
+    return postJson<CanonResult>('/api/composer/canon', canonBody(req));
+  },
+
+  /** A fugue exposition with its answer, countersubject, episodes and stretto search. */
+  fugue(req: FugueRequest): Promise<FugueResult> {
+    return postJson<FugueResult>('/api/composer/fugue', fugueBody(req));
   },
 };

@@ -372,3 +372,184 @@ def test_profile_is_gated_like_the_other_routes() -> None:
     lan = TestClient(_app(), client=("10.20.30.40", 51000))
     r = lan.post("/api/composer/profile", json={"corpus": ["bach_bwv66_6_mxl"]})
     assert r.status_code == 403
+
+
+# -- counterpoint, canon and fugue -------------------------------------------
+
+
+def test_the_capability_report_lists_the_counterpoint_vocabulary() -> None:
+    body = _client().get("/api/composer/").json()
+    assert body["species"] == [1, 2, 3, 4, 5]
+    assert "dorian" in body["modes"] and body["invertible_at"] == [8, 10, 12]
+    assert body["cantus_firmi"]["fux_dorian"]["key"] == "D dorian"
+    assert body["fugue_voices"]["3"] == ["soprano", "alto", "bass"]
+    assert "accented_parallels" in body["counterpoint_rules"]
+
+
+def test_species_answers_from_a_preset_and_from_roll_notes() -> None:
+    c = _client()
+    r = c.post("/api/composer/species", json={"preset": "fux_dorian", "species": 4})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["key"] == "D dorian" and body["species"] == 4
+    assert body["violations"] == [] and body["flags"] == []
+    assert body["suspensions"]
+    assert set(body["parts"]) == {"counterpoint", "cantus"}
+    # a cantus from the roll: re-timed a whole note a bar from its first bar
+    cantus = [
+        {"note": p, "tick": 2 * 4 * Q + i * Q, "ticks": Q}
+        for i, p in enumerate([60, 64, 65, 67, 64, 69, 67, 64, 65, 64, 62, 60])
+    ]
+    r = c.post(
+        "/api/composer/species",
+        json={
+            "cantus": cantus,
+            "species": 2,
+            "position": "below",
+            "key": "C",
+            "seed": 3,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["position"] == "below"
+    cf = body["parts"]["cantus"]
+    assert cf[0]["tick"] == 2 * 4 * Q and all(n["ticks"] == 4 * Q for n in cf)
+    assert body["parts"]["counterpoint"][0]["tick"] == 2 * 4 * Q
+    assert body["violations"] == [] and body["flags"] == []
+
+
+def test_species_refuses_what_it_cannot_write() -> None:
+    c = _client()
+    notes = [
+        {"note": p, "tick": i * Q, "ticks": Q} for i, p in enumerate([62, 65, 64, 62])
+    ]
+    both = c.post(
+        "/api/composer/species", json={"preset": "fux_dorian", "cantus": notes}
+    )
+    assert both.status_code == 422
+    neither = c.post("/api/composer/species", json={"species": 1})
+    assert neither.status_code == 422
+    assert (
+        c.post(
+            "/api/composer/species", json={"preset": "fux_dorian", "species": 6}
+        ).status_code
+        == 422
+    )
+    leap = [
+        {"note": p, "tick": i * Q, "ticks": Q}
+        for i, p in enumerate([62, 65, 64, 69, 62])
+    ]
+    bad = c.post("/api/composer/species", json={"cantus": leap, "key": "D dorian"})
+    assert bad.status_code == 422 and "step" in bad.json()["detail"]
+
+
+def test_species_inverts_on_request() -> None:
+    r = _client().post(
+        "/api/composer/species",
+        json={"preset": "fux_dorian", "position": "below", "invertible": 12},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["inversion"]["ok"] is True
+
+
+def test_canon_answers_and_refuses() -> None:
+    c = _client()
+    r = c.post(
+        "/api/composer/canon", json={"key": "C", "interval": 5, "lag": 4 * Q, "bars": 8}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["flags"] == [] and body["violations"] == []
+    assert body["parts"]["follower"][0]["tick"] == 4 * Q
+    assert c.post("/api/composer/canon", json={"interval": 0}).status_code == 422
+    assert (
+        c.post("/api/composer/canon", json={"lag": 4 * Q, "bars": 2}).status_code == 422
+    )
+    assert c.post("/api/composer/canon", json={"rhythm": "swing"}).status_code == 422
+
+
+def test_fugue_answers_with_voices_entries_and_strettos() -> None:
+    subject = [
+        {"note": p, "tick": t, "ticks": d}
+        for p, t, d in zip(
+            [67, 68, 67, 65, 63, 62, 60],
+            [0, Q, 2 * Q, 3 * Q, 4 * Q, 5 * Q, 6 * Q],
+            [Q, Q, Q, Q, Q, Q, 2 * Q],
+        )
+    ]
+    r = _client().post(
+        "/api/composer/fugue",
+        json={"key": "c", "voices": 3, "subject": subject, "episodes": 1},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["voices"] == ["soprano", "alto", "bass"]
+    assert body["answer"]["kind"] == "tonal"
+    assert body["countersubject_inversion"]["ok"] is True
+    assert body["strettos"] and body["episodes"]
+    assert body["violations"] == [] and body["flags"] == []
+    assert _client().post("/api/composer/fugue", json={"voices": 5}).status_code == 422
+    assert (
+        _client().post("/api/composer/fugue", json={"episodes": 3}).status_code == 422
+    )
+
+
+def test_invertible_check_answers_and_refuses() -> None:
+    lower = [
+        {"note": p, "tick": i * 4 * Q, "ticks": 4 * Q}
+        for i, p in enumerate([60, 62, 64, 60])
+    ]
+    upper = [
+        {"note": p, "tick": i * 4 * Q, "ticks": 4 * Q}
+        for i, p in enumerate([69, 71, 72, 69])
+    ]
+    c = _client()
+    at8 = c.post(
+        "/api/composer/invertible-check",
+        json={"upper": upper, "lower": lower, "interval": 8, "key": "C"},
+    )
+    assert at8.status_code == 200, at8.text
+    assert at8.json()["ok"] is True
+    at12 = c.post(
+        "/api/composer/invertible-check",
+        json={"upper": upper, "lower": lower, "interval": 12, "key": "C"},
+    )
+    assert at12.json()["ok"] is False
+    assert (
+        c.post(
+            "/api/composer/invertible-check",
+            json={"upper": upper, "lower": lower, "interval": 9},
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            "/api/composer/invertible-check", json={"upper": [], "lower": lower}
+        ).status_code
+        == 422
+    )
+
+
+def test_the_counterpoint_routes_take_the_same_gates() -> None:
+    body = {"preset": "fux_dorian"}
+    foreign = _client().post(
+        "/api/composer/species",
+        json=body,
+        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+    )
+    assert foreign.status_code == 403
+    lan = TestClient(_app(), client=("10.20.30.40", 51000))
+    for path, payload in (
+        ("/api/composer/species", body),
+        ("/api/composer/canon", {}),
+        ("/api/composer/fugue", {}),
+        ("/api/composer/invertible-check", {"upper": [], "lower": []}),
+    ):
+        assert lan.post(path, json=payload).status_code == 403, path
+    paired = lan.post(
+        "/api/composer/species",
+        json=body,
+        headers={pairing.HEADER: pairing.get_token()},
+    )
+    assert paired.status_code == 200, paired.text
