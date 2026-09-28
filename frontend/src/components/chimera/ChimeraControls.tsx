@@ -58,9 +58,9 @@ export const ChimeraControls: React.FC = () => {
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const clips = useGenerateParamsStore((s) => s.chimera.clips);
 
-  // Above the early return, so the hook runs on every render. Typing keeps a draft (lib/useTempoField):
-  // a tempo in range lands as it is typed, anything else on Enter or blur, clamped to 20-300. An
-  // emptied field means auto, as it always has.
+  // Above the early return, so the hook runs on every render. Typing keeps a draft (lib/useTempoField)
+  // that lands on Enter or blur, clamped to 20-300; an arrow or spin step lands at once. An emptied
+  // field means auto, as it always has.
   const bpmField = useTempoField(
     typeof targetBpm === 'number' ? targetBpm : '',
     (bpm) => {

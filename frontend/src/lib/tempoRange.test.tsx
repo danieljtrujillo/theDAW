@@ -102,8 +102,9 @@ const valueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.
   assert.deepEqual([field.min, field.max], ['20', '300']);
   await act(async () => {
     valueSetter.call(field, '24.5');
-    field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    field.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }));
   });
+  await act(async () => { field.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true })); });
   assert.equal(field.value, '24.5', 'a typed 24.5 is kept (it was raised to 40)');
   await act(async () => { root.unmount(); });
 }
@@ -121,19 +122,27 @@ const valueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.
   await act(async () => { root.unmount(); });
 }
 
-// Typing a tempo digit by digit, as a person does. Each field used to clamp every keystroke, so the
-// first digit of 95 or 140 was raised to 20 and the next digits landed after it (20 -> 205, 20 -> 204 -> 300).
+// Typing a tempo digit by digit, as a person does: each key is an InputEvent naming its inputType, the
+// event a browser fires for typing. Each field used to clamp every keystroke, so the first digit of 95
+// or 140 was raised to 20 and the next digits landed after it (20 -> 205, 20 -> 204 -> 300).
 const typeDigits = async (field: HTMLInputElement, text: string) => {
   for (const ch of text) {
     await act(async () => {
       valueSetter.call(field, field.value + ch);
-      field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      field.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }));
     });
   }
 };
 const selectAll = async (field: HTMLInputElement) => {
   await act(async () => {
     valueSetter.call(field, '');
+    field.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+  });
+};
+/** A step from the arrow keys or the spin buttons: a plain input event, no inputType. */
+const spinTo = async (field: HTMLInputElement, text: string) => {
+  await act(async () => {
+    valueSetter.call(field, text);
     field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
   });
 };
@@ -167,7 +176,7 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
   await act(async () => { root.unmount(); });
 }
 
-// Chimera's target BPM: 95 typed reads 95 and lands in the store; an emptied field is auto, as before.
+// Chimera's target BPM: 95 typed reads 95 and lands on blur; an emptied field is auto, as before.
 {
   const { useGenerateParamsStore } = await import('../state/generateParamsStore.ts');
   const { ChimeraControls } = await import('../components/chimera/ChimeraControls.tsx');
@@ -186,11 +195,29 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
     const cls = el.className.split(/\s+/);
     assert.ok(cls.includes('text-xs') && cls.includes('font-sans') && cls.includes('font-bold'), `${el.id || el.getAttribute('name')} is 12px bold sans`);
   }
+  // Every tempo the store takes while 250 is typed: typing waits for Enter or blur, so the "25" on the
+  // way is never a tempo (it was, when an in-range draft landed on each keystroke).
+  const seen: unknown[] = [];
+  const stop = useGenerateParamsStore.subscribe((s) => { seen.push(s.chimera.targetBpm); });
   await selectAll(field);
   await typeDigits(field, '95');
   assert.equal(field.value, '95', 'Chimera: 95 typed digit by digit');
-  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 95);
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 120, 'a typed tempo waits for Enter or blur');
   await blur(field);
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 95, 'blur lands the typed 95');
+  seen.length = 0;
+  await selectAll(field);
+  await typeDigits(field, '250');
+  assert.equal(field.value, '250');
+  await keyOn(field, 'Enter');
+  stop();
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 250, 'Enter lands the typed 250');
+  assert.ok(!seen.includes(25) && !seen.includes(2), `no half-typed tempo reached the store (${JSON.stringify(seen)})`);
+  // A step from the arrows or the spin buttons lands at once.
+  await spinTo(field, '251');
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 251, 'a spin step lands at once');
+  await spinTo(field, '301');
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 300, 'a spin step past the top is held at 300');
   await selectAll(field);
   await typeDigits(field, '400');
   await blur(field);
@@ -205,7 +232,7 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
   await act(async () => { root.unmount(); });
 }
 
-// The Step Sequencer's tempo: 140 typed reads 140.
+// The Step Sequencer's tempo: 140 typed reads 140; a half-typed 250 never becomes the pattern's tempo.
 {
   const { StepSequencer } = await import('../components/audio/StepSequencer.tsx');
   const host = doc.createElement('div');
@@ -218,6 +245,18 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
   await selectAll(field);
   await typeDigits(field, '140');
   assert.equal(field.value, '140', 'Step Sequencer: 140 typed digit by digit');
+  await blur(field);
+  assert.equal(field.value, '140', 'blur lands 140');
+  // Escape after a typed 25(0) shows 140: nothing typed reached the pattern's tempo before Enter or blur.
+  await selectAll(field);
+  await typeDigits(field, '25');
+  await keyOn(field, 'Escape');
+  assert.equal(field.value, '140', 'the "25" of a typed 250 never became the tempo');
+  // An arrow or spin step lands at once (and a draft is dropped by it).
+  await spinTo(field, '141');
+  assert.equal(field.value, '141');
+  await keyOn(field, 'Escape');
+  assert.equal(field.value, '141', 'the step was the tempo, not a draft');
   await selectAll(field);
   await typeDigits(field, '12');
   await blur(field);

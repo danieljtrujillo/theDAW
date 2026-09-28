@@ -4,18 +4,19 @@
  * A controlled field that clamps on every keystroke cannot be typed into: the
  * first digit of "140" is 1, which the 20 BPM floor raises to 20 and writes back
  * into the field, so the next digits land after it (20 -> 204 -> 300). This hook
- * keeps what the user types as a draft instead:
- *   - a draft that is already a tempo the app holds (20-300) is committed at
- *     once, so the music follows the typing and a spin-button or arrow step
- *     (always in range) still lands immediately;
- *   - a draft outside the range ("1", "12", "400") stays in the field and is
- *     clamped and committed on Enter or when the field loses focus;
+ * types the way the app's other tempo fields do (the piano roll's BPM field,
+ * PianoRoll.tsx bpmDraft/commitBpmDraft, and EDIT's EditorBpmField):
+ *   - typing arrives as an InputEvent (it carries `inputType`) and stays a draft
+ *     in the field, so nothing moves while a tempo is half typed: the "25" of a
+ *     typed 250 never sets 25 BPM on its way;
+ *   - Enter, or the field losing focus, clamps the draft to 20-300 and commits it;
+ *   - a step from the arrow keys, the spin buttons or the wheel (a plain input
+ *     event, no `inputType`) applies at once, clamped;
  *   - Escape drops the draft and shows the tempo in force;
- *   - an empty or unreadable draft commits nothing (or calls `onEmpty` when
- *     the field gives an empty value a meaning, like Chimera's "auto").
- *
- * The piano roll's own tempo field (PianoRoll.tsx, bpmDraft/commitBpmDraft)
- * keeps a draft the same way.
+ *   - an empty or unreadable draft commits nothing (or calls `onEmpty` when the
+ *     field gives an empty value a meaning, like Chimera's "auto").
+ * The tempo in force shows to the hundredth, so a MIDI file's exact 96.99995
+ * reads 97 and a typed 97.3 reads 97.3.
  */
 import { useState } from 'react';
 import type React from 'react';
@@ -47,26 +48,37 @@ export const tempoDraftCommit = (draft: string): number | 'empty' | null => {
   return Number.isFinite(n) && n > 0 ? clampTempoBpm(n) : null;
 };
 
+/** True for the input event of typing (an InputEvent, which names its `inputType`); false for a step. */
+export const isTypedInput = (e: { nativeEvent: Event }): boolean => 'inputType' in e.nativeEvent;
+
+/** The tempo in force as the field shows it: to the hundredth, or blank. */
+export const tempoFieldText = (value: number | ''): string => (value === '' ? '' : String(Math.round(value * 100) / 100));
+
 /**
  * The props for a tempo `<input type="number">`: spread them onto the field.
  * `value` is the tempo in force; `commit` receives a tempo inside 20-300.
  */
 export function useTempoField(value: number | '', commit: (bpm: number) => void, opts: TempoFieldOptions = {}): TempoFieldProps {
   const [draft, setDraft] = useState<string | null>(null);
-  const finish = () => {
-    if (draft === null) return;
-    const out = tempoDraftCommit(draft);
+  const land = (text: string) => {
+    const out = tempoDraftCommit(text);
     if (typeof out === 'number') commit(out);
     else if (out === 'empty') opts.onEmpty?.();
+  };
+  const finish = () => {
+    if (draft === null) return;
     setDraft(null);
+    land(draft);
   };
   return {
-    value: draft ?? (value === '' ? '' : String(value)),
+    value: draft ?? tempoFieldText(value),
     onChange: (e) => {
-      const raw = e.target.value;
-      setDraft(raw);
-      const n = parseFloat(raw);
-      if (isTempoInRange(n)) commit(n);
+      if (isTypedInput(e)) {
+        setDraft(e.target.value);
+        return;
+      }
+      setDraft(null);
+      land(e.target.value);
     },
     onBlur: finish,
     onKeyDown: (e) => {

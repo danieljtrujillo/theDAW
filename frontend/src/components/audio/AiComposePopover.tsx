@@ -62,7 +62,7 @@ export const AiComposePopover: React.FC<{
   const [style, setStyle] = useState('None');
   const [bars, setBars] = useState(8);
   const [bpm, setBpm] = useState(currentBpm || 120);
-  // Typing keeps a draft (lib/useTempoField): in-range tempos land as typed, the rest clamp on Enter or blur.
+  // Typing keeps a draft (lib/useTempoField) that lands on Enter or blur, clamped to 20-300; an arrow or spin step lands at once.
   const bpmField = useTempoField(bpm, setBpm);
   const [complexity, setComplexity] = useState(0.6);
   const [withBass, setWithBass] = useState(true);

@@ -329,7 +329,8 @@ export const StepSequencer: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [bpm, setBpm] = useState(128);
-  // Typing keeps a draft (lib/useTempoField); the pattern takes whole BPM.
+  // Typing keeps a draft (lib/useTempoField) that lands on Enter or blur, so a playing pattern never
+  // jumps to the "25" of a typed 250; an arrow or spin step lands at once. The pattern takes whole BPM.
   const bpmField = useTempoField(bpm, (n) => setBpm(Math.round(n)));
   const [exportMode, setExportMode] = useState<'single' | 'multi'>('single');
   const [exportBars, setExportBars] = useState(2);
