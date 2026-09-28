@@ -6,6 +6,8 @@
 //   POST /api/models/{name}/download   -> { job_id, name, status }
 //   GET  /api/models/downloads         -> { jobs: DownloadJob[] }
 //   POST /api/models/downloads/clear   -> { cleared: number }
+// Sound bank downloads share the job list (kind 'soundbank'); their catalog
+// lives in soundbankClient.ts.
 
 export type DownloadJobStatus = 'queued' | 'downloading' | 'done' | 'error';
 
@@ -22,8 +24,10 @@ export interface DownloadFile {
  * 'magenta' — a Magenta RT2 checkpoint fetched by the sidecar's own CLI inside
  *             WSL (/api/magenta/engine/checkpoints); progress is best-effort,
  *             parsed from the CLI's log, so bytes may lag or be unknown.
+ * 'soundbank' — an orchestral sound bank via /api/models/soundbanks (GitHub
+ *             releases or the Internet Archive, this PC), with its licence.
  */
-export type DownloadJobKind = 'model' | 'magenta';
+export type DownloadJobKind = 'model' | 'magenta' | 'soundbank';
 
 export interface DownloadJob {
   id: string;
@@ -42,6 +46,10 @@ export interface DownloadJob {
   percent?: number | null;
   /** Path of the log holding the raw CLI output (magenta). */
   log?: string | null;
+  /** The licence the bank is downloaded under (soundbank). */
+  licence?: { name: string; url: string } | null;
+  /** Bank files the finished download installed (soundbank). */
+  installed?: string[];
 }
 
 interface DownloadsResponse {

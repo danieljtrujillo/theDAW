@@ -25,6 +25,7 @@ import { addWorkletModule } from './audioWorkletSupport';
 import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
+import { applyChannelGain, renderGainSnapshot } from './soundbankGain';
 import { MAX_PREVIEW_CHANNELS, PREVIEW_CHANNEL_COUNT } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
@@ -273,6 +274,8 @@ function setChannelProgram(
   }
   synth.programChange(ch, change.program, at);
   programs.set(ch, change.key);
+  // A downloaded bank's playback gain for this preset (lib/soundbankGain), from the program change on.
+  applyChannelGain(synth, ch, dataByte(bank), change.program, time !== undefined ? time - getEngineCtx().currentTime : 0);
 }
 
 /**
@@ -360,6 +363,8 @@ async function renderMidiToBlob(
     // shared cached soundfont reused by the live synth and later renders.
     soundBankList: [{ bankOffset: 0, soundBankBuffer: sf.slice(0) }],
     loopCount: 0,
+    // Each channel's playback gain for a downloaded bank's preset (lib/soundbankGain).
+    snapshot: renderGainSnapshot(midi, sampleRate),
   });
   await synth.isReady;
   const rendered = await ctx.startRendering();

@@ -7,6 +7,8 @@
  *
  * Two sources feed one job list:
  *   - Stable Audio checkpoints from /api/models (Hugging Face, this PC);
+ *   - orchestral sound banks, which share the /api/models job list with
+ *     kind 'soundbank' and start from /api/models/soundbanks/{id}/download;
  *   - Magenta RT2 checkpoints from /api/magenta/engine/checkpoints — fetched
  *     by the sidecar's own CLI inside WSL. Their progress is parsed from the
  *     CLI log (best-effort), so bytes can lag; speed is derived here from
@@ -36,6 +38,7 @@ import {
   startMagentaCheckpointDownload,
   type MagentaCheckpointJob,
 } from '../lib/magentaEngineClient';
+import { startSoundbankDownload } from '../lib/soundbankClient';
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -96,8 +99,9 @@ interface DownloadStore {
   /** Internal: handle for the active poll interval (guards double-intervals). */
   _timer: ReturnType<typeof setInterval> | null;
 
-  /** Trigger a download for `name` (a Stable Audio model, or a Magenta
-   *  checkpoint when `kind` is 'magenta'), then ensure the poll loop is running. */
+  /** Trigger a download for `name` (a Stable Audio model, a Magenta
+   *  checkpoint when `kind` is 'magenta', a sound bank id when `kind` is
+   *  'soundbank'), then ensure the poll loop is running. */
   startDownload: (name: string, kind?: DownloadJobKind) => Promise<void>;
   /** Pull the latest jobs from the backend into state. */
   refresh: () => Promise<void>;
@@ -122,6 +126,7 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     // Open the dock so the user immediately sees the job arrive on next poll.
     set({ expanded: true });
     if (kind === 'magenta') await startMagentaCheckpointDownload(name);
+    else if (kind === 'soundbank') await startSoundbankDownload(name);
     else await startModelDownload(name);
     get()._ensurePolling();
     // Surface the queued job right away rather than waiting a full tick.
@@ -141,7 +146,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       return;
     }
     const previous = get().jobs;
-    const modelJobs = models ?? previous.filter((j) => (j.kind ?? 'model') === 'model');
+    // Sound bank jobs come from the same list as model jobs, so a failed
+    // fetch keeps both.
+    const modelJobs = models ?? previous.filter((j) => j.kind !== 'magenta');
     const magentaJobs = magenta
       ? magenta.map(magentaJobToDownloadJob)
       : previous.filter((j) => j.kind === 'magenta');
