@@ -31,7 +31,7 @@ import {
 } from '../lib/bankRegistry';
 import { notifyPlacesChanged } from '../lib/placesClient';
 import { registerInstalledSoundbankGains } from '../lib/soundbankClient';
-import { registerSoundbankGains, unregisterSoundbankGains, type SoundbankGainManifest } from '../lib/soundbankGain';
+import { registerSoundbankGains, setBundledKits, unregisterSoundbankGains, type SoundbankGainManifest } from '../lib/soundbankGain';
 import { logError, logInfo, logWarn } from './logStore';
 
 /** Where the bundled bank is served from (frontend/public). */
@@ -233,6 +233,8 @@ export const useSoundBankStore = create<SoundBankState>((set, get) => ({
   },
 
   setBundledPresets: (name, presets) => {
+    // Its kits play on a drum channel ahead of any user bank's at the same program.
+    setBundledKits(presets.filter((p) => p.drum).map((p) => p.program));
     const bundled: SoundBank = {
       id: BUNDLED_BANK_ID,
       name: name || 'General MIDI',

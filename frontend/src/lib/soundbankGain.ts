@@ -32,7 +32,9 @@
  * A channel's gain follows the preset it selects: a bank select (CC 0) plus a
  * program. A bank loaded with a bank offset answers bank selects shifted by
  * that offset, so a registered table is looked up at `bankSelect - offset`.
- * The GM drum channel (n % 16 === 9) selects the kit bank, 128.
+ * The GM drum channel (n % 16 === 9) selects the kit bank, 128, where the
+ * bundled bank's kit plays at every program it has one (SpessaSynth takes the
+ * first bank's kit), so no user bank's kit gain applies there.
  */
 import { SpessaSynthProcessor, type BasicMIDI, type SynthesizerSnapshot } from 'spessasynth_core';
 
@@ -76,6 +78,14 @@ const tables = new Map<string, GainTable>();
 
 /** GM's kit bank: what a drum channel selects. */
 export const DRUM_BANK = 128;
+
+/** The kit programs the bundled bank holds (soundBankStore setBundledPresets). */
+let bundledKits: ReadonlySet<number> = new Set();
+
+/** Name the bundled bank's kit programs: a drum channel selecting one plays the bundled kit, at unity. */
+export function setBundledKits(programs: Iterable<number>): void {
+  bundledKits = new Set([...programs].map((p) => Math.round(p)));
+}
 /** No gain step past this (dB) is applied, whatever a manifest says. */
 export const MAX_PLAYBACK_GAIN_DB = 24;
 
@@ -131,6 +141,8 @@ export function soundbankGainDb(bankId: string, bank: number, program: number): 
  */
 export function selectionGainDb(bankSelect: number, program: number, channel?: number): number {
   const bank = channel !== undefined && channel % 16 === 9 ? DRUM_BANK : bankSelect;
+  // The bundled kit plays there, whatever kit a user bank also has at that program.
+  if (bank === DRUM_BANK && bundledKits.has(Math.round(program))) return 0;
   let found = 0;
   for (const table of tables.values()) {
     const inFile = bank === DRUM_BANK ? bank : bank - table.bankOffset;

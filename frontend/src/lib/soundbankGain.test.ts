@@ -25,6 +25,7 @@ import {
   renderChannelGains,
   renderGainSnapshot,
   selectionGainDb,
+  setBundledKits,
   soundbankGainDb,
 } from './soundbankGain.ts';
 import { LEVEL_SAMPLE_RATE, loadBank, maxWindowRmsDb, measureLevel } from './soundbankLevels.ts';
@@ -61,6 +62,20 @@ const job = { bank: 0, program: 40, note: 67, velocity: 100, cc1: 127, seconds: 
   registerSoundbankGains('orchestra', { playback_gain: { '1:73': 12.5 } }, 20);
   assert.equal(selectionGainDb(1, 73), 0);
   assert.equal(selectionGainDb(21, 73), 12.5);
+  clearSoundbankGains();
+}
+
+// ── a kit the bundled bank also has: the bundled kit plays, at unity ──────
+{
+  clearSoundbankGains();
+  registerSoundbankGains('orchestra', { playback_gain: { '128:48': 4, '128:50': 2 } }, 40);
+  // SpessaSynth takes the first bank's kit: gm.sf3's, where it has one.
+  const kits = load().presets.filter((p) => p.isGMGSDrum).map((p) => p.program);
+  assert.ok(kits.includes(48) && !kits.includes(50));
+  setBundledKits(kits);
+  assert.equal(selectionGainDb(0, 48, 9), 0, "gm.sf3's Orchestral kit plays at 48: the user kit's lift is not applied to it");
+  assert.equal(selectionGainDb(0, 50, 9), 2, 'a kit only the user bank has keeps its gain');
+  setBundledKits([]);
   clearSoundbankGains();
 }
 
