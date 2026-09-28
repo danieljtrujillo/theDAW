@@ -28,7 +28,8 @@ import {
   BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, renderBounce, renderExtentSec,
   type BounceRequest, type BounceScope, type RenderDeps,
 } from '../../lib/renderCore';
-import { clipWithAudio, clipsWithMidiAudio, configureMidiRenderQueue, dropAutoRender, midiRenderStatusText, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
+import { clipWithAudio, clipsWithMidiAudio, dropAutoRender, midiRenderStatusText, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
+import { configureAppMidiRenderQueue } from '../../state/appMidiRenderer';
 import { crossfadeRegions } from '../../lib/crossfade';
 import { pairingHeader } from '../../lib/pairing';
 import {
@@ -72,7 +73,6 @@ import {
   isPercussionTrack,
 } from '../../lib/clipProgram';
 import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
-import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { DROP_RENDER_FIELDS, hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
@@ -385,15 +385,11 @@ const cropAudioBlob = async (
 ──────────────────────────────────────────────────────────────────────────── */
 
 // The MIDI render queue's real renderer, peak scan, picker, warm-up and live
-// plan. Set when this module loads, which is before any bounce job can run (the
-// render runner reaches its job functions through this module).
-configureMidiRenderQueue({
-  render: renderStepNotesToBlob,
-  computePeaks,
-  global: getGlobalVoice,
-  ensureReady: ensureSoundfontReady,
-  livePlan: liveMixer.liveMidiIfHeard,
-});
+// plan (state/appMidiRenderer). App.tsx sets them when the app loads; this
+// module sets them again when it loads, which is before any bounce job can run
+// (the render runner reaches its job functions through this module), so a
+// surface that mounts EDIT without App has them too.
+configureAppMidiRenderQueue();
 
 /**
  * The nine fields `lib/renderCore` reads for a bounce: the document — clips,

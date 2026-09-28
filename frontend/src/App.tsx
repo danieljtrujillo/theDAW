@@ -45,6 +45,7 @@ import { currentTransportSec } from './state/liveMixer';
 import { renderStepNotesToBlob } from './lib/midiSynth';
 import { midiRenderSig } from './lib/midiRender';
 import { withRenderTurn } from './state/midiRenderQueue';
+import { configureAppMidiRenderQueue } from './state/appMidiRenderer';
 import { ensureSoundfontReady, getActiveProgram, getGlobalVoice, isSoundfontActive } from './lib/soundfontEngine';
 import { postStatus } from './state/statusNoticeStore';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
@@ -78,6 +79,11 @@ import { notifyPlacesChanged } from './lib/placesClient';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
+
+// The MIDI render queue reads the app's own picker and live plan from the
+// moment the app loads, so an assistant note edit made before EDIT was ever
+// opened decides whether to render from what EDIT will play.
+configureAppMidiRenderQueue();
 
 export default function App() {
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
