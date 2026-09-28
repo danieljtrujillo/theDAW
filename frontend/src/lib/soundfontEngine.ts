@@ -20,9 +20,9 @@ import { create } from 'zustand';
 import { WorkletSynthesizer, audioBufferToWav } from 'spessasynth_lib';
 import { BasicMIDI, SoundBankLoader } from 'spessasynth_core';
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
-import { RANGE_LSB_SPESSA, bendRangeMessages } from './midi';
+import { RANGE_LSB_SPESSA, bendRangeMessages, controlMessage } from './midi';
 import { addWorkletModule } from './audioWorkletSupport';
-import { notesToSmf, type SmfWheel } from './midiWrite';
+import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
 import { MAX_PREVIEW_CHANNELS, PREVIEW_CHANNEL_COUNT } from './pitchBend';
@@ -335,18 +335,22 @@ async function renderMidiToBlob(
 /**
  * The MIDI file a soundfont render of absolute-seconds notes plays. Honors an
  * explicit program when the caller knows the clip's instrument; only falls
- * back to the global picker when it doesn't. Pitch wheels ride in the same
- * file, and a `bank` past 0 is selected before the program (a roll part's
+ * back to the global picker when it doesn't. Pitch wheels and controller
+ * changes (a part's volume, pan, expression, modulation and pedal) ride in the
+ * same file, and a `bank` past 0 is selected before the program (a roll part's
  * Bank, lib/rollBounce), so the render plays that bank's preset.
  */
-export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[]; bank?: number } = {}): Uint8Array {
-  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? [], { bank: opts.bank ?? 0 });
+export function notesRenderSmf(
+  notes: RenderNote[],
+  opts: { program?: number; wheel?: SmfWheel[]; bank?: number; controls?: SmfControl[] } = {},
+): Uint8Array {
+  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? [], { bank: opts.bank ?? 0, controls: opts.controls ?? [] });
 }
 
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
 export async function renderNotesToBlobSF(
   notes: RenderNote[],
-  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[]; bank?: number } & RenderLength = {},
+  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[]; bank?: number; controls?: SmfControl[] } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
   const smf = notesRenderSmf(notes, opts);
   return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts);
@@ -610,6 +614,25 @@ export function sfPitchWheelRange(channel: number, semitones: number, time?: num
     ensurePreviewChannel(s, ch);
     const offset = ch - (ch % 16);
     for (const bytes of bendRangeMessages(ch % 16, Math.max(0, semitones), RANGE_LSB_SPESSA)) s.sendMessage(bytes, offset, options);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Send a controller change (a part's volume, pan, expression, modulation or
+ * sustain pedal) to a preview-synth channel at audio-context time `time` (now
+ * when absent). The message carries the channel's low four bits and the offset
+ * names its group of sixteen, as the wheel's range does, so a part's channel
+ * from 25 up takes its own change. No-op until the synth is ready.
+ */
+export function sfControlChange(channel: number, controller: number, value: number, time?: number): void {
+  const s = liveSynth;
+  if (!s) return;
+  try {
+    const ch = previewChannel(channel);
+    ensurePreviewChannel(s, ch);
+    s.sendMessage(controlMessage(ch % 16, controller, value), ch - (ch % 16), time !== undefined ? { time } : undefined);
   } catch {
     /* ignore */
   }

@@ -1,0 +1,140 @@
+/**
+ * Import as tracks and the arrangement's tempo and meter maps, and the LOG
+ * lines it writes.
+ *
+ * Before: the import left EDIT at whatever tempo and meter it held, so a
+ * waltz at 90 imported into a new arrangement and exported from EDIT came
+ * back in 4/4 at 120, every note on the wrong beat of the wrong bar; then an
+ * arrangement with no clips took only the file's start tempo and first time
+ * signature, so the quartet's tempo change and its three later meters were
+ * lost from the arrangement's MIDI export.
+ *
+ * Now an arrangement with no clips takes the file's whole tempo map and meter
+ * map from where the parts start, in the import's one undo step; one with
+ * clips keeps its own and is offered the file's above the timeline; and the
+ * LOG names the tempo the clips play from, their changes, what EDIT took, and
+ * how the parts sound.
+ *
+ *   cd frontend && npx tsx src/lib/midiImportTracks.timing.test.ts
+ */
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { useEditorStore, type EditorTrack } from '../state/editorStore.ts';
+import { arrangementToMidiFile } from './arrangementMidi.ts';
+import { encodeMidi, parseMidi, tempoMicros, tempoOfMicros, type MidiFileData } from './midi.ts';
+import { importMidiAsTracks, importTracksReport, type MidiTracksDeps } from './midiImportTracks.ts';
+import { midiFileToRollParts } from './rollMidi.ts';
+
+const ed = () => useEditorStore.getState();
+const deps: MidiTracksDeps = { global: () => ({ useSoundfont: true, activeProgram: 0 }) };
+const meterOf = () => ed().meterMap.map((s) => [s.bar, s.meter.num, s.meter.den]);
+/** A tempo as a file's FF 51 holds it: whole microseconds a quarter (90 is 666667 us, 89.999955 BPM). */
+const ff51 = (bpm: number): number => tempoOfMicros(tempoMicros(bpm));
+const temposOf = () => ed().tempoMap.map((e) => [e.beat, e.bpm]);
+
+// A waltz at 90: a melody and a bass, 3/4 all through, at 480 PPQ.
+const waltz: MidiFileData = {
+  ppq: 480,
+  bpm: 90,
+  tempos: [{ tick: 0, bpm: 90 }],
+  timeSignatures: [{ tick: 0, num: 3, den: 4 }],
+  tracks: [
+    {
+      name: 'Flute',
+      programs: [{ tick: 0, channel: 0, program: 73 }],
+      notes: [0, 480, 960, 1440, 1920, 2400].map((tick, i) => ({ tick, durationTicks: 480, note: 72 + i, velocity: 90, channel: 0 })),
+    },
+    {
+      name: 'Bass',
+      programs: [{ tick: 0, channel: 1, program: 32 }],
+      notes: [0, 1440].map((tick) => ({ tick, durationTicks: 1440, note: 43, velocity: 90, channel: 1 })),
+    },
+  ],
+};
+const waltzBytes = parseMidi(encodeMidi(waltz));
+
+// ── a new arrangement takes the file's tempo and meter, in the import's one undo step ─
+{
+  ed().loadProject({ tracks: [], clips: [], bpm: 120, timeSignature: { num: 4, den: 4 } });
+  const undoBefore = ed()._undo.length;
+  const done = importMidiAsTracks(waltzBytes, { label: 'waltz', atSec: 0 }, deps);
+  assert.ok(done);
+  assert.equal(await done.rendered, 0, 'both parts play live');
+  assert.equal(ed().bpm, ff51(90), "EDIT plays at the file's 90, as its FF 51 holds it");
+  assert.deepEqual(meterOf(), [[0, 3, 4]], 'in 3/4');
+  assert.deepEqual(done.arrangement?.tempoMap.map((e) => [e.beat, e.bpm]), [[0, ff51(90)]]);
+  assert.deepEqual(done.arrangement?.meterMap.map((s) => [s.bar, s.meter.num, s.meter.den]), [[0, 3, 4]]);
+  assert.equal(done.offered, false);
+  assert.equal(ed()._undo.length, undoBefore + 1, 'tempo, meter, tracks and clips in one undo step');
+  // Back out as MIDI: 3/4 at 90, every note on the beat the file put it on (480 PPQ doubled to 960).
+  const back = parseMidi(encodeMidi(arrangementToMidiFile(ed()).file));
+  assert.deepEqual(back.timeSignatures?.map((s) => [s.tick, s.num, s.den]), [[0, 3, 4]], "the file's 3/4");
+  assert.deepEqual(back.tempos?.map((t) => [t.tick, t.bpm]), [[0, ff51(90)]], 'at 90');
+  assert.deepEqual(back.tracks.find((t) => t.name === 'Flute')?.notes.map((n) => n.tick), [0, 960, 1920, 2880, 3840, 4800]);
+  const again = midiFileToRollParts(back, 'b');
+  assert.deepEqual(again.meter.meterMap.map((s) => [s.bar, s.meter.num, s.meter.den]), [[0, 3, 4]], 'and reads back in 3/4');
+  assert.deepEqual(again.tempoMap.map((e) => [e.beat, e.bpm]), [[0, ff51(90)]]);
+  // One undo takes the tempo and meter back with the tracks.
+  ed().undo();
+  assert.equal(ed().bpm, 120);
+  assert.deepEqual(meterOf(), [[0, 4, 4]]);
+  assert.equal(ed().clips.length, 0);
+  const report = importTracksReport(done, 'waltz', 0);
+  assert.deepEqual(report.info, [
+    'Import as tracks: 2 parts of "waltz" on new tracks at 0.00s (8 notes, 90 BPM); every part plays live',
+    "Import as tracks: EDIT takes the file's 90 BPM and 3/4",
+  ]);
+  assert.deepEqual(report.warn, [], 'nothing EDIT cannot hold');
+}
+
+// ── an arrangement with clips keeps its own, and is offered the file's ─────
+{
+  const track: EditorTrack = { id: 'keep', name: 'Keep', nameAutoGenerated: false, volume: 0.8, pan: 0, mute: false, solo: false, color: '#fff' };
+  ed().loadProject({
+    tracks: [track],
+    clips: [{ id: 'k', trackId: 'keep', label: 'k', audioBlob: new Blob([new Uint8Array([1])]), mimeType: 'audio/wav', sourceDuration: 1, offsetIntoSource: 0, durationSec: 1, startSec: 0, color: '#fff' }],
+    bpm: 100,
+    timeSignature: { num: 4, den: 4 },
+  });
+  // 4.2 s at 100 BPM is beat 7, three beats into bar 2: a place a time signature can end a bar at.
+  const done = importMidiAsTracks(waltzBytes, { label: 'waltz', atSec: 4.2 }, deps);
+  assert.ok(done);
+  await done.rendered;
+  assert.equal(ed().bpm, 100);
+  assert.deepEqual(meterOf(), [[0, 4, 4]]);
+  assert.equal(done.arrangement, null);
+  assert.equal(done.offered, true, "the file's 3/4 at 90 is offered");
+  assert.equal(ed().timeMapOffer?.clipId, done.parts[0].clipId, 'the offer names the first part');
+  const report = importTracksReport(done, 'waltz', 4.2);
+  assert.equal(report.info[1], "Import as tracks: EDIT keeps its own tempo and time signatures; the file's are offered above the timeline");
+  assert.equal(report.warn.length, 1, 'the export writes EDIT\'s maps until the offer is taken');
+  // Accepting the offer puts the waltz's maps in from the parts' start: bar 2 ends after its three beats, then 3/4 at 90.
+  assert.deepEqual(ed().adoptClipTimeMaps(done.parts[0].clipId), { ok: true });
+  assert.deepEqual(temposOf(), [[0, 100], [7, ff51(90)]], 'the arrangement plays 90 from the parts on');
+  assert.deepEqual(meterOf(), [[0, 4, 4], [1, 3, 4]], 'in 3/4 from bar 2, whose three beats reach the parts');
+}
+
+// ── the quartet: 120 until its first mark, and every change EDIT takes ──────
+{
+  const bytes = new Uint8Array(readFileSync(fileURLToPath(new URL('../../../tests/fixtures/quartet/op132_m530-640.mid', import.meta.url))));
+  const data = parseMidi(bytes);
+  assert.equal(data.bpm, 60, "the file's first tempo event is 60, at beat 251.5");
+  ed().loadProject({ tracks: [], clips: [], bpm: 120, timeSignature: { num: 4, den: 4 } });
+  const done = importMidiAsTracks(data, { label: 'op132', atSec: 0 }, deps);
+  assert.ok(done);
+  await done.rendered;
+  assert.deepEqual(done.tempoMap.map((e) => [e.beat, e.bpm]), [[0, 120], [251.5, 60]]);
+  assert.deepEqual(temposOf(), [[0, 120], [251.5, 60]], 'EDIT takes the tempo the clips start at and its change');
+  assert.deepEqual(meterOf(), [[0, 4, 4], [12, 3, 8], [65, 4, 4], [96, 3, 8]], 'and every time signature');
+  const report = importTracksReport(done, 'op132', 0);
+  assert.match(report.info[0], /, 120 BPM with 1 tempo change, 4 time signatures\); every part plays live/, 'the tempo the clips play from, and its change');
+  assert.equal(report.info[1], "Import as tracks: EDIT takes the file's 120 BPM and its 1 tempo change and its 4 time signatures");
+  assert.deepEqual(report.warn, [], 'nothing EDIT cannot hold');
+  // The arrangement's MIDI export now writes the tempo change and all four meters.
+  const back = parseMidi(encodeMidi(arrangementToMidiFile(ed()).file));
+  assert.deepEqual(back.timeSignatures?.map((s) => [s.num, s.den]), [[4, 4], [3, 8], [4, 4], [3, 8]]);
+  assert.deepEqual(back.tempos?.map((t) => [t.tick / 960, Math.round(t.bpm * 1000) / 1000]), [[0, 120], [251.5, 60]]);
+}
+
+console.log('midiImportTracks.timing: ok');

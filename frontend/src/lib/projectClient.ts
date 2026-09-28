@@ -608,7 +608,10 @@ export interface RecentItem {
  * A roll part as a .tasmo clip saves it (AudioClip `sourceRollPart`): the roll
  * document shared by the clips of every part bounced from one roll, the part's
  * id and place, and its settings. `program` and `channel` are null when the
- * part follows the roll's voice or takes the next free channel.
+ * part follows the roll's voice or takes the next free channel. `bank_lsb` is
+ * its bank select LSB (CC 32), absent when it sends none. `controls` is the
+ * part's controller changes on the roll's clock (960 ticks to the quarter),
+ * absent when it has none. A file written before either opens without it.
  */
 export interface TasmoRollPart {
   doc: string;
@@ -617,11 +620,13 @@ export interface TasmoRollPart {
   name: string;
   program: number | null;
   bank: number;
+  bank_lsb?: number;
   channel: number | null;
   color: string;
   mute: boolean;
   solo: boolean;
   instrument_id?: string | null;
+  controls?: Array<{ tick: number; controller: number; value: number }>;
 }
 
 /** A clip's part record in the file shape. */
@@ -632,18 +637,20 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   name: ref.name,
   program: ref.program,
   bank: ref.bank,
+  ...(ref.bankLsb !== undefined ? { bank_lsb: ref.bankLsb } : {}),
   channel: ref.channel,
   color: ref.color,
   mute: ref.mute,
   solo: ref.solo,
   instrument_id: ref.instrumentId ?? null,
+  ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ tick: c.tick, controller: c.controller, value: c.value })) } : {}),
 });
 
 /** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
 export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined => {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
-  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId }, fallback);
+  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId, bankLsb: r.bank_lsb ?? r.bankLsb }, fallback);
 };
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---

@@ -751,7 +751,15 @@ export const Vocal2MidiPanel: React.FC = () => {
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => void handleExportMidi()} disabled={processedNotes.length === 0} className={`${chip} ${chipOff} flex items-center gap-1`}><Download aria-hidden="true" className="w-3 h-3" /> <span>MIDI</span></button>
             <button type="button" onClick={() => void handleExportWav()} disabled={processedNotes.length === 0} className={`${chip} ${chipOff} flex items-center gap-1`}><Music4 aria-hidden="true" className="w-3 h-3" /> <span>WAV</span></button>
-            <button type="button" onClick={() => { setCapturedNotes([]); setProcessedNotes([]); usePianoRollStore.getState().clear(); setStatus('cleared'); }} className={`${chip} ${chipOff} flex items-center gap-1`}><Trash2 aria-hidden="true" className="w-3 h-3" /> <span>Clear</span></button>
+            <button
+              type="button"
+              onClick={() => { setCapturedNotes([]); setProcessedNotes([]); usePianoRollStore.getState().clear(); setStatus('cleared'); }}
+              aria-label="Clear the take and the roll part's notes and controller changes"
+              title="Clears the captured take, and the piano roll part being edited: its notes, lane bends and controller changes (the roll's undo brings the part back)"
+              className={`${chip} ${chipOff} flex items-center gap-1`}
+            >
+              <Trash2 aria-hidden="true" className="w-3 h-3" /> <span>Clear</span>
+            </button>
           </div>
         </Section>
 

@@ -347,6 +347,8 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     editor_reverse_clip: (p) => facade.reverseClip(pick(p, CLIP)),
     editor_normalize_clip: (p) => facade.normalizeClip(pick(p, [...CLIP, 'peak_db'])),
     editor_bounce_clip: (p) => facade.bounceClip(pick(p, [...CLIP, 'flatten'])),
+    // The arrangement's notes as one MIDI file; the save seam and the voice seam stay out of reach of a payload.
+    editor_export_midi: (p) => facade.exportMidi(pick(p, ['track_ids', 'clip_ids', 'start_sec', 'end_sec', 'name'])),
 
     // -- selection and grid --------------------------------------------------
     editor_select_clips: (p) => facade.selectClips(pick(p, ['clip_ids'])),

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { encodeMidi, parseMidi, tempoMicros, type MidiFileData } from './midi.ts';
+import { encodeMidi, midiStartTempo, parseMidi, tempoMicros, type MidiFileData } from './midi.ts';
 import { meterMapToMidiEvents, midiEventsToMeterMap, normalizeMeterMap, type MeterSegment } from './meterMap.ts';
 import { notesToRollSmf, notesToSmf } from './midiWrite.ts';
 import { midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
@@ -326,6 +326,74 @@ const timing = (notes: readonly PianoNote[]) => notes.map((n) => [n.note, n.step
     '8170e000408170804000817090437f788043008c9208904832836080480000ff2f00' +
     '4d54726b0000001c00ff03034b69740099246e3c89240083249926503c89260000ff2f00';
   assert.equal(hex(encodeMidi(file)), BEFORE_RICH);
+}
+
+// Controllers: modulation, volume, pan, expression and the pedal are kept per
+// track and written back; the bank select LSB rides on the program change it
+// precedes; other controllers are read past as before.
+{
+  const file: MidiFileData = {
+    ppq: 960,
+    bpm: 90,
+    tracks: [
+      {
+        name: 'Piano',
+        notes: [{ tick: 0, note: 48, velocity: 80, durationTicks: 1920, channel: 2 }],
+        programs: [{ tick: 0, channel: 2, program: 0, bank: 121, bankLsb: 1 }],
+        controls: [
+          { tick: 0, channel: 2, controller: 7, value: 100 },
+          { tick: 0, channel: 2, controller: 10, value: 30 },
+          { tick: 480, channel: 2, controller: 64, value: 127 },
+          { tick: 1920, channel: 2, controller: 64, value: 0 },
+          { tick: 1920, channel: 2, controller: 11, value: 90 },
+          { tick: 2400, channel: 2, controller: 1, value: 64 },
+        ],
+      },
+    ],
+  };
+  const bytes = encodeMidi(file);
+  const back = parseMidi(bytes);
+  assert.deepEqual(back.tracks[0].controls, file.tracks[0].controls, 'every kept controller comes back at its tick');
+  assert.deepEqual(back.tracks[0].programs, [{ tick: 0, channel: 2, program: 0, bank: 121, bankLsb: 1 }], 'with the bank MSB and LSB');
+  // At tick 0: CC 0, CC 32 and the program change, then volume and pan, then the note-on.
+  assert.ok(
+    hasBytes(bytes, [0xb2, 0, 121, 0x00, 0xb2, 32, 1, 0x00, 0xc2, 0, 0x00, 0xb2, 7, 100, 0x00, 0xb2, 10, 30, 0x00, 0x92, 48, 80]),
+    'bank, program, controllers, then the note',
+  );
+
+  // A file from elsewhere: reverb (91) and chorus (93) are read past; Reset All
+  // Controllers is kept as the three changes RP-015 makes (volume and pan stay).
+  const foreign = parseMidi(
+    smf(480, [0x00, 0xb0, 91, 40, 0x00, 0xb0, 93, 20, 0x00, 0xb0, 7, 110, 0x00, 0x90, 60, 100, 0x83, 0x60, 0x80, 60, 0, 0x00, 0xb0, 121, 0]),
+  );
+  assert.deepEqual(foreign.tracks[0].controls, [
+    { tick: 0, channel: 0, controller: 7, value: 110 },
+    { tick: 480, channel: 0, controller: 1, value: 0 },
+    { tick: 480, channel: 0, controller: 11, value: 127 },
+    { tick: 480, channel: 0, controller: 64, value: 0 },
+  ]);
+
+  // A setup track that only sets volume and pan for channels other tracks play is kept.
+  const setup = parseMidi(
+    smf(480, [0x00, 0xb1, 7, 90, 0x00, 0xb1, 10, 100], [0x00, 0xff, 0x03, 0x04, 0x48, 0x6f, 0x72, 0x6e, 0x00, 0x91, 60, 90, 0x83, 0x60, 0x81, 60, 0]),
+  );
+  assert.equal(setup.tracks.length, 2);
+  assert.deepEqual(setup.tracks[0].controls, [
+    { tick: 0, channel: 1, controller: 7, value: 90 },
+    { tick: 0, channel: 1, controller: 10, value: 100 },
+  ]);
+  assert.equal(setup.tracks[0].notes.length, 0);
+}
+
+// The tempo a file plays at from tick 0: its tick-0 tempo; 120 (SMF's default)
+// until a first tempo that comes later than a 64th note; the first tempo when a
+// writer put it a few ticks in.
+{
+  assert.equal(midiStartTempo({ ppq: 480, bpm: 60, tempos: [{ tick: 0, bpm: 72 }, { tick: 960, bpm: 60 }] }), 72);
+  assert.equal(midiStartTempo({ ppq: 480, bpm: 60, tempos: [{ tick: 120720, bpm: 60 }] }), 120, 'a mark 251 beats in does not play from the start');
+  assert.equal(midiStartTempo({ ppq: 480, bpm: 96, tempos: [{ tick: 12, bpm: 96 }] }), 96, 'a tempo 12 ticks in is the start tempo');
+  assert.equal(midiStartTempo({ ppq: 480, bpm: 100, tempos: [] }), 100);
+  assert.equal(midiStartTempo({ ppq: 480, bpm: NaN }), 120);
 }
 
 console.log('midi tests passed');

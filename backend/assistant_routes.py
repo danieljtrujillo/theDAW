@@ -213,6 +213,7 @@ Clips:
 - `editor_merge_clips` — Concatenate clips on ONE track; the originals are removed. Payload: `{"clip_ids": ["a", "b"]}`
 - `editor_crossfade_clips` — Same track, touching or overlapping. Payload: `{"clip_id_a": "...", "clip_id_b": "...", "overlap_sec": 0.5}`
 - `editor_reverse_clip` / `editor_normalize_clip` / `editor_bounce_clip` — Payload: `{"clip_id": "..."}`, plus `{"peak_db?": -1}` for normalize and `{"flatten?": bool}` for bounce. Reverse and normalize are audio clips only; bounce a MIDI clip with `flatten` first.
+- `editor_export_midi` — The arrangement's MIDI notes as one type-1 .mid file (a track per EDIT track, each on its channel with its program and controllers, the tempo changes and time signatures), saved through a Save As. Payload: `{"track_ids?": ["..."], "clip_ids?": ["..."], "start_sec?": 0, "end_sec?": 60, "name?": "symphony"}`; no ids takes every track as the mix plays them.
 
 Selection and grid:
 - `editor_select_clips` — Replace the selection ( `[]` clears it). Payload: `{"clip_ids": ["..."]}`

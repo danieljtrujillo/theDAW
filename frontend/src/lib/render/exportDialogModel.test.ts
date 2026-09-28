@@ -195,13 +195,35 @@ async function main(): Promise<void> {
     assert.equal(buildRenderRequest(baseState({ format: 'wav32' })).items[0].request.float32, true);
     assert.equal(buildRenderRequest(baseState({ format: 'wav16' })).items[0].request.float32, false);
 
-    assert.equal(EXPORT_FORMATS.length, 2, 'exactly two formats — encodeBounce is the whole encoder');
-    assert.deepEqual(EXPORT_FORMATS.map((f) => f.id), ['wav16', 'wav32']);
+    // Two audio formats (encodeBounce is the whole audio encoder) and MIDI, which renders nothing.
+    assert.equal(EXPORT_FORMATS.length, 3, 'the two WAVs encodeBounce writes, and MIDI');
+    assert.deepEqual(EXPORT_FORMATS.map((f) => f.id), ['wav16', 'wav32', 'midi']);
+    assert.deepEqual(EXPORT_FORMATS.filter((f) => f.kind === 'audio').map((f) => f.id), ['wav16', 'wav32']);
     assert.equal(formatOf('wav16').label, 'WAV · 16-bit PCM');
     assert.equal(formatOf('wav32').label, 'WAV · 32-bit float');
     assert.equal(formatOf('wav16').float32, false);
     assert.equal(formatOf('wav32').float32, true);
+    assert.equal(formatOf('midi').kind, 'midi');
+    assert.equal(formatOf('midi').ext, 'mid');
     assert.equal(SAMPLE_RATE_LABEL, '44.1 kHz · stereo (fixed)');
+    // An audio plan has no MIDI file.
+    assert.deepEqual(buildRenderRequest(baseState({ format: 'wav16' })).midiItems, []);
+  }
+
+  /* ── MIDI: one file of the notes, whatever WHAT picks, over the range ────── */
+  {
+    const mix = buildRenderRequest(baseState({ format: 'midi', name: 'symphony' }));
+    assert.deepEqual(mix.items, [], 'MIDI renders nothing');
+    assert.deepEqual(mix.midiItems, [{ label: 'symphony.mid', scope: { kind: 'all' }, rangeSec: null }]);
+    const stems = buildRenderRequest(baseState({ format: 'midi', name: 'winds.midi', what: { kind: 'stems', trackIds: ['fl', 'ob'] } }));
+    assert.deepEqual(stems.midiItems, [{ label: 'winds.midi', scope: { kind: 'tracks', trackIds: ['fl', 'ob'] }, rangeSec: null }], 'one file with the picked tracks; .midi is not doubled');
+    const clips = buildRenderRequest(
+      baseState({ format: 'midi', name: 'bars', what: { kind: 'clips', clipIds: ['c9'] }, rangeMode: 'custom', customSec: { startSec: 4, endSec: 12 } }),
+    );
+    assert.deepEqual(clips.midiItems, [{ label: 'bars.mid', scope: { kind: 'clips', clipIds: ['c9'] }, rangeSec: { startSec: 4, endSec: 12 } }]);
+    const empty = buildRenderRequest(baseState({ format: 'midi', rangeMode: 'custom', customSec: { startSec: 5, endSec: 5 } }));
+    assert.equal(empty.rangeError, 'The chosen range is empty — set an end after the start.');
+    assert.equal(empty.midiItems[0].rangeSec, null, 'an empty range reaches no file');
   }
 
   /* ── tailSec is clamped to MAX_TAIL_SEC ───────────────────────────────────── */

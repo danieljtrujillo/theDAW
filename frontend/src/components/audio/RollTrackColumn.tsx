@@ -6,9 +6,11 @@
  * parts draw behind it as ghost notes while GHOSTS is on). The active part's
  * row opens its settings: name, sound (an orchestral instrument from the
  * registry, a General MIDI program, a drum kit, or the roll's own voice), MIDI
- * channel and bank, AUDITION (play this part alone), and keys to move it up or
- * down and to remove it. ADD makes a new part and turns to it, so the next
- * generator, import or drawn note goes there.
+ * channel, bank and bank LSB, the controller changes a MIDI file gave it (how
+ * many of each: modulation, volume, pan, expression, the sustain pedal) with
+ * CLEAR, AUDITION (play this part alone), and keys to move it up or down and
+ * to remove it. ADD makes a new part and turns to it, so the next generator,
+ * import or drawn note goes there.
  *
  * Every change is a roll undo step (state/pianoRollStore), except which part
  * is active and the column's own settings.
@@ -19,7 +21,7 @@ import { partLinkOf, usePianoRollStore, type RollTrack } from '../../state/piano
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { GM_DRUM_KITS, drumKitName } from '../../lib/clipProgram';
 import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../lib/orchestra';
-import { MAX_ROLL_PARTS, isPercussionPart } from '../../lib/rollTracks';
+import { MAX_ROLL_PARTS, isPercussionPart, partControlCounts } from '../../lib/rollTracks';
 import { FIELD_LEGEND, FLYOUT_SELECT, KEY_ON, KEY_REST, MINI_ICON_KEY, MINI_WORD_KEY, STRIP_GLYPH } from './midiDockKit';
 
 const ORCHESTRA_GROUPS = orchestraByFamily();
@@ -63,6 +65,8 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
   };
   const soundValue = partSoundValue(track);
   const inst = orchestraInstrument(track.instrumentId);
+  const controlCounts = partControlCounts(track.controls);
+  const controlsHeading = `roll-part-controls-${track.id}`;
   return (
     <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-1" data-part-editor="">
       <div className="flex flex-col gap-0.5">
@@ -144,7 +148,50 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
             className={FLYOUT_SELECT}
           />
         </div>
+        <div className="flex flex-col gap-0.5 w-14">
+          <label htmlFor="roll-part-bank-lsb" className={FIELD_LEGEND}>LSB</label>
+          <input
+            id="roll-part-bank-lsb"
+            name="roll-part-bank-lsb"
+            type="number"
+            min={0}
+            max={127}
+            step={1}
+            value={track.bankLsb ?? ''}
+            onChange={(e) => roll().setTrackBankLsb(track.id, e.target.value === '' ? null : Number(e.target.value))}
+            title="Bank select LSB (CC 32) sent after the bank, before the program: XG and GS pick a voice's variation with it. Empty sends none; choosing an instrument clears it."
+            className={FLYOUT_SELECT}
+          />
+        </div>
       </div>
+      {controlCounts.length > 0 && (
+        <div className="flex flex-col gap-0.5" data-part-controls="">
+          <div className="flex items-center gap-1">
+            <span id={controlsHeading} className={FIELD_LEGEND}>Controllers</span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={() => roll().setTrackControls(track.id, null)}
+              aria-label={`Clear every controller change of ${track.name}`}
+              title="Remove the part's controller changes: its notes play at the channel's starting volume, pan and expression, pedal up (Ctrl+Z brings them back)"
+              className={`${MINI_WORD_KEY} ${KEY_REST}`}
+            >
+              Clear
+            </button>
+          </div>
+          <ul aria-labelledby={controlsHeading} className="flex flex-col gap-0.5">
+            {controlCounts.map(({ controller, count }) => (
+              <li
+                key={controller.controller}
+                className="text-[12px] font-semibold leading-tight et-ink-2"
+                title={`Controller ${controller.controller}: PLAY sends each change on the part's channel, a bounce renders it and MIDI export writes it`}
+              >
+                {controller.name} · {count} change{count === 1 ? '' : 's'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="flex items-center gap-1">
         <button
           type="button"

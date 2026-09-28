@@ -15,11 +15,14 @@
  * bend every note is in lane A, as before.
  *
  * TIMING: notes travel on TICKS, not on the 16th grid. An export writes each
- * note's own `tick`/`ticks` rescaled from the model's PPQ (960) to the file's,
- * and an import writes the file's ticks back scaled to 960 and derives the
- * step view from them — so a round trip through a 960 PPQ file is exact and a
- * 480 or 96 PPQ file scales rather than snapping to the grid. Bends still speak
- * in steps: a curve is drawn against the grid, not against a note.
+ * note's own `tick`/`ticks` at the file's PPQ, which is the roll's own 960
+ * (ROLL_PPQ), so every tick goes out as the roll holds it and a septuplet or a
+ * quintuplet comes back on the tick it left. An import writes the file's
+ * ticks back scaled to 960 and derives the step view from them — so a round
+ * trip through a 960 PPQ file is exact and a 480 or 96 PPQ file (every file
+ * the roll wrote before, and most other programs') scales rather than
+ * snapping to the grid. Bends still speak in steps: a curve is drawn against
+ * the grid, not against a note.
  *
  * LANES: a roll with more than lane A writes one track per lane, named
  * "Lane B", holding the lane's notes as they sound and, at tick 0, a
@@ -54,13 +57,20 @@
  * follows the picker stays one, rather than turning into the piano its track
  * name "Piano Roll" seems to name).
  *
+ * CONTROLLERS: a part's controller changes (RollTrack `controls`: modulation,
+ * volume, pan, expression, the sustain pedal) are written as B0 messages at
+ * their ticks on every channel the part plays on, once per channel, so a bent
+ * lane's notes take the pedal too.
+ *
  * Import reads a file into parts (midiFileToRollParts): the parts a file this
  * module wrote names, else one part per track, or per channel when one track
  * holds several (a format 0 file), each with the track's name, its first
- * program and bank, its channel (a part on MIDI channel 10 is percussion) and
- * the registry instrument its name or program names (lib/orchestra). The
- * names the roll gives its own tracks ("Piano Roll", "Lane B") name no
- * instrument.
+ * program and bank, its channel, the controller changes its channel carries
+ * anywhere in the file (a setup track's volume and pan included) and the
+ * registry instrument its name or program names (lib/orchestra). A part on
+ * MIDI channel 10, or one whose bank select is General MIDI 2's rhythm bank
+ * (120), is percussion. The names the roll gives its own tracks ("Piano
+ * Roll", "Lane B") name no instrument.
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -86,10 +96,12 @@ import {
 } from './pitchBend';
 import { meterMapToMidiEvents, midiEventsToMeterMap, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
 import {
+  midiStartTempo,
   tempoMicros,
   tempoOfMicros,
   type MidiBend,
   type MidiBendRange,
+  type MidiControl,
   type MidiFileData,
   type MidiNote,
   type MidiProgram,
@@ -97,12 +109,15 @@ import {
   type MidiTrack,
 } from './midi';
 import { GM_NAMES } from './gmInstruments';
+import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram } from './orchestra';
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
+  cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
+  cleanPartControls,
   cleanPartName,
   cleanPartProgram,
   isPercussionPart,
@@ -121,11 +136,18 @@ import {
   sanitizeLanes,
   ticksPerStep,
   type PianoNote,
+  type RollControl,
   type RollMeter,
   type RollTrack,
 } from '../state/pianoRollStore';
 
-export const ROLL_PPQ = 480;
+/**
+ * The resolution a roll export writes: the roll's own PPQ (960, lib/noteClock),
+ * so each note leaves on the tick it has and an import reads the same tick
+ * back. Files the roll wrote at 480 before, and files at any other resolution,
+ * still import: their ticks scale to 960.
+ */
+export const ROLL_PPQ = NOTE_PPQ;
 
 /** The roll state an export reads. */
 export interface RollMidiSource {
@@ -245,11 +267,13 @@ const sameTempos = (a: readonly MidiTempo[], b: readonly MidiTempo[]): boolean =
 /**
  * A parsed file's tempo map: the `theDAW:tempomap=` map when the file's tempos
  * are still exactly the ones it writes, else each tempo as a step at its tick,
- * the file's first tempo at beat 0.
+ * with the tempo the file plays at from tick 0 at beat 0 (lib/midi
+ * midiStartTempo: its tick-0 tempo, else 120 until its first tempo, as SMF
+ * has it).
  */
 export function midiFileTempoMap(data: MidiFileData): TempoEvent[] {
   const ppq = data.ppq || ROLL_PPQ;
-  const start = Number.isFinite(data.bpm) && data.bpm > 0 ? data.bpm : 120;
+  const start = midiStartTempo(data);
   const tempos = data.tempos ?? [];
   if (data.dawTempoMap) {
     const own = parseTempoMapText(data.dawTempoMap);
@@ -378,11 +402,59 @@ function laneTracks(s: RollMidiSource, w: WrittenNotes, name: string, extra: (la
   });
 }
 
-/** Program changes at tick 0 on each of `channels` for a part sounding `program` in `bank` (no bank select for bank 0). */
-const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number): MidiProgram[] =>
+/**
+ * Program changes at tick 0 on each of `channels` for a part sounding
+ * `program` in `bank` (no bank select for bank 0), with its bank select LSB
+ * (CC 32) when it has one.
+ */
+const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number, bankLsb: number | undefined): MidiProgram[] =>
   program === undefined
     ? []
-    : [...new Set(channels)].sort((a, b) => a - b).map((channel) => ({ tick: 0, channel, program, ...(bank > 0 ? { bank } : {}) }));
+    : [...new Set(channels)]
+      .sort((a, b) => a - b)
+      .map((channel) => ({ tick: 0, channel, program, ...(bank > 0 ? { bank } : {}), ...(bankLsb !== undefined ? { bankLsb } : {}) }));
+
+/**
+ * A part's controller changes as a file at `ppq` writes them: every change on
+ * each of `channels`, sorted by tick (per tick, channel by channel in the
+ * part's own order). The roll's ticks are rescaled from PPQ, which at the
+ * roll's own 960 leaves them as they are.
+ */
+export function partControlEvents(controls: readonly RollControl[] | undefined, channels: Iterable<number>, ppq: number): MidiControl[] {
+  if (!controls?.length) return [];
+  const toFile = ppq / PPQ;
+  const out: MidiControl[] = [];
+  for (const channel of [...new Set(channels)].sort((a, b) => a - b)) {
+    for (const c of controls) out.push({ tick: Math.max(0, Math.round(c.tick * toFile)), channel, controller: c.controller, value: c.value });
+  }
+  // Stable, so the changes of one tick keep their channel and part order.
+  return out.sort((a, b) => a.tick - b.tick);
+}
+
+/**
+ * The `extra` of laneTracks for a part: its programs on the channels each track
+ * plays, and its controller changes once per channel, in the first track that
+ * plays on it, so lanes that share a channel do not write a change twice.
+ */
+function partTrackExtra(
+  channels: ReadonlyMap<number, number>,
+  program: number | undefined,
+  bank: number,
+  bankLsb: number | undefined,
+  controls: readonly RollControl[] | undefined,
+  ppq: number,
+  base: Partial<MidiTrack> = {},
+): (lane: PolyLane | null) => Partial<MidiTrack> {
+  const written = new Set<number>();
+  return (lane) => {
+    const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
+    const programs = partPrograms(used, program, bank, bankLsb);
+    const fresh = [...new Set(used)].filter((ch) => !written.has(ch));
+    for (const ch of fresh) written.add(ch);
+    const ctl = partControlEvents(controls, fresh, ppq);
+    return { ...base, ...(programs.length ? { programs } : {}), ...(ctl.length ? { controls: ctl } : {}) };
+  };
+}
 
 /** The `theDAW:part=` text of a part: its settings as JSON, so an import gets the part back. */
 export const partMetaText = (t: RollTrack): string =>
@@ -391,6 +463,7 @@ export const partMetaText = (t: RollTrack): string =>
     name: t.name,
     program: t.program,
     bank: t.bank,
+    ...(t.bankLsb !== undefined ? { bankLsb: t.bankLsb } : {}),
     channel: t.channel,
     color: t.color,
     mute: t.mute,
@@ -404,11 +477,13 @@ export function parsePartMeta(text: string | undefined): (Partial<RollTrack> & {
   try {
     const raw = JSON.parse(text) as Record<string, unknown>;
     if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return null;
+    const bankLsb = cleanPartBankLsb(raw.bankLsb);
     return {
       id: raw.id,
       name: cleanPartName(raw.name, 'Part'),
       program: cleanPartProgram(raw.program),
       bank: cleanPartBank(raw.bank),
+      ...(bankLsb !== undefined ? { bankLsb } : {}),
       channel: cleanPartChannel(raw.channel),
       color: cleanPartColor(raw.color, partColorAt(0)),
       mute: raw.mute === true,
@@ -441,15 +516,14 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   if (part && isPercussionPart(part)) {
     const drums = new Map(s.lanes.map((l) => [l.id, 9]));
     const w = writeNotes(s, notes, ppq, drums, new Set());
-    const programs = partPrograms([9], part.program ?? undefined, 0);
-    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
+    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(drums, part.program ?? undefined, 0, undefined, part.controls, ppq, meta)) };
   }
   // Any other roll of one part writes the channels it always did.
   const channels = laneChannels(s.lanes, s.bends);
   const w = writeNotes(s, notes, ppq, channels, bentLanes(s.lanes, s.bends));
   // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
-  const programs = part && part.program !== null ? partPrograms(channels.values(), part.program, part.bank) : [];
-  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
+  const program = part && part.program !== null ? part.program : undefined;
+  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.bankLsb, part?.controls, ppq, meta)) };
 }
 
 /** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
@@ -482,14 +556,9 @@ export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack
     }
     const w = writeNotes(s, part.notes, ppq, channels, wheelLanes);
     const program = part.program ?? s.voices?.get(part.id)?.program;
-    const meta = partMetaText(part);
-    tracks.push(
-      ...laneTracks(s, w, part.name, (lane) => {
-        const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
-        const programs = partPrograms(used, program, isPercussionPart(part) ? 0 : part.bank);
-        return { partMeta: meta, ...(programs.length ? { programs } : {}) };
-      }),
-    );
+    const percussion = isPercussionPart(part);
+    const extra = partTrackExtra(channels, program, percussion ? 0 : part.bank, percussion ? undefined : part.bankLsb, part.controls, ppq, { partMeta: partMetaText(part) });
+    tracks.push(...laneTracks(s, w, part.name, extra));
   }
   return { ...header, tracks };
 }
@@ -686,26 +755,59 @@ const firstProgram = (programs: readonly MidiProgram[] | undefined, channel: num
   (programs ?? []).find((p) => p.channel === channel);
 
 /**
+ * Bank selects that name a drum set on any channel: General MIDI 2's rhythm
+ * bank (120). A part a file puts on it is percussion, wherever its channel is.
+ * XG's kits (126, 127) are not read as drums: GS gives bank 127 to its
+ * MT-32 melodic map, so the number alone cannot tell a kit from a melody, and
+ * a part on either keeps its channel (the parts column's Sound list makes it
+ * a drum kit by hand).
+ */
+const DRUM_BANKS: ReadonlySet<number> = new Set([120]);
+
+/** True when a program change's bank select names a drum set (DRUM_BANKS). */
+export const isDrumBank = (bank: number | undefined): boolean => bank !== undefined && DRUM_BANKS.has(bank);
+
+/** File controller changes as a part keeps them: on the roll's clock (ticks scaled from `ppq` to PPQ), cleaned. */
+const controlsOnRollClock = (controls: readonly MidiControl[], ppq: number): RollControl[] | undefined => {
+  const toModel = PPQ / (ppq || ROLL_PPQ);
+  return cleanPartControls(controls.map((c) => ({ tick: Math.round(c.tick * toModel), controller: c.controller, value: c.value })));
+};
+
+/**
  * A parsed file as the roll's parts, with the document's meter, lanes, bends
  * and tempo map (read as midiFileToRoll reads them).
  *
  * A file this module wrote with parts gives each part back from its
- * `theDAW:part=` text, its lane tracks joined. Any other file gives one part
- * per track that has notes, or per channel of a track that holds several (a
- * format 0 file), in file order. Each takes the track's name (for a split
- * track, the channel's GM program, or the track's name and the channel), the
- * first program and bank its channel sets (in its track, else anywhere in the
- * file), and its channel; notes on MIDI channel 10 make a percussion part. A
- * part whose name names a registry instrument (lib/orchestra guessInstrument)
- * takes it when the file sets no program or sets that instrument's program;
- * otherwise the program names the instrument (instrumentForProgram) when the
- * registry has one for it.
+ * `theDAW:part=` text, its lane tracks joined, with the controller changes
+ * its tracks carry. Any other file gives one part per track that has notes,
+ * or per channel of a track that holds several (a format 0 file), in file
+ * order. Each takes the track's name (for a split track, the channel's GM
+ * program, or the track's name and the channel), the first program and bank
+ * its channel sets (in its track, else anywhere in the file), its channel,
+ * and every controller change its channel carries in any track (a channel is
+ * the file's, so a setup track's volume and pan reach it). Notes on MIDI
+ * channel 10, or on a channel whose bank select names a drum set
+ * (isDrumBank), make a percussion part. A part whose name names a registry
+ * instrument (lib/orchestra guessInstrument) takes it when the file sets no
+ * program or sets that instrument's program; otherwise the program names the
+ * instrument (instrumentForProgram) when the registry has one for it.
  */
 export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollMidiPartsImport {
   const origins = new Map<string, NoteOrigin>();
   const read = readMidiFile(data, idPrefix, origins);
+  const ppq = data.ppq || ROLL_PPQ;
   const metas = data.tracks.map((t) => parsePartMeta(t.partMeta));
   const own = metas.some((m) => m !== null);
+  // Every kept controller change by channel, across the file's tracks, in track order within a tick.
+  const channelControls = new Map<number, MidiControl[]>();
+  for (const t of data.tracks) {
+    for (const c of t.controls ?? []) {
+      const list = channelControls.get(c.channel);
+      if (list) list.push(c);
+      else channelControls.set(c.channel, [c]);
+    }
+  }
+  for (const list of channelControls.values()) list.sort((a, b) => a.tick - b.tick);
   // Each track's note channels, so a track holding several is split by channel.
   const trackChannels = data.tracks.map((t) => [...new Set(t.notes.map((n) => n.channel))].sort((a, b) => a - b));
   const keyOf = (o: NoteOrigin): string => {
@@ -743,14 +845,22 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
   const parts: RollMidiPart[] = order.map((o, index) => {
     const notes = notesOf.get(o.key) ?? [];
     const meta = own ? metas[o.track] : null;
-    if (meta) return { track: { ...meta, id: undefined }, notes };
+    if (meta) {
+      // The part's own tracks: it wrote its changes on each channel it plays, so the copies fold into one.
+      const mine = data.tracks.filter((_, k) => metas[k]?.id === meta.id).flatMap((t) => t.controls ?? []);
+      const controls = controlsOnRollClock(mine.sort((a, b) => a.tick - b.tick), ppq);
+      return { track: { ...meta, id: undefined, ...(controls ? { controls } : {}) }, notes };
+    }
     const t = data.tracks[o.track];
     const channel = o.channel ?? 0;
     const change = firstProgram(t.programs, channel) ?? data.tracks.map((x) => firstProgram(x.programs, channel)).find((p) => p !== undefined);
-    const percussion = channel === 9;
+    const percussion = channel === 9 || isDrumBank(change?.bank);
     const split = trackChannels[o.track].length > 1;
     const fileProgram = change?.program;
     const bank = percussion ? 0 : change?.bank ?? 0;
+    // The bank select LSB (CC 32) the file sends with the program: XG and GS pick a voice's variations with it.
+    const bankLsb = percussion ? undefined : cleanPartBankLsb(change?.bankLsb);
+    const controls = controlsOnRollClock(channelControls.get(channel) ?? [], ppq);
     const name = !split
       ? t.name
       : percussion
@@ -769,9 +879,11 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
         name: cleanPartName(name, `Part ${index + 1}`),
         program,
         bank,
+        ...(bankLsb !== undefined ? { bankLsb } : {}),
         channel: percussion ? PERCUSSION_PART_CHANNEL : channel + 1,
         color: partColorAt(index),
         ...(inst ? { instrumentId: inst.id } : {}),
+        ...(controls ? { controls } : {}),
       },
       notes,
     };

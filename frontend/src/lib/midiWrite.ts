@@ -20,16 +20,20 @@
  * range's CC 38 counts 1/128 semitones, the way SpessaSynth reads it, since
  * the soundfont render is what reads these wheels.
  *
+ * Controller changes are written only when given (a render of a part that
+ * carries a MIDI file's volume, pan, expression, modulation or sustain pedal):
+ * each at its tick on its channel, after the program change and before a
+ * note that starts on the same tick.
+ *
  * TIMING: this writer's input is absolute SECONDS, so it is the wrong door for
  * the roll's own .mid export — that goes through `lib/rollMidi.rollToMidiFile`,
- * which writes each note's `tick` straight out at the FILE's PPQ (480 by
- * default, so half the model's 960): no second quantise, but an odd model tick
- * rounds by at most half a file tick. Ask it for `PPQ` and nothing moves. What
- * arrives here (a vocal take, a soundfont render's note list) was never on a
- * tick grid to begin with. `SMF_PPQ` is exported so a caller that DOES hold
- * model ticks can convert once, knowingly, instead of guessing the grid.
+ * which writes each note's `tick` straight out at the roll's own 960 PPQ, so
+ * nothing moves. What arrives here (a vocal take, a soundfont render's note
+ * list) was never on a tick grid to begin with. `SMF_PPQ` is exported so a
+ * caller that DOES hold model ticks can convert once, knowingly, instead of
+ * guessing the grid.
  */
-import { RANGE_LSB_SPESSA, TEMPOMAP_TEXT, bendRangeMessages, meterEventMetas, pitchWheelMessage, tempoOfMicros } from './midi';
+import { RANGE_LSB_SPESSA, TEMPOMAP_TEXT, bendRangeMessages, controlMessage, meterEventMetas, pitchWheelMessage, tempoOfMicros } from './midi';
 import { tempoMapText } from './rollMidi';
 import { meterMapToMidiEvents, type MeterEvent, type MeterSegment } from './meterMap';
 import type { RenderNote } from './midiSynth';
@@ -74,14 +78,25 @@ export interface SmfWheel {
   events: ReadonlyArray<{ sec: number; raw: number }>;
 }
 
+/** One controller change for notesToSmf, in seconds: a part's volume, pan, expression, modulation or sustain pedal. */
+export interface SmfControl {
+  sec: number;
+  channel: number;
+  controller: number;
+  value: number;
+}
+
 /**
  * What notesToSmf writes beyond the notes, the signatures and the wheels, by
- * name: each writer (the roll's .mid export, a render's bank) sets only its
- * own field, so adding a field never moves another writer's argument.
+ * name: each writer (the roll's .mid export, a render's bank, a part's
+ * controllers) sets only its own field, so adding a field never moves another
+ * writer's argument.
  */
 export interface SmfOptions {
   /** Bank select MSB 0-127 before every program change; 0 writes no bank select. */
   bank?: number;
+  /** Controller changes (a part's volume, pan, expression, modulation, pedal), each at its tick on its channel. */
+  controls?: readonly SmfControl[];
   /** FF 01 text events at tick 0 (7-bit ASCII), after the signatures' metas. */
   texts?: readonly string[];
 }
@@ -94,8 +109,9 @@ export interface SmfOptions {
  * the same program. The options carry what only some files need: a `bank`
  * past 0 is selected (CC 0) on each of those channels just before its program
  * change, so the program is that bank's preset (bank 0 writes no bank select,
- * as the file always has), and `texts` are FF 01 text events at tick 0, after
- * the signatures' own metas.
+ * as the file always has); `controls` are written at their ticks on their
+ * channels; and `texts` are FF 01 text events at tick 0, after the
+ * signatures' own metas.
  */
 export function notesToSmf(
   notes: RenderNote[],
@@ -106,12 +122,12 @@ export function notesToSmf(
   wheel: readonly SmfWheel[] = [],
   opts: SmfOptions = {},
 ): Uint8Array<ArrayBuffer> {
-  const { bank = 0, texts = [] } = opts;
+  const { bank = 0, controls = [], texts = [] } = opts;
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
   interface Ev {
     tick: number;
-    order: number; // tie-break at equal ticks: meta (-1), bank select (-0.5), then program and note-off (0), range (0.25), wheel (0.5), then note-on (1)
+    order: number; // tie-break at equal ticks: meta (-1), bank select (-0.5), then program and note-off (0), controllers (0.1), range (0.25), wheel (0.5), then note-on (1)
     data: number[];
   }
   const msb = Number.isFinite(bank) ? Math.max(0, Math.min(127, Math.round(bank))) : 0;
@@ -136,6 +152,10 @@ export function notesToSmf(
     const data = [0xff, 0x01];
     pushVlq(data, bytes.length);
     evs.push({ tick: 0, order: -1, data: [...data, ...bytes] });
+  }
+  for (const c of controls) {
+    const tick = Number.isFinite(c.sec) ? Math.max(0, Math.round(c.sec / secPerTick)) : 0;
+    evs.push({ tick, order: 0.1, data: controlMessage(c.channel, c.controller, c.value) });
   }
   for (const w of wheel) {
     for (const data of bendRangeMessages(w.channel, w.range, RANGE_LSB_SPESSA)) evs.push({ tick: 0, order: 0.25, data });

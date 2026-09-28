@@ -29,6 +29,7 @@
  * No Vite-only imports, so node tests load it.
  */
 import type { AudioClip, EditorTrack } from '../state/editorStore';
+import type { RollControl } from '../state/pianoRollStore';
 import { clipRenderIsStale, renderedVoiceFields, type ClipVoice, type GlobalVoice } from './clipProgram';
 import { renderedWindowFields } from './clipRenderWindow';
 import { noteEndStep } from './clipNotes/units';
@@ -43,7 +44,14 @@ export type MidiStepRender = (
   notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
   bpm: number,
   totalSteps: number,
-  opts: { program?: number; bank?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
+  opts: {
+    program?: number;
+    bank?: number;
+    percussion?: boolean;
+    bends?: RollRenderBends;
+    tempoMap?: readonly TempoEvent[];
+    controls?: readonly RollControl[];
+  },
 ) => Promise<{ blob: Blob; duration: number }>;
 
 /** The clip fields a render reads. */
@@ -59,7 +67,8 @@ export type MidiRenderSource = Pick<
   | 'sourcePickupSteps'
   | 'sourceLanes'
   | 'sourceBends'
->;
+> &
+  Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
 /** The clip fields the cache state reads. */
 export type MidiCacheClip = MidiRenderSource &
@@ -127,16 +136,21 @@ function hashNotes(notes: readonly SigNote[] | undefined): number {
 /**
  * Everything a render of `clip` is made from except its voice, as a short
  * string: the notes it plays, its own notes with their lanes, its tempo and
- * tempo map, its grid length, lanes and bends. Two clips with the same
- * signature and voice render the same audio.
+ * tempo map, its grid length, lanes and bends, and its part's controller
+ * changes (its pedal, volume, pan, expression, modulation). Two clips with the
+ * same signature and voice render the same audio. A part with no controllers
+ * signs as a clip did before parts carried them, so its saved render stays
+ * current.
  */
 export function midiRenderSig(clip: MidiRenderSource): string {
+  const controls = clip.sourceRollPart?.controls;
   const small = JSON.stringify([
     clip.sourceBpm ?? null,
     clip.sourceTempoMap ?? null,
     midiClipTotalSteps(clip),
     clip.sourceLanes ?? null,
     clip.sourceBends ?? null,
+    ...(controls?.length ? [controls.map((c) => [c.tick, c.controller, c.value])] : []),
   ]);
   const parts = [hashNotes(clip.sourcePianoRoll), hashNotes(clip.sourceRollNotes), fnv1a(small)];
   return parts.map((p) => p.toString(16).padStart(8, '0')).join('');
@@ -203,6 +217,8 @@ export async function renderMidiClipAudio(
     percussion: voice.percussion,
     ...(input.bends ? { bends: input.bends } : {}),
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
+    // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
+    ...(input.controls ? { controls: input.controls } : {}),
   });
 }
 

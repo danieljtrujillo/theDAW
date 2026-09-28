@@ -29,6 +29,7 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import {
   EXPORT_FORMATS,
+  MIDI_FORMAT_LABEL,
   SAMPLE_RATE_LABEL,
   buildRenderRequest,
   defaultExportState,
@@ -69,16 +70,25 @@ export interface ExportDialogProps {
   defaultName?: string;
 }
 
-const LABEL = 'font-display text-[10px] font-bold uppercase tracking-wider text-zinc-400';
+// Every word in the dialog is 12px or larger, in the bold sans the rest of the app reads in.
+const LABEL = 'font-display text-[12px] font-bold uppercase tracking-wider text-zinc-400';
 const FIELD =
-  'w-full rounded-xs border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] font-mono text-zinc-200 outline-none focus:border-purple-500/50';
-const RADIO_ROW = 'flex items-center gap-1.5 text-[11px] text-zinc-300';
+  'w-full rounded-xs border border-white/10 bg-black/40 px-2 py-1.5 text-[12px] font-semibold text-zinc-200 outline-none focus:border-purple-500/50 disabled:opacity-40';
+const RADIO_ROW = 'flex items-center gap-1.5 text-[12px] font-semibold text-zinc-300';
+const NOTE = 'text-[12px] font-semibold text-zinc-400';
 const BUTTON =
-  'h-8 px-3 rounded-xs text-[10px] font-bold uppercase tracking-wider bg-white/10 text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:hover:bg-white/10';
+  'h-8 px-3 rounded-xs text-[12px] font-bold uppercase tracking-wider bg-white/10 text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:hover:bg-white/10';
 
 const WHAT_LABEL: Record<ExportWhat['kind'], string> = {
   mix: 'Mix — the whole timeline, one file',
   stems: 'Stems — one file per selected track',
+  clips: 'Selection — the selected clip(s), one file',
+};
+
+/** WHAT for the MIDI format: one file, whichever the choice, with a MIDI track per EDIT track. */
+const WHAT_LABEL_MIDI: Record<ExportWhat['kind'], string> = {
+  mix: 'Every MIDI track — one file, as the mix plays them',
+  stems: 'Selected tracks — one file holding those tracks',
   clips: 'Selection — the selected clip(s), one file',
 };
 
@@ -112,6 +122,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
     rangeStart: `${uid}-range-start`,
     rangeEnd: `${uid}-range-end`,
     tail: `${uid}-tail`,
+    tailNote: `${uid}-tail-note`,
     rangeError: `${uid}-range-error`,
     nameError: `${uid}-name-error`,
   };
@@ -167,6 +178,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   }, [onClose]);
 
   const plan = useMemo(() => buildRenderRequest(state), [state]);
+  // MIDI writes the notes: no tail, no library, one file whatever WHAT picks.
+  const midi = formatOf(state.format).kind === 'midi';
+  const whatLabels = midi ? WHAT_LABEL_MIDI : WHAT_LABEL;
 
   const whatInvalid =
     (state.what.kind === 'stems' && state.what.trackIds.length === 0) ||
@@ -256,13 +270,13 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                     disabled={disabled}
                     onChange={() => setWhatKind(kind)}
                   />
-                  {WHAT_LABEL[kind]}
+                  {whatLabels[kind]}
                 </label>
               );
             })}
             {state.what.kind === 'stems' && (
               <div className="flex flex-col gap-1 pl-5 max-h-32 overflow-y-auto">
-                {tracks.length === 0 && <p className="text-[10px] text-zinc-500">No tracks.</p>}
+                {tracks.length === 0 && <p className={NOTE}>No tracks.</p>}
                 {tracks.map((track) => {
                   const id = `${uid}-track-${track.id}`;
                   const trackIds = state.what.kind === 'stems' ? state.what.trackIds : [];
@@ -282,7 +296,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               </div>
             )}
             {state.what.kind === 'clips' && (
-              <p className="pl-5 text-[10px] text-zinc-500">
+              <p className={`pl-5 ${NOTE}`}>
                 {selectedClipIds.length} clip{selectedClipIds.length === 1 ? '' : 's'} selected
               </p>
             )}
@@ -343,9 +357,12 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               </div>
             )}
             {plan.rangeError && (
-              <p id={ids.rangeError} role="alert" className="pl-5 text-[10px] font-semibold text-red-400">
+              <p id={ids.rangeError} role="alert" className="pl-5 text-[12px] font-semibold text-red-400">
                 {plan.rangeError}
               </p>
+            )}
+            {midi && state.rangeMode !== 'project' && (
+              <p className={`pl-5 ${NOTE}`}>The MIDI file starts on the bar line at or before the range, so its bars are the arrangement’s.</p>
             )}
           </fieldset>
 
@@ -365,23 +382,30 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                 ))}
               </select>
             </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor={ids.destination} className={LABEL}>Deliver to</label>
-              <select
-                id={ids.destination}
-                name={ids.destination}
-                value={state.destination}
-                onChange={(e) => setState((s) => ({ ...s, destination: e.target.value as ExportDestination }))}
-                className={FIELD}
-              >
-                {(['both', 'library', 'download'] as const).map((d) => (
-                  <option key={d} value={d}>{DESTINATION_LABEL[d]}</option>
-                ))}
-              </select>
-            </div>
+            {midi ? (
+              <div className="flex flex-col gap-1">
+                <p className={LABEL}>Deliver to</p>
+                <p className={NOTE}>Save As: where you choose, then listed under Recent in every MIDI import</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <label htmlFor={ids.destination} className={LABEL}>Deliver to</label>
+                <select
+                  id={ids.destination}
+                  name={ids.destination}
+                  value={state.destination}
+                  onChange={(e) => setState((s) => ({ ...s, destination: e.target.value as ExportDestination }))}
+                  className={FIELD}
+                >
+                  {(['both', 'library', 'download'] as const).map((d) => (
+                    <option key={d} value={d}>{DESTINATION_LABEL[d]}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
-          <p className="text-[10px] text-zinc-500">
-            {SAMPLE_RATE_LABEL} · {formatOf(state.format).label}
+          <p className={NOTE}>
+            {midi ? MIDI_FORMAT_LABEL : `${SAMPLE_RATE_LABEL} · ${formatOf(state.format).label}`}
           </p>
 
           {/* NAME + TAIL ─────────────────────────────────────────────────── */}
@@ -411,6 +435,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                 max={MAX_TAIL_SEC}
                 step="0.5"
                 value={state.tailSec}
+                // A MIDI file has no audio to ring out; the value stays for when an audio format is chosen again.
+                disabled={midi}
+                aria-describedby={midi ? ids.tailNote : undefined}
                 onChange={(e) => {
                   const raw = Number(e.target.value);
                   const clamped = Number.isFinite(raw) ? Math.min(MAX_TAIL_SEC, Math.max(0, raw)) : 0;
@@ -420,8 +447,11 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               />
             </div>
           </div>
+          {midi && (
+            <p id={ids.tailNote} className={NOTE}>A MIDI file has no tail: its notes end where they end.</p>
+          )}
           {nameErrorMessage !== null && (
-            <p id={ids.nameError} role="alert" className="text-[10px] font-semibold text-red-400">
+            <p id={ids.nameError} role="alert" className="text-[12px] font-semibold text-red-400">
               {nameErrorMessage}
             </p>
           )}
@@ -429,9 +459,12 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
           {/* PREVIEW ─────────────────────────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <p className={LABEL}>Will write</p>
-            <ul className="flex flex-col gap-0.5 text-[10px] font-mono text-zinc-400 max-h-24 overflow-y-auto">
+            <ul className="flex flex-col gap-0.5 text-[12px] font-semibold text-zinc-400 max-h-24 overflow-y-auto">
               {plan.items.map((item, i) => (
                 <li key={`${item.label}-${i}`}>{item.label} — {DESTINATION_LABEL[item.destination]}</li>
+              ))}
+              {plan.midiItems.map((item, i) => (
+                <li key={`midi-${item.label}-${i}`}>{item.label} — Save As</li>
               ))}
             </ul>
           </div>

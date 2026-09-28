@@ -36,6 +36,7 @@ import { MAX_BPM, MIN_BPM } from './timeline';
 import type { TempoEvent } from '../tempoMap';
 import type { RollRenderBends } from '../pitchBend';
 import { clipRenderInput } from '../rollClip';
+import type { RollControl } from '../../state/pianoRollStore';
 
 /** The app's working rate; also `encodeWav`'s and the editor's. */
 export const DEFAULT_SAMPLE_RATE = 44100;
@@ -288,6 +289,8 @@ export interface StepNote {
   velocity: number;
   step: number;
   length: number;
+  /** The roll lane the note plays in, which a bent lane's curve follows. */
+  lane?: number;
 }
 
 /** The renderer shape. Injected so this module can be exercised without pulling
@@ -298,8 +301,16 @@ export type StepNoteRenderer = (
   totalSteps: number,
   /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`.
    *  `bends`: each bending lane's curve (lib/pitchBend rollRenderBends), the notes then carrying their lanes.
-   *  `bank`: the bank select sent before the program (lib/clipProgram clipBank). */
-  opts?: { program?: number; bank?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[]; bends?: RollRenderBends },
+   *  `bank`: the bank select sent before the program (lib/clipProgram clipBank).
+   *  `controls`: the clip's part controller changes on the roll's 960 PPQ clock (lib/rollClip clipRenderInput). */
+  opts?: {
+    program?: number;
+    bank?: number;
+    percussion?: boolean;
+    tempoMap?: readonly TempoEvent[];
+    bends?: RollRenderBends;
+    controls?: readonly RollControl[];
+  },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -355,11 +366,16 @@ const stepsOf = (clip: AudioClip, notes: StepNote[]): number =>
 
 /** The notes a render plays (lib/rollClip clipRenderInput): a clip whose lanes
  *  bend renders its own notes in their lanes with the bends, so an assistant
- *  re-render keeps the bends live playback plays; any other clip its notes. */
-const renderInputOf = (clip: AudioClip, notes: StepNote[]): { notes: StepNote[]; steps: number; bends?: RollRenderBends } => {
+ *  re-render keeps the bends live playback plays; any other clip its notes.
+ *  The part's controllers (its pedal, volume, pan, expression and modulation)
+ *  come with them, so the new audio plays them as the clip's first render did. */
+const renderInputOf = (
+  clip: AudioClip,
+  notes: StepNote[],
+): { notes: StepNote[]; steps: number; bends?: RollRenderBends; controls?: readonly RollControl[] } => {
   const steps = stepsOf(clip, notes);
   const input = clipRenderInput(clip, steps);
-  return { notes: input.notes as StepNote[], steps, ...(input.bends ? { bends: input.bends } : {}) };
+  return { notes: input.notes as StepNote[], steps, ...(input.bends ? { bends: input.bends } : {}), ...(input.controls ? { controls: input.controls } : {}) };
 };
 
 /**
@@ -381,6 +397,7 @@ export async function bounceMidiClip(
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
+    ...(input.controls ? { controls: input.controls } : {}),
   });
 }
 
@@ -411,12 +428,14 @@ export async function stretchMidiClip(
   }
   const render = opts.render ?? defaultStepNoteRenderer;
   const input = renderInputOf(clip, notes);
-  // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo.
+  // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo,
+  // and each controller change stays on its tick.
   return render(input.notes, bpm, input.steps, {
     program: opts.program ?? clip.instrumentProgram,
     ...(opts.bank ? { bank: opts.bank } : {}),
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
+    ...(input.controls ? { controls: input.controls } : {}),
   });
 }

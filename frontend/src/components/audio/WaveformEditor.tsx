@@ -76,6 +76,7 @@ import {
 } from '../../lib/clipProgram';
 import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
 import { DROP_RENDER_FIELDS, hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
+import { importMidiBytesAsTracks } from '../../lib/midiImportTracksApp';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
 import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
@@ -99,7 +100,7 @@ import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { classifyModelGate } from '../../lib/modelDownloadClient';
 import { setLocalOnly } from '../../lib/storageClient';
 import { requireFeature } from '../../notices/featureGateStore';
-import { logError, logInfo } from '../../state/logStore';
+import { logError, logInfo, logWarn } from '../../state/logStore';
 import { saveFile } from '../../lib/saveFile';
 import { dirnameOf, basenameOf } from '../../lib/placesClient';
 import {
@@ -148,7 +149,8 @@ import { RenderRangeDialog } from '../render/RenderRangeDialog';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
 import { StemsRunModal, type StemsRunOptions } from '../library/StemsRunModal';
 import { ExportDialog } from './ExportDialog';
-import type { ExportRenderItem, ExportRenderPlan } from '../../lib/render/exportDialogModel';
+import type { ExportRenderItem, ExportRenderPlan, MidiExportItem } from '../../lib/render/exportDialogModel';
+import { exportArrangementMidi } from '../../lib/arrangementMidiApp';
 import { EffectWindowsHost, FxChainList, openEffectWindow, type EffectWindowOrigin, type FxScope } from './EffectWindows';
 import { browserPopoverEnv, popoverMaxHeight, sameLayout, watchPopover, type PopoverLayout } from '../../lib/popoverPlacement';
 import { useTrackFxRackStore, type TrackFxRackAnchor } from '../../state/trackFxRackStore';
@@ -188,6 +190,7 @@ const ADD_ENTRY_ICON: Record<AddToTrackEntry['id'], React.ReactNode> = {
   'audio-system': <FolderOpen className="w-3 h-3" />,
   'midi-library': <Music className="w-3 h-3" />,
   'midi-system': <FolderOpen className="w-3 h-3" />,
+  'midi-tracks': <Rows3 className="w-3 h-3" />,
   'midi-empty': <Piano className="w-3 h-3" />,
   paste: <Copy className="w-3 h-3" />,
   'new-track': <Plus className="w-3 h-3" />,
@@ -869,11 +872,23 @@ export const runExportPlanItem = async (item: ExportRenderItem): Promise<void> =
   });
 };
 
+/** A MIDI-format export (lib/arrangementMidi): the arrangement's notes written
+ *  and saved, no render; a refusal (no notes, a cancelled Save As) is shown as
+ *  the render failures are. */
+export const runMidiExportItem = async (item: MidiExportItem): Promise<void> => {
+  const outcome = await exportArrangementMidi({ scope: item.scope, range: item.rangeSec, name: item.label });
+  if (!outcome.ok) {
+    logWarn('editor', outcome.error);
+    requireFeature({ id: 'render:failed:midi', kind: 'error', title: 'MIDI export', message: outcome.error, autoDismissMs: 10000 });
+  }
+};
+
 /** Fires every item in an export-dialog plan. Each item runs independently —
  *  one stem failing (logged by `runRenderJob`'s own catch, for the two kinds
  *  that go through the queue) does not stop the others. */
 export const runExportPlan = (plan: ExportRenderPlan): void => {
   for (const item of plan.items) void runExportPlanItem(item);
+  for (const item of plan.midiItems) void runMidiExportItem(item);
 };
 
 /**
@@ -4294,6 +4309,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const addInputUid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const addAudioInputId = `editor-add-audio-${addInputUid}`;
   const addMidiInputId = `editor-add-midi-${addInputUid}`;
+  const addMidiTracksInputId = `editor-add-midi-tracks-${addInputUid}`;
 
   /** The range menu when a right-click at (`sec`, `trackId`) lands inside the
    *  time range; true when it opened. Opening it changes no selection. */
@@ -5741,10 +5757,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         ? useEditorStore.getState().tracks.find((t) => t.id === targetTrackId)
         : undefined;
       // An existing track's own instrument wins, the same order
-      // `effectiveProgramFor` resolves at playback. Matching it here means the
-      // `renderedProgram` written below is already right and the instrument-sync
-      // effect has nothing to re-render. A percussion track's clip keeps no
-      // program of its own: the picker's is an instrument, not a drum kit.
+      // `effectiveProgramFor` resolves at playback, so the clip plays live on
+      // the voice its track shows. A percussion track's clip keeps no program
+      // of its own: the picker's is an instrument, not a drum kit.
       const program = isPercussionTrack(existing) ? existing?.instrumentProgram : existing?.instrumentProgram ?? globalProgram;
       const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
       const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
@@ -5798,6 +5813,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const pendingSystemAdd = useRef<AddToTrackTarget | null>(null);
   const audioFileInputRef = useRef<HTMLInputElement | null>(null);
   const midiFileInputRef = useRef<HTMLInputElement | null>(null);
+  const midiTracksInputRef = useRef<HTMLInputElement | null>(null);
 
   /** Library entries -> clips. The first lands where the user pointed; further
    *  files of a multi-file pick get a track each, the rule onTimelineDrop uses. */
@@ -5866,6 +5882,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   };
 
+  /** "MIDI file as tracks": every part of the file on a new track of its own at the clicked time (lib/midiImportTracks). */
+  const onAddMidiTracksFiles = async (files: File[], target: AddToTrackTarget | null) => {
+    const file = files[0];
+    if (!target || !file) return;
+    try {
+      await importMidiBytesAsTracks(await file.arrayBuffer(), midiFileLabel(file.name), target.atSec);
+    } catch (err) {
+      logError('editor', `Could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   /** The target the open OS dialog was opened for, handed over once. */
   const takePendingAdd = (): AddToTrackTarget | null => {
     const target = pendingSystemAdd.current;
@@ -5913,6 +5940,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       case 'midi-system':
         pendingSystemAdd.current = target;
         midiFileInputRef.current?.click();
+        return;
+      case 'midi-tracks':
+        pendingSystemAdd.current = target;
+        midiTracksInputRef.current?.click();
         return;
       case 'midi-empty':
         // The menu's own anchor, as the library picker takes it.
@@ -8995,6 +9026,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           const files = Array.from(e.target.files ?? []);
           e.target.value = '';
           void onAddMidiFiles(files, takePendingAdd());
+        }}
+      />
+      <label htmlFor={addMidiTracksInputId} className="sr-only">
+        MIDI file to add as tracks, one track per part
+      </label>
+      <input
+        ref={midiTracksInputRef}
+        id={addMidiTracksInputId}
+        name={addMidiTracksInputId}
+        type="file"
+        accept={MIDI_ACCEPT}
+        tabIndex={-1}
+        className="sr-only"
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = '';
+          void onAddMidiTracksFiles(files, takePendingAdd());
         }}
       />
 

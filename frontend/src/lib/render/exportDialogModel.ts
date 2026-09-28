@@ -10,13 +10,21 @@
  * the Zustand stores, so the whole suite runs under plain tsx and the
  * dialog, the preflight and the job builder can all share one model.
  *
- * Only two formats exist because `encodeBounce` (renderCore.ts) is the whole
+ * Two audio formats exist because `encodeBounce` (renderCore.ts) is the whole
  * encoder the app has: `encodeWav(buffer, { float32 })`. There is no mp3,
  * flac, ogg or aiff path to encode to, and no sample-rate or bit-depth
  * control beyond that one boolean — offering one would be a control that
  * cannot work. The render itself is always 44.1 kHz stereo
  * (`BOUNCE_SAMPLE_RATE`), so that is stated to the user rather than exposed
  * as a choice (`SAMPLE_RATE_LABEL`).
+ *
+ * The third format, MIDI, renders nothing: it writes the arrangement's notes
+ * as one type-1 MIDI file (lib/arrangementMidi), so its plan has no audio
+ * items and one `midiItems` entry. WHAT picks the clips (the mix: every MIDI
+ * track as the mix plays them; stems: the picked tracks; a selection: the
+ * picked clips), all in ONE file with a MIDI track per EDIT track, and RANGE
+ * picks the span. It has no tail, and it is saved where the user chooses: a
+ * MIDI file is not a library take.
  *
  * The three `ExportWhat` branches copy the fidelity flags of
  * `WaveformEditor`'s `mixdownRequest` / `stemRequest` / `selectionRequest`
@@ -29,6 +37,7 @@
  * instead.
  */
 import { BOUNCE_SAMPLE_RATE, type BounceRequest } from '../renderCore';
+import type { ArrangementMidiScope } from '../arrangementMidi';
 import { MAX_TAIL_SEC, rangeFromSeconds, type RenderRange } from './renderRange';
 
 /* ── the five answers ────────────────────────────────────────────────────── */
@@ -40,7 +49,7 @@ export type ExportWhat =
 
 export type ExportRangeMode = 'project' | 'selection' | 'custom';
 
-export type ExportFormatId = 'wav16' | 'wav32';
+export type ExportFormatId = 'wav16' | 'wav32' | 'midi';
 
 export type ExportDestination = 'library' | 'download' | 'both';
 
@@ -70,31 +79,38 @@ export interface ExportDialogState {
 export interface ExportFormat {
   id: ExportFormatId;
   label: string;
-  ext: 'wav';
-  mime: 'audio/wav';
+  /** 'audio' renders through `encodeBounce`; 'midi' writes the notes (lib/arrangementMidi). */
+  kind: 'audio' | 'midi';
+  ext: 'wav' | 'mid';
+  mime: 'audio/wav' | 'audio/midi';
   /** Mirrors `BounceRequest.float32` — the only thing that actually differs
-   *  between the two, since `encodeBounce` only branches on this one flag. */
+   *  between the two WAVs, since `encodeBounce` only branches on this one
+   *  flag. False for MIDI, which renders nothing. */
   float32: boolean;
 }
 
-/** Exactly two entries: `encodeBounce` only knows how to write a WAV, either
- *  16-bit PCM or 32-bit float. A third entry here with nothing to encode it
- *  would be a control that cannot work. */
+/** The two WAVs `encodeBounce` can write (16-bit PCM, 32-bit float), and MIDI,
+ *  which lib/arrangementMidi writes from the notes without rendering. */
 export const EXPORT_FORMATS: ExportFormat[] = [
-  { id: 'wav16', label: 'WAV · 16-bit PCM', ext: 'wav', mime: 'audio/wav', float32: false },
-  { id: 'wav32', label: 'WAV · 32-bit float', ext: 'wav', mime: 'audio/wav', float32: true },
+  { id: 'wav16', label: 'WAV · 16-bit PCM', kind: 'audio', ext: 'wav', mime: 'audio/wav', float32: false },
+  { id: 'wav32', label: 'WAV · 32-bit float', kind: 'audio', ext: 'wav', mime: 'audio/wav', float32: true },
+  { id: 'midi', label: 'MIDI · type 1, the notes', kind: 'midi', ext: 'mid', mime: 'audio/midi', float32: false },
 ];
 
 const FORMATS_BY_ID: Record<ExportFormatId, ExportFormat> = {
   wav16: EXPORT_FORMATS[0],
   wav32: EXPORT_FORMATS[1],
+  midi: EXPORT_FORMATS[2],
 };
 
 /** The render itself never varies: every bounce is 44.1 kHz stereo. Shown to
  *  the user as a fact, not offered as a choice with only one option. */
 export const SAMPLE_RATE_LABEL = '44.1 kHz · stereo (fixed)';
 
-/** Total over `ExportFormatId` — the union already limits callers to the two
+/** What a MIDI export holds, shown where the sample rate is for audio. */
+export const MIDI_FORMAT_LABEL = 'Type 1 · 960 PPQ · a track per EDIT track with its program, controllers, pitch bends, tempo map and time signatures';
+
+/** Total over `ExportFormatId` — the union already limits callers to the
  *  ids above, so there is no unknown-id case left to throw on. */
 export function formatOf(id: ExportFormatId): ExportFormat {
   return FORMATS_BY_ID[id];
@@ -137,8 +153,21 @@ export interface ExportRenderItem {
   destination: ExportDestination;
 }
 
+/** One MIDI file a MIDI-format export writes (lib/arrangementMidi). */
+export interface MidiExportItem {
+  /** The file name, `.mid` included. */
+  label: string;
+  /** The clips it takes. */
+  scope: ArrangementMidiScope;
+  /** The timeline span, or null for the whole arrangement. */
+  rangeSec: { startSec: number; endSec: number } | null;
+}
+
 export interface ExportRenderPlan {
+  /** The audio renders. Empty for the MIDI format. */
   items: ExportRenderItem[];
+  /** The MIDI files. Empty for the audio formats; one for MIDI. */
+  midiItems: MidiExportItem[];
   /** Set when `rangeMode` needs a range and none can be built — the chosen
    *  span is empty, or 'selection' was asked for with nothing selected.
    *  `items` is still returned (each with `range: null`) so the dialog can
@@ -157,27 +186,46 @@ const clampTailSec = (sec: number): number => {
  *  so a typed "Take1.WAV" is not doubled into "Take1.WAV.wav". */
 const withWavExt = (name: string): string => (/\.wav$/i.test(name) ? name : `${name}.wav`);
 
+/** Appends '.mid' unless the name already ends in '.mid' or '.midi'. */
+const withMidExt = (name: string): string => (/\.midi?$/i.test(name) ? name : `${name}.mid`);
+
+/** The clips a MIDI export takes for WHAT: every track as the mix plays them, the picked tracks, or the picked clips. */
+const midiScopeOf = (what: ExportWhat): ArrangementMidiScope =>
+  what.kind === 'mix'
+    ? { kind: 'all' }
+    : what.kind === 'stems'
+      ? { kind: 'tracks', trackIds: [...what.trackIds] }
+      : { kind: 'clips', clipIds: [...what.clipIds] };
+
 /**
  * Turns the dialog's five answers into the exact requests the engine runs.
  * Never throws: an unresolvable range is reported through `rangeError`
  * rather than by leaving `items` empty or raising.
  */
 export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
-  const { float32 } = formatOf(state.format);
+  const { float32, kind } = formatOf(state.format);
   const tailSec = clampTailSec(state.tailSec);
   const trimmedName = state.name.trim();
   const base = { sampleRate: BOUNCE_SAMPLE_RATE, float32, tailSec };
 
   let range: RenderRange | null = null;
   let rangeError: string | null = null;
+  let rangeSec: { startSec: number; endSec: number } | null = null;
   if (state.rangeMode === 'selection' || state.rangeMode === 'custom') {
     const sec = state.rangeMode === 'selection' ? state.selectionSec : state.customSec;
     range = sec ? rangeFromSeconds(sec.startSec, sec.endSec, { tailSec }) : null;
     if (!range) rangeError = EMPTY_RANGE_ERROR;
+    else if (sec) rangeSec = { startSec: sec.startSec, endSec: sec.endSec };
   }
   // 'project' covers the whole timeline: range stays null, no error.
 
   const { what } = state;
+
+  // MIDI writes the notes: one file whatever WHAT picks, and no tail.
+  if (kind === 'midi') {
+    return { items: [], midiItems: [{ label: withMidExt(trimmedName), scope: midiScopeOf(what), rangeSec }], rangeError };
+  }
+
   const items: ExportRenderItem[] = [];
 
   if (what.kind === 'mix') {
@@ -240,5 +288,5 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
     });
   }
 
-  return { items, rangeError };
+  return { items, midiItems: [], rangeError };
 }

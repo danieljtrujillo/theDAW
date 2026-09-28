@@ -100,6 +100,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_reverse_clip:'T1_inform',
   editor_normalize_clip:'T1_inform',
   editor_bounce_clip:'T1_inform',
+  // Writes a file and changes nothing in the arrangement; the Save As it opens is the confirmation.
+  editor_export_midi:'T1_inform',
   editor_set_snap:   'T1_inform',
   editor_set_tool:   'T1_inform',
   editor_duplicate_track:'T1_inform',

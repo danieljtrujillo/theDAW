@@ -108,7 +108,7 @@ import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
-import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
+import { getGlobalVoice, sfControlChange, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
 import { drumKitName } from '../../lib/clipProgram';
 import { chooseRollVoice, rollVoiceChoice } from '../../lib/rollVoiceChoice';
 import { gmShortName } from '../../lib/gmInstruments';
@@ -478,6 +478,7 @@ export const PianoRollTransport: React.FC<{
     const send = (wheels: readonly ScheduledWheel[]) => {
       for (const w of wheels) {
         if (w.kind === 'range') sfPitchWheelRange(w.channel, w.value, w.time);
+        else if (w.kind === 'control') sfControlChange(w.channel, w.controller ?? 0, w.value, w.time);
         else sfPitchWheel(w.channel, w.value, w.time);
       }
     };
@@ -1281,18 +1282,20 @@ export const PianoRollEditKey: React.FC = () => {
   );
 };
 
-/** CLEAR: remove every note of the part being edited; the bends go only with the last part's notes (pianoRollStore clear). */
+/** CLEAR: remove every note of the part being edited, and its controller changes; the bends go only with the last part's notes (pianoRollStore clear). */
 export const PianoRollClearKey: React.FC = () => {
   const partName = usePianoRollStore((s) => activeTrackOf(s).name);
   const several = usePianoRollStore((s) => s.tracks.length > 1);
+  // Its name says the controller changes go too whenever the part has any.
+  const what = usePianoRollStore((s) => (activeTrackOf(s).controls?.length ? 'every note and controller change' : 'every note'));
   return (
     <RailKey
       onClick={() => usePianoRollStore.getState().clear()}
-      aria-label={several ? `Clear every note of ${partName}` : 'Clear every note'}
+      aria-label={several ? `Clear ${what} of ${partName}` : `Clear ${what}`}
       description={
         several
-          ? `Remove every note of the part ${partName}. The other parts keep their notes, and while they hold any the pitch bends stay`
-          : 'Remove every note from the roll'
+          ? `Remove every note and controller change of the part ${partName}. The other parts keep theirs, and while they hold any notes the pitch bends stay`
+          : 'Remove every note and controller change from the roll'
       }
       icon={<Trash2 className={RAIL_GLYPH} />}
       legend="Clear"
@@ -1365,17 +1368,26 @@ export const importSheetFileToRoll = (file: File): void => {
         return;
       }
       // Each part of the score becomes a part of the roll on the instrument the
-      // score names (step/length already on the 16th grid from the backend); a
-      // score of one part goes into the part being edited. The score's first
-      // time signature holds for the whole roll; a score with none, or one the
-      // roll cannot draw, is 4/4 (lib/rollPartsImport importSheetParts).
+      // score names, each note at its tick; a score of one part goes into the
+      // part being edited. Every time signature (with the pickup) becomes the
+      // roll's meter map and every tempo mark its tempo map
+      // (lib/rollPartsImport importSheetParts).
       const done = importSheetParts(score);
       const meter = usePianoRollStore.getState().meterMap[0].meter;
       const where = done.into === 'parts' ? ` as ${done.parts} parts` : ` into ${activeTrackOf(usePianoRollStore.getState()).name}`;
+      const changes = [
+        done.tempoChanges ? `${done.tempoChanges} tempo change${done.tempoChanges === 1 ? '' : 's'}` : '',
+        done.meterChanges ? `${done.meterChanges} meter change${done.meterChanges === 1 ? '' : 's'}` : '',
+        score.grace_notes ? `${score.grace_notes} grace notes timed` : '',
+        score.ornaments ? `${score.ornaments} ornaments played out` : '',
+        score.chord_symbols_skipped ? `${score.chord_symbols_skipped} chord symbols left out` : '',
+        score.pedal_marks ? `${score.pedal_marks} sustain pedal mark${score.pedal_marks === 1 ? '' : 's'} as pedal changes` : '',
+      ].filter(Boolean);
       logInfo(
         'piano-roll',
-        `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}`,
+        `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}${changes.length ? `, ${changes.join(', ')}` : ''}`,
       );
+      if (score.unmapped_unpitched) logWarn('piano-roll', `${score.unmapped_unpitched} unpitched notes of "${file.name}" name no drum; they play on the snare (key 38)`);
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} parts are in its last part`);
       if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
     } catch (e) {
@@ -2114,6 +2126,8 @@ export const PianoRoll: React.FC<{
   const addToSelection = usePianoRollStore((s) => s.addToSelection);
   const toggleSelection = usePianoRollStore((s) => s.toggleSelection);
   const clear = usePianoRollStore((s) => s.clear);
+  // CLEAR takes the part's controller changes with its notes: the menu entry says so when it has any.
+  const clearsControls = usePianoRollStore((s) => !!activeTrackOf(s).controls?.length);
   const undo = usePianoRollStore((s) => s.undo);
   const redo = usePianoRollStore((s) => s.redo);
   const noteMenu = useContextMenu<PianoNote>();
@@ -3077,7 +3091,7 @@ export const PianoRoll: React.FC<{
           { type: 'separator' },
           {
             type: 'item',
-            label: 'Clear all notes',
+            label: clearsControls ? 'Clear all notes and controllers' : 'Clear all notes',
             icon: <Trash2 className="w-3 h-3" />,
             hint: `${notes.length}`,
             onSelect: clear,

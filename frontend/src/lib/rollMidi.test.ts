@@ -199,16 +199,18 @@ const bytes = encodeMidi(file);
   }
 }
 
-// A roll with lane A alone and no bend exports the file the roll wrote before it had bends or lanes; a file an older
-// build wrote for a roll with lanes (one track, the lanes written out, no lane texts) imports into lane A alone.
+// A roll with lane A alone and no bend exports the file the roll wrote before it had bends or lanes, at the roll's
+// own 960 PPQ (ROLL_PPQ); a file an older build wrote for a roll with lanes (one track, the lanes written out, no
+// lane texts, at 480 PPQ) imports into lane A alone.
 {
   const laneA = NOTES.filter((n) => n.lane === undefined);
+  assert.equal(ROLL_PPQ, 960, 'the roll writes its own resolution');
   const single = encodeMidi({
-    ppq: 480,
+    ppq: ROLL_PPQ,
     bpm: 100,
     tempos: [{ tick: 0, bpm: 100 }],
-    timeSignatures: meterMapToMidiEvents(MAP, 480, 0),
-    tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(laneA, 480) }],
+    timeSignatures: meterMapToMidiEvents(MAP, ROLL_PPQ, 0),
+    tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(laneA, ROLL_PPQ) }],
   });
   assert.equal(hex(encodeMidi(rollToMidiFile({ ...ROLL, notes: laneA, lanes: [LANES[0]], bends: [] }))), hex(single));
   const legacy = encodeMidi({

@@ -130,10 +130,10 @@ async function main(): Promise<void> {
       assert.equal(input.type, 'radio');
       assert.equal(input.disabled, false, `${suffix} is selectable`);
     }
-    // format: both EXPORT_FORMATS entries, as a real, changeable <select>.
+    // format: every EXPORT_FORMATS entry (the two WAVs and MIDI), as a real, changeable <select>.
     const formatSel = byIdSuffix(dialog, '-format') as HTMLSelectElement;
     assert.equal(formatSel.tagName, 'SELECT');
-    assert.deepEqual(Array.from(formatSel.options).map((o) => o.value), ['wav16', 'wav32']);
+    assert.deepEqual(Array.from(formatSel.options).map((o) => o.value), ['wav16', 'wav32', 'midi']);
     // destination: all three ExportDestination values.
     const destSel = byIdSuffix(dialog, '-destination') as HTMLSelectElement;
     assert.deepEqual(Array.from(destSel.options).map((o) => o.value), ['both', 'library', 'download']);
@@ -307,6 +307,46 @@ async function main(): Promise<void> {
     await act(async () => m.root.unmount());
   }
 
+  /* ── MIDI: the notes as one file, no tail, saved where the user chooses ─── */
+  {
+    const m = mount({
+      projectEndSec: 120,
+      selectionSec: { startSec: 8, endSec: 24 },
+      tracks: [{ id: 't1', name: 'Strings' }, { id: 't2', name: 'Horns' }],
+      selectedClipIds: [],
+      defaultName: 'symphony',
+    });
+    await m.rerender();
+    const dialog = doc.body.querySelector('[role="dialog"]')!;
+    await setNativeValue(byIdSuffix(dialog, '-format') as HTMLSelectElement, 'midi');
+    // The destination select gives way to a Save As note: a MIDI file is not a library take.
+    assert.equal(dialog.querySelector('[id$="-destination"]'), null, 'no destination select for MIDI');
+    assert.match(dialog.textContent ?? '', /Save As: where you choose/);
+    // The tail has nothing to ring out: it is disabled and says why.
+    const tail = byIdSuffix(dialog, '-tail') as HTMLInputElement;
+    assert.equal(tail.disabled, true, 'the tail is disabled for MIDI');
+    const tailNote = doc.getElementById(tail.getAttribute('aria-describedby') ?? '');
+    assert.match(tailNote?.textContent ?? '', /no tail/);
+    // WHAT names one file for every choice.
+    assert.match(dialog.textContent ?? '', /Selected tracks — one file holding those tracks/);
+    await act(async () => { (byIdSuffix(dialog, '-what-stems') as HTMLInputElement).click(); });
+    await act(async () => { (byIdSuffix(dialog, '-track-t2') as HTMLInputElement).click(); });
+    await act(async () => { (byIdSuffix(dialog, '-range-selection') as HTMLInputElement).click(); });
+    assert.match(dialog.textContent ?? '', /symphony\.mid — Save As/, 'the preview names the file');
+    await act(async () => { clickSubmit(dialog).click(); });
+    const { plan, state } = m.exported[0];
+    assert.deepEqual(plan.items, [], 'MIDI renders no audio');
+    assert.deepEqual(plan.midiItems, [{ label: 'symphony.mid', scope: { kind: 'tracks', trackIds: ['t2'] }, rangeSec: { startSec: 8, endSec: 24 } }]);
+    assert.deepEqual(plan, exportDialogModel.buildRenderRequest(state), 'the plan is the model’s, unmodified');
+    // Every word of the dialog is 12px or larger.
+    const sized: Element[] = Array.from(dialog.querySelectorAll('[class*="text-["]'));
+    for (const el of sized) {
+      const sizes = (el.getAttribute('class') ?? '').match(/text-\[(\d+)px\]/g) ?? [];
+      for (const s of sizes) assert.ok(Number(s.replace(/\D/g, '')) >= 12, `${s} is under 12px`);
+    }
+    await act(async () => m.root.unmount());
+  }
+
   /* ── the dialog passes the model's output through unmodified ─────────────── */
   {
     const m = mount({
@@ -474,6 +514,7 @@ async function main(): Promise<void> {
     const plan: ExportRenderPlan = {
       rangeError: null,
       items: [mixPlan.items[0], stemPlan.items[0], clipPlan.items[0]],
+      midiItems: [],
     };
 
     runExportPlan(plan);

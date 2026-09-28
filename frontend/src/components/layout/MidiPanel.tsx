@@ -89,6 +89,7 @@ import { RollSnapControls } from '../audio/RollSnapControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 import { AiComposePopover } from '../audio/AiComposePopover';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
+import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
 import {
   CORNER_CHEVRON_VIEWBOX,
@@ -917,7 +918,11 @@ export const MidiPanel: React.FC = () => {
                 )}
               </DockFlyout>
 
-              <MidiImportPopover onImportFile={importMidiFileToRoll} onImportSheetFile={importSheetFileToRoll} />
+              <MidiImportPopover
+                onImportFile={importMidiFileToRoll}
+                onImportSheetFile={importSheetFileToRoll}
+                onImportTracksFile={importMidiFileAsTracks}
+              />
 
               <RailKey
                 ref={exportKeyRef}

@@ -11,7 +11,7 @@
  * channel each part takes, and which voice a part plays with. Type imports
  * only from the store, so node tests load it.
  */
-import type { PianoNote, RollTrack } from '../state/pianoRollStore';
+import type { PianoNote, RollControl, RollTrack } from '../state/pianoRollStore';
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { GM_STANDARD_KIT, clipVoice, type ClipVoice, type GlobalVoice, type ProgramClip, type ProgramTrack } from './clipProgram';
 import { DRUM_CHANNEL } from './editChannels';
@@ -60,6 +60,9 @@ export const cleanPartProgram = (v: unknown): number | null => (isNum(v) ? Math.
 /** A bank select (MSB) 0-127; 0 for anything else. */
 export const cleanPartBank = (v: unknown): number => (isNum(v) ? Math.max(0, Math.min(127, Math.round(v))) : 0);
 
+/** A bank select LSB (CC 32) 0-127, or undefined when there is none (a part sends no CC 32). */
+export const cleanPartBankLsb = (v: unknown): number | undefined => (isNum(v) ? Math.max(0, Math.min(127, Math.round(v))) : undefined);
+
 /** A MIDI channel 1-16, or null (the part takes the next free one on export). */
 export const cleanPartChannel = (v: unknown): number | null => (isNum(v) ? Math.max(1, Math.min(16, Math.round(v))) : null);
 
@@ -79,6 +82,97 @@ export const isDefaultPartName = (name: string): boolean => /^Part \d+$/.test(na
 /** A part on the General MIDI percussion channel: its notes are drums and its program is the kit. */
 export const isPercussionPart = (t: Pick<RollTrack, 'channel'>): boolean => t.channel === PERCUSSION_PART_CHANNEL;
 
+/** One controller a part keeps: its number, its name in the parts column, and the value a channel starts at. */
+export interface PartController {
+  controller: number;
+  name: string;
+  /** The value General MIDI's reset gives the controller, which a channel holds until a change arrives. */
+  initial: number;
+}
+
+/**
+ * The controllers a part keeps, the ones lib/midi KEPT_CONTROLLERS reads from a
+ * file: modulation, volume, pan, expression and the sustain pedal, with the
+ * values a General MIDI channel starts at.
+ */
+export const PART_CONTROLLERS: readonly PartController[] = Object.freeze([
+  { controller: 1, name: 'Modulation', initial: 0 },
+  { controller: 7, name: 'Volume', initial: 100 },
+  { controller: 10, name: 'Pan', initial: 64 },
+  { controller: 11, name: 'Expression', initial: 127 },
+  { controller: 64, name: 'Sustain pedal', initial: 0 },
+]);
+
+const CONTROLLER_BY_NUMBER: ReadonlyMap<number, PartController> = new Map(PART_CONTROLLERS.map((c) => [c.controller, c]));
+
+/** The part controller `controller` names, or undefined for one a part does not keep. */
+export const partController = (controller: number): PartController | undefined => CONTROLLER_BY_NUMBER.get(controller);
+
+/**
+ * A part's controller changes from a file, a clip or an autosave: only the
+ * controllers PART_CONTROLLERS lists, each tick whole and at least 0, each
+ * value 0-127, sorted by tick with the order of one tick kept. Two changes of
+ * one controller at one tick keep the later, the one in force. Undefined when
+ * none is left, so a part without any carries no field.
+ */
+export function cleanPartControls(raw: unknown): RollControl[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const kept: RollControl[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const c = r as Record<string, unknown>;
+    if (!isNum(c.tick) || !isNum(c.controller) || !isNum(c.value)) continue;
+    const controller = Math.round(c.controller);
+    if (!CONTROLLER_BY_NUMBER.has(controller)) continue;
+    kept.push({ tick: Math.max(0, Math.round(c.tick)), controller, value: Math.max(0, Math.min(127, Math.round(c.value))) });
+  }
+  // A stable sort: changes of one tick keep the order they came in.
+  kept.sort((a, b) => a.tick - b.tick);
+  const out: RollControl[] = [];
+  // The changes of the tick being read, by controller: the same controller
+  // twice at one tick keeps the later one, the one in force, in its place.
+  let group = new Map<number, RollControl>();
+  let groupTick = -1;
+  const flush = () => {
+    for (const c of group.values()) out.push(c);
+    group = new Map();
+  };
+  for (const c of kept) {
+    if (c.tick !== groupTick) {
+      flush();
+      groupTick = c.tick;
+    }
+    group.delete(c.controller);
+    group.set(c.controller, c);
+  }
+  flush();
+  return out.length ? out : undefined;
+}
+
+/** How many changes of each controller a part carries, in PART_CONTROLLERS order: what the parts column lists. */
+export function partControlCounts(controls: readonly RollControl[] | undefined): Array<{ controller: PartController; count: number }> {
+  const counts = new Map<number, number>();
+  for (const c of controls ?? []) counts.set(c.controller, (counts.get(c.controller) ?? 0) + 1);
+  return PART_CONTROLLERS.filter((c) => counts.has(c.controller)).map((c) => ({ controller: c, count: counts.get(c.controller) as number }));
+}
+
+/**
+ * The value each controller the part uses holds just before `tick` (`controls`
+ * sorted by tick): the last change before it, else the controller's initial
+ * value. What PLAY sends a part's channels when it starts, seeks or loops back
+ * to `tick`, so a part started halfway has the volume and pedal it has there.
+ * Changes AT `tick` are left out: they play as the window reaches them.
+ */
+export function controlStateBefore(controls: readonly RollControl[] | undefined, tick: number): Map<number, number> {
+  const state = new Map<number, number>();
+  for (const c of controls ?? []) if (!state.has(c.controller)) state.set(c.controller, partController(c.controller)?.initial ?? 0);
+  for (const c of controls ?? []) {
+    if (c.tick >= tick) break;
+    state.set(c.controller, c.value);
+  }
+  return state;
+}
+
 /** What a part is made from: any of its fields, the rest filled in. */
 export type RollTrackInit = Partial<RollTrack>;
 
@@ -97,6 +191,10 @@ export function makeRollTrack(init: RollTrackInit, index: number): RollTrack {
     notes: Array.isArray(init.notes) ? init.notes : [],
   };
   if (typeof init.instrumentId === 'string' && init.instrumentId) track.instrumentId = init.instrumentId;
+  const bankLsb = cleanPartBankLsb(init.bankLsb);
+  if (bankLsb !== undefined) track.bankLsb = bankLsb;
+  const controls = cleanPartControls(init.controls);
+  if (controls) track.controls = controls;
   return track;
 }
 
