@@ -41,6 +41,27 @@
  * comes in as its tempos, each a step at its tick and each tempo at the exact
  * microseconds its FF 51 holds (lib/midi tempoOfMicros).
  *
+ * PARTS: a roll of more than one part (state/pianoRollStore RollTrack) writes
+ * one track per part, named after it, on the part's channel (lib/rollTracks
+ * partFileChannels: its own, 10 for a percussion part, else the next free
+ * channel but 10), with its program and bank at tick 0 and a `theDAW:part=`
+ * text holding the part itself, so an import gets every part back with its
+ * colour and registry instrument. With lanes past A each part writes one track
+ * per lane, carrying both texts. A bent lane of a part plays on a channel of
+ * its own while the file's sixteen channels last. A roll of one part writes
+ * what it always wrote, plus its program when the part has one and its
+ * `theDAW:part=` text, so an import gives the part back as it was (a part that
+ * follows the picker stays one, rather than turning into the piano its track
+ * name "Piano Roll" seems to name).
+ *
+ * Import reads a file into parts (midiFileToRollParts): the parts a file this
+ * module wrote names, else one part per track, or per channel when one track
+ * holds several (a format 0 file), each with the track's name, its first
+ * program and bank, its channel (a part on MIDI channel 10 is percussion) and
+ * the registry instrument its name or program names (lib/orchestra). The
+ * names the roll gives its own tracks ("Piano Roll", "Lane B") name no
+ * instrument.
+ *
  * No Vite-only imports, so node tests load it.
  */
 import {
@@ -53,6 +74,7 @@ import {
   bendStairAllowance,
   bendValueToRaw,
   bendWheelEvents,
+  bentLanes,
   cutBend,
   laneChannels,
   playedRollBends,
@@ -63,7 +85,30 @@ import {
   type LaneBend,
 } from './pitchBend';
 import { meterMapToMidiEvents, midiEventsToMeterMap, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
-import { tempoMicros, tempoOfMicros, type MidiBend, type MidiBendRange, type MidiFileData, type MidiNote, type MidiTempo } from './midi';
+import {
+  tempoMicros,
+  tempoOfMicros,
+  type MidiBend,
+  type MidiBendRange,
+  type MidiFileData,
+  type MidiNote,
+  type MidiProgram,
+  type MidiTempo,
+  type MidiTrack,
+} from './midi';
+import { GM_NAMES } from './gmInstruments';
+import { guessInstrument, instrumentForProgram } from './orchestra';
+import {
+  PERCUSSION_PART_CHANNEL,
+  cleanPartBank,
+  cleanPartChannel,
+  cleanPartColor,
+  cleanPartName,
+  cleanPartProgram,
+  isPercussionPart,
+  partColorAt,
+  partFileChannels,
+} from './rollTracks';
 import { hasTempoChanges, sanitizeRollTempoMap, startTempoOf } from './rollTempo';
 import { beatToTime, normalizeTempoMap, type TempoEvent } from './tempoMap';
 import {
@@ -77,6 +122,7 @@ import {
   ticksPerStep,
   type PianoNote,
   type RollMeter,
+  type RollTrack,
 } from '../state/pianoRollStore';
 
 export const ROLL_PPQ = 480;
@@ -92,6 +138,20 @@ export interface RollMidiSource {
   bends: readonly LaneBend[];
   /** The roll's tempo map; left out, the roll holds `bpm`. */
   tempoMap?: readonly TempoEvent[];
+  /**
+   * Every part with its real notes (pianoRollStore rollTracksOf). Left out, or
+   * one part, the roll writes `notes` as it always has; more than one writes a
+   * track per part and `notes` is not read.
+   */
+  tracks?: readonly RollTrack[];
+  /**
+   * The part whose notes are `notes` (the store's active part, whose entry in
+   * `tracks` may be stale). Given, that part's notes are read from `notes`, so
+   * the store's state can be passed as it is.
+   */
+  activeTrackId?: string;
+  /** The program each part sounds when it has none of its own (its linked clip's, the picker's), by part id. */
+  voices?: ReadonlyMap<string, { program?: number }>;
 }
 
 /** What an import hands to the roll's importNotes. */
@@ -221,33 +281,47 @@ export function parseLaneMeta(text: string | undefined): PolyLane | null {
   }
 }
 
+/** The notes of one part (or of the roll) as a file writes them: each note on its lane's channel, and each lane's wheel and range on its channel. */
+interface WrittenNotes {
+  notes: MidiNote[];
+  /** Each note's lane (as it plays). */
+  laneOfNote: number[];
+  /** The wheel and range of each lane whose channel is its own, by lane. */
+  laneBends: Map<number, { bends: MidiBend[]; bendRanges: MidiBendRange[] }>;
+}
+
 /**
- * The roll as MIDI at its own tempo and time signatures, with each bent lane's
- * wheel and range on its channel: one track for a roll with lane A alone, and
- * one track per lane, each with its `theDAW:lane=` text, for a roll with more.
+ * `own` notes written for a file at `ppq`: lane repeats written out, each note
+ * on `channels.get(lane)`, and the wheel of each lane in `wheelLanes` on its
+ * channel. Straight from each note's ticks: an unrolled repeat is re-ticked
+ * from the step unrollLanes moved it to, which is exact because a lane cycle
+ * is a whole number of steps. Nothing is quantised on the way out.
  */
-export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData {
+function writeNotes(
+  s: RollMidiSource,
+  own: readonly PianoNote[],
+  ppq: number,
+  channels: ReadonlyMap<number, number>,
+  wheelLanes: ReadonlySet<number>,
+): WrittenNotes {
   const stepTicks = ppq / 4;
   // The note model's ticks rescaled to the file's resolution. At ppq === PPQ
   // this is 1 and every note's tick goes out exactly as it is stored.
   const toFile = ppq / PPQ;
-  const channels = laneChannels(s.lanes, s.bends);
-  const played = unrollLanes(s.notes, s.lanes, s.totalSteps);
+  const played = unrollLanes(own, s.lanes, s.totalSteps);
   // Nothing sounds past the roll's end or its last note's end, so no wheel message is written past it.
   const soundEnd = played.reduce((m, n) => Math.max(m, n.step + n.length), s.totalSteps);
-  // Straight from each note's ticks — an unrolled repeat is re-ticked from the
-  // step unrollLanes moved it to, which is exact because a lane cycle is a whole
-  // number of steps. Nothing is quantised on the way out.
-  const notes: MidiNote[] = played.map((n) => ({
+  const laneOfNote = played.map((n) => playingLane(n.lane, s.lanes));
+  const notes: MidiNote[] = played.map((n, i) => ({
     tick: Math.round(noteTick(n) * toFile),
     note: n.note,
     velocity: Math.max(1, Math.min(127, n.velocity)),
     durationTicks: Math.max(1, Math.round(noteTicks(n) * toFile)),
-    channel: channels.get(playingLane(n.lane, s.lanes)) ?? 0,
+    channel: channels.get(laneOfNote[i]) ?? 0,
   }));
-  // Each bent lane's wheel and range, by lane.
   const laneBends = new Map<number, { bends: MidiBend[]; bendRanges: MidiBendRange[] }>();
   for (const [lane, curve] of playedRollBends(s.bends, s.lanes, s.totalSteps)) {
+    if (!wheelLanes.has(lane)) continue;
     const channel = channels.get(lane) ?? 0;
     const end = Math.min(curve.points[curve.points.length - 1].step, soundEnd);
     const bends: MidiBend[] = [];
@@ -261,8 +335,13 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
     }
     laneBends.set(lane, { bends, bendRanges: [{ tick: 0, channel, semitones: curve.range }] });
   }
+  return { notes, laneOfNote, laneBends };
+}
+
+/** The conductor fields of a roll's file: its tempo, every tempo of its map, and its time signatures. */
+function rollFileHeader(s: RollMidiSource, ppq: number): Omit<MidiFileData, 'tracks'> {
   const tempoMap = sanitizeRollTempoMap(s.tempoMap ?? [], s.bpm);
-  const header = {
+  return {
     ppq,
     bpm: s.bpm,
     // Every tempo change, ramp and fermata, as tempos any reader plays; the map itself beside them.
@@ -277,22 +356,141 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
     // One FF 58 per meter change, a partial bar at tick 0 for a pickup.
     timeSignatures: meterMapToMidiEvents(s.meterMap, ppq, s.pickupSteps),
   };
+}
+
+/** The tracks of written notes: one named `name` for a roll with lane A alone, one per lane with its `theDAW:lane=` text otherwise. */
+function laneTracks(s: RollMidiSource, w: WrittenNotes, name: string, extra: (lane: PolyLane | null) => Partial<MidiTrack>): MidiTrack[] {
   if (s.lanes.length <= 1) {
-    const one = [...laneBends.values()];
+    const one = [...w.laneBends.values()];
     const bends = one.flatMap((b) => b.bends).sort((a, b) => a.tick - b.tick);
     const bendRanges = one.flatMap((b) => b.bendRanges);
-    return { ...header, tracks: [{ name: 'Piano Roll', notes, ...(bends.length ? { bends, bendRanges } : {}) }] };
+    return [{ name, notes: w.notes, ...(bends.length ? { bends, bendRanges } : {}), ...extra(null) }];
   }
-  const laneOfNote = played.map((n) => playingLane(n.lane, s.lanes));
-  const tracks = [...s.lanes].sort((a, b) => a.id - b.id).map((lane) => {
-    const own = laneBends.get(lane.id);
+  return [...s.lanes].sort((a, b) => a.id - b.id).map((lane) => {
+    const own = w.laneBends.get(lane.id);
     return {
-      name: `Lane ${lane.name}`,
-      notes: notes.filter((_, i) => laneOfNote[i] === lane.id),
+      name: name === 'Piano Roll' ? `Lane ${lane.name}` : `${name} · Lane ${lane.name}`,
+      notes: w.notes.filter((_, i) => w.laneOfNote[i] === lane.id),
       ...(own?.bends.length ? { bends: own.bends, bendRanges: own.bendRanges } : {}),
       laneMeta: laneMetaText(lane),
+      ...extra(lane),
     };
   });
+}
+
+/** Program changes at tick 0 on each of `channels` for a part sounding `program` in `bank` (no bank select for bank 0). */
+const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number): MidiProgram[] =>
+  program === undefined
+    ? []
+    : [...new Set(channels)].sort((a, b) => a - b).map((channel) => ({ tick: 0, channel, program, ...(bank > 0 ? { bank } : {}) }));
+
+/** The `theDAW:part=` text of a part: its settings as JSON, so an import gets the part back. */
+export const partMetaText = (t: RollTrack): string =>
+  JSON.stringify({
+    id: t.id,
+    name: t.name,
+    program: t.program,
+    bank: t.bank,
+    channel: t.channel,
+    color: t.color,
+    mute: t.mute,
+    solo: t.solo,
+    ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
+  });
+
+/** The part a `theDAW:part=` text names, or null for text that is not one. */
+export function parsePartMeta(text: string | undefined): (Partial<RollTrack> & { id: string }) | null {
+  if (!text) return null;
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return null;
+    return {
+      id: raw.id,
+      name: cleanPartName(raw.name, 'Part'),
+      program: cleanPartProgram(raw.program),
+      bank: cleanPartBank(raw.bank),
+      channel: cleanPartChannel(raw.channel),
+      color: cleanPartColor(raw.color, partColorAt(0)),
+      mute: raw.mute === true,
+      solo: raw.solo === true,
+      ...(typeof raw.instrumentId === 'string' && raw.instrumentId ? { instrumentId: raw.instrumentId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The roll as MIDI at its own tempo and time signatures, with each bent lane's
+ * wheel and range on its channel: one track for a roll with lane A alone, and
+ * one track per lane, each with its `theDAW:lane=` text, for a roll with more.
+ * A roll of several parts writes each part's tracks on its own channel with its
+ * program (rollPartsToMidiFile).
+ */
+export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData {
+  const parts = s.tracks && s.activeTrackId !== undefined
+    ? s.tracks.map((t) => (t.id === s.activeTrackId ? { ...t, notes: [...s.notes] } : t))
+    : s.tracks;
+  if (parts && parts.length > 1) return rollPartsToMidiFile(s, parts, ppq);
+  const part = parts?.[0];
+  const notes = part ? part.notes : s.notes;
+  const header = rollFileHeader(s, ppq);
+  // The part itself rides beside its notes, so an import gets it back exactly.
+  const meta = part ? { partMeta: partMetaText(part) } : {};
+  // A percussion part is on channel 10, where its program is the kit.
+  if (part && isPercussionPart(part)) {
+    const drums = new Map(s.lanes.map((l) => [l.id, 9]));
+    const w = writeNotes(s, notes, ppq, drums, new Set());
+    const programs = partPrograms([9], part.program ?? undefined, 0);
+    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
+  }
+  // Any other roll of one part writes the channels it always did.
+  const channels = laneChannels(s.lanes, s.bends);
+  const w = writeNotes(s, notes, ppq, channels, bentLanes(s.lanes, s.bends));
+  // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
+  const programs = part && part.program !== null ? partPrograms(channels.values(), part.program, part.bank) : [];
+  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
+}
+
+/** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
+const FILE_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
+
+/**
+ * A roll of several parts as MIDI: each part's tracks named after it on its
+ * own channel (lib/rollTracks partFileChannels), with its program and bank at
+ * tick 0 and its `theDAW:part=` text. A bent lane of a melodic part with notes
+ * in it takes a channel no part has, while one is free, and writes its wheel
+ * there; with none free its notes stay on the part's channel, unbent.
+ */
+export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack[], ppq = ROLL_PPQ): MidiFileData {
+  const header = rollFileHeader(s, ppq);
+  const { channels: base } = partFileChannels(parts);
+  const taken = new Set(base.values());
+  const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
+  const bent = [...bentLanes(s.lanes, s.bends)].sort((a, b) => a - b);
+  const tracks: MidiTrack[] = [];
+  for (const part of parts) {
+    const ch = base.get(part.id) as number;
+    const channels = new Map<number, number>(s.lanes.map((l) => [l.id, ch]));
+    const wheelLanes = new Set<number>();
+    if (!isPercussionPart(part)) {
+      for (const lane of bent) {
+        if (!free.length || !part.notes.some((n) => playingLane(n.lane, s.lanes) === lane)) continue;
+        channels.set(lane, free.shift() as number);
+        wheelLanes.add(lane);
+      }
+    }
+    const w = writeNotes(s, part.notes, ppq, channels, wheelLanes);
+    const program = part.program ?? s.voices?.get(part.id)?.program;
+    const meta = partMetaText(part);
+    tracks.push(
+      ...laneTracks(s, w, part.name, (lane) => {
+        const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
+        const programs = partPrograms(used, program, isPercussionPart(part) ? 0 : part.bank);
+        return { partMeta: meta, ...(programs.length ? { programs } : {}) };
+      }),
+    );
+  }
   return { ...header, tracks };
 }
 
@@ -339,6 +537,7 @@ const channelBend = (
  */
 function laneTracksToRoll(
   data: MidiFileData, ppq: number, idPrefix: string, wheel: Map<number, MidiBend[]>, ranges: Map<number, MidiBendRange[]>,
+  origins?: Map<string, NoteOrigin>,
 ): { notes: PianoNote[]; lanes: PolyLane[]; bends: LaneBend[] } {
   const stepTicks = ppq / 4;
   const toModel = PPQ / ppq;
@@ -357,8 +556,10 @@ function laneTracksToRoll(
       // A looping lane's notes past its first cycle are its repeats.
       if (tick >= cycleTicks - 0.5) continue;
       const ticks = Math.max(MIN_NOTE_TICKS, Math.round(n.durationTicks * toModel));
+      const id = `${idPrefix}-${stamp}-${i++}`;
+      origins?.set(id, { track: k, channel: n.channel });
       notes.push({
-        id: `${idPrefix}-${stamp}-${i++}`,
+        id,
         note: n.note,
         step: tick / perStep,
         length: ticks / perStep,
@@ -379,8 +580,19 @@ function laneTracksToRoll(
   return { notes, lanes, bends: sanitizeBends(bends) };
 }
 
+/** Where an imported note came from: its track in the file and its channel (0-15). */
+interface NoteOrigin {
+  track: number;
+  channel: number;
+}
+
 /** A parsed file as the roll's notes, meter, lanes and bends. */
 export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiImport {
+  return readMidiFile(data, idPrefix);
+}
+
+/** midiFileToRoll, recording each note's track and channel in `origins` when given. */
+function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string, NoteOrigin>): RollMidiImport {
   const ppq = data.ppq || ROLL_PPQ;
   const stepTicks = ppq / 4;
   const { map, pickupSteps } = midiEventsToMeterMap(data.timeSignatures ?? [], ppq);
@@ -401,11 +613,12 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
 
   // A file the roll wrote with its lanes gives every lane back.
   if (data.tracks.some((t) => parseLaneMeta(t.laneMeta))) {
-    const own = laneTracksToRoll(data, ppq, idPrefix, wheel, ranges);
+    const own = laneTracksToRoll(data, ppq, idPrefix, wheel, ranges, origins);
     return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap };
   }
 
   const raw = data.tracks.flatMap((t) => t.notes);
+  const rawTrack = data.tracks.flatMap((t, k) => t.notes.map(() => k));
   const noteChannels = [...new Set(raw.map((n) => n.channel))];
   // A channel whose wheel leaves the centre bends, the lowest MAX_BENT_LANES of them; the rest play unbent in the shared lane.
   const bent = noteChannels
@@ -432,8 +645,10 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
       const lane = laneOf.get(n.channel) ?? 0;
       const tick = Math.max(0, Math.round(n.tick * toModel));
       const ticks = Math.max(MIN_NOTE_TICKS, Math.round(n.durationTicks * toModel));
+      const id = `${idPrefix}-${stamp}-${i}`;
+      origins?.set(id, { track: rawTrack[i], channel: n.channel });
       return {
-        id: `${idPrefix}-${stamp}-${i}`,
+        id,
         note: n.note,
         step: tick / perStep,
         length: ticks / perStep,
@@ -452,4 +667,114 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
     ),
   );
   return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap };
+}
+
+/** One part of an imported file: the part's fields and its notes. */
+export interface RollMidiPart {
+  track: Partial<RollTrack>;
+  notes: PianoNote[];
+}
+
+/** What an import of a file into parts hands to the roll's importParts (or, for one part, importNotes). */
+export type RollMidiPartsImport = Omit<RollMidiImport, 'notes'> & { parts: RollMidiPart[] };
+
+/** The names the roll gives its own tracks when it writes no part names ("Piano Roll", "Lane B"): they name no instrument. */
+const ROLL_TRACK_NAME = /^(?:Piano Roll|Lane [A-Z]+)$/;
+
+/** A track's first program change on `channel`, else undefined. */
+const firstProgram = (programs: readonly MidiProgram[] | undefined, channel: number): MidiProgram | undefined =>
+  (programs ?? []).find((p) => p.channel === channel);
+
+/**
+ * A parsed file as the roll's parts, with the document's meter, lanes, bends
+ * and tempo map (read as midiFileToRoll reads them).
+ *
+ * A file this module wrote with parts gives each part back from its
+ * `theDAW:part=` text, its lane tracks joined. Any other file gives one part
+ * per track that has notes, or per channel of a track that holds several (a
+ * format 0 file), in file order. Each takes the track's name (for a split
+ * track, the channel's GM program, or the track's name and the channel), the
+ * first program and bank its channel sets (in its track, else anywhere in the
+ * file), and its channel; notes on MIDI channel 10 make a percussion part. A
+ * part whose name names a registry instrument (lib/orchestra guessInstrument)
+ * takes it when the file sets no program or sets that instrument's program;
+ * otherwise the program names the instrument (instrumentForProgram) when the
+ * registry has one for it.
+ */
+export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollMidiPartsImport {
+  const origins = new Map<string, NoteOrigin>();
+  const read = readMidiFile(data, idPrefix, origins);
+  const metas = data.tracks.map((t) => parsePartMeta(t.partMeta));
+  const own = metas.some((m) => m !== null);
+  // Each track's note channels, so a track holding several is split by channel.
+  const trackChannels = data.tracks.map((t) => [...new Set(t.notes.map((n) => n.channel))].sort((a, b) => a - b));
+  const keyOf = (o: NoteOrigin): string => {
+    const meta = metas[o.track];
+    if (own) return meta ? `part:${meta.id}` : `track:${o.track}`;
+    return trackChannels[o.track].length > 1 ? `track:${o.track}:${o.channel}` : `track:${o.track}`;
+  };
+  // The parts in file order: a meta part at its first track, a track, or a split track's channels in order.
+  const order: Array<{ key: string; track: number; channel: number | null }> = [];
+  const seen = new Set<string>();
+  data.tracks.forEach((t, k) => {
+    const meta = metas[k];
+    if (own && meta) {
+      const key = `part:${meta.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        order.push({ key, track: k, channel: null });
+      }
+      return;
+    }
+    const chans = trackChannels[k];
+    if (!chans.length) return;
+    if (!own && chans.length > 1) {
+      for (const ch of chans) order.push({ key: `track:${k}:${ch}`, track: k, channel: ch });
+      return;
+    }
+    order.push({ key: `track:${k}`, track: k, channel: chans[0] });
+  });
+  const notesOf = new Map<string, PianoNote[]>(order.map((o) => [o.key, []]));
+  for (const n of read.notes) {
+    const o = origins.get(n.id);
+    const list = (o ? notesOf.get(keyOf(o)) : undefined) ?? (order.length ? notesOf.get(order[0].key) : undefined);
+    list?.push(n);
+  }
+  const parts: RollMidiPart[] = order.map((o, index) => {
+    const notes = notesOf.get(o.key) ?? [];
+    const meta = own ? metas[o.track] : null;
+    if (meta) return { track: { ...meta, id: undefined }, notes };
+    const t = data.tracks[o.track];
+    const channel = o.channel ?? 0;
+    const change = firstProgram(t.programs, channel) ?? data.tracks.map((x) => firstProgram(x.programs, channel)).find((p) => p !== undefined);
+    const percussion = channel === 9;
+    const split = trackChannels[o.track].length > 1;
+    const fileProgram = change?.program;
+    const bank = percussion ? 0 : change?.bank ?? 0;
+    const name = !split
+      ? t.name
+      : percussion
+        ? `${t.name} drums`
+        : fileProgram !== undefined
+          ? GM_NAMES[fileProgram]
+          : `${t.name} channel ${channel + 1}`;
+    // A track the roll named itself names no instrument; with a program the program decides anyway.
+    const named = fileProgram === undefined && ROLL_TRACK_NAME.test(name.trim()) ? undefined : guessInstrument(name);
+    const byName = named && named.percussion === percussion && (fileProgram === undefined || named.program === fileProgram) ? named : undefined;
+    const byProgram = fileProgram !== undefined ? instrumentForProgram(fileProgram, bank, percussion) : undefined;
+    const inst = byName ?? byProgram;
+    const program = fileProgram ?? byName?.program ?? null;
+    return {
+      track: {
+        name: cleanPartName(name, `Part ${index + 1}`),
+        program,
+        bank,
+        channel: percussion ? PERCUSSION_PART_CHANNEL : channel + 1,
+        color: partColorAt(index),
+        ...(inst ? { instrumentId: inst.id } : {}),
+      },
+      notes,
+    };
+  });
+  return { bpm: read.bpm, meter: read.meter, bends: read.bends, tempoMap: read.tempoMap, parts };
 }

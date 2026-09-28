@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
 import { drumKitName } from '../lib/clipProgram';
 import { gmShortName } from '../lib/gmInstruments';
-import type { PianoNote } from './pianoRollStore';
+import type { PianoNote, RollPartRef } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
 import {
@@ -312,9 +312,20 @@ export interface AudioClip {
    *  Roll" puts back on the ruler. Absent on a clip with none, and on clips
    *  bounced before the roll had markers. */
   sourceMarkers?: RollMarker[];
+  /** When sourceKind === 'piano-roll', the roll part this clip holds (pianoRollStore
+   *  RollPartRef): the roll document shared by the clips of every part bounced
+   *  from one roll, the part's id, place and settings. Opening the clip in the
+   *  roll opens every clip of its document, one part each. Absent on clips
+   *  bounced before the roll had parts; such a clip opens as the roll's one part. */
+  sourceRollPart?: RollPartRef;
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;
+  /** Bank select (MSB, 1-127) the clip's own program is chosen in, sent before
+   *  it live and in every render (lib/clipProgram clipBank): a roll part's Bank,
+   *  written by the bounce. Absent is bank 0, the General MIDI set. It never
+   *  applies to the track's or the picker's program, nor on a drum track. */
+  instrumentBank?: number;
   /** The GM program `audioBlob` was actually rendered with. The live scheduler
    *  synthesises MIDI clips from `sourcePianoRoll` and honours instrumentProgram,
    *  but every offline bounce reads the pre-rendered blob — so the two diverge the
@@ -326,6 +337,10 @@ export interface AudioClip {
    *  not name this field clears it (`clipWithUpdates`), so a render that knows
    *  nothing about drums is recorded as the melodic render it is. */
   renderedPercussion?: boolean;
+  /** The bank select `audioBlob` was rendered in, when past 0. A write of
+   *  `renderedProgram` that does not name this field clears it, as it clears
+   *  `renderedPercussion`, so a render that selects no bank is recorded as one. */
+  renderedBank?: number;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
@@ -584,7 +599,8 @@ const clipSignaturePart = (c: AudioClip, track?: EditorTrack, global: GlobalVoic
   const midi = hasMidiNotes(c);
   if (midi) {
     const voice = clipVoice(c, track, global);
-    midiPart = `${midiRenderSig(c)}/${voice.program ?? '-'}${voice.percussion ? 'd' : ''}`;
+    // A bank past 0 (a roll part's Bank) selects another preset, so it is part of the voice; bank 0 signs as it always has.
+    midiPart = `${midiRenderSig(c)}/${voice.program ?? '-'}${voice.percussion ? 'd' : ''}${voice.bank ? `b${voice.bank}` : ''}`;
   }
   return [
     c.id, c.trackId, c.startSec, midi && showsWholeSource(c) ? 'whole' : c.durationSec, c.offsetIntoSource,
@@ -1679,10 +1695,19 @@ const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioCli
     next = rest;
   }
   // A render stamps `renderedProgram`. One that does not say it rendered drums
-  // rendered melodic, so a drum stamp from an earlier render does not survive it.
-  if ('renderedProgram' in updates && !('renderedPercussion' in updates) && next.renderedPercussion !== undefined) {
-    const { renderedPercussion: _drums, ...melodic } = next;
-    return melodic;
+  // rendered melodic, and one that names no bank rendered bank 0, so a stamp
+  // from an earlier render does not survive it.
+  if ('renderedProgram' in updates) {
+    let out = next;
+    if (!('renderedPercussion' in updates) && out.renderedPercussion !== undefined) {
+      const { renderedPercussion: _drums, ...melodic } = out;
+      out = melodic;
+    }
+    if (!('renderedBank' in updates) && out.renderedBank !== undefined) {
+      const { renderedBank: _bank, ...plain } = out;
+      out = plain;
+    }
+    return out;
   }
   return next;
 };
@@ -2124,7 +2149,10 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     coalesceAs(null);
     set((s) => ({
       tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog } : t)),
-      clips: flip ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)) : s.clips,
+      // A flip clears each clip's own program, and the bank that program was chosen in (lib/clipProgram clipBank).
+      clips: flip
+        ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined, instrumentBank: undefined } : c))
+        : s.clips,
     }));
     if (flip) {
       logInfo('editor', drums

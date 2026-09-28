@@ -59,10 +59,13 @@ import {
   projectTimeMapsToTasmo,
   tasmoToProjectTimeMaps,
   clipNotesToTasmo,
+  bankSelectOf,
   clipTotalSteps,
   gmProgramOf,
   playedNotesFromRoll,
+  rollPartToTasmo,
   tasmoClipBpm,
+  tasmoRollPart,
   tasmoMeterToClip,
   tasmoNoteExtras,
   tasmoOwnBpm,
@@ -371,6 +374,12 @@ export const tasmoMidiRenderOptions = (c: Pick<TasmoLoadedClip, 'offset_into_sou
   minDurationSec: Math.max(0, c.offset_into_source ?? 0) + Math.max(0, (c.end_time ?? 0) - (c.start_time ?? 0)),
 });
 
+/** A loaded clip's roll part as the clip field, or nothing when the file has none. */
+const rollPartField = (c: TasmoLoadedClip, color: string): Pick<AudioClip, 'sourceRollPart'> => {
+  const ref = tasmoRollPart(c.roll_part, { name: c.name || 'Part 1', color });
+  return ref ? { sourceRollPart: ref } : {};
+};
+
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
  *  playable (missing audio file on disk, or a MIDI clip with no notes).
  *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
@@ -391,6 +400,9 @@ const buildClip = async (
   const instrumentProgram = gmProgramOf(c.instrument_program);
   const renderedProgram = gmProgramOf(c.rendered_program);
   const renderedPercussion = c.rendered_percussion === true;
+  // The bank the clip's own program is chosen in (a roll part's Bank) and the bank its audio holds; 0 when absent.
+  const instrumentBank = bankSelectOf(c.instrument_bank);
+  const renderedBank = bankSelectOf(c.rendered_bank);
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
@@ -496,6 +508,8 @@ const buildClip = async (
           ...(c.render_auto === true ? { renderAuto: true } : {}),
         }
       : {}),
+    ...(sourceKind && instrumentBank > 0 ? { instrumentBank } : {}),
+    ...(sourceKind && renderedBank > 0 ? { renderedBank } : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
     sourceMeterMap: rollMeter.sourceMeterMap,
@@ -504,6 +518,8 @@ const buildClip = async (
     sourceBends: rollMeter.sourceBends,
     sourceTempoMap: rollMeter.sourceTempoMap,
     sourceMarkers: rollMeter.sourceMarkers,
+    // The roll part the clip holds, so opening it opens every part of its roll; absent in older files.
+    ...(sourceKind ? rollPartField(c, color) : {}),
     // Restore the per-clip mute; omit the field entirely for unmuted clips so
     // pre-mute projects hydrate exactly as before. Gain and fades follow the same
     // rule: a unity/zero value stays `undefined` rather than being written back.
@@ -1467,6 +1483,8 @@ export function captureEditorSession(): CapturedSession {
           // length, meter map, pickup and lanes, so the clip plays what it
           // played and "Edit in Piano Roll" after a reload opens the same bars.
           ...(isMidi ? clipNotesToTasmo(c) : { midi_notes: null }),
+          // The roll part the clip holds: its document, id, place and settings.
+          ...(isMidi && c.sourceRollPart ? { roll_part: rollPartToTasmo(c.sourceRollPart) } : {}),
           // The clip's own instrument and the one its embedded audio was
           // rendered with, each only as a GM program the backend accepts.
           // Without them a reopened project put every part on the global
@@ -1483,6 +1501,9 @@ export function captureEditorSession(): CapturedSession {
                 // once the part plays live.
                 render_stale: !!fname && renderSigStale(c),
                 render_auto: !!fname && c.renderAuto === true,
+                // The bank the clip's own program is chosen in and the bank its audio holds; null for bank 0.
+                instrument_bank: bankSelectOf(c.instrumentBank) || null,
+                rendered_bank: bankSelectOf(c.renderedBank) || null,
               }
             : {}),
           // The tempo a roll clip's notes were written at, or the tempo an

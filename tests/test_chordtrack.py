@@ -465,22 +465,8 @@ def test_write_chordtrack_refuses_an_empty_result(tmp_path: Path):
 # --------------------------------------------------------------------------
 
 
-@pytest.fixture
-def notation_client(tmp_path: Path, monkeypatch) -> Any:
-    """Library + notation routers on a fresh tmp library root (the
-    ``tests/test_library_endpoints.py`` pattern)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from backend.modules.library import router as library_router_module
-    from backend.modules.notation import router as notation_router_module
-
-    monkeypatch.setattr(library_router_module, "_store", None)
-    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
-    app = FastAPI()
-    app.include_router(library_router_module.router, prefix="/api/library")
-    app.include_router(notation_router_module.router, prefix="/api/notation")
-    return TestClient(app)
+# notation_client: the library and notation routers on a tmp library root
+# (tests/conftest.py).
 
 
 def test_chords_route_404s_without_sources(notation_client: Any, tmp_path: Path):

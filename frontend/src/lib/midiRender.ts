@@ -43,7 +43,7 @@ export type MidiStepRender = (
   notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
   bpm: number,
   totalSteps: number,
-  opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
+  opts: { program?: number; bank?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
 ) => Promise<{ blob: Blob; duration: number }>;
 
 /** The clip fields a render reads. */
@@ -63,7 +63,7 @@ export type MidiRenderSource = Pick<
 
 /** The clip fields the cache state reads. */
 export type MidiCacheClip = MidiRenderSource &
-  Pick<AudioClip, 'audioBlob' | 'renderSig' | 'renderedProgram' | 'renderedPercussion' | 'instrumentProgram'>;
+  Pick<AudioClip, 'audioBlob' | 'renderSig' | 'renderedProgram' | 'renderedPercussion' | 'renderedBank' | 'instrumentProgram' | 'instrumentBank'>;
 
 /** A piano-roll clip with notes to render. An empty roll renders nothing and plays nothing. */
 export const hasMidiNotes = (clip: Pick<AudioClip, 'sourceKind' | 'sourcePianoRoll'>): boolean =>
@@ -198,6 +198,8 @@ export async function renderMidiClipAudio(
   const input = clipRenderInput(clip, totalSteps);
   return render(input.notes, midiClipBpm(clip, fallbackBpm), totalSteps, {
     program: voice.program,
+    // The bank the clip's own program was chosen in (a roll part's Bank), so the render plays that preset.
+    ...(voice.bank ? { bank: voice.bank } : {}),
     percussion: voice.percussion,
     ...(input.bends ? { bends: input.bends } : {}),
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
@@ -234,6 +236,7 @@ export const DROP_RENDER_FIELDS: Readonly<Partial<AudioClip>> = Object.freeze({
   renderSig: undefined,
   renderedProgram: undefined,
   renderedPercussion: undefined,
+  renderedBank: undefined,
   renderAuto: undefined,
 });
 

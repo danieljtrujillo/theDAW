@@ -267,7 +267,7 @@ const timerLate = prng(23);
 const plainSink = (synth: SpessaSynthProcessor) => sinkFor(synth);
 const pending = listed
   .flatMap((n) => [
-    { at: ANCHOR + n.onDelaySec + timerLate() * 0.05, fire: (s: EditMidiSink) => s.noteOn(n.channel, n.program, n.midi, n.velocity, Number.NaN) },
+    { at: ANCHOR + n.onDelaySec + timerLate() * 0.05, fire: (s: EditMidiSink) => s.noteOn(n.channel, n.program, n.midi, n.velocity, Number.NaN, n.bank) },
     { at: ANCHOR + n.offDelaySec + timerLate() * 0.05, fire: (s: EditMidiSink) => s.noteOff(n.channel, n.midi, Number.NaN) },
   ])
   .sort((a, b) => a.at - b.at);

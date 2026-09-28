@@ -161,6 +161,26 @@ const sectionMeterBars = (sections: SectionSpec[] | null): number[] => {
   return out;
 };
 
+/**
+ * The roll part the source phrase was taken from. Every render, song build and
+ * reset writes into that part: when another part is being edited, the roll
+ * turns back to it first, so a slider moved after switching parts never pours
+ * one part's phrase into another. Null (a source from before a reload) writes
+ * into the part being edited.
+ */
+let _sourcePart: string | null = null;
+
+/** Remember the part being edited as the source's. */
+const takeSourcePart = (): void => {
+  _sourcePart = usePianoRollStore.getState().activeTrackId;
+};
+
+/** Turn the roll to the source's part, when it still has it and is on another. */
+const toSourcePart = (): void => {
+  const roll = usePianoRollStore.getState();
+  if (_sourcePart && _sourcePart !== roll.activeTrackId && roll.tracks.some((t) => t.id === _sourcePart)) roll.setActiveTrack(_sourcePart);
+};
+
 export const useVirtuosoStore = create<VirtuosoState>()(
   persist(
     (set, get) => {
@@ -171,6 +191,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         mode: string,
       ): void => {
         if (!source || !source.length) return;
+        toSourcePart();
         const roll = usePianoRollStore.getState();
         roll.replaceAll(
           renderVirtuoso(
@@ -191,6 +212,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
       const rebuildSongNow = (keepBends = false): void => {
         const s = get();
         if (!s.source || !s.source.length) return;
+        toSourcePart();
         const roll = usePianoRollStore.getState();
         if (!_songBase || !_songMap) _songBase = roll.meterMap;
         else if (!sameMeterMap(roll.meterMap, _songMap)) _songBase = takeBarsFrom(roll.meterMap, _songBase, _songOwned);
@@ -213,6 +235,9 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         _songOwned = sectionMeterBars(s.sections);
         // The song's tempo map and its section markers go in with its notes, so
         // one undo takes back all three. The user's own markers stay.
+        // The song owns the meters and tempos of its sections' bars, which it
+        // builds over the roll's own maps, so they apply while other parts hold
+        // notes too; the bends it leaves out stay (pianoRollStore importNotes).
         const form = formSectionMarkers(song.sections.map((sec) => ({ label: ROLE_LABELS[sec.role] ?? sec.role, step: sec.step })));
         roll.importNotes(
           song.notes,
@@ -220,7 +245,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           { meterMap: song.meterMap },
           keepBends ? roll.bends : undefined,
           song.tempoMap,
-          withFormMarkers(roll.markers, form),
+          { document: true, markers: withFormMarkers(roll.markers, form) },
         );
         _tempoMap = usePianoRollStore.getState().tempoMap;
       };
@@ -252,12 +277,14 @@ export const useVirtuosoStore = create<VirtuosoState>()(
 
         captureSource: () => {
           clearSongMaps();
+          takeSourcePart();
           set({ source: cloneNotes(usePianoRollStore.getState().notes), songMode: false });
           renderPhrase(get().source, get().amounts, get().key, get().mode);
         },
 
         setAmount: (k, v) => {
           const s = get();
+          if (!s.source) takeSourcePart();
           const source = s.source ?? cloneNotes(usePianoRollStore.getState().notes);
           set({ source, amounts: { ...s.amounts, [k]: clamp01(v) } });
           refresh();
@@ -285,6 +312,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         resetToSource: () => {
           set({ amounts: { ...ZERO_AMOUNTS }, songMode: false });
           const s = get();
+          if (s.source) toSourcePart();
           const roll = usePianoRollStore.getState();
           if (s.source) roll.replaceAll(cloneNotes(s.source));
           // The source phrase goes back under the maps it had before the song.
@@ -297,6 +325,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
 
         buildSong: () => {
           const s = get();
+          if (!s.source) takeSourcePart();
           const source = s.source ?? cloneNotes(usePianoRollStore.getState().notes);
           if (!source.length) return;
           set({ source, songMode: true });

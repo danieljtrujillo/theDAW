@@ -22,6 +22,7 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
 import { midiFileToRoll } from './rollMidi';
+import { KEPT_DOCUMENT_LOG, importMidiParts } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
 import { logError, logInfo } from '../state/logStore';
@@ -178,16 +179,24 @@ export function loadMidiIntoPianoRoll(
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
     }
-    const piano = usePianoRollStore.getState();
     // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
-    // A new file is a new document: the markers of the previous one go.
-    piano.importNotes(notes, bpm, meter, bends, tempoMap, []);
+    // The piano roll takes a file of several tracks as one part each, on its own
+    // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
+    // notes in one layer, as it always has. A new file is a new document: the
+    // markers of the previous one go, unless other parts keep the document.
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn') : null;
+    const kept = parts
+      ? parts.keptDocument
+      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers: [] }).keptDocument;
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
+    const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';
     logInfo(
       'send-to',
-      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
+      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps${partText})`,
     );
+    // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
+    if (kept) logInfo('send-to', KEPT_DOCUMENT_LOG);
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);

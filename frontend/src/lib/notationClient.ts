@@ -141,6 +141,8 @@ export interface MakeArrangementRequest {
   source_artifact_id?: string;
   source_artifact_ids?: string[];
   midi_id?: string;
+  /** Band score: source artifact id -> orchestral registry instrument id (lib/orchestra.ts). */
+  instruments?: Record<string, string>;
 }
 
 export async function getNotationCapabilities(): Promise<NotationCapabilities> {

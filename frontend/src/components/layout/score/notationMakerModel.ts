@@ -10,6 +10,7 @@
  * into the route and its body. Pure: no React, no fetch.
  */
 import type { MakeArrangementRequest, MakeTabsRequest, NotationArtifact } from '../../../lib/notationClient';
+import { guessInstrument, orchestraInstrument } from '../../../lib/orchestra';
 
 export type MakerInstrument = 'piano' | 'voice' | 'guitar' | 'bass' | 'ukulele' | 'drums' | 'band';
 
@@ -64,7 +65,7 @@ export const WAY_HINTS: Record<MakerWay, string> = {
   lead: 'A lead sheet: the melody with chord symbols over it',
   melody: 'One staff with the melody alone, quantized to read cleanly',
   chords: 'A chord track for the CHORDS view, from the lead sheet when there is one, else from the audio',
-  score: 'A band score: one staff per stem on one beat grid (the full-mix stem and pitched drum transcriptions are left out)',
+  score: 'A band score: one staff per stem on one beat grid, each written for the instrument picked beside it, in score order (the full-mix stem and pitched drum transcriptions are left out unless they are given an instrument)',
 };
 
 /** The stems an instrument reads from, best first. */
@@ -101,6 +102,43 @@ export function stemOf(artifact: NotationArtifact): string {
   const cut = ref.lastIndexOf('__');
   const tail = cut >= 0 ? ref.slice(cut + 2) : ref;
   return tail.replace(/_midi$/, '').replace(/__artifact_midi$/, '') || 'full';
+}
+
+/** The registry instrument each stem's staff is written for unless the reader picks another. */
+const STEM_INSTRUMENT: Readonly<Record<string, string>> = {
+  vocals: 'voice',
+  bass: 'electric-bass',
+  guitar: 'electric-guitar',
+  piano: 'piano',
+  drums: 'drum-kit',
+};
+
+/**
+ * The registry instrument a MIDI's staff is written for by default: the stem's
+ * own instrument, else whatever the stem name names ("Flute 1", "Violin II"),
+ * else '' (the staff keeps the stem's name and a clef from its notes).
+ */
+export function defaultStaffInstrument(artifact: NotationArtifact): string {
+  const stem = stemOf(artifact);
+  return STEM_INSTRUMENT[stem] ?? guessInstrument(stem)?.id ?? '';
+}
+
+/** The instrument a MIDI's staff is written for: the reader's pick ('' = none) or the default. */
+export function staffInstrumentValue(artifact: NotationArtifact, picks: Readonly<Record<string, string>>): string {
+  return Object.prototype.hasOwnProperty.call(picks, artifact.id) ? picks[artifact.id] : defaultStaffInstrument(artifact);
+}
+
+/** Artifact id -> registry id for every MIDI whose staff is given a known instrument. */
+export function staffInstrumentsFor(
+  midis: readonly NotationArtifact[],
+  picks: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of midis) {
+    const id = staffInstrumentValue(m, picks);
+    if (id && orchestraInstrument(id)) out[m.id] = id;
+  }
+  return out;
 }
 
 /** The legacy MIDI id the from-midi route takes. */
@@ -156,6 +194,8 @@ export interface MakerChoice {
   tuning: string;
   capo: number;
   difficulty: Difficulty;
+  /** The band score's instrument picks, by artifact id ('' = keep the stem's name); unpicked MIDIs take their default. */
+  staffInstruments?: Readonly<Record<string, string>>;
 }
 
 /** The request a choice becomes, or the reason it cannot be made yet. */
@@ -167,7 +207,10 @@ export function planFor(choice: MakerChoice): MakerPlan | { error: string } {
   if (way === 'chords') return { route: 'chords' };
   if (midis.length === 0) return { error: 'No MIDI yet. Right-click the track and Convert to MIDI.' };
   if (way === 'score') {
-    return { route: 'arrange', req: { style: 'band-score', source_artifact_ids: midis.map((m) => m.id) } };
+    const instruments = staffInstrumentsFor(midis, choice.staffInstruments ?? {});
+    const req: MakeArrangementRequest = { style: 'band-score', source_artifact_ids: midis.map((m) => m.id) };
+    if (Object.keys(instruments).length > 0) req.instruments = instruments;
+    return { route: 'arrange', req };
   }
   if (!source) return { error: 'Pick a MIDI to read from' };
   switch (way) {

@@ -11,6 +11,10 @@
  * `laneMeta` for the roll to read. A tempo map's ramps and fermatas have no
  * field in FF 51 either: the tempo metas carry what every reader plays, and the
  * map itself rides in one text event `theDAW:tempomap=…` (lib/rollMidi reads it).
+ * A track may also carry `theDAW:part=<json>` at tick 0: the piano roll part
+ * it holds (its colour and registry instrument, lib/rollMidi), handed back as
+ * `partMeta`. Program changes, with the bank select (CC 0) in force at each,
+ * are kept per track as `programs`. Track names are written and read as UTF-8.
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -48,9 +52,28 @@ export interface MidiBendRange {
   semitones: number;
 }
 
+/** A program change (C0), with the bank select (CC 0) its channel had when it came. */
+export interface MidiProgram {
+  tick: number;
+  /** Channel 0-15. */
+  channel: number;
+  /** 0-127. */
+  program: number;
+  /** The bank select MSB (CC 0) in force, when the track set one. Encoded before the program change. */
+  bank?: number;
+}
+
 export interface MidiTrack {
   name: string;
   notes: MidiNote[];
+  /** Program changes, sorted by tick. Parsed: absent when the track has none. */
+  programs?: MidiProgram[];
+  /**
+   * The text of the track's `theDAW:part=` event (what follows the `=`), at
+   * tick 0. Parsed: absent when the track has none. A track that carries one
+   * is kept even with no notes, so an empty part survives a round trip.
+   */
+  partMeta?: string;
   /** Pitch wheel messages, sorted by tick. Parsed: absent when the track has none. */
   bends?: MidiBend[];
   /** Bend ranges the track sets, sorted by tick. Parsed: absent when the track sets none. */
@@ -126,8 +149,9 @@ interface RawEvent {
 /** A track event with its place among the events at its tick. */
 type RankedEvent = RawEvent & { rank: number };
 
-/** At one tick: note-offs, then bend ranges, then wheel messages, then note-ons, so a note that ends there is not bent and one that starts there starts bent. */
+/** At one tick: note-offs, then program changes, then bend ranges, then wheel messages, then note-ons, so a note that ends there is not bent and one that starts there starts bent, on its program. */
 const RANK_NOTE_OFF = 0;
+const RANK_PROGRAM = 0.5;
 const RANK_RANGE = 1;
 const RANK_WHEEL = 2;
 const RANK_NOTE_ON = 3;
@@ -182,9 +206,21 @@ export const pitchWheelMessage = (channel: number, value: number): number[] => {
  * that starts there starts bent. A track with neither writes the notes' bytes alone.
  */
 const trackEvents = (t: MidiTrack): RawEvent[] => {
-  const lane: RawEvent[] = t.laneMeta ? [{ tick: 0, bytes: textBytes(`${LANE_TEXT}${asciiJson(t.laneMeta)}`) }] : [];
+  const metas: RawEvent[] = [];
+  if (t.partMeta) metas.push({ tick: 0, bytes: textBytes(`${PART_TEXT}${asciiJson(t.partMeta)}`) });
+  if (t.laneMeta) metas.push({ tick: 0, bytes: textBytes(`${LANE_TEXT}${asciiJson(t.laneMeta)}`) });
   const events = trackBody(t);
-  return lane.length ? [...lane, ...events] : events;
+  return metas.length ? [...metas, ...events] : events;
+};
+
+/** A program change's bytes: CC 0 with its bank first when it has one, then C0. */
+const programEvents = (p: MidiProgram): RankedEvent[] => {
+  const ch = p.channel & 0x0f;
+  const tick = tickOf(p.tick);
+  const out: RankedEvent[] = [];
+  if (typeof p.bank === 'number' && Number.isFinite(p.bank)) out.push({ tick, rank: RANK_PROGRAM, bytes: [0xb0 | ch, 0, Math.max(0, Math.min(127, Math.round(p.bank)))] });
+  out.push({ tick, rank: RANK_PROGRAM, bytes: [0xc0 | ch, Math.max(0, Math.min(127, Math.round(p.program)))] });
+  return out;
 };
 
 /** A track's notes, ranges and wheel messages (trackEvents less its lane text). */
@@ -196,6 +232,7 @@ const trackBody = (t: MidiTrack): RawEvent[] => {
     for (const bytes of bendRangeMessages(r.channel, r.semitones)) wheel.push({ tick, rank: RANK_RANGE, bytes });
   }
   for (const b of t.bends ?? []) wheel.push({ tick: tickOf(b.tick), rank: RANK_WHEEL, bytes: pitchWheelMessage(b.channel, b.value) });
+  for (const p of t.programs ?? []) wheel.push(...programEvents(p));
   if (!wheel.length) return notes;
   return [...wheel, ...notes].sort(byTickAndRank);
 };
@@ -247,8 +284,10 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
   out.bytes([0, 0, 0, 0]);
   out.bytes(writeVLQ(0));
   out.bytes([0xff, 0x03]);
-  out.bytes(writeVLQ(name.length));
-  out.bytes(ascii(name));
+  // UTF-8, so a part named "Clarinet in B♭" keeps its flat sign.
+  const nameBytes = Array.from(new TextEncoder().encode(name));
+  out.bytes(writeVLQ(nameBytes.length));
+  out.bytes(nameBytes);
   let last = 0;
   for (const ev of events) {
     out.bytes(writeVLQ(ev.tick - last));
@@ -262,6 +301,7 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
 const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
 const LANE_TEXT = 'theDAW:lane=';
+const PART_TEXT = 'theDAW:part=';
 /** The text a file's own tempo map rides in beside its FF 51 tempos (lib/rollMidi tempoMapText). */
 export const TEMPOMAP_TEXT = 'theDAW:tempomap=';
 
@@ -408,7 +448,19 @@ interface DecodedTrack {
   ranges: MidiBendRange[];
   /** The track's `theDAW:lane=` text, the last one when it has several. */
   laneMeta: string | null;
+  /** The track's `theDAW:part=` text, the last one when it has several. */
+  partMeta: string | null;
+  programs: MidiProgram[];
 }
+
+/** A track name's bytes as text: UTF-8 when they are valid UTF-8, else one character per byte (Latin-1), as older files carry. */
+const nameText = (data: Uint8Array): string => {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(data).trim();
+  } catch {
+    return Array.from(data, (b) => String.fromCharCode(b)).join('').trim();
+  }
+};
 
 const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   const r = new Reader(chunk);
@@ -416,6 +468,10 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let tick = 0;
   let name = '';
   let laneMeta: string | null = null;
+  let partMeta: string | null = null;
+  const programs: MidiProgram[] = [];
+  // The bank select (CC 0) each channel has, which the program change after it takes.
+  const bankMsb = new Map<number, number>();
   const tempos: MidiTempo[] = [];
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
@@ -452,7 +508,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
       const data = r.bytes(len);
       if (meta === 0x03) {
         // Track name
-        name = Array.from(data, (b) => String.fromCharCode(b)).join('').trim();
+        name = nameText(data);
       } else if (meta === 0x01) {
         const text = Array.from(data, (b) => String.fromCharCode(b)).join('');
         if (text.startsWith(GROUPS_TEXT)) {
@@ -463,6 +519,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
           if (Number.isFinite(steps) && steps >= 0) pickups.push({ tick, steps });
         } else if (text.startsWith(LANE_TEXT)) {
           laneMeta = text.slice(LANE_TEXT.length);
+        } else if (text.startsWith(PART_TEXT)) {
+          partMeta = text.slice(PART_TEXT.length);
         } else if (text.startsWith(TEMPOMAP_TEXT)) {
           tempoMap = text.slice(TEMPOMAP_TEXT.length);
         }
@@ -516,7 +574,11 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         }
       } else if (type === 0xe0) {
         bends.push({ tick, channel: ch, value: d1 | (d2 << 7) });
+      } else if (type === 0xc0) {
+        const bank = bankMsb.get(ch);
+        programs.push({ tick, channel: ch, program: d1 & 0x7f, ...(bank !== undefined ? { bank } : {}) });
       } else if (type === 0xb0) {
+        if (d1 === 0) bankMsb.set(ch, d2 & 0x7f);
         const sel = rpn.get(ch) ?? { msb: 127, lsb: 127, range: null };
         if (d1 === 101) {
           sel.msb = d2;
@@ -538,7 +600,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         }
         rpn.set(ch, sel);
       }
-      // Other channel events (aftertouch, program, other CCs) ignored
+      // Other channel events (aftertouch, other CCs) ignored
     }
   }
 
@@ -558,7 +620,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges, laneMeta };
+  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges, laneMeta, partMeta, programs };
 };
 
 /**
@@ -608,13 +670,15 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     if (t.tempoMap !== null) dawTempoMap = t.tempoMap;
     // A track that only bends is kept: its channel's wheel bends notes another
     // track holds. So is a lane's track with no notes, so the lane comes back.
-    if (t.notes.length > 0 || t.bends.length > 0 || t.laneMeta !== null) {
+    if (t.notes.length > 0 || t.bends.length > 0 || t.laneMeta !== null || t.partMeta !== null) {
       tracks.push({
         name: t.name || `Track ${i}`,
         notes: t.notes,
         ...(t.bends.length ? { bends: t.bends } : {}),
         ...(t.ranges.length ? { bendRanges: t.ranges } : {}),
         ...(t.laneMeta !== null ? { laneMeta: t.laneMeta } : {}),
+        ...(t.partMeta !== null ? { partMeta: t.partMeta } : {}),
+        ...(t.programs.length ? { programs: t.programs } : {}),
       });
     }
   }

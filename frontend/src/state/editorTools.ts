@@ -449,7 +449,8 @@ const commitNotes = async (
     sourcePianoRoll: notes,
     sourceTotalSteps: totalSteps,
     ...rollFields,
-    ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
+    // A program set here drops the bank the old program was chosen in (lib/clipProgram clipBank).
+    ...(programOverride !== undefined ? { instrumentProgram: programOverride, instrumentBank: undefined } : {}),
   }, args, extra, opts);
 };
 
@@ -496,7 +497,7 @@ const commitMidiFields = async (
   try {
     // In the MIDI render queue's turn, so it never overlaps another render.
     rendered = await withRenderTurn(clip.id, clip.label, () =>
-      bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
+      bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, bank: voice.bank, percussion: voice.percussion }));
   } catch (e) {
     return { ok: false, error: `the edit was not applied: re-rendering "${clip.label}" failed — ${reason(e)}` };
   }
@@ -926,7 +927,7 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
     const voice = voiceFor(clip);
     // In the MIDI render queue's turn, so it never overlaps another render.
     rendered = await withRenderTurn(clip.id, clip.label, () =>
-      stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
+      stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, bank: voice.bank, percussion: voice.percussion }));
   } catch (e) {
     return fail(`stretch: ${reason(e)}`);
   }
@@ -2496,7 +2497,8 @@ export async function setRollPart(args: SetRollPartArgs): Promise<ToolResult> {
     sourcePickupSteps: pickup,
     sourceTotalSteps: totalSteps,
     sourceBends: bends,
-    ...(program !== undefined ? { instrumentProgram: program } : {}),
+    // A program set here drops the bank the old program was chosen in (lib/clipProgram clipBank).
+    ...(program !== undefined ? { instrumentProgram: program, instrumentBank: undefined } : {}),
   }, args);
   if (!written.ok) return fail(`set_roll_part: ${written.error}`);
   const bars = partBars(meterMap, totalSteps, pickup);

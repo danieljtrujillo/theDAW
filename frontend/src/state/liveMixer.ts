@@ -80,7 +80,7 @@ import {
   clipLiveSlots,
   clipLiveTiming,
 } from '../lib/editMidiScheduler';
-import { effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
@@ -3057,7 +3057,16 @@ export function silentMidiToReport<T extends { id: string }>(silent: readonly T[
 /** The fields of a clip the live MIDI plan reads. */
 export type LiveMidiClip = Pick<
   AudioClip,
-  'id' | 'trackId' | 'muted' | 'instrumentProgram' | 'sourceKind' | 'sourcePianoRoll' | 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'
+  | 'id'
+  | 'trackId'
+  | 'muted'
+  | 'instrumentProgram'
+  | 'instrumentBank'
+  | 'sourceKind'
+  | 'sourcePianoRoll'
+  | 'sourceRollNotes'
+  | 'sourceLanes'
+  | 'sourceBends'
 >;
 /** The fields of a track the live MIDI plan reads. */
 export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
@@ -3193,6 +3202,8 @@ export interface LiveMidiNote {
   clipId: string;
   channel: number;
   program: number;
+  /** The bank select sent before `program` (lib/clipProgram clipBank); 0 is the General MIDI set. */
+  bank: number;
   midi: number;
   velocity: number;
   onDelaySec: number;
@@ -3225,6 +3236,7 @@ export function liveMidiNotes(
     const chans = plan.channels.channelsOf.get(clip.trackId);
     const program = effectiveProgramFor(clip, track, global);
     if (!chans?.length || program === undefined) continue;
+    const bank = clipBank(clip, track);
     for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track)).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
@@ -3232,6 +3244,7 @@ export function liveMidiNotes(
         clipId: clip.id,
         channel: chans[Math.min(n.slot, chans.length - 1)],
         program,
+        bank,
         midi: n.midi,
         velocity: n.velocity,
         onDelaySec,

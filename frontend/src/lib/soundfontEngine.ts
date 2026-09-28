@@ -25,7 +25,7 @@ import { addWorkletModule } from './audioWorkletSupport';
 import { notesToSmf, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
-import { PREVIEW_CHANNEL_COUNT } from './pitchBend';
+import { MAX_PREVIEW_CHANNELS, PREVIEW_CHANNEL_COUNT } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
   RENDER_TAIL_CAP_SEC,
@@ -150,7 +150,10 @@ async function createLiveSynth(): Promise<WorkletSynthesizer> {
 
 let liveSynth: WorkletSynthesizer | null = null;
 let liveSynthPromise: Promise<WorkletSynthesizer> | null = null;
+/** The bank and program each preview channel was last switched to, as bank * 128 + program. */
 const channelProgram = new Map<number, number>();
+/** How many channels the preview synth has now: PREVIEW_CHANNEL_COUNT, and more as the roll's parts ask for them. */
+let previewChannels = 0;
 function getLiveSynth(): Promise<WorkletSynthesizer> {
   if (!liveSynthPromise) {
     liveSynthPromise = (async () => {
@@ -159,6 +162,7 @@ function getLiveSynth(): Promise<WorkletSynthesizer> {
       // are DRAW's (DRAW_LIVE_CHANNELS). The preview synth plays every channel
       // to the engine master, so sharing a dry output with channel n % 16 changes nothing.
       for (let ch = 16; ch < PREVIEW_CHANNEL_COUNT; ch += 1) synth.addNewChannel();
+      previewChannels = PREVIEW_CHANNEL_COUNT;
       liveSynth = synth;
       channelProgram.clear();
       useSoundfontStore.setState({ ready: true });
@@ -171,9 +175,23 @@ function getLiveSynth(): Promise<WorkletSynthesizer> {
   return liveSynthPromise;
 }
 
-/** A preview-synth channel: 0-15, the keyboard's 16 or DRAW's 17-24. */
+/** A preview-synth channel: 0-15, the keyboard's 16, DRAW's 17-24, or a roll part's from 25 up to MAX_PREVIEW_CHANNELS - 1. */
 const previewChannel = (channel: number): number =>
-  Math.max(0, Math.min(PREVIEW_CHANNEL_COUNT - 1, Number.isFinite(channel) ? Math.round(channel) : 0));
+  Math.max(0, Math.min(MAX_PREVIEW_CHANNELS - 1, Number.isFinite(channel) ? Math.round(channel) : 0));
+
+/**
+ * Make sure the preview synth has channel `ch`, adding channels up to it. The
+ * roll's parts after the first play on channels past DRAW's (lib/rollTracks
+ * rollLiveChannels), which the synth does not start with. Every channel plays
+ * to the engine master, so one past fifteen sharing a dry output with
+ * channel n % 16 changes nothing.
+ */
+function ensurePreviewChannel(synth: WorkletSynthesizer, ch: number): void {
+  while (previewChannels <= ch && previewChannels < MAX_PREVIEW_CHANNELS) {
+    synth.addNewChannel();
+    previewChannels += 1;
+  }
+}
 
 /**
  * Warm up the engine (worklet + soundfont) ahead of first use so the first note
@@ -197,11 +215,24 @@ export async function ensureSoundfontReady(): Promise<boolean> {
  * queued on the synth for then, so a note scheduled ahead switches the channel
  * at its own moment and not while the note before it is still sounding.
  */
-function setChannelProgram(synth: WorkletSynthesizer, ch: number, program: number, programs = channelProgram, time?: number): void {
+function setChannelProgram(
+  synth: WorkletSynthesizer,
+  ch: number,
+  program: number,
+  programs = channelProgram,
+  bank = 0,
+  time?: number,
+): void {
   const p = Math.max(0, Math.min(127, Math.round(program)));
-  if (programs.get(ch) === p) return;
-  synth.programChange(ch, p, time !== undefined ? { time } : undefined);
-  programs.set(ch, p);
+  const b = Math.max(0, Math.min(127, Number.isFinite(bank) ? Math.round(bank) : 0));
+  const key = b * 128 + p;
+  if (programs.get(ch) === key) return;
+  const at = time !== undefined ? { time } : undefined;
+  // A bank other than the one the channel last had is selected first (CC 0),
+  // and the program change after it takes that bank, as MIDI orders the two.
+  if (b !== Math.floor((programs.get(ch) ?? 0) / 128)) synth.controllerChange(ch, 0, b, at);
+  synth.programChange(ch, p, at);
+  programs.set(ch, key);
 }
 
 /**
@@ -219,6 +250,7 @@ export async function previewNoteSF(
   channel = 0,
   when?: number,
   program?: number,
+  bank = 0,
 ): Promise<void> {
   try {
     const ctx = getEngineCtx();
@@ -231,7 +263,8 @@ export async function previewNoteSF(
     }
     const synth = await getLiveSynth();
     const ch = previewChannel(channel);
-    setChannelProgram(synth, ch, program ?? getActiveProgram());
+    ensurePreviewChannel(synth, ch);
+    setChannelProgram(synth, ch, program ?? getActiveProgram(), channelProgram, bank);
     const note = Math.round(midi);
     // A time that passed while the synth loaded plays now, and the note keeps its length.
     const start = Math.max(when ?? 0, ctx.currentTime);
@@ -302,16 +335,18 @@ async function renderMidiToBlob(
 /**
  * The MIDI file a soundfont render of absolute-seconds notes plays. Honors an
  * explicit program when the caller knows the clip's instrument; only falls
- * back to the global picker when it doesn't. Pitch wheels ride in the same file.
+ * back to the global picker when it doesn't. Pitch wheels ride in the same
+ * file, and a `bank` past 0 is selected before the program (a roll part's
+ * Bank, lib/rollBounce), so the render plays that bank's preset.
  */
-export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[] } = {}): Uint8Array {
-  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? []);
+export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[]; bank?: number } = {}): Uint8Array {
+  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? [], { bank: opts.bank ?? 0 });
 }
 
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
 export async function renderNotesToBlobSF(
   notes: RenderNote[],
-  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[] } & RenderLength = {},
+  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[]; bank?: number } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
   const smf = notesRenderSmf(notes, opts);
   return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts);
@@ -394,15 +429,16 @@ const atTime = (time?: number) => (time !== undefined && Number.isFinite(time) ?
 
 /**
  * Note-on on an EDIT channel at audio-context time `time` (now when absent),
- * switching its program first, at the same time, if it changed. The synth
- * queues a timed event and plays it on the render quantum it falls in, so a
- * note scheduled ahead (lib/editMidiScheduler) sounds on the audio clock the
- * clips play on. No-op until its bank exists.
+ * switching its program first, at the same time, if it changed, in bank
+ * select `bankSelect` (a clip's instrumentBank; 0 is the General MIDI set).
+ * The synth queues a timed event and plays it on the render quantum it falls
+ * in, so a note scheduled ahead (lib/editMidiScheduler) sounds on the audio
+ * clock the clips play on. No-op until its synth bank exists.
  */
-export function editNoteOn(channel: number, program: number, midi: number, velocity: number, time?: number): void {
+export function editNoteOn(channel: number, program: number, midi: number, velocity: number, time?: number, bankSelect = 0): void {
   const at = editChannel(channel);
   if (!at) return;
-  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, atTime(time)?.time);
+  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time);
   at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))), atTime(time));
 }
 
@@ -523,6 +559,7 @@ export function liveNoteOn(channel: number, program: number, midi: number, veloc
     return;
   }
   const ch = previewChannel(channel);
+  ensurePreviewChannel(s, ch);
   setChannelProgram(s, ch, program);
   s.noteOn(ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))));
 }
@@ -546,7 +583,12 @@ export function sfPitchWheel(channel: number, raw: number, time?: number): void 
   const s = liveSynth;
   if (!s) return;
   try {
-    s.pitchWheel(channel & 0x0f, Math.max(0, Math.min(16383, Math.round(raw))), time !== undefined ? { time } : undefined);
+    // The whole channel number: spessasynth_lib sends a channel past fifteen
+    // with its offset, so a part's channel from 25 up bends itself, not the
+    // channel n % 16 that a mask to four bits used to bend.
+    const ch = previewChannel(channel);
+    ensurePreviewChannel(s, ch);
+    s.pitchWheel(ch, Math.max(0, Math.min(16383, Math.round(raw))), time !== undefined ? { time } : undefined);
   } catch {
     /* ignore */
   }
@@ -563,7 +605,11 @@ export function sfPitchWheelRange(channel: number, semitones: number, time?: num
   if (!s) return;
   try {
     const options = time !== undefined ? { time } : undefined;
-    for (const bytes of bendRangeMessages(channel, Math.max(0, semitones), RANGE_LSB_SPESSA)) s.sendMessage(bytes, 0, options);
+    // The messages carry the channel's low four bits; the offset names its group of sixteen.
+    const ch = previewChannel(channel);
+    ensurePreviewChannel(s, ch);
+    const offset = ch - (ch % 16);
+    for (const bytes of bendRangeMessages(ch % 16, Math.max(0, semitones), RANGE_LSB_SPESSA)) s.sendMessage(bytes, offset, options);
   } catch {
     /* ignore */
   }

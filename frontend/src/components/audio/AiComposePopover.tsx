@@ -3,7 +3,7 @@ import { Sparkles, Loader2 } from 'lucide-react';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { useTempoField } from '../../lib/useTempoField';
 import { generatePianoFromParams, type AiComposeResult } from '../../lib/aiComposeClient';
-import { COMPOSE_MAX_BARS, composeMeterSummary } from '../../lib/aiComposeGrid';
+import { COMPOSE_MAX_BARS, composeMeterSummary, type ComposeInstrument } from '../../lib/aiComposeGrid';
 import type { MeterSegment } from '../../lib/meterMap';
 import { logError, logInfo } from '../../state/logStore';
 import { DockFlyout, FLYOUT_CARD, KEY_REST, RAIL_GLYPH, RailKey } from './midiDockKit';
@@ -46,14 +46,21 @@ const fieldCls =
  * resulting notes back to the roll. The request is written on the roll's own
  * meter map and pickup, which the card names above GENERATE, and the result
  * carries that meter back with its notes.
+ *
+ * The notes go into the roll part being edited (`part`). When that part has an
+ * instrument other than the piano, FOR THE PART'S INSTRUMENT (on by default)
+ * asks for a part written for it, inside its practical range; off, the card
+ * writes the piano part it always has.
  */
 export const AiComposePopover: React.FC<{
   currentBpm: number;
   /** The roll's time signatures by bar and its pickup: the grid the part is written on. */
   meterMap: MeterSegment[];
   pickupSteps: number;
+  /** The roll part the notes go into: its name, and the instrument COMPOSE can write for. */
+  part?: { name: string; instrument?: ComposeInstrument };
   onGenerated: (result: AiComposeResult) => void;
-}> = ({ currentBpm, meterMap, pickupSteps, onGenerated }) => {
+}> = ({ currentBpm, meterMap, pickupSteps, part, onGenerated }) => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState('');
@@ -66,6 +73,8 @@ export const AiComposePopover: React.FC<{
   const bpmField = useTempoField(bpm, setBpm);
   const [complexity, setComplexity] = useState(0.6);
   const [withBass, setWithBass] = useState(true);
+  const [forInstrument, setForInstrument] = useState(true);
+  const instrument = part?.instrument && forInstrument ? part.instrument : undefined;
   const keyRef = useRef<HTMLButtonElement>(null);
 
   const generate = async () => {
@@ -82,11 +91,12 @@ export const AiComposePopover: React.FC<{
         style: style === 'None' ? undefined : style,
         complexity,
         withBass,
+        ...(instrument ? { instrument } : {}),
       });
       onGenerated(result);
       logInfo(
         'piano-roll',
-        `AI composed ${result.notes.length} notes in ${keyName} ${mode}${result.summary ? ` — ${result.summary}` : ''}`,
+        `AI composed ${result.notes.length} notes in ${keyName} ${mode}${part ? ` for ${part.name}` : ''}${result.summary ? ` — ${result.summary}` : ''}`,
       );
       setOpen(false);
     } catch (e) {
@@ -256,6 +266,29 @@ export const AiComposePopover: React.FC<{
           </p>
         </div>
 
+        {part && (
+          <div className="flex flex-col gap-1">
+            <span className={legendCls}>Part</span>
+            <p className="text-[12px] font-bold et-ink leading-snug" data-compose-part="">
+              {part.name}
+              {part.instrument ? ` (${part.instrument.name}, MIDI ${part.instrument.rangeLow} to ${part.instrument.rangeHigh})` : ''}
+            </p>
+            {part.instrument && (
+              <label htmlFor="ai-compose-for-part" className="flex items-center gap-2 text-[12px] font-semibold text-zinc-300 cursor-pointer">
+                <input
+                  id="ai-compose-for-part"
+                  name="ai-compose-for-part"
+                  type="checkbox"
+                  checked={forInstrument}
+                  onChange={(e) => setForInstrument(e.target.checked)}
+                  className="accent-[rgb(var(--et-accent))]"
+                />
+                {`Write for the ${part.instrument.name}`}
+              </label>
+            )}
+          </div>
+        )}
+
         <label htmlFor="ai-compose-bass" className="flex items-center gap-2 text-[12px] font-semibold text-zinc-300 cursor-pointer">
           <input
             id="ai-compose-bass"
@@ -289,7 +322,7 @@ export const AiComposePopover: React.FC<{
           )}
         </button>
         <p className="text-[12px] font-semibold et-ink-3 leading-snug">
-          Replaces the roll with the generated part, in the roll&apos;s meter. Needs a Gemini API key set in Settings.
+          {part ? `Replaces the notes of ${part.name} with the generated part` : 'Replaces the roll with the generated part'}, in the roll&apos;s meter. Needs a Gemini API key set in Settings.
         </p>
       </DockFlyout>
     </>

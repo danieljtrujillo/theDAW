@@ -114,28 +114,102 @@ export interface ComposePromptInput extends ComposeGridInput {
   complexity: number;
   /** Include a distinct left-hand bass/accompaniment line. */
   withBass?: boolean;
+  /**
+   * The roll part the notes are for, when it is not a piano: the prompt asks
+   * for a part for that instrument inside its practical range (lib/orchestra),
+   * a single line unless it reads a grand staff, and rhythm alone for drums.
+   */
+  instrument?: ComposeInstrument;
 }
+
+/** The instrument a composed part is written for. */
+export interface ComposeInstrument {
+  name: string;
+  /** Practical range, sounding MIDI numbers. */
+  rangeLow: number;
+  rangeHigh: number;
+  /** Written on a grand staff (piano, harp, celesta): two hands. */
+  grandStaff: boolean;
+  /** Drums on channel 10: each note is a drum, not a pitch. */
+  percussion: boolean;
+}
+
+/**
+ * Notes folded by octaves into `low`..`high`: a note below the range moves up
+ * and one above moves down, octave by octave, so a line keeps its pitch
+ * classes and its shape. A range narrower than an octave leaves a note the
+ * nearest it can get.
+ */
+export const foldNotesIntoRange = <T extends { note: number }>(notes: readonly T[], low: number, high: number): T[] =>
+  notes.map((n) => {
+    let note = n.note;
+    while (note < low && note + 12 <= 127) note += 12;
+    while (note > high && note - 12 >= 0) note -= 12;
+    if (note < low) note = Math.min(127, low);
+    return note === n.note ? n : { ...n, note };
+  });
+
+/** The prompt's opening, range and writing lines for the part's instrument. */
+const instrumentLines = (p: ComposePromptInput): { opening: string; range: string; writing: string[]; intent: string } => {
+  const inst = p.instrument;
+  if (!inst || (inst.grandStaff && !inst.percussion && /piano/i.test(inst.name))) {
+    return {
+      opening: 'You are a virtuoso composer and concert pianist. Compose an original, musical solo piano piece as MIDI note data.',
+      range: '- Middle C = MIDI 60. Use the full piano range (about MIDI 33-96).',
+      writing: [
+        '- Write REAL two-hand piano: a singing right-hand melody with clear phrasing and an arch shape,',
+        '  supported by a left-hand accompaniment (broken chords / arpeggios / stride / Alberti).',
+        '- Use smooth voice-leading and inversions, build to a climax, and close phrases with cadences.',
+        p.withBass
+          ? '- Give the left hand a clear bass line in the low register (roughly MIDI 33-55).'
+          : '- Keep the left hand as light accompaniment beneath the melody.',
+      ],
+      intent: 'a beautiful, natural piano piece',
+    };
+  }
+  if (inst.percussion) {
+    return {
+      opening: `You are a composer and orchestral percussionist. Compose an original, musical ${inst.name} part as General MIDI drum notes.`,
+      range: '- Each note is a drum on MIDI channel 10 (General MIDI percussion keys, 35-81): 36 bass drum, 38 snare, 42 closed hi-hat, 49 crash, 51 ride, 54 tambourine, 56 cowbell, 81 triangle.',
+      writing: [
+        '- Write rhythm that fits the bars and their groups: accents on group starts, fills into phrase ends.',
+        '- Pitch is the drum, so keep to the keys that suit the part.',
+      ],
+      intent: `a beautiful, natural ${inst.name} part`,
+    };
+  }
+  return {
+    opening: `You are a virtuoso composer and orchestrator. Compose an original, musical ${inst.name} part as MIDI note data.`,
+    range: `- Middle C = MIDI 60. Write for the ${inst.name}: every note between MIDI ${inst.rangeLow} and ${inst.rangeHigh} (its practical range, at sounding pitch).`,
+    writing: inst.grandStaff
+      ? [
+          `- Write for two hands on a grand staff, as the ${inst.name} plays: a melody over an accompaniment.`,
+          '- Use smooth voice-leading, build to a climax, and close phrases with cadences.',
+        ]
+      : [
+          `- Write one singing line, as the ${inst.name} plays it, with clear phrasing, breaths or bow changes, and an arch shape.`,
+          '- Build to a climax and close phrases with cadences.',
+        ],
+    intent: `a beautiful, natural ${inst.name} part`,
+  };
+};
 
 /** The whole prompt for a request on grid `g`. */
 export const buildComposePrompt = (p: ComposePromptInput, g: ComposeGrid = composeGrid(p)): string => {
+  const inst = instrumentLines(p);
   const lines = [
-    'You are a virtuoso composer and concert pianist. Compose an original, musical solo piano piece as MIDI note data.',
+    inst.opening,
     '',
     ...composeGridLines(g),
-    '- Middle C = MIDI 60. Use the full piano range (about MIDI 33-96).',
+    inst.range,
     '',
     'MUSICALITY (important):',
     `- Key: ${p.key} ${p.mode}. Stay mostly diatonic; use tasteful chromatic passing tones and leading tones into cadences.`,
     `- Tempo: ${Math.round(p.bpm * 100) / 100} BPM (quarter notes per minute).`,
-    '- Write REAL two-hand piano: a singing right-hand melody with clear phrasing and an arch shape,',
-    '  supported by a left-hand accompaniment (broken chords / arpeggios / stride / Alberti).',
-    '- Use smooth voice-leading and inversions, build to a climax, and close phrases with cadences.',
-    p.withBass
-      ? '- Give the left hand a clear bass line in the low register (roughly MIDI 33-55).'
-      : '- Keep the left hand as light accompaniment beneath the melody.',
+    ...inst.writing,
     `- Density / virtuosity: ${p.complexity.toFixed(2)} (0 = sparse and simple, 1 = dense runs, ornaments and fast figuration).`,
     p.style ? `- Style: ${p.style}.` : '',
-    `- Intent: "${p.prompt || 'a beautiful, natural piano piece'}".`,
+    `- Intent: "${p.prompt || inst.intent}".`,
     '',
     'Return JSON only: { "bpm": number, "notes": [{ "note", "step", "length", "velocity" }], "summary": string }.',
     '- note: integer MIDI 0-127. step: number >= 0, in 16th-note steps, fractions allowed for tuplets. length: number > 0, in steps. velocity: integer 1-127.',

@@ -15,8 +15,21 @@
  *
  * No Vite-only imports, so node tests load it.
  */
-import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, MIN_NOTE_STEPS, noteTick, noteTicks, rollMeterOf, sanitizeLanes, type PianoNote, type RollMeter } from '../state/pianoRollStore';
+import type { AudioClip, EditorTrack } from '../state/editorStore';
+import {
+  DEFAULT_LANES,
+  MIN_NOTE_STEPS,
+  noteTick,
+  noteTicks,
+  rollMeterOf,
+  sanitizeLanes,
+  type PianoNote,
+  type RollMeter,
+  type RollPartRef,
+  type RollPartsLoad,
+  type RollTrack,
+} from '../state/pianoRollStore';
+import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartChannel, cleanPartColor, cleanPartName, cleanPartProgram } from './rollTracks';
 import { quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGrooveInMeter, grooveLateness, type GrooveTemplate } from './grooveTemplate';
 import { barAt, laneTimeOf, normalizeMeterMap, roundUpToBar, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
@@ -73,6 +86,7 @@ export type RollLoadArgs = [
   bends: LaneBend[],
   tempoMap: TempoEvent[] | undefined,
   markers: RollMarker[],
+  parts?: RollPartsLoad,
 ];
 
 /**
@@ -329,4 +343,123 @@ export function feelLength(length: number, q: number): number {
   const strength = Math.max(0, Math.min(1, Number.isFinite(q) ? q : 0));
   const whole = Math.max(1, Math.round(length));
   return length + (whole - length) * strength;
+}
+
+// ── Parts: roll parts as EDIT clips and back ────────────────────────────────
+
+/** The record a part's clip keeps of it (AudioClip `sourceRollPart`): its document, id, place and settings. */
+export function rollPartRef(part: RollTrack, order: number, doc: string): RollPartRef {
+  return {
+    doc,
+    id: part.id,
+    order,
+    name: part.name,
+    program: part.program,
+    bank: part.bank,
+    channel: part.channel,
+    color: part.color,
+    mute: part.mute,
+    solo: part.solo,
+    ...(part.instrumentId ? { instrumentId: part.instrumentId } : {}),
+  };
+}
+
+/**
+ * A part record from a file or an autosave, every field brought into range,
+ * or undefined when it names no document or no part. `name` and `color` fall
+ * back to the ones given (the clip's track), so a hand-edited record still opens.
+ */
+export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.doc !== 'string' || !r.doc || typeof r.id !== 'string' || !r.id) return undefined;
+  const order = typeof r.order === 'number' && Number.isFinite(r.order) ? Math.max(0, Math.round(r.order)) : 0;
+  return {
+    doc: r.doc,
+    id: r.id,
+    order,
+    name: cleanPartName(r.name, fallback.name),
+    program: cleanPartProgram(r.program),
+    bank: cleanPartBank(r.bank),
+    channel: cleanPartChannel(r.channel),
+    color: cleanPartColor(r.color, fallback.color),
+    mute: r.mute === true,
+    solo: r.solo === true,
+    ...(typeof r.instrumentId === 'string' && r.instrumentId ? { instrumentId: r.instrumentId } : {}),
+  };
+}
+
+/** The clip fields clipPartsLoad reads of every clip. */
+export type RollPartClip = RollClipInput & Pick<AudioClip, 'trackId' | 'label' | 'color' | 'startSec' | 'sourceRollPart' | 'sourceKind'>;
+
+/** A clip as one of the roll's parts: its record when it has one, else its track's name, colour and drum channel. */
+function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color' | 'isPercussion'> | undefined, notes: PianoNote[], id: string): RollTrack {
+  const ref = clip.sourceRollPart;
+  if (ref) {
+    return {
+      id,
+      name: ref.name,
+      program: ref.program,
+      bank: ref.bank,
+      channel: ref.channel,
+      color: ref.color,
+      mute: ref.mute,
+      solo: ref.solo,
+      notes,
+      ...(ref.instrumentId ? { instrumentId: ref.instrumentId } : {}),
+    };
+  }
+  // A clip bounced before parts: its EDIT track names it, and a drum track makes it a percussion part.
+  return {
+    id,
+    name: cleanPartName(track?.name, cleanPartName(clip.label, 'Part 1')),
+    program: null,
+    bank: 0,
+    channel: track?.isPercussion ? PERCUSSION_PART_CHANNEL : null,
+    color: cleanPartColor(track?.color ?? clip.color, '#a855f7'),
+    mute: false,
+    solo: false,
+    notes,
+  };
+}
+
+/**
+ * The arguments that open `clip` in the roll with every part of its roll
+ * document: each clip in `clips` whose record names the same document becomes
+ * a part, in the order they were bounced, linked to its clip, with `clip`'s
+ * part active and `clip`'s meter, tempo map and bends for the document. Two
+ * clips of one part (a split or a copy in EDIT) give it once: `clip` itself
+ * for its own part, else the earliest on the timeline. A clip with no record
+ * (bounced before parts) opens alone as one part named after its track.
+ */
+export function clipPartsLoad(
+  clip: RollPartClip,
+  clips: readonly RollPartClip[],
+  tracks: readonly Pick<EditorTrack, 'id' | 'name' | 'color' | 'isPercussion'>[],
+): RollLoadArgs {
+  const base = clipRollLoad(clip);
+  const withParts = (parts: RollPartsLoad): RollLoadArgs => [base[0], base[1], base[2], base[3], base[4], base[5], base[6], base[7], parts];
+  const trackOf = (c: RollPartClip) => tracks.find((t) => t.id === c.trackId);
+  const ref = clip.sourceRollPart;
+  if (!ref) {
+    const id = `part-${clip.id}`;
+    const part = partOfClip(clip, trackOf(clip), base[1], id);
+    return withParts({ tracks: [part], activeTrackId: id, links: { [id]: clip.id } });
+  }
+  const byPart = new Map<string, RollPartClip>();
+  byPart.set(ref.id, clip);
+  const siblings = clips
+    .filter((c) => c.id !== clip.id && c.sourceRollPart?.doc === ref.doc)
+    .sort((a, b) => a.startSec - b.startSec);
+  for (const c of siblings) {
+    const id = (c.sourceRollPart as RollPartRef).id;
+    if (!byPart.has(id)) byPart.set(id, c);
+  }
+  const ordered = [...byPart.entries()].sort(([, a], [, b]) => (a.sourceRollPart as RollPartRef).order - (b.sourceRollPart as RollPartRef).order);
+  const links: Record<string, string> = {};
+  const parts = ordered.map(([id, c]) => {
+    links[id] = c.id;
+    return partOfClip(c, trackOf(c), c === clip ? base[1] : clipRollLoad(c)[1], id);
+  });
+  return withParts({ doc: ref.doc, tracks: parts, activeTrackId: ref.id, links });
 }

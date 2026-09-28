@@ -243,6 +243,9 @@ export const MidiImportPopover: React.FC<{
               </button>
             ))}
         </div>
+        <p className="px-1 text-[12px] font-semibold et-ink-3 leading-snug" data-import-parts-note="">
+          A file or score of several tracks opens as one part each, on its own instrument. One track goes into the part you are editing.
+        </p>
       </DockFlyout>
     </>
   );

@@ -25,6 +25,8 @@ import { beatToTime, type TempoEvent } from './tempoMap';
 /** What a step-grid render takes besides its notes: the voice, lane bends, and the roll's tempo map. */
 export interface StepRenderOptions {
   program?: number;
+  /** Bank select (MSB) sent before `program`: a roll part's Bank or a clip's instrumentBank. 0 or left out is the General MIDI set; a percussion render ignores it. */
+  bank?: number;
   percussion?: boolean;
   bends?: RollRenderBends;
   /**
@@ -68,6 +70,8 @@ export interface RenderOptions {
    *  soundfont even while the picker is on Basic or a synth voice, as live
    *  playback does. */
   program?: number;
+  /** Bank select (MSB) a soundfont render sends before `program`; 0 or left out is the General MIDI set. */
+  bank?: number;
   /** Pitch wheels by channel for a soundfont render (the built-in voices bend through each note's `bend`). */
   wheel?: SmfWheel[];
 }
@@ -215,6 +219,8 @@ export function stepRenderRequest(
     options: {
       minDurationSec: nominalSec,
       program: opts.percussion ? (opts.program ?? GM_STANDARD_KIT) : opts.program,
+      // A kit is chosen by its program on the drum channel, so a percussion render selects no bank.
+      ...(!opts.percussion && opts.bank ? { bank: opts.bank } : {}),
       ...(render.wheel.length ? { wheel: render.wheel } : {}),
     },
     nominalSec,

@@ -8,7 +8,10 @@ arrangements rendered as MusicXML:
   - ``simplified``      single-staff melody only, quantized
   - ``band-score``      one staff per source stem (percussion staff for drum
                         MIDIs, clef by register, redundant 'full' mix skipped),
-                        every staff on one beat grid
+                        every staff on one beat grid; a stem given an
+                        instrument from the orchestral registry
+                        (:mod:`..instruments`) is named, ordered, clefed and
+                        transposed as that instrument
 
 Pure music21; no new dependencies. Each builder returns a ``music21`` score
 that the engine writes to MusicXML, so the results render in the existing
@@ -21,7 +24,10 @@ map for all its staves, see :func:`_band_marks`). Each time signature sits on
 the bar line where it takes effect, and a source that opens with a pickup bar
 gives the arrangement the same pickup (:func:`_bar_like_source`). Each head
 keeps the velocity of the notes it stands for. An arrangement is at concert
-pitch.
+pitch, except a band-score staff given a transposing instrument: that part is
+marked as sounding pitch and carries the instrument, so music21's writer puts
+it at written pitch under its ``<transpose>``, as MusicXML stores a part for a
+transposing instrument.
 """
 
 from __future__ import annotations
@@ -78,12 +84,17 @@ def arrange(
     *,
     title: str = "",
     reference_bpm: Optional[float] = None,
+    instruments: Optional[list[Optional[str]]] = None,
 ) -> dict[str, Any]:
     """Build an arrangement of ``style`` from one or more source MIDIs.
 
     ``reference_bpm`` (the song's analysed tempo) is the beat grid a band score
     lays every staff out at; see :func:`_grid_bpm` for the tempo used without
     it. The single-source styles keep their source's own tempo.
+
+    ``instruments`` (band score only) holds, for each source in order, the id
+    of the registry instrument its staff is written for, or None to name and
+    clef the staff from its file. An unknown id is an error.
 
     Returns a result dict; on success it carries the music21 ``score`` for the
     caller to write. Never raises.
@@ -104,11 +115,19 @@ def arrange(
     for path in paths:
         if not path.is_file():
             return {"ok": False, "error": f"source not found: {path}"}
+    if instruments:
+        from ..instruments import by_id
+
+        unknown = [i for i in instruments if i and by_id(i) is None]
+        if unknown:
+            return {"ok": False, "error": f"unknown instrument(s): {unknown}"}
 
     extra_stats: dict[str, Any] = {}
     try:
         if style == "band-score":
-            score, extra_stats = _band_score(paths, title, reference_bpm)
+            score, extra_stats = _band_score(
+                paths, title, reference_bpm, instruments=instruments
+            )
         else:
             base = read_score(paths[0])
             # A part for a transposing instrument may hold written pitch; the
@@ -751,8 +770,67 @@ def _conform_midi(source: Path, bpm: float, target: Path) -> Path:
     return target
 
 
+def _staff_names(
+    staves: list[tuple[Path, str, bool]], records: list[Any]
+) -> list[tuple[str, str]]:
+    """``(name, abbreviation)`` for each staff: the registry's for a staff given
+    an instrument, numbered when two or more staves share it ("Horn in F 1",
+    "Horn in F 2"); the file's otherwise."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record is not None:
+            counts[record.id] = counts.get(record.id, 0) + 1
+    seen: dict[str, int] = {}
+    out: list[tuple[str, str]] = []
+    for (_path, part_name, _drum), record in zip(staves, records):
+        if record is None:
+            out.append((part_name, part_name[:6]))
+            continue
+        if counts[record.id] == 1:
+            out.append((record.name, record.abbreviation))
+            continue
+        seen[record.id] = seen.get(record.id, 0) + 1
+        n = seen[record.id]
+        out.append((f"{record.name} {n}", f"{record.abbreviation} {n}"))
+    return out
+
+
+def _family_groups(score: Any, parts: list[Any], records: list[Any]) -> int:
+    """Bracket each run of two or more adjacent staves of one registry family,
+    as a full score groups its sections. Returns the number of groups."""
+    from music21 import layout
+
+    from ..instruments import family_label
+
+    groups = 0
+    start = 0
+    while start < len(parts):
+        family = records[start].family if records[start] is not None else None
+        end = start + 1
+        while (
+            family is not None
+            and end < len(parts)
+            and records[end] is not None
+            and records[end].family == family
+        ):
+            end += 1
+        if family is not None and end - start >= 2:
+            group = layout.StaffGroup(
+                parts[start:end], name=family_label(family), symbol="bracket"
+            )
+            group.barTogether = True
+            score.insert(0, group)
+            groups += 1
+        start = end
+    return groups
+
+
 def _band_score(
-    paths: list[Path], title: str, reference_bpm: Optional[float] = None
+    paths: list[Path],
+    title: str,
+    reference_bpm: Optional[float] = None,
+    *,
+    instruments: Optional[list[Optional[str]]] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """One staff per stem, every staff on one beat grid.
 
@@ -774,11 +852,32 @@ def _band_score(
     percussion staff, else on the top staff. Every other staff carries the
     mark unprinted. Every staff is barred and keyed by :func:`_band_marks`.
 
+    ``instruments[i]`` names the registry instrument source ``i`` is written
+    for (see :func:`arrange`). A staff given a pitched instrument, or a
+    percussion instrument over kit data, is never skipped, because the reader
+    asked for it; a percussion instrument given to a pitched transcription
+    still meets the skip rules above. The staff is named after the instrument,
+    takes the one of the instrument's clefs that shows the most of its notes,
+    folds outliers into that clef's window cut to the instrument's practical
+    range, and carries the instrument, so a transposing part is written at
+    written pitch.
+    Staves given instruments go first, in score order; the rest follow in file
+    order. Each run of two or more staves of one family is bracketed.
+
     Returns ``(score, stats)`` with ``stats = {skipped, skip_reasons, clefs,
-    folded_notes}``.
+    folded_notes}``, plus ``instruments`` (staff name to registry id) and
+    ``groups`` (brackets written) when any staff was given an instrument.
     """
     from music21 import chord, clef, meter, stream
 
+    from ..instruments import (
+        best_clef,
+        by_id,
+        music21_clef,
+        sounding_window,
+        to_music21,
+    )
+    from ..instruments import instruments as registry
     from ..midi_read import read_score
     from ..tempo_marks import metronome_mark
     from .percussion import build_percussion_part, is_drum_midi
@@ -790,10 +889,21 @@ def _band_score(
     folded_total = 0
     multi = len(paths) > 1
 
+    picks = list(instruments or [])
     staves: list[tuple[Path, str, bool]] = []
+    records: list[Any] = []
     for index, path in enumerate(paths):
         part_name = path.stem[:24] or f"Part {index + 1}"
         drum_kit = is_drum_midi(path)
+        record = by_id(picks[index]) if index < len(picks) and picks[index] else None
+        # A pitched instrument keeps the staff whatever the stem is. A
+        # percussion instrument needs kit data: given to a pitched
+        # transcription (a drum stem basic-pitch read as notes) it cannot be
+        # written, so the skip rules below still apply to it.
+        if record is not None and (drum_kit or not record.percussion):
+            staves.append((path, part_name, drum_kit))
+            records.append(record)
+            continue
         if multi and not drum_kit and _is_mix_stem(path):
             skipped.append(path.stem)
             skip_reasons[path.stem] = "whole-mix transcription duplicates the stems"
@@ -805,12 +915,27 @@ def _band_score(
             )
             continue
         staves.append((path, part_name, drum_kit))
+        records.append(record)
+
+    given = any(record is not None for record in records)
+    if given:
+        after = len(registry())
+        order = sorted(
+            range(len(staves)),
+            key=lambda i: records[i].order if records[i] is not None else after + i,
+        )
+        staves = [staves[i] for i in order]
+        records = [records[i] for i in order]
+    names = _staff_names(staves, records)
 
     bpm = _grid_bpm(staves, reference_bpm)
     meters, keys = _band_marks(staves, bpm)
     shows_tempo = next((i for i, staff in enumerate(staves) if staff[2]), 0)
+    parts: list[Any] = []
     with tempfile.TemporaryDirectory(prefix="band_grid_") as scratch:
-        for index, (path, part_name, drum_kit) in enumerate(staves):
+        for index, (path, _file_name, drum_kit) in enumerate(staves):
+            record = records[index]
+            part_name, abbreviation = names[index]
             if drum_kit:
                 part = build_percussion_part(
                     path,
@@ -819,8 +944,10 @@ def _band_score(
                     time_signatures=meters,
                     shows_tempo=index == shows_tempo,
                 )
+                part.partAbbreviation = abbreviation
                 clefs[part_name] = "percussion"
                 score.insert(0, part)
+                parts.append(part)
                 continue
 
             staff_midi = _conform_midi(path, bpm, Path(scratch) / f"{index}.mid")
@@ -834,10 +961,16 @@ def _band_score(
             sonorities = list(
                 source.chordify().flatten().getElementsByClass(chord.Chord)
             )
-            clef_sign = _clef_for_pitches(
-                [int(p.midi) for sonority in sonorities for p in sonority.pitches]
-            )
-            window = _CLEF_WINDOWS[clef_sign]
+            pitches = [int(p.midi) for sonority in sonorities for p in sonority.pitches]
+            # An unpitched percussion instrument given to a pitched stem names
+            # the staff; its clef and window come from the notes as before.
+            pitched = record if record is not None and not record.percussion else None
+            if pitched is not None:
+                clef_id = best_clef(pitched, pitches)
+                window = sounding_window(pitched, clef_id)
+            else:
+                clef_id = _clef_for_pitches(pitches)
+                window = _CLEF_WINDOWS[clef_id]
             # Rebuild each stem into a fresh part (as the other builders do) so
             # the MusicXML writer bars it with a consistent time signature.
             # Inserting chordify()'s pre-measured stream directly produced scores
@@ -845,8 +978,16 @@ def _band_score(
             # (reading 'denominator')").
             part = stream.Part()
             part.partName = part_name
-            part.partAbbreviation = part_name[:6]
-            part.insert(0, clef.BassClef() if clef_sign == "F" else clef.TrebleClef())
+            part.partAbbreviation = abbreviation
+            if pitched is not None:
+                # The notes are the pitches that sound. With the instrument on
+                # a part marked as sounding, music21's writer moves a
+                # transposing part to the written pitch its <transpose> states.
+                part.atSoundingPitch = True
+                part.insert(0, to_music21(pitched))
+                part.insert(0, music21_clef(clef_id))
+            else:
+                part.insert(0, clef.BassClef() if clef_id == "F" else clef.TrebleClef())
             for offset, ratio in meters:
                 part.insert(offset, meter.TimeSignature(ratio))
             for offset, tonality in keys:
@@ -860,8 +1001,9 @@ def _band_score(
                 folded_total += folded
                 part.insert(sonority.offset, element)
             _mend_ties(part)
-            clefs[part_name] = clef_sign
+            clefs[part_name] = clef_id
             score.insert(0, part)
+            parts.append(part)
 
     stats: dict[str, Any] = {
         "skipped": skipped,
@@ -869,4 +1011,11 @@ def _band_score(
         "clefs": clefs,
         "folded_notes": folded_total,
     }
+    if given:
+        stats["instruments"] = {
+            name: record.id
+            for (name, _abbreviation), record in zip(names, records)
+            if record is not None
+        }
+        stats["groups"] = _family_groups(score, parts, records)
     return score, stats

@@ -92,7 +92,7 @@ const root = createRoot(host);
 await step(() => {
   roll().setEditingClip(null);
   roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 0 });
-  roll().importNotes([{ id: 'a', note: 60, step: 0, length: 4, velocity: 90 }], 120, undefined, [], undefined, []);
+  roll().importNotes([{ id: 'a', note: 60, step: 0, length: 4, velocity: 90 }], 120, undefined, [], undefined, { markers: [] });
   usePianoRollStore.setState({ totalSteps: 128 });
 });
 await step(() => root.render(<MidiPanel />));

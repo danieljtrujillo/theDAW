@@ -32,6 +32,7 @@ import {
   type RollMarkerKind,
 } from '../../lib/rollMarkers';
 import { logInfo } from '../../state/logStore';
+import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
 import { DockFlyout, FLYOUT_CARD, FLYOUT_LEGEND, MINI_ICON_KEY, StripKey, keyTone } from './midiDockKit';
 
 /** The marker row's height, under the ruler. */
@@ -156,7 +157,8 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
   const [renaming, setRenaming] = useState<string | null>(null);
   const helpId = useId();
   const lines = useMemo(() => barLines(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
-  const pressRef = useRef<{ id: string; kind: RollMarkerKind; startX: number; startStep: number; dragging: boolean } | null>(null);
+  // `zoom` is the shell's CSS zoom at the press: a client-px travel over it is row px.
+  const pressRef = useRef<{ id: string; kind: RollMarkerKind; startX: number; zoom: number; startStep: number; dragging: boolean } | null>(null);
   const suppressClickRef = useRef(false);
   const width = totalSteps * stepPx;
   const shown = markers.filter((m) => markerStep(m) < totalSteps);
@@ -174,7 +176,8 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
   // In a bar that already starts with a section, the double-click renames that section (addMarker returns its id).
   const onRowDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if ((e.target as Element).closest('[data-roll-marker], input')) return;
-    const step = (e.clientX - e.currentTarget.getBoundingClientRect().left) / stepPx;
+    // In the row's own px: the shell's CSS zoom scales the client point (lib/canvasScale).
+    const step = clientToLocal(e.currentTarget, e.clientX, e.clientY).x / stepPx;
     const at = markerBarStart(meterMap, Math.min(step, Math.max(0, totalSteps - 1)), pickupSteps);
     const id = usePianoRollStore.getState().addMarker({ step: at, kind: 'section' });
     setRenaming(id);
@@ -183,14 +186,14 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
   const onFlagPointerDown = (e: React.PointerEvent<HTMLButtonElement>, m: RollMarker) => {
     if (e.button !== 0) return;
     e.stopPropagation();
-    pressRef.current = { id: m.id, kind: m.kind, startX: e.clientX, startStep: markerStep(m), dragging: false };
+    pressRef.current = { id: m.id, kind: m.kind, startX: e.clientX, zoom: effectiveZoom(e.currentTarget), startStep: markerStep(m), dragging: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onFlagPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     const press = pressRef.current;
     if (!press) return;
     e.stopPropagation();
-    const dx = e.clientX - press.startX;
+    const dx = (e.clientX - press.startX) / press.zoom;
     if (!press.dragging) {
       if (Math.abs(dx) < FLAG_DRAG_MIN_PX) return;
       press.dragging = true;

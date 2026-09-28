@@ -60,7 +60,8 @@ import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { isAudioEntry } from '../../state/libraryEntry';
 import { logInfo, logWarn } from '../../state/logStore';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { activeTrackOf, rollTracksOf, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { partComposeInstrument } from '../../lib/rollTracks';
 import { artifactTake } from '../../lib/takeNotes';
 import { importTake, placeTake } from '../../lib/rollTakes';
 import { usePlayerStore } from '../../state/playerStore';
@@ -245,6 +246,12 @@ export const MidiPanel: React.FC = () => {
   const rollBpm = usePianoRollStore((s) => s.bpm);
   const rollMeterMap = usePianoRollStore((s) => s.meterMap);
   const rollPickup = usePianoRollStore((s) => s.pickupSteps);
+  // The part AI COMPOSE writes into, and the instrument it can write for.
+  const activePart = usePianoRollStore((s) => activeTrackOf(s));
+  const composePart = React.useMemo(
+    () => ({ name: activePart.name, instrument: partComposeInstrument(activePart) }),
+    [activePart],
+  );
   // The device comes from the global I/O menu (Settings -> Inputs & outputs),
   // with a per-surface override in the REC key's input menu. It used to be a
   // useState seeded from localStorage with NO try/catch — which threw during
@@ -562,7 +569,10 @@ export const MidiPanel: React.FC = () => {
   }, [assetId, loadArtifact]);
 
   const exportMidi = useCallback(async () => {
-    const { notes, bpm, lanes, totalSteps, meterMap, pickupSteps } = usePianoRollStore.getState();
+    const roll = usePianoRollStore.getState();
+    const { bpm, lanes, totalSteps, meterMap, pickupSteps } = roll;
+    // Every part's notes: this writer has one channel, so the parts share it.
+    const notes = rollTracksOf(roll).flatMap((t) => t.notes);
     if (!notes.length) {
       setStatus('no notes to export');
       return;
@@ -958,6 +968,7 @@ export const MidiPanel: React.FC = () => {
                 currentBpm={rollBpm}
                 meterMap={rollMeterMap}
                 pickupSteps={rollPickup}
+                part={composePart}
                 // The part comes back in the meter it was asked for, whatever the roll holds by then.
                 onGenerated={(result) =>
                   usePianoRollStore.getState().importNotes(result.notes, result.bpm, { meterMap: result.meterMap, pickupSteps: result.pickupSteps })

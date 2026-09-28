@@ -11,10 +11,15 @@
  * is gone, keeps the choice as its own voice (pianoRollStore voiceProgram), one
  * roll undo step, and the project turns dirty since a .tasmo saves it.
  * `null` is "follow the instrument picker" either way.
+ *
+ * A roll of several parts: the choice lands on the ACTIVE part. When that part
+ * has a program of its own (the parts column's Sound), the choice replaces it,
+ * one roll undo step; otherwise it goes where it always went, as above.
  */
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore';
-import { usePianoRollStore } from '../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../state/pianoRollStore';
 import { isPercussionTrack } from './clipProgram';
+import { isPercussionPart } from './rollTracks';
 
 /** The EDIT clip the roll is linked to and its track, or null when the roll is unlinked or its clip is gone. */
 export function linkedRollTarget(
@@ -42,7 +47,10 @@ export function rollVoiceChoice(
   clips: readonly AudioClip[],
   tracks: readonly EditorTrack[],
   rollProgram: number | null,
+  part: { program: number | null; channel: number | null } | null = null,
 ): RollVoiceChoice {
+  // The active part's own program comes first: it is what the part plays.
+  if (part && part.program !== null) return { track: null, drums: isPercussionPart(part), program: part.program };
   const linked = linkedRollTarget(editingClipId, clips, tracks);
   if (!linked) return { track: null, drums: false, program: rollProgram };
   return {
@@ -54,19 +62,29 @@ export function rollVoiceChoice(
 
 /**
  * Put the roll on `program` (null: the instrument picker). Returns where it
- * landed: `track` for a linked roll, `roll` for an unlinked one.
+ * landed: `part` for an active part with a program of its own, `track` for a
+ * linked roll, `roll` for an unlinked one.
  *
- * `drums` says what the program is on a linked roll: true for a drum kit,
- * false for a melodic instrument. A choice of the other kind than the linked
+ * `drums` says what the program is: true for a drum kit, false for a melodic
+ * instrument. On a linked roll a choice of the other kind than the linked
  * track flips its drum flag (editorStore setTrackVoice, with a LOG line), so a
- * melodic instrument chosen for a drum track turns drums off. Left out, the
- * program keeps the track's kind, as before. An unlinked roll has no drum
- * flag and ignores it.
+ * melodic instrument chosen for a drum track turns drums off; on an active
+ * part with a program of its own it moves the part onto the percussion channel
+ * or off it (pianoRollStore setTrackProgram). Left out, the program keeps the
+ * track's or the part's kind, as before. An unlinked roll has no drum flag and
+ * ignores it.
  */
-export function chooseRollVoice(program: number | null, drums?: boolean): 'track' | 'roll' {
+export function chooseRollVoice(program: number | null, drums?: boolean): 'part' | 'track' | 'roll' {
   const value = program === null || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
+  const roll = usePianoRollStore.getState();
+  const part = activeTrackOf(roll);
+  if (part.program !== null) {
+    // A kit goes on the percussion channel and a melodic instrument off it; left out, the part keeps its channel.
+    roll.setTrackProgram(part.id, value ?? null, drums);
+    return 'part';
+  }
   const editor = useEditorStore.getState();
-  const linked = linkedRollTarget(usePianoRollStore.getState().editingClipId, editor.clips, editor.tracks);
+  const linked = linkedRollTarget(roll.editingClipId, editor.clips, editor.tracks);
   if (!linked) {
     usePianoRollStore.getState().setVoiceProgram(value ?? null);
     return 'roll';
@@ -75,8 +93,9 @@ export function chooseRollVoice(program: number | null, drums?: boolean): 'track
   editor.undoGroup(() => {
     editor.setTrackVoice(linked.track.id, value, kind);
     // A flip clears the clip's own program; one of the same kind is set with the track's.
+    // The bank the old program was chosen in goes with it (lib/clipProgram clipBank).
     const clip = useEditorStore.getState().clips.find((c) => c.id === linked.clip.id);
-    if (clip && clip.instrumentProgram !== undefined) editor.updateClip(clip.id, { instrumentProgram: value });
+    if (clip && clip.instrumentProgram !== undefined) editor.updateClip(clip.id, { instrumentProgram: value, instrumentBank: undefined });
   });
   return 'track';
 }

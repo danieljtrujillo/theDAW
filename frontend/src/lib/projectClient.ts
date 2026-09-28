@@ -9,8 +9,9 @@ import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type 
 import { normalizeMeterMap, roundUpToBar, sanitizeMeter, sanitizeTuplet, type MeterSegment, type PolyLane } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
-import { playedRollNotes } from './rollClip';
+import { cleanRollPartRef, playedRollNotes } from './rollClip';
 import { rollMarkerToTasmo, tasmoToRollMarkers, type TasmoRollMarker } from './rollMarkers';
+import type { RollPartRef } from '../state/pianoRollStore';
 import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
@@ -316,6 +317,8 @@ export interface TasmoClipInput {
   tempo_map?: TasmoTempoEvent[] | null;
   /** Piano-roll clips: the ruler's named markers (sections and movements), written only when the clip has some. */
   roll_markers?: TasmoRollMarker[] | null;
+  /** Piano-roll clips: the roll part the clip holds (see rollPartToTasmo). */
+  roll_part?: TasmoRollPart | null;
   /** Alternate recordings of this clip, one file entry each, and the comp
    *  across them. `active_take_index` names the take the clip's OWN
    *  `audio_file` / `offset_into_source` mirror, so a reader that ignores all
@@ -337,6 +340,10 @@ export interface TasmoClipInput {
    *  could not play live (AudioClip renderAuto). Optional for the same reason. */
   render_stale?: boolean;
   render_auto?: boolean;
+  /** MIDI clips: the bank select (1-127) the clip's own program is chosen in,
+   *  and the bank its embedded audio was rendered in; null for bank 0. */
+  instrument_bank?: number | null;
+  rendered_bank?: number | null;
   source_bpm?: number | null;
   /** The tempo the audio plays at after a beat match or a stretch, and the
    *  library entry the clip came from. Optional for the same reason. */
@@ -463,6 +470,10 @@ export interface TasmoLoadedClip {
    *  files written before they were saved. */
   render_stale?: boolean;
   render_auto?: boolean;
+  /** The bank the clip's own program is chosen in and the bank its audio was
+   *  rendered in; null or absent for bank 0 and in files written before them. */
+  instrument_bank?: number | null;
+  rendered_bank?: number | null;
   source_bpm?: number | null;
   /** An audio clip's tempo after a beat match or a stretch, and the library
    *  entry it came from; null or absent in files written before they were
@@ -503,6 +514,8 @@ export interface TasmoLoadedClip {
   tempo_map?: TasmoTempoEvent[] | null;
   /** The ruler's markers; absent in .tasmo files written before the roll had them, and on a clip with none. */
   roll_markers?: TasmoRollMarker[] | null;
+  /** The roll part the clip holds; absent in .tasmo files written before the roll had parts. */
+  roll_part?: TasmoRollPart | null;
   /** Alternate recordings, the comp across them, and which take the clip's own
    *  fields mirror; all three absent in .tasmo files written before takes
    *  existed, which is why the loader treats their absence as "not comped"
@@ -590,6 +603,48 @@ export interface RecentItem {
   path: string;
   name: string;
 }
+
+/**
+ * A roll part as a .tasmo clip saves it (AudioClip `sourceRollPart`): the roll
+ * document shared by the clips of every part bounced from one roll, the part's
+ * id and place, and its settings. `program` and `channel` are null when the
+ * part follows the roll's voice or takes the next free channel.
+ */
+export interface TasmoRollPart {
+  doc: string;
+  id: string;
+  order: number;
+  name: string;
+  program: number | null;
+  bank: number;
+  channel: number | null;
+  color: string;
+  mute: boolean;
+  solo: boolean;
+  instrument_id?: string | null;
+}
+
+/** A clip's part record in the file shape. */
+export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
+  doc: ref.doc,
+  id: ref.id,
+  order: ref.order,
+  name: ref.name,
+  program: ref.program,
+  bank: ref.bank,
+  channel: ref.channel,
+  color: ref.color,
+  mute: ref.mute,
+  solo: ref.solo,
+  instrument_id: ref.instrumentId ?? null,
+});
+
+/** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
+export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId }, fallback);
+};
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---
 type ClipMeterFields = Pick<
@@ -912,6 +967,10 @@ export const clipNotesToTasmo = (
 /** A GM program from a file: a whole number 0-127, else undefined. */
 export const gmProgramOf = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 127 ? v : undefined;
+
+/** A bank select from a file or a clip: a whole number 1-127, else 0 (the General MIDI set). */
+export const bankSelectOf = (v: unknown): number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 127 ? v : 0;
 
 /** A clip's own tempo from a file: a positive finite `source_bpm`, else
  *  undefined (a file written before source_bpm existed, or a clip with none). */

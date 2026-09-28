@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   ed().loadProject({ tracks: [], clips: [] });
   roll().setEditingClip(null);
   roll().applyMeter({ meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], pickupSteps: 2 });
-  roll().importNotes(phrase, 96, undefined, [], undefined, []);
+  roll().importNotes(phrase, 96, undefined, [], undefined, { markers: [] });
   useVirtuosoStore.setState({
     style: 'romantic',
     songMode: false,
@@ -306,7 +306,7 @@ async function main(): Promise<void> {
     assert.ok(had > 0);
     roll().importNotes(roll().notes, roll().bpm);
     assert.equal(roll().markers.length, had, 'AI COMPOSE, the arpeggiator and takes keep the markers');
-    roll().importNotes(phrase, 120, undefined, [], undefined, []);
+    roll().importNotes(phrase, 120, undefined, [], undefined, { markers: [] });
     assert.deepEqual(roll().markers, [], 'a MIDI or sheet file is a new document');
     roll().undo();
     assert.equal(roll().markers.length, had);

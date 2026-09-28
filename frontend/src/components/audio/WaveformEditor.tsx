@@ -62,12 +62,14 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipNoteSpan, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
+import { MidiClipNotes } from './MidiClipNotes';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
+  clipBank,
   clipVoice,
   drumKitName,
   isPercussionTrack,
@@ -1365,59 +1367,6 @@ const pushSeparator = (items: ContextMenuItem[]): void => {
   items.push({ type: 'separator' });
 };
 
-const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean }> = ({ clip, zoom, selected }) => {
-  const notes = clip.sourcePianoRoll;
-  if (!notes || notes.length === 0) return null;
-  // The clip's own clock: one tempo, or its tempo map, so a note inside a
-  // ritardando is drawn where it plays.
-  const clock = stepClock(clip.sourceBpm ?? 120, clip.sourceTempoMap);
-  const offset = clip.offsetIntoSource ?? 0;
-  const clipDur = clip.durationSec;
-
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const n of notes) {
-    if (n.note < lo) lo = n.note;
-    if (n.note > hi) hi = n.note;
-  }
-  if (!Number.isFinite(lo)) return null;
-  // One row per semitone in the used range, with a little headroom top/bottom.
-  lo -= 1;
-  hi += 1;
-  const rows = Math.max(1, hi - lo);
-  const rowPct = 100 / (rows + 1);
-
-  return (
-    <div className="absolute inset-x-0 bottom-0 top-3.5 overflow-hidden pointer-events-none">
-      {notes.map((n) => {
-        const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
-        if (relEnd <= 0 || relStart >= clipDur) return null; // outside the visible window
-        const vStart = Math.max(0, relStart);
-        const vEnd = Math.min(clipDur, relEnd);
-        const x = vStart * zoom;
-        const w = Math.max(1.5, (vEnd - vStart) * zoom);
-        const topPct = (hi - n.note) * rowPct;
-        const hPct = Math.max(rowPct - 0.5, 2);
-        const vel = Math.max(1, Math.min(127, n.velocity));
-        return (
-          <div
-            key={n.id}
-            className="absolute rounded-[1px]"
-            style={{
-              left: x,
-              width: w,
-              top: `${topPct}%`,
-              height: `${hPct}%`,
-              backgroundColor: clip.color,
-              opacity: (selected ? 0.6 : 0.42) + (vel / 127) * 0.4,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-};
-
 /**
  * Floating popover portaled to document.body, mirroring ContextMenu's pattern:
  * the Shell scales the DAW with CSS `zoom` (`.dense-layout`), so a fixed panel
@@ -1579,7 +1528,7 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
  * only, so its MIDI notes play that voice live regardless of the track default.
  * On a drum track the list is the drum kits.
  */
-const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
+export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
   const updateClip = useEditorStore((s) => s.updateClip);
   const track = useEditorStore((s) => s.tracks.find((t) => t.id === clip.trackId));
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
@@ -1591,13 +1540,15 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
     ? 'Track default (Basic)'
     : `Track default (${drums ? `${drumKitName(effective)} kit` : gmShortName(effective)})`;
 
+  // A bank belongs to the program it was chosen with (a roll part's Bank, lib/clipProgram clipBank), so a new pick drops it.
+  const bank = clipBank(clip, track);
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     if (v === 'default') {
-      updateClip(clip.id, { instrumentProgram: undefined });
+      updateClip(clip.id, { instrumentProgram: undefined, instrumentBank: undefined });
       return;
     }
-    updateClip(clip.id, { instrumentProgram: Number(v) });
+    updateClip(clip.id, { instrumentProgram: Number(v), instrumentBank: undefined });
     void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
 
@@ -1622,6 +1573,15 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
           <option value={clip.instrumentProgram}>{`${drumKitName(clip.instrumentProgram)} kit`}</option>
         )}
       </select>
+      {bank > 0 && (
+        <span
+          data-clip-bank={bank}
+          title="Bank select sent before the program: the bank the piano roll part chose. Picking another sound here drops it."
+          className="shrink-0 text-xs font-bold text-zinc-300 tabular-nums"
+        >
+          {`Bank ${bank}`}
+        </span>
+      )}
     </div>
   );
 };
@@ -5547,11 +5507,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     // were all deleted is still a roll, and opening it is how you put notes back.
     if (!isMidiClip(clip)) return;
     // The roll's own notes with their lanes, meter map and pickup; a clip bounced
-    // before the roll had a meter opens as 4/4 on a whole number of bars.
-    const args = clipRollLoad(clip);
+    // before the roll had a meter opens as 4/4 on a whole number of bars. The
+    // clips of its other roll parts open with it, one part each (lib/rollClip
+    // clipPartsLoad); a clip bounced before parts opens as one part.
+    const { clips, tracks } = useEditorStore.getState();
+    const args = clipPartsLoad(clip, clips, tracks);
     usePianoRollStore.getState().loadFromClip(...args);
     useBottomPanelStore.getState().showTab('midi');
-    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in MIDI (${args[1].length} notes)`);
+    const partCount = args[8]?.tracks.length ?? 1;
+    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in MIDI (${args[1].length} notes${partCount > 1 ? `, ${partCount} parts` : ''})`);
   }, []);
 
   /** Open the AUDIO EDIT drawer on a clip and bring its tab up (F19). */
@@ -7976,7 +7940,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       peaks. A muted clip's body is dimmed (the red M is the flag). */}
                   {isMidi ? (
                     <div className={clip.muted ? 'opacity-30' : ''}>
-                      <MidiClipNotes clip={clip} zoom={zoom} selected={selected} />
+                      <MidiClipNotes
+                        clip={clip}
+                        zoom={zoom}
+                        selected={selected}
+                        height={Math.max(8, height - 14)}
+                        // The part of the clip in the timeline's view (clip px); all of it before the first measurement.
+                        visibleFromPx={viewport.width > 0 ? viewport.scrollLeft - left : 0}
+                        visibleToPx={viewport.width > 0 ? viewport.scrollLeft + viewport.width - left : width}
+                        // The scroller clips the bodies, so its view (and margin) decides which tracks draw their notes.
+                        scrollRoot={scrollerEl}
+                      />
                     </div>
                   ) : (
                     <div className={`absolute inset-x-0 bottom-0 top-3.5 ${clip.muted ? 'opacity-30' : ''}`}>

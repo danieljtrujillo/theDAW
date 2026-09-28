@@ -8,10 +8,12 @@
  *
  * importTake keeps the take's own tempo, fraction and all (a detected 97.3
  * stays 97.3), so each note plays at the second it was heard at and a take
- * quantised at that tempo keeps every note on its grid line. placeTake keeps
- * the roll's tempo and converts at it. Neither quantises: APPLY does.
+ * quantised at that tempo keeps every note on its grid line. In a roll whose
+ * other parts hold notes, those parts play by the roll's tempo map, so the
+ * take converts through that map instead and the roll keeps it. placeTake
+ * keeps the roll's tempo and converts at it. Neither quantises: APPLY does.
  */
-import { importedRollBpm, usePianoRollStore } from '../state/pianoRollStore';
+import { importedRollBpm, otherPartsHoldNotes, usePianoRollStore } from '../state/pianoRollStore';
 import type { LaneBend } from './pitchBend';
 import { takeToRoll, type TakeNote } from './takeNotes';
 import { stepClock } from './rollTempo';
@@ -24,13 +26,24 @@ export const takeRollBpm = (bpm: number): number =>
   importedRollBpm(Number.isFinite(bpm) && bpm > 0 ? bpm : usePianoRollStore.getState().bpm);
 
 /**
- * Replace the roll's notes with `take` (importNotes fits the grid to it) at
- * `bpm`, the take converted to ticks at the tempo the roll then plays. `bends`
- * go to importNotes as they are. Returns that tempo.
+ * Replace the notes of the part being edited with `take` (importNotes fits
+ * the grid to it) at `bpm`, the take converted to ticks at the tempo the roll
+ * then plays. `bends` go to importNotes as they are. Returns that tempo.
+ *
+ * While other parts hold notes the roll keeps its tempo map, meter and bends
+ * (importNotes), so the take converts through that map at the roll's own
+ * tempo, each note at the second it was heard at, and the roll's starting
+ * tempo is what comes back.
  */
 export function importTake(take: readonly TakeNote[], bpm: number, idPrefix: string, bends?: readonly LaneBend[]): number {
+  const roll = usePianoRollStore.getState();
+  if (otherPartsHoldNotes(roll)) {
+    const clock = stepClock(roll.bpm, roll.tempoMap);
+    roll.importNotes(takeToRoll(take, { bpm: roll.bpm, idPrefix, tempoMap: clock.map }).rollNotes, undefined, undefined, bends);
+    return roll.bpm;
+  }
   const rollBpm = takeRollBpm(bpm);
-  usePianoRollStore.getState().importNotes(takeToRoll(take, { bpm: rollBpm, idPrefix }).rollNotes, rollBpm, undefined, bends);
+  roll.importNotes(takeToRoll(take, { bpm: rollBpm, idPrefix }).rollNotes, rollBpm, undefined, bends);
   return rollBpm;
 }
 

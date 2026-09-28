@@ -297,10 +297,15 @@ async function pump(): Promise<void> {
 }
 
 /** True when `clip` still has the notes (`sig`) and voice a render was made from. */
-const stillMatches = (clip: AudioClip | undefined, sig: string, voice: { program: number | undefined; percussion: boolean }, d: MidiRenderDeps): clip is AudioClip => {
+const stillMatches = (
+  clip: AudioClip | undefined,
+  sig: string,
+  voice: { program: number | undefined; percussion: boolean; bank?: number },
+  d: MidiRenderDeps,
+): clip is AudioClip => {
   if (!clip || midiRenderSig(clip) !== sig) return false;
   const now = clipVoice(clip, trackOf(clip), d.global());
-  return now.program === voice.program && now.percussion === voice.percussion;
+  return now.program === voice.program && now.percussion === voice.percussion && (now.bank ?? 0) === (voice.bank ?? 0);
 };
 
 /** True when the configured live plan plays `clipId` live when it is heard. */

@@ -297,8 +297,9 @@ export type StepNoteRenderer = (
   bpm: number,
   totalSteps: number,
   /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`.
-   *  `bends`: each bending lane's curve (lib/pitchBend rollRenderBends), the notes then carrying their lanes. */
-  opts?: { program?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[]; bends?: RollRenderBends },
+   *  `bends`: each bending lane's curve (lib/pitchBend rollRenderBends), the notes then carrying their lanes.
+   *  `bank`: the bank select sent before the program (lib/clipProgram clipBank). */
+  opts?: { program?: number; bank?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[]; bends?: RollRenderBends },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -315,6 +316,8 @@ export const defaultStepNoteRenderer: StepNoteRenderer = async (notes, bpm, tota
 export interface MidiRenderOptions {
   /** Overrides the clip's own `instrumentProgram`. */
   program?: number;
+  /** The bank select sent before the program (lib/clipProgram clipBank); left out or 0 is the General MIDI set. */
+  bank?: number;
   /** Render on the General MIDI drum channel, where the program is the kit (a percussion track's clip). */
   percussion?: boolean;
   /** Tempo to use when the clip has no `sourceBpm` (e.g. the editor's). */
@@ -374,6 +377,7 @@ export async function bounceMidiClip(
   const input = renderInputOf(clip, notes);
   return render(input.notes, bpm, input.steps, {
     program: opts.program ?? clip.instrumentProgram,
+    ...(opts.bank ? { bank: opts.bank } : {}),
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
@@ -410,6 +414,7 @@ export async function stretchMidiClip(
   // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo.
   return render(input.notes, bpm, input.steps, {
     program: opts.program ?? clip.instrumentProgram,
+    ...(opts.bank ? { bank: opts.bank } : {}),
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),

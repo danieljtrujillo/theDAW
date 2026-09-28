@@ -101,4 +101,21 @@ for (const bpm of [90, 97.3, 120]) {
   assert.deepEqual(file.timeSignatures?.map((s) => [s.tick, s.num, s.den, (s.groups ?? []).join('+')]), [[0, 7, 8, '3+2+2']]);
 }
 
+// A bank past 0 is selected (CC 0) just before the program change on every
+// channel the file uses, so the render plays that bank's preset; bank 0 writes
+// the bytes it always wrote.
+{
+  const notes = [
+    { midi: 60, startSec: 0, durationSec: 0.5, velocity: 100 },
+    { midi: 64, startSec: 0.5, durationSec: 0.5, velocity: 90, channel: 3 },
+  ];
+  const plain = notesToSmf(notes, 60, 0, [], BPM);
+  assert.deepEqual(notesToSmf(notes, 60, 0, [], BPM, [], { bank: 0 }), plain, 'bank 0 changes no byte');
+  const horn = notesToSmf(notes, 60, 0, [], BPM, [], { bank: 1 });
+  const hex = Buffer.from(horn).toString('hex');
+  assert.ok(hex.includes('00b0000100b3000100c03c00c33c'), `bank select then program on channels 1 and 4 (${hex})`);
+  const parsed = parseMidi(horn);
+  assert.deepEqual(parsed.tracks[0].programs, [{ tick: 0, channel: 0, program: 60, bank: 1 }, { tick: 0, channel: 3, program: 60, bank: 1 }], 'a reader sees the bank with each program');
+}
+
 console.log('midiWrite: ok');

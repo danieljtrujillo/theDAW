@@ -4,6 +4,7 @@ import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
   DEFAULT_BEND_RANGE,
   MAX_BENT_LANES,
+  MAX_BEND_STEP,
   bentLanes,
   capBentLanes,
   clampBendRange,
@@ -32,6 +33,24 @@ import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
 import { sanitizeFermata, sanitizeRollTempoMap, startTempoOf, tickBeat } from '../lib/rollTempo';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
+// lib/rollTracks imports only the RollTrack and PianoNote TYPES back from here,
+// erased at compile, so this too is a one-way runtime dependency.
+import {
+  MAX_ROLL_PARTS,
+  PERCUSSION_PART_CHANNEL,
+  allPartNotes,
+  cleanPartBank,
+  cleanPartChannel,
+  cleanPartColor,
+  cleanPartName,
+  cleanPartProgram,
+  isDefaultPartName,
+  makeRollTrack,
+  nextPartColor,
+  nextPartName,
+  sanitizeRollTracks,
+} from '../lib/rollTracks';
+import { orchestraInstrument } from '../lib/orchestra';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -85,6 +104,96 @@ export interface PianoNote {
   channel?: number;
   /** Per-note expression; absent when the note carries none. */
   expr?: NoteExpression;
+}
+
+/**
+ * A part of the roll: one instrument's line in a document that can hold a
+ * whole orchestra (lib/rollTracks has the rules). The tempo map, the meter
+ * map, the lanes and the bends belong to the document, and every part reads
+ * them.
+ *
+ * The ACTIVE part's notes live in the store's `notes`, where every edit,
+ * generator and import writes; its entry here keeps the rest of the part and
+ * may hold notes from before it became active. Read every part's real notes
+ * through `rollTracksOf`.
+ */
+export interface RollTrack {
+  id: string;
+  name: string;
+  /** GM program 0-127 the part plays, or null to follow the roll's voice (its linked clip's, the roll's own, the picker's). On a percussion part, the kit. */
+  program: number | null;
+  /** Bank select (MSB) 0-127 sent before the program; 0 is the General MIDI set. */
+  bank: number;
+  /** MIDI channel 1-16 the part is written on, or null for the next free one; 10 makes it a percussion part. */
+  channel: number | null;
+  /** #rrggbb: the part's swatch, its ghost notes and its EDIT track. */
+  color: string;
+  mute: boolean;
+  solo: boolean;
+  notes: PianoNote[];
+  /** The orchestral registry record the part was set to (lib/orchestra), when one was chosen. */
+  instrumentId?: string;
+}
+
+/**
+ * A roll part as the EDIT clip it bounced into records it (AudioClip
+ * `sourceRollPart`): the roll document the clip belongs to (`doc`, shared by
+ * the clips of every part bounced from one roll), the part's id, its place
+ * among the parts, and its settings. Opening any of those clips opens them
+ * all, one part each.
+ */
+export interface RollPartRef {
+  doc: string;
+  id: string;
+  order: number;
+  name: string;
+  program: number | null;
+  bank: number;
+  channel: number | null;
+  color: string;
+  mute: boolean;
+  solo: boolean;
+  instrumentId?: string;
+}
+
+/** What loadFromClip takes to open a clip together with the clips of its other parts. */
+export interface RollPartsLoad {
+  /** The roll document the clips belong to; a new one when left out. */
+  doc?: string;
+  /** Every part, in order. The opened part's notes are the `notes` loadFromClip is given. */
+  tracks: RollTrack[];
+  /** The opened part. */
+  activeTrackId: string;
+  /** The EDIT clip each part saves into, by part id. */
+  links: Record<string, string>;
+}
+
+/** How importNotes treats the document's maps (see importNotes). */
+export interface ImportNotesOptions {
+  /**
+   * The write owns the document's tempo map and meter: the ones it hands in
+   * replace the roll's even while other parts hold notes. Virtuoso's song
+   * build passes it, since the song's sections set the meters and tempos of
+   * their own bars.
+   */
+  document?: boolean;
+  /**
+   * The markers the write brings (a file's, a song build's FORM sections with
+   * the user's own): they replace the roll's whenever the write sets the
+   * document. Left out, the markers stay.
+   */
+  markers?: readonly RollMarkerInput[];
+}
+
+/** What importNotes did with the document's maps. */
+export interface ImportNotesResult {
+  /**
+   * True when other parts held notes, so the write went into the part being
+   * edited and left the tempo map, the meter, the lanes, the bends and the
+   * markers as the document had them, whatever it was handed; false when it
+   * took them as a roll of one part does.
+   */
+  keptDocument: boolean;
 }
 
 /** A lane's own time as setLaneTime takes it: a field left out stays, null clears it. */
@@ -212,6 +321,88 @@ interface PianoRollState {
    * build writes FORM's sections here and keeps the user's own.
    */
   markers: RollMarker[];
+  /**
+   * The roll's parts, in order (RollTrack). Always at least one. Part of the
+   * document: undo tracks every part's fields and notes. The active part's
+   * notes are `notes`; read every part through `rollTracksOf`.
+   */
+  tracks: RollTrack[];
+  /** The part `notes` holds: where every edit, generator and import writes. View state, like the active lane. */
+  activeTrackId: string;
+  /**
+   * The EDIT clip each part other than the active one saves into, by part id.
+   * The active part's clip is `editingClipId`. Like the link, not undo history:
+   * a bounce binding a part to its new clip is not an edit.
+   */
+  partLinks: Readonly<Record<string, string>>;
+  /**
+   * The roll document's id: every clip bounced from it records it
+   * (RollPartRef.doc), so opening one of them opens every part. A new roll, an
+   * import that replaces the parts and a clip opened alone start a new one.
+   */
+  rollDocId: string;
+  /** Draw the other parts' notes behind the active part's (ghost notes). A setting: persisted, never undo history. */
+  showGhosts: boolean;
+  /** The parts column beside the keyboard is open. A setting, like showGhosts. */
+  partsOpen: boolean;
+  setShowGhosts: (on: boolean) => void;
+  setPartsOpen: (open: boolean) => void;
+  /**
+   * Audition part `id` alone: it becomes the only soloed part, or, when it
+   * already is, every solo clears. One undo step, as a solo is.
+   */
+  soloOnly: (id: string) => void;
+
+  /** Add a part after the others and make it the active one, with the fields and notes given. One undo step. Returns its id, or null at MAX_ROLL_PARTS. */
+  addTrack: (init?: Partial<Omit<RollTrack, 'id'>>) => string | null;
+  /** Remove a part; the last part cannot go. Removing the active part makes its neighbour active. One undo step. */
+  removeTrack: (id: string) => void;
+  /** Make part `id` the one `notes` holds. Not an undo step; the selection clears, since it named the other part's notes. */
+  setActiveTrack: (id: string) => void;
+  /** Move part `id` to `index` in the list (held inside it). One undo step. */
+  moveTrack: (id: string, index: number) => void;
+  /** Rename a part (trimmed; blank keeps the old name). One undo step. */
+  renameTrack: (id: string, name: string) => void;
+  /**
+   * Set a part's program (null: follow the roll's voice), and with
+   * `percussion` given, put it on the percussion channel (true) or off it
+   * (false). Clears its registry instrument. One undo step.
+   */
+  setTrackProgram: (id: string, program: number | null, percussion?: boolean) => void;
+  /** Set a part's bank select, 0-127. One undo step. */
+  setTrackBank: (id: string, bank: number) => void;
+  /** Set a part's MIDI channel, 1-16 or null for the next free one. One undo step. */
+  setTrackChannel: (id: string, channel: number | null) => void;
+  /**
+   * Put a part on an orchestral registry instrument (lib/orchestra): its GM
+   * program and bank, the percussion channel for a kit, and its name when the
+   * part still has a default name. null takes the instrument away and leaves
+   * the program. One undo step.
+   */
+  setTrackInstrument: (id: string, instrumentId: string | null) => void;
+  setTrackColor: (id: string, color: string) => void;
+  setTrackMute: (id: string, mute: boolean) => void;
+  setTrackSolo: (id: string, solo: boolean) => void;
+  /** Replace one part's notes (the active part's through `notes`). One undo step. */
+  setPartNotes: (id: string, notes: PianoNote[]) => void;
+  /**
+   * Replace every part with `parts` (a multi-track MIDI file, a score): new
+   * ids, no links, the first part (or `activeIndex`) active, and the grid
+   * fitted to every part's notes. The meter, bends and tempo map are taken as
+   * importNotes takes them. The parts are a new document, so its markers are
+   * `markers` (a file's own), and none when left out. One undo step.
+   */
+  importParts: (
+    parts: ReadonlyArray<Partial<RollTrack>>,
+    bpm?: number,
+    meter?: Partial<RollMeter>,
+    bends?: readonly LaneBend[],
+    tempoMap?: readonly TempoEvent[],
+    activeIndex?: number,
+    markers?: readonly RollMarkerInput[],
+  ) => void;
+  /** Record the EDIT clip part `id` saves into (null: none). Not an undo step, as the link is not. */
+  bindPartClip: (id: string, clipId: string | null) => void;
 
   /** Set the starting tempo, 20-300 with its fraction kept; the map's beat-0 event takes it. */
   setBpm: (bpm: number) => void;
@@ -280,6 +471,7 @@ interface PianoRollState {
   setLoop: (loop: RollLoop | null) => void;
   /** Turn the loop on or off. With no range set it stays off: the caller sets a range first. */
   setLoopOn: (on: boolean) => void;
+  /** Replace the notes of the part being edited (every generator's write). */
   replaceAll: (notes: PianoNote[]) => void;
   /**
    * Add `notes` in one write (one undo step) and select them, the first as the
@@ -288,6 +480,11 @@ interface PianoRollState {
    * lands whole.
    */
   appendNotes: (notes: PianoNote[]) => void;
+  /**
+   * CLEAR: remove every note of the part being edited and unlink it. The
+   * lanes' points bend every part's notes, so they clear only when no other
+   * part holds notes; their ranges stay.
+   */
   clear: () => void;
   setEditingClip: (id: string | null) => void;
   /** Set the unlinked roll's own program (0-127), or null to follow the picker.
@@ -304,7 +501,9 @@ interface PianoRollState {
    *  Opening a clip is one undo step that carries the link it replaced: undoing it
    *  brings back the previous notes linked to the clip they came from, so an undo
    *  can never bring another clip's notes into this one. The loop clears.
-   *  `markers` are the clip's; left out (a clip bounced before markers), the roll opens with none. */
+   *  `markers` are the clip's; left out (a clip bounced before markers), the roll opens with none.
+   *  `parts` opens the clip with the clips of its other parts (lib/rollClip
+   *  clipPartsLoad); left out, the clip opens as the roll's one part. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -314,30 +513,47 @@ interface PianoRollState {
     bends?: readonly LaneBend[],
     tempoMap?: readonly TempoEvent[],
     markers?: readonly RollMarkerInput[],
+    parts?: RollPartsLoad,
   ) => void;
-  /** Replace the grid with imported notes, auto-fitting length (to a bar line) AND
-   *  pitch range to the content. A `meter` field left out keeps the roll's current value.
-   *  `bends` replaces every lane's bend (a lane the roll ends without is dropped, and
-   *  lanes past MAX_BENT_LANES lose their points); left out, every lane's points are
-   *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
-   *  `tempoMap` replaces the roll's map (a MIDI file's tempo changes); left out, a
-   *  finite `bpm` makes the roll one tempo at `bpm`, since the notes were placed
-   *  at that tempo, and no `bpm` keeps the map the roll has. `markers` replaces
-   *  the roll's markers (a file import passes the file's, a song build FORM's
-   *  and the user's); left out, the markers stay. */
+  /** Replace the notes of the part being edited with imported notes (the other
+   *  parts keep theirs), auto-fitting length (to a bar line, holding every
+   *  part's notes) AND pitch range to the content: every generator's and
+   *  every one-part import's write.
+   *
+   *  In a roll of one part, or one whose other parts hold no notes, the write
+   *  sets the document too. A `meter` field left out keeps the roll's current
+   *  value. `bends` replaces every lane's bend (a lane the roll ends without is
+   *  dropped, and lanes past MAX_BENT_LANES lose their points); left out, every
+   *  lane's points are cleared and its range stays, as CLEAR does, since the
+   *  notes they bent are gone. `tempoMap` replaces the roll's map (a MIDI
+   *  file's tempo changes); left out, a finite `bpm` makes the roll one tempo
+   *  at `bpm`, since the notes were placed at that tempo, and no `bpm` keeps
+   *  the map the roll has. `opts.markers` replaces the roll's markers (a file
+   *  import passes the file's, a song build FORM's and the user's); left out,
+   *  the markers stay.
+   *
+   *  While other parts hold notes they play by the document's tempo map,
+   *  meter, lanes and bends, so the write changes the part's notes and the
+   *  grid's fit only, whatever it is handed; a note on a lane the roll does
+   *  not have (or has with other time than the notes' own `meter.lanes`) goes
+   *  to lane A, and the document's markers stay too. With `opts.document` the
+   *  tempo map, meter, bends and markers it hands in replace the roll's as in
+   *  a roll of one part, and bends it leaves out stay. Returns whether the
+   *  document was kept (ImportNotesResult). */
   importNotes: (
     notes: PianoNote[],
     bpm?: number,
     meter?: Partial<RollMeter>,
     bends?: readonly LaneBend[],
     tempoMap?: readonly TempoEvent[],
-    markers?: readonly RollMarkerInput[],
-  ) => void;
+    opts?: ImportNotesOptions,
+  ) => ImportNotesResult;
   /** Place a live recording WITHOUT shrinking the grid (keeps at least the 256
    *  default, rounded up to a bar), expanding the pitch range to fit, and marks the recorded span. */
   placeRecording: (notes: PianoNote[], range: { startStep: number; endStep: number }) => void;
   setMeterMap: (map: MeterSegment[]) => void;
   setPickupSteps: (steps: number) => void;
+  /** Replace the lanes (sanitized). A note on a lane that goes moves to lane 0, in every part, and the lane's bend goes. */
   setLanes: (lanes: PolyLane[]) => void;
   setActiveLane: (id: number) => void;
   /** Add a lane that loops every `cycleSteps` (null = the whole roll); returns its id. */
@@ -350,7 +566,11 @@ interface PianoRollState {
    * Lane A keeps the roll's time. One undo step, as any lane edit.
    */
   setLaneTime: (id: number, time: LaneTimePatch) => void;
-  /** Remove a lane; its notes move to lane 0, and its bend too when lane 0 has no points. Lane 0 cannot be removed. */
+  /**
+   * Remove a lane; its notes move to lane 0 in every part (lanes are the
+   * document's), and its bend too when lane 0 has no points. Lane 0 cannot be
+   * removed.
+   */
   removeLane: (id: number) => void;
   /** Replace every lane's bend. A bend for a lane the roll does not have is dropped, and lanes past MAX_BENT_LANES lose their points. */
   setBends: (bends: readonly LaneBend[]) => void;
@@ -374,7 +594,8 @@ interface PianoRollState {
    *  up to a bar line. `merge` false keeps a change that repeats the meter before
    *  it (the METER face's ADD). setMeterMap and setPickupSteps go through here.
    *  Lanes given take the bends of lanes that go with them, and a lane that
-   *  arrives starts unbent (MATCH, and the METER face's ADD LANE). */
+   *  arrives starts unbent (MATCH, and the METER face's ADD LANE); a note on a
+   *  lane that goes moves to lane 0, in every part. */
   applyMeter: (meter: Partial<RollMeter>, merge?: boolean) => void;
   /**
    * Add a marker at `tick` (or `step`; neither = the playhead), a section
@@ -422,9 +643,21 @@ interface PianoRollState {
  *  The roll's own voice is here because a .tasmo saves it (`roll_voice`): a
  *  choice from the Vocal2MIDI panel is a step, and undo puts the voice before
  *  it back. The ruler's markers are here because a clip and a .tasmo save
- *  them: an add, a rename, a move (one step per drag) and a removal are steps. */
+ *  them: an add, a rename, a move (one step per drag) and a removal are steps.
+ *
+ *  The parts are here whole (`tracks`, each with its real notes, the active
+ *  one's included), with the part that was active. Undo keeps the part that is
+ *  active now when the step still has it, so undoing an edit in another part
+ *  changes that part without moving the view; a step that carries the link, or
+ *  one that no longer has the active part, goes back to its own active part.
+ *  `notes` is the active part's notes. `tracks` is optional only because a step
+ *  written before parts existed has none: that step restores `notes` into the
+ *  active part and leaves the parts as they are. */
 interface RollHistorySnapshot {
   notes: PianoNote[];
+  tracks?: RollTrack[];
+  activeTrackId?: string;
+  rollDocId?: string;
   bpm: number;
   tempoMap: TempoEvent[];
   totalSteps: number;
@@ -443,7 +676,10 @@ interface RollHistorySnapshot {
 const DEFAULT_STEPS = 256;
 
 const MIN_STEPS = 16;
-const MAX_STEPS = 4096; // ~256 bars; enough for full-song MIDI imports
+// The roll's longest grid: 65,536 sixteenths, 4,096 bars of 4/4, a symphony
+// movement. It is the bend lane's MAX_BEND_STEP, so the two limits never part:
+// a bend point can sit wherever a note can.
+const MAX_STEPS = MAX_BEND_STEP;
 /** The longest the roll grows: a paste past it leaves out the notes that start beyond it. */
 export const MAX_ROLL_STEPS = MAX_STEPS;
 const EPS = 1e-9;
@@ -923,6 +1159,30 @@ const saveSnap = (snap: RollSnapId): void => {
   }
 };
 
+// ── The parts column's settings, persisted ──────────────────────────────────
+
+const PARTS_VIEW_KEY = 'thedaw.roll.parts.v1';
+
+const loadPartsView = (): { showGhosts: boolean; partsOpen: boolean } => {
+  try {
+    if (typeof localStorage === 'undefined') throw new Error('no storage');
+    const raw = localStorage.getItem(PARTS_VIEW_KEY);
+    const o = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    return { showGhosts: o?.showGhosts !== false, partsOpen: o?.partsOpen !== false };
+  } catch {
+    return { showGhosts: true, partsOpen: true };
+  }
+};
+
+const savePartsView = (v: { showGhosts: boolean; partsOpen: boolean }): void => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(PARTS_VIEW_KEY, JSON.stringify(v));
+  } catch {
+    /* private mode / quota: the view just does not survive the reload */
+  }
+};
+
 // ── Undo / redo plumbing (module-scoped) ─────────────────────────────────────
 const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
@@ -958,8 +1218,207 @@ export const endRollGesture = (): void => {
   cutHistoryBurst();
 };
 
+// ── Parts ───────────────────────────────────────────────────────────────────
+
+type PartsView = Pick<PianoRollState, 'tracks' | 'activeTrackId' | 'notes'>;
+let tracksMemo: { tracks: RollTrack[]; active: string; notes: PianoNote[]; out: RollTrack[] } | null = null;
+
+/**
+ * Every part with its real notes: the active part's are the store's `notes`.
+ * The same array comes back while the parts, the active part and its notes
+ * stay the same, so a selector can read it.
+ */
+export const rollTracksOf = (s: PartsView): RollTrack[] => {
+  const m = tracksMemo;
+  if (m && m.tracks === s.tracks && m.active === s.activeTrackId && m.notes === s.notes) return m.out;
+  const out = s.tracks.map((t) => (t.id === s.activeTrackId && t.notes !== s.notes ? { ...t, notes: s.notes } : t));
+  tracksMemo = { tracks: s.tracks, active: s.activeTrackId, notes: s.notes, out };
+  return out;
+};
+
+/** The active part, as the list holds it (its notes may be stale; `notes` is its truth). */
+export const activeTrackOf = (s: Pick<PianoRollState, 'tracks' | 'activeTrackId'>): RollTrack =>
+  s.tracks.find((t) => t.id === s.activeTrackId) ?? s.tracks[0];
+
+/** The EDIT clip part `id` saves into: the link for the active part, its own entry for any other. */
+export const partLinkOf = (s: Pick<PianoRollState, 'activeTrackId' | 'editingClipId' | 'partLinks'>, id: string): string | null =>
+  id === s.activeTrackId ? s.editingClipId : s.partLinks[id] ?? null;
+
+/** A new roll document id. */
+const rollDocUid = (): string =>
+  typeof crypto !== 'undefined' && crypto.randomUUID ? `roll-${crypto.randomUUID()}` : `roll-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
+/** The notes of every part but the active one: what a fit to the notes must still hold. */
+const otherPartNotes = (s: Pick<PianoRollState, 'tracks' | 'activeTrackId'>): PianoNote[] =>
+  allPartNotes(s.tracks.filter((t) => t.id !== s.activeTrackId));
+
+/**
+ * True when a part other than the one being edited holds notes: those notes
+ * play by the document's tempo map, meter, lanes and bends, so a write into the
+ * active part leaves them alone (importNotes, CLEAR, lib/rollTakes importTake).
+ */
+export const otherPartsHoldNotes = (s: Pick<PianoRollState, 'tracks' | 'activeTrackId'>): boolean =>
+  s.tracks.some((t) => t.id !== s.activeTrackId && t.notes.length > 0);
+
+/** A note without its lane: lane 0, which spans the whole roll. */
+const withoutLane = (n: PianoNote): PianoNote => {
+  if (n.lane === undefined) return n;
+  const { lane: _drop, ...rest } = n;
+  return rest;
+};
+
+/** The JSON of a lane's time: its loop, span, meter map and tuplet. Two lanes with the same text keep time alike. */
+const laneTimeText = (l: PolyLane): string =>
+  JSON.stringify([l.cycleSteps ?? null, l.span ?? null, l.meterMap ?? null, l.tuplet ?? null]);
+
+/**
+ * `notes` for a roll that keeps its lanes `lanes`: a note keeps its lane when
+ * the roll has it and, for notes that came with lanes of their own
+ * (`incoming`), when that lane keeps the same time in both; any other note goes
+ * to lane 0, so it never joins a lane that loops or counts otherwise.
+ */
+const notesOnLanes = (notes: readonly PianoNote[], lanes: readonly PolyLane[], incoming?: readonly PolyLane[]): PianoNote[] => {
+  const theirs = incoming ? new Map(sanitizeLanes(incoming).map((l): [number, string] => [l.id, laneTimeText(l)])) : null;
+  const kept = new Set(lanes.filter((l) => l.id !== 0 && (!theirs || theirs.get(l.id) === laneTimeText(l))).map((l) => l.id));
+  return notes.map((n) => (n.lane === undefined || n.lane === 0 || kept.has(n.lane) ? n : withoutLane(n)));
+};
+
+/** `list` with every note on a lane not in `live` moved to lane 0; the same array when none moves. */
+const onLiveLanes = (list: PianoNote[], live: ReadonlySet<number>): PianoNote[] =>
+  list.some((n) => n.lane !== undefined && !live.has(n.lane))
+    ? list.map((n) => (n.lane !== undefined && !live.has(n.lane) ? withoutLane(n) : n))
+    : list;
+
+/**
+ * Every part's notes with a lane `lanes` does not have moved to lane 0. The
+ * lanes belong to the document, so a lane that goes takes no part's notes
+ * with it, and a lane added later with its id finds none of them. The active
+ * part's notes are `notes` (its entry in `tracks` is stale until it is left,
+ * when `notes` replaces it). The same arrays when no note moves, so a lane
+ * edit that leaves the notes records nothing for them.
+ */
+const partsOnLanes = (
+  s: Pick<PianoRollState, 'notes' | 'tracks' | 'activeTrackId'>,
+  lanes: readonly PolyLane[],
+): Pick<PianoRollState, 'notes' | 'tracks'> => {
+  const live = new Set(lanes.map((l) => l.id));
+  let moved = false;
+  const tracks = s.tracks.map((t) => {
+    if (t.id === s.activeTrackId) return t;
+    const notes = onLiveLanes(t.notes, live);
+    if (notes === t.notes) return t;
+    moved = true;
+    return { ...t, notes };
+  });
+  return { notes: onLiveLanes(s.notes, live), tracks: moved ? tracks : s.tracks };
+};
+
+/** The id a new lane takes: past every lane, and past every lane a note of any part still names (a clip saved before lanes moved their notes). */
+const nextLaneId = (s: Pick<PianoRollState, 'lanes' | 'notes' | 'tracks' | 'activeTrackId'>): number => {
+  let top = s.lanes.reduce((m, l) => Math.max(m, l.id), 0);
+  for (const part of rollTracksOf(s)) {
+    for (const n of part.notes) if (n.lane !== undefined && n.lane > top) top = n.lane;
+  }
+  return top + 1;
+};
+
+/** `links` with `id` set to `clipId`, or without `id` when `clipId` is null. */
+const withPartLink = (links: Readonly<Record<string, string>>, id: string, clipId: string | null): Record<string, string> => {
+  const next = { ...links };
+  if (clipId) next[id] = clipId;
+  else delete next[id];
+  return next;
+};
+
+/**
+ * The state that makes part `id` the active one: the current notes stored into
+ * the part that was active, the link kept for it, and `id`'s notes and link in
+ * their place. The selection clears, since it named the other part's notes.
+ */
+const activateSlice = (s: PianoRollState, id: string, tracks: RollTrack[] = s.tracks): Partial<PianoRollState> => {
+  const stored = tracks.map((t) => (t.id === s.activeTrackId ? { ...t, notes: s.notes } : t));
+  const target = stored.find((t) => t.id === id) ?? stored[0];
+  const partLinks = withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
+  return {
+    tracks: stored,
+    activeTrackId: target.id,
+    notes: target.notes,
+    editingClipId: partLinks[target.id] ?? null,
+    partLinks,
+    ...noSelection(),
+  };
+};
+
+/** A part without its registry instrument. */
+const withoutInstrument = (t: RollTrack): RollTrack => {
+  if (t.instrumentId === undefined) return t;
+  const { instrumentId: _drop, ...rest } = t;
+  return rest;
+};
+
+/** `name`, or "`name` 2", "`name` 3"... when another part than `self` has it. */
+const uniquePartName = (tracks: readonly RollTrack[], name: string, self: string): string => {
+  const taken = new Set(tracks.filter((t) => t.id !== self).map((t) => t.name));
+  if (!taken.has(name)) return name;
+  for (let n = 2; ; n += 1) if (!taken.has(`${name} ${n}`)) return `${name} ${n}`;
+};
+
+/** `tracks` with part `id` patched by `patch` (fields cleaned by the caller); null when no part is `id` or nothing changes. */
+const patchTrack = (tracks: RollTrack[], id: string, patch: Partial<RollTrack>): RollTrack[] | null => {
+  const i = tracks.findIndex((t) => t.id === id);
+  if (i < 0) return null;
+  const before = tracks[i];
+  const after = { ...before, ...patch };
+  if ((Object.keys(patch) as (keyof RollTrack)[]).every((k) => before[k] === after[k])) return null;
+  const next = tracks.slice();
+  next[i] = after;
+  return next;
+};
+
+/**
+ * The parts, active part, link and notes a history step puts back. A step
+ * that carries the link, or that no longer has the part now active, goes back
+ * to the part it had active; any other keeps the active part, so undoing an
+ * edit in another part leaves the view where it is. A step written before
+ * parts existed puts its notes into the active part.
+ */
+const restoredParts = (s: PianoRollState, step: RollHistorySnapshot): Partial<PianoRollState> => {
+  if (!step.tracks?.length) return { notes: step.notes };
+  const carriesLink = 'editingClipId' in step;
+  const has = (id: string | undefined) => !!id && step.tracks!.some((t) => t.id === id);
+  const keep = !carriesLink && has(s.activeTrackId);
+  const activeTrackId = keep ? s.activeTrackId : has(step.activeTrackId) ? (step.activeTrackId as string) : step.tracks[0].id;
+  const partLinks = activeTrackId === s.activeTrackId ? s.partLinks : withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
+  const active = step.tracks.find((t) => t.id === activeTrackId) as RollTrack;
+  return {
+    tracks: step.tracks,
+    ...(step.rollDocId ? { rollDocId: step.rollDocId } : {}),
+    activeTrackId,
+    notes: active.notes,
+    partLinks,
+    ...(carriesLink
+      ? { editingClipId: step.editingClipId ?? null }
+      : activeTrackId === s.activeTrackId
+        ? {}
+        : { editingClipId: partLinks[activeTrackId] ?? null }),
+  };
+};
+
+/**
+ * A step's fields that are not its parts (restoredParts puts those back): the
+ * tempo, the grid, the meter, the lanes, the bends and the voice, and a link
+ * only on a step written before parts existed.
+ */
+const docFieldsOf = (step: RollHistorySnapshot): Partial<PianoRollState> => {
+  const { notes: _notes, tracks, activeTrackId: _active, rollDocId: _doc, editingClipId, ...doc } = step;
+  return tracks?.length || !('editingClipId' in step) ? doc : { ...doc, editingClipId: editingClipId ?? null };
+};
+
 const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   notes: s.notes,
+  tracks: rollTracksOf(s),
+  activeTrackId: s.activeTrackId,
+  rollDocId: s.rollDocId,
   bpm: s.bpm,
   tempoMap: s.tempoMap,
   totalSteps: s.totalSteps,
@@ -981,8 +1440,16 @@ const saveFeelOf = (s: PianoRollState): void =>
 const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: string | null): RollHistorySnapshot =>
   'editingClipId' in step ? { ...snap, editingClipId: link } : snap;
 
+const SEED_NOTES = seed();
+const FIRST_PART = makeRollTrack({ notes: SEED_NOTES }, 0);
+
 export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
-  notes: seed(),
+  notes: SEED_NOTES,
+  tracks: [FIRST_PART],
+  activeTrackId: FIRST_PART.id,
+  partLinks: {},
+  rollDocId: rollDocUid(),
+  ...loadPartsView(),
   bpm: 120,
   tempoMap: oneTempo(120),
   totalSteps: DEFAULT_STEPS, // 16 bars at 16ths — a roomy default canvas
@@ -1007,6 +1474,192 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   markers: [],
   _undo: [],
   _redo: [],
+
+  setShowGhosts: (on) => {
+    set({ showGhosts: on === true });
+    savePartsView({ showGhosts: get().showGhosts, partsOpen: get().partsOpen });
+  },
+  setPartsOpen: (open) => {
+    set({ partsOpen: open === true });
+    savePartsView({ showGhosts: get().showGhosts, partsOpen: get().partsOpen });
+  },
+  soloOnly: (id) =>
+    set((s) => {
+      if (!s.tracks.some((t) => t.id === id)) return {};
+      const alone = s.tracks.every((t) => t.solo === (t.id === id));
+      return { tracks: s.tracks.map((t) => {
+        const solo = alone ? false : t.id === id;
+        return t.solo === solo ? t : { ...t, solo };
+      }) };
+    }),
+  addTrack: (init = {}) => {
+    const s = get();
+    if (s.tracks.length >= MAX_ROLL_PARTS) return null;
+    const track = makeRollTrack(
+      {
+        ...init,
+        id: undefined,
+        name: init.name ?? nextPartName(s.tracks),
+        color: init.color ?? nextPartColor(s.tracks),
+        notes: migrateNotes(init.notes ?? []),
+      },
+      s.tracks.length,
+    );
+    // The new part is where the next edit goes, and it saves into no clip yet.
+    set((st) => activateSlice(st, track.id, [...st.tracks, track]));
+    return track.id;
+  },
+  removeTrack: (id) =>
+    set((s) => {
+      if (s.tracks.length <= 1) return {};
+      const i = s.tracks.findIndex((t) => t.id === id);
+      if (i < 0) return {};
+      const rest = s.tracks.filter((t) => t.id !== id);
+      if (id !== s.activeTrackId) return { tracks: rest };
+      // The neighbour that took its place, else the one before it. The removed
+      // part's link stays in partLinks, so undoing the removal relinks it.
+      return activateSlice(s, rest[Math.min(i, rest.length - 1)].id, rest);
+    }),
+  setActiveTrack: (id) => {
+    const s = get();
+    if (id === s.activeTrackId || !s.tracks.some((t) => t.id === id)) return;
+    // Every part's notes are the same before and after, so this is no step.
+    historyApplying = true;
+    try {
+      set((st) => activateSlice(st, id));
+    } finally {
+      historyApplying = false;
+    }
+    cutHistoryBurst();
+  },
+  moveTrack: (id, index) =>
+    set((s) => {
+      const from = s.tracks.findIndex((t) => t.id === id);
+      if (from < 0 || !isNum(index)) return {};
+      const to = Math.max(0, Math.min(s.tracks.length - 1, Math.round(index)));
+      if (to === from) return {};
+      const tracks = s.tracks.slice();
+      const [moved] = tracks.splice(from, 1);
+      tracks.splice(to, 0, moved);
+      return { tracks };
+    }),
+  renameTrack: (id, name) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      const tracks = t ? patchTrack(s.tracks, id, { name: cleanPartName(name, t.name) }) : null;
+      return tracks ? { tracks } : {};
+    }),
+  setTrackProgram: (id, program, percussion) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t) return {};
+      const channel = percussion === true
+        ? PERCUSSION_PART_CHANNEL
+        : percussion === false && t.channel === PERCUSSION_PART_CHANNEL
+          ? null
+          : t.channel;
+      const patched = patchTrack(s.tracks, id, { program: cleanPartProgram(program), channel });
+      // A program chosen by hand is no longer the registry instrument's.
+      const tracks = (patched ?? s.tracks).map((x) => (x.id === id ? withoutInstrument(x) : x));
+      return tracks.some((x, i) => x !== s.tracks[i]) ? { tracks } : {};
+    }),
+  setTrackBank: (id, bank) =>
+    set((s) => {
+      const tracks = patchTrack(s.tracks, id, { bank: cleanPartBank(bank) });
+      return tracks ? { tracks } : {};
+    }),
+  setTrackChannel: (id, channel) =>
+    set((s) => {
+      const tracks = patchTrack(s.tracks, id, { channel: cleanPartChannel(channel) });
+      return tracks ? { tracks } : {};
+    }),
+  setTrackInstrument: (id, instrumentId) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t) return {};
+      if (!instrumentId) {
+        if (t.instrumentId === undefined) return {};
+        return { tracks: s.tracks.map((x) => (x.id === id ? withoutInstrument(x) : x)) };
+      }
+      const inst = orchestraInstrument(instrumentId);
+      if (!inst) return {};
+      const patch: Partial<RollTrack> = {
+        instrumentId: inst.id,
+        program: inst.program,
+        // A kit is chosen by its program on the percussion channel; the bank is the melodic set's.
+        bank: inst.percussion ? 0 : cleanPartBank(inst.bank),
+        channel: inst.percussion ? PERCUSSION_PART_CHANNEL : t.channel === PERCUSSION_PART_CHANNEL ? null : t.channel,
+        ...(isDefaultPartName(t.name) ? { name: uniquePartName(s.tracks, inst.name, id) } : {}),
+      };
+      const tracks = patchTrack(s.tracks, id, patch);
+      return tracks ? { tracks } : {};
+    }),
+  setTrackColor: (id, color) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      const tracks = t ? patchTrack(s.tracks, id, { color: cleanPartColor(color, t.color) }) : null;
+      return tracks ? { tracks } : {};
+    }),
+  setTrackMute: (id, mute) =>
+    set((s) => {
+      const tracks = patchTrack(s.tracks, id, { mute: mute === true });
+      return tracks ? { tracks } : {};
+    }),
+  setTrackSolo: (id, solo) =>
+    set((s) => {
+      const tracks = patchTrack(s.tracks, id, { solo: solo === true });
+      return tracks ? { tracks } : {};
+    }),
+  setPartNotes: (id, incoming) =>
+    set((s) => {
+      if (id === s.activeTrackId) return { notes: migrateNotes(incoming), ...noSelection() };
+      const tracks = patchTrack(s.tracks, id, { notes: migrateNotes(incoming) });
+      return tracks ? { tracks } : {};
+    }),
+  importParts: (parts, bpm, meter, incomingBends, incomingTempo, activeIndex = 0, incomingMarkers) =>
+    set((s) => {
+      // Past MAX_ROLL_PARTS the notes of the parts that do not fit go into the last one, so none is lost.
+      const kept = parts.slice(0, MAX_ROLL_PARTS).map((p) => ({ ...p, id: undefined, notes: [...(p.notes ?? [])] }));
+      if (parts.length > MAX_ROLL_PARTS && kept.length) {
+        const last = kept[kept.length - 1];
+        for (const p of parts.slice(MAX_ROLL_PARTS)) last.notes.push(...(p.notes ?? []));
+      }
+      const tracks = sanitizeRollTracks(kept.map((p) => ({ ...p, notes: migrateNotes(p.notes) })));
+      const active = tracks[Math.max(0, Math.min(tracks.length - 1, isNum(activeIndex) ? Math.round(activeIndex) : 0))];
+      const m = mergeMeter(s, meter);
+      const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
+      const tempo = incomingTempo
+        ? tempoSlice(sanitizeRollTempoMap(incomingTempo, finiteBpm ? importedRollBpm(bpm) : s.bpm))
+        : finiteBpm
+          ? tempoSlice(oneTempo(importedRollBpm(bpm)))
+          : {};
+      const all = allPartNotes(tracks);
+      return {
+        tracks,
+        activeTrackId: active.id,
+        notes: active.notes,
+        // New parts save into no clip, in a new document; the parts they replace keep their links for an undo.
+        editingClipId: null,
+        rollDocId: rollDocUid(),
+        partLinks: withPartLink(s.partLinks, s.activeTrackId, s.editingClipId),
+        ...m,
+        bends: replacedBends(s, m.lanes, incomingBends),
+        // A new document: the file's markers, else none (the previous document's go with its parts).
+        markers: sanitizeRollMarkers(incomingMarkers ?? []),
+        ...(all.length ? fitToNotes(all, m.meterMap, m.pickupSteps) : {}),
+        ...noSelection(),
+        currentStep: 0,
+        isPlaying: false,
+        recordedRange: null,
+        ...tempo,
+      };
+    }),
+  bindPartClip: (id, clipId) =>
+    set((s) => {
+      if (id === s.activeTrackId) return s.editingClipId === clipId ? {} : { editingClipId: clipId };
+      if (!s.tracks.some((t) => t.id === id)) return {};
+      return { partLinks: withPartLink(s.partLinks, id, clipId) };
+    }),
 
   setBpm: (bpm) =>
     set((s) => {
@@ -1218,7 +1871,14 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return { notes, totalSteps, ...selectionOf(notes, added.map((n) => n.id), added[0].id) };
     }),
   clear: () =>
-    set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
+    set((s) => ({
+      notes: [],
+      ...noSelection(),
+      editingClipId: null,
+      recordedRange: null,
+      // The lanes' points bend every part's notes: they go with the last notes, never with one part's.
+      ...(otherPartsHoldNotes(s) ? {} : { bends: clearedBends(s.bends) }),
+    })),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
   setVoiceProgram: (program) => {
@@ -1239,7 +1899,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }
     saveFeelOf(get());
   },
-  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends, incomingTempo, incomingMarkers) => {
+  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends, incomingTempo, incomingMarkers, parts) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved
     // work included) linked to the clip they came from, so SAVE writes them
@@ -1253,9 +1913,25 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         if (undo.length > HISTORY_LIMIT) undo.shift();
         const notes = migrateNotes(incoming);
         const m = mergeMeter(s, meter);
-        const fit = notes.length > 0 ? fitToNotes(notes, m.meterMap, m.pickupSteps) : null;
+        // The clip's parts, the opened one holding `notes`; a clip with none of
+        // its own (bounced before parts, or alone) opens as the roll's one part.
+        const tracks = parts?.tracks.length
+          ? sanitizeRollTracks(parts.tracks.map((t) => ({ ...t, notes: migrateNotes(t.notes ?? []) })))
+          : [makeRollTrack({}, 0)];
+        const activeTrackId = tracks.some((t) => t.id === parts?.activeTrackId) ? (parts?.activeTrackId as string) : tracks[0].id;
+        const opened = tracks.map((t) => (t.id === activeTrackId ? { ...t, notes } : t));
+        let partLinks = withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
+        for (const t of opened) {
+          if (t.id !== activeTrackId) partLinks = withPartLink(partLinks, t.id, parts?.links[t.id] ?? null);
+        }
+        const all = allPartNotes(opened);
+        const fit = all.length > 0 ? fitToNotes(all, m.meterMap, m.pickupSteps) : null;
         return {
           notes,
+          tracks: opened,
+          activeTrackId,
+          partLinks,
+          rollDocId: parts?.doc || rollDocUid(),
           ...m,
           bends: replacedBends(s, m.lanes, incomingBends),
           // A clip bounced before the roll had a tempo map plays at one tempo, its own.
@@ -1283,12 +1959,29 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     cutHistoryBurst();
   },
 
-  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo, incomingMarkers) =>
+  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo, opts) => {
+    const shared = otherPartsHoldNotes(get());
+    const keptDocument = shared && opts?.document !== true;
     set((s) => {
+      if (keptDocument) {
+        // The other parts play by the document's tempo map, meter, lanes and
+        // bends, so a write into this part changes its notes and the fit only.
+        const notes = migrateNotes(notesOnLanes(incoming, s.lanes, meter?.lanes));
+        return {
+          notes,
+          // The grid still holds every other part's notes.
+          ...(notes.length ? fitToNotes([...notes, ...otherPartNotes(s)], s.meterMap, s.pickupSteps) : {}),
+          ...noSelection(),
+          currentStep: 0,
+          isPlaying: false,
+          recordedRange: null,
+        };
+      }
       const notes = migrateNotes(incoming);
-      const markers = incomingMarkers ? { markers: sanitizeRollMarkers(incomingMarkers) } : {};
+      const markers = opts?.markers ? { markers: sanitizeRollMarkers(opts.markers) } : {};
       const m = mergeMeter(s, meter);
-      const bends = replacedBends(s, m.lanes, incomingBends);
+      // Other parts' notes still sound through the lanes' points, so a write that owns the maps keeps the bends it leaves out.
+      const bends = shared && !incomingBends ? bendsAcrossLanes(s.bends, s.lanes, m.lanes) : replacedBends(s, m.lanes, incomingBends);
       const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
       // The file's own map, or one tempo at the tempo the notes were placed at, or the roll's map as it is.
       const tempo = incomingTempo
@@ -1296,22 +1989,28 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         : finiteBpm
           ? tempoSlice(oneTempo(importedRollBpm(bpm)))
           : {};
+      // Lanes that go take no other part's notes with them.
+      const others = shared && meter?.lanes ? { tracks: partsOnLanes({ notes, tracks: s.tracks, activeTrackId: s.activeTrackId }, m.lanes).tracks } : {};
       if (notes.length === 0) {
-        return { notes, ...m, bends, ...tempo, ...markers, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
+        return { notes, ...others, ...m, bends, ...tempo, ...markers, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
       return {
         notes,
+        ...others,
         ...m,
         bends,
         ...markers,
-        ...fitToNotes(notes, m.meterMap, m.pickupSteps),
+        // The notes go into the active part; the grid still holds every other part's.
+        ...fitToNotes([...notes, ...otherPartNotes(s)], m.meterMap, m.pickupSteps),
         ...noSelection(),
         currentStep: 0,
         isPlaying: false,
         recordedRange: null,
         ...tempo,
       };
-    }),
+    });
+    return { keptDocument };
+  },
 
   placeRecording: (incoming, range) =>
     set((s) => {
@@ -1345,6 +2044,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const bends = meter.lanes ? bendsAcrossLanes(s.bends, s.lanes, m.lanes) : s.bends;
       return {
         ...m,
+        // A lane that goes takes no part's notes with it.
+        ...(meter.lanes ? partsOnLanes(s, m.lanes) : {}),
         meterMap,
         // The same object when no lane took a bend with it, so a player sees no bend edit.
         bends: bends.length === s.bends.length ? s.bends : bends,
@@ -1356,14 +2057,16 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const next = sanitizeLanes(lanes);
       return {
         lanes: next,
+        ...partsOnLanes(s, next),
         activeLane: next.some((l) => l.id === s.activeLane) ? s.activeLane : 0,
         bends: bendsForLanes(s.bends, next),
       };
     }),
   setActiveLane: (id) => set((s) => (s.lanes.some((l) => l.id === id) ? { activeLane: id } : {})),
   addLane: (cycleSteps = null) => {
-    const { lanes, bends } = get();
-    const id = lanes.reduce((m, l) => Math.max(m, l.id), 0) + 1;
+    const s = get();
+    const { lanes, bends } = s;
+    const id = nextLaneId(s);
     // A new lane starts unbent, whatever a lane with its id once had.
     set({
       lanes: sanitizeLanes([...lanes, { id, name: laneName(id), cycleSteps: clampCycle(cycleSteps) }]),
@@ -1403,13 +2106,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const bends = gone?.points.length && !zero?.points.length
         ? withLaneBend(rest, 0, () => ({ range: gone.range, points: gone.points }))
         : rest;
+      const lanes = s.lanes.filter((l) => l.id !== id);
       return {
-        lanes: s.lanes.filter((l) => l.id !== id),
-        notes: s.notes.map((n) => {
-          if (n.lane !== id) return n;
-          const { lane: _drop, ...rest } = n;
-          return rest;
-        }),
+        lanes,
+        // Every part's notes on the lane, the parts not being edited too: lanes are the document's.
+        ...partsOnLanes(s, lanes),
         activeLane: s.activeLane === id ? 0 : s.activeLane,
         bends,
       };
@@ -1510,15 +2211,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     // A step that carries the link restores it (spread from `prev` below), and
     // its redo carries the link it replaces.
     const current = withLink(docSnapshot(s), prev, s.editingClipId);
+    const parts = restoredParts(s, prev);
     historyApplying = true;
     set({
-      ...prev,
+      ...docFieldsOf(prev),
+      ...parts,
       // A lane the step is going back to may not have the active one.
       activeLane: prev.lanes.some((l) => l.id === s.activeLane) ? s.activeLane : 0,
       // Nor may it have the notes that were selected: a step back over an added
       // note, a paste or a cut leaves ids behind that no longer exist, and a
       // dead id in the set would survive into the next copy, nudge or delete.
-      ...selectionOf(prev.notes, s.selectedIds, s.selectedNoteId),
+      ...selectionOf(parts.notes as PianoNote[], s.selectedIds, s.selectedNoteId),
       _undo: s._undo.slice(0, -1),
       _redo: [...s._redo, current],
     });
@@ -1532,12 +2235,14 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     if (s._redo.length === 0) return;
     const next = s._redo[s._redo.length - 1];
     const current = withLink(docSnapshot(s), next, s.editingClipId);
+    const parts = restoredParts(s, next);
     historyApplying = true;
     set({
-      ...next,
+      ...docFieldsOf(next),
+      ...parts,
       activeLane: next.lanes.some((l) => l.id === s.activeLane) ? s.activeLane : 0,
       // Same as undo: only the ids the step forward still has stay selected.
-      ...selectionOf(next.notes, s.selectedIds, s.selectedNoteId),
+      ...selectionOf(parts.notes as PianoNote[], s.selectedIds, s.selectedNoteId),
       _undo: [...s._undo, current],
       _redo: s._redo.slice(0, -1),
     });
@@ -1561,6 +2266,7 @@ usePianoRollStore.subscribe((state, prev) => {
   if (historyApplying) return;
   if (
     state.notes === prev.notes &&
+    state.tracks === prev.tracks &&
     state.bpm === prev.bpm &&
     state.tempoMap === prev.tempoMap &&
     state.totalSteps === prev.totalSteps &&
