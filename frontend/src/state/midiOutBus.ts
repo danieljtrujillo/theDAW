@@ -236,6 +236,8 @@ export class MidiClockScheduler {
   /** The next clock, in 24ths of a quarter note from the timeline's start. */
   private next = 0;
   private running = false;
+  /** The latest timestamp handed to the port: every message goes at or after it. */
+  private lastAt: number;
 
   constructor(
     private deps: {
@@ -245,11 +247,31 @@ export class MidiClockScheduler {
       /** Quarter notes at a timeline second, and back (lib/tempoMap). */
       beatAt: (sec: number) => number;
       secAt: (beat: number) => number;
+      /**
+       * The last timestamp an earlier clock on these ports went out at. A
+       * sent message cannot be taken back, so the clocks a stopped pass sent
+       * ahead still arrive: this pass's song position, Start and clocks go
+       * after them, so the host counts from the new position.
+       */
+      after?: number;
     },
-  ) {}
+  ) {
+    this.lastAt = deps.after ?? -Infinity;
+  }
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /** The latest timestamp this clock handed to its ports (performance.now milliseconds). */
+  get lastTimestamp(): number {
+    return this.lastAt;
+  }
+
+  private sendAt(bytes: number[], timestamp: number): void {
+    const at = Math.max(timestamp, this.lastAt);
+    this.lastAt = at;
+    this.deps.send(bytes, at);
   }
 
   /** Start at transport second `fromSec`, heard at context time `anchorCtx`, with the first `lookaheadSec` of clocks sent now. */
@@ -263,8 +285,8 @@ export class MidiClockScheduler {
     this.next = sixteenth * 6;
     const at = this.deps.toPerf(Math.max(this.deps.now(), anchorCtx));
     const spp = Math.min(16383, sixteenth);
-    this.deps.send([0xf2, spp & 0x7f, (spp >> 7) & 0x7f], at);
-    this.deps.send([sixteenth === 0 ? 0xfa : 0xfb], at);
+    this.sendAt([0xf2, spp & 0x7f, (spp >> 7) & 0x7f], at);
+    this.sendAt([sixteenth === 0 ? 0xfa : 0xfb], at);
     this.tick(lookaheadSec);
   }
 
@@ -276,7 +298,7 @@ export class MidiClockScheduler {
       const sec = this.deps.secAt(this.next / 24);
       if (sec > until) break;
       const ctx = this.anchorCtx + (sec - this.anchorT);
-      this.deps.send([0xf8], this.deps.toPerf(Math.max(ctx, this.deps.now())));
+      this.sendAt([0xf8], this.deps.toPerf(Math.max(ctx, this.deps.now())));
       this.next += 1;
     }
   }
@@ -284,7 +306,8 @@ export class MidiClockScheduler {
   stop(): void {
     if (!this.running) return;
     this.running = false;
-    this.deps.send([0xfc], this.deps.toPerf(this.deps.now()));
+    // After the clocks already sent ahead, which still arrive.
+    this.sendAt([0xfc], this.deps.toPerf(this.deps.now()));
   }
 }
 
@@ -292,6 +315,15 @@ export class MidiClockScheduler {
 
 let passSink: TrackOutSink | null = null;
 let passClock: MidiClockScheduler | null = null;
+/** The last timestamp a stopped pass's clock went out at: the next pass's clock starts after it. */
+let clockAfter = -Infinity;
+
+const stopPassClock = (): void => {
+  if (!passClock) return;
+  passClock.stop();
+  clockAfter = Math.max(clockAfter, passClock.lastTimestamp);
+  passClock = null;
+};
 
 const sendTo = (portId: string, bytes: number[], timestamp: number): void => {
   const port = ports.find((p) => p.id === portId);
@@ -342,8 +374,7 @@ export function startTransportClock(
     lookaheadSec?: number;
   },
 ): boolean {
-  passClock?.stop();
-  passClock = null;
+  stopPassClock();
   if (!opts.tracks.some((t) => t.midiOut?.clock)) return false;
   const clockPorts = planTrackRoutes(opts.tracks, new Map(), midiOutDevices()).clockPorts;
   if (!clockPorts.length) return false;
@@ -355,6 +386,7 @@ export function startTransportClock(
     now: opts.now,
     beatAt: opts.beatAt,
     secAt: opts.secAt,
+    after: clockAfter,
   });
   passClock.start(opts.fromSec, opts.anchorCtx, opts.lookaheadSec ?? 0);
   return true;
@@ -439,6 +471,5 @@ export function tickTrackOutputs(lookaheadSec: number): void {
 export function stopTrackOutputs(timestamp: number): void {
   passSink?.allNotesOff(timestamp);
   passSink = null;
-  passClock?.stop();
-  passClock = null;
+  stopPassClock();
 }

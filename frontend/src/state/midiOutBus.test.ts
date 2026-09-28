@@ -145,4 +145,25 @@ const live = [
   assert.equal(startTrackOutputs({ tracks: [{ id: 't1' }], channelsOf: new Map(), fromSec: 0, anchorCtx: 0, now: () => 0, toPerf: (t) => t, beatAt: (s) => s, secAt: (b) => b }), null);
 }
 
+// ── a loop wrap: the stopped pass's clocks sent ahead arrive before the new Start ──
+{
+  const got: Array<{ bytes: number[]; at: number }> = [];
+  setMidiOutputPorts([{ id: 'loop', name: 'Loop Host', send: (bytes: number[], at?: number) => got.push({ bytes, at: at ?? 0 }) }]);
+  const tracks = [{ id: 't', midiOut: { id: 'loop', label: 'Loop Host', channel: 1, clock: true } }];
+  let now = 1000;
+  const common = { tracks, channelsOf: new Map(), now: () => now, toPerf: (t: number) => t * 1000, beatAt: (s: number) => s * 2, secAt: (b: number) => b / 2, lookaheadSec: 0.1 };
+  // A two-second loop at 120: the wrap is seen at 1002.016 s, with the next 0.1 s of clocks already sent.
+  startTrackOutputs({ ...common, fromSec: 0, anchorCtx: 1000 });
+  for (; now < 1002.016; now += 0.025) tickTrackOutputs(0.1);
+  now = 1002.016;
+  startTrackOutputs({ ...common, fromSec: 0, anchorCtx: now });
+  for (; now < 1003.016; now += 0.025) tickTrackOutputs(0.1);
+  stopTrackOutputs(now * 1000);
+  const start = got.findIndex((g, i) => i > 1 && g.bytes[0] === 0xfa);
+  const lastStale = Math.max(...got.slice(0, start).map((g) => g.at));
+  assert.ok(got[start].at >= lastStale, 'the new Start goes after every clock the stopped pass sent');
+  assert.deepEqual(got[start - 2].bytes, [0xfc], 'Stop, then song position, then Start');
+  assert.ok(got.every((g, i) => i === 0 || g.at >= got[i - 1].at), 'the port hears its clock messages in time order');
+}
+
 console.log('midiOutBus: ok');
