@@ -51,6 +51,41 @@ def _fmt_for_suffix(suffix: str) -> str:
     return s or "musicxml"
 
 
+def _part_instrument(part: Any) -> dict[str, Any]:
+    """The instrument a score part names, as the roll's part takes it.
+
+    ``instrument`` is the orchestral registry id
+    (:func:`backend.modules.notation.instruments.match_music21`: the part's or
+    instrument's name, else its music21 class, else its MIDI program), or None.
+    ``program`` is the registry record's General MIDI program, else the
+    music21 instrument's own, else None. ``percussion`` is True for an
+    unpitched percussion part or one on MIDI channel 10, which the roll puts
+    on the percussion channel.
+    """
+    from backend.modules.notation.instruments import match_music21
+
+    try:
+        inst = part.getInstrument(returnDefault=False)
+    except Exception:  # noqa: BLE001 - a bare stream has no instrument to read
+        inst = None
+    if inst is None:
+        return {"instrument": None, "program": None, "percussion": False}
+    record = match_music21(inst)
+    own_program = getattr(inst, "midiProgram", None)
+    program = record.program if record is not None else own_program
+    channel = getattr(inst, "midiChannel", None)
+    percussion = bool(
+        (record is not None and record.percussion)
+        or type(inst).__name__ == "UnpitchedPercussion"
+        or channel == 9
+    )
+    return {
+        "instrument": record.id if record is not None else None,
+        "program": int(program) if program is not None else None,
+        "percussion": percussion,
+    }
+
+
 def parse_score_bytes(data: bytes, filename: str) -> dict[str, Any]:
     """Parse uploaded score bytes. Writes to a temp file with the original
     suffix so music21 detects the format (and can unzip .mxl)."""
@@ -190,7 +225,13 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
                 )
 
         total_notes += len(notes_out)
-        tracks.append({"name": name or f"Part {idx + 1}", "notes": notes_out})
+        tracks.append(
+            {
+                "name": name or f"Part {idx + 1}",
+                "notes": notes_out,
+                **_part_instrument(part),
+            }
+        )
 
     return {
         "ok": True,

@@ -108,8 +108,16 @@ export const KEYBOARD_LIVE_CHANNEL = 16;
  * the arpeggiator's or the keyboard's channel.
  */
 export const DRAW_LIVE_CHANNELS: readonly number[] = Object.freeze([17, 18, 19, 20, 21, 22, 23, 24]);
-/** How many channels the preview synth has: 0-15, the keyboard's and DRAW's. */
+/** How many channels the preview synth has when it starts: 0-15, the keyboard's and DRAW's. */
 export const PREVIEW_CHANNEL_COUNT = DRAW_LIVE_CHANNELS[DRAW_LIVE_CHANNELS.length - 1] + 1;
+/**
+ * The first live channel the roll's parts after the first take (lib/rollTracks
+ * rollLiveChannels). The preview synth adds channels past it on demand, so a
+ * roll of 40 parts plays each part on a channel of its own.
+ */
+export const ROLL_PART_FIRST_CHANNEL = PREVIEW_CHANNEL_COUNT;
+/** The most channels the preview synth grows to: eight groups of sixteen. */
+export const MAX_PREVIEW_CHANNELS = 128;
 /** The channel DRAW's `stroke`-th soundfont stroke (counting from 0) plays on. */
 export const drawStrokeChannel = (stroke: number): number =>
   DRAW_LIVE_CHANNELS[((Math.round(stroke) % DRAW_LIVE_CHANNELS.length) + DRAW_LIVE_CHANNELS.length) % DRAW_LIVE_CHANNELS.length];

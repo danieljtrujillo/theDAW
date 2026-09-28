@@ -41,7 +41,7 @@ import { RecordingHistory } from './RecordingHistory';
 import { AssistantOrb } from './AssistantOrb';
 import { saveFile, type SaveFileResult } from '../../../lib/saveFile';
 
-import { usePianoRollStore } from '../../../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../../../state/pianoRollStore';
 import { useEditorStore } from '../../../state/editorStore';
 import { chooseRollVoice, rollVoiceChoice } from '../../../lib/rollVoiceChoice';
 import { GM_DRUM_KITS, drumKitName } from '../../../lib/clipProgram';
@@ -124,7 +124,8 @@ export const Vocal2MidiPanel: React.FC = () => {
   // this panel on each frame of an EDIT drag.
   const linkedClip = useEditorStore((st) => (editingClipId ? st.clips.find((c) => c.id === editingClipId) : undefined));
   const linkedTrack = useEditorStore((st) => (linkedClip ? st.tracks.find((t) => t.id === linkedClip.trackId) : undefined));
-  const voiceChoice = rollVoiceChoice(editingClipId, linkedClip ? [linkedClip] : [], linkedTrack ? [linkedTrack] : [], rollProgram);
+  const activePart = usePianoRollStore((st) => activeTrackOf(st));
+  const voiceChoice = rollVoiceChoice(editingClipId, linkedClip ? [linkedClip] : [], linkedTrack ? [linkedTrack] : [], rollProgram, activePart);
   const [capturedNotes, setCapturedNotes] = useState<NoteEvent[]>([]);
   const [processedNotes, setProcessedNotes] = useState<NoteEvent[]>([]);
   const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysisResult | null>(null);

@@ -1,5 +1,7 @@
 // AI symbolic composition: ask a Gemini model (through theDAW's server-side
-// proxy) to write a two-hand piano part from parameters, returned as notes
+// proxy) to write a two-hand piano part from parameters, or a part for the
+// instrument of the roll part it goes into (folded into that instrument's
+// practical range), returned as notes
 // on the piano roll's 16th-note step grid. The request carries the roll's
 // meter map and pickup and names every bar's steps and groups
 // (lib/aiComposeGrid.ts); the notes come back with fractional steps allowed and
@@ -10,7 +12,7 @@
 
 import { GoogleGenAI, Type } from '@google/genai';
 import type { PianoNote } from '../state/pianoRollStore';
-import { buildComposePrompt, composeGrid, parseComposeResponse, type ComposePromptInput } from './aiComposeGrid';
+import { buildComposePrompt, composeGrid, foldNotesIntoRange, parseComposeResponse, type ComposePromptInput } from './aiComposeGrid';
 import type { MeterSegment } from './meterMap';
 import { pairingHeader } from './pairing';
 
@@ -89,5 +91,8 @@ export async function generatePianoFromParams(p: AiComposeParams): Promise<AiCom
   });
 
   const stamp = Math.random().toString(36).slice(2);
-  return parseComposeResponse(response.text || '', grid, p.bpm, (i) => `ai-${stamp}-${i}`);
+  const parsed = parseComposeResponse(response.text || '', grid, p.bpm, (i) => `ai-${stamp}-${i}`);
+  // A part for an instrument stays inside its range, whatever the model wrote; drums keep their keys.
+  const inst = p.instrument;
+  return inst && !inst.percussion ? { ...parsed, notes: foldNotesIntoRange(parsed.notes, inst.rangeLow, inst.rangeHigh) } : parsed;
 }

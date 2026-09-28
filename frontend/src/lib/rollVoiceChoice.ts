@@ -11,10 +11,15 @@
  * is gone, keeps the choice as its own voice (pianoRollStore voiceProgram), one
  * roll undo step, and the project turns dirty since a .tasmo saves it.
  * `null` is "follow the instrument picker" either way.
+ *
+ * A roll of several parts: the choice lands on the ACTIVE part. When that part
+ * has a program of its own (the parts column's Sound), the choice replaces it,
+ * one roll undo step; otherwise it goes where it always went, as above.
  */
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore';
-import { usePianoRollStore } from '../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../state/pianoRollStore';
 import { isPercussionTrack } from './clipProgram';
+import { isPercussionPart } from './rollTracks';
 
 /** The EDIT clip the roll is linked to and its track, or null when the roll is unlinked or its clip is gone. */
 export function linkedRollTarget(
@@ -42,7 +47,10 @@ export function rollVoiceChoice(
   clips: readonly AudioClip[],
   tracks: readonly EditorTrack[],
   rollProgram: number | null,
+  part: { program: number | null; channel: number | null } | null = null,
 ): RollVoiceChoice {
+  // The active part's own program comes first: it is what the part plays.
+  if (part && part.program !== null) return { track: null, drums: isPercussionPart(part), program: part.program };
   const linked = linkedRollTarget(editingClipId, clips, tracks);
   if (!linked) return { track: null, drums: false, program: rollProgram };
   return {
@@ -54,12 +62,19 @@ export function rollVoiceChoice(
 
 /**
  * Put the roll on `program` (null: the instrument picker). Returns where it
- * landed: `track` for a linked roll, `roll` for an unlinked one.
+ * landed: `part` for an active part with a program of its own, `track` for a
+ * linked roll, `roll` for an unlinked one.
  */
-export function chooseRollVoice(program: number | null): 'track' | 'roll' {
+export function chooseRollVoice(program: number | null): 'part' | 'track' | 'roll' {
   const value = program === null || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
+  const roll = usePianoRollStore.getState();
+  const part = activeTrackOf(roll);
+  if (part.program !== null) {
+    roll.setTrackProgram(part.id, value ?? null);
+    return 'part';
+  }
   const editor = useEditorStore.getState();
-  const linked = linkedRollTarget(usePianoRollStore.getState().editingClipId, editor.clips, editor.tracks);
+  const linked = linkedRollTarget(roll.editingClipId, editor.clips, editor.tracks);
   if (!linked) {
     usePianoRollStore.getState().setVoiceProgram(value ?? null);
     return 'roll';

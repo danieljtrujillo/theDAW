@@ -9,7 +9,8 @@ import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type 
 import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type PolyLane } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
-import { playedRollNotes } from './rollClip';
+import { cleanRollPartRef, playedRollNotes } from './rollClip';
+import type { RollPartRef } from '../state/pianoRollStore';
 import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
@@ -313,6 +314,8 @@ export interface TasmoClipInput {
   roll_bends?: TasmoLaneBend[] | null;
   /** Piano-roll clips: the tempo map, written only when the clip changes tempo. */
   tempo_map?: TasmoTempoEvent[] | null;
+  /** Piano-roll clips: the roll part the clip holds (see rollPartToTasmo). */
+  roll_part?: TasmoRollPart | null;
   /** Alternate recordings of this clip, one file entry each, and the comp
    *  across them. `active_take_index` names the take the clip's OWN
    *  `audio_file` / `offset_into_source` mirror, so a reader that ignores all
@@ -481,6 +484,8 @@ export interface TasmoLoadedClip {
   roll_bends?: TasmoLaneBend[] | null;
   /** The tempo map; absent in .tasmo files written before the roll had one, and on a clip at one tempo. */
   tempo_map?: TasmoTempoEvent[] | null;
+  /** The roll part the clip holds; absent in .tasmo files written before the roll had parts. */
+  roll_part?: TasmoRollPart | null;
   /** Alternate recordings, the comp across them, and which take the clip's own
    *  fields mirror; all three absent in .tasmo files written before takes
    *  existed, which is why the loader treats their absence as "not comped"
@@ -564,6 +569,48 @@ export interface RecentItem {
   path: string;
   name: string;
 }
+
+/**
+ * A roll part as a .tasmo clip saves it (AudioClip `sourceRollPart`): the roll
+ * document shared by the clips of every part bounced from one roll, the part's
+ * id and place, and its settings. `program` and `channel` are null when the
+ * part follows the roll's voice or takes the next free channel.
+ */
+export interface TasmoRollPart {
+  doc: string;
+  id: string;
+  order: number;
+  name: string;
+  program: number | null;
+  bank: number;
+  channel: number | null;
+  color: string;
+  mute: boolean;
+  solo: boolean;
+  instrument_id?: string | null;
+}
+
+/** A clip's part record in the file shape. */
+export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
+  doc: ref.doc,
+  id: ref.id,
+  order: ref.order,
+  name: ref.name,
+  program: ref.program,
+  bank: ref.bank,
+  channel: ref.channel,
+  color: ref.color,
+  mute: ref.mute,
+  solo: ref.solo,
+  instrument_id: ref.instrumentId ?? null,
+});
+
+/** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
+export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId }, fallback);
+};
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---
 type ClipMeterFields = Pick<

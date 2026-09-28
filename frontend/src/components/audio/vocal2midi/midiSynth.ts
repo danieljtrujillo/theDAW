@@ -7,26 +7,25 @@
  * compact panel also exposes theDAW's own instrument picker for the full 128-program
  * range. WAV export uses theDAW's offline soundfont render.
  *
- * The panel's voice is the voice the piano roll plays (lib/clipProgram
- * rollVoice). The assistant's instrument choice and the panel's ROLL VOICE
+ * The panel's voice is the voice the piano roll's active part plays
+ * (lib/rollPartVoice). The assistant's instrument choice and the panel's ROLL VOICE
  * select set it through lib/rollVoiceChoice: on a roll linked to an EDIT clip
  * they set that clip's track instrument, and on an unlinked roll the roll's own
- * voice (pianoRollStore `voiceProgram`). The panel previews and exports with
+ * voice (pianoRollStore `voiceProgram`), and on a part with a program of its
+ * own that program. The panel previews and exports with
  * it. It never writes the global picker, whose program every EDIT clip without
  * one of its own follows. Left unset, all of them play the picker's program.
  */
 import type { NoteEvent } from './types';
-import { usePianoRollStore } from '../../../state/pianoRollStore';
-import { useEditorStore } from '../../../state/editorStore';
 import {
   getActiveProgram,
-  getGlobalVoice,
   previewNoteSF,
   renderNotesToBlobSF,
   liveAllNotesOff,
 } from '../../../lib/soundfontEngine';
 import type { RenderNote } from '../../../lib/midiSynth';
-import { rollVoice, type ClipVoice } from '../../../lib/clipProgram';
+import type { ClipVoice } from '../../../lib/clipProgram';
+import { rollPartVoice } from '../../../lib/rollPartVoice';
 import { chooseRollVoice } from '../../../lib/rollVoiceChoice';
 import { DRUM_CHANNEL } from '../../../lib/editChannels';
 import { getEngineCtx } from '../../../state/playerStore';
@@ -50,9 +49,8 @@ const INSTRUMENT_GM: Record<InstrumentType, { name: string; program: number }> =
 /** The voice the panel previews and renders with: the roll's (its linked
  *  clip's, else its own), with the picker's program when that has none. */
 export const vocalVoice = (): ClipVoice => {
-  const { clips, tracks } = useEditorStore.getState();
-  const { editingClipId, voiceProgram } = usePianoRollStore.getState();
-  const voice = rollVoice(editingClipId, clips, tracks, getGlobalVoice(), voiceProgram);
+  // The active part's voice (lib/rollPartVoice): its own program, else its linked clip's, else the roll's.
+  const voice = rollPartVoice();
   return { program: voice.program ?? getActiveProgram(), percussion: voice.percussion };
 };
 

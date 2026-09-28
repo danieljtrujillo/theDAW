@@ -22,7 +22,7 @@ import { useShardIndexStore } from '../../state/shardIndexStore';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
-import { usePianoRollStore } from '../../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../../state/pianoRollStore';
 import { artifactTake } from '../../lib/takeNotes';
 import { importTake } from '../../lib/rollTakes';
 import { useMidiSongBoxRequest } from '../../state/midiSongBoxStore';
@@ -262,8 +262,11 @@ async function shardsFor(entryId: string): Promise<number> {
 
 /** The question a row asks before it runs, or null to run at once. */
 function questionFor(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuActionContext, title: string): string | null {
-  const rollNotes = usePianoRollStore.getState().notes.length;
-  const replacingRoll = rollNotes > 0 ? `Replace the ${rollNotes} note${rollNotes === 1 ? '' : 's'} in the piano roll` : null;
+  const roll = usePianoRollStore.getState();
+  const rollNotes = roll.notes.length;
+  // The notes go into the part being edited, which a roll of several parts names.
+  const where = roll.tracks.length > 1 ? `the part ${activeTrackOf(roll).name}` : 'the piano roll';
+  const replacingRoll = rollNotes > 0 ? `Replace the ${rollNotes} note${rollNotes === 1 ? '' : 's'} in ${where}` : null;
   switch (row.id) {
     case 'midi-detect':
       return replacingRoll && `${replacingRoll} with the notes detected in "${title}"?`;

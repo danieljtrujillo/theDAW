@@ -12,6 +12,12 @@ export interface SheetNote {
 export interface SheetTrack {
   name: string;
   notes: SheetNote[];
+  /** The orchestral registry id the part's instrument matches (backend match_music21), or null. Absent from older backends. */
+  instrument?: string | null;
+  /** The part's General MIDI program (0-127), or null. Absent from older backends. */
+  program?: number | null;
+  /** True for an unpitched percussion part, which the roll puts on channel 10. */
+  percussion?: boolean;
 }
 
 export interface SheetScore {

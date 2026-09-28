@@ -315,6 +315,14 @@ class Clip(BaseModel):
     # tempo; source_bpm is its first tempo. Defaulted, so .tasmo files written
     # before the roll had a tempo map still validate and load with None.
     tempo_map: list[dict] | None = None
+    # Piano-roll clips: the roll part the clip holds ({doc, id, order, name,
+    # program, bank, channel, color, mute, solo, instrument_id}). ``doc`` is
+    # shared by the clips of every part bounced from one roll, so opening one
+    # clip in the roll opens them all, one part each; program and channel are
+    # None when the part follows the roll's voice or takes the next free
+    # channel. Defaulted, so .tasmo files written before the roll had parts
+    # still validate and each roll clip opens as one part.
+    roll_part: dict | None = None
     # MIDI clips: the GM program (0-127) the clip plays through when it has one
     # of its own (None = its track's, then the global instrument) and the
     # program its embedded audio was rendered with. source_bpm, on any clip: the

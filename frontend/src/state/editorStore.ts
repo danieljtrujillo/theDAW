@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
-import type { PianoNote } from './pianoRollStore';
+import type { PianoNote, RollPartRef } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
@@ -203,6 +203,12 @@ export interface AudioClip {
    *  playback, drawing and every re-render time the notes through it. Absent on a clip
    *  at one tempo, and on clips bounced before the roll had a tempo map. */
   sourceTempoMap?: TempoEvent[];
+  /** When sourceKind === 'piano-roll', the roll part this clip holds (pianoRollStore
+   *  RollPartRef): the roll document shared by the clips of every part bounced
+   *  from one roll, the part's id, place and settings. Opening the clip in the
+   *  roll opens every clip of its document, one part each. Absent on clips
+   *  bounced before the roll had parts; such a clip opens as the roll's one part. */
+  sourceRollPart?: RollPartRef;
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;

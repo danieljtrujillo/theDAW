@@ -22,6 +22,7 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
 import { midiFileToRoll } from './rollMidi';
+import { importMidiParts } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
 import { logError, logInfo } from '../state/logStore';
@@ -178,14 +179,18 @@ export function loadMidiIntoPianoRoll(
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
     }
-    const piano = usePianoRollStore.getState();
     // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
-    piano.importNotes(notes, bpm, meter, bends, tempoMap);
+    // The piano roll takes a file of several tracks as one part each, on its own
+    // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
+    // notes in one layer, as it always has.
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn') : null;
+    if (!parts) usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap);
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
+    const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';
     logInfo(
       'send-to',
-      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
+      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps${partText})`,
     );
     return true;
   } catch (e) {

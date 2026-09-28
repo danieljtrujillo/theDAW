@@ -58,7 +58,7 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipNoteSpan, clipRenderInput, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { clipNoteSpan, clipPartsLoad, clipRenderInput, midiFileClipFields } from '../../lib/rollClip';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
@@ -5376,11 +5376,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     // were all deleted is still a roll, and opening it is how you put notes back.
     if (!isMidiClip(clip)) return;
     // The roll's own notes with their lanes, meter map and pickup; a clip bounced
-    // before the roll had a meter opens as 4/4 on a whole number of bars.
-    const args = clipRollLoad(clip);
+    // before the roll had a meter opens as 4/4 on a whole number of bars. The
+    // clips of its other roll parts open with it, one part each (lib/rollClip
+    // clipPartsLoad); a clip bounced before parts opens as one part.
+    const { clips, tracks } = useEditorStore.getState();
+    const args = clipPartsLoad(clip, clips, tracks);
     usePianoRollStore.getState().loadFromClip(...args);
     useBottomPanelStore.getState().showTab('midi');
-    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in MIDI (${args[1].length} notes)`);
+    const partCount = args[7]?.tracks.length ?? 1;
+    logInfo('editor', `Editing clip ${clip.id.slice(0, 8)} in MIDI (${args[1].length} notes${partCount > 1 ? `, ${partCount} parts` : ''})`);
   }, []);
 
   /** Open the AUDIO EDIT drawer on a clip and bring its tab up (F19). */
