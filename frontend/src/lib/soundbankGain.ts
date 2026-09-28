@@ -15,7 +15,10 @@
  *  - in a render, as the same per-channel gain carried in the snapshot the
  *    offline worklet applies before it plays the MIDI
  *    (`renderGainSnapshot`), because an OfflineAudioContext worklet may
- *    ignore messages sent after the render starts.
+ *    ignore messages sent after the render starts. The snapshot holds each
+ *    channel's first preset; a later program change to a preset with another
+ *    gain is followed on the synth's own output for that channel, a gain node
+ *    stepped at the change's second (`renderGainSteps`, `routeRenderGains`).
  *
  * A channel's gain follows the preset it selects: a bank select (CC 0) plus a
  * program. A bank loaded with a bank offset answers bank selects shifted by
@@ -185,4 +188,104 @@ export function renderGainSnapshot(midi: BasicMIDI, sampleRate: number): Synthes
   } finally {
     synth.destroySynthProcessor();
   }
+}
+
+/** One step of a channel's render gain: from `sec` on, its dry output plays at `gain` (linear). */
+export interface RenderGainStep {
+  sec: number;
+  gain: number;
+}
+
+/**
+ * The gain steps a render of `midi` puts on each synth output (a channel's
+ * dry output, `channel % 16`) so a program change partway through the file
+ * plays its new preset's playback gain. Each step is relative to the gain the
+ * snapshot gave the channel (its first preset, midiChannelSelections), so a
+ * channel that keeps one preset has no step and its output is left alone.
+ *
+ * The synth sends each channel's reverb and chorus to one shared effects
+ * output, which follows the first preset's gain. An output two channels of the
+ * file share (channels 16 apart, on a second port) takes no steps: a step
+ * there would move the other channel too.
+ */
+export function renderGainSteps(midi: BasicMIDI): Map<number, RenderGainStep[]> {
+  interface Ev { ticks: number; ch: number; type: number; data: Uint8Array }
+  const events: Ev[] = [];
+  midi.tracks.forEach((track) => {
+    const offset = midi.portChannelOffsetMap?.[track.port] ?? 0;
+    for (const e of track.events) {
+      const status = e.statusByte as number;
+      const type = status & 0xf0;
+      if (type !== 0xb0 && type !== 0xc0 && type !== 0x90) continue;
+      events.push({ ticks: e.ticks, ch: (status & 0x0f) + offset, type, data: e.data });
+    }
+  });
+  events.sort((a, b) => a.ticks - b.ticks);
+  const first = midiChannelSelections(midi);
+  const baseDb = new Map<number, number>();
+  for (const [ch, sel] of first) baseDb.set(ch, selectionGainDb(sel.bank, sel.program, ch));
+  const bankNow = new Map<number, number>();
+  const seenFirst = new Set<number>();
+  const steps = new Map<number, RenderGainStep[]>();
+  const nowDb = new Map<number, number>(baseDb);
+  for (const e of events) {
+    if (e.type === 0xb0) {
+      if (e.data[0] === 0) bankNow.set(e.ch, e.data[1]);
+      continue;
+    }
+    if (e.type === 0x90) {
+      if (e.data[1] > 0) seenFirst.add(e.ch);
+      continue;
+    }
+    // A program change. The channel's first selection is the snapshot's.
+    if (!seenFirst.has(e.ch)) {
+      seenFirst.add(e.ch);
+      continue;
+    }
+    const db = selectionGainDb(bankNow.get(e.ch) ?? 0, e.data[0], e.ch);
+    if (db === nowDb.get(e.ch)) continue;
+    nowDb.set(e.ch, db);
+    const list = steps.get(e.ch) ?? [];
+    list.push({ sec: midi.midiTicksToSeconds(e.ticks), gain: dbToGain(db - (baseDb.get(e.ch) ?? 0)) });
+    steps.set(e.ch, list);
+  }
+  const byOutput = new Map<number, RenderGainStep[]>();
+  const usersOf = new Map<number, number>();
+  for (const ch of first.keys()) usersOf.set(ch % 16, (usersOf.get(ch % 16) ?? 0) + 1);
+  for (const [ch, list] of steps) {
+    if ((usersOf.get(ch % 16) ?? 0) > 1) continue;
+    byOutput.set(ch % 16, list);
+  }
+  return byOutput;
+}
+
+/** The parts of a WorkletSynthesizer `routeRenderGains` wires. */
+export interface ChannelOutputs {
+  connectChannel(target: AudioNode, channel: number): AudioNode;
+  disconnectChannel(target: AudioNode, channel: number): void;
+}
+
+/**
+ * Put each output of `steps` (renderGainSteps) through a gain node stepped at
+ * its program changes, between the synth and `destination`. The synth must
+ * already be connected to `destination` (all seventeen outputs). Returns the
+ * nodes made, one per stepped output.
+ */
+export function routeRenderGains(
+  ctx: Pick<BaseAudioContext, 'createGain'>,
+  synth: ChannelOutputs,
+  destination: AudioNode,
+  steps: ReadonlyMap<number, readonly RenderGainStep[]>,
+): GainNode[] {
+  const made: GainNode[] = [];
+  for (const [output, list] of steps) {
+    const node = ctx.createGain();
+    node.gain.setValueAtTime(1, 0);
+    for (const step of list) node.gain.setValueAtTime(step.gain, Math.max(0, step.sec));
+    synth.disconnectChannel(destination, output);
+    synth.connectChannel(node, output);
+    node.connect(destination);
+    made.push(node);
+  }
+  return made;
 }

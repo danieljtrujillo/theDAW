@@ -30,7 +30,7 @@ import { pairingHeaderFor } from './apiJson';
 import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
-import { applyChannelGain, renderGainSnapshot } from './soundbankGain';
+import { applyChannelGain, renderGainSnapshot, renderGainSteps, routeRenderGains } from './soundbankGain';
 import { MAX_PREVIEW_CHANNELS, PREVIEW_CHANNEL_COUNT } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
@@ -621,6 +621,8 @@ async function renderMidiToBlob(
   await addWorkletModule(ctx, await getProcessorUrl());
   const synth = new WorkletSynthesizer(ctx, { eventsEnabled: false });
   synth.connect(ctx.destination);
+  // A program change to a preset with another playback gain steps its channel's output there.
+  routeRenderGains(ctx, synth, ctx.destination, renderGainSteps(midi));
   await synth.startOfflineRender({
     midiSequence: midi,
     // Copy: startOfflineRender transfers (detaches) the buffer, but `sf` is the
