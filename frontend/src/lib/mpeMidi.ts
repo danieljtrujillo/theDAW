@@ -87,13 +87,24 @@ function findZone(tracks: readonly MidiTrack[]): { members: Set<number>; manager
   const last = declared.sort((a, b) => a.tick - b.tick).filter((z) => z.members > 0).pop();
   if (last) return { members: new Set(zoneMembers(last.channel, last.members)), manager: last.channel, track: null };
   // No configuration: a track playing three or more neighbouring channels, one note at a time on each, each shaped per channel.
+  const pressedChannels = new Set<number>();
+  const bentChannels = new Set<number>();
+  for (const x of tracks) {
+    for (const p of x.pressures ?? []) pressedChannels.add(p.channel);
+    for (const c of x.controls ?? []) if (c.controller === 74) pressedChannels.add(c.channel);
+    for (const b of x.bends ?? []) bentChannels.add(b.channel);
+  }
   for (const [k, t] of tracks.entries()) {
     const byCh = new Map<number, MidiNote[]>();
-    for (const n of t.notes) if (n.channel !== DRUM) byCh.set(n.channel, [...(byCh.get(n.channel) ?? []), n]);
+    for (const n of t.notes) {
+      if (n.channel === DRUM) continue;
+      const list = byCh.get(n.channel);
+      if (list) list.push(n);
+      else byCh.set(n.channel, [n]);
+    }
     // Pressure or CC 74 on a channel is MPE's own; a wheel alone is any multi-channel file's bend.
-    const pressed = (ch: number) =>
-      tracks.some((x) => (x.pressures ?? []).some((p) => p.channel === ch) || (x.controls ?? []).some((c) => c.channel === ch && c.controller === 74));
-    const shaped = (ch: number) => pressed(ch) || tracks.some((x) => (x.bends ?? []).some((b) => b.channel === ch));
+    const pressed = (ch: number) => pressedChannels.has(ch);
+    const shaped = (ch: number) => pressed(ch) || bentChannels.has(ch);
     const mono = (ns: MidiNote[]) => maxOverlap(ns.map((n) => ({ start: n.tick, end: n.tick + n.durationTicks }))) <= 1;
     const cands = [...byCh.keys()].filter((ch) => mono(byCh.get(ch)!) && shaped(ch)).sort((a, b) => a - b);
     // The longest run of neighbouring channels.
@@ -108,15 +119,19 @@ function findZone(tracks: readonly MidiTrack[]): { members: Set<number>; manager
   return null;
 }
 
-/** The last event at or before `tick` and every one after it before `end`, from a list sorted by tick. */
+/** The last event at or before `tick` and every one after it before `end`, from a list sorted by tick (a binary search, then the span). */
 function streamIn<T extends { tick: number }>(list: readonly T[], tick: number, end: number): { start: T | undefined; inside: T[] } {
-  let start: T | undefined;
-  const inside: T[] = [];
-  for (const e of list) {
-    if (e.tick <= tick) start = e;
-    else if (e.tick < end) inside.push(e);
-    else break;
+  // The first event past `tick`.
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].tick <= tick) lo = mid + 1;
+    else hi = mid;
   }
+  const start = lo > 0 ? list[lo - 1] : undefined;
+  const inside: T[] = [];
+  for (let i = lo; i < list.length && list[i].tick < end; i += 1) inside.push(list[i]);
   return { start, inside };
 }
 
@@ -134,7 +149,11 @@ export function applyMpeImport(tracks: MidiTrack[]): void {
   const timbreOf = new Map<number, MidiControl[]>();
   const pressureOf = new Map<number, MidiPressure[]>();
   const rangesOf = new Map<number, MidiBendRange[]>();
-  const add = <T>(m: Map<number, T[]>, ch: number, e: T) => m.set(ch, [...(m.get(ch) ?? []), e]);
+  const add = <T>(m: Map<number, T[]>, ch: number, e: T) => {
+    const list = m.get(ch);
+    if (list) list.push(e);
+    else m.set(ch, [e]);
+  };
   for (const t of tracks) {
     for (const b of t.bends ?? []) if (members.has(b.channel)) add(bendsOf, b.channel, b);
     for (const c of t.controls ?? []) if (members.has(c.channel) && c.controller === 74) add(timbreOf, c.channel, c);

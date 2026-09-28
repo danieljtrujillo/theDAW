@@ -100,6 +100,18 @@ for (const withZone of [true, false]) {
   assert.equal(back.tracks[0].notes[0].expr, undefined);
 }
 
+// ── a dense file reads in linear time ─────────────────────────────────────
+{
+  // 40 000 notes on one channel took 5.5 s when each note copied its channel's list.
+  const notes = Array.from({ length: 40000 }, (_, i) => ({ tick: i * 60, note: 40 + (i % 40), velocity: 90, durationTicks: 50, channel: 0 }));
+  const bytes = encodeMidi({ ppq: 480, bpm: 120, tracks: [{ name: 'dense', notes }] } as never);
+  const t0 = performance.now();
+  const read = parseMidi(bytes);
+  const ms = performance.now() - t0;
+  assert.equal(read.tracks[0].notes.length, 40000);
+  assert.ok(ms < 1500, `40 000 notes read in ${ms.toFixed(0)} ms`);
+}
+
 console.log('mpeMidi: ok');
 
 // ── Export: both writers write expressive notes as MPE, and they read back ───
