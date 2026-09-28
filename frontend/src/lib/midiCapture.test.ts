@@ -20,6 +20,7 @@ import {
   STEPS_PER_BEAT,
   capturedControlsToRoll,
   capturesMidi,
+  parseExpressionMessage,
   createNoteCapture,
   cropNotesToWindow,
   isMidiCaptureClip,
@@ -987,6 +988,58 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
     [[960, 0]],
     'the pedal-down before the punch window is cropped; the pedal-up lands a beat in at 60 BPM',
   );
+}
+
+{
+  // An MPE controller: two notes, each on a channel of its own, each shaped by its channel's
+  // pressure, CC 74 and wheel. The take's notes carry them as their own expression; the
+  // CC 74 is the notes', not the part's.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'] });
+  h.sec(0);
+  h.setStatus('recording');
+  // Channel 2 is set just before its note starts, as an MPE controller sends it.
+  h.send([0xd1, 30]);
+  h.send([0xb1, 74, 64]);
+  h.send([0xe1, 0x00, 0x40]);
+  h.send([0x91, 60, 100]);
+  h.sec(0.5);
+  h.send([0xd1, 110]); // pressure swells on channel 2 only
+  h.send([0x92, 64, 90]); // channel 3's note, with nothing set: no start values
+  h.sec(0.75);
+  h.send([0xe2, 0x7f, 0x7f]); // channel 3 bends to the top
+  h.sec(1);
+  h.send([0x81, 60, 0]);
+  h.send([0x82, 64, 0]);
+  h.setStatus('stopping');
+  const [c, e] = (h.clips[0].sourceRollNotes ?? []).slice().sort((a, b) => a.note - b.note);
+  assert.ok(c.expr, 'the C carries the expression of its channel');
+  assert.equal(c.expr.pressure, 30 / 127, 'its pressure where it started');
+  assert.equal(c.expr.timbre, 64 / 127);
+  assert.equal(c.expr.pitchBend, 0);
+  assert.equal(c.expr.bendRange, 48, 'at 48 semitones, the MPE members range');
+  assert.deepEqual(c.expr.curves?.pressure?.map((p) => [p.tick, p.value]), [[960, 110 / 127]], 'the swell half a second in, a beat at 120');
+  assert.equal(e.expr?.pressure, undefined, 'the E started with nothing set');
+  assert.deepEqual(e.expr?.curves?.pitchBend?.map((p) => [p.tick, p.value]), [[480, 1]], 'and bent to the top a quarter second in');
+  assert.equal(h.clips[0].sourceRollPart, undefined, 'the CC 74 belonged to the notes: no part controller');
+  h.dispose();
+
+  // One keyboard on one channel: its aftertouch is not any one note's.
+  resetMidiTakeSeq();
+  const one = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'] });
+  one.setStatus('recording');
+  one.send([0x90, 60, 100]);
+  one.send([0x90, 64, 100]);
+  one.sec(0.5);
+  one.send([0xd0, 90]);
+  one.sec(1);
+  one.setStatus('stopping');
+  assert.ok((one.clips[0].sourceRollNotes ?? []).every((n) => n.expr === undefined), 'no expression on a one-channel pass');
+  one.dispose();
+
+  assert.deepEqual(parseExpressionMessage([0xd3, 127]), { dim: 'pressure', channel: 3, value: 1 });
+  assert.deepEqual(parseExpressionMessage([0xe0, 0, 0]), { dim: 'pitchBend', channel: 0, value: -1 });
+  assert.equal(parseExpressionMessage([0xb0, 7, 90]), null, 'volume belongs to the part');
 }
 
 console.log('midiCapture: ok');
