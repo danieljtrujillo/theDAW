@@ -63,6 +63,7 @@ import {
 import { logError, logWarn } from './logStore';
 import {
   ensureEditBanks,
+  editChannelPressure,
   editControl,
   editNoteOn,
   editNoteOff,
@@ -80,9 +81,13 @@ import {
   EditMidiScheduler,
   clipLiveSlots,
   clipLiveTiming,
+  type EditMidiSink,
 } from '../lib/editMidiScheduler';
+import { startTrackOutputs, stopTrackOutputs, tickTrackOutputs, trackOutputsActive } from './midiOutBus';
+import { beatToTime, timeToBeat } from '../lib/tempoMap';
 import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
+import { trackMembers } from '../lib/mpeRotation';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
 import {
@@ -3070,7 +3075,7 @@ export type LiveMidiClip = Pick<
   | 'sourceBends'
 >;
 /** The fields of a track the live MIDI plan reads. */
-export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
+export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'mpeChannels' | 'instrumentBank' | 'instrumentBankId'>>;
 
 /**
  * Decide which MIDI clips play live and on which channels. A clip plays live
@@ -3080,7 +3085,9 @@ export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPe
  * melodic tracks never on a drum channel and percussion tracks always on one.
  * A melodic track whose clips bend takes one channel per bent lane and one its
  * other lanes share (lib/editMidiScheduler clipLiveSlots), the most any of its
- * clips needs, so each lane bends on its own channel as it does in the bounce.
+ * clips needs, so each lane bends on its own channel as it does in the bounce,
+ * and the member channels its expressive notes rotate across (lib/mpeRotation,
+ * the track's `mpeChannels`).
  */
 export function planLiveMidi(
   clips: readonly LiveMidiClip[],
@@ -3097,7 +3104,7 @@ export function planLiveMidi(
     const ids = wanted.get(track.id);
     if (ids) ids.push(clip.id);
     else wanted.set(track.id, [clip.id]);
-    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track))));
+    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), trackMembers(track.mpeChannels))));
   }
   const channels = planEditChannels(
     tracks
@@ -3263,11 +3270,53 @@ let midiScheduler: EditMidiScheduler | null = null;
 const midiLookaheadSec = (): number =>
   typeof document !== 'undefined' && document.hidden ? EDIT_MIDI_HIDDEN_LOOKAHEAD_SEC : EDIT_MIDI_LOOKAHEAD_SEC;
 
+/** This pass's track outputs (state/midiOutBus): what EDIT's synths are told also goes to each track's MIDI port. Null with none. */
+let trackOut: EditMidiSink | null = null;
+
+/** EDIT's synths, and the tracks' MIDI output ports while a pass has any. */
+const liveSink: EditMidiSink = {
+  noteOn: (...a) => {
+    editNoteOn(...a);
+    trackOut?.noteOn(...a);
+  },
+  noteOff: (...a) => {
+    editNoteOff(...a);
+    trackOut?.noteOff(...a);
+  },
+  wheel: (...a) => {
+    editPitchWheel(...a);
+    trackOut?.wheel(...a);
+  },
+  wheelRange: (...a) => {
+    editPitchWheelRange(...a);
+    trackOut?.wheelRange(...a);
+  },
+  control: (...a) => {
+    editControl(...a);
+    trackOut?.control(...a);
+  },
+  pressure: (...a) => {
+    editChannelPressure(...a);
+    trackOut?.pressure?.(...a);
+  },
+};
+
+/** An audio-context time as performance.now() milliseconds, the clock Web MIDI stamps messages with. */
+function contextToPerf(ctx: AudioContext): (t: number) => number {
+  return (t: number) => {
+    const stamp = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null;
+    if (stamp && typeof stamp.contextTime === 'number' && typeof stamp.performanceTime === 'number') {
+      return stamp.performanceTime + (t - stamp.contextTime) * 1000;
+    }
+    return performance.now() + (t - ctx.currentTime) * 1000;
+  };
+}
+
 function liveMidiScheduler(): EditMidiScheduler {
   if (!midiScheduler) {
     midiScheduler = new EditMidiScheduler({
       now: () => getEngineCtx().currentTime,
-      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange, control: editControl },
+      sink: liveSink,
       clips: () => useEditorStore.getState().clips,
       tracks: () => useEditorStore.getState().tracks,
       global: getGlobalVoice,
@@ -3309,13 +3358,30 @@ function scheduleMidiClips(fromSec: number, plan: LiveMidiPlan): void {
     for (const ch of chans) routeEditChannel(ch, env);
   }
   const scheduler = liveMidiScheduler();
+  // A track with a MIDI output sends what its synth plays to that port too, and the clock from here.
+  const ed = useEditorStore.getState();
+  const tempoMap = ed.tempoMap;
+  trackOut = startTrackOutputs({
+    tracks: ed.tracks,
+    channelsOf: plan.channels.channelsOf,
+    fromSec,
+    anchorCtx: startCtxTime,
+    now: () => ctx.currentTime,
+    toPerf: contextToPerf(ctx),
+    beatAt: (sec) => timeToBeat(tempoMap, sec),
+    secAt: (beat) => beatToTime(tempoMap, beat),
+    lookaheadSec: midiLookaheadSec(),
+  });
   scheduler.start(
     { liveClipIds: plan.liveClipIds, channelsOf: plan.channels.channelsOf },
     fromSec,
     startCtxTime,
     liveMidiEndSec(fromSec),
   );
-  midiTimer = window.setInterval(() => scheduler.tick(), EDIT_MIDI_TICK_MS);
+  midiTimer = window.setInterval(() => {
+    scheduler.tick();
+    tickTrackOutputs(midiLookaheadSec());
+  }, EDIT_MIDI_TICK_MS);
 }
 
 /** Stop the live MIDI scheduler and silence EDIT's synths. The preview synth (the roll, the arpeggiator, the keyboard) keeps sounding. */
@@ -3331,6 +3397,12 @@ function clearMidiTimers(): void {
       logWarn('editor', `Live MIDI fell behind the audio clock: ${late} note(s) started late, ${skipped} skipped (the app was busy or hidden)`);
     }
   }
+  // The tracks' MIDI ports: every note they were sent ends, and a clocked port gets Stop.
+  if (trackOutputsActive()) {
+    const ctx = getEngineCtx();
+    stopTrackOutputs(contextToPerf(ctx)(ctx.currentTime));
+  }
+  trackOut = null;
   editAllNotesOff();
 }
 

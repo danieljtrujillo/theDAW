@@ -46,6 +46,13 @@
  *     ends, each controller it left off its General MIDI default goes back,
  *     the pedal first, so nothing it held rings past it, as its render stops
  *     there and the arrangement's MIDI export writes it (lib/arrangementMidi).
+ *   - Its notes' own expression (PianoNote `expr`: pressure, timbre, bend),
+ *     MPE-style: each expressive note plays on a member channel of its own,
+ *     rotated across a block after the clip's lane channels (lib/mpeRotation;
+ *     the track's `mpeChannels` sets the block's size, 0 turns it off), and
+ *     just before it starts that channel's wheel, CC 74 and channel pressure
+ *     are set to the note's. Where the clip ends its member channels go back
+ *     to CC 74 at rest and no pressure.
  *   - Its gain and fades: the track's MIDI goes through one envelope gain per
  *     track, which follows the clip that is playing (lib/clipFade
  *     applyFadeAutomation with the clip's gain as the peak), the curve the
@@ -120,6 +127,7 @@ import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { PART_CONTROLLERS, partController } from './rollTracks';
 import { stepClock } from './rollTempo';
+import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionMessages, hasExpression, membersNeeded, rotateMembers, trackMembers } from './mpeRotation';
 
 /** How far ahead of the clock a tick schedules while the page is visible. */
 export const EDIT_MIDI_LOOKAHEAD_SEC = 0.1;
@@ -161,8 +169,10 @@ export interface EditMidiSink {
   noteOff(channel: number, midi: number, time: number): void;
   wheel(channel: number, raw: number, time: number): void;
   wheelRange(channel: number, semitones: number, time: number): void;
-  /** A controller change (a part's modulation, volume, pan, expression or pedal), 0-127. */
+  /** A controller change (a part's modulation, volume, pan, expression or pedal, a note's timbre), 0-127. */
   control(channel: number, controller: number, value: number, time: number): void;
+  /** Channel pressure, 0-127: an expressive note's pressure on its member channel. */
+  pressure?(channel: number, value: number, time: number): void;
 }
 
 /** A track's MIDI envelope gain: an AudioParam, or a recorder in tests. */
@@ -218,7 +228,7 @@ export interface TimedNote {
 export interface TimedCtl {
   t: number;
   slot: number;
-  kind: 'range' | 'wheel' | 'cc' | 'reset';
+  kind: 'range' | 'wheel' | 'cc' | 'reset' | 'pressure';
   value: number;
   /** The controller number, for `cc` and `reset`. */
   controller?: number;
@@ -266,12 +276,21 @@ const clipTotalSteps = (clip: TimedClip): number =>
 /**
  * How many channels a clip plays on: one, or one per lane of its that bends
  * plus one its other lanes share (lib/pitchBend laneChannels), exactly the
- * channels its bounce renders on. A percussion clip plays on its one drum channel.
+ * channels its bounce renders on, and then the member channels its
+ * expressive notes rotate across: as many as sound at once, at most
+ * `members` (lib/mpeRotation). A percussion clip plays on its one drum channel.
  */
-export function clipLiveSlots(clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'>, percussion = false): number {
-  if (percussion || !clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1;
+export function clipLiveSlots(
+  clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> & Partial<Pick<AudioClip, 'sourcePianoRoll'>>,
+  percussion = false,
+  members = MPE_DEFAULT_MEMBERS,
+): number {
+  if (percussion) return 1;
+  const expressive = (clip.sourcePianoRoll ?? []).filter((n) => hasExpression(n.expr)).map((n) => ({ start: n.step, end: n.step + n.length }));
+  const mpe = membersNeeded(expressive, members);
+  if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1 + mpe;
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
-  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size);
+  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + mpe;
 }
 
 const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
@@ -281,9 +300,10 @@ const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
  * notes are the ones its bounce renders from (clipRenderInput), at their own
  * lengths through the clip's clock, inside the clip's window: the trim offset
  * is taken off and a note running past an edge is cut at it. A percussion clip
- * ignores bends and plays on one channel.
+ * ignores bends and plays on one channel. Expressive notes rotate across up
+ * to `members` member channels after the lane channels (lib/mpeRotation).
  */
-export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined, percussion = false): ClipTiming {
+export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined, percussion = false, members = MPE_DEFAULT_MEMBERS): ClipTiming {
   const clock = stepClock(clip.sourceBpm ?? fallbackBpm ?? 120, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const dur = clip.durationSec;
@@ -294,22 +314,43 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
   const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
 
+  const used = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
+  // The expressive notes' member channels, after the lane channels: the rotation over every one of them, in steps.
+  const expressive = percussion ? [] : input.notes.filter((n) => hasExpression(n.expr));
+  const spans = expressive.map((n) => ({ start: n.step, end: n.step + n.length }));
+  const mpe = membersNeeded(spans, members);
+  const memberOf = new Map<object, number>();
+  rotateMembers(spans, mpe).forEach((m, i) => {
+    if (m >= 0) memberOf.set(expressive[i], m);
+  });
+  const ctl: TimedCtl[] = [];
+  // The expressive notes' own messages, added last so each stands over a channel default or a part's change at its time.
+  const exprCtl: TimedCtl[] = [];
+
   const notes: TimedNote[] = [];
   for (const n of input.notes) {
     const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
     if (relEnd <= 0 || relStart >= dur) continue; // outside this clip's window
+    const member = memberOf.get(n);
+    const on = start + Math.max(0, relStart);
     notes.push({
-      on: start + Math.max(0, relStart),
+      on,
       off: start + Math.min(dur, relEnd),
       midi: n.note,
       velocity: n.velocity,
-      slot: laneSlot(n.lane),
+      slot: member === undefined ? laneSlot(n.lane) : used + member,
     });
+    // The member channel takes the note's bend, timbre and pressure just before the note starts.
+    if (member !== undefined && n.expr) {
+      const m = expressionMessages(n.expr);
+      exprCtl.push({ t: on, slot: used + member, kind: 'wheel', value: m.wheel });
+      exprCtl.push({ t: on, slot: used + member, kind: 'cc', controller: 74, value: m.timbre });
+      exprCtl.push({ t: on, slot: used + member, kind: 'pressure', value: m.pressure });
+    }
   }
   notes.sort(byOn);
+  const slots = used + mpe;
 
-  const used = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
-  const ctl: TimedCtl[] = [];
   // Every channel the clip uses opens at the clip's start: its range and its
   // wheel where the clip's source begins. A channel no lane bends goes back to
   // the default range at the centre.
@@ -329,10 +370,15 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
       }
     }
   }
-  for (let slot = 0; slot < used; slot += 1) {
+  for (let slot = 0; slot < slots; slot += 1) {
     if (bentSlots.has(slot)) continue;
     ctl.push({ t: start, slot, kind: 'range', value: DEFAULT_BEND_RANGE });
     ctl.push({ t: start, slot, kind: 'wheel', value: BEND_CENTER });
+  }
+  // Where the clip ends its member channels rest: CC 74 at its centre and no pressure.
+  for (let slot = used; slot < slots; slot += 1) {
+    ctl.push({ t: start + dur, slot, kind: 'reset', controller: 74, value: TIMBRE_REST });
+    ctl.push({ t: start + dur, slot, kind: 'pressure', value: 0 });
   }
   // The part's controllers act on a channel, so each goes to every channel the clip plays on.
   const controls = clipControlTimes({ ...clip, offsetIntoSource: offset }, fallbackBpm ?? 120);
@@ -340,7 +386,7 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   if (controls.length) {
     for (const c of controls) {
       held.set(c.controller, c.value);
-      for (let slot = 0; slot < used; slot += 1) ctl.push({ t: c.sec, slot, kind: 'cc', controller: c.controller, value: c.value });
+      for (let slot = 0; slot < slots; slot += 1) ctl.push({ t: c.sec, slot, kind: 'cc', controller: c.controller, value: c.value });
     }
     // Where the clip ends, each controller it left off its default goes back, the pedal first.
     const resets = [...held.entries()]
@@ -348,12 +394,13 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
       .sort(([a], [b]) => pedalFirst(a, b));
     for (const [controller] of resets) {
       const value = partController(controller)?.initial ?? 0;
-      for (let slot = 0; slot < used; slot += 1) ctl.push({ t: start + dur, slot, kind: 'reset', controller, value });
+      for (let slot = 0; slot < slots; slot += 1) ctl.push({ t: start + dur, slot, kind: 'reset', controller, value });
     }
   }
+  ctl.push(...exprCtl);
   // Stable: at one time a channel's range stays ahead of its wheel, and its controllers keep their order.
   ctl.sort((a, b) => a.t - b.t);
-  return { notes, ctl, slots: used, controllers: [...held.keys()].sort(pedalFirst) };
+  return { notes, ctl, slots, controllers: [...held.keys()].sort(pedalFirst) };
 }
 
 /** The first index in `xs` whose key is at or past `t`. */
@@ -455,7 +502,7 @@ export class EditMidiScheduler {
   private held = new Map<string, HeldControls>();
   /** The clips the last tick played live, so a clip that starts playing part way is seen. */
   private lastLive: ReadonlySet<string> = new Set();
-  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; timing: ClipTiming }>();
+  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; members: number; timing: ClipTiming }>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
 
   constructor(deps: EditMidiSchedulerDeps) {
@@ -481,7 +528,8 @@ export class EditMidiScheduler {
     const bpm = this.deps.projectBpm();
     for (const clip of this.deps.clips()) {
       if (!pass.liveClipIds.has(clip.id)) continue;
-      this.timingOf(clip, bpm, isPercussionTrack(trackById.get(clip.trackId)));
+      const track = trackById.get(clip.trackId);
+      this.timingOf(clip, bpm, isPercussionTrack(track), trackMembers(track?.mpeChannels));
     }
   }
 
@@ -534,11 +582,11 @@ export class EditMidiScheduler {
     return this.anchorCtx + (t - this.anchorT);
   }
 
-  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean): ClipTiming {
+  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean, members: number): ClipTiming {
     const hit = this.timing.get(clip);
-    if (hit && hit.bpm === bpm && hit.percussion === percussion) return hit.timing;
-    const timing = clipLiveTiming(clip, bpm, percussion);
-    this.timing.set(clip, { bpm, percussion, timing });
+    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.members === members) return hit.timing;
+    const timing = clipLiveTiming(clip, bpm, percussion, members);
+    this.timing.set(clip, { bpm, percussion, members, timing });
     return timing;
   }
 
@@ -589,6 +637,7 @@ export class EditMidiScheduler {
       const controller = c.controller ?? 0;
       if (c.kind === 'range') return pushAt(channel, time, 0.25, (at) => sink.wheelRange(channel, c.value, at));
       if (c.kind === 'wheel') return pushAt(channel, time, 0.5, (at) => sink.wheel(channel, c.value, at));
+      if (c.kind === 'pressure') return pushAt(channel, time, 0.3, (at) => sink.pressure?.(channel, c.value, at));
       return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => sink.control(channel, controller, c.value, at));
     };
 
@@ -631,7 +680,7 @@ export class EditMidiScheduler {
       const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);
-      const timing = this.timingOf(clip, bpm, percussion);
+      const timing = this.timingOf(clip, bpm, percussion, trackMembers(track.mpeChannels));
       const chOf = (slot: number) => chans[Math.min(slot, chans.length - 1)];
       const clipEnd = clip.startSec + clip.durationSec;
       const open = muteSoloOpen(track, anySolo);
