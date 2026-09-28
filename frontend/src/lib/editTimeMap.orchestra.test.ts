@@ -16,7 +16,7 @@
  *   cd frontend && npx tsx src/lib/editTimeMap.orchestra.test.ts
  */
 import assert from 'node:assert/strict';
-import { encodeMidi, parseMidi, type MidiFileData, type MidiTrack } from './midi.ts';
+import { encodeMidi, parseMidi, tempoMicros, tempoOfMicros, type MidiFileData, type MidiTrack } from './midi.ts';
 import { midiFileClipFields } from './rollClip.ts';
 import { stepClock } from './rollTempo.ts';
 import { editBarStartSec, editGridLines, editRulerBars } from './editTimeMap.ts';
@@ -35,6 +35,9 @@ const T78 = BAR44 * 3;
 const T54 = T78 + BAR78 * 2;
 const END = T54 + BAR54 * 3;
 const tempos = [{ tick: 0, bpm: 96 }, { tick: T78, bpm: 72 }, { tick: T54, bpm: 132 }];
+/** The tempo an FF 51 written for `bpm` holds: a whole number of microseconds a
+ *  quarter, read back exactly (72 is 833333 us, 72.0000288 BPM). */
+const heard = (bpm: number): number => tempoOfMicros(tempoMicros(bpm));
 const timeSignatures = [{ tick: 0, num: 4, den: 4 }, { tick: T78, num: 7, den: 8, groups: [3, 2, 2] }, { tick: T54, num: 5, den: 4 }];
 
 /** Seconds of `tick` under the file's tempos, integrated here rather than by the app. */
@@ -44,7 +47,7 @@ function tickSec(tick: number): number {
     const from = tempos[i].tick;
     const to = i + 1 < tempos.length ? tempos[i + 1].tick : Infinity;
     if (tick <= from) break;
-    sec += ((Math.min(tick, to) - from) / PPQ) * (60 / tempos[i].bpm);
+    sec += ((Math.min(tick, to) - from) / PPQ) * (60 / heard(tempos[i].bpm));
   }
   return sec;
 }
@@ -87,7 +90,7 @@ file.tracks.forEach((_, p) => {
   const clip = ed().clips.find((c) => c.id === clipIds[p])!;
   const track = ed().tracks.find((t) => t.id === clip.trackId)!;
   assert.equal(track.instrumentProgram, PROGRAMS[p], `part ${p + 1} on its own instrument`);
-  assert.deepEqual((clip.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, 96], [T78 / PPQ, 72], [T54 / PPQ, 132]]);
+  assert.deepEqual((clip.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, heard(96)], [T78 / PPQ, heard(72)], [T54 / PPQ, heard(132)]]);
   assert.deepEqual((clip.sourceMeterMap ?? []).map((s) => `${s.bar}:${s.meter.num}/${s.meter.den}`), ['0:4/4', '3:7/8', '5:5/4']);
 });
 
@@ -98,7 +101,7 @@ assert.equal(offer.summary, '4/4 then 7/8 3+2+2 then 5/4, 72-132 BPM');
 assert.equal(offer.anchorSec, 0);
 const res = ed().adoptClipTimeMaps(offer.clipId);
 assert.ok(res.ok, res.error);
-assert.deepEqual(ed().tempoMap.map((e) => [e.beat, e.bpm]), [[0, 96], [12, 72], [19, 132]], 'the arrangement takes the file\'s tempo changes');
+assert.deepEqual(ed().tempoMap.map((e) => [e.beat, e.bpm]), [[0, heard(96)], [12, heard(72)], [19, heard(132)]], 'the arrangement takes the file\'s tempo changes');
 assert.deepEqual(ed().meterMap.map((s) => `${s.bar}:${s.meter.num}/${s.meter.den} ${s.meter.groups.join('+')}`), ['0:4/4 ', '3:7/8 3+2+2', '5:5/4 ']);
 // Every other part now agrees with the arrangement: no offer is left for any of them.
 for (const id of clipIds) {
@@ -139,6 +142,11 @@ const accents = clicksInWindow(editTempoMap(), editMeterMap(), 0, BAR_SEC[8] - 1
 assert.equal(accents.length, 8, 'one downbeat per bar');
 accents.forEach((c, i) => near(c.sec, BAR_SEC[i], 1e-9, `click downbeat ${i + 1}`));
 const sevenEight = clicksInWindow(editTempoMap(), editMeterMap(), BAR_SEC[3], BAR_SEC[4] - 1e-6, { mode: 'group' });
-assert.deepEqual(sevenEight.map((c) => Math.round((c.sec - BAR_SEC[3]) * 1e6) / 1e6), [0, 1.25, 2.083333], 'a 7/8 3+2+2 bar at 72 clicks on its three group starts');
+// A 7/8 3+2+2 bar at 72 clicks on its three group starts: 0, 1.25 s and 2.0833 s in,
+// at the tempo the file's FF 51 holds.
+assert.equal(sevenEight.length, 3, 'a 7/8 3+2+2 bar clicks three times');
+[BAR_SEC[3], tickSec(T78 + (PPQ / 2) * 3), tickSec(T78 + (PPQ / 2) * 5)].forEach((sec, i) => near(sevenEight[i].sec, sec, 1e-9, `7/8 group click ${i + 1}`));
+near(sevenEight[1].sec - BAR_SEC[3], 1.25, 1e-5, 'group 2 of 3+2+2 at 72 is 1.25 s in');
+near(sevenEight[2].sec - BAR_SEC[3], 2.083333, 1e-5, 'group 3 of 3+2+2 at 72 is 2.0833 s in');
 
 console.log('editTimeMap.orchestra: ok');

@@ -23,7 +23,7 @@
  *   cd frontend && npx tsx src/lib/midiLiveScore.test.ts
  */
 import assert from 'node:assert/strict';
-import { encodeMidi, parseMidi, type MidiFileData, type MidiTrack } from './midi.ts';
+import { encodeMidi, parseMidi, tempoMicros, tempoOfMicros, type MidiFileData, type MidiTrack } from './midi.ts';
 import { midiFileClipFields } from './rollClip.ts';
 import { stepClock } from './rollTempo.ts';
 import { midiRenderSig, midiRenderState, type MidiStepRender } from './midiRender.ts';
@@ -56,6 +56,9 @@ const T78 = BAR44 * 2;
 const T54 = T78 + BAR78 * 2;
 const END = T54 + BAR54 * 2;
 const tempos = [{ tick: 0, bpm: 96 }, { tick: T78, bpm: 72 }, { tick: T54, bpm: 132 }];
+/** The tempo an FF 51 written for `bpm` holds: a whole number of microseconds a
+ *  quarter, read back exactly (72 is 833333 us, 72.0000288 BPM). */
+const heard = (bpm: number): number => tempoOfMicros(tempoMicros(bpm));
 const timeSignatures = [{ tick: 0, num: 4, den: 4 }, { tick: T78, num: 7, den: 8, groups: [3, 2, 2] }, { tick: T54, num: 5, den: 4 }];
 const tracks: MidiTrack[] = ORCHESTRA.map((_, p) => {
   const notes = [];
@@ -91,7 +94,7 @@ function checkParts(where: string): void {
     const p = Number(c.label.replace('Part ', '')) - 1;
     const track = ed().tracks.find((t) => t.id === c.trackId)!;
     assert.equal(track.instrumentProgram, ORCHESTRA[p], `${where}: ${c.label} is on its own instrument`);
-    assert.deepEqual((c.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, 96], [T78 / PPQ, 72], [T54 / PPQ, 132]], `${where}: ${c.label} keeps its tempos`);
+    assert.deepEqual((c.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, heard(96)], [T78 / PPQ, heard(72)], [T54 / PPQ, heard(132)]], `${where}: ${c.label} keeps its tempos`);
     assert.deepEqual((c.sourceMeterMap ?? []).map((s) => `${s.bar}:${s.meter.num}/${s.meter.den}${s.meter.groups.length ? ` ${s.meter.groups.join('+')}` : ''}`), ['0:4/4', '2:7/8 3+2+2', '4:5/4'], `${where}: ${c.label} keeps its meters`);
     assert.equal(midiRenderState(c, track, PICKER_OFF), 'none', `${where}: ${c.label} holds no render`);
   }

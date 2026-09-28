@@ -28,7 +28,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SoundBankLoader, SpessaSynthProcessor } from 'spessasynth_core';
-import { encodeMidi, parseMidi, type MidiFileData, type MidiTrack } from './midi.ts';
+import { encodeMidi, parseMidi, tempoMicros, tempoOfMicros, type MidiFileData, type MidiTrack } from './midi.ts';
 import { midiFileClipFields } from './rollClip.ts';
 import { stepClock } from './rollTempo.ts';
 import { EDIT_MIDI_TICK_MS, EditMidiScheduler, type EditMidiSink } from './editMidiScheduler.ts';
@@ -60,6 +60,9 @@ const T78 = BAR44 * 3;
 const T54 = T78 + BAR78 * 2;
 const END = T54 + BAR54 * 3;
 const tempos = [{ tick: 0, bpm: 96 }, { tick: T78, bpm: 72 }, { tick: T54, bpm: 132 }];
+/** The tempo an FF 51 written for `bpm` holds: a whole number of microseconds a
+ *  quarter, read back exactly (72 is 833333 us, 72.0000288 BPM). */
+const heard = (bpm: number): number => tempoOfMicros(tempoMicros(bpm));
 const timeSignatures = [{ tick: 0, num: 4, den: 4 }, { tick: T78, num: 7, den: 8, groups: [3, 2, 2] }, { tick: T54, num: 5, den: 4 }];
 
 /** Seconds of `tick` under the file's tempos, integrated here rather than by the app. */
@@ -69,7 +72,7 @@ function tickSec(tick: number): number {
     const from = tempos[i].tick;
     const to = i + 1 < tempos.length ? tempos[i + 1].tick : Infinity;
     if (tick <= from) break;
-    sec += ((Math.min(tick, to) - from) / PPQ) * (60 / tempos[i].bpm);
+    sec += ((Math.min(tick, to) - from) / PPQ) * (60 / heard(tempos[i].bpm));
   }
   return sec;
 }
@@ -115,7 +118,7 @@ file.tracks.forEach((track, p) => {
 // Each part keeps the file's tempo changes and meters.
 for (const part of parts) {
   const clip = ed().clips.find((c) => c.id === part.clipId)!;
-  assert.deepEqual((clip.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, 96], [T78 / PPQ, 72], [T54 / PPQ, 132]], 'the part keeps both tempo changes');
+  assert.deepEqual((clip.sourceTempoMap ?? []).map((e) => [e.beat, e.bpm]), [[0, heard(96)], [T78 / PPQ, heard(72)], [T54 / PPQ, heard(132)]], 'the part keeps both tempo changes');
   assert.deepEqual(
     (clip.sourceMeterMap ?? []).map((s) => `${s.bar}:${s.meter.num}/${s.meter.den}`),
     ['0:4/4', '3:7/8', '5:5/4'],
