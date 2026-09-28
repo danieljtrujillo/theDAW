@@ -180,6 +180,18 @@
         "midi_out": null,
         "mpe_channels": null,
         "external_only": false,
+        "instrument": {
+          "id": "inst-1",
+          "effect": "vst3",
+          "params": {},
+          "enabled": true,
+          "vst": {
+            "plugin_path": "C:/VST3/Surge XT.vst3",
+            "plugin_name": "Surge XT",
+            "raw_state": "c3RhdGU=",
+            "state_host": "thedaw"
+          }
+        },
         "parent_track_id": "f1",
         "is_folder": false,
         "collapsed": false

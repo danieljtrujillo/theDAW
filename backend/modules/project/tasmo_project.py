@@ -70,6 +70,9 @@ class ChainVst(BaseModel):
     plugin_path: str = ""
     plugin_name: str = ""
     raw_state: str | None = None
+    # Which host captured raw_state ("thedaw", the live host, or "pedalboard"):
+    # a print goes back through the host that captured it. None: the default.
+    state_host: str | None = None
 
 
 class ChainEntry(BaseModel):
@@ -516,6 +519,11 @@ class Track(BaseModel):
     # The track plays through its MIDI out port alone, with no instrument of
     # theDAW's. Defaulted, so older files load every track on its instrument.
     external_only: bool = False
+    # The track's VST3 instrument slot (frontend EditorTrack.instrument): the
+    # plugin its MIDI plays through ahead of its inserts, with its captured
+    # state, in the master chains' entry shape so raw_state is kept. None:
+    # the track plays on the soundfont synths, as in every older file.
+    instrument: ChainEntry | None = None
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is

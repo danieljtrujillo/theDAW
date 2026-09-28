@@ -622,7 +622,18 @@ const st = () => useEditorStore.getState();
     bpm: 120,
     tracks: [
       track('f1', { isFolder: true, collapsed: true, name: 'Strings' }),
-      track('t1', { parentTrackId: 'f1', instrumentProgram: 40 }),
+      // A VST3 instrument in its slot, with the state the live host captured: written as `instrument`.
+      track('t1', {
+        parentTrackId: 'f1',
+        instrumentProgram: 40,
+        instrument: {
+          id: 'inst-1',
+          effect: 'vst3',
+          params: {},
+          enabled: true,
+          vst: { plugin_path: 'C:/VST3/Surge XT.vst3', plugin_name: 'Surge XT', raw_state: 'c3RhdGU=', state_host: 'thedaw' },
+        },
+      }),
       // A program the store should never hold: written as none, so the save
       // is not refused over it.
       track('t2', { instrumentProgram: 40.5 as number }),

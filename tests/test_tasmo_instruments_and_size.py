@@ -338,6 +338,14 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     clips = {c["id"]: c for t in back["tracks"] for c in t["clips"]}
     assert back["tracks"][0]["is_folder"] is True
     assert back["tracks"][1]["instrument_program"] == 40
+    # The track's VST3 instrument slot keeps its plugin, its captured state and
+    # the host that captured it; a track with no slot has none.
+    assert back["tracks"][1]["instrument"] == {
+        **sent["tracks"][1]["instrument"],
+        "label": None,
+    }
+    assert back["tracks"][1]["instrument"]["vst"]["state_host"] == "thedaw"
+    assert back["tracks"][2]["instrument"] is None
     assert clips["tagged"]["source_bpm"] == 92
     assert clips["tagged"]["bpm"] == 124
     assert clips["tagged"]["library_entry_id"] == "lib-7"

@@ -125,6 +125,8 @@ export interface TasmoChainVst {
   plugin_path: string;
   plugin_name: string;
   raw_state?: string | null;
+  /** The host that captured `raw_state` ('thedaw' or 'pedalboard'); absent is the default. */
+  state_host?: string | null;
 }
 
 /**
@@ -391,6 +393,8 @@ export interface TasmoTrackInput {
   mpe_channels?: number | null;
   /** The track plays through its MIDI out port alone; absent in older files. */
   external_only?: boolean;
+  /** The track's VST3 instrument slot, with its captured state; absent with none, as in older files. */
+  instrument?: TasmoChainEntry | null;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -576,6 +580,8 @@ export interface TasmoLoadedTrack {
   mpe_channels?: number | null;
   /** The track plays through its MIDI out port alone; absent in older files. */
   external_only?: boolean;
+  /** The track's VST3 instrument slot, with its captured state; absent with none, as in older files. */
+  instrument?: TasmoChainEntry | null;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in

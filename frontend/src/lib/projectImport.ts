@@ -79,7 +79,7 @@ import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
 import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
-import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
+import { EFFECT_LABELS, type ChainEntry, type VstStateHost } from '../state/effectChainStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
@@ -710,6 +710,8 @@ export function chainEntryToTasmo(e: ChainEntry): TasmoChainEntry {
             // The dialed-in native-editor state. Absent when the plugin has
             // never been opened, which is not the same as an empty blob.
             ...(e.vst.raw_state ? { raw_state: e.vst.raw_state } : {}),
+            // The host that captured it, which prints it again.
+            ...(e.vst.state_host ? { state_host: e.vst.state_host } : {}),
           },
         }
       : {}),
@@ -719,9 +721,10 @@ export function chainEntryToTasmo(e: ChainEntry): TasmoChainEntry {
 
 /** The inverse, for a whole chain. An entry without a usable `id`/`effect` is
  *  dropped: the id is what automation targets, so an entry that has none cannot
- *  be the entry a lane means. `requireVst` is set for the master VST chain,
- *  where an entry with no plugin names nothing to host. */
-export function tasmoToChainEntries(raw: unknown, requireVst = false): ChainEntry[] {
+ *  be the entry a lane means. `requireVst` is set for the master VST chain and a
+ *  track's instrument slot, where an entry with no plugin names nothing to host;
+ *  `what` names the chain in the warning. */
+export function tasmoToChainEntries(raw: unknown, requireVst = false, what = 'Master VST'): ChainEntry[] {
   const out: ChainEntry[] = [];
   for (const item of Array.isArray(raw) ? raw : []) {
     if (!item || typeof item !== 'object') continue;
@@ -735,10 +738,11 @@ export function tasmoToChainEntries(raw: unknown, requireVst = false): ChainEntr
             plugin_path: v.plugin_path,
             plugin_name: typeof v.plugin_name === 'string' ? v.plugin_name : v.plugin_path,
             ...(typeof v.raw_state === 'string' && v.raw_state ? { raw_state: v.raw_state } : {}),
+            ...(v.state_host === 'thedaw' || v.state_host === 'pedalboard' ? { state_host: v.state_host as VstStateHost } : {}),
           }
         : undefined;
     if (requireVst && !vst) {
-      logWarn('project', `Master VST "${e.id}" names no plugin; dropped`);
+      logWarn('project', `${what} "${e.id}" names no plugin; dropped`);
       continue;
     }
     out.push({
@@ -1155,6 +1159,7 @@ export async function loadProjectIntoEditor(
     const midiOut = trackMidiOutOf(t.midi_out);
     const mpeChannels = typeof t.mpe_channels === 'number' && Number.isFinite(t.mpe_channels) ? Math.max(0, Math.min(15, Math.round(t.mpe_channels))) : undefined;
     const parentTrackId = nonEmpty(t.parent_track_id) ?? null;
+    const instrument = t.instrument ? tasmoToChainEntries([t.instrument], true, `Track ${t.name || trackId} instrument`)[0] : undefined;
     outTracks.push({
       id: trackId,
       name: t.name || `Track ${i + 1}`,
@@ -1176,6 +1181,8 @@ export async function loadProjectIntoEditor(
       ...(midiOut ? { midiOut } : {}),
       ...(mpeChannels !== undefined ? { mpeChannels } : {}),
       ...(t.external_only === true ? { externalOnly: true } : {}),
+      // The VST3 instrument slot, its captured state kept (a slot naming no plugin is dropped).
+      ...(instrument ? { instrument } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1617,6 +1624,8 @@ export function captureEditorSession(): CapturedSession {
       midi_out: t.midiOut ? { port_id: t.midiOut.id, port_label: t.midiOut.label, channel: t.midiOut.channel, clock: t.midiOut.clock === true } : null,
       mpe_channels: t.mpeChannels ?? null,
       external_only: t.externalOnly === true,
+      // The VST3 instrument slot, written only where the track has one.
+      ...(t.instrument?.vst ? { instrument: chainEntryToTasmo(t.instrument) } : {}),
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,
