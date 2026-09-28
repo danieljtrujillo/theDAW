@@ -50,9 +50,12 @@ The switch source is the only breakpoint a SoundFont modulator has, so a note
 with four or more layers keeps its softest, middle and loudest ones. Every
 zone in a CC1 preset also carries a zero-amount copy of the default
 "CC1 -> vibrato" modulator, which turns the mod-wheel vibrato off for that
-zone. Velocity still shapes the attack level through the default velocity
-modulator. Short articulations (``mode="velocity"``) keep VSCO's velocity
-layers.
+zone. CC1 presets play each layer at its recorded level, so a swell gets
+louder as well as brighter (VSCO's ``volume`` opcodes lift the soft layers to
+the loud one's level and leave loudness to velocity). A note with one layer
+gets a CC1 level ramp instead (``--cc1-level-db``). Velocity still shapes the
+attack level through the default velocity modulator. Short articulations
+(``mode="velocity"``) keep VSCO's velocity layers and volumes.
 
 Bank layout (the manifest lists every preset with its articulation):
 
@@ -462,6 +465,22 @@ class Modulator:
 #: vibrato in every zone that carries this.
 NO_MOD_WHEEL_VIBRATO = Modulator(mod_source(CC_MOD_WHEEL), GEN_VIB_LFO_TO_PITCH, 0)
 
+#: How much quieter a single-layer note in a CC1 preset plays at CC1 = 0 than
+#: at 127, in dB. Notes with two or more layers get louder from the recordings
+#: themselves (see zone_level_db); a note with one layer has nothing to fade
+#: to, so CC1 moves its level.
+CC1_LEVEL_DB = 15.0
+
+
+def cc1_level_modulator(level_db: float = CC1_LEVEL_DB) -> Modulator:
+    """CC1 -> initialAttenuation, linear in dB: ``level_db`` down at CC1 = 0,
+    none at 127. Modulator attenuation is not EMU-scaled, so 1 dB is 10 cB."""
+    return Modulator(
+        mod_source(CC_MOD_WHEEL, negative=True),
+        GEN_INITIAL_ATTENUATION,
+        round(level_db * 10),
+    )
+
 
 def cc1_layer_modulators(
     layer: int, layers: int, amount: int = XFADE_CB
@@ -799,13 +818,17 @@ def _pick_layers(stack: list[Region]) -> list[Region]:
     return [stack[0], stack[(len(stack) - 1) // 2 + (len(stack) - 1) % 2], stack[-1]]
 
 
-def plan_zones(regions: Sequence[Region], mode: str) -> list[ZonePlan]:
+def plan_zones(
+    regions: Sequence[Region], mode: str, level_db: float = CC1_LEVEL_DB
+) -> list[ZonePlan]:
     """Turn SFZ regions into SoundFont zones.
 
     ``velocity`` keeps each region's key and velocity ranges. ``cc1`` walks the
     keyboard, finds the stack of regions covering each key (softest first by
     velocity band), and emits one zone per region per run of keys whose stack
-    is the same; each zone spans all velocities and fades on CC1.
+    is the same; each zone spans all velocities and fades on CC1 against the
+    other layers. A key with a single layer gets ``level_db`` louder from
+    CC1 = 0 to 127 instead.
     """
     if mode == "velocity":
         return [
@@ -834,7 +857,10 @@ def plan_zones(regions: Sequence[Region], mode: str) -> list[ZonePlan]:
                     127,
                     layer,
                     len(stack),
-                    cc1_layer_modulators(layer, len(stack)),
+                    [
+                        *cc1_layer_modulators(layer, len(stack)),
+                        *([cc1_level_modulator(level_db)] if len(stack) == 1 else []),
+                    ],
                 )
             )
 
@@ -905,11 +931,25 @@ def _zstr(text: str) -> bytes:
     return raw + (b"\0" if len(raw) % 2 else b"")
 
 
+#: Frames handed to libsndfile per write. libvorbis analyses a whole write
+#: at once on the stack, and a multi-second write overflows the 1 MB Windows
+#: main-thread stack ("Windows fatal exception: stack overflow").
+VORBIS_BLOCK = 8192
+
+
 def encode_vorbis(data: np.ndarray, rate: int, compression: float) -> bytes:
     buf = io.BytesIO()
-    sf.write(
-        buf, data, rate, format="OGG", subtype="VORBIS", compression_level=compression
-    )
+    with sf.SoundFile(
+        buf,
+        mode="w",
+        samplerate=rate,
+        channels=1,
+        format="OGG",
+        subtype="VORBIS",
+        compression_level=compression,
+    ) as out:
+        for start in range(0, len(data), VORBIS_BLOCK):
+            out.write(data[start : start + VORBIS_BLOCK])
     return buf.getvalue()
 
 
@@ -1339,6 +1379,7 @@ def plan_presets(
     specs: Sequence[PresetSpec],
     load_sfz: Callable[[str], str],
     list_files: Callable[[str], list[str]],
+    level_db: float = CC1_LEVEL_DB,
 ) -> list[PlannedPreset]:
     planned = []
     for spec in specs:
@@ -1349,12 +1390,24 @@ def plan_presets(
             regions = regions_from_files(list_files(spec.files.folder), spec.files)
         if not regions:
             raise RuntimeError(f"{spec.name}: no regions")
-        planned.append(PlannedPreset(spec, plan_zones(regions, spec.mode)))
+        planned.append(PlannedPreset(spec, plan_zones(regions, spec.mode, level_db)))
     return planned
 
 
-def zone_level_db(plan: ZonePlan) -> float:
-    return plan.region.volume
+#: Peak a preset's loudest sample is scaled to.
+PEAK_TARGET = 0.98
+
+
+def zone_level_db(spec: PresetSpec, plan: ZonePlan) -> float:
+    """The level a zone should play at, relative to its raw recording.
+
+    Velocity presets keep the SFZ ``volume``. CC1 presets play the recordings
+    as they are: VSCO's ``volume`` lifts each soft layer to the level of the
+    loud one (p +20 dB, f +7 dB for the violins) and leaves loudness to
+    velocity, and a CC1 crossfade between levelled layers would only change
+    the timbre.
+    """
+    return 0.0 if spec.mode == "cc1" else plan.region.volume
 
 
 def assemble(
@@ -1363,9 +1416,12 @@ def assemble(
 ) -> tuple[list[SampleData], list[Instrument], list[Preset], list[dict]]:
     """Build the sample pool, instruments and presets.
 
-    A sample is stored once with gain ``g`` (the first region's level, capped
-    so its peak stays below full scale). A zone's attenuation is then
-    ``20 log10(g) - level``; a preset whose zones would need a boost is lowered
+    Each preset gets one make-up gain, the largest that keeps every one of its
+    zones at or below PEAK_TARGET once its zone level is applied, so relative
+    levels inside the preset hold and the loudest sample reaches full scale.
+    A sample is stored once, at the gain its first preset gave it; a later
+    zone that wants it at another level makes up the difference with
+    initialAttenuation, and a preset that would need a boost there is lowered
     as a whole until none does.
     """
     samples: list[SampleData] = []
@@ -1378,25 +1434,43 @@ def assemble(
 
     for pp in planned:
         spec = pp.spec
+        fresh: dict[tuple[str, str], tuple[np.ndarray, int, int]] = {}
+        headroom: list[float] = []
+        for plan in pp.zones:
+            key = (spec.source, plan.region.sample)
+            if key in sample_index:
+                continue
+            if key not in fresh:
+                audio, rate = load_audio(spec, plan.region.sample)
+                audio = prepare_audio(audio, rate)
+                fresh[key] = (audio, int(rate), plan.region.keycenter)
+            peak = float(np.max(np.abs(fresh[key][0]))) or 1.0
+            headroom.append(
+                20 * math.log10(PEAK_TARGET / peak) - zone_level_db(spec, plan)
+            )
+        makeup_db = min(headroom) if headroom else 0.0
+
         zone_samples = []
         for plan in pp.zones:
             key = (spec.source, plan.region.sample)
             if key not in sample_index:
-                audio, rate = load_audio(spec, plan.region.sample)
-                audio = prepare_audio(audio, rate)
-                peak = float(np.max(np.abs(audio))) or 1.0
-                gain_db = min(plan.region.volume, 20 * math.log10(0.98 / peak))
-                audio = audio * np.float32(10 ** (gain_db / 20))
+                audio, rate, root = fresh.pop(key)
+                gain_db = zone_level_db(spec, plan) + makeup_db
                 stem = plan.region.sample.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                 sample_index[key] = len(samples)
                 sample_gain_db[len(samples)] = gain_db
                 samples.append(
-                    SampleData(stem[:20], audio, int(rate), plan.region.keycenter)
+                    SampleData(
+                        stem[:20],
+                        audio * np.float32(10 ** (gain_db / 20)),
+                        rate,
+                        root,
+                    )
                 )
             zone_samples.append(sample_index[key])
 
         atten_db = [
-            sample_gain_db[si] - zone_level_db(plan)
+            sample_gain_db[si] - (zone_level_db(spec, plan) + makeup_db)
             for si, plan in zip(zone_samples, pp.zones)
         ]
         lift = max(0.0, -min(atten_db))
@@ -1516,7 +1590,7 @@ def build(args: argparse.Namespace) -> int:
             if p.startswith(prefix) and "/" not in p[len(prefix) :]
         ]
 
-    planned = plan_presets(specs, load_sfz, list_files)
+    planned = plan_presets(specs, load_sfz, list_files, args.cc1_level_db)
     wanted: list[tuple[str, str]] = sorted(
         {(pp.spec.source, z.region.sample) for pp in planned for z in pp.zones}
     )
@@ -1610,6 +1684,7 @@ def build(args: argparse.Namespace) -> int:
             for s in used
         ],
         "cc1_crossfade_cb": XFADE_CB,
+        "cc1_level_db": args.cc1_level_db,
         "samples": len(samples),
         "source_bytes": total_bytes,
         "timing_s": {
@@ -1672,6 +1747,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--max-download-mb", type=float, default=1000.0)
     parser.add_argument("--jobs", type=int, default=8, help="parallel downloads")
+    parser.add_argument(
+        "--cc1-level-db",
+        type=float,
+        default=CC1_LEVEL_DB,
+        help="how much quieter CC1 presets play at CC1 = 0 than at 127",
+    )
     parser.add_argument(
         "--compression",
         type=float,

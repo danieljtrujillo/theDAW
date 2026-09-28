@@ -141,8 +141,11 @@ def test_cc1_zones_follow_the_layer_stack_per_key_run():
     ]
     for p in plans:
         assert (p.lovel, p.hivel) == (0, 127)
-        assert p.modulators == B.cc1_layer_modulators(p.layer, p.layers)
-        assert p.modulators[-1] == B.NO_MOD_WHEEL_VIBRATO
+        assert p.modulators == [
+            *B.cc1_layer_modulators(p.layer, p.layers),
+            *([B.cc1_level_modulator()] if p.layers == 1 else []),
+        ]
+        assert B.NO_MOD_WHEEL_VIBRATO in p.modulators
 
 
 def test_cc1_keeps_softest_middle_and_loudest_of_four_layers():
@@ -152,10 +155,14 @@ def test_cc1_keeps_softest_middle_and_loudest_of_four_layers():
     assert {p.layers for p in plans} == {3}
 
 
-def test_single_layer_zone_only_turns_off_mod_wheel_vibrato():
-    plans = B.plan_zones([_region("solo", 0, 127, 60)], "cc1")
+def test_single_layer_zone_swells_on_cc1_without_mod_wheel_vibrato():
+    plans = B.plan_zones([_region("solo", 0, 127, 60)], "cc1", level_db=12)
     assert len(plans) == 1
-    assert plans[0].modulators == [B.NO_MOD_WHEEL_VIBRATO]
+    assert plans[0].modulators == [B.NO_MOD_WHEEL_VIBRATO, B.cc1_level_modulator(12)]
+    level = B.cc1_level_modulator(12)
+    assert level.amount == 120
+    assert B.layer_attenuation_cb([level], 0) == pytest.approx(120)
+    assert B.layer_attenuation_cb([level], 127) == pytest.approx(120 / 128, abs=1e-6)
     assert B.NO_MOD_WHEEL_VIBRATO.src == 0x0081
     assert B.NO_MOD_WHEEL_VIBRATO.dest == B.GEN_VIB_LFO_TO_PITCH
     assert B.NO_MOD_WHEEL_VIBRATO.amount == 0
@@ -285,13 +292,19 @@ def _synthetic_plan():
             aliases=((0, 45),),
         )
     )
+    specs.append(
+        B.PresetSpec(
+            "Violas Loud", "strings", "sustain", 4, 41, "velocity", "vsco", "Loud.sfz"
+        )
+    )
     sfz = {
         "Violins.sfz": "<region>sample=v_p.wav lokey=55 hikey=70 pitch_keycenter=62 lovel=0 hivel=62 volume=20\n"
         "<region>sample=v_f.wav lokey=55 hikey=70 pitch_keycenter=62 lovel=63 hivel=127 volume=17",
         "Violas.sfz": "<region>sample=va.wav lokey=48 hikey=70 pitch_keycenter=60",
         "Celli.sfz": "<region>sample=vc.wav lokey=36 hikey=60 pitch_keycenter=48",
         "Contrabass.sfz": "<region>sample=cb.wav lokey=24 hikey=50 pitch_keycenter=36",
-        "Pizz.sfz": "<region>sample=pz_p.wav lokey=55 hikey=80 pitch_keycenter=62 lovel=0 hivel=63\n"
+        "Loud.sfz": "<region>sample=va.wav lokey=48 hikey=70 pitch_keycenter=60 volume=10",
+        "Pizz.sfz": "<region>sample=pz_p.wav lokey=55 hikey=80 pitch_keycenter=62 lovel=0 hivel=63 volume=6\n"
         "<region>sample=pz_f.wav lokey=55 hikey=80 pitch_keycenter=62 lovel=64 hivel=127 tune=-7",
     }
     planned = B.plan_presets(specs, lambda name: sfz[name], lambda folder: [])
@@ -305,29 +318,49 @@ def _synthetic_plan():
         "pz_f.wav": 293.7,
     }
 
+    # The soft violin layer is recorded 12 dB below the loud one.
+    amps = {"v_p.wav": 0.05, "v_f.wav": 0.2}
+
     def load_audio(spec, path):
-        return _tone(freqs[path])
+        return _tone(freqs[path], amp=amps.get(path, 0.1))
 
     return B.assemble(planned, load_audio)
 
 
+def _peak(sample):
+    return float(np.max(np.abs(sample.data)))
+
+
+def _gens(zone):
+    return {g[0]: g[1] for g in zone.generators}
+
+
 def test_assemble_levels_presets_and_ensemble_split():
     samples, instruments, presets, manifest = _synthetic_plan()
+    by_name = {s.name: s for s in samples}
     assert len(samples) == 7
     assert all(s.data.ndim == 1 for s in samples), "samples are mixed to mono"
+
+    # CC1 preset: the recordings keep their own levels (the SFZ volume that
+    # levels p against f is not applied), and one make-up gain brings the
+    # loudest to the peak target.
+    assert _peak(by_name["v_f"]) == pytest.approx(B.PEAK_TARGET, abs=2e-3)
+    assert _peak(by_name["v_p"]) == pytest.approx(B.PEAK_TARGET / 4, abs=2e-3)
     violins = instruments[0]
-    # v_p is stored 20 dB up (0.1 * 10 = 1.0 would clip, so it is capped at
-    # 0.98 peak); both zones are then lifted until neither needs a boost.
-    v_p = samples[0]
-    assert float(np.max(np.abs(v_p.data))) == pytest.approx(0.98, abs=1e-3)
-    gains = {g[0]: g[1] for g in violins.zones[0].generators}
-    # capped gain = 20*log10(0.98/0.1) = 19.82 dB; v_p wants 20 -> -0.18 dB,
-    # the preset is lifted by 0.18; v_f was stored 17 dB up and wants 17 -> 0.18 dB.
-    assert B.GEN_INITIAL_ATTENUATION not in gains
-    gains_f = {g[0]: g[1] for g in violins.zones[1].generators}
-    assert gains_f[B.GEN_INITIAL_ATTENUATION] == round(
-        (17 - 17 + (20 - 20 * math.log10(0.98 / 0.1))) * 10 / 0.4
+    assert all(B.GEN_INITIAL_ATTENUATION not in _gens(z) for z in violins.zones)
+
+    # Velocity preset: the SFZ volumes hold relative to each other.
+    assert _peak(by_name["pz_p"]) == pytest.approx(B.PEAK_TARGET, abs=2e-3)
+    assert 20 * math.log10(_peak(by_name["pz_p"]) / _peak(by_name["pz_f"])) == (
+        pytest.approx(6.0, abs=0.05)
     )
+
+    # A preset that reuses a stored sample at another level attenuates it.
+    loud = next(i for i in instruments if i.name == "Violas Loud")
+    stored_db = 20 * math.log10(B.PEAK_TARGET / 0.1)
+    want = round((stored_db - 10) * 10 / B.EMU_ATTENUATION_FACTOR)
+    assert abs(_gens(loud.zones[0])[B.GEN_INITIAL_ATTENUATION] - want) <= 1
+
     slots = sorted((p.bank, p.program, p.name) for p in presets)
     assert (0, 45, "Pizz") in slots and (2, 40, "Pizz") in slots
     ensemble = [p for p in presets if (p.bank, p.program) == (0, 48)]
@@ -441,3 +474,16 @@ def test_max_download_guard_stops_before_fetching(monkeypatch, tmp_path):
                 str(tmp_path / "o.sf3"),
             ]
         )
+
+
+def test_encode_vorbis_takes_a_long_sample_in_blocks():
+    # One libsndfile write of a long buffer overflowed the Windows main-thread
+    # stack inside libvorbis; the encoder feeds it VORBIS_BLOCK frames at a time.
+    rate = 48000
+    tone = (0.2 * np.sin(2 * np.pi * 220 * np.arange(rate * 20) / rate)).astype(
+        np.float32
+    )
+    blob = B.encode_vorbis(tone, rate, 0.5)
+    decoded, got_rate = sf.read(io.BytesIO(blob), dtype="float32")
+    assert got_rate == rate
+    assert len(decoded) == len(tone)
