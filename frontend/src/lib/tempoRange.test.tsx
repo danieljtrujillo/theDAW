@@ -179,6 +179,13 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
   await act(async () => { root.render(React.createElement(ChimeraControls)); });
   const field = doc.getElementById('chimera-target-bpm') as HTMLInputElement;
   assert.ok(field, 'the Chimera row has its BPM field');
+  // Every value field in the row reads at 12px bold sans over compact-input's 11px mono.
+  const rowFields = [...host.querySelectorAll<HTMLElement>('input, select')];
+  assert.ok(rowFields.length >= 8, `the row's value fields (${rowFields.length})`);
+  for (const el of rowFields) {
+    const cls = el.className.split(/\s+/);
+    assert.ok(cls.includes('text-xs') && cls.includes('font-sans') && cls.includes('font-bold'), `${el.id || el.getAttribute('name')} is 12px bold sans`);
+  }
   await selectAll(field);
   await typeDigits(field, '95');
   assert.equal(field.value, '95', 'Chimera: 95 typed digit by digit');

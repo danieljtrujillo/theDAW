@@ -37,6 +37,9 @@ const HEAL_LABELS: Record<ChimeraHealMode, string> = {
 };
 
 const LABEL = 'text-zinc-400 uppercase tracking-widest cursor-default';
+/** The row's value fields: compact-input's box, with its 11px mono face replaced by 12px bold sans
+ *  (utilities win over the components layer compact-input lives in). */
+const FIELD = 'compact-input text-xs font-sans font-bold';
 
 export const ChimeraControls: React.FC = () => {
   const clipsCount = useGenerateParamsStore((s) => s.chimera.clips.length);
@@ -106,7 +109,7 @@ export const ChimeraControls: React.FC = () => {
           {...bpmField}
           value={isAuto ? '' : bpmField.value}
           placeholder={isAuto ? 'auto' : ''}
-          className="compact-input w-16 disabled:opacity-40"
+          className={`${FIELD} w-16 disabled:opacity-40`}
         />
         <button
           type="button"
@@ -131,7 +134,7 @@ export const ChimeraControls: React.FC = () => {
           name="chimera-align-mode"
           value={alignMode}
           onChange={(e) => setChimeraField('alignMode', e.target.value as ChimeraAlignMode)}
-          className="compact-input"
+          className={FIELD}
         >
           {(Object.keys(ALIGN_LABELS) as ChimeraAlignMode[]).map((m) => (
             <option key={m} value={m}>
@@ -159,7 +162,7 @@ export const ChimeraControls: React.FC = () => {
                 const n = parseInt(e.target.value);
                 setChimeraField('weaveBars', Number.isFinite(n) ? n : 8);
               }}
-              className="compact-input"
+              className={FIELD}
               title="Bars per phrase; phrases start on real downbeats."
             >
               {phraseOptions.map((n) => (
@@ -190,7 +193,7 @@ export const ChimeraControls: React.FC = () => {
                 const n = parseInt(e.target.value);
                 setChimeraField('weaveTotalBars', Number.isFinite(n) ? n : 0);
               }}
-              className="compact-input w-14"
+              className={`${FIELD} w-14`}
               title="0 = match the generation Length"
             />
           </div>
@@ -215,7 +218,7 @@ export const ChimeraControls: React.FC = () => {
                 const clamped = Math.max(1, Math.min(8, Number.isFinite(n) ? n : 3));
                 setChimeraField('weaveMaxPolyphony', clamped);
               }}
-              className="compact-input w-10"
+              className={`${FIELD} w-10`}
               title="Polyphony cap (1-8). Default 3."
             />
           </div>
@@ -232,7 +235,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-harmony"
               value={harmony}
               onChange={(e) => setChimeraField('harmony', e.target.value as ChimeraHarmonyMode)}
-              className="compact-input"
+              className={FIELD}
               title="Auto picks one Camelot-compatible key and pitch-shifts clips by at most 2 semitones; drums and uncertain keys are never shifted."
             >
               {(Object.keys(HARMONY_LABELS) as ChimeraHarmonyMode[]).map((m) => (
@@ -255,7 +258,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-arc"
               value={arc}
               onChange={(e) => setChimeraField('arc', e.target.value as ChimeraArc)}
-              className="compact-input"
+              className={FIELD}
               title="Song = intro/build/peak/release/outro; Rise = continuous build; Flat = DJ blend."
             >
               {(Object.keys(ARC_LABELS) as ChimeraArc[]).map((m) => (
@@ -278,7 +281,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-heal"
               value={heal}
               onChange={(e) => setChimeraField('heal', e.target.value as ChimeraHealMode)}
-              className="compact-input"
+              className={FIELD}
               title="Off = today; Preserve = regenerate only the seams in one pass; Polish = a second pass on the result (2x model time)"
             >
               {(Object.keys(HEAL_LABELS) as ChimeraHealMode[]).map((m) => (
