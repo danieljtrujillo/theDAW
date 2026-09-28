@@ -68,6 +68,19 @@ assert.equal(setClipSourceBpm(clip, 300.1).ok, false, 'above 300 is refused');
   assert.equal(n.tick, PPQ, 'two seconds at 30 BPM is one quarter');
 }
 
+// Vocal2MIDI's tap tempo, which sets the roll's tempo: taps 2.5 s apart were thrown out below 30 BPM.
+{
+  const { TAP_MAX_INTERVAL_MS, tapTempoBpm } = await import('../components/audio/vocal2midi/tapTempo.ts');
+  const taps = (ms: number, n = 4) => Array.from({ length: n }, (_, i) => i * ms);
+  assert.equal(tapTempoBpm(taps(2500)), 24, 'taps 2.5 s apart are a 24 BPM Grave');
+  assert.equal(tapTempoBpm(taps(60000 / 280)), 280, 'a 280 BPM Presto');
+  assert.equal(tapTempoBpm(taps(3100)), null, 'slower than 20 BPM is no tempo');
+  assert.equal(tapTempoBpm(taps(150)), null, 'faster than 300 BPM is no tempo');
+  assert.equal(tapTempoBpm([0, 500, 1000, 4600, 5100]), 120, 'a missed tap (a 3.6 s gap) is left out');
+  assert.equal(tapTempoBpm([0]), null);
+  assert.equal(TAP_MAX_INTERVAL_MS, 3000, 'one beat at 20 BPM');
+}
+
 // The controls: each tempo field offers 20-300 and keeps what is typed in it.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const g = globalThis as unknown as Record<string, unknown>;
@@ -262,6 +275,26 @@ const keyOn = async (field: HTMLInputElement, key: string) => {
   await blur(field);
   assert.equal(field.value, '20', 'blur clamps 12 to 20');
   await act(async () => { root.unmount(); });
+}
+
+// The MAKE control source (an XR headset or a controller) sets Chimera's target BPM in the same 20-300
+// its field holds; its fader stopped at 60-200.
+{
+  const realFetch = g.fetch;
+  // No backend here: the manifest's checkpoint list comes back empty, and the library is already loaded.
+  g.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  const { useLibraryStore } = await import('../state/libraryStore.ts');
+  useLibraryStore.setState({ loaded: true, loading: false, entries: [] } as never);
+  const { makeControlSource } = await import('../state/makeControlSource.ts');
+  const { useGenerateParamsStore } = await import('../state/generateParamsStore.ts');
+  const entry = (await makeControlSource.buildEntries()).find((e) => e.id === 'make.chimera.bpm');
+  assert.ok(entry, 'the Chimera target BPM fader is in the manifest');
+  assert.deepEqual([entry.min, entry.max], [20, 300], 'the fader spans 20-300');
+  for (const [sent, held] of [[24, 24], [280, 280], [400, 300], [5, 20]] as const) {
+    assert.equal(await makeControlSource.apply('make.chimera.bpm', sent), true);
+    assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, held, `a controller's ${sent} sets ${held}`);
+  }
+  g.fetch = realFetch;
 }
 
 console.log('tempoRange: ok');

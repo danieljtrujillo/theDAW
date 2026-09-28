@@ -581,7 +581,12 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "bpm": {
                         "type": "number",
-                        "description": "Beats per minute, 20-400",
+                        "minimum": 20,
+                        "maximum": 300,
+                        "description": (
+                            "Beats per minute, 20-300 (the app's tempo range); "
+                            "a fraction is kept"
+                        ),
                     },
                 },
                 "required": ["bpm"],

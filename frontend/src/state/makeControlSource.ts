@@ -29,6 +29,7 @@
 import { publishControlChanged } from './xrControlClient';
 import type { XrControlSource, XrManifestEntry, XrControlValue } from './xrControlClient';
 import type { BindableTarget } from '../components/surface/widgetTypes';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../lib/tempoMap';
 
 let cache: BindableTarget[] | null = null;
 
@@ -329,8 +330,9 @@ export const makeControlSource: XrControlSource = {
         group: CHIMERA_GROUP,
         label: 'Target BPM',
         kind: 'fader',
-        min: 60,
-        max: 200,
+        // Chimera's own field holds the app's tempo range (lib/tempoMap), so a controller reaches the same tempos.
+        min: TEMPO_BPM_MIN,
+        max: TEMPO_BPM_MAX,
         step: 1,
         value: typeof p.chimera.targetBpm === 'number' ? p.chimera.targetBpm : lastNumericBpm,
       },
@@ -460,7 +462,7 @@ export const makeControlSource: XrControlSource = {
     if (id === 'make.chimera.bpm') {
       const v = Number(value);
       if (!Number.isFinite(v)) return false;
-      lastNumericBpm = Math.min(200, Math.max(60, Math.round(v)));
+      lastNumericBpm = clampTempoBpm(Math.round(v));
       const { useGenerateParamsStore } = await params();
       useGenerateParamsStore.getState().setChimeraField('targetBpm', lastNumericBpm);
       return true;

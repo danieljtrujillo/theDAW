@@ -169,14 +169,14 @@ EDIT arrangement actions (the current tracks/clips/playhead are in `editorState`
 - `editor_split_clip` — Split a clip at a timeline position inside it. Payload: `{"clip_id": "...", "at_sec": 8.0}`
 - `editor_select_clip` — Select a clip. Payload: `{"clip_id": "..."}`
 - `editor_set_playhead` — Move the playhead. Payload: `{"seconds": 0}`
-- `editor_set_bpm` — Set the arrangement BPM (20-400). Payload: `{"bpm": 120}`
+- `editor_set_bpm` — Set the arrangement BPM (20-300, a fraction is kept). Payload: `{"bpm": 120}`
 - `editor_set_loop` — Toggle/set the loop region. Payload: `{"enabled": true, "start_sec?": 0, "end_sec?": 8}`
 - `editor_add_marker` — Drop a timeline marker. Payload: `{"seconds": 16, "name": "optional"}`
 
 Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit the note list and re-bounce the clip's audio, so playback and exports stay in step. A re-bounce writes the FULL rendered length, so a clip that had been trimmed grows back; the result says so when the length moved. Every `*_id` argument also accepts the object's exact label/name.
 - `editor_get_notes` — Read the note list: `{id, note (pitch 0-127), step (16ths from the clip start), length, velocity}`. Payload: `{"clip_id": "..."}`
 - `editor_set_notes` — Replace the note list wholesale. Payload: `{"clip_id": "...", "notes": [{"note": 60, "step": 0, "length": 4, "velocity": 100, "id?": "..."}]}`
-- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool}`
+- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool, "groove?": "straight"|"swing8:<pct>"|"swing16:<pct>"|"group8:<pct>"|"group16:<pct>"|"inegales:60"|"ddot:8"|"ddot:4", "groove_strength?": 0..1}`. The groove is a feel laid over the grid in the clip's own meter (group8/group16 swing inside each of the bar's groups, so 7/8 3+2+2 swings per group); pct is 50-75 (66.7 is a triplet feel).
 - `editor_nudge_notes` — Shift every note in time. EXACTLY ONE unit. Payload: `{"clip_id": "...", "steps?": 0.5}` or `{"ms?": 42}` or `{"ticks?": 120}`
 - `editor_transpose_clip` — Payload: `{"clip_id": "...", "semitones": -12}`
 - `editor_scale_velocity` — Payload: `{"clip_id": "...", "factor?": 0.8, "offset?": -5, "min?": 1, "max?": 127}`

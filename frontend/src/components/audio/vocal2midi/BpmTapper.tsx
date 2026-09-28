@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
+import { TAP_MAX_INTERVAL_MS, tapTempoBpm } from './tapTempo';
 
 interface BpmTapperProps {
   onBpmSet: (bpm: number) => void;
@@ -13,31 +14,8 @@ export const BpmTapper: React.FC<BpmTapperProps> = ({ onBpmSet, currentBpm }) =>
   const [isActive, setIsActive] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const calculateBpm = useCallback((tapTimes: number[]): number | null => {
-    if (tapTimes.length < 2) return null;
-
-    // Calculate intervals between consecutive taps
-    const intervals: number[] = [];
-    for (let i = 1; i < tapTimes.length; i++) {
-      intervals.push(tapTimes[i] - tapTimes[i - 1]);
-    }
-
-    // Filter out outliers (too fast or too slow - outside 30-300 BPM range)
-    const validIntervals = intervals.filter(interval => {
-      const bpm = 60000 / interval;
-      return bpm >= 30 && bpm <= 300;
-    });
-
-    if (validIntervals.length === 0) return null;
-
-    // Calculate average interval
-    const avgInterval = validIntervals.reduce((a, b) => a + b, 0) / validIntervals.length;
-
-    // Convert to BPM
-    const bpm = Math.round(60000 / avgInterval);
-
-    return Math.max(30, Math.min(300, bpm));
-  }, []);
+  // The app's 20-300 BPM (tapTempo.ts): an interval outside it is an outlier and is left out.
+  const calculateBpm = useCallback((tapTimes: number[]): number | null => tapTempoBpm(tapTimes), []);
 
   const handleTap = useCallback(() => {
     const now = performance.now();
@@ -62,10 +40,11 @@ export const BpmTapper: React.FC<BpmTapperProps> = ({ onBpmSet, currentBpm }) =>
       return trimmedTaps;
     });
 
-    // Auto-pause (not reset) after 2 seconds of inactivity
+    // Auto-pause (not reset) once a beat at the slowest tempo (3 s at 20 BPM) and a half second pass
+    // with no tap, so taps at a Grave keep the key lit between them.
     timeoutRef.current = setTimeout(() => {
       setIsActive(false);
-    }, 2000);
+    }, TAP_MAX_INTERVAL_MS + 500);
   }, [calculateBpm]);
 
   const handleReset = useCallback(() => {
