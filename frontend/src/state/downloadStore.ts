@@ -39,6 +39,7 @@ import {
   type MagentaCheckpointJob,
 } from '../lib/magentaEngineClient';
 import { startSoundbankDownload } from '../lib/soundbankClient';
+import { useSoundBankStore } from './soundBankStore';
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -154,6 +155,12 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       : previous.filter((j) => j.kind === 'magenta');
     const jobs = [...modelJobs.map((j) => ({ ...j, kind: j.kind ?? ('model' as const) })), ...magentaJobs];
     set({ jobs });
+    // A sound bank download that just finished is listed by the bank registry
+    // (backend/modules/soundfonts), so every picker lists it now, with its gains.
+    const wasDone = new Set(previous.filter((j) => j.status === 'done').map((j) => j.id));
+    if (jobs.some((j) => j.kind === 'soundbank' && j.status === 'done' && !wasDone.has(j.id))) {
+      void useSoundBankStore.getState().refresh();
+    }
     // Once nothing is active, stop polling but keep the rows on screen.
     if (!jobs.some(isActive)) get()._stopPolling();
   },

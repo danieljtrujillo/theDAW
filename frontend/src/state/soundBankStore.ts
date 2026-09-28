@@ -9,6 +9,13 @@
  * lib/bankRegistry, which turns a voice into the bank select a synth and a
  * MIDI file send; the last list is kept in the browser too, so a project
  * opened before the backend answers resolves its voices at the same offsets.
+ *
+ * A bank the download manager installed (SoundBank `downloadId`) carries
+ * playback gains in its manifest: each listed one is registered with
+ * lib/soundbankGain at its offset (lib/soundbankClient
+ * registerInstalledSoundbankGains), and a bank that leaves the list takes its
+ * gains with it. A sound bank download that finishes refreshes the list
+ * (state/downloadStore), so the new bank is in every picker at once.
  */
 import { create } from 'zustand';
 import { delJson, getJson, postForm, postJson } from '../lib/apiJson';
@@ -21,7 +28,9 @@ import {
   type SoundBank,
 } from '../lib/bankRegistry';
 import { notifyPlacesChanged } from '../lib/placesClient';
-import { logError, logInfo } from './logStore';
+import { registerInstalledSoundbankGains } from '../lib/soundbankClient';
+import { unregisterSoundbankGains } from '../lib/soundbankGain';
+import { logError, logInfo, logWarn } from './logStore';
 
 /** Where the bundled bank is served from (frontend/public). */
 export const BUNDLED_BANK_URL = '/soundfonts/gm.sf3';
@@ -72,6 +81,7 @@ function writeCache(banks: readonly SoundBank[]): void {
       offset: b.offset,
       span: b.span,
       presets: b.presets.map((p) => ({ bank: p.bank, bank_lsb: p.bankLsb, program: p.program, name: p.name, drum: p.drum })),
+      ...(b.downloadId ? { download_id: b.downloadId } : {}),
     }));
     localStorage.setItem(CACHE_KEY, JSON.stringify(list));
   } catch {
@@ -85,6 +95,45 @@ function withUsers(state: readonly SoundBank[], users: readonly SoundBank[]): So
   const next = [...bundled, ...users];
   setBankOffsets(next);
   return next;
+}
+
+/** Each downloaded bank whose playback gains are registered, as `downloadId@offset`. */
+const gainsRegistered = new Map<string, string>();
+
+/**
+ * Register the playback gains of every downloaded bank in `banks` at its
+ * offset (once per bank and offset), and drop the gains of a bank no longer
+ * listed. A bank with no manifest registers none.
+ */
+export async function syncDownloadedBankGains(banks: readonly SoundBank[]): Promise<void> {
+  const listed = new Set<string>();
+  const waits: Promise<void>[] = [];
+  for (const b of userBanks(banks)) {
+    if (!b.downloadId) continue;
+    listed.add(b.id);
+    const sig = `${b.downloadId}@${b.offset}`;
+    if (gainsRegistered.get(b.id) === sig) continue;
+    gainsRegistered.set(b.id, sig);
+    const { downloadId, id, offset, name } = b;
+    waits.push(
+      registerInstalledSoundbankGains(downloadId, id, offset).then(
+        (n) => {
+          if (n > 0) logInfo('midi', `Sound bank "${name}": playback gains for ${n} presets`);
+        },
+        (e: unknown) => {
+          // Asked again on the next list.
+          gainsRegistered.delete(id);
+          logWarn('midi', `Sound bank "${name}" plays without its playback gains: ${describe(e)}`);
+        },
+      ),
+    );
+  }
+  for (const id of [...gainsRegistered.keys()]) {
+    if (listed.has(id)) continue;
+    gainsRegistered.delete(id);
+    unregisterSoundbankGains(id);
+  }
+  await Promise.all(waits);
 }
 
 const cached = readCache();
@@ -105,6 +154,7 @@ export const useSoundBankStore = create<SoundBankState>((set, get) => ({
       const banks = withUsers(get().banks, users);
       writeCache(banks);
       set({ banks, listed: true, error: null });
+      await syncDownloadedBankGains(banks);
     } catch (e) {
       set({ listed: true, error: `Sound banks could not be listed: ${describe(e)}` });
     }
@@ -189,6 +239,13 @@ export const useSoundBankStore = create<SoundBankState>((set, get) => ({
     });
   },
 }));
+
+// The gains follow the list: a removed bank's go, and a cached downloaded bank's are
+// registered from the first list on, so a render before any picker opens has them.
+useSoundBankStore.subscribe((s, prev) => {
+  if (s.banks !== prev.banks) void syncDownloadedBankGains(s.banks);
+});
+if (cached.some((b) => b.downloadId)) void syncDownloadedBankGains(cached);
 
 /** The user's banks the store lists now. */
 export const listedUserBanks = (): SoundBank[] => userBanks(useSoundBankStore.getState().banks);

@@ -53,6 +53,10 @@ export interface SoundBank {
   fileName?: string;
   sourcePath?: string;
   size?: number;
+  /** The download manager's catalog entry the bank was installed from
+   *  (backend/modules/modeldl soundbanks), whose manifest carries its
+   *  playback gains (lib/soundbankGain). Absent for a bank the user added. */
+  downloadId?: string;
 }
 
 /** A voice in a bank: the widened form of a bare program. */
@@ -237,6 +241,7 @@ export interface BackendBank {
   file_name?: string;
   source_path?: string;
   size?: number;
+  download_id?: string;
 }
 
 /** A backend entry as a SoundBank, or null when it is malformed. */
@@ -261,5 +266,6 @@ export function bankFromBackend(raw: BackendBank): SoundBank | null {
     ...(raw.file_name ? { fileName: raw.file_name } : {}),
     ...(raw.source_path ? { sourcePath: raw.source_path } : {}),
     ...(typeof raw.size === 'number' ? { size: raw.size } : {}),
+    ...(typeof raw.download_id === 'string' && raw.download_id ? { downloadId: raw.download_id } : {}),
   };
 }

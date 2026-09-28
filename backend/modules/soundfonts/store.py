@@ -14,6 +14,7 @@ and a MIDI file send.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -37,6 +38,8 @@ __all__ = [
     "USER_OFFSET_FIRST",
     "USER_OFFSET_LAST",
     "add_bank",
+    "add_downloaded_bank",
+    "on_bank_downloaded",
     "allocate_offset",
     "bank_file",
     "list_banks",
@@ -202,15 +205,97 @@ def add_bank(
     return {**_public(entry), "path": str(dest)}
 
 
+def _downloaded_id(download_id: str, path: Path) -> str:
+    """The id a downloaded bank file keeps across downloads: the catalog entry
+    and the file's name, so a second download of the same entry updates its
+    listing (and keeps its offset) instead of adding a copy."""
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{download_id}-{path.stem}".lower()).strip("-")
+    digest = hashlib.sha1(f"{download_id}/{path.name}".lower().encode()).hexdigest()[:8]
+    return f"dl-{slug[:50].strip('-')}-{digest}"
+
+
+def add_downloaded_bank(
+    path: Path, download_id: str, label: str = ""
+) -> dict[str, Any]:
+    """List a bank file the download manager installed (backend/modules/
+    modeldl/soundbanks) where it landed, with its presets and an offset, and
+    the catalog entry it came from as ``download_id`` (the app reads that
+    entry's playback gains, GET /api/models/soundbanks/{id}/manifest).
+
+    The file stays in the download folder: the store lists it by its absolute
+    path, and removing it from the list leaves it installed there. A second
+    download of the same file updates its entry and keeps its offset while its
+    bank range still fits.
+    """
+    path = Path(path)
+    fmt = _format_of(path.name)
+    try:
+        with path.open("rb") as f:
+            info = read_bank(f)
+    except BankFileError as e:
+        raise BankStoreError(
+            f"{path.name} is not a sound bank theDAW can read: {e}"
+        ) from e
+    bank_id = _downloaded_id(download_id, path)
+    with _LOCK:
+        banks = _load()
+        before = next((b for b in banks if b.get("id") == bank_id), None)
+        others = [b for b in banks if b.get("id") != bank_id]
+        taken = [(int(b.get("offset", 0)), int(b.get("span", 1))) for b in others]
+        offset = None
+        if before is not None:
+            kept = int(before.get("offset", 0))
+            if kept + info.melodic_span - 1 <= USER_OFFSET_LAST and all(
+                kept + info.melodic_span <= lo or kept >= lo + max(1, sp)
+                for lo, sp in taken
+            ):
+                offset = kept
+        if offset is None:
+            offset = allocate_offset(info.melodic_span, taken)
+        entry: dict[str, Any] = {
+            "id": bank_id,
+            "name": info.name or label or path.stem,
+            "file_name": path.name,
+            "file": str(path.resolve()),
+            "format": fmt,
+            "size": path.stat().st_size,
+            "offset": offset,
+            "span": info.melodic_span,
+            "added_at": before.get("added_at", time.time()) if before else time.time(),
+            "presets": [p.as_dict() for p in info.presets],
+            "download_id": download_id,
+        }
+        if before is None:
+            banks.append(entry)
+        else:
+            banks = [entry if b.get("id") == bank_id else b for b in banks]
+        _save(banks)
+    log.info(
+        "soundfonts: listed downloaded %s as %s at offset %d",
+        path.name,
+        bank_id,
+        offset,
+    )
+    return {**_public(entry), "path": str(path)}
+
+
+def on_bank_downloaded(path: Path, entry: Any) -> None:
+    """The download manager's hook (modeldl soundbanks add_soundbank_hook):
+    every bank file a download installs is listed at once, so every picker
+    and GET /api/soundfonts show it without a restart."""
+    add_downloaded_bank(path, entry.id, getattr(entry, "label", ""))
+
+
 def remove_bank(bank_id: str) -> bool:
-    """Take a bank off the list and delete its stored file. False when no bank
-    has that id."""
+    """Take a bank off the list and delete its stored file. A downloaded bank
+    (``download_id``) only leaves the list: its file belongs to the download
+    folder. False when no bank has that id."""
     with _LOCK:
         banks = _load()
         keep = [b for b in banks if b.get("id") != bank_id]
         if len(keep) == len(banks):
             return False
-        gone = [b for b in banks if b.get("id") == bank_id]
+        gone = [b for b in banks if b.get("id") == bank_id and not b.get("download_id")]
         _save(keep)
     for b in gone:
         f = _root() / str(b.get("file", ""))
