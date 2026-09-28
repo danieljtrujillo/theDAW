@@ -39,6 +39,8 @@ const { clipRollLoad } = await import('../lib/rollClip.ts');
 const { clipNotesToTasmo, tasmoMeterToClip } = await import('../lib/projectClient.ts');
 const { editMarkerId, markerBarLabel, markerStep } = await import('../lib/rollMarkers.ts');
 const { stepClock } = await import('../lib/rollTempo.ts');
+// Before `window` exists: the synth projectImport pulls in reads `document` when it sees a window.
+const { applyTasmoMarkersAndLoop, markersToLocators } = await import('../lib/projectImport.ts');
 type PianoNote = import('./pianoRollStore.ts').PianoNote;
 type RollBounceDeps = import('../lib/rollBounce.ts').RollBounceDeps;
 if (typeof window === 'undefined') Object.defineProperty(globalThis, 'window', { configurable: true, value: globalThis });
@@ -189,6 +191,31 @@ async function main(): Promise<void> {
     assert.equal(ed().markers.length, before - 1, 'a marker removed in the roll leaves EDIT on the next bounce');
     assert.ok(ed().markers.some((m) => m.label === 'My EDIT marker'));
     assert.equal(rendered, 3);
+  });
+
+  await step("EDIT's markers go through a .tasmo save and reopen with their ids, so a re-bounce after the reopen still replaces them", async () => {
+    await pause();
+    const before = ed().markers.map((m) => ({ ...m }));
+    assert.ok(before.some((m) => m.id.startsWith(`roll:${clipId}:`)), 'the bounce wrote roll markers');
+    // What saveProject writes (captureEditorSession's locators) and what the open path runs after loadProject.
+    const file = JSON.parse(JSON.stringify({ locators: markersToLocators(ed().markers) }));
+    useEditorStore.setState({ markers: [] });
+    applyTasmoMarkersAndLoop(file);
+    assert.deepEqual(ed().markers, before, 'ids, seconds and names as they were saved');
+    // A user's own marker renamed after the reopen, so the re-bounce has a change to carry.
+    const own = roll().markers.find((m) => m.name === 'Theme 2')!;
+    roll().updateMarker(own.id, { name: 'Theme 2 reprise' });
+    const done = await bounceRollToEditor(deps);
+    assert.ok(done && done.kind === 'updated');
+    assert.equal(ed().markers.length, before.length, 'no marker doubled after the reopen');
+    assert.equal(ed().markers.filter((m) => m.label === 'Theme 2 reprise').length, 1);
+    assert.ok(!ed().markers.some((m) => m.label === 'Theme 2'), 'the old name went with the old marker');
+    roll().updateMarker(own.id, { name: 'Theme 2' });
+    await bounceRollToEditor(deps);
+    assert.equal(ed().markers.length, before.length);
+    // A second save and reopen of the same file is still no double.
+    applyTasmoMarkersAndLoop(JSON.parse(JSON.stringify({ locators: markersToLocators(ed().markers) })));
+    assert.equal(ed().markers.length, before.length, 'reapplying the same locators replaces them by id');
   });
 
   await step('a .tasmo save and reopen brings every marker back into the roll', () => {

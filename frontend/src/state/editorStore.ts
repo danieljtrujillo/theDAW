@@ -1044,6 +1044,15 @@ interface EditorStoreState {
   setLoopRegion: (start: number, end: number) => void;
   clearLoop: () => void;
   addMarker: (t: number, label?: string) => void;
+  /**
+   * Put saved markers back on the timeline WITH their ids (a .tasmo reopen,
+   * lib/projectImport applyTasmoMarkersAndLoop). The id is what a roll clip's
+   * bounce finds its own EDIT markers by (`roll:<clip>:<marker>`), so a marker
+   * that came back under a fresh id would be doubled by the next bounce. A
+   * marker whose id is already on the timeline replaces it; an entry with no
+   * usable id or place gets a fresh id or is dropped. Every other marker stays.
+   */
+  restoreMarkers: (markers: readonly TimelineMarker[]) => void;
   removeMarker: (id: string) => void;
   renameMarker: (id: string, label: string) => void;
   moveMarker: (id: string, t: number) => void;
@@ -3226,6 +3235,18 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => ({
       markers: [...s.markers, { id: uid(), t: Math.max(0, t), label: label ?? String(s.markers.length + 1) }].sort((x, y) => x.t - y.t),
     })),
+  restoreMarkers: (incoming) =>
+    set((s) => {
+      const byId = new Map<string, TimelineMarker>();
+      for (const m of incoming) {
+        if (!m || typeof m.t !== 'number' || !Number.isFinite(m.t) || m.t < 0) continue;
+        const id = typeof m.id === 'string' && m.id ? m.id : uid();
+        byId.set(id, { id, t: m.t, label: typeof m.label === 'string' && m.label ? m.label : String(byId.size + 1) });
+      }
+      if (byId.size === 0) return {};
+      const kept = s.markers.filter((m) => !byId.has(m.id));
+      return { markers: [...kept, ...byId.values()].sort((x, y) => x.t - y.t) };
+    }),
   removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
   renameMarker: (id, label) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, label } : m)) })),
   setClipRollMarkers: (clipId, incoming) =>
