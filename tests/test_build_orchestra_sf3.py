@@ -537,7 +537,7 @@ def _fake_synth(samples, instruments, presets, reference_db):
         for job in jobs:
             if job["bankKey"] == "ref":
                 out[job["id"]] = {
-                    "rmsDb": reference_db[job["program"]],
+                    "rmsDb": reference_db.get(job["program"], -12.0),
                     "peak": 0.2,
                     "preset": f"GM {job['program']}",
                     "presetBank": job["bank"],
@@ -549,7 +549,13 @@ def _fake_synth(samples, instruments, presets, reference_db):
                 for p in presets
                 if (p.bank, p.program) == (job["bank"], job["program"])
             )
-            inst = instruments[dict(preset.zones[0].generators)[B.GEN_INSTRUMENT]]
+            # A key-split preset plays the instrument whose range holds the note.
+            split = [
+                z
+                for z in preset.zones
+                if B._zone_keys(z)[0] <= job["note"] <= B._zone_keys(z)[1]
+            ] or preset.zones
+            inst = instruments[dict(split[0].generators)[B.GEN_INSTRUMENT]]
             zones = [
                 z
                 for z in inst.zones
@@ -605,42 +611,96 @@ def _level(tmp_path, reference_db, **kw):
     out = tmp_path / "bank.sf3"
     B.write_soundfont(out, samples, instruments, presets, {"INAM": "t"}, compress=False)
     table = B.verify_levels(
-        out, tmp_path / "gm.sf3", run, instruments, samples, measure
+        out, tmp_path / "gm.sf3", run, instruments, samples, measure, presets
     )
     return run, samples, {row["name"]: row for row in table}
 
 
 def test_levelling_brings_the_strings_within_tolerance(tmp_path):
-    # The reference sits over the violins by more than their headroom (so
-    # they are peak limited), and under the violas (a cut).
-    run, samples, rows = _level(tmp_path, {40: -12.0, 41: -35.0, 42: -20.0, 43: -22.0})
+    # Synthetic levels: violins -13.6, violas -14.0, celli -13.7, bass -13.1 dB.
+    # The violins' reference is 1.5 dB over them (inside the 3 dB of limiting
+    # the samples may take), the violas' 6 dB under them (a cut), and the
+    # celli's 7 dB over them: 3 dB in the samples, the rest at playback.
+    run, samples, rows = _level(tmp_path, {40: -12.0, 41: -20.0, 42: -6.5, 43: -13.0})
     assert not list(tmp_path.glob("*.level-probe.sf2")), "the probe bank is removed"
     assert all(
         float(np.max(np.abs(s.data))) <= B.SAMPLE_CEILING + 1e-6 for s in samples
     )
     for name in ("Violins", "Violas", "Celli", "Contrabass"):
         row = rows[name]
-        assert abs(row["after_minus_reference_db"]) <= B.LEVEL_TOLERANCE_DB, row
+        assert abs(row["played_minus_reference_db"]) <= B.LEVEL_TOLERANCE_DB, row
         assert row["within_tolerance"]
         assert not row["clip_check"]["clips"]
-    assert rows["Violas"]["gain_db"] < 0
-    assert rows["Violas"]["peak_limited_db"] == 0
-    assert rows["Violins"]["gain_db"] > 0
-    assert rows["Violins"]["peak_limited_db"] > 0
-    for row in rows.values():
+        assert row["peak_limited_max_db"] <= B.MAX_LIMIT_DB + 1e-6
         assert row["peak_limited_max_db"] >= row["peak_limited_db"]
-    assert {"before_db", "after_db", "reference", "clip_check"} <= set(rows["Celli"])
-
-
-def test_levelling_caps_the_boost_at_the_limit_depth(tmp_path):
-    run, samples, rows = _level(
-        tmp_path, {40: 10.0, 41: -20.0, 42: -10.0, 43: -11.0}, max_limit_db=6.0
+    assert rows["Violas"]["gain_db"] < 0
+    assert rows["Violas"]["peak_limited_max_db"] == 0
+    assert rows["Violas"]["playback_gain_db"] == pytest.approx(0, abs=0.5)
+    assert rows["Violins"]["gain_db"] > 0
+    assert rows["Violins"]["playback_gain_db"] == pytest.approx(0, abs=0.5)
+    # The celli take 3 dB of limiting and no more; playback makes up the rest.
+    celli = rows["Celli"]
+    assert celli["peak_limited_max_db"] == pytest.approx(B.MAX_LIMIT_DB, abs=0.05)
+    assert celli["after_minus_reference_db"] < -B.LEVEL_TOLERANCE_DB
+    assert celli["playback_gain_db"] == pytest.approx(
+        -celli["after_minus_reference_db"], abs=0.01
     )
-    assert run.limited_db["Violins"] <= 6.0 + 1e-6
-    # The cap is on the measured note's sample, the violins' f layer.
-    targets = {x.name: x for x in run.targets}
-    assert B.level_sample(targets["Violins"], _strings_bank()[1]) is not None
-    assert not rows["Violins"]["within_tolerance"]
+    assert {"before_db", "after_db", "reference", "clip_check"} <= set(celli)
+
+
+def test_the_ensemble_and_aliases_get_playback_gains(tmp_path):
+    samples, instruments, presets, manifest = _strings_bank()
+    measure = _fake_synth(
+        samples,
+        instruments,
+        presets,
+        {40: -12.0, 41: -20.0, 42: -6.5, 43: -13.0, 48: -10.0, 45: -12.0},
+    )
+    run = B.level_bank(
+        samples,
+        instruments,
+        presets,
+        manifest,
+        {"INAM": "t"},
+        tmp_path / "bank.sf3",
+        tmp_path / "gm.sf3",
+        measure,
+    )
+    out = tmp_path / "bank.sf3"
+    B.write_soundfont(out, samples, instruments, presets, {"INAM": "t"}, compress=False)
+    levels = B.verify_levels(
+        out, tmp_path / "gm.sf3", run, instruments, samples, measure, presets
+    )
+    rows = {r["name"]: r for r in levels}
+    assert rows["String Ensemble"]["program"] == 48
+    assert rows["String Ensemble"]["within_tolerance"]
+    table = B.playback_gain_table(levels, manifest)
+    assert table["2:40"] == table["0:45"] == rows["Pizz"]["playback_gain_db"]
+    assert table["0:48"] == rows["String Ensemble"]["playback_gain_db"]
+    assert list(table) == sorted(
+        table, key=lambda k: tuple(int(x) for x in k.split(":"))
+    )
+
+
+def test_playback_gain_stops_short_of_clipping():
+    # 10 dB short, but a velocity-127 note already peaks at 0.5: only up to
+    # -1 dBFS is given.
+    assert B.playback_gain_db(10.0, 0.5) == pytest.approx(
+        20 * math.log10(B.OUTPUT_PEAK_LIMIT / 0.5), abs=0.01
+    )
+    assert B.playback_gain_db(4.0, 0.1) == 4.0
+    assert B.playback_gain_db(-2.0, 0.1) == -2.0
+
+
+def test_levelling_caps_limiting_on_every_sample(tmp_path):
+    run, samples, rows = _level(
+        tmp_path, {40: 10.0, 41: -20.0, 42: -10.0, 43: -11.0}, max_limit_db=2.0
+    )
+    assert max(run.limited_max_db.values()) <= 2.0 + 1e-6
+    violins = rows["Violins"]
+    # Unreachable in the samples, and too far to make up without clipping.
+    assert violins["after_minus_reference_db"] < -10
+    assert not violins["clip_check"]["clips"]
 
 
 def test_a_shared_sample_takes_the_larger_gain_and_the_other_zone_attenuates():

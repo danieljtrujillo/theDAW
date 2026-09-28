@@ -74,8 +74,12 @@ CC1 127 is rendered through SpessaSynth (``frontend/src/lib/soundbankLevels.ts``
 run with ``npx tsx``) in both banks, and the level is the loudest 100 ms RMS.
 The difference is written into the preset's samples. SpessaSynth clamps a
 decoded sample to +-1.0, so a boost that would pass full scale peak limits
-the samples first (a smooth 30 ms gain; the measured note's sample by at
-most ``--max-limit-db``, a hotter note's sample as far as the ceiling needs). A few
+the samples first (a smooth 30 ms gain, at most ``--max-limit-db``, 3 dB, on
+any sample: more flattens the attacks). What the samples cannot take is the
+preset's ``playback_gain_db``, which the app adds after the synth
+(``frontend/src/lib/soundbankGain.ts``, read from the manifest's
+``playback_gain`` table keyed ``"bank:program"``), capped so a velocity-127
+note stays under -1 dBFS. A few
 measure/adjust passes run on a PCM probe bank before the SF3 is encoded,
 then the written bank is measured again, with a clipping check at velocity
 127 on each preset's loudest zone. The manifest's ``levelling`` block holds
@@ -1586,13 +1590,16 @@ OUTPUT_PEAK_LIMIT = 10 ** (-1 / 20)
 #: Largest sample value levelling may write. SpessaSynth clamps decoded
 #: samples to +-1.0, so a louder sample would clip in the app.
 SAMPLE_CEILING = 0.98
-#: Most peak limiting levelling applies to any sample, in dB.
-MAX_LIMIT_DB = 12.0
+#: Most peak limiting levelling applies to any sample, in dB. More flattens
+#: the attacks; the app makes up what is left at playback (playback_gain_db).
+MAX_LIMIT_DB = 3.0
 #: Half-width of the limiter's gain smoothing, in seconds.
 LIMITER_WINDOW_S = 0.03
 #: Measure/adjust passes, and the residual that ends them early.
 LEVEL_PASSES = 4
 LEVEL_SETTLED_DB = 0.3
+#: The String Ensemble split is measured on G4, in the violins' range.
+ENSEMBLE_NOTE = 67
 #: Kit presets are measured on the snare (GM key 38) when the kit has one.
 KIT_LEVEL_KEY = 38
 #: Zones fainter than this at CC1 = 127 are not the playing layer.
@@ -1738,20 +1745,18 @@ def level_gains(
     samples: Sequence[SampleData],
     max_limit_db: float,
 ) -> dict[str, float]:
-    """The gain (dB) that brings each preset to its reference level.
-
-    Where a boost would push a sample past SAMPLE_CEILING, that sample is
-    peak limited. The measured note's own sample may be limited by at most
-    ``max_limit_db``; past that the gain is capped. A sample louder than the
-    measured one (a note whose register or layer was recorded hotter) is
-    limited as far as the ceiling needs, and the table reports how far.
-    """
+    """The gain (dB) toward each preset's reference level that its samples
+    can take: up to the point where the preset's hottest sample would need
+    more than ``max_limit_db`` of peak limiting to stay under SAMPLE_CEILING.
+    What is left is made up at playback (see playback_gain_db)."""
     gains = {}
     for t in targets:
         want = reference[t.name] - measured[t.name]
-        si = level_sample(t, instruments)
-        peak = float(np.max(np.abs(samples[si].data))) if samples[si].data.size else 0.0
-        headroom = 20 * math.log10(SAMPLE_CEILING / max(peak, 1e-9))
+        peaks = [
+            float(np.max(np.abs(samples[i].data)))
+            for i in instrument_samples(instruments[t.instrument])
+        ]
+        headroom = 20 * math.log10(SAMPLE_CEILING / max(max(peaks), 1e-9))
         gains[t.name] = min(want, headroom + max_limit_db)
     return gains
 
@@ -1941,9 +1946,7 @@ def level_bank(
         measured = {t.name: got[f"ours:{t.name}"]["rmsDb"] for t in targets}
         step = {}
         for t in targets:
-            left = max_limit_db - limited_by_sample.get(
-                level_sample(t, instruments), 0.0
-            )
+            left = max_limit_db - _preset_limited_db(t, instruments, limited_by_sample)
             step[t.name] = level_gains(
                 [t], measured, ref, instruments, samples, max(0.0, left)
             )[t.name]
@@ -1963,6 +1966,15 @@ def level_bank(
     return LevelRun(targets, before, total, limited, passes, limited_max)
 
 
+def playback_gain_db(shortfall_db: float, output_peak: float) -> float:
+    """The gain the app applies at playback to a preset that is still
+    ``shortfall_db`` under its reference: all of it, unless that would take
+    the velocity-127 output ``output_peak`` past OUTPUT_PEAK_LIMIT."""
+    room = 20 * math.log10(OUTPUT_PEAK_LIMIT / max(output_peak, 1e-9))
+    # Rounded down, so a capped gain never lands a hair over the limit.
+    return math.floor(min(shortfall_db, room) * 100 + 1e-9) / 100
+
+
 def verify_levels(
     bank: Path,
     reference: Path,
@@ -1970,8 +1982,12 @@ def verify_levels(
     instruments: Sequence[Instrument],
     samples: Sequence[SampleData],
     measure: Measurer,
+    presets: Sequence[Preset] = (),
 ) -> list[dict]:
-    """Measure the written bank and return the before/after table."""
+    """Measure the written bank and return the before/after table, with the
+    playback gain that makes up each preset's remaining shortfall. A String
+    Ensemble split in ``presets`` gets a row of its own against the
+    reference's program 48."""
     targets, before, gains = run.targets, run.before, run.gains
     jobs = []
     loud = {}
@@ -1985,6 +2001,22 @@ def verify_levels(
                 f"clip:{t.name}", "ours", t.bank, t.program, loud[t.name], CLIP_VELOCITY
             )
         )
+    ensemble = next(
+        (p for p in presets if (p.bank, p.program) == (0, 48) and len(p.zones) > 1),
+        None,
+    )
+    if ensemble is not None:
+        for key, bank_key in (("after", "ours"), ("ref", "ref")):
+            jobs.append(
+                _job(
+                    f"{key}:{ensemble.name}",
+                    bank_key,
+                    0,
+                    48,
+                    ENSEMBLE_NOTE,
+                    LEVEL_VELOCITY,
+                )
+            )
     after = measure({"ours": bank, "ref": reference}, jobs)
     table = []
     for t in targets:
@@ -1993,6 +2025,7 @@ def verify_levels(
         now = after[f"after:{t.name}"]
         clip = after[f"clip:{t.name}"]
         delta = now["rmsDb"] - ref["rmsDb"]
+        play = playback_gain_db(-delta, clip["peak"])
         table.append(
             {
                 "name": t.name,
@@ -2011,18 +2044,89 @@ def verify_levels(
                 "peak_limited_max_db": run.limited_max_db[t.name],
                 "after_db": round(now["rmsDb"], 2),
                 "after_minus_reference_db": round(delta, 2),
-                "within_tolerance": abs(delta) <= LEVEL_TOLERANCE_DB,
+                "playback_gain_db": play,
+                "played_minus_reference_db": round(delta + play, 2),
+                "within_tolerance": abs(delta + play) <= LEVEL_TOLERANCE_DB,
                 "played": now["preset"],
                 "clip_check": {
                     "note": loud[t.name],
                     "velocity": CLIP_VELOCITY,
                     "cc1": LEVEL_CC1,
                     "output_peak": round(clip["peak"], 4),
-                    "clips": clip["peak"] >= OUTPUT_PEAK_LIMIT,
+                    "output_peak_with_playback_gain": round(
+                        clip["peak"] * 10 ** (play / 20), 4
+                    ),
+                    "clips": clip["peak"] * 10 ** (play / 20) >= OUTPUT_PEAK_LIMIT,
+                },
+            }
+        )
+    if ensemble is not None:
+        now = after[f"after:{ensemble.name}"]
+        ref = after[f"ref:{ensemble.name}"]
+        delta = now["rmsDb"] - ref["rmsDb"]
+        members = {_zone_gens(z)[GEN_INSTRUMENT] for z in ensemble.zones}
+        peak = max(
+            (
+                row["clip_check"]["output_peak"]
+                for row, t in zip(table, targets)
+                if t.instrument in members
+            ),
+            default=0.0,
+        )
+        play = playback_gain_db(-delta, peak)
+        table.append(
+            {
+                "name": ensemble.name,
+                "bank": 0,
+                "program": 48,
+                "note": ENSEMBLE_NOTE,
+                "reference": {
+                    "preset": ref["preset"],
+                    "bank": ref["presetBank"],
+                    "program": ref["presetProgram"],
+                    "level_db": round(ref["rmsDb"], 2),
+                },
+                "before_db": None,
+                "gain_db": 0.0,
+                "peak_limited_db": 0.0,
+                "peak_limited_max_db": 0.0,
+                "after_db": round(now["rmsDb"], 2),
+                "after_minus_reference_db": round(delta, 2),
+                "playback_gain_db": play,
+                "played_minus_reference_db": round(delta + play, 2),
+                "within_tolerance": abs(delta + play) <= LEVEL_TOLERANCE_DB,
+                "played": now["preset"],
+                "clip_check": {
+                    "note": None,
+                    "velocity": CLIP_VELOCITY,
+                    "cc1": LEVEL_CC1,
+                    "output_peak": round(peak, 4),
+                    "output_peak_with_playback_gain": round(
+                        peak * 10 ** (play / 20), 4
+                    ),
+                    "clips": peak * 10 ** (play / 20) >= OUTPUT_PEAK_LIMIT,
                 },
             }
         )
     return table
+
+
+def playback_gain_table(
+    levels: Sequence[dict], manifest: Sequence[dict]
+) -> dict[str, float]:
+    """``{"bank:program": dB}`` for every preset slot, aliases included: what
+    the app adds at playback (frontend/src/lib/soundbankGain.ts)."""
+    by_name = {row["name"]: row["playback_gain_db"] for row in levels}
+    out: dict[str, float] = {}
+    for m in manifest:
+        gain = by_name.get(m["name"])
+        if gain is None:
+            continue
+        for bank, program in [(m["bank"], m["program"]), *m.get("aliases", [])]:
+            out[f"{bank}:{program}"] = gain
+    return dict(
+        sorted(out.items(), key=lambda kv: tuple(int(x) for x in kv[0].split(":")))
+    )
 
 
 def attribution_text(snaps: Sequence[RepoSnapshot]) -> str:
@@ -2167,25 +2271,29 @@ def build(args: argparse.Namespace) -> int:
             instruments,
             samples,
             measure_with_spessasynth,
+            presets,
         )
         level_seconds += time.monotonic() - verify_started
         for row in levels:
             log.info(
-                "level %-24s ref %-20s %6.1f  before %6.1f  gain %+5.1f  after %6.1f (%+.1f)%s",
+                "level %-24s ref %-20s %6.1f  before %6s  gain %+5.1f  limit %4.1f  "
+                "after %6.1f  playback %+5.1f  played %+.1f%s",
                 row["name"],
                 (row["reference"]["preset"] or "?")[:20],
                 row["reference"]["level_db"],
-                row["before_db"],
+                "-" if row["before_db"] is None else f"{row['before_db']:.1f}",
                 row["gain_db"],
+                row["peak_limited_max_db"],
                 row["after_db"],
-                row["after_minus_reference_db"],
+                row["playback_gain_db"],
+                row["played_minus_reference_db"],
                 "" if row["within_tolerance"] else "  OUT OF TOLERANCE",
             )
             if row["clip_check"]["clips"]:
                 log.warning(
-                    "level %s clips at velocity 127: peak %s",
+                    "level %s clips at velocity 127 with its playback gain: peak %s",
                     row["name"],
-                    row["clip_check"]["output_peak"],
+                    row["clip_check"]["output_peak_with_playback_gain"],
                 )
     encode_seconds = time.monotonic() - encode_started - level_seconds
     total_seconds = time.monotonic() - started
@@ -2213,6 +2321,7 @@ def build(args: argparse.Namespace) -> int:
         "sample_peak_max": round(
             max(float(np.max(np.abs(s.data))) for s in samples), 3
         ),
+        "playback_gain": playback_gain_table(levels, manifest) if levels else {},
         "levelling": {
             "reference": Path(args.reference).name,
             "method": (
@@ -2222,11 +2331,17 @@ def build(args: argparse.Namespace) -> int:
                 f"{CLIP_VELOCITY} on each preset's loudest zone"
             ),
             "passes": levelled.passes if levelled else 0,
+            "max_limit_db": args.max_limit_db,
             "presets": levels,
             "out_of_tolerance": [
                 r["name"] for r in levels if not r["within_tolerance"]
             ],
             "clipping": [r["name"] for r in levels if r["clip_check"]["clips"]],
+            "short_after_playback_gain": [
+                r["name"]
+                for r in levels
+                if r["played_minus_reference_db"] < -LEVEL_TOLERANCE_DB
+            ],
         }
         if levels
         else None,
