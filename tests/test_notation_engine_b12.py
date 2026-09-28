@@ -2770,13 +2770,13 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "zipfile.ZipFile.write (packaging the .zip level)",
         (
             "exporters/chordtrack.py",
-            225,
+            229,
             "output_path",
             "write_text",
         ): "Path.write_text (chord-track JSON export, not MusicXML)",
         (
             "exporters/chordtrack.py",
-            616,
+            627,
             "log_emission[0]",
             "copy",
         ): (
