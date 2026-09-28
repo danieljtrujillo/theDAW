@@ -16,7 +16,9 @@
  * (lib/rollTracks partFileChannels): the one its clips' roll parts name when
  * they agree and no earlier track took it, else the next free one. Past
  * fifteen melodic channels they are shared, and `sharedTracks` names the
- * tracks that share. Each clip's voice
+ * tracks that share: a track whose parts name a channel an earlier track took
+ * keeps that channel once no channel is free, so the parts of a file that
+ * shared a channel share it again. Each clip's voice
  * (lib/clipProgram clipVoice: its program, else its track's, else the
  * picker's) is written as a program change at tick 0, and again at the start
  * of any later clip on the track that sounds another program or bank. The
@@ -134,6 +136,9 @@ export interface ArrangementMidiResult {
   /** Where the file's tick 0 sits on the timeline, in seconds (a range starts on its bar line). */
   startSec: number;
 }
+
+/** A file's channels a melodic track can take: all sixteen but channel 10, the drums'. */
+const MELODIC_FILE_CHANNELS = 15;
 
 /** EDIT's default fader: a track at it writes no volume change of its own. */
 export const EDIT_DEFAULT_VOLUME = 0.8;
@@ -376,7 +381,8 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     // A channel the clips' roll parts agree on (an imported file's own channel) is kept.
     const named = new Set(kept.map((c) => c.sourceRollPart?.channel ?? null));
     const only = named.size === 1 ? [...named][0] : null;
-    const partChannel = only !== null && only !== PERCUSSION_PART_CHANNEL ? only : null;
+    // A drum track is written on channel 10 whatever its parts name, so it names no melodic channel.
+    const partChannel = only !== null && only !== PERCUSSION_PART_CHANNEL && !isPercussionTrack(track) ? only : null;
     const lanes = new Set<number>();
     let plain = false;
     for (const e of events) for (const n of e.notes) {
@@ -389,11 +395,22 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
 
   // A channel two tracks' parts name (two files imported as tracks, each with a part on channel 1) stays with
   // the first track; the next takes a free channel, so two tracks never share a channel while one is free.
+  // When none is left (a 24-part orchestral file, whose parts already share channels), the next keeps the
+  // channel its part names, sharing it as the file did, rather than going onto another part's channel in turn.
+  const partChannels = new Set(tracks.map((t) => t.partChannel).filter((ch): ch is number => ch !== null));
+  // The channels no part names, less those the tracks with no channel of their own and their bent lanes take.
+  let spare =
+    MELODIC_FILE_CHANNELS -
+    partChannels.size -
+    tracks.reduce((n, t) => n + (t.partChannel === null && !isPercussionTrack(t.track) ? 1 : 0) + Math.max(0, t.keys.length - 1), 0);
   const claimed = new Set<number>();
   for (const t of tracks) {
     if (t.partChannel === null) continue;
-    if (claimed.has(t.partChannel)) t.partChannel = null;
-    else claimed.add(t.partChannel);
+    if (!claimed.has(t.partChannel)) claimed.add(t.partChannel);
+    else if (spare > 0) {
+      t.partChannel = null;
+      spare -= 1;
+    }
   }
   // The track's first channel takes its id (and the channel its parts name); each further bent lane takes one more.
   const { channels, shared } = partFileChannels(

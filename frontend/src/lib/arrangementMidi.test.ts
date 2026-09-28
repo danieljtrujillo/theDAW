@@ -294,6 +294,39 @@ const secOf = (tick: number, map = [{ beat: 0, bpm: 120 }]) => beatToTime(map, t
   assert.deepEqual(out.sharedTracks, []);
 }
 
+// ── a file whose parts share channels keeps them shared on the same channels ──
+// A 24-part orchestral file shares channels (Flute 1 and Flute 2 on channel 2).
+// Imported as tracks and exported, the second of each pair used to go onto
+// another part's channel in turn (Flute 2 onto the Piccolo's channel 1), where
+// a player sounds both on one program and the Piccolo's volume and pan reach
+// the flute; read back, the Piccolo part took the flutes' controllers.
+{
+  const part = (name: string, channel: number, program: number) =>
+    ({ doc: 'orch', id: name, order: 0, name, program, bank: 0, channel, color: '#fff', mute: false, solo: false });
+  // Channels 1-9 and 11-16 each named once, then two more parts on channels 2 and 14.
+  const named = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16];
+  const specs = [...named.map((ch) => ({ name: `Part ch${ch}`, ch, program: ch })), { name: 'Flute 2', ch: 2, program: 2 }, { name: 'Violin II', ch: 14, program: 14 }];
+  const tracks = specs.map((s, i) => track(`t${i}`, s.name));
+  const clips = specs.map((s, i) => clip(`c${i}`, `t${i}`, 0, [note(0, 60 + i)], { instrumentProgram: s.program, sourceRollPart: part(s.name, s.ch, s.program) }));
+  const out = arrangementToMidiFile({ bpm: 120, tracks, clips });
+  assert.deepEqual(
+    out.file.tracks.map((t) => t.notes[0].channel + 1),
+    specs.map((s) => s.ch),
+    'every part on the channel it names, the two late ones sharing as the file did',
+  );
+  assert.deepEqual([...out.sharedTracks].sort(), ['Flute 2', 'Part ch14', 'Part ch2', 'Violin II'], 'the export names the parts that share');
+  // With a channel free, the second part to name channel 2 still moves to it.
+  const roomy = arrangementToMidiFile({ bpm: 120, tracks: tracks.slice(0, 3), clips: [clips[0], clips[1], { ...clips[15], trackId: 't2' }] });
+  assert.deepEqual(roomy.file.tracks.map((t) => t.notes[0].channel + 1), [1, 2, 3], 'a free channel for the second part on channel 2');
+  // A drum track is on channel 10 whatever its part names: it takes channel 2 from no melodic part.
+  const kit = arrangementToMidiFile({
+    bpm: 120,
+    tracks: [track('k', 'Kit', { isPercussion: true }), track('f', 'Flute')],
+    clips: [clip('ck', 'k', 0, [note(0, 36)], { sourceRollPart: part('Kit', 2, 0) }), clip('cf', 'f', 0, [note(0, 72)], { instrumentProgram: 73, sourceRollPart: part('Flute', 2, 73) })],
+  });
+  assert.deepEqual(kit.file.tracks.map((t) => t.notes[0].channel + 1), [10, 2], 'the kit on 10, the flute on the channel its part names');
+}
+
 // ── a controller's default where a clip starts is not written ────────────────
 // The value each controller holds where a clip's window starts is written at
 // the clip's start, so a trimmed clip starts with its pedal and volume. A part
