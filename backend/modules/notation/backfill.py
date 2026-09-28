@@ -391,6 +391,20 @@ def _rewrite_titles(path: Path, title: str, composer: str) -> bool:
     return changed
 
 
+def _keeps_own_credit(sheet: dict[str, Any]) -> bool:
+    """True for a sheet the user imported (``POST /api/notation/import`` or a
+    corpus piece, see :mod:`.score_import`). Its title and composer are the
+    file's own, so the backfill never retitles or re-credits it: the app's
+    default artist is not the composer of an imported score."""
+    raw = sheet.get("metadata_json") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return False
+    return isinstance(raw, dict) and bool(raw.get("imported"))
+
+
 def _needs_fix(path: Path, title: str, composer: str) -> bool:
     """Cheap check (no music21 parse): does this sheet still need a title /
     composer fix?"""
@@ -528,7 +542,10 @@ def backfill_scores(store: Any) -> dict[str, int]:
         # launch when the entry has multiple sheets -- one per MIDI -- and
         # never converged on the actually stale ones (regressed SCORE-010).
         stale = [
-            s for s in sheets if _needs_fix(Path(s.get("path") or ""), title, composer)
+            s
+            for s in sheets
+            if not _keeps_own_credit(s)
+            and _needs_fix(Path(s.get("path") or ""), title, composer)
         ]
         if not stale:
             res["skipped"] += 1

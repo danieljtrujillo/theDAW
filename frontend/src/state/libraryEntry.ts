@@ -62,9 +62,11 @@ export interface LibraryEntry {
    * 'image' entries back the VJ video library + overlays; they carry
    * `mediaUrl` / `thumbUrl` / dimensions / `hasAlpha` instead of audio
    * analysis. `audioUrl` falls back to the media URL for these so generic
-   * consumers never see an empty URL.
+   * consumers never see an empty URL. 'score' is a composition: a score with
+   * no recording (an imported score file or music21 corpus piece), whose
+   * notation artifacts are the whole entry; its `audioUrl` is empty.
    */
-  kind?: 'audio' | 'video' | 'image';
+  kind?: 'audio' | 'video' | 'image' | 'score';
   mediaUrl?: string;
   thumbUrl?: string | null;
   /**
