@@ -70,6 +70,8 @@ def get_banks(request: Request) -> dict[str, Any]:
 def post_upload(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     try:
         entry = store.add_bank(file.file, file.filename or "bank.sf2")
+    except store.BankTooLarge as e:
+        raise HTTPException(413, str(e)) from e
     except store.BankStoreError as e:
         raise HTTPException(400, str(e)) from e
     return {"bank": _shown(entry, request)}
@@ -83,6 +85,8 @@ def post_add_path(body: PathBody, request: Request) -> dict[str, Any]:
     try:
         with open(path, "rb") as f:
             entry = store.add_bank(f, os.path.basename(path), source_path=path)
+    except store.BankTooLarge as e:
+        raise HTTPException(413, str(e)) from e
     except store.BankStoreError as e:
         raise HTTPException(400, str(e)) from e
     except OSError as e:

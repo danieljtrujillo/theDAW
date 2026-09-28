@@ -252,3 +252,22 @@ def test_a_registry_that_went_bad_lists_no_banks(
         json.dumps({"banks": [{"id": "../evil", "file": "x"}]}), encoding="utf-8"
     )
     assert client.get("/api/soundfonts").json()["banks"] == []
+
+
+def test_an_upload_past_the_largest_bank_is_refused_and_leaves_nothing(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = make_sf2("Big", [("Violin", 40, 0)])
+    monkeypatch.setattr(store, "MAX_BANK_BYTES", len(data) + 1024)
+    resp = _upload(client, "Big.sf2", data + b"\x00" * 4096)
+    assert resp.status_code == 413
+    assert [
+        p.name for p in (tmp_path / "soundfonts").iterdir() if p.name != store.REGISTRY
+    ] == []
+
+
+def test_bytes_after_the_riff_are_not_stored(client: TestClient) -> None:
+    data = make_sf2("Tail", [("Violin", 40, 0)])
+    bank = _upload(client, "Tail.sf2", data + b"junk" * 1000).json()["bank"]
+    assert Path(bank["path"]).read_bytes() == data
+    assert bank["size"] == len(data)

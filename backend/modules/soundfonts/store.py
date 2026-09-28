@@ -20,7 +20,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -35,6 +34,8 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "BankStoreError",
+    "BankTooLarge",
+    "MAX_BANK_BYTES",
     "USER_OFFSET_FIRST",
     "USER_OFFSET_LAST",
     "add_bank",
@@ -55,6 +56,10 @@ USER_OFFSET_FIRST = 32
 USER_OFFSET_LAST = 119
 
 REGISTRY = "registry.json"
+#: The largest file a bank can be: a RIFF file's size is a 32-bit count, plus
+#: its 8-byte header. An upload past it is refused while it streams in, so a
+#: caller cannot fill the disk with one.
+MAX_BANK_BYTES = (1 << 32) + 8
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _LOCK = threading.Lock()
 _root_override: Path | None = None
@@ -62,6 +67,25 @@ _root_override: Path | None = None
 
 class BankStoreError(ValueError):
     """A bank that cannot be added, with the reason to show the user."""
+
+
+class BankTooLarge(BankStoreError):
+    """The file is larger than any sound bank can be (MAX_BANK_BYTES)."""
+
+
+def _copy_capped(src: BinaryIO, out: BinaryIO, limit: int) -> None:
+    """Copy ``src`` into ``out``, raising BankTooLarge once past ``limit`` bytes."""
+    total = 0
+    while True:
+        block = src.read(1 << 20)
+        if not block:
+            return
+        total += len(block)
+        if total > limit:
+            raise BankTooLarge(
+                f"A sound bank is at most {limit} bytes: a RIFF file cannot be larger."
+            )
+        out.write(block)
 
 
 def set_root_for_tests(root: str | os.PathLike[str] | None) -> None:
@@ -203,9 +227,13 @@ def add_bank(
     tmp = temp_sibling(dest)
     try:
         with tmp.open("wb") as out:
-            shutil.copyfileobj(src, out, 1 << 20)
+            _copy_capped(src, out, MAX_BANK_BYTES)
         with tmp.open("rb") as f:
             info = read_bank(f)
+        # Bytes after the RIFF's end are not part of the bank: they are not kept.
+        if 0 < info.size < tmp.stat().st_size:
+            with tmp.open("r+b") as f:
+                f.truncate(info.size)
         with _LOCK:
             banks = _load()
             offset = allocate_offset(

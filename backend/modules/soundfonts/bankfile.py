@@ -61,6 +61,9 @@ class BankInfo:
     format: str
     name: str
     presets: list[Preset] = field(default_factory=list)
+    #: The bytes the RIFF file spans, its 8-byte header included: anything
+    #: after that is not part of the bank.
+    size: int = 0
 
     @property
     def melodic_span(self) -> int:
@@ -240,5 +243,6 @@ def read_bank(f: BinaryIO) -> BankInfo:
         raise BankFileError(f"unknown RIFF form {form!r}")
     if not info.presets:
         raise BankFileError("the bank lists no presets")
+    info.size = riff_end
     info.presets.sort(key=lambda p: (p.drum, p.bank, p.bank_lsb, p.program))
     return info
