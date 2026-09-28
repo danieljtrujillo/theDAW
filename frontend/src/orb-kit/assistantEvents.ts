@@ -74,6 +74,7 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_stretch_clip',
     'editor_detect_tempo',
     'editor_set_time_signature',
+    'editor_set_meter_map',
     'editor_nudge_clip',
     // Transport.
     'editor_play',

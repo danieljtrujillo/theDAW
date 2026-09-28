@@ -304,6 +304,7 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     editor_stretch_clip: stretchClipTool,
     editor_detect_tempo: (p) => editorToolBridge.detectTempo(pick(p, CLIP)),
     editor_set_time_signature: (p) => facade.setTimeSignature(pick(p, ['num', 'den', 'time_signature'])),
+    editor_set_meter_map: (p) => facade.setMeterMap(pick(p, ['meter_map', 'tempo_map', 'adopt_clip_id'])),
     editor_nudge_clip: (p) => facade.nudgeClip(pick(p, [...CLIP, 'delta_sec', 'beats', 'bars'])),
 
     // -- transport -----------------------------------------------------------

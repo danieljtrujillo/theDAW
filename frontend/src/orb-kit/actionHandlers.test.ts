@@ -14,6 +14,8 @@ import { useGenerateParamsStore } from '../state/generateParamsStore.ts';
 import { useGenerateStore, type GenerateParams } from '../state/generateStore.ts';
 import { useOnboardingStore } from '../onboarding/onboardingStore.ts';
 import { useEditorStore } from '../state/editorStore.ts';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
 
 let captured: GenerateParams | null = null;
 useGenerateStore.setState({
@@ -244,7 +246,7 @@ assert.match(
 );
 
 assert.match(saidNow({ type: 'editor_set_time_signature', payload: { num: 7, den: 8 } }), /7\/8/);
-assert.deepEqual(useEditorStore.getState().timeSignature, { num: 7, den: 8 });
+assert.deepEqual(barOneMeter(), { num: 7, den: 8 });
 
 // Bars come off that meter: bar 3 at 120bpm in 7/8 is 2 * 7 * (0.5 * 4/8) s.
 assert.match(saidNow({ type: 'editor_seek_bar', payload: { bar: 3 } }), /bar 3/);

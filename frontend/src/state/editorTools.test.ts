@@ -22,6 +22,8 @@
 import assert from 'node:assert/strict';
 import { useEditorStore } from './editorStore';
 import type { AudioClip, EditorTrack } from './editorStore';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
 import type { PianoNote } from './pianoRollStore';
 import { registerEditorPlayback, unregisterEditorPlayback } from './editorPlaybackBridge';
 import { getSelectedClips } from './editorSelectionBridge';
@@ -428,9 +430,9 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
 {
   seed();
   okOf(tools.setTimeSignature({ num: 3, den: 4 }), 'meter');
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 3, den: 4 });
+  assert.deepEqual(barOneMeter(), { num: 3, den: 4 });
   okOf(tools.setTimeSignature({ time_signature: '7/8' }), 'meter compact');
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 7, den: 8 });
+  assert.deepEqual(barOneMeter(), { num: 7, den: 8 });
   assert.match(errOf(tools.setTimeSignature({ num: 4, den: 5 }), 'bad den'), /not a meter the editor can bar out/);
   assert.match(errOf(tools.setTimeSignature({}), 'no args'), /pass num and den/);
 
@@ -464,6 +466,71 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   assert.equal(useEditorStore.getState().loopStart, 0);
   assert.equal(useEditorStore.getState().loopEnd, 2);
   assert.equal(useEditorStore.getState().loopEnabled, true);
+}
+
+/* ── the arrangement's meter map and tempo map ────────────────────────────── */
+{
+  seed();
+  // 4/4 for two bars at 120, then 7/8 3+2+2 at 60: bar 3 at 4 s, bar 4 at 7.5 s.
+  const set = okOf(tools.setMeterMap({
+    meter_map: [{ bar: 1, num: 4, den: 4 }, { bar: 3, meter: '7/8 3+2+2' }],
+    tempo_map: [{ bar: 1, bpm: 120 }, { bar: 3, bpm: 60 }],
+  }), 'set maps');
+  assert.match(set.message, /4\/4 from bar 1, 7\/8 3\+2\+2 from bar 3; 120 BPM from bar 1, 60 BPM from bar 3/);
+  assert.deepEqual(
+    useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den, m.meter.groups.join('+')]),
+    [[0, 4, 4, ''], [2, 7, 8, '3+2+2']],
+  );
+  assert.deepEqual(useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm]), [[0, 120], [8, 60]]);
+  assert.deepEqual((set.data as { tempo_map: unknown[] }).tempo_map, [{ bar: 1, beat: 0, bpm: 120, curve: 'step' }, { bar: 3, beat: 0, bpm: 60, curve: 'step' }]);
+
+  // editor_seek_bar and editor_nudge_clip count the map's bars at the map's tempo.
+  const seek = okOf(tools.seekBar({ bar: 4 }), 'seek bar 4');
+  assert.ok(Math.abs(useEditorStore.getState().playheadSec - 7.5) < 1e-9, `bar 4 at 7.5 s, got ${useEditorStore.getState().playheadSec}`);
+  assert.match(seek.message, /7\/8 3\+2\+2 at 60 bpm/);
+  useEditorStore.getState().updateClip('midi1', { startSec: 1 });
+  okOf(tools.nudgeClip({ clip_id: 'midi1', bars: 2 }), 'nudge 2 bars');
+  assert.ok(Math.abs(clipOf('midi1').startSec - 5.75) < 1e-9, 'halfway through bar 1 to halfway through the 7/8 bar 3');
+  useEditorStore.getState().updateClip('midi1', { startSec: 4 });
+  okOf(tools.nudgeClip({ clip_id: 'midi1', beats: 3 }), 'nudge 3 beats');
+  assert.ok(Math.abs(clipOf('midi1').startSec - 5.5) < 1e-9, 'three 8ths at 60 BPM');
+
+  // A tempo position is a bar and quarter notes into it; ramps and fermatas ride along.
+  okOf(tools.setMeterMap({ tempo_map: [{ bar: 3, beat: 1, bpm: 90, curve: 'linear' }, { bar: 5, bpm: 132 }, { bar: 5, beat: 1, fermata: { beats: 2, stretch: 3 } }] }), 'tempo only');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm, e.fermata ? 'hold' : e.curve]),
+    [[0, 120, 'step'], [9, 90, 'linear'], [15, 132, 'step'], [16, 120, 'hold']],
+    'bar 1 keeps its start tempo; bar 5 starts at beat 15 after a 3.5-quarter 7/8 bar',
+  );
+  // Without a bar-1 entry, bar 1 keeps its meter.
+  okOf(tools.setMeterMap({ meter_map: [{ bar: 9, num: 5, den: 4 }] }), 'meter only');
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den]), [[0, 4, 4], [8, 5, 4]]);
+  // One call is one undo step.
+  useEditorStore.getState().undo();
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => m.bar), [0, 2]);
+
+  assert.match(errOf(tools.setMeterMap({}), 'nothing'), /pass meter_map, tempo_map, or adopt_clip_id/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 0, num: 4, den: 4 }] }), 'bar 0'), /bar >= 1/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 2, meter: '7/8 3+3' }] }), 'bad groups'), /not a meter/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 2, num: 7, den: 8, groups: [3, 3] }] }), 'bad groups list'), /not a meter/);
+  assert.match(errOf(tools.setMeterMap({ tempo_map: [{ bar: 2, bpm: 400 }] }), 'bpm'), /20-300/);
+  assert.match(errOf(tools.setMeterMap({ tempo_map: [{ bar: 2, bpm: 90, curve: 'swing' }] }), 'curve'), /"step" \(hold\) or "linear"/);
+  assert.match(errOf(tools.setMeterMap({ adopt_clip_id: 'bass', meter_map: [] }), 'both'), /not both/);
+  assert.match(errOf(tools.setMeterMap({ adopt_clip_id: 'loop A' }), 'audio'), /MIDI|piano/i);
+
+  // adopt_clip_id: the arrangement follows a MIDI clip from its first step.
+  useEditorStore.getState().updateClip('midi1', {
+    startSec: 0,
+    sourceBpm: 96,
+    sourceMeterMap: [{ bar: 0, meter: { num: 5, den: 4, groups: [] } }],
+  });
+  const adopted = okOf(tools.setMeterMap({ adopt_clip_id: 'bass' }), 'adopt');
+  assert.match(adopted.message, /follows "bass"/);
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den]), [[0, 5, 4]]);
+  assert.equal(useEditorStore.getState().bpm, 96);
+  // A load without a meter keeps the session's (as bpm-less loads always have),
+  // so the blocks after this one start from 4/4 again.
+  useEditorStore.getState().setMeterMap([{ bar: 0, meter: { num: 4, den: 4, groups: [] } }]);
 }
 
 /* ── clip geometry: set, trim, duplicate, nudge ──────────────────────────── */

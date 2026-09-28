@@ -28,6 +28,27 @@ import {
 } from '../lib/automationModes';
 import { validTimeSignature } from '../lib/timeSignatureIO';
 import {
+  adoptClipTimeMaps as adoptClipTimeMapsPure,
+  describeClipTime,
+  editDefaultMeterMap,
+  editDefaultTempoMap,
+  editGridStepSec,
+  editSnapSec,
+  editStartBpm,
+  sameMeterMap,
+  sameTempoMap,
+  sanitizeEditMeterMap,
+  sanitizeEditTempoMap,
+  withStartBpm,
+  withTempoEvent,
+  withTempoEventMoved,
+  withoutTempoEvent,
+  type EditGrid,
+  type EditTempoEventKind,
+} from '../lib/editTimeMap';
+import { removeChangeAt as meterMapRemoveChangeAt, sanitizeMeter, setMeterAt as meterMapSetMeterAt } from '../lib/meterMap';
+import type { Meter } from '../lib/colony';
+import {
   MASTER_ID,
   addBus as graphAddBus,
   addSend as graphAddSend,
@@ -124,14 +145,55 @@ export const snapDivisionLabel = (d: SnapDivision): string => {
   }
 };
 
-/** The grid step in seconds, or null when snapping is off (or the stored value
- *  is not a division we know — e.g. a hand-edited project file). */
+/** The grid step in seconds at ONE tempo, or null when snapping is off (or the
+ *  stored value is not a division we know — e.g. a hand-edited project file).
+ *  '1/1' here is four quarters; the arrangement's own grid is `snapGrid` over
+ *  its tempo and meter maps, where '1/1' is a bar of whatever meter holds. */
 export const snapStepSec = (snap: SnapDivision, bpm: number): number | null => {
   if (snap === 'off') return null;
   const beats = SNAP_BEATS[snap];
   if (!beats) return null;
   return (60 / bpm) * beats;
 };
+
+/** A snap division as an arrangement grid (lib/editTimeMap): 'bar' for '1/1'
+ *  (a bar of the meter that holds there), else its spacing in 16th steps; 0 is off. */
+export const snapGrid = (snap: SnapDivision): EditGrid => {
+  if (snap === '1/1') return 'bar';
+  const beats = snap === 'off' ? 0 : SNAP_BEATS[snap];
+  return beats ? beats * 4 : 0;
+};
+
+/** One grid division in seconds where `sec` sits, under the arrangement's maps;
+ *  null when snapping is off. What a keyboard nudge moves a clip by. */
+export const snapStepSecAt = (
+  s: Pick<EditorStoreState, 'snap' | 'tempoMap' | 'meterMap'>,
+  sec: number,
+): number | null => editGridStepSec({ tempoMap: s.tempoMap, meterMap: s.meterMap }, sec, snapGrid(s.snap));
+
+/** The map and the `bpm` it starts at, written together so the two can never disagree. */
+const tempoSlice = (tempoMap: TempoEvent[]): { tempoMap: TempoEvent[]; bpm: number } => ({ tempoMap, bpm: editStartBpm(tempoMap) });
+
+/**
+ * The tempo and meter a loaded project brings. A tempo map wins; a bare `bpm`
+ * (every file saved before tempo maps) is a one-tempo map; neither leaves the
+ * session's. A meter map wins; a single `timeSignature` is a one-meter map;
+ * neither (or an unusable one) leaves the session's.
+ */
+function loadedTimeMaps(
+  cur: Pick<EditorStoreState, 'tempoMap' | 'meterMap'>,
+  p: { bpm?: number; timeSignature?: TimeSignature; meterMap?: readonly MeterSegment[]; tempoMap?: readonly TempoEvent[] },
+): { tempoMap: TempoEvent[]; bpm: number; meterMap: MeterSegment[] } {
+  const bpmOk = typeof p.bpm === 'number' && Number.isFinite(p.bpm) && p.bpm > 0;
+  const tempoMap = p.tempoMap && p.tempoMap.length
+    ? sanitizeEditTempoMap(p.tempoMap, bpmOk ? (p.bpm as number) : editStartBpm(cur.tempoMap))
+    : bpmOk ? editDefaultTempoMap(clampTempoBpm(p.bpm as number)) : cur.tempoMap;
+  const legacy = p.timeSignature ? validTimeSignature(p.timeSignature.num, p.timeSignature.den) : null;
+  const meterMap = p.meterMap && p.meterMap.length
+    ? sanitizeEditMeterMap(p.meterMap)
+    : legacy ? [{ bar: 0, meter: { num: legacy.num, den: legacy.den, groups: [] } }] : cur.meterMap;
+  return { ...tempoSlice(tempoMap), meterMap };
+}
 
 export type ClipSourceKind = 'audio' | 'piano-roll';
 
@@ -376,12 +438,22 @@ export interface AutomationLane {
   enabled: boolean;
 }
 
-/** Bars-per-what. `num` beats of a `den`-th note each. Document state: it
- *  decides where a bar line falls, so `seekBar`, bar-relative clip nudges and
- *  anything else that counts bars read it instead of assuming 4/4. */
+/** Bars-per-what. `num` beats of a `den`-th note each: the single project meter
+ *  files saved before the arrangement held a meter map (`meterMap`), and what
+ *  the legacy `setTimeSignature` and the `.tasmo` `time_signature` pair speak. */
 export interface TimeSignature {
   num: number;
   den: number;
+}
+
+/** A clip's tempo and meter, offered to the arrangement (see `timeMapOffer`). */
+export interface TimeMapOffer {
+  clipId: string;
+  label: string;
+  /** The clip's maps in words: "7/8 3+2+2, 96-132 BPM". */
+  summary: string;
+  /** Timeline seconds where the clip's first step sits: where adoption starts. */
+  anchorSec: number;
 }
 
 /** A meter the editor can actually bar out, or null. Defined in the
@@ -603,9 +675,29 @@ interface EditorStoreState {
   playheadSec: number;
   isPlaying: boolean;
   snap: SnapDivision;
-  bpm: number;              // for snap math
-  /** Project meter. Document state, so it rides undo alongside bpm. */
-  timeSignature: TimeSignature;
+  /** The start tempo: always the tempo of `tempoMap`'s beat-0 event, which the toolbar's BPM field edits. */
+  bpm: number;
+  /**
+   * The arrangement's tempo map (lib/editTimeMap, the roll's own model from
+   * lib/rollTempo): the beat-0 event at `bpm`, then tempo changes, ramps and
+   * fermatas, beats in quarter notes from timeline second 0. Document state:
+   * undo, autosave and .tasmo carry it. The grid, the ruler, snap, bar seeks,
+   * bar nudges and the transport click read it; state/tempoStore mirrors it.
+   * Clips stay where they sit in seconds when it changes.
+   */
+  tempoMap: TempoEvent[];
+  /**
+   * The arrangement's time signatures by bar (lib/meterMap), bar 0 at timeline
+   * second 0 with no pickup. Document state beside `tempoMap`, read by the same
+   * surfaces. A file that saved only a single meter opens as a one-segment map.
+   */
+  meterMap: MeterSegment[];
+  /**
+   * A clip whose tempo or meter differs from the arrangement's, offered for
+   * adoption when it arrives from the roll or a MIDI file. Workspace state: not
+   * undo, not saved.
+   */
+  timeMapOffer: TimeMapOffer | null;
   inpaintSelection: InpaintSelection | null;
   /* ── Workspace selection (batch 11) ───────────────────────────────────────
      Held here rather than in WaveformEditor's local state because EDIT is
@@ -673,9 +765,15 @@ interface EditorStoreState {
      *  belonging to neither is pruned (see `migrateRouting`). */
     routing?: RoutingGraph;
     buses?: EditorBus[];
-    /** The project's meter. Absent (or unusable) leaves the session's alone,
-     *  exactly as `bpm` does. */
+    /** The project's single meter, as files written before meter maps saved
+     *  it. Used when `meterMap` is absent; absent (or unusable) too, the
+     *  session's meter map is left alone, exactly as `bpm` does. */
     timeSignature?: TimeSignature;
+    /** The project's meter map. Wins over `timeSignature`. */
+    meterMap?: readonly MeterSegment[];
+    /** The project's tempo map. Its beat-0 tempo wins over `bpm`; absent, a
+     *  given `bpm` makes a one-tempo map and no `bpm` leaves the session's. */
+    tempoMap?: readonly TempoEvent[];
   }) => void;
   addTrack: (overrides?: Partial<EditorTrack>) => string;
   /** A new lane at `index` (0 = above every lane, `tracks.length` = below
@@ -826,11 +924,41 @@ interface EditorStoreState {
   setPlayhead: (s: number) => void;
   setPlaying: (p: boolean) => void;
   setSnap: (s: SnapDivision) => void;
-  /** Set the project tempo, clamped to the app's 20-300 BPM with its fraction kept; non-finite is ignored. */
+  /** Set the start tempo (the tempo map's beat-0 event), clamped to the app's
+   *  20-300 BPM with its fraction kept; later tempo changes stay. Non-finite is ignored. */
   setBpm: (b: number) => void;
-  /** Set the project meter. A meter the editor cannot bar out is refused (no-op)
-   *  rather than clamped — see {@link validTimeSignature}. */
+  /** Set bar 1's meter, keeping every later meter change. A meter the editor
+   *  cannot bar out is refused (no-op) rather than clamped — see
+   *  {@link validTimeSignature}. */
   setTimeSignature: (num: number, den: number) => void;
+  /** Replace the meter map (sanitized). An equal map writes nothing. One undo step. */
+  setMeterMap: (map: readonly MeterSegment[]) => void;
+  /** Start `meter` at 0-based `bar`, holding to the next change. A meter that is
+   *  not valid (lib/meterMap sanitizeMeter) is refused. One undo step. */
+  setMeterAt: (bar: number, meter: Meter) => void;
+  /** Remove the meter change at 0-based `bar`; bar 0 always keeps a meter. */
+  removeMeterChange: (bar: number) => void;
+  /** Replace the tempo map (sanitized). Its beat-0 tempo becomes `bpm`; with
+   *  none, the current `bpm` starts it. An equal map writes nothing. */
+  setTempoMap: (events: readonly TempoEvent[]) => void;
+  /** Add a tempo change, or a fermata when `event.fermata` is set, replacing one
+   *  of its kind at its beat (on the roll's ticks). One undo step. */
+  addTempoEvent: (event: TempoEvent) => void;
+  /** Move, re-value or re-shape the event of `kind` at `beat`. The start tempo
+   *  stays at beat 0. Writes under one coalesce key, so a run of typed values
+   *  on one event folds into one step. */
+  moveTempoEvent: (beat: number, kind: EditTempoEventKind, patch: Partial<TempoEvent>) => void;
+  /** Remove the event of `kind` at `beat`. The start tempo is never removed. */
+  removeTempoEvent: (beat: number, kind: EditTempoEventKind) => void;
+  /** Offer a clip's tempo and meter when they differ from the arrangement's
+   *  (sets `timeMapOffer`; clears it when they match or cannot be adopted). */
+  offerClipTimeMaps: (clipId: string) => void;
+  /** Drop the offer without changing anything. */
+  dismissTimeMapOffer: () => void;
+  /** Take a piano-roll clip's tempo and meter into the arrangement from the
+   *  clip's first step on (lib/editTimeMap adoptClipTimeMaps). One undo step.
+   *  Returns the reason when it cannot. Clears the offer either way. */
+  adoptClipTimeMaps: (clipId: string) => { ok: true; error?: undefined } | { ok: false; error: string };
   setInpaintSelection: (sel: InpaintSelection | null) => void;
   clearInpaintSelection: () => void;
   /** Store a time selection. Stores null when either bound is non-finite,
@@ -1119,7 +1247,10 @@ export interface EditorHistorySnapshot {
   automationLanes: AutomationLane[];
   markers: TimelineMarker[];
   bpm: number;
-  timeSignature: TimeSignature;
+  /** The arrangement's tempo and meter maps: document state, so undo takes a
+   *  tempo or meter edit back like any other edit. */
+  tempoMap: TempoEvent[];
+  meterMap: MeterSegment[];
   /** Routing is document state: undoing a "route drums into the drum bus" must
    *  take the edge back, and it must take the bus strip back with it — hence
    *  both slices, restored together. */
@@ -1564,7 +1695,8 @@ const docSnapshot = (s: EditorStoreState): EditorHistorySnapshot => ({
   automationLanes: s.automationLanes,
   markers: s.markers,
   bpm: s.bpm,
-  timeSignature: s.timeSignature,
+  tempoMap: s.tempoMap,
+  meterMap: s.meterMap,
   routing: s.routing,
   buses: s.buses,
 });
@@ -1665,7 +1797,9 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   isPlaying: false,
   snap: '1/16',
   bpm: 120,
-  timeSignature: { num: 4, den: 4 },
+  tempoMap: editDefaultTempoMap(120),
+  meterMap: editDefaultMeterMap(),
+  timeMapOffer: null,
   inpaintSelection: null,
   timeSelection: null,
   editCursorSec: 0,
@@ -1687,7 +1821,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   snapshots: {},
   dirty: false,
 
-  loadProject: ({ tracks, clips, bpm, routing, buses, timeSignature }) => {
+  loadProject: ({ tracks, clips, bpm, routing, buses, timeSignature, meterMap, tempoMap }) => {
     // Suppress undo recording for the bulk swap, then start the loaded project as
     // a fresh document (empty undo/redo) so the user can't undo back into the
     // previous session's tracks.
@@ -1726,10 +1860,10 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       playheadSec: 0,
       scrollSec: 0,
       isPlaying: false,
-      bpm: bpm && Number.isFinite(bpm) ? clampTempoBpm(bpm) : get().bpm,
-      // Same rule as bpm: a project that carries a meter sets it, one that does
-      // not leaves the session's alone rather than silently forcing 4/4.
-      timeSignature: (timeSignature && validTimeSignature(timeSignature.num, timeSignature.den)) || get().timeSignature,
+      // A project that carries a tempo or a meter sets it, one that does not
+      // leaves the session's alone rather than silently forcing 120 or 4/4.
+      ...loadedTimeMaps(get(), { bpm, timeSignature, meterMap, tempoMap }),
+      timeMapOffer: null,
       markers: [],
       automationLanes: [],
       // A record pass cannot survive the document it was writing into.
@@ -2494,19 +2628,95 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   // one digit at a time), so its writes share one key and fold into one step.
   setBpm: (b) => {
     if (!Number.isFinite(b)) return;
+    const next = clampTempoBpm(b);
+    if (next === get().bpm) return;
     coalesceAs('bpm');
-    set({ bpm: clampTempoBpm(b) });
+    set(tempoSlice(withStartBpm(get().tempoMap, next)));
   },
   setTimeSignature: (num, den) => {
     const next = validTimeSignature(num, den);
     // A refused meter and a meter that is already set are both non-edits, and a
-    // non-edit never writes (see `updateClip`): `validTimeSignature` hands back
-    // a FRESH object every time, so writing it unconditionally would store an
-    // empty undo step for re-picking the meter the song already has.
-    const cur = get().timeSignature;
-    if (!next || (next.num === cur.num && next.den === cur.den)) return;
+    // non-edit never writes (see `updateClip`), so re-picking the meter the song
+    // already has stores no empty undo step. Bar 1's meter changes; every later
+    // change in the map stays where it is.
+    if (!next) return;
+    const cur = get().meterMap[0]?.meter;
+    if (cur && cur.num === next.num && cur.den === next.den && cur.groups.length === 0) return;
+    get().setMeterAt(0, { num: next.num, den: next.den, groups: [] });
+  },
+  setMeterMap: (map) => {
+    const next = sanitizeEditMeterMap(map);
+    if (sameMeterMap(next, get().meterMap)) return;
     beginUndoStep(); // a meter change is one discrete edit, like a menu action
-    set({ timeSignature: next });
+    set({ meterMap: next });
+  },
+  setMeterAt: (bar, meter) => {
+    if (!Number.isFinite(bar)) return;
+    const clean = sanitizeMeter(meter);
+    if (!clean) return;
+    get().setMeterMap(meterMapSetMeterAt(get().meterMap, Math.max(0, Math.floor(bar)), clean));
+  },
+  removeMeterChange: (bar) => {
+    if (!Number.isFinite(bar) || bar <= 0) return;
+    get().setMeterMap(meterMapRemoveChangeAt(get().meterMap, Math.floor(bar)));
+  },
+  setTempoMap: (events) => {
+    const next = sanitizeEditTempoMap(events ?? [], get().bpm);
+    if (sameTempoMap(next, get().tempoMap)) return;
+    beginUndoStep();
+    set(tempoSlice(next));
+  },
+  addTempoEvent: (event) => {
+    if (!event || !Number.isFinite(event.beat)) return;
+    const next = withTempoEvent(get().tempoMap, event);
+    if (sameTempoMap(next, get().tempoMap)) return;
+    beginUndoStep();
+    set(tempoSlice(next));
+  },
+  moveTempoEvent: (beat, kind, patch) => {
+    const next = withTempoEventMoved(get().tempoMap, beat, kind, patch ?? {});
+    if (!next || sameTempoMap(next, get().tempoMap)) return;
+    // A run of edits to one event (typing a tempo, then its curve) is one gesture.
+    coalesceAs(`tempo-event:${kind}:${beat}`);
+    set(tempoSlice(next));
+  },
+  removeTempoEvent: (beat, kind) => {
+    const next = withoutTempoEvent(get().tempoMap, beat, kind);
+    if (!next) return;
+    beginUndoStep();
+    set(tempoSlice(next));
+  },
+  offerClipTimeMaps: (clipId) => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === clipId);
+    const res = clip && clip.sourceKind === 'piano-roll'
+      ? adoptClipTimeMapsPure({ tempoMap: s.tempoMap, meterMap: s.meterMap }, clip)
+      : null;
+    if (!clip || !res || !res.ok || !res.changes) {
+      if (s.timeMapOffer) set({ timeMapOffer: null });
+      return;
+    }
+    set({ timeMapOffer: { clipId, label: clip.label, summary: describeClipTime(clip), anchorSec: res.anchorSec } });
+  },
+  dismissTimeMapOffer: () => {
+    if (get().timeMapOffer) set({ timeMapOffer: null });
+  },
+  adoptClipTimeMaps: (clipId) => {
+    const s = get();
+    const clip = s.clips.find((c) => c.id === clipId);
+    if (s.timeMapOffer) set({ timeMapOffer: null });
+    if (!clip) return { ok: false, error: 'That clip is no longer on the timeline.' };
+    if (clip.sourceKind !== 'piano-roll') {
+      return { ok: false, error: `"${clip.label}" is audio; only a MIDI clip carries a tempo map and a meter map.` };
+    }
+    const res = adoptClipTimeMapsPure({ tempoMap: s.tempoMap, meterMap: s.meterMap }, clip);
+    if (!res.ok) return res;
+    if (!res.changes) return { ok: true };
+    // Tempo and meter together are one edit, so one undo step takes both back.
+    beginUndoStep();
+    set({ ...tempoSlice(res.tempoMap), meterMap: res.meterMap });
+    logInfo('editor', `The arrangement now follows "${clip.label}": ${describeClipTime(clip)} from ${res.anchorSec.toFixed(2)}s`);
+    return { ok: true };
   },
   setInpaintSelection: (sel) => set({ inpaintSelection: sel }),
   clearInpaintSelection: () => set({ inpaintSelection: null }),
@@ -3221,7 +3431,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       automationLanes: prev.automationLanes,
       markers: prev.markers,
       bpm: prev.bpm,
-      timeSignature: prev.timeSignature,
+      tempoMap: prev.tempoMap,
+      meterMap: prev.meterMap,
       routing: prev.routing,
       buses: prev.buses,
       // The restored document may lack clips/tracks the selections name.
@@ -3253,7 +3464,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       automationLanes: next.automationLanes,
       markers: next.markers,
       bpm: next.bpm,
-      timeSignature: next.timeSignature,
+      tempoMap: next.tempoMap,
+      meterMap: next.meterMap,
       routing: next.routing,
       buses: next.buses,
       ...pruneSelections(s, next.clips, next.tracks),
@@ -3302,7 +3514,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       automationLanes: snap.automationLanes,
       markers: snap.markers,
       bpm: snap.bpm,
-      timeSignature: snap.timeSignature,
+      tempoMap: snap.tempoMap,
+      meterMap: snap.meterMap,
       routing: snap.routing,
       buses: snap.buses,
       selectedClipId: null,
@@ -3360,10 +3573,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   },
 
   snapSec: (s) => {
-    const { snap, bpm } = get();
-    const step = snapStepSec(snap, bpm);
-    if (step === null) return Math.max(0, s);
-    return Math.max(0, Math.round(s / step) * step);
+    const { snap, tempoMap, meterMap } = get();
+    return editSnapSec({ tempoMap, meterMap }, s, snapGrid(snap));
   },
 }));
 
@@ -3499,7 +3710,8 @@ useEditorStore.subscribe((state, prev) => {
     state.automationLanes === prev.automationLanes &&
     state.markers === prev.markers &&
     state.bpm === prev.bpm &&
-    state.timeSignature === prev.timeSignature &&
+    state.tempoMap === prev.tempoMap &&
+    state.meterMap === prev.meterMap &&
     state.routing === prev.routing &&
     state.buses === prev.buses
   ) return;

@@ -59,8 +59,9 @@ export const noteEndStep = (notes: readonly { step: number; length: number }[], 
  * editor snaps to (`SNAP_BEATS` in `state/editorStore.ts`) so the assistant and
  * the toolbar agree on what "1/8T" means. Triplets are 2/3 of the straight
  * value, a quintuplet 16th (Q) is a fifth of a beat and a septuplet 16th (S) a
- * seventh, dotted are 3/2, and '1/1' assumes 4/4 because the editor still has
- * no time-signature model.
+ * seventh, dotted are 3/2. '1/1' is four quarters here; quantizeNotes reads it
+ * as a bar of the notes' meter map when it is given one, and the arrangement's
+ * snap (editorStore snapGrid) as a bar of the arrangement's meter map.
  */
 const DIVISION_BEATS: Record<Exclude<SnapDivision, 'off'>, number> = {
   '1/1': 4,

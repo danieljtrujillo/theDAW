@@ -27,8 +27,7 @@
  * 3. **An operation this layer cannot really perform is an error, not a stub.**
  *    Audio time-stretch needs the backend. Freezing a track needs the offline
  *    renderer that lives in the timeline component. The metronome does not
- *    exist in the model at all, and a tempo map lives only on a piano-roll clip
- *    (written in the roll's TEMPO lane). Each of those returns a refusal that names
+ *    exist in the model at all. Each of those returns a refusal that names
  *    what is missing and where the real path is, because a tool that quietly
  *    does nothing and says "done" is worse than one that says no.
  *
@@ -94,6 +93,22 @@ import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/c
 import { encodeWav } from '../lib/wavEncode';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
 import { stepClock } from '../lib/rollTempo';
+import {
+  editBarAtSec,
+  editBarPosToBeat,
+  editBarStartSec,
+  editBeatToBarPos,
+  editBpmText,
+  editMeterLabel,
+  editMoveByBars,
+  editMoveByBeats,
+  editTempoAtSec,
+  parseEditMeter,
+  sanitizeEditMeterMap,
+} from '../lib/editTimeMap';
+import { sanitizeMeter, type MeterSegment } from '../lib/meterMap';
+import type { Meter } from '../lib/colony';
+import { FERMATA_STRETCH_MAX, FERMATA_STRETCH_MIN, TEMPO_BPM_MAX, TEMPO_BPM_MIN, type TempoEvent } from '../lib/tempoMap';
 
 /* ── result envelope ─────────────────────────────────────────────────────── */
 
@@ -776,7 +791,7 @@ export interface TimeSignatureArgs {
   time_signature?: unknown;
 }
 
-/** Set the project meter. */
+/** Set bar 1's meter; later meter changes stay. */
 export function setTimeSignature(args: TimeSignatureArgs): ToolResult {
   let num = numArg(args.num);
   let den = numArg(args.den);
@@ -793,14 +808,148 @@ export function setTimeSignature(args: TimeSignatureArgs): ToolResult {
     return fail(`set_time_signature: ${num}/${den} is not a meter the editor can bar out — num must be a whole 1-32 and den one of 1, 2, 4, 8, 16, 32`);
   }
   oneStep(() => store().setTimeSignature(valid.num, valid.den));
-  return done(`Time signature is now ${valid.num}/${valid.den}`);
+  const later = store().meterMap.length - 1;
+  return done(`Time signature is now ${valid.num}/${valid.den} from bar 1${later > 0 ? ` (${later} later meter change${later === 1 ? '' : 's'} kept)` : ''}`);
 }
 
-/** Seconds per bar at the current tempo and meter. */
-const barSeconds = (): number => {
+/** The arrangement's two maps, as editTimeMap reads them. */
+const timeMaps = () => {
   const s = store();
-  return (s.timeSignature.num * (60 / s.bpm) * 4) / s.timeSignature.den;
+  return { tempoMap: s.tempoMap, meterMap: s.meterMap };
 };
+
+/** The arrangement's meter map as the tool speaks it: 1-based bars. */
+const meterMapOut = () =>
+  store().meterMap.map((seg) => ({ bar: seg.bar + 1, num: seg.meter.num, den: seg.meter.den, groups: [...seg.meter.groups], label: editMeterLabel(seg.meter) }));
+
+/** The arrangement's tempo map as the tool speaks it: 1-based bars and quarter notes into the bar. */
+const tempoMapOut = () => {
+  const { tempoMap, meterMap } = timeMaps();
+  return tempoMap.map((e) => {
+    const pos = editBeatToBarPos(meterMap, e.beat);
+    return e.fermata
+      ? { bar: pos.bar, beat: pos.beatInBar, fermata: { beats: e.fermata.beats, stretch: e.fermata.stretch } }
+      : { bar: pos.bar, beat: pos.beatInBar, bpm: Math.round(e.bpm * 100) / 100, curve: e.curve === 'linear' ? 'linear' : 'step' };
+  });
+};
+
+/** Both maps in words: "4/4 from bar 1, 7/8 3+2+2 from bar 9; 120 BPM from bar 1, ramp to 90 BPM at bar 17". */
+const timeMapsText = (): string => {
+  const meters = meterMapOut().map((m) => `${m.label} from bar ${m.bar}`).join(', ');
+  const tempos = tempoMapOut().map((e) => {
+    const at = `bar ${e.bar}${e.beat ? ` beat +${n2(e.beat)}` : ''}`;
+    if ('fermata' in e && e.fermata) return `hold ${n2(e.fermata.beats)} beat(s) x${n2(e.fermata.stretch)} at ${at}`;
+    return `${'curve' in e && e.curve === 'linear' ? 'ramp from ' : ''}${'bpm' in e ? e.bpm : ''} BPM from ${at}`;
+  }).join(', ');
+  return `${meters}; ${tempos}`;
+};
+
+export interface MeterMapArgs {
+  /** [{bar, num, den, groups?}] or [{bar, meter: "7/8 3+2+2"}], bars 1-based. Replaces the whole meter map. */
+  meter_map?: unknown;
+  /** [{bar, beat?, bpm, curve?}] or [{bar, beat?, fermata: {beats, stretch}}], bars 1-based, beat = quarter notes into the bar. Replaces the whole tempo map. */
+  tempo_map?: unknown;
+  /** A MIDI clip whose tempo and meter the arrangement takes from the clip's first step on. */
+  adopt_clip_id?: unknown;
+}
+
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+
+/**
+ * Set the arrangement's meter map, tempo map, or both, or take them from a MIDI
+ * clip. Bars are 1-based, as on screen. A map passed replaces the whole map;
+ * without a bar-1 entry, bar 1 keeps its meter (or start tempo). One undo step.
+ */
+export function setMeterMap(args: MeterMapArgs): ToolResult {
+  const adopt = args.adopt_clip_id;
+  const hasMeter = args.meter_map !== undefined && args.meter_map !== null;
+  const hasTempo = args.tempo_map !== undefined && args.tempo_map !== null;
+  if (adopt !== undefined && adopt !== null && adopt !== '') {
+    if (hasMeter || hasTempo) return fail('set_meter_map: pass adopt_clip_id alone, or meter_map / tempo_map, not both');
+    const found = resolveMidiClip(adopt);
+    if (!found.ok) return fail(found.error);
+    const res = oneStep(() => store().adoptClipTimeMaps(found.value.id));
+    if (!res.ok) return fail(`set_meter_map: ${res.error}`);
+    return done(`The arrangement follows "${found.value.label}" from its first bar: ${timeMapsText()}`, { meter_map: meterMapOut(), tempo_map: tempoMapOut() });
+  }
+  if (!hasMeter && !hasTempo) return fail('set_meter_map: pass meter_map, tempo_map, or adopt_clip_id');
+
+  const s = store();
+  let meterMap: MeterSegment[] | null = null;
+  if (hasMeter) {
+    if (!Array.isArray(args.meter_map) || args.meter_map.length === 0) return fail('set_meter_map: meter_map must be a non-empty list of {bar, num, den, groups?}');
+    const segs: MeterSegment[] = [];
+    for (let i = 0; i < args.meter_map.length; i += 1) {
+      const raw = asRecord(args.meter_map[i]);
+      if (!raw) return fail(`set_meter_map: meter_map[${i}] must be an object`);
+      const bar = numArg(raw.bar);
+      if (bar === undefined || !Number.isInteger(bar) || bar < 1) return fail(`set_meter_map: meter_map[${i}] needs a whole bar >= 1 (bar 1 is the start)`);
+      let meter: Meter | null;
+      const text = typeof raw.meter === 'string' ? raw.meter : undefined;
+      if (text !== undefined) {
+        meter = parseEditMeter(text);
+      } else {
+        const groups = Array.isArray(raw.groups)
+          ? raw.groups.map(Number)
+          : typeof raw.groups === 'string' && raw.groups.trim()
+            ? raw.groups.split('+').map((g) => Number(g.trim()))
+            : [];
+        const num = numArg(raw.num);
+        const den = numArg(raw.den);
+        meter = sanitizeMeter({ num, den, groups });
+        if (meter && groups.length > 1 && meter.groups.length === 0) meter = null;
+      }
+      if (!meter) {
+        return fail(`set_meter_map: meter_map[${i}] is not a meter: num must be a whole 1-64, den one of 1, 2, 4, 8, 16, 32, and groups (when given) whole numbers that add up to num`);
+      }
+      segs.push({ bar: bar - 1, meter });
+    }
+    if (!segs.some((seg) => seg.bar === 0)) segs.push({ bar: 0, meter: { ...s.meterMap[0].meter, groups: [...s.meterMap[0].meter.groups] } });
+    meterMap = sanitizeEditMeterMap(segs);
+  }
+
+  // Tempo positions are read against the meter map this call ends with, so a
+  // meter change and a tempo change "at bar 9" in one call land together.
+  const barsFrom = meterMap ?? s.meterMap;
+  let tempoMap: TempoEvent[] | null = null;
+  if (hasTempo) {
+    if (!Array.isArray(args.tempo_map) || args.tempo_map.length === 0) return fail('set_meter_map: tempo_map must be a non-empty list of {bar, beat?, bpm, curve?}');
+    const events: TempoEvent[] = [];
+    for (let i = 0; i < args.tempo_map.length; i += 1) {
+      const raw = asRecord(args.tempo_map[i]);
+      if (!raw) return fail(`set_meter_map: tempo_map[${i}] must be an object`);
+      const bar = numArg(raw.bar);
+      if (bar === undefined || !Number.isInteger(bar) || bar < 1) return fail(`set_meter_map: tempo_map[${i}] needs a whole bar >= 1`);
+      const beatInBar = numArg(raw.beat) ?? 0;
+      if (beatInBar < 0) return fail(`set_meter_map: tempo_map[${i}] beat must be 0 or more quarter notes into the bar`);
+      const beat = editBarPosToBeat(barsFrom, bar, beatInBar);
+      const fermata = asRecord(raw.fermata);
+      if (fermata) {
+        const beats = numArg(fermata.beats);
+        const stretch = numArg(fermata.stretch);
+        if (beats === undefined || beats <= 0 || stretch === undefined || stretch < FERMATA_STRETCH_MIN || stretch > FERMATA_STRETCH_MAX) {
+          return fail(`set_meter_map: tempo_map[${i}] fermata needs beats > 0 and stretch ${FERMATA_STRETCH_MIN}-${FERMATA_STRETCH_MAX}`);
+        }
+        events.push({ beat, bpm: s.bpm, fermata: { beats, stretch } });
+        continue;
+      }
+      const bpm = numArg(raw.bpm);
+      if (bpm === undefined || bpm < TEMPO_BPM_MIN || bpm > TEMPO_BPM_MAX) return fail(`set_meter_map: tempo_map[${i}] needs a bpm of ${TEMPO_BPM_MIN}-${TEMPO_BPM_MAX}`);
+      const curve = strArg(raw.curve);
+      if (curve !== undefined && curve !== 'step' && curve !== 'linear') return fail(`set_meter_map: tempo_map[${i}] curve is "step" (hold) or "linear" (ramp to the next tempo)`);
+      events.push({ beat, bpm, curve: curve === 'linear' ? 'linear' : 'step' });
+    }
+    if (!events.some((e) => !e.fermata && e.beat === 0)) events.push({ beat: 0, bpm: s.bpm, curve: s.tempoMap[0]?.curve ?? 'step' });
+    tempoMap = events;
+  }
+
+  oneStep(() => {
+    if (meterMap) store().setMeterMap(meterMap);
+    if (tempoMap) store().setTempoMap(tempoMap);
+  });
+  return done(`Arrangement time: ${timeMapsText()}`, { meter_map: meterMapOut(), tempo_map: tempoMapOut() });
+}
 
 export interface NudgeClipArgs extends ClipArgs {
   delta_sec?: unknown;
@@ -814,19 +963,22 @@ export function nudgeClip(args: NudgeClipArgs): ToolResult {
   if (!found.ok) return fail(found.error);
 
   const s = store();
-  const beatSec = (60 / s.bpm) * (4 / s.timeSignature.den);
-  const units: Array<[string, number | undefined, number]> = [
-    ['delta_sec', numArg(args.delta_sec), 1],
-    ['beats', numArg(args.beats), beatSec],
-    ['bars', numArg(args.bars), barSeconds()],
+  // Beats are the meter's own unit where the clip starts and bars are whole bars
+  // of the meter map, both through the tempo map, so "2 bars" from inside a 7/8
+  // passage lands two 7/8 bars on, however the tempo moves.
+  const at = found.value.startSec;
+  const units: Array<[string, number | undefined, (n: number) => number]> = [
+    ['delta_sec', numArg(args.delta_sec), (n) => n],
+    ['beats', numArg(args.beats), (n) => editMoveByBeats(timeMaps(), at, n) - at],
+    ['bars', numArg(args.bars), (n) => editMoveByBars(timeMaps(), at, n) - at],
   ];
   const given = units.filter(([, v]) => v !== undefined);
   if (given.length !== 1) {
     return fail(`nudge_clip: expected exactly one of delta_sec/beats/bars, got ${given.length === 0 ? 'none' : given.map(([k]) => k).join(' and ')}`);
   }
 
-  const [unit, amount, scale] = given[0];
-  const moved = nudgeClipPure(found.value, amount * scale);
+  const [unit, amount, toSec] = given[0];
+  const moved = nudgeClipPure(found.value, toSec(amount));
   oneStep(() => s.updateClip(found.value.id, { startSec: moved.startSec }));
   return done(`Moved "${found.value.label}" ${amount} ${unit === 'delta_sec' ? 'second(s)' : unit} to ${n2(moved.startSec)}s`);
 }
@@ -857,9 +1009,12 @@ export function seekBar(args: SeekBarArgs): ToolResult {
   const bar = numArg(args.bar);
   if (bar === undefined || bar < 1) return fail('seek_bar: pass bar >= 1 (bar 1 is the start of the song)');
   const s = store();
-  const sec = (bar - 1) * barSeconds();
+  // The bar's start under the meter map and the tempo map: bar 17 after eight
+  // bars of 7/8 is not where sixteen bars of 4/4 would put it.
+  const sec = editBarStartSec(timeMaps(), Math.floor(bar) - 1);
   s.setPlayhead(sec);
-  return done(`Playhead at bar ${bar} (${n2(sec)}s, ${s.timeSignature.num}/${s.timeSignature.den} at ${s.bpm} bpm)`);
+  const here = editBarAtSec(timeMaps(), sec);
+  return done(`Playhead at bar ${bar} (${n2(sec)}s, ${editMeterLabel(here.meter)} at ${editBpmText(editTempoAtSec(s.tempoMap, sec))} bpm)`);
 }
 
 export interface LoopSelectionArgs {
@@ -1714,7 +1869,7 @@ export const UNSUPPORTED_OPERATIONS: Record<string, string> = {
   set_metronome:
     'the editor has no metronome: no click track, no count-in, nothing in the store to switch. Adding a flag that nothing reads would report success for silence.',
   tempo_map:
-    'the EDIT timeline has ONE project bpm, not a tempo map. A piano-roll clip carries a tempo map of its own (drawn in the TEMPO lane of the MIDI tab, played and rendered with the clip and saved with it), but this layer has no tool that writes one: open the clip in the piano roll and use the TEMPO lane.',
+    'there is no separate tempo_map tool: the arrangement\'s tempo map is written by editor_set_meter_map (its tempo_map argument, bars 1-based, with ramps and fermatas), beside the meter map, and read back by editor_get_state. A piano-roll clip keeps its own tempo map in the TEMPO lane of the MIDI tab.',
   editor_stretch_audio:
     'a pitch-preserving audio stretch runs on the backend (/api/studio/process, time_pitch). stretchClip handles MIDI clips locally and refuses audio ones by name.',
   editor_freeze_track:

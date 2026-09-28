@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { alignedStart, beatMatchPlan, firstBeatInClip, stretchRatio } from './beatMatch';
+import { alignedStart, alignedStartOn, beatMatchPlan, firstBeatInClip, stretchRatio } from './beatMatch';
+import { editMoveByBeats, editSnapSec } from './editTimeMap';
+import { sanitizeRollTempoMap } from './rollTempo';
 
 const close = (a: number | null, b: number, eps = 1e-9) => {
   assert.ok(a !== null && Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -51,5 +53,22 @@ close(alignedStart(0.05, 0.2, beat), 0.3);
 close(alignedStart(3, null, beat), 3);
 // Never before 0: a beat 0.45s in at start 0 goes to the 0.5 line.
 close(alignedStart(0, 0.45, beat), 0.05);
+
+// On the arrangement's grid through a tempo map: 120 BPM for 8 beats (4 s),
+// then 60, so beats after 4 s are a second apart. A clip whose first beat is
+// 0.3 s in, starting at 5.4 s, lands that beat on the 6 s line (not on a 0.5 s
+// grid line), and one near 0 is pushed to the first line it can reach.
+{
+  const maps = {
+    tempoMap: sanitizeRollTempoMap([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 60 }], 120),
+    meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
+  };
+  const near = (sec: number) => editSnapSec(maps, sec, 4);
+  const after = (line: number) => editMoveByBeats(maps, line, 1);
+  close(alignedStartOn(5.4, 0.3, near, after), 5.7);
+  close(alignedStartOn(3.1, 0.3, near, after), 3.2);
+  close(alignedStartOn(0, 0.45, near, after), 0.05);
+  close(alignedStartOn(2, null, near, after), 2);
+}
 
 console.log('beatMatch: ok');

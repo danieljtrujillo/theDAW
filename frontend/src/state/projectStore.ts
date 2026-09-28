@@ -360,6 +360,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // The meter is document state exactly as the tempo is; without it a
           // 7/8 session reopened in whatever meter the session it replaced held.
           time_signature: meterToTasmo(session.timeSignature),
+          // The arrangement's whole tempo map and meter map. `tempo` and
+          // `time_signature` above stay the start tempo and bar 1's meter, so a
+          // reader that knows only those still opens the song at its start.
+          tempo_map: session.tempoMap,
+          meter_map: session.meterMap,
           tracks: session.tracks,
           // The mix buses the tracks' output_routing / send_amounts name. Without
           // this the file could name a bus that had nowhere to live, and the

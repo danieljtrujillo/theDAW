@@ -86,6 +86,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_set_clip_source_bpm:'T1_inform',
   editor_stretch_clip:'T1_inform',
   editor_set_time_signature:'T1_inform',
+  editor_set_meter_map:'T1_inform',
   editor_nudge_clip: 'T1_inform',
   editor_set_clip:   'T1_inform',
   editor_trim_clip:  'T1_inform',

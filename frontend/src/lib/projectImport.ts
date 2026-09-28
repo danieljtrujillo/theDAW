@@ -54,6 +54,10 @@ import {
   type TasmoTake,
   type TasmoChainEntry,
   type TasmoAutomationLane,
+  type TasmoMeterSegment,
+  type TasmoTempoEvent,
+  projectTimeMapsToTasmo,
+  tasmoToProjectTimeMaps,
   clipNotesToTasmo,
   clipTotalSteps,
   gmProgramOf,
@@ -1184,6 +1188,11 @@ export async function loadProjectIntoEditor(
     clips: outClips,
     bpm,
     timeSignature: meterFromTasmo(project.time_signature),
+    // The arrangement's tempo and meter maps win over `tempo` and
+    // `time_signature` when the file has them; a file saved before them opens
+    // with its one tempo and its one meter (tasmoToProjectTimeMaps leaves both
+    // undefined), as it always has.
+    ...tasmoToProjectTimeMaps(project),
     routing,
     buses,
   });
@@ -1387,9 +1396,13 @@ export interface CapturedSession extends CapturedDocument {
   tracks: TasmoTrackInput[];
   files: Array<{ name: string; blob: Blob }>;
   bpm: number;
-  /** Project meter, saved alongside the tempo so a non-4/4 session reopens in
-   *  the meter it was written in. */
+  /** Bar 1's meter, saved alongside the tempo so a reader that knows only the
+   *  `.tasmo` `time_signature` pair opens the session in the meter it starts in. */
   timeSignature: TimeSignature;
+  /** The arrangement's tempo map and meter map, as the file's `tempo_map` and
+   *  `meter_map`. */
+  tempoMap: TasmoTempoEvent[];
+  meterMap: TasmoMeterSegment[];
   clipCount: number;
 }
 
@@ -1535,7 +1548,11 @@ export function captureEditorSession(): CapturedSession {
     tracks,
     files,
     bpm: editor.bpm,
-    timeSignature: editor.timeSignature,
+    timeSignature: { num: editor.meterMap[0]?.meter.num ?? 4, den: editor.meterMap[0]?.meter.den ?? 4 },
+    ...(() => {
+      const maps = projectTimeMapsToTasmo(editor.tempoMap, editor.meterMap);
+      return { tempoMap: maps.tempo_map, meterMap: maps.meter_map };
+    })(),
     clipCount,
     // The tracks above ARE the editor's, so no lane can name one the payload
     // lacks — the filter is left off.

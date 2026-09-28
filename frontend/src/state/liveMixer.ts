@@ -118,6 +118,7 @@ import {
 import { isMidiClip } from '../lib/clipEditTarget';
 import { clipNoteSpan } from '../lib/rollClip';
 import { stepClock } from '../lib/rollTempo';
+import { editTempoAtSec } from '../lib/editTimeMap';
 import type { ChainEntry } from './effectChainStore';
 import {
   CONN_SIDECHAIN,
@@ -3538,7 +3539,8 @@ async function start(fromSec: number): Promise<void> {
   broadcastVstTransport({
     playing: true,
     positionSamples: Math.round(begin * ctx.sampleRate),
-    tempoBpm: ed.bpm,
+    // The tempo the arrangement's tempo map plays where the pass starts.
+    tempoBpm: currentBpm(begin),
     discontinuity: true,
   });
 
@@ -3620,7 +3622,7 @@ export function pause(): void {
   broadcastVstTransport({
     playing: false,
     positionSamples: Math.round(elapsed * getEngineCtx().sampleRate),
-    tempoBpm: currentBpm(),
+    tempoBpm: currentBpm(elapsed),
     discontinuity: false,
   });
 }
@@ -3638,9 +3640,10 @@ export function stop(): void {
   broadcastVstTransport({ playing: false, positionSamples: 0, tempoBpm: currentBpm(), discontinuity: true });
 }
 
-/** The project tempo for the plugin play head; 0 when there is none to give. */
-function currentBpm(): number {
-  const bpm = useEditorStore.getState().bpm;
+/** The tempo at timeline second `atSec` under the arrangement's tempo map, for
+ *  the plugin play head; 0 when there is none to give. */
+function currentBpm(atSec = 0): number {
+  const bpm = editTempoAtSec(useEditorStore.getState().tempoMap, atSec);
   return Number.isFinite(bpm) && bpm > 0 ? bpm : 0;
 }
 

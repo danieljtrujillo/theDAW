@@ -681,23 +681,31 @@ function rig(opts: {
   assert.equal(shouldRun(true), false, 'the metronome is off');
   useMetronomeStore.setState({ enabled: true });
 
-  // The tempo map handed to tempoMap.ts must keep its IDENTITY while the bpm
+  // The tempo map handed to tempoMap.ts must keep its IDENTITY while the map
   // holds: normalizeTempoMap caches on array identity, so a fresh array every
-  // tick would re-sort and re-allocate on every conversion.
-  useEditorStore.setState({ bpm: 120 });
+  // tick would re-sort and re-allocate on every conversion. It is the
+  // arrangement's map, read through tempoStore.
+  useEditorStore.getState().setBpm(120);
   const first = editTempoMap();
-  assert.equal(editTempoMap(), first, 'same bpm, same array');
-  assert.deepEqual([...first], [{ beat: 0, bpm: 120, timeSec: 0 }]);
-  useEditorStore.setState({ bpm: 90 });
+  assert.equal(editTempoMap(), first, 'same map, same array');
+  assert.deepEqual(first.map((e) => [e.beat, e.bpm]), [[0, 120]]);
+  useEditorStore.getState().setBpm(90);
   const next = editTempoMap();
   assert.notEqual(next, first, 'a new bpm is a new map');
-  assert.deepEqual([...next], [{ beat: 0, bpm: 90, timeSec: 0 }]);
-  useEditorStore.setState({ bpm: 120 });
+  assert.deepEqual(next.map((e) => [e.beat, e.bpm]), [[0, 90]]);
+  // A tempo change in the arrangement reaches the click, ramp and all.
+  useEditorStore.getState().addTempoEvent({ beat: 8, bpm: 60, curve: 'linear' });
+  useEditorStore.getState().addTempoEvent({ beat: 16, bpm: 140 });
+  assert.deepEqual(editTempoMap().map((e) => [e.beat, e.bpm, e.curve ?? 'step']), [[0, 90, 'step'], [8, 60, 'linear'], [16, 140, 'step']]);
+  useEditorStore.getState().setTempoMap([{ beat: 0, bpm: 120 }]);
 
-  // Same for the meter half, which otherwise deep-clones ten times a second.
+  // The meter half is the arrangement's meter map, identity-stable between edits.
   const m1 = editMeterMap();
-  assert.equal(editMeterMap(), m1, 'an unchanged meter map is not re-cloned');
+  assert.equal(editMeterMap(), m1, 'an unchanged meter map is the same array');
   assert.equal(m1.length > 0, true);
+  useEditorStore.getState().setMeterAt(2, { num: 7, den: 8, groups: [3, 2, 2] });
+  assert.deepEqual(editMeterMap().map((s) => [s.bar, s.meter.num, s.meter.den, s.meter.groups.join('+')]), [[0, 4, 4, ''], [2, 7, 8, '3+2+2']]);
+  useEditorStore.getState().setMeterMap([{ bar: 0, meter: { num: 4, den: 4, groups: [] } }]);
 }
 
 console.log('metronome: ok');

@@ -21,6 +21,14 @@
  * attempt throws in a module, and silently does nothing in a bundle, instead of
  * leaving conversions serving a stale map.
  *
+ * WHOSE MAP. The EDIT arrangement's tempo map is the project's, and this store
+ * holds it. `editorStore` keeps the document copy (undo, autosave and .tasmo
+ * read its slices); state/editTempoMirror.ts, which metronomeStore installs,
+ * pushes every change of it here and takes an edit made through the actions
+ * below back into `editorStore.setTempoMap` as an undoable edit. The EDIT click
+ * reads its tempo from here. `subscribeTempoMap` is still not wired to
+ * `beatClock`: LOOM and PERFORM own the shared clock's tempo while they run.
+ *
  * SECONDS are not stored. A `TempoEvent` may carry an authoritative `timeSec`
  * (a `notechart` supplies one), but a map being EDITED must not: the whole
  * point of changing a tempo is that everything after it moves, and a stored
@@ -34,7 +42,10 @@ import { DEFAULT_BPM, type TempoCurve, type TempoEvent } from '../lib/tempoMap';
 
 /** A frozen array of frozen events — the shape every action returns. */
 function seal(events: TempoEvent[]): readonly TempoEvent[] {
-  for (const e of events) Object.freeze(e);
+  for (const e of events) {
+    if (e.fermata) Object.freeze(e.fermata);
+    Object.freeze(e);
+  }
   return Object.freeze(events);
 }
 
@@ -64,23 +75,41 @@ interface TempoState {
  *
  * A later event at the same beat wins, so an action can express "replace what
  * is there" by appending.
+ *
+ * FERMATAS (lib/tempoMap `TempoEvent.fermata`) are kept beside the tempo
+ * events, one per beat, with a hold of more than 0 beats and a stretch of at
+ * least 1: the arrangement's map (editorStore `tempoMap`) is mirrored here and
+ * carries them. A fermata and a tempo change can share a beat; the tempo event
+ * sorts first. The actions below edit tempo events only, and a map needs at
+ * least one tempo event to be a map at all.
  */
 function sanitize(events: readonly TempoEvent[]): readonly TempoEvent[] {
   const byBeat = new Map<number, TempoEvent>();
+  const holds = new Map<number, TempoEvent>();
   for (const e of events) {
     if (!e || !Number.isFinite(e.beat) || !Number.isFinite(e.bpm) || e.bpm <= 0) continue;
+    if (e.fermata) {
+      const { beats, stretch } = e.fermata;
+      if (!Number.isFinite(beats) || beats <= 0 || !Number.isFinite(stretch) || stretch < 1) continue;
+      holds.set(e.beat, { beat: e.beat, bpm: clampClockBpm(e.bpm), fermata: { beats, stretch } });
+      continue;
+    }
     byBeat.set(e.beat, { beat: e.beat, bpm: clampClockBpm(e.bpm), curve: e.curve === 'linear' ? 'linear' : 'step' });
   }
-  const out = [...byBeat.values()].sort((a, b) => a.beat - b.beat);
-  return out.length ? seal(out) : INITIAL_TEMPO_EVENTS;
+  if (!byBeat.size) return INITIAL_TEMPO_EVENTS;
+  const out = [...byBeat.values(), ...holds.values()].sort((a, b) => a.beat - b.beat || Number(!!a.fermata) - Number(!!b.fermata));
+  return seal(out);
 }
 
-/** The index of the event in force at `beat`: the last at or before it, or the first. */
+/** The index of the TEMPO event in force at `beat`: the last at or before it, or the first. */
 function indexInForce(events: readonly TempoEvent[], beat: number): number {
-  let idx = 0;
-  for (let i = 0; i < events.length; i += 1) if (events[i].beat <= beat) idx = i;
-  return idx;
+  let idx = events.findIndex((e) => !e.fermata);
+  for (let i = 0; i < events.length; i += 1) if (!events[i].fermata && events[i].beat <= beat) idx = i;
+  return Math.max(0, idx);
 }
+
+/** A copy of an event, its fermata included. */
+const copyEvent = (e: TempoEvent): TempoEvent => ({ ...e, ...(e.fermata ? { fermata: { ...e.fermata } } : {}) });
 
 export const useTempoStore = create<TempoState>()((set, get) => ({
   events: INITIAL_TEMPO_EVENTS,
@@ -95,19 +124,19 @@ export const useTempoStore = create<TempoState>()((set, get) => ({
   moveEvent: (fromBeat, toBeat) => {
     const { events } = get();
     if (!Number.isFinite(toBeat) || fromBeat === toBeat) return;
-    const found = events.find((e) => e.beat === fromBeat);
+    const found = events.find((e) => !e.fermata && e.beat === fromBeat);
     if (!found) return;
     // The moved event goes last, so it wins if something already sits on `toBeat`.
-    set({ events: sanitize([...events.filter((e) => e.beat !== fromBeat), { ...found, beat: toBeat }]) });
+    set({ events: sanitize([...events.filter((e) => e !== found), { ...found, beat: toBeat }]) });
   },
 
   removeEvent: (beat) => {
     const { events } = get();
-    // A tempo map always has a tempo; the last event is not removable.
-    if (events.length <= 1) return;
-    const out = events.filter((e) => e.beat !== beat);
+    // A tempo map always has a tempo; the last tempo event is not removable.
+    if (events.filter((e) => !e.fermata).length <= 1) return;
+    const out = events.filter((e) => e.fermata || e.beat !== beat);
     if (out.length === events.length) return;
-    set({ events: seal(out.map((e) => ({ ...e }))) });
+    set({ events: seal(out.map(copyEvent)) });
   },
 
   setBpmAt: (beat, bpm) => {
@@ -116,7 +145,7 @@ export const useTempoStore = create<TempoState>()((set, get) => ({
     if (!Number.isFinite(next)) return;
     const idx = indexInForce(events, beat);
     if (events[idx].bpm === next) return;
-    const out = events.map((e) => ({ ...e }));
+    const out = events.map(copyEvent);
     out[idx].bpm = next;
     set({ events: seal(out) });
   },

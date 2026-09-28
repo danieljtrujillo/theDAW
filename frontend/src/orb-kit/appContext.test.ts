@@ -15,6 +15,8 @@ const context = formattheDAWAppContext({
     audioClipCount: 1,
     bpm: 120,
     timeSignature: { num: 7, den: 8 },
+    meterMap: [{ bar: 1, meter: '7/8' }, { bar: 9, meter: '5/4' }],
+    tempoMap: [{ bar: 1, beat: 0, bpm: 120 }, { bar: 9, beat: 0, bpm: 96, curve: 'linear' }],
     snap: '1/8',
     tool: 'move',
     playheadSec: 0,
@@ -106,6 +108,8 @@ assert.match(context, /"wavBitDepth": "16"/);
 // whole selection (not selectedClipId), and editor_restore only accepts a name
 // that already exists.
 assert.match(context, /"timeSignature": \{\s*"num": 7,\s*"den": 8\s*\}/);
+assert.match(context, /"meterMap": \[\s*\{\s*"bar": 1,\s*"meter": "7\/8"\s*\},\s*\{\s*"bar": 9,\s*"meter": "5\/4"\s*\}\s*\]/);
+assert.match(context, /"tempoMap": \[/);
 assert.match(context, /"selectedClipIds": \[\s*"c1",\s*"c2"\s*\]/);
 assert.match(context, /"snapshotNames": \[\s*"before the chorus rewrite"\s*\]/);
 

@@ -59,6 +59,9 @@ import {
   type TimeSignature,
 } from '../state/editorStore';
 import type { RoutingGraph } from '../state/routingGraph';
+import type { MeterSegment } from './meterMap';
+import { copyTempoMap } from './rollTempo';
+import type { TempoEvent } from './tempoMap';
 import { captureLiveVstStates } from '../state/vstEditorStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 
@@ -99,9 +102,15 @@ interface AutosaveManifest {
   version: 1;
   savedAt: string;
   bpm: number;
-  /** Project meter. Optional on READ only: manifests written before the field
-   *  existed have none, and those documents are 4/4 by definition. */
+  /** Bar 1's meter. Optional on READ only: manifests written before the field
+   *  existed have none, and those documents are 4/4 by definition. Still
+   *  written, beside `meterMap`, so a build that reads only this opens the
+   *  document in the meter it starts in. */
   timeSignature?: TimeSignature;
+  /** The arrangement's meter map and tempo map. Optional on READ only: a
+   *  manifest written before them opens with `timeSignature` and `bpm`. */
+  meterMap?: MeterSegment[];
+  tempoMap?: TempoEvent[];
   tracks: SerializedTrack[];
   clips: SerializedClip[];
   masterFxChain: unknown[];
@@ -495,7 +504,9 @@ async function buildManifest(assets: FileSystemDirectoryHandle): Promise<Autosav
     version: 1,
     savedAt: new Date().toISOString(),
     bpm: s.bpm,
-    timeSignature: s.timeSignature,
+    timeSignature: { num: s.meterMap[0]?.meter.num ?? 4, den: s.meterMap[0]?.meter.den ?? 4 },
+    meterMap: s.meterMap.map((m) => ({ bar: m.bar, meter: { num: m.meter.num, den: m.meter.den, groups: [...m.meter.groups] } })),
+    tempoMap: copyTempoMap(s.tempoMap),
     tracks,
     clips,
     masterFxChain: s.masterFxChain as unknown[],
@@ -732,6 +743,8 @@ async function restoreFromAutosave(): Promise<void> {
     clips,
     bpm: manifest.bpm,
     timeSignature: manifest.timeSignature ?? { num: 4, den: 4 },
+    ...(Array.isArray(manifest.meterMap) && manifest.meterMap.length ? { meterMap: manifest.meterMap } : {}),
+    ...(Array.isArray(manifest.tempoMap) && manifest.tempoMap.length ? { tempoMap: manifest.tempoMap } : {}),
     routing: manifest.routing,
     buses: manifest.buses,
   });
@@ -818,7 +831,8 @@ export function initEditorAutosave(): void {
       state.automationLanes === prev.automationLanes &&
       state.markers === prev.markers &&
       state.bpm === prev.bpm &&
-      state.timeSignature === prev.timeSignature &&
+      state.tempoMap === prev.tempoMap &&
+      state.meterMap === prev.meterMap &&
       state.loopEnabled === prev.loopEnabled &&
       state.loopStart === prev.loopStart &&
       state.loopEnd === prev.loopEnd &&

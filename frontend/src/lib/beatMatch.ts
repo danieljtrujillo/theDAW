@@ -89,3 +89,21 @@ export function alignedStart(startSec: number, firstBeatSec: number | null, beat
   if (line - firstBeatSec < 0) line += beatLenSec;
   return Math.max(0, line - firstBeatSec);
 }
+
+/**
+ * `alignedStart` on a beat grid that is not evenly spaced (the arrangement's
+ * quarter grid through a tempo map): `lineNear` is the nearest beat line to a
+ * second, `lineAfter` the beat line one beat after a given line. The first beat
+ * lands on the nearest line that keeps the clip at or after 0.
+ */
+export function alignedStartOn(
+  startSec: number,
+  firstBeatSec: number | null,
+  lineNear: (sec: number) => number,
+  lineAfter: (lineSec: number) => number,
+): number {
+  if (firstBeatSec === null) return startSec;
+  let line = lineNear(startSec + firstBeatSec);
+  for (let guard = 0; line - firstBeatSec < 0 && guard < 64; guard += 1) line = lineAfter(line);
+  return Math.max(0, line - firstBeatSec);
+}

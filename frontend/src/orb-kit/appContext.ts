@@ -8,6 +8,7 @@ import {
     type AssistantReferenceContext,
 } from '../state/assistantReferenceStore';
 import { FEATURES } from '../onboarding/featureRegistry';
+import { editBeatToBarPos, editMeterLabel } from '../lib/editTimeMap';
 
 export type EditorClipKind = 'midi' | 'audio';
 export type EditorTrackKind = 'midi' | 'audio' | 'mixed' | 'empty';
@@ -19,8 +20,12 @@ export type EditorSummary = {
     midiClipCount: number;
     audioClipCount: number;
     bpm: number;
-    /** Project meter. Bars — and therefore editor_seek_bar — are counted from it. */
+    /** Bar 1's meter. Bars — and therefore editor_seek_bar — are counted from `meterMap`. */
     timeSignature: { num: number; den: number };
+    /** The arrangement's meter changes, 1-based bars ("7/8 3+2+2" labels). Set with editor_set_meter_map. */
+    meterMap: Array<{ bar: number; meter: string }>;
+    /** The arrangement's tempo events: 1-based bar, quarter notes into it, bpm, "linear" on a ramp, or a fermata. */
+    tempoMap: Array<{ bar: number; beat: number; bpm?: number; curve?: 'linear'; fermata?: { beats: number; stretch: number } }>;
     /** Grid division clip edits snap to ('off' | '1/4' | '1/8' | '1/16' | …). */
     snap: string;
     /** Active edit tool ('move' | 'cut' | 'split'). */
@@ -158,6 +163,9 @@ const chainLabels = (chain: EditorStoreSnapshot['masterFxChain'] | undefined): s
  * (it is pre-rendered for playback), so without `kind` the model has no way to
  * tell MIDI from audio and reports every track as audio.
  */
+/** The most meter changes and tempo events the summary lists. */
+const TIME_MAP_CAP = 64;
+
 export function summarizeEditor(editor: EditorStoreSnapshot): EditorSummary {
     // Bounded so a huge arrangement cannot blow the prompt.
     const CLIP_CAP = 48;
@@ -172,9 +180,17 @@ export function summarizeEditor(editor: EditorStoreSnapshot): EditorSummary {
         audioClipCount: editor.clips.length - midiClipCount,
         bpm: editor.bpm,
         timeSignature: {
-            num: editor.timeSignature?.num ?? 4,
-            den: editor.timeSignature?.den ?? 4,
+            num: editor.meterMap?.[0]?.meter.num ?? 4,
+            den: editor.meterMap?.[0]?.meter.den ?? 4,
         },
+        // Bounded like the clip list, so a movement with a change every bar cannot blow the prompt.
+        meterMap: (editor.meterMap ?? []).slice(0, TIME_MAP_CAP).map((s) => ({ bar: s.bar + 1, meter: editMeterLabel(s.meter) })),
+        tempoMap: (editor.tempoMap ?? []).slice(0, TIME_MAP_CAP).map((e) => {
+            const pos = editBeatToBarPos(editor.meterMap ?? [], e.beat);
+            return e.fermata
+                ? { bar: pos.bar, beat: pos.beatInBar, fermata: { beats: e.fermata.beats, stretch: e.fermata.stretch } }
+                : { bar: pos.bar, beat: pos.beatInBar, bpm: Math.round(e.bpm * 100) / 100, ...(e.curve === 'linear' ? { curve: 'linear' as const } : {}) };
+        }),
         snap: editor.snap,
         tool: editor.tool,
         playheadSec: round2(editor.playheadSec),

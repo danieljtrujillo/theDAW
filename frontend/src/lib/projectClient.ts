@@ -6,7 +6,7 @@ import type { SwayBinding, SwayUnattached } from './swayImportResolve';
 import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
 import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
-import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type PolyLane } from './meterMap';
+import { normalizeMeterMap, roundUpToBar, sanitizeMeter, sanitizeTuplet, type MeterSegment, type PolyLane } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
 import { playedRollNotes } from './rollClip';
@@ -391,6 +391,13 @@ export interface TasmoProjectInput {
   project_name: string;
   tempo?: number;
   time_signature?: number[];
+  /** The arrangement's tempo map (beat 0 = timeline second 0, beats in quarter
+   *  notes) and meter map (bar 0 = timeline second 0). `tempo` stays the start
+   *  tempo and `time_signature` bar 1's meter, so a reader that knows only those
+   *  opens the project at its start. Optional: payloads built before the
+   *  arrangement had maps still validate. */
+  tempo_map?: TasmoTempoEvent[] | null;
+  meter_map?: TasmoMeterSegment[] | null;
   sample_rate?: number;
   author?: string;
   tracks?: TasmoTrackInput[];
@@ -522,6 +529,10 @@ export interface TasmoProjectLoaded {
   tempo: number;
   /** Declared so a non-4/4 set does not silently reload as 4/4. */
   time_signature?: number[];
+  /** The arrangement's tempo and meter maps; absent (or null) in files written
+   *  before them, which open with `tempo` and `time_signature`. */
+  tempo_map?: TasmoTempoEvent[] | null;
+  meter_map?: TasmoMeterSegment[] | null;
   sample_rate: number;
   source_daw?: string | null;
   source_daw_version?: string | null;
@@ -658,7 +669,7 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
 });
 
 /** A tempo event in the file shape: `curve` only when it ramps, `fermata` only on a hold. */
-const tempoEventToTasmo = (e: TempoEvent): TasmoTempoEvent => ({
+export const tempoEventToTasmo = (e: TempoEvent): TasmoTempoEvent => ({
   beat: e.beat,
   bpm: e.bpm,
   ...(e.fermata ? { fermata: { beats: e.fermata.beats, stretch: e.fermata.stretch } } : e.curve === 'linear' ? { curve: 'linear' as const } : {}),
@@ -774,6 +785,36 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
     const start = events.find((e) => e.beat === 0 && !e.fermata)?.bpm ?? events.find((e) => !e.fermata)?.bpm ?? 120;
     const map = sanitizeRollTempoMap(events, start);
     if (hasTempoChanges(map)) out.sourceTempoMap = copyTempoMap(map);
+  }
+  return out;
+};
+
+/** The arrangement's maps in the file shape: every tempo event (the start included) and every meter segment. */
+export const projectTimeMapsToTasmo = (
+  tempoMap: readonly TempoEvent[],
+  meterMap: readonly MeterSegment[],
+): { tempo_map: TasmoTempoEvent[]; meter_map: TasmoMeterSegment[] } => ({
+  tempo_map: tempoMap.map(tempoEventToTasmo),
+  meter_map: meterMap.map((s) => ({ bar: s.bar, meter: { num: s.meter.num, den: s.meter.den, groups: [...s.meter.groups] } })),
+});
+
+/**
+ * The inverse of projectTimeMapsToTasmo, for a loaded project. A key that is
+ * absent, null, empty or all junk stays undefined, so the loader falls back to
+ * `tempo` / `time_signature` exactly as it did for files written before maps.
+ */
+export const tasmoToProjectTimeMaps = (
+  p: Pick<TasmoProjectLoaded, 'tempo' | 'tempo_map' | 'meter_map'>,
+): { tempoMap?: TempoEvent[]; meterMap?: MeterSegment[] } => {
+  const out: { tempoMap?: TempoEvent[]; meterMap?: MeterSegment[] } = {};
+  if (Array.isArray(p.tempo_map) && p.tempo_map.length) {
+    const events = p.tempo_map.filter((e): e is TasmoTempoEvent => !!e && typeof e === 'object');
+    const start = events.find((e) => e.beat === 0 && !e.fermata)?.bpm ?? (Number.isFinite(p.tempo) && p.tempo > 0 ? p.tempo : 120);
+    if (events.some((e) => !e.fermata && Number.isFinite(e.bpm) && e.bpm > 0)) out.tempoMap = copyTempoMap(sanitizeRollTempoMap(events, start));
+  }
+  if (Array.isArray(p.meter_map) && p.meter_map.length) {
+    const segs = p.meter_map.filter((m): m is TasmoMeterSegment => !!m && typeof m === 'object');
+    if (segs.some((m) => sanitizeMeter(m.meter) !== null && Number.isFinite(m.bar))) out.meterMap = normalizeMeterMap(segs);
   }
   return out;
 };

@@ -6,6 +6,22 @@
       4,
       4
     ],
+    "tempo_map": [
+      {
+        "beat": 0,
+        "bpm": 120
+      }
+    ],
+    "meter_map": [
+      {
+        "bar": 0,
+        "meter": {
+          "num": 4,
+          "den": 4,
+          "groups": []
+        }
+      }
+    ],
     "tracks": [
       {
         "id": "f1",

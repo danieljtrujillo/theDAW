@@ -12,6 +12,10 @@
  *
  * The render and the peak scan are passed in (PianoRoll gives lib/midiSynth and
  * editorStore's), so node tests replay a bounce against the real stores.
+ *
+ * When the roll's tempo map or meter map differs from the arrangement's, the
+ * bounce offers them to EDIT (editorStore offerClipTimeMaps); the arrangement
+ * changes only when the offer is accepted.
  */
 import { useEditorStore } from '../state/editorStore';
 import { usePianoRollStore } from '../state/pianoRollStore';
@@ -84,6 +88,8 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
         sourceKind: 'piano-roll',
         label: existing.label.startsWith('roll_') ? `roll_${bpmText}bpm_${noteCount}n` : existing.label,
       });
+      // The roll's tempo and meter, offered to the arrangement when they differ from it.
+      useEditorStore.getState().offerClipTimeMaps(editingClipId);
       return { kind: 'updated', clipId: editingClipId, duration, noteCount };
     }
     // The clip the roll was bound to is gone — fall through to create a new one.
@@ -110,5 +116,8 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   editor.cachePeaks(clipId, peaks);
   // Bind the roll to the new clip so subsequent Send-to-Editor edits in place.
   usePianoRollStore.getState().setEditingClip(clipId);
+  // The roll's tempo and meter, offered to the arrangement when they differ from
+  // it (EDIT shows the offer above the timeline; nothing changes until accepted).
+  useEditorStore.getState().offerClipTimeMaps(clipId);
   return { kind: 'created', clipId, duration, noteCount };
 }

@@ -343,6 +343,10 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["kit"]["rendered_percussion"] is True
     # The piano roll's own voice rides at the top level.
     assert back["roll_voice"] == sent["roll_voice"] == {"program": None}
+    # So do the arrangement's tempo map and meter map.
+    assert back["tempo_map"] == sent["tempo_map"] == [{"beat": 0, "bpm": 120}]
+    assert back["meter_map"] == sent["meter_map"]
+    assert back["meter_map"][0]["meter"] == {"num": 4, "den": 4, "groups": []}
 
 
 # ---------------------------------------------------------------------------

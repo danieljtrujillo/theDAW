@@ -41,7 +41,7 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSec, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
@@ -76,6 +76,9 @@ import { renderedWindowFields } from '../../lib/clipRenderWindow';
 import { rerenderStaleMidiClip } from '../../lib/clipRerender';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
+import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
+import { editMeterFlags, editMoveByBeats, editRulerBars, editSnapSec, editTempoAtSec, editTempoFlags } from '../../lib/editTimeMap';
+import { hasTempoChanges } from '../../lib/rollTempo';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
 import {
   addToTrackGroupLabel,
@@ -128,7 +131,7 @@ import { TimelineGridLayer } from './TimelineGridLayer';
 import { TimelinePrefsPanel } from './TimelinePrefsPanel';
 import {
   ZOOM_FOLLOW_HOLD_MS, ZOOM_STEP_FACTOR, clipChromeLayout, createZoomCoalescer, fitProjectZoom, fitRangeZoom,
-  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerBarLabels, rulerTimeTicks, shouldRescrollAfterZoom,
+  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerTimeTicks, shouldRescrollAfterZoom,
   spanOfClips, viewportWindowSec, wheelDispatch, type ZoomAnchor, type ZoomCoalescer,
 } from './timelineZoom';
 import {
@@ -136,7 +139,7 @@ import {
   highlightClearDecision, hitTestClipRects,
   inpaintFromRange, rangeSplitPlan, rulerDragRange, type RangeMenuAction,
 } from './timelineInteraction';
-import { alignedStart, beatMatchPlan, firstBeatInClip } from '../../lib/beatMatch';
+import { alignedStart, alignedStartOn, beatMatchPlan, firstBeatInClip } from '../../lib/beatMatch';
 import { ContextMenu, useContextMenu, type ContextMenuItem, type ContextMenuPosition } from '../ui/ContextMenu';
 import { RenderRangeDialog } from '../render/RenderRangeDialog';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -1764,28 +1767,30 @@ const MarkerFlag: React.FC<{
   const commit = () => { onRename(draft.trim() || marker.label); setEditing(false); };
   return (
     <div data-ruler-control="1" className="absolute top-0 bottom-0 z-30" style={{ left: marker.t * zoom }} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="absolute top-3.5 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
+      <div className="absolute top-4 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
       {editing ? (
-        <input
-          autoFocus
-          id={`marker-rename-${marker.t}`}
-          name="marker-rename"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
-          aria-label="Marker name"
-          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-[8px] font-mono text-cyan-100 outline-none"
-        />
+        <>
+          <label htmlFor={`marker-rename-${marker.id}`} className="sr-only">Marker name</label>
+          <input
+            autoFocus
+            id={`marker-rename-${marker.id}`}
+            name="marker-rename"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+            className="absolute top-0 left-0 w-28 h-4 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-xs font-bold leading-none text-cyan-100 outline-none"
+          />
+        </>
       ) : (
         <button
           onClick={(e) => { if (e.altKey) onDelete(); else onSeek(); }}
           onDoubleClick={() => { setDraft(marker.label); setEditing(true); }}
           onContextMenu={(e) => { e.preventDefault(); onDelete(); }}
           title={`${marker.label} — click to seek, double-click to rename, Alt or right-click to delete`}
-          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-[8px] font-mono text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
+          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-4 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-xs font-bold leading-none text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-32"
         >
-          <Flag className="w-2 h-2 shrink-0" /> <span className="truncate">{marker.label}</span>
+          <Flag className="w-3 h-3 shrink-0" /> <span className="truncate">{marker.label}</span>
         </button>
       )}
     </div>
@@ -2014,6 +2019,42 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const removeAutomationLane = useEditorStore((s) => s.removeAutomationLane);
   const addAutomationLane = useEditorStore((s) => s.addAutomationLane);
   const projectBpm = useEditorStore((s) => s.bpm);
+  // The arrangement's tempo and meter maps: the grid, the ruler's bar numbers
+  // and its meter and tempo flags draw from them, and snap reads them too.
+  const arrangementTempoMap = useEditorStore((s) => s.tempoMap);
+  const arrangementMeterMap = useEditorStore((s) => s.meterMap);
+  const timeMapOffer = useEditorStore((s) => s.timeMapOffer);
+  /** The Meter and tempo panel: where it opens and the row a ruler flag asked for. */
+  const [timeMapPanel, setTimeMapPanel] = useState<{ x: number; y: number; focus: TimeMapFocus } | null>(null);
+  const timeMapOpenerRef = useRef<HTMLElement | null>(null);
+  const timeMapPanelId = `edit-time-map-${useId().replace(/:/g, '')}`;
+  const openTimeMapPanel = useCallback((el: HTMLElement, focus: TimeMapFocus) => {
+    timeMapOpenerRef.current = el;
+    const r = el.getBoundingClientRect();
+    setTimeMapPanel({ x: r.left, y: r.bottom + 4, focus });
+  }, []);
+  const closeTimeMapPanel = useCallback(() => {
+    setTimeMapPanel(null);
+    timeMapOpenerRef.current?.focus({ preventScroll: true });
+  }, []);
+  // A press outside the panel closes it, as the gain and name panels do; a
+  // press on the button or flag that opened it is theirs to toggle.
+  const timeMapPanelRef = useRef<HTMLDivElement>(null);
+  const timeMapOpen = timeMapPanel !== null;
+  useEffect(() => {
+    if (!timeMapOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (timeMapPanelRef.current?.contains(t) || timeMapOpenerRef.current?.contains(t)) return;
+      setTimeMapPanel(null);
+    };
+    let attached = false;
+    const timer = window.setTimeout(() => { attached = true; window.addEventListener('mousedown', onDown); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) window.removeEventListener('mousedown', onDown);
+    };
+  }, [timeMapOpen]);
   const loopEnabled = useEditorStore((s) => s.loopEnabled);
   const loopStart = useEditorStore((s) => s.loopStart);
   const loopEnd = useEditorStore((s) => s.loopEnd);
@@ -2824,16 +2865,25 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
    *  and the project tempo becomes the target so the grid agrees. One backend
    *  render per clip, in turn. MIDI clips and clips with no known tempo are
    *  skipped and counted in the log line. */
-  const beatMatchClips = useCallback(async (ids: string[], targetBpm: number) => {
+  /** `toProject`: the target is the arrangement's own tempo. When the
+   *  arrangement's tempo map changes tempo, each clip then stretches to the
+   *  tempo sounding where it starts, and the map is left as it is. */
+  const beatMatchClips = useCallback(async (ids: string[], targetBpm: number, toProject = false) => {
     if (!(targetBpm > 0)) return;
     const live = useEditorStore.getState();
     const subjects = ids
       .map((id) => live.clips.find((c) => c.id === id))
       .filter((c): c is AudioClip => !!c && c.sourceKind !== 'piano-roll');
     if (subjects.length === 0) return;
-    const plan = beatMatchPlan(subjects.map((c) => ({ id: c.id, bpm: clipKnownBpm(c) })), targetBpm);
+    // With tempo changes, the grid a first beat lands on is the arrangement's
+    // quarter grid through its tempo map (restarting at each bar line), not a
+    // constant beat from 0, and the map is not rewritten to one tempo.
+    const maps = { tempoMap: live.tempoMap, meterMap: live.meterMap };
+    const mapped = hasTempoChanges(live.tempoMap);
+    const targetOf = (c: AudioClip): number => (mapped && toProject ? editTempoAtSec(live.tempoMap, c.startSec) : targetBpm);
+    const plan = subjects.flatMap((c) => beatMatchPlan([{ id: c.id, bpm: clipKnownBpm(c) }], targetOf(c)));
     const tempoById = new Map(plan.map((step) => [step.id, step.tempo]));
-    if (Math.abs(targetBpm - live.bpm) > 0.01) setBpm(targetBpm);
+    if (!mapped && Math.abs(targetBpm - live.bpm) > 0.01) setBpm(targetBpm);
     const beatLen = 60 / targetBpm;
     let stretched = 0;
     let aligned = 0;
@@ -2856,7 +2906,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const now = useEditorStore.getState().clips.find((c) => c.id === clip.id);
       if (!now) continue;
       const patch: Partial<AudioClip> = {};
-      const start = alignedStart(now.startSec, first, beatLen);
+      const start = mapped
+        ? alignedStartOn(now.startSec, first, (sec) => editSnapSec(maps, sec, 4), (line) => editMoveByBeats({ ...maps, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }] }, line, 1))
+        : alignedStart(now.startSec, first, beatLen);
       if (Math.abs(start - now.startSec) > 1e-6) {
         patch.startSec = start;
         aligned += 1;
@@ -2865,7 +2917,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       if (Object.keys(patch).length > 0) updateClip(clip.id, patch);
     }
     const skipped = unknown > 0 ? `, ${unknown} skipped (no tempo known; analyse them in the library first)` : '';
-    logInfo('editor', `Beat match to ${Math.round(targetBpm)} bpm: ${stretched} stretched, ${aligned} moved onto the grid${skipped}`);
+    const toWhat = mapped && toProject ? 'the arrangement\'s tempo map' : `${Math.round(targetBpm)} bpm`;
+    logInfo('editor', `Beat match to ${toWhat}: ${stretched} stretched, ${aligned} moved onto the grid${skipped}`);
   }, [applyTimePitch, clipKnownBpm, setBpm, updateClip]);
 
   // The clip / track multi-selection lives in editorStore (batch 11), not local
@@ -3669,21 +3722,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   }, [getActionClips, setSelectedClips, splitClipAt]);
 
-  /** One nudge step: the snap grid when snapping is on, else a flat 50ms.
+  /** One nudge step: one division of the snap grid where `atSec` sits (a bar
+   *  of the meter there for 'Bar', at the tempo there), else a flat 50ms.
    *  Shift multiplies by 4 for coarse moves. */
-  const nudgeStepSec = useCallback((coarse: boolean): number => {
-    const { snap: s, bpm: b } = useEditorStore.getState();
-    const step = snapStepSec(s, b) ?? 0.05;
+  const nudgeStepSec = useCallback((coarse: boolean, atSec: number): number => {
+    const step = snapStepSecAt(useEditorStore.getState(), atSec) ?? 0.05;
     return coarse ? step * 4 : step;
   }, []);
 
   const nudgeSelectedClips = useCallback((dir: -1 | 1, coarse: boolean) => {
     const sel = getActionClips();
     if (sel.length === 0) return;
-    const delta = nudgeStepSec(coarse) * dir;
     // Clamp as a group so a nudge left never collapses the selection's internal
     // spacing against t=0 — the whole block stops when its earliest clip hits 0.
     const earliest = Math.min(...sel.map((c) => c.startSec));
+    const delta = nudgeStepSec(coarse, earliest) * dir;
     const applied = Math.max(delta, -earliest);
     if (applied === 0) return;
     sel.forEach((c) => updateClip(c.id, { startSec: Math.max(0, c.startSec + applied) }));
@@ -5651,6 +5704,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         ...fields,
         instrumentProgram: program,
       });
+      // A file whose tempo or meter differs from the arrangement's is offered
+      // for adoption (the banner above the timeline), so an orchestral file's
+      // tempo and meter changes can become the arrangement's with one press.
+      useEditorStore.getState().offerClipTimeMaps(clipId);
       const voice = clipVoice({ instrumentProgram: program }, track, getGlobalVoice());
       logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
       void (async () => {
@@ -5880,9 +5937,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     () => (gridWindow ? rulerTimeTicks({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, zoom }) : []),
     [gridWindow, zoom],
   );
+  // Bar numbers under the arrangement's meter and tempo maps: bar 17 after
+  // eight bars of 7/8 sits where those bars end, not where 4/4 would put it.
   const barLabels = gridWindow
-    ? rulerBarLabels({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, bpm: projectBpm, zoom })
+    ? editRulerBars({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, zoom, tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap })
     : [];
+  const meterFlags = gridWindow
+    ? editMeterFlags({ tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap }, gridWindow.startSec, gridWindow.endSec)
+    : [];
+  const tempoFlags = gridWindow
+    ? editTempoFlags({ tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap }, gridWindow.startSec, gridWindow.endSec)
+    : [];
+  const meterFlagBars = new Set(meterFlags.map((f) => f.bar + 1));
   /** Is this clip's action menu the one on screen? (`aria-expanded` for its trigger buttons.) */
   const clipMenuOpenFor = (clipId: string): boolean => clipMenu.position !== null && clipMenu.payload?.clipId === clipId;
   /** Open a clip's menu under one of its header buttons (compact / handle chrome). */
@@ -6206,13 +6272,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
                 if (ids.length === 0) return;
                 if (ids.length === 1) {
-                  void beatMatchClips(ids, projectBpm);
+                  void beatMatchClips(ids, projectBpm, true);
                   return;
                 }
                 // The first selected clip is the master, the way a deck's SYNC follows the other deck.
                 const anchor = clips.find((c) => c.id === ids[0]);
                 const anchorBpm = anchor ? clipKnownBpm(anchor) : null;
-                void beatMatchClips(anchorBpm !== null ? ids.slice(1) : ids, anchorBpm ?? projectBpm);
+                void beatMatchClips(anchorBpm !== null ? ids.slice(1) : ids, anchorBpm ?? projectBpm, anchorBpm === null);
               }}
               disabled={timePitchBusy || (selectedClipIds.length === 0 && !selectedClipId)}
               aria-label="Beat match the selected clips"
@@ -6670,6 +6736,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       )}
 
+      {/* The arrangement's meter map and tempo map (the ruler's flags and the
+          Meter · Tempo button open it). Portaled like the FX rack. */}
+      {timeMapPanel && (
+        <PopoverPortal
+          x={timeMapPanel.x}
+          y={timeMapPanel.y}
+          anchorClassName="left-4 top-28"
+          maxHeight="80vh"
+          innerRef={timeMapPanelRef}
+          className="fixed z-50 w-160 max-w-[95vw] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3"
+        >
+          <div id={timeMapPanelId} role="dialog" aria-labelledby={`${timeMapPanelId}-h`}>
+            <EditTimeMapPanel headingId={`${timeMapPanelId}-h`} focus={timeMapPanel.focus} onClose={closeTimeMapPanel} onSeek={seekEditorTo} />
+          </div>
+        </PopoverPortal>
+      )}
+
       {/* Per-track FX rack (floating popover, portaled to body so it opens AT
           the click even under the .dense-layout CSS zoom) */}
       {fxPanel && (() => {
@@ -7113,12 +7196,59 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* A clip from the roll or a MIDI file whose tempo or meter differs from
+          the arrangement's: offered once, adopted or kept with one press. */}
+      {timeMapOffer && (
+        <div
+          role="region"
+          aria-label="Clip tempo and meter offer"
+          className="shrink-0 flex flex-wrap items-center gap-2 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1.5"
+        >
+          <span className="text-xs font-bold text-purple-100">
+            {`"${timeMapOffer.label}" is in ${timeMapOffer.summary}. Use its tempo and meter for the arrangement from ${formatTimecode(timeMapOffer.anchorSec)}?`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const res = useEditorStore.getState().adoptClipTimeMaps(timeMapOffer.clipId);
+              if (!res.ok) logError('editor', `Could not take the clip's tempo and meter: ${res.error}`);
+            }}
+            className="rounded border border-purple-400/50 bg-purple-500/25 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-purple-100 hover:bg-purple-500/40"
+          >
+            Use its tempo and meter
+          </button>
+          <button
+            type="button"
+            onClick={() => useEditorStore.getState().dismissTimeMapOffer()}
+            className="rounded border border-white/15 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/10"
+          >
+            Keep the arrangement's
+          </button>
+        </div>
+      )}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
         <div ref={trackHeaderColRef} className="shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
-          {/* Ruler row spacer */}
-          <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-[8px] font-mono text-zinc-700 uppercase">tracks</div>
+          {/* Ruler row spacer, as tall as the ruler. It holds the Meter and
+              tempo panel's button, level with the ruler's meter and tempo rows. */}
+          <div className="h-17 border-b border-white/5 bg-black/30 flex flex-col items-stretch justify-center gap-1 px-2">
+            <button
+              type="button"
+              onClick={(e) => (timeMapPanel ? closeTimeMapPanel() : openTimeMapPanel(e.currentTarget, null))}
+              aria-haspopup="dialog"
+              aria-expanded={timeMapPanel !== null}
+              aria-controls={timeMapPanel ? timeMapPanelId : undefined}
+              title="The arrangement's time signatures and tempo changes: add, edit and remove them, or take them from a MIDI clip"
+              className="rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-purple-200 hover:bg-purple-500/20"
+            >
+              Meter · Tempo
+            </button>
+            <span className="text-center text-xs font-bold text-zinc-500 tabular-nums" title="Bar 1's meter and the start tempo">
+              {`${arrangementMeterMap[0] ? `${arrangementMeterMap[0].meter.num}/${arrangementMeterMap[0].meter.den}` : '4/4'} · ${Math.round(projectBpm * 100) / 100} BPM`}
+            </span>
+          </div>
           {/* One live region for the whole column — the count-in belongs to the
               pass, not to a track. See CountInAnnouncement. */}
           <CountInAnnouncement />
@@ -7308,7 +7438,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Ruler — click to seek, drag to select a time range, shift-drag for
               the loop. Sticky so vertical scroll keeps it pinned. */}
           <div
-            className="h-6 border-b border-white/5 bg-black/80 backdrop-blur-sm sticky top-0 z-40 select-none cursor-col-resize"
+            className="h-17 border-b border-white/5 bg-black/80 backdrop-blur-sm sticky top-0 z-40 select-none cursor-col-resize"
             style={{ width: timelineWidthPx }}
             onMouseDown={onRulerMouseDown}
             onPointerDown={onRulerPointerDown}
@@ -7317,26 +7447,73 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onPointerUp={onRulerPointerUp}
             onPointerCancel={onRulerPointerCancel}
           >
+            {/* Time row (bottom): timecodes, once they are >= 50 px apart. */}
             {renderRuler.map((tick) => (
               <div
                 key={tick.sec}
-                className="absolute top-0 bottom-0 flex items-center px-1 border-l border-white/5 pointer-events-none"
+                className="absolute top-12 bottom-0 px-1 border-l border-white/5 pointer-events-none"
                 style={{ left: tick.sec * zoom }}
               >
-                <span className={`text-[8px] font-mono ${tick.major ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                <span className={`block text-xs font-bold leading-none tabular-nums ${tick.major ? 'text-zinc-400' : 'text-zinc-500'}`}>
                   {formatTimecode(tick.sec).replace(/\.00$/, '')}
                 </span>
               </div>
             ))}
-            {/* Bar numbers (F05) at bar lines, once bars are >= 24 px apart. */}
-            {barLabels.map((b) => (
+            {/* Bar row: bar numbers (F05) at bar lines of the arrangement's meter
+                map, once bars are >= 24 px apart; a bar that starts a new meter
+                shows it as a button that opens the Meter and tempo panel. */}
+            {barLabels.map((b) => (meterFlagBars.has(b.bar) ? null : (
               <div
                 key={`bar-${b.bar}`}
                 aria-hidden="true"
-                className="absolute top-0 h-2.5 border-l border-purple-300/40 pointer-events-none"
+                className="absolute top-4 h-4 border-l border-purple-300/40 pointer-events-none"
                 style={{ left: b.sec * zoom }}
               >
-                <span className="absolute top-0 left-0.5 text-[8px] font-mono leading-none text-purple-300/80">{b.bar}</span>
+                <span className="absolute top-0 left-0.5 text-xs font-bold leading-4 text-purple-300/80 tabular-nums">{b.bar}</span>
+              </div>
+            )))}
+            {meterFlags.map((f) => (
+              <div
+                key={`meter-${f.bar}`}
+                data-ruler-control="1"
+                className="absolute top-4 h-4 z-30 border-l border-purple-300/70"
+                style={{ left: f.sec * zoom }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => openTimeMapPanel(e.currentTarget, { kind: 'meter', bar: f.bar })}
+                  aria-haspopup="dialog"
+                  aria-label={`Bar ${f.bar + 1}: ${f.label}. Edit the meter`}
+                  title={`Bar ${f.bar + 1} is in ${f.label}. Click to edit the meter map`}
+                  className="absolute top-0 left-0 h-4 whitespace-nowrap rounded-br bg-purple-500/25 px-1 text-xs font-bold leading-4 text-purple-100 hover:bg-purple-500/40 tabular-nums"
+                >
+                  {`${f.bar + 1} · ${f.label}`}
+                </button>
+              </div>
+            ))}
+            {/* Tempo row: every tempo change, ramp and fermata, as buttons that
+                open the Meter and tempo panel on their own row. */}
+            {tempoFlags.map((f) => (
+              <div
+                key={`tempo-${f.kind}-${f.beat}`}
+                data-ruler-control="1"
+                className="absolute top-8 h-4 z-30 border-l border-amber-300/70"
+                style={{ left: f.sec * zoom }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => openTimeMapPanel(e.currentTarget, { kind: 'tempo', beat: f.beat, eventKind: f.kind })}
+                  aria-haspopup="dialog"
+                  aria-label={`${f.label} at ${formatTimecode(f.sec)}. Edit the tempo map`}
+                  title={`${f.label} at ${formatTimecode(f.sec)}. Click to edit the tempo map`}
+                  className={`absolute top-0 left-0 h-4 whitespace-nowrap rounded-br px-1 text-xs font-bold leading-4 tabular-nums ${f.kind === 'fermata' ? 'bg-sky-500/20 text-sky-100 hover:bg-sky-500/35' : 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/35'}`}
+                >
+                  {f.label}
+                </button>
               </div>
             ))}
             {/* Loop region (shift-drag the ruler to set; LOOP toggles it) */}
@@ -7354,7 +7531,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 className="absolute top-0 bottom-0 z-10 pointer-events-none bg-sky-400/30 border-x border-sky-300"
                 style={{ left: timeSelection.startSec * zoom, width: (timeSelection.endSec - timeSelection.startSec) * zoom }}
               >
-                <span className="absolute top-0.5 left-1 text-[8px] font-mono text-sky-100 leading-none whitespace-nowrap">
+                <span className="absolute top-12 left-1 text-xs font-bold text-sky-100 leading-none whitespace-nowrap tabular-nums">
                   {formatRangeReadout(timeSelection)}
                 </span>
               </div>
@@ -7437,6 +7614,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 endSec={gridWindow.endSec}
                 zoom={zoom}
                 bpm={projectBpm}
+                tempoMap={arrangementTempoMap}
+                meterMap={arrangementMeterMap}
                 heightPx={lanesHeightPx}
                 style={gridStyle}
                 themeKey={editThemeId}
@@ -8122,12 +8301,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           const noTempo = 'No tempo is known for this clip. Analyse it in the library first.';
           items.push({
             type: 'item',
-            label: `Beat match to project (${Math.round(projectBpm)} bpm)`,
+            label: hasTempoChanges(arrangementTempoMap)
+              ? `Beat match to project (${Math.round(editTempoAtSec(arrangementTempoMap, clip.startSec))} bpm here)`
+              : `Beat match to project (${Math.round(projectBpm)} bpm)`,
             icon: <Gauge className="w-3 h-3" />,
             hint: 'sync',
             disabled: timePitchBusy || anchorBpm === null,
-            title: anchorBpm === null ? noTempo : `Stretch to ${Math.round(projectBpm)} bpm and put the first beat on the grid`,
-            onSelect: () => void beatMatchClips(subjectIds, projectBpm),
+            title: anchorBpm === null
+              ? noTempo
+              : hasTempoChanges(arrangementTempoMap)
+                ? 'Stretch to the tempo the arrangement plays where the clip starts and put the first beat on its beat grid'
+                : `Stretch to ${Math.round(projectBpm)} bpm and put the first beat on the grid`,
+            onSelect: () => void beatMatchClips(subjectIds, projectBpm, true),
           });
           if (others.length > 0) {
             items.push({

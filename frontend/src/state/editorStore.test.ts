@@ -19,6 +19,8 @@
  */
 import assert from 'node:assert/strict';
 import { SNAP_DIVISIONS, beginUndoStep, clipSourceSpanSec, freezeSignature, snapDivisionLabel, useEditorStore, type AudioClip, type EditorTrack } from './editorStore.ts';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
 import type { ChainEntry } from './effectChainStore.ts';
 
 const st = () => useEditorStore.getState();
@@ -517,17 +519,17 @@ const seed = () => {
 /* ── time signature: document state, validated ───────────────────────────── */
 {
   seed();
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 4, den: 4 }, 'defaults to 4/4');
+  assert.deepEqual(barOneMeter(), { num: 4, den: 4 }, 'defaults to 4/4');
 
   useEditorStore.getState().setTimeSignature(7, 8);
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 7, den: 8 });
+  assert.deepEqual(barOneMeter(), { num: 7, den: 8 });
 
   // Nonsense is refused outright rather than clamped into something the caller
   // never asked for — a silently substituted meter would re-bar the whole song.
   for (const [num, den] of [[0, 4], [4, 5], [4, 0], [NaN, 4], [4.5, 4], [33, 4]] as const) {
     useEditorStore.getState().setTimeSignature(num, den);
     assert.deepEqual(
-      useEditorStore.getState().timeSignature,
+      barOneMeter(),
       { num: 7, den: 8 },
       `${num}/${den} should have been refused`,
     );
@@ -535,15 +537,15 @@ const seed = () => {
 
   // It rides undo with the rest of the document.
   useEditorStore.getState().undo();
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 4, den: 4 });
+  assert.deepEqual(barOneMeter(), { num: 4, den: 4 });
   useEditorStore.getState().redo();
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 7, den: 8 });
+  assert.deepEqual(barOneMeter(), { num: 7, den: 8 });
 
   // A load carries it; a load without one keeps what is set, exactly as bpm does.
   useEditorStore.getState().loadProject({ tracks: [seedTrack('t1')], clips: [], bpm: 90, timeSignature: { num: 3, den: 4 } });
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 3, den: 4 });
+  assert.deepEqual(barOneMeter(), { num: 3, den: 4 });
   useEditorStore.getState().loadProject({ tracks: [seedTrack('t1')], clips: [] });
-  assert.deepEqual(useEditorStore.getState().timeSignature, { num: 3, den: 4 });
+  assert.deepEqual(barOneMeter(), { num: 3, den: 4 });
 }
 
 /* ── the project tempo spans the app's 20-300 BPM, fraction kept ─────────── */

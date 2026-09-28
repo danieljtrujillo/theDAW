@@ -971,9 +971,85 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         ["clip_id"],
     ),
     _fn(
+        "editor_set_meter_map",
+        "Set the EDIT arrangement's meter map, tempo map, or both, or take "
+        "both from a MIDI clip. Bars are 1-based, as on screen. A map passed "
+        "replaces the whole map; without a bar-1 entry, bar 1 keeps its meter "
+        "(or start tempo). Tempo positions are a bar plus quarter notes into "
+        "it, read against the meter map this call ends with. Clips stay where "
+        "they are in seconds; the grid, snap, editor_seek_bar and bar nudges "
+        "follow the maps. editor_get_state returns both maps.",
+        {
+            "meter_map": {
+                "type": "array",
+                "description": "Every meter change, bar 1 first. Each item: "
+                "{bar, num, den, groups?} or {bar, meter: '7/8 3+2+2'}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "num": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "den": {"type": "integer", "enum": [1, 2, 4, 8, 16, 32]},
+                        "groups": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Additive grouping that sums to num, e.g. [3, 2, 2]",
+                        },
+                        "meter": {
+                            "type": "string",
+                            "description": "The meter as text, e.g. '7/8' or '7/8 3+2+2'",
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "tempo_map": {
+                "type": "array",
+                "description": "Every tempo change and fermata. Each item: "
+                "{bar, beat?, bpm, curve?} or {bar, beat?, fermata: {beats, stretch}}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "beat": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Quarter notes into the bar (default 0)",
+                        },
+                        "bpm": {"type": "number", "minimum": 20, "maximum": 300},
+                        "curve": {
+                            "type": "string",
+                            "enum": ["step", "linear"],
+                            "description": "step holds the tempo; linear ramps to the next tempo",
+                        },
+                        "fermata": {
+                            "type": "object",
+                            "properties": {
+                                "beats": {"type": "number", "exclusiveMinimum": 0},
+                                "stretch": {
+                                    "type": "number",
+                                    "minimum": 1,
+                                    "maximum": 8,
+                                },
+                            },
+                            "required": ["beats", "stretch"],
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "adopt_clip_id": {
+                "type": "string",
+                "description": "A MIDI clip whose tempo and meter the arrangement "
+                "takes from the clip's first step on. Pass it alone.",
+            },
+        },
+    ),
+    _fn(
         "editor_set_time_signature",
-        "Set the project meter. Bars, and therefore editor_seek_bar, are "
-        "counted from it.",
+        "Set bar 1's meter; later meter changes stay. Bars, and therefore "
+        "editor_seek_bar, are counted from the meter map "
+        "(editor_set_meter_map sets the whole map).",
         {
             "num": {
                 "type": "integer",

@@ -1,6 +1,8 @@
 /**
- * The EDIT toolbar's BPM field, beside the snap picker: the project tempo the
- * snap grid is measured in, 20-300 BPM with its fraction to the hundredth.
+ * The EDIT toolbar's BPM field, beside the snap picker: the arrangement's start
+ * tempo (its tempo map's beat-0 event, editorStore setBpm), 20-300 BPM with its
+ * fraction to the hundredth. Tempo changes after it live in the Meter and tempo
+ * panel (EditTimeMapPanel).
  *
  * A typed tempo applies on Enter or when the field loses focus, so the "1" of
  * a typed 140 is never clamped to 20 first; Escape drops what was typed. A
@@ -52,7 +54,7 @@ export function EditorBpmField({ bpm, onChange }: EditorBpmFieldProps) {
           else if (e.key === 'Escape') setDraft(null);
         }}
         className="w-16 bg-transparent border-none outline-none text-xs font-bold text-zinc-100 tabular-nums"
-        title={`Project tempo, ${TEMPO_BPM_MIN}-${TEMPO_BPM_MAX}: it defines the snap grid`}
+        title={`Start tempo, ${TEMPO_BPM_MIN}-${TEMPO_BPM_MAX}: the first tempo of the arrangement's tempo map. Tempo changes after it are in Meter · Tempo`}
       />
     </>
   );

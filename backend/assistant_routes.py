@@ -189,7 +189,8 @@ Tempo and time:
 - `editor_detect_tempo` — Detect a clip's tempo on the backend. Payload: `{"clip_id": "..."}`
 - `editor_set_clip_source_bpm` — Declare the tempo a clip's media was recorded at. Does NOT stretch. Payload: `{"clip_id": "...", "bpm": 128}`
 - `editor_stretch_clip` — Time-stretch. MIDI re-renders locally; AUDIO gets a pitch-preserving backend stretch (0.25x-4x). Exactly one target. Payload: `{"clip_id": "...", "target_bpm?": 120}` or `{"target_duration_sec?": 8}` or `{"ratio?": 1.25}`
-- `editor_set_time_signature` — Payload: `{"num": 7, "den": 8}`
+- `editor_set_time_signature` — Bar 1's meter; later changes stay. Payload: `{"num": 7, "den": 8}`
+- `editor_set_meter_map` — The arrangement's meter map and/or tempo map (bars 1-based, a map passed replaces the whole map), or both taken from a MIDI clip. Payload: `{"meter_map": [{"bar": 1, "num": 4, "den": 4}, {"bar": 9, "meter": "7/8 3+2+2"}], "tempo_map": [{"bar": 1, "bpm": 96}, {"bar": 17, "bpm": 96, "curve": "linear"}, {"bar": 25, "bpm": 132}]}` or `{"adopt_clip_id": "..."}`
 - `editor_nudge_clip` — Move a clip along the timeline; exactly one distance. Payload: `{"clip_id": "...", "delta_sec?": -0.25}` or `{"beats?": 1}` or `{"bars?": 2}`
 
 Transport:

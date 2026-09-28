@@ -37,6 +37,8 @@
 // Run: npx tsx src/lib/editorAutosave.test.ts
 import assert from 'node:assert/strict';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
 import { isComped } from './clipComp.ts';
 
 const flush = async (n = 8): Promise<void> => {
@@ -388,6 +390,17 @@ async function writeMeterManifest(bytes: Uint8Array): Promise<void> {
   await w.close();
 }
 
+const SAVED_METER_MAP = [
+  { bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } },
+  { bar: 8, meter: { num: 5, den: 4, groups: [] } },
+];
+const SAVED_TEMPO_MAP = [
+  { beat: 0, bpm: 132, curve: 'step' as const },
+  { beat: 28, bpm: 132, curve: 'linear' as const },
+  { beat: 56, bpm: 90, curve: 'step' as const },
+  { beat: 60, bpm: 132, fermata: { beats: 2, stretch: 3 } },
+];
+
 /** The 7/8 manifest the first block writes, reused by the legacy block. */
 let meterSaved = new Uint8Array();
 
@@ -421,6 +434,10 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
     clips: [meterClip('c1', 't1')],
     bpm: 132,
     timeSignature: { num: 7, den: 8 },
+    // The arrangement's maps: 7/8 3+2+2 from bar 1, 5/4 from bar 9; 132 BPM
+    // ramping from beat 28 to 90 at beat 56, and a fermata at beat 60.
+    meterMap: SAVED_METER_MAP,
+    tempoMap: SAVED_TEMPO_MAP,
   });
 
   // Wait for the debounced save to land the manifest.
@@ -430,6 +447,12 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
     manifest.timeSignature,
     { num: 7, den: 8 },
     'the autosave manifest must carry the project meter',
+  );
+  assert.deepEqual(manifest.meterMap, SAVED_METER_MAP, 'the manifest carries the meter map');
+  assert.deepEqual(
+    (manifest.tempoMap as Array<Record<string, unknown>>).map((e) => [e.beat, e.bpm, e.curve ?? null, e.fermata ?? null]),
+    [[0, 132, 'step', null], [28, 132, 'linear', null], [56, 90, 'step', null], [60, 132, null, { beats: 2, stretch: 3 }]],
+    'the manifest carries the tempo map, ramp and fermata included',
   );
 
   // Keep the 7/8 document on disk, then land the session in a different meter
@@ -441,22 +464,37 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
 
   await meter.useAutosaveRecoveryStore.getState().restore();
   assert.deepEqual(
-    useEditorStore.getState().timeSignature,
+    barOneMeter(),
     { num: 7, den: 8 },
     'a restored autosave must bring its own meter back',
   );
+  assert.deepEqual(useEditorStore.getState().meterMap, SAVED_METER_MAP, 'and its meter map');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm, e.curve ?? null, e.fermata ?? null]),
+    [[0, 132, 'step', null], [28, 132, 'linear', null], [56, 90, 'step', null], [60, 132, null, { beats: 2, stretch: 3 }]],
+    'and its tempo map',
+  );
+  assert.equal(useEditorStore.getState().bpm, 132);
 
   /* ── a legacy manifest (no meter) restores as 4/4 ───────────────────────── */
   await tick(60); // let the restore's own autosave land before overwriting it
   const legacy = JSON.parse(new TextDecoder().decode(meterSaved)) as Record<string, unknown>;
   delete legacy.timeSignature;
+  delete legacy.meterMap;
+  delete legacy.tempoMap;
   await writeMeterManifest(new TextEncoder().encode(JSON.stringify(legacy)));
 
   await meter.useAutosaveRecoveryStore.getState().restore();
   assert.deepEqual(
-    useEditorStore.getState().timeSignature,
+    barOneMeter(),
     { num: 4, den: 4 },
     'a document written before the field existed is 4/4, not whatever the session held',
+  );
+  assert.deepEqual(useEditorStore.getState().meterMap.length, 1, 'one meter for a legacy document');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm]),
+    [[0, 132]],
+    'and one tempo, its saved bpm, not the tempo changes the session held',
   );
 
   // This driver stays subscribed to the shared store for the rest of the run,
