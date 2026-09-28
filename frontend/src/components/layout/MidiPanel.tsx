@@ -90,6 +90,9 @@ import { RollSnapControls } from '../audio/RollSnapControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 import { AiComposePopover } from '../audio/AiComposePopover';
 import { ComposerPanel } from '../audio/ComposerPanel';
+import { PianoRollHarmonyKey } from '../audio/RollHarmonyRow';
+import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
+import { PianoRollTransformKey } from '../audio/RollTransforms';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
 import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
@@ -679,6 +682,9 @@ export const MidiPanel: React.FC = () => {
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
         <PianoRollTempoKey on={showTempo} onChange={setShowTempo} />
+        {/* The composer's rows: the harmony row over the ruler and the figured-bass lane under the grid. */}
+        <PianoRollHarmonyKey />
+        <PianoRollFiguresKey />
         <Sep />
         <RollSnapControls />
         <Sep />
@@ -995,6 +1001,8 @@ export const MidiPanel: React.FC = () => {
                 icon={<Feather className={RAIL_GLYPH} />}
                 legend="Compose"
               />
+              {/* TRANSFORM: the motif transforms of the selected notes, beside the composer's column. */}
+              <PianoRollTransformKey />
               <RailKey
                 onClick={() => void makeBeat()}
                 aria-label="Beat from the notes"

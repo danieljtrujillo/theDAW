@@ -1,8 +1,10 @@
 /**
  * Mount test for the piano roll's composer controls: the harmony row over the
  * ruler, its corner, the figured-bass lane with the key picker, the parts
- * column's cantus firmus key, and the dock keys the MIDI tab lays out
- * (HARMONY, FIGURES, TRANSFORM).
+ * column's cantus firmus key, the dock keys the MIDI tab lays out (HARMONY
+ * and FIGURES on the strip beside BEND and TEMPO, TRANSFORM on the rail after
+ * COMPOSE), and the COMPOSE column's CHECK showing the flags the harmony row
+ * shows.
  *
  * The sequence: a roll with Soprano and Bass parts is checked (the route
  * answers one flag); the row opens with a marker named for its rule and
@@ -12,7 +14,9 @@
  * a figure under a bass note (a labelled field, one undo step on blur, Escape
  * puts it back), and the key picker sets the roll's key. The TRANSFORM key is
  * off with nothing selected and opens a menu of six that inverts the
- * selection in one undo step. Every word is 12px or larger.
+ * selection in one undo step. The COMPOSE column's CHECK lists the row's
+ * flags (changed since, as the row says), and its own CHECK puts a new marker
+ * in the row. Every word is 12px or larger.
  *
  * Client-rendered (createRoot on jsdom), in the RollPartControls.test.tsx pattern.
  *
@@ -23,9 +27,7 @@ import { JSDOM } from 'jsdom';
 
 const { MidiPanel } = await import('../layout/MidiPanel.tsx');
 const { endRollGesture, rollTracksOf, usePianoRollStore } = await import('../../state/pianoRollStore.ts');
-const { PianoRollHarmonyKey } = await import('./RollHarmonyRow.tsx');
-const { PianoRollFiguresKey } = await import('./FiguredBassLane.tsx');
-const { PianoRollTransformKey, rollTransformMenuItems } = await import('./RollTransforms.tsx');
+const { rollTransformMenuItems } = await import('./RollTransforms.tsx');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const win = dom.window;
@@ -52,7 +54,11 @@ Object.defineProperty(globalThis, 'fetch', {
   configurable: true,
   writable: true,
   value: async (url: RequestInfo | URL) =>
-    String(url).startsWith('/api/composer/') ? new Response(JSON.stringify(answer), { status: 200 }) : new Response('{}', { status: 404 }),
+    String(url) === '/api/composer/styles'
+      ? new Response(JSON.stringify({ styles: [] }), { status: 200 })
+      : String(url).startsWith('/api/composer/')
+        ? new Response(JSON.stringify(answer), { status: 200 })
+        : new Response('{}', { status: 404 }),
 });
 
 const React = await import('react');
@@ -199,29 +205,68 @@ assert.equal(byLabel('Bass is the cantus firmus').getAttribute('aria-pressed'), 
 assert.deepEqual(smallText(q('[data-roll-harmony]')), [], 'no text under 12px in the row');
 assert.deepEqual(smallText(lane), [], 'nor in the lane');
 
-// ── The dock keys ───────────────────────────────────────────────────────────
-const keyHost = win.document.createElement('div');
-win.document.body.appendChild(keyHost);
-const keyRoot = createRoot(keyHost);
-await step(() => {
-  roll().clearSelection();
-  keyRoot.render(
-    <div>
-      <PianoRollHarmonyKey />
-      <PianoRollFiguresKey />
-      <PianoRollTransformKey />
-    </div>,
-  );
+// ── The dock keys, where the MIDI tab lays them out ─────────────────────────
+// HARMONY and FIGURES on the strip after the lane keys BEND and TEMPO; TRANSFORM on the rail after COMPOSE.
+const stripKey = (word: string): HTMLButtonElement => {
+  const hit = buttons().find((b) => b.textContent === word && b.hasAttribute('aria-pressed') && b.closest('[role="group"]') === null);
+  assert.ok(hit, `the strip's ${word} key`);
+  return hit as HTMLButtonElement;
+};
+const strip = stripKey('Bend').parentElement!;
+const stripWords = [...strip.querySelectorAll(':scope > button')].map((b) => b.textContent);
+const at = stripWords.indexOf('Bend');
+assert.deepEqual(stripWords.slice(at, at + 4), ['Bend', 'Tempo', 'Harmony', 'Figures'], 'the composer rows beside the other lanes');
+const rail = q('[role="group"][aria-label="MIDI actions"]');
+assert.ok(rail, 'the action rail');
+const railNames = [...rail.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent);
+const composeAt = railNames.findIndex((n) => n?.startsWith('Compose:'));
+assert.ok(railNames[composeAt + 1]?.startsWith('Transform'), `TRANSFORM follows COMPOSE on the rail (${railNames.join(' | ')})`);
+
+// ── COMPOSE's CHECK and the harmony row: one list of flags ──────────────────
+await step(() => byLabel('Compose:').click());
+const compose = q('aside[aria-label="Compose"]');
+assert.ok(compose, 'the COMPOSE column is open beside the roll');
+const composeTab = [...compose.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((b) => b.textContent === 'Check')!;
+await step(() => composeTab.click());
+const composeRows = () => [...compose.querySelectorAll<HTMLButtonElement>('ul[aria-label="Voice-leading flags"] button')];
+assert.deepEqual(
+  composeRows().map((b) => b.getAttribute('aria-label')),
+  ['Select the notes: Bar 2, beat 1, Soprano and Bass, Parallel octaves'],
+  "the column lists the check the row's markers show",
+);
+assert.equal(compose.querySelector('[data-compose-flags-source]')?.textContent?.endsWith('The parts changed since.'), true, 'and says the parts changed, as the row does');
+assert.equal(compose.querySelectorAll('select[name$="k-key"]').length, 1, "the roll's key picker in CHECK");
+assert.ok(q('#roll-key'), 'beside the one in the figured-bass lane');
+// CHECK in the column: the row shows its answer.
+answer = { flags: [{ bar: 0, beat: 1, tick: 0, parts: ['soprano', 'bass'], rule: 'voice_crossing', message: 'Soprano under the bass' }], count: 1 };
+const composeCheck = [...compose.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Check' && b.getAttribute('role') !== 'tab')!;
+await step(async () => {
+  composeCheck.click();
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
 });
-const harmonyKey = [...keyHost.querySelectorAll('button')].find((b) => b.textContent?.includes('Harmony'));
-assert.equal(harmonyKey?.getAttribute('aria-pressed'), 'true');
-await step(() => harmonyKey!.click());
+assert.ok(byLabel('Voice crossing at bar 1, beat 1: Soprano under the bass'), "the harmony row's marker for the column's check");
+assert.equal(byLabel('Voice crossing at bar 1, beat 1').getAttribute('aria-label')?.includes('changed'), false);
+assert.deepEqual(composeRows().map((b) => b.getAttribute('aria-label')), ['Select the notes: Bar 1, beat 1, Soprano and Bass, Voice crossing']);
+assert.deepEqual(smallText(compose), [], 'no text under 12px in the column');
+await step(() => byLabel('Close the COMPOSE column').click());
+
+// HARMONY and FIGURES latch their rows.
+const harmonyKey = stripKey('Harmony');
+assert.equal(harmonyKey.getAttribute('aria-pressed'), 'true');
+await step(() => harmonyKey.click());
 assert.equal(roll().showHarmony, false, 'HARMONY closes the row');
 assert.equal(q('[data-roll-harmony]'), null);
-const figuresKey = [...keyHost.querySelectorAll('button')].find((b) => b.textContent?.includes('Figures'));
-assert.equal(figuresKey?.getAttribute('aria-pressed'), 'true');
+await step(() => harmonyKey.click());
+assert.ok(q('[data-roll-harmony]'), 'and opens it');
+const figuresKey = stripKey('Figures');
+assert.equal(figuresKey.getAttribute('aria-pressed'), 'true');
+await step(() => figuresKey.click());
+assert.equal(q('[data-figured-bass-lane]'), null, 'FIGURES closes the lane');
+await step(() => figuresKey.click());
+assert.ok(q('[data-figured-bass-lane]'));
 
-const transformKey = keyHost.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+await step(() => roll().clearSelection());
+const transformKey = rail.querySelector<HTMLButtonElement>('button[aria-controls="piano-roll-transform-menu"]');
 assert.ok(transformKey);
 assert.equal(transformKey.disabled, true, 'TRANSFORM is off with nothing selected');
 assert.equal(transformKey.getAttribute('aria-label'), 'Transform: select notes first');
@@ -246,8 +291,5 @@ assert.equal(menu[0].type, 'header');
 assert.deepEqual(menu.slice(1).map((i) => (i.type === 'item' ? i.disabled : null)), [false, false, false, false, false, false]);
 assert.ok(rollTransformMenuItems(0).slice(1).every((i) => i.type === 'item' && i.disabled), 'off with nothing selected');
 
-await step(() => {
-  keyRoot.unmount();
-  root.unmount();
-});
+await step(() => root.unmount());
 console.log('RollComposer: ok');
