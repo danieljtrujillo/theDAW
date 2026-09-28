@@ -1,7 +1,14 @@
 /**
  * LoomView — the LOOM tab: a living colony of cells (docs/design/loom.md §10–11).
  *
- * One view: the dish (ColonyCanvas). Cells are added with the toolbar's +
+ * Two views, chosen with the COLONY / LANES switch in the header and saved
+ * with the tab's settings (loomStore `mode`). COLONY is the dish
+ * (ColonyCanvas). LANES is the lane score (lib/loomScore): each lane on its
+ * own grid, straight or a 1/12, 1/20, 1/24 or 1/28 tuplet grid, its length in
+ * steps, and the score's `meter` directive, with the score's text in the CODE
+ * pane.
+ *
+ * On the dish, cells are added with the toolbar's +
  * buttons or a right-click on the dish, wired by dragging from a cell's nub,
  * and edited in the CELL pane with buttons, chips and sliders — no typing.
  * The notation stays available: the CODE pane is the whole colony as text,
@@ -12,15 +19,18 @@
  * child off the selected cell now.
  *
  * Colours come from lib/loomPalette and the theme ink tokens; text is 12px+
- * and primary ink so it reads on every theme.
+ * bold sans (Orbitron on labels, keys and tabs) and primary ink so it reads on
+ * every theme. The two score editors stay monospace: the notation lines up in
+ * columns, one token per step.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Play, Dices } from 'lucide-react';
-import { useLoomStore, type EdgeSel } from '../state/loomStore';
+import { useLoomStore, type EdgeSel, type LoomMode } from '../state/loomStore';
+import type { LaneCursor } from '../lib/loomEngine';
 import { useShardIndexStore, type ShardRow } from '../state/shardIndexStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { LOOM_TEMPLATES } from '../data/loomTemplates';
-import { LOOM_ROLES, tupletGrids, type LockParam, type LoomRole } from '../lib/loomScore';
+import { LANE_DIVS, LOOM_ROLES, TUPLET_DIVS, laneBarSteps, tupletGrids, type LockParam, type LoomLane, type LoomRole } from '../lib/loomScore';
 import { beatClock } from '../lib/beatClock';
 import * as shards from '../lib/shardEngine';
 import { GEN_BLURB, GEN_GLYPH, GEN_KINDS, type GenKind } from '../lib/loomGen';
@@ -33,10 +43,10 @@ import { CollapsibleRail } from '../components/ui/CollapsibleRail';
 
 type Pane = 'cell' | 'code' | 'crate';
 
-const label = 'text-xs font-mono font-semibold uppercase tracking-wider et-ink-2';
-const input = 'compact-input rounded border border-white/25 bg-black/30 px-2 py-1 text-[13px] font-mono et-ink focus:outline-none focus:border-amber-300';
-const btn = 'rounded-md border border-white/25 px-2.5 py-1 text-xs font-mono font-semibold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
-const chip = 'rounded-md border px-2 py-1 text-xs font-mono font-semibold et-ink transition-colors';
+const label = 'text-xs font-display font-bold uppercase tracking-wider et-ink-2';
+const input = 'compact-input rounded border border-white/25 bg-black/30 px-2 py-1 text-[13px] font-sans font-semibold et-ink focus:outline-none focus:border-amber-300';
+const btn = 'rounded-md border border-white/25 px-2.5 py-1 text-xs font-display font-bold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+const chip = 'rounded-md border px-2 py-1 text-xs font-sans font-bold et-ink transition-colors';
 
 export function LoomView(): React.ReactElement {
   const running = useLoomStore((s) => s.running);
@@ -58,10 +68,21 @@ export function LoomView(): React.ReactElement {
   const setSwing = useLoomStore((s) => s.setSwing);
   const setGrain = useLoomStore((s) => s.setGrain);
   const growNow = useLoomStore((s) => s.growNow);
+  const mode = useLoomStore((s) => s.mode);
+  const setMode = useLoomStore((s) => s.setMode);
+  const plane = useLoomStore((s) => s.applied);
+  const planeErrors = useLoomStore((s) => s.errors);
+  const planeDirty = useLoomStore((s) => s.dirty);
+  const planeUnresolved = useLoomStore((s) => s.unresolved);
   const [pane, setPane] = useState<Pane>('cell');
+  const lanesView = mode === 'plane';
+  // The CELL pane edits the dish, so the lane score's rail holds CODE and CRATE.
+  const panes: Pane[] = lanesView ? ['code', 'crate'] : ['cell', 'code', 'crate'];
+  const shownPane: Pane = panes.includes(pane) ? pane : panes[0];
 
   const sharding = crate.filter((id) => status[id] === 'sharding' || status[id] === 'loading').length;
-  const keyText = colony.key ? (colony.key === 'follow' ? 'follow' : `${colony.key}${colony.scale === 'minor' ? 'm' : ''}`) : '—';
+  const keyOf = (k?: string, scale?: string) => (k ? (k === 'follow' ? 'follow' : `${k}${scale === 'minor' ? 'm' : ''}`) : '—');
+  const keyText = lanesView ? keyOf(plane.key, plane.scale) : keyOf(colony.key, colony.scale);
   const cells = useMemo(() => walkNodes(colony.root).length, [colony]);
   const rate = colony.grow?.rate ?? 0;
   const max = colony.grow?.max ?? 24;
@@ -75,7 +96,8 @@ export function LoomView(): React.ReactElement {
   return (
     <div className="absolute inset-0 flex flex-col bg-[#07050a] et-ink loom-surface">
       <header data-tour="loom-clock" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-1.5 border-b border-white/15 bg-black/30 shrink-0">
-        <SurfacePlayKey size="bar" playing={running} onToggle={toggle} what="the colony" />
+        <ViewSwitch mode={mode} onChange={setMode} />
+        <SurfacePlayKey size="bar" playing={running} onToggle={toggle} what={lanesView ? 'the lane score' : 'the colony'} />
 
         <div className="flex items-center gap-1.5">
           <label htmlFor="loom-bpm" className={label}>BPM</label>
@@ -94,13 +116,14 @@ export function LoomView(): React.ReactElement {
           <button type="button" onClick={() => setBpm(Math.round(bpm) + 1)} className={btn} aria-label="BPM up">+</button>
         </div>
 
+        {!lanesView && (<>
         <div className="flex items-center gap-2">
           <label htmlFor="loom-grow-rate" className={label} title="How eagerly the colony buds, prunes and mutates on every bar. 0 = frozen.">grow</label>
           <input id="loom-grow-rate" name="loom-grow-rate" type="range" min={0} max={1} step={0.05} value={rate} onChange={(e) => setGrow({ rate: Number(e.target.value), max })} className="w-28 accent-emerald-300" aria-valuetext={rate === 0 ? 'frozen' : `${Math.round(rate * 100)}%`} />
-          <span className="text-[13px] font-mono tabular-nums et-ink w-10">{rate === 0 ? 'off' : `${Math.round(rate * 100)}%`}</span>
+          <span className="text-[13px] font-sans font-bold tabular-nums et-ink w-10">{rate === 0 ? 'off' : `${Math.round(rate * 100)}%`}</span>
           <span className={label}>max</span>
           <button type="button" onClick={() => setGrow({ rate, max: Math.max(2, max - 4) })} className={btn} aria-label="Fewer cells at most">−</button>
-          <span className="text-[13px] font-mono tabular-nums et-ink w-6 text-center" aria-live="polite">{max}</span>
+          <span className="text-[13px] font-sans font-bold tabular-nums et-ink w-6 text-center" aria-live="polite">{max}</span>
           <button type="button" onClick={() => setGrow({ rate, max: Math.min(96, max + 4) })} className={btn} aria-label="More cells at most">+</button>
           <button type="button" onClick={() => growNow()} className={`${btn} border-emerald-300/70`} title="One growth step now">✚ grow</button>
         </div>
@@ -115,33 +138,47 @@ export function LoomView(): React.ReactElement {
         <div className="flex items-center gap-2">
           <label htmlFor="loom-swing" className={label} title="Odd steps of every rule land late. 50% is straight, 67% a triplet feel.">swing</label>
           <input id="loom-swing" name="loom-swing" type="range" min={0.5} max={0.75} step={0.01} value={swing} onChange={(e) => setSwing(Number(e.target.value))} className="w-24 accent-amber-300" aria-valuetext={`${Math.round(swing * 100)}%`} />
-          <span className="text-[13px] font-mono tabular-nums et-ink w-9">{Math.round(swing * 100)}%</span>
+          <span className="text-[13px] font-sans font-bold tabular-nums et-ink w-9">{Math.round(swing * 100)}%</span>
         </div>
 
-        <span className="text-[13px] font-mono et-ink tabular-nums" title="cells in the colony · root bar · growth steps">
+        <span className="text-[13px] font-sans et-ink tabular-nums" title="cells in the colony · root bar · growth steps">
           {cells} cells · {meterText(colony.root.meter)} · bar {colonyLap + 1} · gen {colonyGen}
         </span>
-        <span className="text-[13px] font-mono et-ink-2"><span className={label}>key</span> {keyText}</span>
-        <span className="text-[13px] font-mono et-ink-2"><span className={label}>crate</span> {crate.length} song{crate.length === 1 ? '' : 's'}</span>
-        <span className="text-xs font-mono font-semibold text-amber-200" aria-live="polite">
+        </>)}
+        {lanesView && (
+          <span className="text-[13px] font-sans font-bold et-ink tabular-nums" title="lanes in the score · the bar the beat clock counts">
+            {plane.lanes.length} lane{plane.lanes.length === 1 ? '' : 's'} · {plane.meter ? meterText(plane.meter) : "the clock's own meter"}
+          </span>
+        )}
+        <span className="text-[13px] font-sans font-semibold et-ink-2"><span className={label}>key</span> {keyText}</span>
+        <span className="text-[13px] font-sans font-semibold et-ink-2"><span className={label}>crate</span> {crate.length} song{crate.length === 1 ? '' : 's'}</span>
+        <span className="text-xs font-sans font-bold text-amber-200" aria-live="polite">
           {sharding > 0 ? `sharding ${sharding} song${sharding === 1 ? '' : 's'}…` : ''}
           {queued ? ' · next bar' : ''}
-          {colonyErrors.length > 0 ? ` · ${colonyErrors.length} error${colonyErrors.length === 1 ? '' : 's'} in the code` : colonyDirty ? ' · code edited — apply to hear it' : ''}
-          {colonyUnresolved.length > 0 ? ` · silent: ${colonyUnresolved.slice(-2).join(', ')}` : ''}
+          {lanesView
+            ? (planeErrors.length > 0 ? ` · ${planeErrors.length} error${planeErrors.length === 1 ? '' : 's'} in the code` : planeDirty ? ' · code edited — apply to hear it' : '')
+            : (colonyErrors.length > 0 ? ` · ${colonyErrors.length} error${colonyErrors.length === 1 ? '' : 's'} in the code` : colonyDirty ? ' · code edited — apply to hear it' : '')}
+          {(lanesView ? planeUnresolved : colonyUnresolved).length > 0 ? ` · silent: ${(lanesView ? planeUnresolved : colonyUnresolved).slice(-2).join(', ')}` : ''}
         </span>
       </header>
 
       <div className="flex-1 min-h-0 flex">
-        <section className="flex-1 min-w-0 relative" aria-label="The colony">
-          <ColonyCanvas />
-        </section>
+        {lanesView ? (
+          <section className="flex-1 min-w-0 overflow-auto" aria-label="The lane score">
+            <LanesPane />
+          </section>
+        ) : (
+          <section className="flex-1 min-w-0 relative" aria-label="The colony">
+            <ColonyCanvas />
+          </section>
+        )}
 
         <CollapsibleRail
           as="aside"
           id="loom-rail"
           side="right"
-          name={pane}
-          label="the cell, code and crate panes"
+          name={shownPane}
+          label={lanesView ? 'the code and crate panes' : 'the cell, code and crate panes'}
           storageKey="loom.railCollapsed.v1"
           className="w-96 shrink-0 border-l border-white/15 bg-black/20 flex flex-col min-h-0"
         >
@@ -151,17 +188,17 @@ export function LoomView(): React.ReactElement {
                 {/* At the rail's inner edge, beside the dish. */}
                 <span className="flex pl-1.5">{foldKey}</span>
                 <div role="tablist" aria-label="Loom panes" className="flex flex-1 min-w-0">
-                  {(['cell', 'code', 'crate'] as Pane[]).map((p) => (
+                  {panes.map((p) => (
                     <button
                       key={p}
                       type="button"
                       role="tab"
                       id={`loom-tab-${p}`}
-                      aria-selected={pane === p}
+                      aria-selected={shownPane === p}
                       aria-controls={`loom-pane-${p}`}
                       onClick={() => setPane(p)}
-                      className={`flex-1 px-2 py-2 text-xs font-mono font-semibold uppercase tracking-widest transition-colors ${
-                        pane === p ? 'et-ink border-b-2 border-amber-300' : 'et-ink-2 hover:et-ink'
+                      className={`flex-1 px-2 py-2 text-xs font-display font-bold uppercase tracking-wider transition-colors ${
+                        shownPane === p ? 'et-ink border-b-2 border-amber-300' : 'et-ink-2 hover:et-ink'
                       }`}
                     >
                       {p}
@@ -169,10 +206,10 @@ export function LoomView(): React.ReactElement {
                   ))}
                 </div>
               </div>
-              <div id={`loom-pane-${pane}`} role="tabpanel" aria-labelledby={`loom-tab-${pane}`} className="flex-1 min-h-0 overflow-auto">
-                {pane === 'cell' && <CellPane />}
-                {pane === 'code' && <ColonyCodePane />}
-                {pane === 'crate' && <CratePane />}
+              <div id={`loom-pane-${shownPane}`} role="tabpanel" aria-labelledby={`loom-tab-${shownPane}`} className="flex-1 min-h-0 overflow-auto">
+                {shownPane === 'cell' && <CellPane />}
+                {shownPane === 'code' && (lanesView ? <LaneCodePane /> : <ColonyCodePane />)}
+                {shownPane === 'crate' && <CratePane />}
               </div>
             </>
           )}
@@ -215,7 +252,7 @@ const Slider: React.FC<{ id: string; label: string; value: number; min: number; 
   <div className="flex flex-col gap-0.5">
     <div className="flex items-center justify-between">
       <label htmlFor={id} className={label} title={hint}>{text}</label>
-      <span className="text-[13px] font-mono tabular-nums et-ink">{fmt ? fmt(value) : String(Math.round(value * 100) / 100)}</span>
+      <span className="text-[13px] font-sans font-bold tabular-nums et-ink">{fmt ? fmt(value) : String(Math.round(value * 100) / 100)}</span>
     </div>
     <input id={id} name={id} type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full" style={{ accentColor: accent }} aria-valuetext={fmt ? fmt(value) : undefined} />
   </div>
@@ -227,7 +264,7 @@ const Stepper: React.FC<{ id: string; label: string; value: number; min: number;
     <span id={`${id}-label`} className={label} title={hint}>{text}</span>
     <div role="group" aria-labelledby={`${id}-label`} className="flex items-center gap-1">
       <button type="button" onClick={() => onChange(Math.max(min, Math.round((value - step) * 1000) / 1000))} disabled={value <= min} className={btn} aria-label={`${text} down`}>−</button>
-      <span className="text-[13px] font-mono tabular-nums et-ink min-w-10 text-center" aria-live="polite">{fmt ? fmt(value) : String(value)}</span>
+      <span className="text-[13px] font-sans font-bold tabular-nums et-ink min-w-10 text-center" aria-live="polite">{fmt ? fmt(value) : String(value)}</span>
       <button type="button" onClick={() => onChange(Math.min(max, Math.round((value + step) * 1000) / 1000))} disabled={value >= max} className={btn} aria-label={`${text} up`}>+</button>
     </div>
   </div>
@@ -238,6 +275,183 @@ const Toggle: React.FC<{ id: string; label: string; on: boolean; onChange: (v: b
     {on ? '● ' : '○ '}{text}
   </button>
 );
+
+/* ── the view switch ───────────────────────────────────────────────────── */
+
+/** COLONY or LANES: two keys with aria-pressed in a labelled group; the choice is saved (loomStore `mode`). */
+const ViewSwitch: React.FC<{ mode: LoomMode; onChange: (m: LoomMode) => void }> = ({ mode, onChange }) => (
+  <div role="group" aria-label="LOOM view" className="flex items-center rounded-md border border-white/25 overflow-hidden">
+    {([
+      { m: 'colony' as const, t: 'Colony', title: 'The dish: cells and wires that grow while they play' },
+      { m: 'plane' as const, t: 'Lanes', title: 'The lane score: lanes on their own grids (1/12 to 1/28 tuplets) and the meter directive' },
+    ]).map(({ m, t, title }) => (
+      <button
+        key={m}
+        type="button"
+        aria-pressed={mode === m}
+        onClick={() => { if (mode !== m) onChange(m); }}
+        title={title}
+        className={`px-2.5 py-1 text-xs font-display font-bold uppercase tracking-wider transition-colors ${mode === m ? 'bg-white/15 et-ink' : 'et-ink-2 hover:bg-white/8'}`}
+      >
+        {t}
+      </button>
+    ))}
+  </div>
+);
+
+/* ── LANES ───────────────────────────────────────────────────────────────── */
+
+const STRAIGHT_NAMES: Record<number, string> = { 1: 'wholes', 2: 'halves', 4: 'quarters', 8: '8ths', 16: '16ths', 32: '32nds', 64: '64ths' };
+
+/** A lane grid as its option reads: "1/16 · 16ths", "1/20 · 16th quintuplets". */
+const divLabel = (div: number): string =>
+  `1/${div} · ${TUPLET_DIVS.find((g) => g.div === div)?.name ?? STRAIGHT_NAMES[div] ?? 'steps'}`;
+
+/** The lane score: its meter directive and every lane's grid, length and switches. */
+const LanesPane: React.FC = () => {
+  const score = useLoomStore((s) => s.applied);
+  const cursors = useLoomStore((s) => s.cursors);
+  const addLane = useLoomStore((s) => s.addLane);
+  const setMeter = useLoomStore((s) => s.setMeter);
+  return (
+    <div className="flex flex-col gap-4 p-4 text-[13px] font-sans et-ink max-w-5xl">
+      <div className="flex flex-col gap-2 max-w-xl">
+        <span className="font-display font-bold text-sm uppercase tracking-wider">Meter</span>
+        <p className="text-xs et-ink-2 leading-snug">
+          The bar the beat clock counts while the score plays (the score&apos;s <b className="et-ink">meter</b> line). Each lane&apos;s grid reads against it.
+        </p>
+        {score.meter ? (
+          <>
+            <MeterEditor id="loom-plane-meter" meter={score.meter} tempo={1} onChange={(m) => setMeter(m)} isRoot />
+            <button type="button" onClick={() => setMeter(null)} className={`${btn} self-start`} title="Remove the meter line: the clock keeps its own bar">clock meter</button>
+          </>
+        ) : (
+          <>
+            <p className="text-xs et-ink-2">No meter line: the beat clock keeps its own bar.</p>
+            <button type="button" onClick={() => setMeter({ num: 4, den: 4, groups: [] })} className={`${btn} self-start`}>set a meter</button>
+          </>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="font-display font-bold text-sm uppercase tracking-wider">Lanes</span>
+        <button type="button" onClick={addLane} className={btn}>+ lane</button>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {score.lanes.length === 0 && <li className="et-ink-2">No lanes. Add one, or load a sample in the CODE pane.</li>}
+        {score.lanes.map((l) => <LaneRow key={l.name} lane={l} meter={score.meter} cursor={cursors[l.name]} />)}
+      </ul>
+    </div>
+  );
+};
+
+const LaneRow: React.FC<{ lane: LoomLane; meter: Meter | undefined; cursor: LaneCursor | undefined }> = ({ lane, meter, cursor }) => {
+  const setLaneOpts = useLoomStore((s) => s.setLaneOpts);
+  const removeLane = useLoomStore((s) => s.removeLane);
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const id = `loom-lane-${lane.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  const rail = lane.rows[lane.rows.length - 1] ?? [];
+  const filled = rail.filter(Boolean).length;
+  const barSteps = laneBarSteps(lane, meter);
+  const commitName = () => {
+    const next = (nameDraft ?? '').trim();
+    setNameDraft(null);
+    if (next && next !== lane.name) setLaneOpts(lane.name, { name: next });
+  };
+  const barText = meter
+    ? barSteps !== null
+      ? `A ${meterText(meter)} bar holds ${barSteps} steps of 1/${lane.div}; ${lane.length} steps are ${Math.round((lane.length / barSteps) * 100) / 100} bars.`
+      : `A ${meterText(meter)} bar holds ${Math.round(((lane.div * meter.num) / meter.den) * 100) / 100} steps of 1/${lane.div}, not a whole number, so the lane's steps cross its bar lines.`
+    : `${lane.length} steps of 1/${lane.div}: ${Math.round((lane.length / lane.div) * 100) / 100} whole notes.`;
+  return (
+    <li className="rounded-md border border-white/15 p-2 flex flex-col gap-2">
+      <div className="flex flex-wrap items-end gap-3">
+        <Field id={`${id}-name`} label="lane" hint="Letters, digits, - _ and . (jumps to it follow a rename)">
+          <input
+            id={`${id}-name`}
+            name={`${id}-name`}
+            value={nameDraft ?? lane.name}
+            spellCheck={false}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commitName(); }
+              if (e.key === 'Escape') setNameDraft(null);
+            }}
+            className={`${input} w-32`}
+          />
+        </Field>
+        <Field id={`${id}-grid`} label="grid" hint="Steps per whole note. 1/12, 1/20, 1/24 and 1/28 are tuplet grids.">
+          <select
+            id={`${id}-grid`}
+            name={`${id}-grid`}
+            value={lane.div}
+            onChange={(e) => setLaneOpts(lane.name, { div: Number(e.target.value) })}
+            className={`${input} form-select`}
+            style={{ colorScheme: 'dark' }}
+          >
+            {LANE_DIVS.map((d) => <option key={d} value={d}>{divLabel(d)}</option>)}
+          </select>
+        </Field>
+        <Stepper id={`${id}-len`} label="steps" value={lane.length} min={1} max={256} onChange={(v) => setLaneOpts(lane.name, { length: v })} hint="The lane's length; it loops at its own length (polyrhythm)" />
+        <Toggle id={`${id}-play`} label="plays" on={lane.play} onChange={(v) => setLaneOpts(lane.name, { play: v })} hint="A lane that does not play still steps (its gates and jumps still count)" />
+        <Toggle id={`${id}-target`} label="jump target" on={lane.isTarget} onChange={(v) => setLaneOpts(lane.name, { isTarget: v })} hint="A target lane plays only when a jump sends to it, and is never the master" />
+        <button type="button" onClick={() => removeLane(lane.name)} className={`${btn} ml-auto text-rose-300 border-rose-400/50`} aria-label={`Remove lane ${lane.name}`}>remove</button>
+      </div>
+      <p className="text-xs et-ink-2">{barText} {filled} of {lane.length} rail steps hold a tile.</p>
+      <div aria-hidden="true" className="flex flex-wrap gap-0.5">
+        {rail.map((t, i) => (
+          <span key={i} className={`h-3 w-3 rounded-xs ${t ? 'bg-amber-300/80' : 'bg-white/10'} ${cursor?.step === i ? 'ring-1 ring-white' : ''}`} />
+        ))}
+      </div>
+    </li>
+  );
+};
+
+/** The lane score as text: the source of truth the LANES view writes. */
+const LaneCodePane: React.FC = () => {
+  const text = useLoomStore((s) => s.text);
+  const errors = useLoomStore((s) => s.errors);
+  const dirty = useLoomStore((s) => s.dirty);
+  const running = useLoomStore((s) => s.running);
+  const setText = useLoomStore((s) => s.setText);
+  const apply = useLoomStore((s) => s.apply);
+  const reset = useLoomStore((s) => s.resetStarter);
+  const loadTemplate = useLoomStore((s) => s.loadTemplate);
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 border-b border-white/10">
+        <label htmlFor="loom-lane-template" className={label}>sample</label>
+        <select id="loom-lane-template" name="loom-lane-template" value="" onChange={(e) => { if (e.target.value) loadTemplate(e.target.value); }} className={`${input} form-select max-w-44`} style={{ colorScheme: 'dark' }}>
+          <option value="">— load a lane score —</option>
+          {LOOM_TEMPLATES.filter((t) => t.mode !== 'colony').map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <div className="ml-auto flex gap-1">
+          <button type="button" onClick={reset} className={btn}>starter</button>
+          <button type="button" onClick={() => apply()} disabled={!dirty || errors.length > 0} className={`${btn} border-amber-300/70`}>Apply ⏎</button>
+        </div>
+      </div>
+      <div className="px-3 py-1 text-xs font-sans font-semibold et-ink-2 leading-snug">
+        {dirty ? 'edited' : 'applied'}{running && dirty ? ' · Apply queues to the next master wrap' : ''} · the LANES view writes here
+      </div>
+      <label htmlFor="loom-lane-code" className="sr-only">Lane score</label>
+      <textarea
+        id="loom-lane-code"
+        name="loom-lane-code"
+        value={text}
+        spellCheck={false}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); apply(); } }}
+        className="flex-1 min-h-40 resize-none bg-transparent px-3 py-2 text-xs leading-5 font-mono et-ink focus:outline-none whitespace-pre overflow-auto"
+        aria-describedby="loom-lane-errors"
+      />
+      <ul id="loom-lane-errors" className="max-h-28 overflow-auto border-t border-white/10 px-3 py-1.5 text-xs font-sans font-bold text-rose-300" aria-live="polite">
+        {errors.length === 0 && <li className="et-ink-2 font-semibold">no errors · lane NAME 1/16 x16 [@target] · meter 7/8 2+2+3 · grids 1/12 1/20 1/24 1/28</li>}
+        {errors.map((e, i) => <li key={i}>{e.line ? `line ${e.line}: ` : ''}{e.message}</li>)}
+      </ul>
+    </div>
+  );
+};
 
 /* ── CELL ────────────────────────────────────────────────────────────────── */
 
@@ -260,7 +474,7 @@ const RootInspector: React.FC = () => {
   const growNow = useLoomStore((s) => s.growNow);
   const cells = walkNodes(colony.root);
   return (
-    <div className="flex flex-col gap-4 p-3 text-[13px] font-mono et-ink">
+    <div className="flex flex-col gap-4 p-3 text-[13px] font-sans et-ink">
       <div>
         <div className="font-bold text-sm">the dish</div>
         <p className="et-ink-2 leading-snug mt-1">{cells.length} cells, {colony.root.edges.length} wires at the top. Click a cell or a wire to edit it. Add cells with the + buttons over the dish or a right-click on empty space.</p>
@@ -282,7 +496,7 @@ const RootInspector: React.FC = () => {
 };
 
 const Legend: React.FC = () => (
-  <div className="flex flex-col gap-1 text-xs font-mono et-ink-2 leading-snug">
+  <div className="flex flex-col gap-1 text-xs font-sans et-ink-2 leading-snug">
     <span className={label}>what the shapes mean</span>
     <div><span style={{ color: KIND_COLOR.rule }}>●</span> <b className="et-ink">rule</b> — a pacemaker: fires symbols on its steps every bar</div>
     <div><span style={{ color: ROLE_COLOR.drums }}>●</span> <b className="et-ink">loop</b> — plays a stem when hit; its wires fire when it ends</div>
@@ -333,7 +547,7 @@ const NodeInspector: React.FC<{ nodeKey: string; node: ColonyNode; path: string[
   const id = `loom-cell-${nodeKey.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
   return (
-    <div className="flex flex-col gap-4 p-3 text-[13px] font-mono et-ink">
+    <div className="flex flex-col gap-4 p-3 text-[13px] font-sans et-ink">
       <div className="flex items-start gap-2">
         <span className="mt-1 inline-block size-3 rounded-full shrink-0" style={{ background: color }} aria-hidden="true" />
         <div className="min-w-0">
@@ -592,10 +806,10 @@ const EdgeInspector: React.FC<{ sel: EdgeSel }> = ({ sel }) => {
   const e = g?.edges.find((x) => x.from === sel.from && x.to === sel.to);
   const from = g?.nodes.find((n) => n.id === sel.from);
   const to = g?.nodes.find((n) => n.id === sel.to);
-  if (!g || !e || !from || !to) return <p className="p-3 text-[13px] font-mono et-ink-2">That wire is gone.</p>;
+  if (!g || !e || !from || !to) return <p className="p-3 text-[13px] font-sans font-semibold et-ink-2">That wire is gone.</p>;
   const key = (id: string) => (sel.parent ? `${sel.parent}/${id}` : id);
   return (
-    <div className="flex flex-col gap-4 p-3 text-[13px] font-mono et-ink">
+    <div className="flex flex-col gap-4 p-3 text-[13px] font-sans et-ink">
       <div>
         <div className="font-bold text-sm">wire</div>
         <div className="flex items-center gap-1.5 mt-1">
@@ -639,7 +853,7 @@ const ColonyCodePane: React.FC = () => {
           <button type="button" onClick={() => apply()} disabled={!dirty || errors.length > 0} className={`${btn} border-amber-300/70`}>Apply ⏎</button>
         </div>
       </div>
-      <div className="px-3 py-1 text-xs font-mono et-ink-2 leading-snug">
+      <div className="px-3 py-1 text-xs font-sans font-semibold et-ink-2 leading-snug">
         {dirty ? 'edited' : 'applied'}{running && dirty ? ' · Apply queues to the next bar' : ''} · the colony writes itself here as it grows
       </div>
       <label htmlFor="loom-colony-code" className="sr-only">Colony score</label>
@@ -653,7 +867,7 @@ const ColonyCodePane: React.FC = () => {
         className="flex-1 min-h-40 resize-none bg-transparent px-3 py-2 text-xs leading-5 font-mono et-ink focus:outline-none whitespace-pre overflow-auto"
         aria-describedby="loom-colony-errors"
       />
-      <ul id="loom-colony-errors" className="max-h-28 overflow-auto border-t border-white/10 px-3 py-1.5 text-xs font-mono font-semibold text-rose-300" aria-live="polite">
+      <ul id="loom-colony-errors" className="max-h-28 overflow-auto border-t border-white/10 px-3 py-1.5 text-xs font-sans font-bold text-rose-300" aria-live="polite">
         {errors.length === 0 && <li className="et-ink-2 font-normal">no errors · cells: loop / rule / gate / mod / colony · wires: a -&gt; b [on=N] · grow RATE max=N</li>}
         {errors.map((e, i) => <li key={i}>{e.line ? `line ${e.line}: ` : ''}{e.message}</li>)}
       </ul>
@@ -701,7 +915,7 @@ const CratePane: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col gap-3 p-3 text-[13px] font-mono et-ink">
+    <div className="flex flex-col gap-3 p-3 text-[13px] font-sans et-ink">
       <div className="flex flex-col gap-1">
         <label htmlFor="loom-crate-add" className={label}>add a song to the crate</label>
         <select
