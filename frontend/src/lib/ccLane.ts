@@ -14,7 +14,8 @@
  *
  * Pure: the lane, its tests and the hardware recorder share it.
  */
-import type { RollControl } from '../state/pianoRollStore';
+import type { NoteExpression, PianoNote, RollControl } from '../state/pianoRollStore';
+import { dimensionPoints, withDimensionPoints, type ExpressionDimension } from './noteExpression';
 import { cleanPartControls, partController, PART_CONTROLLERS } from './rollTracks';
 
 /** The strip's height in px, the bend lane's. */
@@ -33,7 +34,10 @@ export const CC_LANE_CONTROLLERS: readonly number[] = Object.freeze(PART_CONTROL
 export const DEFAULT_CC_LANE_CONTROLLER = 11;
 
 /** "CC 11 Expression". */
-export const ccLabel = (controller: number): string => `CC ${controller} ${partController(controller)?.name ?? ''}`.trim();
+export const ccLabel = (controller: number): string => {
+  const dim = NOTE_EXPRESSION_TARGETS.get(controller);
+  return dim ? NOTE_TARGET_LABELS[dim] : `CC ${controller} ${partController(controller)?.name ?? ''}`.trim();
+};
 
 /** One change of the lane's controller. */
 export interface CcPoint {
@@ -191,4 +195,74 @@ export function recordCcPoint(points: readonly CcPoint[], controller: number, ti
   const base = sinceTick === null ? points : points.filter((p) => p.tick <= sinceTick || p.tick > t);
   if (ccValueAt(base, t, controller) === clamp7(value)) return [...base];
   return setCcPoint(base, t, value);
+}
+
+/* ── A selected note's own expression, drawn in the same lane ───────────── */
+
+/**
+ * The lane's note targets: a selected note's pressure, timbre (CC 74) and
+ * bend (PianoNote `expr`, lib/noteExpression), drawn over the note's span as
+ * 0-127 like a controller (the bend with 64 its centre). They take numbers no
+ * controller has, so the lane keeps one number for what it shows.
+ */
+export const NOTE_EXPRESSION_TARGETS: ReadonlyMap<number, ExpressionDimension> = new Map([
+  [-1, 'pressure'],
+  [-2, 'timbre'],
+  [-3, 'pitchBend'],
+]);
+
+/** The note dimension a lane target names, or null for a controller. */
+export const noteDimensionOf = (target: number): ExpressionDimension | null => NOTE_EXPRESSION_TARGETS.get(target) ?? null;
+
+/** The lane's label for a note target. */
+export const NOTE_TARGET_LABELS: Readonly<Record<ExpressionDimension, string>> = Object.freeze({
+  pressure: 'Note pressure',
+  timbre: 'Note timbre (74)',
+  pitchBend: 'Note bend',
+});
+
+/** A dimension's value (0..1, the bend -1..1) as the lane's 0-127. */
+export const dimensionToCc = (dim: ExpressionDimension, v: number): number =>
+  Math.max(0, Math.min(127, Math.round(dim === 'pitchBend' ? (v + 1) * 63.5 : v * 127)));
+
+/** The lane's 0-127 as a dimension's value; the bend's 64 is its centre. */
+export const ccToDimension = (dim: ExpressionDimension, cc: number): number =>
+  dim === 'pitchBend' ? (Math.round(cc) === 64 ? 0 : Math.max(-1, Math.min(1, cc / 63.5 - 1))) : Math.max(0, Math.min(1, cc / 127));
+
+/** Where the lane rests for a dimension a note has not set: no pressure, timbre at its centre, no bend. */
+export const dimensionRest = (dim: ExpressionDimension): number => (dim === 'pressure' ? 0 : 64);
+
+/** A note's dimension as the lane's points, at the roll's ticks (its start value at its first tick). */
+export function noteExpressionPoints(note: Pick<PianoNote, 'tick' | 'step' | 'expr'>, dim: ExpressionDimension): CcPoint[] {
+  const start = note.tick ?? Math.round(note.step * 240);
+  return dimensionPoints(note.expr, dim).map((p) => ({ tick: start + p.tick, value: dimensionToCc(dim, p.value) }));
+}
+
+/**
+ * The note's expression with dimension `dim` set to the lane's `points`
+ * (roll ticks): each held inside the note (from its first tick to its last),
+ * the first at or before the note's start its start value. Undefined when the
+ * note is left with none.
+ */
+export function withNoteExpressionPoints(
+  note: Pick<PianoNote, 'tick' | 'step' | 'ticks' | 'length' | 'expr'>,
+  dim: ExpressionDimension,
+  points: readonly CcPoint[],
+): NoteExpression | undefined {
+  const start = note.tick ?? Math.round(note.step * 240);
+  const span = Math.max(1, note.ticks ?? Math.round(note.length * 240));
+  const rel = points.map((p) => ({ tick: Math.max(0, Math.min(span - 1, Math.round(p.tick - start))), value: ccToDimension(dim, p.value) }));
+  return withDimensionPoints(note.expr, dim, rel);
+}
+
+/** The SVG path of a note's dimension: flat from the note's start at its first value, a step at each change, to the note's end. */
+export function notePath(points: readonly CcPoint[], rest: number, span: { from: number; to: number }, geo: { stepPx: number; ticksPerStep: number; height: number }): string {
+  const xOf = (tick: number) => (tick / geo.ticksPerStep) * geo.stepPx;
+  let d = `M${xOf(span.from).toFixed(2)} ${ccValueToY(points[0]?.tick <= span.from ? points[0].value : rest, geo.height).toFixed(2)}`;
+  for (const p of points) {
+    if (p.tick <= span.from) continue;
+    d += ` H${xOf(p.tick).toFixed(2)} V${ccValueToY(p.value, geo.height).toFixed(2)}`;
+  }
+  d += ` H${xOf(span.to).toFixed(2)}`;
+  return d;
 }

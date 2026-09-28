@@ -96,7 +96,7 @@ export function dimensionPoints(e: NoteExpression | undefined, dim: ExpressionDi
 
 /**
  * `e` with dimension `dim` replaced by `points` (ticks from the note's start):
- * the first point at or before the start is the start value, the rest the
+ * a point at the start (tick 0) is the start value, every later one the
  * curve. An empty list takes the dimension away. Undefined when nothing is left.
  */
 export function withDimensionPoints(e: NoteExpression | undefined, dim: ExpressionDimension, points: readonly NoteExpressionPoint[]): NoteExpression | undefined {
@@ -106,9 +106,10 @@ export function withDimensionPoints(e: NoteExpression | undefined, dim: Expressi
   delete curves[dim];
   const sorted = [...points].sort((a, b) => a.tick - b.tick);
   if (sorted.length) {
+    // A first point at the note's start is where it starts; one later leaves the start as the channel has it.
     const first = sorted[0];
-    base[dim] = clampDimension(dim, first.value);
-    const rest = sorted.slice(1).filter((p) => p.tick > 0);
+    if (first.tick <= 0) base[dim] = clampDimension(dim, first.value);
+    const rest = sorted.filter((p) => p.tick > 0);
     if (rest.length) curves[dim] = rest.map((p) => ({ tick: Math.round(p.tick), value: clampDimension(dim, p.value) }));
   }
   if (Object.keys(curves).length) base.curves = curves;

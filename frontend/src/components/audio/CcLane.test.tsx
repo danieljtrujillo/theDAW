@@ -93,7 +93,8 @@ assert.ok(select, 'a controller field');
 assert.equal(select.getAttribute('name'), select.id, 'id and name');
 assert.equal(q(`label[for="${select.id}"]`)?.textContent, 'Controller');
 assert.equal(select.value, '11', 'expression first');
-assert.deepEqual([...select.options].map((o) => o.value), ['1', '7', '10', '11', '64', '74', '91'], 'every controller a part keeps');
+assert.deepEqual([...select.options].map((o) => o.value), ['1', '7', '10', '11', '64', '74', '91', '-1', '-2', '-3'], 'every controller a part keeps, then the selected note’s expression');
+assert.deepEqual([...select.options].slice(7).map((o) => o.textContent), ['Note pressure', 'Note timbre (74)', 'Note bend']);
 await step(() => {
   select.value = '74';
   select.dispatchEvent(new win.Event('change', { bubbles: true }));
@@ -159,6 +160,72 @@ await step(() => byName('Clear controller').click());
 assert.deepEqual(points(74), []);
 assert.equal(points(64).length, 2);
 assert.equal(points(1).length, 2);
+
+// ── The selected note's own expression ─────────────────────────────────────
+{
+  const noteOf = () => roll().notes.find((x) => x.id === 'p1')!;
+  await step(() => {
+    select.value = '-2';
+    select.dispatchEvent(new win.Event('change', { bubbles: true }));
+  });
+  await step(() => roll().setSelection([]));
+  assert.match(strip.getAttribute('aria-label') ?? '', /Note timbre \(74\): no note selected/);
+  assert.match(strip.textContent ?? '', /Select a note to draw its note timbre/);
+  await step(() => roll().setSelection(['p1']));
+  endRollGesture();
+  const before = roll()._undo.length;
+  // The note spans steps 0-16: its start value at x 0, a change at step 8.
+  await step(() => {
+    ptr(strip, 'pointerdown', 0, ccValueToY(40, CC_LANE_HEIGHT));
+    ptr(strip, 'pointerup', 0, ccValueToY(40, CC_LANE_HEIGHT));
+  });
+  await step(() => {
+    ptr(strip, 'pointerdown', 80, ccValueToY(120, CC_LANE_HEIGHT));
+    ptr(strip, 'pointerup', 80, ccValueToY(120, CC_LANE_HEIGHT));
+  });
+  const e = noteOf().expr!;
+  assert.equal(Math.round(e.timbre! * 127), 40, 'the note starts at the first point');
+  assert.deepEqual(e.curves?.timbre?.map((p) => [p.tick, Math.round(p.value * 127)]), [[1920, 120]], 'and moves at step 8');
+  assert.equal(roll()._undo.length, before + 2, 'each edit one undo step');
+  assert.deepEqual(points(74), [], 'the part’s CC 74 is untouched');
+  // A point past the note's end is held inside it.
+  await step(() => {
+    ptr(strip, 'pointerdown', 300, ccValueToY(10, CC_LANE_HEIGHT));
+    ptr(strip, 'pointerup', 300, ccValueToY(10, CC_LANE_HEIGHT));
+  });
+  assert.ok(noteOf().expr!.curves!.timbre!.every((p) => p.tick < 3840), 'inside the note');
+
+  // Note bend: 64 is the centre.
+  await step(() => {
+    select.value = '-3';
+    select.dispatchEvent(new win.Event('change', { bubbles: true }));
+  });
+  await step(() => {
+    ptr(strip, 'pointerdown', 0, ccValueToY(64, CC_LANE_HEIGHT));
+    ptr(strip, 'pointerup', 0, ccValueToY(64, CC_LANE_HEIGHT));
+  });
+  assert.equal(noteOf().expr!.pitchBend, 0, 'the centre is no bend');
+
+  // REC: an MPE controller's pressure into the selected note while the playhead is in it.
+  await step(() => {
+    select.value = '-1';
+    select.dispatchEvent(new win.Event('change', { bubbles: true }));
+  });
+  await step(() => byName('Rec').click());
+  await step(() => usePianoRollStore.setState({ isPlaying: true, currentStep: 4 }));
+  await step(() => publishMidi([0xd1, 100]));
+  await step(() => usePianoRollStore.setState({ currentStep: 20 }));
+  await step(() => publishMidi([0xd1, 10])); // past the note: not its
+  await step(() => usePianoRollStore.setState({ isPlaying: false }));
+  assert.deepEqual(noteOf().expr!.curves?.pressure?.map((p) => [p.tick, Math.round(p.value * 127)]), [[960, 100]], 'the pressure lands a beat into the note');
+  await step(() => byName('Rec').click());
+
+  // CLEAR takes the note's pressure away, its timbre and bend stay.
+  await step(() => byName('Clear controller').click());
+  assert.equal(noteOf().expr!.pressure, undefined);
+  assert.equal(noteOf().expr!.curves?.pressure, undefined);
+  assert.ok(noteOf().expr!.curves?.timbre, 'its timbre stays');
+}
 
 // The key counts the part's changes.
 assert.ok(byName('CC'), 'the strip key');

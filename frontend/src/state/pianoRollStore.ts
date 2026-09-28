@@ -1435,6 +1435,7 @@ const patchedNote = (base: PianoNote, patch: Partial<PianoNote>): PianoNote => {
   // for NONE, so the one the note had goes rather than surviving the write.
   if ('channel' in patch && !('channel' in p)) delete out.channel;
   if ('expr' in patch && !('expr' in p)) delete out.expr;
+  if ('articulation' in patch && !('articulation' in p)) delete out.articulation;
   const per = ticksPerStep();
   if ('tick' in p) out.step = (out.tick as number) / per;
   else if ('step' in p) out.tick = tickOfStep(out.step);

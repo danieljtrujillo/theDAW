@@ -24,13 +24,21 @@
  *     of a controller a part keeps is written at the playhead, and the pass
  *     lands in one undo step when PLAY stops or REC goes off
  *   - CLEAR removes every change of this controller from the part
+ *
+ * The CONTROLLER field's last three entries draw the SELECTED NOTE's own
+ * expression instead (PianoNote `expr`, lib/noteExpression): "Note pressure",
+ * "Note timbre (74)" and "Note bend", over the note's span, the bend with 64
+ * its centre. The first change at the note's start is where the note starts;
+ * the rest move it while it sounds. REC then writes a hardware MPE
+ * controller's channel pressure, CC 74 or wheel into the selected note while
+ * the playhead is inside it.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Circle, Eraser, PenLine, SlidersHorizontal, TrendingUp } from 'lucide-react';
 import { activeTrackOf, beginRollGesture, endRollGesture, usePianoRollStore } from '../../state/pianoRollStore';
 import { subscribeToMidi } from '../../state/midiBus';
 import { clientToLocal } from '../../lib/canvasScale';
-import { parseMidiMessage } from '../../lib/midiCapture';
+import { parseExpressionMessage, parseMidiMessage } from '../../lib/midiCapture';
 import { barAt } from '../../lib/meterMap';
 import { cellTicks, rollSnapDef, TICKS_PER_STEP } from '../../lib/rollSnap';
 import { partController } from '../../lib/rollTracks';
@@ -40,6 +48,13 @@ import {
   CC_LANE_HEIGHT,
   CC_POINT_R,
   DEFAULT_CC_LANE_CONTROLLER,
+  NOTE_EXPRESSION_TARGETS,
+  dimensionRest,
+  dimensionToCc,
+  noteDimensionOf,
+  noteExpressionPoints,
+  notePath,
+  withNoteExpressionPoints,
   ccLabel,
   ccPath,
   ccPointAt,
@@ -80,26 +95,38 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
   const isPlaying = usePianoRollStore((s) => s.isPlaying);
 
   const [controller, setController] = useState<number>(DEFAULT_CC_LANE_CONTROLLER);
+  // A note target draws the selected note's own expression (lib/ccLane NOTE_EXPRESSION_TARGETS).
+  const noteDim = noteDimensionOf(controller);
+  const note = usePianoRollStore((s) => (s.selectedNoteId ? s.notes.find((n) => n.id === s.selectedNoteId) ?? null : null));
+  const recNoteDim = noteDim;
+  const recController = controller;
   const [selectedTick, setSelectedTick] = useState<number | null>(null);
   const [draw, setDraw] = useState(false);
   const [rec, setRec] = useState(false);
   /** A REC pass's changes by controller, shown over the strip until the pass lands. */
   const [recorded, setRecorded] = useState<ReadonlyMap<number, CcPoint[]>>(new Map());
-  const recordedRef = useRef(new Map<number, { points: CcPoint[]; last: number | null }>());
+  const recordedRef = useRef(new Map<number, { points: CcPoint[]; last: number | null; noteId?: string }>());
 
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ tick: number; mode: 'move' | 'draw'; lastTick: number; lastValue: number } | null>(null);
 
   const totalTicks = Math.max(1, totalSteps * TICKS_PER_STEP);
   const snapTicks = cellTicks(rollSnapDef(snap)) || TICKS_PER_STEP;
-  const stored = useMemo(() => controllerPoints(part.controls, controller), [part.controls, controller]);
+  const stored = useMemo(
+    () => (noteDim ? (note ? noteExpressionPoints(note, noteDim) : []) : controllerPoints(part.controls, controller)),
+    [noteDim, note, part.controls, controller],
+  );
+  const noteSpan = note ? { from: note.tick ?? Math.round(note.step * TICKS_PER_STEP), to: (note.tick ?? Math.round(note.step * TICKS_PER_STEP)) + (note.ticks ?? Math.round(note.length * TICKS_PER_STEP)) } : null;
   const points = recorded.get(controller) ?? stored;
   const selected = points.find((p) => p.tick === selectedTick) ?? null;
   const info = partController(controller);
   const width = Math.max(1, totalSteps * stepPx);
   const height = CC_LANE_HEIGHT;
   const geo = useMemo(() => ({ stepPx, ticksPerStep: TICKS_PER_STEP, totalTicks, height }), [stepPx, totalTicks, height]);
-  const d = useMemo(() => ccPath(points, controller, geo), [points, controller, geo]);
+  const d = useMemo(
+    () => (noteDim ? (noteSpan ? notePath(points, dimensionRest(noteDim), noteSpan, geo) : '') : ccPath(points, controller, geo)),
+    [noteDim, noteSpan?.from, noteSpan?.to, points, controller, geo],
+  );
 
   // The part, the controller or the list changed under the selection: it goes when its change does.
   useEffect(() => {
@@ -114,14 +141,33 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
     [],
   );
 
-  /** Write this controller's changes into the part. */
+  /** The selected note, read fresh from the store. */
+  const liveNote = () => {
+    const s = usePianoRollStore.getState();
+    return s.selectedNoteId ? s.notes.find((n) => n.id === s.selectedNoteId) ?? null : null;
+  };
+  /** What the lane shows, read fresh: the part's controller, or the selected note's dimension. */
+  const readStored = (): CcPoint[] => {
+    if (noteDim) {
+      const n = liveNote();
+      return n ? noteExpressionPoints(n, noteDim) : [];
+    }
+    return controllerPoints(activeTrackOf(usePianoRollStore.getState()).controls, controller);
+  };
+
+  /** Write this controller's changes into the part, or a note target's into the selected note. */
   const write = useCallback(
     (next: readonly CcPoint[]) => {
       const s = usePianoRollStore.getState();
+      if (noteDim) {
+        const n = s.selectedNoteId ? s.notes.find((x) => x.id === s.selectedNoteId) : undefined;
+        if (n) s.updateNote(n.id, { expr: withNoteExpressionPoints(n, noteDim, next) });
+        return;
+      }
       const t = activeTrackOf(s);
       setTrackControls(t.id, withControllerPoints(t.controls, controller, next) ?? null);
     },
-    [controller, setTrackControls],
+    [controller, noteDim, setTrackControls],
   );
 
   // ── REC: a hardware controller, written at the playhead while the roll plays ──
@@ -133,26 +179,51 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
     const s = usePianoRollStore.getState();
     const t = activeTrackOf(s);
     let controls = t.controls;
-    for (const [cc, r] of pass) controls = withControllerPoints(controls, cc, r.points);
-    setTrackControls(t.id, controls ?? null);
+    let changed = false;
+    for (const [cc, r] of pass) {
+      const dim = noteDimensionOf(cc);
+      if (!dim) {
+        controls = withControllerPoints(controls, cc, r.points);
+        changed = true;
+        continue;
+      }
+      // A note target's pass lands in the note it was recorded into.
+      const n = r.noteId ? s.notes.find((x) => x.id === r.noteId) : undefined;
+      if (n) s.updateNote(n.id, { expr: withNoteExpressionPoints(n, dim, r.points) });
+    }
+    if (changed) setTrackControls(t.id, controls ?? null);
   }, [setTrackControls]);
 
   useEffect(() => {
     if (!rec) return undefined;
     const off = subscribeToMidi((msg) => {
-      const m = parseMidiMessage(msg.data);
-      if (m.kind !== 'cc' || !CC_LANE_CONTROLLERS.includes(m.note)) return;
       const s = usePianoRollStore.getState();
       if (!s.isPlaying) return;
       const tick = Math.round(s.currentStep * TICKS_PER_STEP);
       const pass = recordedRef.current;
+      // A note target: an MPE controller's pressure, CC 74 or wheel, into the selected note while the playhead is in it.
+      const expr = parseExpressionMessage(msg.data);
+      if (recNoteDim && expr && expr.dim === recNoteDim) {
+        const n = s.selectedNoteId ? s.notes.find((x) => x.id === s.selectedNoteId) : undefined;
+        const from = n ? (n.tick ?? Math.round(n.step * TICKS_PER_STEP)) : 0;
+        const to = n ? from + (n.ticks ?? Math.round(n.length * TICKS_PER_STEP)) : 0;
+        if (!n || tick < from || tick >= to) return;
+        const key = recController;
+        const was = pass.get(key) ?? { points: noteExpressionPoints(n, recNoteDim), last: null, noteId: n.id };
+        const points = recordCcPoint(was.points, key, tick, dimensionToCc(recNoteDim, expr.value), was.last);
+        pass.set(key, { points, last: tick, noteId: n.id });
+        setRecorded(new Map([...pass].map(([cc, r]) => [cc, r.points])));
+        return;
+      }
+      const m = parseMidiMessage(msg.data);
+      if (m.kind !== 'cc' || !CC_LANE_CONTROLLERS.includes(m.note)) return;
       const was = pass.get(m.note) ?? { points: controllerPoints(activeTrackOf(s).controls, m.note), last: null };
       const points = recordCcPoint(was.points, m.note, tick, m.velocity, was.last);
       pass.set(m.note, { points, last: tick });
       setRecorded(new Map([...pass].map(([cc, r]) => [cc, r.points])));
     });
     return off;
-  }, [rec]);
+  }, [rec, recNoteDim, recController]);
   // A pass lands when PLAY stops or REC goes off.
   useEffect(() => {
     if (!isPlaying) landRecording();
@@ -168,6 +239,8 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    // A note target with no note selected has nothing to draw into.
+    if (noteDim && !note) return;
     const { x, y } = localPoint(e);
     const hit = ccPointAt(points, x, y, geo);
     if (hit && e.altKey) {
@@ -199,7 +272,7 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
     if (!drag) return;
     const { x, y } = localPoint(e);
     const value = ccYToValue(y, height);
-    const current = controllerPoints(activeTrackOf(usePianoRollStore.getState()).controls, controller);
+    const current = readStored();
     if (drag.mode === 'draw') {
       const tick = ccTickAt(x, stepPx, TICKS_PER_STEP, totalTicks, CC_DRAW_TICKS, e.altKey);
       if (tick === drag.lastTick && value === drag.lastValue) return;
@@ -285,9 +358,16 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
             onChange={(e) => setController(Number(e.target.value))}
             className={FIELD_SELECT}
           >
-            {CC_LANE_CONTROLLERS.map((cc) => (
-              <option key={cc} value={cc}>{ccLabel(cc)}</option>
-            ))}
+            <optgroup label="Part controllers">
+              {CC_LANE_CONTROLLERS.map((cc) => (
+                <option key={cc} value={cc}>{ccLabel(cc)}</option>
+              ))}
+            </optgroup>
+            <optgroup label="The selected note">
+              {[...NOTE_EXPRESSION_TARGETS.keys()].map((t) => (
+                <option key={t} value={t}>{ccLabel(t)}</option>
+              ))}
+            </optgroup>
           </select>
         </div>
         <span className={FIELD_VALUE} title="The selected change">
@@ -335,7 +415,11 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
           disabled={stored.length === 0}
           icon={<Eraser className={MINI_GLYPH} />}
           legend="Clear controller"
-          description={`Remove every ${ccLabel(controller)} change from ${part.name}; its other controllers stay`}
+          description={
+            noteDim
+              ? `Remove the selected note's ${ccLabel(controller).toLowerCase()}; its other expression stays`
+              : `Remove every ${ccLabel(controller)} change from ${part.name}; its other controllers stay`
+          }
           className={MINI_ICON_KEY}
         />
       </div>
@@ -344,7 +428,13 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
         ref={surfaceRef}
         role="slider"
         tabIndex={0}
-        aria-label={`${ccLabel(controller)} for ${part.name}, ${points.length} change${points.length === 1 ? '' : 's'}`}
+        aria-label={
+          noteDim
+            ? note
+              ? `${ccLabel(controller)} of the selected note, ${points.length} point${points.length === 1 ? '' : 's'}`
+              : `${ccLabel(controller)}: no note selected`
+            : `${ccLabel(controller)} for ${part.name}, ${points.length} change${points.length === 1 ? '' : 's'}`
+        }
         aria-valuemin={0}
         aria-valuemax={127}
         aria-valuenow={selected?.value ?? info?.initial ?? 0}
@@ -363,8 +453,8 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
           <line
             x1={0}
             x2={width}
-            y1={ccValueToY(info?.initial ?? 0, height)}
-            y2={ccValueToY(info?.initial ?? 0, height)}
+            y1={ccValueToY(noteDim ? dimensionRest(noteDim) : info?.initial ?? 0, height)}
+            y2={ccValueToY(noteDim ? dimensionRest(noteDim) : info?.initial ?? 0, height)}
             stroke="rgb(255 255 255 / 0.18)"
             strokeDasharray="4 4"
             strokeWidth={1}
@@ -384,6 +474,11 @@ export const CcLane: React.FC<CcLaneProps> = ({ stepPx, totalSteps }) => {
               />
             ))}
         </svg>
+        {noteDim && !note && (
+          <p className="absolute inset-0 flex items-center justify-start pl-2 text-[12px] font-semibold et-ink-2 pointer-events-none">
+            Select a note to draw its {ccLabel(controller).toLowerCase()}.
+          </p>
+        )}
       </div>
       <p id="cc-lane-help" className="sr-only">
         Click to add a change, drag to move it, Alt-click to remove it. With Draw on, drag to draw the curve. The arrow
