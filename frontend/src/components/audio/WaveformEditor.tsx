@@ -26,7 +26,7 @@ import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule } from 
 import { decodeClipBlob, releaseDecoded } from '../../lib/decodeCache';
 import { type FadeCurve } from '../../lib/clipFade';
 import {
-  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, instrumentTracksInScope, printInstrumentTracks, renderBounce, renderExtentSec,
+  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, instrumentTracksInScope, isExternalMidiClip, printInstrumentTracks, renderBounce, renderExtentSec,
   type BounceRequest, type BounceScope, type InstrumentPrint, type RenderDeps,
 } from '../../lib/renderCore';
 import { isInstrumentClip } from '../../lib/vstInstrumentMidi';
@@ -433,11 +433,16 @@ interface BounceDeps extends RenderDeps {
 const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean = () => false): Promise<BounceDeps> => {
   // A track whose instrument slot holds a VST3 prints its MIDI through that
   // plugin (lib/renderCore printInstrumentTracks), so its clips skip the
-  // soundfont render.
+  // soundfont render. An external-only track's MIDI clips play on its MIDI out
+  // device and are left out of the bounce (lib/renderCore isExternalMidiClip),
+  // so they skip it too.
   const before = useEditorStore.getState();
   const instrumentTracks = new Set(instrumentTracksInScope(before.clips, before.tracks, scope).map((t) => t.id));
   const midi = await clipsWithMidiAudio(
-    (c) => clipsInScope([c], scope).length > 0 && !(instrumentTracks.has(c.trackId) && isInstrumentClip(c)),
+    (c) =>
+      clipsInScope([c], scope).length > 0 &&
+      !(instrumentTracks.has(c.trackId) && isInstrumentClip(c)) &&
+      !isExternalMidiClip(c, useEditorStore.getState().tracks),
     (n, total, label) => logInfo('editor', `Rendering MIDI for the bounce: ${n} of ${total} (${label})`),
     isCancelled,
   );

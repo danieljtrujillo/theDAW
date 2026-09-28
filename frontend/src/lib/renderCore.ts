@@ -175,7 +175,8 @@ import { ensureHallIrsForChains } from './hallIrs';
 import type { RenderRange } from './render/renderRange';
 import { planRangeRender, sliceRangeBuffer } from './render/renderRangePlan';
 import type { ArrangementMidiSource } from './arrangementMidi';
-import type { GlobalVoice } from './clipProgram';
+import { isExternalOnly, type GlobalVoice } from './clipProgram';
+import { isMidiClip } from './clipEditTarget';
 import {
   instrumentPrintPlan, isInstrumentClip, shapeInstrumentPrint, type InstrumentRenderResult, type InstrumentRenderTrack,
 } from './vstInstrumentMidi';
@@ -318,6 +319,27 @@ export function clipsInScope(clips: AudioClip[], scope: BounceScope): AudioClip[
   if (scope.kind === 'track') return clips.filter((c) => c.trackId === scope.trackId);
   const wanted = new Set(scope.clipIds);
   return clips.filter((c) => wanted.has(c.id));
+}
+
+/**
+ * A MIDI clip on an external-only track (lib/clipProgram isExternalOnly). Its
+ * notes play on the device at the track's MIDI out port, so theDAW's audio has
+ * no sound of it: a bounce, freeze or export leaves it out, as live playback
+ * does, and the arrangement's MIDI export (lib/arrangementMidi) still writes
+ * its notes. The track's audio clips play as any track's do.
+ */
+export function isExternalMidiClip(
+  clip: AudioClip,
+  tracks: readonly Pick<EditorTrack, 'id' | 'externalOnly'>[],
+): boolean {
+  return isMidiClip(clip) && isExternalOnly(tracks.find((t) => t.id === clip.trackId));
+}
+
+/** `clips` less every MIDI clip on an external-only track (isExternalMidiClip). */
+export function withoutExternalMidi(clips: AudioClip[], tracks: readonly Pick<EditorTrack, 'id' | 'externalOnly'>[]): AudioClip[] {
+  const external = new Set(tracks.filter((t) => isExternalOnly(t)).map((t) => t.id));
+  if (external.size === 0) return clips;
+  return clips.filter((c) => !(external.has(c.trackId) && isMidiClip(c)));
 }
 
 /**
@@ -567,7 +589,8 @@ export function trimLeadingSec(buffer: AudioBuffer, sec: number, outLength?: num
 export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promise<AudioBuffer> {
   const { scope } = req;
   const sr = req.sampleRate;
-  const scoped = clipsInScope(deps.clips, scope);
+  // An external-only track's MIDI clips sound on its MIDI out device, not in this audio.
+  const scoped = withoutExternalMidi(clipsInScope(deps.clips, scope), deps.tracks);
   // `range.tailFrames`, not `tailSec`, decides the tail once a range is
   // present (F24) — the two are different knobs (see `BounceRequest.range`),
   // and adding both would double the tail a `planRangeRender` already sized.
