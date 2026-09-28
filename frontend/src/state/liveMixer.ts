@@ -3362,10 +3362,33 @@ function clearMidiTimers(): void {
    track's fader, inserts and panner, like the synths' channels. Audio clips on
    the same track keep their own path and never pass through the instrument. */
 
-interface InstrumentBranch {
+export interface InstrumentBranch {
   source: ConstantSourceNode;
   env: GainNode;
   chain: ChainHandle;
+}
+
+/**
+ * One instrument track's live branch: a silent source feeds the instrument's
+ * `vst3` node (the plugin makes the sound from the notes it is sent), whose
+ * output passes an envelope gain into `trackGain`. Nothing else enters the
+ * source, so the track's audio clips, which liveMixer schedules straight into
+ * `trackGain`, play dry beside the instrument and never through it.
+ */
+export function buildInstrumentBranch(
+  ctx: BaseAudioContext,
+  trackGain: AudioNode,
+  entry: ChainEntry,
+  build: typeof buildEffectChain = buildEffectChain,
+): InstrumentBranch {
+  const source = ctx.createConstantSource();
+  source.offset.value = 0;
+  const env = ctx.createGain();
+  env.gain.value = 1;
+  env.connect(trackGain);
+  const chain = build(ctx, source, env, [entry]);
+  source.start();
+  return { source, env, chain };
 }
 let instrumentBranches = new Map<string, InstrumentBranch>();
 let instrumentPass: InstrumentLivePass | null = null;
@@ -3401,14 +3424,7 @@ function scheduleInstrumentTracks(fromSec: number, plan: readonly InstrumentLive
   for (const t of plan) {
     const node = trackNodes.get(t.trackId);
     if (!node) continue;
-    const source = ctx.createConstantSource();
-    source.offset.value = 0;
-    const env = ctx.createGain();
-    env.gain.value = 1;
-    env.connect(node.gain);
-    const chain = buildEffectChain(ctx, source, env, [t.entry]);
-    source.start();
-    instrumentBranches.set(t.trackId, { source, env, chain });
+    instrumentBranches.set(t.trackId, buildInstrumentBranch(ctx, node.gain, t.entry));
   }
   liveInstrumentPass().start(plan, fromSec, startCtxTime, liveMidiEndSec(fromSec));
   instrumentTimer = window.setInterval(() => instrumentPass?.tick(), EDIT_MIDI_TICK_MS);
