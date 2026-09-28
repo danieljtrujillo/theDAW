@@ -65,6 +65,20 @@ Bank layout (the manifest lists every preset with its articulation):
   bank 5  straight mute            bank 7  harmon mute
   bank 8+ solo violin (bank 8 sustain, 9 spiccato, 10 pizzicato, 11 tremolo)
   bank 128 program 48  orchestral percussion kit
+
+Levelling
+---------
+Each preset is held to the bundled ``frontend/public/soundfonts/gm.sf3`` on
+the same program (``--reference``): a held middle note at velocity 100 and
+CC1 127 is rendered through SpessaSynth (``frontend/src/lib/soundbankLevels.ts``,
+run with ``npx tsx``) in both banks, and the level is the loudest 100 ms RMS.
+The difference is written into the preset's samples. SpessaSynth clamps a
+decoded sample to +-1.0, so a boost that would pass full scale peak limits
+the samples first (a smooth 30 ms gain, at most ``--max-limit-db``). A few
+measure/adjust passes run on a PCM probe bank before the SF3 is encoded,
+then the written bank is measured again, with a clipping check at velocity
+127 on each preset's loudest zone. The manifest's ``levelling`` block holds
+the before/after table. ``--no-level`` skips all of it (no Node needed).
 """
 
 from __future__ import annotations
@@ -1008,7 +1022,10 @@ def write_soundfont(
     smpl = bytearray()
     shdr = []
     for s in samples:
-        data = np.clip(np.asarray(s.data, dtype=np.float32), -1.0, 1.0)
+        data = np.asarray(s.data, dtype=np.float32)
+        # SpessaSynth clamps decoded samples to +-1.0 and 16-bit PCM has no
+        # room above it, so nothing is written past full scale.
+        data = np.clip(data, -1.0, 1.0)
         if compress:
             blob = encode_vorbis(data, s.rate, compression)
             start = len(smpl)
@@ -1548,6 +1565,435 @@ def assemble(
     return samples, instruments, presets, manifest
 
 
+# ---------------------------------------------------------------------------
+# Levelling against the bundled General MIDI bank
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIR = REPO_ROOT / "frontend"
+REFERENCE_BANK = FRONTEND_DIR / "public" / "soundfonts" / "gm.sf3"
+LEVEL_CLI = "src/lib/soundbankLevelsCli.ts"
+
+#: The level is measured on a held note at this velocity with CC1 at 127.
+LEVEL_VELOCITY = 100
+LEVEL_CC1 = 127
+#: Clipping is checked at full velocity and full CC1.
+CLIP_VELOCITY = 127
+LEVEL_TOLERANCE_DB = 1.5
+#: Synth output peak a levelled preset may reach at full velocity.
+OUTPUT_PEAK_LIMIT = 10 ** (-1 / 20)
+#: Largest sample value levelling may write. SpessaSynth clamps decoded
+#: samples to +-1.0, so a louder sample would clip in the app.
+SAMPLE_CEILING = 0.98
+#: Most peak limiting levelling applies to any sample, in dB.
+MAX_LIMIT_DB = 12.0
+#: Half-width of the limiter's gain smoothing, in seconds.
+LIMITER_WINDOW_S = 0.03
+#: Measure/adjust passes, and the residual that ends them early.
+LEVEL_PASSES = 4
+LEVEL_SETTLED_DB = 0.3
+#: Kit presets are measured on the snare (GM key 38) when the kit has one.
+KIT_LEVEL_KEY = 38
+#: Zones fainter than this at CC1 = 127 are not the playing layer.
+_SILENT_LAYER_CB = 60
+
+
+def _zone_gens(zone: Zone) -> dict[int, int]:
+    return dict(zone.generators)
+
+
+def _zone_keys(zone: Zone) -> tuple[int, int]:
+    packed = _zone_gens(zone).get(GEN_KEY_RANGE, _range(0, 127))
+    return packed & 0xFF, packed >> 8
+
+
+def _zone_vels(zone: Zone) -> tuple[int, int]:
+    packed = _zone_gens(zone).get(GEN_VEL_RANGE, _range(0, 127))
+    return packed & 0xFF, packed >> 8
+
+
+def level_note(instrument: Instrument, drum: bool = False) -> int:
+    """The note a preset is measured on: the middle of the keys it covers
+    (the snare for a kit that has one)."""
+    keys = sorted(
+        {
+            k
+            for z in instrument.zones
+            for k in range(_zone_keys(z)[0], _zone_keys(z)[1] + 1)
+        }
+    )
+    if drum and KIT_LEVEL_KEY in keys:
+        return KIT_LEVEL_KEY
+    return keys[len(keys) // 2]
+
+
+def _playing_at_full(zone: Zone) -> bool:
+    """Whether a zone sounds at velocity 127 with CC1 at 127."""
+    lo, hi = _zone_vels(zone)
+    if not lo <= CLIP_VELOCITY <= hi:
+        return False
+    return layer_attenuation_cb(zone.modulators, 127) < _SILENT_LAYER_CB
+
+
+def _zone_output_scale(zone: Zone, samples: Sequence[SampleData]) -> float:
+    sample = samples[_zone_gens(zone)[GEN_SAMPLE_ID]]
+    peak = float(np.max(np.abs(sample.data))) if sample.data.size else 0.0
+    att_db = (
+        _zone_gens(zone).get(GEN_INITIAL_ATTENUATION, 0) * EMU_ATTENUATION_FACTOR / 10
+    )
+    return peak * 10 ** (-att_db / 20)
+
+
+def loudest_key(instrument: Instrument, samples: Sequence[SampleData]) -> int:
+    """A key on the zone that plays loudest at full velocity and CC1: the
+    one to render for the clipping check."""
+    zones = [z for z in instrument.zones if _playing_at_full(z)] or instrument.zones
+    zone = max(zones, key=lambda z: _zone_output_scale(z, samples))
+    lo, hi = _zone_keys(zone)
+    root = _zone_gens(zone).get(GEN_OVERRIDING_ROOT_KEY, lo)
+    return max(lo, min(hi, root))
+
+
+def instrument_samples(instrument: Instrument) -> list[int]:
+    return sorted({_zone_gens(z)[GEN_SAMPLE_ID] for z in instrument.zones})
+
+
+@dataclass
+class LevelTarget:
+    """One levelled preset: where it is measured and what it is held to."""
+
+    name: str
+    instrument: int
+    bank: int
+    program: int
+    note: int
+    ref_bank: int
+    ref_program: int
+
+
+def level_targets(
+    presets: Sequence[Preset],
+    instruments: Sequence[Instrument],
+    manifest: Sequence[dict],
+) -> list[LevelTarget]:
+    """Each built preset's primary slot, compared with the reference preset on
+    the same program (bank 0, or the kit bank for a kit). Aliases share their
+    preset's instrument and the String Ensemble is built from the section
+    instruments, so neither is levelled on its own."""
+    primary = {(m["bank"], m["program"]): m["name"] for m in manifest}
+    targets = []
+    for p in presets:
+        full = primary.get((p.bank, p.program))
+        if full is None or full[:20] != p.name:
+            continue
+        if len(p.zones) != 1:
+            continue
+        inst = _zone_gens(p.zones[0])[GEN_INSTRUMENT]
+        drum = p.bank == 128
+        targets.append(
+            LevelTarget(
+                name=full,
+                instrument=inst,
+                bank=p.bank,
+                program=p.program,
+                note=level_note(instruments[inst], drum),
+                ref_bank=128 if drum else 0,
+                ref_program=p.program,
+            )
+        )
+    return targets
+
+
+def peak_limit(data: np.ndarray, ceiling: float, rate: int) -> np.ndarray:
+    """Bring every peak of ``data`` down to ``ceiling`` with a smooth gain.
+
+    The gain curve is the per-sample need (``ceiling / |x|``, at most 1) run
+    through a minimum filter of +-LIMITER_WINDOW_S, then a moving average of
+    the same half-width. Every averaged value comes from minima whose windows
+    include the sample it lands on, so the result never passes ``ceiling``,
+    and the gain moves over about twice the window, slow enough not to
+    distort a low string's waveform.
+    """
+    from scipy.ndimage import minimum_filter1d, uniform_filter1d
+
+    x = np.asarray(data, dtype=np.float32)
+    mag = np.abs(x)
+    if not x.size or float(mag.max()) <= ceiling:
+        return x
+    need = np.minimum(1.0, ceiling / np.maximum(mag, 1e-12)).astype(np.float32)
+    half = max(1, int(LIMITER_WINDOW_S * rate))
+    held = minimum_filter1d(need, size=2 * half + 1, mode="nearest")
+    gain = uniform_filter1d(held, size=2 * half + 1, mode="nearest")
+    out = x * gain
+    # uniform_filter1d sums in float32; a last clamp absorbs its rounding.
+    return np.clip(out, -ceiling, ceiling)
+
+
+def level_gains(
+    targets: Sequence[LevelTarget],
+    measured: dict[str, float],
+    reference: dict[str, float],
+    instruments: Sequence[Instrument],
+    samples: Sequence[SampleData],
+    max_limit_db: float,
+) -> dict[str, float]:
+    """The gain (dB) that brings each preset to its reference level. Where a
+    boost would push a sample past SAMPLE_CEILING the samples are peak
+    limited, by at most ``max_limit_db``; past that the gain is capped."""
+    gains = {}
+    for t in targets:
+        want = reference[t.name] - measured[t.name]
+        peaks = [
+            float(np.max(np.abs(samples[i].data)))
+            for i in instrument_samples(instruments[t.instrument])
+        ]
+        headroom = 20 * math.log10(SAMPLE_CEILING / max(max(peaks), 1e-9))
+        gains[t.name] = min(want, headroom + max_limit_db)
+    return gains
+
+
+def apply_level_gains(
+    targets: Sequence[LevelTarget],
+    gains: dict[str, float],
+    instruments: Sequence[Instrument],
+    samples: list[SampleData],
+    limited_db: dict[int, float] | None = None,
+) -> None:
+    """Scale each preset's samples by its gain, peak limiting any sample the
+    gain would push past SAMPLE_CEILING (``limited_db`` collects how far each
+    sample was limited). A sample two presets share is scaled by the larger
+    gain, and the other preset's zones attenuate the difference."""
+    by_inst = {t.instrument: gains[t.name] for t in targets}
+    sample_gain: dict[int, float] = {}
+    for inst, gain in by_inst.items():
+        for si in instrument_samples(instruments[inst]):
+            sample_gain[si] = max(sample_gain.get(si, gain), gain)
+    for si, gain in sample_gain.items():
+        s = samples[si]
+        scale = 10 ** (gain / 20)
+        peak = float(np.max(np.abs(s.data))) if s.data.size else 0.0
+        data = s.data
+        if peak * scale > SAMPLE_CEILING:
+            data = peak_limit(data, SAMPLE_CEILING / scale, s.rate)
+            if limited_db is not None:
+                limited_db[si] = limited_db.get(si, 0.0) + 20 * math.log10(
+                    peak * scale / SAMPLE_CEILING
+                )
+        samples[si] = SampleData(
+            s.name, data * np.float32(scale), s.rate, s.root, s.correction
+        )
+    for inst, gain in by_inst.items():
+        for zone in instruments[inst].zones:
+            gens = _zone_gens(zone)
+            extra_db = sample_gain[gens[GEN_SAMPLE_ID]] - gain
+            if extra_db <= 0:
+                continue
+            cb = gens.get(GEN_INITIAL_ATTENUATION, 0) + round(
+                extra_db * 10 / EMU_ATTENUATION_FACTOR
+            )
+            zone.generators = [
+                g for g in zone.generators if g[0] != GEN_INITIAL_ATTENUATION
+            ]
+            zone.generators.insert(-1, (GEN_INITIAL_ATTENUATION, min(MUTE_CB, cb)))
+
+
+Measurer = Callable[[dict[str, Path], list[dict]], dict[str, dict]]
+
+
+def measure_with_spessasynth(
+    banks: dict[str, Path], jobs: list[dict]
+) -> dict[str, dict]:
+    """Render every job through SpessaSynth (``frontend/src/lib/soundbankLevels.ts``)."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    npx = shutil.which("npx")
+    if not npx or not (FRONTEND_DIR / "node_modules" / "spessasynth_core").is_dir():
+        raise SystemExit(
+            "levelling renders through SpessaSynth and needs Node with the frontend's "
+            "node_modules; install them or pass --no-level"
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        jobs_path = Path(tmp) / "jobs.json"
+        out_path = Path(tmp) / "levels.json"
+        jobs_path.write_text(
+            json.dumps({"banks": {k: str(v) for k, v in banks.items()}, "jobs": jobs}),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [npx, "tsx", LEVEL_CLI, str(jobs_path), str(out_path)],
+            cwd=FRONTEND_DIR,
+            check=True,
+        )
+        return json.loads(out_path.read_text(encoding="utf-8"))
+
+
+def _job(
+    job_id: str, bank_key: str, bank: int, program: int, note: int, velocity: int
+) -> dict:
+    return {
+        "id": job_id,
+        "bankKey": bank_key,
+        "bank": bank,
+        "program": program,
+        "note": note,
+        "velocity": velocity,
+        "cc1": LEVEL_CC1,
+    }
+
+
+@dataclass
+class LevelRun:
+    targets: list[LevelTarget]
+    before: dict[str, dict]
+    gains: dict[str, float]
+    limited_db: dict[str, float]
+    passes: int
+
+
+def _preset_limited_db(
+    t: LevelTarget, instruments: Sequence[Instrument], limited: dict[int, float]
+) -> float:
+    return max(
+        (limited.get(si, 0.0) for si in instrument_samples(instruments[t.instrument])),
+        default=0.0,
+    )
+
+
+def level_bank(
+    samples: list[SampleData],
+    instruments: Sequence[Instrument],
+    presets: Sequence[Preset],
+    manifest: Sequence[dict],
+    info: dict[str, str],
+    scratch: Path,
+    reference: Path,
+    measure: Measurer,
+    max_limit_db: float = MAX_LIMIT_DB,
+) -> LevelRun:
+    """Level every preset against ``reference`` in the samples themselves.
+
+    Each pass writes a PCM probe bank beside ``scratch``, renders it, and
+    applies the difference to the reference. Limiting takes a little RMS
+    with it, so a later pass corrects what an earlier one left; passes stop
+    once every preset is within LEVEL_SETTLED_DB. ``verify_levels`` measures
+    the bank that is finally written.
+    """
+    targets = level_targets(presets, instruments, manifest)
+    probe = scratch.with_name(scratch.stem + ".level-probe.sf2")
+    before: dict[str, dict] = {}
+    ref: dict[str, float] = {}
+    total = {t.name: 0.0 for t in targets}
+    limited_by_sample: dict[int, float] = {}
+    passes = 0
+    for passes in range(1, LEVEL_PASSES + 1):
+        write_soundfont(probe, samples, instruments, presets, info, compress=False)
+        try:
+            jobs = [
+                _job(
+                    f"ours:{t.name}", "ours", t.bank, t.program, t.note, LEVEL_VELOCITY
+                )
+                for t in targets
+            ]
+            if passes == 1:
+                jobs += [
+                    _job(
+                        f"ref:{t.name}",
+                        "ref",
+                        t.ref_bank,
+                        t.ref_program,
+                        t.note,
+                        LEVEL_VELOCITY,
+                    )
+                    for t in targets
+                ]
+            got = measure({"ours": probe, "ref": reference}, jobs)
+        finally:
+            probe.unlink(missing_ok=True)
+        if passes == 1:
+            before = got
+            ref = {t.name: got[f"ref:{t.name}"]["rmsDb"] for t in targets}
+        measured = {t.name: got[f"ours:{t.name}"]["rmsDb"] for t in targets}
+        step = {}
+        for t in targets:
+            left = max_limit_db - _preset_limited_db(t, instruments, limited_by_sample)
+            step[t.name] = level_gains(
+                [t], measured, ref, instruments, samples, max(0.0, left)
+            )[t.name]
+        if passes > 1 and all(abs(v) <= LEVEL_SETTLED_DB for v in step.values()):
+            break
+        apply_level_gains(targets, step, instruments, samples, limited_by_sample)
+        for name, v in step.items():
+            total[name] += v
+    limited = {
+        t.name: round(_preset_limited_db(t, instruments, limited_by_sample), 2)
+        for t in targets
+    }
+    return LevelRun(targets, before, total, limited, passes)
+
+
+def verify_levels(
+    bank: Path,
+    reference: Path,
+    run: LevelRun,
+    instruments: Sequence[Instrument],
+    samples: Sequence[SampleData],
+    measure: Measurer,
+) -> list[dict]:
+    """Measure the written bank and return the before/after table."""
+    targets, before, gains = run.targets, run.before, run.gains
+    jobs = []
+    loud = {}
+    for t in targets:
+        jobs.append(
+            _job(f"after:{t.name}", "ours", t.bank, t.program, t.note, LEVEL_VELOCITY)
+        )
+        loud[t.name] = loudest_key(instruments[t.instrument], samples)
+        jobs.append(
+            _job(
+                f"clip:{t.name}", "ours", t.bank, t.program, loud[t.name], CLIP_VELOCITY
+            )
+        )
+    after = measure({"ours": bank, "ref": reference}, jobs)
+    table = []
+    for t in targets:
+        ref = before[f"ref:{t.name}"]
+        was = before[f"ours:{t.name}"]
+        now = after[f"after:{t.name}"]
+        clip = after[f"clip:{t.name}"]
+        delta = now["rmsDb"] - ref["rmsDb"]
+        table.append(
+            {
+                "name": t.name,
+                "bank": t.bank,
+                "program": t.program,
+                "note": t.note,
+                "reference": {
+                    "preset": ref["preset"],
+                    "bank": ref["presetBank"],
+                    "program": ref["presetProgram"],
+                    "level_db": round(ref["rmsDb"], 2),
+                },
+                "before_db": round(was["rmsDb"], 2),
+                "gain_db": round(gains[t.name], 2),
+                "peak_limited_db": run.limited_db[t.name],
+                "after_db": round(now["rmsDb"], 2),
+                "after_minus_reference_db": round(delta, 2),
+                "within_tolerance": abs(delta) <= LEVEL_TOLERANCE_DB,
+                "played": now["preset"],
+                "clip_check": {
+                    "note": loud[t.name],
+                    "velocity": CLIP_VELOCITY,
+                    "cc1": LEVEL_CC1,
+                    "output_peak": round(clip["peak"], 4),
+                    "clips": clip["peak"] >= OUTPUT_PEAK_LIMIT,
+                },
+            }
+        )
+    return table
+
+
 def attribution_text(snaps: Sequence[RepoSnapshot]) -> str:
     lines = [
         "theDAW Orchestra - sample sources",
@@ -1654,6 +2100,23 @@ def build(args: argparse.Namespace) -> int:
         ),
         "ISFT": "theDAW build_orchestra_sf3",
     }
+    level_seconds = 0.0
+    levelled = None
+    if not args.no_level:
+        level_started = time.monotonic()
+        reference = Path(args.reference).resolve()
+        levelled = level_bank(
+            samples,
+            instruments,
+            presets,
+            manifest,
+            info,
+            out,
+            reference,
+            measure_with_spessasynth,
+            args.max_limit_db,
+        )
+        level_seconds += time.monotonic() - level_started
     size = write_soundfont(
         out,
         samples,
@@ -1663,7 +2126,37 @@ def build(args: argparse.Namespace) -> int:
         compress=not args.sf2,
         compression=args.compression,
     )
-    encode_seconds = time.monotonic() - encode_started
+    levels: list[dict] = []
+    if levelled is not None:
+        verify_started = time.monotonic()
+        levels = verify_levels(
+            out,
+            Path(args.reference).resolve(),
+            levelled,
+            instruments,
+            samples,
+            measure_with_spessasynth,
+        )
+        level_seconds += time.monotonic() - verify_started
+        for row in levels:
+            log.info(
+                "level %-24s ref %-20s %6.1f  before %6.1f  gain %+5.1f  after %6.1f (%+.1f)%s",
+                row["name"],
+                (row["reference"]["preset"] or "?")[:20],
+                row["reference"]["level_db"],
+                row["before_db"],
+                row["gain_db"],
+                row["after_db"],
+                row["after_minus_reference_db"],
+                "" if row["within_tolerance"] else "  OUT OF TOLERANCE",
+            )
+            if row["clip_check"]["clips"]:
+                log.warning(
+                    "level %s clips at velocity 127: peak %s",
+                    row["name"],
+                    row["clip_check"]["output_peak"],
+                )
+    encode_seconds = time.monotonic() - encode_started - level_seconds
     total_seconds = time.monotonic() - started
     manifest_doc = {
         "name": args.name,
@@ -1686,10 +2179,31 @@ def build(args: argparse.Namespace) -> int:
         "cc1_crossfade_cb": XFADE_CB,
         "cc1_level_db": args.cc1_level_db,
         "samples": len(samples),
+        "sample_peak_max": round(
+            max(float(np.max(np.abs(s.data))) for s in samples), 3
+        ),
+        "levelling": {
+            "reference": Path(args.reference).name,
+            "method": (
+                f"loudest 100 ms RMS of a held note, velocity {LEVEL_VELOCITY}, CC1 "
+                f"{LEVEL_CC1}, rendered by SpessaSynth; reference preset on the same "
+                f"program; tolerance {LEVEL_TOLERANCE_DB} dB; clip check at velocity "
+                f"{CLIP_VELOCITY} on each preset's loudest zone"
+            ),
+            "passes": levelled.passes if levelled else 0,
+            "presets": levels,
+            "out_of_tolerance": [
+                r["name"] for r in levels if not r["within_tolerance"]
+            ],
+            "clipping": [r["name"] for r in levels if r["clip_check"]["clips"]],
+        }
+        if levels
+        else None,
         "source_bytes": total_bytes,
         "timing_s": {
             "download": round(fetch_seconds, 1),
             "encode_and_write": round(encode_seconds, 1),
+            "levelling": round(level_seconds, 1),
             "total": round(total_seconds, 1),
         },
         "presets": manifest,
@@ -1761,6 +2275,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--sf2", action="store_true", help="write 16-bit PCM SF2 instead of SF3"
+    )
+    parser.add_argument(
+        "--no-level",
+        action="store_true",
+        help="skip levelling against the reference bank (needs Node + frontend node_modules)",
+    )
+    parser.add_argument(
+        "--reference",
+        default=str(REFERENCE_BANK),
+        help="bank each preset is levelled against (default: the bundled gm.sf3)",
+    )
+    parser.add_argument(
+        "--max-limit-db",
+        type=float,
+        default=MAX_LIMIT_DB,
+        help="most peak limiting levelling may apply to a sample, in dB",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="plan and size the build only"

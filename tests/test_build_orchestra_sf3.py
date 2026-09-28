@@ -273,7 +273,7 @@ def _tone(freq, seconds=0.3, rate=22050, amp=0.1):
     return np.stack([tone, tone], axis=1), rate  # stereo, like VSCO
 
 
-def _synthetic_plan():
+def _synthetic_plan(attack_spike=False):
     names = ["Violins", "Violas", "Celli", "Contrabass"]
     specs = [
         B.PresetSpec(n, "strings", "sustain", 0, 40 + i, "cc1", "vsco", f"{n}.sfz")
@@ -322,7 +322,11 @@ def _synthetic_plan():
     amps = {"v_p.wav": 0.05, "v_f.wav": 0.2}
 
     def load_audio(spec, path):
-        return _tone(freqs[path], amp=amps.get(path, 0.1))
+        data, rate = _tone(freqs[path], amp=amps.get(path, 0.1))
+        if attack_spike:
+            # A bow attack four times the body, the way VSCO recordings peak.
+            data[200:260] *= 4.0
+        return data, rate
 
     return B.assemble(planned, load_audio)
 
@@ -487,3 +491,177 @@ def test_encode_vorbis_takes_a_long_sample_in_blocks():
     decoded, got_rate = sf.read(io.BytesIO(blob), dtype="float32")
     assert got_rate == rate
     assert len(decoded) == len(tone)
+
+
+# --------------------------------------------------------------------------
+# Levelling against the reference bank, on the strings subset
+
+
+def test_peak_limit_holds_the_ceiling_and_leaves_quiet_audio_alone():
+    rate = 8000
+    t = np.arange(rate) / rate
+    body = 0.2 * np.sin(2 * np.pi * 110 * t).astype(np.float32)
+    body[800:840] += 0.75  # a bow-attack spike
+    out = B.peak_limit(body, 0.5, rate)
+    assert float(np.max(np.abs(out))) <= 0.5 + 1e-6
+    # Away from the spike (beyond two limiter windows) nothing changes.
+    far = int(2.5 * B.LIMITER_WINDOW_S * rate)
+    assert np.allclose(out[840 + far :], body[840 + far :])
+    # The gain moves smoothly: no step bigger than a few percent per sample.
+    mask = np.abs(body) > 0.05
+    ratio = out[mask] / body[mask]
+    assert float(np.max(np.abs(np.diff(ratio)))) < 0.05
+    quiet = 0.1 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+    assert np.array_equal(B.peak_limit(quiet, 0.5, rate), quiet)
+
+
+def _strings_bank():
+    samples, instruments, presets, manifest = _synthetic_plan(attack_spike=True)
+    return list(samples), instruments, presets, manifest
+
+
+def _window_rms_db(x, rate):
+    win = int(0.1 * rate)
+    if len(x) < win:
+        return 10 * math.log10(float(np.mean(x**2)) + 1e-20)
+    c = np.cumsum(np.concatenate([[0.0], x.astype(np.float64) ** 2]))
+    return 10 * math.log10(float(np.max(c[win:] - c[:-win]) / win) + 1e-20)
+
+
+def _fake_synth(samples, instruments, presets, reference_db):
+    """Stands in for SpessaSynth: the level of a note is the loudest 100 ms RMS
+    of the sample its playing zone holds, less the zone's attenuation."""
+
+    def measure(banks, jobs):
+        out = {}
+        for job in jobs:
+            if job["bankKey"] == "ref":
+                out[job["id"]] = {
+                    "rmsDb": reference_db[job["program"]],
+                    "peak": 0.2,
+                    "preset": f"GM {job['program']}",
+                    "presetBank": job["bank"],
+                    "presetProgram": job["program"],
+                }
+                continue
+            preset = next(
+                p
+                for p in presets
+                if (p.bank, p.program) == (job["bank"], job["program"])
+            )
+            inst = instruments[dict(preset.zones[0].generators)[B.GEN_INSTRUMENT]]
+            zones = [
+                z
+                for z in inst.zones
+                if B._zone_keys(z)[0] <= job["note"] <= B._zone_keys(z)[1]
+                and B._zone_vels(z)[0] <= job["velocity"] <= B._zone_vels(z)[1]
+                and B.layer_attenuation_cb(z.modulators, job["cc1"]) < 60
+            ]
+            gens = dict(zones[-1].generators)
+            s = samples[gens[B.GEN_SAMPLE_ID]]
+            att_db = (
+                gens.get(B.GEN_INITIAL_ATTENUATION, 0) * B.EMU_ATTENUATION_FACTOR / 10
+            )
+            out[job["id"]] = {
+                "rmsDb": _window_rms_db(s.data, s.rate) - att_db,
+                "peak": float(np.max(np.abs(s.data))) * 10 ** (-att_db / 20) * 0.26,
+                "preset": preset.name,
+                "presetBank": preset.bank,
+                "presetProgram": preset.program,
+            }
+        return out
+
+    return measure
+
+
+def test_level_targets_cover_each_primary_slot_once():
+    samples, instruments, presets, manifest = _strings_bank()
+    targets = B.level_targets(presets, instruments, manifest)
+    # Aliases (0:45 for Pizz) and the key-split ensemble are not levelled on
+    # their own; everything else is, against its program in the reference.
+    assert sorted(t.name for t in targets) == sorted(
+        ["Violins", "Violas", "Celli", "Contrabass", "Pizz", "Violas Loud"]
+    )
+    pizz = next(t for t in targets if t.name == "Pizz")
+    assert (pizz.bank, pizz.program, pizz.ref_bank, pizz.ref_program) == (2, 40, 0, 40)
+    violins = next(t for t in targets if t.name == "Violins")
+    assert 55 <= violins.note <= 70
+
+
+def _level(tmp_path, reference_db, **kw):
+    samples, instruments, presets, manifest = _strings_bank()
+    measure = _fake_synth(samples, instruments, presets, reference_db)
+    run = B.level_bank(
+        samples,
+        instruments,
+        presets,
+        manifest,
+        {"INAM": "t"},
+        tmp_path / "bank.sf3",
+        tmp_path / "gm.sf3",
+        measure,
+        **kw,
+    )
+    out = tmp_path / "bank.sf3"
+    B.write_soundfont(out, samples, instruments, presets, {"INAM": "t"}, compress=False)
+    table = B.verify_levels(
+        out, tmp_path / "gm.sf3", run, instruments, samples, measure
+    )
+    return run, samples, {row["name"]: row for row in table}
+
+
+def test_levelling_brings_the_strings_within_tolerance(tmp_path):
+    # The reference sits over the violins by more than their headroom (so
+    # they are peak limited), and under the violas (a cut).
+    run, samples, rows = _level(tmp_path, {40: -12.0, 41: -35.0, 42: -20.0, 43: -22.0})
+    assert not list(tmp_path.glob("*.level-probe.sf2")), "the probe bank is removed"
+    assert all(
+        float(np.max(np.abs(s.data))) <= B.SAMPLE_CEILING + 1e-6 for s in samples
+    )
+    for name in ("Violins", "Violas", "Celli", "Contrabass"):
+        row = rows[name]
+        assert abs(row["after_minus_reference_db"]) <= B.LEVEL_TOLERANCE_DB, row
+        assert row["within_tolerance"]
+        assert not row["clip_check"]["clips"]
+    assert rows["Violas"]["gain_db"] < 0
+    assert rows["Violas"]["peak_limited_db"] == 0
+    assert rows["Violins"]["gain_db"] > 0
+    assert rows["Violins"]["peak_limited_db"] > 0
+    assert {"before_db", "after_db", "reference", "clip_check"} <= set(rows["Celli"])
+
+
+def test_levelling_caps_the_boost_at_the_limit_depth(tmp_path):
+    run, samples, rows = _level(
+        tmp_path, {40: 10.0, 41: -20.0, 42: -10.0, 43: -11.0}, max_limit_db=6.0
+    )
+    assert run.limited_db["Violins"] <= 6.0 + 1e-6
+    assert not rows["Violins"]["within_tolerance"]
+
+
+def test_a_shared_sample_takes_the_larger_gain_and_the_other_zone_attenuates():
+    samples, instruments, presets, manifest = _strings_bank()
+    targets = B.level_targets(presets, instruments, manifest)
+    violas = next(t for t in targets if t.name == "Violas")
+    loud = next(t for t in targets if t.name == "Violas Loud")
+    shared = B.instrument_samples(instruments[violas.instrument])[0]
+    assert shared in B.instrument_samples(instruments[loud.instrument])
+    peak_before = float(np.max(np.abs(samples[shared].data)))
+    zone = instruments[loud.instrument].zones[0]
+    att_before = dict(zone.generators).get(B.GEN_INITIAL_ATTENUATION, 0)
+    gains = {t.name: 0.0 for t in targets}
+    gains["Violas"] = -2.0
+    gains["Violas Loud"] = -8.0
+    B.apply_level_gains(targets, gains, instruments, samples)
+    assert float(np.max(np.abs(samples[shared].data))) == pytest.approx(
+        peak_before * 10 ** (-2 / 20), rel=1e-4
+    )
+    att_after = dict(zone.generators)[B.GEN_INITIAL_ATTENUATION]
+    assert att_after - att_before == round(6.0 * 10 / B.EMU_ATTENUATION_FACTOR)
+    assert zone.generators[-1][0] == B.GEN_SAMPLE_ID
+
+
+def test_loudest_key_renders_the_playing_layer():
+    samples, instruments, presets, manifest = _strings_bank()
+    # Both violin layers share one key range rooted on 62; at full CC1 only
+    # the f layer plays.
+    assert B.loudest_key(instruments[0], samples) == 62
