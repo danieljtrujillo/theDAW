@@ -280,6 +280,110 @@ def test_quantize_score_puts_quintuplets_on_fifths() -> None:
     )
 
 
+def _mixed_bar_notes() -> list[tuple[float, float]]:
+    """Beat 1: four sixteenths; beat 2: an eighth triplet; then a quarter and
+    a quarter. Every onset a little early or late."""
+    sixteenths = [(i * 0.25 + (0.01 if i % 2 else -0.01), 0.25) for i in range(4)]
+    triplet = [(1.0 + i / 3 + (0.012 if i % 2 else -0.012), 1 / 3) for i in range(3)]
+    return sixteenths + triplet + [(2.01, 1.0), (2.99, 1.0)]
+
+
+def _placed(notes) -> list[float]:
+    """Each note's onset and length, in one flat list."""
+    out: list[float] = []
+    for n in notes:
+        out += [float(n.offset), float(n.quarterLength)]
+    return out
+
+
+def _expected(*notes: tuple[float, float]) -> list[float]:
+    return [value for note_values in notes for value in note_values]
+
+
+def test_a_bar_of_sixteenths_then_a_triplet_keeps_both() -> None:
+    """The grid is chosen per beat: a bar with sixteenths on beat 1 and an
+    eighth triplet on beat 2 prints both, where one grid for the bar put the
+    triplet on sixteenths."""
+    notes = _mixed_bar_notes()
+    part = stream.Part()
+    part.insert(0, time_signature("4/4"))
+    from music21 import note
+
+    for i, (onset, length) in enumerate(notes):
+        head = note.Note(60 + i % 7)
+        head.duration.quarterLength = length
+        part.insert(onset, head)
+    score = stream.Score()
+    score.insert(0, part)
+
+    placed = _placed(quantize_score(score).parts[0].notes)
+
+    assert placed == pytest.approx(
+        _expected(
+            *[(i * 0.25, 0.25) for i in range(4)],
+            *[(1.0 + i / 3, 1 / 3) for i in range(3)],
+            (2.0, 1.0),
+            (3.0, 1.0),
+        )
+    )
+
+
+def test_a_barred_mixed_bar_keeps_its_triplet() -> None:
+    """The same bar in a measure (a MusicXML source) is put on the same
+    grids."""
+    from music21 import note
+
+    measure = stream.Measure(number=1)
+    measure.insert(0, time_signature("4/4"))
+    for i, (onset, length) in enumerate(_mixed_bar_notes()):
+        head = note.Note(60 + i % 7)
+        head.duration.quarterLength = length
+        measure.insert(onset, head)
+    part = stream.Part()
+    part.append(measure)
+    score = stream.Score()
+    score.insert(0, part)
+
+    placed = _placed(quantize_score(score).parts[0].recurse().notes)
+
+    assert placed == pytest.approx(
+        _expected(
+            *[(i * 0.25, 0.25) for i in range(4)],
+            *[(1.0 + i / 3, 1 / 3) for i in range(3)],
+            (2.0, 1.0),
+            (3.0, 1.0),
+        )
+    )
+
+
+def test_a_grouped_bar_chooses_a_grid_per_pulse_group() -> None:
+    """In 7/8 2+2+3 the groups are a quarter, a quarter and a dotted quarter:
+    sixteenths in the first group and a triplet in the second each keep their
+    own grid."""
+    from music21 import note
+
+    sixteenths = [(i * 0.25 + (0.01 if i % 2 else -0.01), 0.25) for i in range(4)]
+    triplet = [(1.0 + i / 3 + (0.012 if i % 2 else -0.012), 1 / 3) for i in range(3)]
+    part = stream.Part()
+    part.insert(0, time_signature("7/8 2+2+3"))
+    for i, (onset, length) in enumerate(sixteenths + triplet + [(2.02, 1.5)]):
+        head = note.Note(60 + i % 7)
+        head.duration.quarterLength = length
+        part.insert(onset, head)
+    score = stream.Score()
+    score.insert(0, part)
+
+    placed = _placed(quantize_score(score).parts[0].notes)
+
+    assert placed == pytest.approx(
+        _expected(
+            *[(i * 0.25, 0.25) for i in range(4)],
+            *[(1.0 + i / 3, 1 / 3) for i in range(3)],
+            (2.0, 1.5),
+        )
+    )
+
+
 def test_quantize_score_leaves_an_exact_score_alone(tmp_path: Path) -> None:
     """A roll's notes (exact, off any grid the divisors know) come back as
     they went in."""
