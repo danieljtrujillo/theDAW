@@ -16,6 +16,7 @@ import { ExternalLink, Globe, Heart, Monitor, Settings, UserCircle, X } from 'lu
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import { ModelsSection } from './settings/ModelsSection';
 import { ModelFoldersSection } from './settings/ModelFoldersSection';
+import { SoundBanksSection } from './settings/SoundBanksSection';
 import { StorageSection } from './settings/StorageSection';
 import { AutoprocessSection } from './settings/AutoprocessSection';
 import { ModulesSection } from './settings/ModulesSection';
@@ -157,7 +158,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             className="absolute right-3 top-full mt-1 z-10 flex flex-col gap-2 rounded-md border border-purple-500/30 bg-[#0c0a14] p-2 shadow-xl"
           >
             <div className="flex items-center gap-2">
-              <label htmlFor="settings-artist" className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">Artist</label>
+              <label htmlFor="settings-artist" className="text-xs font-bold uppercase tracking-widest text-zinc-400 shrink-0">Artist</label>
               <input
                 id="settings-artist"
                 name="settings-artist"
@@ -171,7 +172,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
               />
             </div>
             <div className="flex items-center gap-2">
-              <label htmlFor="settings-musescore-path" className="text-[11px] font-mono uppercase tracking-widest text-zinc-400 shrink-0">MuseScore</label>
+              <label htmlFor="settings-musescore-path" className="text-xs font-bold uppercase tracking-widest text-zinc-400 shrink-0">MuseScore</label>
               <input
                 id="settings-musescore-path"
                 name="settings-musescore-path"
@@ -189,13 +190,13 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
                   onClick={() => void browseMusescore()}
                   aria-label="Browse for the MuseScore executable"
                   title="Pick the MuseScore executable"
-                  className="btn-ghost text-[10px] px-1.5 py-1 shrink-0"
+                  className="btn-ghost text-xs font-bold px-1.5 py-1 shrink-0"
                 >
                   BROWSE…
                 </button>
               )}
             </div>
-            <p className="text-[10px] text-zinc-500 max-w-72">
+            <p className="text-xs font-bold text-zinc-400 max-w-72">
               Optional: PDF and SVG use the built-in engraver; MuseScore stands in when node is missing.
             </p>
           </div>
@@ -206,6 +207,7 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
           <div className="columns-1 lg:columns-2 2xl:columns-3 gap-3">
             <div className="break-inside-avoid mb-3"><ModelsSection /></div>
             <div className="break-inside-avoid mb-3"><ModelFoldersSection /></div>
+            <div className="break-inside-avoid mb-3"><SoundBanksSection /></div>
             <div className="break-inside-avoid mb-3"><AutoprocessSection /></div>
             <div className="break-inside-avoid mb-3"><LayoutSection /></div>
             <div className="break-inside-avoid mb-3"><IoSection /></div>
@@ -221,13 +223,13 @@ export const SettingsModal: React.FC<{ open: boolean; onClose: () => void }> = (
             target="_blank"
             rel="noopener noreferrer"
             title="theDAW is independent and self-funded. A sponsorship keeps development going (food, coffee, and compute) and flows straight back into the software."
-            className="group inline-flex items-center gap-2 rounded-md border border-purple-400/50 bg-purple-500/20 px-4 py-1 text-[11px] font-black uppercase tracking-widest text-purple-100 shadow-lg shadow-purple-900/30 hover:bg-purple-500/30 hover:border-purple-300/70 hover:text-white transition-colors"
+            className="group inline-flex items-center gap-2 rounded-md border border-purple-400/50 bg-purple-500/20 px-4 py-1 text-xs font-black uppercase tracking-widest text-purple-100 shadow-lg shadow-purple-900/30 hover:bg-purple-500/30 hover:border-purple-300/70 hover:text-white transition-colors"
           >
             <Heart className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
             Sponsor theDAW
             <ExternalLink className="w-3 h-3 opacity-70" />
           </a>
-          <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">independent &amp; self-funded</span>
+          <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">independent &amp; self-funded</span>
         </div>
       </div>
     </div>
