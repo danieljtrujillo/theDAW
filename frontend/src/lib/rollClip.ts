@@ -166,13 +166,28 @@ export function midiFileClipFields(data: MidiFileData, idPrefix = 'imp'): RollCl
 export type ClipRenderSource = Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> &
   Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
+/** A note as it sounds, as one comparable string: its tick, length, pitch and velocity. */
+const soundingKey = (n: Pick<PianoNote, 'step' | 'length' | 'note' | 'velocity'>): string =>
+  `${Math.round(n.step * TICKS_PER_STEP)}|${Math.round(n.length * TICKS_PER_STEP)}|${n.note}|${n.velocity}`;
+
+/** Whether two note lists sound the same, in any order. */
+const soundsTheSame = (a: readonly PianoNote[], b: readonly PianoNote[]): boolean => {
+  if (a.length !== b.length) return false;
+  const ka = a.map(soundingKey).sort();
+  const kb = b.map(soundingKey).sort();
+  return ka.every((k, i) => k === kb[i]);
+};
+
 /**
  * The notes a roll clip's audio renders from over `totalSteps`, and the
  * controller changes of the part it holds (`controls`, from its
  * `sourceRollPart`), which a render plays with them so the pedal and the
  * volume a MIDI file gave the part are in the audio. A clip whose lanes bend
  * renders the roll's own notes unrolled with their lanes, so each note follows
- * its lane's curve; any other clip renders the notes it plays.
+ * its lane's curve, while those notes still play the clip's notes; any other
+ * clip renders the notes it plays. EDIT's note tools and the assistant's write
+ * the played notes alone, and a render of such a clip plays the edit, without
+ * the bends of the roll notes it left behind.
  */
 export function clipRenderInput(
   clip: ClipRenderSource,
@@ -181,9 +196,12 @@ export function clipRenderInput(
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
   const own = clip.sourceRollNotes;
   const controls = clip.sourceRollPart?.controls?.length ? clip.sourceRollPart.controls : undefined;
+  const played = clip.sourcePianoRoll ?? [];
   const bends = clip.sourceBends?.length && own?.length ? rollRenderBends(sanitizeBends(clip.sourceBends), lanes, totalSteps) : undefined;
-  if (!bends || !own) return { notes: clip.sourcePianoRoll ?? [], ...(controls ? { controls } : {}) };
-  return { notes: unrollLanes(own, lanes, totalSteps), bends, ...(controls ? { controls } : {}) };
+  if (!bends || !own) return { notes: played, ...(controls ? { controls } : {}) };
+  const unrolled = unrollLanes(own, lanes, totalSteps);
+  if (clip.sourcePianoRoll && !soundsTheSame(unrolled, played)) return { notes: played, ...(controls ? { controls } : {}) };
+  return { notes: unrolled, bends, ...(controls ? { controls } : {}) };
 }
 
 /** A controller change at a timeline second: what a clip's part sends where EDIT plays it. */
