@@ -19,6 +19,12 @@
  * clip is as long as the longest part, to the bar line after its last note, so
  * they line up bar for bar.
  *
+ * An arrangement with no clips takes the file's start tempo and first time
+ * signature (EDIT holds one of each), so its grid lines up with the parts and
+ * its MIDI export writes the file's tempo and meter. An arrangement with clips
+ * keeps its own. The file's later tempo and meter changes stay on the clips,
+ * which play and reopen with them.
+ *
  * Every track and clip is made in one undo step. A clip first carries a short
  * silent placeholder and its nominal length; its audio renders in the
  * background, one part at a time so thirty parts do not start thirty renders at
@@ -38,7 +44,7 @@ import type { RollControl, RollTrack } from '../state/pianoRollStore';
 import { clipVoice, renderedVoiceFields, type GlobalVoice } from './clipProgram';
 import { claimClipRender, releaseClipRender } from './clipRerender';
 import { renderedWindowFields } from './clipRenderWindow';
-import { roundUpToBar } from './meterMap';
+import { roundUpToBar, type MeterSegment } from './meterMap';
 import type { MidiFileData } from './midi';
 import { silentWavBlob } from './midiCapture';
 import type { RollRenderBends } from './pitchBend';
@@ -94,6 +100,15 @@ export interface MidiTracksResult {
   /** The clips' length in steps, and in seconds under the file's tempo map. */
   totalSteps: number;
   durationSec: number;
+  /** The tempo map and the meter map every clip holds (the file's, as the roll reads them). */
+  tempoMap: TempoEvent[];
+  meterMap: MeterSegment[];
+  /**
+   * The tempo and time signature EDIT took from the file (its start tempo and
+   * first time signature) when the arrangement had no clips; null when the
+   * arrangement kept its own.
+   */
+  arrangement: { bpm: number; timeSignature: { num: number; den: number } } | null;
   /** Resolves with how many renders landed once every part has rendered (or failed). */
   rendered: Promise<number>;
 }
@@ -149,7 +164,17 @@ export function importMidiAsTracks(
   const global = deps.global();
   const editor = useEditorStore.getState();
   const landed: MidiTrackPart[] = [];
+  // An arrangement with no clips takes the file's start tempo and first time signature; one with clips keeps its own.
+  const takesTiming = editor.clips.length === 0;
+  const startBpm = file.tempoMap[0]?.bpm ?? bpm;
+  const firstMeter = file.meter.meterMap[0]?.meter;
   editor.undoGroup(() => {
+    if (takesTiming) {
+      const now = useEditorStore.getState();
+      if (Math.abs(now.bpm - startBpm) > 1e-9) now.setBpm(startBpm);
+      // A meter EDIT cannot bar out is refused there, and the arrangement keeps its own.
+      if (firstMeter) now.setTimeSignature(firstMeter.num, firstMeter.den);
+    }
     file.parts.forEach((part, order) => {
       // The part's own program, else a kit on the drum track, else the picker's: what a new track holds (lib/rollTracks partVoice).
       const voice = partVoice(part, null, [], [], global, null);
@@ -199,14 +224,64 @@ export function importMidiAsTracks(
     });
   });
   const rendered = renderInTurn(landed, bpm, file.totalSteps, deps);
+  const after = useEditorStore.getState();
   return {
     doc,
     parts: landed,
     noteCount: landed.reduce((n, p) => n + p.noteCount, 0),
     totalSteps: file.totalSteps,
     durationSec,
+    tempoMap: file.tempoMap.map((e) => ({ ...e })),
+    meterMap: file.meter.meterMap.map((s) => ({ bar: s.bar, meter: { ...s.meter, groups: [...s.meter.groups] } })),
+    arrangement: takesTiming ? { bpm: after.bpm, timeSignature: { num: after.timeSignature.num, den: after.timeSignature.den } } : null,
     rendered,
   };
+}
+
+/** The tempo in a LOG line, to the hundredth. */
+const bpmText = (bpm: number): string => String(Math.round(bpm * 100) / 100);
+
+/**
+ * The LOG lines an import writes (lib/midiImportTracksApp logs them): what
+ * landed, at the tempo the clips play from (their own tempo map's start, 120
+ * when the file's first tempo comes later than a 64th note in, lib/midi
+ * midiStartTempo) with its changes and time signatures; what EDIT took from
+ * the file; and, as a warning, the tempo and meter changes the clips hold that
+ * EDIT's one tempo and one time signature cannot, so the arrangement's MIDI
+ * export leaves them out.
+ */
+export function importTracksReport(done: MidiTracksResult, label: string, atSec: number): { info: string[]; warn: string[] } {
+  const tempos = done.tempoMap.filter((e) => !e.fermata);
+  const startBpm = tempos[0]?.bpm ?? 120;
+  const tempoChanges = Math.max(0, tempos.length - 1);
+  const meters = done.meterMap.length;
+  const drums = done.parts.filter((p) => p.percussion).length;
+  const controllers = done.parts.reduce((n, p) => n + p.controlCount, 0);
+  const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const info = [
+    `Import as tracks: ${plural(done.parts.length, 'part')} of "${label}" on new tracks at ${atSec.toFixed(2)}s ` +
+      `(${done.noteCount} notes${drums ? `, ${drums} on drum tracks` : ''}${controllers ? `, ${controllers} controller changes` : ''}, ` +
+      `${bpmText(startBpm)} BPM${tempoChanges ? ` with ${plural(tempoChanges, 'tempo change')}` : ''}` +
+      `${meters > 1 ? `, ${meters} time signatures` : ''}); rendering audio in the background`,
+  ];
+  if (done.arrangement) {
+    const ts = done.arrangement.timeSignature;
+    const first = done.meterMap[0]?.meter;
+    info.push(
+      !first || (first.num === ts.num && first.den === ts.den)
+        ? `Import as tracks: EDIT takes the file's ${bpmText(done.arrangement.bpm)} BPM and ${ts.num}/${ts.den}`
+        : `Import as tracks: EDIT takes the file's ${bpmText(done.arrangement.bpm)} BPM and keeps ${ts.num}/${ts.den}: it cannot bar out the file's ${first.num}/${first.den}`,
+    );
+  }
+  const warn: string[] = [];
+  if (tempoChanges || meters > 1) {
+    const held = [tempoChanges ? plural(tempoChanges, 'tempo change') : '', meters > 1 ? `${meters} time signatures` : ''].filter(Boolean).join(' and ');
+    warn.push(
+      `Import as tracks: the clips play "${label}" with its ${held}, but EDIT holds one tempo and one time signature, ` +
+        "so the arrangement's MIDI export writes EDIT's alone",
+    );
+  }
+  return { info, warn };
 }
 
 /**

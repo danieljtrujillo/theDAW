@@ -12,12 +12,9 @@ import { computePeaks } from '../state/editorStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { midiFileLabel } from './fileFilters';
 import { parseMidi } from './midi';
-import { importMidiAsTracks, type MidiTracksResult } from './midiImportTracks';
+import { importMidiAsTracks, importTracksReport, type MidiTracksResult } from './midiImportTracks';
 import { renderStepNotesToBlob } from './midiSynth';
 import { ensureSoundfontReady, getGlobalVoice } from './soundfontEngine';
-
-/** The tempo in a LOG line, to the hundredth. */
-const bpmText = (bpm: number): string => String(Math.round(bpm * 100) / 100);
 
 /**
  * Put a MIDI file's parts on EDIT tracks of their own at `atSec` and log what
@@ -49,17 +46,9 @@ export async function importMidiBytesAsTracks(bytes: ArrayBuffer, label: string,
     logError('editor', `Import as tracks: no notes in "${label}"`);
     return null;
   }
-  const tempoChanges = Math.max(0, (data.tempos?.length ?? 1) - 1);
-  const meters = data.timeSignatures?.length ?? 0;
-  const drums = done.parts.filter((p) => p.percussion).length;
-  const controllers = done.parts.reduce((n, p) => n + p.controlCount, 0);
-  logInfo(
-    'editor',
-    `Import as tracks: ${done.parts.length} part${done.parts.length === 1 ? '' : 's'} of "${label}" on new tracks at ${atSec.toFixed(2)}s ` +
-      `(${done.noteCount} notes${drums ? `, ${drums} on drum tracks` : ''}${controllers ? `, ${controllers} controller changes` : ''}, ` +
-      `${bpmText(data.bpm)} BPM${tempoChanges ? ` with ${tempoChanges} tempo change${tempoChanges === 1 ? '' : 's'}` : ''}` +
-      `${meters > 1 ? `, ${meters} time signatures` : ''}); rendering audio in the background`,
-  );
+  const report = importTracksReport(done, label, atSec);
+  for (const line of report.info) logInfo('editor', line);
+  for (const line of report.warn) logWarn('editor', line);
   return done;
 }
 

@@ -168,6 +168,8 @@ assert.deepEqual(landed.parts.map((p) => ed().clips.find((c) => c.id === p.clipI
   // Round trip through the bytes.
   const back = parseMidi(encodeMidi(out.file));
   assert.deepEqual(back.tracks.map((t) => t.notes.length), noteCounts);
+  // EDIT holds one time signature, which the import set to the file's first (4/4); the clips keep all four,
+  // and the export writes them once the arrangement holds a meter map.
   assert.deepEqual(back.timeSignatures?.map((s) => [s.tick, s.num, s.den]), [[0, 4, 4]], "the arrangement's one time signature");
   // A span: the file starts on the bar line at or before it (EDIT is 4/4 at 120: a bar every 2 s).
   const span = arrangementToMidiFile(st, { range: { startSec: 11, endSec: 21 } });
