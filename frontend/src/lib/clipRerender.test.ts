@@ -7,7 +7,9 @@
  * re-rendered, and the string render rings 1.5 s longer. At 8039b45 the
  * re-render wrote the new blob and left the clip's window at the piano
  * render's length, so export cut the string chord's release. Then the clip is
- * trimmed and set to Harp: a trimmed window is kept. Run from `frontend/`:
+ * trimmed and set to Harp: a trimmed window is kept. A clip whose own program
+ * carries a bank (a roll part's Bank) renders in that bank, and a render that
+ * says no bank leaves none recorded. Run from `frontend/`:
  *   npx tsx src/lib/clipRerender.test.ts
  */
 import assert from 'node:assert/strict';
@@ -19,10 +21,10 @@ const ed = () => useEditorStore.getState();
 const global: GlobalVoice = { useSoundfont: true, activeProgram: 0 };
 let renderSec = 0;
 let beforeWrite: () => void = () => {};
-const renders: Array<{ program?: number; totalSteps: number }> = [];
+const renders: Array<{ program?: number; bank?: number; totalSteps: number }> = [];
 const deps: ClipRerenderDeps = {
   render: (_notes, _bpm, totalSteps, opts) => {
-    renders.push({ program: opts.program, totalSteps });
+    renders.push({ program: opts.program, totalSteps, ...(opts.bank !== undefined ? { bank: opts.bank } : {}) });
     return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: renderSec });
   },
   computePeaks: () => {
@@ -97,6 +99,21 @@ async function main(): Promise<void> {
     assert.equal(await rerenderStaleMidiClip(clipId, deps), false);
     beforeWrite = () => {};
     assert.equal(clip().renderedProgram, 46, 'nothing was written');
+  });
+
+  await step("a clip's own program in bank 1 renders in bank 1, and is current after", async () => {
+    ed().updateClip(clipId, { instrumentProgram: 60, instrumentBank: 1 });
+    assert.equal(clipRenderIsStale(clip(), track(), global), true, 'the bank makes the render stale');
+    assert.equal(await rerenderStaleMidiClip(clipId, deps), true);
+    assert.deepEqual(renders.at(-1), { program: 60, bank: 1, totalSteps: 32 });
+    assert.deepEqual([clip().renderedProgram, clip().renderedBank], [60, 1]);
+    assert.equal(clipRenderIsStale(clip(), track(), global), false);
+  });
+
+  await step('a render that names no bank clears the recorded one', async () => {
+    ed().applyClipRender(clipId, { renderedProgram: 60 });
+    assert.equal(clip().renderedBank, undefined, 'a bank stamp from an earlier render does not survive it');
+    assert.equal(clipRenderIsStale(clip(), track(), global), true, 'so the clip is rendered in its bank again');
   });
 
   console.log('clipRerender: ok');

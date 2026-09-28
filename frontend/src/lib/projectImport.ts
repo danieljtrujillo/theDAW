@@ -55,6 +55,7 @@ import {
   type TasmoChainEntry,
   type TasmoAutomationLane,
   clipNotesToTasmo,
+  bankSelectOf,
   clipTotalSteps,
   gmProgramOf,
   playedNotesFromRoll,
@@ -426,6 +427,9 @@ const buildClip = async (
   const instrumentProgram = gmProgramOf(c.instrument_program);
   let renderedProgram = gmProgramOf(c.rendered_program);
   let renderedPercussion = c.rendered_percussion === true;
+  // The bank the clip's own program is chosen in (a roll part's Bank) and the bank its audio holds; 0 when absent.
+  const instrumentBank = bankSelectOf(c.instrument_bank);
+  let renderedBank = bankSelectOf(c.rendered_bank);
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
@@ -459,13 +463,16 @@ const buildClip = async (
     );
     if (notes.length === 0) return null;
     const program = trackPercussion ? (instrumentProgram ?? trackProgram ?? GM_STANDARD_KIT) : instrumentProgram ?? trackProgram;
+    // A bank goes with the clip's own program only (lib/clipProgram clipBank).
+    const bank = !trackPercussion && instrumentProgram !== undefined ? instrumentBank : 0;
     const rendered = await renderNotesToBlob(
       trackPercussion ? notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : notes,
-      { ...tasmoMidiRenderOptions(c), ...(program === undefined ? {} : { program }) },
+      { ...tasmoMidiRenderOptions(c), ...(program === undefined ? {} : { program }), ...(bank > 0 ? { bank } : {}) },
     );
     blob = rendered.blob;
     renderedProgram = program;
     renderedPercussion = trackPercussion;
+    renderedBank = bank;
   } else {
     return null;
   }
@@ -518,6 +525,8 @@ const buildClip = async (
     ...(sourceKind && instrumentProgram !== undefined ? { instrumentProgram } : {}),
     ...(sourceKind && renderedProgram !== undefined ? { renderedProgram } : {}),
     ...(sourceKind && renderedPercussion ? { renderedPercussion: true } : {}),
+    ...(sourceKind && instrumentBank > 0 ? { instrumentBank } : {}),
+    ...(sourceKind && renderedBank > 0 ? { renderedBank } : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
     sourceMeterMap: rollMeter.sourceMeterMap,
@@ -1489,6 +1498,9 @@ export function captureEditorSession(): CapturedSession {
                 instrument_program: gmProgramOf(c.instrumentProgram) ?? null,
                 rendered_program: gmProgramOf(c.renderedProgram) ?? null,
                 rendered_percussion: c.renderedPercussion === true,
+                // The bank the clip's own program is chosen in and the bank its audio holds; null for bank 0.
+                instrument_bank: bankSelectOf(c.instrumentBank) || null,
+                rendered_bank: bankSelectOf(c.renderedBank) || null,
               }
             : {}),
           // The tempo a roll clip's notes were written at, or the tempo an

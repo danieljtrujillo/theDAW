@@ -212,6 +212,11 @@ export interface AudioClip {
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;
+  /** Bank select (MSB, 1-127) the clip's own program is chosen in, sent before
+   *  it live and in every render (lib/clipProgram clipBank): a roll part's Bank,
+   *  written by the bounce. Absent is bank 0, the General MIDI set. It never
+   *  applies to the track's or the picker's program, nor on a drum track. */
+  instrumentBank?: number;
   /** The GM program `audioBlob` was actually rendered with. The live scheduler
    *  synthesises MIDI clips from `sourcePianoRoll` and honours instrumentProgram,
    *  but every offline bounce reads the pre-rendered blob — so the two diverge the
@@ -223,6 +228,10 @@ export interface AudioClip {
    *  not name this field clears it (`clipWithUpdates`), so a render that knows
    *  nothing about drums is recorded as the melodic render it is. */
   renderedPercussion?: boolean;
+  /** The bank select `audioBlob` was rendered in, when past 0. A write of
+   *  `renderedProgram` that does not name this field clears it, as it clears
+   *  `renderedPercussion`, so a render that selects no bank is recorded as one. */
+  renderedBank?: number;
   /** Fade-in duration in seconds (0 = no fade). */
   fadeInSec?: number;
   /** Fade-out duration in seconds (0 = no fade). */
@@ -1417,10 +1426,19 @@ const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioCli
   const takes = mirrorOntoTakes(clip, updates);
   const next = takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
   // A render stamps `renderedProgram`. One that does not say it rendered drums
-  // rendered melodic, so a drum stamp from an earlier render does not survive it.
-  if ('renderedProgram' in updates && !('renderedPercussion' in updates) && next.renderedPercussion !== undefined) {
-    const { renderedPercussion: _drums, ...melodic } = next;
-    return melodic;
+  // rendered melodic, and one that names no bank rendered bank 0, so a stamp
+  // from an earlier render does not survive it.
+  if ('renderedProgram' in updates) {
+    let out = next;
+    if (!('renderedPercussion' in updates) && out.renderedPercussion !== undefined) {
+      const { renderedPercussion: _drums, ...melodic } = out;
+      out = melodic;
+    }
+    if (!('renderedBank' in updates) && out.renderedBank !== undefined) {
+      const { renderedBank: _bank, ...plain } = out;
+      out = plain;
+    }
+    return out;
   }
   return next;
 };

@@ -332,6 +332,10 @@ export interface TasmoClipInput {
   rendered_program?: number | null;
   /** MIDI clips: whether the embedded audio was rendered on the drum channel. */
   rendered_percussion?: boolean;
+  /** MIDI clips: the bank select (1-127) the clip's own program is chosen in,
+   *  and the bank its embedded audio was rendered in; null for bank 0. */
+  instrument_bank?: number | null;
+  rendered_bank?: number | null;
   source_bpm?: number | null;
   /** The tempo the audio plays at after a beat match or a stretch, and the
    *  library entry the clip came from. Optional for the same reason. */
@@ -446,6 +450,10 @@ export interface TasmoLoadedClip {
   /** Whether the clip's audio was rendered on the drum channel; absent in files
    *  written before it was saved. */
   rendered_percussion?: boolean;
+  /** The bank the clip's own program is chosen in and the bank its audio was
+   *  rendered in; null or absent for bank 0 and in files written before them. */
+  instrument_bank?: number | null;
+  rendered_bank?: number | null;
   source_bpm?: number | null;
   /** An audio clip's tempo after a beat match or a stretch, and the library
    *  entry it came from; null or absent in files written before they were
@@ -896,6 +904,10 @@ export const clipNotesToTasmo = (
 /** A GM program from a file: a whole number 0-127, else undefined. */
 export const gmProgramOf = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 127 ? v : undefined;
+
+/** A bank select from a file or a clip: a whole number 1-127, else 0 (the General MIDI set). */
+export const bankSelectOf = (v: unknown): number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 127 ? v : 0;
 
 /** A clip's own tempo from a file: a positive finite `source_bpm`, else
  *  undefined (a file written before source_bpm existed, or a clip with none). */

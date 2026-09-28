@@ -295,7 +295,7 @@ export type StepNoteRenderer = (
   bpm: number,
   totalSteps: number,
   /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`. */
-  opts?: { program?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[] },
+  opts?: { program?: number; bank?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[] },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -312,6 +312,8 @@ export const defaultStepNoteRenderer: StepNoteRenderer = async (notes, bpm, tota
 export interface MidiRenderOptions {
   /** Overrides the clip's own `instrumentProgram`. */
   program?: number;
+  /** The bank select sent before the program (lib/clipProgram clipBank); left out or 0 is the General MIDI set. */
+  bank?: number;
   /** Render on the General MIDI drum channel, where the program is the kit (a percussion track's clip). */
   percussion?: boolean;
   /** Tempo to use when the clip has no `sourceBpm` (e.g. the editor's). */
@@ -359,7 +361,7 @@ export async function bounceMidiClip(
   const notes = notesOf(clip);
   const bpm = tempoOf(clip, opts.bpm);
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, ...(opts.bank ? { bank: opts.bank } : {}), percussion: opts.percussion, ...tempoOpt(clip) });
 }
 
 /**
@@ -389,5 +391,5 @@ export async function stretchMidiClip(
   }
   const render = opts.render ?? defaultStepNoteRenderer;
   // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo.
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
+  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, ...(opts.bank ? { bank: opts.bank } : {}), percussion: opts.percussion, ...tempoOpt(clip) });
 }

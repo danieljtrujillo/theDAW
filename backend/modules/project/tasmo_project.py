@@ -337,6 +337,12 @@ class Clip(BaseModel):
     # drum channel (rendered_program then names the kit). Defaulted, so older
     # files load as rendered on a melodic channel.
     rendered_percussion: bool = False
+    # MIDI clips: the bank select (1-127) the clip's own program is chosen in
+    # (a piano-roll part's Bank) and the bank its embedded audio was rendered
+    # in; None for bank 0, the General MIDI set. Defaulted, so older files load
+    # every clip in bank 0 as before.
+    instrument_bank: int | None = None
+    rendered_bank: int | None = None
     source_bpm: float | None = None
     # Audio clips: the tempo the audio plays at after a beat match or a
     # stretch (EDIT's SYNC and BPM readout read it), and the library entry the

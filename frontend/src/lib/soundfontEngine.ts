@@ -325,16 +325,18 @@ async function renderMidiToBlob(
 /**
  * The MIDI file a soundfont render of absolute-seconds notes plays. Honors an
  * explicit program when the caller knows the clip's instrument; only falls
- * back to the global picker when it doesn't. Pitch wheels ride in the same file.
+ * back to the global picker when it doesn't. Pitch wheels ride in the same
+ * file, and a `bank` past 0 is selected before the program (a roll part's
+ * Bank, lib/rollBounce), so the render plays that bank's preset.
  */
-export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[] } = {}): Uint8Array {
-  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? []);
+export function notesRenderSmf(notes: RenderNote[], opts: { program?: number; wheel?: SmfWheel[]; bank?: number } = {}): Uint8Array {
+  return notesToSmf(notes, opts.program ?? getActiveProgram(), 0, [], 120, opts.wheel ?? [], opts.bank ?? 0);
 }
 
 /** Render absolute-seconds notes to a WAV blob through the soundfont. */
 export async function renderNotesToBlobSF(
   notes: RenderNote[],
-  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[] } & RenderLength = {},
+  opts: { sampleRate?: number; program?: number; wheel?: SmfWheel[]; bank?: number } & RenderLength = {},
 ): Promise<{ blob: Blob; duration: number }> {
   const smf = notesRenderSmf(notes, opts);
   return renderMidiToBlob(smf.buffer as ArrayBuffer, opts.sampleRate ?? 44100, opts);
@@ -410,11 +412,15 @@ function editChannel(channel: number): { bank: EditBank; ch: number } | null {
   return bank ? { bank, ch: localChannel(channel) } : null;
 }
 
-/** Note-on on an EDIT channel, switching its program first if it changed. No-op until its bank exists. */
-export function editNoteOn(channel: number, program: number, midi: number, velocity: number): void {
+/**
+ * Note-on on an EDIT channel, switching its program first if it changed, in
+ * bank select `bankSelect` (a clip's instrumentBank; 0 is the General MIDI
+ * set). No-op until its synth bank exists.
+ */
+export function editNoteOn(channel: number, program: number, midi: number, velocity: number, bankSelect = 0): void {
   const at = editChannel(channel);
   if (!at) return;
-  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs);
+  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect);
   at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))));
 }
 

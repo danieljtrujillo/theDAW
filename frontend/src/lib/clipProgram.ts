@@ -14,6 +14,12 @@
  * instrument and not a kit: with no program of their own they use the Standard
  * kit.
  *
+ * A clip with a program of its own may carry the bank that program was chosen
+ * in (`instrumentBank`, a roll part's Bank written by the bounce): the voice
+ * selects that bank before the program, live and in every render. A bank never
+ * applies to a program it was not chosen with (the track's or the picker's),
+ * nor on the drum channel, where the kit is chosen by program.
+ *
  * Type imports only, so node tests load it.
  */
 import type { AudioClip, EditorTrack } from '../state/editorStore';
@@ -24,7 +30,7 @@ export interface GlobalVoice {
   activeProgram: number;
 }
 
-export type ProgramClip = Pick<AudioClip, 'instrumentProgram'>;
+export type ProgramClip = Pick<AudioClip, 'instrumentProgram' | 'instrumentBank'>;
 export type ProgramTrack = Pick<EditorTrack, 'instrumentProgram' | 'isPercussion'>;
 
 /** The General MIDI Standard drum kit. */
@@ -60,14 +66,24 @@ export function effectiveProgramFor(
   return clip.instrumentProgram ?? track?.instrumentProgram ?? (global.useSoundfont ? global.activeProgram : undefined);
 }
 
-/** A clip's voice: its program (effectiveProgramFor) and whether it is on the drum channel. */
+/** A clip's voice: its program (effectiveProgramFor), whether it is on the drum channel, and the bank its own program is selected in (absent: 0). */
 export interface ClipVoice {
   program: number | undefined;
   percussion: boolean;
+  /** Bank select (MSB) sent before the program, 1-127; absent for bank 0, the General MIDI set. */
+  bank?: number;
 }
 
+/** The bank a clip's voice selects: its instrumentBank with a program of its own on a melodic track, else 0. */
+export const clipBank = (clip: ProgramClip, track: ProgramTrack | null | undefined): number => {
+  if (isPercussionTrack(track) || clip.instrumentProgram === undefined) return 0;
+  const bank = clip.instrumentBank;
+  return typeof bank === 'number' && Number.isFinite(bank) ? Math.max(0, Math.min(127, Math.round(bank))) : 0;
+};
+
 export function clipVoice(clip: ProgramClip, track: ProgramTrack | null | undefined, global: GlobalVoice): ClipVoice {
-  return { program: effectiveProgramFor(clip, track, global), percussion: isPercussionTrack(track) };
+  const bank = clipBank(clip, track);
+  return { program: effectiveProgramFor(clip, track, global), percussion: isPercussionTrack(track), ...(bank > 0 ? { bank } : {}) };
 }
 
 /**
@@ -89,9 +105,13 @@ export function rollVoice(
   return clipVoice(clip, tracks.find((t) => t.id === clip.trackId), global);
 }
 
-/** The clip fields that record a render made with `voice`. */
-export function renderedVoiceFields(voice: ClipVoice): Pick<AudioClip, 'renderedProgram' | 'renderedPercussion'> {
-  return { renderedProgram: voice.program, renderedPercussion: voice.percussion ? true : undefined };
+/** The clip fields that record a render made with `voice`: its program, its drum channel and its bank. */
+export function renderedVoiceFields(voice: ClipVoice): Pick<AudioClip, 'renderedProgram' | 'renderedPercussion' | 'renderedBank'> {
+  return {
+    renderedProgram: voice.program,
+    renderedPercussion: voice.percussion ? true : undefined,
+    renderedBank: voice.bank ? voice.bank : undefined,
+  };
 }
 
 /**
@@ -101,11 +121,15 @@ export function renderedVoiceFields(voice: ClipVoice): Pick<AudioClip, 'rendered
  * is never stale.
  */
 export function clipRenderIsStale(
-  clip: ProgramClip & Pick<AudioClip, 'renderedProgram' | 'renderedPercussion'>,
+  clip: ProgramClip & Pick<AudioClip, 'renderedProgram' | 'renderedPercussion' | 'renderedBank'>,
   track: ProgramTrack | null | undefined,
   global: GlobalVoice,
 ): boolean {
   const voice = clipVoice(clip, track, global);
   if (voice.program === undefined) return false;
-  return voice.program !== clip.renderedProgram || voice.percussion !== (clip.renderedPercussion === true);
+  return (
+    voice.program !== clip.renderedProgram
+    || voice.percussion !== (clip.renderedPercussion === true)
+    || (voice.bank ?? 0) !== (clip.renderedBank ?? 0)
+  );
 }

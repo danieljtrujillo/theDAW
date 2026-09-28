@@ -260,6 +260,8 @@ _KEPT_CLIP = (
     "instrument_program",
     "rendered_program",
     "rendered_percussion",
+    "instrument_bank",
+    "rendered_bank",
     "source_bpm",
     "bpm",
     "library_entry_id",
@@ -331,6 +333,10 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert [n["step"] for n in clips["looped"]["midi_notes"]] == [0, 4, 8, 12]
     assert clips["looped"]["roll_notes"][0]["lane"] == 1
     assert clips["plain"]["midi_notes"][1]["channel"] == 3
+    # A roll part's Bank on its clip, and the bank its audio was rendered in.
+    assert clips["plain"]["instrument_bank"] == 1
+    assert clips["plain"]["rendered_bank"] == 1
+    assert clips["looped"]["instrument_bank"] is None
     assert clips["plain"]["midi_notes"][1]["expr"]["pitch_bend"] == -0.5
     # A roll clip's tempo map: a ramp and a fermata on the tempo it ramps to.
     assert clips["plain"]["tempo_map"][1] == {"beat": 2, "bpm": 90, "curve": "linear"}

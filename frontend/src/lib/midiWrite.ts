@@ -75,7 +75,9 @@ export interface SmfWheel {
  * leading program change so the whole part plays on one GM instrument.
  * `signatures` sit on the grid of `bpm` (rollMeterToSmfEvents). A note with a
  * `channel` plays there, and `wheel` bends channels; every channel used gets
- * the same program.
+ * the same program. A `bank` past 0 is selected (CC 0) on each of those
+ * channels just before its program change, so the program is that bank's
+ * preset; bank 0 writes no bank select, as the file always has.
  */
 export function notesToSmf(
   notes: RenderNote[],
@@ -84,20 +86,28 @@ export function notesToSmf(
   signatures: readonly MeterEvent[] = [],
   bpm = DEFAULT_BPM,
   wheel: readonly SmfWheel[] = [],
+  bank = 0,
 ): Uint8Array {
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
   interface Ev {
     tick: number;
-    order: number; // tie-break at equal ticks: meta (-1), then program and note-off (0), range (0.25), wheel (0.5), then note-on (1)
+    order: number; // tie-break at equal ticks: meta (-1), bank select (-0.5), then program and note-off (0), range (0.25), wheel (0.5), then note-on (1)
     data: number[];
   }
-  const evs: Ev[] = [{ tick: 0, order: 0, data: [0xc0 | ch, program & 0x7f] }];
+  const msb = Number.isFinite(bank) ? Math.max(0, Math.min(127, Math.round(bank))) : 0;
+  const evs: Ev[] = [];
+  /** A channel's program change at tick 0, with its bank select before it when the bank is past 0. */
+  const programOn = (c: number): void => {
+    if (msb > 0) evs.push({ tick: 0, order: -0.5, data: [0xb0 | c, 0x00, msb] });
+    evs.push({ tick: 0, order: 0, data: [0xc0 | c, program & 0x7f] });
+  };
+  programOn(ch);
   const others = new Set<number>();
   for (const n of notes) if (typeof n.channel === 'number') others.add(n.channel & 0x0f);
   for (const w of wheel) others.add(w.channel & 0x0f);
   others.delete(ch);
-  for (const c of [...others].sort((a, b) => a - b)) evs.push({ tick: 0, order: 0, data: [0xc0 | c, program & 0x7f] });
+  for (const c of [...others].sort((a, b) => a - b)) programOn(c);
   for (const s of signatures) {
     const tick = Number.isFinite(s.tick) ? Math.max(0, Math.round(s.tick)) : 0;
     for (const data of meterEventMetas(s)) evs.push({ tick, order: -1, data });

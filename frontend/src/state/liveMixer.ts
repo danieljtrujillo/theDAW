@@ -67,7 +67,7 @@ import {
   resetEditRouting,
   getGlobalVoice,
 } from '../lib/soundfontEngine';
-import { effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
@@ -3018,7 +3018,7 @@ export function emptyLiveMidiPlan(): LiveMidiPlan {
 }
 
 /** The fields of a clip the live MIDI plan reads. */
-export type LiveMidiClip = Pick<AudioClip, 'id' | 'trackId' | 'muted' | 'instrumentProgram' | 'sourceKind' | 'sourcePianoRoll' | 'sourceRollNotes'>;
+export type LiveMidiClip = Pick<AudioClip, 'id' | 'trackId' | 'muted' | 'instrumentProgram' | 'instrumentBank' | 'sourceKind' | 'sourcePianoRoll' | 'sourceRollNotes'>;
 /** The fields of a track the live MIDI plan reads. */
 export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
 
@@ -3059,6 +3059,8 @@ export interface LiveMidiNote {
   clipId: string;
   channel: number;
   program: number;
+  /** The bank select sent before `program` (lib/clipProgram clipBank); 0 is the General MIDI set. */
+  bank: number;
   midi: number;
   velocity: number;
   onDelaySec: number;
@@ -3091,12 +3093,14 @@ export function liveMidiNotes(
     const channel = plan.channels.channelOf.get(clip.trackId);
     const program = effectiveProgramFor(clip, track, global);
     if (channel === undefined || program === undefined) continue;
+    const bank = clipBank(clip, track);
     for (const { note: midi, velocity, onSec, offSec } of midiClipNoteTimes(clip, projectBpm, fromSec)) {
       const onDelaySec = Math.max(0, onSec - fromSec);
       out.push({
         clipId: clip.id,
         channel,
         program,
+        bank,
         midi,
         velocity,
         onDelaySec,
@@ -3132,7 +3136,7 @@ function scheduleMidiClips(clips: AudioClip[], fromSec: number, plan: LiveMidiPl
       // sounding MIDI clip lands mid-playback like an audio clip's gate.
       const live = useEditorStore.getState().clips.find((c) => c.id === n.clipId);
       if (live?.muted) return;
-      editNoteOn(n.channel, n.program, n.midi, n.velocity);
+      editNoteOn(n.channel, n.program, n.midi, n.velocity, n.bank);
     }, n.onDelaySec * 1000));
     // The note-off always fires: a note-off for a note that was skipped is
     // harmless, and skipping it would leave a stuck note when the clip is

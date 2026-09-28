@@ -31,7 +31,7 @@ export interface ClipRerenderDeps {
     notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
     bpm: number,
     totalSteps: number,
-    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
+    opts: { program?: number; bank?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array }>;
@@ -72,6 +72,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
   const input = clipRenderInput(clip, totalSteps);
   const rendered = await deps.render(input.notes, bpm, totalSteps, {
     program: voice.program,
+    // The bank the clip's own program was chosen in (a roll part's Bank), so the render plays that preset.
+    ...(voice.bank ? { bank: voice.bank } : {}),
     percussion: voice.percussion,
     bends: input.bends,
     // The clip's tempo changes, ramps and fermatas, so the new voice plays them too.
@@ -80,7 +82,12 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
   const { peaks } = await deps.computePeaks(rendered.blob, 240);
   // Re-read: the user may have deleted, trimmed or re-assigned the clip mid-render.
   const after = voiceNow(clipId, deps.global());
-  if (!after || after.voice.program !== voice.program || after.voice.percussion !== voice.percussion) return false;
+  if (
+    !after
+    || after.voice.program !== voice.program
+    || after.voice.percussion !== voice.percussion
+    || (after.voice.bank ?? 0) !== (voice.bank ?? 0)
+  ) return false;
   // Derived audio, so no undo step: undo restores clips whose bounce is
   // stale, and this write then follows the undo with the redo stack intact.
   useEditorStore.getState().applyClipRender(clipId, {

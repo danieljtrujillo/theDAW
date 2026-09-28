@@ -618,6 +618,9 @@ const st = () => useEditorStore.getState();
         sourceRollNotes: plain,
         instrumentProgram: 42,
         renderedProgram: 42,
+        // A roll part in Bank 1: the bank goes out as `instrument_bank` and `rendered_bank`.
+        instrumentBank: 1,
+        renderedBank: 1,
         sourceBpm: 90,
         // A tempo change, a ramp and a fermata: the clip's tempo map goes out as `tempo_map`.
         sourceTempoMap: [

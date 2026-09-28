@@ -355,16 +355,18 @@ const commitNotes = async (
     return { ok: false, error: `refusing: that would leave "${clip.label}" with no notes at all` };
   }
   const totalSteps = noteEndStep(notes, 16);
+  // A program set here drops the bank the old program was chosen in (lib/clipProgram clipBank).
+  const reprogram: Partial<AudioClip> = programOverride !== undefined ? { instrumentProgram: programOverride, instrumentBank: undefined } : {};
   const next: AudioClip = {
     ...clip,
     sourcePianoRoll: notes,
     sourceTotalSteps: totalSteps,
-    ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
+    ...reprogram,
   };
   const voice = voiceFor(next);
   let rendered: { blob: Blob; duration: number };
   try {
-    rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, bank: voice.bank, percussion: voice.percussion });
   } catch (e) {
     return { ok: false, error: `the edit was not applied: re-rendering "${clip.label}" failed — ${reason(e)}` };
   }
@@ -373,7 +375,7 @@ const commitNotes = async (
   oneStep(() => store().updateClip(current.value.id, {
     sourcePianoRoll: notes,
     sourceTotalSteps: totalSteps,
-    ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
+    ...reprogram,
     audioBlob: rendered.blob,
     mimeType: 'audio/wav',
     sourceDuration: rendered.duration,
@@ -749,7 +751,7 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
   let rendered: { blob: Blob; duration: number };
   try {
     const voice = voiceFor(clip);
-    rendered = await stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    rendered = await stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, bank: voice.bank, percussion: voice.percussion });
   } catch (e) {
     return fail(`stretch: ${reason(e)}`);
   }

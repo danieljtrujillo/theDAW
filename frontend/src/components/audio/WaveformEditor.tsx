@@ -65,6 +65,7 @@ import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
+  clipBank,
   clipRenderIsStale,
   clipVoice,
   drumKitName,
@@ -1472,7 +1473,7 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
  * only, so its MIDI notes play that voice live regardless of the track default.
  * On a drum track the list is the drum kits.
  */
-const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
+export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
   const updateClip = useEditorStore((s) => s.updateClip);
   const track = useEditorStore((s) => s.tracks.find((t) => t.id === clip.trackId));
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
@@ -1484,13 +1485,15 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
     ? 'Track default (Basic)'
     : `Track default (${drums ? `${drumKitName(effective)} kit` : gmShortName(effective)})`;
 
+  // A bank belongs to the program it was chosen with (a roll part's Bank, lib/clipProgram clipBank), so a new pick drops it.
+  const bank = clipBank(clip, track);
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     if (v === 'default') {
-      updateClip(clip.id, { instrumentProgram: undefined });
+      updateClip(clip.id, { instrumentProgram: undefined, instrumentBank: undefined });
       return;
     }
-    updateClip(clip.id, { instrumentProgram: Number(v) });
+    updateClip(clip.id, { instrumentProgram: Number(v), instrumentBank: undefined });
     void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
 
@@ -1515,6 +1518,15 @@ const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
           <option value={clip.instrumentProgram}>{`${drumKitName(clip.instrumentProgram)} kit`}</option>
         )}
       </select>
+      {bank > 0 && (
+        <span
+          data-clip-bank={bank}
+          title="Bank select sent before the program: the bank the piano roll part chose. Picking another sound here drops it."
+          className="shrink-0 text-xs font-bold text-zinc-300 tabular-nums"
+        >
+          {`Bank ${bank}`}
+        </span>
+      )}
     </div>
   );
 };
@@ -2599,7 +2611,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     () => clips.filter((c) => c.sourceKind === 'piano-roll')
       .map((c) => {
         const v = clipVoiceOf(c);
-        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
+        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}b${v.bank ?? 0}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}b${c.renderedBank ?? 0}`;
       })
       .join('|'),
     [clips, tracks, sfActiveProgram, sfEnabled, clipVoiceOf],
@@ -6845,7 +6857,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className="fixed z-50 w-66 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
           >
             <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+              <span className="text-xs font-bold text-zinc-400 truncate">
                 Clip instrument — <span style={{ color: clip.color }}>{clip.label}</span>
               </span>
               <button

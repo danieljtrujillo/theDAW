@@ -74,6 +74,36 @@ def test_a_clip_written_before_parts_has_no_part() -> None:
     assert clip.roll_part is None
 
 
+def test_a_clip_bank_round_trips_through_the_archive(tmp_path: Path) -> None:
+    """A part's Bank reaches its clip: the bank its program is chosen in and
+    the bank its audio was rendered in. Without the fields pydantic dropped
+    them, and a reopened Horn in bank 1 played the bank 0 French Horn."""
+    horn = {
+        **_clip("horn", PART),
+        "instrument_program": 60,
+        "instrument_bank": 1,
+        "rendered_program": 60,
+        "rendered_bank": 1,
+    }
+    project = TasmoProject.model_validate(
+        {
+            "project_name": "Banks",
+            "tempo": 100,
+            "tracks": [{"id": "t1", "name": "Horn", "type": "audio", "clips": [horn]}],
+        }
+    )
+    out = tmp_path / "banks.tasmo"
+    TasmoFile.save(project, str(out))
+    loaded, _ = TasmoFile.load(str(out))
+    clip = loaded.tracks[0].clips[0]
+    assert (clip.instrument_bank, clip.rendered_bank) == (1, 1)
+
+
+def test_a_clip_written_before_banks_is_in_bank_zero() -> None:
+    clip = Clip.model_validate(_clip("old", PART))
+    assert (clip.instrument_bank, clip.rendered_bank) == (None, None)
+
+
 def _quartet(path: Path) -> Path:
     """A score of a violin, a viola, a cello and a snare drum, as MusicXML."""
     from music21 import instrument, meter, note, stream
