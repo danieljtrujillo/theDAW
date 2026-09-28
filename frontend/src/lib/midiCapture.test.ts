@@ -24,6 +24,7 @@ import {
   createNoteCapture,
   cropNotesToWindow,
   isMidiCaptureClip,
+  isMpePass,
   parseMidiMessage,
   resetMidiTakeSeq,
   silentWavBlob,
@@ -1036,6 +1037,31 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   one.setStatus('stopping');
   assert.ok((one.clips[0].sourceRollNotes ?? []).every((n) => n.expr === undefined), 'no expression on a one-channel pass');
   one.dispose();
+
+  // A split keyboard: the bass hand on channel 2, the melody on channel 1 with the wheel on it. Not MPE:
+  // the wheel bends the melody's channel at the synth's own range, so no note takes a 48-semitone bend.
+  resetMidiTakeSeq();
+  const split = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'] });
+  split.setStatus('recording');
+  split.send([0x91, 36, 90]);
+  split.send([0x90, 72, 100]);
+  split.sec(0.5);
+  split.send([0xe0, 0x00, 0x60]);
+  split.sec(1);
+  split.send([0x80, 72, 0]);
+  split.send([0x81, 36, 0]);
+  split.setStatus('stopping');
+  assert.ok((split.clips[0].sourceRollNotes ?? []).every((n) => n.expr === undefined), 'no note of a split keyboard carries an MPE bend');
+  split.dispose();
+  // Two hands on one channel each, a chord in the left: not one note at a time, not MPE.
+  assert.equal(
+    isMpePass([
+      { note: 36, velocity: 90, startSec: 0, endSec: 1, channel: 1, expr: { pressure: 0.5, changes: [] } },
+      { note: 40, velocity: 90, startSec: 0, endSec: 1, channel: 1 },
+      { note: 72, velocity: 90, startSec: 0, endSec: 1, channel: 0 },
+    ]),
+    false,
+  );
 
   assert.deepEqual(parseExpressionMessage([0xd3, 127]), { dim: 'pressure', channel: 3, value: 1 });
   assert.deepEqual(parseExpressionMessage([0xe0, 0, 0]), { dim: 'pitchBend', channel: 0, value: -1 });

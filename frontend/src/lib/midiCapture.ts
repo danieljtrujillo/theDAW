@@ -346,9 +346,32 @@ export function cropNotesToWindow(
   return out;
 }
 
-/** True when a pass played notes on two or more channels (the drums' aside): an MPE controller's, whose channels are its notes'. */
-export const isMpePass = (notes: readonly CapturedNote[]): boolean =>
-  new Set(notes.filter((n) => (n.channel ?? 0) !== 9).map((n) => n.channel ?? 0)).size >= 2;
+/**
+ * True when a pass is an MPE controller's, whose channels are its notes': its
+ * notes (the drums' aside) sit on two or more channels, one note at a time on
+ * each, and some channel carries pressure or CC 74, MPE's own dimensions. A
+ * split or layered keyboard (a bass hand on one channel, the melody on
+ * another, a wheel on the melody's) is not one: its wheel bends a channel at
+ * that synth's own range, not a note at MPE's 48 semitones.
+ */
+export function isMpePass(notes: readonly CapturedNote[]): boolean {
+  const byChannel = new Map<number, CapturedNote[]>();
+  for (const n of notes) {
+    const ch = n.channel ?? 0;
+    if (ch === 9) continue;
+    const list = byChannel.get(ch);
+    if (list) list.push(n);
+    else byChannel.set(ch, [n]);
+  }
+  if (byChannel.size < 2) return false;
+  for (const list of byChannel.values()) {
+    const sorted = [...list].sort((a, b) => a.startSec - b.startSec);
+    for (let i = 1; i < sorted.length; i += 1) if (sorted[i].startSec < sorted[i - 1].endSec - 1e-6) return false;
+  }
+  return [...byChannel.values()].some((list) =>
+    list.some((n) => n.expr && (n.expr.pressure !== undefined || n.expr.timbre !== undefined || n.expr.changes.some((c) => c.dim !== 'pitchBend'))),
+  );
+}
 
 /**
  * A captured note's expression as the roll's (PianoNote `expr`): its start
