@@ -208,6 +208,8 @@ assert.deepEqual(
   [['bach', 'extracted']],
   'the list comes unwrapped',
 );
+serve(200, { flags: [], count: 0 });
+assert.deepEqual(await composerApi.styles(), [], 'an answer with no list is no styles, never undefined');
 
 serve(200, { schema: 'thedaw.composer.style', id: 'debussy', source: 'authored', works: [] });
 const debussy = await composerApi.style('debussy');

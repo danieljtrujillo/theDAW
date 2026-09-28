@@ -809,10 +809,10 @@ export const composerApi = {
     return postJson<FormResult>('/api/composer/form/realize', formBody(req));
   },
 
-  /** The shipped style profiles, one line each. */
+  /** The shipped style profiles, one line each; none when the answer holds no list. */
   async styles(): Promise<StyleSummary[]> {
-    const body = await getJson<{ styles: StyleSummary[] }>('/api/composer/styles');
-    return body.styles;
+    const body = await getJson<{ styles?: unknown }>('/api/composer/styles');
+    return Array.isArray(body?.styles) ? (body.styles as StyleSummary[]) : [];
   },
 
   /** One shipped style profile in full. */
