@@ -37,6 +37,7 @@ then runs its answer through this checker.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import combinations
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -94,12 +95,20 @@ def key_label(k: m21key.Key) -> str:
 
 def key_spelling(k: m21key.Key) -> dict[int, str]:
     """pc -> name for the key's scale, with the raised sixth and seventh in minor."""
+    return dict(_key_spelling(k.tonic.name, k.mode))
+
+
+@lru_cache(maxsize=128)
+def _key_spelling(tonic: str, mode: str) -> tuple[tuple[int, str], ...]:
+    # music21 builds the scale through its interval network, which takes
+    # milliseconds; a form plan asks for the same few keys hundreds of times.
+    k = m21key.Key(tonic, mode)
     out = {p.pitchClass: p.name for p in k.getScale().getPitches()}
     if k.mode == "minor":
         for degree in (6, 7):
             p = k.pitchFromDegree(degree).transpose("A1")
             out.setdefault(p.pitchClass, p.name)
-    return out
+    return tuple(out.items())
 
 
 def spelled_pitch(midi: int, spelling: Mapping[int, str] | None) -> m21pitch.Pitch:
