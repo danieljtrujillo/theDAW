@@ -173,10 +173,14 @@ export function applyMpeImport(tracks: MidiTrack[]): void {
 
   tracks.forEach((t, k) => {
     if (zone.track !== null && zone.track !== k) return;
-    // The part's channel: the most used channel of the track's other notes, else the zone's manager, else its first member.
+    // The part's channel: the most used channel of the track's other notes, else the channel its program
+    // or controllers are written on (a track whose every note is expressive), else the zone's manager,
+    // else its first member.
     const counts = new Map<number, number>();
     for (const n of t.notes) if (!members.has(n.channel)) counts.set(n.channel, (counts.get(n.channel) ?? 0) + 1);
-    const home = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? zone.manager ?? Math.min(...members);
+    const outside = (ch: number) => !members.has(ch) && ch !== zone.manager && ch !== DRUM;
+    const written = (t.programs ?? []).find((p) => outside(p.channel))?.channel ?? (t.controls ?? []).find((c) => outside(c.channel))?.channel;
+    const home = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? written ?? zone.manager ?? Math.min(...members);
     for (const n of t.notes) {
       if (!members.has(n.channel)) continue;
       const ch = n.channel;

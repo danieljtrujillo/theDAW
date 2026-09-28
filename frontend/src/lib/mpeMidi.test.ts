@@ -121,6 +121,19 @@ for (const withZone of [true, false]) {
   assert.equal(midiFileToRollParts(back).parts.length, 3, 'flute, oboe and clarinet');
 }
 
+// ── an arrangement track whose every note is expressive reads back on its own channel and program ──
+{
+  const { arrangementToMidiFile } = await import('./arrangementMidi.ts');
+  const { migrateNotes } = await import('../state/pianoRollStore.ts');
+  const notes = migrateNotes([{ id: 'a', note: 60, step: 0, length: 8, velocity: 100, expr: { pressure: 0.2 } }]);
+  const track = { id: 't', name: 'Seaboard', color: '#fff', volume: 0.8, pan: 0, mute: false, solo: false, fxChain: [], instrumentProgram: 88 };
+  const clip = { id: 'c', trackId: 't', label: 'x', mimeType: 'audio/wav', sourceDuration: 2, offsetIntoSource: 0, durationSec: 2, startSec: 0, color: '#fff', sourceKind: 'piano-roll', sourcePianoRoll: notes, sourceBpm: 120, sourceTotalSteps: 16 };
+  const back = parseMidi(encodeMidi(arrangementToMidiFile({ tracks: [track as never], clips: [clip as never], bpm: 120 }).file));
+  assert.deepEqual(back.tracks[0].notes.map((n) => n.channel), [0], "the note comes home to the track's channel, not the zone's manager");
+  const [p] = midiFileToRollParts(back).parts;
+  assert.deepEqual([p.track.program, p.track.channel], [88, 1], 'with its program');
+}
+
 // ── a dense file reads in linear time ─────────────────────────────────────
 {
   // 40 000 notes on one channel took 5.5 s when each note copied its channel's list.
