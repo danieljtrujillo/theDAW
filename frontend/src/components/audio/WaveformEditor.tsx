@@ -22,12 +22,13 @@ import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../../lib/mage
 import { AutomationLane } from './AutomationLane';
 import { buildAddAutomationLaneOptions } from './automationLaneOptions';
 import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule } from '../../lib/rackEffects';
-import { decodeClipBlob } from '../../lib/decodeCache';
+import { decodeClipBlob, releaseDecoded } from '../../lib/decodeCache';
 import { type FadeCurve } from '../../lib/clipFade';
 import {
-  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, renderBounce, renderExtentSec,
-  type BounceRequest, type BounceScope, type RenderDeps,
+  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, instrumentTracksInScope, printInstrumentTracks, renderBounce, renderExtentSec,
+  type BounceRequest, type BounceScope, type InstrumentPrint, type RenderDeps,
 } from '../../lib/renderCore';
+import { isInstrumentClip } from '../../lib/vstInstrumentMidi';
 import { clipWithAudio, clipsWithMidiAudio, dropAutoRender, midiRenderStatusText, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
 import { configureAppMidiRenderQueue } from '../../state/appMidiRenderer';
 import { crossfadeRegions } from '../../lib/crossfade';
@@ -45,7 +46,7 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
-import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
@@ -59,7 +60,7 @@ import {
 import { useAppUiStore } from '../../state/appUiStore';
 import { useVstEditorStore } from '../../state/vstEditorStore';
 import type { ChainEntry, VstNode } from '../../state/effectChainStore';
-import type { Vst3PluginInfo } from '../../lib/vstClient';
+import { renderInstrumentTrack, type Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
@@ -424,14 +425,32 @@ interface BounceDeps extends RenderDeps {
 }
 
 const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean = () => false): Promise<BounceDeps> => {
+  // A track whose instrument slot holds a VST3 prints its MIDI through that
+  // plugin (lib/renderCore printInstrumentTracks), so its clips skip the
+  // soundfont render.
+  const before = useEditorStore.getState();
+  const instrumentTracks = new Set(instrumentTracksInScope(before.clips, before.tracks, scope).map((t) => t.id));
   const midi = await clipsWithMidiAudio(
-    (c) => clipsInScope([c], scope).length > 0,
+    (c) => clipsInScope([c], scope).length > 0 && !(instrumentTracks.has(c.trackId) && isInstrumentClip(c)),
     (n, total, label) => logInfo('editor', `Rendering MIDI for the bounce: ${n} of ${total} (${label})`),
     isCancelled,
   );
   const st = useEditorStore.getState();
+  let print: InstrumentPrint;
+  try {
+    print = await printInstrumentTracks({ ...st, clips: midi.clips }, scope, renderInstrumentTrack, {
+      global: getGlobalVoice(),
+      sampleRate: BOUNCE_SAMPLE_RATE,
+      isCancelled,
+      onProgress: (n, total, name) => logInfo('editor', `Printing VST instruments for the bounce: ${n} of ${total} (${name})`),
+      onWarning: (name, w) => logWarn('editor', `VST instrument on ${name}: ${w}`),
+    });
+  } catch (e) {
+    midi.release();
+    throw e;
+  }
   return {
-    clips: midi.clips,
+    clips: print.clips,
     tracks: st.tracks,
     masterFxChain: st.masterFxChain,
     automationLanes: st.automationLanes,
@@ -440,7 +459,10 @@ const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean 
     decode: decodeClipBlob,
     buildChain: buildEffectChain,
     scheduleSources: liveMixer.scheduleClipSources,
-    release: midi.release,
+    release: () => {
+      midi.release();
+      for (const blob of print.printed) releaseDecoded(blob);
+    },
   };
 };
 
@@ -4456,7 +4478,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       logError('editor', 'Track has no clips to freeze.');
       return;
     }
-    const hasVsts = (track.fxChain ?? []).some((e) => e.enabled && e.effect === 'vst3' && e.vst);
+    const hasVsts = activeTrackInstrument(track) !== null || (track.fxChain ?? []).some((e) => e.enabled && e.effect === 'vst3' && e.vst);
     enqueueBounce({
       kind: 'freeze',
       trackId,
@@ -7475,7 +7497,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                             : 'bg-black/40 text-zinc-500 border-white/5 hover:text-white'
                       }`}
                     >F</button>
-                    {(t.frozenOriginal || (t.fxChain ?? []).some((e) => e.effect === 'vst3' && e.vst)) && (
+                    {(t.frozenOriginal || t.instrument?.vst || (t.fxChain ?? []).some((e) => e.effect === 'vst3' && e.vst)) && (
                       <TrackFreezeButton
                         trackId={t.id}
                         trackName={t.name}
