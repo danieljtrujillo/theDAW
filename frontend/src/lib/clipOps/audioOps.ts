@@ -37,6 +37,7 @@ import type { TempoEvent } from '../tempoMap';
 import type { RollRenderBends } from '../pitchBend';
 import { clipRenderInput } from '../rollClip';
 import type { RollControl } from '../../state/pianoRollStore';
+import { clipArticulationInstrument, type ArticulationInstrument } from '../articulationMap';
 
 /** The app's working rate; also `encodeWav`'s and the editor's. */
 export const DEFAULT_SAMPLE_RATE = 44100;
@@ -302,7 +303,8 @@ export type StepNoteRenderer = (
   /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`.
    *  `bends`: each bending lane's curve (lib/pitchBend rollRenderBends), the notes then carrying their lanes.
    *  `bank`: the bank select sent before the program (lib/clipProgram clipBank).
-   *  `controls`: the clip's part controller changes on the roll's 960 PPQ clock (lib/rollClip clipRenderInput). */
+   *  `controls`: the clip's part controller changes on the roll's 960 PPQ clock (lib/rollClip clipRenderInput).
+   *  `articulation`: the instrument the notes' articulations resolve against (lib/articulationRender). */
   opts?: {
     program?: number;
     bank?: number;
@@ -310,6 +312,7 @@ export type StepNoteRenderer = (
     tempoMap?: readonly TempoEvent[];
     bends?: RollRenderBends;
     controls?: readonly RollControl[];
+    articulation?: ArticulationInstrument;
   },
 ) => Promise<RenderedAudio>;
 
@@ -320,8 +323,9 @@ export type StepNoteRenderer = (
  * that actually render.
  */
 export const defaultStepNoteRenderer: StepNoteRenderer = async (notes, bpm, totalSteps, opts) => {
-  const { renderStepNotesToBlob } = await import('../midiSynth');
-  return renderStepNotesToBlob(notes, bpm, totalSteps, opts ?? {});
+  // Each note played by its articulation, a preset articulation on a channel of its own (lib/articulationRender).
+  const { renderArticulatedStepNotes } = await import('../articulationRender');
+  return renderArticulatedStepNotes(notes, bpm, totalSteps, opts ?? {});
 };
 
 export interface MidiRenderOptions {
@@ -391,13 +395,15 @@ export async function bounceMidiClip(
   const bpm = tempoOf(clip, opts.bpm);
   const render = opts.render ?? defaultStepNoteRenderer;
   const input = renderInputOf(clip, notes);
+  const program = opts.program ?? clip.instrumentProgram;
   return render(input.notes, bpm, input.steps, {
-    program: opts.program ?? clip.instrumentProgram,
+    program,
     ...(opts.bank ? { bank: opts.bank } : {}),
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
     ...(input.controls ? { controls: input.controls } : {}),
+    articulation: clipArticulationInstrument(clip, program, opts.percussion === true),
   });
 }
 
@@ -430,12 +436,14 @@ export async function stretchMidiClip(
   const input = renderInputOf(clip, notes);
   // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo,
   // and each controller change stays on its tick.
+  const program = opts.program ?? clip.instrumentProgram;
   return render(input.notes, bpm, input.steps, {
-    program: opts.program ?? clip.instrumentProgram,
+    program,
     ...(opts.bank ? { bank: opts.bank } : {}),
     percussion: opts.percussion,
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
     ...(input.controls ? { controls: input.controls } : {}),
+    articulation: clipArticulationInstrument(clip, program, opts.percussion === true),
   });
 }

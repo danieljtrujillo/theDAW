@@ -55,6 +55,7 @@ import {
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
+import { isArticulation, type Articulation } from '../lib/articulationMap';
 import {
   composerApi,
   type CanonResult,
@@ -143,6 +144,14 @@ export interface PianoNote {
   channel?: number;
   /** Per-note expression; absent when the note carries none. */
   expr?: NoteExpression;
+  /**
+   * How the note is played (lib/articulationMap): legato, staccato,
+   * pizzicato, tremolo, marcato, spiccato, col legno, harmonics or con
+   * sordino. Absent is ordinario (arco on a string part). The roll's
+   * articulation lane marks it; PLAY, EDIT and a render play it on the preset
+   * or keyswitch it resolves to for the part's instrument.
+   */
+  articulation?: Articulation;
 }
 
 /**
@@ -759,6 +768,11 @@ interface PianoRollState {
   nudgeSelected: (dSteps: number, dNotes: number) => void;
   /** Set `ids` to one velocity, clamped 1-127. */
   setVelocity: (ids: Iterable<string>, velocity: number) => void;
+  /**
+   * Mark `ids` with `articulation` (lib/articulationMap), or null for
+   * ordinario. One undo step; none when every note already has it.
+   */
+  setArticulation: (ids: Iterable<string>, articulation: Articulation | null) => void;
   /** Multiply the velocity of `ids`, clamped 1-127. */
   scaleVelocity: (ids: Iterable<string>, factor: number) => void;
   /** Quantize amount, 0-100; persisted. */
@@ -1345,6 +1359,7 @@ export const withTicks = (n: PianoNote, stepsPerBeat?: number): PianoNote => {
   const expr = validExpr(n.expr);
   if (expr === undefined) delete out.expr;
   else out.expr = expr;
+  if (!isArticulation(n.articulation)) delete out.articulation;
   return out;
 };
 
@@ -1382,6 +1397,7 @@ const validNote = <T extends Partial<PianoNote>>(patch: T): Omit<T, 'id'> => {
     if (expr === undefined) delete out.expr;
     else out.expr = expr;
   }
+  if ('articulation' in out && !isArticulation(out.articulation)) delete out.articulation;
   return out as Omit<T, 'id'>;
 };
 
@@ -2427,6 +2443,21 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       if (ds === 0 && dn === 0) return {};
       // Through patchedNote so the move lands on the ticks, not only on the view.
       return { notes: s.notes.map((n) => (s.selectedIds.has(n.id) ? patchedNote(n, { step: n.step + ds, note: n.note + dn }) : n)) };
+    }),
+
+  setArticulation: (ids, articulation) =>
+    set((s) => {
+      const want = ids instanceof Set ? (ids as Set<string>) : new Set(ids);
+      const art = isArticulation(articulation) ? articulation : undefined;
+      let changed = false;
+      const notes = s.notes.map((n) => {
+        if (!want.has(n.id) || n.articulation === art) return n;
+        changed = true;
+        if (art) return { ...n, articulation: art };
+        const { articulation: _drop, ...rest } = n;
+        return rest;
+      });
+      return changed ? { notes } : {};
     }),
 
   setVelocity: (ids, velocity) =>

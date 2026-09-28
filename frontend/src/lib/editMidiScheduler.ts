@@ -46,6 +46,13 @@
  *     ends, each controller it left off its General MIDI default goes back,
  *     the pedal first, so nothing it held rings past it, as its render stops
  *     there and the arrangement's MIDI export writes it (lib/arrangementMidi).
+ *   - Its notes' articulations (lib/articulationMap articulatedNotes): each
+ *     note plays shaped by its articulation (a staccato at half its length),
+ *     and an articulation the soundfont holds as a preset of its own (a string
+ *     part's pizzicato, GM 46) plays on a channel of its own after the clip's
+ *     others, in that preset, through the scheduler's per-note program
+ *     changes, so the part's other notes keep their program. A note on such a
+ *     channel does not follow its lane's bend.
  *   - Its gain and fades: the track's MIDI goes through one envelope gain per
  *     track, which follows the clip that is playing (lib/clipFade
  *     applyFadeAutomation with the clip's gain as the peak), the curve the
@@ -129,6 +136,7 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { PART_CONTROLLERS, partController } from './rollTracks';
+import { articulatedNotes, clipArticulationInstrument } from './articulationMap';
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { stepClock } from './rollTempo';
 
@@ -221,6 +229,9 @@ export interface TimedNote {
   midi: number;
   velocity: number;
   slot: number;
+  /** The preset an articulation plays the note in (lib/articulationMap), on its own slot; absent: the clip's voice. */
+  program?: number;
+  bank?: number;
 }
 
 /**
@@ -279,12 +290,20 @@ const clipTotalSteps = (clip: TimedClip): number =>
 /**
  * How many channels a clip plays on: one, or one per lane of its that bends
  * plus one its other lanes share (lib/pitchBend laneChannels), exactly the
- * channels its bounce renders on. A percussion clip plays on its one drum channel.
+ * channels its bounce renders on, and one more for each soundfont preset its
+ * notes' articulations play (lib/articulationMap: a string part's pizzicato).
+ * A percussion clip plays on its one drum channel.
  */
-export function clipLiveSlots(clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'>, percussion = false): number {
-  if (percussion || !clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1;
+export function clipLiveSlots(
+  clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> & Partial<Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollPart'>>,
+  percussion = false,
+  program?: number,
+): number {
+  if (percussion) return 1;
+  const arts = articulatedNotes(clip.sourcePianoRoll ?? clip.sourceRollNotes ?? [], clipArticulationInstrument(clip, program, false)).targets.length;
+  if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1 + arts;
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
-  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size);
+  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + arts;
 }
 
 const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
@@ -296,7 +315,7 @@ const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
  * is taken off and a note running past an edge is cut at it. A percussion clip
  * ignores bends and plays on one channel.
  */
-export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined, percussion = false): ClipTiming {
+export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined, percussion = false, program?: number): ClipTiming {
   const clock = stepClock(clip.sourceBpm ?? fallbackBpm ?? 120, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const dur = clip.durationSec;
@@ -306,9 +325,13 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   const slotOf = new Map<number, number>();
   if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
   const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
+  const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
+  // Each note shaped by its articulation; a preset articulation on a slot of its own after the lanes'.
+  const arts = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
 
   const notes: TimedNote[] = [];
-  for (const n of input.notes) {
+  for (const a of arts.notes) {
+    const n = a.played;
     const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
     if (relEnd <= 0 || relStart >= dur) continue; // outside this clip's window
     notes.push({
@@ -316,12 +339,13 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
       off: start + Math.min(dur, relEnd),
       midi: n.note,
       velocity: n.velocity,
-      slot: laneSlot(n.lane),
+      slot: a.target ? laneSlots + a.slot : laneSlot(n.lane),
+      ...(a.target ? { program: a.target.program, bank: a.target.bank } : {}),
     });
   }
   notes.sort(byOn);
 
-  const used = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
+  const used = laneSlots + arts.targets.length;
   const ctl: TimedCtl[] = [];
   // Every channel the clip uses opens at the clip's start: its range and its
   // wheel where the clip's source begins. A channel no lane bends goes back to
@@ -468,7 +492,7 @@ export class EditMidiScheduler {
   private held = new Map<string, HeldControls>();
   /** The clips the last tick played live, so a clip that starts playing part way is seen. */
   private lastLive: ReadonlySet<string> = new Set();
-  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; timing: ClipTiming }>();
+  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; program: number | undefined; timing: ClipTiming }>();
   /** The value each automated controller holds on its track's channels this pass, by `${trackId}:${controller}`. */
   private ccHeld = new Map<string, number>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
@@ -496,7 +520,8 @@ export class EditMidiScheduler {
     const bpm = this.deps.projectBpm();
     for (const clip of this.deps.clips()) {
       if (!pass.liveClipIds.has(clip.id)) continue;
-      this.timingOf(clip, bpm, isPercussionTrack(trackById.get(clip.trackId)));
+      const track = trackById.get(clip.trackId);
+      this.timingOf(clip, bpm, isPercussionTrack(track), track ? effectiveProgramFor(clip, track, this.deps.global()) : undefined);
     }
   }
 
@@ -550,11 +575,11 @@ export class EditMidiScheduler {
     return this.anchorCtx + (t - this.anchorT);
   }
 
-  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean): ClipTiming {
+  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean, program: number | undefined): ClipTiming {
     const hit = this.timing.get(clip);
-    if (hit && hit.bpm === bpm && hit.percussion === percussion) return hit.timing;
-    const timing = clipLiveTiming(clip, bpm, percussion);
-    this.timing.set(clip, { bpm, percussion, timing });
+    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.program === program) return hit.timing;
+    const timing = clipLiveTiming(clip, bpm, percussion, program);
+    this.timing.set(clip, { bpm, percussion, program, timing });
     return timing;
   }
 
@@ -666,7 +691,9 @@ export class EditMidiScheduler {
         out.push({ time, order: 0, send: () => sink.noteOff(channel, n.midi, time) });
         this.sounding.splice(i, 1);
       }
-      out.push({ time, order: 1, send: () => sink.noteOn(channel, voice.program, n.midi, n.velocity, time, voice.bank, voice.bankLsb) });
+      // A note an articulation plays in a preset of its own (on its own slot) takes that preset.
+      const v = n.program !== undefined ? { program: n.program, bank: n.bank ?? 0, bankLsb: undefined } : voice;
+      out.push({ time, order: 1, send: () => sink.noteOn(channel, v.program, n.midi, n.velocity, time, v.bank, v.bankLsb) });
       if (time > now) this.queued.push({ channel, midi: n.midi, time });
       this.sounding.push({ clipId, channel, midi: n.midi, off: n.off });
       this.counts.notes += 1;
@@ -683,7 +710,7 @@ export class EditMidiScheduler {
       const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);
-      const timing = this.timingOf(clip, bpm, percussion);
+      const timing = this.timingOf(clip, bpm, percussion, program);
       const chOf = (slot: number) => chans[Math.min(slot, chans.length - 1)];
       const clipEnd = clip.startSec + clip.durationSec;
       const open = muteSoloOpen(track, anySolo);

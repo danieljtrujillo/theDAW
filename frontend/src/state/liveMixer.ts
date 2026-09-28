@@ -3068,7 +3068,8 @@ export type LiveMidiClip = Pick<
   | 'sourceRollNotes'
   | 'sourceLanes'
   | 'sourceBends'
->;
+> &
+  Partial<Pick<AudioClip, 'sourceRollPart'>>;
 /** The fields of a track the live MIDI plan reads. */
 export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
 
@@ -3097,7 +3098,7 @@ export function planLiveMidi(
     const ids = wanted.get(track.id);
     if (ids) ids.push(clip.id);
     else wanted.set(track.id, [clip.id]);
-    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track))));
+    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), effectiveProgramFor(clip, track, global))));
   }
   const channels = planEditChannels(
     tracks
@@ -3238,14 +3239,14 @@ export function liveMidiNotes(
     const program = effectiveProgramFor(clip, track, global);
     if (!chans?.length || program === undefined) continue;
     const bank = clipBank(clip, track);
-    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track)).notes) {
+    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), program).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
       out.push({
         clipId: clip.id,
         channel: chans[Math.min(n.slot, chans.length - 1)],
-        program,
-        bank,
+        program: n.program ?? program,
+        bank: n.program !== undefined ? (n.bank ?? 0) : bank,
         midi: n.midi,
         velocity: n.velocity,
         onDelaySec,

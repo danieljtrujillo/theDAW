@@ -103,6 +103,7 @@ import {
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
 import { CcLane } from './CcLane';
+import { ArticulationLane } from './ArticulationLane';
 import { TempoLane } from './TempoLane';
 import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers';
 import { HARMONY_ROW_HEIGHT, RollHarmonyCorner, RollHarmonyRow, runRollVoiceLeadingCheck } from './RollHarmonyRow';
@@ -2110,12 +2111,15 @@ export const PianoRoll: React.FC<{
   showTempo?: boolean;
   /** The CC lane is open under the grid (the strip's CC key). */
   showCc?: boolean;
+  /** The articulation lane is open under the grid (the strip's ART key). */
+  showArticulations?: boolean;
 }> = ({
   stepPx,
   onStepPxChange,
   showBend = false,
   showTempo = false,
   showCc = false,
+  showArticulations = false,
 }) => {
   const notes = usePianoRollStore((s) => s.notes);
   const totalSteps = usePianoRollStore((s) => s.totalSteps);
@@ -3069,6 +3073,7 @@ export const PianoRoll: React.FC<{
           {showFiguredBass && <FiguredBassLane stepPx={stepPx} totalSteps={totalSteps} win={view} />}
           {showBend && <BendLane stepPx={stepPx} totalSteps={totalSteps} />}
           {showCc && <CcLane stepPx={stepPx} totalSteps={totalSteps} />}
+          {showArticulations && <ArticulationLane stepPx={stepPx} totalSteps={totalSteps} />}
           {showTempo && <TempoLane stepPx={stepPx} totalSteps={totalSteps} />}
         </div>
       </div>

@@ -15,6 +15,7 @@ import type { RollPartRef } from '../state/pianoRollStore';
 import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
+import { isArticulation } from './articulationMap';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
 /** A time-signature change: the meter from `bar` until the next change. */
@@ -65,6 +66,8 @@ export interface TasmoStepNote {
   ticks?: number;
   channel?: number;
   expr?: TasmoNoteExpression;
+  /** The note's articulation (lib/articulationMap), when it has one. */
+  articulation?: string;
 }
 
 /** A pitch bend point as a piano-roll clip stores it; `shape` only when it is not `linear`. */
@@ -728,6 +731,7 @@ export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
     ...(ticks !== undefined ? { ticks } : {}),
     ...(n.channel !== undefined ? { channel: n.channel } : {}),
     ...(expr ? { expr } : {}),
+    ...(n.articulation ? { articulation: n.articulation } : {}),
   };
 };
 
@@ -787,8 +791,9 @@ const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
  * roll's own ingest rule (`withTicks` in pianoRollStore). Ticks that disagree
  * with the steps beside them (a hand-edited file) are dropped, so the steps win.
  */
-export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> => {
-  const out: Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> = {};
+export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr' | 'articulation'> => {
+  const out: Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr' | 'articulation'> = {};
+  if (isArticulation(n.articulation)) out.articulation = n.articulation;
   const { lane, channel } = n;
   const tick = ticksMatching(n.tick, n.step, 0);
   const ticks = ticksMatching(n.ticks, n.length, MIN_NOTE_TICKS);
@@ -941,7 +946,7 @@ export const playedNotesFromRoll = (meter: ClipMeterFields): PianoNote[] => {
 /** What a note sounds like, as one comparable string; ids and ticks left out. */
 const soundingKey = (n: PianoNote): string =>
   `${n.note}|${n.step}|${n.length}|${n.velocity}|${n.lane ?? ''}|${n.channel ?? ''}|` +
-  `${n.expr?.pressure ?? ''}|${n.expr?.timbre ?? ''}|${n.expr?.pitchBend ?? ''}`;
+  `${n.expr?.pressure ?? ''}|${n.expr?.timbre ?? ''}|${n.expr?.pitchBend ?? ''}|${n.articulation ?? ''}`;
 
 /** Whether two note lists sound the same, in any order. */
 const sameSounding = (a: readonly PianoNote[], b: readonly PianoNote[]): boolean => {

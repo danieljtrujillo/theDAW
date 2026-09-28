@@ -24,6 +24,13 @@
  * messages for the window it schedules notes in. A built-in voice follows its
  * lane's curve through automation scheduled with the note.
  *
+ * Articulations: each note plays shaped by its articulation (a staccato at
+ * half its written length), and an articulation a soundfont holds as a preset
+ * of its own (a string part's pizzicato, GM 46) plays that preset on a
+ * channel of its own (lib/articulationMap articulatedNotes, lib/rollTracks
+ * rollLiveChannels `arts`), so the part's other notes keep their program. The
+ * part's controllers go to those channels too.
+ *
  * Controllers: a soundfont part's controller changes (RollTrack `controls`:
  * modulation, volume, pan, expression, the sustain pedal) go out on every
  * channel the part plays on, each at its step's context time, in the same
@@ -64,6 +71,7 @@ import {
 import { REANCHOR_STEPS, rollStepAt, shownStep, windowOnsets } from './rollTransport';
 import { TICKS_PER_STEP } from './rollSnap';
 import { audiblePartIds, controlStateBefore, partController, rollLiveChannels, type PartLiveChannels } from './rollTracks';
+import { articulatedNotes, type ArticulatedNote, type SoundfontArticulationTarget } from './articulationMap';
 import type { PianoNote } from '../state/pianoRollStore';
 
 /** Seconds the scheduler plans ahead each tick: its notes, and the roll's click. */
@@ -146,6 +154,10 @@ interface PartPlan {
   channelList: number[];
   controls: readonly RollControl[];
   controlItems: ControlItem[];
+  /** Each played note as its articulation plays it, by the played note. */
+  arts: Map<PianoNote, ArticulatedNote<PianoNote>>;
+  /** The soundfont presets its articulations play in, one channel each (`channels.arts`). */
+  artTargets: SoundfontArticulationTarget[];
 }
 
 export interface RollScheduler {
@@ -177,7 +189,7 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
   let playState = startRollPlay(roll, origin);
   let cursor = -REANCHOR_STEPS; // absolute step scheduled up to (inclusive)
   // Unrolled once per part, lane, length or bend edit, not once per tick.
-  let source: { tracks: readonly RollTrack[]; lanes: readonly PolyLane[]; total: number; bends: readonly LaneBend[] } | null = null;
+  let source: { tracks: readonly RollTrack[]; lanes: readonly PolyLane[]; total: number; bends: readonly LaneBend[]; voices: string } | null = null;
   let plans: PartPlan[] = [];
   let bent = new Map<number, PlayedBend>();
   let lapCurves = bent;
@@ -234,22 +246,31 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     playState = followed;
     const { lapState, steps, clock: lc } = playState;
     const { lap } = lapState;
-    if (!source || source.tracks !== tracks || source.lanes !== lanes || source.total !== total || source.bends !== bends) {
+    // The program each part sounds decides what its articulations resolve to.
+    const partPrograms = tracks.map((t) => voiceOf(t.id)?.program);
+    const voiceSig = partPrograms.map((p) => p ?? '').join(',');
+    if (!source || source.tracks !== tracks || source.lanes !== lanes || source.total !== total || source.bends !== bends || source.voices !== voiceSig) {
       if (source && (source.lanes !== lanes || source.total !== total || source.bends !== bends)) wheelFresh = true;
       // A part moved to another channel starts its curve fresh there.
       if (source && source.tracks.length !== tracks.length) wheelFresh = true;
-      source = { tracks, lanes, total, bends };
-      const channels = rollLiveChannels(tracks, lanes, bends);
-      plans = tracks.map((t) => {
+      source = { tracks, lanes, total, bends, voices: voiceSig };
+      const unrolled = tracks.map((t) => unrollLanes(t.notes, lanes, total));
+      const artsOf = tracks.map((t, i) =>
+        articulatedNotes(unrolled[i], { instrumentId: t.instrumentId, program: t.program ?? partPrograms[i] ?? null, percussion: voiceOf(t.id)?.percussion === true }),
+      );
+      const channels = rollLiveChannels(tracks, lanes, bends, new Map(tracks.map((t, i) => [t.id, artsOf[i].targets.length])));
+      plans = tracks.map((t, i) => {
         const ch = channels.get(t.id) as PartLiveChannels;
         const controls = t.controls ?? NO_CONTROLS;
         return {
           id: t.id,
-          played: unrollLanes(t.notes, lanes, total),
+          played: unrolled[i],
           channels: ch,
-          channelList: [...new Set([ch.base, ...ch.lanes.values()])].sort((a, b) => a - b),
+          channelList: [...new Set([ch.base, ...ch.lanes.values(), ...(ch.arts ?? [])])].sort((a, b) => a - b),
           controls,
           controlItems: controls.map((c) => ({ step: c.tick / TICKS_PER_STEP, controller: c.controller, value: c.value })),
+          arts: new Map(artsOf[i].notes.map((a) => [a.note, a])),
+          artTargets: artsOf[i].targets,
         };
       });
       bent = playedRollBends(bends, lanes, total);
@@ -362,9 +383,13 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       if (!audible.has(plan.id)) continue;
       const voice = voices.get(plan.id) as SchedulerVoice;
       const soundfont = voice.program !== undefined;
-      for (const { note: n, abs: occ } of windowOnsets(plan.played, lap, cursor, targetAbs)) {
+      for (const { note: written, abs: occ } of windowOnsets(plan.played, lap, cursor, targetAbs)) {
+        // The note as its articulation plays it, and the preset channel it plays on when it has one.
+        const art = plan.arts.get(written);
+        const n = art?.played ?? written;
+        const artChannel = soundfont && art?.target ? plan.channels.arts?.[art.slot] : undefined;
         const lane = playingLane(n.lane, lanes);
-        const channel = plan.channels.lanes.get(lane) ?? plan.channels.base;
+        const channel = artChannel ?? plan.channels.lanes.get(lane) ?? plan.channels.base;
         const curve = soundfont ? undefined : lapCurves.get(lane);
         const when = lapTimeOf(lc, occ);
         const at = Math.max(now, when);
@@ -386,8 +411,12 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
           // A note lasts as long as its own steps do under the map.
           duration: spanSec(steps, n.step, n.length),
           channel,
-          ...(voice.program !== undefined ? { program: voice.program } : {}),
-          ...(voice.bank ? { bank: voice.bank } : {}),
+          ...(artChannel !== undefined && art?.target
+            ? { program: art.target.program, ...(art.target.bank ? { bank: art.target.bank } : {}) }
+            : {
+                ...(voice.program !== undefined ? { program: voice.program } : {}),
+                ...(voice.bank ? { bank: voice.bank } : {}),
+              }),
           percussion: voice.percussion,
           ...(bend ? { bend } : {}),
           step: n.step,

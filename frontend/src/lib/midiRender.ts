@@ -38,6 +38,7 @@ import type { RollRenderBends } from './pitchBend';
 import { clipRenderInput } from './rollClip';
 import { stepClock } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
+import { clipArticulationInstrument, type ArticulationInstrument } from './articulationMap';
 
 /** lib/midiSynth renderStepNotesToBlob, injected so node tests render without Web Audio. */
 export type MidiStepRender = (
@@ -51,6 +52,8 @@ export type MidiStepRender = (
     bends?: RollRenderBends;
     tempoMap?: readonly TempoEvent[];
     controls?: readonly RollControl[];
+    /** The instrument the notes' articulations resolve against (lib/articulationRender); a renderer that knows none ignores it. */
+    articulation?: ArticulationInstrument;
   },
 ) => Promise<{ blob: Blob; duration: number }>;
 
@@ -125,7 +128,9 @@ function hashNotes(notes: readonly SigNote[] | undefined): number {
   let chunk = '';
   for (let i = 0; i < notes.length; i += 1) {
     const n = notes[i];
-    chunk += `${n.note},${n.tick ?? n.step},${n.ticks ?? n.length},${n.velocity},${n.lane ?? ''};`;
+    // A note's articulation plays it in another way (lib/articulationMap); a note with none signs as it always has.
+    const art = (n as { articulation?: string }).articulation;
+    chunk += `${n.note},${n.tick ?? n.step},${n.ticks ?? n.length},${n.velocity},${n.lane ?? ''}${art ? `@${art}` : ''};`;
     if (chunk.length > 4096) { h = fnv1a(chunk, h); chunk = ''; }
   }
   h = fnv1a(`${chunk}#${notes.length}`, h);
@@ -219,6 +224,8 @@ export async function renderMidiClipAudio(
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
     // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
     ...(input.controls ? { controls: input.controls } : {}),
+    // Its notes' articulations, each played as it resolves for the clip's instrument (lib/articulationRender).
+    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true),
   });
 }
 
