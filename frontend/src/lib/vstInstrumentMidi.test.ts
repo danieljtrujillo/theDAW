@@ -15,10 +15,13 @@ import type { PolyLane } from './meterMap.ts';
 import type { LaneBend } from './pitchBend.ts';
 import { instrumentTracksInScope, printInstrumentTracks, type InstrumentRenderer } from './renderCore.ts';
 import { renderInstrumentTrack } from './vstClient.ts';
+import { readWavSamples, writeFloatWav } from './wavSamples.ts';
 import {
   INSTRUMENT_TAIL_SEC,
+  instrumentGainAt,
   instrumentPrintPlan,
   parseInstrumentRender,
+  shapeInstrumentPrint,
   trackInstrumentMessages,
   type InstrumentRenderTrack,
 } from './vstInstrumentMidi.ts';
@@ -164,6 +167,53 @@ const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
   // Called off: no track renders.
   const none = await printInstrumentTracks(source, { kind: 'master' }, render, { isCancelled: () => true });
   assert.equal(none.clips.some((c) => c.id.startsWith('instrument-print:')), false);
+}
+
+// ── the print carries each clip's gain and fades, as live playback does ───────
+{
+  const rate = 1000;
+  /** What a plugin that holds every note at full scale would print: 1.0 on both channels. */
+  const fullScale = (seconds: number): Blob => {
+    const frames = Math.round(seconds * rate);
+    const ones = new Float32Array(frames).fill(1);
+    return writeFloatWav({ sampleRate: rate, frames, channels: [ones, ones.slice()] });
+  };
+  const render: InstrumentRenderer = async (req) => ({
+    trackId: req.track_id, audio: fullScale(req.duration), frames: Math.round(req.duration * rate), sampleRate: rate, warnings: [],
+  });
+  const minus6 = 10 ** (-6 / 20);
+  // A two-second clip at -6 dB with a one-second linear fade-out, starting at 1 s.
+  const faded = clip('f', 'vln', 1, [note(0, 60, 16)], { durationSec: 2, gain: minus6, fadeOutSec: 1 });
+  const print = await printInstrumentTracks({ bpm: 120, tracks: [track('vln', { instrument: strings })], clips: [faded] }, { kind: 'master' }, render, { sampleRate: rate });
+  const printed = print.clips.find((c) => c.id === 'instrument-print:vln');
+  assert.ok(printed?.audioBlob);
+  const got = readWavSamples(await printed.audioBlob.arrayBuffer());
+  const at = (sec: number) => got.channels[0][Math.round((sec - printed.startSec) * rate)];
+  assert.equal(printed.startSec, 1);
+  assert.ok(Math.abs(at(1.25) - minus6) < 1e-6, 'the body prints at -6 dB');
+  assert.ok(Math.abs(20 * Math.log10(at(1.9)) - -6) < 0.01, 'still -6 dB right up to the fade');
+  assert.ok(Math.abs(at(2.5) - minus6 * 0.5) < 1e-3, 'half way down the fade-out');
+  assert.ok(at(2.99) < minus6 * 0.02, 'nearly silent at the end of the fade');
+  assert.equal(at(3.5), 0, "the release tail past a faded clip's end is silent, as live");
+  assert.equal(got.channels[1][Math.round(0.25 * rate)], got.channels[0][Math.round(0.25 * rate)], 'both channels');
+  assert.equal(printed.gain, undefined, 'the print itself plays at unity: the gain is in its samples, not applied twice');
+
+  // A clip with gain and no fade-out: the tail rings on at the clip's gain; the next clip takes over at its start.
+  const a = clip('a', 'vln', 0, [note(0, 60, 4)], { durationSec: 1, gain: 0.5, fadeInSec: 0.5 });
+  const b = clip('b', 'vln', 2, [note(0, 62, 4)], { durationSec: 1, gain: 0.25 });
+  const two = await printInstrumentTracks({ bpm: 120, tracks: [track('vln', { instrument: strings })], clips: [a, b] }, { kind: 'master' }, render, { sampleRate: rate });
+  const p2 = two.clips.find((c) => c.id === 'instrument-print:vln');
+  assert.ok(p2?.audioBlob);
+  const s2 = readWavSamples(await p2.audioBlob.arrayBuffer());
+  const at2 = (sec: number) => s2.channels[0][Math.round(sec * rate)];
+  assert.ok(Math.abs(at2(0.25) - 0.25) < 1e-3, "half way up A's fade-in, at A's gain");
+  assert.ok(Math.abs(at2(1.5) - 0.5) < 1e-6, "A's release rings at A's gain");
+  assert.ok(Math.abs(at2(2.5) - 0.25) < 1e-6, 'B owns the envelope from its start');
+  assert.equal(instrumentGainAt([a, b], -1), 1, 'before any clip: unity');
+
+  // All clips at unity with no fades: the print is handed on untouched.
+  const flat = await shapeInstrumentPrint(fullScale(1), 0, [clip('u', 'vln', 0, [note(0, 60)])]);
+  assert.equal(readWavSamples(await flat.arrayBuffer()).channels[0][10], 1);
 }
 
 // ── the client: one track per request, the multipart answer read back ─────────

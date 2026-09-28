@@ -176,7 +176,7 @@ import { planRangeRender, sliceRangeBuffer } from './render/renderRangePlan';
 import type { ArrangementMidiSource } from './arrangementMidi';
 import type { GlobalVoice } from './clipProgram';
 import {
-  instrumentPrintPlan, isInstrumentClip, type InstrumentRenderResult, type InstrumentRenderTrack,
+  instrumentPrintPlan, isInstrumentClip, shapeInstrumentPrint, type InstrumentRenderResult, type InstrumentRenderTrack,
 } from './vstInstrumentMidi';
 import { encodeWav } from './wavEncode';
 
@@ -1344,13 +1344,16 @@ export async function printInstrumentTracks(
       throw new Error(`Track "${track.name}" could not be printed through its instrument: ${e instanceof Error ? e.message : String(e)}`);
     }
     for (const w of result.warnings) opts.onWarning?.(track.name, w);
+    // The gain and fades of each clip, over the print, as live playback puts them on the
+    // instrument's output: the print lands on the track as one clip at unity.
+    const audio = await shapeInstrumentPrint(result.audio, plan.startSec, plan.clips);
     const durationSec = result.frames / (result.sampleRate || sampleRate);
     for (const c of scoped) if (c.trackId === track.id && isInstrumentClip(c)) replaced.add(c.id);
     prints.push({
       id: `instrument-print:${track.id}`,
       trackId: track.id,
       label: `${track.name} (${track.instrument?.vst?.plugin_name || 'instrument'})`,
-      audioBlob: result.audio,
+      audioBlob: audio,
       mimeType: 'audio/wav',
       sourceDuration: durationSec,
       offsetIntoSource: 0,
@@ -1358,7 +1361,7 @@ export async function printInstrumentTracks(
       startSec: plan.startSec,
       color: track.color,
     });
-    printed.push(result.audio);
+    printed.push(audio);
     done += 1;
     opts.onProgress?.(done, targets.length, track.name);
   }

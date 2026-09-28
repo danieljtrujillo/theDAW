@@ -18,6 +18,9 @@
  * Pure (no stores), so node tests run it.
  */
 import type { AudioClip, EditorTrack } from '../state/editorStore';
+import { clipPeakGain } from '../state/editorStore';
+import { fadeGainAt } from './clipFade';
+import { readWavSamples, writeFloatWav } from './wavSamples';
 import { EDIT_DEFAULT_VOLUME, arrangementToMidiFile, type ArrangementMidiSource } from './arrangementMidi';
 import type { GlobalVoice } from './clipProgram';
 import { sanitizeRollTempoMap } from './rollTempo';
@@ -111,6 +114,8 @@ export interface InstrumentRenderTrack {
 export interface InstrumentPrintPlan {
   request: InstrumentRenderTrack;
   startSec: number;
+  /** The clips the print plays, whose gain and fades shape it (instrumentGainAt). */
+  clips: AudioClip[];
 }
 
 /**
@@ -135,6 +140,7 @@ export function instrumentPrintPlan(
   const lastSec = messages[messages.length - 1].t;
   return {
     startSec,
+    clips: played,
     request: {
       track_id: track.id,
       plugin_path: instrument.vst.plugin_path,
@@ -145,6 +151,53 @@ export function instrumentPrintPlan(
       events: messages.map((m) => ({ t: Math.max(0, m.t - startSec), data: m.data })),
     },
   };
+}
+
+/**
+ * The gain live playback puts on an instrument's output at timeline second `t`,
+ * over the track's `clips` (the ones it plays, muted ones left out).
+ *
+ * Live, the instrument's output passes one envelope gain per track, and the
+ * scheduler hands that envelope to each clip at the clip's start
+ * (lib/editMidiScheduler scheduleEnvelope: the clip's fades with its gain as
+ * the peak, lib/clipFade applyFadeAutomation). So the clip that started last
+ * owns the envelope: inside its window the gain is its gain times its fade
+ * curve, and past its end the envelope holds where the clip left it, so a
+ * release tail rings at the clip's gain, and is silent after a fade-out.
+ * Before the first clip the envelope is at unity.
+ */
+export function instrumentGainAt(clips: readonly AudioClip[], t: number): number {
+  let owner: AudioClip | undefined;
+  for (const c of clips) {
+    if (c.startSec <= t + 1e-9 && (!owner || c.startSec >= owner.startSec)) owner = c;
+  }
+  if (!owner) return 1;
+  const dur = Math.max(0, owner.durationSec);
+  const rel = Math.min(Math.max(0, t - owner.startSec), dur);
+  return clipPeakGain(owner) * fadeGainAt(owner, rel);
+}
+
+/** True when every clip plays at unity with no fades, so the envelope is 1 throughout. */
+const flatEnvelope = (clips: readonly AudioClip[]): boolean =>
+  clips.every((c) => clipPeakGain(c) === 1 && !(c.fadeInSec && c.fadeInSec > 0) && !(c.fadeOutSec && c.fadeOutSec > 0));
+
+/**
+ * The print shaped by the envelope live playback applies (instrumentGainAt):
+ * each clip's gain and fades over its own span, the release after a clip at
+ * the gain the clip ended on. `startSec` is where the print sits on the
+ * timeline. A print whose clips all play at unity comes back as it is.
+ */
+export async function shapeInstrumentPrint(audio: Blob, startSec: number, clips: readonly AudioClip[]): Promise<Blob> {
+  const played = clips.filter((c) => !c.muted);
+  if (flatEnvelope(played)) return audio;
+  const samples = readWavSamples(await audio.arrayBuffer());
+  const rate = samples.sampleRate;
+  for (let i = 0; i < samples.frames; i += 1) {
+    const g = instrumentGainAt(played, startSec + i / rate);
+    if (g === 1) continue;
+    for (const ch of samples.channels) ch[i] *= g;
+  }
+  return writeFloatWav(samples);
 }
 
 /** One track as /api/vst/render-midi answered it. */
