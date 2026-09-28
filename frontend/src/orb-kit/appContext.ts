@@ -16,13 +16,13 @@ export type EditorTrackKind = 'midi' | 'audio' | 'mixed' | 'empty';
 export type EditorSummary = {
     trackCount: number;
     clipCount: number;
-    /** Clips whose sourceKind is 'piano-roll' — editable MIDI, pre-rendered to audio for playback. */
+    /** Clips whose sourceKind is 'piano-roll' — editable MIDI. One with an instrument plays live on EDIT's synths and renders when an export needs it; one without plays its rendered audio. */
     midiClipCount: number;
     audioClipCount: number;
     bpm: number;
     /** Bar 1's meter. Bars — and therefore editor_seek_bar — are counted from `meterMap`. */
     timeSignature: { num: number; den: number };
-    /** The arrangement's meter changes, 1-based bars ("7/8 3+2+2" labels). Set with editor_set_meter_map. */
+    /** The arrangement's meter changes, 1-based bars ("7/8 3+2+2" labels), the first 64. Set with editor_set_meter_map; editor_get_meter_map reads them all. */
     meterMap: Array<{ bar: number; meter: string }>;
     /** The arrangement's tempo events: 1-based bar, quarter notes into it, bpm, "linear" on a ramp, or a fermata. */
     tempoMap: Array<{ bar: number; beat: number; bpm?: number; curve?: 'linear'; fermata?: { beats: number; stretch: number } }>;

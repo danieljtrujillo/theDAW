@@ -74,6 +74,7 @@ import { hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
 import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
+import { NewMidiPartDialog } from './NewMidiPartDialog';
 import { editMeterFlags, editMoveByBeats, editRulerBars, editSnapSec, editTempoAtSec, editTempoFlags } from '../../lib/editTimeMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
@@ -180,6 +181,7 @@ const ADD_ENTRY_ICON: Record<AddToTrackEntry['id'], React.ReactNode> = {
   'audio-system': <FolderOpen className="w-3 h-3" />,
   'midi-library': <Music className="w-3 h-3" />,
   'midi-system': <FolderOpen className="w-3 h-3" />,
+  'midi-empty': <Piano className="w-3 h-3" />,
   paste: <Copy className="w-3 h-3" />,
   'new-track': <Plus className="w-3 h-3" />,
 };
@@ -3037,6 +3039,26 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // opens. This flag is what makes the menu re-render once the startup load
   // finishes, so "Audio from Library" stops reading as an empty library.
   const libraryLoaded = useLibraryStore((s) => s.loaded);
+  /** The "Empty MIDI part…" dialog: which track (null = a new one), the second
+   *  the menu opened at, and where the dialog opens. */
+  const [newPart, setNewPart] = useState<{ trackId: string | null; atSec: number; x: number; y: number } | null>(null);
+  const newPartId = `edit-new-part-${useId().replace(/:/g, '')}`;
+  const newPartRef = useRef<HTMLDivElement>(null);
+  const newPartOpen = newPart !== null;
+  // A press outside the dialog closes it, as the meter panel does.
+  useEffect(() => {
+    if (!newPartOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (newPartRef.current?.contains(e.target as Node)) return;
+      setNewPart(null);
+    };
+    let attached = false;
+    const timer = window.setTimeout(() => { attached = true; window.addEventListener('mousedown', onDown); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) window.removeEventListener('mousedown', onDown);
+    };
+  }, [newPartOpen]);
   const [inpaintPrompt, setInpaintPrompt] = useState('');
   const [inpaintSteps, setInpaintSteps] = useState(8);
   const [inpaintSeed, setInpaintSeed] = useState(-1);
@@ -5892,6 +5914,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         pendingSystemAdd.current = target;
         midiFileInputRef.current?.click();
         return;
+      case 'midi-empty':
+        // The menu's own anchor, as the library picker takes it.
+        setNewPart({ trackId: target.trackId, atSec: target.atSec, x: at?.x ?? 240, y: at?.y ?? 160 });
+        return;
       case 'paste':
         pasteClips({ atSec: target.atSec, trackId: target.trackId ?? undefined });
         return;
@@ -6761,6 +6787,29 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         >
           <div id={timeMapPanelId} role="dialog" aria-labelledby={`${timeMapPanelId}-h`}>
             <EditTimeMapPanel headingId={`${timeMapPanelId}-h`} focus={timeMapPanel.focus} onClose={closeTimeMapPanel} onSeek={seekEditorTo} />
+          </div>
+        </PopoverPortal>
+      )}
+
+      {/* "Empty MIDI part…" from the Add-to-track menus: an empty part with an
+          instrument, in the arrangement's meter and tempo from its bar. */}
+      {newPart && (
+        <PopoverPortal
+          x={newPart.x}
+          y={newPart.y}
+          anchorClassName="left-4 top-28"
+          maxHeight="80vh"
+          innerRef={newPartRef}
+          className="fixed z-50 w-104 max-w-[95vw] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3"
+        >
+          <div id={newPartId} role="dialog" aria-labelledby={`${newPartId}-h`}>
+            <NewMidiPartDialog
+              headingId={`${newPartId}-h`}
+              trackId={newPart.trackId}
+              atSec={newPart.atSec}
+              onClose={() => { setNewPart(null); returnFocusToTimeline(); }}
+              onCreated={(clipId) => selectClipSingle(clipId)}
+            />
           </div>
         </PopoverPortal>
       )}

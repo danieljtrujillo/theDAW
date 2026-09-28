@@ -173,7 +173,7 @@ EDIT arrangement actions (the current tracks/clips/playhead are in `editorState`
 - `editor_set_loop` — Toggle/set the loop region. Payload: `{"enabled": true, "start_sec?": 0, "end_sec?": 8}`
 - `editor_add_marker` — Drop a timeline marker. Payload: `{"seconds": 16, "name": "optional"}`
 
-Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit the note list and re-bounce the clip's audio, so playback and exports stay in step. A re-bounce writes the FULL rendered length, so a clip that had been trimmed grows back; the result says so when the length moved. Every `*_id` argument also accepts the object's exact label/name.
+Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit the note list, and the piano roll opens with the edit. A MIDI clip with an instrument plays live on EDIT's synths and renders its audio when an export needs it; a clip that holds rendered audio (or has no instrument) is re-rendered by a note edit. A note edit resets the clip to its whole grid, so a clip that had been trimmed grows back; the result says so when the length moved. Every `*_id` argument also accepts the object's exact label/name.
 - `editor_get_notes` — Read the note list: `{id, note (pitch 0-127), step (16ths from the clip start), length, velocity}`. Payload: `{"clip_id": "..."}`
 - `editor_set_notes` — Replace the note list wholesale. Payload: `{"clip_id": "...", "notes": [{"note": 60, "step": 0, "length": 4, "velocity": 100, "id?": "..."}]}`
 - `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool}`
@@ -183,14 +183,21 @@ Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit 
 - `editor_humanize_clip` — Payload: `{"clip_id": "...", "timing_steps?": 0.1, "velocity?": 8, "seed?": 7}`
 - `editor_fix_overlaps` — Resolve same-pitch collisions. Payload: `{"clip_id": "...", "mode": "legato"|"trim"|"dedupe"}`
 - `editor_filter_notes` — Strip blips and out-of-range notes. Payload: `{"clip_id": "...", "min_length_steps?": 0.5, "min_velocity?": 10, "min_pitch?": 21, "max_pitch?": 108, "max_gap_steps?": 32}`
-- `editor_set_clip_instrument` — Re-render a MIDI clip through a GM program. Payload: `{"clip_id": "...", "program": 33}`
+- `editor_set_clip_instrument` — Point a MIDI clip at a GM program; a clip holding rendered audio is re-rendered through it. Payload: `{"clip_id": "...", "program": 33}`
+
+Roll parts (a MIDI clip is one part of a score: one instrument, its notes with their polymeter lanes, its meter map, pickup and length; bars are 1-based):
+- `editor_create_midi_clip` — An empty part with a GM instrument (default: the instrument of the track `track_id` names), the arrangement's meters and tempo from its start bar, on a new track unless `track_id` is given. It plays live. Payload: `{"program": 40, "start_bar": 1, "bars": 16, "track_name?": "Violin I", "percussion?": false, "track_id?": "...", "start_sec?": 0, "label?": "..."}`
+- `editor_list_roll_parts` — Every part: instrument, track, start bar, bars, note count, render state. Payload: `{}`
+- `editor_get_roll_part` — One part whole: instrument, tempo map, meter map, pickup, lanes, bends and its own notes `{id, note, step, length, velocity, lane?}`. Payload: `{"clip_id": "...", "from_bar?": 1, "to_bar?": 8}`
+- `editor_set_roll_part` — Write a part back; pass any of the fields. Payload: `{"clip_id": "...", "notes?": [{"note": 67, "step": 0, "length": 2, "velocity": 90, "lane?": 0}], "lanes?": [{"id": 1, "cycle_steps": 14, "tuplet?": {"n": 3, "m": 2}}], "meter_map?": [{"bar": 1, "meter": "7/8 3+2+2"}], "pickup_steps?": 0, "bars?": 32, "program?": 42}`
 
 Tempo and time:
 - `editor_detect_tempo` — Detect a clip's tempo on the backend. Payload: `{"clip_id": "..."}`
 - `editor_set_clip_source_bpm` — Declare the tempo a clip's media was recorded at. Does NOT stretch. Payload: `{"clip_id": "...", "bpm": 128}`
-- `editor_stretch_clip` — Time-stretch. MIDI re-renders locally; AUDIO gets a pitch-preserving backend stretch (0.25x-4x). Exactly one target. Payload: `{"clip_id": "...", "target_bpm?": 120}` or `{"target_duration_sec?": 8}` or `{"ratio?": 1.25}`
+- `editor_stretch_clip` — Time-stretch. MIDI takes the new tempo (re-rendered locally when it holds rendered audio or has no instrument); AUDIO gets a pitch-preserving backend stretch (0.25x-4x). Exactly one target. Payload: `{"clip_id": "...", "target_bpm?": 120}` or `{"target_duration_sec?": 8}` or `{"ratio?": 1.25}`
 - `editor_set_time_signature` — Bar 1's meter; later changes stay. Payload: `{"num": 7, "den": 8}`
 - `editor_set_meter_map` — The arrangement's meter map and/or tempo map (bars 1-based, a map passed replaces the whole map), or both taken from a MIDI clip. Payload: `{"meter_map": [{"bar": 1, "num": 4, "den": 4}, {"bar": 9, "meter": "7/8 3+2+2"}], "tempo_map": [{"bar": 1, "bpm": 96}, {"bar": 17, "bpm": 96, "curve": "linear"}, {"bar": 25, "bpm": 132}]}` or `{"adopt_clip_id": "..."}`
+- `editor_get_meter_map` — Read both maps back in full (editorState lists the first 64 entries), optionally for a bar range. Payload: `{"from_bar?": 1, "to_bar?": 64}`
 - `editor_nudge_clip` — Move a clip along the timeline; exactly one distance. Payload: `{"clip_id": "...", "delta_sec?": -0.25}` or `{"beats?": 1}` or `{"bars?": 2}`
 
 Transport:

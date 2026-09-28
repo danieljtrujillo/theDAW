@@ -18,13 +18,14 @@
  *
  * 2. **Notes are edited as notes.** A piano-roll clip IS its note list, so
  *    "quantize this" is `clipNotes.quantizeNotes` on the notes — not a guess at
- *    what quantized audio would sound like. The clip's audio is a cache
- *    (lib/midiRender): a clip with an instrument plays live on EDIT's synths
- *    and renders when an export needs it, so an edit to one that holds no
- *    render renders nothing. A clip that holds a render, or has no instrument
- *    to play live, is re-rendered, and that note mutation AWAITS the render
- *    before reporting success, so the audio an offline bounce reads never
- *    falls behind the notes.
+ *    what quantized audio would sound like — written to the notes the clip
+ *    plays and to the roll's own notes (lib/clipRollSync), so the piano roll
+ *    opens with the edit. The clip's audio is a cache (lib/midiRender): a clip
+ *    with an instrument plays live on EDIT's synths and renders when an export
+ *    needs it, so an edit to one that holds no render renders nothing. A clip
+ *    that holds a render, or has no instrument to play live, is re-rendered,
+ *    and that note mutation AWAITS the render before reporting success, so the
+ *    audio an offline bounce reads never falls behind the notes.
  *
  * 3. **An operation this layer cannot really perform is an error, not a stub.**
  *    Audio time-stretch needs the backend. Freezing a track needs the offline
@@ -56,7 +57,7 @@ import type {
   SnapDivision,
   ToolMode,
 } from './editorStore';
-import type { PianoNote } from './pianoRollStore';
+import { DEFAULT_LANES, sanitizeLanes, withTicks, type PianoNote } from './pianoRollStore';
 import { publishSelectedClips } from './editorSelectionBridge';
 import { callEditorPlay, callEditorStop, isEditorPlaybackRegistered } from './editorPlaybackBridge';
 import { logInfo } from './logStore';
@@ -93,11 +94,18 @@ import {
 } from '../lib/clipOps';
 import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
 import { encodeWav } from '../lib/wavEncode';
-import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
-import { hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig } from '../lib/midiRender';
+import { clipVoice, drumKitName, GM_STANDARD_KIT, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
+import { isMidiClip } from '../lib/clipEditTarget';
+import { hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig, midiRenderState, midiRenderStateText } from '../lib/midiRender';
 import { midiGlobalVoice } from './midiRenderQueue';
-import { stepClock } from '../lib/rollTempo';
+import { rollNotesAfterEdit } from '../lib/clipRollSync';
+import { playedRollNotes } from '../lib/rollClip';
+import { sanitizeBends } from '../lib/pitchBend';
+import { GM_NAMES } from '../lib/gmInstruments';
+import { playedTempoMap, stepClock } from '../lib/rollTempo';
 import {
+  arrangementClipTime,
+  arrangementClipTimeAtSec,
   editBarAtSec,
   editBarPosToBeat,
   editBarStartSec,
@@ -110,7 +118,7 @@ import {
   parseEditMeter,
   sanitizeEditMeterMap,
 } from '../lib/editTimeMap';
-import { sanitizeMeter, type MeterSegment } from '../lib/meterMap';
+import { barAt, barStartStep, normalizeMeterMap, roundUpToBar, sanitizeMeter, type MeterSegment, type PolyLane } from '../lib/meterMap';
 import type { Meter } from '../lib/colony';
 import { FERMATA_STRETCH_MAX, FERMATA_STRETCH_MIN, TEMPO_BPM_MAX, TEMPO_BPM_MIN, type TempoEvent } from '../lib/tempoMap';
 
@@ -280,13 +288,15 @@ const recheck = (before: AudioClip, inputs: readonly (keyof AudioClip)[]): Found
 
 /** A piano-roll clip with its notes still attached, or a refusal that says which
  *  of the two things is missing. */
-const resolveMidiClip = (ref: unknown): Found<AudioClip> => {
+const resolveMidiClip = (ref: unknown, allowEmpty = false): Found<AudioClip> => {
   const found = resolveClip(ref);
   if (!found.ok) return found;
   const clip = found.value;
   if (clip.sourceKind !== 'piano-roll') {
     return { ok: false, error: `"${clip.label}" is an audio clip; note operations need a piano-roll (MIDI) clip` };
   }
+  // An empty roll is still a roll (lib/clipEditTarget): writing notes into it is how it is filled.
+  if (allowEmpty && isMidiClip(clip)) return { ok: true, value: clip };
   if (!clip.sourcePianoRoll || clip.sourcePianoRoll.length === 0) {
     return { ok: false, error: `"${clip.label}" is a piano-roll clip but carries no notes, so there is nothing to edit` };
   }
@@ -371,6 +381,12 @@ const voiceFor = (clip: AudioClip): ClipVoice => {
  * Write a new note list onto a MIDI clip, and re-render its audio when it
  * holds a render or has no instrument to play live.
  *
+ * The roll's own notes (`sourceRollNotes`) are written in the same step, each
+ * edited note in its lane (lib/clipRollSync), so the edit is still there when
+ * the clip is opened in the piano roll. The grid keeps its length, growing to
+ * the bar line after the last note when the notes run past it, so reopening
+ * shows the same bars.
+ *
  * A clip's audio is a cache (lib/midiRender). A clip that holds one gets a new
  * render (nothing is committed until it succeeds, so a failed synth leaves the
  * clip exactly as it was), and so does a clip with no program of its own or on
@@ -391,10 +407,15 @@ const commitNotes = async (
   if (notes.length === 0) {
     return { ok: false, error: `refusing: that would leave "${clip.label}" with no notes at all` };
   }
-  const totalSteps = noteEndStep(notes, 16);
+  const pickup = clip.sourcePickupSteps ?? 0;
+  const noteEnd = noteEndStep(notes, 1);
+  const barEnd = roundUpToBar(clip.sourceMeterMap ?? [], noteEnd, pickup);
+  const totalSteps = Math.max(clip.sourceTotalSteps ?? 0, clip.sourceMeterMap ? barEnd : noteEndStep(notes, 16), noteEnd);
+  const rollFields = rollNotesAfterEdit(clip, notes, totalSteps);
   return commitMidiFields(clip, {
     sourcePianoRoll: notes,
     sourceTotalSteps: totalSteps,
+    ...rollFields,
     ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
   }, args, extra, opts);
 };
@@ -493,10 +514,10 @@ const clipRef = (args: ClipArgs): unknown => args.clip_id ?? args.clip;
 
 /** Read a MIDI clip's notes. */
 export function getNotes(args: ClipArgs): ToolResult {
-  const found = resolveMidiClip(clipRef(args));
+  const found = resolveMidiClip(clipRef(args), true);
   if (!found.ok) return fail(found.error);
   const clip = found.value;
-  const notes = clip.sourcePianoRoll.map((n) => ({ ...n }));
+  const notes = (clip.sourcePianoRoll ?? []).map((n) => ({ ...n }));
   return done(
     `"${clip.label}" has ${notes.length} note(s) over ${clip.sourceTotalSteps ?? 0} step(s) at ${clip.sourceBpm ?? store().bpm} bpm`,
     { clipId: clip.id, label: clip.label, bpm: clip.sourceBpm ?? store().bpm, totalSteps: clip.sourceTotalSteps, notes },
@@ -509,7 +530,7 @@ export interface SetNotesArgs extends ClipArgs, RenderArgs {
 
 /** Replace a MIDI clip's note list wholesale and re-render its audio. */
 export async function setNotes(args: SetNotesArgs): Promise<ToolResult> {
-  const found = resolveMidiClip(clipRef(args));
+  const found = resolveMidiClip(clipRef(args), true);
   if (!found.ok) return fail(found.error);
   if (!Array.isArray(args.notes)) return fail('setNotes: pass notes as an array of { note, step, length, velocity }');
 
@@ -927,6 +948,42 @@ const asRecord = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
 /**
+ * A meter map as a tool is handed it: [{bar, num, den, groups?}] or
+ * [{bar, meter: "7/8 3+2+2"}], bars 1-based. Returns the segments with 0-based
+ * bars, unsorted and without a bar-0 default (each caller decides that).
+ */
+const parseMeterMapArg = (list: unknown, tool: string): Found<MeterSegment[]> => {
+  if (!Array.isArray(list) || list.length === 0) return { ok: false, error: `${tool}: meter_map must be a non-empty list of {bar, num, den, groups?}` };
+  const segs: MeterSegment[] = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const raw = asRecord(list[i]);
+    if (!raw) return { ok: false, error: `${tool}: meter_map[${i}] must be an object` };
+    const bar = numArg(raw.bar);
+    if (bar === undefined || !Number.isInteger(bar) || bar < 1) return { ok: false, error: `${tool}: meter_map[${i}] needs a whole bar >= 1 (bar 1 is the start)` };
+    let meter: Meter | null;
+    const text = typeof raw.meter === 'string' ? raw.meter : undefined;
+    if (text !== undefined) {
+      meter = parseEditMeter(text);
+    } else {
+      const groups = Array.isArray(raw.groups)
+        ? raw.groups.map(Number)
+        : typeof raw.groups === 'string' && raw.groups.trim()
+          ? raw.groups.split('+').map((g) => Number(g.trim()))
+          : [];
+      const num = numArg(raw.num);
+      const den = numArg(raw.den);
+      meter = sanitizeMeter({ num, den, groups });
+      if (meter && groups.length > 1 && meter.groups.length === 0) meter = null;
+    }
+    if (!meter) {
+      return { ok: false, error: `${tool}: meter_map[${i}] is not a meter: num must be a whole 1-64, den one of 1, 2, 4, 8, 16, 32, and groups (when given) whole numbers that add up to num` };
+    }
+    segs.push({ bar: bar - 1, meter });
+  }
+  return { ok: true, value: segs };
+};
+
+/**
  * Set the arrangement's meter map, tempo map, or both, or take them from a MIDI
  * clip. Bars are 1-based, as on screen. A map passed replaces the whole map;
  * without a bar-1 entry, bar 1 keeps its meter (or start tempo). One undo step.
@@ -948,33 +1005,9 @@ export function setMeterMap(args: MeterMapArgs): ToolResult {
   const s = store();
   let meterMap: MeterSegment[] | null = null;
   if (hasMeter) {
-    if (!Array.isArray(args.meter_map) || args.meter_map.length === 0) return fail('set_meter_map: meter_map must be a non-empty list of {bar, num, den, groups?}');
-    const segs: MeterSegment[] = [];
-    for (let i = 0; i < args.meter_map.length; i += 1) {
-      const raw = asRecord(args.meter_map[i]);
-      if (!raw) return fail(`set_meter_map: meter_map[${i}] must be an object`);
-      const bar = numArg(raw.bar);
-      if (bar === undefined || !Number.isInteger(bar) || bar < 1) return fail(`set_meter_map: meter_map[${i}] needs a whole bar >= 1 (bar 1 is the start)`);
-      let meter: Meter | null;
-      const text = typeof raw.meter === 'string' ? raw.meter : undefined;
-      if (text !== undefined) {
-        meter = parseEditMeter(text);
-      } else {
-        const groups = Array.isArray(raw.groups)
-          ? raw.groups.map(Number)
-          : typeof raw.groups === 'string' && raw.groups.trim()
-            ? raw.groups.split('+').map((g) => Number(g.trim()))
-            : [];
-        const num = numArg(raw.num);
-        const den = numArg(raw.den);
-        meter = sanitizeMeter({ num, den, groups });
-        if (meter && groups.length > 1 && meter.groups.length === 0) meter = null;
-      }
-      if (!meter) {
-        return fail(`set_meter_map: meter_map[${i}] is not a meter: num must be a whole 1-64, den one of 1, 2, 4, 8, 16, 32, and groups (when given) whole numbers that add up to num`);
-      }
-      segs.push({ bar: bar - 1, meter });
-    }
+    const parsed = parseMeterMapArg(args.meter_map, 'set_meter_map');
+    if (!parsed.ok) return fail(parsed.error);
+    const segs = parsed.value;
     if (!segs.some((seg) => seg.bar === 0)) segs.push({ bar: 0, meter: { ...s.meterMap[0].meter, groups: [...s.meterMap[0].meter.groups] } });
     meterMap = sanitizeEditMeterMap(segs);
   }
@@ -1019,6 +1052,60 @@ export function setMeterMap(args: MeterMapArgs): ToolResult {
     if (tempoMap) store().setTempoMap(tempoMap);
   });
   return done(`Arrangement time: ${timeMapsText()}`, { meter_map: meterMapOut(), tempo_map: tempoMapOut() });
+}
+
+export interface GetMeterMapArgs {
+  /** 1-based bars to read from and to (inclusive). */
+  from_bar?: unknown;
+  to_bar?: unknown;
+}
+
+/** The most entries of each map one read returns; from_bar / to_bar page through more. */
+const MAX_MAP_ENTRIES = 2000;
+
+/**
+ * Read the arrangement's meter map and tempo map back, bars 1-based, in full
+ * (the assistant's editor state lists only the first 64 entries of each). A
+ * range lists what changes inside it, led by the meter and the tempo event in
+ * force where it starts, so a read of bars 200-240 says what bar 200 is in.
+ */
+export function getMeterMap(args: GetMeterMapArgs = {}): ToolResult {
+  const fromBar = numArg(args.from_bar);
+  const toBar = numArg(args.to_bar);
+  if (fromBar !== undefined && (!Number.isInteger(fromBar) || fromBar < 1)) return fail('get_meter_map: from_bar is a whole bar >= 1');
+  if (toBar !== undefined && (!Number.isInteger(toBar) || toBar < (fromBar ?? 1))) return fail('get_meter_map: to_bar is a whole bar at or after from_bar');
+  const inRange = (bar: number): boolean => (fromBar === undefined || bar >= fromBar) && (toBar === undefined || bar <= toBar);
+  const allMeters = meterMapOut();
+  const allTempos = tempoMapOut();
+  // What is in force where the range starts: the last change at or before it.
+  const leadOf = <T extends { bar: number }>(list: T[]): T[] => {
+    if (fromBar === undefined) return [];
+    const before = list.filter((e) => e.bar < fromBar);
+    return before.length && !list.some((e) => e.bar === fromBar) ? [before[before.length - 1]] : [];
+  };
+  const meters = [...leadOf(allMeters), ...allMeters.filter((m) => inRange(m.bar))];
+  const tempoLead = fromBar === undefined ? [] : allTempos.filter((e) => e.bar < fromBar && !('fermata' in e && e.fermata)).slice(-1);
+  const tempos = [...tempoLead, ...allTempos.filter((e) => inRange(e.bar))];
+  const s = store();
+  const end = s.clips.reduce((m, c) => Math.max(m, c.startSec + c.durationSec), 0);
+  const lastBar = end > 0 ? editBarAtSec(timeMaps(), Math.max(0, end - 1e-6)).bar + 1 : 0;
+  const shownMeters = meters.slice(0, MAX_MAP_ENTRIES);
+  const shownTempos = tempos.slice(0, MAX_MAP_ENTRIES);
+  const truncated = shownMeters.length < meters.length || shownTempos.length < tempos.length;
+  const range = fromBar !== undefined || toBar !== undefined ? ` in bars ${fromBar ?? 1}-${toBar ?? 'end'}` : '';
+  const sample = shownMeters.slice(0, 12).map((m) => `${m.label} from bar ${m.bar}`).join(', ');
+  return done(
+    `${meters.length} meter entr${meters.length === 1 ? 'y' : 'ies'} and ${tempos.length} tempo event(s)${range}; the clips span ${lastBar} bar(s) at a start tempo of ${editBpmText(s.bpm)} BPM. Meters: ${sample}${shownMeters.length > 12 ? ', …' : ''}${truncated ? `. First ${MAX_MAP_ENTRIES} of each listed; pass from_bar for more` : ''}`,
+    {
+      meter_map: shownMeters,
+      tempo_map: shownTempos,
+      meter_changes: allMeters.length,
+      tempo_events: allTempos.length,
+      start_bpm: s.bpm,
+      last_bar: lastBar,
+      truncated,
+    },
+  );
 }
 
 export interface NudgeClipArgs extends ClipArgs {
@@ -1928,6 +2015,420 @@ export function listSnapshots(): ToolResult {
   return done(names.length ? `Snapshots: ${names.join(', ')}` : 'No snapshots have been taken yet', { snapshots: names });
 }
 
+/* ── roll parts ──────────────────────────────────────────────────────────────
+   An EDIT MIDI clip is one part of a score: one instrument, its notes with
+   their polymeter lanes, its meter map, pickup and grid. These tools make a
+   part, list the parts, read one whole and write one back, so the assistant
+   can write an orchestra part by part. Bars are 1-based, as on screen. A part
+   plays live on EDIT's synths and renders when an export needs its audio
+   (lib/midiRender). */
+
+/** The longest part a tool makes or sets, in bars. */
+const MAX_PART_BARS = 4096;
+/** The most notes one read returns; `from_bar` / `to_bar` page through more. */
+const MAX_PART_NOTES = 4000;
+
+const gmName = (program: number): string => GM_NAMES[program] ?? `Program ${program + 1}`;
+
+/**
+ * How many bars a part's grid of `totalSteps` covers after its pickup: the bar
+ * that holds its last quarter step, counted from 1 (a grid that ends inside a
+ * bar counts that bar). A quarter step is shorter than the shortest bar (1/32,
+ * half a step) and far wider than meterMap's float tolerance, which a
+ * `totalSteps - 1e-9` probe fell inside, counting the bar after the end.
+ */
+const partBars = (meterMap: readonly MeterSegment[], totalSteps: number, pickup: number): number =>
+  totalSteps <= pickup + 1e-9 ? 0 : barAt(meterMap, Math.max(pickup, totalSteps - 0.25), pickup).bar + 1;
+
+/** The render state of a part, in the words its menu uses. */
+const partRender = (clip: AudioClip): { state: string; text: string } => {
+  const track = store().tracks.find((t) => t.id === clip.trackId);
+  const voice = voiceFor(clip);
+  const state = midiRenderState(clip, track, midiGlobalVoice());
+  return { state, text: midiRenderStateText(state, voice.program !== undefined) };
+};
+
+export interface CreateMidiClipArgs {
+  /** The track to put the part on (id or name). Absent: a new track for it. */
+  track_id?: unknown;
+  /** The new track's name; defaults to the instrument's. */
+  track_name?: unknown;
+  /** GM program 0-127; on a percussion part the kit. Default: the instrument of the track `track_id` names. */
+  program?: unknown;
+  /** A drum part: the new track plays on the drum channel. */
+  percussion?: unknown;
+  /** 1-based arrangement bar the part starts on (default 1). */
+  start_bar?: unknown;
+  /** Or the timeline second it starts at. */
+  start_sec?: unknown;
+  /** Length in bars (default 4). */
+  bars?: unknown;
+  label?: unknown;
+}
+
+/**
+ * Make an empty MIDI clip: a part with an instrument, the arrangement's meters
+ * and tempo from where it starts, `bars` bars long. It plays live on its
+ * instrument, so nothing is rendered. One undo step (a new track included).
+ */
+export function createMidiClip(args: CreateMidiClipArgs): ToolResult {
+  const percussion = boolArg(args.percussion) ?? false;
+  const programArg = numArg(args.program);
+  if (programArg !== undefined && (!Number.isInteger(programArg) || programArg < 0 || programArg > 127)) {
+    return fail('create_midi_clip: program must be a whole GM program 0-127');
+  }
+  const bars = numArg(args.bars) ?? 4;
+  if (!Number.isInteger(bars) || bars < 1 || bars > MAX_PART_BARS) return fail(`create_midi_clip: bars must be a whole number 1-${MAX_PART_BARS}`);
+  const startBar = numArg(args.start_bar);
+  const startSecArg = numArg(args.start_sec);
+  if (startBar !== undefined && startSecArg !== undefined) return fail('create_midi_clip: pass start_bar or start_sec, not both');
+  if (startBar !== undefined && (!Number.isInteger(startBar) || startBar < 1)) return fail('create_midi_clip: start_bar is a whole bar >= 1 (bar 1 is the start)');
+  if (startSecArg !== undefined && startSecArg < 0) return fail('create_midi_clip: start_sec must be 0 or more');
+
+  let track: EditorTrack | undefined;
+  if (args.track_id !== undefined && args.track_id !== null && args.track_id !== '') {
+    const found = resolveTrack(args.track_id);
+    if (!found.ok) return fail(found.error);
+    track = found.value;
+  }
+  const drums = percussion || track?.isPercussion === true;
+  // The program named, else the target track's instrument, else (a drum part) the Standard kit.
+  const program = programArg ?? track?.instrumentProgram ?? (drums ? GM_STANDARD_KIT : undefined);
+  if (program === undefined) {
+    return fail(`create_midi_clip: pass program, a GM program 0-127 (0 = Acoustic Grand Piano, 40 = Violin, 48 = String Ensemble 1)${track ? `; "${track.name}" has no instrument of its own` : ''}`);
+  }
+
+  // The part's time: the arrangement's bars and tempo from its first bar, so
+  // its bar lines and seconds are the arrangement's (lib/editTimeMap).
+  const maps = timeMaps();
+  const at = startSecArg !== undefined
+    ? arrangementClipTimeAtSec(maps, startSecArg, bars)
+    : arrangementClipTime(maps, (startBar ?? 1) - 1, bars);
+  const partFields = {
+    sourceKind: 'piano-roll' as const,
+    sourcePianoRoll: [] as PianoNote[],
+    sourceRollNotes: [] as PianoNote[],
+    sourceBpm: at.sourceBpm,
+    sourceTempoMap: at.sourceTempoMap,
+    sourceTotalSteps: at.sourceTotalSteps,
+    sourceMeterMap: at.sourceMeterMap,
+    sourcePickupSteps: 0,
+    sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
+    sourceBends: [],
+  };
+  const nominal = midiClipNominalSec(partFields, store().bpm);
+  const instrumentName = drums ? `${drumKitName(program)} kit` : gmName(program);
+  const label = strArg(args.label) ?? instrumentName;
+
+  const ids = oneStep(() => {
+    const s = store();
+    const trackId = track?.id ?? s.addTrack({
+      name: strArg(args.track_name) ?? instrumentName,
+      nameAutoGenerated: false,
+      instrumentProgram: program,
+      ...(drums ? { isPercussion: true } : {}),
+    });
+    const trk = store().tracks.find((t) => t.id === trackId);
+    const clipId = s.addClipToTrack({
+      trackId,
+      label,
+      mimeType: 'audio/wav',
+      sourceDuration: nominal,
+      offsetIntoSource: 0,
+      durationSec: nominal,
+      startSec: at.startSec,
+      color: trk?.color ?? '#a855f7',
+      ...partFields,
+      // A part on a track that holds its instrument follows the track; on a
+      // track holding another one it carries its own, which plays first
+      // (lib/clipProgram effectiveProgramFor).
+      ...(trk?.instrumentProgram === program ? {} : { instrumentProgram: program }),
+    });
+    return { trackId, clipId };
+  });
+  const bar = editBarAtSec(maps, at.startSec).bar + 1;
+  return done(
+    `Made "${label}", an empty ${bars}-bar ${instrumentName} part at bar ${bar} (${n2(at.startSec)}s, ${n2(nominal)}s long, ${editMeterLabel(at.sourceMeterMap[0].meter)} at ${editBpmText(at.sourceBpm)} BPM). It plays live; fill it with editor_set_notes or editor_set_roll_part`,
+    { clipId: ids.clipId, trackId: ids.trackId, startSec: at.startSec, startBar: bar, bars, totalSteps: at.sourceTotalSteps, program, percussion: drums },
+  );
+}
+
+export interface RollPartArgs extends ClipArgs {
+  /** 1-based bars of the part to list notes from and to (inclusive). */
+  from_bar?: unknown;
+  to_bar?: unknown;
+}
+
+/** A part's lanes in the tool's words. */
+const lanesOut = (lanes: readonly PolyLane[]) => lanes.map((l) => ({
+  id: l.id,
+  name: l.name,
+  cycle_steps: l.cycleSteps ?? null,
+  ...(l.span ? { span_start: l.span.start, span_end: l.span.end ?? null } : {}),
+  ...(l.meterMap?.length ? { meter_map: l.meterMap.map((sg) => ({ bar: sg.bar + 1, num: sg.meter.num, den: sg.meter.den, groups: [...sg.meter.groups] })) } : {}),
+  ...(l.tuplet ? { tuplet: { n: l.tuplet.n, m: l.tuplet.m } } : {}),
+}));
+
+/**
+ * Read a whole part: its instrument, tempo, meter map (1-based bars), pickup,
+ * grid, polymeter lanes, bends, and its own notes with their lanes (the notes
+ * the piano roll opens with), plus whether it plays live or from a render.
+ */
+export function getRollPart(args: RollPartArgs): ToolResult {
+  const found = resolveMidiClip(clipRef(args), true);
+  if (!found.ok) return fail(found.error);
+  const clip = found.value;
+  const track = store().tracks.find((t) => t.id === clip.trackId);
+  const voice = voiceFor(clip);
+  const meterMap = normalizeMeterMap(clip.sourceMeterMap);
+  const pickup = clip.sourcePickupSteps ?? 0;
+  const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
+  const totalSteps = clip.sourceTotalSteps ?? roundUpToBar(meterMap, noteEndStep(clip.sourcePianoRoll ?? [], 1), pickup);
+  const own = clip.sourceRollNotes?.length ? clip.sourceRollNotes : clip.sourcePianoRoll ?? [];
+  const fromBar = numArg(args.from_bar);
+  const toBar = numArg(args.to_bar);
+  if (fromBar !== undefined && (!Number.isInteger(fromBar) || fromBar < 1)) return fail('get_roll_part: from_bar is a whole bar >= 1');
+  if (toBar !== undefined && (!Number.isInteger(toBar) || toBar < (fromBar ?? 1))) return fail('get_roll_part: to_bar is a whole bar at or after from_bar');
+  const lo = fromBar !== undefined ? barStartStep(meterMap, fromBar - 1, pickup) : 0;
+  const hi = toBar !== undefined ? barStartStep(meterMap, toBar, pickup) : Infinity;
+  const inRange = own.filter((n) => n.step >= lo - 1e-9 && n.step < hi - 1e-9);
+  const notes = inRange.slice(0, MAX_PART_NOTES).map((n) => ({
+    id: n.id,
+    note: n.note,
+    step: n.step,
+    length: n.length,
+    velocity: n.velocity,
+    ...(typeof (n as PianoNote & { lane?: number }).lane === 'number' ? { lane: (n as PianoNote & { lane?: number }).lane } : {}),
+  }));
+  const bars = partBars(meterMap, totalSteps, pickup);
+  const render = partRender(clip);
+  const tempoMap = playedTempoMap(clip.sourceBpm ?? store().bpm, clip.sourceTempoMap ?? null).map((e) => (e.fermata
+    ? { beat: e.beat, fermata: { beats: e.fermata.beats, stretch: e.fermata.stretch } }
+    : { beat: e.beat, bpm: Math.round(e.bpm * 100) / 100, curve: e.curve === 'linear' ? 'linear' : 'step' }));
+  const data = {
+    clip_id: clip.id,
+    label: clip.label,
+    track_id: clip.trackId,
+    track: track?.name ?? null,
+    program: voice.program ?? null,
+    instrument: voice.program === undefined ? null : voice.percussion ? `${drumKitName(voice.program)} kit` : gmName(voice.program),
+    percussion: voice.percussion,
+    start_sec: clip.startSec,
+    start_bar: editBarAtSec(timeMaps(), clip.startSec).bar + 1,
+    bpm: clip.sourceBpm ?? store().bpm,
+    tempo_map: tempoMap,
+    meter_map: meterMap.map((sg) => ({ bar: sg.bar + 1, num: sg.meter.num, den: sg.meter.den, groups: [...sg.meter.groups], label: editMeterLabel(sg.meter) })),
+    pickup_steps: pickup,
+    total_steps: totalSteps,
+    bars,
+    lanes: lanesOut(lanes),
+    bends: sanitizeBends(clip.sourceBends ?? []).map((b) => ({ lane: b.lane, range: b.range, points: b.points.map((p) => ({ step: p.step, value: p.value, shape: p.shape })) })),
+    notes,
+    note_count: own.length,
+    played_note_count: clip.sourcePianoRoll?.length ?? 0,
+    truncated: inRange.length > notes.length,
+    render: render.state,
+    render_text: render.text,
+  };
+  const range = fromBar !== undefined || toBar !== undefined ? ` (bars ${fromBar ?? 1}-${toBar ?? bars}: ${inRange.length})` : '';
+  return done(
+    `"${clip.label}": ${data.instrument ?? 'no instrument'}, ${bars} bar(s) in ${data.meter_map.map((m) => `${m.label} from bar ${m.bar}`).join(', ')}, ${lanes.length} lane(s), ${own.length} note(s)${range}${data.truncated ? `, first ${notes.length} listed` : ''}. ${render.text}`,
+    data,
+  );
+}
+
+export interface SetRollPartArgs extends ClipArgs, RenderArgs {
+  /** The part's own notes, each {note, step, length, velocity, lane?, id?}. Replaces them all; [] empties the part. */
+  notes?: unknown;
+  /** The polymeter lanes, each {id, name?, cycle_steps?, span_start?, span_end?, meter_map?, tuplet?}. Lane 0 (A) is always there. */
+  lanes?: unknown;
+  /** The part's meter map, 1-based bars; without a bar-1 entry bar 1 keeps its meter. */
+  meter_map?: unknown;
+  /** 16ths before the part's bar 1. */
+  pickup_steps?: unknown;
+  /** The grid length in bars (after the pickup), or in 16ths. */
+  bars?: unknown;
+  total_steps?: unknown;
+  /** GM program 0-127 for the part. */
+  program?: unknown;
+}
+
+/**
+ * Write a part back: any of its notes (with their lanes), lanes, meter map,
+ * pickup, grid length and program. The notes it plays are derived from the
+ * roll's notes and lanes the way the roll's EDIT key derives them, and the
+ * whole write is one undo step. A part holding a render is re-rendered.
+ */
+export async function setRollPart(args: SetRollPartArgs): Promise<ToolResult> {
+  const found = resolveMidiClip(clipRef(args), true);
+  if (!found.ok) return fail(found.error);
+  const clip = found.value;
+  const given = ['notes', 'lanes', 'meter_map', 'pickup_steps', 'bars', 'total_steps', 'program']
+    .filter((k) => (args as Record<string, unknown>)[k] !== undefined && (args as Record<string, unknown>)[k] !== null);
+  if (given.length === 0) return fail('set_roll_part: pass at least one of notes, lanes, meter_map, pickup_steps, bars, total_steps, program');
+  if (args.bars !== undefined && args.total_steps !== undefined) return fail('set_roll_part: pass bars or total_steps, not both');
+
+  let program: number | undefined;
+  if (args.program !== undefined && args.program !== null) {
+    program = numArg(args.program);
+    if (program === undefined || !Number.isInteger(program) || program < 0 || program > 127) return fail('set_roll_part: program must be a whole GM program 0-127');
+  }
+
+  let meterMap = normalizeMeterMap(clip.sourceMeterMap);
+  if (args.meter_map !== undefined && args.meter_map !== null) {
+    const parsed = parseMeterMapArg(args.meter_map, 'set_roll_part');
+    if (!parsed.ok) return fail(parsed.error);
+    const segs = parsed.value;
+    if (!segs.some((sg) => sg.bar === 0)) segs.push({ bar: 0, meter: { ...meterMap[0].meter, groups: [...meterMap[0].meter.groups] } });
+    meterMap = normalizeMeterMap(segs);
+  }
+
+  let pickup = clip.sourcePickupSteps ?? 0;
+  if (args.pickup_steps !== undefined && args.pickup_steps !== null) {
+    const p = numArg(args.pickup_steps);
+    if (p === undefined || p < 0 || p > 64 || Math.round(p * 2) / 2 !== p) return fail('set_roll_part: pickup_steps is 0-64 16ths, in halves');
+    pickup = p;
+  }
+
+  let lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
+  if (args.lanes !== undefined && args.lanes !== null) {
+    if (!Array.isArray(args.lanes)) return fail('set_roll_part: lanes must be a list of {id, name?, cycle_steps?, span_start?, span_end?, meter_map?, tuplet?}');
+    const raw: PolyLane[] = [];
+    for (let i = 0; i < args.lanes.length; i += 1) {
+      const l = asRecord(args.lanes[i]);
+      if (!l) return fail(`set_roll_part: lanes[${i}] must be an object`);
+      const id = numArg(l.id);
+      if (id === undefined || !Number.isInteger(id) || id < 0) return fail(`set_roll_part: lanes[${i}] needs a whole id >= 0 (0 is lane A)`);
+      const cycle = l.cycle_steps === null || l.cycle_steps === undefined ? null : numArg(l.cycle_steps);
+      if (cycle !== null && (cycle === undefined || cycle < 1)) return fail(`set_roll_part: lanes[${i}] cycle_steps is a length in 16ths >= 1, or null for a lane that does not loop`);
+      let laneMeter: MeterSegment[] | undefined;
+      if (l.meter_map !== undefined && l.meter_map !== null) {
+        const parsed = parseMeterMapArg(l.meter_map, `set_roll_part lanes[${i}]`);
+        if (!parsed.ok) return fail(parsed.error);
+        laneMeter = parsed.value;
+      }
+      const tuplet = asRecord(l.tuplet);
+      const spanStart = numArg(l.span_start);
+      const spanEnd = numArg(l.span_end);
+      raw.push({
+        id,
+        name: strArg(l.name) ?? '',
+        cycleSteps: cycle,
+        ...(spanStart !== undefined ? { span: { start: spanStart, end: spanEnd ?? null } } : {}),
+        ...(laneMeter ? { meterMap: laneMeter } : {}),
+        ...(tuplet ? { tuplet: { n: Number(tuplet.n), m: Number(tuplet.m) } } : {}),
+      });
+    }
+    lanes = sanitizeLanes(raw);
+  }
+  const laneIds = new Set(lanes.map((l) => l.id));
+
+  let own: PianoNote[] = (clip.sourceRollNotes?.length ? clip.sourceRollNotes : clip.sourcePianoRoll ?? []).map((n) => ({ ...n }));
+  if (args.notes !== undefined && args.notes !== null) {
+    if (!Array.isArray(args.notes)) return fail('set_roll_part: notes must be a list of {note, step, length, velocity, lane?, id?}');
+    own = [];
+    for (let i = 0; i < args.notes.length; i += 1) {
+      const raw = asRecord(args.notes[i]);
+      if (!raw) return fail(`set_roll_part: note ${i} is not an object`);
+      const note = numArg(raw.note);
+      const step = numArg(raw.step);
+      const length = numArg(raw.length);
+      const velocity = numArg(raw.velocity);
+      const lane = numArg(raw.lane);
+      if (note === undefined || note < 0 || note > 127) return fail(`set_roll_part: note ${i} needs a pitch 0-127`);
+      if (step === undefined || step < 0) return fail(`set_roll_part: note ${i} needs a step >= 0`);
+      if (length === undefined || length <= 0) return fail(`set_roll_part: note ${i} needs a length > 0`);
+      if (velocity === undefined || velocity < 1 || velocity > 127) return fail(`set_roll_part: note ${i} needs a velocity 1-127`);
+      if (lane !== undefined && !laneIds.has(lane)) return fail(`set_roll_part: note ${i} is in lane ${lane}, which the part does not have (lanes: ${[...laneIds].join(', ')})`);
+      own.push(withTicks({
+        id: strArg(raw.id) ?? uid(),
+        note: Math.round(note),
+        step,
+        length,
+        velocity: Math.round(velocity),
+        ...(lane !== undefined && lane !== 0 ? { lane } : {}),
+      } as PianoNote));
+    }
+  } else {
+    // Notes in a lane that is gone move to lane A.
+    own = own.map((n) => {
+      const lane = (n as PianoNote & { lane?: number }).lane;
+      if (lane === undefined || laneIds.has(lane)) return n;
+      const { lane: _gone, ...rest } = n as PianoNote & { lane?: number };
+      return rest;
+    });
+  }
+
+  const noteEnd = noteEndStep(own, 1);
+  let totalSteps: number;
+  if (args.bars !== undefined && args.bars !== null) {
+    const bars = numArg(args.bars);
+    if (bars === undefined || !Number.isInteger(bars) || bars < 1 || bars > MAX_PART_BARS) return fail(`set_roll_part: bars must be a whole number 1-${MAX_PART_BARS}`);
+    totalSteps = barStartStep(meterMap, bars, pickup);
+  } else if (args.total_steps !== undefined && args.total_steps !== null) {
+    const t = numArg(args.total_steps);
+    if (t === undefined || t <= 0) return fail('set_roll_part: total_steps must be more than 0');
+    totalSteps = t;
+  } else {
+    totalSteps = Math.max(clip.sourceTotalSteps ?? 0, roundUpToBar(meterMap, noteEnd, pickup));
+  }
+  if (noteEnd > totalSteps + 1e-9) {
+    return fail(`set_roll_part: the notes run to step ${n2(noteEnd)}, past the part's end at ${n2(totalSteps)}; pass more bars`);
+  }
+
+  const bends = sanitizeBends(clip.sourceBends ?? []).filter((b) => laneIds.has(b.lane));
+  const played = playedRollNotes(own, lanes, totalSteps);
+  const written = await commitMidiFields(clip, {
+    sourcePianoRoll: played,
+    sourceRollNotes: own,
+    sourceLanes: lanes,
+    sourceMeterMap: meterMap,
+    sourcePickupSteps: pickup,
+    sourceTotalSteps: totalSteps,
+    sourceBends: bends,
+    ...(program !== undefined ? { instrumentProgram: program } : {}),
+  }, args);
+  if (!written.ok) return fail(`set_roll_part: ${written.error}`);
+  const bars = partBars(meterMap, totalSteps, pickup);
+  return done(
+    `Wrote "${clip.label}" (${given.join(', ')}): ${own.length} note(s), ${played.length} played, ${bars} bar(s) in ${meterMap.map((sg) => `${editMeterLabel(sg.meter)} from bar ${sg.bar + 1}`).join(', ')}, ${lanes.length} lane(s)${written.value.rendered ? `; its audio was re-rendered (${n2(written.value.duration)}s)` : '; it plays live'}${written.value.lengthNote}`,
+    { clipId: clip.id, notes: own.length, played: played.length, totalSteps, bars },
+  );
+}
+
+/** Every MIDI clip as a part: its instrument, where it sits, its length and notes, and its render state. */
+export function listRollParts(): ToolResult {
+  const s = store();
+  const parts = s.clips.filter((c) => isMidiClip(c)).map((c) => {
+    const voice = voiceFor(c);
+    const track = s.tracks.find((t) => t.id === c.trackId);
+    const meterMap = normalizeMeterMap(c.sourceMeterMap);
+    const total = c.sourceTotalSteps ?? roundUpToBar(meterMap, noteEndStep(c.sourcePianoRoll ?? [], 1), c.sourcePickupSteps ?? 0);
+    return {
+      clip_id: c.id,
+      label: c.label,
+      track_id: c.trackId,
+      track: track?.name ?? null,
+      program: voice.program ?? null,
+      instrument: voice.program === undefined ? null : voice.percussion ? `${drumKitName(voice.program)} kit` : gmName(voice.program),
+      percussion: voice.percussion,
+      start_sec: c.startSec,
+      start_bar: editBarAtSec(timeMaps(), c.startSec).bar + 1,
+      bars: partBars(meterMap, total, c.sourcePickupSteps ?? 0),
+      notes: c.sourceRollNotes?.length || c.sourcePianoRoll?.length || 0,
+      lanes: sanitizeLanes(c.sourceLanes?.length ? c.sourceLanes : DEFAULT_LANES).length,
+      render: partRender(c).state,
+      muted: !!c.muted,
+    };
+  });
+  return done(
+    parts.length
+      ? `${parts.length} part(s): ${parts.slice(0, 24).map((p) => `${p.label} (${p.instrument ?? 'no instrument'}, bar ${p.start_bar}, ${p.bars} bars, ${p.notes} notes)`).join('; ')}${parts.length > 24 ? '; …' : ''}`
+      : 'No MIDI parts on the timeline yet; editor_create_midi_clip makes one',
+    { parts },
+  );
+}
+
 /* ── operations this layer deliberately does not have ────────────────────── */
 
 /**
@@ -1940,7 +2441,7 @@ export const UNSUPPORTED_OPERATIONS: Record<string, string> = {
   set_metronome:
     'the editor has no metronome: no click track, no count-in, nothing in the store to switch. Adding a flag that nothing reads would report success for silence.',
   tempo_map:
-    'there is no separate tempo_map tool: the arrangement\'s tempo map is written by editor_set_meter_map (its tempo_map argument, bars 1-based, with ramps and fermatas), beside the meter map, and read back by editor_get_state. A piano-roll clip keeps its own tempo map in the TEMPO lane of the MIDI tab.',
+    'there is no separate tempo_map tool: the arrangement\'s tempo map is written by editor_set_meter_map (its tempo_map argument, bars 1-based, with ramps and fermatas), beside the meter map, and read back in full by editor_get_meter_map (editor_get_state lists the first 64 entries). A piano-roll clip keeps its own tempo map in the TEMPO lane of the MIDI tab, and editor_get_roll_part reads it.',
   editor_stretch_audio:
     'a pitch-preserving audio stretch runs on the backend (/api/studio/process, time_pitch). stretchClip handles MIDI clips locally and refuses audio ones by name.',
   editor_freeze_track:

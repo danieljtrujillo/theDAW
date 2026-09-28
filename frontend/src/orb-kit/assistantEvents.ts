@@ -58,7 +58,7 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_set_bpm',
     'editor_set_loop',
     'editor_add_marker',
-    // Notes — piano-roll clips, edited as notes and re-bounced.
+    // Notes — piano-roll clips, edited as notes (a clip holding rendered audio re-renders).
     'editor_quantize_clip',
     'editor_get_notes',
     'editor_set_notes',
@@ -69,12 +69,18 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_fix_overlaps',
     'editor_filter_notes',
     'editor_set_clip_instrument',
+    // Roll parts: a MIDI clip as one part of a score.
+    'editor_create_midi_clip',
+    'editor_list_roll_parts',
+    'editor_get_roll_part',
+    'editor_set_roll_part',
     // Tempo and time.
     'editor_set_clip_source_bpm',
     'editor_stretch_clip',
     'editor_detect_tempo',
     'editor_set_time_signature',
     'editor_set_meter_map',
+    'editor_get_meter_map',
     'editor_nudge_clip',
     // Transport.
     'editor_play',
