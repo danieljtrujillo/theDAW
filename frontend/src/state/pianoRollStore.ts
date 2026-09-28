@@ -1580,6 +1580,9 @@ export const rollTracksOf = (s: PartsView): RollTrack[] => {
   return out;
 };
 
+/** The part marked as the cantus firmus, with its real notes, or null: what a species request sends as its `cantus`. */
+export const cantusFirmusOf = (s: PartsView): RollTrack | null => rollTracksOf(s).find((t) => t.cantusFirmus === true) ?? null;
+
 /** The active part, as the list holds it (its notes may be stale; `notes` is its truth). */
 export const activeTrackOf = (s: Pick<PianoRollState, 'tracks' | 'activeTrackId'>): RollTrack =>
   s.tracks.find((t) => t.id === s.activeTrackId) ?? s.tracks[0];

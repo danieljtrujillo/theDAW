@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import {
   ROLL_TRANSFORMS,
+  cantusFirmusOf,
   effectiveRollKey,
   rollComposeContext,
   rollTracksOf,
@@ -222,6 +223,7 @@ function counterpoint(): void {
   roll().setActiveTrack(cantusId);
   roll().setCantusFirmus(cantusId);
   assert.equal(byName('Part 1').cantusFirmus, true);
+  assert.deepEqual(cantusFirmusOf(roll())?.notes.map((n) => n.note), [62, 65, 64, 62], 'the cantus a species request sends');
   roll().setCantusFirmus(byName('Viola').id);
   assert.equal(byName('Part 1').cantusFirmus, undefined, 'one cantus firmus at a time');
   assert.equal(byName('Viola').cantusFirmus, true);
