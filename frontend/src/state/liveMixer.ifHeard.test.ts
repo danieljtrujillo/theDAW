@@ -62,4 +62,25 @@ const part = (id: string, trackId: string, over: Partial<AudioClip> = {}): Audio
   for (let i = 1; i < 9; i += 1) assert.equal(heardFirst.has(`k${i}`), pass.liveClipIds.has(`k${i}`), `drum track ${i} as the pass has it`);
 }
 
+{
+  // What EDIT pays on every clip change (its render-state memo): a large score
+  // of 120 tracks and 480 parts with half the tracks muted, one extra plan per
+  // muted track. Measured, not budgeted: the time prints for the record.
+  const tracks = Array.from({ length: 120 }, (_, i) => track(`t${i}`, { instrumentProgram: i % 128 }));
+  const clips = tracks.flatMap((t, i) => Array.from({ length: 4 }, (_, k) => part(`${t.id}-${k}`, t.id, { startSec: k * 4, muted: i % 2 === 0 })));
+  const time = (fn: () => void): number => {
+    const runs: number[] = [];
+    for (let r = 0; r < 15; r += 1) {
+      const t0 = performance.now();
+      fn();
+      runs.push(performance.now() - t0);
+    }
+    return runs.sort((a, b) => a - b)[7];
+  };
+  const plan = time(() => planLiveMidi(clips, tracks, OFF));
+  const heard = time(() => liveMidiIfHeard(clips, tracks, OFF));
+  assert.equal(liveMidiIfHeard(clips, tracks, OFF).size, 480, 'every part plays live when heard');
+  console.log(`  120 tracks, 480 parts, 60 tracks muted: planLiveMidi ${plan.toFixed(2)} ms, liveMidiIfHeard ${heard.toFixed(2)} ms (median of 15)`);
+}
+
 console.log('liveMixer.ifHeard: ok');

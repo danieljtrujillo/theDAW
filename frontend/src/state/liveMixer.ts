@@ -3098,7 +3098,13 @@ export function planLiveMidi(
  * part sounds, not how: a muted part's header says how it plays when heard
  * (its M key says it is muted), and EDIT decides from this whether a part
  * needs a render, so muting a part never renders it or drops what it holds.
- * One more plan per track that holds a muted MIDI clip.
+ *
+ * One more plan answers every muted clip at once: with every clip unmuted, a
+ * track that still gets its channels gets them with fewer tracks competing
+ * too (channels go out in track order, and a track that fits keeps fitting
+ * when fewer take them before it). Only a muted clip whose track that plan
+ * drops past the last channel gets a plan of its own, with just its track's
+ * muted clips unmuted.
  */
 export function liveMidiIfHeard(
   clips: readonly LiveMidiClip[],
@@ -3107,14 +3113,20 @@ export function liveMidiIfHeard(
   plan: LiveMidiPlan = planLiveMidi(clips, tracks, global),
 ): Set<string> {
   const out = new Set(plan.liveClipIds);
-  const mutedByTrack = new Map<string, Set<string>>();
+  if (!clips.some((c) => c.muted && isMidiClip(c))) return out;
+  const allHeard = planLiveMidi(clips.map((c) => (c.muted ? { ...c, muted: false } : c)), tracks, global);
+  const dropped = new Set(allHeard.channels.dropped);
+  const crowded = new Map<string, Set<string>>();
   for (const c of clips) {
     if (!c.muted || !isMidiClip(c)) continue;
-    const ids = mutedByTrack.get(c.trackId);
-    if (ids) ids.add(c.id);
-    else mutedByTrack.set(c.trackId, new Set([c.id]));
+    if (allHeard.liveClipIds.has(c.id)) out.add(c.id);
+    else if (dropped.has(c.trackId)) {
+      const ids = crowded.get(c.trackId);
+      if (ids) ids.add(c.id);
+      else crowded.set(c.trackId, new Set([c.id]));
+    }
   }
-  for (const ids of mutedByTrack.values()) {
+  for (const ids of crowded.values()) {
     const trial = planLiveMidi(clips.map((c) => (ids.has(c.id) ? { ...c, muted: false } : c)), tracks, global);
     for (const id of ids) if (trial.liveClipIds.has(id)) out.add(id);
   }
