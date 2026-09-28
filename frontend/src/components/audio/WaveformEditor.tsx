@@ -18,6 +18,7 @@ import { MetamorphPanel } from './MetamorphPanel';
 import { useMorphStore } from '../../state/morphEngine';
 import { useMetamorphPanelRequest } from '../../state/metamorphPanelRequestStore';
 import { MagentaToolStage } from './MagentaToolStage';
+import { TrackVstInstrument } from './TrackVstInstrument';
 import { MAGENTA_TOOLS, magentaToolById, type MagentaTool } from '../../lib/magentaToolCatalog';
 import { AutomationLane } from './AutomationLane';
 import { buildAddAutomationLaneOptions } from './automationLaneOptions';
@@ -2025,6 +2026,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const addMasterVst = useEditorStore((s) => s.addMasterVst);
   const setMasterVstRawState = useEditorStore((s) => s.setMasterVstRawState);
   const setTrackVstRawState = useEditorStore((s) => s.setTrackVstRawState);
+  const setTrackInstrumentRawState = useEditorStore((s) => s.setTrackInstrumentRawState);
   const addTrackVst = useEditorStore((s) => s.addTrackVst);
   const removeMasterVst = useEditorStore((s) => s.removeMasterVst);
   const reorderMasterVst = useEditorStore((s) => s.reorderMasterVst);
@@ -7544,6 +7546,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 </div>
                 {clips.some((c) => c.trackId === t.id && isMidiClip(c)) && (
                   <TrackInstrumentSelect track={t} status={liveMidiStatus.get(t.id)} />
+                )}
+                {!t.frozenOriginal && clips.some((c) => c.trackId === t.id && isMidiClip(c)) && (
+                  <TrackVstInstrument
+                    track={t}
+                    plugins={vstPlugins}
+                    scanning={vstScanning}
+                    onRescan={() => void scanVst(true)}
+                    onOpenEditor={(entry) => openVstEditor(entry, (_entryId, raw) => setTrackInstrumentRawState(t.id, raw))}
+                  />
                 )}
               </div>
             ))}
