@@ -12,6 +12,10 @@ export interface SheetNote {
 export interface SheetTrack {
   name: string;
   notes: SheetNote[];
+  /** The printed dynamics and hairpins as a CC11 (expression) curve, one
+   *  point where the value changes, on the same step grid as the notes.
+   *  Present only when the sheet prints dynamics. */
+  cc11?: { step: number; value: number }[];
 }
 
 export interface SheetScore {
