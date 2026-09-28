@@ -16,12 +16,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from music21 import articulations, bar, dynamics, meter, note, stream, tempo
 
+from backend.lib import pairing
 from backend.modules.library import router as library_router_module
 from backend.modules.notation import router as notation_router_module
 from backend.modules.notation.perform import PPQ, perform_musicxml
 from tests.test_library_store import _seed_generate_entry
 
 ENTRY = "job_pf_00"
+LOOPBACK_PEER = ("127.0.0.1", 51000)
+LAN_PEER = ("10.20.30.40", 51000)
 
 # Soprano, alto, tenor, bass: one chord per beat, four bars.
 _CHORDS = [
@@ -135,7 +138,8 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.include_router(library_router_module.router, prefix="/api/library")
     app.include_router(notation_router_module.router, prefix="/api/notation")
     return (
-        TestClient(app),
+        # This machine's own UI: a loopback peer.
+        TestClient(app, client=LOOPBACK_PEER),
         library_router_module.get_store(),
         tmp_path / "job_pf" / "00",
     )
@@ -208,6 +212,36 @@ def test_the_perform_route_guards_like_its_neighbours(library):
         ).status_code
         == 422
     )
+
+
+def test_the_perform_route_answers_only_this_machine_or_a_paired_device(
+    library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """PERFORM writes a MIDI into the entry, so a page outside theDAW and a
+    LAN caller without the pairing token are refused, and a paired device
+    performs the sheet as this machine's own UI does."""
+    monkeypatch.setattr(pairing, "_TOKEN_FILE", tmp_path / "pairing_token.txt")
+    monkeypatch.setattr(pairing, "_cached", None)
+    client, store, entry_dir = library
+    sheet = _chorale(entry_dir / "notation" / "chorale.musicxml")
+    _register(store, entry_dir, "sheet1", "musicxml", sheet)
+    url = f"/api/notation/{ENTRY}/perform"
+    body = {"source_artifact_id": "sheet1"}
+
+    foreign = client.post(
+        url,
+        json=body,
+        headers={"origin": "https://evil.example", "sec-fetch-site": "cross-site"},
+    )
+    assert foreign.status_code == 403, foreign.text
+
+    lan = TestClient(client.app, client=LAN_PEER)
+    assert lan.post(url, json=body).status_code == 403
+    assert store.db.get_notation_artifact("sheet1__performed_midi") is None
+
+    paired = lan.post(url, json=body, headers={pairing.HEADER: pairing.get_token()})
+    assert paired.status_code == 200, paired.text
+    assert paired.json()["artifact"]["id"] == "sheet1__performed_midi"
 
 
 def test_capabilities_say_perform_is_available(library):

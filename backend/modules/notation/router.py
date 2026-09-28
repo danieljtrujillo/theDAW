@@ -1477,14 +1477,21 @@ class PerformRequest(BaseModel):
     bpm: Optional[float] = Field(default=None, gt=0, le=1000)
 
 
-@router.post("/{entry_id}/perform")
+@router.post(
+    "/{entry_id}/perform",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def perform_artifact(entry_id: str, body: PerformRequest) -> dict[str, Any]:
     """Play a MusicXML sheet as an expressive MIDI (the SCORE tab's EXPORT >
     PERFORM): ritardandos into cadences, fermatas held, phrase downbeats
     leaned on, articulation and dynamics as printed (see :mod:`.perform`).
     The MIDI is written beside the entry's other exports and registered as a
     ``midi`` artifact ``<source>__performed_midi``, so it lists and opens like
-    any other MIDI of the entry."""
+    any other MIDI of the entry. It writes a file, so it answers only to this
+    machine's own UI, the desktop shell or a paired device."""
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
