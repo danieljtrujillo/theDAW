@@ -1171,14 +1171,16 @@ export const PianoRollEditKey: React.FC = () => {
   );
 };
 
-/** CLEAR: remove every note of the part being edited. */
+/** CLEAR: remove every note of the part being edited, and its controller changes (pianoRollStore clear). */
 export const PianoRollClearKey: React.FC = () => {
   const partName = usePianoRollStore((s) => activeTrackOf(s).name);
   const several = usePianoRollStore((s) => s.tracks.length > 1);
+  // Its name says the controller changes go too whenever the part has any.
+  const what = usePianoRollStore((s) => (activeTrackOf(s).controls?.length ? 'every note and controller change' : 'every note'));
   return (
     <RailKey
       onClick={() => usePianoRollStore.getState().clear()}
-      aria-label={several ? `Clear every note of ${partName}` : 'Clear every note'}
+      aria-label={several ? `Clear ${what} of ${partName}` : `Clear ${what}`}
       description={
         several
           ? `Remove every note and controller change of the part ${partName}; the other parts keep theirs`
@@ -1986,6 +1988,8 @@ export const PianoRoll: React.FC<{
   const addToSelection = usePianoRollStore((s) => s.addToSelection);
   const toggleSelection = usePianoRollStore((s) => s.toggleSelection);
   const clear = usePianoRollStore((s) => s.clear);
+  // CLEAR takes the part's controller changes with its notes: the menu entry says so when it has any.
+  const clearsControls = usePianoRollStore((s) => !!activeTrackOf(s).controls?.length);
   const undo = usePianoRollStore((s) => s.undo);
   const redo = usePianoRollStore((s) => s.redo);
   const noteMenu = useContextMenu<PianoNote>();
@@ -2841,7 +2845,7 @@ export const PianoRoll: React.FC<{
           { type: 'separator' },
           {
             type: 'item',
-            label: 'Clear all notes',
+            label: clearsControls ? 'Clear all notes and controllers' : 'Clear all notes',
             icon: <Trash2 className="w-3 h-3" />,
             hint: `${notes.length}`,
             onSelect: clear,

@@ -92,7 +92,11 @@ const heading = list?.querySelector('[id^="roll-part-controls-"]');
 assert.equal(heading?.textContent, 'Controllers');
 assert.equal(list?.querySelector('ul')?.getAttribute('aria-labelledby'), heading?.id, 'the list is named by its heading');
 
-// CLEAR takes them away in one undo step; undo brings them back.
+// The dock's CLEAR key takes a part's controller changes with its notes, and its name says so while the part has any.
+const hasKey = (name: string): boolean => [...win.document.querySelectorAll('button')].some((b) => b.getAttribute('aria-label') === name);
+assert.ok(hasKey('Clear every note and controller change of Piano'), "the CLEAR key names the piano's controller changes");
+
+// The parts column's CLEAR takes them away in one undo step; undo brings them back.
 endRollGesture();
 const steps = roll()._undo.length;
 await step(() => key('Clear every controller change of Piano').click());
@@ -100,9 +104,11 @@ assert.equal(rollTracksOf(roll())[0].controls, undefined, 'the part has no contr
 assert.equal(roll()._undo.length, steps + 1, 'one undo step');
 assert.equal(q('[data-part-controls]'), null, 'and no list');
 assert.equal(rollTracksOf(roll())[0].notes.length, 1, 'its notes stay');
+assert.ok(hasKey('Clear every note of Piano'), 'with none left, the CLEAR key clears notes alone');
 await step(() => roll().undo());
 assert.equal(rollTracksOf(roll())[0].controls?.length, 4, 'undo brings them back');
 assert.ok(q('[data-part-controls]'), 'with the list');
+assert.ok(hasKey('Clear every note and controller change of Piano'));
 
 // The bank LSB field: named by its label, empty for a part that sends none, and a typed value is one undo step.
 {
