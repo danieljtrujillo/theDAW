@@ -27,6 +27,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from backend.modules.notation.expression import length_scale, read_sheet_expression
+
 log = logging.getLogger(__name__)
 
 # Symbolic formats music21 can read that we treat as "sheet" sources. MIDI is
@@ -155,6 +157,9 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         except Exception:  # noqa: BLE001
             name = ""
 
+        # Printed dynamics, hairpins and articulation, read as playing.
+        marks = read_sheet_expression(part)
+
         notes_out: list[dict[str, Any]] = []
         for el in pflat.notes:  # Note or Chord elements only
             off = float(el.offset)
@@ -168,9 +173,12 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             try:
                 if el.volume is not None and el.volume.velocity is not None:
                     vel = int(el.volume.velocity)
+                elif marks.has_dynamics:
+                    vel = marks.velocity(el, off)
             except Exception:  # noqa: BLE001 - many scores carry no velocity
                 vel = 90
             vel = max(1, min(127, vel))
+            length = max(1, int(round(length * length_scale(el))))
 
             if isinstance(el, m21chord.Chord):
                 pitches = [p.midi for p in el.pitches]
@@ -190,7 +198,16 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
                 )
 
         total_notes += len(notes_out)
-        tracks.append({"name": name or f"Part {idx + 1}", "notes": notes_out})
+        track: dict[str, Any] = {"name": name or f"Part {idx + 1}", "notes": notes_out}
+        # The printed dynamics as a CC11 (expression) curve, when there are any.
+        cc11 = marks.cc11(float(el.offset) for el in pflat.notes)
+        if cc11:
+            track["cc11"] = [
+                {"step": int(round(at * STEPS_PER_QUARTER)), "value": value}
+                for at, value in cc11
+                if at >= 0
+            ]
+        tracks.append(track)
 
     return {
         "ok": True,

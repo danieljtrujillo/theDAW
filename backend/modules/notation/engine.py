@@ -59,6 +59,8 @@ from typing import Any, Mapping, NamedTuple, Optional, Sequence
 from backend.modules.library.db import LibraryDB, normalize_artifact_path
 
 from . import pdf_render
+from .expression import apply_to_export as apply_expression
+from .expression import expression_enabled
 from .midi_read import is_midi, read_score
 from .sheet_pitch import legacy_sounding_pitch, stamp_written_pitch
 from .tempo_marks import engrave_tempo_marks, restore_sounding_tempi
@@ -750,6 +752,9 @@ def capabilities() -> dict[str, Any]:
         # POST /{entry_id}/chords route rather than /export, so they get
         # their own capability flag instead of a "formats" entry.
         "chords": True,
+        # POST /{entry_id}/perform renders a sheet as a played MIDI with
+        # partitura (:mod:`.perform`).
+        "perform": importlib.util.find_spec("partitura") is not None,
         # song.ogg for a Beat Saber level needs ffmpeg; the UI shows the pack
         # card's audio status from this.
         "ffmpeg": find_ffmpeg() is not None,
@@ -1128,7 +1133,12 @@ def _is_musicxml(path: Path) -> bool:
 
 
 def _stage_musicxml(
-    source_path: Path, scratch: Path, title: str, *, artist: str = ""
+    source_path: Path,
+    scratch: Path,
+    title: str,
+    *,
+    artist: str = "",
+    expression: bool = True,
 ) -> Path:
     """Write ``source_path`` (any music21-readable source, normally MIDI) as a
     MusicXML file at ``scratch``, titled + credited, and return ``scratch``.
@@ -1136,6 +1146,8 @@ def _stage_musicxml(
     ``artist`` is the composer credit to stamp; callers resolve it once via
     :func:`_chart_artist` (falls back to the global :func:`artist_name` when
     empty) so every staged copy of the same entry carries the same credit.
+    ``expression`` prints the MIDI's dynamics, hairpins, articulation and
+    slurs on the sheet (:mod:`.expression`).
 
     The engravers read MusicXML only. The file is written beside the caller's
     output and the caller removes it afterwards; it is never registered as an
@@ -1154,6 +1166,8 @@ def _stage_musicxml(
             staged_score.metadata.composer = artist or artist_name()
         except Exception as exc:  # noqa: BLE001 - titling is best-effort
             log.debug("notation: staging title skipped: %s", exc)
+    if expression:
+        apply_expression(staged_score, source_path)
     engrave_tempo_marks(staged_score)
     return _write_musicxml(
         staged_score, scratch, what=f"staging {source_path.name} as musicxml"
@@ -1670,6 +1684,7 @@ def _convert_one(
             artifact_id=artifact_id,
             title=title,
             artist=artist,
+            options=options,
         )
     if fmt in _MUSESCORE_FORMATS:
         return _engrave(
@@ -1822,7 +1837,11 @@ def _engrave(
             scratch = output_path.with_name(f"{output_path.stem}__staged_src.musicxml")
             try:
                 scratch = source = _stage_musicxml(
-                    source_path, scratch, title, artist=credited_artist
+                    source_path,
+                    scratch,
+                    title,
+                    artist=credited_artist,
+                    expression=expression_enabled(options),
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning(
@@ -2267,6 +2286,7 @@ def _convert_with_music21(
     artifact_id: Optional[str],
     title: str = "",
     artist: str = "",
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     try:
         import music21
@@ -2330,6 +2350,8 @@ def _convert_with_music21(
             md.composer = composer
         except Exception as exc:  # noqa: BLE001 - titling is best-effort
             log.debug("notation: could not set title on %s: %s", output_path, exc)
+        if not percussion and expression_enabled(options):
+            apply_expression(score, source_path)
         engrave_tempo_marks(score)
         final_path = _write_musicxml(
             score, output_path, what=f"{fmt} export of {source_path.name}"

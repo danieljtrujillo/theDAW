@@ -20,6 +20,7 @@ import {
 import { readSoundingTempi } from './soundingTempo';
 import {
   exportArtifact,
+  performScore,
   getNotationCapabilities,
   listNotationArtifacts,
   fetchArtifactText,
@@ -399,13 +400,19 @@ export const ScoreView: React.FC = () => {
     setExporting(format);
     try {
       const options = partIndex === null ? undefined : { parts: [partIndex] };
-      const artifact = await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
+      // PERFORM has its own route; its MIDI lands in the artifact list like
+      // any export's result and is opened the same way below.
+      const artifact = format === 'perform'
+        ? await performScore(selectedEntryId, selectedArtifact.id, analysisBpm ?? undefined)
+        : await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
       const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
       logInfo(
         'score',
-        partName
-          ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
-          : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
+        format === 'perform'
+          ? `Performed ${selectedArtifact.id} as MIDI${artifact?.path ? ` (${artifact.path})` : ''}`
+          : partName
+            ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
+            : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
       );
       await loadArtifacts();
       if (artifact?.id) setSelectedArtifactId(artifact.id);
