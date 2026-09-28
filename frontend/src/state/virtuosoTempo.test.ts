@@ -105,7 +105,9 @@ assert.deepEqual(useVirtuosoStore.getState().sections, [
   close(tempoAt(deep.tempoMap, 160 - TICK)!.bpm, 120 * (1 - 0.5), 1e-9, 'the final one stops at half');
 }
 
-// A section's own tempo holds over its bars, and the roll's map resumes after it.
+// A section's own tempo holds until the next change: a later section without
+// a tempo keeps it, as in a score, and never falls back to the roll's base
+// tempo. Before this, the outro below jumped back to 100.
 {
   const base: TempoEvent[] = [{ beat: 0, bpm: 100 }];
   const sections = [
@@ -120,12 +122,28 @@ assert.deepEqual(useVirtuosoStore.getState().sections, [
   close(at(8 - TICK)!.bpm, 56 * 0.94, 1e-9, 'into its cadence');
   assert.equal(at(8)?.bpm, 132, 'the Allegro starts on its bar line');
   close(at(16 - TICK)!.bpm, 132 * 0.94, 1e-9, "the Allegro's ritardando");
-  assert.equal(at(16)?.bpm, 100, "the outro follows the roll's map again");
-  close(at(24 - TICK)!.bpm, 100 * (1 - 0.06 * 2.2), 1e-9, 'the final cadence');
+  assert.equal(at(16)?.bpm, 132, "the outro keeps the Allegro's tempo, not the roll's 100");
+  close(at(24 - TICK)!.bpm, 132 * (1 - 0.06 * 2.2), 1e-9, 'the final cadence slows from 132');
+  assert.ok(!song.tempoMap.some((e) => !e.fermata && e.beat > 0 && e.bpm === 100), 'the roll base tempo never comes back');
   // Seconds: bar 1 at 56, then the Allegro's first bar at 132.
   const clock = stepClock(56, song.tempoMap);
   close(clock.at(16), (4 * 60) / 56, 1e-9, 'bar 1 lasts four quarters at 56');
   close(clock.at(48) - clock.at(32), (4 * 60) / 132, 1e-9, 'bar 3 lasts four quarters at 132');
+  close(clock.at(80) - clock.at(64), (4 * 60) / 132, 1e-9, 'bar 5, the outro, lasts four quarters at 132');
+
+  // The sections before the first section tempo follow the roll's map; a point
+  // of the roll's map past a section with a tempo is the next change.
+  const later = buildSong(phrase, {
+    key: 'C', mode: 'major', style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 100,
+    sections: [{ role: 'intro', bars: 2 }, { role: 'theme', bars: 2, bpm: 132 }, { role: 'bridge', bars: 2 }, { role: 'outro', bars: 2 }],
+    tempoMap: [{ beat: 0, bpm: 100 }, { beat: 28, bpm: 90 }],
+  });
+  const la = (b: number) => tempoAt(later.tempoMap, b);
+  assert.equal(la(0)?.bpm, 100, 'section 1 has no tempo and nothing before it: the roll map');
+  assert.equal(la(8)?.bpm, 132, 'section 2 sets 132');
+  assert.equal(la(16)?.bpm, 132, 'section 3 keeps 132');
+  assert.equal(la(28)?.bpm, 90, "the roll map's own change at beat 28 still happens");
+  assert.equal(la(24)?.bpm, 132, 'section 4 starts a tempo at 132, the tempo in force at its bar line');
 }
 
 // The roll's drawn map is followed: its tempo change and its own ramp stay.
@@ -161,7 +179,7 @@ const DRAWN: TempoEvent[] = [{ beat: 0, bpm: 56 }, { beat: 8, bpm: 120 }];
   assert.equal(roll().bpm, 60, "the header shows section 1's tempo");
   assert.equal(tempoAt(roll().tempoMap, 16)?.bpm, 138.25, 'section 2 starts at its tempo');
   assert.equal(tempoAt(roll().tempoMap, 12)?.curve, 'linear', "section 1's last bar ramps");
-  assert.equal(tempoAt(roll().tempoMap, 32)?.bpm, 120, "section 3 follows the roll's drawn map");
+  assert.equal(tempoAt(roll().tempoMap, 32)?.bpm, 138.25, "section 3 keeps section 2's tempo");
   const built = roll().tempoMap;
 
   // One undo takes back the notes and the map together; redo brings both back.
@@ -194,10 +212,10 @@ const DRAWN: TempoEvent[] = [{ beat: 0, bpm: 56 }, { beat: 8, bpm: 120 }];
   assert.equal(tempoAt(roll().tempoMap, 40)?.bpm, 90, 'the drawn point survives the rebuild');
   assert.equal(tempoAt(roll().tempoMap, 16)?.bpm, 138.25, 'the section tempo is still written');
 
-  // Removing a section tempo gives its bars back to the roll's map.
+  // Removing a section tempo: its bars keep section 1's tempo, the one in force.
   v().setSectionTempo(1, null);
   await settle();
-  assert.equal(tempoAt(roll().tempoMap, 16)?.bpm, 120, "section 2 follows the roll's map once its tempo is gone");
+  assert.equal(tempoAt(roll().tempoMap, 16)?.bpm, 60, "section 2 keeps section 1's 60 once its own tempo is gone");
 
   // RESET: the source phrase under the map it followed, with the point drawn in song mode.
   v().resetToSource();

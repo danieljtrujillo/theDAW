@@ -1361,13 +1361,26 @@ export interface SectionSpec {
   bars: number;
   /** The section's time signature; absent follows the roll's meter map. */
   meter?: Meter;
-  /** The section's tempo in quarter notes a minute; absent follows the roll's tempo map. */
+  /** The section's tempo in quarter notes a minute; absent keeps the tempo in force (an earlier section's, else the roll's map). */
   bpm?: number;
 }
 
 /** A section tempo the song can hold: inside the app's 20..300, to the hundredth, or undefined. */
 export const sanitizeSectionTempo = (bpm: unknown): number | undefined =>
   typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0 ? clampTempoBpm(Math.round(bpm * 100) / 100) : undefined;
+
+/**
+ * The tempo section `i` keeps when it has none of its own: the nearest
+ * earlier section's tempo, or undefined when no earlier section has one (the
+ * section then follows the roll's tempo map). songTempoMap builds the same.
+ */
+export function heldSectionTempo(sections: readonly Pick<SectionSpec, 'bpm'>[], i: number): number | undefined {
+  for (let k = Math.min(i, sections.length) - 1; k >= 0; k -= 1) {
+    const bpm = sanitizeSectionTempo(sections[k]?.bpm);
+    if (bpm !== undefined) return bpm;
+  }
+  return undefined;
+}
 
 /** The default section layout for a style, one full harmonic cycle per section. */
 export function defaultSections(style: StyleName): SectionSpec[] {
@@ -1388,8 +1401,9 @@ export interface BuildSongOpts extends TransformOpts {
   /** Reference groove pocket applied by the final humanize pass. */
   groove?: GrooveTemplate;
   /**
-   * The roll's tempo map (lib/rollTempo), which sections without a tempo of
-   * their own follow. Absent means one tempo at `bpm`.
+   * The roll's tempo map (lib/rollTempo), which the sections before the first
+   * section tempo follow; after one, a section without a tempo keeps the tempo
+   * in force (songTempoMap). Absent means one tempo at `bpm`.
    */
   tempoMap?: readonly TempoEvent[];
 }
@@ -1436,9 +1450,11 @@ export interface SectionBeats {
 const RIT_END_BEATS = 1 / PPQ;
 
 /**
- * The song's tempo map. `base` is the roll's map, which sections without a
- * tempo of their own follow. A section with a tempo holds it from its first
- * bar line to its end, where the roll's map takes over again. Then each
+ * The song's tempo map. `base` is the roll's map, which the sections before
+ * the first section tempo follow. A section with a tempo holds it from its
+ * first bar line until the next change: a later section's own tempo, or a
+ * point of the roll's map past the section's end. A section without a tempo
+ * of its own keeps the tempo in force, as in a score. Then each
  * section's last bar ramps linearly from the tempo in force at its bar line to
  * `1 - ritDepth` of the tempo in force at its end, reached one tick before the
  * end, and the next section starts at the tempo the ramp interrupted ("a
@@ -1470,14 +1486,15 @@ export function songTempoMap(
     for (const beat of [...tempos.keys()]) if ((fromIncluded ? beat >= from : beat > from) && beat < to) tempos.delete(beat);
   };
 
-  // Each section's own tempo over its bars; the roll's map resumes at its end.
+  // Each section's own tempo from its first bar line. It stays until the next
+  // change, as a tempo marking does in a score: a later section without a
+  // tempo of its own keeps it, and a point of the roll's map past the
+  // section's end is the next change.
   for (const sec of sections) {
     const bpm = sanitizeSectionTempo(sec.bpm);
     if (bpm === undefined || !(sec.end > sec.start)) continue;
-    const resume = { bpm: getTempoAtBeat(baseTempi, sec.end), curve: curveAt(baseTempi, sec.end) };
     dropInside(sec.start, sec.end, true);
     put(sec.start, bpm, 'step');
-    if (!tempos.has(sec.end)) put(sec.end, resume.bpm, resume.curve);
   }
 
   // A ritardando over each section's last bar.
@@ -1510,7 +1527,7 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
     });
   }
   const style = STYLES[opts.style] ?? STYLES.romantic;
-  const bpm = Math.max(40, Math.min(300, opts.bpm || 120));
+  const bpm = clampTempoBpm(opts.bpm || 120);
   const barSec = barSeconds(meterAtBar(normalizeMeterMap(opts.meterMap), 0), 60 / bpm);
   const targetBars = Math.max(style.progression.length * 3, Math.ceil((opts.targetSec ?? 110) / barSec));
   const barsPer = Math.max(2, style.progression.length);
