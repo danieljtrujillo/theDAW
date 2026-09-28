@@ -2549,7 +2549,7 @@ export function listRollParts(): ToolResult {
  */
 export const UNSUPPORTED_OPERATIONS: Record<string, string> = {
   set_metronome:
-    'the editor has no metronome: no click track, no count-in, nothing in the store to switch. Adding a flag that nothing reads would report success for silence.',
+    "the assistant has no tool for EDIT's click yet. The user switches it with the metronome key in the footer (right-click it for the level and the Beat: quarters, groups or dotted quarters), and sets the count-in with the count-in select beside it (the piano roll's Count field is the same setting); all of them are saved in metronomeStore.",
   tempo_map:
     'there is no separate tempo_map tool: the arrangement\'s tempo map is written by editor_set_meter_map (its tempo_map argument, bars 1-based, with ramps and fermatas), beside the meter map, and read back in full by editor_get_meter_map (editor_get_state lists the first 64 entries). A piano-roll clip keeps its own tempo map in the TEMPO lane of the MIDI tab, and editor_get_roll_part reads it.',
   editor_stretch_audio:
