@@ -4,6 +4,8 @@ import { useAppUiStore } from '../state/appUiStore';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { logError, logInfo } from '../state/logStore';
 import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
+import { withRenderTurn } from '../state/midiRenderQueue';
+import { midiRenderSig } from './midiRender';
 import type { PianoNote } from '../state/pianoRollStore';
 import { takeToRoll } from './takeNotes';
 import { clampTempoBpm } from './tempoMap';
@@ -126,7 +128,8 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
   const notes = notesFromDawClip(clip);
   if (notes.length === 0) throw new Error(`Clip has no audio or MIDI notes: ${clip.name}`);
   const options = dawMidiRenderOptions(clip);
-  const rendered = await renderNotesToBlob(notes, options);
+  // In the MIDI render queue's turn, so it never overlaps another render.
+  const rendered = await withRenderTurn('', clip.name || 'Imported MIDI clip', () => renderNotesToBlob(notes, options));
   const { rollNotes, totalSteps } = pianoNotesFromRenderNotes(notes, project.tempo);
   // The grid covers the whole window too, so a later re-render (an instrument
   // change in EDIT) keeps the rests after the last note.
@@ -201,6 +204,21 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
           sourcePianoRoll: loaded.sourcePianoRoll,
           sourceBpm: loaded.sourceKind === 'piano-roll' ? dawBpm(project.tempo) : undefined,
           sourceTotalSteps: loaded.sourceTotalSteps,
+          // A MIDI clip's render is made because its new track has no
+          // instrument to play it live: it records what it was made from, so a
+          // note edit marks it stale, and why it is held, so EDIT drops it once
+          // the part plays live (lib/midiRender).
+          ...(loaded.sourceKind === 'piano-roll'
+            ? {
+                renderSig: midiRenderSig({
+                  sourceKind: 'piano-roll',
+                  sourcePianoRoll: loaded.sourcePianoRoll,
+                  sourceBpm: dawBpm(project.tempo),
+                  sourceTotalSteps: loaded.sourceTotalSteps,
+                }),
+                renderAuto: true,
+              }
+            : {}),
         });
         useEditorStore.getState().cachePeaks(clipId, peaks);
         imported += 1;

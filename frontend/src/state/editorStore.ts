@@ -241,8 +241,17 @@ export interface AudioClip {
   /** Piano-roll clips: what the cached render in `audioBlob` was made from
    *  (lib/midiRender midiRenderSig), so a note or tempo edit that did not
    *  render marks the cache stale. Absent on renders made before it existed,
-   *  which are trusted for their notes. */
+   *  which are trusted for their notes. lib/midiRender STALE_RENDER_SIG marks a
+   *  render saved out of date, so it reopens stale. */
   renderSig?: string;
+  /** Piano-roll clips: the render in `audioBlob` was made because the clip
+   *  could not play live (no instrument, or past the last live channel), not
+   *  because anyone asked to keep it. EDIT drops it once the clip plays live
+   *  (state/midiRenderQueue dropAutoRender), so a part that gets an instrument
+   *  stops re-rendering after every edit. Absent on a render kept on purpose
+   *  (Keep rendered audio, an audio edit) and on every render saved before the
+   *  field existed. New audio, or none, that does not name it clears it. */
+  renderAuto?: boolean;
   mimeType: string;
   /** Total length of the source audio in seconds. */
   sourceDuration: number;
@@ -1611,6 +1620,12 @@ const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioCli
   // render saved before signatures existed).
   if ('audioBlob' in updates && !('renderSig' in updates) && next.renderSig !== undefined) {
     const { renderSig: _sig, ...rest } = next;
+    next = rest;
+  }
+  // The same holds for the mark that the audio was rendered only so the part
+  // could be heard: other audio (an audio edit's), or none, is not that render.
+  if ('audioBlob' in updates && !('renderAuto' in updates) && next.renderAuto !== undefined) {
+    const { renderAuto: _auto, ...rest } = next;
     next = rest;
   }
   // A render stamps `renderedProgram`. One that does not say it rendered drums

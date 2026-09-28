@@ -329,6 +329,15 @@ class Clip(BaseModel):
     # drum channel (rendered_program then names the kit). Defaulted, so older
     # files load as rendered on a melodic channel.
     rendered_percussion: bool = False
+    # MIDI clips with embedded audio: whether that render was out of date when
+    # saved (its notes, tempo, lanes, bends or grid had changed and the
+    # re-render had not landed), so the clip reopens with a stale render that
+    # EDIT renders again instead of printing old notes; and whether EDIT made
+    # the render only because the clip could not play live (no instrument, or
+    # past the last live channel), so it is dropped once the clip plays live.
+    # Defaulted, so older files open their renders as current and kept.
+    render_stale: bool = False
+    render_auto: bool = False
     source_bpm: float | None = None
     # Audio clips: the tempo the audio plays at after a beat match or a
     # stretch (EDIT's SYNC and BPM readout read it), and the library entry the

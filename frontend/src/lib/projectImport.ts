@@ -36,7 +36,7 @@ import {
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
 import { MIN_NOTE_STEPS, usePianoRollStore, type PianoNote } from '../state/pianoRollStore';
 import { useAppUiStore } from '../state/appUiStore';
-import { renderNotesToBlob, type RenderNote, type RenderOptions } from './midiSynth';
+import type { RenderOptions } from './midiSynth';
 import {
   projectApi,
   type TasmoProjectLoaded,
@@ -77,9 +77,7 @@ import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
 import { tasmoLoadedToDawProject } from './tasmoToSession';
-import { GM_STANDARD_KIT } from './clipProgram';
-import { midiClipNominalSec, midiRenderSig } from './midiRender';
-import { DRUM_CHANNEL } from './editChannels';
+import { STALE_RENDER_SIG, midiClipNominalSec, midiRenderSig, renderSigStale } from './midiRender';
 import { meterFromTasmo } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
 
@@ -107,35 +105,8 @@ const pick = (o: Record<string, number>, ...keys: string[]): number | undefined 
 };
 
 /**
- * Convert a clip's stored note list into absolute-seconds render notes. The
- * stored shape varies by importer, so this accepts both seconds-based
- * (start/duration) and step-based (step/length) spellings.
- */
-const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderNote[] => {
-  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
-  const notes: RenderNote[] = [];
-  for (const n of raw) {
-    const midi = pick(n, 'note', 'pitch', 'midi', 'key');
-    if (midi === undefined) continue;
-    const startSec =
-      pick(n, 'start', 'startSec', 'start_time', 'time') ??
-      (pick(n, 'step') ?? 0) * stepSec;
-    const durSec =
-      pick(n, 'duration', 'durationSec', 'dur', 'length_sec') ??
-      (pick(n, 'length') ?? 1) * stepSec;
-    notes.push({
-      midi: Math.round(midi),
-      startSec: Math.max(0, startSec),
-      durationSec: Math.max(0.02, durSec),
-      velocity: clamp(pick(n, 'velocity', 'vel'), 1, 127, 100),
-    });
-  }
-  return notes;
-};
-
-/**
- * The piano-roll view of the same notes, for "Edit in Piano Roll" and EDIT's
- * playback of the clip. An edge in seconds (a DAW importer's, or a set saved
+ * The piano-roll view of a clip's stored notes, for "Edit in Piano Roll" and
+ * EDIT's playback of the clip. The stored shape varies by importer. An edge in seconds (a DAW importer's, or a set saved
  * from the Session grid) lands on its tick at `bpm` (PPQ to the quarter), never
  * snapped to a 16th, and keeps only its lane. An edge in steps (theDAW's own
  * save) keeps its fraction, with the `tick` / `ticks` the file writes beside it
@@ -402,17 +373,13 @@ export const tasmoMidiRenderOptions = (c: Pick<TasmoLoadedClip, 'offset_into_sou
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
  *  playable (missing audio file on disk, or a MIDI clip with no notes).
  *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
- *  at; `trackProgram` is the track's GM program, which a clip with no audio
- *  file of its own renders through when it has no program of its own, and
- *  `trackPercussion` puts that render on the drum channel, where the program
- *  is the kit (the Standard kit when neither names one). */
+ *  at. A MIDI clip with no audio file opens as its notes whatever its track
+ *  plays: EDIT's render upkeep renders one that cannot play live. */
 const buildClip = async (
   c: TasmoLoadedClip,
   trackId: string,
   color: string,
   projectBpm: number,
-  trackProgram?: number,
-  trackPercussion = false,
 ): Promise<AudioClip | null> => {
   let blob: Blob | null = null;
   let sourceKind: AudioClip['sourceKind'];
@@ -421,8 +388,8 @@ const buildClip = async (
   // source_bpm existed gives every clip the project tempo, as it always did.
   const bpm = tasmoClipBpm(c, projectBpm);
   const instrumentProgram = gmProgramOf(c.instrument_program);
-  let renderedProgram = gmProgramOf(c.rendered_program);
-  let renderedPercussion = c.rendered_percussion === true;
+  const renderedProgram = gmProgramOf(c.rendered_program);
+  const renderedPercussion = c.rendered_percussion === true;
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
@@ -444,31 +411,15 @@ const buildClip = async (
       return null;
     }
     blob = await res.blob();
-  } else if ((c.midi_notes?.length || sourcePianoRoll?.length) && sourcePianoRoll?.length
-    && (trackPercussion || (instrumentProgram ?? trackProgram) !== undefined)) {
-    // No audio of its own and an instrument to play it: the clip plays live on
-    // EDIT's synths and renders when an export needs it (lib/midiRender), so a
-    // 24-part score opens without rendering 24 parts first.
+  } else if (sourcePianoRoll?.length) {
+    // No audio of its own: the clip opens as its notes. With an instrument it
+    // plays live on EDIT's synths and renders when an export needs it
+    // (lib/midiRender), so a 24-part score opens without rendering 24 parts
+    // first. With none it cannot play live, and EDIT's render upkeep renders
+    // it through the MIDI render queue, one part at a time, after the project
+    // is open (state/midiRenderQueue), instead of holding the open up while
+    // each part renders here outside the queue.
     blob = null;
-  } else if (c.midi_notes?.length || sourcePianoRoll?.length) {
-    // No audio of its own and no instrument of its own: render the notes,
-    // through the global instrument (no program given). The program used is
-    // recorded, so EDIT does not render the clip a second time.
-    const notes = toRenderNotes(
-      c.midi_notes?.length
-        ? c.midi_notes
-        : (sourcePianoRoll ?? []).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity })),
-      bpm,
-    );
-    if (notes.length === 0) return null;
-    const program = trackPercussion ? (instrumentProgram ?? trackProgram ?? GM_STANDARD_KIT) : instrumentProgram ?? trackProgram;
-    const rendered = await renderNotesToBlob(
-      trackPercussion ? notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : notes,
-      { ...tasmoMidiRenderOptions(c), ...(program === undefined ? {} : { program }) },
-    );
-    blob = rendered.blob;
-    renderedProgram = program;
-    renderedPercussion = trackPercussion;
   } else {
     return null;
   }
@@ -530,10 +481,19 @@ const buildClip = async (
     ...(sourceKind && instrumentProgram !== undefined ? { instrumentProgram } : {}),
     ...(sourceKind && renderedProgram !== undefined ? { renderedProgram } : {}),
     ...(sourceKind && renderedPercussion ? { renderedPercussion: true } : {}),
-    // A saved render is trusted for the notes saved beside it; from here on an
-    // edit that does not render shows the render as stale (lib/midiRender).
+    // A saved render is trusted for the notes saved beside it, unless the file
+    // says it was saved out of date (`render_stale`: its re-render had not
+    // landed), which reopens it stale so EDIT renders it again. From here on an
+    // edit that does not render shows the render as stale (lib/midiRender). A
+    // render EDIT made only so the part could be heard keeps that mark, so it
+    // is dropped once the part plays live.
     ...(sourceKind && blob && sourcePianoRoll?.length
-      ? { renderSig: midiRenderSig({ ...rollMeter, sourcePianoRoll, sourceTotalSteps, sourceBpm: bpm }) }
+      ? {
+          renderSig: c.render_stale === true
+            ? STALE_RENDER_SIG
+            : midiRenderSig({ ...rollMeter, sourcePianoRoll, sourceTotalSteps, sourceBpm: bpm }),
+          ...(c.render_auto === true ? { renderAuto: true } : {}),
+        }
       : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
@@ -1187,7 +1147,7 @@ export async function loadProjectIntoEditor(
         continue;
       }
       try {
-        const clip = await buildClip(c, trackId, color, bpm, trackProgram, t.is_percussion === true);
+        const clip = await buildClip(c, trackId, color, bpm);
         if (clip) outClips.push(clip);
         else skipped += 1;
       } catch (e) {
@@ -1513,6 +1473,13 @@ export function captureEditorSession(): CapturedSession {
                 instrument_program: gmProgramOf(c.instrumentProgram) ?? null,
                 rendered_program: gmProgramOf(c.renderedProgram) ?? null,
                 rendered_percussion: c.renderedPercussion === true,
+                // Why the embedded render is there, and whether it still
+                // matches the notes. A render saved out of date (its re-render
+                // had not landed) reopens stale, so an export never prints the
+                // old notes; one EDIT made so the part could be heard is dropped
+                // once the part plays live.
+                render_stale: !!fname && renderSigStale(c),
+                render_auto: !!fname && c.renderAuto === true,
               }
             : {}),
           // The tempo a roll clip's notes were written at, or the tempo an

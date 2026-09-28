@@ -633,8 +633,11 @@ const st = () => useEditorStore.getState();
         sourceLanes: lanes,
         renderedProgram: 7.5 as number,
         sourceBpm: 120,
+        // Its render was made from other notes (the re-render had not landed): saved as render_stale.
+        renderSig: 'made-from-other-notes',
       }),
-      rollClip('edited', 't2', { sourcePianoRoll: [note('e0', 60, 0, 1, { velocity: 30 })], sourceRollNotes: [note('r0', 60, 0, 1)], startSec: 2 }),
+      // Its render was made because the part could not play live: saved as render_auto.
+      rollClip('edited', 't2', { sourcePianoRoll: [note('e0', 60, 0, 1, { velocity: 30 })], sourceRollNotes: [note('r0', 60, 0, 1)], startSec: 2, renderAuto: true }),
       audioClip('tagged', 't3', { sourceBpm: 92, bpm: 124, libraryEntryId: 'lib-7' }),
       audioClip('untagged', 't3', { startSec: 1 }),
       rollClip('kit', 'd1', { sourcePianoRoll: [note('k0', 36, 0, 1)], renderedProgram: 25, renderedPercussion: true }),
@@ -665,6 +668,9 @@ const st = () => useEditorStore.getState();
   const byTrack = new Map(payload.project.tracks.map((t) => [t.id, t]));
   assert.equal(byTrack.get('t2')?.instrument_program, null, 'a program outside 0-127 is written as none');
   assert.equal(byTrack.get('t2')?.clips.find((c) => c.id === 'looped')?.rendered_program, null);
+  assert.equal(byTrack.get('t2')?.clips.find((c) => c.id === 'looped')?.render_stale, true, 'a render out of date is saved as such');
+  assert.equal(byTrack.get('t2')?.clips.find((c) => c.id === 'edited')?.render_auto, true, 'a render made to be heard is saved as such');
+  assert.equal(byTrack.get('t1')?.clips.find((c) => c.id === 'plain')?.render_stale, false, 'a render with no signature is trusted for its notes');
   if (process.env.WRITE_TASMO_FIXTURE) {
     writeFileSync(fixturePath, `${JSON.stringify(payload, null, 2)}\n`);
   }

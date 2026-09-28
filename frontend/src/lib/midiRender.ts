@@ -18,7 +18,13 @@
  * lanes, bends or grid length it was rendered from have changed since
  * (`renderSig`). A clip saved before `renderSig` existed has none, and its
  * render is trusted for its notes: every path that wrote notes then rendered
- * with them.
+ * with them. A render saved out of date carries STALE_RENDER_SIG, so it
+ * reopens stale.
+ *
+ * A render is held for one of two reasons. EDIT made it because the clip
+ * could not play live (`renderAuto`): it is dropped once the clip plays live.
+ * Or someone asked for it (Keep rendered audio, an audio edit, or a build that
+ * predates the mark): it is kept, and re-rendered when it goes stale.
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -136,6 +142,22 @@ export function midiRenderSig(clip: MidiRenderSource): string {
   return parts.map((p) => p.toString(16).padStart(8, '0')).join('');
 }
 
+/**
+ * The signature a render carries when it was saved out of date: its notes,
+ * tempo, lanes, bends or grid had changed and the re-render had not landed.
+ * No note list hashes to it, so the render reopens stale and EDIT renders it
+ * again (a .tasmo keeps the fact as `render_stale`, lib/projectImport).
+ */
+export const STALE_RENDER_SIG = 'stale';
+
+/**
+ * True when the clip holds a render that was made from other notes, tempo,
+ * lanes, bends or grid than it has now (`renderSig`). A render with no
+ * signature is trusted for its notes.
+ */
+export const renderSigStale = (clip: MidiRenderSource & Pick<AudioClip, 'audioBlob' | 'renderSig'>): boolean =>
+  hasClipAudio(clip) && clip.renderSig !== undefined && clip.renderSig !== midiRenderSig(clip);
+
 /* ── the cache state ────────────────────────────────────────────────────── */
 
 /** 'none': no render is held. 'current': the render matches the notes and voice. 'stale': it does not. */
@@ -153,7 +175,7 @@ export function midiRenderState(
   if (!hasMidiNotes(clip)) return 'current';
   if (!hasClipAudio(clip)) return 'none';
   if (clipRenderIsStale(clip, track, global)) return 'stale';
-  if (clip.renderSig !== undefined && clip.renderSig !== midiRenderSig(clip)) return 'stale';
+  if (renderSigStale(clip)) return 'stale';
   return 'current';
 }
 
@@ -162,8 +184,9 @@ export function midiRenderState(
 /**
  * Render a clip's notes through `voice`: the notes its lanes play (each in its
  * lane when the lanes bend), at its own tempo and tempo map, over its grid.
- * The one render call every path makes (the queue, the export fill, the
- * assistant's note tools, the roll's EDIT key when it renders).
+ * The render call the MIDI render queue makes for every clip render: EDIT's
+ * upkeep, Keep rendered audio, audio edits, exports, and every part queued so
+ * it can be heard.
  */
 export async function renderMidiClipAudio(
   clip: MidiRenderSource,
@@ -184,13 +207,15 @@ export async function renderMidiClipAudio(
 /**
  * The fields a render writes onto `clip`: the audio, its window (a clip that
  * shows its whole source takes the render's length, ring-out included; a
- * trimmed one keeps its window, lib/clipRenderWindow), the voice it holds and
- * the signature of what it was rendered from.
+ * trimmed one keeps its window, lib/clipRenderWindow), the voice it holds, the
+ * signature of what it was rendered from, and whether it was made only so the
+ * clip can be heard (`auto`, AudioClip renderAuto) or kept on purpose.
  */
 export function midiRenderFields(
   clip: MidiRenderSource & Pick<AudioClip, 'durationSec' | 'sourceDuration' | 'offsetIntoSource' | 'timeStretchRate'>,
   rendered: { blob: Blob; duration: number },
   voice: ClipVoice,
+  auto = false,
 ): Partial<AudioClip> {
   return {
     audioBlob: rendered.blob,
@@ -198,8 +223,19 @@ export function midiRenderFields(
     ...renderedWindowFields(clip, rendered.duration),
     ...renderedVoiceFields(voice),
     renderSig: midiRenderSig(clip),
+    renderAuto: auto ? true : undefined,
   };
 }
+
+/** The fields that take a clip's render away: its audio, peaks, signature, voice stamp and auto mark. The window stays. */
+export const DROP_RENDER_FIELDS: Readonly<Partial<AudioClip>> = Object.freeze({
+  audioBlob: undefined,
+  peaks: undefined,
+  renderSig: undefined,
+  renderedProgram: undefined,
+  renderedPercussion: undefined,
+  renderAuto: undefined,
+});
 
 /**
  * The window of a piano-roll clip with no render after its notes change: a
@@ -213,9 +249,13 @@ export function midiLiveWindowFields(
   return renderedWindowFields(clip, nominalSec);
 }
 
-/** A few words on a clip's render, for its menu and title: "Plays live; renders when exported". */
-export function midiRenderStateText(state: MidiRenderState, live: boolean): string {
+/**
+ * A few words on a clip's render, for its menu and title: "Plays live; renders
+ * when exported". `auto` is a render EDIT made so the clip can be heard.
+ */
+export function midiRenderStateText(state: MidiRenderState, live: boolean, auto = false): string {
   if (state === 'none') return live ? 'Plays live; renders when exported' : 'Needs a render to be heard';
   if (state === 'stale') return 'Rendered audio is out of date; re-rendering';
-  return live ? 'Plays live; rendered audio kept' : 'Plays its rendered audio';
+  if (live) return 'Plays live; rendered audio kept';
+  return auto ? 'Plays audio rendered so it can be heard; dropped once it plays live' : 'Plays its rendered audio';
 }

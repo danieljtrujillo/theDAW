@@ -260,6 +260,8 @@ _KEPT_CLIP = (
     "instrument_program",
     "rendered_program",
     "rendered_percussion",
+    "render_stale",
+    "render_auto",
     "source_bpm",
     "bpm",
     "library_entry_id",
@@ -336,6 +338,11 @@ def test_the_frontend_payload_saves_and_reopens_with_every_field(
     assert clips["plain"]["tempo_map"][1] == {"beat": 2, "bpm": 90, "curve": "linear"}
     assert clips["plain"]["tempo_map"][3]["fermata"] == {"beats": 1, "stretch": 2}
     assert clips["looped"]["tempo_map"] is None
+    # A render saved out of date reopens stale, and one EDIT made only so a
+    # part could be heard keeps that mark, so each part renders or drops it.
+    assert clips["looped"]["render_stale"] is True
+    assert clips["edited"]["render_auto"] is True
+    assert clips["plain"]["render_stale"] is False
     # A drum track keeps its flag and its kit, and its clip's kit render.
     drums = next(t for t in back["tracks"] if t["id"] == "d1")
     assert drums["is_percussion"] is True

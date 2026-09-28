@@ -329,6 +329,11 @@ export interface TasmoClipInput {
   rendered_program?: number | null;
   /** MIDI clips: whether the embedded audio was rendered on the drum channel. */
   rendered_percussion?: boolean;
+  /** MIDI clips with embedded audio: the render was out of date when saved
+   *  (lib/midiRender renderSigStale), and EDIT made it only because the clip
+   *  could not play live (AudioClip renderAuto). Optional for the same reason. */
+  render_stale?: boolean;
+  render_auto?: boolean;
   source_bpm?: number | null;
   /** The tempo the audio plays at after a beat match or a stretch, and the
    *  library entry the clip came from. Optional for the same reason. */
@@ -450,6 +455,11 @@ export interface TasmoLoadedClip {
   /** Whether the clip's audio was rendered on the drum channel; absent in files
    *  written before it was saved. */
   rendered_percussion?: boolean;
+  /** Whether the clip's embedded render was out of date when saved, and whether
+   *  EDIT made it only because the clip could not play live; absent (false) in
+   *  files written before they were saved. */
+  render_stale?: boolean;
+  render_auto?: boolean;
   source_bpm?: number | null;
   /** An audio clip's tempo after a beat match or a stretch, and the library
    *  entry it came from; null or absent in files written before they were

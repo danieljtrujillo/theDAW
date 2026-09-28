@@ -466,9 +466,19 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   // A take with no program cannot play live, so its audio is rendered after the
   // clip lands, applied through applyClipRender, and the clip carries a silent
   // placeholder meanwhile: a real WAV with peaks already on it, so
-  // WaveformEditor's decode-peaks effect has nothing to fail on.
+  // WaveformEditor's decode-peaks effect has nothing to fail on. Both are audio
+  // held only so the take can be heard (renderAuto), which EDIT drops once the
+  // take plays live, and the render records what it was made from (renderSig),
+  // so a later note edit marks it stale. At 057f7499 the render carried
+  // neither: it was kept after the take got an instrument, and a note edit
+  // in the roll left it playing the old notes.
   resetMidiTakeSeq();
   const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'] });
+  const sigOf: Array<Record<string, unknown>> = [];
+  h.deps.renderSig = (take) => {
+    sigOf.push(take as Record<string, unknown>);
+    return `sig:${take.sourcePianoRoll?.map((n) => n.note).join(',')}@${take.sourceBpm}/${take.sourceTotalSteps}`;
+  };
   h.sec(8);
   h.setStatus('recording');
   h.sec(8.5);
@@ -486,6 +496,7 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   assert.ok(clip.audioBlob instanceof Blob && clip.audioBlob.size > 44, 'the placeholder is a real WAV, not a zero-byte blob');
   assert.equal(clip.mimeType, 'audio/wav');
   assert.equal(clip.peaks?.length, 240, 'and it ships flat peaks, so the decode effect skips it');
+  assert.equal(clip.renderAuto, true, 'the placeholder is held only so the take can be heard');
   assert.equal(h.undoSteps(), 1, 'one undo step for the pass');
 
   await flush();
@@ -503,6 +514,9 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   assert.ok(h.renders[0].updates.audioBlob instanceof Blob, 'with the rendered blob');
   assert.equal(h.renders[0].updates.renderedProgram, undefined, 'nothing to stamp');
   assert.equal(h.renders[0].peaks?.length, 240, 'and its peaks');
+  assert.equal(h.renders[0].updates.renderAuto, true, 'made so the take can be heard');
+  assert.equal(h.renders[0].updates.renderSig, 'sig:60,67@120/14', 'and what it was made from: the notes as they landed');
+  assert.deepEqual(sigOf[0].sourcePianoRoll, clip.sourcePianoRoll, 'the signature reads the landed notes');
   h.dispose();
 }
 

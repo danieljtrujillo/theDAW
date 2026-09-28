@@ -459,7 +459,8 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
 
   useEditorStore.getState().loadProject({
     tracks: [meterTrack('t1')],
-    clips: [meterClip('c1', 't1'), liveMidiClip('m1', 't1'), keptMidiClip('m2', 't1')],
+    // m3 holds a render EDIT made only so it could be heard (renderAuto).
+    clips: [meterClip('c1', 't1'), liveMidiClip('m1', 't1'), keptMidiClip('m2', 't1'), { ...keptMidiClip('m3', 't1'), startSec: 16, renderAuto: true }],
     bpm: 132,
     timeSignature: { num: 7, den: 8 },
     // The arrangement's maps: 7/8 3+2+2 from bar 1, 5/4 from bar 9; 132 BPM
@@ -521,6 +522,10 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
   assert.ok(restoredKept?.audioBlob instanceof Blob, 'a part with a kept render comes back with it');
   assert.equal(restoredKept?.renderSig, '0123456789abcdef01234567', 'and with what the render was made from');
   assert.equal(restoredKept?.renderedProgram, 40);
+  assert.equal(restoredKept?.renderAuto, undefined, 'kept on purpose');
+  const restoredAuto = useEditorStore.getState().clips.find((c) => c.id === 'm3');
+  assert.ok(restoredAuto?.audioBlob instanceof Blob, 'a render made to be heard comes back');
+  assert.equal(restoredAuto?.renderAuto, true, 'with the mark that lets EDIT drop it once the part plays live');
 
   /* ── a legacy manifest (no meter) restores as 4/4 ───────────────────────── */
   await tick(60); // let the restore's own autosave land before overwriting it

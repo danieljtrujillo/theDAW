@@ -96,8 +96,8 @@ import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/c
 import { encodeWav } from '../lib/wavEncode';
 import { clipVoice, drumKitName, GM_STANDARD_KIT, isPercussionTrack, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
 import { isMidiClip } from '../lib/clipEditTarget';
-import { hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig, midiRenderState, midiRenderStateText } from '../lib/midiRender';
-import { midiGlobalVoice } from './midiRenderQueue';
+import { DROP_RENDER_FIELDS, hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig, midiRenderState, midiRenderStateText } from '../lib/midiRender';
+import { midiGlobalVoice, midiLiveIfHeard, withRenderTurn } from './midiRenderQueue';
 import { rollNotesAfterEdit } from '../lib/clipRollSync';
 import { playedRollNotes } from '../lib/rollClip';
 import { sanitizeBends } from '../lib/pitchBend';
@@ -337,7 +337,9 @@ const extractWindow = async (asked: AudioClip, args: RenderArgs): Promise<Blob> 
   if (!clip.audioBlob) {
     if (!hasMidiNotes(clip)) throw new Error(`"${clip.label}" has no audio (an empty MIDI clip)`);
     const voice = voiceFor(clip);
-    const rendered = await bounceMidiClip(clip, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    // In the MIDI render queue's turn, so it never overlaps another render.
+    const rendered = await withRenderTurn(clip.id, clip.label, () =>
+      bounceMidiClip(clip, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
     clip = { ...clip, ...midiRenderFields(clip, rendered, voice) };
   }
   const offset = Math.max(0, clip.offsetIntoSource ?? 0);
@@ -378,6 +380,32 @@ const voiceFor = (clip: AudioClip): ClipVoice => {
 };
 
 /**
+ * True when `next` (a clip as an edit is about to leave it) plays live when
+ * heard: the plan play() makes, with `next` in its place (the MIDI render
+ * queue's configured plan, state/midiRenderQueue midiLiveIfHeard).
+ */
+const playsLiveAs = (next: AudioClip): boolean =>
+  midiLiveIfHeard(store().clips.map((c) => (c.id === next.id ? next : c))).has(next.id);
+
+/**
+ * True when `clip` holds a render EDIT made only so it could be heard
+ * (renderAuto) and `next` plays live: the edit drops that render instead of
+ * rendering it again (state/midiRenderQueue dropAutoRender does the same).
+ */
+const autoRenderGoes = (clip: AudioClip, next: AudioClip): boolean =>
+  clip.renderAuto === true && !!clip.audioBlob && playsLiveAs(next);
+
+/**
+ * The auto mark a render written by an edit carries. A render asked for (the
+ * bounce tool) is kept. Otherwise it keeps the reason the clip held a render,
+ * and a clip that held none (it cannot play live) holds this one so it can be
+ * heard.
+ */
+const autoMarkFor = (clip: AudioClip, asked: boolean): Pick<AudioClip, 'renderAuto'> => ({
+  renderAuto: !asked && (clip.audioBlob ? clip.renderAuto === true : true) ? true : undefined,
+});
+
+/**
  * Write a new note list onto a MIDI clip, and re-render its audio when it
  * holds a render or has no instrument to play live.
  *
@@ -392,7 +420,10 @@ const voiceFor = (clip: AudioClip): ClipVoice => {
  * clip exactly as it was), and so does a clip with no program of its own or on
  * its track, which cannot play live; `render: 'always'` renders regardless (the
  * bounce tool). A clip that plays live and holds no render takes the notes at
- * once and renders when an export needs it.
+ * once and renders when an export needs it, and a render EDIT made only so it
+ * could be heard (renderAuto) is dropped rather than rendered again once it
+ * plays live. Each render takes the MIDI render queue's turn, so it never
+ * overlaps another render.
  */
 const commitNotes = async (
   clip: AudioClip,
@@ -437,16 +468,20 @@ const commitMidiFields = async (
   const totalSteps = next.sourceTotalSteps ?? 0;
   const voice = voiceFor(next);
   const empty = !next.sourcePianoRoll?.length;
-  const renders = !empty && (opts.render === 'always' || !!clip.audioBlob || voice.program === undefined);
+  const asked = opts.render === 'always';
+  // A render EDIT made only so the clip could be heard goes once the clip plays live.
+  const autoGoes = !asked && autoRenderGoes(clip, next);
+  const renders = !empty && (asked || (!!clip.audioBlob && !autoGoes) || voice.program === undefined);
   if (!renders) {
     // Plays live with no render, or has no notes left to render: the notes and
-    // the grid's window, nothing rendered. An emptied clip's old render goes.
+    // the grid's window, nothing rendered. An emptied clip's old render goes,
+    // and so does a render made only so a clip that now plays live was heard.
     const nominal = midiClipNominalSec(next, store().bpm);
     const current = recheck(clip, MIDI_INPUTS);
     if (!current.ok) return { ok: false, error: current.error };
     oneStep(() => store().updateClip(current.value.id, {
       ...noteFields,
-      ...(empty && clip.audioBlob ? { audioBlob: undefined, peaks: undefined, renderSig: undefined, renderedProgram: undefined, renderedPercussion: undefined } : {}),
+      ...((empty || autoGoes) && clip.audioBlob ? { ...DROP_RENDER_FIELDS } : {}),
       offsetIntoSource: 0,
       sourceDuration: nominal,
       durationSec: nominal,
@@ -457,7 +492,9 @@ const commitMidiFields = async (
   }
   let rendered: { blob: Blob; duration: number };
   try {
-    rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    // In the MIDI render queue's turn, so it never overlaps another render.
+    rendered = await withRenderTurn(clip.id, clip.label, () =>
+      bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
   } catch (e) {
     return { ok: false, error: `the edit was not applied: re-rendering "${clip.label}" failed — ${reason(e)}` };
   }
@@ -472,6 +509,7 @@ const commitMidiFields = async (
     offsetIntoSource: 0,
     ...renderedVoiceFields(voice),
     renderSig: midiRenderSig(next),
+    ...autoMarkFor(clip, asked),
     // The cached waveform describes the old audio; leaving it would draw the
     // pre-edit shape until something else happened to recompute it.
     peaks: undefined,
@@ -839,19 +877,29 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
   if (plan.value.kind === 'audio') return fail('audio stretch is a backend operation (T13)');
 
   // A MIDI clip that plays live with no render takes the new tempo at once and
-  // renders when an export needs it (lib/midiRender).
-  if (!clip.audioBlob && voiceFor(clip).program !== undefined) {
-    const newBpm = (clip.sourceBpm ?? store().bpm) / plan.value.ratio;
-    const stretched = { ...clip, sourceBpm: newBpm };
+  // renders when an export needs it (lib/midiRender); a render EDIT made only
+  // so it could be heard goes with the old tempo.
+  const liveBpm = (clip.sourceBpm ?? store().bpm) / plan.value.ratio;
+  const autoGoes = autoRenderGoes(clip, { ...clip, sourceBpm: liveBpm });
+  if ((!clip.audioBlob || autoGoes) && voiceFor(clip).program !== undefined) {
+    const stretched = { ...clip, sourceBpm: liveBpm };
     const nominal = midiClipNominalSec(stretched, store().bpm);
-    oneStep(() => store().updateClip(clip.id, { sourceBpm: newBpm, offsetIntoSource: 0, sourceDuration: nominal, durationSec: nominal }));
-    return done(`Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)}: it plays live at ${newBpm.toFixed(1)} bpm, now ${n2(nominal)}s, and renders when exported`);
+    oneStep(() => store().updateClip(clip.id, {
+      sourceBpm: liveBpm,
+      ...(autoGoes ? { ...DROP_RENDER_FIELDS } : {}),
+      offsetIntoSource: 0,
+      sourceDuration: nominal,
+      durationSec: nominal,
+    }));
+    return done(`Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)}: it plays live at ${liveBpm.toFixed(1)} bpm, now ${n2(nominal)}s, and renders when exported`);
   }
 
   let rendered: { blob: Blob; duration: number };
   try {
     const voice = voiceFor(clip);
-    rendered = await stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    // In the MIDI render queue's turn, so it never overlaps another render.
+    rendered = await withRenderTurn(clip.id, clip.label, () =>
+      stretchMidiClip(clip, plan.value.ratio, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
   } catch (e) {
     return fail(`stretch: ${reason(e)}`);
   }
@@ -867,6 +915,7 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
     sourceBpm: newBpm,
     ...renderedVoiceFields(voiceFor(current.value)),
     renderSig: midiRenderSig({ ...current.value, sourceBpm: newBpm }),
+    ...autoMarkFor(current.value, false),
   });
   return done(
     `Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)} — re-rendered at ${newBpm.toFixed(1)} bpm, now ${n2(rendered.duration)}s`,
@@ -2040,13 +2089,19 @@ const gmName = (program: number): string => GM_NAMES[program] ?? `Program ${prog
 const partBars = (meterMap: readonly MeterSegment[], totalSteps: number, pickup: number): number =>
   totalSteps <= pickup + 1e-9 ? 0 : barAt(meterMap, Math.max(pickup, totalSteps - 0.25), pickup).bar + 1;
 
-/** The render state of a part, in the words its menu uses. */
+/**
+ * The render state of a part, in the words its menu uses: whether it plays
+ * live when heard (the plan play() makes, a muted part read as if unmuted, as
+ * EDIT's clip header reads it) and why it holds a render.
+ */
 const partRender = (clip: AudioClip): { state: string; text: string } => {
-  const track = store().tracks.find((t) => t.id === clip.trackId);
-  const voice = voiceFor(clip);
-  const state = midiRenderState(clip, track, midiGlobalVoice());
-  return { state, text: midiRenderStateText(state, voice.program !== undefined) };
+  const state = partRenderState(clip);
+  return { state, text: midiRenderStateText(state, playsLiveAs(clip), clip.renderAuto === true && !!clip.audioBlob) };
 };
+
+/** A part's render state alone: 'none', 'current' or 'stale' (lib/midiRender). */
+const partRenderState = (clip: AudioClip) =>
+  midiRenderState(clip, store().tracks.find((t) => t.id === clip.trackId), midiGlobalVoice());
 
 export interface CreateMidiClipArgs {
   /** The track to put the part on (id or name). Absent: a new track for it. */
@@ -2432,7 +2487,7 @@ export function listRollParts(): ToolResult {
       bars: partBars(meterMap, total, c.sourcePickupSteps ?? 0),
       notes: c.sourceRollNotes?.length || c.sourcePianoRoll?.length || 0,
       lanes: sanitizeLanes(c.sourceLanes?.length ? c.sourceLanes : DEFAULT_LANES).length,
-      render: partRender(c).state,
+      render: partRenderState(c),
       muted: !!c.muted,
     };
   });

@@ -38,7 +38,8 @@
  * whose track or picker gives it a program plays live on EDIT's synths and has
  * no audio of its own until an export renders it (lib/midiRender); a take with
  * no program cannot play live, so its rendered audio is applied afterwards
- * through the history-exempt `applyClipRender`. No reference DAW under
+ * through the history-exempt `applyClipRender`, marked as made so it can be
+ * heard (EDIT drops it once the take plays live). No reference DAW under
  * `oss-refs/` was opened while writing this file and no code is copied from one.
  */
 
@@ -398,13 +399,18 @@ export interface MidiCaptureDeps {
   /** The clip with this id as the editor holds it now, read when its render
    *  lands so a take the user trimmed meanwhile keeps its window. */
   clipWindow: (id: string) => RenderWindowClip | undefined;
-  /** `midiSynth.renderStepNotesToBlob`. */
+  /** `midiSynth.renderStepNotesToBlob`, taken in the MIDI render queue's turn
+   *  (state/midiRenderQueue withRenderTurn) so it never overlaps another render. */
   renderStepNotes: (
     notes: StepRenderNote[],
     bpm: number,
     totalSteps: number,
     opts?: { program?: number; percussion?: boolean },
   ) => Promise<{ blob: Blob; duration: number }>;
+  /** `lib/midiRender.midiRenderSig`: what a take's render was made from, so a
+   *  later note edit marks it stale and EDIT renders it again. Left out, the
+   *  render carries no signature and is trusted for its notes. */
+  renderSig?: (take: Pick<AudioClip, 'sourceKind' | 'sourcePianoRoll' | 'sourceRollNotes' | 'sourceBpm' | 'sourceTotalSteps'>) => string;
   /** `editorStore.computePeaks`. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array; duration: number }>;
   /** `statusNoticeStore.postStatus`. */
@@ -548,8 +554,10 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         // through the history-exempt `applyClipRender`, so the pass stays one
         // undo step however long the render takes. The placeholder it carries
         // meanwhile is a real decodable WAV and ships flat peaks, so
-        // WaveformEditor's decode-peaks effect has nothing to fail on.
-        ...(playsLive ? {} : { audioBlob: silentWavBlob(), peaks: new Float32Array(CAPTURE_PEAK_BINS) }),
+        // WaveformEditor's decode-peaks effect has nothing to fail on. Both are
+        // audio the take holds only so it can be heard (AudioClip renderAuto),
+        // so EDIT drops them once the take plays live.
+        ...(playsLive ? {} : { audioBlob: silentWavBlob(), peaks: new Float32Array(CAPTURE_PEAK_BINS), renderAuto: true }),
         mimeType: 'audio/wav',
         sourceDuration: land.durationSec,
         offsetIntoSource: 0,
@@ -608,6 +616,21 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
             // the RESOLVED program (track's own, else the global picker's) —
             // the same value `effectiveProgramFor` reports for this clip.
             ...(land.voice.program !== undefined ? renderedVoiceFields(land.voice) : {}),
+            // The notes it was made from, as the take landed with them, so a
+            // later note edit marks it stale; and the reason it is held: the
+            // take cannot play live, so it goes once the take can.
+            ...(deps.renderSig
+              ? {
+                  renderSig: deps.renderSig({
+                    sourceKind: 'piano-roll',
+                    sourcePianoRoll: land.rollNotes,
+                    sourceRollNotes: land.rollNotes,
+                    sourceBpm: bpm,
+                    sourceTotalSteps: land.totalSteps,
+                  }),
+                }
+              : {}),
+            renderAuto: true,
           },
           peaks,
         );

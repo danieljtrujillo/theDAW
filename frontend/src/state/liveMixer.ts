@@ -3091,6 +3091,36 @@ export function planLiveMidi(
   return { liveClipIds, channels };
 }
 
+/**
+ * The MIDI clips that play live when they are heard: every clip planLiveMidi
+ * plays live, and each muted clip that would play live were the muted clips of
+ * its track unmuted (the other tracks as they are). Mute decides whether a
+ * part sounds, not how: a muted part's header says how it plays when heard
+ * (its M key says it is muted), and EDIT decides from this whether a part
+ * needs a render, so muting a part never renders it or drops what it holds.
+ * One more plan per track that holds a muted MIDI clip.
+ */
+export function liveMidiIfHeard(
+  clips: readonly LiveMidiClip[],
+  tracks: readonly LiveMidiTrack[],
+  global: GlobalVoice,
+  plan: LiveMidiPlan = planLiveMidi(clips, tracks, global),
+): Set<string> {
+  const out = new Set(plan.liveClipIds);
+  const mutedByTrack = new Map<string, Set<string>>();
+  for (const c of clips) {
+    if (!c.muted || !isMidiClip(c)) continue;
+    const ids = mutedByTrack.get(c.trackId);
+    if (ids) ids.add(c.id);
+    else mutedByTrack.set(c.trackId, new Set([c.id]));
+  }
+  for (const ids of mutedByTrack.values()) {
+    const trial = planLiveMidi(clips.map((c) => (ids.has(c.id) ? { ...c, muted: false } : c)), tracks, global);
+    for (const id of ids) if (trial.liveClipIds.has(id)) out.add(id);
+  }
+  return out;
+}
+
 /** How a track's MIDI clips sound in EDIT, for the track header's status. */
 export interface LiveMidiTrackStatus {
   /** 'live': EDIT's synths play the notes; 'bounce': the rendered audio plays. */
@@ -3425,12 +3455,14 @@ async function start(fromSec: number): Promise<void> {
   // A MIDI clip that holds no render and will not play live this pass (the
   // synths did not load, or its track is past the last live channel) has
   // nothing to sound: it is rendered, one clip at a time, and plays from the
-  // next pass on.
+  // next pass on. One the plan plays live whose synths did not load keeps its
+  // render ('keep'): EDIT's upkeep ('cache') renders nothing for, and drops the
+  // automatic render of, a clip the plan plays live.
   const silent = clips.filter((c) => !c.muted && hasMidiNotes(c) && !c.audioBlob && !liveMidiPlan.liveClipIds.has(c.id));
   if (silent.length > 0) {
     logWarn('editor', `${silent.length} MIDI clip(s) cannot play live this pass and hold no render; rendering them now: ${silent.slice(0, 4).map((c) => c.label).join(', ')}${silent.length > 4 ? ', …' : ''}`);
     for (const c of silent) {
-      requestMidiRender(c.id, 'cache').catch((e) => logError('editor', `MIDI render failed for "${c.label}": ${e instanceof Error ? e.message : String(e)}`));
+      requestMidiRender(c.id, plan.liveClipIds.has(c.id) ? 'keep' : 'cache').catch((e) => logError('editor', `MIDI render failed for "${c.label}": ${e instanceof Error ? e.message : String(e)}`));
     }
   }
 

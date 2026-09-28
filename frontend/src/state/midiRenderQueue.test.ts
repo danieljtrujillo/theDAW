@@ -10,7 +10,9 @@
  * render, one is muted and one is audio. The export renders what it must one
  * clip at a time, leaves the live part without a render, keeps the render of
  * the part that cannot play live, and frees the export-only render's decoded
- * audio afterwards.
+ * audio afterwards. Then why a part holds a render: one made because it could
+ * not play live is dropped once it can, one kept on purpose never is, and a
+ * render in another tool's turn waits in line with the clip renders.
  *
  *   cd frontend && npx tsx src/state/midiRenderQueue.test.ts
  */
@@ -22,9 +24,13 @@ import {
   clipWithAudio,
   clipsWithMidiAudio,
   configureMidiRenderQueue,
+  dropAutoRender,
+  midiLiveIfHeard,
   requestMidiRender,
   useMidiRenderQueue,
+  withRenderTurn,
 } from './midiRenderQueue.ts';
+import { liveMidiIfHeard } from './liveMixer.ts';
 import { midiRenderSig, midiRenderState, type MidiStepRender } from '../lib/midiRender.ts';
 import { rollClipFields } from '../lib/rollClip.ts';
 import { decodeCacheStats, decodeClipBlob } from '../lib/decodeCache.ts';
@@ -328,6 +334,120 @@ const reset = (): void => {
   assert.deepEqual(await b, { kind: 'skipped', reason: 'the project closed' });
   await gate();
   assert.equal((await a).kind, 'written', 'the render already running finishes');
+}
+
+/* ── why a part holds a render, and when it lets it go ────────────────────── */
+// From here the queue has the live plan the app gives it (liveMixer
+// liveMidiIfHeard), so 'cache' knows which parts play live.
+configureMidiRenderQueue({
+  render,
+  computePeaks: async (_blob, bins) => ({ peaks: new Float32Array(bins ?? 240) }),
+  global: () => global,
+  ensureReady: async () => true,
+  livePlan: liveMidiIfHeard,
+});
+{
+  // The review's sequence: a part on a track with no instrument is rendered by
+  // the request EDIT's upkeep queues for a part that cannot play live; then the
+  // track is given a violin. At 057f7499 the render went stale, EDIT rendered
+  // it again and kept it, and every later note edit rendered the live part again.
+  reset();
+  ed().loadProject({ tracks: [track('t0')], clips: [part('a', 't0', 60)] });
+  assert.equal(midiLiveIfHeard().has('a'), false, 'no instrument: it cannot play live');
+  assert.equal((await requestMidiRender('a', 'cache')).kind, 'written');
+  assert.equal(clip('a')!.renderAuto, true, 'the render is marked as made so the part can be heard');
+  ed().updateTrack('t0', { instrumentProgram: 40 });
+  assert.ok(midiLiveIfHeard().has('a'), 'with a violin it plays live');
+  assert.equal(midiRenderState(clip('a')!, ed().tracks[0], global), 'stale', 'and the render is out of date');
+  const undoDepth = ed()._undo.length;
+  const out = await requestMidiRender('a', 'cache');
+  assert.equal(out.kind, 'skipped', 'the upkeep renders nothing for a part that plays live');
+  assert.equal(calls.length, 1, 'one render in all');
+  assert.equal(clip('a')!.audioBlob, undefined, 'the automatic render is dropped');
+  assert.equal(clip('a')!.renderAuto, undefined);
+  assert.equal(clip('a')!.renderSig, undefined);
+  assert.equal(clip('a')!.renderedProgram, undefined);
+  assert.equal(ed()._undo.length, undoDepth, 'the drop is derived audio: no undo step');
+  // A note edit on the live part renders nothing now.
+  ed().updateClip('a', { sourcePianoRoll: clip('a')!.sourcePianoRoll!.map((n) => ({ ...n, note: n.note + 2 })) });
+  assert.equal((await requestMidiRender('a', 'cache')).kind, 'skipped');
+  assert.equal(calls.length, 1);
+}
+{
+  // dropAutoRender leaves a render kept on purpose alone.
+  reset();
+  ed().loadProject({ tracks: [track('t0', { instrumentProgram: 40 })], clips: [part('k', 't0', 60)] });
+  assert.equal((await requestMidiRender('k', 'keep')).kind, 'written', 'Keep rendered audio on a live part renders it');
+  assert.equal(clip('k')!.renderAuto, undefined, 'kept on purpose');
+  assert.equal(dropAutoRender('k'), false, 'a kept render is never dropped on its own');
+  assert.ok(clip('k')!.audioBlob instanceof Blob);
+  // It goes stale and the upkeep renders it again, still kept.
+  ed().updateTrack('t0', { instrumentProgram: 41 });
+  assert.equal((await requestMidiRender('k', 'cache')).kind, 'written');
+  assert.equal(clip('k')!.renderedProgram, 41);
+  assert.equal(clip('k')!.renderAuto, undefined);
+  assert.equal(calls.length, 2);
+}
+{
+  // Keep rendered audio on a part holding a current automatic render keeps it
+  // from then on, and renders nothing; an audio edit keeps it the same way.
+  reset();
+  ed().loadProject({ tracks: [track('t0'), track('t1')], clips: [part('a', 't0', 60), part('b', 't1', 62)] });
+  await requestMidiRender('a', 'cache');
+  await requestMidiRender('b', 'cache');
+  assert.equal(clip('a')!.renderAuto, true);
+  assert.equal((await requestMidiRender('a', 'keep')).kind, 'current');
+  assert.equal(clip('a')!.renderAuto, undefined, 'kept from now on');
+  const edited = await clipWithAudio('b');
+  assert.equal(edited.renderAuto, undefined, 'an audio edit keeps the render it worked on');
+  assert.equal(calls.length, 2, 'neither rendered again');
+  // Given instruments, neither is dropped.
+  ed().updateTrack('t0', { instrumentProgram: 40 });
+  ed().updateTrack('t1', { instrumentProgram: 40 });
+  assert.equal(dropAutoRender('a'), false);
+  assert.equal(dropAutoRender('b'), false);
+}
+{
+  // A part queued for its render gets an instrument before its turn: the
+  // request finds it playing live and renders nothing.
+  reset();
+  ed().loadProject({ tracks: [track('t0'), track('t1')], clips: [part('a', 't0', 60), part('b', 't1', 62)] });
+  gated = true;
+  const first = requestMidiRender('a', 'cache');
+  const second = requestMidiRender('b', 'cache');
+  ed().updateTrack('t1', { instrumentProgram: 40 });
+  await gate();
+  await first;
+  const late = await second;
+  assert.equal(late.kind, 'skipped');
+  assert.equal(calls.length, 1, 'only the part that still cannot play live rendered');
+  assert.equal(clip('b')!.audioBlob, undefined);
+}
+{
+  // A render in another tool's turn (an assistant note tool, a stretch, a MIDI
+  // take) waits for the clip render ahead of it and holds up the one after.
+  reset();
+  ed().loadProject({ tracks: [track('t0'), track('t1')], clips: [part('a', 't0', 60), part('b', 't1', 62)] });
+  gated = true;
+  const order: string[] = [];
+  const a = requestMidiRender('a', 'cache').then(() => order.push('a'));
+  const turn = withRenderTurn('x', 'MIDI take', async () => {
+    const r = await render([{ note: 70, velocity: 90, step: 0, length: 2 }], 120, 16, {});
+    order.push('turn');
+    return r;
+  });
+  const b = requestMidiRender('b', 'cache').then(() => order.push('b'));
+  assert.deepEqual(useMidiRenderQueue.getState().waiting.map((w) => w.label), ['MIDI take', 'b'], 'the turn waits in line');
+  await gate();
+  await gate();
+  await gate();
+  await Promise.all([a, turn, b]);
+  assert.deepEqual(order, ['a', 'turn', 'b']);
+  assert.equal(maxActive, 1, 'no two renders ever ran at once');
+  // A failure in a turn is the caller's, and not a failed clip render.
+  gated = false;
+  await assert.rejects(withRenderTurn('x', 'broken', async () => { throw new Error('synth down'); }), /synth down/);
+  assert.equal(useMidiRenderQueue.getState().failed, 0);
 }
 
 console.log('midiRenderQueue: ok');
