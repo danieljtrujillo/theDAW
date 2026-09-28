@@ -108,6 +108,8 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_reorder_tracks',
     'editor_duplicate_track',
     'editor_freeze_track',
+    // Templates.
+    'editor_add_symphony_template',
     // Analysis (backend DSP).
     'editor_analyze_clip',
     'editor_compare_timing',

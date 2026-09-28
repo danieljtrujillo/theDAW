@@ -1588,6 +1588,25 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         {"track_id": _TRACK_ID},
         ["track_id"],
     ),
+    _fn(
+        "editor_add_symphony_template",
+        "Add the Symphony orchestra template after the arrangement's tracks: "
+        "a folder of sixteen section tracks (strings, woodwinds, harp, brass, "
+        "percussion) on their instruments, panned to their seats, each on its "
+        "section's bus; the five section buses send to one Hall bus whose "
+        "Reverb plays the measured Detmold Konzerthaus, and every track's synth "
+        "reverb send (CC 91) is 0. One undo step; deletes nothing.",
+        {
+            "seating": {
+                "type": "string",
+                "enum": ["american", "european"],
+                "description": (
+                    "american (default): violins together on the left; european: "
+                    "first and second violins facing each other"
+                ),
+            }
+        },
+    ),
     # ── analysis ────────────────────────────────────────────────────────────
     _fn(
         "editor_analyze_clip",

@@ -111,6 +111,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_set_snap:   'T1_inform',
   editor_set_tool:   'T1_inform',
   editor_duplicate_track:'T1_inform',
+  // Adds tracks and buses and deletes nothing, as one undo step.
+  editor_add_symphony_template:'T1_inform',
   editor_rename_marker:'T1_inform',
   editor_add_automation_lane:'T1_inform',
   editor_set_automation_points:'T1_inform',
@@ -259,6 +261,8 @@ export function describeToolCall(toolName: string, args: Record<string, unknown>
       return 'Set the loop region'
     case 'editor_add_marker':
       return `Add marker at ${args.seconds}s`
+    case 'editor_add_symphony_template':
+      return `Add the symphony orchestra template (${args.seating === 'european' ? 'European' : 'American'} seating): sixteen section tracks, five section buses and a hall`
 
     // -- the T2 editor tools --------------------------------------------------
     // These are the ones a user has to approve, so each says what it DESTROYS,

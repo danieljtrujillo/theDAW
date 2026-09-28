@@ -369,6 +369,8 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     editor_reorder_tracks: (p) => facade.reorderTracks(pick(p, ['track_ids'])),
     editor_duplicate_track: (p) => facade.duplicateTrack(pick(p, TRACK)),
     editor_freeze_track: (p) => facade.freezeTrack(pick(p, TRACK)),
+    // The Symphony orchestra template: sixteen section tracks, their buses and the hall send.
+    editor_add_symphony_template: (p) => facade.createSymphonyTemplate(pick(p, ['seating'])),
 
     // -- analysis (backend DSP) ----------------------------------------------
     editor_analyze_clip: (p) => editorToolBridge.analyzeClip(pick(p, CLIP)),
