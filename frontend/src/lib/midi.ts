@@ -23,6 +23,7 @@
  * ride in one conductor text `theDAW:markers=…` (lib/rollMidi reads it), as
  * FF 06 holds a name alone.
  */
+import { isArticulation, type Articulation } from './articulationMap';
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
 
@@ -41,6 +42,20 @@ export interface MidiNote {
   durationTicks: number;
   /** Channel 0-15. Drum sounds are conventionally channel 9. */
   channel: number;
+  /**
+   * The roll note's articulation (lib/articulationMap). Encoded: the track
+   * writes a `theDAW:art=` text at tick 0 naming each articulated note (its
+   * tick, pitch and channel), which a parse reads back onto the note. Parsed:
+   * absent on a note the text does not name.
+   */
+  articulation?: Articulation;
+  /**
+   * The channel the note plays on without its articulation, when the
+   * articulation plays it on a channel of its own (a pizzicato on GM 46).
+   * Encoded into the `theDAW:art=` text; a parse puts the note back on it, so
+   * an import reads the part's own channel and lanes. Parsed: never set.
+   */
+  homeChannel?: number;
 }
 
 /** A pitch wheel message (E0). */
@@ -268,6 +283,17 @@ const trackEvents = (t: MidiTrack): RawEvent[] => {
   const metas: RawEvent[] = [];
   if (t.partMeta) metas.push({ tick: 0, bytes: textBytes(`${PART_TEXT}${asciiJson(t.partMeta)}`) });
   if (t.laneMeta) metas.push({ tick: 0, bytes: textBytes(`${LANE_TEXT}${asciiJson(t.laneMeta)}`) });
+  const arts = t.notes.filter((n) => n.articulation);
+  if (arts.length) {
+    const rows = arts.map((n) => [
+      Math.max(0, Math.round(n.tick)),
+      n.note,
+      n.channel & 0x0f,
+      n.articulation,
+      ...(n.homeChannel !== undefined && n.homeChannel !== n.channel ? [n.homeChannel & 0x0f] : []),
+    ]);
+    metas.push({ tick: 0, bytes: textBytes(`${ART_TEXT}${JSON.stringify(rows)}`) });
+  }
   const events = trackBody(t);
   return metas.length ? [...metas, ...events] : events;
 };
@@ -373,6 +399,8 @@ const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
 const LANE_TEXT = 'theDAW:lane=';
 const PART_TEXT = 'theDAW:part=';
+/** The text a track's articulated notes ride in: [tick, note, channel, articulation, home channel?] each. */
+const ART_TEXT = 'theDAW:art=';
 /** The text a file's own tempo map rides in beside its FF 51 tempos (lib/rollMidi tempoMapText). */
 export const TEMPOMAP_TEXT = 'theDAW:tempomap=';
 /** The text a roll's markers ride in with their kinds beside their FF 06 names (lib/rollMidi). */
@@ -540,6 +568,34 @@ interface DecodedTrack {
   controls: MidiControl[];
 }
 
+/**
+ * A track's `theDAW:art=` text read onto its notes: each row names a note by
+ * tick, pitch and channel, which takes the articulation and goes back to its
+ * home channel (the one its part plays on). A row the notes do not match, or
+ * an articulation the map does not know, is read past.
+ */
+function applyArticulationText(notes: MidiNote[], text: string): void {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(text);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(rows)) return;
+  const byKey = new Map<string, { art: Articulation; home: number | undefined }>();
+  for (const r of rows) {
+    if (!Array.isArray(r) || !isArticulation(r[3])) continue;
+    const home = typeof r[4] === 'number' && Number.isInteger(r[4]) && r[4] >= 0 && r[4] < 16 ? r[4] : undefined;
+    byKey.set(`${r[0]}:${r[1]}:${r[2]}`, { art: r[3], home });
+  }
+  for (const n of notes) {
+    const hit = byKey.get(`${n.tick}:${n.note}:${n.channel}`);
+    if (!hit) continue;
+    n.articulation = hit.art;
+    if (hit.home !== undefined) n.channel = hit.home;
+  }
+}
+
 /** KEPT_CONTROLLERS as a set, for the parser's per-event test. */
 const KEPT_CONTROLLER_SET: ReadonlySet<number> = new Set(KEPT_CONTROLLERS);
 
@@ -559,6 +615,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let name = '';
   let laneMeta: string | null = null;
   let partMeta: string | null = null;
+  let artMeta: string | null = null;
   const programs: MidiProgram[] = [];
   const controls: MidiControl[] = [];
   // The bank select (CC 0, and CC 32) each channel has, which the program change after it takes.
@@ -615,6 +672,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
           laneMeta = text.slice(LANE_TEXT.length);
         } else if (text.startsWith(PART_TEXT)) {
           partMeta = text.slice(PART_TEXT.length);
+        } else if (text.startsWith(ART_TEXT)) {
+          artMeta = text.slice(ART_TEXT.length);
         } else if (text.startsWith(TEMPOMAP_TEXT)) {
           tempoMap = text.slice(TEMPOMAP_TEXT.length);
         } else if (text.startsWith(MARKERS_TEXT)) {
@@ -731,6 +790,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
+  if (artMeta !== null) applyArticulationText(finished, artMeta);
   return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, markers, markerMeta, bends, ranges, laneMeta, partMeta, programs, controls };
 };
 
