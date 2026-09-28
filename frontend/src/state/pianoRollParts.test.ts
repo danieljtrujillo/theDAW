@@ -264,4 +264,138 @@ const beginBlock = () => {
   assert.equal(st().rollDocId, doc, 'undo puts the document back');
 }
 
+/** The tempo map as "beat:bpm" pairs. */
+const tempoText = () => st().tempoMap.map((e) => `${e.beat}:${e.bpm}`).join(' ');
+/** Every bend point of every lane. */
+const bendCount = () => st().bends.reduce((n, b) => n + b.points.length, 0);
+/** A Violin part with two notes and a Cello part with one, the Cello active, a tempo change at beat 8 and two bend points on lane A. */
+const orchestra = () => {
+  st().importParts(
+    [
+      { name: 'Violin', program: 40, notes: [note(0, 76), note(4, 79)] },
+      { name: 'Cello', program: 42, notes: [note(0, 48)] },
+    ],
+    120,
+    { lanes: [{ id: 0, name: 'A', cycleSteps: null }] },
+  );
+  st().setTempoMap([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 80 }]);
+  st().addBendPoint(0, { step: 0, value: 0.5 });
+  st().addBendPoint(0, { step: 4, value: 0 });
+  st().setActiveTrack(part(1).id);
+  assert.equal(tempoText(), '0:120 8:80');
+  assert.equal(bendCount(), 2);
+};
+
+// A generator writing into one part (the ARP's "send to roll" is
+// importNotes(notes, cfg.bpm); AI COMPOSE adds the meter it asked in) keeps the
+// tempo map, the meter and the bends every other part plays by.
+{
+  orchestra();
+  const meterBefore = st().meterMap;
+  const done = st().importNotes([note(0, 43), note(2, 45), note(4, 47)], 120);
+  assert.equal(done.keptDocument, true, 'the write says it kept the document');
+  assert.equal(tempoText(), '0:120 8:80', "the ARP's bpm does not flatten the tempo map");
+  assert.equal(bendCount(), 2, "the Violin's bend survives");
+  assert.deepEqual(parts().map((t) => t.notes.length), [2, 3], 'the notes went into the Cello; the Violin keeps its two');
+  const composed = st().importNotes([note(0, 40)], 96, { meterMap: [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }], pickupSteps: 0 });
+  assert.equal(composed.keptDocument, true);
+  assert.equal(st().meterMap, meterBefore, 'the meter handed in does not replace the roll’s');
+  assert.equal(tempoText(), '0:120 8:80');
+}
+
+// A one-track MIDI file into one part: the file's tempo map, meter, lanes and
+// bends stay out, and a note on a lane the roll does not have (or has with
+// another loop) goes to lane A.
+{
+  orchestra();
+  st().addLane(12);
+  const done = st().importNotes(
+    [note(0, 50), { ...note(2, 52), lane: 1 }, { ...note(4, 53), lane: 7 }],
+    100,
+    {
+      meterMap: [{ bar: 0, meter: { num: 3, den: 4, groups: [] } }],
+      pickupSteps: 0,
+      lanes: [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 8 }, { id: 7, name: 'H', cycleSteps: null }],
+    },
+    [{ lane: 0, range: 2, points: [{ id: 'f', step: 0, value: -1, shape: 'linear' }] }],
+    [{ beat: 0, bpm: 100 }],
+  );
+  assert.equal(done.keptDocument, true);
+  assert.equal(tempoText(), '0:120 8:80', "the file's tempo map is not applied");
+  assert.equal(st().meterMap[0].meter.num, 4, 'nor its meter');
+  assert.deepEqual(st().lanes.map((l) => [l.id, l.cycleSteps]), [[0, null], [1, 12]], 'nor its lanes');
+  assert.equal(st().bends.find((b) => b.lane === 0)?.points[0].value, 0.5, 'nor its bend');
+  assert.deepEqual(st().notes.map((n) => n.lane), [undefined, undefined, undefined], "a note of the file's 8-step lane B and of its lane H goes to lane A");
+}
+
+// Virtuoso's song build owns the maps of its sections: its tempo map applies
+// while other parts hold notes, and the bends it leaves out stay.
+{
+  orchestra();
+  const done = st().importNotes([note(0, 55)], 90, undefined, undefined, [{ beat: 0, bpm: 90 }, { beat: 4, bpm: 110 }], { document: true });
+  assert.equal(done.keptDocument, false);
+  assert.equal(tempoText(), '0:90 4:110', "the song's tempo map is the roll's");
+  assert.equal(bendCount(), 2, 'the bends it left out stay');
+}
+
+// With no notes in any other part, a write sets the document as a roll of one part does.
+{
+  orchestra();
+  st().setPartNotes(part(0).id, []);
+  const done = st().importNotes([note(0, 43)], 132);
+  assert.equal(done.keptDocument, false);
+  assert.equal(tempoText(), '0:132', 'one tempo at the bpm given');
+  assert.equal(bendCount(), 0, 'and the points go with the notes they bent');
+}
+
+// A take (the vocal column, LOAD, the track menu) into one part converts
+// through the roll's tempo map and leaves it: a note heard at 5 s lands on the
+// step it sounds at under 120 then 80 BPM.
+{
+  orchestra();
+  const { importTake } = await import('../lib/rollTakes.ts');
+  const bpm = importTake([{ note: 60, velocity: 90, startSec: 5, endSec: 5.75 }], 97.3, 'take');
+  assert.equal(bpm, 120, "the roll's own tempo comes back");
+  assert.equal(tempoText(), '0:120 8:80', 'the tempo map stays');
+  // 8 beats at 120 take 4 s; the 5th second is 1 s into 80 BPM, 4/3 of a beat: beat 9.333, step 37.333.
+  assert.ok(Math.abs(st().notes[0].step - (8 + 4 / 3) * 4) < 0.01, `the note sits where 5 s falls on the map (${st().notes[0].step})`);
+  assert.equal(parts()[0].notes.length, 2, 'the Violin is untouched');
+}
+
+// CLEAR in one part keeps the other parts' notes and the bends they play through.
+{
+  orchestra();
+  st().clear();
+  assert.equal(st().notes.length, 0, 'the Cello is empty');
+  assert.equal(parts()[0].notes.length, 2, 'the Violin keeps its notes');
+  assert.equal(bendCount(), 2, 'and the bend points stay');
+  // With the last notes gone the points go too, as they always have.
+  st().setActiveTrack(part(0).id);
+  st().clear();
+  assert.equal(bendCount(), 0, 'CLEAR of the last part with notes clears the points');
+}
+
+// Removing a lane while another part is being edited moves every part's notes
+// on it to lane A, so a lane added next never takes them over.
+{
+  orchestra();
+  const lane = st().addLane(null);
+  st().setActiveTrack(part(0).id);
+  st().replaceAll([note(0, 76), { ...note(4, 79), lane }]);
+  st().setActiveTrack(part(1).id);
+  beginBlock();
+  st().removeLane(lane);
+  assert.equal(st()._undo.length, 1, 'one undo step');
+  assert.deepEqual(parts()[0].notes.map((n) => n.lane), [undefined, undefined], "the Violin's lane-B note is on lane A");
+  const added = st().addLane(8);
+  assert.equal(added, lane, 'the next lane takes the free id');
+  assert.ok(parts()[0].notes.every((n) => n.lane === undefined), 'and none of the Violin’s notes joins the new looping lane');
+  st().undo();
+  st().undo();
+  assert.equal(parts()[0].notes[1].lane, lane, 'undo puts the note back on its lane');
+  // A note that still names a lane the roll lost (a clip saved before this) keeps new lanes off its id.
+  st().setPartNotes(part(0).id, [{ ...note(0, 76), lane: 5 }]);
+  assert.equal(st().addLane(4), 6, 'a new lane takes an id past every lane a note names');
+}
+
 console.log('pianoRollParts: ok');

@@ -226,12 +226,16 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         _songMap = normalizeMeterMap(song.meterMap);
         _songOwned = sectionMeterBars(s.sections);
         // The song's tempo map goes in with its notes, so one undo takes back both.
+        // The song owns the meters and tempos of its sections' bars, which it
+        // builds over the roll's own maps, so they apply while other parts hold
+        // notes too; the bends it leaves out stay (pianoRollStore importNotes).
         roll.importNotes(
           song.notes,
           startTempoOf(song.tempoMap) ?? baseBpm,
           { meterMap: song.meterMap },
           keepBends ? roll.bends : undefined,
           song.tempoMap,
+          { document: true },
         );
         _tempoMap = usePianoRollStore.getState().tempoMap;
       };

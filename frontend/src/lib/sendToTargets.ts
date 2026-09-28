@@ -184,7 +184,7 @@ export function loadMidiIntoPianoRoll(
     // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
     // notes in one layer, as it always has.
     const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn') : null;
-    if (!parts) usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap);
+    const kept = parts ? parts.keptDocument : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap).keptDocument;
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
     const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';
@@ -192,6 +192,8 @@ export function loadMidiIntoPianoRoll(
       'send-to',
       `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps${partText})`,
     );
+    // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
+    if (kept) logInfo('send-to', "The roll kept its own tempo map, time signatures, lanes and pitch bends, which its other parts play by; the file's were not applied");
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);

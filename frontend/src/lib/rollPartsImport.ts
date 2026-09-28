@@ -6,7 +6,9 @@
  * and lanes for the document. A file of one part writes into the ACTIVE part
  * (importNotes), as every generator does, and keeps the other parts; when the
  * active part follows the roll's voice and the file names an instrument, the
- * part takes it.
+ * part takes it. While other parts hold notes, the roll keeps its tempo map,
+ * meter, lanes and bends, which they play by, and the result says so
+ * (`keptDocument`), so the import's log line can tell the user.
  *
  * Store-writing but free of Vite-only imports, so node tests replay it.
  */
@@ -27,6 +29,8 @@ export interface PartsImportResult {
   into: 'parts' | 'active';
   /** Parts past MAX_ROLL_PARTS, whose notes went into the last part. */
   folded: number;
+  /** True when the file went into the active part of a roll whose other parts hold notes, so the roll kept its own tempo map, meter, lanes and bends (pianoRollStore importNotes). */
+  keptDocument: boolean;
 }
 
 /** Put `parts` in the roll: several replace every part, one goes into the active part. */
@@ -40,13 +44,13 @@ export function applyRollParts(
   const roll = usePianoRollStore.getState();
   const notes = parts.reduce((n, p) => n + p.notes.length, 0);
   // A file with nothing in it changes nothing.
-  if (parts.length === 0) return { parts: 0, notes: 0, into: 'active', folded: 0 };
+  if (parts.length === 0) return { parts: 0, notes: 0, into: 'active', folded: 0, keptDocument: false };
   if (parts.length > 1) {
     roll.importParts(parts.map((p) => ({ ...p.track, notes: p.notes })), bpm, meter, bends, tempoMap);
-    return { parts: Math.min(parts.length, MAX_ROLL_PARTS), notes, into: 'parts', folded: Math.max(0, parts.length - MAX_ROLL_PARTS) };
+    return { parts: Math.min(parts.length, MAX_ROLL_PARTS), notes, into: 'parts', folded: Math.max(0, parts.length - MAX_ROLL_PARTS), keptDocument: false };
   }
   const part = parts[0];
-  roll.importNotes(part?.notes ?? [], bpm, meter, bends, tempoMap);
+  const { keptDocument } = roll.importNotes(part?.notes ?? [], bpm, meter, bends, tempoMap);
   const after = usePianoRollStore.getState();
   const active = activeTrackOf(after);
   // The file's instrument, for a part that has none of its own.
@@ -55,7 +59,7 @@ export function applyRollParts(
     if (inst && (part.track.program == null || inst.program === part.track.program)) after.setTrackInstrument(active.id, inst.id);
     else if (part.track.program != null) after.setTrackProgram(active.id, part.track.program, part.track.channel === PERCUSSION_PART_CHANNEL);
   }
-  return { parts: 1, notes, into: 'active', folded: 0 };
+  return { parts: 1, notes, into: 'active', folded: 0, keptDocument };
 }
 
 /** A parsed MIDI file into the roll's parts (lib/rollMidi midiFileToRollParts). */

@@ -92,4 +92,34 @@ const secondsInRoll = (): Array<[number, number]> => {
   assert.ok(usePianoRollStore.getState().bends.every((b) => b.points.length === 0), 'no slides with Pitch bend off');
 }
 
+// Into one part of a roll whose Violin part holds notes, with a tempo change
+// and a bend drawn: the take converts through the roll's map, the roll keeps
+// its tempo and its bend, and the slides stay out with a line in the log.
+{
+  const { useLogStore } = await import('../../../state/logStore.ts');
+  const roll = () => usePianoRollStore.getState();
+  roll().importParts(
+    [
+      { name: 'Violin', program: 40, notes: [{ id: 'v1', note: 76, step: 0, length: 4, velocity: 90 }] },
+      { name: 'Voice', notes: [] },
+    ],
+    120,
+  );
+  roll().setTempoMap([{ beat: 0, bpm: 120 }, { beat: 8, bpm: 80 }]);
+  roll().addBendPoint(0, { step: 0, value: 0.25 });
+  roll().setActiveTrack(roll().tracks[1].id);
+  const logged = useLogStore.getState().entries.length;
+  const bpm = applyVocalNotesToRoll(sung, 97.3, true);
+  assert.equal(bpm, 120, "the roll's own tempo");
+  assert.deepEqual(roll().tempoMap.map((e) => [e.beat, e.bpm]), [[0, 120], [8, 80]], 'the tempo map stays');
+  assert.deepEqual(roll().bends.find((b) => b.lane === 0)?.points.map((p) => p.value), [0.25], "the Violin's bend stays; the slides are not written");
+  // Each note plays at the second it was sung at, on the roll's 120 BPM (all before beat 8).
+  const halfTick = 60 / 120 / PPQ / 2;
+  secondsInRoll().forEach(([start], i) => {
+    assert.ok(Math.abs(start - sung[i].startTime) <= halfTick, `note ${i} starts where it was sung (${start} s)`);
+  });
+  const lines = useLogStore.getState().entries.slice(logged).map((e) => e.msg);
+  assert.ok(lines.some((m) => /slides were not written/.test(m)), `the log says why the slides are missing (${lines.join(' | ')})`);
+}
+
 console.log('vocal2midi rollBridge tests passed');

@@ -1269,7 +1269,7 @@ export const PianoRollEditKey: React.FC = () => {
   );
 };
 
-/** CLEAR: remove every note of the part being edited. */
+/** CLEAR: remove every note of the part being edited; the bends go only with the last part's notes (pianoRollStore clear). */
 export const PianoRollClearKey: React.FC = () => {
   const partName = usePianoRollStore((s) => activeTrackOf(s).name);
   const several = usePianoRollStore((s) => s.tracks.length > 1);
@@ -1277,7 +1277,11 @@ export const PianoRollClearKey: React.FC = () => {
     <RailKey
       onClick={() => usePianoRollStore.getState().clear()}
       aria-label={several ? `Clear every note of ${partName}` : 'Clear every note'}
-      description={several ? `Remove every note of the part ${partName}; the other parts keep theirs` : 'Remove every note from the roll'}
+      description={
+        several
+          ? `Remove every note of the part ${partName}. The other parts keep their notes, and while they hold any the pitch bends stay`
+          : 'Remove every note from the roll'
+      }
       icon={<Trash2 className={RAIL_GLYPH} />}
       legend="Clear"
     />
@@ -1311,6 +1315,10 @@ export const exportRollMidi = async (): Promise<void> => {
   else if (result.downloaded) logInfo('piano-roll', `Exported ${count} notes${partText} as MIDI`);
 };
 
+/** The log line of a one-part import into a roll whose other parts hold notes (lib/rollPartsImport keptDocument). */
+export const KEPT_DOCUMENT_TEXT =
+  "The roll kept its own tempo map, time signatures, lanes and pitch bends, which its other parts play by; the file's were not applied";
+
 export const importMidiFileToRoll = (file: File): void => {
   file.arrayBuffer().then((buf) => {
     try {
@@ -1333,6 +1341,7 @@ export const importMidiFileToRoll = (file: File): void => {
         `Imported ${done.notes} notes from "${file.name}"${where} at ${Math.round(done.bpm * 100) / 100} BPM${changes > 0 ? ` with ${changes} tempo change${changes === 1 ? '' : 's'}` : ''} in ${meterLabel(done.meterMap[0].meter)}${done.bentLanes ? `, pitch bend in ${done.bentLanes} lane${done.bentLanes === 1 ? '' : 's'}` : ''}`,
       );
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} tracks are in its last part`);
+      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_TEXT);
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1360,6 +1369,7 @@ export const importSheetFileToRoll = (file: File): void => {
         `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}`,
       );
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} parts are in its last part`);
+      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_TEXT);
     } catch (e) {
       logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);
     }

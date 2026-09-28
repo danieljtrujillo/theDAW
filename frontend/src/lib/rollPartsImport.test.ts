@@ -81,6 +81,8 @@ const score: SheetScore = {
   const done = importMidiParts(file, 't');
   assert.equal(done.into, 'active');
   assert.equal(roll().tracks.length, 2, 'the other part stays');
+  assert.equal(done.keptDocument, true, 'the other part holds notes, so the roll keeps its own tempo, meter and bends');
+  assert.equal(roll().bpm, 120, "and the file's 100 BPM is not applied");
   const [first, keep] = rollTracksOf(roll());
   assert.equal(first.notes.length, 1, 'the notes are in the part being edited');
   assert.deepEqual([first.program, first.instrumentId, first.name], [71, 'clarinet-bb', 'Clarinet in B♭'], 'which takes the file’s clarinet');
