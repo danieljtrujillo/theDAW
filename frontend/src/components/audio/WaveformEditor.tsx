@@ -28,7 +28,7 @@ import {
   BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, renderBounce, renderExtentSec,
   type BounceRequest, type BounceScope, type RenderDeps,
 } from '../../lib/renderCore';
-import { clipWithAudio, clipsWithMidiAudio, configureMidiRenderQueue, dropAutoRender, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
+import { clipWithAudio, clipsWithMidiAudio, configureMidiRenderQueue, dropAutoRender, midiRenderStatusText, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
 import { crossfadeRegions } from '../../lib/crossfade';
 import { pairingHeader } from '../../lib/pairing';
 import {
@@ -7348,7 +7348,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <>
             <span aria-hidden="true" className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
             <span className="text-xs font-bold text-sky-100">
-              {`Rendering MIDI audio${midiQueue.running.mode === 'export' ? ' for the export' : ''}: ${midiQueue.running.label}${midiQueue.waiting.length ? ` · ${midiQueue.waiting.length} waiting` : ''}`}
+              {midiRenderStatusText(midiQueue.running, midiQueue.waiting.length)}
             </span>
           </>
         )}

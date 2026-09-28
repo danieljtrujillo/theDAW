@@ -17,7 +17,7 @@
  */
 import assert from 'node:assert/strict';
 import { useEditorStore, type AudioClip, type EditorTrack } from './editorStore.ts';
-import { configureMidiRenderQueue, requestMidiRender, useMidiRenderQueue } from './midiRenderQueue.ts';
+import { clipsWithMidiAudio, configureMidiRenderQueue, midiRenderStatusText, requestMidiRender, useMidiRenderQueue } from './midiRenderQueue.ts';
 import { dropPending, useExternalDragStore } from './externalDragStore.ts';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from './clipDragOut.ts';
 import { liveMidiIfHeard } from './liveMixer.ts';
@@ -30,10 +30,14 @@ const OFF = { useSoundfont: false, activeProgram: 0 };
 let active = 0;
 let maxActive = 0;
 const calls: Array<number | undefined> = [];
+/** EDIT's render bar line while each render runs (midiRenderStatusText). */
+const statuses: string[] = [];
 const render: MidiStepRender = async (notes, bpm, totalSteps, opts) => {
   active += 1;
   maxActive = Math.max(maxActive, active);
   calls.push(opts.program);
+  const q = useMidiRenderQueue.getState();
+  if (q.running) statuses.push(midiRenderStatusText(q.running, q.waiting.length));
   try {
     await new Promise((r) => setTimeout(r, 2));
     return { blob: new Blob([new Uint8Array(64 + notes.length)], { type: 'audio/wav' }), duration: (totalSteps * 60) / bpm / 4 + 1 };
@@ -76,7 +80,9 @@ async function main(): Promise<void> {
     clips: [part('violin', 't1', 60), part('cello', 't2', 48), part('muted', 't3', 72, { muted: true }), part('bare', 't4', 55), audio, part('kept', 't1', 64, { startSec: 4 })],
   });
   await requestMidiRender('kept', 'keep');
+  assert.deepEqual(statuses, ['Rendering MIDI audio: kept'], "EDIT's own render names no purpose");
   calls.length = 0;
+  statuses.length = 0;
   const undoDepth = ed()._undo.length;
 
   // ── Ctrl+click on parts: every press plans a drag, and nothing renders ──────
@@ -109,6 +115,9 @@ async function main(): Promise<void> {
   assert.ok(dropped.every((i) => i.blob instanceof Blob && i.blob.size > 0));
   assert.equal(maxActive, 1, 'rendered one at a time');
   assert.deepEqual(calls, [40, 42, 71, undefined], 'each through its own voice');
+  // The render bar says what the renders are for: this drag, not an export.
+  assert.equal(statuses.length, 4);
+  statuses.forEach((line, i) => assert.ok(line.startsWith(`Rendering MIDI audio for the drag out: ${['violin', 'cello', 'muted', 'bare'][i]}`), line));
   // The live parts keep no render; the part that cannot play live keeps the one EDIT would make for it.
   for (const id of ['violin', 'cello', 'muted']) assert.equal(clipOf(id).audioBlob, undefined, `${id} holds no render after the drag`);
   assert.ok(clipOf('bare').audioBlob instanceof Blob);
@@ -137,6 +146,12 @@ async function main(): Promise<void> {
   dropPending(() => { outside += 1; }, () => { outside += 1; });
   useExternalDragStore.getState().end();
   assert.equal(outside, 0);
+
+  // ── an export's renders say they are for the export ──
+  statuses.length = 0;
+  const bounce = await clipsWithMidiAudio((c) => c.id === 'violin');
+  assert.deepEqual(statuses, ['Rendering MIDI audio for the export: violin']);
+  bounce.release();
 
   console.log('clipDragOut: ok');
 }

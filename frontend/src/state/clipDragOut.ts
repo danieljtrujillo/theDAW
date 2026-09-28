@@ -63,7 +63,7 @@ export function beginClipDragOut(plan: ClipDragOutPlan): void {
     return;
   }
   logInfo('editor', `Rendering ${ids.size} MIDI part(s) for the drag; the drop takes them as they land`);
-  const job = clipsWithMidiAudio((c) => ids.has(c.id), undefined, undefined, { includeMuted: true });
+  const job = clipsWithMidiAudio((c) => ids.has(c.id), undefined, undefined, { includeMuted: true, purpose: 'drag-out' });
   const pending = job.then((out) => out.clips
     .filter((c): c is AudioClip & { audioBlob: Blob } => ids.has(c.id) && c.audioBlob instanceof Blob)
     .map((c) => ({ blob: c.audioBlob, mimeType: c.mimeType, label: c.label })));

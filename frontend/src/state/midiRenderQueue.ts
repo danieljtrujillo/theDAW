@@ -68,6 +68,13 @@ export interface MidiRenderDeps {
 
 export type MidiRenderMode = 'cache' | 'keep' | 'export';
 
+/**
+ * What a render is for, as the queue's status line says it: an export (every
+ * bounce job) or a drag of EDIT clips to another surface. Left out for EDIT's
+ * own upkeep and for edits.
+ */
+export type MidiRenderPurpose = 'export' | 'drag-out';
+
 /** What a request came to. `clip` is the clip with its audio: for 'rendered', a copy the store never saw. */
 export type MidiRenderOutcome =
   | { kind: 'written'; clip: AudioClip }
@@ -80,6 +87,7 @@ interface ClipJob {
   clipId: string;
   label: string;
   mode: MidiRenderMode;
+  purpose?: MidiRenderPurpose;
   promise: Promise<MidiRenderOutcome>;
   resolve: (o: MidiRenderOutcome) => void;
   reject: (e: unknown) => void;
@@ -100,9 +108,9 @@ type Job = ClipJob | TurnJob;
 /** The queue as the UI reads it. */
 export interface MidiRenderQueueState {
   /** The clip rendering now, or null. A render in another tool's turn names what it renders; its mode is 'keep'. */
-  running: { clipId: string; label: string; mode: MidiRenderMode } | null;
+  running: { clipId: string; label: string; mode: MidiRenderMode; purpose?: MidiRenderPurpose } | null;
   /** Clips waiting, in order. */
-  waiting: Array<{ clipId: string; label: string; mode: MidiRenderMode }>;
+  waiting: Array<{ clipId: string; label: string; mode: MidiRenderMode; purpose?: MidiRenderPurpose }>;
   /** Renders finished this session, and renders that failed. */
   done: number;
   failed: number;
@@ -175,12 +183,26 @@ async function resolvedDeps(): Promise<MidiRenderDeps> {
   return deps;
 }
 
+/** A job as the queue's state shows it. */
+const shown = (j: Job): { clipId: string; label: string; mode: MidiRenderMode; purpose?: MidiRenderPurpose } =>
+  j.kind === 'clip'
+    ? { clipId: j.clipId, label: j.label, mode: j.mode, ...(j.purpose ? { purpose: j.purpose } : {}) }
+    : { clipId: j.clipId, label: j.label, mode: 'keep' };
+
 const publish = (running: MidiRenderQueueState['running']): void => {
-  useMidiRenderQueue.setState({
-    running,
-    waiting: jobs.map((j) => ({ clipId: j.clipId, label: j.label, mode: j.kind === 'clip' ? j.mode : 'keep' })),
-  });
+  useMidiRenderQueue.setState({ running, waiting: jobs.map(shown) });
 };
+
+/**
+ * The status line for the render running now, as EDIT's render bar prints it:
+ * "Rendering MIDI audio for the drag out: Violin I · 3 waiting". An export's
+ * renders say "for the export"; EDIT's own renders name no purpose.
+ */
+export function midiRenderStatusText(running: NonNullable<MidiRenderQueueState['running']>, waiting: number): string {
+  const purpose = running.purpose ?? (running.mode === 'export' ? 'export' : undefined);
+  const why = purpose === 'drag-out' ? ' for the drag out' : purpose === 'export' ? ' for the export' : '';
+  return `Rendering MIDI audio${why}: ${running.label}${waiting ? ` · ${waiting} waiting` : ''}`;
+}
 
 const liveClip = (id: string): AudioClip | undefined => useEditorStore.getState().clips.find((c) => c.id === id);
 const trackOf = (clip: AudioClip) => useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
@@ -189,15 +211,22 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 /**
  * Ask for `clipId`'s audio. Resolves when this clip's turn has come and gone;
  * rejects when the render fails. A request for a clip and mode already waiting
- * shares that job.
+ * shares that job (and names its purpose when the waiting one named none).
+ * `purpose` is what the status line says the render is for.
  */
-export function requestMidiRender(clipId: string, mode: MidiRenderMode = 'cache'): Promise<MidiRenderOutcome> {
+export function requestMidiRender(clipId: string, mode: MidiRenderMode = 'cache', purpose?: MidiRenderPurpose): Promise<MidiRenderOutcome> {
   const waiting = jobs.find((j): j is ClipJob => j.kind === 'clip' && j.clipId === clipId && j.mode === mode);
-  if (waiting) return waiting.promise;
+  if (waiting) {
+    if (purpose && !waiting.purpose) {
+      waiting.purpose = purpose;
+      publish(useMidiRenderQueue.getState().running);
+    }
+    return waiting.promise;
+  }
   let resolve!: (o: MidiRenderOutcome) => void;
   let reject!: (e: unknown) => void;
   const promise = new Promise<MidiRenderOutcome>((res, rej) => { resolve = res; reject = rej; });
-  jobs.push({ kind: 'clip', clipId, label: liveClip(clipId)?.label ?? clipId, mode, promise, resolve, reject });
+  jobs.push({ kind: 'clip', clipId, label: liveClip(clipId)?.label ?? clipId, mode, ...(purpose ? { purpose } : {}), promise, resolve, reject });
   publish(useMidiRenderQueue.getState().running);
   void pump();
   return promise;
@@ -234,7 +263,7 @@ async function pump(): Promise<void> {
   try {
     while (jobs.length > 0) {
       const job = jobs.shift() as Job;
-      publish({ clipId: job.clipId, label: job.label, mode: job.kind === 'clip' ? job.mode : 'keep' });
+      publish(shown(job));
       if (job.kind === 'turn') {
         try {
           job.resolve(await job.work());
@@ -372,7 +401,7 @@ export async function clipsWithMidiAudio(
   wanted: (clip: AudioClip) => boolean = () => true,
   onProgress?: (doneCount: number, total: number, label: string) => void,
   shouldStop: () => boolean = () => false,
-  opts: { includeMuted?: boolean } = {},
+  opts: { includeMuted?: boolean; purpose?: MidiRenderPurpose } = {},
 ): Promise<MidiBounceClips> {
   const transient = new Map<string, Partial<AudioClip>>();
   const release = (): void => {
@@ -419,7 +448,7 @@ export async function clipsWithMidiAudio(
       const mode: MidiRenderMode = clipVoice(live, trackOf(live), d.global()).program === undefined ? 'cache' : 'export';
       let outcome: MidiRenderOutcome;
       try {
-        outcome = await requestMidiRender(clip.id, mode);
+        outcome = await requestMidiRender(clip.id, mode, opts.purpose ?? 'export');
       } catch (e) {
         release();
         throw new Error(`MIDI clip "${clip.label}" could not be rendered: ${message(e)}`);
