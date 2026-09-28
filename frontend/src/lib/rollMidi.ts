@@ -108,6 +108,7 @@ import { guessInstrument, instrumentForProgram } from './orchestra';
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
+  cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
   cleanPartControls,
@@ -389,11 +390,17 @@ function laneTracks(s: RollMidiSource, w: WrittenNotes, name: string, extra: (la
   });
 }
 
-/** Program changes at tick 0 on each of `channels` for a part sounding `program` in `bank` (no bank select for bank 0). */
-const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number): MidiProgram[] =>
+/**
+ * Program changes at tick 0 on each of `channels` for a part sounding
+ * `program` in `bank` (no bank select for bank 0), with its bank select LSB
+ * (CC 32) when it has one.
+ */
+const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number, bankLsb: number | undefined): MidiProgram[] =>
   program === undefined
     ? []
-    : [...new Set(channels)].sort((a, b) => a - b).map((channel) => ({ tick: 0, channel, program, ...(bank > 0 ? { bank } : {}) }));
+    : [...new Set(channels)]
+      .sort((a, b) => a - b)
+      .map((channel) => ({ tick: 0, channel, program, ...(bank > 0 ? { bank } : {}), ...(bankLsb !== undefined ? { bankLsb } : {}) }));
 
 /**
  * A part's controller changes as a file at `ppq` writes them: every change on
@@ -421,6 +428,7 @@ function partTrackExtra(
   channels: ReadonlyMap<number, number>,
   program: number | undefined,
   bank: number,
+  bankLsb: number | undefined,
   controls: readonly RollControl[] | undefined,
   ppq: number,
   base: Partial<MidiTrack> = {},
@@ -428,7 +436,7 @@ function partTrackExtra(
   const written = new Set<number>();
   return (lane) => {
     const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
-    const programs = partPrograms(used, program, bank);
+    const programs = partPrograms(used, program, bank, bankLsb);
     const fresh = [...new Set(used)].filter((ch) => !written.has(ch));
     for (const ch of fresh) written.add(ch);
     const ctl = partControlEvents(controls, fresh, ppq);
@@ -443,6 +451,7 @@ export const partMetaText = (t: RollTrack): string =>
     name: t.name,
     program: t.program,
     bank: t.bank,
+    ...(t.bankLsb !== undefined ? { bankLsb: t.bankLsb } : {}),
     channel: t.channel,
     color: t.color,
     mute: t.mute,
@@ -456,11 +465,13 @@ export function parsePartMeta(text: string | undefined): (Partial<RollTrack> & {
   try {
     const raw = JSON.parse(text) as Record<string, unknown>;
     if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return null;
+    const bankLsb = cleanPartBankLsb(raw.bankLsb);
     return {
       id: raw.id,
       name: cleanPartName(raw.name, 'Part'),
       program: cleanPartProgram(raw.program),
       bank: cleanPartBank(raw.bank),
+      ...(bankLsb !== undefined ? { bankLsb } : {}),
       channel: cleanPartChannel(raw.channel),
       color: cleanPartColor(raw.color, partColorAt(0)),
       mute: raw.mute === true,
@@ -491,14 +502,14 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   if (part && isPercussionPart(part)) {
     const drums = new Map(s.lanes.map((l) => [l.id, 9]));
     const w = writeNotes(s, notes, ppq, drums, new Set());
-    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(drums, part.program ?? undefined, 0, part.controls, ppq)) };
+    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(drums, part.program ?? undefined, 0, undefined, part.controls, ppq)) };
   }
   // Any other roll of one part writes the channels it always did.
   const channels = laneChannels(s.lanes, s.bends);
   const w = writeNotes(s, notes, ppq, channels, bentLanes(s.lanes, s.bends));
   // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
   const program = part && part.program !== null ? part.program : undefined;
-  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.controls, ppq)) };
+  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.bankLsb, part?.controls, ppq)) };
 }
 
 /** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
@@ -531,7 +542,8 @@ export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack
     }
     const w = writeNotes(s, part.notes, ppq, channels, wheelLanes);
     const program = part.program ?? s.voices?.get(part.id)?.program;
-    const extra = partTrackExtra(channels, program, isPercussionPart(part) ? 0 : part.bank, part.controls, ppq, { partMeta: partMetaText(part) });
+    const percussion = isPercussionPart(part);
+    const extra = partTrackExtra(channels, program, percussion ? 0 : part.bank, percussion ? undefined : part.bankLsb, part.controls, ppq, { partMeta: partMetaText(part) });
     tracks.push(...laneTracks(s, w, part.name, extra));
   }
   return { ...header, tracks };
@@ -829,6 +841,8 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
     const split = trackChannels[o.track].length > 1;
     const fileProgram = change?.program;
     const bank = percussion ? 0 : change?.bank ?? 0;
+    // The bank select LSB (CC 32) the file sends with the program: XG and GS pick a voice's variations with it.
+    const bankLsb = percussion ? undefined : cleanPartBankLsb(change?.bankLsb);
     const controls = controlsOnRollClock(channelControls.get(channel) ?? [], ppq);
     const name = !split
       ? t.name
@@ -847,6 +861,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
         name: cleanPartName(name, `Part ${index + 1}`),
         program,
         bank,
+        ...(bankLsb !== undefined ? { bankLsb } : {}),
         channel: percussion ? PERCUSSION_PART_CHANNEL : channel + 1,
         color: partColorAt(index),
         ...(inst ? { instrumentId: inst.id } : {}),

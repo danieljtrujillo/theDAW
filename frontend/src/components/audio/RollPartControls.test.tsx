@@ -104,6 +104,31 @@ await step(() => roll().undo());
 assert.equal(rollTracksOf(roll())[0].controls?.length, 4, 'undo brings them back');
 assert.ok(q('[data-part-controls]'), 'with the list');
 
+// The bank LSB field: named by its label, empty for a part that sends none, and a typed value is one undo step.
+{
+  const lsb = q<HTMLInputElement>('#roll-part-bank-lsb');
+  assert.ok(lsb, 'an LSB field in the part settings');
+  assert.equal(lsb.getAttribute('name'), 'roll-part-bank-lsb');
+  assert.equal(q('label[for="roll-part-bank-lsb"]')?.textContent, 'LSB', 'named by its label');
+  assert.equal(lsb.value, '', 'the piano sends none');
+  const setValue = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!;
+  endRollGesture();
+  const before = roll()._undo.length;
+  await step(() => {
+    setValue.call(lsb, '3');
+    lsb.dispatchEvent(new win.Event('input', { bubbles: true }));
+  });
+  assert.equal(rollTracksOf(roll())[0].bankLsb, 3, 'typed, the part sends CC 32 = 3');
+  assert.equal(roll()._undo.length, before + 1, 'one undo step');
+  assert.equal(q<HTMLInputElement>('#roll-part-bank-lsb')?.value, '3');
+  endRollGesture();
+  await step(() => {
+    setValue.call(lsb, '');
+    lsb.dispatchEvent(new win.Event('input', { bubbles: true }));
+  });
+  assert.equal(rollTracksOf(roll())[0].bankLsb, undefined, 'emptied, it sends none');
+}
+
 // A part without any shows no list.
 const celloKey = [...win.document.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? '').startsWith('Edit part Cello,'));
 assert.ok(celloKey, "the cello's name key");

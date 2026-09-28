@@ -28,6 +28,7 @@ import {
   PERCUSSION_PART_CHANNEL,
   allPartNotes,
   cleanPartBank,
+  cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
   cleanPartControls,
@@ -127,6 +128,12 @@ export interface RollTrack {
   program: number | null;
   /** Bank select (MSB) 0-127 sent before the program; 0 is the General MIDI set. */
   bank: number;
+  /**
+   * Bank select LSB (CC 32) 0-127, sent after the MSB and before the program
+   * (XG and GS pick a voice's variations with it). Absent when the part sends
+   * none, as every part made before it existed.
+   */
+  bankLsb?: number;
   /** MIDI channel 1-16 the part is written on, or null for the next free one; 10 makes it a percussion part. */
   channel: number | null;
   /** #rrggbb: the part's swatch, its ghost notes and its EDIT track. */
@@ -159,6 +166,8 @@ export interface RollPartRef {
   name: string;
   program: number | null;
   bank: number;
+  /** The part's bank select LSB (RollTrack `bankLsb`). Absent when it sends none. */
+  bankLsb?: number;
   channel: number | null;
   color: string;
   mute: boolean;
@@ -362,11 +371,14 @@ interface PianoRollState {
   setTrackProgram: (id: string, program: number | null, percussion?: boolean) => void;
   /** Set a part's bank select, 0-127. One undo step. */
   setTrackBank: (id: string, bank: number) => void;
+  /** Set a part's bank select LSB (CC 32), 0-127, or null to send none. One undo step; no step when nothing changes. */
+  setTrackBankLsb: (id: string, bankLsb: number | null) => void;
   /** Set a part's MIDI channel, 1-16 or null for the next free one. One undo step. */
   setTrackChannel: (id: string, channel: number | null) => void;
   /**
    * Put a part on an orchestral registry instrument (lib/orchestra): its GM
-   * program and bank, the percussion channel for a kit, and its name when the
+   * program and bank (with no bank LSB: the file's variation belonged to the
+   * voice it replaces), the percussion channel for a kit, and its name when the
    * part still has a default name. null takes the instrument away and leaves
    * the program. One undo step.
    */
@@ -1246,6 +1258,14 @@ const patchTrack = (tracks: RollTrack[], id: string, patch: Partial<RollTrack>):
   return next;
 };
 
+/** A part with its bank select LSB set to `bankLsb`: the field removed when it sends none. */
+const withBankLsb = (t: RollTrack, bankLsb: number | undefined): RollTrack => {
+  if (bankLsb !== undefined) return t.bankLsb === bankLsb ? t : { ...t, bankLsb };
+  if (t.bankLsb === undefined) return t;
+  const { bankLsb: _drop, ...rest } = t;
+  return rest;
+};
+
 /** A part with its controller changes set to `controls`: the field removed when there are none. */
 const withControls = (t: RollTrack, controls: RollControl[] | undefined): RollTrack => {
   if (controls?.length) return { ...t, controls };
@@ -1499,6 +1519,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const tracks = patchTrack(s.tracks, id, { bank: cleanPartBank(bank) });
       return tracks ? { tracks } : {};
     }),
+  setTrackBankLsb: (id, bankLsb) =>
+    set((s) => {
+      const i = s.tracks.findIndex((t) => t.id === id);
+      if (i < 0) return {};
+      const next = withBankLsb(s.tracks[i], cleanPartBankLsb(bankLsb));
+      // The same value writes nothing, so it adds no undo step.
+      if (next === s.tracks[i]) return {};
+      const tracks = s.tracks.slice();
+      tracks[i] = next;
+      return { tracks };
+    }),
   setTrackChannel: (id, channel) =>
     set((s) => {
       const tracks = patchTrack(s.tracks, id, { channel: cleanPartChannel(channel) });
@@ -1515,8 +1546,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const inst = orchestraInstrument(instrumentId);
       if (!inst) return {};
       // A kit is chosen by its program on the percussion channel; the bank is the melodic set's.
-      const tracks = patchTrack(s.tracks, id, instrumentPatchOf(s.tracks, t, inst));
-      return tracks ? { tracks } : {};
+      const patched = patchTrack(s.tracks, id, instrumentPatchOf(s.tracks, t, inst));
+      // The instrument's own bank, with no LSB: a file's variation belonged to the voice it replaces.
+      const tracks = (patched ?? s.tracks).map((x) => (x.id === id ? withBankLsb(x, undefined) : x));
+      return tracks.some((x, i) => x !== s.tracks[i]) ? { tracks } : {};
     }),
   setTrackColor: (id, color) =>
     set((s) => {

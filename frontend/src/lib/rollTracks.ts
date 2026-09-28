@@ -60,6 +60,9 @@ export const cleanPartProgram = (v: unknown): number | null => (isNum(v) ? Math.
 /** A bank select (MSB) 0-127; 0 for anything else. */
 export const cleanPartBank = (v: unknown): number => (isNum(v) ? Math.max(0, Math.min(127, Math.round(v))) : 0);
 
+/** A bank select LSB (CC 32) 0-127, or undefined when there is none (a part sends no CC 32). */
+export const cleanPartBankLsb = (v: unknown): number | undefined => (isNum(v) ? Math.max(0, Math.min(127, Math.round(v))) : undefined);
+
 /** A MIDI channel 1-16, or null (the part takes the next free one on export). */
 export const cleanPartChannel = (v: unknown): number | null => (isNum(v) ? Math.max(1, Math.min(16, Math.round(v))) : null);
 
@@ -188,6 +191,8 @@ export function makeRollTrack(init: RollTrackInit, index: number): RollTrack {
     notes: Array.isArray(init.notes) ? init.notes : [],
   };
   if (typeof init.instrumentId === 'string' && init.instrumentId) track.instrumentId = init.instrumentId;
+  const bankLsb = cleanPartBankLsb(init.bankLsb);
+  if (bankLsb !== undefined) track.bankLsb = bankLsb;
   const controls = cleanPartControls(init.controls);
   if (controls) track.controls = controls;
   return track;

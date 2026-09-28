@@ -20,7 +20,7 @@
  * (lib/clipProgram clipVoice: its program, else its track's, else the
  * picker's) is written as a program change at tick 0, and again at the start
  * of any later clip on the track that sounds another program; the bank select
- * is the clip's roll part's.
+ * is the clip's roll part's, its MSB and, when the part has one, its LSB.
  *
  * CONTROLLERS: each clip's roll part carries its controller changes
  * (RollPartRef `controls`: modulation, volume, pan, expression, the sustain
@@ -77,7 +77,7 @@ import { bendWheelEvents, playingLane } from './pitchBend';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { tempoMapText, tempoMapToMidiTempos } from './rollMidi';
 import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from './rollTempo';
-import { PERCUSSION_PART_CHANNEL, partController, partFileChannels } from './rollTracks';
+import { PERCUSSION_PART_CHANNEL, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
 
 /** The arrangement an export reads (editorStore's fields). */
@@ -163,6 +163,8 @@ interface ClipEvents {
   endSec: number;
   program: number | undefined;
   bank: number;
+  /** The part's bank select LSB (CC 32), when it sends one. */
+  bankLsb: number | undefined;
   /** Each note with the bent lane it plays in; null for a lane that does not bend (the track's own channel). */
   notes: Array<{ onSec: number; offSec: number; note: number; velocity: number; lane: number | null }>;
   controls: Array<{ sec: number; controller: number; value: number }>;
@@ -228,6 +230,7 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
     endSec: clip.startSec + clip.durationSec,
     program: percussion ? (program ?? GM_STANDARD_KIT) : program,
     bank: percussion ? 0 : Math.max(0, Math.min(127, Math.round(clip.sourceRollPart?.bank ?? 0))),
+    bankLsb: percussion ? undefined : cleanPartBankLsb(clip.sourceRollPart?.bankLsb),
     notes,
     controls,
     wheels,
@@ -378,10 +381,12 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     for (const e of events) {
       if (!e.notes.length && !e.controls.length) continue;
       // A program change where the clip's voice differs from the one sounding: tick 0 for the first, on each of the track's channels.
-      const key = `${e.program ?? 'none'}:${e.bank}`;
+      const key = `${e.program ?? 'none'}:${e.bank}:${e.bankLsb ?? 'none'}`;
       if (e.program !== undefined && key !== current) {
         const tick = current === null ? 0 : tickOf(Math.max(startSec, e.startSec));
-        for (const channel of trackChannels) programs.push({ tick, channel, program: e.program, ...(e.bank > 0 ? { bank: e.bank } : {}) });
+        for (const channel of trackChannels) {
+          programs.push({ tick, channel, program: e.program, ...(e.bank > 0 ? { bank: e.bank } : {}), ...(e.bankLsb !== undefined ? { bankLsb: e.bankLsb } : {}) });
+        }
         current = key;
       }
       for (const n of e.notes) {

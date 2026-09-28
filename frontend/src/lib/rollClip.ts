@@ -31,6 +31,7 @@ import {
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
+  cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
   cleanPartControls,
@@ -431,6 +432,7 @@ export function rollPartRef(part: RollTrack, order: number, doc: string): RollPa
     name: part.name,
     program: part.program,
     bank: part.bank,
+    ...(part.bankLsb !== undefined ? { bankLsb: part.bankLsb } : {}),
     channel: part.channel,
     color: part.color,
     mute: part.mute,
@@ -451,6 +453,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
   if (typeof r.doc !== 'string' || !r.doc || typeof r.id !== 'string' || !r.id) return undefined;
   const order = typeof r.order === 'number' && Number.isFinite(r.order) ? Math.max(0, Math.round(r.order)) : 0;
   const controls = cleanPartControls(r.controls);
+  const bankLsb = cleanPartBankLsb(r.bankLsb);
   return {
     doc: r.doc,
     id: r.id,
@@ -458,6 +461,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
     name: cleanPartName(r.name, fallback.name),
     program: cleanPartProgram(r.program),
     bank: cleanPartBank(r.bank),
+    ...(bankLsb !== undefined ? { bankLsb } : {}),
     channel: cleanPartChannel(r.channel),
     color: cleanPartColor(r.color, fallback.color),
     mute: r.mute === true,
@@ -479,6 +483,7 @@ function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color
       name: ref.name,
       program: ref.program,
       bank: ref.bank,
+      ...(ref.bankLsb !== undefined ? { bankLsb: ref.bankLsb } : {}),
       channel: ref.channel,
       color: ref.color,
       mute: ref.mute,

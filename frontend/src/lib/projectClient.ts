@@ -574,9 +574,10 @@ export interface RecentItem {
  * A roll part as a .tasmo clip saves it (AudioClip `sourceRollPart`): the roll
  * document shared by the clips of every part bounced from one roll, the part's
  * id and place, and its settings. `program` and `channel` are null when the
- * part follows the roll's voice or takes the next free channel. `controls` is
- * the part's controller changes on the roll's clock (960 ticks to the quarter),
- * absent when it has none; a file written before controllers opens without them.
+ * part follows the roll's voice or takes the next free channel. `bank_lsb` is
+ * its bank select LSB (CC 32), absent when it sends none. `controls` is the
+ * part's controller changes on the roll's clock (960 ticks to the quarter),
+ * absent when it has none. A file written before either opens without it.
  */
 export interface TasmoRollPart {
   doc: string;
@@ -585,6 +586,7 @@ export interface TasmoRollPart {
   name: string;
   program: number | null;
   bank: number;
+  bank_lsb?: number;
   channel: number | null;
   color: string;
   mute: boolean;
@@ -601,6 +603,7 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   name: ref.name,
   program: ref.program,
   bank: ref.bank,
+  ...(ref.bankLsb !== undefined ? { bank_lsb: ref.bankLsb } : {}),
   channel: ref.channel,
   color: ref.color,
   mute: ref.mute,
@@ -613,7 +616,7 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
 export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined => {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
-  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId }, fallback);
+  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId, bankLsb: r.bank_lsb ?? r.bankLsb }, fallback);
 };
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---

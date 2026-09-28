@@ -6,10 +6,10 @@
  * parts draw behind it as ghost notes while GHOSTS is on). The active part's
  * row opens its settings: name, sound (an orchestral instrument from the
  * registry, a General MIDI program, a drum kit, or the roll's own voice), MIDI
- * channel and bank, the controller changes a MIDI file gave it (how many of
- * each: modulation, volume, pan, expression, the sustain pedal) with CLEAR,
- * AUDITION (play this part alone), and keys to move it up or down and to
- * remove it. ADD makes a new part and turns to it, so the next generator,
+ * channel, bank and bank LSB, the controller changes a MIDI file gave it (how
+ * many of each: modulation, volume, pan, expression, the sustain pedal) with
+ * CLEAR, AUDITION (play this part alone), and keys to move it up or down and
+ * to remove it. ADD makes a new part and turns to it, so the next generator,
  * import or drawn note goes there.
  *
  * Every change is a roll undo step (state/pianoRollStore), except which part
@@ -145,6 +145,21 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
             value={track.bank}
             onChange={(e) => roll().setTrackBank(track.id, Number(e.target.value))}
             title="Bank select (MSB) sent before the program: 0 is the General MIDI set"
+            className={FLYOUT_SELECT}
+          />
+        </div>
+        <div className="flex flex-col gap-0.5 w-14">
+          <label htmlFor="roll-part-bank-lsb" className={FIELD_LEGEND}>LSB</label>
+          <input
+            id="roll-part-bank-lsb"
+            name="roll-part-bank-lsb"
+            type="number"
+            min={0}
+            max={127}
+            step={1}
+            value={track.bankLsb ?? ''}
+            onChange={(e) => roll().setTrackBankLsb(track.id, e.target.value === '' ? null : Number(e.target.value))}
+            title="Bank select LSB (CC 32) sent after the bank, before the program: XG and GS pick a voice's variation with it. Empty sends none; choosing an instrument clears it."
             className={FLYOUT_SELECT}
           />
         </div>
