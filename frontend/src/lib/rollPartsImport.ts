@@ -26,7 +26,7 @@ import { guessInstrument, orchestraInstrument } from './orchestra';
 import type { LaneBend } from './pitchBend';
 import { midiFileToRollParts, type RollMidiPart } from './rollMidi';
 import { sanitizeRollTempoMap } from './rollTempo';
-import { MAX_ROLL_PARTS, PERCUSSION_PART_CHANNEL, cleanPartProgram, partColorAt } from './rollTracks';
+import { MAX_ROLL_PARTS, PERCUSSION_PART_CHANNEL, cleanPartControls, cleanPartProgram, partColorAt } from './rollTracks';
 import type { SheetScore } from './sheetImportClient';
 import type { TempoEvent } from './tempoMap';
 
@@ -91,7 +91,8 @@ const scorePpq = (score: Pick<SheetScore, 'ppq'>): number => (typeof score.ppq =
  * `program`. A part the importer marks `percussion` goes on channel 10. Each
  * note keeps its tick, rescaled from the score's PPQ to the roll's (the same
  * 960, so unchanged); a note from an older backend, which sent steps alone,
- * is placed by its step.
+ * is placed by its step. The part's controller changes (its sustain pedal
+ * from the score's pedal marks) come on the same clock as its `controls`.
  */
 export function sheetScoreParts(score: Pick<SheetScore, 'tracks' | 'ppq'>): RollMidiPart[] {
   const toModel = PPQ / scorePpq(score);
@@ -110,12 +111,17 @@ export function sheetScoreParts(score: Pick<SheetScore, 'tracks' | 'ppq'>): Roll
     const inst = orchestraInstrument(track.instrument ?? undefined) ?? guessInstrument(track.name);
     const percussion = track.percussion === true || inst?.percussion === true;
     const program = inst ? inst.program : cleanPartProgram(track.program);
+    // Rescaled to the roll's clock; cleanPartControls drops anything that is not a controller change a part keeps.
+    const controls = cleanPartControls(
+      (track.controls ?? []).map((c) => (c && typeof c.tick === 'number' ? { ...c, tick: Math.max(0, Math.round(c.tick * toModel)) } : c)),
+    );
     const part: Partial<RollTrack> = {
       name: track.name,
       program,
       color: partColorAt(index),
       ...(percussion ? { channel: PERCUSSION_PART_CHANNEL } : {}),
       ...(inst ? { instrumentId: inst.id } : {}),
+      ...(controls ? { controls } : {}),
     };
     return { track: part, notes };
   });

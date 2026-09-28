@@ -1,6 +1,7 @@
 /**
  * A score into the roll on the roll's own clock: every note at its tick,
- * every time signature with the pickup, every tempo mark
+ * every time signature with the pickup, every tempo mark, and the sustain
+ * pedal its pedal marks give each part
  * (lib/rollPartsImport importSheetParts over the sheet importer's answer).
  *
  * Before: the roll took the score's notes on whole 16th steps (a quintuplet
@@ -103,6 +104,43 @@ assert.equal(sheetScoreTempoMap({ ...score, tempos: [{ tick: 0, bpm: 132 }] }), 
   roll().undo();
   assert.equal(roll().tracks.length, 1, 'one undo puts the roll back');
   assert.equal(roll().bpm, 100);
+}
+
+// A piano score's sustain pedal (the importer's controller 64 changes) comes in as the part's controls,
+// on both staves of a split piano, and one part into the part being edited sets them in the same undo step.
+{
+  const pedal = [
+    { tick: 0, controller: 64, value: 127 },
+    { tick: 1920, controller: 64, value: 0 },
+    { tick: 1980, controller: 64, value: 127 },
+    { tick: 3840, controller: 64, value: 0 },
+  ];
+  const piano: SheetScore = {
+    ...score,
+    tempos: [{ tick: 0, bpm: 90 }],
+    time_signatures: [{ tick: 0, num: 4, den: 4, groups: [] }],
+    pickup_ticks: 0,
+    tracks: [
+      { name: 'Piano', instrument: 'piano', program: 0, notes: [t(0, 1920, 72), t(1920, 1920, 74)], controls: pedal },
+      { name: 'Piano', instrument: 'piano', program: 0, notes: [t(0, 3840, 48)], controls: pedal },
+    ],
+  };
+  const parts = sheetScoreParts(piano);
+  assert.deepEqual(parts.map((p) => p.track.controls), [pedal, pedal], 'each staff with the pedal');
+  assert.equal(sheetScoreParts({ ...piano, tracks: [{ ...piano.tracks[0], controls: undefined }] })[0].track.controls, undefined, 'no pedal, no controls');
+  // An importer at 480 PPQ: the pedal lands on the roll's 960 like the notes.
+  assert.deepEqual(sheetScoreParts({ ...piano, ppq: 480 })[0].track.controls?.map((c) => c.tick), [0, 3840, 3960, 7680]);
+  importSheetParts(piano);
+  assert.deepEqual(rollTracksOf(roll()).map((p) => p.controls), [pedal, pedal], 'the roll parts hold it');
+  endRollGesture();
+  // One part into the part being edited: its notes and its pedal are one undo step.
+  roll().importNotes([{ id: 'y', note: 60, step: 0, length: 2, velocity: 90 }], 90, undefined, undefined, undefined, { controls: [] });
+  endRollGesture();
+  importSheetParts({ ...piano, tracks: [piano.tracks[0]] });
+  assert.deepEqual(rollTracksOf(roll()).find((p) => p.id === roll().activeTrackId)?.controls, pedal);
+  roll().undo();
+  assert.equal(rollTracksOf(roll()).find((p) => p.id === roll().activeTrackId)?.controls, undefined, 'one undo takes the pedal back out with the notes');
+  assert.deepEqual(roll().notes.map((n) => n.note), [60]);
 }
 
 // An answer from an older backend (whole steps, the first signature and tempo alone) comes in as it always did.

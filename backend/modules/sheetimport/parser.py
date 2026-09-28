@@ -40,7 +40,18 @@ General MIDI program and whether it is percussion. On the way in:
 - dynamics set the velocity of the notes after them (pp 32, p 44, mf 70, f 89,
   ff 108, from music21's volume scalars), a sforzando only the notes it
   marks; a note's own velocity in the file wins, and a note before any
-  dynamic keeps 90, as before.
+  dynamic keeps 90, as before;
+- a MusicXML sustain pedal mark (``<pedal>``) becomes the part's sustain
+  pedal, controller 64 (``controls`` on the track): down (127) where the mark
+  starts or resumes, up (0) where it stops or is discontinued, and a change
+  lifts it and puts it down again a 64th note later. A pedal is read from the
+  file's own directions, at the time the notes before it in its measure
+  reach, and follows its measure through every repeat; every staff of a piano
+  part gets it. A sostenuto pedal is another pedal and is left out.
+
+A part music21 splits into staves (a piano's two) is found in the file by the
+staves' ids, so the kit keys and pedals of every part after it stay with the
+part they belong to.
 
 Every pitch is the pitch that sounds. A part for a transposing instrument is
 written at the pitch its player reads, which its ``<transpose>`` puts a whole
@@ -55,6 +66,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -91,6 +103,12 @@ TEMPO_ANCHOR_TICKS = PPQ // 2
 TEMPO_SNAP_TICKS = PPQ // 8
 #: A tempo when the score marks none at its start.
 DEFAULT_BPM = 120.0
+#: The sustain pedal's controller number.
+SUSTAIN_CC = 64
+#: How long a pedal change holds the pedal up before it goes down again, in
+#: quarter notes (a 64th note): a lift and a press on one tick would be one
+#: change of the controller, and the press would win.
+PEDAL_CHANGE_QL = 0.0625
 
 #: Dynamics that mark one attack rather than a level: they set the velocity of
 #: the notes they sit on, and the level after them is the one before (a
@@ -242,13 +260,44 @@ def _musicxml_root(src: Path) -> Optional[ElementTree.Element]:
     return None
 
 
-def _unpitched_keys(src: Path) -> list[dict[tuple[str, int, Optional[str]], int]]:
+def _xml_part_ids(root: Optional[ElementTree.Element]) -> list[str]:
+    """The ids of a MusicXML file's ``<part>`` elements, in order."""
+    return [] if root is None else [p.get("id") or "" for p in root.iter("part")]
+
+
+_STAFF_ID = re.compile(r"^(.*)-Staff\d+$")
+
+
+def _part_sources(parts: list[Any], xml_ids: list[str]) -> list[Optional[int]]:
+    """For each music21 part, the index of the MusicXML ``<part>`` it was read
+    from, or None. music21 splits a part with several staves into PartStaffs
+    whose ids are ``<part id>-Staff<n>``, so a piano's two staves are two parts
+    of one ``<part>``, and every part after them sits one index further on
+    than its place in the file; a part with one staff keeps the file's order."""
+    out: list[Optional[int]] = []
+    following = 0
+    for part in parts:
+        match = _STAFF_ID.match(str(getattr(part, "id", "") or ""))
+        if match and match.group(1) in xml_ids:
+            index = xml_ids.index(match.group(1))
+            out.append(index)
+            following = index + 1
+        elif following < len(xml_ids):
+            out.append(following)
+            following += 1
+        else:
+            out.append(None)
+    return out
+
+
+def _unpitched_keys(
+    root: Optional[ElementTree.Element],
+) -> list[dict[tuple[str, int, Optional[str]], int]]:
     """For each ``<part>`` of a MusicXML file, in order: the kit key of each
     unpitched staff position, by (display step, octave, notehead) and by
     (display step, octave, None), read from the note's ``<instrument>`` and
     that instrument's ``<midi-unpitched>`` (1-based in the file). A part that
     has one unpitched instrument gives it to notes that name none."""
-    root = _musicxml_root(src)
     if root is None:
         return []
     keys_by_instrument: dict[str, int] = {}
@@ -325,6 +374,159 @@ def _unpitched_key(
         if candidate is not None and 0 <= int(candidate) <= 127:
             return int(candidate), True
     return _FALLBACK_KIT_KEY, False
+
+
+# ── MusicXML sustain pedal ──────────────────────────────────────────────────
+
+
+def _xml_duration(el: ElementTree.Element) -> float:
+    """An element's ``<duration>`` in divisions (0 when it has none)."""
+    try:
+        return float((el.findtext("duration") or "0").strip())
+    except ValueError:
+        return 0.0
+
+
+def _pedal_changes(
+    root: Optional[ElementTree.Element],
+) -> list[tuple[int, list[tuple[int, float, int]]]]:
+    """For each ``<part>`` of a MusicXML file, in order: how many measures it
+    has, and its sustain pedal as (measure index, quarter notes into the
+    measure, controller 64 value), in the order the part writes them.
+
+    A direction sounds at the time the notes, backups and forwards before it in
+    its measure reach; its ``<offset>`` moves the sound only when it says
+    ``sound="yes"`` (otherwise it places the mark on the page). A chord's
+    later notes and grace notes take no time. ``start`` and ``resume`` put the
+    pedal down (127), ``stop`` and ``discontinue`` lift it (0), and a
+    ``change`` lifts it and puts it down PEDAL_CHANGE_QL later. ``sostenuto``
+    starts the sostenuto pedal, which the stop, change, discontinue and resume
+    that follow with the same ``number`` belong to, so they change nothing
+    here.
+    """
+    if root is None:
+        return []
+    out: list[tuple[int, list[tuple[int, float, int]]]] = []
+    for part in root.iter("part"):
+        divisions = 1.0
+        changes: list[tuple[int, float, int]] = []
+        # The pedal each mark number has open: "damper" or "sostenuto".
+        open_pedal: dict[str, str] = {}
+        measures = part.findall("measure")
+        for index, measure in enumerate(measures):
+            position = 0.0
+            for child in measure:
+                if child.tag == "attributes":
+                    try:
+                        divisions = float(child.findtext("divisions") or divisions)
+                    except ValueError:
+                        pass
+                    divisions = divisions if divisions > 0 else 1.0
+                elif child.tag == "note":
+                    if child.find("grace") is None and child.find("chord") is None:
+                        position += _xml_duration(child)
+                elif child.tag == "backup":
+                    position -= _xml_duration(child)
+                elif child.tag == "forward":
+                    position += _xml_duration(child)
+                elif child.tag == "direction":
+                    at = position
+                    offset = child.find("offset")
+                    if offset is not None and offset.get("sound") == "yes":
+                        try:
+                            at += float((offset.text or "0").strip())
+                        except ValueError:
+                            pass
+                    ql = max(0.0, at / divisions)
+                    for pedal in child.iter("pedal"):
+                        kind = pedal.get("type") or ""
+                        number = pedal.get("number") or "1"
+                        if kind == "sostenuto":
+                            open_pedal[number] = "sostenuto"
+                            continue
+                        if kind == "start":
+                            open_pedal[number] = "damper"
+                            changes.append((index, ql, 127))
+                            continue
+                        if open_pedal.get(number, "damper") != "damper":
+                            # The sostenuto pedal's mark; a stop ends it.
+                            if kind == "stop":
+                                open_pedal.pop(number, None)
+                            continue
+                        if kind == "resume":
+                            changes.append((index, ql, 127))
+                        elif kind in ("stop", "discontinue"):
+                            changes.append((index, ql, 0))
+                            if kind == "stop":
+                                open_pedal.pop(number, None)
+                        elif kind == "change":
+                            changes.append((index, ql, 0))
+                            changes.append((index, ql + PEDAL_CHANGE_QL, 127))
+        out.append((len(measures), changes))
+    return out
+
+
+def _pedal_controls(
+    written: Any,
+    expanded: Any,
+    measure_count: int,
+    changes: list[tuple[int, float, int]],
+) -> list[dict[str, int]]:
+    """A part's sustain pedal (:func:`_pedal_changes`) as controller changes
+    at ticks of the part as it plays: each measure of ``expanded`` (repeats
+    played out) gets the changes of the written measure it was copied from,
+    found through music21's derivation chain, so a pedal inside a repeat
+    sounds on every pass. A lift and a press on one tick (a stop where the
+    next start is) is a change: the press waits PEDAL_CHANGE_QL. Nothing when
+    the written part's measures are not the file's."""
+    from music21 import stream as m21stream
+
+    if not changes:
+        return []
+    measures = list(written.getElementsByClass(m21stream.Measure))
+    if len(measures) != measure_count:
+        log.debug(
+            "sheetimport: pedal marks skipped: the part has %d measures, the file %d",
+            len(measures),
+            measure_count,
+        )
+        return []
+    index_of = {id(m): i for i, m in enumerate(measures)}
+    by_measure: dict[int, list[tuple[float, int]]] = {}
+    for index, ql, value in changes:
+        by_measure.setdefault(index, []).append((ql, value))
+    placed: list[dict[str, int]] = []
+    for measure in expanded.getElementsByClass(m21stream.Measure):
+        source: Any = measure
+        index: Optional[int] = None
+        for _ in range(16):
+            index = index_of.get(id(source))
+            derivation = getattr(source, "derivation", None)
+            if index is not None or derivation is None or derivation.origin is None:
+                break
+            source = derivation.origin
+        if index is None:
+            continue
+        for ql, value in by_measure.get(index, []):
+            placed.append(
+                {
+                    "tick": _tick(float(measure.offset) + ql),
+                    "controller": SUSTAIN_CC,
+                    "value": value,
+                }
+            )
+    out: list[dict[str, int]] = []
+    for change in sorted(placed, key=lambda c: c["tick"]):
+        last = out[-1] if out else None
+        if (
+            change["value"] > 0
+            and last is not None
+            and last["tick"] == change["tick"]
+            and last["value"] == 0
+        ):
+            change = {**change, "tick": change["tick"] + _tick(PEDAL_CHANGE_QL)}
+        out.append(change)
+    return sorted(out, key=lambda c: c["tick"])
 
 
 # ── time: signatures, pickup, tempo marks ───────────────────────────────────
@@ -760,14 +962,28 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
     except Exception:  # noqa: BLE001 - key detection is best-effort
         detected_key = ""
 
+    # The MusicXML itself (None for any other format), for what music21 does
+    # not keep: the kit keys of unpitched notes and the sustain pedal. Each
+    # music21 part finds its <part> through _part_sources (a piano's staves
+    # are two music21 parts of one <part>).
+    xml_root = _musicxml_root(src)
+    sources = _part_sources(written_parts or parts, _xml_part_ids(xml_root))
+    pedals = _pedal_changes(xml_root)
+
+    def source_of(part_index: int) -> Optional[int]:
+        return sources[part_index] if part_index < len(sources) else None
+
     # The file's own kit keys, read from its XML only when an unpitched note needs them.
     file_keys: Optional[list[dict[tuple[str, int, Optional[str]], int]]] = None
 
     def keys_of(part_index: int) -> dict[tuple[str, int, Optional[str]], int]:
         nonlocal file_keys
         if file_keys is None:
-            file_keys = _unpitched_keys(src)
-        return file_keys[part_index] if part_index < len(file_keys) else {}
+            file_keys = _unpitched_keys(xml_root)
+        source = source_of(part_index)
+        return (
+            file_keys[source] if source is not None and source < len(file_keys) else {}
+        )
 
     tracks: list[dict[str, Any]] = []
     total_notes = 0
@@ -777,7 +993,10 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         "chord_symbols_skipped": 0,
         "unpitched": 0,
         "unmapped_unpitched": 0,
+        # Sustain pedal presses the file writes (a change is one), counted once per <part>.
+        "pedal_marks": 0,
     }
+    pedal_parts_counted: set[int] = set()
     for idx, part in enumerate(parts):
         # Strip ties so a note held across a barline (or any tie) becomes ONE
         # sustained note event, not several re-articulated ones — otherwise the
@@ -884,11 +1103,22 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
                 )
         notes_out.sort(key=lambda n: (n["tick"], n["pitch"]))
         total_notes += len(notes_out)
+
+        # The sustain pedal the part's <part> writes, on every pass of its measures.
+        controls: list[dict[str, int]] = []
+        source = source_of(idx)
+        if source is not None and source < len(pedals) and idx < len(written_parts):
+            measure_count, changes = pedals[source]
+            controls = _pedal_controls(written_parts[idx], part, measure_count, changes)
+            if controls and source not in pedal_parts_counted:
+                pedal_parts_counted.add(source)
+                stats["pedal_marks"] += sum(1 for _, _, value in changes if value > 0)
         tracks.append(
             {
                 "name": name or f"Part {idx + 1}",
                 "notes": notes_out,
                 **_part_instrument(part),
+                **({"controls": controls} if controls else {}),
             }
         )
 

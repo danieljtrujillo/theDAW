@@ -26,6 +26,15 @@ export interface SheetTrack {
   program?: number | null;
   /** True for an unpitched percussion part, which the roll puts on channel 10. */
   percussion?: boolean;
+  /** The part's controller changes at ticks of `SheetScore.ppq`: its sustain pedal (64) from the score's pedal marks. Absent when it has none, and from older backends. */
+  controls?: SheetControl[];
+}
+
+/** A controller change of a part at its tick. */
+export interface SheetControl {
+  tick: number;
+  controller: number;
+  value: number;
 }
 
 /** A time signature of the score at its tick (bar 1's at tick 0; `pickup_ticks` says where bar 1 starts). */
@@ -74,6 +83,8 @@ export interface SheetScore {
   chord_symbols_skipped?: number;
   unpitched?: number;
   unmapped_unpitched?: number;
+  /** Sustain pedal presses the score writes (a pedal change is one), which its parts play as controller 64. */
+  pedal_marks?: number;
 }
 
 /** Extensions accepted by the sheet importer (music21 symbolic formats). MIDI is

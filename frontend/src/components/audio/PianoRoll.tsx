@@ -1267,6 +1267,7 @@ export const importSheetFileToRoll = (file: File): void => {
         score.grace_notes ? `${score.grace_notes} grace notes timed` : '',
         score.ornaments ? `${score.ornaments} ornaments played out` : '',
         score.chord_symbols_skipped ? `${score.chord_symbols_skipped} chord symbols left out` : '',
+        score.pedal_marks ? `${score.pedal_marks} sustain pedal mark${score.pedal_marks === 1 ? '' : 's'} as pedal changes` : '',
       ].filter(Boolean);
       logInfo(
         'piano-roll',
