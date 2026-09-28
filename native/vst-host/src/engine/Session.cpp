@@ -1455,6 +1455,18 @@ void Session::audioLoop() {
             dropClient();
             continue;
         }
+        // Wait for bytes with WSAPoll and only then recv(): the recv never times out, so the
+        // socket never enters the indeterminate state a timed-out blocking recv leaves behind.
+        WSAPOLLFD poll{};
+        poll.fd = socket;
+        poll.events = POLLRDNORM;
+        const int ready = WSAPoll(&poll, 1, net::kAudioPollTimeoutMs);
+        if (ready == 0) continue;
+        if (ready == SOCKET_ERROR) {
+            util::log::audioNote("poll failed", WSAGetLastError());
+            dropClient();
+            continue;
+        }
         const int wanted = static_cast<int>(std::min<size_t>(space, 256 * 1024));
         const int received = recv(socket, reinterpret_cast<char*>(buffer), wanted, 0);
         if (received == 0) {

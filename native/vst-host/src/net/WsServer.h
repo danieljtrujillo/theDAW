@@ -16,6 +16,10 @@
 
 namespace thedaw::net {
 
+// How long the audio thread waits for the client's next bytes before it goes round its loop
+// again; this also bounds how long a park request waits and how long a queued reply sits.
+inline constexpr int kAudioPollTimeoutMs = 2;
+
 // ---- handshake pieces (exposed so --selftest can exercise them directly) ----
 
 struct HttpRequest {
