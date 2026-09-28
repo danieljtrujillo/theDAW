@@ -3382,6 +3382,8 @@ function liveInstrumentPass(): InstrumentLivePass {
       port: (entryId) => {
         const client = vstSessions.get(entryId)?.client;
         if (!client?.sendMidi || !client.midiPanic) return null;
+        // A host built before the midi op answers it with an error: leave it alone.
+        if (client.ready && client.acceptsMidi !== true) return null;
         return { sendMidi: (events) => client.sendMidi?.(events), midiPanic: () => client.midiPanic?.() };
       },
       sampleRate: (entryId) => vstSessions.get(entryId)?.client.sampleRate || getEngineCtx().sampleRate,

@@ -18,6 +18,7 @@ import { Loader2, Plug, Power, RefreshCw, X } from 'lucide-react';
 import { useEditorStore, type EditorTrack } from '../../state/editorStore';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { useVstLiveStore, type VstLiveStatus } from '../../state/vstLiveStore';
+import { vstSessions } from '../../lib/vstLive/sessionRegistry';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 
 /** The scanned plugins that can play MIDI: the instruments. */
@@ -60,7 +61,11 @@ export const TrackVstInstrument: React.FC<TrackVstInstrumentProps> = ({ track, p
   const available = instrumentPlugins(plugins);
   const name = instrument?.vst?.plugin_name || instrument?.vst?.plugin_path.split(/[\\/]/).pop() || '';
   const status: VstLiveStatus = instrument?.enabled ? (live?.status ?? 'off') : 'off';
-  const statusTitle = !instrument?.enabled
+  // A live host built before it could take notes processes the plugin but plays none of the part.
+  const deaf = status === 'live' && !!instrument && vstSessions.get(instrument.id)?.client.acceptsMidi === false;
+  const statusTitle = deaf
+    ? 'The installed live VST host predates instrument playback, so the part is silent live; update theDAW to hear it. Bounces, freezes and exports print through the plugin'
+    : !instrument?.enabled
     ? 'Switched off: the track plays on EDIT\'s synths'
     : status === 'live'
       ? 'Plays live through the plugin; bounces, freezes and exports print through it'
@@ -102,8 +107,8 @@ export const TrackVstInstrument: React.FC<TrackVstInstrumentProps> = ({ track, p
               {name}
             </button>
             <span className="flex items-center gap-1 shrink-0 font-sans text-xs font-bold text-zinc-300" title={statusTitle}>
-              <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status]}`} />
-              {INSTRUMENT_STATUS_WORD[status]}
+              <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${deaf ? 'bg-amber-400' : STATUS_DOT[status]}`} />
+              {deaf ? 'Update' : INSTRUMENT_STATUS_WORD[status]}
               <span className="sr-only">{`: ${statusTitle}`}</span>
             </span>
             <button
