@@ -36,7 +36,7 @@ import React from 'react';
 import { create } from 'zustand';
 import {
   ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, DiamondMinus, DiamondPlus, Dices,
-  Eraser, ListPlus, ListX, Minus, Plus, Scissors, Send, Timer,
+  Eraser, Hourglass, ListPlus, ListX, Minus, Plus, Scissors, Send, Timer,
 } from 'lucide-react';
 import { laneName, usePianoRollStore, type LaneTimePatch } from '../../state/pianoRollStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
@@ -50,7 +50,7 @@ import {
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
   laneMeterValue, lanePitches, laneSpanLabel, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
   removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
-  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
@@ -681,16 +681,40 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
           >
             {tempoSum.value}
           </span>
-          <StripKey
-            mini
-            iconOnly
-            aria-label={tempoSum.clearLabel}
-            aria-describedby="mf-tempo-value"
-            description={tempoSum.clearDescription}
-            onClick={() => usePianoRollStore.getState().setTempoMap([])}
-            icon={<Eraser className={MINI_GLYPH} />}
-            legend={tempoSum.clearLabel}
-          />
+          {/* Two keys, so neither clears the other's marks: Clear takes the
+              tempo changes and keeps every fermata, Clear fermatas takes the
+              holds and keeps every tempo change. Each shows only when there is
+              something for it to clear. */}
+          {tempoSum.clearTempo && (
+            <StripKey
+              mini
+              iconOnly
+              aria-label={tempoSum.clearTempo.label}
+              aria-describedby="mf-tempo-value"
+              description={tempoSum.clearTempo.description}
+              onClick={() => {
+                const r = usePianoRollStore.getState();
+                r.setTempoMap(withoutTempoChanges(r.tempoMap));
+              }}
+              icon={<Eraser className={MINI_GLYPH} />}
+              legend={tempoSum.clearTempo.label}
+            />
+          )}
+          {tempoSum.clearFermatas && (
+            <StripKey
+              mini
+              iconOnly
+              aria-label={tempoSum.clearFermatas.label}
+              aria-describedby="mf-tempo-value"
+              description={tempoSum.clearFermatas.description}
+              onClick={() => {
+                const r = usePianoRollStore.getState();
+                r.setTempoMap(withoutFermatas(r.tempoMap));
+              }}
+              icon={<Hourglass className={MINI_GLYPH} />}
+              legend={tempoSum.clearFermatas.label}
+            />
+          )}
         </div>
       )}
 

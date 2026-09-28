@@ -567,10 +567,25 @@ export interface TempoSummary {
   value: string;
   /** The hover: how many tempo points and fermatas follow the start, and the range. */
   title: string;
-  /** The Clear key's name, which says whether it clears tempo points, fermatas or both. */
-  clearLabel: string;
-  clearDescription: string;
+  /** Tempo points after the start (a ramp's target counts as one). */
+  points: number;
+  /** Fermatas. */
+  holds: number;
+  /**
+   * The Clear key's name and hover. It clears the tempo changes and keeps the
+   * fermatas; null when there are no tempo changes to clear.
+   */
+  clearTempo: { label: string; description: string } | null;
+  /** The Clear fermatas key's name and hover: it keeps the tempo changes. Null with no fermata. */
+  clearFermatas: { label: string; description: string } | null;
 }
+
+/** The map with its tempo changes cleared: the start tempo and every fermata, which keeps its place. */
+export const withoutTempoChanges = (map: readonly TempoEvent[]): TempoEvent[] =>
+  map.filter((e) => !!e.fermata || e.beat === 0);
+
+/** The map with its fermatas cleared: every tempo change stays. */
+export const withoutFermatas = (map: readonly TempoEvent[]): TempoEvent[] => map.filter((e) => !e.fermata);
 
 /**
  * The readout for `map` (the roll's tempo map; `startBpm` is its beat-0
@@ -591,12 +606,24 @@ export function tempoSummary(map: readonly TempoEvent[], startBpm: number): Temp
   const counted = [points > 0 ? pointText : '', holds > 0 ? holdText : ''].filter(Boolean).join(' and ');
   const range = lowText === highText ? `at ${lowText} BPM throughout` : `from ${lowText} to ${highText} BPM`;
   const title = `${counted || 'Nothing'} after the ${bpmText(startBpm)} BPM start, ${range}`;
-  const what = points > 0 && holds > 0 ? 'the tempo changes and fermatas' : holds > 0 ? 'the fermatas' : 'the tempo changes';
+  const keep = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   return {
     value,
     title,
-    clearLabel: `Clear ${what}`,
-    clearDescription: `Clear ${what}; the roll runs at ${bpmText(startBpm)} BPM throughout`,
+    points,
+    holds,
+    clearTempo: points > 0
+      ? {
+        label: 'Clear the tempo changes',
+        description: `Clear the tempo changes; the roll runs at ${bpmText(startBpm)} BPM throughout${holds > 0 ? ` and keeps its ${keep(holds, 'fermata', 'fermatas')}` : ''}`,
+      }
+      : null,
+    clearFermatas: holds > 0
+      ? {
+        label: 'Clear the fermatas',
+        description: `Clear the ${keep(holds, 'fermata', 'fermatas')}${points === 1 ? '; the tempo point stays' : points > 1 ? `; the ${points} tempo points stay` : ''}`,
+      }
+      : null,
   };
 }
 
