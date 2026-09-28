@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-import soundfile as sf  # type: ignore[import]
+import soundfile as sf
 
 from backend.modules.notation.exporters.chordtrack import (
     SCHEMA,

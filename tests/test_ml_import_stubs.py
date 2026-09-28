@@ -6,7 +6,8 @@ None of the four ships type information, and every import of them carried a
 match the real packages: every class, function, method and parameter they
 declare exists on the installed package with those parameter names, and the
 type checker's config points at them. librosa and pedalboard ship their own
-``py.typed``, so their imports need neither stubs nor a suppression.
+``py.typed``, so their imports need neither stubs nor a suppression, and
+soundfile and aubio resolve as installed dependencies, so neither do theirs.
 
 onnxruntime and mido are imported and inspected. basic_pitch and
 piano_transcription_inference are read from their source with ``ast``: their
@@ -253,7 +254,14 @@ def test_piano_transcription_stub_matches_the_source() -> None:
 
 
 def test_no_import_of_these_packages_is_suppressed() -> None:
-    watched = r"\b(onnxruntime|basic_pitch|piano_transcription_inference|mido|librosa|pedalboard)\b"
+    # soundfile and aubio are declared dependencies (pyproject.toml; aubio from
+    # the vendored wheel of every shipped platform), so their imports resolve
+    # in the project venv like the backend's other soundfile imports; the last
+    # three suppressions on them (two tests, chimera's aubio probe) are gone.
+    watched = (
+        r"\b(onnxruntime|basic_pitch|piano_transcription_inference|mido|librosa"
+        r"|pedalboard|soundfile|aubio)\b"
+    )
     offenders = []
     for folder in ("backend", "tests", "scripts"):
         for path in (ROOT / folder).rglob("*.py"):
@@ -263,3 +271,27 @@ def test_no_import_of_these_packages_is_suppressed() -> None:
                     if re.search(r"type:\s*ignore|pyright:\s*ignore", line):
                         offenders.append(f"{path.relative_to(ROOT)}:{number}")
     assert offenders == []
+
+
+def test_no_import_anywhere_is_suppressed() -> None:
+    """No ``import`` line in the backend, tests or scripts carries a
+    ``type: ignore``: every module the code imports resolves for the type
+    checker, through the package itself or a stub under ``stubs/``."""
+    offenders = []
+    for folder in ("backend", "tests", "scripts"):
+        for path in (ROOT / folder).rglob("*.py"):
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for number, line in enumerate(lines, 1):
+                if re.search(r"^\s*(import|from)\s", line) and re.search(
+                    r"#\s*(type|pyright):\s*ignore", line
+                ):
+                    offenders.append(f"{path.relative_to(ROOT)}:{number}")
+    assert offenders == []
+
+
+def test_the_unsuppressed_packages_import() -> None:
+    import aubio
+    import soundfile
+
+    assert isinstance(aubio.version, str) and aubio.version
+    assert callable(soundfile.read) and callable(soundfile.write)
