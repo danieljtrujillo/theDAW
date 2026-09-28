@@ -155,4 +155,61 @@ console.log('mpeMidi: ok');
   assert.deepEqual(planMpeExport([{ key: 'x', start: 0, end: 10 }], new Set([12])).members, [14], 'one member for one note');
 }
 
+// ── the part's controllers reach the member channels, in both writers and in the roll's PLAY ──
+{
+  const { rollToMidiFile } = await import('./rollMidi.ts');
+  const { arrangementToMidiFile } = await import('./arrangementMidi.ts');
+  const { makeRollTrack } = await import('./rollTracks.ts');
+  const { memberPartControls } = await import('./mpeMidi.ts');
+  const { migrateNotes, DEFAULT_LANES, usePianoRollStore, rollTracksOf, activeTrackOf } = await import('../state/pianoRollStore.ts');
+  const { normalizeMeterMap } = await import('./meterMap.ts');
+  const { createRollScheduler, ROLL_LOOKAHEAD_SEC } = await import('./rollPartPlay.ts');
+  const notes = migrateNotes([
+    { id: 'e', note: 60, step: 0, length: 8, velocity: 100, expr: { pressure: 0.5 } },
+    { id: 'p', note: 67, step: 0, length: 8, velocity: 80 },
+  ]);
+  // The pedal down at 0 and up at the next bar, volume 50.
+  const controls = [{ tick: 0, controller: 64, value: 127 }, { tick: 0, controller: 7, value: 50 }, { tick: 3840, controller: 64, value: 0 }];
+  const part = makeRollTrack({ id: 'lead', name: 'Lead', program: 0, notes, controls }, 0);
+  const file = rollToMidiFile({ notes: [], lanes: [...DEFAULT_LANES], totalSteps: 32, bpm: 120, meterMap: normalizeMeterMap([]), pickupSteps: 0, bends: [], tracks: [part] });
+  const t = file.tracks[0];
+  const member = t.notes.find((n) => n.note === 60)!.channel;
+  assert.notEqual(member, 0);
+  const onMember = (t.controls ?? []).filter((c) => c.channel === member && c.controller !== 74).map((c) => [c.tick, c.controller, c.value]);
+  assert.deepEqual(onMember, [[0, 64, 127], [0, 7, 50], [3840, 64, 0]], "the member takes the part's pedal and volume, and the pedal's release after the note");
+  assert.equal(midiFileToRollParts(parseMidi(encodeMidi(file))).parts[0].track.controls?.length, 3, 'read back, the part keeps its three changes');
+
+  const track = { id: 't', name: 'Lead', color: '#fff', volume: 0.5, pan: 0, mute: false, solo: false, fxChain: [], instrumentProgram: 0 };
+  const clip = { id: 'c', trackId: 't', label: 'x', mimeType: 'audio/wav', sourceDuration: 4, offsetIntoSource: 0, durationSec: 4, startSec: 0, color: '#fff', sourceKind: 'piano-roll', sourcePianoRoll: notes, sourceBpm: 120, sourceTotalSteps: 32, sourceRollPart: { ...part, doc: 'd', order: 0 } };
+  const arr = arrangementToMidiFile({ tracks: [track as never], clips: [clip as never], bpm: 120 }).file.tracks[0];
+  const arrMember = arr.notes.find((n) => n.note === 60)!.channel;
+  const home = arr.notes.find((n) => n.note === 67)!.channel;
+  const cc = (ch: number, controller: number) => (arr.controls ?? []).filter((c) => c.channel === ch && c.controller === controller).map((c) => c.value);
+  assert.ok(cc(home, 64).length > 0 && cc(home, 7).length > 0, 'the track channel has the pedal and the fader');
+  assert.deepEqual(cc(arrMember, 64), cc(home, 64), 'the member channel takes the pedal the track channel has');
+  assert.deepEqual(cc(arrMember, 7), cc(home, 7), 'and its fader volume');
+
+  // A member the next note takes stops following the part there.
+  assert.deepEqual(memberPartControls({ tick: 10 }, 14, [{ tick: 0, controller: 1, value: 5 }, { tick: 20, controller: 1, value: 9 }, { tick: 40, controller: 1, value: 3 }], 30).map((c) => [c.tick, c.value]), [[10, 5], [20, 9]]);
+
+  // The roll's PLAY: the member channel hears the part's pedal and volume.
+  usePianoRollStore.getState().importParts([{ name: 'Lead', program: 0, notes }] as never, 120);
+  const st0 = usePianoRollStore.getState();
+  st0.setTrackControls(activeTrackOf(st0).id, controls.slice(0, 2));
+  usePianoRollStore.setState({ currentStep: 0, loop: null, loopOn: false });
+  const state = usePianoRollStore.getState();
+  const sched = createRollScheduler({ ...state, tracks: rollTracksOf(state) }, 1, ROLL_LOOKAHEAD_SEC);
+  const heard = new Set<string>();
+  const noteCh = new Map<number, number>();
+  for (let now = 1; now < 2; now += 0.025) {
+    const s = usePianoRollStore.getState();
+    const out = sched.tick(now, { ...s, tracks: rollTracksOf(s) }, () => ({ program: 0, percussion: false }));
+    for (const w of out.wheels) if (w.kind === 'control') heard.add(`${w.channel}:${w.controller}=${w.value}`);
+    for (const n of out.notes) noteCh.set(n.note, n.channel);
+  }
+  const playMember = noteCh.get(60)!;
+  assert.notEqual(playMember, noteCh.get(67));
+  assert.ok(heard.has(`${playMember}:64=127`) && heard.has(`${playMember}:7=50`), "PLAY sends the part's pedal and volume to the expressive note's channel");
+}
+
 console.log('mpeMidi export: ok');

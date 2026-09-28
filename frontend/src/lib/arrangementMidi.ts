@@ -123,7 +123,7 @@ import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempo
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { articulatedNotes, clipArticulationInstrument, type Articulation, type SoundfontArticulationTarget } from './articulationMap';
 import { artChannelKey } from './rollMidi';
-import { mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
+import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
 import { EXPRESSION_DIMENSIONS, type ExpressionDimension } from './noteExpression';
 import type { NoteExpression } from '../state/pianoRollStore';
 
@@ -573,6 +573,8 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     const rangeOn = new Map<number, number>();
     const pressures: MidiPressure[] = [];
     const mpeBends: MidiBend[] = [];
+    /** The track's notes on member channels, which take the track's controllers while they are theirs. */
+    const memberNotes: Array<{ key: string; tick: number; member: number }> = [];
     let current: string | null = null;
     let noteIndex = 0;
     for (const e of events) {
@@ -590,8 +592,10 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
         const tick = tickOf(n.onSec);
         const durationTicks = Math.max(1, tickOf(n.offSec) - tick);
         const home = channelOf(n.lane);
-        const member = n.expr ? mpe.channelOf.get(`${track.id}#${noteIndex}`) : undefined;
+        const memberKey = `${track.id}#${noteIndex}`;
+        const member = n.expr ? mpe.channelOf.get(memberKey) : undefined;
         noteIndex += 1;
+        if (member !== undefined) memberNotes.push({ key: memberKey, tick, member });
         const artChannel = n.art ? artChannelOf(n.art.key) : undefined;
         if (n.art && artChannel === undefined && member === undefined) articulationFallback.add(track.name);
         const channel = member ?? artChannel ?? home;
@@ -681,6 +685,13 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       if (Math.abs(scale - 1) > 1e-9 && !setAtZero(channel, 7)) controls.push({ tick: 0, channel, controller: 7, value: clamp7(GM_DEFAULT_VOLUME * scale) });
       if (panOffset !== 0 && !setAtZero(channel, 10)) controls.push({ tick: 0, channel, controller: 10, value: clamp7(64 + panOffset) });
       if (reverbSend !== undefined) controls.push({ tick: 0, channel, controller: REVERB_SEND_CC, value: reverbSend });
+    }
+    // Each expressive note's member channel takes the track's controllers (its pedal, fader, pan, send and
+    // automation, as its own channel has them) from the note's start until the next note takes that member.
+    if (memberNotes.length) {
+      const home = voiceChannels[0];
+      const own = controls.filter((c) => c.channel === home).sort((a, b) => a.tick - b.tick);
+      for (const m of memberNotes) controls.push(...memberPartControls({ tick: m.tick }, m.member, own, mpe.until.get(m.key)));
     }
     notes.sort((a, b) => a.tick - b.tick);
     controls.sort((a, b) => a.tick - b.tick);

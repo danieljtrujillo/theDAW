@@ -121,7 +121,7 @@ import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram } from './orchestra';
 import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
 import { scaleExpressionTicks } from './noteExpression';
-import { mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
+import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
@@ -391,6 +391,8 @@ interface MpeMessages {
  */
 interface MpeWrite {
   channelOf: Map<string, number>;
+  /** Each note's member is its own until the next note on it starts (lib/mpeMidi planMpeExport). */
+  until: Map<string, number>;
   members: number[];
   noRoom: boolean;
   lastRange: Map<number, number>;
@@ -490,7 +492,14 @@ function writeNotes(
   channels: ReadonlyMap<number, number>,
   wheelLanes: ReadonlySet<number>,
   art?: ArticulationFileChannels,
-  mpe?: { partId: string; plan: MpeWrite; program: number | undefined; bank: number },
+  mpe?: {
+    partId: string;
+    plan: MpeWrite;
+    program: number | undefined;
+    bank: number;
+    /** The part's controller changes at the file's resolution (any channel), which each member note takes. */
+    controls?: readonly MidiControl[];
+  },
 ): WrittenNotes {
   const stepTicks = ppq / 4;
   // The note model's ticks rescaled to the file's resolution. At ppq === PPQ
@@ -522,6 +531,8 @@ function writeNotes(
       mpeOut.bends.push(...m.bends);
       mpeOut.controls.push(...m.controls);
       mpeOut.pressures.push(...m.pressures);
+      // The part's pedal, volume, pan and modulation on the member while the note sounds.
+      mpeOut.controls.push(...memberPartControls({ tick }, member, mpe.controls ?? [], mpe.plan.until.get(`${mpe.partId}#${i}`)));
     }
     return {
       tick,
@@ -748,7 +759,13 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   // Its expressive notes on the upper MPE zone's member channels (lib/mpeMidi), clear of every channel above.
   const taken1 = new Set([...channels.values(), ...[...art.channelOf.values()].map((c) => c.channel)]);
   const mpe = planMpe(s, [{ id: part?.id ?? 'roll', notes }], ppq, taken1);
-  const w = writeNotes(s, notes, ppq, channels, wheelLanes, art, { partId: part?.id ?? 'roll', plan: mpe, program, bank: part?.bank ?? 0 });
+  const w = writeNotes(s, notes, ppq, channels, wheelLanes, art, {
+    partId: part?.id ?? 'roll',
+    plan: mpe,
+    program,
+    bank: part?.bank ?? 0,
+    controls: partControlEvents(part?.controls, [0], ppq),
+  });
   const tracks = laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.bankLsb, part?.controls, ppq, meta, art));
   tracks[0] = withMpeMessages(tracks[0], w.mpe);
   return { ...header, tracks: withMpeZone(tracks, mpe) };
@@ -842,7 +859,15 @@ export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack
     const { channels, wheelLanes, art } = plan.parts.get(part.id) as PartLaneChannels;
     const program = part.program ?? s.voices?.get(part.id)?.program;
     const percussion = isPercussionPart(part);
-    const w = writeNotes(s, part.notes, ppq, channels, wheelLanes, art, percussion ? undefined : { partId: part.id, plan: mpe, program, bank: part.bank });
+    const w = writeNotes(
+      s,
+      part.notes,
+      ppq,
+      channels,
+      wheelLanes,
+      art,
+      percussion ? undefined : { partId: part.id, plan: mpe, program, bank: part.bank, controls: partControlEvents(part.controls, [0], ppq) },
+    );
     const extra = partTrackExtra(channels, program, percussion ? 0 : part.bank, percussion ? undefined : part.bankLsb, part.controls, ppq, { partMeta: partMetaText(part) }, art);
     const own = laneTracks(s, w, part.name, extra);
     own[0] = withMpeMessages(own[0], w.mpe);

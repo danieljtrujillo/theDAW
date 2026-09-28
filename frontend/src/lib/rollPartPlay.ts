@@ -340,7 +340,8 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
           id: t.id,
           played: unrolled[i],
           channels: ch,
-          channelList: [...new Set([ch.base, ...ch.lanes.values(), ...(ch.arts ?? [])])].sort((a, b) => a - b),
+          // Every channel the part's notes play on takes its controllers: its member channels too, as EDIT sends a clip's to every slot.
+          channelList: [...new Set([ch.base, ...ch.lanes.values(), ...(ch.arts ?? []), ...(ch.mpe ?? [])])].sort((a, b) => a - b),
           controls,
           controlItems: controls.map((c) => ({ step: c.tick / TICKS_PER_STEP, controller: c.controller, value: c.value })),
           arts: new Map(artsOf[i].notes.map((a) => [a.note, a])),

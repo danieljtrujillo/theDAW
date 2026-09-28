@@ -37,6 +37,37 @@ import { DEFAULT_BEND_RANGE } from './pitchBend';
 export const MPE_MEMBER_BEND_RANGE = 48;
 /** The upper zone's manager channel, which the writers declare their members on. */
 export const MPE_EXPORT_MANAGER = 15;
+/** The controllers a member channel keeps for its note's own: CC 74, and the RPN and data entry its bend range is set with. */
+const NOTE_OWN_CONTROLLERS: ReadonlySet<number> = new Set([6, 38, 74, 98, 99, 100, 101]);
+
+/**
+ * A part's controllers on the member channel its expressive note plays on:
+ * the value each holds where the note starts, at its tick, then each change
+ * until the next note takes that member (`until`, MpeExportPlan `until`), so
+ * the note plays and rings out in the part's pedal, volume, pan and
+ * modulation as its other notes do, and a pedal the part lifts after the note
+ * lifts there too. `part` is the part's own changes (one channel's, any
+ * channel number) in tick order. A member channel is shared by every part's
+ * expressive notes in turn, so it is set per note.
+ */
+export function memberPartControls(
+  note: { tick: number },
+  member: number,
+  part: readonly { tick: number; controller: number; value: number }[],
+  until = Infinity,
+): MidiControl[] {
+  const end = until;
+  const held = new Map<number, number>();
+  const inside: MidiControl[] = [];
+  for (const c of part) {
+    if (NOTE_OWN_CONTROLLERS.has(c.controller)) continue;
+    if (c.tick <= note.tick) held.set(c.controller, c.value);
+    else if (c.tick < end) inside.push({ tick: c.tick, channel: member, controller: c.controller, value: c.value });
+    else break;
+  }
+  return [...[...held].map(([controller, value]) => ({ tick: note.tick, channel: member, controller, value })), ...inside];
+}
+
 /** The member channels the writers take, in order: 14 down to 10, clear of the drum channel. */
 export const MPE_EXPORT_MEMBERS: readonly number[] = Object.freeze([14, 13, 12, 11, 10]);
 
@@ -180,6 +211,8 @@ export interface MpeExportPlan {
   members: number[];
   /** True when there were expressive notes and no member channel free (they stay on their parts' channels). */
   noRoom: boolean;
+  /** Each note's member is its own from its start to here: the next note on that member starts (absent: none does). */
+  until: Map<string, number>;
 }
 
 /**
@@ -189,7 +222,8 @@ export interface MpeExportPlan {
  */
 export function planMpeExport(notes: readonly MpeExportNote[], taken: ReadonlySet<number>): MpeExportPlan {
   const channelOf = new Map<string, number>();
-  if (!notes.length) return { channelOf, members: [], noRoom: false };
+  const until = new Map<string, number>();
+  if (!notes.length) return { channelOf, members: [], noRoom: false, until };
   const free: number[] = [];
   if (!taken.has(MPE_EXPORT_MANAGER)) {
     for (const ch of MPE_EXPORT_MEMBERS) {
@@ -197,11 +231,22 @@ export function planMpeExport(notes: readonly MpeExportNote[], taken: ReadonlySe
       free.push(ch);
     }
   }
-  if (!free.length) return { channelOf, members: [], noRoom: true };
+  if (!free.length) return { channelOf, members: [], noRoom: true, until };
   const want = Math.max(1, Math.min(free.length, maxOverlap(notes)));
   const members = free.slice(0, want);
-  rotateMembers(notes, members.length).forEach((m, i) => channelOf.set(notes[i].key, members[m]));
-  return { channelOf, members, noRoom: false };
+  const byMember = new Map<number, MpeExportNote[]>();
+  rotateMembers(notes, members.length).forEach((m, i) => {
+    channelOf.set(notes[i].key, members[m]);
+    if (m < 0) return;
+    const list = byMember.get(members[m]);
+    if (list) list.push(notes[i]);
+    else byMember.set(members[m], [notes[i]]);
+  });
+  for (const list of byMember.values()) {
+    list.sort((a, b) => a.start - b.start);
+    for (let i = 0; i + 1 < list.length; i += 1) until.set(list[i].key, list[i + 1].start);
+  }
+  return { channelOf, members, noRoom: false, until };
 }
 
 /** The MPE Configuration Message a file with `members` member channels carries on channel 15 at tick 0. */
