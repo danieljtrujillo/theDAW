@@ -1448,6 +1448,9 @@ const PopoverPortal: React.FC<{
   );
 };
 
+/** The track instrument select's value for an external-only track (EditorTrack externalOnly). */
+const EXTERNAL_ONLY_VALUE = 'external';
+
 /**
  * Compact per-track instrument selector (channel-rack style). "Default" leaves
  * the track on the global Piano Roll instrument; picking a GM program assigns it
@@ -1470,6 +1473,9 @@ const PopoverPortal: React.FC<{
  * user bank's kit is a kit of the track's kind (its value starts `kit|`).
  * The cable key beside the drum key opens the track's MIDI output (a port,
  * its channel, clock) and its per-note expression channels (TrackMidiOut).
+ * "External only" plays the track through that port alone: EDIT schedules
+ * its notes to the port and no synth of theDAW's sounds them; its status
+ * reads Port.
  */
 export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: liveMixer.LiveMidiTrackStatus }> = ({ track, status }) => {
   const setTrackVoice = useEditorStore((s) => s.setTrackVoice);
@@ -1481,13 +1487,19 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
     ? null
     : { bankId: track.instrumentBankId ?? BUNDLED_BANK_ID, bank: track.instrumentBank ?? 0, program: track.instrumentProgram };
   const refValue = trackRef && isBankPreset(trackRef) ? `${drums ? 'kit|' : ''}${instrumentRefValue(trackRef)}` : null;
-  const value = refValue ?? voiceValue(track.instrumentProgram, drums);
+  const value = track.externalOnly ? EXTERNAL_ONLY_VALUE : refValue ?? voiceValue(track.instrumentProgram, drums);
   const defaultLabel = drums
     ? `Default (${drumKitName(0)} kit)`
     : globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
 
+  const updateTrack = useEditorStore((s) => s.updateTrack);
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
+    if (v === EXTERNAL_ONLY_VALUE) {
+      // Its MIDI out port alone plays it: no program of theDAW's (TrackMidiOut picks the port).
+      updateTrack(track.id, { externalOnly: true, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined });
+      return;
+    }
     const kit = v.startsWith('kit|');
     const ref = parseInstrumentRefValue(kit ? v.slice(4) : v);
     if (ref) {
@@ -1556,17 +1568,18 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
         style={{ colorScheme: 'dark' }}
       >
         <option value={DEFAULT_VOICE_VALUE}>{defaultLabel}</option>
+        <option value={EXTERNAL_ONLY_VALUE}>{track.midiOut ? `External only (${track.midiOut.label})` : 'External only (MIDI out port)'}</option>
         {drums ? [kits, instruments] : [instruments, kits]}
         {bankPresets}
         {unlisted}
       </select>
       {status && (
         <span
-          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
+          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.external ? 'text-sky-300' : status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
           title={status.reason}
         >
-          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
-          {status.mode === 'live' ? 'Live' : 'Bounce'}
+          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.external ? 'bg-sky-400' : status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+          {status.external ? 'Port' : status.mode === 'live' ? 'Live' : 'Bounce'}
           <span className="sr-only">{`: ${status.reason}`}</span>
         </span>
       )}

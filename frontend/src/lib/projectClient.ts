@@ -387,6 +387,8 @@ export interface TasmoTrackInput {
   midi_out?: { port_id: string; port_label: string; channel: number; clock: boolean } | null;
   /** The channels notes with per-note expression rotate across; null or absent: the default. */
   mpe_channels?: number | null;
+  /** The track plays through its MIDI out port alone; absent in older files. */
+  external_only?: boolean;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -568,6 +570,8 @@ export interface TasmoLoadedTrack {
   midi_out?: { port_id: string; port_label: string; channel: number; clock: boolean } | null;
   /** The channels notes with per-note expression rotate across; null or absent: the default. */
   mpe_channels?: number | null;
+  /** The track plays through its MIDI out port alone; absent in older files. */
+  external_only?: boolean;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in

@@ -1168,6 +1168,7 @@ export async function loadProjectIntoEditor(
       ...(trackBankId ? { instrumentBankId: trackBankId } : {}),
       ...(midiOut ? { midiOut } : {}),
       ...(mpeChannels !== undefined ? { mpeChannels } : {}),
+      ...(t.external_only === true ? { externalOnly: true } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1606,6 +1607,7 @@ export function captureEditorSession(): CapturedSession {
       // Where the track's live MIDI also goes, and the channels its expressive notes rotate across.
       midi_out: t.midiOut ? { port_id: t.midiOut.id, port_label: t.midiOut.label, channel: t.midiOut.channel, clock: t.midiOut.clock === true } : null,
       mpe_channels: t.mpeChannels ?? null,
+      external_only: t.externalOnly === true,
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

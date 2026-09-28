@@ -751,7 +751,8 @@ export function editNoteOn(
 ): void {
   const at = editChannel(channel);
   if (!at) return;
-  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time, bankLsb);
+  // A note with no program (an external-only track's, NO_PROGRAM) keeps whatever the channel plays.
+  if (program >= 0) setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time, bankLsb);
   at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))), atTime(time));
 }
 

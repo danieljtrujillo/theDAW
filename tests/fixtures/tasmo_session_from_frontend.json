@@ -42,6 +42,7 @@
         "instrument_bank_id": null,
         "midi_out": null,
         "mpe_channels": null,
+        "external_only": false,
         "parent_track_id": null,
         "is_folder": true,
         "collapsed": true
@@ -178,6 +179,7 @@
         "instrument_bank_id": null,
         "midi_out": null,
         "mpe_channels": null,
+        "external_only": false,
         "parent_track_id": "f1",
         "is_folder": false,
         "collapsed": false
@@ -360,6 +362,7 @@
         "instrument_bank_id": null,
         "midi_out": null,
         "mpe_channels": null,
+        "external_only": false,
         "parent_track_id": null,
         "is_folder": false,
         "collapsed": false
@@ -420,6 +423,7 @@
         "instrument_bank_id": null,
         "midi_out": null,
         "mpe_channels": null,
+        "external_only": false,
         "parent_track_id": null,
         "is_folder": false,
         "collapsed": false
@@ -498,6 +502,7 @@
         "instrument_bank_id": null,
         "midi_out": null,
         "mpe_channels": null,
+        "external_only": false,
         "parent_track_id": null,
         "is_folder": false,
         "collapsed": false

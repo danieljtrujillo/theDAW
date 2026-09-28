@@ -109,7 +109,7 @@ import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { clipPeakGain } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes } from '../state/pianoRollStore';
 import { clipBankSelect } from './arrangementMidi';
-import { clipVoice, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from './clipProgram';
+import { NO_PROGRAM, clipVoice, effectiveProgramFor, isExternalOnly, isPercussionTrack, type GlobalVoice } from './clipProgram';
 import { applyFadeAutomation, type AudioParamLike } from './clipFade';
 import {
   BEND_CENTER,
@@ -157,7 +157,9 @@ export const CHANNEL_DEFAULTS: ReadonlyArray<{ controller: number; value: number
 );
 
 /**
- * What EDIT's synths are told. Every time is audio-context seconds. `bank` is
+ * What EDIT's synths are told. Every time is audio-context seconds. `program`
+ * is NO_PROGRAM (-1) for an external-only track's notes: no program change or
+ * bank select goes with them (lib/clipProgram isExternalOnly). `bank` is
  * the bank select (CC 0) sent before `program` (lib/clipProgram clipBank: a
  * clip's own program in a roll part's Bank); 0 is the General MIDI set.
  * `bankLsb` is the CC 32 after it: the roll part's bank LSB while the clip
@@ -674,9 +676,11 @@ export class EditMidiScheduler {
       const track = trackById.get(clip.trackId);
       const chans = track ? this.pass.channelsOf.get(track.id) : undefined;
       if (!track || !chans?.length) continue;
-      const program = effectiveProgramFor(clip, track, global);
+      // An external-only track plays to its MIDI port with no program of theDAW's.
+      const external = isExternalOnly(track);
+      const program = external ? NO_PROGRAM : effectiveProgramFor(clip, track, global);
       if (program === undefined) continue;
-      const { bank, bankLsb } = clipBankSelect(clipVoice(clip, track, global), clip.sourceRollPart);
+      const { bank, bankLsb } = external ? { bank: 0, bankLsb: undefined } : clipBankSelect(clipVoice(clip, track, global), clip.sourceRollPart);
       const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);

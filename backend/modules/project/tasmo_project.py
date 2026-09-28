@@ -510,6 +510,9 @@ class Track(BaseModel):
     # How many channels notes with per-note expression rotate across (0-15);
     # None is the frontend's default.
     mpe_channels: int | None = None
+    # The track plays through its MIDI out port alone, with no instrument of
+    # theDAW's. Defaulted, so older files load every track on its instrument.
+    external_only: bool = False
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is

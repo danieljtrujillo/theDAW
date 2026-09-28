@@ -44,7 +44,18 @@ export interface GlobalVoice {
 }
 
 export type ProgramClip = Pick<AudioClip, 'instrumentProgram' | 'instrumentBank'> & Partial<Pick<AudioClip, 'instrumentBankId'>>;
-export type ProgramTrack = Pick<EditorTrack, 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'instrumentBank' | 'instrumentBankId'>>;
+export type ProgramTrack = Pick<EditorTrack, 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'instrumentBank' | 'instrumentBankId' | 'externalOnly'>>;
+
+/**
+ * An external-only track: its MIDI goes to its MIDI out port alone
+ * (EditorTrack `externalOnly`). EDIT schedules its notes live with no
+ * program of theDAW's (NO_PROGRAM: the host keeps the patch it has), and
+ * none of theDAW's synths sounds them.
+ */
+export const isExternalOnly = (track: Pick<EditorTrack, 'externalOnly'> | null | undefined): boolean => track?.externalOnly === true;
+
+/** The program an external-only track's notes carry: none, so no program change or bank select goes out. */
+export const NO_PROGRAM = -1;
 
 /** The General MIDI Standard drum kit. */
 export const GM_STANDARD_KIT = 0;

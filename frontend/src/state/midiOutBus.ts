@@ -177,8 +177,9 @@ export class TrackOutSink implements EditMidiSink {
     const r = this.routes.get(channel);
     if (!r) return;
     const key = `${r.portId}:${r.channel}`;
-    const change = programSwitch(this.programs.get(key), program, bank, bankLsb);
-    this.programs.set(key, change.key);
+    // An external-only track's notes carry no program (NO_PROGRAM): the host keeps its own patch.
+    const change = program < 0 ? { controllers: [] as Array<[0 | 32, number]>, program: null, key: this.programs.get(key) } : programSwitch(this.programs.get(key), program, bank, bankLsb);
+    if (change.key !== undefined) this.programs.set(key, change.key);
     this.out(channel, time, (ch) => [
       ...change.controllers.map(([cc, v]) => [0xb0 | ch, cc, v]),
       ...(change.program === null ? [] : [[0xc0 | ch, change.program]]),
@@ -302,42 +303,128 @@ const sendTo = (portId: string, bytes: number[], timestamp: number): void => {
   }
 };
 
-/**
- * Start the tracks' outputs for a pass that plays `fromSec` at context time
- * `anchorCtx`: the routes for each live track with an output, and the clock
- * to every port a track sends clock to. Returns the sink the scheduler tees
- * its messages into, or null when no track has an output.
- */
-export function startTrackOutputs(opts: {
-  tracks: ReadonlyArray<{ id: string; name?: string; midiOut?: TrackMidiOut }>;
-  channelsOf: ReadonlyMap<string, readonly number[]>;
-  fromSec: number;
-  anchorCtx: number;
+/** What a pass's track outputs read: the tracks, the audio clock, and the tempo map for the clock. */
+export interface TrackOutputOptions {
+  tracks: ReadonlyArray<{ id: string; name?: string; midiOut?: TrackMidiOut; externalOnly?: boolean }>;
   now: () => number;
   toPerf: ContextToPerf;
-  beatAt: (sec: number) => number;
-  secAt: (beat: number) => number;
-  /** How far ahead the first clocks are sent (the scheduler's lookahead). */
-  lookaheadSec?: number;
-}): TrackOutSink | null {
-  stopTrackOutputs(opts.toPerf(opts.now()));
+}
+
+/**
+ * Start the tracks' routes for a pass of live MIDI: each live track with an
+ * output port sends what the scheduler plays on its channels to that port.
+ * Returns the sink the scheduler's messages go to as well, or null when no
+ * live track has an open port.
+ */
+export function startTrackRoutes(opts: TrackOutputOptions & { channelsOf: ReadonlyMap<string, readonly number[]> }): TrackOutSink | null {
+  passSink?.allNotesOff(opts.toPerf(opts.now()));
+  passSink = null;
   if (!opts.tracks.some((t) => t.midiOut)) return null;
   const plan = planTrackRoutes(opts.tracks, opts.channelsOf, midiOutDevices());
-  if (plan.missing.length) logWarn('midi', `MIDI out port not open for ${plan.missing.join(', ')}: those tracks play inside theDAW only`);
+  if (plan.missing.length) logWarn('midi', `MIDI out port not open for ${plan.missing.join(', ')}: those tracks send nothing to it`);
   passSink = plan.routes.size ? new TrackOutSink(plan.routes, sendTo, opts.toPerf) : null;
-  if (plan.clockPorts.length) {
-    passClock = new MidiClockScheduler({
-      send: (bytes, ts) => {
-        for (const id of plan.clockPorts) sendTo(id, bytes, ts);
-      },
-      toPerf: opts.toPerf,
-      now: opts.now,
-      beatAt: opts.beatAt,
-      secAt: opts.secAt,
-    });
-    passClock.start(opts.fromSec, opts.anchorCtx, opts.lookaheadSec ?? 0);
-  }
   return passSink;
+}
+
+/**
+ * Start MIDI clock for a transport pass that plays `fromSec` at context time
+ * `anchorCtx`, to every open port a track sends clock to, whether or not the
+ * pass plays any MIDI (an arrangement of audio alone drives the host too).
+ * Returns true when a clock started.
+ */
+export function startTransportClock(
+  opts: TrackOutputOptions & {
+    fromSec: number;
+    anchorCtx: number;
+    beatAt: (sec: number) => number;
+    secAt: (beat: number) => number;
+    /** How far ahead the first clocks are sent (the scheduler's lookahead). */
+    lookaheadSec?: number;
+  },
+): boolean {
+  passClock?.stop();
+  passClock = null;
+  if (!opts.tracks.some((t) => t.midiOut?.clock)) return false;
+  const clockPorts = planTrackRoutes(opts.tracks, new Map(), midiOutDevices()).clockPorts;
+  if (!clockPorts.length) return false;
+  passClock = new MidiClockScheduler({
+    send: (bytes, ts) => {
+      for (const id of clockPorts) sendTo(id, bytes, ts);
+    },
+    toPerf: opts.toPerf,
+    now: opts.now,
+    beatAt: opts.beatAt,
+    secAt: opts.secAt,
+  });
+  passClock.start(opts.fromSec, opts.anchorCtx, opts.lookaheadSec ?? 0);
+  return true;
+}
+
+/** The routes and the clock together (startTrackRoutes, startTransportClock). */
+export function startTrackOutputs(
+  opts: TrackOutputOptions & {
+    channelsOf: ReadonlyMap<string, readonly number[]>;
+    fromSec: number;
+    anchorCtx: number;
+    beatAt: (sec: number) => number;
+    secAt: (beat: number) => number;
+    lookaheadSec?: number;
+  },
+): TrackOutSink | null {
+  stopTrackOutputs(opts.toPerf(opts.now()));
+  const sink = startTrackRoutes(opts);
+  startTransportClock(opts);
+  return sink;
+}
+
+/**
+ * The sink EDIT's live scheduler plays into: theDAW's synths (`internal`) for
+ * every channel but an external-only track's (`externalChannels`, which no
+ * synth of theDAW's sounds), and the tracks' ports (`external`) for all of
+ * them.
+ */
+export function passMidiSink(
+  internal: EditMidiSink,
+  external: () => EditMidiSink | null,
+  externalChannels: () => ReadonlySet<number>,
+): EditMidiSink {
+  const inside = (ch: number) => !externalChannels().has(ch);
+  return {
+    noteOn: (...a) => {
+      if (inside(a[0])) internal.noteOn(...a);
+      external()?.noteOn(...a);
+    },
+    noteOff: (...a) => {
+      if (inside(a[0])) internal.noteOff(...a);
+      external()?.noteOff(...a);
+    },
+    wheel: (...a) => {
+      if (inside(a[0])) internal.wheel(...a);
+      external()?.wheel(...a);
+    },
+    wheelRange: (...a) => {
+      if (inside(a[0])) internal.wheelRange(...a);
+      external()?.wheelRange(...a);
+    },
+    control: (...a) => {
+      if (inside(a[0])) internal.control(...a);
+      external()?.control(...a);
+    },
+    pressure: (...a) => {
+      if (inside(a[0])) internal.pressure?.(...a);
+      external()?.pressure?.(...a);
+    },
+  };
+}
+
+/** The live channels of the external-only tracks in a plan. */
+export function externalOnlyChannels(
+  tracks: ReadonlyArray<{ id: string; externalOnly?: boolean }>,
+  channelsOf: ReadonlyMap<string, readonly number[]>,
+): Set<number> {
+  const out = new Set<number>();
+  for (const t of tracks) if (t.externalOnly) for (const ch of channelsOf.get(t.id) ?? []) out.add(ch);
+  return out;
 }
 
 /** True while a pass has a track output or a clock running. */

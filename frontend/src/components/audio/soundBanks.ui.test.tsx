@@ -248,5 +248,21 @@ const clip = () => ed().clips.find((c) => c.id === clipId)!;
   void mpe;
 }
 
+// ── External only in the track's instrument select ────────────────────────
+{
+  await act(async () => root.render(<TrackInstrumentSelect track={track()} status={{ mode: 'live', external: true, channels: 1, reason: 'External only' }} />));
+  const sel = host.querySelector('select') as HTMLSelectElement;
+  const opt = [...sel.options].find((o) => o.value === 'external');
+  assert.match(opt?.textContent ?? '', /External only \(loopMIDI Port\)/, 'names the port it plays through');
+  await change(sel, 'external');
+  assert.equal(track().externalOnly, true);
+  assert.equal(track().instrumentProgram, undefined, "no program of theDAW's");
+  await act(async () => root.render(<TrackInstrumentSelect track={track()} status={{ mode: 'live', external: true, channels: 1, reason: 'External only' }} />));
+  assert.equal((host.querySelector('select') as HTMLSelectElement).value, 'external');
+  assert.match(host.textContent ?? '', /Port/, 'the status reads Port');
+  await change(host.querySelector('select') as HTMLSelectElement, 'gm:40');
+  assert.deepEqual([track().externalOnly, track().instrumentProgram], [undefined, 40], 'an instrument brings the synth back');
+}
+
 await act(async () => root.unmount());
 console.log('soundBanks.ui: ok');

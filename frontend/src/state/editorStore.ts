@@ -430,6 +430,10 @@ export interface EditorTrack {
    *  also gets MIDI clock and song position from the transport. Absent: the
    *  track's MIDI stays inside theDAW. */
   midiOut?: { id: string; label: string; channel: number; clock?: boolean };
+  /** The track's MIDI plays through its MIDI out port alone: EDIT schedules
+   *  its notes live to the port with no program change, and no synth of
+   *  theDAW's sounds them (lib/clipProgram isExternalOnly). Absent: false. */
+  externalOnly?: boolean;
   /** How many channels the track rotates notes with per-note expression
    *  across (lib/mpeRotation), 0 to play them on the track's own channel.
    *  Absent: MPE_DEFAULT_MEMBERS. */
@@ -2170,10 +2174,11 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     // A bank preset keeps its bank and bank select; a bare program is the bundled bank's bank 0.
     const bankId = prog !== undefined && sound && sound.bankId !== BUNDLED_BANK_ID ? sound.bankId : undefined;
     const bank = prog !== undefined && sound && sound.bank > 0 ? Math.max(0, Math.min(127, Math.round(sound.bank))) : undefined;
-    if (!flip && Object.is(track.instrumentProgram, prog) && track.instrumentBankId === bankId && track.instrumentBank === bank) return;
+    if (!flip && Object.is(track.instrumentProgram, prog) && track.instrumentBankId === bankId && track.instrumentBank === bank && !track.externalOnly) return;
     coalesceAs(null);
     set((s) => ({
-      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog, instrumentBank: bank, instrumentBankId: bankId } : t)),
+      // A voice of theDAW's ends external-only playing: the track sounds through its instrument again.
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog, instrumentBank: bank, instrumentBankId: bankId, externalOnly: undefined } : t)),
       // A flip clears each clip's own program, and the bank that program was chosen in (lib/clipProgram clipBank).
       clips: flip
         ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined } : c))
