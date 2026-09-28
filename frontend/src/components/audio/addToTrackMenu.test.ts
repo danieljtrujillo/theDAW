@@ -16,6 +16,7 @@ const ALL_IDS: AddToTrackEntryId[] = [
   'audio-system',
   'midi-library',
   'midi-system',
+  'midi-empty',
   'paste',
   'new-track',
 ];
@@ -76,7 +77,8 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
 }
 
 // (c) Every source x kind combination is present exactly once, and each is
-// tagged with the kind and source its handler routes on.
+// tagged with the kind and source its handler routes on. The empty MIDI part
+// is a MIDI clip made here, so it has a kind and no source.
 {
   const menu = buildAddToTrackMenu(onTrack, fullCaps);
   const combos = menu
@@ -87,8 +89,12 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
     'audio/library',
     'audio/system',
     'midi/library',
+    'midi/null',
     'midi/system',
   ]);
+  assert.equal(byId(menu, 'midi-empty').kind, 'midi');
+  assert.equal(byId(menu, 'midi-empty').source, null);
+  assert.equal(byId(menu, 'midi-empty').label, 'Empty MIDI part…');
   assert.equal(byId(menu, 'audio-library').kind, 'audio');
   assert.equal(byId(menu, 'audio-library').source, 'library');
   assert.equal(byId(menu, 'audio-system').kind, 'audio');
@@ -119,6 +125,7 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
   assert.match(byId(menu, 'midi-library').title, /No MIDI in the library/);
   assert.equal(byId(menu, 'audio-system').enabled, true);
   assert.equal(byId(menu, 'midi-system').enabled, true);
+  assert.equal(byId(menu, 'midi-empty').enabled, true, 'an empty part needs nothing from the library');
   assert.equal(byId(menu, 'paste').enabled, false);
   assert.match(byId(menu, 'paste').title, /Copy or cut a clip first/);
   assert.equal(byId(menu, 'new-track').enabled, true);

@@ -336,6 +336,15 @@ class Clip(BaseModel):
     # drum channel (rendered_program then names the kit). Defaulted, so older
     # files load as rendered on a melodic channel.
     rendered_percussion: bool = False
+    # MIDI clips with embedded audio: whether that render was out of date when
+    # saved (its notes, tempo, lanes, bends or grid had changed and the
+    # re-render had not landed), so the clip reopens with a stale render that
+    # EDIT renders again instead of printing old notes; and whether EDIT made
+    # the render only because the clip could not play live (no instrument, or
+    # past the last live channel), so it is dropped once the clip plays live.
+    # Defaulted, so older files open their renders as current and kept.
+    render_stale: bool = False
+    render_auto: bool = False
     source_bpm: float | None = None
     # Audio clips: the tempo the audio plays at after a beat match or a
     # stretch (EDIT's SYNC and BPM readout read it), and the library entry the
@@ -548,6 +557,16 @@ class TasmoProject(BaseModel):
     author: str = ""
     tempo: float = 120.0
     time_signature: list[int] = [4, 4]
+    # The EDIT arrangement's tempo map ([{beat, bpm, curve, fermata}], beat in
+    # quarter notes from timeline second 0, curve "linear" on a ramp, fermata
+    # {beats, stretch} on a hold) and meter map ([{bar, meter: {num, den,
+    # groups}}], bar 0 at timeline second 0): the shapes a piano-roll clip's
+    # tempo_map and meter_map use. `tempo` stays the start tempo and
+    # `time_signature` bar 1's meter, so a reader that knows only those opens
+    # the song at its start. None means the file was written before the
+    # arrangement had maps, and the reader uses `tempo` and `time_signature`.
+    tempo_map: list[dict] | None = None
+    meter_map: list[dict] | None = None
     sample_rate: int = 48000
     tracks: list[Track] = []
     # Mix buses. Empty for a project that routes everything straight to the

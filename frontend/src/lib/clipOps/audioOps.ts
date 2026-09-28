@@ -34,6 +34,8 @@ import { encodeWav } from '../wavEncode';
 import { noteEndStep } from '../clipNotes/units';
 import { MAX_BPM, MIN_BPM } from './timeline';
 import type { TempoEvent } from '../tempoMap';
+import type { RollRenderBends } from '../pitchBend';
+import { clipRenderInput } from '../rollClip';
 
 /** The app's working rate; also `encodeWav`'s and the editor's. */
 export const DEFAULT_SAMPLE_RATE = 44100;
@@ -294,8 +296,9 @@ export type StepNoteRenderer = (
   notes: StepNote[],
   bpm: number,
   totalSteps: number,
-  /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`. */
-  opts?: { program?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[] },
+  /** `tempoMap`: the clip's own (lib/rollTempo), scaled by the renderer so it starts at `bpm`.
+   *  `bends`: each bending lane's curve (lib/pitchBend rollRenderBends), the notes then carrying their lanes. */
+  opts?: { program?: number; percussion?: boolean; tempoMap?: readonly TempoEvent[]; bends?: RollRenderBends },
 ) => Promise<RenderedAudio>;
 
 /**
@@ -347,6 +350,15 @@ const tempoOpt = (clip: AudioClip): { tempoMap?: readonly TempoEvent[] } =>
 const stepsOf = (clip: AudioClip, notes: StepNote[]): number =>
   clip.sourceTotalSteps ?? noteEndStep(notes, 16);
 
+/** The notes a render plays (lib/rollClip clipRenderInput): a clip whose lanes
+ *  bend renders its own notes in their lanes with the bends, so an assistant
+ *  re-render keeps the bends live playback plays; any other clip its notes. */
+const renderInputOf = (clip: AudioClip, notes: StepNote[]): { notes: StepNote[]; steps: number; bends?: RollRenderBends } => {
+  const steps = stepsOf(clip, notes);
+  const input = clipRenderInput(clip, steps);
+  return { notes: input.notes as StepNote[], steps, ...(input.bends ? { bends: input.bends } : {}) };
+};
+
 /**
  * Render a piano-roll clip's notes to audio at its own tempo — the "bounce"
  * that turns a MIDI clip into something every export path can read, since the
@@ -359,7 +371,13 @@ export async function bounceMidiClip(
   const notes = notesOf(clip);
   const bpm = tempoOf(clip, opts.bpm);
   const render = opts.render ?? defaultStepNoteRenderer;
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
+  const input = renderInputOf(clip, notes);
+  return render(input.notes, bpm, input.steps, {
+    program: opts.program ?? clip.instrumentProgram,
+    percussion: opts.percussion,
+    ...tempoOpt(clip),
+    ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
+  });
 }
 
 /**
@@ -388,6 +406,12 @@ export async function stretchMidiClip(
     );
   }
   const render = opts.render ?? defaultStepNoteRenderer;
+  const input = renderInputOf(clip, notes);
   // The clip's tempo map scales with it: every change keeps its proportion to the new start tempo.
-  return render(notes, bpm, stepsOf(clip, notes), { program: opts.program ?? clip.instrumentProgram, percussion: opts.percussion, ...tempoOpt(clip) });
+  return render(input.notes, bpm, input.steps, {
+    program: opts.program ?? clip.instrumentProgram,
+    percussion: opts.percussion,
+    ...tempoOpt(clip),
+    ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
+  });
 }

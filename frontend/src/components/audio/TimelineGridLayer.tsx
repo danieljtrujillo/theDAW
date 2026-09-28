@@ -2,6 +2,9 @@ import { useLayoutEffect, useRef, type JSX } from 'react';
 import { computeCanvasBox, effectiveZoom } from '../../lib/canvasScale';
 import { gridCanvasDpr } from '../../lib/timeline/gridCanvasBudget';
 import { gridLines, type GridLevel, type GridLine } from '../../lib/timeline/gridLines';
+import { editGridLines } from '../../lib/editTimeMap';
+import type { MeterSegment } from '../../lib/meterMap';
+import type { TempoEvent } from '../../lib/tempoMap';
 
 /**
  * Tempo-aware bar / beat / subdivision grid drawn behind the timeline lanes.
@@ -14,7 +17,10 @@ import { gridLines, type GridLevel, type GridLine } from '../../lib/timeline/gri
  * visible range; `gridLines` refuses more than 5000 lines.
  *
  * Tempo: pass the same `bpm` (and bar length) the editor snap uses, so drawn
- * lines and snap positions agree.
+ * lines and snap positions agree. With `tempoMap` and `meterMap` (the EDIT
+ * arrangement's), the grid follows both instead (lib/editTimeMap editGridLines):
+ * every bar in its own meter, with its groups, at the tempo it plays at, the
+ * same maps `editorStore.snapSec` snaps to.
  */
 export interface TimelineGridLayerProps {
   startSec: number;
@@ -23,6 +29,10 @@ export interface TimelineGridLayerProps {
   bpm: number;
   beatsPerBar?: number;
   subdivisionsPerBeat?: number;
+  /** The arrangement's tempo map; with `meterMap`, it replaces `bpm` / `beatsPerBar`. */
+  tempoMap?: readonly TempoEvent[];
+  /** The arrangement's meter map. */
+  meterMap?: readonly MeterSegment[];
   /** Layer height in local CSS px. */
   heightPx: number;
   /**
@@ -60,7 +70,7 @@ const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.min(1, Math.ma
 
 export function TimelineGridLayer(p: TimelineGridLayerProps): JSX.Element | null {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { startSec, endSec, zoom, bpm, beatsPerBar = 4, subdivisionsPerBeat = 4, heightPx, themeKey } = p;
+  const { startSec, endSec, zoom, bpm, beatsPerBar = 4, subdivisionsPerBeat = 4, heightPx, themeKey, tempoMap, meterMap } = p;
   const { visible, barOpacity, beatOpacity, subdivOpacity, barWidthPx } = p.style;
 
   const widthPx = Math.max(0, (endSec - startSec) * zoom);
@@ -87,7 +97,9 @@ export function TimelineGridLayer(p: TimelineGridLayerProps): JSX.Element | null
 
     let lines: GridLine[];
     try {
-      lines = gridLines({ startSec, endSec, bpm, beatsPerBar, subdivisionsPerBeat, zoom });
+      lines = tempoMap && meterMap
+        ? editGridLines({ startSec, endSec, zoom, tempoMap, meterMap })
+        : gridLines({ startSec, endSec, bpm, beatsPerBar, subdivisionsPerBeat, zoom });
     } catch (err) {
       // Bad input or an unwindowed range: draw nothing rather than take the
       // editor down with it.
@@ -119,7 +131,7 @@ export function TimelineGridLayer(p: TimelineGridLayerProps): JSX.Element | null
       ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${tier.alpha})`;
       ctx.stroke();
     }
-  }, [visible, startSec, endSec, zoom, bpm, beatsPerBar, subdivisionsPerBeat, heightPx, widthPx, barOpacity, beatOpacity, subdivOpacity, barWidthPx, themeKey]);
+  }, [visible, startSec, endSec, zoom, bpm, beatsPerBar, subdivisionsPerBeat, tempoMap, meterMap, heightPx, widthPx, barOpacity, beatOpacity, subdivOpacity, barWidthPx, themeKey]);
 
   if (!visible) return null;
   return (

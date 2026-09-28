@@ -7,7 +7,7 @@
  * module stays importable by a plain `tsx` test with no DOM, no AudioContext
  * and no store graph behind it — `metronome.test.ts` drives it with a fake
  * context. This file is the seam where it meets playerStore, liveMixer,
- * editorStore and beatClock, and every one of those is READ ONLY from here.
+ * editorStore and tempoStore, and every one of those is READ ONLY from here.
  *
  * Settings are persisted like the app's other small preference stores
  * (`drawModeStore`, `layoutPrefsStore`): `persist` + a `partialize` that saves
@@ -32,12 +32,14 @@ import {
   type MetronomeDeps,
   type MetronomeSettings,
 } from '../lib/metronome';
-import { beatClock } from '../lib/beatClock';
 import type { TempoEvent } from '../lib/tempoMap';
 import type { MeterSegment } from '../lib/meterMap';
 import { getEngineCtx, getMasterGain, usePlayerStore } from './playerStore';
 import { currentTransportSec, isPlaying as liveIsPlaying } from './liveMixer';
 import { useEditorStore } from './editorStore';
+import { useTempoStore } from './tempoStore';
+// The arrangement's tempo map into tempoStore, which `editTempoMap` reads.
+import './editTempoMirror';
 import { EDITOR_TIMELINE_ID } from '../components/audio/trackMenuModel';
 
 /** The count-in lengths the UI offers. */
@@ -98,33 +100,25 @@ export const useMetronomeStore = create<MetronomeState>()(
 /* ------------------------------- the service ------------------------------ */
 
 /**
- * The EDIT timeline's tempo is still the scalar `editorStore.bpm`, so the map
- * handed to `tempoMap.ts` is the degenerate one-event one. It is cached by bpm
- * because `normalizeTempoMap` keys its cache on array IDENTITY — handing it a
- * fresh array every tick would re-sort and re-allocate on every conversion.
- * When EDIT grows a real tempo map, this function is what returns it.
+ * The EDIT arrangement's tempo map, read through `tempoStore`, the app's one
+ * owned tempo map, which mirrors `editorStore.tempoMap` (ramps and fermatas
+ * included). tempoStore replaces its frozen array on every change and never
+ * otherwise, so the array handed to `tempoMap.ts` keeps its identity from tick
+ * to tick and `normalizeTempoMap`'s identity cache keeps hitting.
  */
-let tempoCache: { bpm: number; map: TempoEvent[] } = { bpm: 0, map: [] };
 export function editTempoMap(): readonly TempoEvent[] {
-  const bpm = useEditorStore.getState().bpm;
-  if (tempoCache.bpm !== bpm) tempoCache = { bpm, map: [{ beat: 0, bpm, timeSec: 0 }] };
-  return tempoCache.map;
+  return useTempoStore.getState().events;
 }
 
 /**
- * The meter half, cached the same way and for the same reason. `beatClock`'s
- * `meterMap` getter hands back a fresh DEEP CLONE on every access, so reading it
- * straight through allocated a map, a segment and a groups array ten times a
- * second for the whole of playback. The clone is unavoidable from out here
- * (beatClock owns it), but keeping the previous array when nothing changed is
- * not: the signature is every field that can affect a bar line.
+ * The EDIT arrangement's meter map (`editorStore.meterMap`). The click follows
+ * the EDIT transport, so it counts the arrangement's bars: a 7/8 bar at bar 9
+ * clicks in 7/8 there. Before the arrangement held a meter map, this read the
+ * shared `beatClock`'s, which LOOM or PERFORM may have set to their own meter.
+ * The store replaces the array on every edit, so its identity is stable between.
  */
-let meterCache: { sig: string; map: MeterSegment[] } = { sig: '', map: [] };
 export function editMeterMap(): readonly MeterSegment[] {
-  const live = beatClock.meterMap;
-  const sig = live.map((s) => `${s.bar}:${s.meter.num}/${s.meter.den}:${s.meter.groups.join('.')}`).join('|');
-  if (meterCache.sig !== sig) meterCache = { sig, map: live };
-  return meterCache.map;
+  return useEditorStore.getState().meterMap;
 }
 
 /**
@@ -151,7 +145,7 @@ function ensureScheduler(): MetronomeScheduler {
     destination: () => { try { return getMasterGain(); } catch { return null; } },
     transportSec: () => currentTransportSec(),
     tempoMap: editTempoMap,
-    // One meter owner: the shared clock's map (4/4 until something sets one).
+    // The arrangement's meter map: the bars the EDIT transport plays through.
     meterMap: editMeterMap,
     settings: () => useMetronomeStore.getState(),
     clickOpts: () => ({ mode: useMetronomeStore.getState().clickMode }),

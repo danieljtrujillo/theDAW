@@ -38,6 +38,7 @@
  */
 import { computePeaks, useEditorStore } from '../state/editorStore';
 import type { AudioClip } from '../state/editorStore';
+import { clipWithAudio } from '../state/midiRenderQueue';
 import type { ToolResult } from '../state/editorTools';
 import { stepClock } from '../lib/rollTempo';
 import { logInfo } from '../state/logStore';
@@ -172,7 +173,9 @@ async function postClip(
   deps: BridgeDeps,
 ): Promise<Response> {
   const form = new FormData();
-  form.append('file', clip.audioBlob, uploadNameFor(clip));
+  // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+  const blob = clip.audioBlob ?? (await clipWithAudio(clip.id)).audioBlob;
+  form.append('file', blob as Blob, uploadNameFor(clip));
   for (const [key, value] of Object.entries(fields)) {
     if (value !== undefined) form.append(key, value);
   }
@@ -639,7 +642,9 @@ export async function getWaveformPeaks(args: WaveformPeaksArgs, deps: BridgeDeps
   } else {
     const compute = deps.computePeaksImpl ?? computePeaks;
     try {
-      const out = await compute(clip.audioBlob, buckets);
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const blob = clip.audioBlob ?? (await clipWithAudio(clip.id)).audioBlob;
+      const out = await compute(blob as Blob, buckets);
       peaks = out.peaks;
       duration = out.duration;
     } catch (e) {

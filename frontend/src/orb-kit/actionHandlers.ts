@@ -303,11 +303,23 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
         ),
     editor_set_clip_instrument: (p) => facade.setClipInstrument(pick(p, [...CLIP, 'program'])),
 
+    // -- roll parts ----------------------------------------------------------
+    editor_create_midi_clip: (p) =>
+        facade.createMidiClip(pick(p, ['track_id', 'track_name', 'program', 'percussion', 'start_bar', 'start_sec', 'bars', 'label'])),
+    editor_list_roll_parts: () => facade.listRollParts(),
+    editor_get_roll_part: (p) => facade.getRollPart(pick(p, [...CLIP, 'from_bar', 'to_bar'])),
+    editor_set_roll_part: (p) =>
+        facade.setRollPart(
+            pick(p, [...CLIP, 'notes', 'lanes', 'meter_map', 'pickup_steps', 'bars', 'total_steps', 'program']),
+        ),
+
     // -- tempo and time ------------------------------------------------------
     editor_set_clip_source_bpm: (p) => facade.setClipSourceBpm(pick(p, [...CLIP, 'bpm'])),
     editor_stretch_clip: stretchClipTool,
     editor_detect_tempo: (p) => editorToolBridge.detectTempo(pick(p, CLIP)),
     editor_set_time_signature: (p) => facade.setTimeSignature(pick(p, ['num', 'den', 'time_signature'])),
+    editor_set_meter_map: (p) => facade.setMeterMap(pick(p, ['meter_map', 'tempo_map', 'adopt_clip_id'])),
+    editor_get_meter_map: (p) => facade.getMeterMap(pick(p, ['from_bar', 'to_bar'])),
     editor_nudge_clip: (p) => facade.nudgeClip(pick(p, [...CLIP, 'delta_sec', 'beats', 'bars'])),
 
     // -- transport -----------------------------------------------------------

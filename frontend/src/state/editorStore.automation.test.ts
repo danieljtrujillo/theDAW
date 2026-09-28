@@ -414,7 +414,7 @@ const undoSteps = (): number => st()._undo.length;
   for (const snap of st()._undo) {
     assert.deepEqual(
       Object.keys(snap).sort(),
-      ['automationLanes', 'bpm', 'buses', 'clips', 'markers', 'masterFxChain', 'masterVstChain', 'routing', 'timeSignature', 'tracks'],
+      ['automationLanes', 'bpm', 'buses', 'clips', 'markers', 'masterFxChain', 'masterVstChain', 'meterMap', 'routing', 'tempoMap', 'tracks'],
       'an undo snapshot carries the document slices and nothing else — holds are transient',
     );
   }

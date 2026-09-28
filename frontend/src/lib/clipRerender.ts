@@ -23,6 +23,7 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import type { RollRenderBends } from './pitchBend';
 import { clipRenderInput } from './rollClip';
+import { midiRenderSig } from './midiRender';
 import type { TempoEvent } from './tempoMap';
 
 export interface ClipRerenderDeps {
@@ -88,6 +89,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
     mimeType: 'audio/wav',
     ...renderedWindowFields(after.clip, rendered.duration),
     ...renderedVoiceFields(voice),
+    // What the render was made from (lib/midiRender), so a later note edit shows it stale.
+    renderSig: midiRenderSig(clip),
   }, peaks);
   return true;
 }

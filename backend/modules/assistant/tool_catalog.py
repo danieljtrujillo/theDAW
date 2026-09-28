@@ -718,13 +718,33 @@ _SNAP_DIVISIONS = [
 _GRID_DIVISIONS = [d for d in _SNAP_DIVISIONS if d != "off"]
 
 _MIDI_ONLY = (
-    " Piano-roll (MIDI) clips only — it edits the note list and re-bounces the "
-    "clip's audio, so the blob every export reads never falls behind the notes."
+    " Piano-roll (MIDI) clips only — it edits the note list, and the piano roll "
+    "opens with the edit. A clip holding rendered audio (or with no instrument "
+    "to play live) is re-rendered; one that plays live renders when exported."
 )
 _LENGTH_WARNING = (
-    " A re-bounce writes the full rendered length, so a previously trimmed clip "
-    "grows back; the result says so when the length moved."
+    " A note edit resets the clip to its whole grid (plus the render's ring-out "
+    "when it renders), so a previously trimmed clip grows back; the result says "
+    "so when the length moved."
 )
+_METER_ITEMS = {
+    "type": "object",
+    "properties": {
+        "bar": {"type": "integer", "minimum": 1},
+        "num": {"type": "integer", "minimum": 1, "maximum": 64},
+        "den": {"type": "integer", "enum": [1, 2, 4, 8, 16, 32]},
+        "groups": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 1},
+            "description": "Additive grouping that sums to num, e.g. [3, 2, 2]",
+        },
+        "meter": {
+            "type": "string",
+            "description": "The meter as text, e.g. '7/8' or '7/8 3+2+2'",
+        },
+    },
+    "required": ["bar"],
+}
 
 _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
     # ── notes ───────────────────────────────────────────────────────────────
@@ -785,8 +805,11 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         "editor_set_notes",
-        "Replace a MIDI clip's note list wholesale and re-render its audio. The "
-        "list you pass becomes the clip — notes you omit are gone." + _LENGTH_WARNING,
+        "Replace a MIDI clip's note list wholesale; the piano roll opens with "
+        "it, and a clip holding rendered audio (or with no instrument) is "
+        "re-rendered. The list you pass becomes the clip — notes you omit are "
+        "gone. An empty part from editor_create_midi_clip takes its first notes "
+        "here." + _LENGTH_WARNING,
         {
             "clip_id": _CLIP_ID,
             "notes": {
@@ -940,11 +963,179 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         },
         ["clip_id"],
     ),
+    # ── roll parts ─────────────────────────────────────────────────────────
+    _fn(
+        "editor_create_midi_clip",
+        "Make an empty MIDI clip: one part of a score with a General MIDI "
+        "instrument, the arrangement's meters and tempo from the bar it starts "
+        "on, and a length in bars. Without track_id it gets a new track named "
+        "for its instrument. It plays live, so nothing renders. Fill it with "
+        "editor_set_notes or editor_set_roll_part. One undo step.",
+        {
+            "program": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 127,
+                "description": "GM program (0 = Acoustic Grand Piano, 40 = Violin, "
+                "42 = Cello, 56 = Trumpet, 73 = Flute); on a percussion part the kit "
+                "(0 = Standard, 48 = Orchestral). Default: the instrument of the "
+                "track named by track_id; a new melodic part needs one",
+            },
+            "percussion": {
+                "type": "boolean",
+                "description": "A drum part: its new track plays on the drum channel. "
+                "With track_id it must match that track: a drum track holds drum "
+                "parts and a melodic track melodic ones, and a mismatch is refused",
+            },
+            "track_id": {
+                "type": "string",
+                "description": "Put the part on this track (id or name) instead of a "
+                "new one; the track decides whether the part is a drum part",
+            },
+            "track_name": {
+                "type": "string",
+                "description": "The new track's name (default: the instrument's)",
+            },
+            "start_bar": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Arrangement bar the part starts on (default 1)",
+            },
+            "start_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Or the timeline second it starts at",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "Length in bars (default 4)",
+            },
+            "label": {"type": "string", "description": "The clip's name"},
+        },
+    ),
+    _fn(
+        "editor_list_roll_parts",
+        "List every MIDI clip as a part: its instrument, track, start bar, "
+        "bars, note count, lanes, and whether it plays live or holds rendered "
+        "audio.",
+        {},
+    ),
+    _fn(
+        "editor_get_roll_part",
+        "Read one MIDI part whole: instrument, tempo and tempo map, meter map "
+        "(1-based bars), pickup, grid length, polymeter lanes, bends, and its own "
+        "notes, each {id, note, step (16ths from the part's start), length, "
+        "velocity, lane?} (the notes the piano roll opens with). Up to 4000 notes "
+        "per read; from_bar/to_bar page through longer parts.",
+        {
+            "clip_id": _CLIP_ID,
+            "from_bar": {"type": "integer", "minimum": 1},
+            "to_bar": {"type": "integer", "minimum": 1},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_roll_part",
+        "Write a MIDI part back: any of its notes (with lanes), lanes, meter "
+        "map, pickup, length and instrument. Notes passed replace all of them "
+        "([] empties the part). The notes it plays are derived from its notes "
+        "and lanes the way the piano roll's EDIT key does it. One undo step; a "
+        "part holding rendered audio is re-rendered." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "notes": {
+                "type": "array",
+                "description": "The part's complete note list",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "note": {"type": "integer", "minimum": 0, "maximum": 127},
+                        "step": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Start, in 16ths from the part's start (fractions for tuplets)",
+                        },
+                        "length": {"type": "number", "exclusiveMinimum": 0},
+                        "velocity": {"type": "integer", "minimum": 1, "maximum": 127},
+                        "lane": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Polymeter lane id (default 0, lane A)",
+                        },
+                        "id": {"type": "string"},
+                    },
+                    "required": ["note", "step", "length", "velocity"],
+                },
+            },
+            "lanes": {
+                "type": "array",
+                "description": "The part's polymeter lanes; lane 0 (A) is always kept",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "minimum": 0},
+                        "name": {"type": "string"},
+                        "cycle_steps": {
+                            "type": "number",
+                            "minimum": 1,
+                            "description": "Loop length in 16ths; leave it out for a lane that does not loop",
+                        },
+                        "span_start": {"type": "number", "minimum": 0},
+                        "span_end": {
+                            "type": "number",
+                            "description": "Where the lane stops; leave it out for the part end",
+                        },
+                        "meter_map": {
+                            "type": "array",
+                            "description": "The lane's own meters, from its bar 1",
+                            "items": _METER_ITEMS,
+                        },
+                        "tuplet": {
+                            "type": "object",
+                            "properties": {
+                                "n": {"type": "integer", "minimum": 1, "maximum": 16},
+                                "m": {"type": "integer", "minimum": 1, "maximum": 16},
+                            },
+                            "required": ["n", "m"],
+                        },
+                    },
+                    "required": ["id"],
+                },
+            },
+            "meter_map": {
+                "type": "array",
+                "description": "The part's meters, bar 1 first (1-based bars)",
+                "items": _METER_ITEMS,
+            },
+            "pickup_steps": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 64,
+                "description": "16ths before the part's bar 1",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "The part's length in bars (after the pickup)",
+            },
+            "total_steps": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Or its length in 16ths",
+            },
+            "program": {"type": "integer", "minimum": 0, "maximum": 127},
+        },
+        ["clip_id"],
+    ),
     _fn(
         "editor_set_clip_instrument",
-        "Point a MIDI clip at a General MIDI program and re-render its audio "
-        "through it. Use this rather than editor_set_clip for instrument "
-        "changes — it re-bounces, so exports match playback." + _LENGTH_WARNING,
+        "Point a MIDI clip at a General MIDI program. It plays live through "
+        "that program, and a clip holding rendered audio is re-rendered through "
+        "it. Use this rather than editor_set_clip for instrument changes, so "
+        "exports match playback." + _LENGTH_WARNING,
         {
             "clip_id": _CLIP_ID,
             "program": {
@@ -972,8 +1163,9 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         "editor_stretch_clip",
-        "Time-stretch a clip. A MIDI clip is re-rendered at the new tempo in "
-        "the browser; an AUDIO clip goes to the backend for a pitch-preserving "
+        "Time-stretch a clip. A MIDI clip takes the new tempo (and is "
+        "re-rendered in the browser when it holds rendered audio or has no "
+        "instrument); an AUDIO clip goes to the backend for a pitch-preserving "
         "stretch (ratio 0.25x-4x). Pass exactly one target. target_bpm needs "
         "the clip's sourceBpm set.",
         {
@@ -1007,9 +1199,98 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         ["clip_id"],
     ),
     _fn(
+        "editor_set_meter_map",
+        "Set the EDIT arrangement's meter map, tempo map, or both, or take "
+        "both from a MIDI clip. Bars are 1-based, as on screen. A map passed "
+        "replaces the whole map; without a bar-1 entry, bar 1 keeps its meter "
+        "(or start tempo). Tempo positions are a bar plus quarter notes into "
+        "it, read against the meter map this call ends with. Clips stay where "
+        "they are in seconds; the grid, snap, editor_seek_bar and bar nudges "
+        "follow the maps. editor_get_meter_map reads both maps back.",
+        {
+            "meter_map": {
+                "type": "array",
+                "description": "Every meter change, bar 1 first. Each item: "
+                "{bar, num, den, groups?} or {bar, meter: '7/8 3+2+2'}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "num": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "den": {"type": "integer", "enum": [1, 2, 4, 8, 16, 32]},
+                        "groups": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Additive grouping that sums to num, e.g. [3, 2, 2]",
+                        },
+                        "meter": {
+                            "type": "string",
+                            "description": "The meter as text, e.g. '7/8' or '7/8 3+2+2'",
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "tempo_map": {
+                "type": "array",
+                "description": "Every tempo change and fermata. Each item: "
+                "{bar, beat?, bpm, curve?} or {bar, beat?, fermata: {beats, stretch}}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "beat": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Quarter notes into the bar (default 0)",
+                        },
+                        "bpm": {"type": "number", "minimum": 20, "maximum": 300},
+                        "curve": {
+                            "type": "string",
+                            "enum": ["step", "linear"],
+                            "description": "step holds the tempo; linear ramps to the next tempo",
+                        },
+                        "fermata": {
+                            "type": "object",
+                            "properties": {
+                                "beats": {"type": "number", "exclusiveMinimum": 0},
+                                "stretch": {
+                                    "type": "number",
+                                    "minimum": 1,
+                                    "maximum": 8,
+                                },
+                            },
+                            "required": ["beats", "stretch"],
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "adopt_clip_id": {
+                "type": "string",
+                "description": "A MIDI clip whose tempo and meter the arrangement "
+                "takes from the clip's first step on. Pass it alone.",
+            },
+        },
+    ),
+    _fn(
+        "editor_get_meter_map",
+        "Read the EDIT arrangement's meter map and tempo map: every meter "
+        "change {bar, num, den, groups, label} and every tempo event {bar, "
+        "beat, bpm, curve} or fermata, bars 1-based, plus how many bars the "
+        "clips span. from_bar/to_bar read a range (the meter and tempo in "
+        "force at from_bar come first); up to 2000 entries of each per read. "
+        "editor_get_state lists only the first 64.",
+        {
+            "from_bar": {"type": "integer", "minimum": 1},
+            "to_bar": {"type": "integer", "minimum": 1},
+        },
+    ),
+    _fn(
         "editor_set_time_signature",
-        "Set the project meter. Bars, and therefore editor_seek_bar, are "
-        "counted from it.",
+        "Set bar 1's meter; later meter changes stay. Bars, and therefore "
+        "editor_seek_bar, are counted from the meter map "
+        "(editor_set_meter_map sets the whole map).",
         {
             "num": {
                 "type": "integer",

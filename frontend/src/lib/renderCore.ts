@@ -653,6 +653,10 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   const buffers = new Map<Blob, AudioBuffer>();
   try {
     for (const clip of scoped) {
+      // A piano-roll clip with no render has no audio. The callers hand this a
+      // clip list whose MIDI clips were rendered first (state/midiRenderQueue
+      // clipsWithMidiAudio); one still without audio (an empty roll) is silent.
+      if (!clip.audioBlob) continue;
       // The clip's OWN blob, unconditionally — this is the loop the three
       // renderers had, and a second clip on the same Blob has always asked for
       // it again (`deps.decode` is `lib/decodeCache`, which answers the second

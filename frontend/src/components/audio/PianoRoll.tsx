@@ -11,7 +11,7 @@ import {
 } from '../../state/pianoRollStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { getEngineCtx } from '../../state/playerStore';
-import { useEditorStore, computePeaks } from '../../state/editorStore';
+import { useEditorStore } from '../../state/editorStore';
 import { downloadMidi, parseMidi } from '../../utils/midi';
 import { logError, logInfo, logWarn } from '../../state/logStore';
 import type { Meter } from '../../lib/colony';
@@ -124,7 +124,6 @@ import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers'
 import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
-import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
 import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
 import { drumKitName, rollVoice, type ClipVoice } from '../../lib/clipProgram';
@@ -1099,9 +1098,11 @@ export const PianoRollMapKey: React.FC = () => (
 );
 
 /**
- * EDIT: render the notes to audio and add them to the waveform editor. Once a
- * clip is linked the key reads SAVE (latched) and re-renders that clip in
- * place; the corner target unlinks it.
+ * EDIT: put the notes on the EDIT timeline as a MIDI clip (lib/rollBounce). A
+ * part with a program plays live there and renders when exported; one with no
+ * program is rendered through the MIDI render queue so it can be heard. Once a
+ * clip is linked the key reads SAVE (latched) and writes that clip in place;
+ * the corner target unlinks it.
  */
 export const PianoRollEditKey: React.FC = () => {
   const noteCount = usePianoRollStore((s) => s.notes.length);
@@ -1114,23 +1115,26 @@ export const PianoRollEditKey: React.FC = () => {
 
   const handleSendToEditor = async () => {
     if (usePianoRollStore.getState().notes.length === 0) {
-      logError('piano-roll', 'No notes to bounce');
+      logError('piano-roll', 'No notes to send to the editor');
       return;
     }
     setIsBouncing(true);
     const start = performance.now();
     try {
-      const done = await bounceRollToEditor({ render: renderStepNotesToBlob, computePeaks, global: getGlobalVoice });
+      const done = await bounceRollToEditor({ global: getGlobalVoice });
       if (!done) return;
       const ms = (performance.now() - start).toFixed(0);
+      // A part with a program plays live in EDIT and renders when exported; one
+      // with none was rendered through the MIDI render queue so it can be heard.
+      const how = done.rendering ? 'rendered so it can be heard' : 'plays live';
       if (done.kind === 'updated') {
-        logInfo('piano-roll', `Updated editor clip ${done.clipId.slice(0, 8)} (${done.duration.toFixed(2)}s, ${done.noteCount} notes)`);
-        logInfo('piano-roll', `Re-bounce took ${ms}ms`);
+        logInfo('piano-roll', `Updated editor clip ${done.clipId.slice(0, 8)} (${done.duration.toFixed(2)}s, ${done.noteCount} notes; ${how})`);
+        logInfo('piano-roll', `Save took ${ms}ms`);
       } else {
-        logInfo('piano-roll', `Bounced ${done.noteCount} notes → editor (${done.duration.toFixed(2)}s in ${ms}ms)`);
+        logInfo('piano-roll', `Sent ${done.noteCount} notes → editor (${done.duration.toFixed(2)}s in ${ms}ms; ${how})`);
       }
     } catch (e) {
-      logError('piano-roll', `Bounce failed: ${e instanceof Error ? e.message : e}`);
+      logError('piano-roll', `Sending to the editor failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setIsBouncing(false);
     }
@@ -1139,7 +1143,7 @@ export const PianoRollEditKey: React.FC = () => {
   const linked = !!editingClipId;
   const unlinkTip = useDockTip({
     word: 'Unlink',
-    description: 'Detach: future renders create a new editor clip instead of updating the linked one',
+    description: 'Detach: the next send creates a new editor clip instead of updating the linked one',
     label: 'Unlink from the editor clip',
     expanded: clipMenuOpen,
     placement: 'right',
@@ -1147,8 +1151,8 @@ export const PianoRollEditKey: React.FC = () => {
   // The name always carries the key's word (the DockTip's EDIT or SAVE).
   const name = isBouncing
     ? linked
-      ? 'Save: bouncing to the linked editor clip'
-      : 'Edit: bouncing to the editor'
+      ? 'Save: sending to the linked editor clip'
+      : 'Edit: sending to the editor'
     : linked
       ? `Save to the linked editor clip ${editingClipId.slice(0, 8)}`
       : 'Edit: send to the editor';

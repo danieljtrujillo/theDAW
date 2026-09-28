@@ -123,8 +123,18 @@ export function quantizeNotes(
   const quantizeEnds = options.quantizeEnds ?? false;
   const map = options.meterMap;
   const pickup = Math.max(0, options.pickupSteps ?? 0);
+  // '1/1' is a bar. With a meter map that is the bar line of whatever meter
+  // holds (a 5/4 bar is 20 steps, not a 16-step cell and a 4-step remainder);
+  // without one it stays the 16-step 4/4 bar it has always been.
+  const barLineNear = (position: number): number => {
+    const bar = barAt(map as readonly MeterSegment[], position, pickup);
+    const end = bar.start + bar.len;
+    return position - bar.start <= end - position ? bar.start : end;
+  };
   const lineNear = (position: number): number =>
-    map && map.length ? nearestBarLine(position, gridSteps, swing, map, pickup) : nearestLine(position, gridSteps, swing);
+    map && map.length
+      ? options.grid === '1/1' ? barLineNear(position) : nearestBarLine(position, gridSteps, swing, map, pickup)
+      : nearestLine(position, gridSteps, swing);
 
   return notes.map((note) => {
     const target = lineNear(note.step);

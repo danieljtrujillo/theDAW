@@ -398,10 +398,19 @@ const harness = (opts: {
 
 const MIDI_TRACK: CaptureTrack = { id: 'midi-1', color: '#7c3aed', instrumentProgram: 0 };
 const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
+/** A MIDI track with no instrument of its own: its latest clip is a roll clip,
+ *  so it captures, and with the picker off its takes have no program and
+ *  cannot play live, so they are rendered. */
+const PLAIN_MIDI_TRACK: CaptureTrack = { id: 'roll-0', color: '#f0f' };
+const PLAIN_MIDI_CLIPS: CaptureClip[] = [
+  { trackId: 'roll-0', startSec: 0, sourceKind: 'piano-roll', sourcePianoRoll: [{ id: 'n', note: 60, step: 0, length: 1, velocity: 90 }] },
+];
 
 {
   // A pass lands a MIDI clip on the armed instrument track at the transport
-  // second the pass started, as ONE undo step, with the audio applied after.
+  // second the pass started, as ONE undo step. The track has an instrument, so
+  // the take plays live on EDIT's synths: it lands with no audio of its own and
+  // nothing is rendered (lib/midiRender: it renders when an export needs it).
   resetMidiTakeSeq();
   const h = harness({ tracks: [MIDI_TRACK, AUDIO_TRACK], armed: ['midi-1', 'aud-1'] });
   h.sec(8);
@@ -441,23 +450,94 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   assert.equal(clip.sourceTotalSteps, 14);
   near(clip.durationSec, 14 * 0.125, 'the clip is as long as its grid');
   assert.equal(h.undoSteps(), 1, 'one undo step for the pass');
-  // The placeholder has to survive WaveformEditor's decode-peaks effect until
-  // the render lands: a real WAV, and peaks already on it so it is skipped.
-  assert.ok(clip.audioBlob.size > 44, 'the placeholder is a real WAV, not a zero-byte blob');
+  assert.equal(clip.audioBlob, undefined, 'a take with an instrument lands with no audio of its own: it plays live');
+  assert.equal(clip.peaks, undefined, 'and no placeholder peaks: its notes are what EDIT draws');
+  assert.equal(clip.mimeType, 'audio/wav');
+
+  await flush();
+  assert.equal(h.warmups(), 0, 'nothing warms the soundfont for a render');
+  assert.equal(h.rendered.length, 0, 'nothing is rendered');
+  assert.equal(h.renders.length, 0, 'and nothing is applied');
+  assert.deepEqual(h.notices, [], 'nothing to say about a pass that landed');
+  h.dispose();
+}
+
+{
+  // A take with no program cannot play live, so its audio is rendered after the
+  // clip lands, applied through applyClipRender, and the clip carries a silent
+  // placeholder meanwhile: a real WAV with peaks already on it, so
+  // WaveformEditor's decode-peaks effect has nothing to fail on. Both are audio
+  // held only so the take can be heard (renderAuto), which EDIT drops once the
+  // take plays live, and the render records what it was made from (renderSig),
+  // so a later note edit marks it stale. At 057f7499 the render carried
+  // neither: it was kept after the take got an instrument, and a note edit
+  // in the roll left it playing the old notes.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'] });
+  const sigOf: Array<Record<string, unknown>> = [];
+  h.deps.renderSig = (take) => {
+    sigOf.push(take as Record<string, unknown>);
+    return `sig:${take.sourcePianoRoll?.map((n) => n.note).join(',')}@${take.sourceBpm}/${take.sourceTotalSteps}`;
+  };
+  h.sec(8);
+  h.setStatus('recording');
+  h.sec(8.5);
+  h.send([0x90, 60, 100]);
+  h.sec(9);
+  h.send([0x80, 60, 0]);
+  h.sec(9.25);
+  h.send([0x90, 67, 90]); // still held when the pass ends
+  h.sec(9.75);
+  h.setStatus('stopping');
+
+  assert.equal(h.clips.length, 1);
+  const clip = h.clips[0];
+  assert.equal(clip.instrumentProgram, undefined);
+  assert.ok(clip.audioBlob instanceof Blob && clip.audioBlob.size > 44, 'the placeholder is a real WAV, not a zero-byte blob');
   assert.equal(clip.mimeType, 'audio/wav');
   assert.equal(clip.peaks?.length, 240, 'and it ships flat peaks, so the decode effect skips it');
+  assert.equal(clip.renderAuto, true, 'the placeholder is held only so the take can be heard');
+  assert.equal(h.undoSteps(), 1, 'one undo step for the pass');
 
   await flush();
   assert.equal(h.warmups(), 1, 'the soundfont is warmed before the render');
   assert.equal(h.rendered.length, 1, 'the audio is rendered after the clip lands');
   assert.equal(h.rendered[0].totalSteps, 14);
-  assert.equal(h.rendered[0].program, 0);
+  assert.equal(h.rendered[0].program, undefined, 'no program: the render is the voice it has');
+  assert.deepEqual(
+    h.rendered[0].notes.map((n) => [n.note, n.step, n.length]),
+    [[60, 4, 4], [67, 10, 4]],
+    'the render plays the notes as played',
+  );
   assert.equal(h.renders.length, 1, 'and applied through applyClipRender');
   assert.equal(h.renders[0].id, clip.id);
   assert.ok(h.renders[0].updates.audioBlob instanceof Blob, 'with the rendered blob');
-  assert.equal(h.renders[0].updates.renderedProgram, 0, 'stamped with the program it was rendered with');
+  assert.equal(h.renders[0].updates.renderedProgram, undefined, 'nothing to stamp');
   assert.equal(h.renders[0].peaks?.length, 240, 'and its peaks');
-  assert.deepEqual(h.notices, [], 'nothing to say about a pass that landed');
+  assert.equal(h.renders[0].updates.renderAuto, true, 'made so the take can be heard');
+  assert.equal(h.renders[0].updates.renderSig, 'sig:60,67@120/14', 'and what it was made from: the notes as they landed');
+  assert.deepEqual(sigOf[0].sourcePianoRoll, clip.sourcePianoRoll, 'the signature reads the landed notes');
+  h.dispose();
+}
+
+{
+  // A take with no program whose render fails loses its silent placeholder, so
+  // EDIT's MIDI render queue sees a clip that holds no audio and cannot play
+  // live, renders it again, and says why if that fails too.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'] });
+  h.deps.renderStepNotes = async () => { throw new Error('synth down'); };
+  h.setStatus('recording');
+  h.sec(0.5);
+  h.send([0x90, 60, 100]);
+  h.sec(1);
+  h.send([0x80, 60, 0]);
+  h.setStatus('stopping');
+  assert.ok(h.clips[0].audioBlob instanceof Blob, 'the placeholder rides until the render settles');
+  await flush();
+  assert.equal(h.renders.length, 1, 'one write when the render fails');
+  assert.ok('audioBlob' in h.renders[0].updates && h.renders[0].updates.audioBlob === undefined, 'it takes the placeholder away');
+  assert.ok('peaks' in h.renders[0].updates && h.renders[0].updates.peaks === undefined, 'and its flat peaks');
   h.dispose();
 }
 
@@ -507,6 +587,33 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   assert.deepEqual(clip.sourcePianoRoll, clip.sourceRollNotes, 'the sounding copy holds the same timing');
   assert.equal(clip.sourceTotalSteps, 7, 'the grid runs to the 16th after the last note ends');
   near(clip.durationSec, 7 * 0.15, 'and the clip is as long as its grid');
+  await flush();
+  // The track has an instrument, so these are the notes EDIT's live scheduler
+  // plays; nothing is rendered until an export needs the audio.
+  assert.equal(h.rendered.length, 0, 'a take that plays live is not rendered');
+  h.dispose();
+}
+
+{
+  // The same off-grid take on a track with no program is rendered, and the
+  // render plays each note at the ticks it was played on.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'], bpm: 100 });
+  h.sec(10);
+  h.setStatus('recording');
+  h.sec(10.2);
+  h.send([0x90, 60, 100]);
+  h.sec(10.25);
+  h.send([0x90, 64, 90]);
+  h.sec(10.29);
+  h.send([0x80, 60, 0]);
+  h.sec(10.8);
+  h.send([0x80, 64, 0]);
+  h.sec(11);
+  h.send([0x90, 67, 70]);
+  h.send([0x80, 67, 0]);
+  h.sec(11.5);
+  h.setStatus('stopping');
   await flush();
   assert.deepEqual(
     h.rendered[0].notes.map((n) => [n.note, n.step, n.length]),
@@ -581,10 +688,9 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
 }
 
 {
-  // A track with NO instrument of its own renders through the global picker's
-  // program and is stamped with it. Without that, `effectiveProgramFor` reports
-  // the picker's program, `renderedProgram` is empty, and WaveformEditor
-  // re-renders the clip the instant it appears.
+  // A track with NO instrument of its own plays through the global picker's
+  // program, the way `effectiveProgramFor` resolves it, so the take plays live
+  // and is not rendered. The picker is not pinned onto the clip.
   resetMidiTakeSeq();
   const h = harness({
     tracks: [{ id: 'roll-2', color: '#f0f' }],
@@ -610,15 +716,16 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
     undefined,
     'the picker is NOT pinned onto the clip — it must keep following the picker',
   );
+  assert.equal(h.clips[0].audioBlob, undefined, 'the picker plays it live, so it lands with no audio');
   await flush();
-  assert.equal(h.rendered[0].program, 40, 'but the bounce uses the resolved program');
-  assert.equal(h.renders[0].updates.renderedProgram, 40, 'and is stamped with it');
+  assert.equal(h.rendered.length, 0, 'and nothing is rendered');
+  assert.equal(h.renders.length, 0);
   h.dispose();
 }
 
 {
   // The track's own instrument beats the global picker, as effectiveProgramFor
-  // resolves it.
+  // resolves it: the take carries the track's program and plays live on it.
   resetMidiTakeSeq();
   const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], globalProgram: 40 });
   h.setStatus('recording');
@@ -627,17 +734,17 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   h.sec(1);
   h.send([0x80, 60, 0]);
   h.setStatus('stopping');
+  assert.equal(h.clips[0].instrumentProgram, 0, "the track's own program wins");
   await flush();
-  assert.equal(h.rendered[0].program, 0, "the track's own program wins");
-  assert.equal(h.renders[0].updates.renderedProgram, 0);
+  assert.equal(h.rendered.length, 0, 'it plays live, so nothing is rendered');
   h.dispose();
 }
 
 {
   // An armed drum track with no clips and no program is a MIDI track: the pass
-  // lands on it, renders on the drum channel with the Standard kit (never the
-  // picker's instrument) and is stamped as a drum render. At 8039b45 the drum
-  // key did not exist, and a track like this recorded the mic.
+  // lands on it and plays on the drum channel with the Standard kit (never the
+  // picker's instrument), live, so nothing is rendered. At 8039b45 the drum key
+  // did not exist, and a track like this recorded the mic.
   resetMidiTakeSeq();
   const drums: CaptureTrack = { id: 'drums-1', color: '#fa0', isPercussion: true };
   assert.equal(capturesMidi(drums, []), true);
@@ -650,11 +757,9 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   h.setStatus('stopping');
   assert.equal(h.clips.length, 1);
   assert.equal(h.clips[0].instrumentProgram, undefined, 'the kit is the track default, not pinned');
+  assert.equal(h.clips[0].audioBlob, undefined, 'the kit plays it live, so it lands with no audio');
   await flush();
-  assert.equal(h.rendered[0].program, 0, 'the Standard kit, not the picker');
-  assert.equal(h.rendered[0].percussion, true);
-  assert.equal(h.renders[0].updates.renderedProgram, 0);
-  assert.equal(h.renders[0].updates.renderedPercussion, true);
+  assert.equal(h.rendered.length, 0, 'and nothing is rendered');
   h.dispose();
 }
 
@@ -778,9 +883,10 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   // the clip lands as long as its notes, and the render rings 1.5 s past them
   // (a string section's release). At 8039b45 applyClipRender wrote only
   // sourceDuration, so the clip still ended at the note-off and EDIT playback
-  // and export cut the release there.
+  // and export cut the release there. (A track with no program: its takes are
+  // rendered when they land.)
   resetMidiTakeSeq();
-  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], ringSec: 1.5 });
+  const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'], ringSec: 1.5 });
   h.sec(0);
   h.setStatus('recording');
   h.sec(0.5);
@@ -802,7 +908,7 @@ const AUDIO_TRACK: CaptureTrack = { id: 'aud-1', color: '#22d3ee' };
   // The same take trimmed by the user while it rendered keeps the window the
   // user gave it; only the source length follows the render.
   resetMidiTakeSeq();
-  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'], ringSec: 1.5 });
+  const h = harness({ tracks: [PLAIN_MIDI_TRACK], existingClips: PLAIN_MIDI_CLIPS, armed: ['roll-0'], ringSec: 1.5 });
   h.sec(0);
   h.setStatus('recording');
   h.sec(0.5);

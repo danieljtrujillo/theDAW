@@ -455,4 +455,16 @@ assert.deepEqual(empty.removed, []);
 
 assert.equal(garbage.length, 6, 'input untouched');
 
+// '1/1' with a meter map is a bar of the meter that holds: in a 5/4 bar (20
+// steps) a note at step 15 goes to the bar end, not to a 16-step cell line.
+{
+  const fiveFour = [{ bar: 0, meter: { num: 5, den: 4, groups: [] } }];
+  const bar = quantizeNotes([n('a', 60, 15, 1), n('b', 62, 9, 1), n('c', 64, 23, 1)], { grid: '1/1', meterMap: fiveFour });
+  assert.deepEqual(bar.map((x) => x.step), [20, 0, 20], 'bar lines of 5/4 at 0, 20, 40');
+  const sevenEight = [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }];
+  assert.deepEqual(quantizeNotes([n('d', 60, 8, 1), n('e', 60, 6, 1)], { grid: '1/1', meterMap: sevenEight }).map((x) => x.step), [14, 0]);
+  // Without a meter map it stays the 16-step bar of 4/4.
+  assert.deepEqual(quantizeNotes([n('f', 60, 15, 1)], { grid: '1/1' }).map((x) => x.step), [16]);
+}
+
 console.log('clipNotes: ok');

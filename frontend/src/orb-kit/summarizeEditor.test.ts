@@ -11,7 +11,8 @@ const base = useEditorStore.getState();
 const snapshot = {
   ...base,
   bpm: 128,
-  timeSignature: { num: 6, den: 8 },
+  meterMap: [{ bar: 0, meter: { num: 6, den: 8, groups: [3, 3] } }, { bar: 4, meter: { num: 7, den: 8, groups: [3, 2, 2] } }],
+  tempoMap: [{ beat: 0, bpm: 128, curve: 'step' as const }, { beat: 9, bpm: 96, curve: 'linear' as const }, { beat: 10.5, bpm: 100, curve: 'step' as const }],
   snap: '1/16' as const,
   tool: 'split' as const,
   selectedClipIds: ['ca', 'cm'],
@@ -53,6 +54,11 @@ assert.equal(s.bpm, 128);
 // the selection editor_loop_selection acts on, and the snapshot names
 // editor_restore will accept.
 assert.deepEqual(s.timeSignature, { num: 6, den: 8 });
+// The whole meter map and tempo map, bars 1-based as on screen: a 7/8 change at
+// bar 5 after four 6/8 bars (12 steps each = 3 quarters), so beat 9 (a ramp to
+// 96) is the top of bar 4 and beat 10.5 is 1.5 quarters into it.
+assert.deepEqual(s.meterMap, [{ bar: 1, meter: '6/8 3+3' }, { bar: 5, meter: '7/8 3+2+2' }]);
+assert.deepEqual(s.tempoMap, [{ bar: 1, beat: 0, bpm: 128 }, { bar: 4, beat: 0, bpm: 96, curve: 'linear' }, { bar: 4, beat: 1.5, bpm: 100 }]);
 assert.deepEqual(s.selectedClipIds, ['ca', 'cm']);
 assert.deepEqual(s.snapshotNames, []);
 

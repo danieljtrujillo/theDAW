@@ -16,6 +16,7 @@ import { SlideTrack } from './SlideTrack';
 import { useLibraryStore } from '../../state/libraryStore';
 import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
+import { clipWithAudio } from '../../state/midiRenderQueue';
 import { useMorphStore, type MorphParams, type MorphSource } from '../../state/morphEngine';
 
 const SLIDERS: { key: keyof MorphParams; label: string; min: number; max: number; step: number; unit?: string }[] = [
@@ -63,7 +64,10 @@ export function MetamorphPanel() {
   const resolve = async (val: string): Promise<MorphSource | null> => {
     if (val.startsWith('clip:')) {
       const c = clips.find((x) => `clip:${x.id}` === val);
-      return c ? { id: val, title: c.label || trackName(c.trackId), blob: c.audioBlob } : null;
+      if (!c) return null;
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const withAudio = await clipWithAudio(c.id);
+      return { id: val, title: c.label || trackName(c.trackId), blob: withAudio.audioBlob as Blob };
     }
     if (val.startsWith('lib:')) {
       const id = val.slice('lib:'.length);

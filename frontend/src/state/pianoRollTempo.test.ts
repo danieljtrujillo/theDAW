@@ -1,9 +1,10 @@
 /**
  * The piano roll's tempo map as a document field, replayed against the real
  * roll and editor stores: the TEMPO lane's edits and the header's BPM, undo
- * and redo over every one of them, imports and clip loads, and the bounce that
+ * and redo over every one of them, imports and clip loads, and the send that
  * carries the map to EDIT and back (lib/rollBounce, lib/rollClip), where live
- * playback, drawing and every re-render time the clip's notes through it.
+ * playback, drawing, every export render and every re-render (the MIDI render
+ * queue, state/midiRenderQueue) time the clip's notes through it.
  * Run from `frontend/`:
  *   npx tsx src/state/pianoRollTempo.test.ts
  */
@@ -13,7 +14,8 @@ import { useEditorStore } from './editorStore.ts';
 import { midiClipNoteTimes } from './liveMixer.ts';
 import { bounceRollToEditor, type RollBounceDeps } from '../lib/rollBounce.ts';
 import { clipNoteSpan, clipRollLoad } from '../lib/rollClip.ts';
-import { rerenderStaleMidiClip } from '../lib/clipRerender.ts';
+import { clipsWithMidiAudio, configureMidiRenderQueue, requestMidiRender } from './midiRenderQueue.ts';
+import { liveMidiIfHeard } from './liveMixer.ts';
 import { stepRenderRequest, type RenderNote } from '../lib/midiSynth.ts';
 import { bounceMidiClip, stretchMidiClip } from '../lib/clipOps/audioOps.ts';
 import { stepClock } from '../lib/rollTempo.ts';
@@ -117,17 +119,28 @@ async function main(): Promise<void> {
   st().importNotes(notes, 60, undefined, [], ritardando);
   usePianoRollStore.setState({ totalSteps: 64 });
   const rendered: Array<{ notes: RenderNote[]; nominalSec: number; tempoMap?: readonly TempoEvent[] }> = [];
-  const deps: RollBounceDeps = {
+  const picker = () => ({ useSoundfont: true, activeProgram: 0 });
+  configureMidiRenderQueue({
     render: (n, bpm, totalSteps, opts) => {
       const req = stepRenderRequest(n, bpm, totalSteps, opts);
       rendered.push({ notes: req.notes, nominalSec: req.nominalSec, tempoMap: opts.tempoMap });
       return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: req.nominalSec });
     },
     computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-    global: () => ({ useSoundfont: true, activeProgram: 0 }),
+    global: picker,
+    ensureReady: () => Promise.resolve(),
+    livePlan: liveMidiIfHeard,
+  });
+  const deps: RollBounceDeps = { global: picker };
+  /** An export of the clip: the MIDI render queue renders it for that export alone. */
+  const exportClip = async (clipId: string): Promise<void> => {
+    const out = await clipsWithMidiAudio((c) => c.id === clipId);
+    out.release();
   };
   const done = await bounceRollToEditor(deps);
   assert.ok(done);
+  assert.equal(rendered.length, 0, 'the part plays live, so the send renders nothing');
+  await exportClip(done.clipId);
   const clock = stepClock(60, ritardando);
   const bounce = rendered.at(-1)!;
   // The bounce plays the map: each note at its step's seconds, its length its steps' seconds.
@@ -159,9 +172,10 @@ async function main(): Promise<void> {
   assert.equal(shape(st().tempoMap), '0:90');
   st().redo();
 
-  // A re-bounce after the last change is gone clears the clip's map.
+  // A re-send after the last change is gone clears the clip's map.
   st().setTempoMap([{ beat: 0, bpm: 60 }]);
   await bounceRollToEditor(deps);
+  await exportClip(done.clipId);
   const cleared = ed().clips.find((c) => c.id === done.clipId)!;
   assert.equal(cleared.sourceTempoMap, undefined, 'a clip at one tempo carries no map');
   assert.equal(rendered.at(-1)?.tempoMap, undefined);
@@ -178,10 +192,13 @@ async function main(): Promise<void> {
   usePianoRollStore.setState({ totalSteps: 64 });
   await bounceRollToEditor(deps);
   const mapped = ed().clips.find((c) => c.id === done.clipId)!;
+  // "Keep rendered audio": the part keeps a render; a new instrument makes it
+  // stale, and EDIT's render upkeep renders it again.
+  await requestMidiRender(done.clipId, 'keep');
   ed().updateTrack(mapped.trackId, { instrumentProgram: 41 });
   const before = rendered.length;
-  const again = await rerenderStaleMidiClip(done.clipId, { ...deps, ensureReady: () => Promise.resolve() });
-  assert.equal(again, true, 'the new voice re-renders the clip');
+  const again = await requestMidiRender(done.clipId, 'cache');
+  assert.equal(again.kind, 'written', 'the new voice re-renders the clip');
   assert.equal(rendered.length, before + 1);
   assert.equal(shape(rendered.at(-1)!.tempoMap ?? []), '0:60 8:132 12:132r 16:66', 'through its tempo map');
   const opsRenders: Array<{ bpm: number; notes: RenderNote[] }> = [];

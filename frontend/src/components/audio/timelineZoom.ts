@@ -330,6 +330,8 @@ const RULER_READOUT_INSET_PX = 4;
 const RULER_READOUT_PAD_PX = 4;
 /** A bar number starts `left-0.5` (2 px) past its bar line. */
 const RULER_BAR_LABEL_INSET_PX = 2;
+/** A timecode starts `px-1` (4 px) past its tick line. */
+const RULER_TIME_LABEL_INSET_PX = 4;
 
 /**
  * The local-px extent the range readout's pill can cover on the ruler, for a
@@ -343,10 +345,11 @@ export function rulerReadoutSpanPx(startSec: number, zoom: number, text: string)
 }
 
 /**
- * Whether a bar number's text could reach under the range readout. The
- * readout and the bar numbers share the ruler's top row, so the ruler hides
- * these numbers while a range is up (the readout's opaque pill would
- * otherwise cut through them); its bar line stays.
+ * Whether a bar number's text could reach under the range readout, for a ruler
+ * that draws the readout in the bar numbers' row: such a ruler hides these
+ * numbers while a range is up (the readout's opaque pill would otherwise cut
+ * through them); its bar line stays. EDIT's ruler draws the readout in its
+ * time row, which timeLabelUnderReadout answers for.
  */
 export function barLabelUnderReadout(
   b: { bar: number; sec: number },
@@ -355,6 +358,23 @@ export function barLabelUnderReadout(
 ): boolean {
   const left = b.sec * zoom + RULER_BAR_LABEL_INSET_PX;
   const right = left + String(b.bar).length * RULER_CHAR_MAX_PX;
+  return left < readout.rightPx && right > readout.leftPx;
+}
+
+/**
+ * Whether a timecode's text could reach under the range readout. EDIT's ruler
+ * draws the readout in its time row, so the ruler hides these timecodes while
+ * a range is up (the readout's opaque pill would otherwise cut through them);
+ * the tick line stays. `text` is the timecode as the ruler prints it.
+ */
+export function timeLabelUnderReadout(
+  tick: { sec: number },
+  text: string,
+  zoom: number,
+  readout: { leftPx: number; rightPx: number },
+): boolean {
+  const left = tick.sec * zoom + RULER_TIME_LABEL_INSET_PX;
+  const right = left + [...text].length * RULER_CHAR_MAX_PX;
   return left < readout.rightPx && right > readout.leftPx;
 }
 

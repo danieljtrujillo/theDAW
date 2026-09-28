@@ -1,8 +1,9 @@
 // A piano-roll clip's tempo map survives a .tasmo save and open, and a file
 // written before clips had one opens at one tempo, as it always did.
 //
-// Each block replays the app's own order: the roll is bounced to EDIT
-// (lib/rollBounce), captureEditorSession builds the payload,
+// Each block replays the app's own order: the roll is sent to EDIT
+// (lib/rollBounce, where the part plays live and holds no render),
+// captureEditorSession builds the payload,
 // projectApi.saveSession posts it, the JSON comes back from the backend,
 // loadProjectIntoEditor opens it, and "Edit in Piano Roll" (clipRollLoad)
 // puts the map back in the roll. PERFORM's reading of the same save
@@ -85,11 +86,7 @@ async function main(): Promise<void> {
   for (let s = 0; s < 64; s += 4) notes.push({ id: `n${s}`, note: 60, step: s, length: 3, velocity: 100 });
   roll().importNotes(notes, 50, undefined, [], MAP);
   usePianoRollStore.setState({ totalSteps: 64 });
-  const done = await bounceRollToEditor({
-    render: (_n, _bpm, _total, _opts) => Promise.resolve({ blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }), duration: 30 }),
-    computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-    global: () => ({ useSoundfont: true, activeProgram: 48 }),
-  });
+  const done = await bounceRollToEditor({ global: () => ({ useSoundfont: true, activeProgram: 48 }) });
   assert.ok(done);
 
   const { project, files } = await saveThroughTheWire();

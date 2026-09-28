@@ -43,6 +43,8 @@ import { currentPassPunchWindow, useRecordingStore } from './state/recordingStor
 import { beginUndoStep, computePeaks, useEditorStore } from './state/editorStore';
 import { currentTransportSec } from './state/liveMixer';
 import { renderStepNotesToBlob } from './lib/midiSynth';
+import { midiRenderSig } from './lib/midiRender';
+import { withRenderTurn } from './state/midiRenderQueue';
 import { ensureSoundfontReady, getActiveProgram, getGlobalVoice, isSoundfontActive } from './lib/soundfontEngine';
 import { postStatus } from './state/statusNoticeStore';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
@@ -431,7 +433,11 @@ export default function App() {
         addClipToTrack: (clip) => useEditorStore.getState().addClipToTrack(clip),
         applyClipRender: (id, updates, peaks) => useEditorStore.getState().applyClipRender(id, updates, peaks),
         clipWindow: (id) => useEditorStore.getState().clips.find((c) => c.id === id),
-        renderStepNotes: (notes, bpm, totalSteps, opts) => renderStepNotesToBlob(notes, bpm, totalSteps, opts),
+        // A take's first render takes the MIDI render queue's turn, so it never
+        // overlaps another render, and records what it was made from.
+        renderStepNotes: (notes, bpm, totalSteps, opts) =>
+          withRenderTurn('', 'MIDI take', () => renderStepNotesToBlob(notes, bpm, totalSteps, opts)),
+        renderSig: midiRenderSig,
         computePeaks,
         postStatus,
       }),

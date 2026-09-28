@@ -35,6 +35,7 @@ const { usePianoRollStore, beginRollGesture, endRollGesture } = await import('./
 const { useEditorStore } = await import('./editorStore.ts');
 const { ZERO_AMOUNTS } = await import('../lib/virtuosoTransform.ts');
 const { bounceRollToEditor } = await import('../lib/rollBounce.ts');
+const { configureMidiRenderQueue } = await import('./midiRenderQueue.ts');
 const { clipRollLoad } = await import('../lib/rollClip.ts');
 const { clipNotesToTasmo, tasmoMeterToClip } = await import('../lib/projectClient.ts');
 const { editMarkerId, markerBarLabel, markerStep } = await import('../lib/rollMarkers.ts');
@@ -63,15 +64,21 @@ async function step(name: string, fn: () => Promise<void> | void): Promise<void>
 
 const phrase: PianoNote[] = [0, 2, 4, 5, 7, 9, 11, 12].map((d, i) => ({ id: `p${i}`, note: 60 + d, step: i * 2, length: 2, velocity: 90 }));
 let rendered = 0;
-const deps: RollBounceDeps = {
+// The part plays live on the picker's piano, so the EDIT key writes its notes
+// and renders nothing (lib/rollBounce). A render the queue is asked for still
+// goes through this stand-in synth, and is counted.
+const global = () => ({ useSoundfont: true, activeProgram: 0 });
+configureMidiRenderQueue({
   render: (_notes, bpm, totalSteps, opts) => {
     rendered += 1;
     // The audio lasts as long as the roll plays through its tempo map.
     return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: stepClock(bpm, opts.tempoMap).at(totalSteps) });
   },
   computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-  global: () => ({ useSoundfont: false, activeProgram: 0 }),
-};
+  global,
+  ensureReady: () => Promise.resolve(),
+});
+const deps: RollBounceDeps = { global };
 
 async function main(): Promise<void> {
   ed().loadProject({ tracks: [], clips: [] });
@@ -190,7 +197,7 @@ async function main(): Promise<void> {
     await bounceRollToEditor(deps);
     assert.equal(ed().markers.length, before - 1, 'a marker removed in the roll leaves EDIT on the next bounce');
     assert.ok(ed().markers.some((m) => m.label === 'My EDIT marker'));
-    assert.equal(rendered, 3);
+    assert.equal(rendered, 0, 'a part that plays live is sent three times and never rendered');
   });
 
   await step("EDIT's markers go through a .tasmo save and reopen with their ids, so a re-bounce after the reopen still replaces them", async () => {

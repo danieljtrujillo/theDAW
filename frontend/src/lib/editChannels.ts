@@ -34,11 +34,22 @@ export const MELODIC_BANK_CHANNELS: readonly number[] = Object.freeze(
 export interface EditChannelTrack {
   id: string;
   percussion: boolean;
+  /**
+   * Channels the track needs: one, plus one for each lane of its clips that
+   * bends (a pitch wheel bends a whole channel, lib/pitchBend laneChannels).
+   * Absent: one. A percussion track always takes one, the drum channel.
+   */
+  channels?: number;
 }
 
 export interface EditChannelPlan {
-  /** Global channel (bank * 16 + local) by track id. */
+  /** Global channel (bank * 16 + local) by track id: the track's first channel. */
   channelOf: Map<string, number>;
+  /**
+   * Every channel of each track, first channel first. A track whose lanes bend
+   * holds one channel per bent lane after its first (EditChannelTrack.channels).
+   */
+  channelsOf: Map<string, number[]>;
   /** How many banks the plan uses. */
   banks: number;
   /** Tracks past the last bank, which get no channel. */
@@ -48,25 +59,49 @@ export interface EditChannelPlan {
 export const bankOfChannel = (channel: number): number => Math.floor(channel / EDIT_BANK_CHANNELS);
 export const localChannel = (channel: number): number => channel % EDIT_BANK_CHANNELS;
 
-/** One channel per track, in the order given. */
+/** The global channel of the `i`-th slot of the melodic pool. */
+const melodicSlot = (i: number): number =>
+  Math.floor(i / MELODIC_BANK_CHANNELS.length) * EDIT_BANK_CHANNELS + MELODIC_BANK_CHANNELS[i % MELODIC_BANK_CHANNELS.length];
+
+/**
+ * Channels for each track, in the order given: one per track, or as many as a
+ * melodic track asks for (`channels`), taken one after another from the
+ * melodic pool, so a track's channels can run from one bank into the next.
+ * Each of a track's channels feeds that track's strip, so crossing a bank
+ * changes nothing it sounds through. A track whose channels do not all fit is
+ * dropped and plays its bounce; it takes nothing from the pool, so a later
+ * track that fits still gets its channels.
+ */
 export function planEditChannels(tracks: readonly EditChannelTrack[], maxBanks = MAX_EDIT_BANKS): EditChannelPlan {
   const channelOf = new Map<string, number>();
+  const channelsOf = new Map<string, number[]>();
   const dropped: string[] = [];
   let melodic = 0;
   let percussion = 0;
   let banks = 0;
   for (const t of tracks) {
     if (channelOf.has(t.id)) continue;
-    const bank = t.percussion ? percussion : Math.floor(melodic / MELODIC_BANK_CHANNELS.length);
-    if (bank >= maxBanks) {
-      dropped.push(t.id);
-      continue;
+    let chans: number[];
+    if (t.percussion) {
+      if (percussion >= maxBanks) {
+        dropped.push(t.id);
+        continue;
+      }
+      chans = [percussion * EDIT_BANK_CHANNELS + DRUM_CHANNEL];
+      percussion += 1;
+    } else {
+      const asked = Math.round(t.channels ?? 1);
+      const want = Math.max(1, Math.min(MELODIC_BANK_CHANNELS.length, Number.isFinite(asked) ? asked : 1));
+      if (Math.floor((melodic + want - 1) / MELODIC_BANK_CHANNELS.length) >= maxBanks) {
+        dropped.push(t.id);
+        continue;
+      }
+      chans = Array.from({ length: want }, (_, i) => melodicSlot(melodic + i));
+      melodic += want;
     }
-    const local = t.percussion ? DRUM_CHANNEL : MELODIC_BANK_CHANNELS[melodic % MELODIC_BANK_CHANNELS.length];
-    if (t.percussion) percussion += 1;
-    else melodic += 1;
-    channelOf.set(t.id, bank * EDIT_BANK_CHANNELS + local);
-    banks = Math.max(banks, bank + 1);
+    channelOf.set(t.id, chans[0]);
+    channelsOf.set(t.id, chans);
+    for (const ch of chans) banks = Math.max(banks, bankOfChannel(ch) + 1);
   }
-  return { channelOf, banks, dropped };
+  return { channelOf, channelsOf, banks, dropped };
 }

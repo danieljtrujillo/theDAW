@@ -25,9 +25,10 @@ import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule } from 
 import { decodeClipBlob } from '../../lib/decodeCache';
 import { type FadeCurve } from '../../lib/clipFade';
 import {
-  BOUNCE_SAMPLE_RATE, encodeBounce, renderBounce, renderExtentSec,
-  type BounceRequest, type RenderDeps,
+  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, renderBounce, renderExtentSec,
+  type BounceRequest, type BounceScope, type RenderDeps,
 } from '../../lib/renderCore';
+import { clipWithAudio, clipsWithMidiAudio, configureMidiRenderQueue, dropAutoRender, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
 import { crossfadeRegions } from '../../lib/crossfade';
 import { pairingHeader } from '../../lib/pairing';
 import {
@@ -42,8 +43,8 @@ import { effectiveZoom } from '../../lib/canvasScale';
 import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
-import { useExternalDragStore } from '../../state/externalDragStore';
-import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSec, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
+import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
@@ -60,25 +61,25 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipNoteSpan, clipRenderInput, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { clipNoteSpan, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
-  clipRenderIsStale,
   clipVoice,
   drumKitName,
   isPercussionTrack,
-  renderedVoiceFields,
-  type ClipVoice,
 } from '../../lib/clipProgram';
 import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
-import { renderedWindowFields } from '../../lib/clipRenderWindow';
-import { rerenderStaleMidiClip } from '../../lib/clipRerender';
+import { DROP_RENDER_FIELDS, hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
+import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
+import { NewMidiPartDialog } from './NewMidiPartDialog';
+import { editMeterFlags, editMoveByBeats, editRulerBars, editSnapSec, editTempoAtSec, editTempoFlags } from '../../lib/editTimeMap';
+import { hasTempoChanges } from '../../lib/rollTempo';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
 import {
   addToTrackGroupLabel,
@@ -130,8 +131,8 @@ import { useEditThemeStore } from '../../state/editThemeStore';
 import { TimelineGridLayer } from './TimelineGridLayer';
 import { TimelinePrefsPanel } from './TimelinePrefsPanel';
 import {
-  ZOOM_FOLLOW_HOLD_MS, ZOOM_STEP_FACTOR, barLabelUnderReadout, clipChromeLayout, createZoomCoalescer, fitProjectZoom, fitRangeZoom,
-  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerBarLabels, rulerReadoutSpanPx, rulerTimeTicks, shouldRescrollAfterZoom,
+  ZOOM_FOLLOW_HOLD_MS, ZOOM_STEP_FACTOR, RULER_BAR_LABEL_MIN_PX, clipChromeLayout, createZoomCoalescer, fitProjectZoom, fitRangeZoom,
+  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerReadoutSpanPx, rulerTimeTicks, shouldRescrollAfterZoom, timeLabelUnderReadout,
   spanOfClips, viewportWindowSec, wheelDispatch, type ZoomAnchor, type ZoomCoalescer,
 } from './timelineZoom';
 import {
@@ -139,7 +140,7 @@ import {
   highlightClearDecision, hitTestClipRects,
   inpaintFromRange, rangeSplitPlan, rulerDragRange, type RangeMenuAction,
 } from './timelineInteraction';
-import { alignedStart, beatMatchPlan, firstBeatInClip } from '../../lib/beatMatch';
+import { alignedStart, alignedStartOn, beatMatchPlan, firstBeatInClip } from '../../lib/beatMatch';
 import { ContextMenu, useContextMenu, type ContextMenuItem, type ContextMenuPosition } from '../ui/ContextMenu';
 import { RenderRangeDialog } from '../render/RenderRangeDialog';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -185,6 +186,7 @@ const ADD_ENTRY_ICON: Record<AddToTrackEntry['id'], React.ReactNode> = {
   'audio-system': <FolderOpen className="w-3 h-3" />,
   'midi-library': <Music className="w-3 h-3" />,
   'midi-system': <FolderOpen className="w-3 h-3" />,
+  'midi-empty': <Piano className="w-3 h-3" />,
   paste: <Copy className="w-3 h-3" />,
   'new-track': <Plus className="w-3 h-3" />,
 };
@@ -308,38 +310,6 @@ const preventSelectStart = (e: Event): void => e.preventDefault();
 // --- WAV encoder for the offline mixdown output. ---
 
 /**
- * Tiny silent WAV placeholder used when creating large MIDI clips. The real
- * bounced audio is rendered asynchronously after the editable MIDI clip appears,
- * so users are not stuck waiting on an OfflineAudioContext + peak extraction.
- */
-const silentWavBlob = (): Blob => {
-  const sampleRate = 44100;
-  const channels = 1;
-  const samples = Math.ceil(sampleRate * 0.1);
-  const bytesPerSample = 2;
-  const dataBytes = samples * channels * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataBytes);
-  const view = new DataView(buffer);
-  const writeStr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + dataBytes, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * channels * bytesPerSample, true);
-  view.setUint16(32, channels * bytesPerSample, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, dataBytes, true);
-  return new Blob([buffer], { type: 'audio/wav' });
-};
-
-/**
  * Decode an audio Blob, extract the portion [offsetSec, offsetSec+durationSec],
  * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
  * exactly the visible clip region, with mask coords relative to its start.
@@ -414,6 +384,17 @@ const cropAudioBlob = async (
        against.
 ──────────────────────────────────────────────────────────────────────────── */
 
+// The MIDI render queue's real renderer, peak scan, picker, warm-up and live
+// plan. Set when this module loads, which is before any bounce job can run (the
+// render runner reaches its job functions through this module).
+configureMidiRenderQueue({
+  render: renderStepNotesToBlob,
+  computePeaks,
+  global: getGlobalVoice,
+  ensureReady: ensureSoundfontReady,
+  livePlan: liveMixer.liveMidiIfHeard,
+});
+
 /**
  * The nine fields `lib/renderCore` reads for a bounce: the document — clips,
  * tracks, the master rack, the automation lanes, and (since T14) the routing
@@ -425,11 +406,30 @@ const cropAudioBlob = async (
  *
  * Read from the store when the JOB RUNS, not when it was enqueued: a job that
  * waited behind another renders the document it actually starts against.
+ *
+ * A piano-roll clip may hold no render (lib/midiRender): it plays live and is
+ * rendered here, before the graph is built. Every MIDI clip in `scope` without
+ * a current render goes through the MIDI render queue one clip at a time
+ * (state/midiRenderQueue clipsWithMidiAudio); a stale cache is re-rendered and
+ * kept, and a clip with none is rendered for this bounce only. A job called off
+ * while those renders run stops before the next one (`isCancelled`), and the
+ * job drops its result as it always has. `release` frees the decoded audio of
+ * the renders made for this bounce only; every job calls it once its bounce is
+ * done, since the decode cache holds a buffer until someone says it is gone.
  */
-const currentRenderDeps = (): RenderDeps => {
+interface BounceDeps extends RenderDeps {
+  release: () => void;
+}
+
+const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean = () => false): Promise<BounceDeps> => {
+  const midi = await clipsWithMidiAudio(
+    (c) => clipsInScope([c], scope).length > 0,
+    (n, total, label) => logInfo('editor', `Rendering MIDI for the bounce: ${n} of ${total} (${label})`),
+    isCancelled,
+  );
   const st = useEditorStore.getState();
   return {
-    clips: st.clips,
+    clips: midi.clips,
     tracks: st.tracks,
     masterFxChain: st.masterFxChain,
     automationLanes: st.automationLanes,
@@ -438,7 +438,17 @@ const currentRenderDeps = (): RenderDeps => {
     decode: decodeClipBlob,
     buildChain: buildEffectChain,
     scheduleSources: liveMixer.scheduleClipSources,
+    release: midi.release,
   };
+};
+
+/** Bounce `request` over `deps`, then free the renders made for it alone. */
+const bounceAndRelease = async (request: BounceRequest, deps: BounceDeps): Promise<AudioBuffer> => {
+  try {
+    return await renderBounce(request, deps);
+  } finally {
+    deps.release();
+  }
 };
 
 /** COMMIT EDIT's bounce, and the master half of a VST freeze. Everything: the
@@ -632,7 +642,10 @@ const runMixdownJob = async (
   const st = useEditorStore.getState();
   const start = performance.now();
   logInfo('editor', `Mixing ${st.clips.length} clips on ${st.tracks.length} tracks…`);
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const mixDeps = await currentRenderDeps(job.request.scope, isCancelled);
+  // Called off while its MIDI clips rendered: nothing is bounced.
+  if (isCancelled()) { mixDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, mixDeps);
   const blob = encodeBounce(rendered, job.request);
   // Called off while the context was rendering. Nothing has been written yet,
   // so stopping here really does stop it — the buffer is simply dropped.
@@ -688,7 +701,9 @@ const runSelectionJob = async (
 ): Promise<RenderJobResult> => {
   const { scope } = job.request;
   const ids = scope.kind === 'selection' ? scope.clipIds : [];
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const selectionDeps = await currentRenderDeps(scope, isCancelled);
+  if (isCancelled()) { selectionDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, selectionDeps);
   const blob = encodeBounce(rendered, job.request);
   if (isCancelled()) return {};
   // Resolved AFTER the render, from the same document `renderBounce` just read,
@@ -789,7 +804,9 @@ const runExportJob = async (
   if (job.destination === undefined) {
     throw new Error(`${job.label}: export job carries no destination`);
   }
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const exportDeps = await currentRenderDeps(job.request.scope, isCancelled);
+  if (isCancelled()) { exportDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, exportDeps);
   const blob = encodeBounce(rendered, job.request);
   if (isCancelled()) return {};
   await deliverExport(blob, rendered.duration, {
@@ -902,27 +919,34 @@ const runStemJob = async (
   let stage = 0;
   const step = (): void => { stage += 1; onProgress(stage, total); };
 
-  // The freeze signature is taken HERE rather than at enqueue: the queue may
-  // have held this job, and what the frozen master is a render OF is the
-  // document the bounce below is about to read.
-  const sig = isTrack ? '' : freezeSignature({
-    clips: st.clips,
-    tracks: st.tracks,
-    masterFxChain: st.masterFxChain,
-    masterVstChain: st.masterVstChain,
-    bpm: st.bpm,
-  });
-  // Measured from the SAME snapshot the bounce below reads, as the stem
-  // renderer always did. The master branch reports the rendered buffer's own
-  // duration instead and never looks at this.
-  const durationSec = isTrack ? renderExtentSec(st.clips, request.scope) : 0;
-
   // A track freeze replaces what the transport is playing, so it stops first.
   // The master freeze does not: re-rendering a stale frozen master while the
   // live mix plays is a normal thing to do, and it never did stop it.
   if (isTrack && apply) usePlayerStore.getState().stop();
 
-  const rendered = await renderBounce(request, currentRenderDeps());
+  const deps = await currentRenderDeps(request.scope, isCancelled);
+  if (isCancelled()) { deps.release(); return {}; }
+  // The freeze signature is taken HERE rather than at enqueue: the queue may
+  // have held this job, and what the frozen master is a render OF is the
+  // document the bounce below is about to read. That is the document as it
+  // stands after its MIDI clips rendered: a stale cached render the renders
+  // just replaced is not an edit, and a signature taken before them would call
+  // the new frozen master stale the moment it landed.
+  const now = useEditorStore.getState();
+  const sig = isTrack ? '' : freezeSignature({
+    clips: now.clips,
+    tracks: now.tracks,
+    masterFxChain: now.masterFxChain,
+    masterVstChain: now.masterVstChain,
+    bpm: now.bpm,
+    global: getGlobalVoice(),
+  });
+  // Measured from the SAME clips the bounce below reads (its MIDI clips with
+  // their renders, ring-out included), as the stem renderer always did. The
+  // master branch reports the rendered buffer's own duration instead and never
+  // looks at this.
+  const durationSec = isTrack ? renderExtentSec(deps.clips, request.scope) : 0;
+  const rendered = await bounceAndRelease(request, deps);
   const fileName = isTrack ? 'track-stem.wav' : 'edit-master.wav';
   let file = new File([encodeBounce(rendered, request)], fileName, { type: 'audio/wav' });
   step();
@@ -1020,7 +1044,7 @@ const RenderJobsPill: React.FC = () => {
   if (!live) {
     return (
       <div className="flex items-center gap-1.5 rounded border border-white/10 bg-black/40 px-2 py-0.5">
-        <span className="text-xs font-semibold text-zinc-500 tabular-nums">
+        <span className="text-xs font-bold text-zinc-500 tabular-nums">
           {finishedCount} render{finishedCount === 1 ? '' : 's'} finished
         </span>
         <button
@@ -1047,7 +1071,7 @@ const RenderJobsPill: React.FC = () => {
       className="flex items-center gap-1.5 rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5"
     >
       <Loader2 className={`w-3 h-3 text-purple-300 ${active ? 'animate-spin' : 'opacity-50'}`} />
-      <span className="tabular-nums text-xs font-semibold text-purple-100 max-w-32 truncate" title={live.label}>
+      <span className="text-xs font-bold tabular-nums text-purple-100 max-w-32 truncate" title={live.label}>
         {live.label}
       </span>
       <progress
@@ -1067,7 +1091,7 @@ const RenderJobsPill: React.FC = () => {
           onClick={() => cancel(queued[queued.length - 1].id)}
           aria-label="Cancel the last queued render"
           title="Cancel the render at the back of the queue"
-          className="text-xs font-semibold text-purple-300/70 tabular-nums rounded px-1 hover:text-white hover:bg-white/10"
+          className="text-xs font-bold text-purple-300/70 tabular-nums rounded px-1 hover:text-white hover:bg-white/10"
         >
           +{pending} queued
         </button>
@@ -1308,6 +1332,8 @@ const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }>
   // on cleanup is what once left every clip blank with "Failed to fetch").
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
+    // A MIDI clip with no render has no waveform; its notes are drawn instead.
+    if (!clip.audioBlob) { setUrl(null); return undefined; }
     const shared = acquireObjectUrl(clip.audioBlob);
     setUrl(shared.url);
     return () => {
@@ -1468,8 +1494,13 @@ const PopoverPortal: React.FC<{
  * track's own kind first: choosing a kit on a melodic track turns the drum flag
  * on, and choosing an instrument on a drum track turns it off, one undo step
  * with a LOG line (editorStore setTrackVoice).
+ *
+ * The status after it (a dot and one word) says how the track's MIDI sounds on
+ * the next play: Live, on EDIT's synths on the audio clock
+ * (lib/editMidiScheduler), or Bounce, its rendered audio; its title says why
+ * and how many channels a live track holds.
  */
-export const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
+export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: liveMixer.LiveMidiTrackStatus }> = ({ track, status }) => {
   const setTrackVoice = useEditorStore((s) => s.setTrackVoice);
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
@@ -1532,6 +1563,16 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track 
         <option value={DEFAULT_VOICE_VALUE}>{defaultLabel}</option>
         {drums ? [kits, instruments] : [instruments, kits]}
       </select>
+      {status && (
+        <span
+          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
+          title={status.reason}
+        >
+          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+          {status.mode === 'live' ? 'Live' : 'Bounce'}
+          <span className="sr-only">{`: ${status.reason}`}</span>
+        </span>
+      )}
     </div>
   );
 };
@@ -1602,6 +1643,10 @@ interface PointerOp {
   initialTrackIndex: number;
   initialClips?: Array<{ id: string; startSec: number; trackIndex: number }>;
   dragItems?: AudioDragItem[];
+  /** `ctrl-drag-pending` / its copy-move: MIDI parts in the drag with no current
+   *  render. Nothing renders at the press; a drag that leaves the timeline
+   *  renders them (state/clipDragOut) and hands them over when they land. */
+  dragRenderIds?: string[];
   /** Undo depth when the press went down. The whole drag is ONE undo step, so a deeper stack
    *  means the drag has written something — which is exactly what Escape has to take back. */
   undoDepthAtStart?: number;
@@ -1620,16 +1665,16 @@ const TimePitchControls: React.FC<{ busy: boolean; onApply: (tempo: number, semi
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Tempo</span>
+        <span className="text-xs font-bold tabular-nums text-zinc-500 w-14 shrink-0">Tempo</span>
         <SlideTrack value={tempo} min={0.25} max={4} step={0.01} defaultValue={1} ariaLabel="Tempo (time-stretch)" className="flex-1" onChange={setTempo} />
-        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
+        <span className="text-xs font-bold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Pitch</span>
+        <span className="text-xs font-bold tabular-nums text-zinc-500 w-14 shrink-0">Pitch</span>
         <SlideTrack value={semitones} min={-12} max={12} step={1} defaultValue={0} ariaLabel="Pitch (semitones)" className="flex-1" onChange={(v) => setSemitones(Math.round(v))} />
-        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
+        <span className="text-xs font-bold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
       </div>
-      <p className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
+      <p className="text-xs font-bold tabular-nums text-zinc-600 leading-relaxed">
         Tempo keeps pitch; pitch keeps length. Rendered on the backend and baked into the clip.
       </p>
       <button
@@ -1726,7 +1771,7 @@ const ClipGainControls: React.FC<{ gain: number; onChange: (gain: number) => voi
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Gain</span>
+        <span className="text-xs font-bold tabular-nums text-zinc-500 w-14 shrink-0">Gain</span>
         <SlideTrack
           value={Math.max(-24, Math.min(12, db))}
           min={-24}
@@ -1737,11 +1782,11 @@ const ClipGainControls: React.FC<{ gain: number; onChange: (gain: number) => voi
           className="flex-1"
           onChange={(v) => onChange(10 ** (v / 20))}
         />
-        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">
+        <span className="text-xs font-bold text-zinc-400 w-12 shrink-0 text-right tabular-nums">
           {db > -0.05 && db < 0.05 ? '0.0' : `${db > 0 ? '+' : ''}${db.toFixed(1)}`} dB
         </span>
       </div>
-      <p className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
+      <p className="text-xs font-bold tabular-nums text-zinc-600 leading-relaxed">
         Sits before the track fader and its insert FX, so gain-staging changes what the
         track&apos;s compressor hears. Non-destructive — the clip&apos;s audio is untouched.
       </p>
@@ -1767,28 +1812,30 @@ const MarkerFlag: React.FC<{
   const commit = () => { onRename(draft.trim() || marker.label); setEditing(false); };
   return (
     <div data-ruler-control="1" className="absolute top-0 bottom-0 z-30" style={{ left: marker.t * zoom }} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="absolute top-3.5 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
+      <div className="absolute top-4 bottom-0 w-px bg-cyan-400/50 pointer-events-none" />
       {editing ? (
-        <input
-          autoFocus
-          id={`marker-rename-${marker.t}`}
-          name="marker-rename"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
-          aria-label="Marker name"
-          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-xs font-semibold tabular-nums text-cyan-100 outline-none"
-        />
+        <>
+          <label htmlFor={`marker-rename-${marker.id}`} className="sr-only">Marker name</label>
+          <input
+            autoFocus
+            id={`marker-rename-${marker.id}`}
+            name="marker-rename"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+            className="absolute top-0 left-0 w-28 h-4 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-xs font-bold leading-none text-cyan-100 outline-none"
+          />
+        </>
       ) : (
         <button
           onClick={(e) => { if (e.altKey) onDelete(); else onSeek(); }}
           onDoubleClick={() => { setDraft(marker.label); setEditing(true); }}
           onContextMenu={(e) => { e.preventDefault(); onDelete(); }}
           title={`${marker.label} — click to seek, double-click to rename, Alt or right-click to delete`}
-          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 leading-none bg-cyan-500/20 border border-cyan-400/40 rounded-br text-xs font-semibold tabular-nums text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
+          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-4 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-xs font-bold leading-none text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-32"
         >
-          <Flag className="w-2 h-2 shrink-0" /> <span className="truncate">{marker.label}</span>
+          <Flag className="w-3 h-3 shrink-0" /> <span className="truncate">{marker.label}</span>
         </button>
       )}
     </div>
@@ -1967,7 +2014,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const stretchClipToFit = useEditorStore((s) => s.stretchClipToFit);
   const resetClipStretch = useEditorStore((s) => s.resetClipStretch);
   const cachePeaks = useEditorStore((s) => s.cachePeaks);
-  const applyClipRender = useEditorStore((s) => s.applyClipRender);
+
   const addClipToTrack = useEditorStore((s) => s.addClipToTrack);
   const snapSec = useEditorStore((s) => s.snapSec);
   const getTotalDurationSec = useEditorStore((s) => s.getTotalDurationSec);
@@ -2017,6 +2064,42 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const removeAutomationLane = useEditorStore((s) => s.removeAutomationLane);
   const addAutomationLane = useEditorStore((s) => s.addAutomationLane);
   const projectBpm = useEditorStore((s) => s.bpm);
+  // The arrangement's tempo and meter maps: the grid, the ruler's bar numbers
+  // and its meter and tempo flags draw from them, and snap reads them too.
+  const arrangementTempoMap = useEditorStore((s) => s.tempoMap);
+  const arrangementMeterMap = useEditorStore((s) => s.meterMap);
+  const timeMapOffer = useEditorStore((s) => s.timeMapOffer);
+  /** The Meter and tempo panel: where it opens and the row a ruler flag asked for. */
+  const [timeMapPanel, setTimeMapPanel] = useState<{ x: number; y: number; focus: TimeMapFocus } | null>(null);
+  const timeMapOpenerRef = useRef<HTMLElement | null>(null);
+  const timeMapPanelId = `edit-time-map-${useId().replace(/:/g, '')}`;
+  const openTimeMapPanel = useCallback((el: HTMLElement, focus: TimeMapFocus) => {
+    timeMapOpenerRef.current = el;
+    const r = el.getBoundingClientRect();
+    setTimeMapPanel({ x: r.left, y: r.bottom + 4, focus });
+  }, []);
+  const closeTimeMapPanel = useCallback(() => {
+    setTimeMapPanel(null);
+    timeMapOpenerRef.current?.focus({ preventScroll: true });
+  }, []);
+  // A press outside the panel closes it, as the gain and name panels do; a
+  // press on the button or flag that opened it is theirs to toggle.
+  const timeMapPanelRef = useRef<HTMLDivElement>(null);
+  const timeMapOpen = timeMapPanel !== null;
+  useEffect(() => {
+    if (!timeMapOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (timeMapPanelRef.current?.contains(t) || timeMapOpenerRef.current?.contains(t)) return;
+      setTimeMapPanel(null);
+    };
+    let attached = false;
+    const timer = window.setTimeout(() => { attached = true; window.addEventListener('mousedown', onDown); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) window.removeEventListener('mousedown', onDown);
+    };
+  }, [timeMapOpen]);
   const loopEnabled = useEditorStore((s) => s.loopEnabled);
   const loopStart = useEditorStore((s) => s.loopStart);
   const loopEnd = useEditorStore((s) => s.loopEnd);
@@ -2509,10 +2592,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const explodeClipToStems = useCallback(async (clipId: string, opts: StemsRunOptions) => {
     const st = useEditorStore.getState();
-    const src = st.clips.find((c) => c.id === clipId);
-    if (!src) return;
+    if (!st.clips.some((c) => c.id === clipId)) return;
     setStemsJob({ clipId, entryId: null, phase: 'preparing', pct: 0 });
     try {
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const src = await clipWithAudio(clipId);
       // 1. A library entry to key the stems backend on.
       let entryId = src.libraryEntryId ?? null;
       if (!entryId) {
@@ -2627,61 +2711,76 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     void explodeClipToStems(modal.clipId, opts);
   }, [stemsModal, explodeClipToStems]);
 
-  /** The voice a MIDI clip actually sounds with (lib/clipProgram): clip
-   *  override, else track default, else the global instrument, on the drum
-   *  channel when its track is percussion — the rule liveMixer plays by. */
-  const clipVoiceOf = useCallback((clip: AudioClip): ClipVoice => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipVoice(clip, track, getGlobalVoice());
-  }, []);
-  /** True when a MIDI clip's bounce was rendered with another voice than it now has. */
-  const renderIsStale = useCallback((clip: AudioClip): boolean => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipRenderIsStale(clip, track, getGlobalVoice());
-  }, []);
-
-  /** Re-bounce a stale MIDI clip's audio through its current instrument
-   *  (lib/clipRerender), so every export plays what live playback does. */
-  const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
+  /** Queue a MIDI clip's render (state/midiRenderQueue: one clip at a time),
+   *  writing it as the clip's cached audio: 'cache' for EDIT's own upkeep,
+   *  'keep' when the user asks to keep the audio with the clip. */
+  const rerenderMidiClipAudio = useCallback(async (clipId: string, mode: MidiRenderMode = 'cache') => {
     try {
-      await rerenderStaleMidiClip(clipId, {
-        render: renderStepNotesToBlob,
-        computePeaks,
-        global: getGlobalVoice,
-        ensureReady: ensureSoundfontReady,
-      });
+      await requestMidiRender(clipId, mode);
     } catch (e) {
       const label = useEditorStore.getState().clips.find((c) => c.id === clipId)?.label ?? clipId;
-      logError('editor', `Instrument re-render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
+      logError('editor', `MIDI render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
     }
   }, []);
 
-  // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
-  // overrides, track defaults and the global picker in one place, so no individual
-  // instrument control has to remember to trigger a re-render.
-  // `tracks` and the soundfont store are in the dep list because a clip's
-  // effective program can change without `clips` changing at all — via a track
-  // default or the global instrument picker. Without them, reassigning the
-  // instrument at either of those levels would leave the bounced audio stale.
+  // Keep every MIDI clip's cached render in step with its notes and instrument
+  // (lib/midiRender). Covers clip overrides, track defaults and the global picker
+  // in one place, so no individual instrument control has to remember to ask for
+  // a render. `tracks` and the soundfont store are in the dep list because a
+  // clip's effective program can change without `clips` changing at all — via a
+  // track default or the global instrument picker. Without them, reassigning the
+  // instrument at either of those levels would leave a cached render stale.
   const sfActiveProgram = useSoundfontStore((s) => s.activeProgram);
   const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
-  const midiClipProgramSig = useMemo(
-    () => clips.filter((c) => c.sourceKind === 'piano-roll')
-      .map((c) => {
-        const v = clipVoiceOf(c);
-        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
-      })
-      .join('|'),
-    [clips, tracks, sfActiveProgram, sfEnabled, clipVoiceOf],
+  // Which MIDI tracks the next pass plays live on EDIT's synths and which play
+  // their bounce, for the status beside each track's instrument (the same plan
+  // play() makes, liveMixer planLiveMidi).
+  const liveMidiStatus = useMemo(
+    () => liveMixer.liveMidiTrackStatus(clips, tracks, { useSoundfont: sfEnabled, activeProgram: sfActiveProgram }),
+    [clips, tracks, sfActiveProgram, sfEnabled],
   );
+  // Each MIDI clip's render state (lib/midiRender): no render, a current one or
+  // a stale one, whether it plays live when heard (liveMixer liveMidiIfHeard:
+  // the plan play() makes, a muted clip read as if unmuted), and whether EDIT
+  // made its render only so it could be heard (renderAuto). A clip whose kept
+  // render went stale (a note edit, an instrument change) is re-rendered, and so
+  // is an automatic render of a clip that still cannot play live; a clip with no
+  // render that cannot play live (no program, or past the last live channel) is
+  // rendered so it can be heard; a clip that plays live with no render stays
+  // without one until an export needs it, and an automatic render it holds is
+  // dropped, so a part given an instrument stops re-rendering after every edit.
+  // Every render goes through the queue one clip at a time.
+  const midiRenderInfo = useMemo(() => {
+    const global = { useSoundfont: sfEnabled, activeProgram: sfActiveProgram };
+    const live = liveMixer.liveMidiIfHeard(clips, tracks, global);
+    const byId = new Map<string, { state: MidiRenderState; live: boolean; auto: boolean }>();
+    const wanted: string[] = [];
+    const drop: string[] = [];
+    for (const c of clips) {
+      if (!hasMidiNotes(c)) continue;
+      const track = tracks.find((t) => t.id === c.trackId);
+      const state = midiRenderState(c, track, global);
+      const isLive = live.has(c.id);
+      const auto = c.renderAuto === true && !!c.audioBlob;
+      byId.set(c.id, { state, live: isLive, auto });
+      if (auto && isLive) drop.push(c.id);
+      // The signature rides along, so an edit to a clip already waiting asks again (the queue shares the job).
+      else if (state === 'stale' || (state === 'none' && !isLive && !c.muted)) wanted.push(`${c.id}:${midiRenderSig(c)}`);
+    }
+    return { byId, wantedSig: wanted.join('|'), dropIds: drop.join('|') };
+  }, [clips, tracks, sfActiveProgram, sfEnabled]);
   useEffect(() => {
-    const stale = useEditorStore.getState().clips.filter(
-      (c) => c.sourceKind === 'piano-roll' && c.sourcePianoRoll?.length && renderIsStale(c),
-    );
-    for (const c of stale) void rerenderMidiClipAudio(c.id);
-    // midiClipProgramSig collapses the clip list to just the voice pairing, so
-    // this runs when an instrument assignment changes — not on every clip drag.
-  }, [midiClipProgramSig, renderIsStale, rerenderMidiClipAudio]);
+    if (!midiRenderInfo.wantedSig) return;
+    for (const key of midiRenderInfo.wantedSig.split('|')) void rerenderMidiClipAudio(key.slice(0, key.lastIndexOf(':')));
+    // wantedSig collapses the clip list to the clips that need a render, so this
+    // runs when one starts or stops needing one, not on every clip drag.
+  }, [midiRenderInfo.wantedSig, rerenderMidiClipAudio]);
+  useEffect(() => {
+    if (!midiRenderInfo.dropIds) return;
+    const dropped = midiRenderInfo.dropIds.split('|').filter((id) => dropAutoRender(id));
+    if (dropped.length) logInfo('editor', `${dropped.length} MIDI part(s) now play live, so the audio rendered for them to be heard was dropped`);
+  }, [midiRenderInfo.dropIds]);
+  const midiQueue = useMidiRenderQueue();
 
   // Tap tempo. Averages the intervals between recent taps and writes the result to
   // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
@@ -2750,13 +2849,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // Render the clip's current region (offset..offset+duration) to a WAV File so the
   // backend stretches only what the clip actually plays, not the whole source.
-  const extractRegionWav = useCallback(async (clip: AudioClip): Promise<File> => {
+  const extractRegionWav = useCallback(async (asked: AudioClip): Promise<File> => {
+    // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+    const clip = await clipWithAudio(asked.id);
     // 44100 puts this in the same shared-cache lane as the offline renderers, so
     // a stretch after a bounce (or a bounce after a stretch) reuses the buffer.
     // `ac` stays open past the decode — createBuffer below still needs it.
     const ac = new AudioContext({ sampleRate: 44100 });
     try {
-      const buf = await decodeClipBlob(ac, clip.audioBlob);
+      const buf = await decodeClipBlob(ac, clip.audioBlob as Blob);
       const sr = buf.sampleRate;
       const start = Math.max(0, Math.floor((clip.offsetIntoSource ?? 0) * sr));
       const len = Math.max(1, Math.min(buf.length - start, Math.ceil(clip.durationSec * sr)));
@@ -2820,16 +2921,25 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
    *  and the project tempo becomes the target so the grid agrees. One backend
    *  render per clip, in turn. MIDI clips and clips with no known tempo are
    *  skipped and counted in the log line. */
-  const beatMatchClips = useCallback(async (ids: string[], targetBpm: number) => {
+  /** `toProject`: the target is the arrangement's own tempo. When the
+   *  arrangement's tempo map changes tempo, each clip then stretches to the
+   *  tempo sounding where it starts, and the map is left as it is. */
+  const beatMatchClips = useCallback(async (ids: string[], targetBpm: number, toProject = false) => {
     if (!(targetBpm > 0)) return;
     const live = useEditorStore.getState();
     const subjects = ids
       .map((id) => live.clips.find((c) => c.id === id))
       .filter((c): c is AudioClip => !!c && c.sourceKind !== 'piano-roll');
     if (subjects.length === 0) return;
-    const plan = beatMatchPlan(subjects.map((c) => ({ id: c.id, bpm: clipKnownBpm(c) })), targetBpm);
+    // With tempo changes, the grid a first beat lands on is the arrangement's
+    // quarter grid through its tempo map (restarting at each bar line), not a
+    // constant beat from 0, and the map is not rewritten to one tempo.
+    const maps = { tempoMap: live.tempoMap, meterMap: live.meterMap };
+    const mapped = hasTempoChanges(live.tempoMap);
+    const targetOf = (c: AudioClip): number => (mapped && toProject ? editTempoAtSec(live.tempoMap, c.startSec) : targetBpm);
+    const plan = subjects.flatMap((c) => beatMatchPlan([{ id: c.id, bpm: clipKnownBpm(c) }], targetOf(c)));
     const tempoById = new Map(plan.map((step) => [step.id, step.tempo]));
-    if (Math.abs(targetBpm - live.bpm) > 0.01) setBpm(targetBpm);
+    if (!mapped && Math.abs(targetBpm - live.bpm) > 0.01) setBpm(targetBpm);
     const beatLen = 60 / targetBpm;
     let stretched = 0;
     let aligned = 0;
@@ -2852,7 +2962,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const now = useEditorStore.getState().clips.find((c) => c.id === clip.id);
       if (!now) continue;
       const patch: Partial<AudioClip> = {};
-      const start = alignedStart(now.startSec, first, beatLen);
+      const start = mapped
+        ? alignedStartOn(now.startSec, first, (sec) => editSnapSec(maps, sec, 4), (line) => editMoveByBeats({ ...maps, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }] }, line, 1))
+        : alignedStart(now.startSec, first, beatLen);
       if (Math.abs(start - now.startSec) > 1e-6) {
         patch.startSec = start;
         aligned += 1;
@@ -2861,7 +2973,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       if (Object.keys(patch).length > 0) updateClip(clip.id, patch);
     }
     const skipped = unknown > 0 ? `, ${unknown} skipped (no tempo known; analyse them in the library first)` : '';
-    logInfo('editor', `Beat match to ${Math.round(targetBpm)} bpm: ${stretched} stretched, ${aligned} moved onto the grid${skipped}`);
+    const toWhat = mapped && toProject ? 'the arrangement\'s tempo map' : `${Math.round(targetBpm)} bpm`;
+    logInfo('editor', `Beat match to ${toWhat}: ${stretched} stretched, ${aligned} moved onto the grid${skipped}`);
   }, [applyTimePitch, clipKnownBpm, setBpm, updateClip]);
 
   // The clip / track multi-selection lives in editorStore (batch 11), not local
@@ -2962,6 +3075,26 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // opens. This flag is what makes the menu re-render once the startup load
   // finishes, so "Audio from Library" stops reading as an empty library.
   const libraryLoaded = useLibraryStore((s) => s.loaded);
+  /** The "Empty MIDI part…" dialog: which track (null = a new one), the second
+   *  the menu opened at, and where the dialog opens. */
+  const [newPart, setNewPart] = useState<{ trackId: string | null; atSec: number; x: number; y: number } | null>(null);
+  const newPartId = `edit-new-part-${useId().replace(/:/g, '')}`;
+  const newPartRef = useRef<HTMLDivElement>(null);
+  const newPartOpen = newPart !== null;
+  // A press outside the dialog closes it, as the meter panel does.
+  useEffect(() => {
+    if (!newPartOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (newPartRef.current?.contains(e.target as Node)) return;
+      setNewPart(null);
+    };
+    let attached = false;
+    const timer = window.setTimeout(() => { attached = true; window.addEventListener('mousedown', onDown); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (attached) window.removeEventListener('mousedown', onDown);
+    };
+  }, [newPartOpen]);
   const [inpaintPrompt, setInpaintPrompt] = useState('');
   const [inpaintSteps, setInpaintSteps] = useState(8);
   const [inpaintSeed, setInpaintSeed] = useState(-1);
@@ -3090,15 +3223,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const submitInpaint = async () => {
     const sel = useEditorStore.getState().inpaintSelection;
     if (!sel) return;
-    const clip = useEditorStore.getState().clips.find((c) => c.id === sel.clipId);
-    if (!clip) return;
+    if (!useEditorStore.getState().clips.some((c) => c.id === sel.clipId)) return;
 
     // Always crop the audio to exactly the visible clip region before sending.
     // This guarantees mask coordinates are relative to the start of the audio
     // the model receives, regardless of offsetIntoSource (split/trim clips).
     let croppedAudio: Blob;
+    let clip: AudioClip;
     try {
-      croppedAudio = await cropAudioBlob(clip.audioBlob, clip.offsetIntoSource, clip.durationSec);
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      clip = await clipWithAudio(sel.clipId);
+      croppedAudio = await cropAudioBlob(clip.audioBlob as Blob, clip.offsetIntoSource, clip.durationSec);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logError('editor', `Inpaint: failed to crop audio: ${msg}`);
@@ -3356,8 +3491,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const title = (c: AudioClip) => c.label || tracks.find((t) => t.id === c.trackId)?.name || 'clip';
     const morph = useMorphStore.getState();
     try {
-      await morph.loadA({ id: `clip:${donor.id}`, title: title(donor), blob: donor.audioBlob });
-      await morph.loadB({ id: `clip:${host.id}`, title: title(host), blob: host.audioBlob });
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const donorAudio = await clipWithAudio(donor.id);
+      const hostAudio = await clipWithAudio(host.id);
+      await morph.loadA({ id: `clip:${donor.id}`, title: title(donor), blob: donorAudio.audioBlob as Blob });
+      await morph.loadB({ id: `clip:${host.id}`, title: title(host), blob: hostAudio.audioBlob as Blob });
     } catch (e) {
       logError('edit', `Bleed: could not load the pair — ${e instanceof Error ? e.message : String(e)}`);
       return;
@@ -3574,7 +3712,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     try {
       const ctx = getEngineCtx();
       if (ctx.state === 'suspended') void ctx.resume();
-      const audioBuf = await decodeClipBlob(ctx, clip.audioBlob);
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const withAudio = await clipWithAudio(clip.id);
+      const audioBuf = await decodeClipBlob(ctx, withAudio.audioBlob as Blob);
       const src = ctx.createBufferSource();
       src.buffer = audioBuf;
       // Route through the shared master → analyser → destination chain. No gain
@@ -3673,21 +3813,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     }
   }, [getActionClips, setSelectedClips, splitClipAt]);
 
-  /** One nudge step: the snap grid when snapping is on, else a flat 50ms.
+  /** One nudge step: one division of the snap grid where `atSec` sits (a bar
+   *  of the meter there for 'Bar', at the tempo there), else a flat 50ms.
    *  Shift multiplies by 4 for coarse moves. */
-  const nudgeStepSec = useCallback((coarse: boolean): number => {
-    const { snap: s, bpm: b } = useEditorStore.getState();
-    const step = snapStepSec(s, b) ?? 0.05;
+  const nudgeStepSec = useCallback((coarse: boolean, atSec: number): number => {
+    const step = snapStepSecAt(useEditorStore.getState(), atSec) ?? 0.05;
     return coarse ? step * 4 : step;
   }, []);
 
   const nudgeSelectedClips = useCallback((dir: -1 | 1, coarse: boolean) => {
     const sel = getActionClips();
     if (sel.length === 0) return;
-    const delta = nudgeStepSec(coarse) * dir;
     // Clamp as a group so a nudge left never collapses the selection's internal
     // spacing against t=0 — the whole block stops when its earliest clip hits 0.
     const earliest = Math.min(...sel.map((c) => c.startSec));
+    const delta = nudgeStepSec(coarse, earliest) * dir;
     const applied = Math.max(delta, -earliest);
     if (applied === 0) return;
     sel.forEach((c) => updateClip(c.id, { startSec: Math.max(0, c.startSec + applied) }));
@@ -4259,8 +4399,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // The rule lives in editorStore.freezeSignature, with the test that holds it
   // to every field a renderer reads.
   const freezeSig = useMemo(
-    () => freezeSignature({ clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm }),
-    [clips, tracks, masterFxChain, masterVstChain, editorBpm],
+    () => freezeSignature({
+      clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm,
+      // A MIDI clip with no program of its own or on its track renders through the picker.
+      global: { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
+    }),
+    [clips, tracks, masterFxChain, masterVstChain, editorBpm, sfEnabled, sfActiveProgram],
   );
 
   const frozenStale = !frozenMaster || frozenMaster.sig !== freezeSig;
@@ -4462,14 +4606,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
     if (edge === 'move' && (e.ctrlKey || e.metaKey)) {
       const ids = selectedClipIds.includes(clipId) ? selectedClipIds : [clipId];
-      const dragItems: AudioDragItem[] = ids
+      const picked = ids
         .map((id) => clips.find((c) => c.id === id))
-        .filter((c): c is AudioClip => !!c)
-        .map((c) => ({
-          blob: c.audioBlob,
-          mimeType: c.mimeType,
-          label: c.label,
-        }));
+        .filter((c): c is AudioClip => !!c);
+      // A press renders nothing: a Ctrl+click selects and a Ctrl+drag inside
+      // the timeline copies, and neither needs audio. A drag that leaves the
+      // timeline hands over the audio the clips have now, and renders the MIDI
+      // parts with no current render for that drag only (state/clipDragOut).
+      const plan = planClipDragOut(picked, tracks, getGlobalVoice());
       opRef.current = {
         kind: 'ctrl-drag-pending',
         clipId,
@@ -4479,7 +4623,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         initialDurationSec: clip.durationSec,
         initialOffsetIntoSource: clip.offsetIntoSource,
         initialTrackIndex: Math.max(0, tracks.findIndex((t) => t.id === clip.trackId)),
-        dragItems,
+        dragItems: plan.items,
+        dragRenderIds: plan.renderIds,
         shiftKey: e.shiftKey,
       };
       return;
@@ -4585,8 +4730,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
     // A copy-drag that LEAVES the timeline becomes the drag to another surface it has always been
     // (the library, another tab's drop zone): the copies are taken back and the app-level drag
-    // starts with the ORIGINAL clips' audio.
-    if (op.kind === 'move' && op.dragItems && op.dragItems.length > 0) {
+    // starts with the ORIGINAL clips' audio. MIDI parts with no current render are rendered for
+    // this drag (state/clipDragOut: the MIDI render queue, one at a time, muted ones too): the
+    // drop takes them as they land, and once the drag is over the decoded audio of the renders
+    // made for it alone is freed. A part that plays live keeps no render from the drag.
+    const dragPlan = { items: op.dragItems ?? [], renderIds: op.dragRenderIds ?? [] };
+    if (op.kind === 'move' && dragOutHasContent(dragPlan)) {
       const box = timelineScrollRef.current?.getBoundingClientRect();
       const margin = 24;
       if (
@@ -4600,7 +4749,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         }
         opRef.current = null;
         showLaneInsert(null);
-        useExternalDragStore.getState().begin(op.dragItems);
+        beginClipDragOut(dragPlan);
         return;
       }
     }
@@ -5625,7 +5774,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
       // The clip's length under the file's own tempo changes.
       const nominalDuration = stepClock(bpm, fields.sourceTempoMap).at(totalSteps);
-      const blob = silentWavBlob();
       // Land on the track the user pointed at; make one only when there is
       // none. Until this parameter existed every MIDI insert called addTrack,
       // so "add to track" never added to the track that was right-clicked.
@@ -5641,10 +5789,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
       const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
       const color = track?.color ?? '#a855f7';
+      // No audio of its own: with a program the clip plays live on EDIT's
+      // synths and renders when an export needs it; without one the render
+      // queue renders it now so it can be heard (lib/midiRender).
       const clipId = addClipToTrack({
         trackId,
         label,
-        audioBlob: blob,
         mimeType: 'audio/wav',
         sourceDuration: nominalDuration,
         offsetIntoSource: 0,
@@ -5655,43 +5805,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         ...fields,
         instrumentProgram: program,
       });
+      // A file whose tempo or meter differs from the arrangement's is offered
+      // for adoption (the banner above the timeline), so an orchestral file's
+      // tempo and meter changes can become the arrangement's with one press.
+      useEditorStore.getState().offerClipTimeMaps(clipId);
       const voice = clipVoice({ instrumentProgram: program }, track, getGlobalVoice());
-      logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
-      void (async () => {
-        const started = performance.now();
-        try {
-          // A bending lane renders its notes along its curve (clipRenderInput).
-          const input = clipRenderInput(fields, totalSteps);
-          const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, {
-            program: voice.program,
-            percussion: voice.percussion,
-            ...(input.bends ? { bends: input.bends } : {}),
-            ...(fields.sourceTempoMap ? { tempoMap: fields.sourceTempoMap } : {}),
-          });
-          const { peaks } = await computePeaks(rendered.blob, 240);
-          // Re-read: the clip may have been trimmed or deleted mid-render.
-          const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
-          if (!live) return;
-          // The bounce is derived from the clip's notes, so it adds no undo step
-          // of its own (see applyClipRender). An untrimmed clip takes the
-          // render's length, ring-out included (lib/clipRenderWindow).
-          applyClipRender(clipId, {
-            audioBlob: rendered.blob,
-            mimeType: 'audio/wav',
-            ...renderedWindowFields(live, rendered.duration),
-            // Record what this bounce actually contains so the instrument-sync
-            // effect doesn't immediately re-render a clip that is already correct.
-            ...renderedVoiceFields(voice),
-          }, peaks);
-          logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
-        } catch (renderErr) {
-          logError('editor', `MIDI audio render failed for "${label}": ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`);
-        }
-      })();
+      logInfo(
+        'editor',
+        `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; `
+          + (voice.program !== undefined ? 'it plays live and renders when exported' : 'rendering its audio (it has no instrument to play live)'),
+      );
     } catch (err) {
       logError('editor', `Add MIDI failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [addTrack, addClipToTrack, applyClipRender]);
+  }, [addTrack, addClipToTrack]);
 
   /* -- "Add to track" ------------------------------------------------------
      One dispatcher behind the timeline menu, the track-header menu and the two
@@ -5827,6 +5954,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         pendingSystemAdd.current = target;
         midiFileInputRef.current?.click();
         return;
+      case 'midi-empty':
+        // The menu's own anchor, as the library picker takes it.
+        setNewPart({ trackId: target.trackId, atSec: target.atSec, x: at?.x ?? 240, y: at?.y ?? 160 });
+        return;
       case 'paste':
         pasteClips({ atSec: target.atSec, trackId: target.trackId ?? undefined });
         return;
@@ -5884,13 +6015,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     () => (gridWindow ? rulerTimeTicks({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, zoom }) : []),
     [gridWindow, zoom],
   );
+  // Bar numbers under the arrangement's meter and tempo maps: bar 17 after
+  // eight bars of 7/8 sits where those bars end, not where 4/4 would put it.
   const barLabels = gridWindow
-    ? rulerBarLabels({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, bpm: projectBpm, zoom })
+    ? editRulerBars({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, zoom, tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap, minPx: RULER_BAR_LABEL_MIN_PX })
     : [];
-  /** The time range's readout, and the ruler px its pill can cover. It shares
-   *  the ruler's top row with the bar numbers, so the numbers under it hide. */
+  /** The time range's readout, and the ruler px its pill can cover. It sits in
+   *  the ruler's time row, so the timecodes under it hide. */
   const rangeReadout = timeSelection ? formatRangeReadout(timeSelection) : null;
   const rangeReadoutSpan = timeSelection && rangeReadout ? rulerReadoutSpanPx(timeSelection.startSec, zoom, rangeReadout) : null;
+  const meterFlags = gridWindow
+    ? editMeterFlags({ tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap }, gridWindow.startSec, gridWindow.endSec)
+    : [];
+  const tempoFlags = gridWindow
+    ? editTempoFlags({ tempoMap: arrangementTempoMap, meterMap: arrangementMeterMap }, gridWindow.startSec, gridWindow.endSec)
+    : [];
+  const meterFlagBars = new Set(meterFlags.map((f) => f.bar + 1));
   /** Is this clip's action menu the one on screen? (`aria-expanded` for its trigger buttons.) */
   const clipMenuOpenFor = (clipId: string): boolean => clipMenu.position !== null && clipMenu.payload?.clipId === clipId;
   /** Open a clip's menu under one of its header buttons (compact / handle chrome). */
@@ -6214,13 +6354,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 const ids = selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
                 if (ids.length === 0) return;
                 if (ids.length === 1) {
-                  void beatMatchClips(ids, projectBpm);
+                  void beatMatchClips(ids, projectBpm, true);
                   return;
                 }
                 // The first selected clip is the master, the way a deck's SYNC follows the other deck.
                 const anchor = clips.find((c) => c.id === ids[0]);
                 const anchorBpm = anchor ? clipKnownBpm(anchor) : null;
-                void beatMatchClips(anchorBpm !== null ? ids.slice(1) : ids, anchorBpm ?? projectBpm);
+                void beatMatchClips(anchorBpm !== null ? ids.slice(1) : ids, anchorBpm ?? projectBpm, anchorBpm === null);
               }}
               disabled={timePitchBusy || (selectedClipIds.length === 0 && !selectedClipId)}
               aria-label="Beat match the selected clips"
@@ -6478,7 +6618,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold text-zinc-500 tabular-nums">
+          <span className="text-xs font-bold text-zinc-500 tabular-nums">
             <span ref={headerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
           <label htmlFor="editor-mixdown-name" className="sr-only">Mixdown filename</label>
@@ -6489,7 +6629,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             value={mixdownName}
             onChange={(e) => setMixdownName(e.target.value)}
             placeholder="mixdown name…"
-            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-mono text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
+            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-bold text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
             title="Optional filename for the committed mixdown"
           />
           {/* What the queue is doing right now: the active job, its progress
@@ -6519,7 +6659,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             // cancel it) instead of being swallowed. Only an empty timeline has
             // nothing to render.
             disabled={clips.length === 0}
-            className="btn-primary py-1! px-2! text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+            className="btn-primary py-1! px-2! text-xs font-bold flex items-center gap-1.5 disabled:opacity-40"
             title={isCommitting
               ? 'A mixdown is already rendering — pressing this queues another behind it'
               : 'Render all clips to a single audio file and save it to the library'}
@@ -6682,6 +6822,46 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       )}
 
+      {/* The arrangement's meter map and tempo map (the ruler's flags and the
+          Meter · Tempo button open it). Portaled like the FX rack. */}
+      {timeMapPanel && (
+        <PopoverPortal
+          x={timeMapPanel.x}
+          y={timeMapPanel.y}
+          anchorClassName="left-4 top-28"
+          maxHeight="80vh"
+          innerRef={timeMapPanelRef}
+          className="fixed z-50 w-160 max-w-[95vw] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3"
+        >
+          <div id={timeMapPanelId} role="dialog" aria-labelledby={`${timeMapPanelId}-h`}>
+            <EditTimeMapPanel headingId={`${timeMapPanelId}-h`} focus={timeMapPanel.focus} onClose={closeTimeMapPanel} onSeek={seekEditorTo} />
+          </div>
+        </PopoverPortal>
+      )}
+
+      {/* "Empty MIDI part…" from the Add-to-track menus: an empty part with an
+          instrument, in the arrangement's meter and tempo from its bar. */}
+      {newPart && (
+        <PopoverPortal
+          x={newPart.x}
+          y={newPart.y}
+          anchorClassName="left-4 top-28"
+          maxHeight="80vh"
+          innerRef={newPartRef}
+          className="fixed z-50 w-104 max-w-[95vw] overflow-y-auto hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3"
+        >
+          <div id={newPartId} role="dialog" aria-labelledby={`${newPartId}-h`}>
+            <NewMidiPartDialog
+              headingId={`${newPartId}-h`}
+              trackId={newPart.trackId}
+              atSec={newPart.atSec}
+              onClose={() => { setNewPart(null); returnFocusToTimeline(); }}
+              onCreated={(clipId) => selectClipSingle(clipId)}
+            />
+          </div>
+        </PopoverPortal>
+      )}
+
       {/* Per-track FX rack (floating popover, portaled to body so it opens AT
           the click even under the .dense-layout CSS zoom) */}
       {fxPanel && (() => {
@@ -6779,7 +6959,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {!stemsJob.phase.startsWith('failed') && (
             <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-300" />
           )}
-          <span className="text-xs font-semibold tabular-nums text-zinc-200">
+          <span className="text-xs font-bold tabular-nums text-zinc-200">
             {stemsJob.phase.startsWith('failed')
               ? `Stem separation ${stemsJob.phase}`
               : `Separating stems — ${stemsJob.phase} ${stemsJob.pct}%`}
@@ -6833,7 +7013,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onChange={(e) => setAddLaneKey(e.target.value)}
               disabled={addLaneOptions.length === 0}
               title="Add an automation lane for a parameter you have not ridden yet"
-              className="flex-1 min-w-0 bg-black/40 text-zinc-300 border border-white/10 rounded px-1.5 py-1 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-amber-500/60 disabled:opacity-40"
+              className="flex-1 min-w-0 bg-black/40 text-zinc-300 border border-white/10 rounded px-1.5 py-1 text-xs font-bold focus:outline-hidden focus:ring-1 focus:ring-amber-500/60 disabled:opacity-40"
             >
               <option value="">{addLaneOptions.length === 0 ? 'No parameters left to automate' : 'Choose a parameter…'}</option>
               {addLaneOptions.map((o) => (
@@ -6857,7 +7037,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </button>
           </div>
           {automationLanes.length === 0 ? (
-            <span className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
+            <span className="text-xs font-bold tabular-nums text-zinc-600 leading-relaxed">
               No lanes yet. Pick a parameter above, or turn on WRITE and ride a fader or FX control while playing to record one.
             </span>
           ) : (
@@ -6880,7 +7060,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     />
                     <button
                       onClick={() => setActiveLaneId(lane.id)}
-                      className={`flex-1 text-left text-xs font-semibold tabular-nums truncate ${active ? 'text-amber-100' : 'text-zinc-300 hover:text-white'}`}
+                      className={`flex-1 text-left text-xs font-bold tabular-nums truncate ${active ? 'text-amber-100' : 'text-zinc-300 hover:text-white'}`}
                       title="Select this lane to edit its breakpoints"
                     >
                       {laneLabel(lane)} <span className="text-zinc-600">({lane.points.length})</span>
@@ -6889,7 +7069,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       onClick={() => clearAutomationLane(lane.id)}
                       aria-label={`Clear ${laneLabel(lane)}`}
                       title="Clear all breakpoints in this lane"
-                      className="px-1 py-0.5 rounded text-xs font-semibold tabular-nums text-zinc-500 hover:text-amber-300 hover:bg-white/5 shrink-0"
+                      className="px-1 py-0.5 rounded text-xs font-bold tabular-nums text-zinc-500 hover:text-amber-300 hover:bg-white/5 shrink-0"
                     >
                       CLR
                     </button>
@@ -6907,7 +7087,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </div>
           )}
           {activeLaneId && (
-            <p className="text-xs font-semibold tabular-nums text-zinc-500 leading-relaxed border-t border-white/5 pt-2">
+            <p className="text-xs font-bold tabular-nums text-zinc-500 leading-relaxed border-t border-white/5 pt-2">
               Editing the highlighted lane: click the curve to add a point, drag a point to move it, Alt-click or right-click a point to delete it.
             </p>
           )}
@@ -7010,8 +7190,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   <span className="font-display text-xs font-bold uppercase tracking-widest text-purple-300/70">{section.group}</span>
                   {section.keys.map(([k, desc]) => (
                     <div key={k} className="flex items-baseline justify-between gap-3">
-                      <kbd className="text-xs font-semibold tabular-nums text-zinc-200 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">{k}</kbd>
-                      <span className="text-xs font-semibold tabular-nums text-zinc-500 text-right">{desc}</span>
+                      <kbd className="text-xs font-bold tabular-nums text-zinc-200 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">{k}</kbd>
+                      <span className="text-xs font-bold tabular-nums text-zinc-500 text-right">{desc}</span>
                     </div>
                   ))}
                 </div>
@@ -7125,12 +7305,90 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* A clip from the roll or a MIDI file whose tempo or meter differs from
+          the arrangement's: offered once, adopted or kept with one press. */}
+      {timeMapOffer && (
+        <div
+          role="region"
+          aria-label="Clip tempo and meter offer"
+          className="shrink-0 flex flex-wrap items-center gap-2 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1.5"
+        >
+          <span className="text-xs font-bold text-purple-100">
+            {`"${timeMapOffer.label}" is in ${timeMapOffer.summary}. Use its tempo and meter for the arrangement from ${formatTimecode(timeMapOffer.anchorSec)}?`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const res = useEditorStore.getState().adoptClipTimeMaps(timeMapOffer.clipId);
+              if (!res.ok) logError('editor', `Could not take the clip's tempo and meter: ${res.error}`);
+            }}
+            className="rounded border border-purple-400/50 bg-purple-500/25 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-purple-100 hover:bg-purple-500/40"
+          >
+            Use its tempo and meter
+          </button>
+          <button
+            type="button"
+            onClick={() => useEditorStore.getState().dismissTimeMapOffer()}
+            className="rounded border border-white/15 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/10"
+          >
+            Keep the arrangement's
+          </button>
+        </div>
+      )}
+
+      {/* The MIDI render queue (state/midiRenderQueue): which clip is rendering
+          and how many wait. Mounted always, so the status is announced. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-label="MIDI render queue"
+        className={midiQueue.running ? 'shrink-0 flex flex-wrap items-center gap-2 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1' : 'sr-only'}
+      >
+        {midiQueue.running && (
+          <>
+            <span aria-hidden="true" className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+            <span className="text-xs font-bold text-sky-100">
+              {`Rendering MIDI audio${midiQueue.running.mode === 'export' ? ' for the export' : ''}: ${midiQueue.running.label}${midiQueue.waiting.length ? ` · ${midiQueue.waiting.length} waiting` : ''}`}
+            </span>
+          </>
+        )}
+      </div>
+      {midiQueue.lastError && !midiQueue.running && (
+        <div role="alert" className="shrink-0 flex flex-wrap items-center gap-2 border-b border-red-500/30 bg-red-500/10 px-3 py-1">
+          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-red-400" />
+          <span className="text-xs font-bold text-red-100">{`MIDI render failed: ${midiQueue.lastError}`}</span>
+          <button
+            type="button"
+            onClick={() => useMidiRenderQueue.setState({ lastError: null })}
+            className="rounded border border-white/15 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/10"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
         <div ref={trackHeaderColRef} className="shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
-          {/* Ruler row spacer */}
-          <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-xs font-bold text-zinc-700 uppercase">tracks</div>
+          {/* Ruler row spacer, as tall as the ruler. It holds the Meter and
+              tempo panel's button, level with the ruler's meter and tempo rows. */}
+          <div className="h-17 border-b border-white/5 bg-black/30 flex flex-col items-stretch justify-center gap-1 px-2">
+            <button
+              type="button"
+              onClick={(e) => (timeMapPanel ? closeTimeMapPanel() : openTimeMapPanel(e.currentTarget, null))}
+              aria-haspopup="dialog"
+              aria-expanded={timeMapPanel !== null}
+              aria-controls={timeMapPanel ? timeMapPanelId : undefined}
+              title="The arrangement's time signatures and tempo changes: add, edit and remove them, or take them from a MIDI clip"
+              className="rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-purple-200 hover:bg-purple-500/20"
+            >
+              Meter · Tempo
+            </button>
+            <span className="text-center text-xs font-bold text-zinc-500 tabular-nums" title="Bar 1's meter and the start tempo">
+              {`${arrangementMeterMap[0] ? `${arrangementMeterMap[0].meter.num}/${arrangementMeterMap[0].meter.den}` : '4/4'} · ${Math.round(projectBpm * 100) / 100} BPM`}
+            </span>
+          </div>
           {/* One live region for the whole column — the count-in belongs to the
               pass, not to a track. See CountInAnnouncement. */}
           <CountInAnnouncement />
@@ -7264,7 +7522,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                   </span>
                 </div>
                 {clips.some((c) => c.trackId === t.id && isMidiClip(c)) && (
-                  <TrackInstrumentSelect track={t} />
+                  <TrackInstrumentSelect track={t} status={liveMidiStatus.get(t.id)} />
                 )}
               </div>
             ))}
@@ -7320,7 +7578,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {/* Ruler — click to seek, drag to select a time range, shift-drag for
               the loop. Sticky so vertical scroll keeps it pinned. */}
           <div
-            className="h-6 border-b border-white/5 bg-black/80 backdrop-blur-sm sticky top-0 z-40 select-none cursor-col-resize"
+            className="h-17 border-b border-white/5 bg-black/80 backdrop-blur-sm sticky top-0 z-40 select-none cursor-col-resize"
             style={{ width: timelineWidthPx }}
             onMouseDown={onRulerMouseDown}
             onPointerDown={onRulerPointerDown}
@@ -7329,31 +7587,81 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             onPointerUp={onRulerPointerUp}
             onPointerCancel={onRulerPointerCancel}
           >
-            {renderRuler.map((tick) => (
-              <div
-                key={tick.sec}
-                className="absolute top-0 bottom-0 flex items-end pb-0.5 px-1 border-l border-white/5 pointer-events-none"
-                style={{ left: tick.sec * zoom }}
-              >
-                {/* Bold 12 px sans in the ruler's lower half; bar numbers take
-                    the upper half. RULER_TIME_LABEL_MIN_PX is sized for it. */}
-                <span className={`font-sans text-xs font-bold leading-none tabular-nums ${tick.major ? 'text-zinc-300' : 'text-zinc-500'}`}>
-                  {formatTimecode(tick.sec).replace(/\.00$/, '')}
-                </span>
-              </div>
-            ))}
-            {/* Bar numbers (F05) at bar lines, once bars are RULER_BAR_LABEL_MIN_PX apart.
-                A number the range readout would cover keeps its bar line only. */}
-            {barLabels.map((b) => (
+            {/* Time row (bottom): timecodes in bold 12 px sans, once they are
+                RULER_TIME_LABEL_MIN_PX apart. A timecode the range readout
+                would cover keeps its tick line only. */}
+            {renderRuler.map((tick) => {
+              const text = formatTimecode(tick.sec).replace(/\.00$/, '');
+              return (
+                <div
+                  key={tick.sec}
+                  className="absolute top-12 bottom-0 px-1 border-l border-white/5 pointer-events-none"
+                  style={{ left: tick.sec * zoom }}
+                >
+                  {!(rangeReadoutSpan && timeLabelUnderReadout(tick, text, zoom, rangeReadoutSpan)) && (
+                    <span className={`block font-sans text-xs font-bold leading-none tabular-nums ${tick.major ? 'text-zinc-300' : 'text-zinc-500'}`}>
+                      {text}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            {/* Bar row: bar numbers (F05) at bar lines of the arrangement's meter
+                map, once bars are RULER_BAR_LABEL_MIN_PX apart; a bar that starts
+                a new meter shows it as a button that opens the Meter and tempo
+                panel. */}
+            {barLabels.map((b) => (meterFlagBars.has(b.bar) ? null : (
               <div
                 key={`bar-${b.bar}`}
                 aria-hidden="true"
-                className="absolute top-0 h-2.5 border-l border-purple-300/40 pointer-events-none"
+                className="absolute top-4 h-4 border-l border-purple-300/40 pointer-events-none"
                 style={{ left: b.sec * zoom }}
               >
-                {!(rangeReadoutSpan && barLabelUnderReadout(b, zoom, rangeReadoutSpan)) && (
-                  <span className="absolute top-0 left-0.5 font-sans text-xs font-bold leading-none tabular-nums text-purple-300">{b.bar}</span>
-                )}
+                <span className="absolute top-0 left-0.5 font-sans text-xs font-bold leading-4 tabular-nums text-purple-300">{b.bar}</span>
+              </div>
+            )))}
+            {meterFlags.map((f) => (
+              <div
+                key={`meter-${f.bar}`}
+                data-ruler-control="1"
+                className="absolute top-4 h-4 z-30 border-l border-purple-300/70"
+                style={{ left: f.sec * zoom }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => openTimeMapPanel(e.currentTarget, { kind: 'meter', bar: f.bar })}
+                  aria-haspopup="dialog"
+                  aria-label={`Bar ${f.bar + 1}: ${f.label}. Edit the meter`}
+                  title={`Bar ${f.bar + 1} is in ${f.label}. Click to edit the meter map`}
+                  className="absolute top-0 left-0 h-4 whitespace-nowrap rounded-br bg-purple-500/25 px-1 text-xs font-bold leading-4 text-purple-100 hover:bg-purple-500/40 tabular-nums"
+                >
+                  {`${f.bar + 1} · ${f.label}`}
+                </button>
+              </div>
+            ))}
+            {/* Tempo row: every tempo change, ramp and fermata, as buttons that
+                open the Meter and tempo panel on their own row. */}
+            {tempoFlags.map((f) => (
+              <div
+                key={`tempo-${f.kind}-${f.beat}`}
+                data-ruler-control="1"
+                className="absolute top-8 h-4 z-30 border-l border-amber-300/70"
+                style={{ left: f.sec * zoom }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => openTimeMapPanel(e.currentTarget, { kind: 'tempo', beat: f.beat, eventKind: f.kind })}
+                  aria-haspopup="dialog"
+                  aria-label={`${f.label} at ${formatTimecode(f.sec)}. Edit the tempo map`}
+                  title={`${f.label} at ${formatTimecode(f.sec)}. Click to edit the tempo map`}
+                  className={`absolute top-0 left-0 h-4 whitespace-nowrap rounded-br px-1 text-xs font-bold leading-4 tabular-nums ${f.kind === 'fermata' ? 'bg-sky-500/20 text-sky-100 hover:bg-sky-500/35' : 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/35'}`}
+                >
+                  {f.label}
+                </button>
               </div>
             ))}
             {/* Loop region (shift-drag the ruler to set; LOOP toggles it) */}
@@ -7364,8 +7672,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               />
             )}
             {/* Time range on the ruler (F03): the stronger band, with its
-                start – end · duration readout on an opaque pill in the top row
-                (the bar numbers it would cover are hidden above). A picture of
+                start – end · duration readout on an opaque pill in the time row
+                (the timecodes it would cover are hidden above). A picture of
                 state: no pointer. */}
             {timeSelection && (
               <div
@@ -7373,7 +7681,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 className="absolute top-0 bottom-0 z-10 pointer-events-none bg-sky-400/30 border-x border-sky-300"
                 style={{ left: timeSelection.startSec * zoom, width: (timeSelection.endSec - timeSelection.startSec) * zoom }}
               >
-                <span className="absolute top-0 left-1 px-1 rounded-sm bg-sky-900 font-sans text-xs font-bold text-sky-100 leading-none whitespace-nowrap tabular-nums">
+                <span className="absolute top-12 left-1 px-1 rounded-sm bg-sky-900 font-sans text-xs font-bold text-sky-100 leading-none whitespace-nowrap tabular-nums">
                   {rangeReadout}
                 </span>
               </div>
@@ -7456,6 +7764,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 endSec={gridWindow.endSec}
                 zoom={zoom}
                 bpm={projectBpm}
+                tempoMap={arrangementTempoMap}
+                meterMap={arrangementMeterMap}
                 heightPx={lanesHeightPx}
                 style={gridStyle}
                 themeKey={editThemeId}
@@ -7596,6 +7906,27 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                             aria-pressed={!!clip.muted}
                             className={`px-1 h-3.5 rounded-sm font-display text-xs font-bold leading-none flex items-center ${clip.muted ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-black/40 text-zinc-300 border border-white/10 hover:text-white'}`}
                           >M</button>
+                          {isMidi && (() => {
+                            // The clip's audio as a cache (lib/midiRender): a dot and one word.
+                            // `live` is how the clip plays when heard, so a muted
+                            // part reads as it will sound unmuted; the M key beside
+                            // it says it is muted, and the title does too.
+                            const info = midiRenderInfo.byId.get(clip.id);
+                            if (!info) return null;
+                            const queued = midiQueue.running?.clipId === clip.id || midiQueue.waiting.some((w) => w.clipId === clip.id);
+                            const word = queued ? 'Rendering' : info.state === 'none' ? (info.live ? 'Live' : 'Silent') : info.state === 'stale' ? 'Stale' : info.live ? 'Kept' : 'Audio';
+                            const dot = queued ? 'bg-sky-400' : info.state === 'none' ? (info.live ? 'bg-emerald-400' : 'bg-red-400') : info.state === 'stale' ? 'bg-amber-400' : 'bg-zinc-300';
+                            const said = queued ? 'Rendering its audio now' : midiRenderStateText(info.state, info.live, info.auto);
+                            return (
+                              <span
+                                className="flex items-center gap-1 text-xs font-bold text-zinc-300"
+                                title={clip.muted ? `Muted. When heard: ${said.charAt(0).toLowerCase()}${said.slice(1)}` : said}
+                              >
+                                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                                {word}
+                              </span>
+                            );
+                          })()}
                           {clipStretchRate(clip) !== 1 && (
                             <span
                               className="text-amber-300 tabular-nums"
@@ -7680,7 +8011,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                         background: 'rgba(168, 85, 247, 0.18)',
                       }}
                     >
-                      <span className="absolute top-0.5 left-1 text-xs font-semibold tabular-nums text-purple-300 pointer-events-none leading-none">
+                      <span className="absolute top-0.5 left-1 text-xs font-bold tabular-nums text-purple-300 pointer-events-none leading-none">
                         {(inpaintSelection.endSec - inpaintSelection.startSec).toFixed(2)}s
                       </span>
                     </div>
@@ -7927,10 +8258,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       {/* Status bar */}
       <div className="h-6 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold text-zinc-500 tabular-nums">
+          <span className="text-xs font-bold text-zinc-500 tabular-nums">
             <span ref={footerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
-          <span className="text-xs font-semibold tabular-nums text-zinc-600">
+          <span className="text-xs font-bold tabular-nums text-zinc-600">
             {clips.length} clips · {tracks.length} tracks
           </span>
         </div>
@@ -8100,14 +8431,19 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           onSelect: () => {
             const selection = getSelectionForInit();
             if (selection.length === 0) return;
-            addBlobsToChimera(
-              selection.map((c) => ({
-                blob: c.audioBlob,
-                mimeType: c.mimeType,
-                label: c.label,
-              })),
-            );
-            onSwitchTab?.('create');
+            // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+            void Promise.all(selection.map((c) => clipWithAudio(c.id)))
+              .then((withAudio) => {
+                addBlobsToChimera(
+                  withAudio.map((c) => ({
+                    blob: c.audioBlob as Blob,
+                    mimeType: c.mimeType,
+                    label: c.label,
+                  })),
+                );
+                onSwitchTab?.('create');
+              })
+              .catch((err) => logError('editor', `Chimera: ${err instanceof Error ? err.message : String(err)}`));
           },
         });
         // Granular bleed: needs a second selected clip to act as the donor.
@@ -8141,12 +8477,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           const noTempo = 'No tempo is known for this clip. Analyse it in the library first.';
           items.push({
             type: 'item',
-            label: `Beat match to project (${Math.round(projectBpm)} bpm)`,
+            label: hasTempoChanges(arrangementTempoMap)
+              ? `Beat match to project (${Math.round(editTempoAtSec(arrangementTempoMap, clip.startSec))} bpm here)`
+              : `Beat match to project (${Math.round(projectBpm)} bpm)`,
             icon: <Gauge className="w-3 h-3" />,
             hint: 'sync',
             disabled: timePitchBusy || anchorBpm === null,
-            title: anchorBpm === null ? noTempo : `Stretch to ${Math.round(projectBpm)} bpm and put the first beat on the grid`,
-            onSelect: () => void beatMatchClips(subjectIds, projectBpm),
+            title: anchorBpm === null
+              ? noTempo
+              : hasTempoChanges(arrangementTempoMap)
+                ? 'Stretch to the tempo the arrangement plays where the clip starts and put the first beat on its beat grid'
+                : `Stretch to ${Math.round(projectBpm)} bpm and put the first beat on the grid`,
+            onSelect: () => void beatMatchClips(subjectIds, projectBpm, true),
           });
           if (others.length > 0) {
             items.push({
@@ -8221,6 +8563,41 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               setInstrPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
             },
           });
+          // The clip's audio is a cache (lib/midiRender): keep a render with the
+          // clip, or free it and let the clip play live and render on export. A
+          // render EDIT made only so the clip could be heard offers both: keep it
+          // for good, or (once the clip plays live, when EDIT drops it anyway)
+          // free it. `info.live` reads a muted clip as if unmuted.
+          const info = midiRenderInfo.byId.get(clip.id);
+          if (info) {
+            const queued = midiQueue.running?.clipId === clip.id || midiQueue.waiting.some((w) => w.clipId === clip.id);
+            if (!clip.audioBlob || info.auto) {
+              items.push({
+                type: 'item',
+                label: 'Keep rendered audio',
+                icon: <AudioWaveform className="w-3 h-3" />,
+                hint: queued ? 'rendering' : info.auto ? 'rendered to be heard' : info.live ? 'plays live now' : 'needs it to sound',
+                title: 'Keep the audio with this clip, rendering it now when it has none. Exports and audio edits then use it, and it is re-rendered when the notes or instrument change.',
+                disabled: queued,
+                onSelect: () => { void rerenderMidiClipAudio(clip.id, 'keep'); },
+              });
+            }
+            if (clip.audioBlob) {
+              items.push({
+                type: 'item',
+                label: 'Drop rendered audio',
+                icon: <AudioWaveform className="w-3 h-3" />,
+                // A disabled row takes no pointer, so the reason is in the hint.
+                hint: !info.live ? 'no live instrument' : info.state === 'stale' ? 'out of date' : 'kept',
+                title: 'Free the cached render. The clip plays live on its instrument and renders when an export needs it. Undo brings the audio back.',
+                disabled: !info.live,
+                onSelect: () => {
+                  useEditorStore.getState().updateClip(clip.id, { ...DROP_RENDER_FIELDS });
+                  logInfo('editor', `"${clip.label}" plays live and renders when exported`);
+                },
+              });
+            }
+          }
         }
         // ── Insert ONE stem beside this clip ────────────────────────────────
         // Every stem the entry already has is listed, aggregates included: the
@@ -8673,7 +9050,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               {inpaintPanel.error && (
                 <p
                   role="alert"
-                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-xs font-semibold tabular-nums leading-relaxed text-rose-200 wrap-break-word"
+                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-xs font-bold tabular-nums leading-relaxed text-rose-200 wrap-break-word"
                 >
                   {inpaintPanel.error}
                 </p>
@@ -8685,25 +9062,25 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 placeholder="Describe what to generate in this region…"
                 value={inpaintPrompt}
                 onChange={(e) => setInpaintPrompt(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-purple-500/50 transition-colors"
+                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-bold text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-purple-500/50 transition-colors"
                 rows={3}
                 autoFocus
               />
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold tabular-nums text-zinc-500">Steps</span>
-                  <span className="text-xs font-semibold tabular-nums text-zinc-400">{inpaintSteps}</span>
+                  <span className="text-xs font-bold tabular-nums text-zinc-500">Steps</span>
+                  <span className="text-xs font-bold tabular-nums text-zinc-400">{inpaintSteps}</span>
                 </div>
                 <SlideTrack min={4} max={20} step={1} value={inpaintSteps}
                   onChange={(v) => setInpaintSteps(v)} className="w-full" ariaLabel="Inpaint steps" />
               </div>
               <div className="flex items-center gap-2">
-                <label htmlFor="inpaint-seed" className="text-xs font-semibold tabular-nums text-zinc-500 shrink-0">Seed</label>
+                <label htmlFor="inpaint-seed" className="text-xs font-bold tabular-nums text-zinc-500 shrink-0">Seed</label>
                 <input
                   id="inpaint-seed"
                   type="number" name="inpaint-seed" value={inpaintSeed}
                   onChange={(e) => setInpaintSeed(parseInt(e.target.value) || -1)}
-                  className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
+                  className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-bold text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
                   placeholder="-1 (random)"
                 />
               </div>
@@ -8722,7 +9099,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <div className="flex flex-col items-center gap-3 py-4">
               <div className="w-5 h-5 border-2 border-purple-500/40 border-t-purple-400 rounded-full animate-spin" />
               <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Generating…</span>
-              <button onClick={rejectInpaint} className="text-xs font-semibold tabular-nums text-zinc-600 hover:text-zinc-400 transition-colors">
+              <button onClick={rejectInpaint} className="text-xs font-bold tabular-nums text-zinc-600 hover:text-zinc-400 transition-colors">
                 cancel
               </button>
             </div>

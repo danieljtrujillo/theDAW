@@ -6,6 +6,22 @@
       4,
       4
     ],
+    "tempo_map": [
+      {
+        "beat": 0,
+        "bpm": 120
+      }
+    ],
+    "meter_map": [
+      {
+        "bar": 0,
+        "meter": {
+          "num": 4,
+          "den": 4,
+          "groups": []
+        }
+      }
+    ],
     "tracks": [
       {
         "id": "f1",
@@ -134,6 +150,8 @@
             "instrument_program": 42,
             "rendered_program": 42,
             "rendered_percussion": false,
+            "render_stale": false,
+            "render_auto": false,
             "source_bpm": 90,
             "bpm": null,
             "library_entry_id": null,
@@ -243,6 +261,8 @@
             "instrument_program": null,
             "rendered_program": null,
             "rendered_percussion": false,
+            "render_stale": true,
+            "render_auto": false,
             "source_bpm": 120,
             "bpm": null,
             "library_entry_id": null,
@@ -302,6 +322,8 @@
             "instrument_program": null,
             "rendered_program": null,
             "rendered_percussion": false,
+            "render_stale": false,
+            "render_auto": true,
             "source_bpm": null,
             "bpm": null,
             "library_entry_id": null,
@@ -427,6 +449,8 @@
             "instrument_program": null,
             "rendered_program": 25,
             "rendered_percussion": true,
+            "render_stale": false,
+            "render_auto": false,
             "source_bpm": null,
             "bpm": null,
             "library_entry_id": null,

@@ -22,6 +22,7 @@ import {
   rulerTimeTicks,
   shouldRescrollAfterZoom,
   spanOfClips,
+  timeLabelUnderReadout,
   viewportWindowSec,
   wheelDispatch,
 } from './timelineZoom';
@@ -372,6 +373,52 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
   const firstClear = Math.ceil(span.rightPx / zoom / 2) + 1;
   assert.equal(barLabelUnderReadout({ bar: firstClear, sec: (firstClear - 1) * 2 }, zoom, span), false);
   assert.ok(RULER_CHAR_MAX_PX >= DIGIT_PX, 'the character bound is at least a bold 12 px digit');
+}
+
+// --- The range readout never draws over a timecode --------------------------
+{
+  // EDIT's ruler draws the readout in its time row, beside the timecodes: a
+  // range dragged from 8 s to 16 s printed "00:08.000 – 00:16.000 · 8.000s"
+  // over the 10 s and 15 s timecodes. Sweep the zoom: every timecode left on
+  // screen clears the readout's real text, and the bound the ruler hides by
+  // covers it. The timecode is the ruler's own spelling ("00:10", "00:12.50").
+  const DIGIT_PX = 7.2;
+  const range = { startSec: 8, endSec: 16, scope: { kind: 'all-tracks' as const } };
+  const readout = formatRangeReadout(range);
+  const timecode = (sec: number): string => {
+    const total = Math.floor(sec * 1000);
+    const cs = Math.floor((total % 1000) / 10);
+    const s = Math.floor(total / 1000) % 60;
+    const m = Math.floor(total / 60000);
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`.replace(/\.00$/, '');
+  };
+  const realLeft = (zoom: number) => range.startSec * zoom + 4;
+  const realRight = (zoom: number) => realLeft(zoom) + 8 + [...readout].length * DIGIT_PX;
+  let sawHidden = false;
+  for (let zoom = 400; zoom >= 2; zoom /= 1.25) {
+    const ticks = rulerTimeTicks({ startSec: 0, endSec: 60, zoom });
+    const span = rulerReadoutSpanPx(range.startSec, zoom, readout);
+    for (const t of ticks) {
+      const text = timecode(t.sec);
+      const left = t.sec * zoom + 4;
+      const right = left + [...text].length * DIGIT_PX;
+      const hidden = timeLabelUnderReadout(t, text, zoom, span);
+      sawHidden ||= hidden;
+      if (!hidden) {
+        assert.ok(
+          right <= realLeft(zoom) || left >= realRight(zoom),
+          `timecode ${text} at ${zoom.toFixed(2)} px/s is drawn under the range readout`,
+        );
+      }
+    }
+  }
+  assert.ok(sawHidden, 'the sweep reached a zoom where timecodes sit under the readout');
+  // A timecode before the range and one well past the pill keep their text.
+  const zoom = 40;
+  const span = rulerReadoutSpanPx(range.startSec, zoom, readout);
+  assert.equal(timeLabelUnderReadout({ sec: 5 }, '00:05', zoom, span), false);
+  assert.equal(timeLabelUnderReadout({ sec: 10 }, '00:10', zoom, span), true);
+  assert.equal(timeLabelUnderReadout({ sec: 30 }, '00:30', zoom, span), false);
 }
 
 // --- Clip chrome: header inside the visible part, off the resize zones -------

@@ -37,6 +37,8 @@
 // Run: npx tsx src/lib/editorAutosave.test.ts
 import assert from 'node:assert/strict';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
 import { isComped } from './clipComp.ts';
 
 const flush = async (n = 8): Promise<void> => {
@@ -372,6 +374,34 @@ const meterClip = (id: string, trackId: string): AudioClip => ({
   color: '#8b5cf6',
 });
 
+/** A piano-roll part that plays live and holds no render (lib/midiRender): no audio to store. */
+const liveMidiClip = (id: string, trackId: string): AudioClip => ({
+  id,
+  trackId,
+  label: id,
+  mimeType: 'audio/wav',
+  sourceDuration: 2,
+  offsetIntoSource: 0,
+  durationSec: 2,
+  startSec: 4,
+  color: '#8b5cf6',
+  sourceKind: 'piano-roll',
+  sourcePianoRoll: [{ id: 'n1', note: 67, step: 0, length: 4, velocity: 90 }, { id: 'n2', note: 71, step: 4, length: 4, velocity: 90 }],
+  sourceRollNotes: [{ id: 'n1', note: 67, step: 0, length: 4, velocity: 90 }, { id: 'n2', note: 71, step: 4, length: 4, velocity: 90 }],
+  sourceBpm: 132,
+  sourceTotalSteps: 16,
+  instrumentProgram: 40,
+});
+
+/** The same part holding a kept render: its audio and what the render was made from. */
+const keptMidiClip = (id: string, trackId: string): AudioClip => ({
+  ...liveMidiClip(id, trackId),
+  startSec: 8,
+  audioBlob: new Blob(['render'], { type: 'audio/wav' }),
+  renderedProgram: 40,
+  renderSig: '0123456789abcdef01234567',
+});
+
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
 async function meterManifestHandle(): Promise<MeterFakeFileHandle> {
@@ -387,6 +417,17 @@ async function writeMeterManifest(bytes: Uint8Array): Promise<void> {
   await w.write(bytes);
   await w.close();
 }
+
+const SAVED_METER_MAP = [
+  { bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } },
+  { bar: 8, meter: { num: 5, den: 4, groups: [] } },
+];
+const SAVED_TEMPO_MAP = [
+  { beat: 0, bpm: 132, curve: 'step' as const },
+  { beat: 28, bpm: 132, curve: 'linear' as const },
+  { beat: 56, bpm: 90, curve: 'step' as const },
+  { beat: 60, bpm: 132, fermata: { beats: 2, stretch: 3 } },
+];
 
 /** The 7/8 manifest the first block writes, reused by the legacy block. */
 let meterSaved: Uint8Array = new Uint8Array();
@@ -418,9 +459,14 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
 
   useEditorStore.getState().loadProject({
     tracks: [meterTrack('t1')],
-    clips: [meterClip('c1', 't1')],
+    // m3 holds a render EDIT made only so it could be heard (renderAuto).
+    clips: [meterClip('c1', 't1'), liveMidiClip('m1', 't1'), keptMidiClip('m2', 't1'), { ...keptMidiClip('m3', 't1'), startSec: 16, renderAuto: true }],
     bpm: 132,
     timeSignature: { num: 7, den: 8 },
+    // The arrangement's maps: 7/8 3+2+2 from bar 1, 5/4 from bar 9; 132 BPM
+    // ramping from beat 28 to 90 at beat 56, and a fermata at beat 60.
+    meterMap: SAVED_METER_MAP,
+    tempoMap: SAVED_TEMPO_MAP,
   });
 
   // Wait for the debounced save to land the manifest.
@@ -431,6 +477,19 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
     { num: 7, den: 8 },
     'the autosave manifest must carry the project meter',
   );
+  assert.deepEqual(manifest.meterMap, SAVED_METER_MAP, 'the manifest carries the meter map');
+  assert.deepEqual(
+    (manifest.tempoMap as Array<Record<string, unknown>>).map((e) => [e.beat, e.bpm, e.curve ?? null, e.fermata ?? null]),
+    [[0, 132, 'step', null], [28, 132, 'linear', null], [56, 90, 'step', null], [60, 132, null, { beats: 2, stretch: 3 }]],
+    'the manifest carries the tempo map, ramp and fermata included',
+  );
+  // A MIDI part with no render stores its notes and no audio asset.
+  const savedClips = manifest.clips as Array<Record<string, unknown>>;
+  const savedMidi = savedClips.find((c) => c.id === 'm1');
+  assert.ok(savedMidi, 'the live MIDI part is in the manifest');
+  assert.equal(savedMidi.assetHash, null, 'with no audio asset');
+  assert.equal((savedMidi.sourcePianoRoll as unknown[]).length, 2, 'and its notes');
+  assert.equal(typeof savedClips.find((c) => c.id === 'c1')?.assetHash, 'string', 'the audio clip keeps its asset');
 
   // Keep the 7/8 document on disk, then land the session in a different meter
   // (the clip stays, so the asset GC keeps its bytes) and restore.
@@ -441,22 +500,52 @@ async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
 
   await meter.useAutosaveRecoveryStore.getState().restore();
   assert.deepEqual(
-    useEditorStore.getState().timeSignature,
+    barOneMeter(),
     { num: 7, den: 8 },
     'a restored autosave must bring its own meter back',
   );
+  assert.deepEqual(useEditorStore.getState().meterMap, SAVED_METER_MAP, 'and its meter map');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm, e.curve ?? null, e.fermata ?? null]),
+    [[0, 132, 'step', null], [28, 132, 'linear', null], [56, 90, 'step', null], [60, 132, null, { beats: 2, stretch: 3 }]],
+    'and its tempo map',
+  );
+  assert.equal(useEditorStore.getState().bpm, 132);
+  const restoredMidi = useEditorStore.getState().clips.find((c) => c.id === 'm1');
+  assert.ok(restoredMidi, 'the live MIDI part is restored');
+  assert.equal(restoredMidi.audioBlob, undefined, 'still holding no render: it plays live');
+  assert.equal(restoredMidi.sourceKind, 'piano-roll');
+  assert.deepEqual(restoredMidi.sourcePianoRoll?.map((n) => n.note), [67, 71], 'with its notes');
+  assert.equal(restoredMidi.instrumentProgram, 40, 'and its instrument');
+  assert.ok(useEditorStore.getState().clips.find((c) => c.id === 'c1')?.audioBlob instanceof Blob, 'the audio clip comes back with its audio');
+  const restoredKept = useEditorStore.getState().clips.find((c) => c.id === 'm2');
+  assert.ok(restoredKept?.audioBlob instanceof Blob, 'a part with a kept render comes back with it');
+  assert.equal(restoredKept?.renderSig, '0123456789abcdef01234567', 'and with what the render was made from');
+  assert.equal(restoredKept?.renderedProgram, 40);
+  assert.equal(restoredKept?.renderAuto, undefined, 'kept on purpose');
+  const restoredAuto = useEditorStore.getState().clips.find((c) => c.id === 'm3');
+  assert.ok(restoredAuto?.audioBlob instanceof Blob, 'a render made to be heard comes back');
+  assert.equal(restoredAuto?.renderAuto, true, 'with the mark that lets EDIT drop it once the part plays live');
 
   /* ── a legacy manifest (no meter) restores as 4/4 ───────────────────────── */
   await tick(60); // let the restore's own autosave land before overwriting it
   const legacy = JSON.parse(new TextDecoder().decode(meterSaved)) as Record<string, unknown>;
   delete legacy.timeSignature;
+  delete legacy.meterMap;
+  delete legacy.tempoMap;
   await writeMeterManifest(new TextEncoder().encode(JSON.stringify(legacy)));
 
   await meter.useAutosaveRecoveryStore.getState().restore();
   assert.deepEqual(
-    useEditorStore.getState().timeSignature,
+    barOneMeter(),
     { num: 4, den: 4 },
     'a document written before the field existed is 4/4, not whatever the session held',
+  );
+  assert.deepEqual(useEditorStore.getState().meterMap.length, 1, 'one meter for a legacy document');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm]),
+    [[0, 132]],
+    'and one tempo, its saved bpm, not the tempo changes the session held',
   );
 
   // This driver stays subscribed to the shared store for the rest of the run,

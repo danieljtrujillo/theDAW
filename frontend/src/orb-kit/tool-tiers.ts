@@ -35,6 +35,9 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   // have to undo, so they run without a card. Measuring a clip is read-only
   // even though it costs a backend round trip.
   editor_get_notes:  'T0_silent',
+  editor_list_roll_parts:'T0_silent',
+  editor_get_roll_part:'T0_silent',
+  editor_get_meter_map:'T0_silent',
   editor_select_clips:'T0_silent',
   editor_select_range:'T0_silent',
   editor_select_notes:'T0_silent',
@@ -76,6 +79,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   // takes it back in one step. That is what makes a receipt enough.
   editor_quantize_clip:'T1_inform',
   editor_set_notes:  'T1_inform',
+  editor_create_midi_clip:'T1_inform',
+  editor_set_roll_part:'T1_inform',
   editor_nudge_notes:'T1_inform',
   editor_transpose_clip:'T1_inform',
   editor_scale_velocity:'T1_inform',
@@ -86,6 +91,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_set_clip_source_bpm:'T1_inform',
   editor_stretch_clip:'T1_inform',
   editor_set_time_signature:'T1_inform',
+  editor_set_meter_map:'T1_inform',
   editor_nudge_clip: 'T1_inform',
   editor_set_clip:   'T1_inform',
   editor_trim_clip:  'T1_inform',
