@@ -65,7 +65,7 @@ import { logError, logWarn } from './logStore';
 import {
   ensureEditBanks,
   editChannelPressure,
-  editControl,
+  editControllerChange,
   editNoteOn,
   editNoteOff,
   editPitchWheel,
@@ -3092,7 +3092,8 @@ export type LiveMidiClip = Pick<
   | 'sourceRollNotes'
   | 'sourceLanes'
   | 'sourceBends'
->;
+> &
+  Partial<Pick<AudioClip, 'sourceRollPart'>>;
 /** The fields of a track the live MIDI plan reads. */
 export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'> &
   Partial<Pick<EditorTrack, 'instrument' | 'mpeChannels' | 'instrumentBank' | 'instrumentBankId' | 'externalOnly'>>;
@@ -3128,7 +3129,10 @@ export function planLiveMidi(
     const ids = wanted.get(track.id);
     if (ids) ids.push(clip.id);
     else wanted.set(track.id, [clip.id]);
-    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), trackMembers(track.mpeChannels))));
+    slots.set(
+      track.id,
+      Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), effectiveProgramFor(clip, track, global), trackMembers(track.mpeChannels))),
+    );
   }
   const channels = planEditChannels(
     tracks
@@ -3287,14 +3291,14 @@ export function liveMidiNotes(
     if (!chans?.length || program === undefined) continue;
     // The bank select the scheduler sends: the clip's, its track's or the picker's program's (lib/clipProgram clipVoice).
     const bank = clipVoice(clip, track, global).bank ?? 0;
-    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), trackMembers(track.mpeChannels)).notes) {
+    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), program, trackMembers(track.mpeChannels)).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
       out.push({
         clipId: clip.id,
         channel: chans[Math.min(n.slot, chans.length - 1)],
-        program,
-        bank,
+        program: n.program ?? program,
+        bank: n.program !== undefined ? (n.bank ?? 0) : bank,
         midi: n.midi,
         velocity: n.velocity,
         onDelaySec,
@@ -3335,7 +3339,8 @@ const liveSink: EditMidiSink = passMidiSink(
     noteOff: editNoteOff,
     wheel: editPitchWheel,
     wheelRange: editPitchWheelRange,
-    control: editControl,
+    // Every controller number, raw: a part's, a note's timbre, the reverb send and a track's trackMidiCc lanes.
+    control: editControllerChange,
     pressure: editChannelPressure,
   },
   () => trackOut,
@@ -3364,6 +3369,8 @@ function liveMidiScheduler(): EditMidiScheduler {
       projectBpm: () => useEditorStore.getState().bpm,
       envelope: (trackId) => midiEnvGains.get(trackId)?.gain ?? null,
       lookaheadSec: midiLookaheadSec,
+      // A MIDI track's controller lanes (trackMidiCc) play with its notes.
+      automation: () => useEditorStore.getState().automationLanes,
     });
   }
   return midiScheduler;

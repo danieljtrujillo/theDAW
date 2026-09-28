@@ -48,6 +48,33 @@
  * change, program change included, goes to each channel the track's notes
  * play on.
  *
+ * ARTICULATIONS: a note's articulation rides with it (the `theDAW:art=` text
+ * lib/midi writes, which an import reads back). A note whose articulation
+ * plays a soundfont preset of its own (lib/articulationMap, for the clip's
+ * instrument: a string part's pizzicato on GM 46) is written on a channel of
+ * that preset's, the one EDIT's live MIDI gives it, with the preset's program
+ * change and bank select at tick 0; a bent lane's articulation notes take one
+ * per lane, which carries the lane's wheel too. Those channels come from the
+ * same sixteen; past fifteen melodic channels an articulation that finds none
+ * free plays on its track's own channel in the track's program, and
+ * `articulationFallback` names the track.
+ *
+ * PER-NOTE EXPRESSION: a note that carries expression of its own (PianoNote
+ * `expr`) is written MPE-style on the upper zone's member channels (lib/
+ * mpeMidi: 14 down, rotated across the arrangement's notes as EDIT rotates
+ * them live), each member set to its note's range, wheel, CC 74 and pressure
+ * just before it starts and then at every point of its curves, with the
+ * zone's configuration message on channel 15. An import reads them back onto
+ * the notes. With no member channel free, those notes stay on their track's
+ * channel and `mpeNoRoom` says so.
+ *
+ * CONTROLLER AUTOMATION: a track's trackMidiCc automation lanes (lib/
+ * midiCcAutomation) are written as that controller's changes on each of the
+ * track's channels, the value at the file's start first, then a change where
+ * the lane's whole value moves, to the end of the track's last clip (or the
+ * span). A lane owns its controller on its track, so the clips' own changes
+ * of that controller are left out, as EDIT's live playback leaves them out.
+ *
  * PITCH BEND: a clip whose roll lanes bend (`sourceBends`) is written as its
  * render plays it (lib/rollClip clipRenderInput, lib/pitchBendVoice): the
  * roll's own notes unrolled across their lanes, each bent lane's notes on a
@@ -80,12 +107,12 @@
  * run it; exportArrangementMidi (lib/arrangementMidiApp) reads the stores and
  * saves the file.
  */
-import type { AudioClip, EditorTrack, TimelineMarker } from '../state/editorStore';
+import type { AudioClip, AutomationLane, EditorTrack, TimelineMarker } from '../state/editorStore';
 import type { RollPartRef } from '../state/pianoRollStore';
 import { noteEndStep } from './clipNotes/units';
 import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type ClipVoice, type GlobalVoice } from './clipProgram';
 import { barAt, barStartStep, meterAtBar, meterMapToMidiEvents, normalizeMeterMap, roundUpToBar, type MeterSegment } from './meterMap';
-import type { MidiBend, MidiBendRange, MidiControl, MidiFileData, MidiNote, MidiProgram, MidiTrack } from './midi';
+import type { MidiBend, MidiBendRange, MidiControl, MidiFileData, MidiNote, MidiPressure, MidiProgram, MidiTrack } from './midi';
 import { PPQ } from './noteClock';
 import { bendWheelEvents, playingLane } from './pitchBend';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
@@ -93,6 +120,12 @@ import { tempoMapText, tempoMapToMidiTempos } from './rollMidi';
 import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from './rollTempo';
 import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
+import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
+import { articulatedNotes, clipArticulationInstrument, type Articulation, type SoundfontArticulationTarget } from './articulationMap';
+import { artChannelKey } from './rollMidi';
+import { mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
+import { EXPRESSION_DIMENSIONS, type ExpressionDimension } from './noteExpression';
+import type { NoteExpression } from '../state/pianoRollStore';
 
 /** The arrangement an export reads (editorStore's fields). */
 export interface ArrangementMidiSource {
@@ -107,6 +140,8 @@ export interface ArrangementMidiSource {
   meterMap?: readonly MeterSegment[];
   /** EDIT's timeline markers, each at its second; written as FF 06 markers. */
   markers?: readonly TimelineMarker[];
+  /** EDIT's automation lanes; the trackMidiCc ones are written as controller changes. */
+  automationLanes?: readonly AutomationLane[];
 }
 
 /** Which clips an export takes. `all` follows the mix (mute and solo); the other two take what they name. */
@@ -135,6 +170,10 @@ export interface ArrangementMidiResult {
   mutedClips: number;
   /** Where the file's tick 0 sits on the timeline, in seconds (a range starts on its bar line). */
   startSec: number;
+  /** True when notes carried expression of their own and no MPE member channel was free: they play on their track's channel. */
+  mpeNoRoom?: boolean;
+  /** Tracks whose preset articulations (a pizzicato's GM 46) found no channel of their own past fifteen melodic channels: they play in the track's program. */
+  articulationFallback: string[];
 }
 
 /** The reverb send controller (General MIDI's Effects 1 depth), which EditorTrack synthReverbSend sets. */
@@ -193,8 +232,22 @@ interface ClipEvents {
   bank: number;
   /** The part's bank select LSB (CC 32), when it sends one. */
   bankLsb: number | undefined;
-  /** Each note with the bent lane it plays in; null for a lane that does not bend (the track's own channel). */
-  notes: Array<{ onSec: number; offSec: number; note: number; velocity: number; lane: number | null }>;
+  /**
+   * Each note with the bent lane it plays in (null for a lane that does not
+   * bend: the track's own channel), its articulation, and the articulation
+   * channel it plays on when its articulation plays a preset of its own.
+   */
+  notes: Array<{
+    onSec: number;
+    offSec: number;
+    note: number;
+    velocity: number;
+    lane: number | null;
+    articulation?: Articulation;
+    art: { key: string; target: SoundfontArticulationTarget } | null;
+    /** The note's own expression, its curves' points at timeline seconds (null when it carries none). */
+    expr: { e: NoteExpression; curves: Partial<Record<ExpressionDimension, Array<{ sec: number; value: number }>>> } | null;
+  }>;
   controls: Array<{ sec: number; controller: number; value: number }>;
   /** Each bent lane's range and wheel messages, the value where the clip's window starts first. */
   wheels: Array<{ lane: number; range: number; events: Array<{ sec: number; raw: number }> }>;
@@ -219,18 +272,41 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const input = percussion ? null : clipRenderInput(clip, clipTotalSteps(clip));
   const bends = input?.bends;
   const notes: ClipEvents['notes'] = [];
-  for (const n of bends && input ? input.notes : (clip.sourcePianoRoll ?? [])) {
+  const voice = clipVoice(clip, track, global);
+  // The notes' articulations, as they resolve for the voice EDIT plays the clip with.
+  const source = bends && input ? input.notes : (clip.sourcePianoRoll ?? []);
+  const arts = articulatedNotes(source, clipArticulationInstrument(clip, voice.program ?? clip.sourceRollPart?.program ?? undefined, percussion)).notes;
+  source.forEach((n, i) => {
     const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
-    if (relEnd <= 0 || relStart >= clip.durationSec) continue;
-    const lane = bends ? playingLane(n.lane, bends.lanes) : 0;
+    if (relEnd <= 0 || relStart >= clip.durationSec) return;
+    const laneId = bends ? playingLane(n.lane, bends.lanes) : 0;
+    const lane = bends?.played.has(laneId) ? laneId : null;
+    const target = arts[i]?.target ?? null;
     notes.push({
       onSec: clip.startSec + Math.max(0, relStart),
       offSec: clip.startSec + Math.min(clip.durationSec, relEnd),
       note: n.note,
       velocity: n.velocity,
-      lane: bends?.played.has(lane) ? lane : null,
+      lane,
+      ...(n.articulation ? { articulation: n.articulation } : {}),
+      art: target ? { key: artChannelKey(target, lane), target } : null,
+      // The note's own expression, its curve points at their seconds through the clip's clock.
+      expr: writesAsMpe(n.expr)
+        ? {
+            e: n.expr,
+            curves: Object.fromEntries(
+              EXPRESSION_DIMENSIONS.filter((d) => n.expr?.curves?.[d]?.length).map((d) => [
+                d,
+                (n.expr?.curves?.[d] ?? []).map((p) => ({
+                  sec: clip.startSec + clock.at(((n.tick ?? Math.round(n.step * 240)) + p.tick) / 240) - offset,
+                  value: p.value,
+                })),
+              ]),
+            ),
+          }
+        : null,
     });
-  }
+  });
   // Each bent lane with notes in the window: its wheel from the window's first step to its last point or the window's end.
   const wheels: ClipEvents['wheels'] = [];
   if (bends) {
@@ -255,7 +331,6 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const controls: ClipEvents['controls'] = clipControlTimes(clip, fallbackBpm)
     .filter((c) => !(c.held && c.value === controllerDefault(c.controller)))
     .map((c) => ({ sec: c.sec, controller: c.controller, value: c.value }));
-  const voice = clipVoice(clip, track, global);
   // The voice EDIT plays the clip with; with none (no program anywhere, the picker off the soundfont), its roll part's.
   const program = voice.program ?? clip.sourceRollPart?.program ?? undefined;
   const { bank, bankLsb } = clipBankSelect(voice, clip.sourceRollPart);
@@ -328,6 +403,9 @@ function endClipControls(events: ClipEvents[]): void {
 /** The partFileChannels id of a track's extra channel for bent lane `lane`. */
 const laneChannelId = (trackId: string, lane: number): string => `${trackId}\u0001lane:${lane}`;
 
+/** The partFileChannels id of a track's articulation channel `key` (rollMidi artChannelKey). */
+const artChannelId = (trackId: string, key: string): string => `${trackId}\u0001art:${key}`;
+
 /** The clips of `track` the scope takes, in timeline order. */
 function scopedClips(source: ArrangementMidiSource, track: EditorTrack, scope: ArrangementMidiScope, soloed: boolean): AudioClip[] {
   if (scope.kind === 'all' && (track.mute || (soloed && !track.solo))) return [];
@@ -362,10 +440,19 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   const cutEnd = (sec: number): number => (range ? Math.min(sec, range.endSec) : sec);
 
   const soloed = source.tracks.some((t) => t.solo && !t.isFolder);
+  const ccLanes = trackCcLanes(source.automationLanes);
+  const owned = automatedControllers(ccLanes);
   let mutedClips = 0;
   // Every EDIT track with notes in the export, with its clips' events and the channels its notes need:
   // `null` for the lanes that do not bend, then each bent lane, lowest id first.
-  const tracks: Array<{ track: EditorTrack; events: ClipEvents[]; partChannel: number | null; keys: Array<number | null> }> = [];
+  const tracks: Array<{
+    track: EditorTrack;
+    events: ClipEvents[];
+    partChannel: number | null;
+    keys: Array<number | null>;
+    /** Its articulation channels, each with its preset and the bent lane it follows. */
+    arts: Array<{ key: string; target: SoundfontArticulationTarget; lane: number | null }>;
+  }> = [];
   for (const track of source.tracks) {
     if (track.isFolder) continue;
     const clips = scopedClips(source, track, scope, soloed);
@@ -378,6 +465,9 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       .filter((c) => !range || c.startSec + c.durationSec > range.startSec + 1e-9);
     const events = kept.map((c) => clipEvents(c, track, global, bpm));
     endClipControls(events);
+    // The controllers the track's automation owns leave the clips' own changes out.
+    const ownedHere = owned.get(track.id);
+    if (ownedHere) for (const e of events) e.controls = e.controls.filter((c) => !ownedHere.has(c.controller));
     for (const e of events) {
       e.notes = e.notes.filter((n) => inRange(n.onSec)).map((n) => ({ ...n, offSec: cutEnd(n.offSec) }));
       e.controls = e.controls.filter((c) => !range || c.sec < range.endSec - 1e-9);
@@ -399,7 +489,11 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       else lanes.add(n.lane);
     }
     const keys: Array<number | null> = [...(plain ? [null] : []), ...[...lanes].sort((a, b) => a - b)];
-    tracks.push({ track, events, partChannel, keys });
+    const arts: Array<{ key: string; target: SoundfontArticulationTarget; lane: number | null }> = [];
+    for (const e of events) for (const n of e.notes) {
+      if (n.art && !arts.some((a) => a.key === n.art?.key)) arts.push({ key: n.art.key, target: n.art.target, lane: n.lane });
+    }
+    tracks.push({ track, events, partChannel, keys, arts });
   }
 
   // A channel two tracks' parts name (two files imported as tracks, each with a part on channel 1) stays with
@@ -411,7 +505,7 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   let spare =
     MELODIC_FILE_CHANNELS -
     partChannels.size -
-    tracks.reduce((n, t) => n + (t.partChannel === null && !isPercussionTrack(t.track) ? 1 : 0) + Math.max(0, t.keys.length - 1), 0);
+    tracks.reduce((n, t) => n + (t.partChannel === null && !isPercussionTrack(t.track) ? 1 : 0) + Math.max(0, t.keys.length - 1) + t.arts.length, 0);
   const claimed = new Set<number>();
   for (const t of tracks) {
     if (t.partChannel === null) continue;
@@ -423,22 +517,44 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   }
   // The track's first channel takes its id (and the channel its parts name); each further bent lane takes one more.
   const { channels, shared } = partFileChannels(
-    tracks.flatMap((t) =>
-      t.keys.map((key, i) =>
+    tracks.flatMap((t) => [
+      ...t.keys.map((key, i) =>
         i === 0
           ? { id: t.track.id, channel: isPercussionTrack(t.track) ? PERCUSSION_PART_CHANNEL : t.partChannel }
           : { id: laneChannelId(t.track.id, key as number), channel: null },
       ),
-    ),
+      ...t.arts.map((a) => ({ id: artChannelId(t.track.id, a.key), channel: null })),
+    ]),
   );
   const sharedIds = new Set(shared);
+  // Every expressive note of the export, on the upper MPE zone's members, clear of every channel the tracks took.
+  const mpeSpans: MpeExportNote[] = [];
+  for (const t of tracks) {
+    let i = 0;
+    for (const e of t.events) for (const n of e.notes) {
+      if (n.expr && !isPercussionTrack(t.track)) mpeSpans.push({ key: `${t.track.id}#${i}`, start: tickOf(n.onSec), end: Math.max(tickOf(n.onSec) + 1, tickOf(n.offSec)) });
+      i += 1;
+    }
+  }
+  const mpe = planMpeExport(mpeSpans, new Set(channels.values()));
+  const memberRange = new Map<number, number>();
+  // The tracks whose preset articulations found no channel of their own.
+  const articulationFallback = new Set<string>();
+  const memberProgram = new Map<number, string>();
 
   const out: MidiTrack[] = [];
   let noteCount = 0;
-  for (const { track, events, keys } of tracks) {
+  for (const { track, events, keys, arts } of tracks) {
     const channelOf = (key: number | null): number =>
       channels.get(key === keys[0] ? track.id : laneChannelId(track.id, key as number)) as number;
-    const trackChannels = [...new Set(keys.map(channelOf))];
+    // An articulation channel that would be shared with another track (no channel left) is not taken: its notes stay home.
+    const artChannelOf = (key: string): number | undefined => {
+      const id = artChannelId(track.id, key);
+      return sharedIds.has(id) ? undefined : channels.get(id);
+    };
+    // The channels the clips' voice plays on, and every channel the track's notes play on (its articulation channels too).
+    const voiceChannels = [...new Set(keys.map(channelOf))];
+    const trackChannels = [...new Set([...voiceChannels, ...arts.map((a) => artChannelOf(a.key)).filter((ch): ch is number => ch !== undefined)])];
     const notes: MidiNote[] = [];
     const programs: MidiProgram[] = [];
     const controls: MidiControl[] = [];
@@ -446,43 +562,98 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     const wheelOn = new Map<number, MidiBend[]>();
     const bendRanges: MidiBendRange[] = [];
     const rangeOn = new Map<number, number>();
+    const pressures: MidiPressure[] = [];
+    const mpeBends: MidiBend[] = [];
     let current: string | null = null;
+    let noteIndex = 0;
     for (const e of events) {
       if (!e.notes.length && !e.controls.length) continue;
       // A program change where the clip's voice differs from the one sounding: tick 0 for the first, on each of the track's channels.
       const key = `${e.program ?? 'none'}:${e.bank}:${e.bankLsb ?? 'none'}`;
       if (e.program !== undefined && key !== current) {
         const tick = current === null ? 0 : tickOf(Math.max(startSec, e.startSec));
-        for (const channel of trackChannels) {
+        for (const channel of voiceChannels) {
           programs.push({ tick, channel, program: e.program, ...(e.bank > 0 ? { bank: e.bank } : {}), ...(e.bankLsb !== undefined ? { bankLsb: e.bankLsb } : {}) });
         }
         current = key;
       }
       for (const n of e.notes) {
         const tick = tickOf(n.onSec);
-        notes.push({ tick, note: n.note, velocity: Math.max(1, Math.min(127, Math.round(n.velocity))), durationTicks: Math.max(1, tickOf(n.offSec) - tick), channel: channelOf(n.lane) });
+        const durationTicks = Math.max(1, tickOf(n.offSec) - tick);
+        const home = channelOf(n.lane);
+        const member = n.expr ? mpe.channelOf.get(`${track.id}#${noteIndex}`) : undefined;
+        noteIndex += 1;
+        const artChannel = n.art ? artChannelOf(n.art.key) : undefined;
+        if (n.art && artChannel === undefined && member === undefined) articulationFallback.add(track.name);
+        const channel = member ?? artChannel ?? home;
+        if (member !== undefined && n.expr) {
+          // The member channel: the clip's voice, then the note's range, wheel, CC 74 and pressure, then its curves.
+          const voice = `${e.program ?? ''}:${e.bank}`;
+          if (e.program !== undefined && memberProgram.get(member) !== voice) {
+            programs.push({ tick, channel: member, program: e.program, ...(e.bank > 0 ? { bank: e.bank } : {}) });
+            memberProgram.set(member, voice);
+          }
+          const curves: NonNullable<NoteExpression['curves']> = {};
+          for (const [dim, pts] of Object.entries(n.expr.curves) as Array<[ExpressionDimension, Array<{ sec: number; value: number }>]>) {
+            curves[dim] = pts.map((p) => ({ tick: Math.max(1, tickOf(p.sec) - tick), value: p.value }));
+          }
+          const m = mpeNoteMessages({ tick, durationTicks, expr: { ...n.expr.e, curves } }, member, 1, memberRange.get(member));
+          memberRange.set(member, m.range);
+          bendRanges.push(...m.ranges);
+          mpeBends.push(...m.bends);
+          controls.push(...m.controls);
+          pressures.push(...m.pressures);
+        }
+        notes.push({
+          tick,
+          note: n.note,
+          velocity: Math.max(1, Math.min(127, Math.round(n.velocity))),
+          durationTicks,
+          channel,
+          ...(n.articulation ? { articulation: n.articulation } : {}),
+          ...(member === undefined && channel !== home ? { homeChannel: home } : {}),
+        });
       }
       for (const c of e.controls) {
         const tick = tickOf(Math.max(startSec, c.sec));
         for (const channel of trackChannels) controls.push({ tick, channel, controller: c.controller, value: c.value });
       }
       for (const w of e.wheels) {
-        const channel = channelOf(w.lane);
-        const list = wheelOn.get(channel) ?? [];
-        wheelOn.set(channel, list);
-        for (const [i, x] of w.events.entries()) {
-          const tick = tickOf(Math.max(startSec, x.sec));
-          // The lane's range (RPN 0/0) with its first message, and again where a later clip's lane bends by another.
-          if (i === 0 && rangeOn.get(channel) !== w.range) {
-            bendRanges.push({ tick, channel, semitones: w.range });
-            rangeOn.set(channel, w.range);
+        // The lane's own channel, and each articulation channel of the lane, which bends with it.
+        for (const channel of [channelOf(w.lane), ...arts.filter((a) => a.lane === w.lane).map((a) => artChannelOf(a.key)).filter((ch): ch is number => ch !== undefined)]) {
+          const list = wheelOn.get(channel) ?? [];
+          wheelOn.set(channel, list);
+          for (const [i, x] of w.events.entries()) {
+            const tick = tickOf(Math.max(startSec, x.sec));
+            // The lane's range (RPN 0/0) with its first message, and again where a later clip's lane bends by another.
+            if (i === 0 && rangeOn.get(channel) !== w.range) {
+              bendRanges.push({ tick, channel, semitones: w.range });
+              rangeOn.set(channel, w.range);
+            }
+            // A message at the tick of the one before it replaces it: the wheel goes where the later one says.
+            if (list.length && list[list.length - 1].tick === tick) list.pop();
+            list.push({ tick, channel, value: x.raw });
           }
-          // A message at the tick of the one before it replaces it: the wheel goes where the later one says.
-          if (list.length && list[list.length - 1].tick === tick) list.pop();
-          list.push({ tick, channel, value: x.raw });
         }
       }
     }
+    // The track's controller automation: its value at the file's start, then each change to the end of its last clip.
+    const trackEnd = cutEnd(events.reduce((m, e) => Math.max(m, e.endSec), 0));
+    for (const l of ccLanes) {
+      if (l.trackId !== track.id) continue;
+      const from = range ? Math.max(startSec, range.startSec) : startSec;
+      const held = ccLaneValueAt(l.lane, from);
+      for (const channel of trackChannels) controls.push({ tick: tickOf(from), channel, controller: l.controller, value: held });
+      for (const e of ccLaneEvents(l.lane, from + 1e-6, trackEnd, held).events) {
+        for (const channel of trackChannels) controls.push({ tick: tickOf(e.sec), channel, controller: l.controller, value: e.value });
+      }
+    }
+    // Each articulation channel's preset at tick 0, with its bank select.
+    for (const a of arts) {
+      const channel = artChannelOf(a.key);
+      if (channel !== undefined) programs.push({ tick: 0, channel, program: a.target.program, ...(a.target.bank > 0 ? { bank: a.target.bank } : {}) });
+    }
+    programs.sort((a, b) => a.tick - b.tick);
     // The fader and pan, on the General MIDI volume curve and around the centre.
     const scale = faderVolumeScale(track.volume);
     const panOffset = panControlOffset(track.pan);
@@ -504,15 +675,20 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     }
     notes.sort((a, b) => a.tick - b.tick);
     controls.sort((a, b) => a.tick - b.tick);
-    const bends = [...wheelOn.values()].flat().sort((a, b) => a.tick - b.tick);
+    const bends = [...[...wheelOn.values()].flat(), ...mpeBends].sort((a, b) => a.tick - b.tick);
     bendRanges.sort((a, b) => a.tick - b.tick);
+    pressures.sort((a, b) => a.tick - b.tick);
+    programs.sort((a, b) => a.tick - b.tick);
     noteCount += notes.length;
     out.push({
       name: track.name,
       notes,
       ...(programs.length ? { programs } : {}),
       ...(controls.length ? { controls } : {}),
-      ...(bends.length ? { bends, bendRanges } : {}),
+      ...(bends.length || bendRanges.length ? { bends, bendRanges } : {}),
+      ...(pressures.length ? { pressures } : {}),
+      // The MPE zone's configuration message, once, in the first track.
+      ...(out.length === 0 && mpe.members.length ? { mpeZones: [mpeZoneEvent(mpe.members.length)] } : {}),
     });
   }
 
@@ -542,5 +718,7 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       .map((t) => t.track.name),
     mutedClips,
     startSec,
+    ...(mpe.noRoom ? { mpeNoRoom: true } : {}),
+    articulationFallback: [...articulationFallback],
   };
 }

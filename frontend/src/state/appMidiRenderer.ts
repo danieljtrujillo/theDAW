@@ -12,7 +12,7 @@
  *
  * Every module here is already in App.tsx's eager import graph.
  */
-import { renderStepNotesToBlob } from '../lib/midiSynth';
+import { renderArticulatedStepNotes } from '../lib/articulationRender';
 import { ensureSoundfontReady, getGlobalVoice } from '../lib/soundfontEngine';
 import { computePeaks } from './editorStore';
 import { liveMidiIfHeard } from './liveMixer';
@@ -21,7 +21,8 @@ import { configureMidiRenderQueue } from './midiRenderQueue';
 /** Hand the MIDI render queue the app's own renderer, peak scan, picker, warm-up and live plan. */
 export function configureAppMidiRenderQueue(): void {
   configureMidiRenderQueue({
-    render: renderStepNotesToBlob,
+    // Each note played by its articulation, a preset articulation on a channel of its own.
+    render: renderArticulatedStepNotes,
     computePeaks,
     global: getGlobalVoice,
     ensureReady: ensureSoundfontReady,

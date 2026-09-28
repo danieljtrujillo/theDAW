@@ -46,6 +46,13 @@
  *     ends, each controller it left off its General MIDI default goes back,
  *     the pedal first, so nothing it held rings past it, as its render stops
  *     there and the arrangement's MIDI export writes it (lib/arrangementMidi).
+ *   - Its notes' articulations (lib/articulationMap articulatedNotes): each
+ *     note plays shaped by its articulation (a staccato at half its length),
+ *     and an articulation the soundfont holds as a preset of its own (a string
+ *     part's pizzicato, GM 46) plays on a channel of its own after the clip's
+ *     others, in that preset, through the scheduler's per-note program
+ *     changes, so the part's other notes keep their program. A note on such a
+ *     channel does not follow its lane's bend.
  *   - Its notes' own expression (PianoNote `expr`: pressure, timbre, bend),
  *     MPE-style: each expressive note plays on a member channel of its own,
  *     rotated across a block after the clip's lane channels (lib/mpeRotation;
@@ -80,6 +87,16 @@
  *     sets its channels where they are at that point (range, wheel and
  *     controllers), as a pass starting there does.
  *
+ * Controller automation
+ * ---------------------
+ * A track's trackMidiCc automation lanes (lib/midiCcAutomation) send their
+ * controller on every channel the track plays on: where a pass starts, the
+ * value each lane has there, then a change wherever the lane's whole value
+ * moves inside each window. A lane owns its controller on its track, so the
+ * track's clips' own changes of it are left out while the lane is enabled
+ * and has points. A lane that goes (removed, disabled, emptied) mid-pass puts
+ * its controller back where the channel starts.
+ *
  * Late ticks
  * ----------
  * A tick that runs late (a busy main thread, a hidden tab) does not fire a
@@ -105,7 +122,7 @@
  *
  * No Vite-only imports, so node tests load it.
  */
-import type { AudioClip, EditorTrack } from '../state/editorStore';
+import type { AudioClip, AutomationLane, EditorTrack } from '../state/editorStore';
 import { clipPeakGain } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes } from '../state/pianoRollStore';
 import { REVERB_SEND_CC, clipBankSelect, synthReverbSendOf } from './arrangementMidi';
@@ -126,6 +143,8 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { PART_CONTROLLERS, partController } from './rollTracks';
+import { articulatedNotes, clipArticulationInstrument } from './articulationMap';
+import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { stepClock } from './rollTempo';
 import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionMessages, hasExpression, membersNeeded, rotateMembers, trackMembers } from './mpeRotation';
 
@@ -155,6 +174,15 @@ export const CHANNEL_DEFAULTS: ReadonlyArray<{ controller: number; value: number
     .sort((a, b) => pedalFirst(a.controller, b.controller))
     .map((c) => Object.freeze({ controller: c.controller, value: c.initial })),
 );
+
+/**
+ * The controllers every pass opens every channel with. Brightness (74) and the
+ * reverb send (91) go back to their defaults only on a channel a pass moved
+ * them on: SpessaSynth recomputes a channel's filter on every brightness
+ * change, even one to where it already is, which moves the onsets of the
+ * notes that follow, so a pass sends none it does not need.
+ */
+const ALWAYS_OPENED: ReadonlySet<number> = new Set([1, 7, 10, 11, 64]);
 
 /**
  * What EDIT's synths are told. Every time is audio-context seconds. `program`
@@ -204,6 +232,8 @@ export interface EditMidiSchedulerDeps {
   lookaheadSec?: () => number;
   /** Absent: EDIT_MIDI_LATE_SEC. */
   lateSec?: number;
+  /** EDIT's automation lanes, read every tick; the trackMidiCc ones play (lib/midiCcAutomation). Absent: none. */
+  automation?: () => readonly AutomationLane[];
 }
 
 /** The program and bank select a clip's notes are played in. */
@@ -220,6 +250,9 @@ export interface TimedNote {
   midi: number;
   velocity: number;
   slot: number;
+  /** The preset an articulation plays the note in (lib/articulationMap), on its own slot; absent: the clip's voice. */
+  program?: number;
+  bank?: number;
 }
 
 /**
@@ -272,27 +305,68 @@ export type TimedClip = Pick<
   Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
 /** A clip's grid length, as its re-render reads it (lib/clipRerender). */
-const clipTotalSteps = (clip: TimedClip): number =>
+const clipTotalSteps = (clip: Partial<TimedClip>): number =>
   clip.sourceTotalSteps ?? roundUpToBar(clip.sourceMeterMap ?? [], noteEndStep(clip.sourcePianoRoll ?? [], 1), clip.sourcePickupSteps ?? 0);
+
+/**
+ * Which slot (channel of the track's) each of a clip's notes plays on: its
+ * lane's (one per bent lane and one the rest share), or, for a note whose
+ * articulation plays a soundfont preset of its own, a slot after the lanes'
+ * for that preset and the bent lane it sits in, so the lane's wheel bends it
+ * there too (`artSlots` names the lane slot each follows; null when none).
+ */
+function clipSlotPlan(clip: Parameters<typeof clipRenderInput>[0] & Partial<TimedClip>, percussion: boolean, program: number | undefined) {
+  const input = clipRenderInput(clip, clipTotalSteps(clip));
+  const bends = percussion ? undefined : input.bends;
+  const slotOf = new Map<number, number>();
+  if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
+  const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
+  const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
+  const bentLaneSlots = new Set<number>(bends ? [...bends.played.keys()].map((lane) => slotOf.get(lane) ?? 0) : []);
+  const arts = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
+  const artSlots: Array<{ follows: number | null }> = [];
+  const artIndex = new Map<string, number>();
+  const noteSlots = arts.notes.map((a) => {
+    const ls = laneSlot(a.note.lane);
+    if (!a.target) return ls;
+    const follows = bentLaneSlots.has(ls) ? ls : null;
+    const key = `${a.slot}|${follows ?? '-'}`;
+    let i = artIndex.get(key);
+    if (i === undefined) {
+      i = artSlots.length;
+      artSlots.push({ follows });
+      artIndex.set(key, i);
+    }
+    return laneSlots + i;
+  });
+  return { input, bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: laneSlots + artSlots.length };
+}
 
 /**
  * How many channels a clip plays on: one, or one per lane of its that bends
  * plus one its other lanes share (lib/pitchBend laneChannels), exactly the
- * channels its bounce renders on, and then the member channels its
- * expressive notes rotate across: as many as sound at once, at most
- * `members` (lib/mpeRotation). A percussion clip plays on its one drum channel.
+ * channels its bounce renders on, one more for each soundfont preset its
+ * notes' articulations play (lib/articulationMap: a string part's pizzicato),
+ * and then the member channels its expressive notes rotate across: as many as
+ * sound at once, at most `members` (lib/mpeRotation). A percussion clip plays
+ * on its one drum channel.
  */
 export function clipLiveSlots(
-  clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> & Partial<Pick<AudioClip, 'sourcePianoRoll'>>,
+  clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> & Partial<Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollPart'>>,
   percussion = false,
+  program?: number,
   members = MPE_DEFAULT_MEMBERS,
 ): number {
   if (percussion) return 1;
   const expressive = (clip.sourcePianoRoll ?? []).filter((n) => hasExpression(n.expr)).map((n) => ({ start: n.step, end: n.step + n.length }));
   const mpe = membersNeeded(expressive, members);
-  if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1 + mpe;
-  const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
-  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + mpe;
+  // No articulated note: the lanes' channels alone, counted as the bounce counts them.
+  if (!(clip.sourcePianoRoll ?? clip.sourceRollNotes ?? []).some((n) => n.articulation)) {
+    if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1 + mpe;
+    const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
+    return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + mpe;
+  }
+  return clipSlotPlan(clip, false, program).slots + mpe;
 }
 
 const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
@@ -305,42 +379,45 @@ const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
  * ignores bends and plays on one channel. Expressive notes rotate across up
  * to `members` member channels after the lane channels (lib/mpeRotation).
  */
-export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined, percussion = false, members = MPE_DEFAULT_MEMBERS): ClipTiming {
+export function clipLiveTiming(
+  clip: TimedClip,
+  fallbackBpm: number | undefined,
+  percussion = false,
+  program?: number,
+  members = MPE_DEFAULT_MEMBERS,
+): ClipTiming {
   const clock = stepClock(clip.sourceBpm ?? fallbackBpm ?? 120, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const dur = clip.durationSec;
   const start = clip.startSec;
-  const input = clipRenderInput(clip, clipTotalSteps(clip));
-  const bends = percussion ? undefined : input.bends;
-  const slotOf = new Map<number, number>();
-  if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
-  const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
+  // Each note shaped by its articulation; a preset articulation on a slot of its own after the lanes' (clipSlotPlan).
+  const { bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: used } = clipSlotPlan(clip, percussion, program);
 
-  const used = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
-  // The expressive notes' member channels, after the lane channels: the rotation over every one of them, in steps.
-  const expressive = percussion ? [] : input.notes.filter((n) => hasExpression(n.expr));
-  const spans = expressive.map((n) => ({ start: n.step, end: n.step + n.length }));
+  // The expressive notes' member channels, after the lane and articulation channels: the rotation over every one of them, in steps.
+  const expressive = percussion ? [] : arts.notes.filter((a) => hasExpression(a.played.expr));
+  const spans = expressive.map((a) => ({ start: a.played.step, end: a.played.step + a.played.length }));
   const mpe = membersNeeded(spans, members);
   const memberOf = new Map<object, number>();
   rotateMembers(spans, mpe).forEach((m, i) => {
     if (m >= 0) memberOf.set(expressive[i], m);
   });
-  const ctl: TimedCtl[] = [];
   // The expressive notes' own messages, added last so each stands over a channel default or a part's change at its time.
   const exprCtl: TimedCtl[] = [];
 
   const notes: TimedNote[] = [];
-  for (const n of input.notes) {
+  for (const [i, a] of arts.notes.entries()) {
+    const n = a.played;
     const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
     if (relEnd <= 0 || relStart >= dur) continue; // outside this clip's window
-    const member = memberOf.get(n);
+    const member = memberOf.get(a);
     const on = start + Math.max(0, relStart);
     notes.push({
       on,
       off: start + Math.min(dur, relEnd),
       midi: n.note,
       velocity: n.velocity,
-      slot: member === undefined ? laneSlot(n.lane) : used + member,
+      slot: member === undefined ? noteSlots[i] : used + member,
+      ...(a.target ? { program: a.target.program, bank: a.target.bank } : {}),
     });
     // The member channel takes the note's bend, timbre and pressure just before the note starts.
     if (member !== undefined && n.expr) {
@@ -353,6 +430,7 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   notes.sort(byOn);
   const slots = used + mpe;
 
+  const ctl: TimedCtl[] = [];
   // Every channel the clip uses opens at the clip's start: its range and its
   // wheel where the clip's source begins. A channel no lane bends goes back to
   // the default range at the centre.
@@ -371,6 +449,14 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
         if (t > start + EPS && t < start + dur) ctl.push({ t, slot, kind: 'wheel', value: e.raw });
       }
     }
+    // An articulation slot of a bent lane takes the lane's range and wheel, so its notes bend with the lane.
+    const laneCtl = ctl.slice();
+    artSlots.forEach((a, i) => {
+      if (a.follows === null) return;
+      const slot = laneSlots + i;
+      bentSlots.add(slot);
+      for (const c of laneCtl) if (c.slot === a.follows) ctl.push({ ...c, slot });
+    });
   }
   for (let slot = 0; slot < slots; slot += 1) {
     if (bentSlots.has(slot)) continue;
@@ -506,7 +592,11 @@ export class EditMidiScheduler {
   private held = new Map<string, HeldControls>();
   /** The clips the last tick played live, so a clip that starts playing part way is seen. */
   private lastLive: ReadonlySet<string> = new Set();
-  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; members: number; timing: ClipTiming }>();
+  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; program: number | undefined; members: number; timing: ClipTiming }>();
+  /** The value each automated controller holds on its track's channels this pass, by `${trackId}:${controller}`. */
+  private ccHeld = new Map<string, number>();
+  /** Channels a controller outside ALWAYS_OPENED was sent to, by `${channel}:${controller}`: the next pass puts it back there. */
+  private moved = new Set<string>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
 
   constructor(deps: EditMidiSchedulerDeps) {
@@ -533,7 +623,7 @@ export class EditMidiScheduler {
     for (const clip of this.deps.clips()) {
       if (!pass.liveClipIds.has(clip.id)) continue;
       const track = trackById.get(clip.trackId);
-      this.timingOf(clip, bpm, isPercussionTrack(track), trackMembers(track?.mpeChannels));
+      this.timingOf(clip, bpm, isPercussionTrack(track), track ? effectiveProgramFor(clip, track, this.deps.global()) : undefined, trackMembers(track?.mpeChannels));
     }
   }
 
@@ -554,6 +644,7 @@ export class EditMidiScheduler {
     this.envelopes = new Map();
     // The pass opens every channel at the defaults, so no clip's controllers are held yet.
     this.held = new Map();
+    this.ccHeld = new Map();
     this.lastLive = new Set();
     this.counts = { notes: 0, chased: 0, late: 0, skipped: 0 };
     // A wheel message of this pass on a channel waits until the last stale one
@@ -586,11 +677,11 @@ export class EditMidiScheduler {
     return this.anchorCtx + (t - this.anchorT);
   }
 
-  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean, members: number): ClipTiming {
+  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean, program: number | undefined, members: number): ClipTiming {
     const hit = this.timing.get(clip);
-    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.members === members) return hit.timing;
-    const timing = clipLiveTiming(clip, bpm, percussion, members);
-    this.timing.set(clip, { bpm, percussion, members, timing });
+    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.program === program && hit.members === members) return hit.timing;
+    const timing = clipLiveTiming(clip, bpm, percussion, program, members);
+    this.timing.set(clip, { bpm, percussion, program, members, timing });
     return timing;
   }
 
@@ -627,6 +718,11 @@ export class EditMidiScheduler {
     const bpm = this.deps.projectBpm();
     const out: Out[] = [];
     const live = new Set<string>();
+    // Every controller change goes through here, so a pass knows which channels moved brightness or the reverb send.
+    const control = (channel: number, controller: number, value: number, t: number): void => {
+      if (!ALWAYS_OPENED.has(controller)) this.moved.add(`${channel}:${controller}`);
+      sink.control(channel, controller, value, t);
+    };
 
     // A channel message at `time`, held until after the last stale one a stopped
     // pass left queued on its channel. Returns the time it goes at.
@@ -642,7 +738,7 @@ export class EditMidiScheduler {
       if (c.kind === 'range') return pushAt(channel, time, 0.25, (at) => sink.wheelRange(channel, c.value, at));
       if (c.kind === 'wheel') return pushAt(channel, time, 0.5, (at) => sink.wheel(channel, c.value, at));
       if (c.kind === 'pressure') return pushAt(channel, time, 0.3, (at) => sink.pressure?.(channel, c.value, at));
-      return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => sink.control(channel, controller, c.value, at));
+      return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => control(channel, controller, c.value, at));
     };
 
     // The pass opens every channel it plays on at the General MIDI defaults, the
@@ -653,6 +749,9 @@ export class EditMidiScheduler {
       for (const chans of this.pass.channelsOf.values()) for (const ch of chans) channels.add(ch);
       for (const channel of [...channels].sort((a, b) => a - b)) {
         CHANNEL_DEFAULTS.forEach((d, i) => {
+          const key = `${channel}:${d.controller}`;
+          if (!ALWAYS_OPENED.has(d.controller) && !this.moved.has(key)) return;
+          this.moved.delete(key);
           pushAt(channel, at, DEFAULTS_ORDER + i * 1e-3, (t) => sink.control(channel, d.controller, d.value, t));
         });
       }
@@ -672,6 +771,42 @@ export class EditMidiScheduler {
       }
     }
 
+    // Controller automation: each enabled trackMidiCc lane's changes on its track's channels.
+    const ccLanes = trackCcLanes(this.deps.automation?.());
+    const automated = automatedControllers(ccLanes);
+    const liveCc = new Set<string>();
+    for (const l of ccLanes) {
+      const chans = this.pass.channelsOf.get(l.trackId);
+      if (!chans?.length) continue;
+      const key = `${l.trackId}:${l.controller}`;
+      liveCc.add(key);
+      let held = this.ccHeld.get(key) ?? null;
+      if (held === null) {
+        // Where the lane comes in (the pass's start, or now for a lane added while playing): its value there.
+        const joinT = first ? this.fromT : Math.max(from, nowT);
+        held = ccLaneValueAt(l.lane, joinT);
+        const at = Math.max(now, this.ctxOf(joinT));
+        const value = held;
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => control(channel, l.controller, value, t));
+      }
+      const { events, held: after } = ccLaneEvents(l.lane, Math.max(from, first ? this.fromT + 1e-6 : from), until, held);
+      for (const e of events) {
+        const at = Math.max(now, this.ctxOf(e.sec));
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => control(channel, l.controller, e.value, t));
+      }
+      if (after !== null) this.ccHeld.set(key, after);
+    }
+    // A lane that went puts its controller back where the channel starts.
+    for (const key of [...this.ccHeld.keys()]) {
+      if (liveCc.has(key)) continue;
+      this.ccHeld.delete(key);
+      const cut = key.lastIndexOf(':');
+      const trackId = key.slice(0, cut);
+      const controller = Number(key.slice(cut + 1));
+      const value = partController(controller)?.initial ?? 0;
+      for (const channel of this.pass.channelsOf.get(trackId) ?? []) pushAt(channel, now, RESET_ORDER, (t) => sink.control(channel, controller, value, t));
+    }
+
     const pushOn = (clipId: string, channel: number, voice: LiveVoice, n: TimedNote, time: number) => {
       // A note of this key still held on the channel ends where this one starts,
       // or its later note-off would cut this one.
@@ -681,7 +816,9 @@ export class EditMidiScheduler {
         out.push({ time, order: 0, send: () => sink.noteOff(channel, n.midi, time) });
         this.sounding.splice(i, 1);
       }
-      out.push({ time, order: 1, send: () => sink.noteOn(channel, voice.program, n.midi, n.velocity, time, voice.bank, voice.bankLsb) });
+      // A note an articulation plays in a preset of its own (on its own slot) takes that preset.
+      const v = n.program !== undefined ? { program: n.program, bank: n.bank ?? 0, bankLsb: undefined } : voice;
+      out.push({ time, order: 1, send: () => sink.noteOn(channel, v.program, n.midi, n.velocity, time, v.bank, v.bankLsb) });
       if (time > now) this.queued.push({ channel, midi: n.midi, time });
       this.sounding.push({ clipId, channel, midi: n.midi, off: n.off });
       this.counts.notes += 1;
@@ -700,10 +837,13 @@ export class EditMidiScheduler {
       const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);
-      const timing = this.timingOf(clip, bpm, percussion, trackMembers(track.mpeChannels));
+      const timing = this.timingOf(clip, bpm, percussion, program, trackMembers(track.mpeChannels));
       const chOf = (slot: number) => chans[Math.min(slot, chans.length - 1)];
       const clipEnd = clip.startSec + clip.durationSec;
       const open = muteSoloOpen(track, anySolo);
+      // The controllers the track's automation owns: the clip's own changes of them are left out.
+      const owned = automated.get(track.id);
+      const ownCtl = (c: TimedCtl): boolean => !owned || (c.kind !== 'cc' && c.kind !== 'reset') || !owned.has(c.controller ?? -1);
 
       // Envelope: a clip entering the window takes the track's envelope at its
       // start; playback starting inside a clip takes it from there; an edit to
@@ -739,13 +879,13 @@ export class EditMidiScheduler {
         }
         const at = Math.max(now, this.ctxOf(joinAt));
         for (const c of [...lastOf.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'range' ? -1 : 1))) {
-          noteCc(c, pushCtl(chOf(c.slot), c, at));
+          if (ownCtl(c)) noteCc(c, pushCtl(chOf(c.slot), c, at));
         }
       }
       for (let i = lowerBound(timing.ctl, from, (c) => c.t); i < timing.ctl.length; i += 1) {
         const c = timing.ctl[i];
         if (c.t >= until - EPS) break;
-        noteCc(c, pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t))));
+        if (ownCtl(c)) noteCc(c, pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t))));
       }
       // What the clip's controllers left on its channels, so they go back if it stops playing live first.
       if (timing.controllers.length) {

@@ -17,6 +17,7 @@ import { Camera, ChevronLeft, ChevronRight, LayoutTemplate, ListMusic, Plus, Rot
 import { useVirtuosoStore } from '../../state/virtuosoStore';
 import { LibraryPicker, MIDI_ONLY_TABS } from './LibraryPicker';
 import { MeterFace } from './MeterFace';
+import { ExpressionKey } from './ExpressionKey';
 import { logError } from '../../state/logStore';
 import { meterLabel, parseMeterLabel, sectionMeterChoices } from '../../lib/meterFace';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
@@ -445,6 +446,7 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
             icon={<ListMusic className={STRIP_GLYPH} />}
             legend="Song"
           />
+          <ExpressionKey iconOnly />
         </div>
         </div>
         )}

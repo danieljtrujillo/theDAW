@@ -194,17 +194,18 @@ const FIXTURES: Record<string, string> = {
   'renderSection climax octaves': '260:f3e22b0a65b24d6f7537acd9',
   'renderSection outro stride': '48:748d418055dda730911b43ac',
   'renderSection outro octaves': '48:748d418055dda730911b43ac',
-  'buildSong romantic': '558:01a1779aa5c0520e0d82a6fe',
-  'buildSong romantic sections': '436:5784c3e25fdf898b2c2fb2b8',
-  'buildSong baroque': '700:d0be393eb01184ae260f6050',
-  'buildSong baroque sections': '436:1b2135ba90dafae24df48e70',
-  'buildSong mussorgsky': '800:7999348de641aa744383c4c9',
-  'buildSong mussorgsky sections': '436:375b00d6e2ad0b95829fbb0f',
-  'buildSong flamenco': '930:12a32d5ec27d86a45a24f554',
-  'buildSong flamenco sections': '436:6862e5c69c052b40de1d99ab',
-  'buildSong ragtime': '623:765fbc9464389c325d581d35',
-  'buildSong ragtime sections': '439:1c76309492510a90d22f8920',
-  'buildSong default': '1265:30a6e7d83beae841ead25820',
+  // buildSong's humanize plays by section (humanizeSections): the notes are the same, their timing and velocities moved.
+  'buildSong romantic': '558:cde05994bd4b26e9ee309d83',
+  'buildSong romantic sections': '436:97772df995227d04838a2b5e',
+  'buildSong baroque': '700:b772309101d978bd8e85a755',
+  'buildSong baroque sections': '436:41b229171bbdd49ef36f0d43',
+  'buildSong mussorgsky': '800:e5a04d7e7a736c5046ea5aa0',
+  'buildSong mussorgsky sections': '436:5c7b43a7789f2f76e1468e98',
+  'buildSong flamenco': '930:ef1a0d727c51705907d4efcc',
+  'buildSong flamenco sections': '436:96d3e0331987cc45014d2cb3',
+  'buildSong ragtime': '623:bc44ef5bfaa23a45ef906e17',
+  'buildSong ragtime sections': '439:6fc2403910560f4543dea108',
+  'buildSong default': '1265:2e076874b66357ea0b372710',
   'arp renderProgression': '104:969c285a5c4fa70b17afef59',
   'arp renderProgression looped': '125:a71e91c7fafa6d3c59992cca',
 };
@@ -763,6 +764,25 @@ for (const amount of [0.6, 1]) {
     lines(0.9).at(-1),
     'Now 90: a third under about 90 in 100 top notes, up to about three in ten of them a semitone lower where that does not clash with the melody.',
   );
+}
+
+// humanize with its sections: each section leans its own way, the notes and lengths stay.
+{
+  const src = phrase(20260913);
+  const plain = humanize(src, 1, 5);
+  const played = humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0.125 });
+  assert.equal(played.length, plain.length, 'the same notes');
+  assert.deepEqual(played.map((n) => [n.note, n.length]), plain.map((n) => [n.note, n.length]), 'pitch and length stay');
+  assert.ok(played.some((n, i) => n.step !== plain[i].step), 'the onsets move by section');
+  const lean = (from: number, to: number): number => {
+    const d = played.map((n, i) => n.step - plain[i].step).filter((_, i) => plain[i].step >= from && plain[i].step < to);
+    return d.reduce((a, b) => a + b, 0) / Math.max(1, d.length);
+  };
+  assert.ok(Math.abs(lean(0, 16) - lean(16, 1e9)) > 1e-4, `each section leans its own way (${lean(0, 16).toFixed(4)} vs ${lean(16, 1e9).toFixed(4)} steps)`);
+  assert.ok(played.every((n, i) => Math.abs(n.step - plain[i].step) <= (0.012 * 1.25 + 0.008) / 0.125 + 1e-9), 'within the bias and the drift, in steps');
+  const sig = (ns: PianoNote[]) => ns.map((n) => [n.note, n.step, n.length, n.velocity]);
+  assert.deepEqual(sig(humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0.125 })), sig(played), 'seeded');
+  assert.deepEqual(sig(humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0 })), sig(plain), 'no step length: no section pass');
 }
 
 console.log('virtuosoTransform: ok');

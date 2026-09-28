@@ -134,7 +134,7 @@ const clipOf = (id: string): AudioClip => useEditorStore.getState().clips.find((
   assert.deepEqual(calls[0].controls, PEDAL);
   assert.equal(calls[0].bent, true, "lane B's bend is in the new instrument's audio");
   assert.deepEqual(calls[0].lanes, [0, 1, 1], 'each note in its lane');
-  assert.deepEqual(calls[0].keys, ['bends', 'controls', 'percussion', 'program'], 'no tempo map: the clip has one tempo');
+  assert.deepEqual(calls[0].keys, ['articulation', 'bends', 'controls', 'percussion', 'program'], 'no tempo map: the clip has one tempo; the instrument its articulations resolve against rides along');
 
   seed();
   const b = await tools.bounceClip({ clip_id: 'keys', flatten: true, render });

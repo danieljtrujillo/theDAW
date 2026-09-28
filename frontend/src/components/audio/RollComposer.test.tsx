@@ -206,7 +206,7 @@ assert.deepEqual(smallText(q('[data-roll-harmony]')), [], 'no text under 12px in
 assert.deepEqual(smallText(lane), [], 'nor in the lane');
 
 // ── The dock keys, where the MIDI tab lays them out ─────────────────────────
-// HARMONY and FIGURES on the strip after the lane keys BEND and TEMPO; TRANSFORM on the rail after COMPOSE.
+// HARMONY and FIGURES on the strip after the lane keys BEND, CC, ART and TEMPO; TRANSFORM on the rail after COMPOSE.
 const stripKey = (word: string): HTMLButtonElement => {
   const hit = buttons().find((b) => b.textContent === word && b.hasAttribute('aria-pressed') && b.closest('[role="group"]') === null);
   assert.ok(hit, `the strip's ${word} key`);
@@ -215,7 +215,7 @@ const stripKey = (word: string): HTMLButtonElement => {
 const strip = stripKey('Bend').parentElement!;
 const stripWords = [...strip.querySelectorAll(':scope > button')].map((b) => b.textContent);
 const at = stripWords.indexOf('Bend');
-assert.deepEqual(stripWords.slice(at, at + 4), ['Bend', 'Tempo', 'Harmony', 'Figures'], 'the composer rows beside the other lanes');
+assert.deepEqual(stripWords.slice(at, at + 6), ['Bend', 'CC', 'Art', 'Tempo', 'Harmony', 'Figures'], 'the composer rows beside the other lanes');
 const rail = q('[role="group"][aria-label="MIDI actions"]');
 assert.ok(rail, 'the action rail');
 const railNames = [...rail.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent);

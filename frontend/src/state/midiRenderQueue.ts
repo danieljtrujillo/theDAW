@@ -167,14 +167,15 @@ export function midiLiveIfHeard(clips: readonly AudioClip[] = useEditorStore.get
  */
 async function resolvedDeps(): Promise<MidiRenderDeps> {
   if (deps) return deps;
-  const [synth, sf, store, mixer] = await Promise.all([
-    import('../lib/midiSynth'),
+  const [artRender, sf, store, mixer] = await Promise.all([
+    import('../lib/articulationRender'),
     import('../lib/soundfontEngine'),
     import('./editorStore'),
     import('./liveMixer'),
   ]);
   deps ??= {
-    render: synth.renderStepNotesToBlob,
+    // Each note played by its articulation, a preset articulation on a channel of its own.
+    render: artRender.renderArticulatedStepNotes,
     computePeaks: store.computePeaks,
     global: sf.getGlobalVoice,
     ensureReady: sf.ensureSoundfontReady,

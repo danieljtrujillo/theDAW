@@ -253,7 +253,7 @@ Analysis (backend DSP):
 Markers and automation:
 - `editor_remove_marker` — Payload: `{"marker_id": "id or current label"}`
 - `editor_rename_marker` — `name` is the NEW label. Payload: `{"marker_id": "...", "name": "Chorus 2"}`
-- `editor_add_automation_lane` — Payload: `{"kind": "trackVolume"|"trackPan"|"trackFx"|"masterFx", "track_id?": "...", "entry_id?": "...", "param_key?": "..."}`
+- `editor_add_automation_lane` — Payload: `{"kind": "trackVolume"|"trackPan"|"trackFx"|"masterFx"|"trackMidiCc", "track_id?": "...", "entry_id?": "...", "param_key?": "..."}` (trackMidiCc: `param_key` is the controller number, 1/7/10/11/64/74/91, values 0-127)
 - `editor_set_automation_points` — Payload: `{"lane_id": "...", "points": [{"t": 0, "v": 0.8}, {"t": 8, "v": 0.2}]}`
 
 Safety net — use these, they are cheap:

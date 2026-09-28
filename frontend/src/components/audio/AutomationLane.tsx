@@ -74,6 +74,7 @@ export function lanePathPoints(
 const laneName = (target: AutomationTarget): string => {
   if (target.kind === 'trackVolume') return 'track volume';
   if (target.kind === 'trackPan') return 'track pan';
+  if (target.kind === 'trackMidiCc') return `track MIDI controller ${target.paramKey ?? ''}`.trim();
   const scope = target.kind === 'masterFx' ? 'master' : 'track';
   return `${scope} effect ${target.paramKey ?? 'parameter'}`;
 };

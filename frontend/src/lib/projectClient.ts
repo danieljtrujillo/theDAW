@@ -5,7 +5,7 @@ import { dawDeviceToEffectNode } from './dawEffectMap';
 import type { SwayBinding, SwayUnattached } from './swayImportResolve';
 import type { PerformRoutingSnapshot } from '../state/performRouting';
 import type { AudioClip } from '../state/editorStore';
-import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type PianoNote } from '../state/pianoRollStore';
+import { DEFAULT_LANES, clampLaneSpan, sanitizeLanes, type NoteExpression, type NoteExpressionPoint, type PianoNote } from '../state/pianoRollStore';
 import { normalizeMeterMap, roundUpToBar, sanitizeMeter, sanitizeTuplet, type MeterSegment, type PolyLane } from './meterMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
@@ -15,6 +15,8 @@ import type { RollPartRef } from '../state/pianoRollStore';
 import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
+import { isArticulation } from './articulationMap';
+import { sanitizeNoteExpression } from './noteExpression';
 
 // --- Piano-roll meter (mirrors lib/meterMap in the .tasmo JSON shape) ---
 /** A time-signature change: the meter from `bar` until the next change. */
@@ -46,6 +48,10 @@ export interface TasmoNoteExpression {
   pressure?: number;
   timbre?: number;
   pitch_bend?: number;
+  /** The semitones pitch_bend ±1 is worth, when the note names its own. */
+  bend_range?: number;
+  /** Each dimension's movement inside the note: [ticks from its start, value] pairs. */
+  curves?: { pressure?: Array<[number, number]>; timbre?: Array<[number, number]>; pitch_bend?: Array<[number, number]> };
 }
 
 /**
@@ -65,6 +71,8 @@ export interface TasmoStepNote {
   ticks?: number;
   channel?: number;
   expr?: TasmoNoteExpression;
+  /** The note's articulation (lib/articulationMap), when it has one. */
+  articulation?: string;
 }
 
 /** A pitch bend point as a piano-roll clip stores it; `shape` only when it is not `linear`. */
@@ -745,7 +753,17 @@ const exprToTasmo = (e: NoteExpression | undefined): TasmoNoteExpression | undef
     ...(e.pressure !== undefined ? { pressure: e.pressure } : {}),
     ...(e.timbre !== undefined ? { timbre: e.timbre } : {}),
     ...(e.pitchBend !== undefined ? { pitch_bend: e.pitchBend } : {}),
+    ...(e.bendRange !== undefined ? { bend_range: e.bendRange } : {}),
   };
+  if (e.curves) {
+    const pairs = (c: NoteExpressionPoint[] | undefined) => c?.map((p): [number, number] => [p.tick, p.value]);
+    const curves = {
+      ...(e.curves.pressure ? { pressure: pairs(e.curves.pressure) } : {}),
+      ...(e.curves.timbre ? { timbre: pairs(e.curves.timbre) } : {}),
+      ...(e.curves.pitchBend ? { pitch_bend: pairs(e.curves.pitchBend) } : {}),
+    };
+    if (Object.keys(curves).length) out.curves = curves;
+  }
   return Object.keys(out).length ? out : undefined;
 };
 
@@ -774,6 +792,7 @@ export const pianoNoteToTasmo = (n: PianoNote): TasmoStepNote => {
     ...(ticks !== undefined ? { ticks } : {}),
     ...(n.channel !== undefined ? { channel: n.channel } : {}),
     ...(expr ? { expr } : {}),
+    ...(n.articulation ? { articulation: n.articulation } : {}),
   };
 };
 
@@ -833,8 +852,9 @@ const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
  * roll's own ingest rule (`withTicks` in pianoRollStore). Ticks that disagree
  * with the steps beside them (a hand-edited file) are dropped, so the steps win.
  */
-export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> => {
-  const out: Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr'> = {};
+export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr' | 'articulation'> => {
+  const out: Pick<PianoNote, 'lane' | 'tick' | 'ticks' | 'channel' | 'expr' | 'articulation'> = {};
+  if (isArticulation(n.articulation)) out.articulation = n.articulation;
   const { lane, channel } = n;
   const tick = ticksMatching(n.tick, n.step, 0);
   const ticks = ticksMatching(n.ticks, n.length, MIN_NOTE_TICKS);
@@ -844,11 +864,17 @@ export const tasmoNoteExtras = (n: Record<string, unknown>): Pick<PianoNote, 'la
   if (typeof channel === 'number' && Number.isFinite(channel)) out.channel = Math.max(1, Math.min(16, Math.round(channel)));
   if (n.expr && typeof n.expr === 'object') {
     const e = n.expr as Record<string, unknown>;
-    const expr: NoteExpression = {};
-    if (typeof e.pressure === 'number' && Number.isFinite(e.pressure)) expr.pressure = clampUnit(e.pressure);
-    if (typeof e.timbre === 'number' && Number.isFinite(e.timbre)) expr.timbre = clampUnit(e.timbre);
-    if (typeof e.pitch_bend === 'number' && Number.isFinite(e.pitch_bend)) expr.pitchBend = Math.max(-1, Math.min(1, e.pitch_bend));
-    if (Object.keys(expr).length) out.expr = expr;
+    const c = (e.curves && typeof e.curves === 'object' ? e.curves : {}) as Record<string, unknown>;
+    const points = (raw: unknown) => (Array.isArray(raw) ? raw.map((p) => (Array.isArray(p) ? { tick: p[0], value: p[1] } : p)) : undefined);
+    // The file's snake_case into the roll's shape, then the roll's own rule (lib/noteExpression).
+    const expr = sanitizeNoteExpression({
+      pressure: e.pressure,
+      timbre: e.timbre,
+      pitchBend: e.pitch_bend,
+      bendRange: e.bend_range,
+      curves: { pressure: points(c.pressure), timbre: points(c.timbre), pitchBend: points(c.pitch_bend) },
+    });
+    if (expr) out.expr = expr;
   }
   return out;
 };
@@ -987,7 +1013,7 @@ export const playedNotesFromRoll = (meter: ClipMeterFields): PianoNote[] => {
 /** What a note sounds like, as one comparable string; ids and ticks left out. */
 const soundingKey = (n: PianoNote): string =>
   `${n.note}|${n.step}|${n.length}|${n.velocity}|${n.lane ?? ''}|${n.channel ?? ''}|` +
-  `${n.expr?.pressure ?? ''}|${n.expr?.timbre ?? ''}|${n.expr?.pitchBend ?? ''}`;
+  `${n.expr?.pressure ?? ''}|${n.expr?.timbre ?? ''}|${n.expr?.pitchBend ?? ''}|${n.expr?.bendRange ?? ''}|${n.expr?.curves ? JSON.stringify(n.expr.curves) : ''}|${n.articulation ?? ''}`;
 
 /** Whether two note lists sound the same, in any order. */
 const sameSounding = (a: readonly PianoNote[], b: readonly PianoNote[]): boolean => {

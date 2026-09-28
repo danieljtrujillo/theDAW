@@ -865,6 +865,24 @@ export function editControl(channel: number, controller: number, value: number, 
 }
 
 /**
+ * A controller change of any number (0-127) on an EDIT channel at `time` (now
+ * when absent), sent as its raw bytes the way sfControlChange sends one to the
+ * preview synth: every controller a roll part keeps (lib/rollTracks
+ * PART_CONTROLLERS, brightness and the reverb send among them) and a track's
+ * trackMidiCc automation. EDIT's live MIDI sink (state/liveMixer) sends its
+ * controllers here. No-op until its bank exists.
+ */
+export function editControllerChange(channel: number, controller: number, value: number, time?: number): void {
+  const at = editChannel(channel);
+  if (!at) return;
+  try {
+    at.bank.synth.sendMessage(controlMessage(at.ch, controller, value), 0, atTime(time));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
  * The controllers EDIT sends live, as the synth names them: a roll part's
  * (lib/rollTracks PART_CONTROLLERS), a note's timbre (CC 74, the third
  * dimension of per-note expression) and a track's reverb send (EditorTrack

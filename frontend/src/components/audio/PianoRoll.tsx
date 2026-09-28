@@ -102,6 +102,8 @@ import {
 } from '../../lib/grooveTemplate';
 import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
+import { CcLane } from './CcLane';
+import { ArticulationLane } from './ArticulationLane';
 import { TempoLane } from './TempoLane';
 import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers';
 import { HARMONY_ROW_HEIGHT, RollHarmonyCorner, RollHarmonyRow, runRollVoiceLeadingCheck } from './RollHarmonyRow';
@@ -1326,7 +1328,12 @@ export const exportRollMidi = async (): Promise<void> => {
     logWarn('piano-roll', `A MIDI file has 16 channels: ${names.join(', ')} share channels, and a player sounds them on one program each`);
   }
   // A bent lane plays on a channel of its own; with every channel taken its notes go on the part's channel, unbent.
-  const unbent = parts.length > 1 ? partLaneChannels(roll, parts).unbent : [];
+  const plan = parts.length > 1 ? partLaneChannels({ ...roll, voices }, parts) : null;
+  const unbent = plan?.unbent ?? [];
+  // A preset articulation (a pizzicato's GM 46) with no channel left plays in its part's own program.
+  if (plan?.articulationFallback.length) {
+    logWarn('piano-roll', `No MIDI channel was left for the articulations of ${plan.articulationFallback.map((f) => f.name).join(', ')}: their pizzicato, tremolo and muted notes play in the part's own program`);
+  }
   if (unbent.length) {
     const lanes = unbent.map((u) => `${u.name} lane ${roll.lanes.find((l) => l.id === u.lane)?.name ?? u.lane}`);
     logWarn('piano-roll', `No MIDI channel was left for the pitch bend of ${lanes.join(', ')}: those notes are in the file unbent`);
@@ -2107,11 +2114,17 @@ export const PianoRoll: React.FC<{
   showBend?: boolean;
   /** The tempo lane is open under the grid (the strip's TEMPO key). */
   showTempo?: boolean;
+  /** The CC lane is open under the grid (the strip's CC key). */
+  showCc?: boolean;
+  /** The articulation lane is open under the grid (the strip's ART key). */
+  showArticulations?: boolean;
 }> = ({
   stepPx,
   onStepPxChange,
   showBend = false,
   showTempo = false,
+  showCc = false,
+  showArticulations = false,
 }) => {
   const notes = usePianoRollStore((s) => s.notes);
   const totalSteps = usePianoRollStore((s) => s.totalSteps);
@@ -3064,6 +3077,8 @@ export const PianoRoll: React.FC<{
           <VelocityLane stepPx={stepPx} totalSteps={totalSteps} win={view} />
           {showFiguredBass && <FiguredBassLane stepPx={stepPx} totalSteps={totalSteps} win={view} />}
           {showBend && <BendLane stepPx={stepPx} totalSteps={totalSteps} />}
+          {showCc && <CcLane stepPx={stepPx} totalSteps={totalSteps} />}
+          {showArticulations && <ArticulationLane stepPx={stepPx} totalSteps={totalSteps} />}
           {showTempo && <TempoLane stepPx={stepPx} totalSteps={totalSteps} />}
         </div>
       </div>

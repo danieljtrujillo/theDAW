@@ -123,6 +123,7 @@ import { rollTracksOf, usePianoRollStore, type RollVoiceLeading } from '../../st
 import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { RollKeyPicker } from './FiguredBassLane';
 import { FLYOUT_LEGEND, FLYOUT_SELECT, MINI_GLYPH, MINI_KEY, StripKey, keyTone } from './midiDockKit';
+import { ExpressionKey } from './ExpressionKey';
 
 export type ComposeSectionId = 'harmony' | 'form' | 'counterpoint' | 'check' | 'profile';
 type SectionId = ComposeSectionId;
@@ -696,6 +697,7 @@ export const ComposerPanel: React.FC<{
           <span className="sr-only">{status.message}</span>
         </div>
         <span className="flex-1" />
+        <ExpressionKey mini iconOnly />
         <StripKey
           mini
           iconOnly

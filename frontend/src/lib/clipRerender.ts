@@ -45,6 +45,7 @@ import { clipRenderInput } from './rollClip';
 import { midiRenderSig } from './midiRender';
 import type { TempoEvent } from './tempoMap';
 import type { RollControl } from '../state/pianoRollStore';
+import { clipArticulationInstrument, type ArticulationInstrument } from './articulationMap';
 
 export interface ClipRerenderDeps {
   /** lib/midiSynth renderStepNotesToBlob. */
@@ -59,6 +60,8 @@ export interface ClipRerenderDeps {
       bends?: RollRenderBends;
       tempoMap?: readonly TempoEvent[];
       controls?: readonly RollControl[];
+      /** The instrument the notes' articulations resolve against (lib/articulationRender). */
+      articulation?: ArticulationInstrument;
     },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
@@ -108,6 +111,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
     // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
     ...(input.controls ? { controls: input.controls } : {}),
+    // Its notes' articulations, as they resolve for the new voice.
+    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true),
   });
   const { peaks } = await deps.computePeaks(rendered.blob, 240);
   // Re-read: the user may have deleted, trimmed or re-assigned the clip mid-render.

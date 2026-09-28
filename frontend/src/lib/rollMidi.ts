@@ -111,6 +111,7 @@ import {
   type MidiControl,
   type MidiFileData,
   type MidiNote,
+  type MidiPressure,
   type MidiProgram,
   type MidiTempo,
   type MidiTrack,
@@ -118,6 +119,9 @@ import {
 import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram } from './orchestra';
+import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
+import { scaleExpressionTicks } from './noteExpression';
+import { mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
@@ -367,6 +371,104 @@ interface WrittenNotes {
   laneOfNote: number[];
   /** The wheel and range of each lane whose channel is its own, by lane. */
   laneBends: Map<number, { bends: MidiBend[]; bendRanges: MidiBendRange[] }>;
+  /** The member channels' messages for the part's expressive notes (MPE), which its first track carries. */
+  mpe: MpeMessages;
+}
+
+/** Member-channel messages a part's expressive notes need: programs, ranges, wheels, CC 74 and pressure. */
+interface MpeMessages {
+  programs: MidiProgram[];
+  bendRanges: MidiBendRange[];
+  bends: MidiBend[];
+  controls: MidiControl[];
+  pressures: MidiPressure[];
+}
+
+/**
+ * Where a file's expressive notes go (lib/mpeMidi planMpeExport): each note's
+ * member channel by `${partId}#${index in its unrolled notes}`, and what each
+ * member was last set to, shared across the file's parts.
+ */
+interface MpeWrite {
+  channelOf: Map<string, number>;
+  members: number[];
+  noRoom: boolean;
+  lastRange: Map<number, number>;
+  lastProgram: Map<number, string>;
+}
+
+/** The MPE plan for `parts`' expressive notes at `ppq`, clear of the `taken` channels. */
+function planMpe(s: RollMidiSource, parts: ReadonlyArray<{ id: string; notes: readonly PianoNote[] }>, ppq: number, taken: ReadonlySet<number>): MpeWrite {
+  const toFile = ppq / PPQ;
+  const spans: MpeExportNote[] = [];
+  for (const p of parts) {
+    unrollLanes(p.notes, s.lanes, s.totalSteps).forEach((n, i) => {
+      if (!writesAsMpe(n.expr)) return;
+      const start = Math.round(noteTick(n) * toFile);
+      spans.push({ key: `${p.id}#${i}`, start, end: start + Math.max(1, Math.round(noteTicks(n) * toFile)) });
+    });
+  }
+  const plan = planMpeExport(spans, taken);
+  return { ...plan, lastRange: new Map(), lastProgram: new Map() };
+}
+
+/** A file's first track with the MPE zone's configuration message, when the plan uses members. */
+function withMpeZone(tracks: MidiTrack[], plan: MpeWrite): MidiTrack[] {
+  if (!plan.members.length || !tracks.length) return tracks;
+  const [first, ...rest] = tracks;
+  return [{ ...first, mpeZones: [mpeZoneEvent(plan.members.length)] }, ...rest];
+}
+
+/** `track` with a part's member-channel messages merged in, each list in tick order. */
+function withMpeMessages(track: MidiTrack, m: MpeMessages): MidiTrack {
+  if (!m.bends.length && !m.programs.length) return track;
+  const byTick = <T extends { tick: number }>(a: readonly T[] | undefined, b: readonly T[]): T[] => [...(a ?? []), ...b].sort((x, y) => x.tick - y.tick);
+  return {
+    ...track,
+    programs: byTick(track.programs, m.programs),
+    bendRanges: byTick(track.bendRanges, m.bendRanges),
+    bends: byTick(track.bends, m.bends),
+    controls: byTick(track.controls, m.controls),
+    pressures: byTick(track.pressures, m.pressures),
+  };
+}
+
+/**
+ * A part's articulation channels in a file: one per soundfont preset its
+ * articulations play (lib/articulationMap) and bent lane they sit in, as the
+ * live players give them, by `artChannelKey`, each with its preset.
+ */
+export interface ArticulationFileChannels {
+  inst: ArticulationInstrument;
+  channelOf: Map<string, { channel: number; target: SoundfontArticulationTarget; lane: number | null }>;
+}
+
+/** The key of an articulation channel: its preset, and the bent lane whose wheel it follows (none: '-'). */
+export const artChannelKey = (target: SoundfontArticulationTarget, lane: number | null): string => `${targetKey(target)}|${lane ?? '-'}`;
+
+/**
+ * The articulation channels `own` needs, in first-note order: a preset
+ * articulation's notes in a lane whose wheel the file writes (`wheelLanes`)
+ * take a channel of their own per lane, so the lane's bend reaches them.
+ */
+export function articulationChannelNeeds(
+  lanes: readonly PolyLane[],
+  own: readonly PianoNote[],
+  inst: ArticulationInstrument,
+  wheelLanes: ReadonlySet<number>,
+): Array<{ key: string; target: SoundfontArticulationTarget; lane: number | null }> {
+  const out: Array<{ key: string; target: SoundfontArticulationTarget; lane: number | null }> = [];
+  const seen = new Set<string>();
+  for (const a of articulatedNotes(own, inst).notes) {
+    if (!a.target) continue;
+    const lane = playingLane(a.note.lane, lanes);
+    const bent = wheelLanes.has(lane) ? lane : null;
+    const key = artChannelKey(a.target, bent);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, target: a.target, lane: bent });
+  }
+  return out;
 }
 
 /**
@@ -375,6 +477,11 @@ interface WrittenNotes {
  * channel. Straight from each note's ticks: an unrolled repeat is re-ticked
  * from the step unrollLanes moved it to, which is exact because a lane cycle
  * is a whole number of steps. Nothing is quantised on the way out.
+ *
+ * A note's articulation rides with it (the `theDAW:art=` text lib/midi
+ * writes). With `art`, a note whose articulation plays a preset of its own
+ * goes on that preset's channel (its home channel kept for the text), and a
+ * bent lane's wheel is written on its articulation channels too.
  */
 function writeNotes(
   s: RollMidiSource,
@@ -382,6 +489,8 @@ function writeNotes(
   ppq: number,
   channels: ReadonlyMap<number, number>,
   wheelLanes: ReadonlySet<number>,
+  art?: ArticulationFileChannels,
+  mpe?: { partId: string; plan: MpeWrite; program: number | undefined; bank: number },
 ): WrittenNotes {
   const stepTicks = ppq / 4;
   // The note model's ticks rescaled to the file's resolution. At ppq === PPQ
@@ -391,13 +500,39 @@ function writeNotes(
   // Nothing sounds past the roll's end or its last note's end, so no wheel message is written past it.
   const soundEnd = played.reduce((m, n) => Math.max(m, n.step + n.length), s.totalSteps);
   const laneOfNote = played.map((n) => playingLane(n.lane, s.lanes));
-  const notes: MidiNote[] = played.map((n, i) => ({
-    tick: Math.round(noteTick(n) * toFile),
-    note: n.note,
-    velocity: Math.max(1, Math.min(127, n.velocity)),
-    durationTicks: Math.max(1, Math.round(noteTicks(n) * toFile)),
-    channel: channels.get(laneOfNote[i]) ?? 0,
-  }));
+  const arts = art ? articulatedNotes(played, art.inst).notes : null;
+  const mpeOut: MpeMessages = { programs: [], bendRanges: [], bends: [], controls: [], pressures: [] };
+  const notes: MidiNote[] = played.map((n, i) => {
+    const home = channels.get(laneOfNote[i]) ?? 0;
+    const target = arts?.[i]?.target;
+    const own = target && art ? art.channelOf.get(artChannelKey(target, wheelLanes.has(laneOfNote[i]) ? laneOfNote[i] : null)) : undefined;
+    const tick = Math.round(noteTick(n) * toFile);
+    const durationTicks = Math.max(1, Math.round(noteTicks(n) * toFile));
+    // A note with expression of its own plays on its MPE member channel, set to it just before it starts.
+    const member = mpe && writesAsMpe(n.expr) ? mpe.plan.channelOf.get(`${mpe.partId}#${i}`) : undefined;
+    if (member !== undefined && mpe && n.expr) {
+      const key = `${mpe.program ?? ''}:${mpe.bank}`;
+      if (mpe.program !== undefined && mpe.plan.lastProgram.get(member) !== key) {
+        mpeOut.programs.push({ tick, channel: member, program: mpe.program, ...(mpe.bank > 0 ? { bank: mpe.bank } : {}) });
+        mpe.plan.lastProgram.set(member, key);
+      }
+      const m = mpeNoteMessages({ tick, durationTicks, expr: n.expr }, member, toFile, mpe.plan.lastRange.get(member));
+      mpe.plan.lastRange.set(member, m.range);
+      mpeOut.bendRanges.push(...m.ranges);
+      mpeOut.bends.push(...m.bends);
+      mpeOut.controls.push(...m.controls);
+      mpeOut.pressures.push(...m.pressures);
+    }
+    return {
+      tick,
+      note: n.note,
+      velocity: Math.max(1, Math.min(127, n.velocity)),
+      durationTicks,
+      channel: member ?? (own ? own.channel : home),
+      ...(n.articulation ? { articulation: n.articulation } : {}),
+      ...(own && member === undefined ? { homeChannel: home } : {}),
+    };
+  });
   const laneBends = new Map<number, { bends: MidiBend[]; bendRanges: MidiBendRange[] }>();
   for (const [lane, curve] of playedRollBends(s.bends, s.lanes, s.totalSteps)) {
     if (!wheelLanes.has(lane)) continue;
@@ -412,9 +547,16 @@ function writeNotes(
       if (last && last.tick === tick) bends.pop();
       bends.push({ tick, channel, value: e.raw });
     }
-    laneBends.set(lane, { bends, bendRanges: [{ tick: 0, channel, semitones: curve.range }] });
+    // The lane's articulation channels bend with it: the same wheel, after the lane's own channel's.
+    const artChannels = art ? [...art.channelOf.values()].filter((c) => c.lane === lane).map((c) => c.channel) : [];
+    const own = bends.slice();
+    for (const ch of artChannels) for (const b of own) bends.push({ ...b, channel: ch });
+    laneBends.set(lane, {
+      bends,
+      bendRanges: [channel, ...artChannels].map((ch) => ({ tick: 0, channel: ch, semitones: curve.range })),
+    });
   }
-  return { notes, laneOfNote, laneBends };
+  return { notes, laneOfNote, laneBends, mpe: mpeOut };
 }
 
 /** The conductor fields of a roll's file: its tempo, every tempo of its map, and its time signatures. */
@@ -506,12 +648,20 @@ function partTrackExtra(
   controls: readonly RollControl[] | undefined,
   ppq: number,
   base: Partial<MidiTrack> = {},
+  art?: ArticulationFileChannels,
 ): (lane: PolyLane | null) => Partial<MidiTrack> {
   const written = new Set<number>();
+  // The articulation channels' presets go in the part's first track, each with its bank select.
+  let artPending = art ? [...art.channelOf.values()] : [];
   return (lane) => {
     const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
-    const programs = partPrograms(used, program, bank, bankLsb);
-    const fresh = [...new Set(used)].filter((ch) => !written.has(ch));
+    const programs = [
+      ...partPrograms(used, program, bank, bankLsb),
+      ...artPending.map((c) => ({ tick: 0, channel: c.channel, program: c.target.program, ...(c.target.bank > 0 ? { bank: c.target.bank } : {}) })),
+    ];
+    const artUsed = artPending.map((c) => c.channel);
+    artPending = [];
+    const fresh = [...new Set([...used, ...artUsed])].filter((ch) => !written.has(ch));
     for (const ch of fresh) written.add(ch);
     const ctl = partControlEvents(controls, fresh, ppq);
     return { ...base, ...(programs.length ? { programs } : {}), ...(ctl.length ? { controls: ctl } : {}) };
@@ -582,19 +732,36 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   }
   // Any other roll of one part writes the channels it always did.
   const channels = laneChannels(s.lanes, s.bends);
-  const w = writeNotes(s, notes, ppq, channels, bentLanes(s.lanes, s.bends));
+  const wheelLanes = bentLanes(s.lanes, s.bends);
   // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
   const program = part && part.program !== null ? part.program : undefined;
-  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.bankLsb, part?.controls, ppq, meta)) };
+  // Each preset articulation on a channel of its own, from the channels the lanes leave free.
+  const inst: ArticulationInstrument = { instrumentId: part?.instrumentId, program: program ?? (part ? s.voices?.get(part.id)?.program : undefined) ?? null };
+  const taken = new Set(channels.values());
+  const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
+  const art: ArticulationFileChannels = { inst, channelOf: new Map() };
+  for (const need of articulationChannelNeeds(s.lanes, notes, inst, wheelLanes)) {
+    const ch = free.shift();
+    if (ch === undefined) break;
+    art.channelOf.set(need.key, { channel: ch, target: need.target, lane: need.lane });
+  }
+  // Its expressive notes on the upper MPE zone's member channels (lib/mpeMidi), clear of every channel above.
+  const taken1 = new Set([...channels.values(), ...[...art.channelOf.values()].map((c) => c.channel)]);
+  const mpe = planMpe(s, [{ id: part?.id ?? 'roll', notes }], ppq, taken1);
+  const w = writeNotes(s, notes, ppq, channels, wheelLanes, art, { partId: part?.id ?? 'roll', plan: mpe, program, bank: part?.bank ?? 0 });
+  const tracks = laneTracks(s, w, 'Piano Roll', partTrackExtra(channels, program, part?.bank ?? 0, part?.bankLsb, part?.controls, ppq, meta, art));
+  tracks[0] = withMpeMessages(tracks[0], w.mpe);
+  return { ...header, tracks: withMpeZone(tracks, mpe) };
 }
 
 /** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
 const FILE_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
 
-/** A part's channel for each lane in a file, and the lanes whose wheel it writes (their own channel). */
+/** A part's channel for each lane in a file, the lanes whose wheel it writes (their own channel), and its articulation channels. */
 interface PartLaneChannels {
   channels: Map<number, number>;
   wheelLanes: Set<number>;
+  art: ArticulationFileChannels;
 }
 
 /**
@@ -605,9 +772,14 @@ interface PartLaneChannels {
  * none: its notes stay on the part's channel, unbent, and the export says so.
  */
 export function partLaneChannels(
-  s: Pick<RollMidiSource, 'lanes' | 'bends'>,
+  s: Pick<RollMidiSource, 'lanes' | 'bends'> & Partial<Pick<RollMidiSource, 'voices'>>,
   parts: readonly RollTrack[],
-): { parts: Map<string, PartLaneChannels>; unbent: Array<{ partId: string; name: string; lane: number }> } {
+): {
+  parts: Map<string, PartLaneChannels>;
+  unbent: Array<{ partId: string; name: string; lane: number }>;
+  /** Parts a preset articulation of which found no channel left: those notes play on the part's channel, in its program. */
+  articulationFallback: Array<{ partId: string; name: string }>;
+} {
   const { channels: base } = partFileChannels(parts);
   const taken = new Set(base.values());
   const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
@@ -629,9 +801,23 @@ export function partLaneChannels(
         wheelLanes.add(lane);
       }
     }
-    out.set(part.id, { channels, wheelLanes });
+    out.set(part.id, { channels, wheelLanes, art: { inst: { instrumentId: part.instrumentId, program: part.program ?? s.voices?.get(part.id)?.program ?? null }, channelOf: new Map() } });
   }
-  return { parts: out, unbent };
+  // Then each melodic part's preset articulations, while a channel is free (lib/articulationMap).
+  const articulationFallback: Array<{ partId: string; name: string }> = [];
+  for (const part of parts) {
+    if (isPercussionPart(part)) continue;
+    const p = out.get(part.id) as PartLaneChannels;
+    for (const need of articulationChannelNeeds(s.lanes, part.notes, p.art.inst, p.wheelLanes)) {
+      const ch = free.shift();
+      if (ch === undefined) {
+        if (!articulationFallback.some((f) => f.partId === part.id)) articulationFallback.push({ partId: part.id, name: part.name });
+        continue;
+      }
+      p.art.channelOf.set(need.key, { channel: ch, target: need.target, lane: need.lane });
+    }
+  }
+  return { parts: out, unbent, articulationFallback };
 }
 
 /**
@@ -644,16 +830,25 @@ export function partLaneChannels(
 export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack[], ppq = ROLL_PPQ): MidiFileData {
   const header = rollFileHeader(s, ppq);
   const plan = partLaneChannels(s, parts);
+  // The parts' expressive notes share the upper MPE zone, clear of every part's channels (lib/mpeMidi).
+  const taken = new Set<number>();
+  for (const p of plan.parts.values()) {
+    for (const ch of p.channels.values()) taken.add(ch);
+    for (const c of p.art.channelOf.values()) taken.add(c.channel);
+  }
+  const mpe = planMpe(s, parts.filter((p) => !isPercussionPart(p)), ppq, taken);
   const tracks: MidiTrack[] = [];
   for (const part of parts) {
-    const { channels, wheelLanes } = plan.parts.get(part.id) as PartLaneChannels;
-    const w = writeNotes(s, part.notes, ppq, channels, wheelLanes);
+    const { channels, wheelLanes, art } = plan.parts.get(part.id) as PartLaneChannels;
     const program = part.program ?? s.voices?.get(part.id)?.program;
     const percussion = isPercussionPart(part);
-    const extra = partTrackExtra(channels, program, percussion ? 0 : part.bank, percussion ? undefined : part.bankLsb, part.controls, ppq, { partMeta: partMetaText(part) });
-    tracks.push(...laneTracks(s, w, part.name, extra));
+    const w = writeNotes(s, part.notes, ppq, channels, wheelLanes, art, percussion ? undefined : { partId: part.id, plan: mpe, program, bank: part.bank });
+    const extra = partTrackExtra(channels, program, percussion ? 0 : part.bank, percussion ? undefined : part.bankLsb, part.controls, ppq, { partMeta: partMetaText(part) }, art);
+    const own = laneTracks(s, w, part.name, extra);
+    own[0] = withMpeMessages(own[0], w.mpe);
+    tracks.push(...own);
   }
-  return { ...header, tracks };
+  return { ...header, tracks: withMpeZone(tracks, mpe) };
 }
 
 /** Every note the file carries, across all its tracks: what an export reports it wrote. */
@@ -729,6 +924,9 @@ function laneTracksToRoll(
         tick,
         ticks,
         ...(lane.id > 0 ? { lane: lane.id } : {}),
+        ...(n.articulation ? { articulation: n.articulation } : {}),
+        // An MPE note's own expression (lib/mpeMidi), its curves on the roll's clock.
+        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
       });
     }
     const channel = t.bends?.[0]?.channel ?? t.notes[0]?.channel;
@@ -819,6 +1017,8 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
         tick,
         ticks,
         ...(lane > 0 ? { lane } : {}),
+        ...(n.articulation ? { articulation: n.articulation } : {}),
+        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
       };
     })
     .sort((a, b) => a.step - b.step);

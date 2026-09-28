@@ -26,8 +26,29 @@
  * needs is a `MidiCaptureDeps` entry supplied by the one `startMidiCapture()`
  * mount in `App.tsx`. The runtime imports are pure modules that load no store:
  * `lib/takeNotes` (whose only import is `lib/noteClock`, which has none),
- * `lib/clipProgram` and `lib/clipRenderWindow`; the rest are `import type`,
- * erased at compile. So the core is testable under plain `tsx` with no DOM, no
+ * `lib/clipProgram`, `lib/clipRenderWindow` and `lib/rollTracks` (the part
+ * controllers a pass keeps); the rest are `import type`, erased at compile.
+ *
+ * Per-note expression (MPE)
+ * -------------------------
+ * An MPE controller plays each note on a channel of its own and shapes it
+ * with that channel's pressure (D0), CC 74 and pitch wheel. A pass keeps, for
+ * each held note, where its channel's three were when it started and every
+ * change while it sounds (parseExpressionMessage), and when the pass played
+ * notes on two or more channels (an MPE pass) they land as each note's own
+ * expression (PianoNote `expr`: pressure, timbre, bend at 48 semitones, and
+ * their curves; lib/noteExpression), and the pass's CC 74 is the notes', not
+ * the part's. A pass on one channel keeps none: one keyboard's aftertouch and
+ * wheel move every note it holds, not one.
+ *
+ * Controllers
+ * -----------
+ * A pass keeps the controller changes a roll part keeps (lib/rollTracks
+ * PART_CONTROLLERS: modulation, volume, pan, expression, the sustain pedal,
+ * brightness and the reverb send), each stamped with the transport second it
+ * arrived at, as a note is. They land on the take as its roll part's
+ * controller changes (AudioClip `sourceRollPart` controls), the list EDIT
+ * plays live, renders and exports, and the roll's CC lane draws. So the core is testable under plain `tsx` with no DOM, no
  * store graph and — the point — no real MIDI device.
  *
  * Design source
@@ -47,7 +68,11 @@ import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from './clipProgram';
 import { renderedWindowFields, type RenderWindowClip } from './clipRenderWindow';
 import type { MidiBusMessage } from '../state/midiBus';
-import type { PianoNote } from '../state/pianoRollStore';
+import type { NoteExpression, PianoNote, RollControl, RollPartRef } from '../state/pianoRollStore';
+import { PPQ } from './noteClock';
+import { sanitizeNoteExpression, type ExpressionDimension } from './noteExpression';
+import { MPE_MEMBER_BEND_RANGE } from './mpeMidi';
+import { PERCUSSION_PART_CHANNEL, cleanPartControls, partController } from './rollTracks';
 import { takeToRoll } from './takeNotes';
 
 /* -------------------------------------------------------------------------- */
@@ -105,6 +130,47 @@ export interface CapturedNote {
   velocity: number;
   startSec: number;
   endSec: number;
+  /** The channel it was played on, when not channel 1 (0). */
+  channel?: number;
+  /** Its channel's pressure, CC 74 and wheel where it started and while it sounded; absent when its channel sent none. */
+  expr?: CapturedExpression;
+}
+
+/** A held note's channel expression: the values it started at (0..1, the bend -1..1) and each change, seconds from its start. */
+export interface CapturedExpression {
+  pressure?: number;
+  timbre?: number;
+  pitchBend?: number;
+  changes: Array<{ sec: number; dim: ExpressionDimension; value: number }>;
+}
+
+/**
+ * A channel pressure (D0), CC 74 or pitch wheel (E0) message as the note
+ * expression it is on its channel: pressure and timbre 0..1, the bend -1..1.
+ * Null for anything else.
+ */
+export function parseExpressionMessage(data: readonly number[] | Uint8Array): { dim: ExpressionDimension; channel: number; value: number } | null {
+  const status = Number(data[0] ?? 0) | 0;
+  if (status < 0x80 || status >= 0xf0) return null;
+  const channel = status & 0x0f;
+  const command = status & 0xf0;
+  const d1 = Number(data[1] ?? 0) & 0x7f;
+  const d2 = Number(data[2] ?? 0) & 0x7f;
+  if (command === 0xd0) return { dim: 'pressure', channel, value: d1 / 127 };
+  if (command === 0xb0 && d1 === 74) return { dim: 'timbre', channel, value: d2 / 127 };
+  if (command === 0xe0) {
+    const raw = d1 | (d2 << 7);
+    return { dim: 'pitchBend', channel, value: (raw - 8192) / (raw >= 8192 ? 8191 : 8192) };
+  }
+  return null;
+}
+
+/** One controller change played, in TRANSPORT seconds: a controller a roll part keeps. */
+export interface CapturedControl {
+  controller: number;
+  /** 0-127. */
+  value: number;
+  sec: number;
 }
 
 export interface NoteCapture {
@@ -117,6 +183,8 @@ export interface NoteCapture {
   close: () => CapturedNote[];
   /** How many notes are held down right now. */
   pending: () => number;
+  /** The controller changes of the pass `close` ended, in play order (lib/rollTracks PART_CONTROLLERS only). A second call returns nothing. */
+  takeControls: () => CapturedControl[];
 }
 
 /** A note held down, keyed by `(channel << 8) | note` so two channels playing
@@ -125,6 +193,8 @@ interface HeldNote {
   note: number;
   velocity: number;
   startSec: number;
+  channel: number;
+  expr?: CapturedExpression;
 }
 
 /**
@@ -135,25 +205,57 @@ export function createNoteCapture(opts: { now: () => number }): NoteCapture {
   const { now } = opts;
   const held = new Map<number, HeldNote>();
   let done: CapturedNote[] = [];
+  let controls: CapturedControl[] = [];
+  let closedControls: CapturedControl[] = [];
   let isOpen = false;
+  // Each channel's pressure, CC 74 and wheel as last sent: what a note on it starts at.
+  const channelState = new Map<number, Partial<Record<ExpressionDimension, number>>>();
 
   const finish = (key: number, endSec: number): void => {
     const h = held.get(key);
     if (!h) return;
     held.delete(key);
-    done.push({ note: h.note, velocity: h.velocity, startSec: h.startSec, endSec });
+    done.push({
+      note: h.note,
+      velocity: h.velocity,
+      startSec: h.startSec,
+      endSec,
+      ...(h.channel !== 0 ? { channel: h.channel } : {}),
+      ...(h.expr ? { expr: h.expr } : {}),
+    });
   };
 
   return {
     open: () => {
       held.clear();
       done = [];
+      controls = [];
+      closedControls = [];
+      channelState.clear();
       isOpen = true;
     },
     onMessage: (msg) => {
       if (!isOpen) return;
       const data = Array.isArray(msg) || msg instanceof Uint8Array ? msg : (msg as MidiBusMessage).data;
+      const expression = parseExpressionMessage(data as readonly number[]);
+      if (expression) {
+        // The channel's state for the next note, and a change of every note it holds now.
+        const at = now();
+        const state = channelState.get(expression.channel) ?? {};
+        state[expression.dim] = expression.value;
+        channelState.set(expression.channel, state);
+        for (const h of held.values()) {
+          if (h.channel !== expression.channel) continue;
+          h.expr ??= { changes: [] };
+          h.expr.changes.push({ sec: Math.max(0, at - h.startSec), dim: expression.dim, value: expression.value });
+        }
+      }
       const parsed = parseMidiMessage(data as readonly number[]);
+      if (parsed.kind === 'cc') {
+        // A controller a part keeps, at the transport second it arrived (the header's rule).
+        if (partController(parsed.note)) controls.push({ controller: parsed.note, value: Math.max(0, Math.min(127, parsed.velocity)), sec: now() });
+        return;
+      }
       if (parsed.kind !== 'noteOn' && parsed.kind !== 'noteOff') return;
       // The transport second NOW, not `msg.t` — see the header.
       const at = now();
@@ -165,7 +267,15 @@ export function createNoteCapture(opts: { now: () => number }): NoteCapture {
       // A second note-on for a pitch already down is a retrigger (some
       // controllers never send the off): close the old note, start a new one.
       finish(key, at);
-      held.set(key, { note: parsed.note, velocity: Math.max(1, Math.min(127, parsed.velocity)), startSec: at });
+      const state = channelState.get(parsed.channel);
+      held.set(key, {
+        note: parsed.note,
+        velocity: Math.max(1, Math.min(127, parsed.velocity)),
+        startSec: at,
+        channel: parsed.channel,
+        // Where its channel's pressure, CC 74 and wheel are as it starts (an MPE controller sends them just before).
+        ...(state && Object.keys(state).length ? { expr: { ...state, changes: [] } } : {}),
+      });
     },
     close: () => {
       if (!isOpen) return [];
@@ -176,9 +286,16 @@ export function createNoteCapture(opts: { now: () => number }): NoteCapture {
       for (const key of [...held.keys()]) finish(key, at);
       const out = done;
       done = [];
+      closedControls = controls;
+      controls = [];
       return out.sort((a, b) => a.startSec - b.startSec || a.note - b.note);
     },
     pending: () => held.size,
+    takeControls: () => {
+      const out = closedControls;
+      closedControls = [];
+      return out;
+    },
   };
 }
 
@@ -214,9 +331,92 @@ export function cropNotesToWindow(
     const to = Math.min(n.endSec, win.to);
     if (to < from) continue;
     if (to === from && n.endSec > n.startSec) continue;
-    out.push({ note: n.note, velocity: n.velocity, startSec: from, endSec: to });
+    // A note cut at its start keeps its expression from there on.
+    const cut = from - n.startSec;
+    const expr = n.expr && cut > 0 ? { ...n.expr, changes: n.expr.changes.filter((c) => c.sec >= cut).map((c) => ({ ...c, sec: c.sec - cut })) } : n.expr;
+    out.push({
+      note: n.note,
+      velocity: n.velocity,
+      startSec: from,
+      endSec: to,
+      ...(n.channel !== undefined ? { channel: n.channel } : {}),
+      ...(expr ? { expr } : {}),
+    });
   }
   return out;
+}
+
+/** True when a pass played notes on two or more channels (the drums' aside): an MPE controller's, whose channels are its notes'. */
+export const isMpePass = (notes: readonly CapturedNote[]): boolean =>
+  new Set(notes.filter((n) => (n.channel ?? 0) !== 9).map((n) => n.channel ?? 0)).size >= 2;
+
+/**
+ * A captured note's expression as the roll's (PianoNote `expr`): its start
+ * values and each change as a curve point at its tick from the note's start
+ * (960 to the quarter at `bpm`), the bend at MPE's 48 semitones. Undefined
+ * when it has none.
+ */
+export function capturedExpression(e: CapturedExpression | undefined, bpm: number): NoteExpression | undefined {
+  if (!e) return undefined;
+  const ticksPerSec = ((Number.isFinite(bpm) && bpm > 0 ? bpm : 120) / 60) * PPQ;
+  const curves: NonNullable<NoteExpression['curves']> = {};
+  for (const c of e.changes) {
+    const tick = Math.round(c.sec * ticksPerSec);
+    if (tick <= 0) continue;
+    (curves[c.dim] ??= []).push({ tick, value: c.value });
+  }
+  // A change at the note's start is its start value.
+  const start: Partial<Record<ExpressionDimension, number>> = { pressure: e.pressure, timbre: e.timbre, pitchBend: e.pitchBend };
+  for (const c of e.changes) if (Math.round(c.sec * ticksPerSec) <= 0) start[c.dim] = c.value;
+  return sanitizeNoteExpression({
+    ...start,
+    ...(start.pitchBend !== undefined || curves.pitchBend ? { bendRange: MPE_MEMBER_BEND_RANGE } : {}),
+    curves,
+  });
+}
+
+/**
+ * A pass's controller changes as a take's roll part controls: each inside the
+ * punch window (an open window keeps all), at its tick from the clip's start
+ * (`originSec`) at 960 to the quarter at `bpm`, the way takeToRoll places a
+ * note, cleaned as every part's controls are (lib/rollTracks
+ * cleanPartControls). Undefined when none is left.
+ */
+export function capturedControlsToRoll(
+  controls: readonly CapturedControl[],
+  opts: { bpm: number; originSec: number; window?: PunchWindow | null },
+): RollControl[] | undefined {
+  const bpm = Number.isFinite(opts.bpm) && opts.bpm > 0 ? opts.bpm : 120;
+  const ticksPerSec = (bpm / 60) * PPQ;
+  const win = opts.window ?? null;
+  const kept = controls.filter((c) => !win || (c.sec >= win.from && c.sec <= win.to));
+  return cleanPartControls(
+    kept.map((c) => ({ tick: Math.max(0, Math.round((c.sec - opts.originSec) * ticksPerSec)), controller: c.controller, value: c.value })),
+  );
+}
+
+/** The roll part a take with controller changes carries (AudioClip `sourceRollPart`): a document of its own, one part. */
+export function takePartRef(opts: {
+  takeId: string;
+  name: string;
+  color: string;
+  program?: number;
+  percussion?: boolean;
+  controls: RollControl[];
+}): RollPartRef {
+  return {
+    doc: `take-${opts.takeId}`,
+    id: `take-part-${opts.takeId}`,
+    order: 0,
+    name: opts.name,
+    program: opts.program ?? null,
+    bank: 0,
+    channel: opts.percussion ? PERCUSSION_PART_CHANNEL : null,
+    color: opts.color,
+    mute: false,
+    solo: false,
+    controls: opts.controls,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -405,7 +605,7 @@ export interface MidiCaptureDeps {
     notes: StepRenderNote[],
     bpm: number,
     totalSteps: number,
-    opts?: { program?: number; percussion?: boolean },
+    opts?: { program?: number; percussion?: boolean; controls?: readonly RollControl[] },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** `lib/midiRender.midiRenderSig`: what a take's render was made from, so a
    *  later note edit marks it stale and EDIT renders it again. Left out, the
@@ -493,12 +693,15 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
       /** The voice this clip's audio is rendered with, resolved the way
        *  lib/clipProgram `clipVoice` resolves it. */
       voice: ClipVoice;
+      /** The controller changes played in the pass, on the clip's clock; absent when none. */
+      controls?: RollControl[];
     }> = [];
     let played = 0;
     const bpm = deps.bpm();
     const globalProgram = deps.globalProgram();
     for (const pass of passes) {
       const raw = pass.capture.close();
+      const playedControls = pass.capture.takeControls();
       played += raw.length;
       // The punch crop is DESTRUCTIVE here, and that is a divergence from the
       // audio recorder worth naming: `placeTakes` keeps the whole pass as the
@@ -514,7 +717,17 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
       const startSec = win ? Math.max(pass.openedAt, win.from) : pass.openedAt;
       const { rollNotes, totalSteps } = takeToRoll(notes, { bpm, originSec: startSec, idPrefix: 'mc' });
       if (rollNotes.length === 0 || totalSteps <= 0) continue;
+      // An MPE pass: each note takes its own channel's expression, and CC 74 was the notes', not the part's.
+      const mpe = isMpePass(notes);
+      if (mpe && rollNotes.length === notes.length) {
+        rollNotes.forEach((n, i) => {
+          const expr = capturedExpression(notes[i].expr, bpm);
+          if (expr) n.expr = expr;
+        });
+      }
+      const controls = capturedControlsToRoll(mpe ? playedControls.filter((c) => c.controller !== 74) : playedControls, { bpm, originSec: startSec, window: win });
       landing.push({
+        ...(controls ? { controls } : {}),
         pass,
         rollNotes,
         totalSteps,
@@ -576,6 +789,19 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         // later. `effectiveProgramFor` falls back to the picker on its own, and
         // `renderedProgram` below records what the bounce actually used.
         ...(land.pass.program !== undefined ? { instrumentProgram: land.pass.program } : {}),
+        // The controllers played with the notes, as the take's roll part carries them.
+        ...(land.controls
+          ? {
+              sourceRollPart: takePartRef({
+                takeId: String(takeSeq),
+                name: `MIDI take ${takeSeq}`,
+                color: land.pass.color ?? FALLBACK_CLIP_COLOR,
+                program: land.pass.program,
+                percussion: land.pass.percussion,
+                controls: land.controls,
+              }),
+            }
+          : {}),
       });
       if (!playsLive) rendered.push({ clipId, land });
     }
@@ -594,7 +820,11 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
           land.rollNotes.map((n) => ({ note: n.note, velocity: n.velocity, step: n.step, length: n.length })),
           bpm,
           land.totalSteps,
-          land.voice.program !== undefined ? { program: land.voice.program, percussion: land.voice.percussion } : {},
+          {
+            ...(land.voice.program !== undefined ? { program: land.voice.program, percussion: land.voice.percussion } : {}),
+            // The controllers played with it, as its live playback sends them.
+            ...(land.controls ? { controls: land.controls } : {}),
+          },
         );
         let peaks: Float32Array | undefined;
         try {

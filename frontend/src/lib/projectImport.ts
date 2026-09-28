@@ -11,6 +11,7 @@
  */
 import {
   useEditorStore,
+  midiCcOfTarget,
   computePeaks,
   type AudioClip,
   type AutomationLane,
@@ -668,7 +669,7 @@ export function applyTasmoMarkersAndLoop(project: Pick<TasmoProjectLoaded, 'loca
 // Mirrors `ChainEntry` / `EditorAutomationLane` in
 // backend/modules/project/tasmo_project.py.
 
-/** The four target kinds the editor can automate. A lane naming anything else
+/** The five target kinds the editor can automate. A lane naming anything else
  *  is a hand-edited file, and is dropped rather than restored as a lane that
  *  writes nowhere. */
 const AUTOMATION_KINDS: readonly AutomationTargetKind[] = [
@@ -676,6 +677,7 @@ const AUTOMATION_KINDS: readonly AutomationTargetKind[] = [
   'trackPan',
   'trackFx',
   'masterFx',
+  'trackMidiCc',
 ];
 
 /** A non-empty string, or undefined for anything else a file might hold. */
@@ -830,6 +832,8 @@ export function automationTargetResolver(
       return !!target.entryId && !!target.paramKey && masterEntries.has(target.entryId);
     }
     if (!target.trackId || !trackIds.has(target.trackId)) return false;
+    // A MIDI track's controller lane names a controller a roll part keeps.
+    if (target.kind === 'trackMidiCc') return midiCcOfTarget(target) !== null;
     if (target.kind !== 'trackFx') return true;
     return !!target.entryId && !!target.paramKey && !!trackEntries.get(target.trackId)?.has(target.entryId);
   };

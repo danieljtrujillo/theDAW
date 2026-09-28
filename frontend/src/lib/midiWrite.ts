@@ -99,6 +99,13 @@ export interface SmfOptions {
   controls?: readonly SmfControl[];
   /** FF 01 text events at tick 0 (7-bit ASCII), after the signatures' metas. */
   texts?: readonly string[];
+  /**
+   * Channels that play a program of their own instead of the file's: an
+   * articulation's preset (lib/articulationMap, a string part's pizzicato on
+   * a channel of its own). Each gets its bank select (when past 0) and
+   * program change at tick 0.
+   */
+  channelPrograms?: ReadonlyArray<{ channel: number; program: number; bank?: number }>;
 }
 
 /**
@@ -122,7 +129,8 @@ export function notesToSmf(
   wheel: readonly SmfWheel[] = [],
   opts: SmfOptions = {},
 ): Uint8Array<ArrayBuffer> {
-  const { bank = 0, controls = [], texts = [] } = opts;
+  const { bank = 0, controls = [], texts = [], channelPrograms = [] } = opts;
+  const ownProgram = new Map(channelPrograms.map((c) => [c.channel & 0x0f, c]));
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
   interface Ev {
@@ -134,8 +142,10 @@ export function notesToSmf(
   const evs: Ev[] = [];
   /** A channel's program change at tick 0, with its bank select before it when the bank is past 0. */
   const programOn = (c: number): void => {
-    if (msb > 0) evs.push({ tick: 0, order: -0.5, data: [0xb0 | c, 0x00, msb] });
-    evs.push({ tick: 0, order: 0, data: [0xc0 | c, program & 0x7f] });
+    const own = ownProgram.get(c);
+    const cBank = own ? Math.max(0, Math.min(127, Math.round(own.bank ?? 0))) : msb;
+    if (cBank > 0) evs.push({ tick: 0, order: -0.5, data: [0xb0 | c, 0x00, cBank] });
+    evs.push({ tick: 0, order: 0, data: [0xc0 | c, (own ? own.program : program) & 0x7f] });
   };
   programOn(ch);
   const others = new Set<number>();

@@ -71,13 +71,17 @@ const base = {
     cleanPartControls([
       { tick: 10.4, controller: 64, value: 200 },
       { tick: -3, controller: 7, value: 50.6 },
-      { tick: 5, controller: 91, value: 40 }, // reverb: not a part controller
+      { tick: 5, controller: 93, value: 40 }, // chorus: not a part controller
+      { tick: 6, controller: 91, value: 30 }, // the reverb send: a part controller since the CC lane
+      { tick: 7, controller: 74, value: 90 }, // brightness, likewise
       { tick: 10, controller: 64, value: 0 }, // the same controller at one tick: the later is in force
       'junk',
       { tick: 5, controller: 1 },
     ]),
     [
       { tick: 0, controller: 7, value: 51 },
+      { tick: 6, controller: 91, value: 30 },
+      { tick: 7, controller: 74, value: 90 },
       { tick: 10, controller: 64, value: 0 },
     ],
   );

@@ -49,12 +49,16 @@ import {
   cleanPartName,
   cleanPartProgram,
   isDefaultPartName,
+  isPercussionPart,
   makeRollTrack,
   nextPartColor,
   nextPartName,
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
+import { isArticulation, type Articulation } from '../lib/articulationMap';
+import { buildExpression, withExpressionControls } from '../lib/clipNotes/expression';
+import { sanitizeNoteExpression } from '../lib/noteExpression';
 import {
   composerApi,
   type CanonResult,
@@ -93,18 +97,35 @@ import {
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
- * independent of its channel's wheel. The roll only STORES these; nothing plays
- * or writes them yet (that is #42). Ranges are fixed here so every later reader
- * agrees: `pressure` and `timbre` are 0..1, `pitchBend` is -1..1 of whatever
- * bend range the note's channel is in.
+ * independent of its channel's wheel. Ranges are fixed here so every reader
+ * agrees: `pressure` and `timbre` are 0..1, `pitchBend` is -1..1 of
+ * `bendRange` semitones when the note names one, else of whatever bend range
+ * the note's channel is in. Those are the values the note starts at; `curves`
+ * holds how each moves inside the note (lib/noteExpression). An MPE file or
+ * controller brings them in (lib/mpeMidi, lib/midiCapture), the roll's CC
+ * lane draws them for a selected note, and both MIDI writers write them as MPE.
  */
 export interface NoteExpression {
   /** Aftertouch / channel pressure, 0..1. */
   pressure?: number;
   /** The third MPE dimension (CC 74 "timbre" / slide), 0..1. */
   timbre?: number;
-  /** Bend at the note, -1..1 of its channel's range. */
+  /** Bend at the note, -1..1 of its range. */
   pitchBend?: number;
+  /** The semitones `pitchBend` ±1 is worth (an MPE member channel's range, 48 by default); absent, the channel's. */
+  bendRange?: number;
+  /** Each dimension's movement inside the note: points at ticks from its start, each holding until the next. */
+  curves?: {
+    pressure?: NoteExpressionPoint[];
+    timbre?: NoteExpressionPoint[];
+    pitchBend?: NoteExpressionPoint[];
+  };
+}
+
+/** One point of a note's expression curve: ticks from the note's start, and the value from there. */
+export interface NoteExpressionPoint {
+  tick: number;
+  value: number;
 }
 
 export interface PianoNote {
@@ -143,6 +164,14 @@ export interface PianoNote {
   channel?: number;
   /** Per-note expression; absent when the note carries none. */
   expr?: NoteExpression;
+  /**
+   * How the note is played (lib/articulationMap): legato, staccato,
+   * pizzicato, tremolo, marcato, spiccato, col legno, harmonics or con
+   * sordino. Absent is ordinario (arco on a string part). The roll's
+   * articulation lane marks it; PLAY, EDIT and a render play it on the preset
+   * or keyswitch it resolves to for the part's instrument.
+   */
+  articulation?: Articulation;
 }
 
 /**
@@ -545,6 +574,15 @@ interface PianoRollState {
   harmonyChords: RollChordLabel[];
   /** The harmony row over the ruler is open. A setting: persisted, never undo history. */
   showHarmony: boolean;
+  /**
+   * EXPRESSION: the composer's writes (a plan, a counterpoint, a FORM
+   * movement) and Virtuoso's song build shape each part they write with
+   * phrase expression (lib/clipNotes/expression: CC 1 and CC 11 curves from
+   * its hairpins, slurs and density, and seeded attacks). A setting:
+   * persisted, never undo history.
+   */
+  expressionOn: boolean;
+  setExpressionOn: (on: boolean) => void;
   /** The figured-bass lane under the grid is open. A setting, like showHarmony. */
   showFiguredBass: boolean;
   setShowHarmony: (on: boolean) => void;
@@ -759,6 +797,11 @@ interface PianoRollState {
   nudgeSelected: (dSteps: number, dNotes: number) => void;
   /** Set `ids` to one velocity, clamped 1-127. */
   setVelocity: (ids: Iterable<string>, velocity: number) => void;
+  /**
+   * Mark `ids` with `articulation` (lib/articulationMap), or null for
+   * ordinario. One undo step; none when every note already has it.
+   */
+  setArticulation: (ids: Iterable<string>, articulation: Articulation | null) => void;
   /** Multiply the velocity of `ids`, clamped 1-127. */
   scaleVelocity: (ids: Iterable<string>, factor: number) => void;
   /** Quantize amount, 0-100; persisted. */
@@ -1311,15 +1354,7 @@ const validChannel = (v: unknown): number | undefined =>
 const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
 
 /** Expression with each dimension in range, or undefined when nothing is left. */
-const validExpr = (e: unknown): NoteExpression | undefined => {
-  if (!e || typeof e !== 'object') return undefined;
-  const src = e as NoteExpression;
-  const out: NoteExpression = {};
-  if (isNum(src.pressure)) out.pressure = clampUnit(src.pressure);
-  if (isNum(src.timbre)) out.timbre = clampUnit(src.timbre);
-  if (isNum(src.pitchBend)) out.pitchBend = Math.max(-1, Math.min(1, src.pitchBend));
-  return Object.keys(out).length > 0 ? out : undefined;
-};
+const validExpr = (e: unknown): NoteExpression | undefined => sanitizeNoteExpression(e);
 
 /**
  * A note with its ticks settled and `step`/`length` recomputed from them, plus
@@ -1345,6 +1380,7 @@ export const withTicks = (n: PianoNote, stepsPerBeat?: number): PianoNote => {
   const expr = validExpr(n.expr);
   if (expr === undefined) delete out.expr;
   else out.expr = expr;
+  if (!isArticulation(n.articulation)) delete out.articulation;
   return out;
 };
 
@@ -1382,6 +1418,7 @@ const validNote = <T extends Partial<PianoNote>>(patch: T): Omit<T, 'id'> => {
     if (expr === undefined) delete out.expr;
     else out.expr = expr;
   }
+  if ('articulation' in out && !isArticulation(out.articulation)) delete out.articulation;
   return out as Omit<T, 'id'>;
 };
 
@@ -1398,6 +1435,7 @@ const patchedNote = (base: PianoNote, patch: Partial<PianoNote>): PianoNote => {
   // for NONE, so the one the note had goes rather than surviving the write.
   if ('channel' in patch && !('channel' in p)) delete out.channel;
   if ('expr' in patch && !('expr' in p)) delete out.expr;
+  if ('articulation' in patch && !('articulation' in p)) delete out.articulation;
   const per = ticksPerStep();
   if ('tick' in p) out.step = (out.tick as number) / per;
   else if ('step' in p) out.tick = tickOfStep(out.step);
@@ -1502,6 +1540,28 @@ const savePartsView = (v: { showGhosts: boolean; partsOpen: boolean }): void => 
     localStorage.setItem(PARTS_VIEW_KEY, JSON.stringify(v));
   } catch {
     /* private mode / quota: the view just does not survive the reload */
+  }
+};
+
+// ── The Expression setting, persisted ───────────────────────────────────────
+
+const EXPRESSION_KEY = 'thedaw.roll.expression.v1';
+
+const loadExpressionOn = (): boolean => {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(EXPRESSION_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const saveExpressionOn = (on: boolean): void => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(EXPRESSION_KEY, on ? '1' : '0');
+  } catch {
+    /* private mode / quota: the setting just does not survive the reload */
   }
 };
 
@@ -1961,6 +2021,27 @@ const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite
   return { tracks, notes: active.notes, activeId: active.id, idsByWrite, created, skipped };
 };
 
+/**
+ * `done` with every part it wrote shaped by phrase expression
+ * (lib/clipNotes/expression): its attacks moved and its CC 1 and CC 11 set
+ * from its phrases, which `boundaries` (section starts) split again. The
+ * part's other controllers stay. A percussion part is left as written.
+ */
+const expressedWrite = (done: PartsWrite, boundaries: readonly number[] = []): PartsWrite => {
+  const written = new Set(done.idsByWrite.filter((id): id is string => !!id));
+  const tracks = done.tracks.map((t, i) => {
+    if (!written.has(t.id) || !t.notes.length || isPercussionPart(t)) return t;
+    const r = buildExpression(t.notes, {
+      seed: i + 1,
+      boundaries,
+      instrument: { instrumentId: t.instrumentId, program: t.program },
+    });
+    return withControls({ ...t, notes: migrateNotes(r.notes) }, cleanPartControls(withExpressionControls(t.controls, r.controls)));
+  });
+  const active = tracks.find((t) => t.id === done.activeId) ?? tracks[0];
+  return { ...done, tracks, notes: active.notes };
+};
+
 /** The part being edited moved to `done.activeId` (the write left the one before out): its clip link comes along, as setActiveTrack's does. */
 const writtenActive = (s: PianoRollState, done: PartsWrite): Partial<PianoRollState> => {
   if (done.activeId === s.activeTrackId) return {};
@@ -2053,11 +2134,14 @@ const commitComposerWrite = (
   setKey: boolean,
   extraIds: Record<string, string> = {},
   readKey?: RollKey,
+  expressive = false,
 ): RollWriteResult => {
   let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
   cutHistoryBurst();
   usePianoRollStore.setState((s) => {
-    const done = writeParts(s, w.writes);
+    const written = writeParts(s, w.writes);
+    // EXPRESSION on: each written part shaped by its phrases (expressedWrite).
+    const done = expressive && s.expressionOn ? expressedWrite(written) : written;
     out = writeResultOf(done);
     const key = setKey && w.key ? w.key : null;
     const vlKey = key ?? readKey ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes, activeTrackId: done.activeId });
@@ -2114,6 +2198,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   voiceLeading: null,
   harmonyChords: [],
   ...loadComposeView(),
+  expressionOn: loadExpressionOn(),
+  setExpressionOn: (on) => {
+    set({ expressionOn: on === true });
+    saveExpressionOn(on === true);
+  },
   _undo: [],
   _redo: [],
 
@@ -2427,6 +2516,21 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       if (ds === 0 && dn === 0) return {};
       // Through patchedNote so the move lands on the ticks, not only on the view.
       return { notes: s.notes.map((n) => (s.selectedIds.has(n.id) ? patchedNote(n, { step: n.step + ds, note: n.note + dn }) : n)) };
+    }),
+
+  setArticulation: (ids, articulation) =>
+    set((s) => {
+      const want = ids instanceof Set ? (ids as Set<string>) : new Set(ids);
+      const art = isArticulation(articulation) ? articulation : undefined;
+      let changed = false;
+      const notes = s.notes.map((n) => {
+        if (!want.has(n.id) || n.articulation === art) return n;
+        changed = true;
+        if (art) return { ...n, articulation: art };
+        const { articulation: _drop, ...rest } = n;
+        return rest;
+      });
+      return changed ? { notes } : {};
     }),
 
   setVelocity: (ids, velocity) =>
@@ -2987,15 +3091,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       });
       return changed ? { tracks } : {};
     }),
-  writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true),
-  writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false),
+  writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true, {}, undefined, true),
+  writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false, {}, undefined, true),
   writeFormMovement: (form, movementIndex = 0) => {
     const w = formMovementWrite(form, movementIndex);
     if (!w) return null;
     let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
     cutHistoryBurst();
     set((s) => {
-      const done = writeParts(s, w.writes);
+      const written = writeParts(s, w.writes);
+      // EXPRESSION on: each written part shaped by its phrases, split again at the movement's sections.
+      const done = s.expressionOn ? expressedWrite(written, w.markers.map((m) => m.tick)) : written;
       out = writeResultOf(done);
       const meterMap = normalizeMeterMap(w.meterMap);
       const tempo = tempoSlice(sanitizeRollTempoMap(w.tempoMap, importedRollBpm(w.bpm)));
