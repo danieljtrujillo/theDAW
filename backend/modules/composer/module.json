@@ -1,0 +1,10 @@
+{
+  "name": "composer",
+  "label": "Composer",
+  "enabled": true,
+  "icon": "FileMusic",
+  "sidebar": false,
+  "api_prefix": "/api/composer",
+  "backend": true,
+  "description": "Composition by rule on music21: a seeded harmony planner (roman-numeral progressions with sevenths, applied dominants, the Neapolitan and the Italian, French and German sixths, five cadence types and pivot-chord modulation) voiced in SATB, a voice-leading checker (parallels, hidden fifths and octaves, crossing, overlap, spacing, ranges, unresolved leading tones and sevenths) and a figured-bass realizer. Chords sit on the roll's meter map, notes in 960 PPQ ticks. No model."
+}
