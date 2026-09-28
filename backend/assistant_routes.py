@@ -192,6 +192,19 @@ Roll parts (a MIDI clip is one part of a score: one instrument, its notes with t
 - `editor_get_roll_part` — One part whole: instrument, tempo map, meter map, pickup, lanes, bends and its own notes `{id, note, step, length, velocity, lane?}`. Payload: `{"clip_id": "...", "from_bar?": 1, "to_bar?": 8}`
 - `editor_set_roll_part` — Write a part back; pass any of the fields. Payload: `{"clip_id": "...", "notes?": [{"note": 67, "step": 0, "length": 2, "velocity": 90, "lane?": 0}], "lanes?": [{"id": 1, "cycle_steps": 14, "tuplet?": {"n": 3, "m": 2}}], "meter_map?": [{"bar": 1, "meter": "7/8 3+2+2"}], "pickup_steps?": 0, "bars?": 32, "program?": 42}`
 
+Composer (the MIDI tab's piano roll, the same engines as its COMPOSE column; a write replaces the roll parts with the names it writes and keeps the rest, and the roll's undo takes it back):
+- `composer_plan` — A phrase in a key voiced in four parts (Soprano, Alto, Tenor, Bass) on the roll's meter, optionally in a composer's style; answers with the chords. Payload: `{"key": "D", "mode": "minor", "bars": 8, "cadence?": "half", "style?": "bach", "harmonic_rhythm?": "bar", "include?": ["neapolitan"], "modulate_to?": "F", "seed?": 3, "write?": true}`
+- `composer_check` — Voice-leading faults over every roll part with notes, by rule and by place. Payload: `{"key?": "D", "mode?": "minor"}`
+- `composer_form` — A whole form's movements and sections; `realize: true` voices it and writes one movement into the roll, replacing its parts, with its meter, tempo map and section markers. Payload: `{"form": "sonata"|"rondo"|"theme_and_variations"|"minuet_and_trio"|"scherzo"|"symphony", "key": "C", "mode?": "major", "bars?": 96, "tempo?": 132, "meter?": "3/4", "rondo?": "ABACA", "variations?": 4, "seed?": 0, "realize?": false, "movement?": 1}`
+- `composer_species` — Species counterpoint (1-5) above or below a cantus: one of Fux's (`preset`) or a roll part (`cantus_part`). Payload: `{"species": 2, "position": "above", "preset?": "fux_dorian", "cantus_part?": "Cantus", "key?": "D", "mode?": "dorian", "invertible?": 10, "seed?": 0}`
+- `composer_canon` — A two-voice canon. Payload: `{"key": "C", "mode?": "major", "interval": 5, "lag_beats": 4, "bars": 8, "transposition?": "diatonic", "rhythm?": "mixed", "seed?": 0}`
+- `composer_fugue` — A fugue exposition, one roll part a voice. Payload: `{"key": "C", "mode?": "minor", "voices": 3, "subject_part?": "Subject", "subject_start?": "tonic", "episodes?": 1, "countersubject?": true, "seed?": 0}`
+- `composer_styles` — The style profiles and whether each was measured or authored. Payload: `{}`
+- `composer_profile` — A style profile's numbers, counted from corpus pieces or a library score, or a shipped style's. Payload: `{"corpus": ["bach_bwv66_6_mxl"]}` or `{"entry_id": "..."}` or `{"style": "bach"}`
+- `notation_import` — Import a score written as text as a library composition. Payload: `{"filename": "tune.abc", "content": "<the whole ABC, MusicXML or kern file as text>", "into_roll?": true}`
+- `notation_corpus_search` — Search the music21 corpus. Payload: `{"query": "bach chorale", "limit?": 25}`
+- `notation_corpus_open` — Import a corpus piece as a library composition. Payload: `{"id": "bach_bwv66_6_mxl", "into_roll?": true}`
+
 Tempo and time:
 - `editor_detect_tempo` — Detect a clip's tempo on the backend. Payload: `{"clip_id": "..."}`
 - `editor_set_clip_source_bpm` — Declare the tempo a clip's media was recorded at. Does NOT stretch. Payload: `{"clip_id": "...", "bpm": 128}`
