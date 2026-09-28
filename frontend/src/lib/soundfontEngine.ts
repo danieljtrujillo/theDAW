@@ -1099,6 +1099,23 @@ export function sfControlChange(channel: number, controller: number, value: numb
   }
 }
 
+/**
+ * Channel pressure (0-127) on a preview-synth channel at `time` (now when
+ * absent): an expressive note's pressure on its member channel while the roll
+ * plays (lib/rollPartPlay). No-op if the synth is not ready.
+ */
+export function sfChannelPressure(channel: number, value: number, time?: number): void {
+  const s = liveSynth;
+  if (!s) return;
+  try {
+    const ch = previewChannel(channel);
+    ensurePreviewChannel(s, ch);
+    s.channelPressure(ch, Math.max(0, Math.min(127, Math.round(value))), time !== undefined ? { time } : undefined);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Panic: stop every note on the preview synth (a preview's STOP). EDIT's banks stop through editAllNotesOff. */
 export function liveAllNotesOff(): void {
   const s = liveSynth;

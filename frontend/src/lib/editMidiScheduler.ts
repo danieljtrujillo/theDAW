@@ -146,7 +146,18 @@ import { PART_CONTROLLERS, partController } from './rollTracks';
 import { articulatedNotes, clipArticulationInstrument } from './articulationMap';
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { stepClock } from './rollTempo';
-import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionMessages, hasExpression, membersNeeded, rotateMembers, trackMembers } from './mpeRotation';
+import {
+  MPE_DEFAULT_MEMBERS,
+  TIMBRE_REST,
+  expressionCurveSteps,
+  expressionMessages,
+  hasExpression,
+  membersNeeded,
+  noteBendRange,
+  rotateMembers,
+  trackMembers,
+} from './mpeRotation';
+import { TICKS_PER_STEP } from './rollSnap';
 
 /** How far ahead of the clock a tick schedules while the page is visible. */
 export const EDIT_MIDI_LOOKAHEAD_SEC = 0.1;
@@ -419,12 +430,23 @@ export function clipLiveTiming(
       slot: member === undefined ? noteSlots[i] : used + member,
       ...(a.target ? { program: a.target.program, bank: a.target.bank } : {}),
     });
-    // The member channel takes the note's bend, timbre and pressure just before the note starts.
+    // The member channel takes the note's bend range (RPN 0), bend, timbre and
+    // pressure just before the note starts, then each point of the note's
+    // curves at its time while the note sounds.
     if (member !== undefined && n.expr) {
+      const slot = used + member;
       const m = expressionMessages(n.expr);
-      exprCtl.push({ t: on, slot: used + member, kind: 'wheel', value: m.wheel });
-      exprCtl.push({ t: on, slot: used + member, kind: 'cc', controller: 74, value: m.timbre });
-      exprCtl.push({ t: on, slot: used + member, kind: 'pressure', value: m.pressure });
+      exprCtl.push({ t: on, slot, kind: 'range', value: noteBendRange(n.expr) });
+      exprCtl.push({ t: on, slot, kind: 'wheel', value: m.wheel });
+      exprCtl.push({ t: on, slot, kind: 'cc', controller: 74, value: m.timbre });
+      exprCtl.push({ t: on, slot, kind: 'pressure', value: m.pressure });
+      const off = start + Math.min(dur, relEnd);
+      for (const e of expressionCurveSteps(n.expr)) {
+        const t = start + clock.at(n.step + e.tick / TICKS_PER_STEP) - offset;
+        if (t <= on + EPS || t >= off - EPS) continue;
+        if (e.kind === 'timbre') exprCtl.push({ t, slot, kind: 'cc', controller: 74, value: e.value });
+        else exprCtl.push({ t, slot, kind: e.kind, value: e.value });
+      }
     }
   }
   notes.sort(byOn);

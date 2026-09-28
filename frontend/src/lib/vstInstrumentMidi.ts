@@ -84,6 +84,10 @@ export function trackInstrumentMessages(
         out.push({ t, data: [ch, controller, Math.max(0, Math.min(127, Math.round(value)))], order: ORDER.control });
       }
     }
+    // An expressive note's pressure on its MPE member channel.
+    for (const p of mt.pressures ?? []) {
+      out.push({ t: sec(p.tick), data: [0xd0 | (p.channel & 0x0f), Math.max(0, Math.min(127, Math.round(p.value)))], order: ORDER.control });
+    }
     for (const b of mt.bends ?? []) {
       const raw = Math.max(0, Math.min(16383, Math.round(b.value)));
       out.push({ t: sec(b.tick), data: [0xe0 | (b.channel & 0x0f), raw & 0x7f, raw >> 7], order: ORDER.wheel });

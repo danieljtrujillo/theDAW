@@ -41,6 +41,13 @@
  * another part soloed) and STOP put its controllers back where a channel
  * starts, pedal up first, so a held pedal never outlives its part.
  *
+ * Expression: a note with pressure, timbre or bend of its own (PianoNote
+ * `expr`) plays MPE-style on a member channel of its part's (lib/rollTracks
+ * `mpe`), taken in rotation (lib/mpeRotation): just before it starts, that
+ * channel gets the note's bend range (RPN 0, `bendRange`, else 2), its bend,
+ * CC 74 and channel pressure, and each point of its curves goes out at its
+ * time while the note sounds. STOP puts the member channels back at rest.
+ *
  * No Vite-only imports, so node tests load it.
  */
 import type { RollControl, RollTrack } from '../state/pianoRollStore';
@@ -74,6 +81,7 @@ import { TICKS_PER_STEP } from './rollSnap';
 import { audiblePartIds, controlStateBefore, partController, rollLiveChannels, type PartLiveChannels } from './rollTracks';
 import { articulatedNotes, type ArticulatedNote, type SoundfontArticulationTarget } from './articulationMap';
 import type { PianoNote } from '../state/pianoRollStore';
+import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionCurveSteps, expressionMessages, hasExpression, membersNeeded, noteBendRange } from './mpeRotation';
 
 /** Seconds the scheduler plans ahead each tick: its notes, and the roll's click. */
 export const ROLL_LOOKAHEAD_SEC = 0.12;
@@ -119,11 +127,12 @@ export interface ScheduledRollNote {
 
 /**
  * A channel message for the soundfont, at `time` (now when absent): a pitch
- * wheel message (`value` 0-16383), a bend range (`value` in semitones), or a
- * controller change (`controller`, `value` 0-127).
+ * wheel message (`value` 0-16383), a bend range (`value` in semitones), a
+ * controller change (`controller`, `value` 0-127), or channel pressure
+ * (`value` 0-127, an expressive note's on its member channel).
  */
 export interface ScheduledWheel {
-  kind: 'wheel' | 'range' | 'control';
+  kind: 'wheel' | 'range' | 'control' | 'pressure';
   channel: number;
   value: number;
   /** The controller number of a 'control' message. */
@@ -226,6 +235,25 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
   let controlFresh = true;
   // Each part's controllers and channels as the last plan had them, so a change is seen.
   let controlShape = new Map<string, { controls: readonly RollControl[]; channels: string }>();
+  // Member channels: the context time each one's last note ends, and the ones this playback has set.
+  const memberBusy = new Map<number, number>();
+  const memberTouched = new Set<number>();
+  let lastMemberTime = 0;
+  /** A member channel for a note from `when` to `end`: the one free longest, else the one whose note ends first (lib/mpeRotation). */
+  const takeMember = (channels: readonly number[], when: number, end: number): number => {
+    let pick = -1;
+    for (const ch of channels) {
+      const busy = memberBusy.get(ch) ?? -Infinity;
+      if (busy > when + 1e-9) continue;
+      if (pick < 0 || busy < (memberBusy.get(pick) ?? -Infinity)) pick = ch;
+    }
+    if (pick < 0) {
+      pick = channels[0];
+      for (const ch of channels) if ((memberBusy.get(ch) ?? -Infinity) < (memberBusy.get(pick) ?? -Infinity)) pick = ch;
+    }
+    memberBusy.set(pick, Math.max(memberBusy.get(pick) ?? -Infinity, end));
+    return pick;
+  };
 
   const releaseWheel = (ch: number, now: number, out: ScheduledWheel[]) => {
     const at = Math.max(now, lastWheelTime) + 0.001;
@@ -294,7 +322,17 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
         }
         return { index, follows };
       });
-      const channels = rollLiveChannels(tracks, lanes, bends, new Map(tracks.map((t, i) => [t.id, artPlans[i].follows.length])));
+      // The member channels each part's expressive notes rotate across: as many as sound at once.
+      const memberCounts = new Map(
+        tracks.map((t, i) => [
+          t.id,
+          membersNeeded(
+            unrolled[i].filter((n) => hasExpression(n.expr)).map((n) => ({ start: n.step, end: n.step + n.length })),
+            MPE_DEFAULT_MEMBERS,
+          ),
+        ]),
+      );
+      const channels = rollLiveChannels(tracks, lanes, bends, new Map(tracks.map((t, i) => [t.id, artPlans[i].follows.length])), memberCounts);
       plans = tracks.map((t, i) => {
         const ch = channels.get(t.id) as PartLiveChannels;
         const controls = t.controls ?? NO_CONTROLS;
@@ -431,10 +469,30 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
         const artAt = plan.artIndex.get(written);
         const artChannel = soundfont && art?.target && artAt !== undefined ? plan.channels.arts?.[artAt] : undefined;
         const lane = playingLane(n.lane, lanes);
-        const channel = artChannel ?? plan.channels.lanes.get(lane) ?? plan.channels.base;
-        const curve = soundfont ? undefined : lapCurves.get(lane);
         const when = lapTimeOf(lc, occ);
         const at = Math.max(now, when);
+        // A soundfont note with expression of its own plays on a member channel, set to the note first.
+        const members = plan.channels.mpe;
+        const expressive = soundfont && !voice.percussion && !!members?.length && hasExpression(n.expr);
+        const endAt = Math.max(at, lapTimeOf(lc, occ + Math.max(1 / TICKS_PER_STEP, n.length)));
+        const member = expressive && members ? takeMember(members, at, endAt) : undefined;
+        const channel = member ?? artChannel ?? plan.channels.lanes.get(lane) ?? plan.channels.base;
+        if (member !== undefined && n.expr) {
+          const m = expressionMessages(n.expr);
+          wheels.push({ kind: 'range', channel: member, value: noteBendRange(n.expr), time: at });
+          wheels.push({ kind: 'wheel', channel: member, value: m.wheel, time: at });
+          wheels.push({ kind: 'control', channel: member, controller: 74, value: m.timbre, time: at });
+          wheels.push({ kind: 'pressure', channel: member, value: m.pressure, time: at });
+          for (const e of expressionCurveSteps(n.expr)) {
+            const t = lapTimeOf(lc, occ + e.tick / TICKS_PER_STEP);
+            if (t <= at || t >= endAt) continue;
+            if (e.kind === 'timbre') wheels.push({ kind: 'control', channel: member, controller: 74, value: e.value, time: t });
+            else wheels.push({ kind: e.kind, channel: member, value: e.value, time: t });
+          }
+          memberTouched.add(member);
+          lastMemberTime = Math.max(lastMemberTime, endAt);
+        }
+        const curve = soundfont ? undefined : lapCurves.get(lane);
         let bend: VoiceBend | undefined;
         if (curve) {
           // A note that starts late picks its curve up where the curve is by then.
@@ -478,6 +536,16 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       // After every controller change already sent, so a pedal-down in the lookahead cannot outlast STOP.
       resetControls([...controlTouched.keys()], Math.max(now, lastControlTime) + 0.001, out);
       controlLive.clear();
+      // Each member channel back at rest: the centre, the default range, CC 74 at rest and no pressure.
+      const rest = Math.max(now, lastMemberTime, lastWheelTime) + 0.001;
+      for (const ch of memberTouched) {
+        out.push({ kind: 'wheel', channel: ch, value: BEND_CENTER, time: rest });
+        out.push({ kind: 'range', channel: ch, value: DEFAULT_BEND_RANGE, time: rest });
+        out.push({ kind: 'control', channel: ch, controller: 74, value: TIMBRE_REST, time: rest });
+        out.push({ kind: 'pressure', channel: ch, value: 0, time: rest });
+      }
+      memberTouched.clear();
+      memberBusy.clear();
       return out;
     },
     state: () => playState,

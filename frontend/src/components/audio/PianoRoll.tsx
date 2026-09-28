@@ -114,7 +114,7 @@ import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
-import { getGlobalVoice, sfControlChange, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
+import { getGlobalVoice, sfChannelPressure, sfControlChange, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
 import { drumKitName } from '../../lib/clipProgram';
 import { chooseRollVoice, rollVoiceChoice } from '../../lib/rollVoiceChoice';
 import { gmShortName } from '../../lib/gmInstruments';
@@ -485,6 +485,7 @@ export const PianoRollTransport: React.FC<{
       for (const w of wheels) {
         if (w.kind === 'range') sfPitchWheelRange(w.channel, w.value, w.time);
         else if (w.kind === 'control') sfControlChange(w.channel, w.controller ?? 0, w.value, w.time);
+        else if (w.kind === 'pressure') sfChannelPressure(w.channel, w.value, w.time);
         else sfPitchWheel(w.channel, w.value, w.time);
       }
     };

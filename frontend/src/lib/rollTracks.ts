@@ -299,6 +299,13 @@ export interface PartLiveChannels {
    * target past the last channel plays on the part's own channel.
    */
   arts?: number[];
+  /**
+   * The member channels the part's expressive notes rotate across
+   * (lib/mpeRotation: a note with pressure, timbre or bend of its own plays on
+   * a channel of its own). Absent when it has none; fewer than asked for when
+   * the channels run out.
+   */
+  mpe?: number[];
 }
 
 /**
@@ -319,12 +326,15 @@ export interface PartLiveChannels {
  * `articulations` counts the soundfont presets each part's articulations play
  * in (lib/articulationMap); each takes a melodic channel after every part's
  * own, so a part's articulation never moves another part off its channel.
+ * `members` counts the member channels each part's expressive notes need
+ * (lib/mpeRotation), taken after the articulations' the same way.
  */
 export function rollLiveChannels(
   parts: readonly Pick<RollTrack, 'id' | 'channel'>[],
   lanes: readonly PolyLane[],
   bends: readonly LaneBend[],
   articulations?: ReadonlyMap<string, number>,
+  members?: ReadonlyMap<string, number>,
 ): Map<string, PartLiveChannels> {
   const out = new Map<string, PartLiveChannels>();
   const bent = [...bentLanes(lanes, bends)].sort((a, b) => a - b);
@@ -379,6 +389,18 @@ export function rollLiveChannels(
       arts.push(ch);
     }
     if (arts.length) live.arts = arts;
+  }
+  for (const part of parts) {
+    const want = members?.get(part.id) ?? 0;
+    const live = out.get(part.id);
+    if (!live || want <= 0 || isPercussionPart(part)) continue;
+    const mpe: number[] = [];
+    for (let i = 0; i < want; i += 1) {
+      const ch = takeMelodic();
+      if (ch === null) break;
+      mpe.push(ch);
+    }
+    if (mpe.length) live.mpe = mpe;
   }
   return out;
 }

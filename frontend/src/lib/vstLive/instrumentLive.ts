@@ -135,6 +135,8 @@ export function vstInstrumentSink(opts: InstrumentSinkOptions): EditMidiSink & {
       push(time, [status, 38, 0]);
     },
     control: (channel, controller, value, time) => push(time, [0xb0 | ch(channel), b7(controller), b7(value)]),
+    // Channel pressure: an expressive note's pressure on its member channel (lib/mpeRotation).
+    pressure: (channel, value, time) => push(time, [0xd0 | ch(channel), b7(value)]),
     flush,
   };
 }

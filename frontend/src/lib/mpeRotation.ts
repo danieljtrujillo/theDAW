@@ -15,7 +15,7 @@
  * Pure, so node tests load it.
  */
 import type { NoteExpression } from '../state/pianoRollStore';
-import { bendValueToRaw } from './pitchBend';
+import { DEFAULT_BEND_RANGE, bendValueToRaw } from './pitchBend';
 
 /** Member channels an EDIT track rotates expressive notes across when it names no number (EditorTrack mpeChannels). */
 export const MPE_DEFAULT_MEMBERS = 8;
@@ -32,9 +32,36 @@ export interface Span {
 
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-/** True when a note carries any expression of its own. */
+/** True when a note carries any expression of its own: a start value, or a curve that moves inside it. */
 export const hasExpression = (e: NoteExpression | undefined): e is NoteExpression =>
-  !!e && (finite(e.pressure) || finite(e.timbre) || finite(e.pitchBend));
+  !!e &&
+  (finite(e.pressure) ||
+    finite(e.timbre) ||
+    finite(e.pitchBend) ||
+    !!e.curves?.pressure?.length ||
+    !!e.curves?.timbre?.length ||
+    !!e.curves?.pitchBend?.length);
+
+/** The bend range (semitones for a whole wheel) a note's own channel is set to: its `bendRange`, else the General MIDI default of 2. */
+export const noteBendRange = (e: NoteExpression | undefined): number =>
+  finite(e?.bendRange) ? Math.max(0, e.bendRange) : DEFAULT_BEND_RANGE;
+
+/** One step of a note's expression inside it: at `tick` roll ticks from its start, a message of `kind` with `value` (the wheel as a 14-bit position, CC 74 and pressure 0-127). */
+export interface ExpressionStep {
+  tick: number;
+  kind: 'wheel' | 'timbre' | 'pressure';
+  value: number;
+}
+
+/** Each curve point of a note's expression as the message it sends, in tick order (lib/noteExpression curves). */
+export function expressionCurveSteps(e: NoteExpression | undefined): ExpressionStep[] {
+  const out: ExpressionStep[] = [];
+  const to127 = (v: number) => Math.max(0, Math.min(127, Math.round(v * 127)));
+  for (const p of e?.curves?.pitchBend ?? []) out.push({ tick: p.tick, kind: 'wheel', value: bendValueToRaw(p.value) });
+  for (const p of e?.curves?.timbre ?? []) out.push({ tick: p.tick, kind: 'timbre', value: to127(p.value) });
+  for (const p of e?.curves?.pressure ?? []) out.push({ tick: p.tick, kind: 'pressure', value: to127(p.value) });
+  return out.sort((a, b) => a.tick - b.tick);
+}
 
 /** The member channel count a track asks for: its own number (0 turns rotation off), else MPE_DEFAULT_MEMBERS. */
 export const trackMembers = (mpeChannels: number | undefined): number =>
