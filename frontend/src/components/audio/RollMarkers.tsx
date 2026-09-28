@@ -24,7 +24,6 @@ import { barAt, barLines, type MeterSegment } from '../../lib/meterMap';
 import {
   MARKER_NAME_MAX,
   markerAround,
-  markerAtPlace,
   markerBarLabel,
   markerSpoken,
   markerStep,
@@ -59,19 +58,49 @@ export const currentMarkerId = (markers: readonly RollMarker[], step: number): s
 /** True when `step` holds a marker other than the one moving, of its kind: a place a move must not land on. */
 export type MarkerPlaceTaken = (step: number) => boolean;
 
-/** The steps a Shift drag or Shift arrow can land on: every whole step from 0 to the roll's last. */
-const allSteps = (totalSteps: number): number[] => Array.from({ length: Math.max(1, totalSteps) }, (_, i) => i);
+/**
+ * The place-taken test for a move of marker `m` among `markers`: another marker
+ * of its kind at that tick (lib/rollMarkers markerAtPlace, read once into a set
+ * so each place costs one lookup however many markers the roll holds).
+ */
+export const markerPlaceTaken = (markers: readonly RollMarker[], m: Pick<RollMarker, 'id' | 'kind'>): MarkerPlaceTaken => {
+  const ticks = new Set<number>();
+  for (const x of markers) if (x.kind === m.kind && x.id !== m.id) ticks.add(x.tick);
+  return (step) => ticks.has(markerTickOfStep(step));
+};
 
 /**
- * The free place nearest `step` among `places` (bar lines, or whole steps with
- * Shift), or `fallback` when every place is taken. A drag passes over the other
- * markers' places and never lands on them, so no drag removes a neighbour.
+ * The free place nearest `step` among `places` (the bar lines), or `fallback`
+ * when every place is taken. A drag passes over the other markers' places and
+ * never lands on them, so no drag removes a neighbour.
  */
 export const nearestFreePlace = (places: readonly number[], step: number, taken: MarkerPlaceTaken, fallback: number): number => {
   let best: number | null = null;
   for (const l of places) {
     if (taken(l)) continue;
     if (best === null || Math.abs(l - step) < Math.abs(best - step)) best = l;
+  }
+  return best ?? fallback;
+};
+
+/**
+ * The free whole step nearest `step` in 0..totalSteps-1 (a Shift drag), or
+ * `fallback` when every step is taken. It searches outward from the step under
+ * the pointer and stops once no closer step can follow, so a drag reads a few
+ * places per move on a 65,536-step roll; on a tie the earlier step wins.
+ */
+export const nearestFreeStep = (step: number, totalSteps: number, taken: MarkerPlaceTaken, fallback: number): number => {
+  const last = Math.max(0, Math.floor(totalSteps) - 1);
+  const at = Math.max(0, Math.min(last, Math.round(step)));
+  let best: number | null = null;
+  for (let d = 0; d <= last; d += 1) {
+    if (best !== null && d - 0.5 > Math.abs(best - step)) break;
+    for (const c of d === 0 ? [at] : [at - d, at + d]) {
+      if (c < 0 || c > last || taken(c)) continue;
+      const gap = Math.abs(c - step);
+      const bestGap = best === null ? Infinity : Math.abs(best - step);
+      if (gap < bestGap || (gap === bestGap && best !== null && c < best)) best = c;
+    }
   }
   return best ?? fallback;
 };
@@ -90,8 +119,17 @@ export const keyMoveStep = (
   totalSteps: number,
   taken: MarkerPlaceTaken = () => false,
 ): number => {
-  const places = fine ? allSteps(totalSteps) : lines;
-  const ahead = places.filter((l) => (dir > 0 ? l > step + 1e-9 : l < step - 1e-9) && !taken(l));
+  if (fine) {
+    // Walk step by step from the one after (or before) `step`: only the places passed are read.
+    const last = Math.max(0, Math.floor(totalSteps) - 1);
+    if (dir > 0) {
+      for (let c = Math.floor(step + 1e-9) + 1; c <= last; c += 1) if (!taken(c)) return c;
+    } else {
+      for (let c = Math.min(last, Math.ceil(step - 1e-9) - 1); c >= 0; c -= 1) if (!taken(c)) return c;
+    }
+    return step;
+  }
+  const ahead = lines.filter((l) => (dir > 0 ? l > step + 1e-9 : l < step - 1e-9) && !taken(l));
   if (ahead.length === 0) return step;
   return dir > 0 ? ahead[0] : ahead[ahead.length - 1];
 };
@@ -131,10 +169,7 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
     });
 
   /** The place-taken test for a move of marker `m`: another marker of its kind already there. */
-  const takenFor = (m: Pick<RollMarker, 'id' | 'kind'>): MarkerPlaceTaken => {
-    const all = usePianoRollStore.getState().markers;
-    return (step) => !!markerAtPlace(all, m.kind, markerTickOfStep(step), m.id);
-  };
+  const takenFor = (m: Pick<RollMarker, 'id' | 'kind'>): MarkerPlaceTaken => markerPlaceTaken(usePianoRollStore.getState().markers, m);
 
   // In a bar that already starts with a section, the double-click renames that section (addMarker returns its id).
   const onRowDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -164,7 +199,9 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
     }
     const raw = Math.max(0, Math.min(Math.max(0, totalSteps - 1), press.startStep + dx / stepPx));
     const here = usePianoRollStore.getState().markers.find((x) => x.id === press.id);
-    const step = nearestFreePlace(e.shiftKey ? allSteps(totalSteps) : lines, raw, takenFor(press), here ? markerStep(here) : press.startStep);
+    const stay = here ? markerStep(here) : press.startStep;
+    const taken = takenFor(press);
+    const step = e.shiftKey ? nearestFreeStep(raw, totalSteps, taken, stay) : nearestFreePlace(lines, raw, taken, stay);
     usePianoRollStore.getState().updateMarker(press.id, { step });
   };
   const endPress = (e: React.PointerEvent<HTMLButtonElement>) => {

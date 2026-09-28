@@ -263,5 +263,62 @@ await pause();
 await step(() => { roll().updateMarker('theme', { kind: 'movement' }); });
 assert.equal(shape(), 'S:Intro@0 M:I@16 S:Theme@16 S:Bridge B@32', 'Theme stays a section beside movement I');
 
+// A Shift drag moves by single steps and still passes over a neighbour: Intro pulled onto Theme's step
+// lands on the free step beside it, and Theme stays.
+await pause();
+await frame();
+await step(() => {
+  const intro = flagNamed('Intro')!;
+  pointer(intro, 'pointerdown', 0, true);
+  pointer(intro, 'pointermove', 8 * STEP_PX, true);
+  pointer(intro, 'pointermove', 16 * STEP_PX, true);
+  pointer(intro, 'pointerup', 16 * STEP_PX, true);
+});
+assert.equal(shape(), 'S:Intro@15 M:I@16 S:Theme@16 S:Bridge B@32', 'Intro lands on step 15, beside Theme');
+
+// The place helpers against a plain scan of every place, on rolls up to 65,536 steps: a Shift drag lands
+// on the nearest free step, a Shift arrow on the next free one, and a busy roll reads few places per move.
+{
+  const { keyMoveStep, markerPlaceTaken, nearestFreeStep } = await import('./RollMarkers.tsx');
+  let seed = 7;
+  const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let trial = 0; trial < 400; trial += 1) {
+    const total = trial % 4 === 0 ? 65536 : 16 + Math.floor(rand() * 240);
+    const takenSet = new Set<number>();
+    const busy = Math.floor(rand() * Math.min(total, 60));
+    const around = Math.floor(rand() * total);
+    for (let i = 0; i < busy; i += 1) takenSet.add(Math.max(0, Math.min(total - 1, around + Math.floor((rand() - 0.5) * 40))));
+    const taken = (s: number) => takenSet.has(s);
+    const at = rand() * (total - 1);
+    let want: number | null = null;
+    for (let s = 0; s < total; s += 1) if (!taken(s) && (want === null || Math.abs(s - at) < Math.abs(want - at))) want = s;
+    assert.equal(nearestFreeStep(at, total, taken, -1), want ?? -1, `nearest free step to ${at} of ${total}`);
+    for (const dir of [-1, 1] as const) {
+      let next: number | null = null;
+      for (let s = 0; s < total; s += 1) {
+        if (taken(s) || (dir > 0 ? s <= at + 1e-9 : s >= at - 1e-9)) continue;
+        if (next === null || (dir > 0 ? s < next : s > next)) next = s;
+      }
+      assert.equal(keyMoveStep([], at, dir, true, total, taken), next ?? at, `next free step ${dir > 0 ? 'after' : 'before'} ${at}`);
+    }
+  }
+  // The taken test reads the roll's markers once: same kind, another marker, the same tick.
+  const marks: Parameters<typeof markerPlaceTaken>[0] = [
+    { id: 'a', tick: 0, name: 'A', kind: 'section' },
+    { id: 'b', tick: 240 * 16, name: 'B', kind: 'section' },
+    { id: 'i', tick: 240 * 16, name: 'I', kind: 'movement' },
+  ];
+  const forA = markerPlaceTaken(marks, { id: 'a', kind: 'section' });
+  assert.deepEqual([forA(0), forA(16), forA(15)], [false, true, false], 'its own place is free, B is taken');
+  const forI = markerPlaceTaken(marks, { id: 'i', kind: 'movement' });
+  assert.equal(forI(0), false, 'a section does not take a movement place');
+  // A 65,536-step roll with 64 sections packed round the pointer: the search reads a few hundred places at most.
+  let reads = 0;
+  const packed = new Set(Array.from({ length: 64 }, (_, i) => 32000 + i));
+  const counted = (s: number) => { reads += 1; return packed.has(s); };
+  assert.equal(nearestFreeStep(32010.4, 65536, counted, -1), 31999);
+  assert.ok(reads < 200, `a Shift drag move read ${reads} places`);
+}
+
 await step(() => root.unmount());
 console.log('RollMarkers: ok');
