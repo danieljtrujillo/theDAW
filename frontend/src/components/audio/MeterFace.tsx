@@ -48,7 +48,7 @@ import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
   BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
-  laneMeterValue, lanePitches, laneSpanLabel, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
+  laneMeterValue, lanePitches, laneSpanLabel, laneSpanSteps, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
   removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
   stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
@@ -299,7 +299,9 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     const l = r.lanes.find((x) => x.id === r.activeLane);
     if (!l || l.id === 0) return;
     // Shift steps one bar: the lane's own bar when it keeps a time of its own.
-    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, laneBarSteps(l, r.meterMap, r.pickupSteps) ?? stepsPerBar(meter), r.totalSteps);
+    // A lane with a span loops inside it: a press past the span wraps to the shortest loop.
+    const spanSteps = laneSpanSteps(l, r.totalSteps);
+    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, laneBarSteps(l, r.meterMap, r.pickupSteps) ?? stepsPerBar(meter), r.totalSteps, spanSteps);
     r.applyMeter({ lanes: r.lanes.map((x) => (x.id === l.id ? { ...x, cycleSteps } : x)) });
   };
   // The lane's notes and bends move with its loop's first cycle; the writes fold into one undo step.
@@ -397,6 +399,8 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const groups = groupChoices(meter);
   const groupsNow = groupsValue(meter.groups);
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
+  // A spanned lane's loop counts inside its span (stepLoop), so its longer-loop key wraps and is never off.
+  const spanLen = lane.id === 0 ? null : laneSpanSteps(lane, totalSteps);
   const barLen = Math.round(laneBar ?? stepsPerBar(meter));
   const spanOn = spanIsSegment(segs, selected, lane.span, pickupSteps);
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
@@ -633,7 +637,13 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       <Stepper
         id="mf-loop"
         legend="Loop"
-        title={lane.id === 0 ? 'Lane A runs the whole roll' : `Lane ${lane.name} loops every ${loopValue === 'All' ? 'roll' : `${loopValue} steps`}. Shift-click steps a bar of ${barLen}.`}
+        title={
+          lane.id === 0
+            ? 'Lane A runs the whole roll'
+            : spanLen !== null
+              ? `Lane ${lane.name} loops every ${loopValue === 'All' ? `${spanLen} steps, its whole span` : `${loopValue} steps`} inside its ${spanLen}-step span. Shift-click steps a bar of ${barLen}; past the span's length the loop wraps back to the shortest.`
+              : `Lane ${lane.name} loops every ${loopValue === 'All' ? 'roll' : `${loopValue} steps`}. Shift-click steps a bar of ${barLen}.`
+        }
         value={loopValue}
         valueClass="min-w-5"
         downLabel={`Shorter loop for lane ${lane.name}`}
@@ -641,7 +651,7 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         downIcon={<ArrowLeftToLine className={MINI_GLYPH} />}
         upIcon={<ArrowRightToLine className={MINI_GLYPH} />}
         downDisabled={lane.id === 0 || lane.cycleSteps === 1}
-        upDisabled={lane.id === 0 || lane.cycleSteps == null}
+        upDisabled={lane.id === 0 || (lane.cycleSteps == null && spanLen === null)}
         onStep={onLoop}
       />
       {/* The legend shows the bars the lane plays in, so the span reads without a hover. */}

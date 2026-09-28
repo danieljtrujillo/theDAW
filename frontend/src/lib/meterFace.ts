@@ -200,15 +200,37 @@ export function groupChoices(meter: Meter): Array<{ value: string; label: string
 export const newLaneCycle = (map: readonly MeterSegment[]): number =>
   Math.max(1, Math.round(stepsPerBar(normalizeMeterMap(map, false)[0].meter)));
 
+/** The steps a lane's span covers inside a roll of `totalSteps`, or null for a lane without a span. */
+export function laneSpanSteps(lane: Pick<PolyLane, 'span'>, totalSteps: number): number | null {
+  if (!lane.span) return null;
+  const origin = Math.max(0, Math.min(totalSteps, lane.span.start));
+  const end = Math.max(origin, Math.min(totalSteps, lane.span.end ?? totalSteps));
+  return end - origin;
+}
+
 /**
  * LOOP: one step, or one bar of `barSteps` with Shift. A lane with no loop
  * counts as the whole roll; reaching the roll's length stops the loop (null).
  * A shorter loop always loops: from a loop at or past the roll's length it
  * lands one step inside the roll.
+ *
+ * A lane with a span (`spanSteps`, the length of the bars it plays in) counts
+ * inside its span: its loop runs from one step up to the span's length, where
+ * one pass fills the span. A press past the span's length wraps to the
+ * shortest loop (one step, or one bar with Shift), so the lane keeps looping;
+ * a loop longer than its span would play its first span-length once and never
+ * repeat. A lane with no loop counts as its whole span.
  */
-export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number): number | null {
-  const total = Math.max(1, Math.floor(totalSteps));
+export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number, spanSteps?: number | null): number | null {
   const by = byBar ? Math.max(1, Math.round(barSteps)) : 1;
+  if (spanSteps != null && Number.isFinite(spanSteps) && spanSteps > 0) {
+    const span = Math.max(1, Math.round(spanSteps));
+    const now = Math.min(Math.round(cycle ?? span), span);
+    if (dir < 0) return clamp(now - by, 1, span);
+    const next = now + by;
+    return next > span ? Math.min(by, span) : next;
+  }
+  const total = Math.max(1, Math.floor(totalSteps));
   if (dir < 0) return clamp(Math.min(Math.round(cycle ?? total), total) - by, 1, Math.max(1, total - 1));
   const next = clamp(Math.round(cycle ?? total) + by, 1, total);
   return next >= total ? null : next;

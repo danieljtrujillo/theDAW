@@ -9,7 +9,7 @@ import {
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
   setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
-  setGroupingText, stepPickup, tempoSummary, UNITS, withoutFermatas, withoutTempoChanges, type GenSettings,
+  setGroupingText, stepPickup, tempoSummary, UNITS, laneSpanSteps, withoutFermatas, withoutTempoChanges, type GenSettings,
 } from './meterFace.ts';
 import type { TempoEvent } from './tempoMap.ts';
 import { stepRenderRequest } from './midiSynth.ts';
@@ -171,6 +171,16 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.equal(stepLoop(160, -1, false, 16, 160), 159, 'a loop the length of the roll steps inside it');
   assert.equal(stepLoop(300, -1, false, 16, 160), 159, 'a loop past the roll steps inside it, never off');
   assert.equal(stepLoop(300, -1, true, 16, 160), 144, 'Shift steps a bar down from the roll length');
+  // A lane with a 64-step span loops inside it and wraps past its length.
+  assert.equal(stepLoop(48, 1, true, 16, 192, 64), 64, 'a loop can fill its span');
+  assert.equal(stepLoop(64, 1, true, 16, 192, 64), 16, 'past the span it wraps to one bar');
+  assert.equal(stepLoop(64, 1, false, 16, 192, 64), 1, 'one step past it wraps to one step');
+  assert.equal(stepLoop(null, 1, true, 16, 192, 64), 16, 'no loop counts as the whole span, so a press wraps');
+  assert.equal(stepLoop(80, -1, false, 16, 192, 64), 63, 'a loop past the span steps down from the span');
+  assert.equal(stepLoop(1, -1, false, 16, 192, 64), 1);
+  assert.equal(laneSpanSteps({ span: { start: 64, end: 128 } }, 192), 64);
+  assert.equal(laneSpanSteps({ span: { start: 64, end: null } }, 192), 128, 'an open span runs to the roll end');
+  assert.equal(laneSpanSteps({}, 192), null);
   const forms = laneForms([LANE_A, { id: 1, name: 'B', cycleSteps: 12 }, { id: 2, name: 'C', cycleSteps: 10 }, { id: 3, name: 'D', cycleSteps: 9 }], 1);
   assert.deepEqual([...forms.entries()], [[0, 'outline'], [1, 'solid'], [2, 'stripe'], [3, 'hatch']]);
 }
