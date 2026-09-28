@@ -64,9 +64,16 @@ def _part_instrument(part: Any) -> dict[str, Any]:
     """
     from backend.modules.notation.instruments import match_music21
 
+    # Instrument detection is best-effort, as the rest of a part's metadata is:
+    # a part music21 cannot read an instrument from still imports its notes.
     try:
         inst = part.getInstrument(returnDefault=False)
-    except Exception:  # noqa: BLE001 - a bare stream has no instrument to read
+    except Exception as exc:
+        log.debug(
+            "sheetimport: no instrument read for part %r: %s",
+            getattr(part, "partName", ""),
+            exc,
+        )
         inst = None
     if inst is None:
         return {"instrument": None, "program": None, "percussion": False}
