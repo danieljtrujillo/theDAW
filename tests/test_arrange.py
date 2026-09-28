@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pretty_midi
-import pytest  # type: ignore[import]
+import pytest
 
 from backend.modules.library.db import LibraryDB
 from backend.modules.notation.arrangers.percussion import (

@@ -265,7 +265,7 @@ def _generator_string(method: str) -> str:
 
             parts.append(f"music21 {getattr(music21, '__version__', 'unknown')}")
         else:
-            import librosa  # type: ignore[import]
+            import librosa
 
             parts.append(f"librosa {getattr(librosa, '__version__', 'unknown')}")
     except ImportError:
@@ -656,7 +656,7 @@ def _from_chroma(
     include_sevenths: bool,
     resolution: str,
 ) -> dict[str, Any]:
-    import librosa  # type: ignore[import]
+    import librosa
     import numpy as np
 
     y, sr = librosa.load(str(audio_path), sr=_SR, mono=True)
