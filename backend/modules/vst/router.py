@@ -1032,7 +1032,8 @@ async def process_file(
 #: /render-midi limits. A part is at most an hour long and carries at most a
 #: million messages; a request renders at most 64 tracks. Each is far past any
 #: arrangement EDIT holds and small enough that a bad request cannot pin the
-#: plugin thread for long.
+#: plugin thread for long. The audio a request asks for, all its tracks
+#: together, also stays under THEDAW_VST_RENDER_MAX_BYTES (2 GiB by default).
 RENDER_MIDI_MAX_TRACKS = 64
 RENDER_MIDI_MAX_SECONDS = 3600.0
 RENDER_MIDI_MAX_EVENTS = 1_000_000
@@ -1233,6 +1234,11 @@ def render_midi(req: RenderMidiRequest, request: Request):
     # Every track is checked before any plugin loads, so a bad last track does
     # not cost the user the minutes the first ones took.
     plans: list[tuple[RenderMidiTrack, str, list[tuple[bytes, float]]]] = []
+    # The float32 audio the request asks for, all tracks together: it is held in
+    # memory as rendered and again in the multipart answer, so it stays under
+    # the same byte budget a /process-file upload has.
+    budget = _render_max_upload_bytes()
+    asked_bytes = 0
     for track in req.tracks:
         if not track.track_id or len(track.track_id) > _RENDER_MIDI_MAX_ID_CHARS:
             raise HTTPException(
@@ -1248,6 +1254,16 @@ def render_midi(req: RenderMidiRequest, request: Request):
                 detail=(
                     f"Track {track.track_id}: duration must be above 0 and at most "
                     f"{int(RENDER_MIDI_MAX_SECONDS)} seconds."
+                ),
+            )
+        asked_bytes += int(round(track.duration * req.sample_rate)) * req.channels * 4
+        if asked_bytes > budget:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"The render would hold {asked_bytes} bytes of audio, past the "
+                    f"{budget} byte budget (THEDAW_VST_RENDER_MAX_BYTES): render "
+                    "fewer tracks, a shorter span, a lower rate or fewer channels."
                 ),
             )
         if len(track.events) > RENDER_MIDI_MAX_EVENTS:

@@ -450,3 +450,25 @@ def test_state_host_is_checked_before_anything_renders(client, pedalboard, strin
     )
     assert not_b64.status_code == 400
     assert pedalboard.loaded == []
+
+
+def test_a_render_larger_than_the_byte_budget_is_refused_before_any_plugin_loads(
+    client, pedalboard, strings, monkeypatch: pytest.MonkeyPatch
+):
+    # An hour at 192 kHz on 8 channels is 22 GB of float samples, held in memory
+    # twice over (the render, then the multipart answer): refused up front.
+    body = {
+        "sample_rate": 192000,
+        "channels": 8,
+        "tracks": [_track(strings, duration=3600.0)],
+    }
+    response = client.post("/api/vst/render-midi", json=body)
+    assert response.status_code == 413
+    assert "THEDAW_VST_RENDER_MAX_BYTES" in response.json()["detail"]
+    assert pedalboard.loaded == []
+    # The budget counts every track of the request together.
+    monkeypatch.setenv("THEDAW_VST_RENDER_MAX_BYTES", str(3 * 44100 * 2 * 4))
+    two = {"tracks": [_track(strings, duration=2.0), _track(strings, duration=2.0)]}
+    assert client.post("/api/vst/render-midi", json=two).status_code == 413
+    one = {"tracks": [_track(strings, duration=2.0)]}
+    assert client.post("/api/vst/render-midi", json=one).status_code == 200
