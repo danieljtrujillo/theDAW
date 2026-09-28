@@ -19,7 +19,7 @@
  *
  * Units: `VST_BRIDGE_URL_PUSH_MS` is milliseconds; `*Samples` are sample frames.
  */
-import { VstBridgeClient, type VstBridgeClientLike, type VstBridgeClientOptions, type VstBridgeStats, type VstEditorOpenOptions, type VstEditorRect } from './bridgeClient';
+import { VstBridgeClient, type VstBridgeClientLike, type VstBridgeClientOptions, type VstBridgeStats, type VstEditorOpenOptions, type VstEditorRect, type VstMidiEvent } from './bridgeClient';
 import type { BridgeAudioPort, BridgeWorkerCommand, BridgeWorkerEvent, BridgeWorkerOp } from './bridgeWorker';
 import { editorWindowsSuppressed, LIVE_EDITOR_SUPPRESSED_LOG } from './editorWindowSwitch';
 import type { VstFrameHeader } from './frames';
@@ -67,6 +67,7 @@ export class VstBridgeWorkerClient implements VstBridgeClientLike {
   channelsOut = 0;
   pluginLatencySamples = 0;
   hasEditor = false;
+  acceptsMidi = false;
 
   /** Mutated in place, never replaced: the FX row and the logs hold on to this
    *  object the same way they hold `VstBridgeClient.stats`. */
@@ -144,6 +145,7 @@ export class VstBridgeWorkerClient implements VstBridgeClientLike {
         return;
       }
       case 'ready':
+        this.acceptsMidi = msg.ready.accepts_midi === true;
         h.onReady?.(msg.ready);
         return;
       case 'latency':
@@ -279,6 +281,17 @@ export class VstBridgeWorkerClient implements VstBridgeClientLike {
 
   getParams(): void {
     this.op('getParams', []);
+  }
+
+  /** Sent only while ready, as the main-thread client does. */
+  sendMidi(events: readonly VstMidiEvent[]): void {
+    if (!this._ready || events.length === 0) return;
+    this.op('sendMidi', [events]);
+  }
+
+  midiPanic(): void {
+    if (!this._ready) return;
+    this.op('midiPanic', []);
   }
 
   setState(stateB64: string): void {

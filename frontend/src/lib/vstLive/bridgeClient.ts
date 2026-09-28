@@ -93,7 +93,15 @@ export interface VstReadyEvent {
   channels_out: number;
   has_editor: boolean;
   state_compat: boolean;
+  /** The host takes the `midi` and `midi_panic` ops. Absent from a host built before them. */
+  accepts_midi?: boolean;
   warnings: string[];
+}
+
+/** One MIDI channel voice message for the `midi` op: `pos` is timeline sample frames, -1 = now. */
+export interface VstMidiEvent {
+  pos: number;
+  data: number[];
 }
 
 /** What the client tells its owner. Every handler is optional. */
@@ -196,6 +204,8 @@ export interface VstBridgeClientLike {
   readonly channelsOut: number;
   readonly pluginLatencySamples: number;
   readonly hasEditor: boolean;
+  /** The host said in `ready` that it takes MIDI (an instrument's notes). Optional: test fakes predate it. */
+  readonly acceptsMidi?: boolean;
   readonly stats: VstBridgeStats;
   connect(): void;
   close(): void;
@@ -212,6 +222,11 @@ export interface VstBridgeClientLike {
   closeEditor(): void;
   bypass(on: boolean): void;
   ping(): void;
+  /** Hand the plugin MIDI to play at timeline positions (the `midi` op). Sent only while the
+   *  session is ready: a note held back until a reconnect would land late, all at once. */
+  sendMidi?(events: readonly VstMidiEvent[]): void;
+  /** Drop the MIDI the host holds and release every sounding note (a stop, seek or loop wrap). */
+  midiPanic?(): void;
   /** Take the worklet's end of a `MessageChannel` and carry audio over it
    *  instead of through the caller's thread. Absent on the main-thread client. */
   attachAudioPort?(port: MessagePort): void;
@@ -257,6 +272,7 @@ export class VstBridgeClient implements VstBridgeClientLike {
   pluginLatencySamples = 0;
   /** The plugin has an editor view. */
   hasEditor = false;
+  acceptsMidi = false;
 
   readonly stats: VstBridgeStats = {
     lateBlocks: 0,
@@ -396,6 +412,7 @@ export class VstBridgeClient implements VstBridgeClientLike {
         this.channelsOut = ready.channels_out;
         this.pluginLatencySamples = ready.latency_samples;
         this.hasEditor = ready.has_editor;
+        this.acceptsMidi = ready.accepts_midi === true;
         this.lastOutSeq = -1; // a new host process restarts the sequence
         this.retryAttempt = 0; // a healthy session earns a fresh backoff
         if (this.everReady) this.stats.reconnects += 1;
@@ -541,6 +558,16 @@ export class VstBridgeClient implements VstBridgeClientLike {
 
   getParams(): void {
     this.op({ op: 'get_params' });
+  }
+
+  sendMidi(events: readonly VstMidiEvent[]): void {
+    if (this.closed || !this._ready || events.length === 0) return;
+    this.raw(JSON.stringify({ op: 'midi', events }));
+  }
+
+  midiPanic(): void {
+    if (this.closed || !this._ready) return;
+    this.raw(JSON.stringify({ op: 'midi_panic' }));
   }
 
   paramText(index: number, value: number): void {
