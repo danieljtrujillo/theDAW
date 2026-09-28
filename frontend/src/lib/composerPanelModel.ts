@@ -26,6 +26,7 @@ import type {
   KeyMode,
   ModalMode,
   NoteLike,
+  PartRanges,
   PlanRequest,
   ProfileRequest,
   RondoPattern,
@@ -263,9 +264,18 @@ export interface HarmonyState {
 
 export const DEFAULT_HARMONY: HarmonyState = { key: 'C', mode: 'major', bars: 8, cadence: '', harmonicRhythm: '', style: '', seed: 0 };
 
-export function planRequest(h: HarmonyState, meterMap?: readonly MeterSegment[]): PlanRequest {
+/** SATB ranges worth sending: null when there are none, so the backend's own apply. */
+const someRanges = (ranges?: PartRanges): PartRanges | null => (ranges && Object.keys(ranges).length ? { ...ranges } : null);
+
+/**
+ * The plan request for `h`, on the roll's meter map and with the ranges of the
+ * roll's SATB parts when given (pianoRollStore rollComposeContext), so the
+ * plan fits the parts it is written into.
+ */
+export function planRequest(h: HarmonyState, meterMap?: readonly MeterSegment[], ranges?: PartRanges): PlanRequest {
   const style = h.style || undefined;
   const rhythm = h.harmonicRhythm === 'style' && !style ? undefined : h.harmonicRhythm || undefined;
+  const r = someRanges(ranges);
   return {
     key: h.key,
     mode: h.mode,
@@ -275,6 +285,7 @@ export function planRequest(h: HarmonyState, meterMap?: readonly MeterSegment[])
     ...(rhythm ? { harmonicRhythm: rhythm } : {}),
     ...(style ? { style } : {}),
     ...(meterMap && meterMap.length ? { meterMap } : {}),
+    ...(r ? { ranges: r } : {}),
   };
 }
 
@@ -314,12 +325,15 @@ export function formControlApplies(form: FormName, control: 'tempo' | 'meter' | 
   return form !== 'symphony';
 }
 
-export function formRequest(f: FormState): FormRequest {
+/** The form request for `f`, with the ranges of the roll's SATB parts when given (the parts a realized movement goes into). */
+export function formRequest(f: FormState, ranges?: PartRanges): FormRequest {
+  const r = someRanges(ranges);
   const req: FormRequest = {
     form: f.form,
     key: f.key,
     mode: f.mode,
     seed: clampInt(f.seed, LIMITS.seed.min, LIMITS.seed.max, 0),
+    ...(r ? { ranges: r } : {}),
   };
   if (f.bars !== null && Number.isFinite(f.bars)) req.bars = clampInt(f.bars, LIMITS.formBars.min, formBarsMax(f.form), LIMITS.formBars.min);
   if (formControlApplies(f.form, 'tempo') && f.tempo !== null && Number.isFinite(f.tempo)) {

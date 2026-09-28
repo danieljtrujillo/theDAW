@@ -8,8 +8,14 @@
  *   - WRITE with a plan the backend refuses shows its 422 sentence in the
  *     status line (a dot and the word REFUSED) and puts it in the LOG, then a
  *     plan it accepts lands in the roll as four parts;
+ *   - the plan request carries the roll's meter and its SATB parts' ranges,
+ *     and the plan lands through the roll store's own write (one undo step);
  *   - a symphony greys out the tempo and meter it would ignore;
- *   - CHECK lists the flags by rule, and a row selects its notes.
+ *   - a part marked as the cantus firmus is the cantus "the selected part"
+ *     sends, and the species answer's cantus goes back into it;
+ *   - CHECK shows the roll's key picker and the roll's last voice-leading
+ *     answer, a write's or a check's: the same flags the harmony row shows,
+ *     whichever key ran the check. A row selects its notes.
  *
  *   cd frontend && npx tsx src/components/audio/ComposerPanel.test.tsx
  */
@@ -35,11 +41,13 @@ for (const [key, value] of Object.entries(globals)) {
 // The backend, as far as this panel asks it.
 let planRefusal: string | null = 'no path of pivot chords from C major to F# minor';
 const asked: string[] = [];
+const bodies: Record<string, Record<string, unknown>> = {};
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-globalThis.fetch = (async (input: RequestInfo | URL) => {
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : String(input);
   asked.push(url);
+  if (init?.body) bodies[url] = JSON.parse(String(init.body));
   if (url === '/api/composer/styles') {
     return json(200, {
       styles: [
@@ -66,20 +74,41 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
       meter_map: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
       chords: [],
       parts: { soprano: two(72), alto: two(67), tenor: two(60), bass: two(48) },
-      flags: [],
+      flags: [{ bar: 1, beat: 1, tick: 3840, parts: ['alto', 'tenor'], rule: 'spacing', message: 'alto and tenor apart' }],
     });
   }
   if (url === '/api/composer/check') {
+    return json(200, checkAnswer);
+  }
+  if (url === '/api/composer/species') {
+    const line = (notes: number[]) => notes.map((note, i) => ({ note, tick: i * 3840, ticks: 3840 }));
     return json(200, {
-      count: 2,
-      flags: [
-        { bar: 1, beat: 1, tick: 3840, parts: ['Soprano', 'Bass'], rule: 'parallel_octaves', message: 'parallel octaves' },
-        { bar: 0, beat: 1, tick: 0, parts: ['Alto', 'Tenor'], rule: 'spacing', message: 'more than an octave' },
-      ],
+      species: 1,
+      position: 'above',
+      key: 'D dorian',
+      ppq: 960,
+      bar_ticks: 3840,
+      seed: 0,
+      invertible: null,
+      inversion: null,
+      order: ['counterpoint', 'cantus'],
+      parts: { counterpoint: line([62, 64]), cantus: line([50, 52]) },
+      suspensions: [],
+      rhythm: [],
+      violations: [],
+      flags: [],
     });
   }
   return json(404, { detail: `no route ${url}` });
 }) as typeof fetch;
+
+let checkAnswer: unknown = {
+  count: 2,
+  flags: [
+    { bar: 1, beat: 1, tick: 3840, parts: ['soprano', 'bass'], rule: 'parallel_octaves', message: 'parallel octaves' },
+    { bar: 0, beat: 1, tick: 0, parts: ['alto', 'tenor'], rule: 'spacing', message: 'more than an octave' },
+  ],
+};
 
 const React = await import('react');
 const { act } = React;
@@ -89,6 +118,10 @@ const { usePianoRollStore, rollTracksOf } = await import('../../state/pianoRollS
 const { useLogStore } = await import('../../state/logStore.ts');
 
 const step = (fn: () => void | Promise<void>) => act(async () => { await fn(); });
+const roll = () => usePianoRollStore.getState();
+// Each write is its own undo step: the history joins writes closer than 300 ms.
+let clock = performance.now();
+performance.now = () => (clock += 1000);
 const settle = () => step(() => new Promise((r) => setTimeout(r, 0)));
 
 usePianoRollStore.getState().importParts([{ name: 'Part 1', notes: [] }]);
@@ -161,11 +194,22 @@ assert.ok(logged.at(-1)?.msg.includes('no path of pivot chords'), 'and it goes t
 assert.equal(rollTracksOf(usePianoRollStore.getState()).length, 1, 'a refused plan writes nothing');
 
 planRefusal = null;
+const undoBefore = roll()._undo.length;
 await press(key('Write'));
 await settle();
-assert.ok(statusWord().startsWith('Done'), `then Done (got "${statusWord()}")`);
-assert.deepEqual(rollTracksOf(usePianoRollStore.getState()).map((t) => t.name), ['Soprano', 'Alto', 'Tenor', 'Bass']);
-assert.equal(useLogStore.getState().entries.at(-1)?.level, 'info');
+assert.ok(statusWord().startsWith('Flagged'), `then written, with the plan's one flag (got "${statusWord()}")`);
+assert.deepEqual(rollTracksOf(roll()).map((t) => t.name), ['Soprano', 'Alto', 'Tenor', 'Bass'], "the roll's spare empty part gives way to the plan");
+assert.equal(useLogStore.getState().entries.at(-1)?.level, 'warn');
+const planBody = bodies['/api/composer/plan'];
+assert.deepEqual(planBody.meter_map, [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }], "on the roll's meter");
+assert.equal(planBody.ranges, undefined, 'no SATB parts yet, so no ranges: the backend uses its own');
+assert.equal(roll().voiceLeading?.source, 'plan', "the plan's flags are the roll's");
+assert.equal(roll()._undo.length, undoBefore + 1, 'one undo step');
+// The second WRITE plans in the ranges of the roll's SATB parts.
+await press(key('Write'));
+await settle();
+assert.deepEqual((bodies['/api/composer/plan'].ranges as Record<string, number[]>).soprano, [60, 84], "the Soprano part's registry range");
+assert.deepEqual(rollTracksOf(roll()).map((t) => t.name), ['Soprano', 'Alto', 'Tenor', 'Bass'], 'the same four parts, their notes replaced');
 
 // Re-roll changes the seed field.
 const seedField = () => win.document.getElementById(idFor('Seed')) as HTMLInputElement;
@@ -195,25 +239,73 @@ const cantusOptions = [...(win.document.getElementById(idFor('Cantus')) as HTMLS
 assert.equal(cantusOptions[0], 'Selected part: Soprano', 'the cantus can be the part being edited');
 assert.equal(cantusOptions.length, 6, 'or one of five Fux cantus firmi');
 assert.equal((win.document.getElementById(idFor('Key')) as HTMLSelectElement).disabled, true, "a preset brings its own key");
+
+// A part marked as the cantus firmus is the cantus "the selected part" sends, and gets it back.
+const bassPart = rollTracksOf(roll()).find((t) => t.name === 'Bass')!;
+await step(() => roll().setCantusFirmus(bassPart.id));
+const cantusSelect = () => win.document.getElementById(idFor('Cantus')) as HTMLSelectElement;
+assert.equal(cantusSelect().options[0].textContent, 'Cantus firmus part: Bass', 'the option names the marked part');
+await choose(idFor('Cantus'), 'part');
+assert.ok(host.textContent?.includes('The cantus is read from Bass, the part marked Cantus firmus, and written back into it.'));
+await press($$<HTMLButtonElement>('button').filter((b) => b.textContent?.trim() === 'Write')[0]);
+await settle();
+assert.ok(statusWord().startsWith('Done'), `species written (got "${statusWord()}")`);
+assert.deepEqual((bodies['/api/composer/species'].cantus as { note: number }[]).map((n) => n.note), [48, 50], "the Bass part's notes");
+assert.deepEqual(rollTracksOf(roll()).find((t) => t.id === bassPart.id)?.notes.map((n) => n.note), [50, 52], "the answer's cantus back in Bass");
+assert.ok(rollTracksOf(roll()).some((t) => t.name === 'Counterpoint'));
 const lagMax = (win.document.getElementById(idFor('Lag (beats)')) as HTMLInputElement).max;
 assert.equal(lagMax, '16');
 
 // ── CHECK ───────────────────────────────────────────────────────────────────
 await press(tab('Check'));
 assertLabelled('CHECK');
+assert.ok(win.document.getElementById(idFor('Key')), "the roll's key picker, the one the harmony row's check reads");
+const source = () => $('[data-compose-flags-source]')?.textContent ?? '';
+assert.equal(source(), 'From the counterpoint written, in C major.', "before any check, the last write's answer");
 await press(key('Check'));
 await settle();
 assert.ok(statusWord().startsWith('Flagged'), `flags read as Flagged (got "${statusWord()}")`);
+assert.deepEqual(bodies['/api/composer/check'].order, ['soprano', 'alto', 'tenor', 'bass'], 'the SATB parts');
+assert.deepEqual([bodies['/api/composer/check'].key, bodies['/api/composer/check'].mode], ['C', 'major'], "in the roll's key");
+assert.equal(source(), 'From the last check, in C major.');
 const counts = $$('ul[aria-label="Flags by rule"] li').map((li) => li.textContent);
 assert.deepEqual(counts, ['Parallel octaves1', 'Spacing1']);
-const rows = $$<HTMLButtonElement>('ul[aria-label="Voice-leading flags"] button');
-assert.equal(rows.length, 2);
-assert.ok(rows[0].textContent?.includes('Bar 2, beat 1 · Soprano, Bass'), rows[0].textContent ?? '');
-await press(rows[0]);
-const s = usePianoRollStore.getState();
+const rows = () => $$<HTMLButtonElement>('ul[aria-label="Voice-leading flags"] button');
+assert.equal(rows().length, 2);
+assert.ok(rows()[0].textContent?.includes('Bar 2, beat 1 · Soprano, Bass'), 'the flag names the roll parts as the roll does');
+assert.deepEqual(roll().voiceLeading?.flags.map((f) => f.rule), ['parallel_octaves', 'spacing'], "the list is the store's voiceLeading");
+await press(rows()[0]);
+const s = roll();
 assert.equal(rollTracksOf(s).find((t) => t.id === s.activeTrackId)?.name, 'Soprano', 'the row opens the part it names');
 assert.deepEqual([...s.selectedIds].map((id) => s.notes.find((n) => n.id === id)?.note), [74], 'and selects its note there');
 assert.ok(statusWord().startsWith('Selected'));
+
+// The HARMONY key, when asked for, is the key the check reads in.
+await press(tab('Harmony'));
+await choose(idFor('Key'), 'D');
+await choose(idFor('Mode'), 'minor');
+await press(tab('Check'));
+const inHarmonyKey = win.document.getElementById(idFor('Read in D minor (the HARMONY key) instead')) as HTMLInputElement;
+assert.equal(inHarmonyKey.checked, false, "the roll's key unless asked");
+await step(() => inHarmonyKey.click());
+await press(key('Check'));
+await settle();
+assert.deepEqual([bodies['/api/composer/check'].key, bodies['/api/composer/check'].mode], ['D', 'minor']);
+assert.equal(source(), 'From the last check, in D minor.');
+assert.equal(roll().rollKey?.tonic, 'C', "the roll's own key stays");
+
+// A check from the harmony row's corner (the store's own) is what this list shows next: one source.
+checkAnswer = { count: 1, flags: [{ bar: 0, beat: 1, tick: 0, parts: ['tenor', 'bass'], rule: 'hidden_fifths', message: 'hidden fifths' }] };
+await step(async () => {
+  await roll().runVoiceLeadingCheck();
+});
+assert.deepEqual(rows().map((r) => r.textContent?.includes('Tenor, Bass')), [true]);
+// An edit to a checked part says so.
+await step(() => roll().setPartNotes(rollTracksOf(roll()).find((t) => t.name === 'Tenor')!.id, []));
+assert.equal(source(), 'From the last check, in C major. The parts changed since.');
+// Undo takes the edit back, and the list reads current again.
+await step(() => roll().undo());
+assert.equal(source(), 'From the last check, in C major.');
 
 // ── PROFILE ─────────────────────────────────────────────────────────────────
 await press(tab('Profile'));

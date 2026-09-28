@@ -48,7 +48,7 @@ import {
   type HarmonyState,
   type ProfileState,
 } from '../lib/composerPanelModel';
-import { rollPartNotes, runVoiceLeadingCheck, writeCounterpoint, writeFormMovement, writePlan } from '../lib/composeToRoll';
+import { rollPartNotes, rollRequestContext, runVoiceLeadingCheck, writeCounterpoint, writeFormMovement, writePlan } from '../lib/composeToRoll';
 import { fetchArtifactText, importScoreFile, openCorpusPiece, searchCorpus } from '../lib/notationClient';
 import { importSheetParts } from '../lib/rollPartsImport';
 import { parseSheetFile } from '../lib/sheetImportClient';
@@ -129,7 +129,9 @@ async function composerPlan(p: Payload): Promise<ToolResult> {
       style: str(p, 'style') ?? '',
       seed: clampInt(num(p, 'seed'), LIMITS.seed.min, LIMITS.seed.max, 0),
     };
-    const req = planRequest(h, usePianoRollStore.getState().meterMap);
+    // The roll's meter and the ranges of its SATB parts, as the COMPOSE panel sends them.
+    const ctx = rollRequestContext();
+    const req = planRequest(h, ctx.meterMap, ctx.ranges);
     const include = Array.isArray(p.include) ? (p.include as unknown[]).map(String) : [];
     const modulateTo = str(p, 'modulate_to');
     const plan = await composerApi.plan({
@@ -183,7 +185,7 @@ async function composerForm(p: Payload): Promise<ToolResult> {
       variations: num(p, 'variations') ?? null,
       seed: clampInt(num(p, 'seed'), LIMITS.seed.min, LIMITS.seed.max, 0),
     };
-    const req = formRequest(f);
+    const req = formRequest(f, rollRequestContext().ranges);
     const realize = bool(p, 'realize', false);
     const result = realize ? await composerApi.realizeForm(req) : await composerApi.form(req);
     const movements = result.movements.map((m) => ({
@@ -201,7 +203,7 @@ async function composerForm(p: Payload): Promise<ToolResult> {
     }
     const index = clampInt(num(p, 'movement'), 1, result.movements.length, 1) - 1;
     const m = result.movements[index];
-    const w = writeFormMovement(m);
+    const w = writeFormMovement(result, index);
     showRoll();
     return done(
       `Realized movement ${index + 1} (${m.title}, ${m.key}, ${m.bars} bars) into the piano roll as ${w.parts.join(', ')} (${w.notes} notes), with its meter, tempo map and section markers; ${result.flag_count ?? 0} voice-leading flags over the form. Movements: ${JSON.stringify(movements)}`,

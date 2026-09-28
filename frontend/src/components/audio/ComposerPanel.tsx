@@ -13,15 +13,19 @@
  *   COUNTERPOINT  species counterpoint against a cantus (the selected part or
  *                 one of Fux's), a canon, a fugue exposition, and an
  *                 inversion check of two parts.
- *   CHECK         the voice-leading check over every part, counted by rule;
- *                 a row selects the notes it names.
+ *   CHECK         the roll's key and the voice-leading check over its SATB
+ *                 parts, counted by rule; the list is the roll's last
+ *                 voice-leading answer (a check's, or a write's), the same
+ *                 flags the harmony row shows, and a row selects the notes it
+ *                 names.
  *   PROFILE       a style profile counted from corpus pieces or a library
  *                 score, or a shipped style's numbers.
  *
  * The header's status is a dot and one word, with the sentence under it; every
  * result and every refusal (the backend's 422 sentence) also goes to the LOG.
  * Options and limits come from lib/composerPanelModel, which holds the
- * backend's own; the roll is written and read through lib/composeToRoll.
+ * backend's own; the roll is written and read through lib/composeToRoll, whose
+ * writes are the roll store's composer actions (one undo step each).
  */
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { ChartColumn, Dices, FlipVertical2, ListChecks, Loader2, PenLine, ScrollText, Search, Workflow, X } from 'lucide-react';
@@ -30,6 +34,7 @@ import {
   COMPOSER_PPQ,
   composerApi,
   type FormRequest,
+  type VoiceLeadingFlag,
   type FormResult,
   type InvertibleInterval,
   type InvertibleResult,
@@ -100,18 +105,23 @@ import {
 } from '../../lib/composerPanelModel';
 import {
   activeRollPartId,
+  rollKeyForPanel,
   rollPartNotes,
+  rollRequestContext,
   runVoiceLeadingCheck,
   selectFlagNotes,
+  speciesCantusNotes,
   writeCounterpoint,
   writeFormMovement,
   writePlan,
-  type CheckOutcome,
+  type RollWrite,
 } from '../../lib/composeToRoll';
 import { searchCorpus, type CorpusPiece } from '../../lib/notationClient';
+import { rollKeyName } from '../../lib/rollKey';
 import { logError, logInfo, logWarn } from '../../state/logStore';
-import { rollTracksOf, usePianoRollStore } from '../../state/pianoRollStore';
+import { rollTracksOf, usePianoRollStore, type RollVoiceLeading } from '../../state/pianoRollStore';
 import { useLibrarySearch } from '../../state/useLibrarySearch';
+import { RollKeyPicker } from './FiguredBassLane';
 import { FLYOUT_LEGEND, FLYOUT_SELECT, MINI_GLYPH, MINI_KEY, StripKey, keyTone } from './midiDockKit';
 
 export type ComposeSectionId = 'harmony' | 'form' | 'counterpoint' | 'check' | 'profile';
@@ -275,16 +285,31 @@ const ActionKey: React.FC<{
   />
 );
 
-/** Flags as rows: where, which parts, what. A row with `onPick` selects its notes. */
-const FlagList: React.FC<{ flags: readonly AnyFlag[]; onPick?: (f: AnyFlag) => void; label: string }> = ({ flags, onPick, label }) => {
+/**
+ * Flags as rows: where, which parts, what. A row with `onPick` selects its
+ * notes. `partName` names a flag's part as the roll does ('soprano' is the
+ * part "Soprano").
+ */
+function FlagList<F extends AnyFlag>({
+  flags,
+  onPick,
+  label,
+  partName = (p) => p,
+}: {
+  flags: readonly F[];
+  onPick?: (f: F) => void;
+  label: string;
+  partName?: (part: string) => string;
+}) {
   if (!flags.length) return <p className={NOTE}>No rule broken.</p>;
   return (
     <ul aria-label={label} className="flex flex-col gap-0.5 max-h-56 overflow-y-auto">
       {flags.map((f, i) => {
+        const names = f.parts.map(partName);
         const text = (
           <>
             <span className="block text-[12px] font-bold et-ink tabular-nums">
-              {flagPlace(f)} · {f.parts.join(', ')}
+              {flagPlace(f)} · {names.join(', ')}
             </span>
             <span className="block text-[12px] font-semibold et-ink-3">
               {ruleLabel(f.rule)}: {f.message}
@@ -297,7 +322,7 @@ const FlagList: React.FC<{ flags: readonly AnyFlag[]; onPick?: (f: AnyFlag) => v
               <button
                 type="button"
                 onClick={() => onPick(f)}
-                aria-label={`Select the notes: ${flagPlace(f)}, ${f.parts.join(' and ')}, ${ruleLabel(f.rule)}`}
+                aria-label={`Select the notes: ${flagPlace(f)}, ${names.join(' and ')}, ${ruleLabel(f.rule)}`}
                 className="w-full text-left px-1.5 py-1 rounded-xs transition-shadow hover:shadow-[inset_0_0_0_100px_rgba(255,255,255,0.06)]"
               >
                 {text}
@@ -310,7 +335,29 @@ const FlagList: React.FC<{ flags: readonly AnyFlag[]; onPick?: (f: AnyFlag) => v
       })}
     </ul>
   );
+}
+
+/** Where the roll's last voice-leading answer came from, as the CHECK section says it. */
+const FLAG_SOURCE: Record<RollVoiceLeading['source'], string> = {
+  check: 'the last check',
+  plan: 'the plan written',
+  continuo: 'the realized figured bass',
+  counterpoint: 'the counterpoint written',
+  form: 'the movement written',
 };
+
+/** True when a part the roll's last voice-leading answer read has different notes now. */
+const useFlagsStale = (): boolean =>
+  usePianoRollStore((s) => {
+    const vl = s.voiceLeading;
+    if (!vl) return false;
+    const parts = rollTracksOf(s);
+    return Object.entries(vl.notesAt).some(([id, at]) => parts.find((p) => p.id === id)?.notes !== at);
+  });
+
+/** "; 2 voices left out: the roll holds its most parts" when a write left some out. */
+const leftOut = (w: RollWrite): string =>
+  w.skipped ? `; ${w.skipped} voice${w.skipped === 1 ? '' : 's'} left out: the roll holds its most parts` : '';
 
 const RuleCounts: React.FC<{ flags: readonly AnyFlag[] }> = ({ flags }) => (
   <ul aria-label="Flags by rule" className="flex flex-col gap-0.5">
@@ -388,16 +435,30 @@ export const ComposerPanel: React.FC<{
 
   const tracks = usePianoRollStore((s) => rollTracksOf(s));
   const activeId = usePianoRollStore((s) => s.activeTrackId);
-  const meterMap = usePianoRollStore((s) => s.meterMap);
+  // The roll's last voice-leading answer: the CHECK list shows what the harmony row shows.
+  const voiceLeading = usePianoRollStore((s) => s.voiceLeading);
+  const flagsStale = useFlagsStale();
   const partOptions = useMemo(
     () => tracks.map((t) => ({ value: t.id, label: `${t.name} (${t.notes.length} notes)` })),
     [tracks],
   );
   const activeName = tracks.find((t) => t.id === activeId)?.name ?? 'the selected part';
+  // A species cantus from "the selected part" is the part marked as the cantus firmus when one is.
+  const cantusPart = tracks.find((t) => t.cantusFirmus === true);
+  const cantusOption = cantusPart ? `Cantus firmus part: ${cantusPart.name}` : `Selected part: ${activeName}`;
+  /** A flag's part name as the roll names that part. */
+  const flagPartName = useCallback(
+    (name: string) => {
+      const id = voiceLeading?.ids[name];
+      return (id && tracks.find((t) => t.id === id)?.name) || name;
+    },
+    [voiceLeading, tracks],
+  );
 
   const [styles, setStyles] = useState<StyleSummary[]>([]);
-  const [harmony, setHarmony] = useState<HarmonyState>(DEFAULT_HARMONY);
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+  // HARMONY and FORM open on the roll's key (its own, else the key its notes are in).
+  const [harmony, setHarmony] = useState<HarmonyState>(() => ({ ...DEFAULT_HARMONY, ...rollKeyForPanel() }));
+  const [form, setForm] = useState<FormState>(() => ({ ...DEFAULT_FORM, ...rollKeyForPanel() }));
   const [formPlan, setFormPlan] = useState<{ req: FormRequest; result: FormResult; realized: boolean } | null>(null);
   const [movement, setMovement] = useState(0);
   const [cp, setCp] = useState<CounterpointState>(DEFAULT_COUNTERPOINT);
@@ -408,8 +469,7 @@ export const ComposerPanel: React.FC<{
   const [invLower, setInvLower] = useState('');
   const [invInterval, setInvInterval] = useState<InvertibleInterval>(8);
   const [inversion, setInversion] = useState<InvertibleResult | null>(null);
-  const [checkInKey, setCheckInKey] = useState(true);
-  const [check, setCheck] = useState<CheckOutcome | null>(null);
+  const [checkInKey, setCheckInKey] = useState(false);
   const [profileState, setProfileState] = useState<ProfileState>(DEFAULT_PROFILE);
   const [profile, setProfile] = useState<StyleProfile | null>(null);
   const [corpusQuery, setCorpusQuery] = useState('');
@@ -480,19 +540,21 @@ export const ComposerPanel: React.FC<{
 
   const writeHarmony = () =>
     run('plan', 'Write', async () => {
-      const plan = await composerApi.plan(planRequest(harmony, meterMap));
+      // On the roll's meter, in the ranges of its SATB parts: the plan fits the parts it goes into.
+      const ctx = rollRequestContext();
+      const plan = await composerApi.plan(planRequest(harmony, ctx.meterMap, ctx.ranges));
       const w = writePlan(plan);
       const style = plan.style ? ` in the style of ${styles.find((s) => s.id === plan.style)?.name ?? plan.style}` : '';
       const flags = plan.flags.length;
       return doneStatus(
-        `Wrote ${w.parts.join(', ')}: ${w.notes} notes, ${plan.bars} bars in ${plan.key}${style}, ${(CADENCE_OPTIONS.find((o) => o.value === plan.cadence)?.label ?? plan.cadence).toLowerCase()} cadence, seed ${plan.seed}${flags ? `, ${flags} voice-leading flags` : ''}`,
+        `Wrote ${w.parts.join(', ')}: ${w.notes} notes, ${plan.bars} bars in ${plan.key}${style}, ${(CADENCE_OPTIONS.find((o) => o.value === plan.cadence)?.label ?? plan.cadence).toLowerCase()} cadence, seed ${plan.seed}${flags ? `, ${flags} voice-leading flags` : ''}${leftOut(w)}`,
         flags,
       );
     });
 
   const planForm = () =>
     run('form', 'Plan', async () => {
-      const req = formRequest(form);
+      const req = formRequest(form, rollRequestContext().ranges);
       const result = await composerApi.form(req);
       setFormPlan({ req, result, realized: false });
       setMovement(0);
@@ -502,29 +564,31 @@ export const ComposerPanel: React.FC<{
 
   const realizeForm = () =>
     run('realize', 'Realize', async () => {
-      const req = formRequest(form);
+      const req = formRequest(form, rollRequestContext().ranges);
       const cached = formPlan && formPlan.realized && sameFormRequest(formPlan.req, req) ? formPlan.result : null;
       const result = cached ?? (await composerApi.realizeForm(req));
       setFormPlan({ req, result, realized: true });
-      const m = result.movements[Math.min(movement, result.movements.length - 1)];
-      const w = writeFormMovement(m);
+      const index = Math.min(movement, result.movements.length - 1);
+      const m = result.movements[index];
+      const w = writeFormMovement(result, index);
       const flags = m.sections.reduce((n, s) => n + (s.flags?.length ?? 0), 0);
       return doneStatus(
-        `Realized ${m.title} in ${m.key}: ${m.bars} bars, ${w.notes} notes, ${m.sections.length} section markers${flags ? `, ${flags} voice-leading flags` : ''}`,
+        `Realized ${m.title} in ${m.key}: ${m.bars} bars, ${w.notes} notes, ${m.sections.length} section markers${flags ? `, ${flags} voice-leading flags` : ''}${leftOut(w)}`,
         flags,
       );
     });
 
   const writeSpecies = () =>
     run('species', 'Species', async () => {
-      const req = speciesRequest(cp, cp.cantus === 'part' ? rollPartNotes(activeRollPartId()) : undefined);
+      // "The selected part" is the part marked as the cantus firmus when one is, else the part being edited.
+      const req = speciesRequest(cp, cp.cantus === 'part' ? speciesCantusNotes() : undefined);
       const result = await composerApi.species(req);
       const w = writeCounterpoint(result);
       setCpFlags(result.violations);
       const at = INVERSION_INTERVALS.find((o) => o.value === result.invertible)?.label.toLowerCase();
       const inv = result.inversion ? `, ${result.inversion.ok ? 'inverts cleanly' : 'does not invert cleanly'} at the ${at}` : '';
       return doneStatus(
-        `Wrote species ${result.species} ${result.position} the cantus in ${result.key}: ${w.notes} notes in ${w.parts.join(' and ')}, ${result.suspensions.length} suspensions${inv}`,
+        `Wrote species ${result.species} ${result.position} the cantus in ${result.key}: ${w.notes} notes in ${w.parts.join(' and ')}, ${result.suspensions.length} suspensions${inv}${leftOut(w)}`,
         result.violations.length,
       );
     });
@@ -536,7 +600,7 @@ export const ComposerPanel: React.FC<{
       setCpFlags(result.violations);
       const beats = result.lag / COMPOSER_PPQ;
       return doneStatus(
-        `Wrote a canon, the follower a ${canonIntervalLabel(result.interval).toLowerCase()} and ${beats} beat${beats === 1 ? '' : 's'} behind, ${result.bars} bars in ${result.key}: ${w.notes} notes`,
+        `Wrote a canon, the follower a ${canonIntervalLabel(result.interval).toLowerCase()} and ${beats} beat${beats === 1 ? '' : 's'} behind, ${result.bars} bars in ${result.key}: ${w.notes} notes${leftOut(w)}`,
         result.violations.length,
       );
     });
@@ -548,7 +612,7 @@ export const ComposerPanel: React.FC<{
       const w = writeCounterpoint(result);
       setCpFlags(result.violations);
       return doneStatus(
-        `Wrote a ${result.voices.length}-voice fugue exposition in ${result.key}: ${result.answer.kind} answer, ${result.episodes.length} episode${result.episodes.length === 1 ? '' : 's'}, ${result.strettos.length} stretto${result.strettos.length === 1 ? '' : 's'} found, ${w.notes} notes`,
+        `Wrote a ${result.voices.length}-voice fugue exposition in ${result.key}: ${result.answer.kind} answer, ${result.episodes.length} episode${result.episodes.length === 1 ? '' : 's'}, ${result.strettos.length} stretto${result.strettos.length === 1 ? '' : 's'} found, ${w.notes} notes${leftOut(w)}`,
         result.violations.length,
       );
     });
@@ -570,18 +634,24 @@ export const ComposerPanel: React.FC<{
 
   const runCheck = () =>
     run('check', 'Check', async () => {
+      // The flags land in the roll's voiceLeading, which this list and the harmony row both show.
       const result = await runVoiceLeadingCheck(checkInKey ? { key: harmony.key, mode: harmony.mode } : {});
-      setCheck(result);
+      const parts = Object.keys(result.idByName).length;
+      const key = usePianoRollStore.getState().voiceLeading?.key;
+      const inKey = key ? ` in ${rollKeyName(key)}` : '';
       return doneStatus(
-        result.count ? `${result.count} voice-leading flag${result.count === 1 ? '' : 's'} over ${Object.keys(result.idByName).length} parts` : `No voice-leading flags over ${Object.keys(result.idByName).length} parts`,
+        result.count
+          ? `${result.count} voice-leading flag${result.count === 1 ? '' : 's'} over ${parts} parts${inKey}`
+          : `No voice-leading flags over ${parts} parts${inKey}`,
         result.count,
       );
     });
 
-  const pickFlag = (f: AnyFlag) => {
-    if (!check) return;
-    const n = selectFlagNotes(f, check.idByName);
-    report({ tone: 'ok', word: 'Selected', message: `${n} note${n === 1 ? '' : 's'} at ${flagPlace(f).toLowerCase()} in ${f.parts[0]}` });
+  const pickFlag = (f: VoiceLeadingFlag) => {
+    const n = selectFlagNotes(f);
+    const s = usePianoRollStore.getState();
+    const part = rollTracksOf(s).find((t) => t.id === s.activeTrackId)?.name ?? flagPartName(f.parts[0]);
+    report({ tone: 'ok', word: 'Selected', message: `${n} note${n === 1 ? '' : 's'} at ${flagPlace(f).toLowerCase()} in ${part}` });
   };
 
   const searchPieces = () =>
@@ -815,7 +885,7 @@ export const ComposerPanel: React.FC<{
               />
               <ActionKey
                 legend="Realize"
-                description="Voice every section in four parts and write the chosen movement into the roll, replacing its parts (undo brings them back)"
+                description="Voice every section in four parts and write the chosen movement into the Soprano, Alto, Tenor and Bass parts, with its meters, tempi and section markers (one undo step)"
                 onClick={() => void realizeForm()}
                 busy={busy}
                 running={running === 'realize'}
@@ -886,7 +956,7 @@ export const ComposerPanel: React.FC<{
                   <Select
                     id={idOf('c-cantus')}
                     value={cp.cantus}
-                    options={[{ value: 'part' as const, label: `Selected part: ${activeName}` }, ...CANTUS_PRESETS]}
+                    options={[{ value: 'part' as const, label: cantusOption }, ...CANTUS_PRESETS]}
                     onChange={(cantus) => setCp((s) => ({ ...s, cantus }))}
                   />
                 </Field>
@@ -909,6 +979,13 @@ export const ComposerPanel: React.FC<{
                   />
                 </Field>
               </div>
+              {cp.cantus === 'part' && (
+                <p className={NOTE}>
+                  {cantusPart
+                    ? `The cantus is read from ${cantusPart.name}, the part marked Cantus firmus, and written back into it.`
+                    : 'Mark a part Cantus firmus in the parts column to read the cantus from it and write it back there.'}
+                </p>
+              )}
               <SeedField id={idOf('c-seed')} value={cp.seed} onChange={(seed) => setCp((s) => ({ ...s, seed }))} />
               <div className="flex items-center gap-2">
                 <ActionKey
@@ -1086,6 +1163,10 @@ export const ComposerPanel: React.FC<{
 
         {section === 'check' && (
           <div className={GROUP}>
+            {/* The roll's own key: the harmony row's CHECK, REALIZE and the transforms read it too. */}
+            <div className="self-start">
+              <RollKeyPicker id={idOf('k-key')} />
+            </div>
             <label htmlFor={idOf('k-inkey')} className={CHECK_LABEL}>
               <input
                 id={idOf('k-inkey')}
@@ -1095,23 +1176,26 @@ export const ComposerPanel: React.FC<{
                 onChange={(e) => setCheckInKey(e.target.checked)}
                 className="accent-[rgb(var(--et-accent))]"
               />
-              {`Read in ${harmony.key} ${harmony.mode} (the HARMONY key)`}
+              {`Read in ${harmony.key} ${harmony.mode} (the HARMONY key) instead`}
             </label>
             <div className="flex items-center gap-2">
               <ActionKey
                 legend="Check"
-                description="Check every roll part with notes for parallels, hidden fifths and octaves, crossing, spacing, range and unresolved tones"
+                description="Check the Soprano, Alto, Tenor and Bass parts (else the four highest parts) for parallels, hidden fifths and octaves, crossing, spacing, range and unresolved tones"
                 onClick={() => void runCheck()}
                 busy={busy}
                 running={running === 'check'}
                 icon={<ListChecks className={MINI_GLYPH} />}
               />
             </div>
-            {check && (
+            {voiceLeading && (
               <>
-                <RuleCounts flags={check.flags} />
-                <FlagList flags={check.flags} onPick={pickFlag} label="Voice-leading flags" />
-                {check.flags.length > 0 && <p className={NOTE}>A row selects its notes in the first part it names.</p>}
+                <p className={NOTE} data-compose-flags-source="">
+                  {`From ${FLAG_SOURCE[voiceLeading.source]}, in ${rollKeyName(voiceLeading.key)}${flagsStale ? '. The parts changed since.' : '.'}`}
+                </p>
+                <RuleCounts flags={voiceLeading.flags} />
+                <FlagList flags={voiceLeading.flags} onPick={pickFlag} partName={flagPartName} label="Voice-leading flags" />
+                {voiceLeading.flags.length > 0 && <p className={NOTE}>A row selects its notes and moves the playhead there; the harmony row over the ruler shows the same flags.</p>}
               </>
             )}
           </div>

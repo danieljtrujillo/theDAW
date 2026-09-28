@@ -168,6 +168,8 @@ planStatus = 200;
 // write: false plans without writing.
 const notWritten = await handletheDAWAction({ type: 'composer_plan', payload: { write: false } });
 assert.ok(notWritten.startsWith('Planned (not written)'), notWritten);
+// With SATB parts in the roll, a plan asks in their ranges, as the COMPOSE panel's does.
+assert.deepEqual((sent.at(-1)?.body as { ranges?: Record<string, number[]> }).ranges?.soprano, [60, 84]);
 
 // ── counterpoint from a roll part ───────────────────────────────────────────
 usePianoRollStore.getState().addTrack({
@@ -175,7 +177,9 @@ usePianoRollStore.getState().addTrack({
   notes: [62, 65, 64, 62].map((n, i) => toPianoNote({ note: n, tick: i * 3840, ticks: 3840 })),
 });
 const species = await handletheDAWAction({ type: 'composer_species', payload: { species: 2, position: 'below', cantus_part: 'cantus line', key: 'D', mode: 'dorian' } });
-assert.ok(species.startsWith('Wrote species 2 below the cantus in D dorian into the piano roll as Cantus and Counterpoint'), species);
+assert.ok(species.startsWith('Wrote species 2 below the cantus in D dorian into the piano roll as Cantus firmus and Counterpoint'), species);
+// The roll store's species write: the cantus goes into a part named "Cantus firmus", which takes the mark.
+assert.equal(rollTracksOf(usePianoRollStore.getState()).find((t) => t.name === 'Cantus firmus')?.cantusFirmus, true);
 const speciesBody = sent.at(-1)?.body as Record<string, unknown>;
 assert.deepEqual((speciesBody.cantus as { note: number }[]).map((n) => n.note), [62, 65, 64, 62], 'the named part is the cantus');
 assert.equal(speciesBody.preset, undefined);
