@@ -769,8 +769,8 @@ for (const amount of [0.6, 1]) {
 // humanize with its sections: each section leans its own way, the notes and lengths stay.
 {
   const src = phrase(20260913);
-  const plain = humanize(src, 1, 5, undefined, OPTS);
-  const played = humanize(src, 1, 5, undefined, OPTS, { starts: [0, 16], stepSec: 0.125 });
+  const plain = humanize(src, 1, 5);
+  const played = humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0.125 });
   assert.equal(played.length, plain.length, 'the same notes');
   assert.deepEqual(played.map((n) => [n.note, n.length]), plain.map((n) => [n.note, n.length]), 'pitch and length stay');
   assert.ok(played.some((n, i) => n.step !== plain[i].step), 'the onsets move by section');
@@ -781,8 +781,8 @@ for (const amount of [0.6, 1]) {
   assert.ok(Math.abs(lean(0, 16) - lean(16, 1e9)) > 1e-4, `each section leans its own way (${lean(0, 16).toFixed(4)} vs ${lean(16, 1e9).toFixed(4)} steps)`);
   assert.ok(played.every((n, i) => Math.abs(n.step - plain[i].step) <= (0.012 * 1.25 + 0.008) / 0.125 + 1e-9), 'within the bias and the drift, in steps');
   const sig = (ns: PianoNote[]) => ns.map((n) => [n.note, n.step, n.length, n.velocity]);
-  assert.deepEqual(sig(humanize(src, 1, 5, undefined, OPTS, { starts: [0, 16], stepSec: 0.125 })), sig(played), 'seeded');
-  assert.deepEqual(sig(humanize(src, 1, 5, undefined, OPTS, { starts: [0, 16], stepSec: 0 })), sig(plain), 'no step length: no section pass');
+  assert.deepEqual(sig(humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0.125 })), sig(played), 'seeded');
+  assert.deepEqual(sig(humanize(src, 1, 5, undefined, undefined, { starts: [0, 16], stepSec: 0 })), sig(plain), 'no step length: no section pass');
 }
 
 console.log('virtuosoTransform: ok');
