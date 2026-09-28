@@ -25,9 +25,6 @@ constexpr int kHandshakeSendTimeoutMs = 5000;
 // client slot -- and so the acceptor thread, which serves one connection at a
 // time -- open past this.
 constexpr int kHandshakeDeadlineMs = 2000;
-// The audio thread polls the socket with this timeout, which also bounds how
-// long a park request waits and how long a queued control reply sits.
-constexpr int kAudioRecvTimeoutMs = 2;
 // Shorter than the park timeout in Session.cpp (4000 ms): a peer that stops reading can
 // stall a send, and a stalled send must never out-wait a park or the join in stop().
 constexpr int kAudioSendTimeoutMs = 1000;
@@ -49,7 +46,13 @@ void configureClientSocket(SOCKET socket) {
     BOOL nodelay = TRUE;
     setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay),
                sizeof(nodelay));
-    DWORD recvTimeout = kAudioRecvTimeoutMs;
+    // No receive timeout. The audio thread waits for data with WSAPoll and calls recv() only
+    // on a readable socket (Session::audioLoop). A blocking recv() that times out through
+    // SO_RCVTIMEO leaves a Windows socket "in an indeterminate state" (the setsockopt
+    // documentation), and under CPU load such a timeout came back as error 997
+    // (WSA_IO_PENDING) instead of WSAETIMEDOUT, which dropped a healthy client.
+    // The handshake socket set one for the upgrade read; this puts it back to none.
+    DWORD recvTimeout = 0;
     setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
                reinterpret_cast<const char*>(&recvTimeout), sizeof(recvTimeout));
     DWORD sendTimeout = kAudioSendTimeoutMs;

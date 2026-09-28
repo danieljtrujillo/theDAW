@@ -102,6 +102,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--in", dest="in_path")
     parser.add_argument("--out", dest="out_path")
     parser.add_argument("--params-json")
+    parser.add_argument("--midi-events")
     parser.add_argument("--tail-seconds")
     parser.add_argument("--host-name")
     parser.add_argument("--iid-log", action="store_true")
@@ -272,6 +273,10 @@ def _render(args: argparse.Namespace) -> int:
         warnings.append(f"echo: plugin-name={args.plugin_name}")
         warnings.append(f"echo: block-size={args.block_size}")
         warnings.append(f"echo: tail-seconds={args.tail_seconds}")
+        if args.midi_events:
+            lines = Path(args.midi_events).read_text(encoding="ascii").splitlines()
+            warnings.append(f"echo: midi-events={len(lines)}")
+            warnings.extend(f"echo: midi {line}" for line in lines[:8])
 
     try:
         Path(args.out_path).write_bytes(payload)

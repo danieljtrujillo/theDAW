@@ -517,6 +517,47 @@ void Session::handleOp(const json::Value& message, const std::string& op) {
         return;
     }
 
+    if (op == "midi") {
+        // {"op":"midi","events":[{"pos":<timeline sample frames, -1 = now>,"data":[s,d1,d2]}...]}
+        const json::Value* events = message.find("events");
+        if (events == nullptr || !events->isArray()) {
+            sendError("midi needs an \"events\" array", false);
+            return;
+        }
+        size_t refused = 0;
+        for (const json::Value& event : events->array) {
+            const json::Value* pos = event.find("pos");
+            const json::Value* data = event.find("data");
+            uint8_t bytes[3] = {0, 0, 0};
+            int32_t size = 0;
+            bool ok = pos != nullptr && pos->isNumber() && data != nullptr && data->isArray() &&
+                      !data->array.empty() && data->array.size() <= 3;
+            if (ok) {
+                for (const json::Value& b : data->array) {
+                    if (!b.isNumber() || b.number < 0 || b.number > 255 ||
+                        b.number != static_cast<double>(static_cast<int>(b.number))) {
+                        ok = false;
+                        break;
+                    }
+                    bytes[size++] = static_cast<uint8_t>(b.number);
+                }
+            }
+            const double position = ok ? (pos->number < 0 ? -1.0 : pos->number) : 0.0;
+            if (!ok || !midi_->push(position, bytes, size)) ++refused;
+        }
+        if (refused > 0) {
+            sendWarningMessage("midi: " + std::to_string(refused) +
+                               " message(s) were not channel voice messages or did not fit, and were dropped");
+        }
+        return;
+    }
+
+    if (op == "midi_panic") {
+        // A stop, seek or loop wrap: drop what is waiting and release every note still sounding.
+        if (!midi_->pushPanic()) sendWarningMessage("midi_panic: the MIDI queue is full");
+        return;
+    }
+
     if (op == "get_state") {
         sendStateMessage();
         return;
@@ -674,6 +715,8 @@ void Session::sendReady() {
         .intField("channels_out", prepared_.channelsOut)
         .boolField("has_editor", hasEditor_)
         .boolField("state_compat", stateCompatible_)
+        // This host takes the `midi` and `midi_panic` ops: a client asks before it sends notes.
+        .boolField("accepts_midi", true)
         .key("warnings")
         .beginArray();
     for (const std::string& warning : startupWarnings_) writer.valueString(warning);
@@ -1231,6 +1274,11 @@ void Session::handleAudioBlock(const uint8_t* data, size_t size) {
         bypassDelay_.clear();
     }
 
+    // The client's MIDI for this block, at the offsets its timeline positions put it on.
+    const int32_t midiCount =
+        midi_->collect(header.positionSamples, frames, blockMidi_, MidiQueue::kMaxPerBlock);
+    instance->setBlockMidi(blockMidi_, midiCount);
+
     LARGE_INTEGER start{};
     LARGE_INTEGER finish{};
     QueryPerformanceCounter(&start);
@@ -1404,6 +1452,18 @@ void Session::audioLoop() {
         uint8_t* buffer = reader_.writePointer(space);
         if (buffer == nullptr || space == 0) {
             util::log::audioNote("receive buffer exhausted");
+            dropClient();
+            continue;
+        }
+        // Wait for bytes with WSAPoll and only then recv(): the recv never times out, so the
+        // socket never enters the indeterminate state a timed-out blocking recv leaves behind.
+        WSAPOLLFD poll{};
+        poll.fd = socket;
+        poll.events = POLLRDNORM;
+        const int ready = WSAPoll(&poll, 1, net::kAudioPollTimeoutMs);
+        if (ready == 0) continue;
+        if (ready == SOCKET_ERROR) {
+            util::log::audioNote("poll failed", WSAGetLastError());
             dropClient();
             continue;
         }

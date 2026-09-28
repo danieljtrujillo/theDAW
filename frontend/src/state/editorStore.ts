@@ -421,11 +421,24 @@ export interface EditorTrack {
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
    *  the track fader and its panner during live playback and offline bounce. */
   fxChain?: ChainEntry[];
+  /**
+   * The track's VST3 instrument: the slot AHEAD of `fxChain` that plays the
+   * track's MIDI clips in place of EDIT's soundfont synths. A `vst3` chain entry
+   * (its `vst` names the plugin and carries the state captured from its
+   * editor), so the live host, the editor window and the state capture treat
+   * it as they treat any hosted plugin, keyed by its `id`. Offline, every
+   * bounce prints it through POST /api/vst/render-midi before the track's
+   * inserts (lib/renderCore printInstrumentTracks); live, liveMixer hosts it at
+   * the head of the track's chain and sends it the track's notes. Undefined, or
+   * `enabled: false`, and the track's MIDI plays on EDIT's synths.
+   */
+  instrument?: ChainEntry;
   /** Present while the track is FROZEN: its clips + insert chain are rendered to a
    *  single printed stem (so backend-hosted VST3 — which can't run live in the
    *  browser — becomes audible). The originals are stashed here for unfreeze; the
-   *  live fxChain is emptied because every effect is baked into the stem. */
-  frozenOriginal?: { clips: AudioClip[]; fxChain: ChainEntry[] };
+   *  live fxChain is emptied because every effect is baked into the stem, and the
+   *  instrument slot is emptied because the stem holds what it played. */
+  frozenOriginal?: { clips: AudioClip[]; fxChain: ChainEntry[]; instrument?: ChainEntry };
   /** Arrangement hierarchy only — which folder this track sits inside, or the
    *  root when undefined/null. Routing (buses, sends, freeze) is unchanged. */
   parentTrackId?: string | null;
@@ -538,6 +551,16 @@ export interface TimelineMarker {
 /** Clip gain as a safe multiplier — unity for undefined, NaN, or negative values.
  *  Every scheduling path (live + the three offline bounces) reads clip gain through
  *  this, so a malformed value can never silence or invert a clip. */
+/** The track's instrument entry when it is switched on and names a plugin, else null. */
+export const activeTrackInstrument = (track: Pick<EditorTrack, 'instrument'> | undefined): ChainEntry | null =>
+  track?.instrument?.enabled && track.instrument.vst ? track.instrument : null;
+
+/** The chain a track sounds through: its instrument (when on) ahead of its inserts. */
+export const trackSoundChain = (track: Pick<EditorTrack, 'instrument' | 'fxChain'>): ChainEntry[] => {
+  const instrument = activeTrackInstrument(track);
+  return instrument ? [instrument, ...(track.fxChain ?? [])] : (track.fxChain ?? []);
+};
+
 export const clipPeakGain = (clip: Pick<AudioClip, 'gain'>): number => {
   const g = clip.gain;
   return typeof g === 'number' && Number.isFinite(g) && g >= 0 ? g : 1;
@@ -1210,6 +1233,13 @@ interface EditorStoreState {
     rawState: string,
     stateHost?: VstStateHost,
   ) => void;
+  /** Put a VST3 instrument in the track's instrument slot, or empty the slot
+   *  with null. The track's MIDI then plays and prints through it. One undo step. */
+  setTrackInstrument: (trackId: string, plugin: VstNode | null) => void;
+  /** Switch the instrument slot on or off, keeping the plugin and its state. */
+  toggleTrackInstrument: (trackId: string) => void;
+  /** Store the instrument's captured plugin state, as `setTrackVstRawState` does for an insert. */
+  setTrackInstrumentRawState: (trackId: string, rawState: string, stateHost?: VstStateHost) => void;
   /** Replace an existing chain entry's effect with a live rack effect (reset to
    *  its defaults, enabled), keeping the entry's id + slot. Used to "rebuild" an
    *  imported device that came in inert so a controller mapping has a live home. */
@@ -2254,7 +2284,12 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
         clips,
         tracks: s.tracks.map((t) =>
           t.id === trackId
-            ? { ...t, fxChain: [], frozenOriginal: { clips: original, fxChain: t.fxChain ?? [] } }
+            ? {
+                ...t,
+                fxChain: [],
+                instrument: undefined,
+                frozenOriginal: { clips: original, fxChain: t.fxChain ?? [], ...(t.instrument ? { instrument: t.instrument } : {}) },
+              }
             : t,
         ),
         selectedClipId: null,
@@ -2279,7 +2314,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       return {
         clips,
         tracks: s.tracks.map((t) =>
-          t.id === trackId ? { ...t, fxChain: fo.fxChain, frozenOriginal: undefined } : t,
+          t.id === trackId ? { ...t, fxChain: fo.fxChain, instrument: fo.instrument, frozenOriginal: undefined } : t,
         ),
         selectedClipId: null,
         ...pruneSelections(s, clips, s.tracks),
@@ -3288,6 +3323,42 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
                   : e,
               ),
             }
+          : t,
+      ),
+    }));
+  },
+
+  setTrackInstrument: (trackId, plugin) => {
+    const track = get().tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId
+          ? { ...t, instrument: plugin ? { id: uid(), effect: 'vst3', params: {}, enabled: true, vst: plugin } : undefined }
+          : t,
+      ),
+    }));
+    logInfo(
+      'editor',
+      plugin
+        ? `Track ${track.name} plays its MIDI through ${plugin.plugin_name || plugin.plugin_path}`
+        : `Track ${track.name} plays its MIDI on EDIT's synths again`,
+    );
+  },
+
+  toggleTrackInstrument: (trackId) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId && t.instrument ? { ...t, instrument: { ...t.instrument, enabled: !t.instrument.enabled } } : t,
+      ),
+    })),
+
+  setTrackInstrumentRawState: (trackId, rawState, stateHost = 'pedalboard') => {
+    coalesceAs(`track:${trackId}:instrument`);
+    set((s) => ({
+      tracks: s.tracks.map((t) =>
+        t.id === trackId && t.instrument?.vst
+          ? { ...t, instrument: { ...t.instrument, vst: { ...t.instrument.vst, raw_state: rawState, state_host: stateHost } } }
           : t,
       ),
     }));

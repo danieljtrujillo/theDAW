@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -703,6 +704,8 @@ def _render_with_thedaw_host(
     state_blob: bytes | None,
     param_map: dict,
     warnings: list[str],
+    midi_events: list[tuple[int, bytes]] | None = None,
+    tail_seconds: str = "auto",
 ) -> bytes:
     """Render the audio already staged at ``in_path`` through
     ``thedaw-vst-host --render``.
@@ -748,8 +751,20 @@ def _render_with_thedaw_host(
             "--block-size",
             "1024",
             "--tail-seconds",
-            "auto",
+            tail_seconds,
         ]
+        if midi_events:
+            # An instrument: the MIDI it plays, one "<frame> <status> <data...>" line each.
+            midi_path = work / "midi.txt"
+            midi_path.write_text(
+                "".join(
+                    f"{frame} {' '.join(str(b) for b in data)}\n"
+                    for frame, data in midi_events
+                ),
+                encoding="ascii",
+            )
+            temp_paths.append(midi_path)
+            cmd += ["--midi-events", str(midi_path)]
         if plugin_name:
             cmd += ["--plugin-name", plugin_name]
         if state_blob:
@@ -1012,6 +1027,334 @@ async def process_file(
         headers["X-Vst-Warnings"] = json.dumps(warnings, ensure_ascii=True)[:4000]
         headers["Access-Control-Expose-Headers"] = "X-Vst-Warnings"
     return Response(content=buf.getvalue(), media_type="audio/wav", headers=headers)
+
+
+#: /render-midi limits. A part is at most an hour long and carries at most a
+#: million messages; a request renders at most 64 tracks. Each is far past any
+#: arrangement EDIT holds and small enough that a bad request cannot pin the
+#: plugin thread for long.
+RENDER_MIDI_MAX_TRACKS = 64
+RENDER_MIDI_MAX_SECONDS = 3600.0
+RENDER_MIDI_MAX_EVENTS = 1_000_000
+RENDER_MIDI_MIN_RATE = 8000
+RENDER_MIDI_MAX_RATE = 192000
+RENDER_MIDI_MAX_CHANNELS = 8
+_RENDER_MIDI_MAX_ID_CHARS = 200
+
+
+class RenderMidiEvent(BaseModel):
+    #: Seconds from the start of the render.
+    t: float
+    #: One channel voice message: the status byte, then its data bytes.
+    data: list[int]
+
+
+class RenderMidiTrack(BaseModel):
+    track_id: str
+    plugin_path: str
+    raw_state: str = ""
+    #: Which host captured ``raw_state`` (``vst.state_host``): ``thedaw`` renders
+    #: through our own host, which reads the state it wrote; anything else
+    #: renders through pedalboard.
+    state_host: str = ""
+    params: dict[str, float] = {}
+    #: Seconds of audio to render, the release tail included.
+    duration: float
+    events: list[RenderMidiEvent]
+
+
+class RenderMidiRequest(BaseModel):
+    sample_rate: int = 44100
+    channels: int = 2
+    tracks: list[RenderMidiTrack]
+
+
+def _render_midi_messages(track: RenderMidiTrack) -> list[tuple[bytes, float]]:
+    """A track's events as pedalboard's ``(bytes, seconds)`` list, in time order.
+
+    A message before 0 s is played at 0 s; one at or past the track's duration
+    is left out, since pedalboard would ignore it anyway. The sort is stable, so
+    a note-off and a note-on at one instant keep the order the caller wrote.
+    """
+    from backend.modules.vst.host import midi_message_bytes
+
+    out: list[tuple[bytes, float]] = []
+    for i, event in enumerate(track.events):
+        if not math.isfinite(event.t):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Track {track.track_id}: event {i} has no finite time.",
+            )
+        try:
+            data = midi_message_bytes(event.data)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Track {track.track_id}: event {i}: {e}."
+            )
+        t = max(0.0, float(event.t))
+        if t < track.duration:
+            out.append((data, t))
+    out.sort(key=lambda m: m[1])
+    return out
+
+
+def _multipart(parts: list[tuple[str, str, str | None, bytes]]) -> tuple[bytes, str]:
+    """``multipart/form-data`` bytes for ``(name, content_type, filename, body)``
+    parts, and the Content-Type header that names the boundary."""
+    boundary = "thedaw-render-" + os.urandom(12).hex()
+    chunks: list[bytes] = []
+    for name, content_type, filename, body in parts:
+        disposition = f'form-data; name="{name}"'
+        if filename:
+            disposition += f'; filename="{filename}"'
+        chunks.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: {disposition}\r\n"
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("ascii")
+        )
+        chunks.append(body)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _render_instrument_with_thedaw_host(
+    track: RenderMidiTrack,
+    plugin_path: str,
+    messages: list[tuple[bytes, float]],
+    sample_rate: int,
+    channels: int,
+    warnings: list[str],
+) -> tuple[bytes, int]:
+    """One instrument track through ``thedaw-vst-host --render --midi-events``.
+
+    The host renders a file, so it is handed ``duration`` seconds of silence at
+    the render's rate and channel count, the track's messages at their sample
+    frames, its state and parameters, and no tail of its own (the duration
+    already carries the release). Returns the WAV and its frame count.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    from backend.lib.audio_io import save_audio
+
+    frames = int(round(track.duration * sample_rate))
+    try:
+        _RENDER_DIR.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="render-midi-", dir=str(_RENDER_DIR)))
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create the render directory: {_os_reason(e)}",
+        )
+    try:
+        in_path = work / "in.wav"
+        try:
+            save_audio(
+                in_path,
+                np.zeros((channels, frames), dtype=np.float32),
+                sample_rate,
+                format="wav",
+                subtype="FLOAT",
+            )
+        except OSError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not stage the render input: {_os_reason(e)}",
+            )
+        state_blob = base64.b64decode(track.raw_state) if track.raw_state else None
+        events = [(int(round(t * sample_rate)), data) for data, t in messages]
+        wav = _render_with_thedaw_host(
+            work,
+            in_path,
+            plugin_path,
+            "",
+            state_blob,
+            dict(track.params),
+            warnings,
+            events,
+            "0",
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    try:
+        rendered_frames = int(sf.info(io.BytesIO(wav)).frames)
+    except Exception:
+        rendered_frames = frames
+    return wav, rendered_frames
+
+
+@router.post("/render-midi")
+def render_midi(req: RenderMidiRequest, request: Request):
+    """Render EDIT MIDI tracks through their VST3 instruments.
+
+    Each track names its instrument (``plugin_path``, with the ``raw_state``
+    captured from its editor and any ``params``), the seconds to render and its
+    messages: notes, controller changes (modulation, volume, pan, expression,
+    the pedal and any other CC the part writes), pressure and pitch bend, each
+    at its second. Every track is rendered on its own through a fresh plugin
+    (``host.render_instrument``), in request order.
+
+    The answer is ``multipart/form-data``: a ``report`` part (JSON:
+    ``{"tracks": [{"track_id", "part", "frames", "sample_rate", "warnings"}]}``)
+    and one ``audio/wav`` part per track, 32-bit float, named in the report.
+
+    Gated the way ``/process-file`` is: this loads and runs plugins, and a
+    paired device passes. Plugin paths go through the same ``path_policy``
+    containment as every other plugin route.
+    """
+    require_loopback_launch_or_pairing_token(request)
+    import numpy as np
+
+    from backend.lib.audio_io import save_audio
+    from backend.modules.vst.host import render_instrument
+
+    if not req.tracks:
+        raise HTTPException(status_code=400, detail="No tracks to render.")
+    if len(req.tracks) > RENDER_MIDI_MAX_TRACKS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"At most {RENDER_MIDI_MAX_TRACKS} tracks render in one request.",
+        )
+    if not RENDER_MIDI_MIN_RATE <= req.sample_rate <= RENDER_MIDI_MAX_RATE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sample_rate must be {RENDER_MIDI_MIN_RATE}-{RENDER_MIDI_MAX_RATE} Hz."
+            ),
+        )
+    if not 1 <= req.channels <= RENDER_MIDI_MAX_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"channels must be 1-{RENDER_MIDI_MAX_CHANNELS}.",
+        )
+
+    # Every track is checked before any plugin loads, so a bad last track does
+    # not cost the user the minutes the first ones took.
+    plans: list[tuple[RenderMidiTrack, str, list[tuple[bytes, float]]]] = []
+    for track in req.tracks:
+        if not track.track_id or len(track.track_id) > _RENDER_MIDI_MAX_ID_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"track_id must be 1-{_RENDER_MIDI_MAX_ID_CHARS} characters.",
+            )
+        if not (
+            math.isfinite(track.duration)
+            and 0 < track.duration <= RENDER_MIDI_MAX_SECONDS
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Track {track.track_id}: duration must be above 0 and at most "
+                    f"{int(RENDER_MIDI_MAX_SECONDS)} seconds."
+                ),
+            )
+        if len(track.events) > RENDER_MIDI_MAX_EVENTS:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Track {track.track_id}: at most {RENDER_MIDI_MAX_EVENTS} "
+                    "MIDI messages render in one track."
+                ),
+            )
+        if len(track.raw_state) > _RENDER_MAX_RAW_STATE_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Track {track.track_id}: raw_state is too large.",
+            )
+        resolved = _validated_plugin_path(track.plugin_path)
+        if not resolved.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"VST3 instrument not found: {track.plugin_path}",
+            )
+        mode = (track.state_host or "").strip().lower() or "pedalboard"
+        if mode not in ("pedalboard", "thedaw"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Track {track.track_id}: unknown state_host {track.state_host!r}: "
+                    "expected 'thedaw' or 'pedalboard'."
+                ),
+            )
+        if mode == "thedaw" and track.raw_state:
+            try:
+                base64.b64decode(track.raw_state, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Track {track.track_id}: raw_state was not valid base64: {e}",
+                )
+        plans.append((track, str(resolved), _render_midi_messages(track)))
+
+    report: list[dict] = []
+    parts: list[tuple[str, str, str | None, bytes]] = []
+    for index, (track, plugin_path, messages) in enumerate(plans):
+        warnings: list[str] = []
+        part = f"track-{index}"
+        if (track.state_host or "").strip().lower() == "thedaw":
+            # Our own host wrote this state, so our own host renders it: a VST3 state blob
+            # does not survive the trip to pedalboard for every plugin (see /process-file).
+            wav, frames = _render_instrument_with_thedaw_host(
+                track, plugin_path, messages, req.sample_rate, req.channels, warnings
+            )
+            report.append(
+                {
+                    "track_id": track.track_id,
+                    "part": part,
+                    "frames": frames,
+                    "sample_rate": int(req.sample_rate),
+                    "warnings": warnings,
+                }
+            )
+            parts.append((part, "audio/wav", f"{part}.wav", wav))
+            continue
+        try:
+            rendered = render_instrument(
+                plugin_path,
+                messages,
+                track.duration,
+                req.sample_rate,
+                track.params or None,
+                track.raw_state or None,
+                warnings,
+                req.channels,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Track {track.track_id}: {e}")
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Track {track.track_id}: the instrument failed to render: {e}",
+            )
+        buf = io.BytesIO()
+        # save_audio takes (channels, frames); rendered is (frames, channels).
+        save_audio(
+            buf,
+            np.asarray(rendered).T,
+            req.sample_rate,
+            format="wav",
+            subtype="FLOAT",
+        )
+        report.append(
+            {
+                "track_id": track.track_id,
+                "part": part,
+                "frames": int(rendered.shape[0]),
+                "sample_rate": int(req.sample_rate),
+                "warnings": warnings,
+            }
+        )
+        parts.append((part, "audio/wav", f"{part}.wav", buf.getvalue()))
+
+    report_body = json.dumps({"tracks": report}, ensure_ascii=True).encode("utf-8")
+    body, content_type = _multipart(
+        [("report", "application/json", None, report_body), *parts]
+    )
+    return Response(content=body, media_type=content_type)
 
 
 @router.post("/open-editor")

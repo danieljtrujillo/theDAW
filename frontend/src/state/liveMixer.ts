@@ -42,6 +42,7 @@
  */
 import {
   useEditorStore,
+  activeTrackInstrument,
   freezeSignature,
   sampleLane,
   automationTargetKey,
@@ -99,6 +100,7 @@ import {
 import { broadcastVstTransport } from '../lib/vstLive/vstLiveNode';
 import { hookVstSessionUnload, vstSessions } from '../lib/vstLive/sessionRegistry';
 import { createProjectSessions } from '../lib/vstLive/projectSessions';
+import { InstrumentLivePass, planInstrumentTracks, type InstrumentLiveTrack } from '../lib/vstLive/instrumentLive';
 import { entryLatencySamples, useVstLiveStore, type VstLiveEntryState } from './vstLiveStore';
 import { sliceChunks, type AudioChunk } from '../lib/audioAnalysis';
 import {
@@ -260,6 +262,12 @@ let lastClipMuteSig = '';
 // The MIDI clips this pass synthesises live (planLiveMidi); every other MIDI
 // clip plays its bounced audio.
 let liveMidiPlan: LiveMidiPlan = emptyLiveMidiPlan();
+// The MIDI clips a track's VST3 instrument plays this pass (lib/vstLive/instrumentLive): neither
+// EDIT's synths nor the clip audio path touch them.
+let instrumentPlan: InstrumentLiveTrack[] = [];
+let instrumentClips: ReadonlySet<string> = new Set();
+/** Does this pass play `clipId` some other way than its audio (EDIT's synths or a VST3 instrument)? */
+const playsWithoutAudio = (clipId: string): boolean => liveMidiPlan.liveClipIds.has(clipId) || instrumentClips.has(clipId);
 let autoFxTimer = 0; // setInterval handle for the FX-param automation lookahead
 
 // Session-local master bus + psychoacoustic insert rack. Every track's panner
@@ -2503,9 +2511,9 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
     // Muted clips are not scheduled at all; a mute toggled DURING playback is
     // handled live by the clip's mute gate (see applyClipMutesLive).
     if (clip.muted) continue;
-    // A clip the live synth plays skips its bounced audio so we don't double
-    // up; scheduleMidiClips plays its notes instead.
-    if (liveMidiPlan.liveClipIds.has(clip.id)) continue;
+    // A clip the live synth or a VST3 instrument plays skips its bounced audio
+    // so we don't double up; scheduleMidiClips / scheduleInstrumentTracks play its notes instead.
+    if (playsWithoutAudio(clip.id)) continue;
     // A MIDI clip with no render has no audio to play (start() queued its render).
     if (!clip.audioBlob) continue;
     const nodes = trackNodes.get(clip.trackId);
@@ -2574,7 +2582,7 @@ function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
     if (!nodes) continue;
     const insts = nodes.fx.instances();
     const trackClips = clips.filter(
-      (c) => c.trackId === t.id && !c.muted && !liveMidiPlan.liveClipIds.has(c.id),
+      (c) => c.trackId === t.id && !c.muted && !playsWithoutAudio(c.id),
     );
 
     for (const entry of teleEntries) {
@@ -3070,7 +3078,7 @@ export type LiveMidiClip = Pick<
   | 'sourceBends'
 >;
 /** The fields of a track the live MIDI plan reads. */
-export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
+export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'instrument'>>;
 
 /**
  * Decide which MIDI clips play live and on which channels. A clip plays live
@@ -3094,6 +3102,8 @@ export function planLiveMidi(
     if (clip.muted || !isMidiClip(clip)) continue;
     const track = trackById.get(clip.trackId);
     if (!track || effectiveProgramFor(clip, track, global) === undefined) continue;
+    // A track whose instrument slot holds a VST3 plays through it, not on EDIT's synths.
+    if (activeTrackInstrument(track)) continue;
     const ids = wanted.get(track.id);
     if (ids) ids.push(clip.id);
     else wanted.set(track.id, [clip.id]);
@@ -3180,6 +3190,14 @@ export function liveMidiTrackStatus(
   const dropped = new Set(plan.channels.dropped);
   for (const t of tracks) {
     if (!midiTracks.has(t.id)) continue;
+    if (activeTrackInstrument(t)) {
+      out.set(t.id, {
+        mode: 'live',
+        channels: 1,
+        reason: 'Plays live through its VST3 instrument; bounces, freezes and exports print through it',
+      });
+      continue;
+    }
     const chans = plan.channels.channelsOf.get(t.id);
     if (chans) {
       out.set(t.id, {
@@ -3332,6 +3350,98 @@ function clearMidiTimers(): void {
     }
   }
   editAllNotesOff();
+  clearInstrumentTracks();
+}
+
+/* ── VST3 instruments, live ──────────────────────────────────────────────────
+   A track whose instrument slot holds a VST3 plays its MIDI through that plugin's
+   live host session (lib/vstLive/instrumentLive). Its branch: a silent source
+   feeds the instrument's `vst3` node (the same live node every hosted plugin
+   uses, keyed by the entry id, so the session outlives the pass), whose output
+   goes through an envelope gain (the playing clip's gain and fades) into the
+   track's fader, inserts and panner, like the synths' channels. Audio clips on
+   the same track keep their own path and never pass through the instrument. */
+
+export interface InstrumentBranch {
+  source: ConstantSourceNode;
+  env: GainNode;
+  chain: ChainHandle;
+}
+
+/**
+ * One instrument track's live branch: a silent source feeds the instrument's
+ * `vst3` node (the plugin makes the sound from the notes it is sent), whose
+ * output passes an envelope gain into `trackGain`. Nothing else enters the
+ * source, so the track's audio clips, which liveMixer schedules straight into
+ * `trackGain`, play dry beside the instrument and never through it.
+ */
+export function buildInstrumentBranch(
+  ctx: BaseAudioContext,
+  trackGain: AudioNode,
+  entry: ChainEntry,
+  build: typeof buildEffectChain = buildEffectChain,
+): InstrumentBranch {
+  const source = ctx.createConstantSource();
+  source.offset.value = 0;
+  const env = ctx.createGain();
+  env.gain.value = 1;
+  env.connect(trackGain);
+  const chain = build(ctx, source, env, [entry]);
+  source.start();
+  return { source, env, chain };
+}
+let instrumentBranches = new Map<string, InstrumentBranch>();
+let instrumentPass: InstrumentLivePass | null = null;
+let instrumentTimer = 0;
+
+function liveInstrumentPass(): InstrumentLivePass {
+  if (!instrumentPass) {
+    instrumentPass = new InstrumentLivePass({
+      now: () => getEngineCtx().currentTime,
+      clips: () => useEditorStore.getState().clips,
+      tracks: () => useEditorStore.getState().tracks,
+      global: getGlobalVoice,
+      projectBpm: () => useEditorStore.getState().bpm,
+      port: (entryId) => {
+        const client = vstSessions.get(entryId)?.client;
+        if (!client?.sendMidi || !client.midiPanic) return null;
+        // A host built before the midi op answers it with an error: leave it alone.
+        if (client.ready && client.acceptsMidi !== true) return null;
+        return { sendMidi: (events) => client.sendMidi?.(events), midiPanic: () => client.midiPanic?.() };
+      },
+      sampleRate: (entryId) => vstSessions.get(entryId)?.client.sampleRate || getEngineCtx().sampleRate,
+      latencySamples: (entryId) => entryLatencySamples(useVstLiveStore.getState().entries[entryId]),
+      envelope: (trackId) => instrumentBranches.get(trackId)?.env.gain ?? null,
+      lookaheadSec: midiLookaheadSec,
+    });
+  }
+  return instrumentPass;
+}
+
+/** Build each instrument track's branch and start its notes, anchored with the pass's audio. */
+function scheduleInstrumentTracks(fromSec: number, plan: readonly InstrumentLiveTrack[]): void {
+  const ctx = getEngineCtx();
+  for (const t of plan) {
+    const node = trackNodes.get(t.trackId);
+    if (!node) continue;
+    instrumentBranches.set(t.trackId, buildInstrumentBranch(ctx, node.gain, t.entry));
+  }
+  liveInstrumentPass().start(plan, fromSec, startCtxTime, liveMidiEndSec(fromSec));
+  instrumentTimer = window.setInterval(() => instrumentPass?.tick(), EDIT_MIDI_TICK_MS);
+}
+
+/** End the instrument pass (each plugin releases what it holds) and take the branches down. */
+function clearInstrumentTracks(): void {
+  if (instrumentTimer) {
+    clearInterval(instrumentTimer);
+    instrumentTimer = 0;
+  }
+  instrumentPass?.stop();
+  for (const b of instrumentBranches.values()) {
+    try { b.source.stop(); } catch { /* never started */ }
+    try { b.chain.dispose(); b.source.disconnect(); b.env.disconnect(); } catch { /* gone */ }
+  }
+  instrumentBranches = new Map();
 }
 
 /** Stop + disconnect every scheduled source (does not tear down track nodes). */
@@ -3494,7 +3604,10 @@ async function start(fromSec: number): Promise<void> {
   // next pass on. One the plan plays live whose synths did not load keeps its
   // render ('keep'): EDIT's upkeep ('cache') renders nothing for, and drops the
   // automatic render of, a clip the plan plays live.
-  const silent = clips.filter((c) => !c.muted && hasMidiNotes(c) && !c.audioBlob && !liveMidiPlan.liveClipIds.has(c.id));
+  // The tracks whose instrument slot plays their MIDI through a VST3.
+  instrumentPlan = planInstrumentTracks(clips, ed.tracks);
+  instrumentClips = new Set(instrumentPlan.flatMap((t) => [...t.liveClipIds]));
+  const silent = clips.filter((c) => !c.muted && hasMidiNotes(c) && !c.audioBlob && !playsWithoutAudio(c.id));
   if (silent.length > 0) {
     // A seek or a loop wrap starts a new pass while those renders run: the
     // LOG names a part once, when its render is first asked for.
@@ -3511,7 +3624,7 @@ async function start(fromSec: number): Promise<void> {
   // live skips its cached render, so a 24-part score does not decode 24 renders
   // nobody hears.
   try {
-    await ensureDecoded(clips.filter((c) => !liveMidiPlan.liveClipIds.has(c.id)));
+    await ensureDecoded(clips.filter((c) => !playsWithoutAudio(c.id)));
   } catch (e) {
     // The clips that DID decode before the failure are pinned; nothing is going
     // to schedule them now, so they are released here rather than held until the
@@ -3553,6 +3666,7 @@ async function start(fromSec: number): Promise<void> {
   scheduleAutomation(begin); // native vol/pan envelopes onto their AudioParams
   startFxAutomation();        // ~40 Hz lookahead writer for FX-param lanes
   if (liveMidiPlan.liveClipIds.size > 0) scheduleMidiClips(begin, liveMidiPlan);
+  if (instrumentPlan.length > 0) scheduleInstrumentTracks(begin, instrumentPlan);
 
   playing = true;
   usePlayerStore.setState({
@@ -3776,7 +3890,10 @@ const projectSessions = createProjectSessions({
   entries: () => {
     const ed = useEditorStore.getState();
     const out: ChainEntry[] = [...ed.masterVstChain];
-    for (const t of ed.tracks) if (t.fxChain) out.push(...t.fxChain);
+    for (const t of ed.tracks) {
+      if (t.instrument) out.push(t.instrument);
+      if (t.fxChain) out.push(...t.fxChain);
+    }
     return out;
   },
   sampleRate: () => getEngineCtx().sampleRate,

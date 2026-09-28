@@ -156,7 +156,7 @@
  */
 import type { ChainEntry } from '../state/effectChainStore';
 import {
-  sampleLane, type AudioClip, type AutomationLane, type EditorBus, type EditorTrack,
+  activeTrackInstrument, sampleLane, type AudioClip, type AutomationLane, type EditorBus, type EditorTrack,
 } from '../state/editorStore';
 import {
   applyEnvelopeEvents, entryPrefixLatencies, fxLaneSampleTime, laneEnvelopeEvents,
@@ -174,6 +174,11 @@ import {
 import { ensureHallIrsForChains } from './hallIrs';
 import type { RenderRange } from './render/renderRange';
 import { planRangeRender, sliceRangeBuffer } from './render/renderRangePlan';
+import type { ArrangementMidiSource } from './arrangementMidi';
+import type { GlobalVoice } from './clipProgram';
+import {
+  instrumentPrintPlan, isInstrumentClip, shapeInstrumentPrint, type InstrumentRenderResult, type InstrumentRenderTrack,
+} from './vstInstrumentMidi';
 import { encodeWav } from './wavEncode';
 
 /** The rate every offline bounce pins. Decoded buffers are cached per rate
@@ -1269,4 +1274,104 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
  *  so a job queue that owns the request owns the encoding too. */
 export function encodeBounce(buffer: AudioBuffer, req: Pick<BounceRequest, 'float32'>): Blob {
   return encodeWav(buffer, { float32: req.float32 });
+}
+
+/* ── The instrument slot ──────────────────────────────────────────────────── */
+
+/** Renders one track's instrument print (POST /api/vst/render-midi). */
+export type InstrumentRenderer = (track: InstrumentRenderTrack, sampleRate: number) => Promise<InstrumentRenderResult>;
+
+export interface InstrumentPrintOptions {
+  /** The picker's voice, for clips whose program decides nothing but their channel's bank select. */
+  global?: GlobalVoice;
+  /** The rate the prints render at; the bounce's own. */
+  sampleRate?: number;
+  /** Asked before each track; once it says yes no more tracks render. */
+  isCancelled?: () => boolean;
+  /** Hears each track as its print lands. */
+  onProgress?: (done: number, total: number, trackName: string) => void;
+  /** Hears the backend's warnings (a state or parameter the instrument did not take). */
+  onWarning?: (trackName: string, warning: string) => void;
+}
+
+/** What a bounce reads once the instrument tracks are printed. */
+export interface InstrumentPrint {
+  /** The document's clips with each instrument track's piano-roll clips in scope replaced by its print. */
+  clips: AudioClip[];
+  /** The printed audio, one per instrument track rendered. */
+  printed: Blob[];
+}
+
+/** The tracks whose instrument slot plays MIDI clips a bounce of `scope` covers. */
+export function instrumentTracksInScope(
+  clips: readonly AudioClip[],
+  tracks: readonly EditorTrack[],
+  scope: BounceScope,
+): EditorTrack[] {
+  const scoped = clipsInScope([...clips], scope);
+  return tracks.filter(
+    (t) => !t.isFolder && activeTrackInstrument(t) !== null && scoped.some((c) => c.trackId === t.id && isInstrumentClip(c) && !c.muted),
+  );
+}
+
+/**
+ * Print every instrument track a bounce of `scope` covers, ahead of the bounce.
+ *
+ * The instrument slot sits ahead of the track's inserts, so its print takes
+ * the place of the track's piano-roll clips: one audio clip per track, from
+ * the first clip's start, holding what the instrument played for all of them
+ * (their notes, controllers and bends, lib/vstInstrumentMidi). The bounce then
+ * runs that audio through the track's rack, fader and pan like any clip, and a
+ * freeze prints it into the stem. A selection prints only the selected clips.
+ *
+ * Rejects, naming the track, when a print fails: an export never prints
+ * silence where a part should sound.
+ */
+export async function printInstrumentTracks(
+  source: ArrangementMidiSource & { clips: readonly AudioClip[]; tracks: readonly EditorTrack[] },
+  scope: BounceScope,
+  render: InstrumentRenderer,
+  opts: InstrumentPrintOptions = {},
+): Promise<InstrumentPrint> {
+  const global = opts.global ?? { useSoundfont: false, activeProgram: 0 };
+  const sampleRate = opts.sampleRate ?? BOUNCE_SAMPLE_RATE;
+  const scoped = clipsInScope([...source.clips], scope);
+  const targets = instrumentTracksInScope(source.clips, source.tracks, scope);
+  const replaced = new Set<string>();
+  const prints: AudioClip[] = [];
+  const printed: Blob[] = [];
+  let done = 0;
+  for (const track of targets) {
+    if (opts.isCancelled?.()) break;
+    const plan = instrumentPrintPlan(source, track, scoped, global);
+    if (!plan) continue;
+    let result: InstrumentRenderResult;
+    try {
+      result = await render(plan.request, sampleRate);
+    } catch (e) {
+      throw new Error(`Track "${track.name}" could not be printed through its instrument: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    for (const w of result.warnings) opts.onWarning?.(track.name, w);
+    // The gain and fades of each clip, over the print, as live playback puts them on the
+    // instrument's output: the print lands on the track as one clip at unity.
+    const audio = await shapeInstrumentPrint(result.audio, plan.startSec, plan.clips);
+    const durationSec = result.frames / (result.sampleRate || sampleRate);
+    for (const c of scoped) if (c.trackId === track.id && isInstrumentClip(c)) replaced.add(c.id);
+    prints.push({
+      id: `instrument-print:${track.id}`,
+      trackId: track.id,
+      label: `${track.name} (${track.instrument?.vst?.plugin_name || 'instrument'})`,
+      audioBlob: audio,
+      mimeType: 'audio/wav',
+      sourceDuration: durationSec,
+      offsetIntoSource: 0,
+      durationSec,
+      startSec: plan.startSec,
+      color: track.color,
+    });
+    printed.push(audio);
+    done += 1;
+    opts.onProgress?.(done, targets.length, track.name);
+  }
+  return { clips: [...source.clips.filter((c) => !replaced.has(c.id)), ...prints], printed };
 }

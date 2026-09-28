@@ -38,7 +38,11 @@ std::uint64_t nextToken() {
 // points a plugin may write for one of them. Both are generous for a live host and both exist
 // only so process() never has to allocate.
 constexpr std::size_t kMaxQueuesPerBlock = 512;
-constexpr std::size_t kInputPointsPerQueue = 1;
+// Input: a set_param is one point at offset 0, and a mapped MIDI controller or wheel sweep adds
+// one point per message, so a block of a fast pitch-bend curve still fits.
+constexpr std::size_t kInputPointsPerQueue = 64;
+// Note events one block can carry in each direction.
+constexpr std::size_t kMaxEventsPerBlock = 1024;
 constexpr std::size_t kOutputPointsPerQueue = 64;
 
 Steinberg::Vst::SpeakerArrangement arrangementForChannels(std::int32_t channels) {
@@ -393,6 +397,8 @@ void Vst3Instance::allocateProcessBuffers() {
 
     inputChanges_.reserve(kMaxQueuesPerBlock, kInputPointsPerQueue);
     outputChanges_.reserve(kMaxQueuesPerBlock, kOutputPointsPerQueue);
+    inputEvents_.reserve(kMaxEventsPerBlock);
+    outputEvents_.reserve(kMaxEventsPerBlock);
 
     processContext_ = Steinberg::Vst::ProcessContext{};
     processContext_.sampleRate = config_.sampleRate;
@@ -406,8 +412,8 @@ void Vst3Instance::allocateProcessBuffers() {
     processData_.outputs = outputBusBuffers_.empty() ? nullptr : outputBusBuffers_.data();
     processData_.inputParameterChanges = &inputChanges_;
     processData_.outputParameterChanges = &outputChanges_;
-    processData_.inputEvents = &emptyEvents_;
-    processData_.outputEvents = &emptyEvents_;
+    processData_.inputEvents = &inputEvents_;
+    processData_.outputEvents = &outputEvents_;
     processData_.processContext = &processContext_;
 
     // Parameter flush: the VST3 way to hand a plugin a parameter change while no audio is
@@ -424,8 +430,9 @@ void Vst3Instance::allocateProcessBuffers() {
     flushData_.outputs = nullptr;
     flushData_.inputParameterChanges = &inputChanges_;
     flushData_.outputParameterChanges = &outputChanges_;
-    flushData_.inputEvents = &emptyEvents_;
-    flushData_.outputEvents = &emptyEvents_;
+    // The flush carries parameters only: its event lists are the same objects, cleared first.
+    flushData_.inputEvents = &inputEvents_;
+    flushData_.outputEvents = &outputEvents_;
     flushData_.processContext = &processContext_;
 }
 
@@ -498,6 +505,7 @@ PrepareResult Vst3Instance::setUpProcessing(std::string& error) {
     }
 
     refreshParameterCache();
+    buildMidiMapping();
 
     result.ok = true;
     result.channelsIn = channelsIn_;
@@ -1078,6 +1086,11 @@ void Vst3Instance::process(const float* const* in, float* const* out, std::int32
         }
     }
 
+    // This block's MIDI: notes into the event list, controllers and the wheel onto their mapped
+    // parameters at their own offsets. After the context above, which dates each note.
+    fillBlockMidi();
+    outputEvents_.clear();
+
     processData_.numSamples = frames;
     processor_->process(processData_);
 
@@ -1136,6 +1149,8 @@ void Vst3Instance::flushParameters() {
     // us when a set_param went by, and one call clears the whole queue.
     if (!drainEditsIntoInputChanges()) return;
     outputChanges_.clear();
+    inputEvents_.clear();
+    outputEvents_.clear();
 
     // Everything flushData_ points at was allocated in allocateProcessBuffers(); the only field
     // that moves is numSamples, which stays 0 for the lifetime of the call.
@@ -1143,6 +1158,125 @@ void Vst3Instance::flushParameters() {
     processor_->process(flushData_);
 
     forwardOutputChanges();
+}
+
+void Vst3Instance::setBlockMidi(const MidiEvent* events, std::int32_t count) {
+    blockMidi_ = events;
+    blockMidiCount_ = events != nullptr ? std::max<std::int32_t>(0, count) : 0;
+}
+
+void Vst3Instance::buildMidiMapping() {
+    midiParam_.assign(static_cast<std::size_t>(16 * kMidiControllerSlots), kNoMidiParam);
+    if (!controller_) return;
+    Steinberg::Vst::IMidiMapping* mapping = nullptr;
+    if (controller_->queryInterface(Steinberg::Vst::IMidiMapping::iid,
+                                    reinterpret_cast<void**>(&mapping)) != Steinberg::kResultOk ||
+        mapping == nullptr) {
+        return;
+    }
+    for (Steinberg::int16 channel = 0; channel < 16; ++channel) {
+        for (Steinberg::int16 controller = 0; controller < kMidiControllerSlots; ++controller) {
+            Steinberg::Vst::ParamID id = 0;
+            if (mapping->getMidiControllerAssignment(0, channel, controller, id) == Steinberg::kResultOk) {
+                midiParam_[static_cast<std::size_t>(channel * kMidiControllerSlots + controller)] =
+                    static_cast<std::int64_t>(id);
+            }
+        }
+    }
+    mapping->release();
+}
+
+void Vst3Instance::fillBlockMidi() {
+    inputEvents_.clear();
+    const MidiEvent* events = blockMidi_;
+    const std::int32_t count = blockMidiCount_;
+    blockMidi_ = nullptr;
+    blockMidiCount_ = 0;
+    if (events == nullptr || count <= 0) return;
+    const bool tempoValid = (processContext_.state & Steinberg::Vst::ProcessContext::kTempoValid) != 0;
+    const double ppqPerSample =
+        tempoValid && config_.sampleRate > 0 ? processContext_.tempo / 60.0 / config_.sampleRate : 0.0;
+
+    auto mapped = [&](std::int32_t channel, std::int32_t controller, std::int32_t offset, double value) {
+        if (midiParam_.empty() || controller < 0 || controller >= kMidiControllerSlots) return;
+        const std::int64_t id =
+            midiParam_[static_cast<std::size_t>(channel * kMidiControllerSlots + controller)];
+        if (id == kNoMidiParam) return;
+        if (ParamValueQueue* queue = inputChanges_.queueFor(static_cast<Steinberg::Vst::ParamID>(id))) {
+            Steinberg::int32 index = 0;
+            queue->addPoint(offset, value, index);
+        }
+    };
+
+    for (std::int32_t i = 0; i < count; ++i) {
+        const MidiEvent& m = events[i];
+        if (m.size < 2) continue;
+        const std::int32_t offset = std::max<std::int32_t>(0, m.sampleOffset);
+        const std::uint8_t kind = static_cast<std::uint8_t>(m.data[0] & 0xF0);
+        const Steinberg::int16 channel = static_cast<Steinberg::int16>(m.data[0] & 0x0F);
+        Steinberg::Vst::Event e{};
+        e.busIndex = 0;
+        e.sampleOffset = offset;
+        e.ppqPosition = processContext_.projectTimeMusic + static_cast<double>(offset) * ppqPerSample;
+        e.flags = 0;
+        switch (kind) {
+            case 0x90:
+                if (m.size < 3) break;
+                if (m.data[2] > 0) {
+                    e.type = Steinberg::Vst::Event::kNoteOnEvent;
+                    e.noteOn.channel = channel;
+                    e.noteOn.pitch = static_cast<Steinberg::int16>(m.data[1]);
+                    e.noteOn.tuning = 0.0f;
+                    e.noteOn.velocity = static_cast<float>(m.data[2]) / 127.0f;
+                    e.noteOn.length = 0;
+                    e.noteOn.noteId = -1;
+                } else {
+                    e.type = Steinberg::Vst::Event::kNoteOffEvent;
+                    e.noteOff.channel = channel;
+                    e.noteOff.pitch = static_cast<Steinberg::int16>(m.data[1]);
+                    e.noteOff.velocity = 0.0f;
+                    e.noteOff.noteId = -1;
+                    e.noteOff.tuning = 0.0f;
+                }
+                inputEvents_.push(e);
+                break;
+            case 0x80:
+                if (m.size < 3) break;
+                e.type = Steinberg::Vst::Event::kNoteOffEvent;
+                e.noteOff.channel = channel;
+                e.noteOff.pitch = static_cast<Steinberg::int16>(m.data[1]);
+                e.noteOff.velocity = static_cast<float>(m.data[2]) / 127.0f;
+                e.noteOff.noteId = -1;
+                e.noteOff.tuning = 0.0f;
+                inputEvents_.push(e);
+                break;
+            case 0xA0:
+                if (m.size < 3) break;
+                e.type = Steinberg::Vst::Event::kPolyPressureEvent;
+                e.polyPressure.channel = channel;
+                e.polyPressure.pitch = static_cast<Steinberg::int16>(m.data[1]);
+                e.polyPressure.pressure = static_cast<float>(m.data[2]) / 127.0f;
+                e.polyPressure.noteId = -1;
+                inputEvents_.push(e);
+                break;
+            case 0xB0:
+                if (m.size < 3) break;
+                mapped(channel, m.data[1], offset, static_cast<double>(m.data[2]) / 127.0);
+                break;
+            case 0xD0:
+                mapped(channel, Steinberg::Vst::kAfterTouch, offset, static_cast<double>(m.data[1]) / 127.0);
+                break;
+            case 0xE0: {
+                if (m.size < 3) break;
+                const int raw = static_cast<int>(m.data[1]) | (static_cast<int>(m.data[2]) << 7);
+                mapped(channel, Steinberg::Vst::kPitchBend, offset, static_cast<double>(raw) / 16383.0);
+                break;
+            }
+            default:
+                // Program changes: a VST3 instrument plays the preset dialled into it.
+                break;
+        }
+    }
 }
 
 void Vst3Instance::resetDsp() {

@@ -21,6 +21,7 @@
 #include "../util/Wav.h"
 #include "ChannelMap.h"
 #include "MessageLoop.h"
+#include "MidiQueue.h"
 
 namespace thedaw {
 namespace {
@@ -214,6 +215,72 @@ double resolveTailSeconds(double requested, double reportedTailSeconds,
     return reportedTailSeconds;
 }
 
+// One message of --midi-events, at its sample frame of the render.
+struct TimedMidi {
+    int64_t frame = 0;
+    MidiEvent event;
+};
+
+// Reads --midi-events: "<frame> <status> <data1> [<data2>]" per line, blank lines and lines
+// starting with '#' skipped. A line that is not a channel voice message is counted in `skipped`
+// rather than guessed at. The result is in frame order, lines at one frame in file order.
+bool loadMidiEvents(const std::wstring& path, std::vector<TimedMidi>& out, size_t& skipped,
+                    std::string& error) {
+    std::vector<uint8_t> bytes;
+    if (!util::readFile(path, bytes, error)) return false;
+    const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = util::trim(text.substr(start, end - start));
+        start = end + 1;
+        if (line.empty() || line.front() == '#') continue;
+        long long fields[4] = {0, 0, 0, 0};
+        int count = 0;
+        size_t cursor = 0;
+        bool ok = true;
+        while (cursor < line.size() && ok) {
+            while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) ++cursor;
+            if (cursor >= line.size()) break;
+            size_t stop = cursor;
+            while (stop < line.size() && line[stop] != ' ' && line[stop] != '\t') ++stop;
+            if (count >= 4 || !util::parseInt(line.substr(cursor, stop - cursor), fields[count])) {
+                ok = false;
+                break;
+            }
+            ++count;
+            cursor = stop;
+        }
+        if (!ok || count < 3 || fields[0] < 0) {
+            ++skipped;
+            continue;
+        }
+        uint8_t data[3] = {0, 0, 0};
+        const int size = count - 1;
+        for (int i = 0; i < size; ++i) {
+            if (fields[i + 1] < 0 || fields[i + 1] > 255) {
+                ok = false;
+                break;
+            }
+            data[i] = static_cast<uint8_t>(fields[i + 1]);
+        }
+        if (!ok || !MidiQueue::valid(data, size)) {
+            ++skipped;
+            continue;
+        }
+        TimedMidi timed;
+        timed.frame = fields[0];
+        timed.event.size = static_cast<uint8_t>(size);
+        for (int i = 0; i < size; ++i) timed.event.data[i] = data[i];
+        out.push_back(timed);
+        if (end == text.size()) break;
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const TimedMidi& a, const TimedMidi& b) { return a.frame < b.frame; });
+    return true;
+}
+
 // Everything the worker thread needs, and everything it hands back.
 struct RenderJob {
     IPluginInstance* plugin = nullptr;
@@ -226,6 +293,8 @@ struct RenderJob {
     int64_t latencySamples = 0;
     int64_t tailFrames = 0;
     int64_t outputFrames = 0;
+    // --midi-events, in frame order; empty for an effect render.
+    const std::vector<TimedMidi>* midi = nullptr;
 
     std::vector<std::vector<float>> output;  // planar, fileChannels x outputFrames
     int64_t blocksProcessed = 0;
@@ -273,6 +342,9 @@ void renderOnWorker(RenderJob& job) {
 
     const auto started = std::chrono::steady_clock::now();
     IPluginInstance* plugin = job.plugin;
+    // This block's MIDI, at offsets inside it. Not the realtime thread: it may grow.
+    std::vector<MidiEvent> blockMidi;
+    size_t nextMidi = 0;
 
     int64_t fed = 0;
     while (fed < total) {
@@ -293,8 +365,19 @@ void renderOnWorker(RenderJob& job) {
 
         transport.discontinuity = fed == 0;
         transport.positionSamples = static_cast<double>(fed);
+        blockMidi.clear();
+        if (job.midi != nullptr) {
+            while (nextMidi < job.midi->size() && (*job.midi)[nextMidi].frame < fed + chunk) {
+                MidiEvent ev = (*job.midi)[nextMidi].event;
+                ev.sampleOffset = static_cast<int32_t>(std::max<int64_t>(0, (*job.midi)[nextMidi].frame - fed));
+                blockMidi.push_back(ev);
+                ++nextMidi;
+            }
+        }
         const unsigned long fault = util::guarded([&] {
             if (transport.discontinuity) plugin->resetDsp();
+            plugin->setBlockMidi(blockMidi.empty() ? nullptr : blockMidi.data(),
+                                 static_cast<int32_t>(blockMidi.size()));
             plugin->process(job.channelsIn > 0 ? pluginInConstPtr.data() : nullptr,
                             pluginOutPtr.data(), chunk, transport);
         });
@@ -430,6 +513,20 @@ int runRender(const Options& options, MessageLoop& loop) {
         paramsApplied = applyParams(*instance, options.paramsJson, warnings);
     }
 
+    std::vector<TimedMidi> midi;
+    if (!options.midiEvents.empty()) {
+        size_t skipped = 0;
+        std::string midiError;
+        if (!loadMidiEvents(options.midiEvents, midi, skipped, midiError)) {
+            printFailure("--midi-events could not be read: " + midiError);
+            return kExitUnreadableInput;
+        }
+        if (skipped > 0) {
+            warnings.push_back(util::toString(static_cast<long long>(skipped)) +
+                               " line(s) of --midi-events were not channel voice messages and were skipped");
+        }
+    }
+
     std::string tailSource;
     const double tailSeconds =
         resolveTailSeconds(options.tailSeconds, prepared.tailSeconds, tailSource);
@@ -446,6 +543,7 @@ int runRender(const Options& options, MessageLoop& loop) {
     job.tailFrames =
         static_cast<int64_t>(std::llround(tailSeconds * input.sampleRate));
     job.outputFrames = static_cast<int64_t>(input.frames()) + job.tailFrames;
+    job.midi = midi.empty() ? nullptr : &midi;
 
     // A render whose output cannot fit in a WAV file must be refused now, before the output
     // buffer is allocated or the worker thread starts — writeWavFile enforces this same ceiling
@@ -551,6 +649,7 @@ int runRender(const Options& options, MessageLoop& loop) {
         .intField("tail_frames", job.tailFrames)
         .intField("blocks", job.blocksProcessed)
         .intField("params_applied", paramsApplied)
+        .intField("midi_events", static_cast<long long>(midi.size()))
         .numField("peak", job.peak)
         .intField("non_finite_samples", job.nonFinite)
         .numField("render_seconds", job.seconds)

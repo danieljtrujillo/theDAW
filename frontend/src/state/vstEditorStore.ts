@@ -278,6 +278,9 @@ function sinkLiveParams(entryId: string, values: Map<number, number>): void {
       return;
     }
   }
+  // A track's instrument slot: its knobs live in the plugin's own state, which
+  // the next capture stores; there is no rack param list to merge them into.
+  if (ed.tracks.some((t) => t.instrument?.id === entryId)) return;
   const master = ed.masterFxChain.find((e) => e.id === entryId);
   if (master) {
     ed.updateMasterEffectParams(entryId, merge(master.params));
@@ -370,6 +373,11 @@ function sinkLiveRawState(entryId: string, rawState: string): boolean {
     const e = (t.fxChain ?? []).find((x) => x.id === entryId);
     if (e?.vst) {
       ed.setTrackVstRawState(t.id, entryId, rawState, 'thedaw');
+      flip();
+      return true;
+    }
+    if (t.instrument?.id === entryId && t.instrument.vst) {
+      ed.setTrackInstrumentRawState(t.id, rawState, 'thedaw');
       flip();
       return true;
     }
@@ -1169,7 +1177,7 @@ function chainEntryExists(entryId: string): boolean {
   if (useEffectChainStore.getState().chain.some((e) => e.id === entryId)) return true;
   const ed = useEditorStore.getState();
   if (ed.masterVstChain.some((e) => e.id === entryId)) return true;
-  return ed.tracks.some((t) => (t.fxChain ?? []).some((e) => e.id === entryId));
+  return ed.tracks.some((t) => t.instrument?.id === entryId || (t.fxChain ?? []).some((e) => e.id === entryId));
 }
 
 // A plugin leaves the project by many roads: its row's remove button (Edit or Mix), its track being

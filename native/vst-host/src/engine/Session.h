@@ -26,6 +26,7 @@
 #include "AudioFrame.h"
 #include "DelayLine.h"
 #include "MessageLoop.h"
+#include "MidiQueue.h"
 
 namespace thedaw {
 
@@ -192,6 +193,9 @@ private:
     bool parked_ = false;
 
     // ---- queues ----
+    // The client's `midi` op, placed into blocks by timeline position (message -> audio). On the
+    // heap: its ring and pending list are far larger than a stack frame should carry.
+    std::unique_ptr<MidiQueue> midi_ = std::make_unique<MidiQueue>();
     util::SpscQueue<std::string, 64> incoming_;   // audio -> message
     util::SpscQueue<std::string, 64> outgoing_;   // message -> audio
     util::SpscQueue<AudioNotice, 64> notices_;    // audio -> message
@@ -232,6 +236,7 @@ private:
     float* dryDelayedPtr_[kMaxWireChannels] = {};
     float* dryMappedPtr_[kMaxWireChannels] = {};
     float* wireOutPtr_[kMaxWireChannels] = {};
+    MidiEvent blockMidi_[MidiQueue::kMaxPerBlock] = {};
     DelayLine bypassDelay_;
     float bypassGain_ = 0.0f;  // 0 = fully wet, 1 = fully dry
     float bypassStep_ = 1.0f;

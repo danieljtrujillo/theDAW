@@ -96,7 +96,7 @@ type SerializedClip = Omit<AudioClip, 'audioBlob' | 'peaks' | 'takes'> & {
 };
 
 type SerializedTrack = Omit<EditorTrack, 'frozenOriginal'> & {
-  frozenOriginal?: { clips: SerializedClip[]; fxChain: EditorTrack['fxChain'] };
+  frozenOriginal?: { clips: SerializedClip[]; fxChain: EditorTrack['fxChain']; instrument?: EditorTrack['instrument'] };
 };
 
 interface AutosaveManifest {
@@ -500,6 +500,7 @@ async function buildManifest(assets: FileSystemDirectoryHandle): Promise<Autosav
         frozenOriginal: {
           clips: await Promise.all(frozenOriginal.clips.map((c) => serializeClip(c, assets))),
           fxChain: frozenOriginal.fxChain,
+          ...(frozenOriginal.instrument ? { instrument: frozenOriginal.instrument } : {}),
         },
       };
     }),
@@ -729,6 +730,7 @@ async function restoreFromAutosave(): Promise<void> {
         frozenOriginal: {
           clips: await Promise.all(frozenOriginal.clips.map(reviveClip)),
           fxChain: frozenOriginal.fxChain ?? [],
+          ...(frozenOriginal.instrument ? { instrument: frozenOriginal.instrument } : {}),
         },
       };
     }),

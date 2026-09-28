@@ -3,7 +3,8 @@
 // per-stage processing is an UPLOAD POST to /api/vst/process-file driven from
 // studioStore (mirroring /api/studio/process), so no other client calls are
 // needed here.
-import { delJson, getJson, postJson } from './apiJson';
+import { delJson, describeApiError, getJson, pairingHeaderFor, postJson } from './apiJson';
+import { parseInstrumentRender, type InstrumentRenderResult, type InstrumentRenderTrack } from './vstInstrumentMidi';
 import { editorWindowsSuppressed, OFFLINE_EDITOR_SUPPRESSED_LOG } from './vstLive/editorWindowSwitch';
 
 export interface Vst3PluginInfo {
@@ -135,6 +136,29 @@ export const vstApi = {
   editorSize: (pluginPath: string) =>
     getJson<{ status: string; w?: number; h?: number }>(`/api/vst/editor-size?plugin_path=${encodeURIComponent(pluginPath)}`),
 };
+
+/**
+ * Print one EDIT track through its VST3 instrument: POST /api/vst/render-midi
+ * with the track's messages, and its WAV back. One track per request, so a
+ * print can report and be called off track by track. Rejects with the
+ * backend's own words.
+ */
+export async function renderInstrumentTrack(
+  track: InstrumentRenderTrack,
+  sampleRate: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InstrumentRenderResult> {
+  const url = '/api/vst/render-midi';
+  const res = await fetchImpl(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
+    body: JSON.stringify({ sample_rate: sampleRate, channels: 2, tracks: [track] }),
+  });
+  if (!res.ok) throw new Error(await describeApiError(res));
+  const [result] = await parseInstrumentRender(await res.formData());
+  if (!result) throw new Error('the instrument render answered with no track');
+  return result;
+}
 
 /* ── live host sessions (/api/vst/live/*) ───────────────────────────────────
    The LIVE path is a different thing from the routes above. Those drive the

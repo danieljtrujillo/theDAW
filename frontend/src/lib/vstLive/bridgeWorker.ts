@@ -32,6 +32,7 @@ import {
   type VstBridgeStats,
   type VstEditorOpenOptions,
   type VstEditorRect,
+  type VstMidiEvent,
   type VstParamDescriptor,
   type VstReadyEvent,
 } from './bridgeClient';
@@ -63,6 +64,8 @@ export type BridgeWorkerOp =
   | 'closeEditor'
   | 'bypass'
   | 'ping'
+  | 'sendMidi'
+  | 'midiPanic'
   | 'sendAudio';
 
 /** Main -> worker. */
@@ -291,6 +294,12 @@ export function createBridgeWorker(deps: BridgeWorkerDeps): BridgeWorkerHandler 
         break;
       case 'ping':
         c.ping();
+        break;
+      case 'sendMidi':
+        c.sendMidi?.(args[0] as VstMidiEvent[]);
+        break;
+      case 'midiPanic':
+        c.midiPanic?.();
         break;
       case 'sendAudio':
         c.sendAudio(args[0] as VstFrameHeader, args[1] as Float32Array[]);

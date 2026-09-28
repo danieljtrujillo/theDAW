@@ -76,6 +76,7 @@ public:
                  const TransportInfo& transport) override;
     void flushParameters() override;
     void resetDsp() override;
+    void setBlockMidi(const MidiEvent* events, std::int32_t count) override;
 
     // ---- HandlerSink (any thread) ----
     void handleBeginEdit(Steinberg::Vst::ParamID id) override;
@@ -109,6 +110,12 @@ private:
     // Audio thread. Moves whatever setParamNormalized() queued into inputChanges_ at sample
     // offset 0; returns false when there was nothing to move. Allocation-free.
     bool drainEditsIntoInputChanges();
+    // Message thread, audio parked. Reads the plugin's IMidiMapping into midiParam_: which
+    // parameter each MIDI controller (and channel pressure, and the pitch wheel) drives on each
+    // channel of event bus 0.
+    void buildMidiMapping();
+    // Audio thread. Turns this block's MIDI into note events and mapped parameter points.
+    void fillBlockMidi();
     // Audio thread. Reports what the plugin wrote into outputChanges_ back to the message
     // thread, at most one message-thread hop per call. Allocation-free.
     void forwardOutputChanges();
@@ -169,7 +176,17 @@ private:
 
     ParameterChanges inputChanges_;
     ParameterChanges outputChanges_;
-    EmptyEventList emptyEvents_;
+    EventList inputEvents_;
+    EventList outputEvents_;
+
+    // The MIDI the next process() plays (setBlockMidi), valid until that call returns.
+    const MidiEvent* blockMidi_ = nullptr;
+    std::int32_t blockMidiCount_ = 0;
+    // [channel * kMidiControllerSlots + controller] -> ParamID, or kNoMidiParam. Controllers
+    // 0-127, then kAfterTouch (128) and kPitchBend (129). Written only while audio is parked.
+    static constexpr std::int32_t kMidiControllerSlots = 130;
+    static constexpr std::int64_t kNoMidiParam = -1;
+    std::vector<std::int64_t> midiParam_;
 
     EditRing toProcessor_{1024};   // edits that must ride the next block
     EditRing toMessageThread_{1024};  // edits the message thread must mirror onto the controller
