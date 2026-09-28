@@ -6,6 +6,11 @@
  * audio-rate motion, and a path overlay previews where the source travels and,
  * for orbits, which way it spins.
  *
+ * The pad is a pointer surface; its two axes are also real sliders on lines
+ * through the source (PadAxisSlider): X is left/right and Z is front/back, in
+ * the pad's distance units, so the keyboard and a screen reader move the
+ * source across and forward one axis at a time.
+ *
  * Rendered by FxRack in place of the generic sliders when the effect is the
  * spatializer. Values round-trip through the same ChainEntry.params the audio
  * factory reads, so the pad and the sound stay in sync.
@@ -13,6 +18,8 @@
 
 import { useEffect, useRef } from 'react';
 import { SlideTrack } from './SlideTrack';
+import { PadAxisSlider } from './PadAxisSlider';
+import { createGestureTracker } from '../../lib/gestureTracker';
 import { getRackEffect, SPATIAL_MOTIONS, SPATIAL_PRESETS } from '../../lib/rackEffects';
 
 interface SpatializerPadProps {
@@ -35,6 +42,18 @@ const R = C - 12;             // usable radius (leave a ring margin)
 const MAX_DIST = 8;           // distance value mapped to the pad edge
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
+/** Source azimuth/distance -> left/right (x) and front/back (z) in distance units. */
+const sourceAxes = (azDeg: number, dist: number): { x: number; z: number } => {
+  const az = (azDeg * Math.PI) / 180;
+  return { x: Math.sin(az) * dist, z: Math.cos(az) * dist };
+};
+
+/** Left/right and front/back back to the azimuth (whole degrees) and distance the effect reads. */
+const axesToSource = (x: number, z: number, minDist: number): { azimuth: number; distance: number } => ({
+  azimuth: Math.round((Math.atan2(x, z) * 180) / Math.PI),
+  distance: +clamp(Math.hypot(x, z), minDist, MAX_DIST).toFixed(2),
+});
+
 /** Source azimuth/distance -> pad pixel coords (front = up, right = right). */
 const sourceXY = (azDeg: number, dist: number) => {
   const az = (azDeg * Math.PI) / 180;
@@ -50,7 +69,18 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
   // automation store cannot recover from (lib/automationGesture.ts). Read
   // through a ref so the cleanup cannot close over a stale prop.
   const endRef = useRef(onGestureEnd); endRef.current = onGestureEnd;
-  useEffect(() => () => { if (dragging.current) endRef.current?.(); }, []);
+  const startRef = useRef(onGestureStart); startRef.current = onGestureStart;
+  // The axis sliders' key gestures, closed on keyup, blur or unmount.
+  const keyGesture = useRef<ReturnType<typeof createGestureTracker> | null>(null);
+  const getKeyGesture = () => (keyGesture.current ??= createGestureTracker({
+    onStart: () => startRef.current?.(),
+    onEnd: () => endRef.current?.(),
+  }));
+  useEffect(() => () => {
+    if (dragging.current) endRef.current?.();
+    keyGesture.current?.dispose();
+    keyGesture.current = null;
+  }, []);
   const def = getRackEffect('spatializer');
 
   const azimuth = params.azimuth ?? 0;
@@ -210,6 +240,15 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
     return null;
   };
 
+  const minDist = def?.params.find((p) => p.key === 'distance')?.min ?? 0.5;
+  const axes = sourceAxes(azimuth, distance);
+  const axisText = (v: number, neg: string, pos: string) => (Math.abs(v) < 0.005 ? 'centre' : `${Math.abs(v).toFixed(1)} ${v < 0 ? neg : pos}`);
+  const keyMove = (key: string, x: number, z: number) => {
+    getKeyGesture().key('down', key);
+    onChange({ ...params, ...axesToSource(x, z, minDist) });
+  };
+  const keyRelease = (key?: string) => getKeyGesture().key('up', key);
+
   const motionId = `${idPrefix}-motion`;
 
   return (
@@ -220,8 +259,9 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
           width={PAD}
           height={PAD}
           viewBox={`0 0 ${PAD} ${PAD}`}
-          role="application"
-          aria-label="Spatial position pad. Drag to set azimuth and distance. Precise values are in the sliders below."
+          role="group"
+          aria-roledescription="XY pad"
+          aria-label="Spatial position pad. Drag to set azimuth and distance, or use the left-right and front-back sliders through the source. Precise values are in the sliders below."
           className="shrink-0 rounded bg-black/50 border border-white/10 cursor-crosshair touch-none"
           onPointerDown={onDown}
           onPointerMove={onMove}
@@ -243,6 +283,34 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
           {/* source */}
           <line x1={C} y1={C} x2={src.x} y2={src.y} stroke="#a855f7" strokeOpacity={0.35} strokeWidth={1} />
           <circle cx={src.x} cy={src.y} r={5} fill="#a855f7" stroke="#fff" strokeWidth={1} />
+          <PadAxisSlider
+            axis="x"
+            label="Source left-right (X)"
+            value={+axes.x.toFixed(2)}
+            min={-MAX_DIST}
+            max={MAX_DIST}
+            step={0.1}
+            valueText={axisText(axes.x, 'left', 'right')}
+            pos={src.x}
+            size={PAD}
+            color="#a855f7"
+            onKey={(next, key) => keyMove(key, next, axes.z)}
+            onKeyRelease={keyRelease}
+          />
+          <PadAxisSlider
+            axis="y"
+            label="Source front-back (Z)"
+            value={+axes.z.toFixed(2)}
+            min={-MAX_DIST}
+            max={MAX_DIST}
+            step={0.1}
+            valueText={axisText(axes.z, 'behind', 'in front')}
+            pos={src.y}
+            size={PAD}
+            color="#a855f7"
+            onKey={(next, key) => keyMove(key, axes.x, next)}
+            onKeyRelease={keyRelease}
+          />
         </svg>
 
         <div className="flex-1 flex flex-col gap-1.5 min-w-0">
