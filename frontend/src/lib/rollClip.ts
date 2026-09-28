@@ -36,6 +36,7 @@ import {
   cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
+  cleanFiguredBass,
   cleanPartControls,
   cleanPartName,
   cleanPartProgram,
@@ -438,7 +439,7 @@ export function feelLength(length: number, q: number): number {
 
 // ── Parts: roll parts as EDIT clips and back ────────────────────────────────
 
-/** The record a part's clip keeps of it (AudioClip `sourceRollPart`): its document, id, place, settings and controller changes. */
+/** The record a part's clip keeps of it (AudioClip `sourceRollPart`): its document, id, place, settings, controller changes, figured bass and cantus firmus mark. */
 export function rollPartRef(part: RollTrack, order: number, doc: string): RollPartRef {
   return {
     doc,
@@ -454,6 +455,8 @@ export function rollPartRef(part: RollTrack, order: number, doc: string): RollPa
     solo: part.solo,
     ...(part.instrumentId ? { instrumentId: part.instrumentId } : {}),
     ...(part.controls?.length ? { controls: part.controls.map((c) => ({ ...c })) } : {}),
+    ...(part.figuredBass?.length ? { figuredBass: part.figuredBass.map((m) => ({ ...m })) } : {}),
+    ...(part.cantusFirmus ? { cantusFirmus: true } : {}),
   };
 }
 
@@ -468,6 +471,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
   if (typeof r.doc !== 'string' || !r.doc || typeof r.id !== 'string' || !r.id) return undefined;
   const order = typeof r.order === 'number' && Number.isFinite(r.order) ? Math.max(0, Math.round(r.order)) : 0;
   const controls = cleanPartControls(r.controls);
+  const figuredBass = cleanFiguredBass(r.figuredBass);
   const bankLsb = cleanPartBankLsb(r.bankLsb);
   return {
     doc: r.doc,
@@ -483,6 +487,8 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
     solo: r.solo === true,
     ...(typeof r.instrumentId === 'string' && r.instrumentId ? { instrumentId: r.instrumentId } : {}),
     ...(controls ? { controls } : {}),
+    ...(figuredBass ? { figuredBass } : {}),
+    ...(r.cantusFirmus === true ? { cantusFirmus: true } : {}),
   };
 }
 
@@ -506,6 +512,8 @@ function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color
       notes,
       ...(ref.instrumentId ? { instrumentId: ref.instrumentId } : {}),
       ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ ...c })) } : {}),
+      ...(ref.figuredBass?.length ? { figuredBass: ref.figuredBass.map((m) => ({ ...m })) } : {}),
+      ...(ref.cantusFirmus ? { cantusFirmus: true } : {}),
     };
   }
   // A clip bounced before parts: its EDIT track names it, and a drum track makes it a percussion part.

@@ -611,7 +611,9 @@ export interface RecentItem {
  * part follows the roll's voice or takes the next free channel. `bank_lsb` is
  * its bank select LSB (CC 32), absent when it sends none. `controls` is the
  * part's controller changes on the roll's clock (960 ticks to the quarter),
- * absent when it has none. A file written before either opens without it.
+ * absent when it has none. `figured_bass` holds the figures under its bass
+ * notes and `cantus_firmus` marks the roll's cantus firmus. A file written
+ * before any of them opens without it.
  */
 export interface TasmoRollPart {
   doc: string;
@@ -627,6 +629,10 @@ export interface TasmoRollPart {
   solo: boolean;
   instrument_id?: string | null;
   controls?: Array<{ tick: number; controller: number; value: number }>;
+  /** The figures under the part's bass notes, by tick on the roll's clock; absent when it has none. */
+  figured_bass?: Array<{ tick: number; figure: string }>;
+  /** True for the roll's cantus firmus part; absent otherwise. */
+  cantus_firmus?: boolean;
 }
 
 /** A clip's part record in the file shape. */
@@ -644,13 +650,24 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   solo: ref.solo,
   instrument_id: ref.instrumentId ?? null,
   ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ tick: c.tick, controller: c.controller, value: c.value })) } : {}),
+  ...(ref.figuredBass?.length ? { figured_bass: ref.figuredBass.map((m) => ({ tick: m.tick, figure: m.figure })) } : {}),
+  ...(ref.cantusFirmus ? { cantus_firmus: true } : {}),
 });
 
 /** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
 export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: string }): RollPartRef | undefined => {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
-  return cleanRollPartRef({ ...r, instrumentId: r.instrument_id ?? r.instrumentId, bankLsb: r.bank_lsb ?? r.bankLsb }, fallback);
+  return cleanRollPartRef(
+    {
+      ...r,
+      instrumentId: r.instrument_id ?? r.instrumentId,
+      bankLsb: r.bank_lsb ?? r.bankLsb,
+      figuredBass: r.figured_bass ?? r.figuredBass,
+      cantusFirmus: r.cantus_firmus ?? r.cantusFirmus,
+    },
+    fallback,
+  );
 };
 
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---
