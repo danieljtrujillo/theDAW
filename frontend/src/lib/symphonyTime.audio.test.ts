@@ -8,7 +8,8 @@
  *
  * Then: the live scheduler's clock (startRollPlay, windowOnsets, rollClickPlan)
  * puts every click on its group start and every note where the render puts it;
- * the bounce (rollBounce through the render request and SpessaSynth, as in
+ * the bounce (rollBounce sends the part, and an export renders it through the
+ * MIDI render queue with the render request and SpessaSynth, as in
  * tempoBounce.audio.test) sounds each note within 10 ms of its time under the
  * map; the MIDI export read back into the roll (the MIDI tab's import) brings
  * back the map, the meter and every note, and bounces to the same seconds.
@@ -22,6 +23,7 @@ import { BasicMIDI, SoundBankLoader, SpessaSynthProcessor } from 'spessasynth_co
 import { stepRenderRequest } from './midiSynth.ts';
 import { notesRenderSmf } from './soundfontEngine.ts';
 import { bounceRollToEditor } from './rollBounce.ts';
+import { clipsWithMidiAudio, configureMidiRenderQueue } from '../state/midiRenderQueue.ts';
 import { clickPlacement, snapGrid, TICKS_PER_STEP } from './rollSnap.ts';
 import { feelRollNotes } from './rollClip.ts';
 import { grooveById } from './grooveTemplate.ts';
@@ -74,12 +76,16 @@ function onsetAfter(audio: Float32Array, from: number, win: number): number {
   return Number.NaN;
 }
 
-/** Bounce the roll to EDIT as the app does, keeping the soundfont MIDI the render plays. */
+/**
+ * Send the roll to EDIT as the app does, then export the part (the MIDI render
+ * queue's clipsWithMidiAudio), keeping the soundfont MIDI the render plays.
+ */
 async function bounce(): Promise<{ smf: Uint8Array; seconds: number; starts: number[] }> {
   let smf: Uint8Array | null = null;
   let seconds = 0;
   let starts: number[] = [];
-  const done = await bounceRollToEditor({
+  const picker = () => ({ useSoundfont: true, activeProgram: WOODBLOCK });
+  configureMidiRenderQueue({
     render: (n, bpm, total, opts) => {
       const req = stepRenderRequest(n, bpm, total, { ...opts, program: WOODBLOCK });
       smf = notesRenderSmf(req.notes, req.options);
@@ -88,9 +94,15 @@ async function bounce(): Promise<{ smf: Uint8Array; seconds: number; starts: num
       return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: req.nominalSec });
     },
     computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-    global: () => ({ useSoundfont: true, activeProgram: WOODBLOCK }),
+    global: picker,
+    ensureReady: () => Promise.resolve(),
   });
-  assert.ok(done && smf, 'the roll bounced');
+  const done = await bounceRollToEditor({ global: picker });
+  assert.ok(done, 'the roll went to EDIT');
+  assert.equal(smf, null, 'the part plays live, so the send renders nothing');
+  const out = await clipsWithMidiAudio((c) => c.id === done.clipId);
+  out.release();
+  assert.ok(smf, 'the export rendered it');
   return { smf: smf as Uint8Array, seconds, starts };
 }
 

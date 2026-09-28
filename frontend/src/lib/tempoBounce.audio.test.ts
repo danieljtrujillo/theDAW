@@ -1,10 +1,12 @@
 /**
  * A ritardando written in the roll's tempo map, heard in the bounce: the roll
- * is bounced to EDIT (lib/rollBounce) through the render request the app makes
- * (midiSynth stepRenderRequest), the notes go into the MIDI file the soundfont
- * render plays (soundfontEngine notesRenderSmf), SpessaSynth's own processor
- * renders it with the bundled General MIDI bank, and each note's onset is
- * measured in the audio.
+ * is sent to EDIT (lib/rollBounce), where the part plays live, and an export
+ * renders it through the MIDI render queue (state/midiRenderQueue
+ * clipsWithMidiAudio) with the render request the app makes (midiSynth
+ * stepRenderRequest). The notes go into the MIDI file the soundfont render
+ * plays (soundfontEngine notesRenderSmf), SpessaSynth's own processor renders
+ * it with the bundled General MIDI bank, and each note's onset is measured in
+ * the audio.
  *
  * The roll: a woodblock on every beat, 120 bpm for a bar, a ramp to 60 over
  * two bars, then a bar at 60. Every onset lands within 10 ms of the ramp's
@@ -18,6 +20,7 @@ import { BasicMIDI, SoundBankLoader, SpessaSynthProcessor } from 'spessasynth_co
 import { stepRenderRequest } from './midiSynth.ts';
 import { notesRenderSmf } from './soundfontEngine.ts';
 import { bounceRollToEditor } from './rollBounce.ts';
+import { clipsWithMidiAudio, configureMidiRenderQueue } from '../state/midiRenderQueue.ts';
 import { usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 import { useEditorStore } from '../state/editorStore.ts';
 
@@ -78,7 +81,8 @@ async function main(): Promise<void> {
 
   let smf: Uint8Array | null = null;
   let seconds = 0;
-  const done = await bounceRollToEditor({
+  const picker = () => ({ useSoundfont: true, activeProgram: WOODBLOCK });
+  configureMidiRenderQueue({
     render: (n, bpm, total, opts) => {
       const req = stepRenderRequest(n, bpm, total, { ...opts, program: WOODBLOCK });
       smf = notesRenderSmf(req.notes, req.options);
@@ -86,9 +90,15 @@ async function main(): Promise<void> {
       return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: req.nominalSec });
     },
     computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-    global: () => ({ useSoundfont: true, activeProgram: WOODBLOCK }),
+    global: picker,
+    ensureReady: () => Promise.resolve(),
   });
-  assert.ok(done && smf);
+  const done = await bounceRollToEditor({ global: picker });
+  assert.ok(done, 'the roll went to EDIT');
+  assert.equal(smf, null, 'the part plays live, so the send renders nothing');
+  const out = await clipsWithMidiAudio((c) => c.id === done.clipId);
+  out.release();
+  assert.ok(smf, 'the export rendered it');
   const audio = await renderMidi(smf as Uint8Array, seconds + 0.5);
 
   // The ramp in closed form: 120 falling 7.5 bpm a beat from beat 4 to beat 12.

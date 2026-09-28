@@ -7,8 +7,10 @@
  * key bounces them. At 8039b45 setInstrument wrote the global picker (program
  * 48 and soundfonts on), so the EDIT clip was re-voiced and re-rendered as
  * strings. Keeping the picker alone must not lose what that write did for the
- * roll: the roll auditions and bounces the notes as strings, on a new track
- * that holds strings. Run from `frontend/`:
+ * roll: the roll auditions the notes as strings and sends them to a new track
+ * that holds strings, where they play live and an export renders them as
+ * strings (through the MIDI render queue, state/midiRenderQueue: the EDIT key
+ * renders nothing for a part that plays live). Run from `frontend/`:
  *   npx tsx src/components/audio/vocal2midi/midiSynth.test.ts
  */
 import assert from 'node:assert/strict';
@@ -18,6 +20,9 @@ import { effectiveProgramFor, rollVoice } from '../../../lib/clipProgram.ts';
 import { usePianoRollStore } from '../../../state/pianoRollStore.ts';
 import { useEditorStore } from '../../../state/editorStore.ts';
 import { bounceRollToEditor } from '../../../lib/rollBounce.ts';
+import { clipsWithMidiAudio, configureMidiRenderQueue, requestMidiRender } from '../../../state/midiRenderQueue.ts';
+import { liveMidiIfHeard } from '../../../state/liveMixer.ts';
+import { clipVoice } from '../../../lib/clipProgram.ts';
 import { chooseRollVoice, rollVoiceChoice } from '../../../lib/rollVoiceChoice.ts';
 import { clipRollLoad } from '../../../lib/rollClip.ts';
 import type { AudioClip, EditorTrack } from '../../../state/editorStore.ts';
@@ -25,6 +30,19 @@ import type { AudioClip, EditorTrack } from '../../../state/editorStore.ts';
 function run(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve(fn()).then(() => console.log(`  ok - ${name}`));
 }
+
+/** Every program the stand-in synth rendered, in order. */
+const rendered: Array<number | undefined> = [];
+configureMidiRenderQueue({
+  render: (_n, _b, _t, o) => {
+    rendered.push(o.program);
+    return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: 2 });
+  },
+  computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
+  global: getGlobalVoice,
+  ensureReady: () => Promise.resolve(),
+  livePlan: liveMidiIfHeard,
+});
 
 async function main(): Promise<void> {
   useSoundfontStore.getState().setActiveProgram(1);
@@ -56,19 +74,20 @@ async function main(): Promise<void> {
       { program: 48, percussion: false },
       'the roll auditions strings',
     );
-    const rendered: Array<number | undefined> = [];
-    const done = await bounceRollToEditor({
-      render: (_n, _b, _t, o) => {
-        rendered.push(o.program);
-        return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: 2 });
-      },
-      computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-      global: getGlobalVoice,
-    });
+    rendered.length = 0;
+    const done = await bounceRollToEditor({ global: getGlobalVoice });
     assert.ok(done && done.kind === 'created');
-    assert.deepEqual(rendered, [48], 'the bounce renders strings');
+    assert.deepEqual(rendered, [], 'the send renders nothing: the part plays live');
     const clip = useEditorStore.getState().clips.find((c) => c.id === done.clipId)!;
-    assert.equal(useEditorStore.getState().tracks.find((t) => t.id === clip.trackId)?.instrumentProgram, 48, 'the new track holds strings');
+    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
+    assert.equal(track?.instrumentProgram, 48, 'the new track holds strings');
+    assert.deepEqual(clipVoice(clip, track, getGlobalVoice()), { program: 48, percussion: false }, 'the part plays strings');
+    // An export renders it as strings, through the queue, for that export only.
+    const out = await clipsWithMidiAudio((c) => c.id === done.clipId);
+    assert.deepEqual(rendered, [48], 'the export renders strings');
+    assert.equal(out.clips.find((c) => c.id === done.clipId)?.renderedProgram, 48);
+    assert.equal(useEditorStore.getState().clips.find((c) => c.id === done.clipId)?.audioBlob, undefined, 'and the part still holds no render');
+    out.release();
     assert.equal(useSoundfontStore.getState().activeProgram, 1, 'the picker still has its program');
   });
 
@@ -121,17 +140,13 @@ async function main(): Promise<void> {
     ed().redo();
     assert.equal(ed().tracks.find((t) => t.id === 't1')?.instrumentProgram, 48);
 
-    // The roll's EDIT key re-renders the clip in place through strings.
-    const rendered: Array<number | undefined> = [];
-    const done = await bounceRollToEditor({
-      render: (_n, _b, _t, o) => {
-        rendered.push(o.program);
-        return Promise.resolve({ blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), duration: 2 });
-      },
-      computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
-      global: getGlobalVoice,
-    });
+    // The roll's EDIT key writes the clip in place; the render it keeps is now
+    // out of date, and EDIT's render upkeep renders it again through strings.
+    rendered.length = 0;
+    const done = await bounceRollToEditor({ global: getGlobalVoice });
     assert.equal(done?.kind, 'updated');
+    assert.deepEqual(rendered, [], 'the send itself renders nothing');
+    await requestMidiRender('lead', 'cache');
     assert.deepEqual(rendered, [48]);
     assert.equal(ed().clips.find((c) => c.id === 'lead')?.renderedProgram, 48);
   });
