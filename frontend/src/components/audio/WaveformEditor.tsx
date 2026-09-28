@@ -79,6 +79,8 @@ import {
   drumKitName,
   isPercussionTrack,
 } from '../../lib/clipProgram';
+import { anyLiftedVoice } from '../../lib/soundbankGain';
+import { safetyLimiterFor } from '../../lib/synthOutputStage';
 import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
 import { BUNDLED_BANK_ID, instrumentRefValue, parseInstrumentRefValue, presetName, type InstrumentRef } from '../../lib/bankRegistry';
 import { BankPresetOptions, isBankPreset, useSoundBanks } from './bankPresetOptions';
@@ -432,6 +434,17 @@ interface BounceDeps extends RenderDeps {
   release: () => void;
 }
 
+/** True when a MIDI clip the bounce of `scope` plays sounds a sound bank preset its playback gain lifts above unity. */
+const liftedVoiceIn = (clips: readonly AudioClip[], tracks: readonly EditorTrack[], scope: BounceScope): boolean => {
+  const global = getGlobalVoice();
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+  return anyLiftedVoice(
+    clipsInScope([...clips], scope)
+      .filter((c) => !c.muted && isMidiClip(c))
+      .map((c) => clipVoice(c, byId.get(c.trackId), global)),
+  );
+};
+
 const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean = () => false): Promise<BounceDeps> => {
   // A track whose instrument slot holds a VST3 prints its MIDI through that
   // plugin (lib/renderCore printInstrumentTracks), so its clips skip the
@@ -472,6 +485,8 @@ const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean 
     decode: decodeClipBlob,
     buildChain: buildEffectChain,
     scheduleSources: liveMixer.scheduleClipSources,
+    // A MIDI clip on a lifted sound bank preset: the bounce's master goes out through the safety limiter.
+    ...(liftedVoiceIn(print.clips, st.tracks, scope) ? { safetyLimiter: safetyLimiterFor } : {}),
     release: () => {
       midi.release();
       for (const blob of print.printed) releaseDecoded(blob);

@@ -19,6 +19,15 @@
  *    channel's first preset; a later program change to a preset with another
  *    gain is followed on the synth's own output for that channel, a gain node
  *    stepped at the change's second (`renderGainSteps`, `routeRenderGains`).
+ *    The synth's shared reverb/chorus output cannot be split by channel, so
+ *    it keeps each channel's first-preset gain; the render's whole sum, that
+ *    output included, goes through the safety limiter whenever the file plays
+ *    a lifted preset (lib/synthOutputStage wireRenderOutput), so it cannot
+ *    pass -0.3 dBFS.
+ *
+ * Registration caps a lift so a single velocity-127 note at CC 7 127 stays
+ * under -0.3 dBFS (the manifest's `levelling` clip check gives each preset's
+ * peak): the safety limiter then acts only on a sum, never on a lone note.
  *
  * A channel's gain follows the preset it selects: a bank select (CC 0) plus a
  * program. A bank loaded with a bank offset answers bank selects shifted by
@@ -30,6 +39,31 @@ import { SpessaSynthProcessor, type BasicMIDI, type SynthesizerSnapshot } from '
 export interface SoundbankGainManifest {
   /** `"bank:program"` -> dB the app adds at playback. */
   playback_gain?: Record<string, number>;
+  /**
+   * The build's levelling table (scripts/build_orchestra_sf3.py): each
+   * preset's clip check, whose `output_peak` is the linear peak of a
+   * velocity-127 note on its loudest zone at the default CC 7 (100) with no
+   * playback gain.
+   */
+  levelling?: { presets?: Array<{ bank?: number; program?: number; clip_check?: { output_peak?: number } | null }> };
+}
+
+/** The ceiling a single note is held under at registration (dBFS): the safety limiter's (lib/synthOutputStage). */
+export const SINGLE_NOTE_CEILING_DB = -0.3;
+/** Headroom kept under that ceiling for the notes the clip check did not play (dB). */
+export const SINGLE_NOTE_MARGIN_DB = 0.2;
+/** A velocity-127 note at CC 7 127 over one at the default CC 7 of 100: SpessaSynth's volume is the square of CC 7. */
+const CC7_FULL_OVER_DEFAULT_DB = 40 * Math.log10(127 / 100);
+
+/**
+ * The most playback gain (dB) preset output peak `outputPeak` (linear, a
+ * velocity-127 note at CC 7 100 with no gain) takes and still plays a single
+ * velocity-127 note at CC 7 127 under SINGLE_NOTE_CEILING_DB, less
+ * SINGLE_NOTE_MARGIN_DB.
+ */
+export function singleNoteGainCapDb(outputPeak: number): number {
+  const peakDb = 20 * Math.log10(Math.max(outputPeak, 1e-9));
+  return SINGLE_NOTE_CEILING_DB - SINGLE_NOTE_MARGIN_DB - CC7_FULL_OVER_DEFAULT_DB - peakDb;
 }
 
 interface GainTable {
@@ -55,11 +89,22 @@ export const dbToGain = (db: number): number => 10 ** (db / 20);
  * how many preset slots carry a gain.
  */
 export function registerSoundbankGains(bankId: string, manifest: SoundbankGainManifest | null | undefined, bankOffset = 0): number {
+  // Each preset's single-note cap, from the build's clip check where it has one.
+  const caps = new Map<string, number>();
+  for (const row of manifest?.levelling?.presets ?? []) {
+    const peak = row?.clip_check?.output_peak;
+    if (typeof row?.bank !== 'number' || typeof row.program !== 'number' || typeof peak !== 'number' || !(peak > 0)) continue;
+    caps.set(key(row.bank, row.program), singleNoteGainCapDb(peak));
+  }
   const gains = new Map<string, number>();
   for (const [slot, db] of Object.entries(manifest?.playback_gain ?? {})) {
     const m = /^(\d+):(\d+)$/.exec(slot);
     if (!m || typeof db !== 'number' || !Number.isFinite(db)) continue;
-    gains.set(key(Number(m[1]), Number(m[2])), Math.max(-MAX_PLAYBACK_GAIN_DB, Math.min(MAX_PLAYBACK_GAIN_DB, db)));
+    const k = key(Number(m[1]), Number(m[2]));
+    // A lift is capped so a single velocity-127 note at CC 7 127 stays under the ceiling; a cut is kept as it is.
+    const cap = caps.get(k);
+    const capped = db > 0 && cap !== undefined ? Math.max(0, Math.min(db, cap)) : db;
+    gains.set(k, Math.max(-MAX_PLAYBACK_GAIN_DB, Math.min(MAX_PLAYBACK_GAIN_DB, capped)));
   }
   tables.delete(bankId);
   tables.set(bankId, { bankOffset: Number.isFinite(bankOffset) ? Math.round(bankOffset) : 0, gains });
@@ -93,6 +138,15 @@ export function selectionGainDb(bankSelect: number, program: number, channel?: n
     if (db !== undefined) found = db;
   }
   return found;
+}
+
+/** True when any of `voices` (a bank select, a program, and a drum voice's flag) plays a preset its playback gain lifts above unity. */
+export function anyLiftedVoice(voices: Iterable<{ bank?: number; program?: number; percussion?: boolean }>): boolean {
+  for (const v of voices) {
+    if (v.program === undefined) continue;
+    if (selectionGainDb(v.bank ?? 0, v.program, v.percussion ? 9 : 0) > 0) return true;
+  }
+  return false;
 }
 
 /** Anything with SpessaSynth channels whose system gain can be set: a WorkletSynthesizer or a SpessaSynthProcessor. */

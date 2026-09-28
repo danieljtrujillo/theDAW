@@ -308,6 +308,14 @@ export interface RenderDeps {
   makeCompDelay?: (ctx: BaseAudioContext) => DelayNode;
   /** Onset slicing, for the spatializer's teleport schedule. */
   sliceChunks?: (buf: AudioBuffer) => AudioChunk[];
+  /**
+   * A safety limiter for the bounce's master output (lib/synthOutputStage),
+   * passed when a clip in the bounce plays a sound bank preset its playback
+   * gain lifts above unity: the whole mix then goes through it on its way out,
+   * so the sum stays under -0.3 dBFS. Resolving null (or absent) leaves the
+   * master unlimited.
+   */
+  safetyLimiter?: (ctx: BaseAudioContext) => Promise<AudioNode | null>;
 }
 
 /* ── Scope ────────────────────────────────────────────────────────────────── */
@@ -808,12 +816,16 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   // ── Master bus ───────────────────────────────────────────────────────────
   const chains: ChainHandle[] = [];
   const masterBus = ctx.createGain();
+  // A lifted sound bank preset in the mix: the master goes out through the safety limiter.
+  const safety = deps.safetyLimiter ? await deps.safetyLimiter(ctx) : null;
+  if (safety) safety.connect(ctx.destination);
+  const masterOut = safety ?? ctx.destination;
   let masterFx: ChainHandle | null = null;
   if (useMasterFx) {
-    masterFx = deps.buildChain(ctx, masterBus, ctx.destination, deps.masterFxChain);
+    masterFx = deps.buildChain(ctx, masterBus, masterOut, deps.masterFxChain);
     chains.push(masterFx);
   } else {
-    masterBus.connect(ctx.destination);
+    masterBus.connect(masterOut);
   }
 
   /**
