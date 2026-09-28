@@ -111,6 +111,9 @@ export interface NotationCapabilities {
     max_bytes: number;
     corpus: boolean;
   };
+  /** What GET /musescore reports; 'audio' is in `formats` only when its
+   *  reason is empty. */
+  musescore_render?: MuseScoreRenderStatus;
 }
 
 /** One piece of the music21 corpus, as GET /api/notation/corpus lists it. */
@@ -179,6 +182,53 @@ export async function openCorpusPiece(id: string): Promise<ScoreImportResult> {
   });
   if (!res.ok) throw new Error(await errorText(res, 'corpus open'));
   return await res.json() as ScoreImportResult;
+}
+
+/** GET /api/notation/musescore: MuseScore 4 and Muse Sounds for the 'audio'
+ *  export. `reason` is empty when a render can run. */
+export interface MuseScoreRenderStatus {
+  found: boolean;
+  path: string | null;
+  muse_sounds: boolean;
+  reason: string;
+}
+
+export async function getMuseScoreStatus(): Promise<MuseScoreRenderStatus> {
+  const res = await fetch('/api/notation/musescore');
+  if (!res.ok) throw new Error(`MuseScore status HTTP ${res.status}`);
+  return await res.json() as MuseScoreRenderStatus;
+}
+
+/** What the 'audio' export made: a new Library entry holding the WAV. */
+export interface ScoreAudioRender {
+  library_entry_id: string;
+  title: string;
+  audio_url?: string;
+}
+
+/**
+ * Render a sheet (or its parts) with MuseScore 4 and Muse Sounds into a WAV
+ * the backend adds to the Library. Takes minutes on a long score.
+ */
+export async function renderScoreAudio(
+  entryId: string,
+  sourceArtifactId: string,
+  options?: Record<string, unknown>,
+): Promise<ScoreAudioRender> {
+  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_artifact_id: sourceArtifactId, format: 'audio', options: options ?? {} }),
+  });
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : `MuseScore render HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return payload as ScoreAudioRender;
 }
 
 /** Options for POST /{entry}/chords (the gantasmo.chordtrack builder). */

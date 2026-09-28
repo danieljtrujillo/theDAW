@@ -66,6 +66,9 @@ _EXT_FOR_FORMAT = {
     # The score as MIDI at the pitch every part sounds (one track per part,
     # tempo and meter maps): exporters/sounding_midi.py.
     "midi": ".sounding.mid",
+    # The score rendered by MuseScore 4 with Muse Sounds. The WAV is written
+    # here, copied into a new Library entry, and removed (musescore_render).
+    "audio": ".wav",
 }
 
 # The one export target this router writes itself (exporters/sounding_midi.py)
@@ -331,6 +334,17 @@ def open_corpus_piece(body: CorpusOpenRequest) -> dict[str, Any]:
         raise _import_error(exc) from exc
 
 
+@router.get("/musescore")
+def get_musescore() -> dict[str, Any]:
+    """Whether a score can be rendered to audio here: ``{found, path,
+    muse_sounds, reason}`` for MuseScore 4 and Muse Sounds
+    (:func:`.musescore_render.musescore_status`); ``reason`` is empty when the
+    "audio" export can run, and says what is missing otherwise."""
+    from .musescore_render import musescore_status
+
+    return musescore_status()
+
+
 def _entry_known(store: Any, entry_id: str) -> bool:
     """Whether ``entry_id`` is known to the library at all: a DB row OR an
     on-disk entry directory, whichever answers first.
@@ -569,10 +583,12 @@ def rewrite_legacy_sheet(entry_id: str, artifact_id: str) -> dict[str, Any]:
 def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     """Export an existing notation artifact (MIDI or MusicXML) to another
     format and register the result. Targets: the keys of ``_EXT_FOR_FORMAT``
-    (musicxml, abc, pdf, svg, notechart, beatsaber, midi). ``pdf`` and ``svg``
-    are engraved by the headless OSMD renderer, or by MuseScore when that is
-    missing (``options.engine`` pins one). ``midi`` is the score at sounding
-    pitch, one track per part (:func:`_export_sounding_midi`).
+    (musicxml, abc, pdf, svg, notechart, beatsaber, midi, audio). ``pdf``
+    and ``svg`` are engraved by the headless OSMD renderer, or by MuseScore
+    when that is missing (``options.engine`` pins one). ``midi`` is the score
+    at sounding pitch, one track per part (:func:`_export_sounding_midi`).
+    ``audio`` is rendered by MuseScore 4 with Muse Sounds into a new Library
+    entry; its result carries ``library_entry_id`` in place of an artifact.
 
     ``options.parts`` (a non-empty list of part indices, ``<part-list>``
     order) scopes any format to those parts. The file is then named

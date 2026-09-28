@@ -21,10 +21,13 @@ import { readSoundingTempi } from './soundingTempo';
 import {
   exportArtifact,
   performScore,
+  getMuseScoreStatus,
   getNotationCapabilities,
   listNotationArtifacts,
+  renderScoreAudio,
   fetchArtifactText,
   invalidateArtifactText,
+  type MuseScoreRenderStatus,
   type NotationArtifact,
   type NotationCapabilities,
 } from '../../lib/notationClient';
@@ -249,6 +252,8 @@ export const ScoreView: React.FC = () => {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [caps, setCaps] = useState<NotationCapabilities | null>(null);
+  // RENDER WITH MUSESCORE's status (GET /musescore); null until read.
+  const [musescoreStatus, setMusescoreStatus] = useState<MuseScoreRenderStatus | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   // Bumped when a sheet is rewritten in place (same artifact id, new bytes),
   // so the preview, keyed by it, reads the file again.
@@ -387,8 +392,32 @@ export const ScoreView: React.FC = () => {
     void getNotationCapabilities()
       .then((next) => { if (!cancelled) setCaps(next); })
       .catch(() => { if (!cancelled) setCaps(null); });
+    void getMuseScoreStatus()
+      .then((next) => { if (!cancelled) setMusescoreStatus(next); })
+      .catch(() => {
+        if (!cancelled) setMusescoreStatus({ found: false, path: null, muse_sounds: false, reason: 'MuseScore status unreadable' });
+      });
     return () => { cancelled = true; };
   }, []);
+
+  /** RENDER WITH MUSESCORE: MuseScore 4 plays the sheet (or one part) with
+   *  Muse Sounds into a WAV the backend adds to the Library as a new entry. */
+  const renderWithMuseScore = async (partIndex: number | null) => {
+    if (!selectedEntryId || !selectedArtifact) return;
+    setExporting('audio');
+    const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
+    logInfo('score', `Rendering ${partName ?? 'the score'} with MuseScore and Muse Sounds…`);
+    try {
+      const options = partIndex === null ? undefined : { parts: [partIndex] };
+      const made = await renderScoreAudio(selectedEntryId, selectedArtifact.id, options);
+      logInfo('score', `MuseScore render added to the Library: ${made.title}`);
+      await useLibraryStore.getState().refresh();
+    } catch (e) {
+      logError('score', `MuseScore render failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(null);
+    }
+  };
 
   // Any part, any format: options.parts scopes every export-route format to
   // one part (the backend filters the sheet with stage_parts, then converts);
@@ -397,6 +426,10 @@ export const ScoreView: React.FC = () => {
   const exportSelectedAs = async (format: string, partIndex: number | null = null) => {
     if (!selectedEntryId || !selectedArtifact) return;
     if (selectedArtifact.kind !== 'musicxml' && selectedArtifact.kind !== 'midi') return;
+    if (format === 'audio') {
+      await renderWithMuseScore(partIndex);
+      return;
+    }
     setExporting(format);
     try {
       const options = partIndex === null ? undefined : { parts: [partIndex] };
@@ -567,6 +600,7 @@ export const ScoreView: React.FC = () => {
       }
       const next = await getNotationCapabilities();
       setCaps(next);
+      if (next.musescore_render) setMusescoreStatus(next.musescore_render);
       logInfo(
         'score',
         next.musescore
@@ -850,6 +884,7 @@ export const ScoreView: React.FC = () => {
           <ExportMenu
             artifact={selectedArtifact}
             caps={caps}
+            musescore={musescoreStatus}
             parts={selectedParts}
             partsLoading={partsLoading}
             exporting={exporting}

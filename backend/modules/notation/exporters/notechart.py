@@ -76,6 +76,7 @@ from ..arrangers.percussion import (
     gm_pitch_for_display,
     is_drum_midi,
 )
+from ..grid import is_exact, quantize_score, quantizer_label
 from ..midi_read import read_midi, read_score
 from ..tempo_marks import restore_sounding_tempi
 from . import beatsaber_map
@@ -1462,10 +1463,11 @@ def build_notechart(
     # <sound tempo> its notes were placed at, which music21 does not read back.
     restore_sounding_tempi(score, source_path)
 
+    source_exact = is_exact(score)
     if source_format == "midi" and not drum_source:
         # Match what MAKE SHEET engraves, so the chart and the sheet agree.
         try:
-            quantized = score.quantize((4, 3), inPlace=False, recurse=True)
+            quantized = quantize_score(score, exact=source_exact)
             if quantized is not None:
                 score = quantized
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
@@ -1589,7 +1591,7 @@ def build_notechart(
             "gridLabel": f"1/{grid_divisions * 4}",
             "gridSeconds": grid_seconds,
             "tripletsAllowed": True,
-            "engine": "music21.quantize((4,3))"
+            "engine": quantizer_label(source_exact)
             if source_format == "midi"
             else "source",
             "rawIsQuantized": raw_is_quantized,

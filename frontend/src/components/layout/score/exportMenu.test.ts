@@ -4,11 +4,12 @@ import {
   ALL_PARTS,
   buildExportMenu,
   MUSESCORE_DOWNLOAD_URL,
+  musescoreRenderReason,
   routeFormatFor,
   SHEET_EXPORT_ORDER,
   type ExportMenuEntry,
 } from './exportMenuModel.ts';
-import type { NotationCapabilities } from '../../../lib/notationClient.ts';
+import type { MuseScoreRenderStatus, NotationCapabilities } from '../../../lib/notationClient.ts';
 
 const fullCaps: NotationCapabilities = {
   ok: true,
@@ -316,6 +317,57 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
 {
   const menu = buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: [{ name: '' }, { name: 'Lead' }] });
   assert.deepEqual(menu.parts.map((p) => p.label), ['All parts', 'Part 1', 'Lead']);
+}
+
+// (h) RENDER WITH MUSESCORE: listed after the formats when the owner passes
+// the render status, enabled with MuseScore 4 and Muse Sounds, otherwise
+// disabled with a short reason printed under it (note) and in its hover text.
+{
+  const ready: MuseScoreRenderStatus = { found: true, path: 'C:/Program Files/MuseScore 4/bin/MuseScore4.exe', muse_sounds: true, reason: '' };
+  const noSounds: MuseScoreRenderStatus = { ...ready, muse_sounds: false, reason: 'Muse Sounds is not installed (MuseHub)' };
+  const noMuseScore: MuseScoreRenderStatus = { found: false, path: null, muse_sounds: false, reason: 'MuseScore 4 is not installed' };
+
+  const menu = (musescore: MuseScoreRenderStatus | null) =>
+    buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: bandParts, musescore });
+
+  const all = menu(ready).formatsFor(ALL_PARTS);
+  assert.deepEqual(ids(all), [...ALL_IDS, 'audio']);
+  const render = byId(all, 'audio');
+  assert.equal(render.label, 'RENDER WITH MUSESCORE');
+  assert.equal(render.kind, 'export');
+  assert.equal(render.enabled, true);
+  assert.equal(render.note, undefined);
+  assert.equal(render.partScoped, false);
+  assert.equal(routeFormatFor(render), 'audio');
+
+  const bass = menu(ready).formatsFor(menu(ready).parts[1]);
+  assert.equal(byId(bass, 'audio').partScoped, true);
+  assert.match(byId(bass, 'audio').title, /Bass only/);
+
+  const withoutSounds = byId(menu(noSounds).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(withoutSounds.enabled, false);
+  assert.equal(withoutSounds.note, 'Needs Muse Sounds (MuseHub)');
+  assert.equal(musescoreRenderReason(noSounds), 'Needs Muse Sounds (MuseHub)');
+  assert.match(withoutSounds.title, /^Needs Muse Sounds/);
+
+  const withoutMuseScore = byId(menu(noMuseScore).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(withoutMuseScore.enabled, false);
+  assert.equal(withoutMuseScore.note, 'Needs MuseScore 4');
+
+  const reading = byId(menu(null).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(reading.enabled, false);
+  assert.equal(reading.note, 'Checking for MuseScore 4…');
+
+  // A MIDI sheet renders too (the backend stages it as MusicXML).
+  const midi = buildExportMenu({ artifactKind: 'midi', caps: fullCaps, parts: null, musescore: ready });
+  assert.equal(byId(midi.formatsFor(ALL_PARTS), 'audio').enabled, true);
+
+  // An owner that passes no status lists no render entry.
+  assert.ok(!ids(buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: null }).formatsFor(ALL_PARTS)).includes('audio'));
+
+  // Without an engraver the render still sits before GET / LOCATE MUSESCORE.
+  const bare = buildExportMenu({ artifactKind: 'musicxml', caps: noEngraverCaps, parts: null, musescore: noMuseScore });
+  assert.deepEqual(ids(bare.formatsFor(ALL_PARTS)).slice(-3), ['audio', ...ENGRAVER_IDS]);
 }
 
 console.log('exportMenu tests passed');
