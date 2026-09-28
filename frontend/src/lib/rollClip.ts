@@ -238,10 +238,9 @@ export interface ClipControlTime {
  * controller that changes right where the window starts is left out of that
  * state, since its change plays there (the rule PLAY's chase follows in
  * lib/rollPartPlay), and a change within a nanosecond of the start counts as
- * inside the window, so rounding in the clock never drops it. The
- * arrangement's MIDI export (lib/arrangementMidi) reads it. EDIT's live
- * playback sends no part controllers yet; a live scheduler that does should
- * send this list.
+ * inside the window, so rounding in the clock never drops it. EDIT's live
+ * playback (lib/editMidiScheduler) sends this list on every channel the clip
+ * plays on, and the arrangement's MIDI export (lib/arrangementMidi) writes it.
  */
 export function clipControlTimes(
   clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourceBpm' | 'sourceTempoMap' | 'sourceRollPart'>,
