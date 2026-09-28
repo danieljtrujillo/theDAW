@@ -178,9 +178,17 @@ const tempoSlice = (tempoMap: TempoEvent[]): { tempoMap: TempoEvent[]; bpm: numb
 
 /**
  * The tempo and meter a loaded project brings. A tempo map wins; a bare `bpm`
- * (every file saved before tempo maps) is a one-tempo map; neither leaves the
- * session's. A meter map wins; a single `timeSignature` is a one-meter map;
- * neither (or an unusable one) leaves the session's.
+ * (every file saved before tempo maps) is a one-tempo map; neither keeps only
+ * the session's start tempo, as one event. A meter map wins; a single
+ * `timeSignature` is a one-meter map; neither (or an unusable one) keeps only
+ * the session's bar-1 meter, as one segment.
+ *
+ * "Neither" is New Project (Shell: `loadProject({ tracks: [], clips: [] })`).
+ * Its markers and automation lanes are cleared with the tracks, so the maps
+ * are cut back to where they start: the tempo changes and meter changes of the
+ * project being replaced belong to that project's bars, which are gone. The
+ * start tempo and bar 1's meter carry over, as `bpm` and the time signature
+ * did before the arrangement had maps.
  */
 function loadedTimeMaps(
   cur: Pick<EditorStoreState, 'tempoMap' | 'meterMap'>,
@@ -189,11 +197,14 @@ function loadedTimeMaps(
   const bpmOk = typeof p.bpm === 'number' && Number.isFinite(p.bpm) && p.bpm > 0;
   const tempoMap = p.tempoMap && p.tempoMap.length
     ? sanitizeEditTempoMap(p.tempoMap, bpmOk ? (p.bpm as number) : editStartBpm(cur.tempoMap))
-    : bpmOk ? editDefaultTempoMap(clampTempoBpm(p.bpm as number)) : cur.tempoMap;
+    : editDefaultTempoMap(clampTempoBpm(bpmOk ? (p.bpm as number) : editStartBpm(cur.tempoMap)));
   const legacy = p.timeSignature ? validTimeSignature(p.timeSignature.num, p.timeSignature.den) : null;
+  const barOne = sanitizeEditMeterMap(cur.meterMap)[0]?.meter ?? editDefaultMeterMap()[0].meter;
   const meterMap = p.meterMap && p.meterMap.length
     ? sanitizeEditMeterMap(p.meterMap)
-    : legacy ? [{ bar: 0, meter: { num: legacy.num, den: legacy.den, groups: [] } }] : cur.meterMap;
+    : legacy
+      ? [{ bar: 0, meter: { num: legacy.num, den: legacy.den, groups: [] } }]
+      : [{ bar: 0, meter: { num: barOne.num, den: barOne.den, groups: [...barOne.groups] } }];
   return { ...tempoSlice(tempoMap), meterMap };
 }
 
@@ -805,12 +816,14 @@ interface EditorStoreState {
     buses?: EditorBus[];
     /** The project's single meter, as files written before meter maps saved
      *  it. Used when `meterMap` is absent; absent (or unusable) too, the
-     *  session's meter map is left alone, exactly as `bpm` does. */
+     *  session's bar-1 meter carries over as a one-meter map, as the start
+     *  tempo does for `bpm`. */
     timeSignature?: TimeSignature;
     /** The project's meter map. Wins over `timeSignature`. */
     meterMap?: readonly MeterSegment[];
     /** The project's tempo map. Its beat-0 tempo wins over `bpm`; absent, a
-     *  given `bpm` makes a one-tempo map and no `bpm` leaves the session's. */
+     *  given `bpm` makes a one-tempo map, and no `bpm` a one-tempo map at the
+     *  session's start tempo. */
     tempoMap?: readonly TempoEvent[];
   }) => void;
   addTrack: (overrides?: Partial<EditorTrack>) => string;
@@ -1919,8 +1932,9 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       playheadSec: 0,
       scrollSec: 0,
       isPlaying: false,
-      // A project that carries a tempo or a meter sets it, one that does not
-      // leaves the session's alone rather than silently forcing 120 or 4/4.
+      // A project that carries a tempo or a meter sets it; one that does not
+      // (New Project) keeps the session's start tempo and bar-1 meter rather
+      // than silently forcing 120 or 4/4, and none of its later changes.
       ...loadedTimeMaps(get(), { bpm, timeSignature, meterMap, tempoMap }),
       timeMapOffer: null,
       markers: [],

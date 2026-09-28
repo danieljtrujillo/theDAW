@@ -169,10 +169,30 @@ const fresh = () => {
   assert.deepEqual(beats(), [[0, 96, 'step'], [16, 72, 'linear'], [32, 132, 'step']]);
   assert.deepEqual(meters(), [[0, '4/4'], [4, '7/8 3+2+2']]);
   assert.equal(st().bpm, 96);
-  // A load that says nothing (New Project) keeps the session's, as bpm always did.
+  // New Project (Shell handleNewProject: a load that says nothing) keeps the
+  // start tempo and bar 1's meter, as bpm and the time signature always did,
+  // and none of the changes that belonged to the bars it cleared. At 13657cdc
+  // every meter and tempo change of the old project stayed on the new one.
   st().loadProject({ tracks: [], clips: [] });
-  assert.deepEqual(meters(), [[0, '4/4'], [4, '7/8 3+2+2']]);
+  assert.deepEqual(meters(), [[0, '4/4']], 'bar 1\'s meter, no meter change');
+  assert.deepEqual(beats(), [[0, 96, 'step']], 'the start tempo, no tempo change');
   assert.equal(st().bpm, 96);
+  assert.equal(st()._undo.length, 0);
+  // The sequence the review replayed: 96 BPM, 7/8 at bar 5, 5/4 at bar 10, tempo changes at beats 16 and 40.
+  st().loadProject({ tracks: [], clips: [], bpm: 96 });
+  st().setMeterAt(4, { num: 7, den: 8, groups: [3, 2, 2] });
+  st().setMeterAt(9, { num: 5, den: 4, groups: [] });
+  st().addTempoEvent({ beat: 16, bpm: 72 });
+  st().addTempoEvent({ beat: 40, bpm: 132 });
+  st().loadProject({ tracks: [], clips: [] });
+  assert.deepEqual(meters(), [[0, '4/4']]);
+  assert.deepEqual(beats(), [[0, 96, 'step']]);
+  // A session that starts in 7/8 3+2+2 starts the new project in it, groups and all.
+  st().setTimeSignature(7, 8);
+  st().setMeterAt(0, { num: 7, den: 8, groups: [3, 2, 2] });
+  st().setMeterAt(3, { num: 4, den: 4, groups: [] });
+  st().loadProject({ tracks: [], clips: [] });
+  assert.deepEqual(meters(), [[0, '7/8 3+2+2']]);
 }
 
 /* ── a MIDI clip's maps: offered, adopted in one step, kept on refusal ───── */
