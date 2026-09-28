@@ -64,10 +64,23 @@ const render: MidiStepRender = async (notes, bpm, totalSteps, opts) => {
   }
 };
 
+/** When set, each peak scan waits for `peakGate()` before it resolves, as a real decode takes time. */
+let peaksGated = false;
+const peakWaiting: Array<() => void> = [];
+const peakGate = async (): Promise<void> => {
+  for (let i = 0; i < 50 && peakWaiting.length === 0; i += 1) await new Promise((r) => setTimeout(r, 1));
+  const next = peakWaiting.shift();
+  assert.ok(next, 'a peak scan is waiting at the gate');
+  next();
+};
+
 let global = { useSoundfont: false, activeProgram: 0 };
 configureMidiRenderQueue({
   render,
-  computePeaks: async (_blob, bins) => ({ peaks: new Float32Array(bins ?? 240) }),
+  computePeaks: async (_blob, bins) => {
+    if (peaksGated) await new Promise<void>((r) => peakWaiting.push(r));
+    return { peaks: new Float32Array(bins ?? 240) };
+  },
   global: () => global,
   ensureReady: async () => true,
 });
@@ -101,6 +114,7 @@ const reset = (): void => {
   active = 0;
   maxActive = 0;
   gated = false;
+  peaksGated = false;
   failNext = null;
   global = { useSoundfont: false, activeProgram: 0 };
   useMidiRenderQueue.setState({ running: null, waiting: [], done: 0, failed: 0, lastError: null });
@@ -171,7 +185,7 @@ const reset = (): void => {
 /* ── a part deleted mid-render is skipped; a trimmed one keeps its trim ───── */
 {
   reset();
-  ed().loadProject({ tracks: [track('t0'), track('t1')], clips: [part('a', 't0', 60), part('b', 't1', 62)] });
+  ed().loadProject({ tracks: [track('t0'), track('t1'), track('t2')], clips: [part('a', 't0', 60), part('b', 't1', 62), part('c', 't2', 64)] });
   gated = true;
   const gone = requestMidiRender('a', 'cache');
   await new Promise((r) => setTimeout(r, 1));
@@ -187,6 +201,22 @@ const reset = (): void => {
   await trimmed;
   assert.equal(clip('b')!.durationSec, 0.75, 'the trim made during the render is kept');
   assert.ok(Math.abs(clip('b')!.sourceDuration - 3.5) < 1e-9, 'the source is the whole render');
+
+  // The render lands, then its peaks are scanned (a decode), and the user trims
+  // the part while the scan runs. The window is worked out after the scan, so
+  // the trim is kept; a window taken before the scan would write the whole
+  // render's length over it.
+  peaksGated = true;
+  const scanned = requestMidiRender('c', 'cache');
+  await gate();
+  for (let i = 0; i < 50 && peakWaiting.length === 0; i += 1) await new Promise((r) => setTimeout(r, 1));
+  assert.equal(peakWaiting.length, 1, 'the peak scan is running');
+  ed().updateClip('c', { durationSec: 0.5 });
+  await peakGate();
+  assert.equal((await scanned).kind, 'written');
+  assert.ok(clip('c')!.audioBlob instanceof Blob, 'the render is written');
+  assert.equal(clip('c')!.durationSec, 0.5, 'the trim made during the peak scan is kept');
+  assert.ok(Math.abs(clip('c')!.sourceDuration - 3.5) < 1e-9, 'the source is the whole render');
 }
 
 /* ── a failed render says why, and the next success clears it ─────────────── */
