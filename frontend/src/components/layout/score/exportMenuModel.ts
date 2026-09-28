@@ -5,8 +5,8 @@
  *
  * Level one is the part ("All parts", then each part of the sheet in score
  * order); level two is the format. Any part goes to any format: the export
- * route's options.parts scopes musicxml / abc / pdf / svg / notechart to one
- * part (the backend filters the sheet with stage_parts, then converts), the
+ * route's options.parts scopes musicxml / abc / pdf / svg / midi / notechart
+ * to one part (the backend filters the sheet with stage_parts, then converts), the
  * pack takes ?parts=, and Beat Saber has its own part filter. So the format
  * column is the same list for every part; only what an entry DOES differs:
  * the whole-sheet XML is a plain download of the file, the one-part XML is a
@@ -16,6 +16,11 @@
  * through music21 on the way); its parts are not listed, because a MIDI has
  * no <part-list> to read.
  *
+ * PERFORM (All parts only) plays the sheet as a MIDI performance through its
+ * own route, POST /api/notation/{entry}/perform; the MIDI it makes is listed
+ * with the entry's other artifacts and opened like an export's result. A MIDI
+ * artifact shows it disabled: there is no sheet to play yet.
+ *
  * PDF and SVG each come from either engraver — the headless OSMD renderer
  * (the SCORE tab's own) first, MuseScore as the stand-in — so they are offered
  * when the backend lists them. When it does not (neither engraver present),
@@ -23,8 +28,14 @@
  * MUSESCORE (a link to the download page) and LOCATE MUSESCORE… (an action the
  * owner handles: pick the executable, save it in Settings, re-read
  * capabilities).
+ *
+ * RENDER WITH MUSESCORE follows the formats when the owner passes the render
+ * status (GET /api/notation/musescore): it POSTs the 'audio' export, which
+ * MuseScore 4 plays with Muse Sounds into a new Library entry. Without
+ * MuseScore 4 or without Muse Sounds it stays in the list, disabled, with a
+ * short reason the menu prints under it (`note`).
  */
-import type { NotationCapabilities } from '../../../lib/notationClient';
+import type { MuseScoreRenderStatus, NotationCapabilities } from '../../../lib/notationClient';
 import type { PartDescriptor } from '../../../state/playAlongStore';
 
 /**
@@ -40,13 +51,23 @@ import type { PartDescriptor } from '../../../state/playAlongStore';
  * (OSMD or MuseScore) is present, so intersecting it with this list is the
  * honest answer.
  */
-export const SHEET_EXPORT_ORDER = ['pdf', 'abc', 'svg', 'notechart', 'beatsaber'] as const;
+export const SHEET_EXPORT_ORDER = ['pdf', 'abc', 'svg', 'midi', 'notechart', 'beatsaber'] as const;
 export type SheetExportFormat = (typeof SHEET_EXPORT_ORDER)[number];
 
-/** What the export route is asked for; 'musicxml' is the one-part XML. */
-export type ExportRouteFormat = SheetExportFormat | 'musicxml';
+/** What the owner is asked to make; 'musicxml' is the one-part XML,
+ *  'perform' the MIDI performance (its own route, not /export) and 'audio'
+ *  the MuseScore render. */
+export type ExportRouteFormat = SheetExportFormat | 'musicxml' | 'perform' | 'audio';
 
-export type ExportEntryId = 'xml' | 'pack' | 'file' | SheetExportFormat | 'get-musescore' | 'locate-musescore';
+export type ExportEntryId =
+  | 'xml'
+  | 'pack'
+  | 'file'
+  | SheetExportFormat
+  | 'perform'
+  | 'audio'
+  | 'get-musescore'
+  | 'locate-musescore';
 
 /** What choosing an entry does: follow an `<a download>`, POST an export,
  *  open the Beat Saber popover (which POSTs its own export), open an external
@@ -78,6 +99,9 @@ export interface ExportMenuEntry {
   partScoped: boolean;
   /** 'link' entries only: where the link goes. */
   href?: string;
+  /** A short line the menu prints under the label: why the entry is
+   *  disabled, for an entry whose reason must be seen without hovering. */
+  note?: string;
 }
 
 export interface ExportMenuModel {
@@ -89,6 +113,12 @@ export interface ExportMenuInput {
   artifactKind: string | null;
   caps: NotationCapabilities | null;
   parts: readonly PartDescriptor[] | null;
+  /**
+   * GET /api/notation/musescore: whether MuseScore 4 and Muse Sounds are
+   * here to render the score to audio. null while it is being read; left out
+   * by an owner that offers no render, which then lists no render entry.
+   */
+  musescore?: MuseScoreRenderStatus | null;
 }
 
 export const ALL_PARTS: ExportMenuPart = { key: 'all', label: 'All parts', index: null, isPercussion: false };
@@ -100,8 +130,11 @@ const LABELS: Record<ExportEntryId, string> = {
   pdf: 'PDF',
   abc: 'ABC',
   svg: 'SVG',
+  midi: 'MIDI (SOUNDING)',
   notechart: 'NOTECHART',
   beatsaber: 'BEAT SABER',
+  perform: 'PERFORM (MIDI)',
+  audio: 'RENDER WITH MUSESCORE',
   'get-musescore': 'GET MUSESCORE',
   'locate-musescore': 'LOCATE MUSESCORE…',
 };
@@ -109,11 +142,15 @@ const LABELS: Record<ExportEntryId, string> = {
 const ENGRAVER_NOTE =
   'engraved by the headless OSMD renderer, the engraver the SCORE tab draws with; MuseScore stands in when it is missing';
 
+const SOUNDING_NOTE =
+  'every part at the pitch it sounds, so a B-flat clarinet plays a whole step below the page; one named track per part with its program, and the tempo and meter maps';
+
 /** Hover text for an offered sheet export of the whole sheet. */
 const OFFERED_TITLES: Record<SheetExportFormat, string> = {
   pdf: `Export PDF from this score (${ENGRAVER_NOTE})`,
   abc: 'Export ABC from this score',
   svg: `Export SVG from this score (${ENGRAVER_NOTE})`,
+  midi: `Export MIDI from this score (${SOUNDING_NOTE})`,
   notechart: 'Export the Unity note chart (timecode + spelled notes) from this score',
   beatsaber: 'Export a Beat Saber level pack (Info.dat + one .dat per difficulty + song.ogg) from this score',
 };
@@ -124,6 +161,8 @@ function partTitle(id: SheetExportFormat, part: ExportMenuPart): string {
     case 'pdf':
     case 'svg':
       return `Export ${LABELS[id]} of ${part.label} only (${ENGRAVER_NOTE})`;
+    case 'midi':
+      return `Export MIDI of ${part.label} only, at the pitch it sounds`;
     case 'notechart':
       return `Export the Unity note chart of ${part.label} only`;
     case 'beatsaber':
@@ -140,6 +179,10 @@ const PACK_ENGRAVER_NOTE =
 const PACK_TITLE = `MusicXML + ${PACK_ENGRAVER_NOTE}`;
 const MIDI_PACK_TITLE = `MIDI + ${PACK_ENGRAVER_NOTE}`;
 const CAPS_PENDING = 'Reading backend capabilities…';
+const PERFORM_TITLE =
+  'Play this sheet as a MIDI performance: it slows into the final bar, fermatas and double bars, leans on phrase downbeats, and plays the printed dynamics, accents, staccato and slurs. The MIDI opens here and lists with the other MIDI';
+const PERFORM_MIDI_TITLE = 'PERFORM plays a sheet: make the XML (sheet) from this MIDI first, then PERFORM that sheet';
+const PERFORM_MISSING_TITLE = 'PERFORM needs partitura on the backend, and this backend does not offer it';
 
 /** Why a sheet export is not offered. The pdf/svg reason mirrors how
  *  capabilities() gates them (backend/modules/notation/engine.py): either
@@ -159,11 +202,57 @@ function unavailableReason(id: SheetExportFormat, caps: NotationCapabilities | n
 const offered = (id: SheetExportFormat, caps: NotationCapabilities | null): boolean =>
   !!caps && (caps.formats ?? []).includes(id);
 
-/** The export route's format for an 'export' entry ('xml' asks for a
- *  musicxml conversion; the rest are their own ids). */
+/** What an 'export' entry asks the owner for ('xml' asks for a musicxml
+ *  conversion, 'perform' for the MIDI performance; the rest are their own
+ *  ids). */
 export function routeFormatFor(entry: ExportMenuEntry): ExportRouteFormat {
-  return entry.id === 'xml' ? 'musicxml' : (entry.id as SheetExportFormat);
+  return entry.id === 'xml' ? 'musicxml' : (entry.id as SheetExportFormat | 'perform' | 'audio');
 }
+
+/** PERFORM, for the whole sheet: a MIDI has no sheet to play, and the
+ *  backend says whether it can play one at all (caps.perform). */
+function performEntry(caps: NotationCapabilities | null, kind: 'musicxml' | 'midi'): ExportMenuEntry {
+  const reason =
+    kind === 'midi' ? PERFORM_MIDI_TITLE : !caps ? CAPS_PENDING : caps.perform ? null : PERFORM_MISSING_TITLE;
+  return {
+    id: 'perform',
+    label: LABELS.perform,
+    kind: 'export',
+    enabled: reason === null,
+    title: reason ?? PERFORM_TITLE,
+    partScoped: false,
+  };
+}
+
+/** The short reason RENDER WITH MUSESCORE is disabled, or '' when it can run. */
+export function musescoreRenderReason(status: MuseScoreRenderStatus | null): string {
+  if (!status) return 'Checking for MuseScore 4…';
+  if (!status.found) return 'Needs MuseScore 4';
+  if (!status.muse_sounds) return 'Needs Muse Sounds (MuseHub)';
+  return '';
+}
+
+/** RENDER WITH MUSESCORE for the whole sheet (part null) or one part. */
+function renderEntry(status: MuseScoreRenderStatus | null, part: ExportMenuPart | null): ExportMenuEntry {
+  const scoped = part !== null && part.index !== null;
+  const reason = musescoreRenderReason(status);
+  const what = scoped ? `${part.label} only` : 'this score';
+  return {
+    id: 'audio',
+    label: LABELS.audio,
+    kind: 'export',
+    enabled: reason === '',
+    title: reason
+      ? `${reason}: MuseScore 4 plays the score with Muse Sounds into a WAV in the Library`
+      : `Play ${what} with MuseScore 4 and Muse Sounds into a WAV, added to the Library`,
+    partScoped: scoped,
+    ...(reason ? { note: reason } : {}),
+  };
+}
+
+/** The render entry when the owner passed a render status (even null). */
+const renderEntries = (input: ExportMenuInput, part: ExportMenuPart | null): ExportMenuEntry[] =>
+  input.musescore === undefined ? [] : [renderEntry(input.musescore, part)];
 
 /** A sheet format for the whole sheet (part null) or for one part. */
 function sheetEntry(id: SheetExportFormat, caps: NotationCapabilities | null, part: ExportMenuPart | null): ExportMenuEntry {
@@ -222,10 +311,14 @@ function engraverEntries(caps: NotationCapabilities | null): ExportMenuEntry[] {
   ];
 }
 
-/** Every format for the whole sheet: XML, the pack, then the export route's
- *  targets. For a MIDI the XML is a conversion (there is no sheet to download
+/** Every format for the whole sheet: XML, the pack, the export route's
+ *  targets, then PERFORM. For a MIDI the XML is a conversion (there is no sheet to download
  *  yet) and the pack is MIDI + PDF. */
-function allPartsFormats(caps: NotationCapabilities | null, kind: 'musicxml' | 'midi'): ExportMenuEntry[] {
+function allPartsFormats(
+  caps: NotationCapabilities | null,
+  kind: 'musicxml' | 'midi',
+  render: ExportMenuEntry[],
+): ExportMenuEntry[] {
   const xml: ExportMenuEntry =
     kind === 'midi'
       ? { id: 'xml', label: 'XML (sheet)', kind: 'export', enabled: !!caps, title: caps ? XML_SHEET_TITLE : CAPS_PENDING, partScoped: false }
@@ -238,7 +331,14 @@ function allPartsFormats(caps: NotationCapabilities | null, kind: 'musicxml' | '
     title: kind === 'midi' ? MIDI_PACK_TITLE : PACK_TITLE,
     partScoped: false,
   };
-  return [xml, pack, ...SHEET_EXPORT_ORDER.map((id) => sheetEntry(id, caps, null)), ...engraverEntries(caps)];
+  return [
+    xml,
+    pack,
+    ...SHEET_EXPORT_ORDER.map((id) => sheetEntry(id, caps, null)),
+    performEntry(caps, kind),
+    ...render,
+    ...engraverEntries(caps),
+  ];
 }
 
 /**
@@ -248,7 +348,7 @@ function allPartsFormats(caps: NotationCapabilities | null, kind: 'musicxml' | '
  * export-route formats POST options.parts, Beat Saber pre-selects the part in
  * its popover.
  */
-function onePartFormats(part: ExportMenuPart, caps: NotationCapabilities | null): ExportMenuEntry[] {
+function onePartFormats(part: ExportMenuPart, caps: NotationCapabilities | null, render: ExportMenuEntry[]): ExportMenuEntry[] {
   return [
     {
       id: 'xml',
@@ -267,6 +367,7 @@ function onePartFormats(part: ExportMenuPart, caps: NotationCapabilities | null)
       partScoped: true,
     },
     ...SHEET_EXPORT_ORDER.map((id) => sheetEntry(id, caps, part)),
+    ...render,
     ...engraverEntries(caps),
   ];
 }
@@ -305,8 +406,8 @@ export function buildExportMenu(input: ExportMenuInput): ExportMenuModel {
         ];
       }
       return part.index === null
-        ? allPartsFormats(caps, artifactKind === 'midi' ? 'midi' : 'musicxml')
-        : onePartFormats(part, caps);
+        ? allPartsFormats(caps, artifactKind === 'midi' ? 'midi' : 'musicxml', renderEntries(input, null))
+        : onePartFormats(part, caps, renderEntries(input, part));
     },
   };
 }

@@ -55,6 +55,13 @@ from backend.lib import paths
 
 log = logging.getLogger(__name__)
 
+#: The ``kind`` of a composition entry: a score with no recording, whose
+#: notation artifacts are the whole entry (an imported MusicXML, kern or ABC
+#: file, or a piece opened from the music21 corpus).
+SCORE_KIND = "score"
+#: The MIME type a composition entry reports: its sheet is MusicXML.
+SCORE_MIME_TYPE = "application/vnd.recordare.musicxml+xml"
+
 #: How many failures one bulk import reports back. The list is for a human
 #: reading a progress panel, not a log; a folder of 200,000 files with a bad
 #: drive would otherwise return 200,000 strings.
@@ -813,6 +820,8 @@ def _record_from_metadata(
     kind = str(meta.get("kind") or "audio")
     if kind in ("video", "image"):
         return _media_record_from_metadata(entry_dir, meta, api_prefix, kind)
+    if kind == SCORE_KIND:
+        return _score_record_from_metadata(entry_dir, meta, api_prefix)
 
     audio_file = _resolve_audio_file(entry_dir, meta)
 
@@ -973,6 +982,58 @@ def _media_record_from_metadata(
     )
 
 
+def _score_record_from_metadata(
+    entry_dir: Path,
+    meta: dict[str, Any],
+    api_prefix: str,
+) -> LibraryRecord:
+    """Build a LibraryRecord for a composition entry (kind='score').
+
+    A composition is a score with no recording: its notation artifacts (under
+    ``notation/``) are the entry, so ``metadata.json`` alone makes it one and
+    the record carries no audio URL. ``api_prefix`` is unused and kept so the
+    three record builders share one signature.
+    """
+    del api_prefix
+    timestamp = meta.get("timestamp")
+    if not timestamp:
+        saved_at = meta.get("saved_at")
+        if isinstance(saved_at, (int, float)):
+            timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(saved_at)) + "Z"
+        else:
+            timestamp = ""
+    source = str(meta.get("source") or "import")
+    model = str(meta.get("model") or SCORE_KIND)
+    return LibraryRecord(
+        id=entry_dir.name,
+        title=str(meta.get("title") or meta.get("filename") or "Score"),
+        prompt=str(meta.get("prompt") or ""),
+        negative_prompt="",
+        model=model,
+        duration=float(meta.get("duration") or 0.0),
+        steps=0,
+        cfg=0.0,
+        seed=0,
+        audio_url="",
+        audio_filename="",
+        mime_type=str(meta.get("mime_type") or SCORE_MIME_TYPE),
+        file_size_bytes=0,
+        timestamp=timestamp,
+        favorite=bool(meta.get("favorite", False)),
+        rating=meta.get("rating")
+        if meta.get("rating") in ("like", "dislike")
+        else None,
+        tags=list(meta.get("tags") or []),
+        notes=str(meta.get("notes") or ""),
+        source=source,
+        chimera_sources=[],
+        lyrics=str(meta.get("lyrics") or ""),
+        spectrogram_paths={},
+        kind=SCORE_KIND,
+        **_provider_wire(meta, source=source, model=model),
+    )
+
+
 def _int_or_none(v: Any) -> Optional[int]:
     try:
         return int(v)
@@ -1023,7 +1084,14 @@ def _record_from_db_row(
             unresolved[entry_id] = slug
     meta = _flatten_suno_meta(meta)
     is_media = kind in ("video", "image")
-    if is_media:
+    if kind == SCORE_KIND:
+        # A composition: its notation artifacts are the entry, and there is no
+        # audio or media stream for a URL to point at.
+        media_url = None
+        audio_url = ""
+        thumb_url = None
+        cover_url = None
+    elif is_media:
         media_url: Optional[str] = _media_url_for(api_prefix, entry_id)
         audio_url = media_url
         thumb_url = (
@@ -1546,6 +1614,9 @@ class LibraryStore:
                         record.cover_url = _cover_url_if_present(
                             inner, self.api_prefix, entry_id
                         )
+                elif record.kind == SCORE_KIND:
+                    # A composition has no audio or media stream to point at.
+                    record.audio_url = ""
                 else:
                     record.media_url = _media_url_for(self.api_prefix, entry_id)
                     record.audio_url = record.media_url
@@ -1677,6 +1748,9 @@ class LibraryStore:
             record.audio_url = record.media_url
             if record.thumb_url:
                 record.thumb_url = _thumb_url_for(self.api_prefix, entry_id)
+        elif record.kind == SCORE_KIND:
+            # A composition has no recording: no audio URL to re-stamp.
+            record.audio_url = ""
         else:
             record.audio_url = _audio_url_for(self.api_prefix, entry_id)
             if record.cover_url:
@@ -2491,6 +2565,52 @@ class LibraryStore:
         assert record is not None, "freshly imported media must resolve"
         self._sync_record_to_db(record, record_meta)
         return record
+
+    def create_score_entry(
+        self,
+        *,
+        title: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> tuple[LibraryRecord, Path]:
+        """Create an empty composition entry (kind='score') and return its
+        record and directory.
+
+        The caller writes the score's files under ``<dir>/notation/`` and
+        registers them as notation artifacts. ``metadata`` is merged into
+        ``metadata.json`` (the notation identity keys ``notation_artist`` /
+        ``notation_title`` among them); ``id``, ``kind``, ``saved_at`` and
+        ``timestamp`` are the store's own. No analysis, stems, lyrics or MIDI
+        job is queued: a composition has no audio for any of them to read.
+        """
+        entry_id = uuid.uuid4().hex
+        entry_dir = self.root / entry_id
+        entry_dir.mkdir(parents=True, exist_ok=True)
+        record_meta: dict[str, Any] = {
+            "title": title or "Score",
+            "prompt": "",
+            "negative_prompt": "",
+            "model": SCORE_KIND,
+            "mime_type": SCORE_MIME_TYPE,
+            "duration": 0.0,
+            "favorite": False,
+            "rating": None,
+            "tags": [],
+            "notes": "",
+            "source": "import",
+            **dict(metadata or {}),
+            "id": entry_id,
+            "kind": SCORE_KIND,
+            "saved_at": time.time(),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        # New entry id: nothing else can be mid-write on this file. Locked
+        # anyway, so that EVERY metadata.json write in this module happens
+        # under the lock.
+        with self._meta_lock:
+            _write_metadata(entry_dir, record_meta)
+        record = _score_record_from_metadata(entry_dir, record_meta, self.api_prefix)
+        self._sync_record_to_db(record, record_meta)
+        return record, entry_dir
 
     # ---- Cover art ----------------------------------------------------------
 

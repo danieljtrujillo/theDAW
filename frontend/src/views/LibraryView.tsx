@@ -839,6 +839,33 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     useLibraryCounts.getState().invalidate();
   }, []);
 
+  // A score made or imported anywhere else (SCORE's IMPORT SCORE FILE and
+  // BROWSE CORPUS, a MAKE) invalidates the library counts; when the score
+  // count moves and this list has been loaded, fetch it again so the new
+  // score is listed without a manual refresh. Fetched directly rather than
+  // through refreshScores, which would invalidate the counts once more.
+  const scoreCount = libraryCounts?.score ?? null;
+  const scoresLoaded = allScores !== null;
+  const seenScoreCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (scoreCount === null) return;
+    const seen = seenScoreCountRef.current;
+    seenScoreCountRef.current = scoreCount;
+    if (seen === null || seen === scoreCount || !scoresLoaded) return;
+    let cancelled = false;
+    void fetch('/api/library/_all/scores')
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancelled) setAllScores(j.scores || []);
+      })
+      .catch((e: unknown) => {
+        logError('library', `Failed to refresh scores: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scoreCount, scoresLoaded]);
+
   const refreshScores = React.useCallback(async () => {
     try {
       const j = await fetch('/api/library/_all/scores').then((r) => r.json());
@@ -2271,7 +2298,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             parentTitles={parentTitles}
             placeholder={allScores === null
               ? 'Loading scores…'
-              : 'No scores yet. Open a track in SCORE, pick an instrument and press MAKE.'}
+              : 'No scores yet. Open a track in SCORE, pick an instrument and press MAKE, or import a score file or a corpus piece there.'}
             onOpen={openScoreForEntry}
             onRefresh={refreshScores}
             selectedId={selectedEntryId}

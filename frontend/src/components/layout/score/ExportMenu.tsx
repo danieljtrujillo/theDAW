@@ -8,12 +8,14 @@
  * What the menu offers comes from buildExportMenu (exportMenuModel.ts); this
  * file is the DOM, the keyboard and the focus handling. Any part goes to any
  * format: an 'export' entry POSTs through onExport with the highlighted part's
- * index (null for All parts), the pack link carries ?parts=, and the Beat
+ * index (null for All parts; PERFORM asks for 'perform', a route of its own), the pack link carries ?parts=, and the Beat
  * Saber popover (rendered through `children` inside the same anchor so the
  * dialog sits under the EXPORT button) pre-selects the part; while it is open
  * the menu stays closed. A 'link' entry (GET MUSESCORE) is an external page —
  * Electron's window-open handler sends it to the system browser — and an
- * 'action' entry (LOCATE MUSESCORE…) hands its id to onAction.
+ * 'action' entry (LOCATE MUSESCORE…) hands its id to onAction. RENDER WITH
+ * MUSESCORE is an 'export' entry (format 'audio'); while MuseScore 4 or Muse
+ * Sounds is missing it is disabled and prints the reason under its label.
  *
  * Keyboard: ArrowUp/Down move within a column (disabled entries skipped),
  * Home/End jump within it, ArrowRight goes from a part to its first enabled
@@ -24,10 +26,11 @@
  * button when the Beat Saber popover closes.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Download, ExternalLink, FolderOpen, Gamepad2, Loader2 } from 'lucide-react';
+import { AudioLines, ChevronDown, Download, ExternalLink, FolderOpen, Gamepad2, Loader2, Music2 } from 'lucide-react';
 import {
   notationArtifactUrl,
   notationPackUrl,
+  type MuseScoreRenderStatus,
   type NotationArtifact,
   type NotationCapabilities,
 } from '../../../lib/notationClient';
@@ -49,6 +52,9 @@ export const EXPORT_MENU_ID = 'score-export-menu';
 export interface ExportMenuProps {
   artifact: NotationArtifact | null;
   caps: NotationCapabilities | null;
+  /** GET /musescore: MuseScore 4 and Muse Sounds for RENDER WITH MUSESCORE
+   *  (null while it is read; left out, no render entry is listed). */
+  musescore?: MuseScoreRenderStatus | null;
   /** The sheet's parts in score order when something has learnt them; null
    *  until then (the menu asks for them through onOpen). */
   parts: PartDescriptor[] | null;
@@ -82,6 +88,7 @@ const usable = (el: HTMLElement | null): el is HTMLElement =>
 export const ExportMenu: React.FC<ExportMenuProps> = ({
   artifact,
   caps,
+  musescore,
   parts,
   partsLoading,
   exporting,
@@ -102,8 +109,8 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
   const artifactId = artifact?.id ?? null;
   const artifactKind = artifact?.kind ?? null;
   const model = useMemo(
-    () => buildExportMenu({ artifactKind, caps, parts }),
-    [artifactKind, caps, parts],
+    () => buildExportMenu({ artifactKind, caps, parts, musescore }),
+    [artifactKind, caps, parts, musescore],
   );
   const highlighted: ExportMenuPart =
     model.parts.find((p) => p.key === highlightedKey) ?? model.parts[0];
@@ -454,8 +461,21 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                     <FolderOpen className="w-3 h-3 shrink-0 text-sky-300" aria-hidden="true" />
                   ) : exporting === routeFormatFor(entry) ? (
                     <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-hidden="true" />
+                  ) : entry.id === 'perform' ? (
+                    <Music2 className="w-3 h-3 shrink-0 text-purple-300" aria-hidden="true" />
+                  ) : entry.id === 'audio' ? (
+                    <AudioLines className="w-3 h-3 shrink-0 text-emerald-300" aria-hidden="true" />
                   ) : null}
-                  {entry.label}
+                  {entry.note ? (
+                    // The reason is part of the item's name, so a screen reader
+                    // hears it as well as the eye sees it.
+                    <span className="flex flex-col min-w-0">
+                      <span>{entry.label}</span>
+                      <span className="text-xs font-bold normal-case text-amber-200">{entry.note}</span>
+                    </span>
+                  ) : (
+                    entry.label
+                  )}
                 </button>
               );
             })}

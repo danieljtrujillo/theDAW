@@ -83,11 +83,12 @@ def _resolve_tuning(
 def _read_events(midi_path: Path) -> list[_Event]:
     from music21 import chord, note
 
+    from ..grid import quantize_score
     from ..midi_read import read_score
 
     score = read_score(midi_path)
     try:
-        score = score.quantize((4, 3), inPlace=False, recurse=True)
+        score = quantize_score(score)
     except Exception as exc:  # noqa: BLE001 - quantize is best-effort
         log.debug("guitar_tab: quantize skipped for %s: %s", midi_path, exc)
 

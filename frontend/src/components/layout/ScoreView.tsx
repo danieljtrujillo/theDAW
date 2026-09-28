@@ -2,6 +2,7 @@ import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useM
 import { createPortal } from 'react-dom';
 import { ChevronDown, ChevronLeft, ChevronRight, Download, Expand, Loader2, Minus, Plus, RefreshCw, Shrink, Waves } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import { isAudioEntry } from '../../state/libraryEntry';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
@@ -19,10 +20,14 @@ import {
 import { readSoundingTempi } from './soundingTempo';
 import {
   exportArtifact,
+  performScore,
+  getMuseScoreStatus,
   getNotationCapabilities,
   listNotationArtifacts,
+  renderScoreAudio,
   fetchArtifactText,
   invalidateArtifactText,
+  type MuseScoreRenderStatus,
   type NotationArtifact,
   type NotationCapabilities,
 } from '../../lib/notationClient';
@@ -50,6 +55,7 @@ import {
 import { fitZoomToPage, type FitReport } from './score/scoreFit';
 import { NotationMaker } from './score/NotationMaker';
 import { stemOf } from './score/notationMakerModel';
+import { announceImportedScore, ScoreImport } from './score/ScoreImport';
 
 // The zoom a score fitted to per (artifact, page width): a re-open renders
 // once at that zoom instead of measuring-and-fitting again. Bounded.
@@ -156,10 +162,21 @@ const LazyFallback: React.FC = () => (
 export const ScoreView: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const entries = useLibraryStore((s) => s.entries);
-  const entry = useMemo(
-    () => entries.find((candidate) => candidate.id === selectedEntryId) ?? null,
-    [entries, selectedEntryId],
+  // An entry off every loaded page (an imported composition is never on the
+  // audio pages) is fetched by id; lookupVersion bumps when it lands.
+  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
+  const libraryEntry = useMemo<LibraryEntry | null>(
+    () => {
+      if (!selectedEntryId) return null;
+      return entries.find((candidate) => candidate.id === selectedEntryId)
+        ?? useLibraryStore.getState().getById(selectedEntryId)
+        ?? null;
+    },
+    [entries, selectedEntryId, lookupVersion],
   );
+  // The track the play-along follows: only an audio entry has a recording. A
+  // composition (kind 'score') is read unplayed, like a sheet with no track.
+  const entry = libraryEntry && isAudioEntry(libraryEntry) ? libraryEntry : null;
   const [artifacts, setArtifacts] = useState<NotationArtifact[]>([]);
   // Focus mode: pop the whole Score panel to a fullscreen overlay and hide the
   // artifact sidebar, so the follow-along (strip/highway/chords) is large and
@@ -235,6 +252,8 @@ export const ScoreView: React.FC = () => {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [caps, setCaps] = useState<NotationCapabilities | null>(null);
+  // RENDER WITH MUSESCORE's status (GET /musescore); null until read.
+  const [musescoreStatus, setMusescoreStatus] = useState<MuseScoreRenderStatus | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   // Bumped when a sheet is rewritten in place (same artifact id, new bytes),
   // so the preview, keyed by it, reads the file again.
@@ -373,8 +392,32 @@ export const ScoreView: React.FC = () => {
     void getNotationCapabilities()
       .then((next) => { if (!cancelled) setCaps(next); })
       .catch(() => { if (!cancelled) setCaps(null); });
+    void getMuseScoreStatus()
+      .then((next) => { if (!cancelled) setMusescoreStatus(next); })
+      .catch(() => {
+        if (!cancelled) setMusescoreStatus({ found: false, path: null, muse_sounds: false, reason: 'MuseScore status unreadable' });
+      });
     return () => { cancelled = true; };
   }, []);
+
+  /** RENDER WITH MUSESCORE: MuseScore 4 plays the sheet (or one part) with
+   *  Muse Sounds into a WAV the backend adds to the Library as a new entry. */
+  const renderWithMuseScore = async (partIndex: number | null) => {
+    if (!selectedEntryId || !selectedArtifact) return;
+    setExporting('audio');
+    const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
+    logInfo('score', `Rendering ${partName ?? 'the score'} with MuseScore and Muse Sounds…`);
+    try {
+      const options = partIndex === null ? undefined : { parts: [partIndex] };
+      const made = await renderScoreAudio(selectedEntryId, selectedArtifact.id, options);
+      logInfo('score', `MuseScore render added to the Library: ${made.title}`);
+      await useLibraryStore.getState().refresh();
+    } catch (e) {
+      logError('score', `MuseScore render failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(null);
+    }
+  };
 
   // Any part, any format: options.parts scopes every export-route format to
   // one part (the backend filters the sheet with stage_parts, then converts);
@@ -383,16 +426,26 @@ export const ScoreView: React.FC = () => {
   const exportSelectedAs = async (format: string, partIndex: number | null = null) => {
     if (!selectedEntryId || !selectedArtifact) return;
     if (selectedArtifact.kind !== 'musicxml' && selectedArtifact.kind !== 'midi') return;
+    if (format === 'audio') {
+      await renderWithMuseScore(partIndex);
+      return;
+    }
     setExporting(format);
     try {
       const options = partIndex === null ? undefined : { parts: [partIndex] };
-      const artifact = await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
+      // PERFORM has its own route; its MIDI lands in the artifact list like
+      // any export's result and is opened the same way below.
+      const artifact = format === 'perform'
+        ? await performScore(selectedEntryId, selectedArtifact.id, analysisBpm ?? undefined)
+        : await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
       const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
       logInfo(
         'score',
-        partName
-          ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
-          : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
+        format === 'perform'
+          ? `Performed ${selectedArtifact.id} as MIDI${artifact?.path ? ` (${artifact.path})` : ''}`
+          : partName
+            ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
+            : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
       );
       await loadArtifacts();
       if (artifact?.id) setSelectedArtifactId(artifact.id);
@@ -547,6 +600,7 @@ export const ScoreView: React.FC = () => {
       }
       const next = await getNotationCapabilities();
       setCaps(next);
+      if (next.musescore_render) setMusescoreStatus(next.musescore_render);
       logInfo(
         'score',
         next.musescore
@@ -661,8 +715,8 @@ export const ScoreView: React.FC = () => {
             <>
               <div className="h-10 shrink-0 border-b border-white/10 flex items-center gap-2 px-3">
                 <span className="font-display text-xs font-bold uppercase text-zinc-300">Notation</span>
-                <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={entry?.title}>
-                  {entry?.title ?? 'Select a library track'}
+                <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={libraryEntry?.title}>
+                  {libraryEntry?.title ?? 'Select a library track'}
                 </span>
                 <button
                   type="button"
@@ -677,6 +731,11 @@ export const ScoreView: React.FC = () => {
                 {/* At the rail's inner edge, beside the score. */}
                 <span className="-mr-1 flex">{foldKey}</span>
               </div>
+
+              {/* A score of its own, not made from a track: a file, or a
+                  piece of the music21 corpus. Selecting the new composition
+                  lists and opens its sheet here. */}
+              <ScoreImport caps={caps} onImported={announceImportedScore} />
 
               <NotationMaker
                 entryId={selectedEntryId}
@@ -825,6 +884,7 @@ export const ScoreView: React.FC = () => {
           <ExportMenu
             artifact={selectedArtifact}
             caps={caps}
+            musescore={musescoreStatus}
             parts={selectedParts}
             partsLoading={partsLoading}
             exporting={exporting}

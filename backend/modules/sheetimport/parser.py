@@ -74,6 +74,8 @@ from pathlib import Path
 from typing import Any, Optional
 from xml.etree import ElementTree
 
+from backend.modules.notation.expression import length_scale, read_sheet_expression
+
 log = logging.getLogger(__name__)
 
 # Symbolic formats music21 can read that we treat as "sheet" sources. MIDI is
@@ -105,6 +107,8 @@ TEMPO_SNAP_TICKS = PPQ // 8
 DEFAULT_BPM = 120.0
 #: The sustain pedal's controller number.
 SUSTAIN_CC = 64
+#: The expression controller number (the printed dynamics as a curve).
+EXPRESSION_CC = 11
 #: How long a pedal change holds the pedal up before it goes down again, in
 #: quarter notes (a 64th note): a lift and a press on one tick would be one
 #: change of the controller, and the press would win.
@@ -1077,6 +1081,10 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             name = ""
 
         levels, accents = _velocity_timeline(pflat)
+        # Printed hairpins and accents, read as playing, between the levels
+        # and sforzandos the part prints (_velocity_timeline's velocities).
+        marks = read_sheet_expression(part)
+        marks.use_levels(levels, accents, DEFAULT_VELOCITY)
         part_kit = _part_kit_key(part)
         events: list[_Event] = []
         # Note, Chord and Unpitched elements; a ChordSymbol is a Chord too.
@@ -1122,9 +1130,7 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
                 )
                 vel = None
             if vel is None:
-                vel = next(
-                    (v for o, v in accents.items() if abs(o - off) < 1e-9), None
-                ) or _level_at(levels, off)
+                vel = marks.velocity(el, off)
             grace = bool(el.duration.isGrace)
             steal_previous = (
                 getattr(el.duration, "stealTimePrevious", None) if grace else None
@@ -1137,7 +1143,7 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             events.append(
                 _Event(
                     offset=off,
-                    length=float(el.duration.quarterLength or 0),
+                    length=float(el.duration.quarterLength or 0) * length_scale(el),
                     pitches=pitches,
                     velocity=max(1, min(127, vel)),
                     grace=grace,
@@ -1186,6 +1192,18 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             if controls and source not in pedal_parts_counted:
                 pedal_parts_counted.add(source)
                 stats["pedal_marks"] += sum(1 for _, _, value in changes if value > 0)
+        # The printed dynamics as an expression (CC11) curve, beside the pedal.
+        curve = marks.cc11(float(ev.offset) for ev in events)
+        if curve:
+            controls = sorted(
+                controls
+                + [
+                    {"tick": _tick(at), "controller": EXPRESSION_CC, "value": value}
+                    for at, value in curve
+                    if at >= 0
+                ],
+                key=lambda c: (c["tick"], c["controller"]),
+            )
         tracks.append(
             {
                 "name": name or f"Part {idx + 1}",

@@ -107,6 +107,7 @@ def arrange(
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
 
+    from ..grid import is_exact, quantize_score
     from ..midi_read import read_score
 
     paths = [Path(s) for s in sources]
@@ -135,8 +136,9 @@ def arrange(
             base.toSoundingPitch(inPlace=True)
             context = _source_context(base)
             pickup = _pickup(base)
+            exact = is_exact(base)
             try:
-                base = base.quantize((4, 3), inPlace=False, recurse=True)
+                base = quantize_score(base, exact=exact)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: quantize skipped for %s: %s", paths[0], exc)
             if style == "piano-reduction":
@@ -148,7 +150,7 @@ def arrange(
             # Re-quantize AFTER the merge. These styles all route through
             # _skyline_chords -> chordify(), which slices a new sonority at every
             # onset boundary across every part. When the source mixes duple and
-            # triple positions (which the (4, 3) grid above permits by design),
+            # triple positions (which the per-bar grid above permits by design),
             # those slice widths are differences between the two grids and are
             # not representable as a plain note value, so music21 renders them as
             # nonsense tuplets: 12:7, 24:19, 11:8, 17:16. Snapping the assembled
@@ -157,7 +159,7 @@ def arrange(
             # irrational tuplet notes 8 -> 0, total tuplets 690 -> 214, note
             # count unchanged at 1183.
             try:
-                score = score.quantize((4, 3), inPlace=False, recurse=True)
+                score = quantize_score(score, exact=exact)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: post-merge quantize skipped for %s: %s", style, exc)
             _bar_like_source(score, pickup)
@@ -231,99 +233,34 @@ def _pickup(base: Any) -> float:
 
 def _snap_meters(part: Any) -> None:
     """Move each time signature of the unbarred ``part`` to the bar line where
-    ``makeMeasures`` puts it in force (:mod:`..bar_lines`), so no bar prints a
-    meter its contents do not fill."""
-    from music21 import meter
+    ``makeMeasures`` puts it in force (:func:`..bar_lines.snap_part_meters`)."""
+    from ..bar_lines import snap_part_meters
 
-    from ..bar_lines import snap_meters_to_bar_lines
-
-    stated = list(part.getElementsByClass(meter.TimeSignature))
-    at = [(float(ts.getOffsetBySite(part)), ts.ratioString) for ts in stated]
-    for ts in stated:
-        part.remove(ts)
-    for offset, ratio, index in snap_meters_to_bar_lines(at):
-        part.insert(
-            offset, stated[index] if index is not None else meter.TimeSignature(ratio)
-        )
+    snap_part_meters(part)
 
 
 def _pickup_bar_fits(part: Any, pickup: float) -> bool:
-    """Whether the first bar of the barred ``part`` can become a pickup of
-    ``pickup`` quarters short: it has no voices and nothing but rests starts
-    before ``pickup``."""
-    from music21 import stream
+    """:func:`..bar_lines.pickup_bar_fits`."""
+    from ..bar_lines import pickup_bar_fits
 
-    first = part.getElementsByClass(stream.Measure).first()
-    if first is None or first.hasVoices():
-        return False
-    return all(
-        el.isRest
-        for el in first.notesAndRests
-        if el.getOffsetBySite(first) < pickup - _EPS
-    )
+    return pickup_bar_fits(part, pickup)
 
 
 def _open_with_pickup(part: Any, pickup: float) -> None:
-    """Turn the first bar of the barred ``part``, whose music starts ``pickup``
-    quarters in, into a pickup bar (:func:`_pickup_bar_fits` must hold): the
-    rests before the music go, a rest reaching past ``pickup`` keeping its
-    part after it, the rest of the bar moves back by ``pickup`` with
-    ``paddingLeft`` set, and every later bar moves back and is numbered one
-    lower, so the pickup is bar 0 as in the source."""
-    from music21 import common, note, stream
+    """:func:`..bar_lines.open_with_pickup`: the first bar of ``part`` becomes
+    the pickup, bar 0."""
+    from ..bar_lines import open_with_pickup
 
-    measures = list(part.getElementsByClass(stream.Measure))
-    first = measures[0]
-    for el in list(first.notesAndRests):
-        offset = el.getOffsetBySite(first)
-        if offset < pickup - _EPS:
-            first.remove(el)
-            end = offset + el.quarterLength
-            if end > pickup + _EPS:
-                first.insert(pickup, note.Rest(quarterLength=end - pickup))
-    for el in list(first.elements):
-        offset = el.getOffsetBySite(first)
-        if offset >= pickup - _EPS:
-            first.setElementOffset(el, common.opFrac(offset - pickup))
-    first.paddingLeft = pickup
-    first.number = 0
-    for measure in measures[1:]:
-        part.setElementOffset(
-            measure, common.opFrac(measure.getOffsetBySite(part) - pickup)
-        )
-        measure.number = measure.number - 1
+    open_with_pickup(part, pickup)
 
 
 def _bar_like_source(score: Any, pickup: float) -> None:
-    """Bar the unbarred parts of a single-source arrangement as the source is.
+    """Bar the unbarred parts of a single-source arrangement as the source is
+    (:func:`..bar_lines.bar_like_source`), opening with the source's pickup
+    (:func:`_pickup`)."""
+    from ..bar_lines import bar_like_source
 
-    Each time signature moves to the bar line it takes effect on
-    (:func:`_snap_meters`). With a ``pickup`` (:func:`_pickup`) every note and
-    every mark after offset 0 moves ``pickup`` later, so the source's bar lines
-    fall on the arrangement's; the parts are then barred and each first bar
-    becomes the pickup (:func:`_open_with_pickup`). Without one the writer
-    bars the parts.
-    """
-    from music21 import common, note
-
-    for part in score.parts:
-        if pickup:
-            for element in list(part.elements):
-                offset = element.getOffsetBySite(part)
-                if offset > 0 or isinstance(element, note.GeneralNote):
-                    part.setElementOffset(element, common.opFrac(offset + pickup))
-        _snap_meters(part)
-    if pickup:
-        # As music21's writer bars a score: every part to the end of the
-        # longest, so a staff that falls silent keeps its bars.
-        end = [0.0, float(score.highestTime)]
-        for part in score.parts:
-            part.makeNotation(refStreamOrTimeRange=end, inPlace=True)
-        # Every staff opens with the pickup, or none does and each first bar
-        # opens on rests, so the staves keep one bar grid.
-        if all(_pickup_bar_fits(part, pickup) for part in score.parts):
-            for part in score.parts:
-                _open_with_pickup(part, pickup)
+    bar_like_source(score, pickup)
 
 
 def _hidden_tempo(mark: Any) -> Any:
@@ -698,7 +635,8 @@ def _band_marks(
     staves: list[tuple[Path, str, bool]], bpm: float
 ) -> tuple[list[tuple[Any, str]], list[tuple[Any, Any]]]:
     """The one meter map and the one key map every staff of a band score is
-    barred and keyed by: ``([(offset, "n/d")], [(offset, Key)])``, each offset
+    barred and keyed by: ``([(offset, spec)], [(offset, Key)])`` (a spec is
+    ``"n/d"`` or a grouped ``"n/d g+g"``, :mod:`..bar_lines`), each offset
     on the ``bpm`` grid and each meter on the bar line it takes effect on
     (:func:`..bar_lines.snap_meters_to_bar_lines`).
 
@@ -714,15 +652,29 @@ def _band_marks(
     from music21 import common, key
 
     from ..bar_lines import snap_meters_to_bar_lines
+    from ..midi_read import read_midi_meters
 
     files = {path: pretty_midi.PrettyMIDI(str(path)) for path, _name, _drum in staves}
     meters: list[tuple[Any, str]] = []
     for path, _name, _drum in sorted(staves, key=lambda staff: not staff[2]):
-        stated = [
-            (_grid_offset(ts.time, bpm), f"{int(ts.numerator)}/{int(ts.denominator)}")
-            for ts in files[path].time_signature_changes
-            if ts.numerator > 0 and ts.denominator > 0
-        ]
+        # Every track's signatures, each with its grouping (read_midi_meters);
+        # the pretty_midi list (the first track only) when the file does not read.
+        stated_meters = read_midi_meters(path)
+        pm = files[path]
+        if stated_meters is not None:
+            stated = [
+                (_grid_offset(pm.tick_to_time(mark.tick), bpm), mark.spec)
+                for mark in stated_meters.marks
+            ]
+        else:
+            stated = [
+                (
+                    _grid_offset(ts.time, bpm),
+                    f"{int(ts.numerator)}/{int(ts.denominator)}",
+                )
+                for ts in pm.time_signature_changes
+                if ts.numerator > 0 and ts.denominator > 0
+            ]
         if stated:
             meters = [
                 (common.opFrac(offset), ratio)
@@ -868,7 +820,7 @@ def _band_score(
     folded_notes}``, plus ``instruments`` (staff name to registry id) and
     ``groups`` (brackets written) when any staff was given an instrument.
     """
-    from music21 import chord, clef, meter, stream
+    from music21 import chord, clef, stream
 
     from ..instruments import (
         best_clef,
@@ -878,6 +830,8 @@ def _band_score(
         to_music21,
     )
     from ..instruments import instruments as registry
+    from ..bar_lines import time_signature
+    from ..grid import quantize_score
     from ..midi_read import read_score
     from ..tempo_marks import metronome_mark
     from .percussion import build_percussion_part, is_drum_midi
@@ -955,7 +909,7 @@ def _band_score(
             # otherwise pickle it into its cache under a path never read again.
             source = read_score(staff_midi, cache=staff_midi == path)
             try:
-                source = source.quantize((4, 3), inPlace=False, recurse=True)
+                source = quantize_score(source)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: quantize skipped for %s: %s", path, exc)
             sonorities = list(
@@ -988,8 +942,8 @@ def _band_score(
                 part.insert(0, music21_clef(clef_id))
             else:
                 part.insert(0, clef.BassClef() if clef_id == "F" else clef.TrebleClef())
-            for offset, ratio in meters:
-                part.insert(offset, meter.TimeSignature(ratio))
+            for offset, spec in meters:
+                part.insert(offset, time_signature(spec))
             for offset, tonality in keys:
                 part.insert(offset, copy.deepcopy(tonality))
             mark = metronome_mark(bpm)

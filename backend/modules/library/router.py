@@ -3,7 +3,7 @@
 Endpoints (prefix from module.json → `/api/library`):
 
     GET    /summary            category counts + the DB revision they came from
-    GET    /entries            list entries (?kind=audio|video|image|media|all);
+    GET    /entries            list entries (?kind=audio|video|image|media|score|all);
                                with ?limit= it is paged + searchable (see below)
     GET    /entries/ids        every matching id, for select-all / shift-range
     GET    /entries/facets     value counts per field, for the filter dropdowns
@@ -645,6 +645,8 @@ _KIND_FILTERS: dict[str, Optional[set[str]]] = {
     "video": {"video"},
     "image": {"image"},
     "media": {"video", "image"},
+    # Composition entries: a score with no recording (notation import).
+    "score": {"score"},
     "all": None,
 }
 

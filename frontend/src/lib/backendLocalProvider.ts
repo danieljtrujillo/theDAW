@@ -67,8 +67,9 @@ interface ServerRecord {
   last_played_at?: number | null;
   cover_url?: string | null;
   // The record's media kind. /entries lists audio unless asked for ?kind=media
-  // or ?kind=all, and older backends omit the field.
-  kind?: 'audio' | 'video' | 'image';
+  // or ?kind=all, and older backends omit the field. 'score' is a composition
+  // (an imported score with no recording), listed under ?kind=score.
+  kind?: 'audio' | 'video' | 'image' | 'score';
   // Enrichment attached by the backend's `_attach_analysis` (only present once
   // the entry has been analyzed). Flat scalar analysis dict + parsed embedded
   // file tags — see LibraryEntry.analysis / .embeddedTags.

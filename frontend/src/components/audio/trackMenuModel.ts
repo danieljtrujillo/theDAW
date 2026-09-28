@@ -51,7 +51,9 @@ export const probeFailed = <T>(detail?: string): Probe<T> => ({ state: 'failed',
 export interface TrackMenuEntry {
   id: string;
   title: string;
-  kind: 'audio' | 'video' | 'image';
+  /** 'score' is a composition (a score with no recording): like a video or
+   *  an image, every audio action is gated off it (REASON.notAudio). */
+  kind: 'audio' | 'video' | 'image' | 'score';
   model: string;
   prompt: string;
   /** deriveStyle(entry), trimmed. */

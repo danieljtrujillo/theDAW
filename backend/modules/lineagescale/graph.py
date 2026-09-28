@@ -136,6 +136,14 @@ _KINDS: tuple[LinkKind, ...] = (
         SOURCE_END_FROM,
         "backend/modules/notation/engine.py:2635",
     ),
+    # A score played into audio: from_id is the sheet artifact, to_id is the
+    # new Library entry holding the render.
+    LinkKind(
+        "rendered_as_audio",
+        ROLE_ARTIFACT,
+        SOURCE_END_FROM,
+        "backend/modules/notation/musescore_render.py:388",
+    ),
     LinkKind(
         "charted_as_chords",
         ROLE_ARTIFACT,

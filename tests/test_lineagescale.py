@@ -147,7 +147,9 @@ _RELATION_WRITER_FILES = (
     "backend/modules/library/store.py",
     "backend/modules/midi/runner.py",
     "backend/modules/notation/engine.py",
+    "backend/modules/notation/musescore_render.py",
     "backend/modules/notation/router.py",
+    "backend/modules/notation/score_import.py",
     "backend/modules/stems/engine.py",
     "backend/modules/suno/router.py",
 )

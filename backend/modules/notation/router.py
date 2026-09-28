@@ -11,10 +11,15 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+)
 from backend.modules.library.router import get_store as get_library_store
 
 from .arrangers.score_arrange import STYLES as ARRANGEMENT_STYLES
@@ -22,6 +27,7 @@ from .engine import (
     _chart_artist,
     _ENGRAVE_ENGINES,
     _musicxml_prolog_extras,
+    _register_conversion,
     _scored_name,
     _set_musicxml_composer,
     _song_slug,
@@ -57,7 +63,17 @@ _EXT_FOR_FORMAT = {
     "notechart": ".notechart.json",
     # A zipped Beat Saber custom level (Info.dat + <Difficulty>.dat + song.ogg).
     "beatsaber": ".beatsaber.zip",
+    # The score as MIDI at the pitch every part sounds (one track per part,
+    # tempo and meter maps): exporters/sounding_midi.py.
+    "midi": ".sounding.mid",
+    # The score rendered by MuseScore 4 with Muse Sounds. The WAV is written
+    # here, copied into a new Library entry, and removed (musescore_render).
+    "audio": ".wav",
 }
+
+# The one export target this router writes itself (exporters/sounding_midi.py)
+# rather than through ``convert_score``.
+SOUNDING_MIDI_FORMAT = "midi"
 
 # Formats written into their own sub-directory of notation/ (the Beat Saber
 # writer leaves the unzipped level folder beside the zip, which would clutter
@@ -219,7 +235,118 @@ def _resolve_midi_artifact_path(store: Any, entry_id: str, artifact_id: str) -> 
 @router.get("")
 @router.get("/")
 def get_capabilities() -> dict[str, Any]:
-    return capabilities()
+    from .score_import import IMPORT_SUFFIXES, MAX_IMPORT_BYTES
+
+    caps = capabilities()
+    caps["score_import"] = {
+        "extensions": list(IMPORT_SUFFIXES),
+        "max_bytes": MAX_IMPORT_BYTES,
+        "corpus": bool(caps.get("music21")),
+    }
+    return caps
+
+
+def _import_error(exc: Exception) -> HTTPException:
+    status = int(getattr(exc, "status", 422) or 422)
+    return HTTPException(status, str(exc))
+
+
+@router.post(
+    "/import",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
+async def import_score_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Import a score file as a composition entry of its own.
+
+    Takes ``.musicxml``, ``.xml``, ``.mxl``, ``.krn`` or ``.abc``, at most
+    ``MAX_IMPORT_BYTES``. music21 parses it; the entry keeps the original file
+    and a MusicXML sheet for the SCORE tab, titled and credited from the
+    file's own metadata (see :mod:`.score_import`). Guarded like every other
+    route that writes a file: a page outside theDAW is refused, and so is a
+    LAN caller without the launch or pairing token. Only the final component
+    of the uploaded name is read, and only for its suffix and display name;
+    every file is written under the new entry's own ``notation/`` folder.
+    """
+    from .score_import import (
+        IMPORT_SUFFIXES,
+        MAX_IMPORT_BYTES,
+        ScoreImportError,
+        import_kind,
+        import_score_upload,
+        safe_filename,
+    )
+
+    name = safe_filename(file.filename or "")
+    if import_kind(name) is None:
+        raise HTTPException(
+            415,
+            f"{name or 'the file'} is not a score file; import takes "
+            f"{', '.join(IMPORT_SUFFIXES)}",
+        )
+    data = await file.read(MAX_IMPORT_BYTES + 1)
+    if not data:
+        raise HTTPException(400, "Empty file")
+    if len(data) > MAX_IMPORT_BYTES:
+        raise HTTPException(413, "Score file too large")
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    try:
+        return await run_in_threadpool(import_score_upload, store, data, name)
+    except ScoreImportError as exc:
+        raise _import_error(exc) from exc
+
+
+@router.get("/corpus")
+def search_corpus(q: str = "", limit: int = 50) -> dict[str, Any]:
+    """Search the music21 corpus bundled with music21 (composer, title,
+    movement, path; case-insensitive). Each result carries the ``id``
+    ``POST /corpus/open`` takes."""
+    from backend.modules.sheetimport.corpus import search
+
+    try:
+        return search(q, limit)
+    except ImportError as exc:
+        raise HTTPException(503, f"music21 is not available: {exc}") from exc
+
+
+class CorpusOpenRequest(BaseModel):
+    id: str
+
+
+@router.post(
+    "/corpus/open",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
+def open_corpus_piece(body: CorpusOpenRequest) -> dict[str, Any]:
+    """Import one corpus piece (an ``id`` from ``GET /corpus``) as a
+    composition entry, the same way ``POST /import`` imports a file."""
+    from .score_import import ScoreImportError, import_corpus_piece
+
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    try:
+        return import_corpus_piece(store, body.id)
+    except ScoreImportError as exc:
+        raise _import_error(exc) from exc
+
+
+@router.get("/musescore")
+def get_musescore() -> dict[str, Any]:
+    """Whether a score can be rendered to audio here: ``{found, path,
+    muse_sounds, reason}`` for MuseScore 4 and Muse Sounds
+    (:func:`.musescore_render.musescore_status`); ``reason`` is empty when the
+    "audio" export can run, and says what is missing otherwise."""
+    from .musescore_render import musescore_status
+
+    return musescore_status()
 
 
 def _entry_known(store: Any, entry_id: str) -> bool:
@@ -284,7 +411,11 @@ def list_artifacts(entry_id: str, kind: Optional[str] = None) -> dict[str, Any]:
     for artifact in artifacts:
         if artifact.get("kind") != "musicxml":
             continue
-        legacy = legacy_sounding_pitch(Path(str(artifact.get("path") or "")))
+        # An imported sheet is the user's own file (or one written from it at
+        # written pitch), never a sheet an older build of this app wrote.
+        legacy = not _artifact_metadata(artifact).get(
+            "imported"
+        ) and legacy_sounding_pitch(Path(str(artifact.get("path") or "")))
         artifact["legacy_sounding_pitch"] = legacy
         artifact["rewrite_from_midi"] = (
             legacy and legacy_sheet_midi(store.db, artifact) is not None
@@ -456,9 +587,12 @@ def rewrite_legacy_sheet(entry_id: str, artifact_id: str) -> dict[str, Any]:
 def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     """Export an existing notation artifact (MIDI or MusicXML) to another
     format and register the result. Targets: the keys of ``_EXT_FOR_FORMAT``
-    (musicxml, abc, pdf, svg, notechart, beatsaber). ``pdf`` and ``svg`` are
-    engraved by the headless OSMD renderer, or by MuseScore when that is
-    missing (``options.engine`` pins one).
+    (musicxml, abc, pdf, svg, notechart, beatsaber, midi, audio). ``pdf``
+    and ``svg`` are engraved by the headless OSMD renderer, or by MuseScore
+    when that is missing (``options.engine`` pins one). ``midi`` is the score
+    at sounding pitch, one track per part (:func:`_export_sounding_midi`).
+    ``audio`` is rendered by MuseScore 4 with Muse Sounds into a new Library
+    entry; its result carries ``library_entry_id`` in place of an artifact.
 
     ``options.parts`` (a non-empty list of part indices, ``<part-list>``
     order) scopes any format to those parts. The file is then named
@@ -507,6 +641,21 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
 
     # Audio context for the chart-based targets (notechart duration, Beat Saber
     # song.ogg + Info.dat BPM). Harmless for the symbolic formats.
+    if fmt == SOUNDING_MIDI_FORMAT:
+        result = _export_sounding_midi(
+            store.db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output,
+            source_ref=body.source_artifact_id,
+            artifact_id=_export_artifact_id(body.source_artifact_id, fmt, parts),
+            parts=parts,
+            title=title,
+        )
+        if not result.get("ok"):
+            raise HTTPException(501, result)
+        return result
+
     audio_path = store.get_audio_path(entry_id)
     duration = getattr(entry, "duration", None) if entry is not None else None
     audio_duration_sec = float(duration) if duration else None
@@ -529,6 +678,65 @@ def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     if not result.get("ok"):
         raise HTTPException(501, result)
     return result
+
+
+def _export_sounding_midi(
+    db: Any,
+    *,
+    entry_id: str,
+    source_path: Path,
+    output_path: Path,
+    source_ref: str,
+    artifact_id: str,
+    parts: list[int],
+    title: str,
+) -> dict[str, Any]:
+    """Write the score as MIDI at sounding pitch (``exporters.sounding_midi``)
+    and register it as a ``midi`` artifact. ``parts`` scopes it to those
+    parts the way every other target is scoped: :func:`.engine.stage_parts`
+    filters the sheet, the writer reads the staged file, and the staged file
+    is removed afterwards and never registered."""
+    from .exporters.sounding_midi import ENGINE, ENGINE_VERSION, write_sounding_midi
+
+    staged_path: Optional[Path] = None
+    extra: dict[str, Any] = {"sounding_pitch": True}
+    try:
+        source = source_path
+        if parts:
+            entry = db.get_entry(entry_id) if entry_id else None
+            try:
+                staged = stage_parts(
+                    source_path,
+                    parts,
+                    title,
+                    output_path=output_path,
+                    artist=_chart_artist(entry),
+                )
+            except Exception as exc:
+                return {"ok": False, "engine": ENGINE, "error": str(exc) or repr(exc)}
+            staged_path = source = staged.path
+            extra["parts"] = staged.parts
+        result = write_sounding_midi(source, output_path)
+    finally:
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+    if not result.get("ok"):
+        return result
+    extra["tracks"] = result.get("tracks", [])
+    registered = _register_conversion(
+        db,
+        entry_id=entry_id,
+        fmt=SOUNDING_MIDI_FORMAT,
+        final_path=Path(str(result["path"])),
+        source_path=source_path,
+        source_ref=source_ref,
+        artifact_id=artifact_id,
+        engine=ENGINE,
+        engine_version=ENGINE_VERSION,
+        extra_metadata=extra,
+    )
+    registered["tracks"] = extra["tracks"]
+    return registered
 
 
 def _artifact_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1243,7 +1451,9 @@ def get_artifact_file(artifact_id: str) -> FileResponse:
     kind = artifact.get("kind")
     if kind == "musicxml":
         mime = "application/vnd.recordare.musicxml+xml"
-    elif kind in ("abc", "alphatex"):
+    elif kind == "mxl":
+        mime = "application/vnd.recordare.musicxml"
+    elif kind in ("abc", "alphatex", "kern"):
         mime = "text/plain; charset=utf-8"
     elif kind in ("chordtrack", "notechart", "lyrics"):
         mime = "application/json"
@@ -1258,3 +1468,66 @@ def get_artifact_file(artifact_id: str) -> FileResponse:
         media_type=mime or "application/octet-stream",
         filename=download_name,
     )
+
+
+class PerformRequest(BaseModel):
+    source_artifact_id: str
+    # Quarters per minute for a sheet that prints no tempo; the entry's
+    # analysed BPM when absent, and the performer's default after that.
+    bpm: Optional[float] = Field(default=None, gt=0, le=1000)
+
+
+@router.post("/{entry_id}/perform")
+def perform_artifact(entry_id: str, body: PerformRequest) -> dict[str, Any]:
+    """Play a MusicXML sheet as an expressive MIDI (the SCORE tab's EXPORT >
+    PERFORM): ritardandos into cadences, fermatas held, phrase downbeats
+    leaned on, articulation and dynamics as printed (see :mod:`.perform`).
+    The MIDI is written beside the entry's other exports and registered as a
+    ``midi`` artifact ``<source>__performed_midi``, so it lists and opens like
+    any other MIDI of the entry."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    if store.get_entry(entry_id) is None:
+        raise HTTPException(404, f"entry {entry_id!r} not found")
+
+    source = store.db.get_notation_artifact(body.source_artifact_id)
+    if source is None or source.get("entry_id") != entry_id:
+        raise HTTPException(
+            404,
+            f"artifact {body.source_artifact_id!r} not found for entry {entry_id!r}",
+        )
+    if source.get("kind") != "musicxml":
+        raise HTTPException(
+            422,
+            f"artifact {body.source_artifact_id!r} is a {source.get('kind')!r}; "
+            "PERFORM plays a MusicXML sheet",
+        )
+    source_path = Path(source.get("path") or "")
+    if not source_path.is_file():
+        raise HTTPException(404, f"artifact file missing on disk: {source_path}")
+
+    entry_dir = store._dir_for(entry_id)  # the route family's own convention
+    if entry_dir is None:
+        raise HTTPException(500, f"entry directory missing for {entry_id!r}")
+    slug = _song_slug(_entry_title(store, entry_id))
+    output = (
+        entry_dir
+        / "notation"
+        / _scored_name(slug, f"{source_path.stem}__performed.mid")
+    )
+
+    from .perform import perform_to_artifact
+
+    result = perform_to_artifact(
+        store.db,
+        entry_id=entry_id,
+        source_path=source_path,
+        output_path=output,
+        source_ref=body.source_artifact_id,
+        artifact_id=f"{body.source_artifact_id}__performed_midi",
+        qpm=body.bpm or _analysis_bpm(store, entry_id),
+    )
+    if not result.get("ok"):
+        raise HTTPException(501, result)
+    return result

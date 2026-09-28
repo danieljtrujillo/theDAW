@@ -59,6 +59,9 @@ from typing import Any, Mapping, NamedTuple, Optional, Sequence
 from backend.modules.library.db import LibraryDB, normalize_artifact_path
 
 from . import pdf_render
+from .expression import apply_to_export as apply_expression
+from .expression import expression_enabled
+from .grid import quantize_score
 from .midi_read import is_midi, read_score
 from .sheet_pitch import legacy_sounding_pitch, stamp_written_pitch
 from .tempo_marks import engrave_tempo_marks, restore_sounding_tempi
@@ -519,7 +522,12 @@ _ENGRAVE_ENGINES = ("osmd", "musescore")
 # Formats that can be scoped to a subset of parts through options["parts"]
 # (stage_parts filters the sheet, then the ordinary converter runs on it).
 # beatsaber has its own part filter inside the level writer.
-_PART_SCOPED_FORMATS = frozenset({"musicxml", "abc", "pdf", "svg", "notechart"})
+_PART_SCOPED_FORMATS = frozenset(
+    {"musicxml", "abc", "pdf", "svg", "notechart", "audio"}
+)
+# The score rendered to a WAV by MuseScore 4 with Muse Sounds, added to the
+# Library as a new entry (musescore_render).
+_AUDIO_FORMATS = frozenset({"audio"})
 # The Unity flying-notation chart (timecode + notes), written by exporters/notechart.
 _NOTECHART_FORMATS = frozenset({"notechart"})
 # Map an output format to the artifact ``kind`` stored in the DB.
@@ -695,11 +703,12 @@ def capabilities() -> dict[str, Any]:
     musescore = musescore_binary()
     osmd = pdf_render.available()
     # What ``POST /{entry_id}/export`` (``_EXT_FOR_FORMAT``) actually accepts,
-    # plus pdf/svg below when an engraver is present. "midi", "json" and
-    # "alphatex" are artifact *kinds* this module already produces (a
-    # registered MIDI, a note chart's raw dict, a tab arrangement) but none of
-    # them is an /export target -- advertising them here promised a
-    # conversion the route then rejected with 422. "chordtrack" is likewise
+    # plus pdf/svg below when an engraver is present. "json" and "alphatex"
+    # are artifact *kinds* this module already produces (a note chart's raw
+    # dict, a tab arrangement) but neither is an /export target --
+    # advertising them here promised a conversion the route then rejected
+    # with 422. "midi" is both: an artifact kind, and the sounding-pitch MIDI
+    # target the route writes itself. "chordtrack" is likewise
     # not an /export target: chord tracks are built through their own
     # POST /{entry_id}/chords route (see ``caps["chords"]`` below).
     formats = [
@@ -707,6 +716,9 @@ def capabilities() -> dict[str, Any]:
         "abc",
         "notechart",
         "beatsaber",
+        # The score as MIDI at sounding pitch, one track per part: written by
+        # the router itself (router._export_sounding_midi), not convert_score.
+        "midi",
     ]
     # PDF and SVG each come from EITHER engraver: the headless OSMD renderer
     # first (the SCORE tab's own engraver, so the sheet matches the screen),
@@ -720,8 +732,15 @@ def capabilities() -> dict[str, Any]:
     ]
     if engravers:
         formats += ["pdf", "svg"]
+    # "audio" needs MuseScore 4 with Muse Sounds (GET /musescore says why not).
+    from .musescore_render import musescore_status
+
+    musescore_render = musescore_status()
+    if not musescore_render["reason"]:
+        formats.append("audio")
     return {
         "ok": True,
+        "musescore_render": musescore_render,
         "music21": importlib.util.find_spec("music21") is not None,
         "musescore": musescore is not None,
         "musescore_path": musescore,
@@ -746,6 +765,9 @@ def capabilities() -> dict[str, Any]:
         # POST /{entry_id}/chords route rather than /export, so they get
         # their own capability flag instead of a "formats" entry.
         "chords": True,
+        # POST /{entry_id}/perform renders a sheet as a played MIDI with
+        # partitura (:mod:`.perform`).
+        "perform": importlib.util.find_spec("partitura") is not None,
         # song.ogg for a Beat Saber level needs ffmpeg; the UI shows the pack
         # card's audio status from this.
         "ffmpeg": find_ffmpeg() is not None,
@@ -827,6 +849,10 @@ _KIND_FOR_SUFFIX = {
     ".midi": "midi",
     ".musicxml": "musicxml",
     ".xml": "musicxml",
+    # Compressed MusicXML (a zip holding the sheet) and Humdrum kern: the
+    # originals a user imports (POST /api/notation/import) are kept as-is.
+    ".mxl": "mxl",
+    ".krn": "kern",
     ".alphatex": "alphatex",
     ".abc": "abc",
     ".pdf": "pdf",
@@ -1120,7 +1146,12 @@ def _is_musicxml(path: Path) -> bool:
 
 
 def _stage_musicxml(
-    source_path: Path, scratch: Path, title: str, *, artist: str = ""
+    source_path: Path,
+    scratch: Path,
+    title: str,
+    *,
+    artist: str = "",
+    expression: bool = True,
 ) -> Path:
     """Write ``source_path`` (any music21-readable source, normally MIDI) as a
     MusicXML file at ``scratch``, titled + credited, and return ``scratch``.
@@ -1128,6 +1159,8 @@ def _stage_musicxml(
     ``artist`` is the composer credit to stamp; callers resolve it once via
     :func:`_chart_artist` (falls back to the global :func:`artist_name` when
     empty) so every staged copy of the same entry carries the same credit.
+    ``expression`` prints the MIDI's dynamics, hairpins, articulation and
+    slurs on the sheet (:mod:`.expression`).
 
     The engravers read MusicXML only. The file is written beside the caller's
     output and the caller removes it afterwards; it is never registered as an
@@ -1146,6 +1179,8 @@ def _stage_musicxml(
             staged_score.metadata.composer = artist or artist_name()
         except Exception as exc:  # noqa: BLE001 - titling is best-effort
             log.debug("notation: staging title skipped: %s", exc)
+    if expression:
+        apply_expression(staged_score, source_path)
     engrave_tempo_marks(staged_score)
     return _write_musicxml(
         staged_score, scratch, what=f"staging {source_path.name} as musicxml"
@@ -1519,6 +1554,10 @@ def convert_score(
     The other ``options`` (per-format export options), ``audio_path``,
     ``audio_duration_sec`` and ``analysis_bpm`` are consumed by the chart-based
     targets (``notechart``, ``beatsaber``); the other formats ignore them.
+
+    ``audio`` renders the score to a WAV with MuseScore 4 and Muse Sounds and
+    adds it to the Library as a new entry (:mod:`.musescore_render`); the
+    result carries ``library_entry_id`` and no notation artifact.
     """
     fmt = fmt.lower().strip()
     if not source_path.is_file():
@@ -1662,6 +1701,7 @@ def _convert_one(
             artifact_id=artifact_id,
             title=title,
             artist=artist,
+            options=options,
         )
     if fmt in _MUSESCORE_FORMATS:
         return _engrave(
@@ -1692,6 +1732,20 @@ def _convert_one(
             extra_metadata=extra_metadata,
             artist=artist,
             entry=entry,
+        )
+    if fmt in _AUDIO_FORMATS:
+        from .musescore_render import render_audio
+
+        return render_audio(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output_path,
+            source_ref=source_ref,
+            title=title,
+            artist=artist,
+            register_source=register_source,
+            extra_metadata=extra_metadata,
         )
     if fmt in _BEATSABER_FORMATS:
         return _convert_to_beatsaber(
@@ -1814,7 +1868,11 @@ def _engrave(
             scratch = output_path.with_name(f"{output_path.stem}__staged_src.musicxml")
             try:
                 scratch = source = _stage_musicxml(
-                    source_path, scratch, title, artist=credited_artist
+                    source_path,
+                    scratch,
+                    title,
+                    artist=credited_artist,
+                    expression=expression_enabled(options),
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning(
@@ -2217,7 +2275,7 @@ def _convert_to_abc(
         # move it, and its key, to the pitch it sounds.
         score.toSoundingPitch(inPlace=True)
         try:
-            score = score.quantize((4, 3), inPlace=False, recurse=True)
+            score = quantize_score(score)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("notation: abc quantize skipped for %s: %s", source_path, exc)
         if is_midi(source_path):
@@ -2259,6 +2317,7 @@ def _convert_with_music21(
     artifact_id: Optional[str],
     title: str = "",
     artist: str = "",
+    options: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     try:
         import music21
@@ -2290,7 +2349,7 @@ def _convert_with_music21(
             restore_sounding_tempi(score, source_path)
             # Quantize raw transcriptions to clean, notatable rhythms. Best-effort.
             try:
-                score = score.quantize((4, 3), inPlace=False, recurse=True)
+                score = quantize_score(score)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug(
                     "notation: music21 quantize skipped for %s: %s", source_path, exc
@@ -2322,6 +2381,8 @@ def _convert_with_music21(
             md.composer = composer
         except Exception as exc:  # noqa: BLE001 - titling is best-effort
             log.debug("notation: could not set title on %s: %s", output_path, exc)
+        if not percussion and expression_enabled(options):
+            apply_expression(score, source_path)
         engrave_tempo_marks(score)
         final_path = _write_musicxml(
             score, output_path, what=f"{fmt} export of {source_path.name}"
