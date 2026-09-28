@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from backend.modules.library.db import LibraryDB
 from backend.modules.notation.arrangers.score_arrange import arrange
 from backend.modules.notation.engine import midi_to_arrangement
-from tests.test_notation import notation_client  # noqa: F401 - pytest fixture
 
 
 def _line(path: Path, pitches: list[int], *, program: int = 0) -> Path:
@@ -189,7 +188,7 @@ def test_midi_to_arrangement_writes_a_transposing_score(tmp_path: Path):
 
 
 def test_arrange_route_passes_instruments_by_artifact(
-    notation_client: TestClient,  # noqa: F811 - pytest fixture
+    notation_client: TestClient,
     tmp_path: Path,
 ):
     from backend.modules.library import router as library_router_module

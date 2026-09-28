@@ -15,7 +15,7 @@ import struct
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import pytest  # type: ignore[import]
+import pytest
 
 from backend.modules.notation import instruments as reg
 

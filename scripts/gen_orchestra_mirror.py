@@ -18,15 +18,18 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
-
-from backend.modules.notation.instruments import (  # noqa: E402 - path set above
-    FRONTEND_MIRROR,
-    frontend_module_text,
-)
 
 
 def main() -> int:
+    # The script runs from anywhere, so the checkout goes on the path before
+    # the registry is imported.
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from backend.modules.notation.instruments import (
+        FRONTEND_MIRROR,
+        frontend_module_text,
+    )
+
     target = REPO / FRONTEND_MIRROR
     target.write_text(frontend_module_text(), encoding="utf-8", newline="\n")
     print(target)

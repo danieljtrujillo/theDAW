@@ -103,6 +103,25 @@ def autoencoder(request):
 
 
 @pytest.fixture
+def notation_client(tmp_path: Path, monkeypatch):
+    """The library and notation routers on a fresh library root in ``tmp_path``
+    (the ``tests/test_library_endpoints.py`` pattern), shared by the notation,
+    chord-track and band-score route tests."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.modules.library import router as library_router_module
+    from backend.modules.notation import router as notation_router_module
+
+    monkeypatch.setattr(library_router_module, "_store", None)
+    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
+    app = FastAPI()
+    app.include_router(library_router_module.router, prefix="/api/library")
+    app.include_router(notation_router_module.router, prefix="/api/notation")
+    return TestClient(app)
+
+
+@pytest.fixture
 def maybe_save_audio(request):
     """Return a callable that saves audio to disk when --save-audio is passed.
 
