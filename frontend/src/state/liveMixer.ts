@@ -94,7 +94,7 @@ import {
   trackOutputsActive,
 } from './midiOutBus';
 import { beatToTime, timeToBeat } from '../lib/tempoMap';
-import { clipVoice, effectiveProgramFor, isExternalOnly, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import { NO_PROGRAM, clipVoice, effectiveProgramFor, isExternalOnly, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { trackMembers } from '../lib/mpeRotation';
 import { userBanksByEditBank } from '../lib/editBankBanks';
@@ -3131,7 +3131,11 @@ export function planLiveMidi(
     else wanted.set(track.id, [clip.id]);
     slots.set(
       track.id,
-      Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), effectiveProgramFor(clip, track, global), trackMembers(track.mpeChannels))),
+      Math.max(
+        slots.get(track.id) ?? 1,
+        // Counted as the scheduler times the clip: an external-only track plays with no program of theDAW's.
+        clipLiveSlots(clip, isPercussionTrack(track), isExternalOnly(track) ? NO_PROGRAM : effectiveProgramFor(clip, track, global), trackMembers(track.mpeChannels)),
+      ),
     );
   }
   const channels = planEditChannels(

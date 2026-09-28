@@ -340,7 +340,9 @@ const clipTotalSteps = (clip: Partial<TimedClip>): number =>
  * articulation plays a soundfont preset of its own, a slot after the lanes'
  * for that preset and the bent lane it sits in, so the lane's wheel bends it
  * there too (`artSlots` names the lane slot each follows; null when none).
- * On a VST3 instrument (`vst3`) no articulation takes a slot of its own.
+ * On a VST3 instrument (`vst3`), and on an external-only track (`program`
+ * NO_PROGRAM: its host keeps its own patch, and no program change of theDAW's
+ * reaches it), no articulation takes a slot of its own.
  */
 function clipSlotPlan(
   clip: Parameters<typeof clipRenderInput>[0] & Partial<TimedClip>,
@@ -356,8 +358,8 @@ function clipSlotPlan(
   const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
   const bentLaneSlots = new Set<number>(bends ? [...bends.played.keys()].map((lane) => slotOf.get(lane) ?? 0) : []);
   const found = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
-  // A VST3 instrument switches articulations itself: every note stays on its lane's channel.
-  const arts = vst3 ? { notes: found.notes.map((a) => ({ ...a, target: null, slot: -1 })), targets: [] } : found;
+  // A VST3 instrument, or an external host, plays its own patch: every note stays on its lane's channel.
+  const arts = vst3 || program === NO_PROGRAM ? { notes: found.notes.map((a) => ({ ...a, target: null, slot: -1 })), targets: [] } : found;
   const artSlots: Array<{ follows: number | null }> = [];
   const artIndex = new Map<string, number>();
   const noteSlots = arts.notes.map((a) => {
@@ -703,7 +705,7 @@ export class EditMidiScheduler {
         clip,
         bpm,
         isPercussionTrack(track),
-        track ? effectiveProgramFor(clip, track, this.deps.global()) : undefined,
+        track ? (isExternalOnly(track) ? NO_PROGRAM : effectiveProgramFor(clip, track, this.deps.global())) : undefined,
         trackMembers(track?.mpeChannels),
         this.deps.articulations?.(clip.trackId) ?? null,
       );

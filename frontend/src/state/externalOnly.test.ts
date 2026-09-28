@@ -130,6 +130,44 @@ const plan = planLiveMidi(ed().clips, ed().tracks, OFF);
   ed().updateTrack(host, { externalOnly: true, instrumentProgram: undefined });
 }
 
+// ── a string part's pizzicato on a host: its own channel, no General MIDI preset ──
+{
+  sent.length = 0;
+  ed().loadProject({ tracks: [], clips: [] });
+  const strings = ed().addTrack({ name: 'Violins (host)' });
+  ed().updateTrack(strings, { externalOnly: true, midiOut: { id: 'host', label: 'Orchestra Host', channel: 3 } });
+  const clipId = clipOn(strings, [note('v1', 67, 0), { ...note('v2', 69, 8), articulation: 'pizzicato' }]);
+  ed().updateClip(clipId, {
+    sourceRollPart: { doc: 'd', id: 'p', order: 0, name: 'Violin', program: null, bank: 0, channel: null, color: '#fff', mute: false, solo: false, instrumentId: 'violin' },
+  } as never);
+  assert.equal(ed().clips.find((c) => c.id === clipId)?.sourceRollPart?.instrumentId, 'violin', 'the part names the violin');
+  const p = planLiveMidi(ed().clips, ed().tracks, OFF);
+  assert.equal(p.channels.channelsOf.get(strings)?.length, 1, 'no channel is set aside for a pizzicato preset the host does not have');
+  const external = externalOnlyChannels(ed().tracks, p.channels.channelsOf);
+  const clock = { t: 200 };
+  const out = startTrackRoutes({ tracks: ed().tracks, channelsOf: p.channels.channelsOf, now: () => clock.t, toPerf: (t) => t * 1000 });
+  const nop = () => {};
+  const sched = new EditMidiScheduler({
+    now: () => clock.t,
+    sink: passMidiSink({ noteOn: nop, noteOff: nop, wheel: nop, wheelRange: nop, control: nop, pressure: nop }, () => out, () => external),
+    clips: () => ed().clips,
+    tracks: () => ed().tracks,
+    global: () => OFF,
+    projectBpm: () => ed().bpm,
+  });
+  sched.start({ liveClipIds: p.liveClipIds, channelsOf: p.channels.channelsOf }, 0, clock.t);
+  for (const end = clock.t + 3; clock.t < end; ) {
+    clock.t += EDIT_MIDI_TICK_MS / 1000;
+    sched.tick();
+  }
+  sched.stop();
+  const toHost = sent.filter((s) => s.port === 'host').map((s) => s.bytes);
+  assert.deepEqual(toHost.filter((b) => (b[0] & 0xf0) === 0x90).map((b) => [b[0] & 0x0f, b[1]]), [[2, 67], [2, 69]], 'both notes on the host channel');
+  assert.equal(toHost.filter((b) => (b[0] & 0xf0) === 0xc0).length, 0, 'no pizzicato program change reaches the host');
+  assert.equal(toHost.filter((b) => (b[0] & 0xf0) === 0xb0 && (b[1] === 0 || b[1] === 32)).length, 0, 'and no bank select');
+  stopTrackOutputs(0);
+}
+
 // ── the clock on an arrangement of audio alone ─────────────────────────────
 {
   sent.length = 0;
