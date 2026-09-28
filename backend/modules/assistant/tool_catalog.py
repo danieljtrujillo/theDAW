@@ -947,11 +947,14 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             },
             "percussion": {
                 "type": "boolean",
-                "description": "A drum part: its new track plays on the drum channel",
+                "description": "A drum part: its new track plays on the drum channel. "
+                "With track_id it must match that track: a drum track holds drum "
+                "parts and a melodic track melodic ones, and a mismatch is refused",
             },
             "track_id": {
                 "type": "string",
-                "description": "Put the part on this track (id or name) instead of a new one",
+                "description": "Put the part on this track (id or name) instead of a "
+                "new one; the track decides whether the part is a drum part",
             },
             "track_name": {
                 "type": "string",

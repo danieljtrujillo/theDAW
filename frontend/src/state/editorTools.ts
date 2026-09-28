@@ -94,7 +94,7 @@ import {
 } from '../lib/clipOps';
 import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
 import { encodeWav } from '../lib/wavEncode';
-import { clipVoice, drumKitName, GM_STANDARD_KIT, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
+import { clipVoice, drumKitName, GM_STANDARD_KIT, isPercussionTrack, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
 import { isMidiClip } from '../lib/clipEditTarget';
 import { hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig, midiRenderState, midiRenderStateText } from '../lib/midiRender';
 import { midiGlobalVoice } from './midiRenderQueue';
@@ -2055,7 +2055,8 @@ export interface CreateMidiClipArgs {
   track_name?: unknown;
   /** GM program 0-127; on a percussion part the kit. Default: the instrument of the track `track_id` names. */
   program?: unknown;
-  /** A drum part: the new track plays on the drum channel. */
+  /** A drum part: the new track plays on the drum channel. With `track_id` it
+   *  must agree with that track (a drum track holds drum parts only). */
   percussion?: unknown;
   /** 1-based arrangement bar the part starts on (default 1). */
   start_bar?: unknown;
@@ -2070,9 +2071,16 @@ export interface CreateMidiClipArgs {
  * Make an empty MIDI clip: a part with an instrument, the arrangement's meters
  * and tempo from where it starts, `bars` bars long. It plays live on its
  * instrument, so nothing is rendered. One undo step (a new track included).
+ *
+ * Whether the part plays on the drum channel is the track's to say
+ * (lib/clipProgram clipVoice reads `isPercussion` off the track), so a part on
+ * `track_id` is a drum part exactly when that track is a drum track. A
+ * `percussion` that disagrees with the track is refused with the reason: on a
+ * melodic track the part would play a melodic program under a kit's name, and
+ * the drum pitches written into it would sound as notes.
  */
 export function createMidiClip(args: CreateMidiClipArgs): ToolResult {
-  const percussion = boolArg(args.percussion) ?? false;
+  const percussionArg = boolArg(args.percussion);
   const programArg = numArg(args.program);
   if (programArg !== undefined && (!Number.isInteger(programArg) || programArg < 0 || programArg > 127)) {
     return fail('create_midi_clip: program must be a whole GM program 0-127');
@@ -2091,7 +2099,14 @@ export function createMidiClip(args: CreateMidiClipArgs): ToolResult {
     if (!found.ok) return fail(found.error);
     track = found.value;
   }
-  const drums = percussion || track?.isPercussion === true;
+  if (track && percussionArg === true && !isPercussionTrack(track)) {
+    return fail(`create_midi_clip: "${track.name}" is a melodic track, so a part on it plays its instrument and not a kit. Leave out track_id to put the drum part on a new drum track, or pass a drum track`);
+  }
+  if (track && percussionArg === false && isPercussionTrack(track)) {
+    return fail(`create_midi_clip: "${track.name}" is a drum track, so a part on it plays a kit. Leave out track_id to put the part on a new track of its own, or pass a melodic track`);
+  }
+  // The track that holds the part decides the drum channel; a new track is a drum track when asked.
+  const drums = track ? isPercussionTrack(track) : percussionArg === true;
   // The program named, else the target track's instrument, else (a drum part) the Standard kit.
   const program = programArg ?? track?.instrumentProgram ?? (drums ? GM_STANDARD_KIT : undefined);
   if (program === undefined) {

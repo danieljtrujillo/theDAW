@@ -28,6 +28,7 @@ import { barStartStep } from '../lib/meterMap.ts';
 import { stepClock } from '../lib/rollTempo.ts';
 import { editBarStartSec } from '../lib/editTimeMap.ts';
 import { midiRenderSig, midiRenderState } from '../lib/midiRender.ts';
+import { clipVoice } from '../lib/clipProgram.ts';
 import { planLiveMidi } from './liveMixer.ts';
 
 const ed = () => useEditorStore.getState();
@@ -207,6 +208,21 @@ async function main(): Promise<void> {
   assert.equal(drums.program, 0, 'the Standard kit');
   assert.equal(trackOf(drums.clipId as string).isPercussion, true);
   assert.equal(clipOf(drums.clipId as string).label, 'Standard kit');
+  const off = { useSoundfont: false, activeProgram: 0 };
+  assert.deepEqual(clipVoice(clipOf(drums.clipId as string), trackOf(drums.clipId as string), off), { program: 0, percussion: true }, 'it plays the kit on the drum channel');
+  // A drum part asked for on a melodic track is refused: the track decides the
+  // channel, so at 057f7499 the "kit" played the cello (or GM 25, a steel guitar).
+  const partsBefore = ed().clips.length;
+  assert.match(await errOf(tools.createMidiClip({ track_id: 'Cello', percussion: true, bars: 2 }), 'kit on a melodic track'), /"Cello" is a melodic track.*Leave out track_id/);
+  assert.match(await errOf(tools.createMidiClip({ track_id: 'Cello', percussion: true, program: 25, bars: 2 }), 'kit 25 on a melodic track'), /melodic track/);
+  assert.equal(ed().clips.length, partsBefore, 'a refusal makes nothing');
+  // On a drum track a part is a drum part whether or not percussion is said, and the program is its kit.
+  const kitTrack = trackOf(drums.clipId as string);
+  const brush = dataOf(await okOf(tools.createMidiClip({ track_id: kitTrack.id, program: 40, bars: 1 }), 'a part on the drum track'));
+  assert.equal(brush.percussion, true, 'reported as a drum part');
+  assert.deepEqual(clipVoice(clipOf(brush.clipId as string), trackOf(brush.clipId as string), off), { program: 40, percussion: true }, 'kit 40 on the drum channel');
+  assert.equal(clipOf(brush.clipId as string).label, 'Brush kit');
+  assert.match(await errOf(tools.createMidiClip({ track_id: kitTrack.id, percussion: false, program: 40 }), 'melodic part on the drum track'), /is a drum track/);
   const midBar = editBarStartSec(ed(), 1) + 0.3;
   const odd = dataOf(await okOf(tools.createMidiClip({ program: 73, start_sec: midBar, bars: 3 }), 'part inside a bar'));
   near(odd.startSec as number, midBar, 'starts where it was asked');
