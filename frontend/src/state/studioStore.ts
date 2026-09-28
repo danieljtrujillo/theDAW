@@ -14,6 +14,7 @@ import {
 } from './effectChainStore';
 import { useAdvancedEditorSourceStore } from './advancedEditorStore';
 import { getRackEffect, buildEffectChain, ensureChopModule, ensureGranularModule } from '../lib/rackEffects';
+import { ensureHallIrsForChains } from '../lib/hallIrs';
 import { encodeWav } from '../lib/wavEncode';
 import { pairingHeader } from '../lib/pairing';
 
@@ -387,6 +388,8 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
         if (entries.some((e) => e.effect === 'ares')) {
           try { await ensureGranularModule(offline); } catch { /* falls back to passthrough */ }
         }
+        // A Reverb on a measured hall renders it, not the synthesized room (lib/hallIrs).
+        await ensureHallIrsForChains(offline, [entries]);
         const inGain = offline.createGain();
         buildEffectChain(offline, inGain, offline.destination, entries);
         const src = offline.createBufferSource();

@@ -1,0 +1,29 @@
+Concert-hall impulse responses played by EDIT's Reverb device
+=============================================================
+
+Files: detmold-konzerthaus/seat-211/*.flac, detmold-konzerthaus/seat-372/*.flac
+
+Source
+  "Open Database of Spatial Room Impulse Responses at Detmold University of Music"
+  Sebastia V. Amengual Gari, Banu Sahin, Dusty Eddy, Malte Kob
+  149th Audio Engineering Society Convention, 2020
+  Zenodo record 4116247 (v0.2), https://doi.org/10.5281/zenodo.4116247
+  Archive: DetmoldSRIR_v01.zip, Set C (SetC_DenseKH_LSOrchestra/Data/DummyHead)
+
+Licence
+  Creative Commons Attribution 4.0 International (CC BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+
+What was measured
+  The Detmold Konzerthaus (about 600 seats, 4600 m3) with a loudspeaker
+  orchestra of eight Neumann KH120 sources on stage and a Neumann KU100 dummy
+  head at audience seat 211 (centre of the front of the fixed stalls) and seat
+  372 (centre of the rear stalls). Seen from the audience, S1-S4 are the front
+  row from left to right and S5-S8 the row 2 m behind it.
+
+Changes made (scripts/build_hall_irs.py)
+  - Each seat's eight responses are trimmed to start 1.5 ms before the earliest
+    direct sound among them, scaled by one gain per seat, faded out over their
+    last 50 ms and written as 16-bit FLAC at 48 kHz.
+  - s1.flac-s8.flac are sources S1-S8. stage.flac is new: the mean of the eight
+    responses, scaled on its own, standing for the whole stage playing at once.

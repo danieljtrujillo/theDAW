@@ -1000,6 +1000,45 @@ function chunkSafetyCountsBusChains(): void {
 
 /* ── run ──────────────────────────────────────────────────────────────────── */
 
+/* ── The hall responses load before any rack is built ────────────────────── */
+
+// A Reverb on a measured hall (lib/hallIrs) finds its response decoded only if
+// the bounce loads it BEFORE the racks are built: the factory reads the cache
+// once, at build. The shared hall of a symphony template is a BUS, so the bus
+// racks are among the chains handed over.
+async function theHallResponsesLoadBeforeTheRacksAreBuilt(): Promise<void> {
+  const hall: ChainEntry = { id: 'hall-fx', effect: 'reverb', enabled: true, params: { hall: 1, position: 0, wet: 1 } };
+  const h = harness({
+    tracks: [track({ id: 't1', fxChain: [compressor('t-fx')] }), track({ id: 't2' })],
+    clips: [clip({ id: 'c1', trackId: 't1' })],
+    routing: graphWithOneBus(),
+    buses: [bus({ id: 'b1', fxChain: [hall] })],
+  });
+  const order: string[] = [];
+  let handed: ReadonlyArray<readonly ChainEntry[] | undefined> = [];
+  h.deps.ensureHallIrs = async (_ctx, chains) => {
+    handed = chains;
+    order.push('ensure');
+  };
+  const build = h.deps.buildChain;
+  h.deps.buildChain = ((...args: Parameters<typeof build>) => {
+    order.push('build');
+    return build(...args);
+  }) as typeof build;
+  await renderBounce(request({ kind: 'master' }), h.deps);
+  assert.equal(order[0], 'ensure', 'the responses load before the first rack');
+  assert.equal(order.filter((o) => o === 'ensure').length, 1, 'once per bounce');
+  assert.ok(handed.some((c) => c?.includes(hall)), 'the bus rack is among the chains');
+  assert.ok(handed.some((c) => c?.some((e) => e.id === 't-fx')), 'and so is every track rack');
+
+  // Without FX nothing is built, so nothing loads.
+  const noFx = harness({ tracks: [track({ id: 't1' })], clips: [clip({ id: 'c1', trackId: 't1' })], buses: [bus({ id: 'b1', fxChain: [hall] })], routing: graphWithOneBus() });
+  let called = 0;
+  noFx.deps.ensureHallIrs = async () => { called += 1; };
+  await renderBounce(request({ kind: 'master' }, { includeFx: false }), noFx.deps);
+  assert.equal(called, 0, 'a bounce without FX loads no response');
+}
+
 async function main(): Promise<void> {
   await aBusStripIsBuiltAndPlacedByTheGraph();
   await busFxOnlyUnderIncludeFx();
@@ -1026,6 +1065,7 @@ async function main(): Promise<void> {
   await aStemBuildsNoCompDelay();
   await aSelectionBuildsNoCompDelay();
   chunkSafetyCountsBusChains();
+  await theHallResponsesLoadBeforeTheRacksAreBuilt();
   console.log('renderCore.routing: ok');
 }
 

@@ -22,6 +22,7 @@ import { createVstLiveNode } from './vstLive/vstLiveNode';
 import { vstLiveLatencySec } from '../state/vstLiveStore';
 import type { ChainEntry } from '../state/effectChainStore';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from './tempoMap';
+import { HALL_OPTION_LABELS, POSITION_OPTION_LABELS, cachedHallIr, hallIrUrl, loadHallIr } from './hallIrs';
 
 /** The effect id a hosted VST3 plugin carries. It is deliberately NOT a
  *  `RACK_EFFECTS` entry — `getRackEffect('vst3')` stays undefined — because a
@@ -1715,7 +1716,21 @@ const makeReverbIR = (ctx: BaseAudioContext, seconds: number): AudioBuffer => {
   return ir;
 };
 
-/* Reverb: convolution of a synthesized IR, with predelay, tone and wet/dry. */
+/**
+ * Reverb: convolution with predelay, tone and wet/dry.
+ *
+ * The impulse response is the synthesized room (decaying noise `decay`
+ * seconds long) unless `hall` names a measured one (lib/hallIrs): a concert
+ * hall heard from an audience seat, from the stage `position` the source
+ * sits at. A measured response is an asset loaded with `decodeAudioData`
+ * (hallIrs loadHallIr). When it is already decoded for this context's rate
+ * the convolver gets it at once, which is how an offline bounce plays it
+ * (renderCore awaits hallIrs ensureHallIrsForChains before building); live,
+ * the synthesized room plays until the file arrives and the response is
+ * swapped in then. A file that cannot load leaves the synthesized room.
+ * `decay` shapes only the synthesized room: a measured hall rings as long as
+ * the hall does.
+ */
 const makeReverb: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
   const output = ctx.createGain();
@@ -1732,12 +1747,38 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
   conv.connect(tone);
   tone.connect(wet);
   wet.connect(output);
-  let curSeconds = -1;
+  /** What the convolver holds: a hall file's URL, or `synth:<seconds>`. */
+  let current = '';
+  /** The response the params ask for, which a load in flight checks before it lands. */
+  let wanted = '';
+  let disposed = false;
+  const setSynthetic = (seconds: number) => {
+    const key = `synth:${seconds}`;
+    if (current === key) return;
+    conv.buffer = makeReverbIR(ctx, seconds);
+    current = key;
+  };
   const setParams = (p: Record<string, number>) => {
     const seconds = clamp(p.decay ?? 2.0, 0.1, 8);
-    if (seconds !== curSeconds) {
-      conv.buffer = makeReverbIR(ctx, seconds);
-      curSeconds = seconds;
+    const url = hallIrUrl(p.hall, p.position);
+    if (!url) {
+      wanted = `synth:${seconds}`;
+      setSynthetic(seconds);
+    } else if (wanted !== url || current !== url) {
+      wanted = url;
+      const ready = cachedHallIr(url, ctx.sampleRate);
+      if (ready) {
+        if (current !== url) conv.buffer = ready;
+        current = url;
+      } else {
+        // Until the file arrives the room is heard, never silence.
+        if (!current) setSynthetic(seconds);
+        void loadHallIr(ctx, url).then((buf) => {
+          if (!buf || disposed || wanted !== url || current === url) return;
+          conv.buffer = buf;
+          current = url;
+        });
+      }
     }
     pre.delayTime.setValueAtTime(clamp((p.predelay ?? 20) / 1000, 0, 0.5), ctx.currentTime);
     tone.frequency.value = clamp(p.tone ?? 8000, 500, 18000);
@@ -1751,6 +1792,7 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
     output,
     setParams,
     dispose: () => {
+      disposed = true;
       try {
         input.disconnect();
         dry.disconnect();
@@ -2285,9 +2327,11 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     id: 'reverb',
     label: 'Reverb',
     group: 'Space',
-    description: 'Convolution reverb (synthesized IR) with predelay, tone and wet/dry mix.',
+    description: 'Convolution reverb with predelay, tone and wet/dry mix: a synthesized room, or a measured concert hall heard from the stage position a part sits at.',
     params: [
-      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's', curve: 'log', group: 'Space' },
+      { key: 'hall', label: 'Hall', min: 0, max: HALL_OPTION_LABELS.length - 1, step: 1, default: 0, kind: 'select', options: HALL_OPTION_LABELS, group: 'Hall', tip: 'The impulse response: the synthesized room, or the Detmold Konzerthaus measured from an audience seat (CC BY 4.0).' },
+      { key: 'position', label: 'Stage position', min: 0, max: POSITION_OPTION_LABELS.length - 1, step: 1, default: 0, kind: 'select', options: POSITION_OPTION_LABELS, group: 'Hall', tip: 'Where on the stage the source sits, seen from the audience. Measured halls only.' },
+      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's', curve: 'log', group: 'Space', tip: 'Length of the synthesized room. A measured hall rings as long as the hall does.' },
       { key: 'predelay', label: 'Predelay', min: 0, max: 200, step: 1, default: 20, unit: 'ms', group: 'Space' },
       { key: 'tone', label: 'Tone', min: 500, max: 18000, step: 50, default: 8000, unit: 'Hz', curve: 'log', group: 'Tone', tip: 'Low-pass on the reverb tail.' },
       { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3, display: 'percent', group: 'Output' },
@@ -2295,10 +2339,12 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     mixKey: 'wet',
     xy: [{ label: 'Decay / Mix', x: 'decay', y: 'wet' }],
     presets: [
-      { label: 'Room', values: { decay: 0.8, predelay: 10, tone: 6000, wet: 0.2 } },
-      { label: 'Plate', values: { decay: 1.8, predelay: 0, tone: 12000, wet: 0.3 } },
-      { label: 'Hall', values: { decay: 3, predelay: 30, tone: 8000, wet: 0.35 } },
-      { label: 'Cathedral', values: { decay: 6, predelay: 60, tone: 5000, wet: 0.45 } },
+      { label: 'Room', values: { hall: 0, decay: 0.8, predelay: 10, tone: 6000, wet: 0.2 } },
+      { label: 'Plate', values: { hall: 0, decay: 1.8, predelay: 0, tone: 12000, wet: 0.3 } },
+      { label: 'Hall', values: { hall: 0, decay: 3, predelay: 30, tone: 8000, wet: 0.35 } },
+      { label: 'Cathedral', values: { hall: 0, decay: 6, predelay: 60, tone: 5000, wet: 0.45 } },
+      { label: 'Konzerthaus, front stalls', values: { hall: 1, position: 0, predelay: 0, tone: 18000, wet: 0.35 } },
+      { label: 'Konzerthaus, rear stalls', values: { hall: 2, position: 0, predelay: 0, tone: 18000, wet: 0.45 } },
     ],
     // TAIL: the convolver keeps ringing for `decay` seconds (up to 8) after its
     // input stops, so audio from one chunk belongs in the next. A boundary would

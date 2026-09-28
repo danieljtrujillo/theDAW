@@ -171,6 +171,7 @@ import {
   SPATIAL_TELEPORT, buildEffectChain, chainLatencySec, ensureChopModule, teleportXYZ,
   type ChainHandle,
 } from './rackEffects';
+import { ensureHallIrsForChains } from './hallIrs';
 import type { RenderRange } from './render/renderRange';
 import { planRangeRender, sliceRangeBuffer } from './render/renderRangePlan';
 import { encodeWav } from './wavEncode';
@@ -286,6 +287,10 @@ export interface RenderDeps {
   /** Register the chop worklet on the render context before the rack is built,
    *  so an enabled chop entry bakes in instead of degrading to passthrough. */
   ensureChop?: (ctx: BaseAudioContext) => Promise<void>;
+  /** Load the measured hall responses the chains' Reverb entries play
+   *  (lib/hallIrs), before the racks are built, so each Reverb renders its
+   *  hall from the first sample instead of the synthesized room. */
+  ensureHallIrs?: (ctx: BaseAudioContext, chains: ReadonlyArray<readonly ChainEntry[] | undefined>) => Promise<void>;
   /**
    * The per-track compensation delay, `liveMixer.insertCompNode`'s node in this
    * graph. A seam of its own rather than another `ctx.createGain()`-style call
@@ -767,6 +772,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       const ensureChop = deps.ensureChop ?? ensureChopModule;
       try { await ensureChop(ctx); } catch { /* falls back to passthrough */ }
     }
+    // The measured hall responses, bus racks included (a shared hall send is a bus).
+    const ensureHallIrs = deps.ensureHallIrs ?? ensureHallIrsForChains;
+    await ensureHallIrs(ctx, [...candidates, ...(scope.kind === 'master' ? (deps.buses ?? []).map((b) => b.fxChain) : [])]);
   }
 
   // ── Master bus ───────────────────────────────────────────────────────────
