@@ -36,7 +36,7 @@ import React from 'react';
 import { create } from 'zustand';
 import {
   ArrowLeftToLine, ArrowRightToLine, AudioWaveform, Blocks, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, DiamondMinus, DiamondPlus, Dices,
-  Eraser, ListPlus, ListX, Minus, Plus, Scissors, Send, Timer,
+  Eraser, Hourglass, ListPlus, ListX, Minus, Plus, Scissors, Send, Timer,
 } from 'lucide-react';
 import { laneName, usePianoRollStore, type LaneTimePatch } from '../../state/pianoRollStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
@@ -48,9 +48,9 @@ import { normalizeMeterMap, stepsPerBar } from '../../lib/meterMap';
 import {
   BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
-  laneMeterValue, lanePitches, laneSpanLabel, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
-  removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
-  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  laneMeterValue, lanePitches, laneSpanLabel, laneSpanSteps, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
+  removeChange, loopPastSpan, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
+  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
@@ -112,12 +112,15 @@ interface StepperProps {
   valueClass?: string;
   /** Inside the GEN card: the 12px legend and readout. */
   flyout?: boolean;
+  /** A problem with the value: the readout reads in the accent with a dotted underline, and a screen
+   *  reader hears this text after the value (the keys are described by the readout). */
+  alert?: string;
 }
 
 /** The −/+ keys are one control with the readout between them, named by their
  *  own DockTips; the field carries no title, so no key shows two tooltips. A key
  *  its press takes to the limit passes keyboard focus to its pair. */
-export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
+export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout, alert }) => (
   <div className={FIELD}>
     {legend && <span className={flyout ? FLYOUT_LEGEND : FIELD_LEGEND} title={title}>{legend}</span>}
     <StripKey
@@ -132,7 +135,16 @@ export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, down
       icon={downIcon ?? <Minus className={MINI_GLYPH} />}
       legend={downLabel}
     />
-    <span id={`${id}-value`} aria-live="polite" title={title} className={`${flyout ? FLYOUT_VALUE : FIELD_VALUE} ${valueClass}`}>{value}</span>
+    <span
+      id={`${id}-value`}
+      aria-live="polite"
+      title={title}
+      data-alert={alert ? '' : undefined}
+      className={`${alert ? (flyout ? FLYOUT_VALUE : FIELD_VALUE).replace('et-ink', 'et-accent-legend underline decoration-dotted underline-offset-2') : flyout ? FLYOUT_VALUE : FIELD_VALUE} ${valueClass}`}
+    >
+      {value}
+      {alert && <span className="sr-only">, {alert}</span>}
+    </span>
     <StripKey
       mini
       iconOnly
@@ -299,7 +311,9 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     const l = r.lanes.find((x) => x.id === r.activeLane);
     if (!l || l.id === 0) return;
     // Shift steps one bar: the lane's own bar when it keeps a time of its own.
-    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, laneBarSteps(l, r.meterMap, r.pickupSteps) ?? stepsPerBar(meter), r.totalSteps);
+    // A lane with a span loops inside it: a press past the span wraps to the shortest loop.
+    const spanSteps = laneSpanSteps(l, r.totalSteps);
+    const cycleSteps = stepLoop(l.cycleSteps, dir, byBar, laneBarSteps(l, r.meterMap, r.pickupSteps) ?? stepsPerBar(meter), r.totalSteps, spanSteps);
     r.applyMeter({ lanes: r.lanes.map((x) => (x.id === l.id ? { ...x, cycleSteps } : x)) });
   };
   // The lane's notes and bends move with its loop's first cycle; the writes fold into one undo step.
@@ -310,6 +324,15 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     r.applyMeter({ lanes: next.lanes });
     if (next.notes) r.replaceAll(next.notes);
     if (next.bends) r.setBends(next.bends);
+    // A loop longer than the new span plays its first span-length once; say so, and how to fit it.
+    const after = next.lanes.find((x) => x.id === r.activeLane);
+    const past = after ? loopPastSpan(after, r.totalSteps) : null;
+    if (after && past) {
+      post(
+        `LANE ${after.name} LOOPS EVERY ${past.cycle} STEPS, LONGER THAN ITS ${past.span}-STEP SPAN: IT PLAYS ITS FIRST ${past.span} STEPS ONCE AND THE LAST ${past.cycle - past.span} ARE NOT HEARD. SHORTER LOOP FITS IT INSIDE THE SPAN; SPAN AGAIN GIVES THE WHOLE LOOP BACK.`,
+        'warn',
+      );
+    }
   };
 
   /* GEN */
@@ -397,6 +420,10 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const groups = groupChoices(meter);
   const groupsNow = groupsValue(meter.groups);
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
+  // A spanned lane's loop counts inside its span (stepLoop), so its longer-loop key wraps and is never off.
+  const spanLen = lane.id === 0 ? null : laneSpanSteps(lane, totalSteps);
+  // A loop longer than its span (SPAN on a longer loop, MATCH, an older file) reads flagged, with the reason.
+  const pastSpan = loopPastSpan(lane, totalSteps);
   const barLen = Math.round(laneBar ?? stepsPerBar(meter));
   const spanOn = spanIsSegment(segs, selected, lane.span, pickupSteps);
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
@@ -633,15 +660,24 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       <Stepper
         id="mf-loop"
         legend="Loop"
-        title={lane.id === 0 ? 'Lane A runs the whole roll' : `Lane ${lane.name} loops every ${loopValue === 'All' ? 'roll' : `${loopValue} steps`}. Shift-click steps a bar of ${barLen}.`}
+        title={
+          lane.id === 0
+            ? 'Lane A runs the whole roll'
+            : pastSpan
+              ? `Lane ${lane.name} loops every ${pastSpan.cycle} steps, longer than its ${pastSpan.span}-step span: it plays its first ${pastSpan.span} steps once and the last ${pastSpan.cycle - pastSpan.span} are not heard. Shorter loop fits it inside the span.`
+            : spanLen !== null
+              ? `Lane ${lane.name} loops every ${loopValue === 'All' ? `${spanLen} steps, its whole span` : `${loopValue} steps`} inside its ${spanLen}-step span. Shift-click steps a bar of ${barLen}; past the span's length the loop wraps back to the shortest.`
+              : `Lane ${lane.name} loops every ${loopValue === 'All' ? 'roll' : `${loopValue} steps`}. Shift-click steps a bar of ${barLen}.`
+        }
         value={loopValue}
         valueClass="min-w-5"
+        alert={pastSpan ? `longer than its ${pastSpan.span}-step span; the last ${pastSpan.cycle - pastSpan.span} steps are not heard` : undefined}
         downLabel={`Shorter loop for lane ${lane.name}`}
         upLabel={`Longer loop for lane ${lane.name}`}
         downIcon={<ArrowLeftToLine className={MINI_GLYPH} />}
         upIcon={<ArrowRightToLine className={MINI_GLYPH} />}
         downDisabled={lane.id === 0 || lane.cycleSteps === 1}
-        upDisabled={lane.id === 0 || lane.cycleSteps == null}
+        upDisabled={lane.id === 0 || (lane.cycleSteps == null && spanLen === null)}
         onStep={onLoop}
       />
       {/* The legend shows the bars the lane plays in, so the span reads without a hover. */}
@@ -681,16 +717,40 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
           >
             {tempoSum.value}
           </span>
-          <StripKey
-            mini
-            iconOnly
-            aria-label={tempoSum.clearLabel}
-            aria-describedby="mf-tempo-value"
-            description={tempoSum.clearDescription}
-            onClick={() => usePianoRollStore.getState().setTempoMap([])}
-            icon={<Eraser className={MINI_GLYPH} />}
-            legend={tempoSum.clearLabel}
-          />
+          {/* Two keys, so neither clears the other's marks: Clear takes the
+              tempo changes and keeps every fermata, Clear fermatas takes the
+              holds and keeps every tempo change. Each shows only when there is
+              something for it to clear. */}
+          {tempoSum.clearTempo && (
+            <StripKey
+              mini
+              iconOnly
+              aria-label={tempoSum.clearTempo.label}
+              aria-describedby="mf-tempo-value"
+              description={tempoSum.clearTempo.description}
+              onClick={() => {
+                const r = usePianoRollStore.getState();
+                r.setTempoMap(withoutTempoChanges(r.tempoMap));
+              }}
+              icon={<Eraser className={MINI_GLYPH} />}
+              legend={tempoSum.clearTempo.label}
+            />
+          )}
+          {tempoSum.clearFermatas && (
+            <StripKey
+              mini
+              iconOnly
+              aria-label={tempoSum.clearFermatas.label}
+              aria-describedby="mf-tempo-value"
+              description={tempoSum.clearFermatas.description}
+              onClick={() => {
+                const r = usePianoRollStore.getState();
+                r.setTempoMap(withoutFermatas(r.tempoMap));
+              }}
+              icon={<Hourglass className={MINI_GLYPH} />}
+              legend={tempoSum.clearFermatas.label}
+            />
+          )}
         </div>
       )}
 

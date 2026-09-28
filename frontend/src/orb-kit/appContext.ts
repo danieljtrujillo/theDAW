@@ -46,8 +46,10 @@ export type EditorSummary = {
         solo: boolean;
         armed: boolean;
         frozen: boolean;
-        /** Default GM program (0-127) for MIDI clips on this track; null = global default. */
+        /** Default program (0-127) for MIDI clips on this track: a GM program, or a drum kit when `drums`; null = global default. */
         instrumentProgram: number | null;
+        /** A drum track: its MIDI plays on the drum channel and `instrumentProgram` names a kit. */
+        drums: boolean;
         /** Insert FX chain, in order (effect ids / labels). */
         fxChain: string[];
         clipCount: number;
@@ -126,7 +128,7 @@ export function formattheDAWAppContext(context: RuntimeContext): string {
             'If the user asks to improve the prompt, propose a better prompt and emit set_prompt or improve_prompt if they ask you to apply it.',
             'If the user asks to change settings, emit concrete app actions; do not merely describe the settings.',
             'If a requested UI operation has no available action, explain the limitation and give the closest available action.',
-            'editorState below is the live EDIT arrangement. Every clip has kind "midi" (piano-roll clip with an editable note list, noteCount, instrumentProgram) or "audio". Every track has kind midi/audio/mixed/empty. Never assume a track is audio — read kind.',
+            'editorState below is the live EDIT arrangement. Every clip has kind "midi" (piano-roll clip with an editable note list, noteCount, instrumentProgram) or "audio". Every track has kind midi/audio/mixed/empty, and drums true on a drum track, whose instrumentProgram is a drum kit number. Never assume a track is audio — read kind.',
         ],
         currentUI: context.ui,
         locatableFeatures: context.locatableFeatures,
@@ -204,6 +206,7 @@ export function summarizeEditor(editor: EditorStoreSnapshot): EditorSummary {
                 armed: !!t.armed,
                 frozen: !!t.frozenOriginal,
                 instrumentProgram: t.instrumentProgram ?? null,
+                drums: t.isPercussion === true,
                 fxChain: chainLabels(t.fxChain),
                 clipCount: own.length,
             };

@@ -27,6 +27,7 @@ import {
   ROLE_LABELS,
   defaultSections,
   harmonyDescription,
+  heldSectionTempo,
   type VirtuosoAmounts,
   type StyleName,
   type Role,
@@ -182,9 +183,11 @@ const SongStructure: React.FC = () => {
                 <option key={c.value} value={c.value}>{c.label}</option>
               ))}
             </select>
-            {/* The section's tempo. Empty follows the roll's tempo map; a typed
-                tempo applies on Enter or when the field loses focus, so the "1"
-                of a typed 132 is never taken as a tempo of its own. */}
+            {/* The section's tempo. Empty keeps the tempo in force, as in a
+                score: an earlier section's tempo (its number shows as the
+                placeholder), else the roll's tempo map. A typed tempo applies
+                on Enter or when the field loses focus, so the "1" of a typed
+                132 is never taken as a tempo of its own. */}
             <label htmlFor={`vt-sec-bpm-${i}`} className="sr-only">{`Section ${i + 1} tempo in BPM`}</label>
             <input
               key={`${i}:${sec.bpm ?? ''}`}
@@ -194,7 +197,7 @@ const SongStructure: React.FC = () => {
               min={TEMPO_BPM_MIN}
               max={TEMPO_BPM_MAX}
               step="any"
-              placeholder="BPM"
+              placeholder={heldSectionTempo(sections, i) === undefined ? 'BPM' : String(heldSectionTempo(sections, i))}
               defaultValue={sec.bpm ?? ''}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -206,7 +209,11 @@ const SongStructure: React.FC = () => {
                 else if (Number.isFinite(v) && v > 0) setSectionTempo(i, v);
                 else e.target.value = sec.bpm === undefined ? '' : String(sec.bpm);
               }}
-              title="The section's tempo; empty follows the piano roll's tempo map. The build slows into each section's last bar."
+              title={
+                heldSectionTempo(sections, i) === undefined
+                  ? "The section's tempo; empty follows the piano roll's tempo map. The build slows into each section's last bar."
+                  : `The section's tempo; empty keeps ${heldSectionTempo(sections, i)} BPM from an earlier section, as a tempo marking holds until the next one. The build slows into each section's last bar.`
+              }
               className={`${sectionField} w-13`}
             />
             <button

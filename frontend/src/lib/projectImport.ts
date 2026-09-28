@@ -65,6 +65,7 @@ import {
   ticksMatching,
 } from './projectClient';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
+import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
 import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
@@ -107,7 +108,7 @@ const pick = (o: Record<string, number>, ...keys: string[]): number | undefined 
  * (start/duration) and step-based (step/length) spellings.
  */
 const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderNote[] => {
-  const stepSec = 60 / Math.max(40, bpm) / 4; // 16th-note seconds
+  const stepSec = 60 / Math.max(TEMPO_BPM_MIN, bpm) / 4; // 16th-note seconds, at the app's 20 BPM floor
   const notes: RenderNote[] = [];
   for (const n of raw) {
     const midi = pick(n, 'note', 'pitch', 'midi', 'key');
@@ -141,7 +142,7 @@ const toRenderNotes = (raw: Array<Record<string, number>>, bpm: number): RenderN
  * as one step.
  */
 export const tasmoMidiNotesToPiano = (raw: Array<Record<string, number>>, bpm: number): PianoNote[] => {
-  const ticksPerSec = (Math.max(40, bpm) / 60) * PPQ;
+  const ticksPerSec = (Math.max(TEMPO_BPM_MIN, bpm) / 60) * PPQ;
   const ticksPerStep = PPQ / ROLL_STEPS_PER_BEAT;
   return raw
     .map((n): PianoNote | null => {
@@ -517,6 +518,7 @@ const buildClip = async (
     sourceLanes: rollMeter.sourceLanes,
     sourceBends: rollMeter.sourceBends,
     sourceTempoMap: rollMeter.sourceTempoMap,
+    sourceMarkers: rollMeter.sourceMarkers,
     // Restore the per-clip mute; omit the field entirely for unmuted clips so
     // pre-mute projects hydrate exactly as before. Gain and fades follow the same
     // rule: a unity/zero value stays `undefined` rather than being written back.
@@ -615,14 +617,15 @@ export function tasmoToLoop(raw: unknown): { enabled: boolean; start: number; en
  *
  * Called AFTER `loadProject`, which has just cleared both — so a file carrying
  * neither leaves the freshly cleared state exactly as it is, which is what every
- * project written before this did. Uses only the editor store's existing public
- * setters (`addMarker`, `setLoopRegion`, `setLoopEnabled`); marker ids are NOT
- * preserved, because `addMarker` mints its own — nothing outside the store keys
- * off a marker id, and the file's id is only there to identify the entry.
+ * project written before this did. Marker ids ARE preserved (`restoreMarkers`):
+ * a roll clip's bounce finds the EDIT markers it wrote by their id
+ * (`roll:<clip>:<marker>`, lib/rollMarkers), so a marker reopened under a fresh
+ * id would be written a second time by the next bounce of that clip. A locator
+ * saved without an id gets a fresh one from `locatorsToMarkers`.
  */
 export function applyTasmoMarkersAndLoop(project: Pick<TasmoProjectLoaded, 'locators' | 'loop'>): void {
   const store = useEditorStore.getState();
-  for (const m of locatorsToMarkers(project.locators)) store.addMarker(m.t, m.label);
+  store.restoreMarkers(locatorsToMarkers(project.locators));
   const loop = tasmoToLoop(project.loop);
   if (loop) {
     // setLoopRegion enables the loop for any region worth having; setLoopEnabled
@@ -1196,7 +1199,7 @@ export async function loadProjectIntoEditor(
   // same reason and in the same place. This one runs SECOND because it resolves
   // each lane against the tracks `loadProject` has just put in the store.
   applyTasmoMasterAndAutomation(project);
-  // `addMarker` is an ordinary document mutation, so the history subscription
+  // `restoreMarkers` is an ordinary document mutation, so the history subscription
   // (editorStore.ts, `state.markers !== prev.markers`) has just flagged the
   // freshly opened project dirty and pushed an undo step that would rewind the
   // markers out of it. A just-opened project is by definition unmodified and has

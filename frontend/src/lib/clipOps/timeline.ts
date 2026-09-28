@@ -35,6 +35,7 @@
  * there. MIDI clips are re-rendered locally — see `audioOps.stretchMidiClip`.
  */
 import type { AudioClip } from '../../state/editorStore';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../tempoMap';
 
 /** Shortest clip the editor will produce. A zero-length clip is invisible and
  *  unselectable, so a collapse lands here instead. (`splitClipAt` refuses to
@@ -42,11 +43,11 @@ import type { AudioClip } from '../../state/editorStore';
  *  underneath that policy.) */
 export const MIN_CLIP_SEC = 0.01;
 
-/** Tempo bounds, matching `editorStore.setBpm`'s clamp. Anything outside this
- *  cannot be played back or rendered faithfully — `renderStepNotesToBlob`
- *  floors its own tempo at 40 — so it is refused rather than silently moved. */
-export const MIN_BPM = 40;
-export const MAX_BPM = 240;
+/** Tempo bounds: the app's 20-300 BPM, the range `editorStore.setBpm` clamps
+ *  to and the roll, its render and its tempo map hold (lib/tempoMap). A tempo
+ *  outside it is refused rather than silently moved. */
+export const MIN_BPM = TEMPO_BPM_MIN;
+export const MAX_BPM = TEMPO_BPM_MAX;
 
 /**
  * Success carries the value; failure carries a message a tool can show a user

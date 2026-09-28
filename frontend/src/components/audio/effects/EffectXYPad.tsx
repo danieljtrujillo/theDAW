@@ -2,8 +2,11 @@
  * EffectXYPad — a generic XY surface for a schema-declared param pair (the
  * OwlPad look: dark glass cell, faint grid, crosshair + glowing dot). X and Y
  * travel are log-aware through the same mapping the knobs use, so a
- * frequency axis sweeps musically. Keyboard: arrows nudge X/Y by one step
- * (Shift = 10 steps); double-click resets both to their defaults.
+ * frequency axis sweeps musically. The pad is a pointer surface; each axis is
+ * also a real slider on its crosshair line (PadAxisSlider): Tab reaches the X
+ * slider, then the Y slider, and each takes the arrow keys (Shift = 10
+ * steps), PageUp/PageDown, Home and End; Delete resets both. Double-click
+ * resets both to their defaults.
  *
  * Like SlideTrack and EffectKnob, the pad reports its GESTURE boundary —
  * `onGestureStart` before the first `onChange` of a drag / key press and
@@ -15,6 +18,7 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { createGestureTracker } from '../../../lib/gestureTracker';
 import { formatParamValue, fromNorm, snapParam, toNorm, type ParamSchema } from './paramFormat';
+import { PadAxisSlider } from '../PadAxisSlider';
 
 interface EffectXYPadProps {
   label: string;
@@ -84,23 +88,16 @@ export const EffectXYPad: React.FC<EffectXYPadProps> = ({ label, xParam, yParam,
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     getGesture().pointerUp();
   };
-  // The write is chosen BEFORE anything is dispatched, so the gesture can open
-  // ahead of the change it belongs to and an unhandled key stays inert.
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const m = e.shiftKey ? 10 : 1;
-    let write: (() => void) | null = null;
-    switch (e.key) {
-      case 'ArrowRight': write = () => onChange({ x: snapParam(xParam, x + xParam.step * m), y }); break;
-      case 'ArrowLeft': write = () => onChange({ x: snapParam(xParam, x - xParam.step * m), y }); break;
-      case 'ArrowUp': write = () => onChange({ x, y: snapParam(yParam, y + yParam.step * m) }); break;
-      case 'ArrowDown': write = () => onChange({ x, y: snapParam(yParam, y - yParam.step * m) }); break;
-      case 'Backspace': case 'Delete': write = () => onChange({ x: xParam.default, y: yParam.default }); break;
-    }
-    if (!write) return;
-    getGesture().key('down', e.key);
-    write();
-    e.preventDefault();
+  // A key press opens the gesture ahead of the change it belongs to; the
+  // slider hands over only keys it takes, so an unhandled key stays inert.
+  const keyWrite = (key: string, next: { x: number; y: number }) => {
+    getGesture().key('down', key);
+    onChange(next);
   };
+  const reset = (key: string) => keyWrite(key, { x: xParam.default, y: yParam.default });
+  // The keyup closes the key gesture; blur (no key) is the backstop for a
+  // focus lost mid-press, whose keyup is delivered somewhere else.
+  const release = (key?: string) => getGesture().key('up', key);
 
   return (
     <div className="flex flex-col items-center gap-1 min-w-0">
@@ -110,12 +107,11 @@ export const EffectXYPad: React.FC<EffectXYPadProps> = ({ label, xParam, yParam,
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        role="application"
+        role="group"
         aria-labelledby={capId}
         aria-roledescription="XY pad"
-        aria-description={`Drag to set ${xParam.label} (X) and ${yParam.label} (Y). Arrow keys nudge; Delete resets.`}
-        tabIndex={0}
-        className="shrink-0 rounded bg-black/50 border border-white/10 cursor-crosshair touch-none outline-none focus-visible:ring-2 focus-visible:ring-purple-400/60"
+        aria-description={`Drag to set ${xParam.label} (X) and ${yParam.label} (Y), or use the X and Y sliders on the crosshair. Delete resets.`}
+        className="shrink-0 rounded bg-black/50 border border-white/10 cursor-crosshair touch-none"
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
@@ -129,11 +125,6 @@ export const EffectXYPad: React.FC<EffectXYPadProps> = ({ label, xParam, yParam,
           onChange({ x: xParam.default, y: yParam.default });
           g.pointerUp();
         }}
-        onKeyDown={onKeyDown}
-        // The keyup closes the key gesture; blur is the backstop for a focus
-        // lost mid-press, whose keyup is delivered somewhere else.
-        onKeyUp={(e) => getGesture().key('up', e.key)}
-        onBlur={() => getGesture().key('up')}
       >
         {[0.25, 0.5, 0.75].map((f) => (
           <g key={f}>
@@ -145,6 +136,36 @@ export const EffectXYPad: React.FC<EffectXYPadProps> = ({ label, xParam, yParam,
         <line x1={0} y1={dotY} x2={size} y2={dotY} stroke={color} strokeOpacity={0.35} strokeWidth={1} />
         <circle cx={dotX} cy={dotY} r={9} fill={color} fillOpacity={0.18} />
         <circle cx={dotX} cy={dotY} r={5} fill={color} stroke="#fff" strokeWidth={1} />
+        <PadAxisSlider
+          axis="x"
+          label={`${label} ${xParam.label} (X)`}
+          value={x}
+          min={xParam.min}
+          max={xParam.max}
+          step={xParam.step}
+          valueText={formatParamValue(xParam, x)}
+          pos={dotX}
+          size={size}
+          color={color}
+          onKey={(next, key) => keyWrite(key, { x: snapParam(xParam, next), y })}
+          onReset={reset}
+          onKeyRelease={release}
+        />
+        <PadAxisSlider
+          axis="y"
+          label={`${label} ${yParam.label} (Y)`}
+          value={y}
+          min={yParam.min}
+          max={yParam.max}
+          step={yParam.step}
+          valueText={formatParamValue(yParam, y)}
+          pos={dotY}
+          size={size}
+          color={color}
+          onKey={(next, key) => keyWrite(key, { x, y: snapParam(yParam, next) })}
+          onReset={reset}
+          onKeyRelease={release}
+        />
         {/* Axis names drawn last with a dark halo, so the crosshair and the dot
             passing under a word never cut its letters. */}
         <text x={size / 2} y={size - 4} textAnchor="middle" fontSize={12} fill="#d4d4d8" stroke="#000" strokeOpacity={0.9} strokeWidth={3} strokeLinejoin="round" paintOrder="stroke" className="font-sans font-bold">{xParam.label}</text>

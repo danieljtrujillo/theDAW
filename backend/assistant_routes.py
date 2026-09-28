@@ -160,24 +160,24 @@ Available actions:
 - `get_status` — Query current generation status. No payload needed.
 
 EDIT arrangement actions (the current tracks/clips/playhead are in `editorState` of the app context; use the ids from there).
-`editorState` is the live arrangement: every clip carries `kind` — `"midi"` (a piano-roll clip: editable note list, `noteCount`, `instrumentProgram` GM 0-127, `sourceBpm`) or `"audio"` (waveform) — and every track carries `kind` (`midi` / `audio` / `mixed` / `empty`), `instrumentProgram`, `fxChain`, `armed`, `frozen`. It also has `snap`, `tool`, `markers`, `masterFxChain`, `automationLaneCount`. MIDI clips are pre-rendered to audio for playback, so NEVER decide a track is audio from its label — read `kind`.
+`editorState` is the live arrangement: every clip carries `kind` — `"midi"` (a piano-roll clip: editable note list, `noteCount`, `instrumentProgram` GM 0-127, `sourceBpm`) or `"audio"` (waveform) — and every track carries `kind` (`midi` / `audio` / `mixed` / `empty`), `instrumentProgram`, `drums` (true: a drum track, whose `instrumentProgram` is a drum kit number), `fxChain`, `armed`, `frozen`. It also has `snap`, `tool`, `markers`, `masterFxChain`, `automationLaneCount`. MIDI clips are pre-rendered to audio for playback, so NEVER decide a track is audio from its label — read `kind`.
 - `editor_get_state` — The same full editorState (tracks with kind, clips with kind/noteCount/instrumentProgram, markers, snap, loop). Payload: `{}`
 - `editor_add_track` — Add a track. Payload: `{"name": "optional"}`
 - `editor_remove_track` — Remove a track AND its clips (asks the user to confirm). Payload: `{"track_id": "id or name"}`
-- `editor_set_track` — Update a track. Payload: `{"track_id": "...", "volume?": 0..1, "pan?": -1..1, "mute?": bool, "solo?": bool, "name?": "...", "armed?": bool, "instrument_program?": 0..127, "frozen?": false}`. `frozen: false` unfreezes; `frozen: true` is refused (freeze from the EDIT track header).
+- `editor_set_track` — Update a track. Payload: `{"track_id": "...", "volume?": 0..1, "pan?": -1..1, "mute?": bool, "solo?": bool, "name?": "...", "armed?": bool, "instrument_program?": 0..127, "drums?": bool, "frozen?": false}`. `frozen: false` unfreezes; `frozen: true` is refused (freeze from the EDIT track header). `drums` says what `instrument_program` is: `true` makes a drum track and reads it as a drum kit (0 = Standard), `false` a melodic track and a General MIDI program; changing the kind clears the clips' own programs. Omit `drums` to keep the track's kind.
 - `editor_move_clip` — Move a clip in time and/or across tracks. Payload: `{"clip_id": "...", "start_sec?": 12.5, "track_id?": "..."}`
 - `editor_remove_clip` — Delete a clip (asks the user to confirm). Payload: `{"clip_id": "..."}`
 - `editor_split_clip` — Split a clip at a timeline position inside it. Payload: `{"clip_id": "...", "at_sec": 8.0}`
 - `editor_select_clip` — Select a clip. Payload: `{"clip_id": "..."}`
 - `editor_set_playhead` — Move the playhead. Payload: `{"seconds": 0}`
-- `editor_set_bpm` — Set the arrangement BPM (20-400). Payload: `{"bpm": 120}`
+- `editor_set_bpm` — Set the arrangement BPM (20-300, a fraction is kept). Payload: `{"bpm": 120}`
 - `editor_set_loop` — Toggle/set the loop region. Payload: `{"enabled": true, "start_sec?": 0, "end_sec?": 8}`
 - `editor_add_marker` — Drop a timeline marker. Payload: `{"seconds": 16, "name": "optional"}`
 
 Note editing (piano-roll clips only — a clip with `kind: "midi"`). These edit the note list and re-bounce the clip's audio, so playback and exports stay in step. A re-bounce writes the FULL rendered length, so a clip that had been trimmed grows back; the result says so when the length moved. Every `*_id` argument also accepts the object's exact label/name.
 - `editor_get_notes` — Read the note list: `{id, note (pitch 0-127), step (16ths from the clip start), length, velocity}`. Payload: `{"clip_id": "..."}`
 - `editor_set_notes` — Replace the note list wholesale. Payload: `{"clip_id": "...", "notes": [{"note": 60, "step": 0, "length": 4, "velocity": 100, "id?": "..."}]}`
-- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool}`
+- `editor_quantize_clip` — Snap notes to a grid. Payload: `{"clip_id": "...", "grid": "1/16"|"1/8"|"1/4"|"1/32"|"1/64"|"1/1"|"1/2"|"1/8T"|"1/16T"|"1/32T"|"1/4T"|"1/16Q"|"1/16S"|"1/8D"|"1/16D"|"1/4D", "strength?": 0..1, "swing?": -1..1, "quantize_ends?": bool, "groove?": "straight"|"swing8:<pct>"|"swing16:<pct>"|"group8:<pct>"|"group16:<pct>"|"inegales:60"|"ddot:8"|"ddot:4", "groove_strength?": 0..1}`. The groove is a feel laid over the grid in the clip's own meter (group8/group16 swing inside each of the bar's groups, so 7/8 3+2+2 swings per group); pct is 50-75 (66.7 is a triplet feel).
 - `editor_nudge_notes` — Shift every note in time. EXACTLY ONE unit. Payload: `{"clip_id": "...", "steps?": 0.5}` or `{"ms?": 42}` or `{"ticks?": 120}`
 - `editor_transpose_clip` — Payload: `{"clip_id": "...", "semitones": -12}`
 - `editor_scale_velocity` — Payload: `{"clip_id": "...", "factor?": 0.8, "offset?": -5, "min?": 1, "max?": 127}`

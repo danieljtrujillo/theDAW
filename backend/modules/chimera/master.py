@@ -129,7 +129,7 @@ def _limit_pedalboard(
     x: np.ndarray, sr: int, ceiling_db: float, release_ms: float
 ) -> tuple[np.ndarray, float]:
     """``pedalboard.Limiter`` pass. Raises ``ImportError`` without pedalboard."""
-    from pedalboard import Limiter  # type: ignore[import-not-found]
+    from pedalboard import Limiter
 
     arr = _stereo(x)
     lim = Limiter(threshold_db=float(ceiling_db), release_ms=float(release_ms))

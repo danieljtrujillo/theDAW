@@ -16,6 +16,17 @@ import {
 // lib/rollSelection imports only the PianoNote TYPE back from here, which is
 // erased at compile, so this is a one-way runtime dependency.
 import { clampVelocity } from '../lib/rollSelection';
+import {
+  cleanMarkerName,
+  isRollMarkerKind,
+  markerAtPlace,
+  markerTickOfStep,
+  nextMarkerName,
+  sameRollMarkers,
+  sanitizeRollMarkers,
+  type RollMarker,
+  type RollMarkerInput,
+} from '../lib/rollMarkers';
 import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 // lib/rollSnap imports only the PianoNote TYPE back from here, as rollSelection does.
 import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
@@ -193,6 +204,14 @@ interface PianoRollState {
    * setting like the feel: persisted, never undo history.
    */
   snap: RollSnapId;
+  /**
+   * Named markers on the ruler (lib/rollMarkers): sections and movements, by
+   * tick, sorted. Part of the document: undo covers every add, rename, move
+   * and removal, a bounce copies them onto the clip as `sourceMarkers` (and to
+   * EDIT's timeline), and a .tasmo clip saves them as `roll_markers`. A song
+   * build writes FORM's sections here and keeps the user's own.
+   */
+  markers: RollMarker[];
 
   /** Set the starting tempo, 20-300 with its fraction kept; the map's beat-0 event takes it. */
   setBpm: (bpm: number) => void;
@@ -284,7 +303,8 @@ interface PianoRollState {
    *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
    *  Opening a clip is one undo step that carries the link it replaced: undoing it
    *  brings back the previous notes linked to the clip they came from, so an undo
-   *  can never bring another clip's notes into this one. The loop clears. */
+   *  can never bring another clip's notes into this one. The loop clears.
+   *  `markers` are the clip's; left out (a clip bounced before markers), the roll opens with none. */
   loadFromClip: (
     clipId: string,
     notes: PianoNote[],
@@ -293,6 +313,7 @@ interface PianoRollState {
     meter?: Partial<RollMeter>,
     bends?: readonly LaneBend[],
     tempoMap?: readonly TempoEvent[],
+    markers?: readonly RollMarkerInput[],
   ) => void;
   /** Replace the grid with imported notes, auto-fitting length (to a bar line) AND
    *  pitch range to the content. A `meter` field left out keeps the roll's current value.
@@ -301,13 +322,16 @@ interface PianoRollState {
    *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
    *  `tempoMap` replaces the roll's map (a MIDI file's tempo changes); left out, a
    *  finite `bpm` makes the roll one tempo at `bpm`, since the notes were placed
-   *  at that tempo, and no `bpm` keeps the map the roll has. */
+   *  at that tempo, and no `bpm` keeps the map the roll has. `markers` replaces
+   *  the roll's markers (a file import passes the file's, a song build FORM's
+   *  and the user's); left out, the markers stay. */
   importNotes: (
     notes: PianoNote[],
     bpm?: number,
     meter?: Partial<RollMeter>,
     bends?: readonly LaneBend[],
     tempoMap?: readonly TempoEvent[],
+    markers?: readonly RollMarkerInput[],
   ) => void;
   /** Place a live recording WITHOUT shrinking the grid (keeps at least the 256
    *  default, rounded up to a bar), expanding the pitch range to fit, and marks the recorded span. */
@@ -352,6 +376,24 @@ interface PianoRollState {
    *  Lanes given take the bends of lanes that go with them, and a lane that
    *  arrives starts unbent (MATCH, and the METER face's ADD LANE). */
   applyMeter: (meter: Partial<RollMeter>, merge?: boolean) => void;
+  /**
+   * Add a marker at `tick` (or `step`; neither = the playhead), a section
+   * unless `kind` says otherwise, named the next free rehearsal letter or roman
+   * numeral unless `name` is given. When one of its kind is already at that
+   * tick, nothing is added: that marker stays, renamed to `name` when a name is
+   * given, and its id is returned, so the caller selects it. Returns the id.
+   */
+  addMarker: (marker: RollMarkerInput) => string;
+  /**
+   * Rename, move (`tick` or `step`) or retype a marker. Any edit makes a FORM
+   * marker the user's own. A move or retype onto the place of another marker of
+   * that kind is refused (the marker keeps its place and kind; a rename in the
+   * same patch still applies), so no edit removes a neighbour.
+   */
+  updateMarker: (id: string, patch: Omit<RollMarkerInput, 'id' | 'origin'>) => void;
+  removeMarker: (id: string) => void;
+  /** Replace every marker (sanitized). */
+  setMarkers: (markers: readonly RollMarkerInput[]) => void;
 
   // Undo / redo. Snapshots capture the document slices below; because every
   // mutation replaces arrays immutably, a snapshot just references the prior
@@ -379,7 +421,8 @@ interface PianoRollState {
  *
  *  The roll's own voice is here because a .tasmo saves it (`roll_voice`): a
  *  choice from the Vocal2MIDI panel is a step, and undo puts the voice before
- *  it back. */
+ *  it back. The ruler's markers are here because a clip and a .tasmo save
+ *  them: an add, a rename, a move (one step per drag) and a removal are steps. */
 interface RollHistorySnapshot {
   notes: PianoNote[];
   bpm: number;
@@ -392,6 +435,7 @@ interface RollHistorySnapshot {
   lanes: PolyLane[];
   bends: LaneBend[];
   voiceProgram: number | null;
+  markers: RollMarker[];
   /** The linked clip before the step, present only when the step's write changed it. */
   editingClipId?: string | null;
 }
@@ -530,6 +574,9 @@ const replacedBends = (
   incoming: readonly LaneBend[] | undefined,
 ): LaneBend[] =>
   incoming ? capBentLanes(bendsForLanes(sanitizeBends(incoming), lanes), lanes) : clearedBends(bendsAcrossLanes(s.bends, s.lanes, lanes));
+
+const uidMarker = (): string =>
+  typeof crypto !== 'undefined' && crypto.randomUUID ? `mk-${crypto.randomUUID()}` : `mk-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 
 const uidBend = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID ? `bp-${crypto.randomUUID()}` : `bp-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -923,6 +970,7 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   lanes: s.lanes,
   bends: s.bends,
   voiceProgram: s.voiceProgram,
+  markers: s.markers,
 });
 
 /** Write the feel record from the store, after a write that moved one of its fields. */
@@ -956,6 +1004,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   bends: [],
   ...loadFeel(),
   snap: loadSnap(),
+  markers: [],
   _undo: [],
   _redo: [],
 
@@ -1190,7 +1239,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }
     saveFeelOf(get());
   },
-  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends, incomingTempo) => {
+  loadFromClip: (clipId, incoming, bpm, totalSteps, meter, incomingBends, incomingTempo, incomingMarkers) => {
     // Opening a clip is one undo step of its own, and the step carries the link
     // it replaced: undoing it brings back the roll's previous notes (unsaved
     // work included) linked to the clip they came from, so SAVE writes them
@@ -1217,6 +1266,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ),
           ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
           editingClipId: clipId,
+          markers: sanitizeRollMarkers(incomingMarkers ?? []),
           ...noSelection(),
           isPlaying: false,
           currentStep: 0,
@@ -1233,9 +1283,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     cutHistoryBurst();
   },
 
-  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo) =>
+  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo, incomingMarkers) =>
     set((s) => {
       const notes = migrateNotes(incoming);
+      const markers = incomingMarkers ? { markers: sanitizeRollMarkers(incomingMarkers) } : {};
       const m = mergeMeter(s, meter);
       const bends = replacedBends(s, m.lanes, incomingBends);
       const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
@@ -1246,12 +1297,13 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ? tempoSlice(oneTempo(importedRollBpm(bpm)))
           : {};
       if (notes.length === 0) {
-        return { notes, ...m, bends, ...tempo, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
+        return { notes, ...m, bends, ...tempo, ...markers, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
       return {
         notes,
         ...m,
         bends,
+        ...markers,
         ...fitToNotes(notes, m.meterMap, m.pickupSteps),
         ...noSelection(),
         currentStep: 0,
@@ -1404,6 +1456,53 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   setBendRange: (lane, semitones) =>
     set((s) => (hasLane(s.lanes, lane) ? { bends: withLaneBend(s.bends, lane, () => ({ range: semitones })) } : {})),
 
+  addMarker: (marker) => {
+    const s = get();
+    const kind = isRollMarkerKind(marker.kind) ? marker.kind : 'section';
+    const id = typeof marker.id === 'string' && marker.id.trim() ? marker.id.trim() : uidMarker();
+    const tick = isNum(marker.tick) && marker.tick >= 0 ? Math.round(marker.tick) : markerTickOfStep(isNum(marker.step) ? marker.step : s.currentStep);
+    // A place already holding one of this kind keeps it: the new marker would otherwise replace it.
+    const there = markerAtPlace(s.markers, kind, tick, id);
+    if (there) {
+      if (typeof marker.name === 'string' && marker.name.trim()) get().updateMarker(there.id, { name: marker.name });
+      return there.id;
+    }
+    const name = cleanMarkerName(marker.name, nextMarkerName(s.markers, kind));
+    set((st) => ({ markers: sanitizeRollMarkers([...st.markers.filter((m) => m.id !== id), { id, tick, name, kind }]) }));
+    return id;
+  },
+  updateMarker: (id, patch) =>
+    set((s) => {
+      const found = s.markers.find((m) => m.id === id);
+      if (!found) return {};
+      let kind = isRollMarkerKind(patch.kind) ? patch.kind : found.kind;
+      let tick = isNum(patch.tick) && patch.tick >= 0
+        ? Math.round(patch.tick)
+        : isNum(patch.step) ? markerTickOfStep(patch.step) : found.tick;
+      // Landing on another marker of this kind would remove it (one of a kind per place): refuse the move,
+      // and the retype too when the marker's own place already holds one of the new kind.
+      if (markerAtPlace(s.markers, kind, tick, id)) {
+        tick = found.tick;
+        if (markerAtPlace(s.markers, kind, tick, id)) kind = found.kind;
+      }
+      const name = 'name' in patch ? cleanMarkerName(patch.name, found.name) : found.name;
+      // An edit that changes nothing writes nothing, so a held drag records no step of its own.
+      if (tick === found.tick && name === found.name && kind === found.kind) return {};
+      // The edited marker is the user's now: no origin, so the next song build keeps it.
+      const next = sanitizeRollMarkers([...s.markers.filter((m) => m.id !== id), { id, tick, name, kind }]);
+      return sameRollMarkers(next, s.markers) ? {} : { markers: next };
+    }),
+  removeMarker: (id) =>
+    set((s) => {
+      const markers = s.markers.filter((m) => m.id !== id);
+      return markers.length === s.markers.length ? {} : { markers };
+    }),
+  setMarkers: (list) =>
+    set((s) => {
+      const markers = sanitizeRollMarkers(list);
+      return sameRollMarkers(markers, s.markers) ? {} : { markers };
+    }),
+
   undo: () => {
     const s = get();
     if (s._undo.length === 0) return;
@@ -1471,7 +1570,8 @@ usePianoRollStore.subscribe((state, prev) => {
     state.pickupSteps === prev.pickupSteps &&
     state.lanes === prev.lanes &&
     state.bends === prev.bends &&
-    state.voiceProgram === prev.voiceProgram
+    state.voiceProgram === prev.voiceProgram &&
+    state.markers === prev.markers
   ) return;
   const relinked = state.editingClipId !== prev.editingClipId;
   const revoiced = state.voiceProgram !== prev.voiceProgram;

@@ -12,6 +12,11 @@
  * A song also writes the roll's tempo map: each section's own tempo and a
  * ritardando over each section's last bar (lib/virtuosoTransform songTempoMap),
  * on top of the map the roll had before the song. RESET puts that map back.
+ *
+ * A song also writes a section marker on the roll's ruler at each FORM
+ * section's first bar line, named by its role (lib/rollMarkers
+ * formSectionMarkers). A rebuild replaces those and keeps every marker the
+ * user made or edited, and RESET takes them off.
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -20,6 +25,7 @@ import { usePianoRollStore, type PianoNote } from './pianoRollStore';
 import {
   renderVirtuoso,
   buildSong as buildSongNotes,
+  ROLE_LABELS,
   STYLES,
   ZERO_AMOUNTS,
   defaultSections,
@@ -33,6 +39,7 @@ import {
 import { buildGrooveFromMidiBytes } from '../lib/grooveExtract';
 import type { Meter } from '../lib/colony';
 import { meterEquals, normalizeMeterMap, sanitizeMeter, takeBarsFrom, type MeterSegment } from '../lib/meterMap';
+import { formSectionMarkers, withFormMarkers, withoutFormMarkers } from '../lib/rollMarkers';
 import { sanitizeRollTempoMap, startTempoOf } from '../lib/rollTempo';
 import type { TempoEvent } from '../lib/tempoMap';
 
@@ -204,13 +211,16 @@ export const useVirtuosoStore = create<VirtuosoState>()(
         });
         _songMap = normalizeMeterMap(song.meterMap);
         _songOwned = sectionMeterBars(s.sections);
-        // The song's tempo map goes in with its notes, so one undo takes back both.
+        // The song's tempo map and its section markers go in with its notes, so
+        // one undo takes back all three. The user's own markers stay.
+        const form = formSectionMarkers(song.sections.map((sec) => ({ label: ROLE_LABELS[sec.role] ?? sec.role, step: sec.step })));
         roll.importNotes(
           song.notes,
           startTempoOf(song.tempoMap) ?? baseBpm,
           { meterMap: song.meterMap },
           keepBends ? roll.bends : undefined,
           song.tempoMap,
+          withFormMarkers(roll.markers, form),
         );
         _tempoMap = usePianoRollStore.getState().tempoMap;
       };
@@ -280,6 +290,8 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           // The source phrase goes back under the maps it had before the song.
           if (_songBase && _songMap && sameMeterMap(roll.meterMap, _songMap)) roll.setMeterMap(_songBase);
           if (_tempoBase && _tempoMap && usePianoRollStore.getState().tempoMap === _tempoMap) roll.setTempoMap(_tempoBase);
+          // The section markers the song wrote come off; the user's own stay.
+          roll.setMarkers(withoutFormMarkers(usePianoRollStore.getState().markers));
           clearSongMaps();
         },
 

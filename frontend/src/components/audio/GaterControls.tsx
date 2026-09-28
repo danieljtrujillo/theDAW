@@ -10,6 +10,7 @@
 
 import { SlideTrack } from './SlideTrack';
 import { GATER_DIVISIONS } from '../../lib/rackEffects';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 
 const SHAPES = ['Sine', 'Square', 'Saw'] as const;
 
@@ -84,7 +85,7 @@ export function GaterControls({ params, onChange, idPrefix, projectBpm, onGestur
           </div>
           <div className="flex items-center gap-2">
             <span id={bpmId} className="font-sans text-xs font-bold text-zinc-400 w-16 shrink-0">BPM</span>
-            <SlideTrack value={bpm} min={40} max={240} step={1} defaultValue={projectBpm ?? 120}
+            <SlideTrack value={bpm} min={TEMPO_BPM_MIN} max={TEMPO_BPM_MAX} step={1} defaultValue={projectBpm ?? 120}
               ariaLabelledBy={bpmId} className="flex-1" onChange={(v) => set('bpm', v)}
               onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
             {projectBpm != null && projectBpm !== bpm && (

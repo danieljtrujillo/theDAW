@@ -10,6 +10,12 @@
  * was rendered with (`renderedProgram`, `renderedPercussion`), so EDIT's
  * instrument sync sees the audio is current.
  *
+ * The roll's named markers go with the bounce: onto the clip (`sourceMarkers`)
+ * and onto EDIT's timeline, each at the second its step sounds in the clip, as
+ * markers whose ids name the clip (lib/rollMarkers). The clip write and the
+ * marker write are one EDIT undo step, and a second bounce of the same clip
+ * replaces its markers there instead of adding more.
+ *
  * The render and the peak scan are passed in (PianoRoll gives lib/midiSynth and
  * editorStore's), so node tests replay a bounce against the real stores.
  */
@@ -19,6 +25,7 @@ import { renderedVoiceFields, rollVoice, type GlobalVoice } from './clipProgram'
 import { unrollLanes } from './meterMap';
 import { rollRenderBends, type RollRenderBends } from './pitchBend';
 import { rollClipFields } from './rollClip';
+import { clipTimelineMarkers } from './rollMarkers';
 import type { TempoEvent } from './tempoMap';
 
 export interface RollBounceDeps {
@@ -69,20 +76,30 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   const { peaks } = await deps.computePeaks(blob, 240);
   const editor = useEditorStore.getState();
 
+  /** The roll's markers on EDIT's timeline, at their seconds in the clip at `startSec`. */
+  const markClip = (clipId: string, startSec: number): void =>
+    useEditorStore.getState().setClipRollMarkers(
+      clipId,
+      clipTimelineMarkers(roll.markers, { clipId, startSec, offsetSec: 0, durationSec: duration, bpm, tempoMap: fields.sourceTempoMap }),
+    );
+
   if (editingClipId) {
     const existing = editor.clips.find((c) => c.id === editingClipId);
     if (existing) {
-      editor.updateClip(editingClipId, {
-        audioBlob: blob,
-        mimeType: 'audio/wav',
-        sourceDuration: duration,
-        durationSec: duration,
-        offsetIntoSource: 0,
-        peaks,
-        ...fields,
-        ...renderedVoiceFields(voice),
-        sourceKind: 'piano-roll',
-        label: existing.label.startsWith('roll_') ? `roll_${bpmText}bpm_${noteCount}n` : existing.label,
+      editor.undoGroup(() => {
+        editor.updateClip(editingClipId, {
+          audioBlob: blob,
+          mimeType: 'audio/wav',
+          sourceDuration: duration,
+          durationSec: duration,
+          offsetIntoSource: 0,
+          peaks,
+          ...fields,
+          ...renderedVoiceFields(voice),
+          sourceKind: 'piano-roll',
+          label: existing.label.startsWith('roll_') ? `roll_${bpmText}bpm_${noteCount}n` : existing.label,
+        });
+        markClip(editingClipId, existing.startSec);
       });
       return { kind: 'updated', clipId: editingClipId, duration, noteCount };
     }
@@ -91,21 +108,25 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   }
 
   // Here the voice is the roll's own or the picker's (rollVoice found no linked clip).
-  const trackId = editor.addTrack({ name: `Piano ${bpmText} BPM`, instrumentProgram: voice.program });
-  const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
-  const clipId = editor.addClipToTrack({
-    trackId,
-    label: `roll_${bpmText}bpm_${noteCount}n`,
-    audioBlob: blob,
-    mimeType: 'audio/wav',
-    sourceDuration: duration,
-    offsetIntoSource: 0,
-    durationSec: duration,
-    startSec: 0,
-    color: trackColor,
-    sourceKind: 'piano-roll',
-    ...fields,
-    ...renderedVoiceFields(voice),
+  const clipId = editor.undoGroup(() => {
+    const trackId = editor.addTrack({ name: `Piano ${bpmText} BPM`, instrumentProgram: voice.program });
+    const trackColor = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
+    const id = editor.addClipToTrack({
+      trackId,
+      label: `roll_${bpmText}bpm_${noteCount}n`,
+      audioBlob: blob,
+      mimeType: 'audio/wav',
+      sourceDuration: duration,
+      offsetIntoSource: 0,
+      durationSec: duration,
+      startSec: 0,
+      color: trackColor,
+      sourceKind: 'piano-roll',
+      ...fields,
+      ...renderedVoiceFields(voice),
+    });
+    markClip(id, useEditorStore.getState().clips.find((c) => c.id === id)?.startSec ?? 0);
+    return id;
   });
   editor.cachePeaks(clipId, peaks);
   // Bind the roll to the new clip so subsequent Send-to-Editor edits in place.

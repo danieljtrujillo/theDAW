@@ -73,6 +73,7 @@ import {
   renderedVoiceFields,
   type ClipVoice,
 } from '../../lib/clipProgram';
+import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { renderedWindowFields } from '../../lib/clipRenderWindow';
 import { rerenderStaleMidiClip } from '../../lib/clipRerender';
@@ -1463,27 +1464,40 @@ const PopoverPortal: React.FC<{
  *
  * The drum key beside it makes the track a percussion track: its MIDI clips
  * play and render on the General MIDI drum channel, where a note is a drum and
- * the program picks the kit, so the list offers the kits instead.
+ * the program picks the kit. The list holds the instruments and the kits, the
+ * track's own kind first: choosing a kit on a melodic track turns the drum flag
+ * on, and choosing an instrument on a drum track turns it off, one undo step
+ * with a LOG line (editorStore setTrackVoice).
  */
-const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
-  const updateTrack = useEditorStore((s) => s.updateTrack);
+export const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
+  const setTrackVoice = useEditorStore((s) => s.setTrackVoice);
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
   const drums = isPercussionTrack(track);
-  const value = track.instrumentProgram === undefined ? 'default' : String(track.instrumentProgram);
+  const value = voiceValue(track.instrumentProgram, drums);
   const defaultLabel = drums
     ? `Default (${drumKitName(0)} kit)`
     : globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
-    if (v === 'default') {
-      updateTrack(track.id, { instrumentProgram: undefined });
-      return;
-    }
-    updateTrack(track.id, { instrumentProgram: Number(v) });
-    void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
+    const pick = parseVoiceValue(e.target.value, drums);
+    setTrackVoice(track.id, pick.program, pick.drums);
+    if (pick.program !== undefined) void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
+  const kits = (
+    <optgroup key="kits" label="Drum kits">
+      {GM_DRUM_KITS.map((k) => <option key={k.program} value={voiceValue(k.program, true)}>{`${k.name} kit`}</option>)}
+      {/* A program the kit list lacks (set by the assistant) stays listed, so the select shows what the track holds. */}
+      {drums && track.instrumentProgram !== undefined && !GM_DRUM_KITS.some((k) => k.program === track.instrumentProgram) && (
+        <option value={voiceValue(track.instrumentProgram, true)}>{`${drumKitName(track.instrumentProgram)} kit`}</option>
+      )}
+    </optgroup>
+  );
+  const instruments = (
+    <optgroup key="instruments" label="Instruments">
+      {GM_NAMES.map((nm, i) => <option key={nm} value={voiceValue(i, false)}>{`${i + 1}. ${nm}`}</option>)}
+    </optgroup>
+  );
 
   // A program means an instrument on a melodic track and a kit on a drum
   // track, so switching clears the track's and its clips' programs and they
@@ -1515,14 +1529,8 @@ const TrackInstrumentSelect: React.FC<{ track: EditorTrack }> = ({ track }) => {
         className="flex-1 min-w-0 form-select px-1 py-0.5 text-xs font-bold"
         style={{ colorScheme: 'dark' }}
       >
-        <option value="default">{defaultLabel}</option>
-        {drums
-          ? GM_DRUM_KITS.map((k) => <option key={k.program} value={k.program}>{`${k.name} kit`}</option>)
-          : GM_NAMES.map((nm, i) => <option key={nm} value={i}>{`${i + 1}. ${nm}`}</option>)}
-        {/* A program the kit list lacks (set by the assistant) stays listed, so the select shows what the track holds. */}
-        {drums && track.instrumentProgram !== undefined && !GM_DRUM_KITS.some((k) => k.program === track.instrumentProgram) && (
-          <option value={track.instrumentProgram}>{`${drumKitName(track.instrumentProgram)} kit`}</option>
-        )}
+        <option value={DEFAULT_VOICE_VALUE}>{defaultLabel}</option>
+        {drums ? [kits, instruments] : [instruments, kits]}
       </select>
     </div>
   );

@@ -21,6 +21,7 @@ import { addWorkletModule } from './audioWorkletSupport';
 import { createVstLiveNode } from './vstLive/vstLiveNode';
 import { vstLiveLatencySec } from '../state/vstLiveStore';
 import type { ChainEntry } from '../state/effectChainStore';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from './tempoMap';
 
 /** The effect id a hosted VST3 plugin carries. It is deliberately NOT a
  *  `RACK_EFFECTS` entry — `getRackEffect('vst3')` stays undefined — because a
@@ -1013,7 +1014,7 @@ const makeGater: RackEffectFactory = (ctx, params) => {
 
   const apply = (p: Record<string, number>) => {
     const synced = (p.sync ?? 0) >= 0.5;
-    const bpm = clamp(p.bpm ?? 120, 40, 240);
+    const bpm = clamp(p.bpm ?? 120, TEMPO_BPM_MIN, TEMPO_BPM_MAX);
     const div = Math.round(clamp(p.div ?? 3, 0, GATER_DIV_CYCLES.length - 1));
     const rate = synced ? (bpm / 60) * GATER_DIV_CYCLES[div] : clamp(p.rate ?? 6, 0.1, 30);
     const depth = clamp(p.depth ?? 0.8, 0, 1);
@@ -2120,7 +2121,7 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'sync', label: 'Sync', min: 0, max: 1, step: 1, default: 0, kind: 'toggle', group: 'Clock', tip: 'Tempo-sync: the rate follows Division × BPM instead of the Rate knob.' },
       { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz', curve: 'log', group: 'Clock' },
       { key: 'div', label: 'Division', min: 0, max: 7, step: 1, default: 3, options: GATER_DIVISIONS, group: 'Clock' },
-      { key: 'bpm', label: 'BPM', min: 40, max: 240, step: 1, default: 120, group: 'Clock' },
+      { key: 'bpm', label: 'BPM', min: TEMPO_BPM_MIN, max: TEMPO_BPM_MAX, step: 1, default: 120, group: 'Clock' },
       { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1, options: ['Sine', 'Square', 'Saw'], group: 'Gate' },
       { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8, display: 'percent', group: 'Gate' },
     ],

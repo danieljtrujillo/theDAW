@@ -114,7 +114,10 @@ async function main(): Promise<void> {
   }));
 
   const DIAL = 'div[role="slider"]';
-  const SURFACE = 'svg[role="application"]';
+  // The pad is a pointer surface (a labelled group); its two axes are sliders.
+  const SURFACE = 'svg[role="group"]';
+  const PAD_X = '[role="slider"][aria-label="Filter Freq (X)"]';
+  const PAD_Y = '[role="slider"][aria-label="Filter Reso (Y)"]';
 
   // ── EffectKnob ────────────────────────────────────────────────────────────
 
@@ -263,7 +266,7 @@ async function main(): Promise<void> {
   // A held arrow is one gesture here too.
   {
     const w = pad();
-    const el = w.el(SURFACE);
+    const el = w.el(PAD_X);
     act(() => { keyEvent(el, 'keydown', 'ArrowRight'); });
     act(() => { keyEvent(el, 'keydown', 'ArrowRight'); });
     assert.deepEqual(w.bounds(), ['start']);
@@ -276,8 +279,37 @@ async function main(): Promise<void> {
   // An unhandled key opens nothing.
   {
     const w = pad();
-    act(() => { keyEvent(w.el(SURFACE), 'keydown', 'Tab'); });
+    act(() => { keyEvent(w.el(PAD_X), 'keydown', 'Tab'); });
+    act(() => { keyEvent(w.el(PAD_Y), 'keydown', 'a'); });
     assert.deepEqual(w.log, []);
+    w.unmount();
+  }
+
+  // Each axis is a slider a screen reader reads: its range, its value and its
+  // formatted text, and the keys move that axis alone. Up to afd27bea the pad
+  // was one role="application" surface with no value for either axis.
+  {
+    const w = pad();
+    const sx = w.el(PAD_X);
+    const sy = w.el(PAD_Y);
+    assert.equal(w.el(SURFACE).getAttribute('tabindex'), null, 'the surface is not a tab stop; its sliders are');
+    assert.deepEqual([sx.getAttribute('tabindex'), sy.getAttribute('tabindex')], ['0', '0']);
+    assert.deepEqual([sx.getAttribute('aria-valuemin'), sx.getAttribute('aria-valuemax'), sx.getAttribute('aria-valuenow')], ['0', '1', '0.5']);
+    assert.equal(sy.getAttribute('aria-valuenow'), '0.25');
+    act(() => { keyEvent(sy, 'keydown', 'ArrowUp'); });
+    act(() => { keyEvent(sy, 'keyup', 'ArrowUp'); });
+    assert.equal(w.el(PAD_Y).getAttribute('aria-valuenow'), '0.26', 'Up raises Y by one step');
+    assert.equal(w.el(PAD_X).getAttribute('aria-valuenow'), '0.5', 'and leaves X');
+    act(() => { keyEvent(w.el(PAD_X), 'keydown', 'End'); });
+    act(() => { keyEvent(w.el(PAD_X), 'keyup', 'End'); });
+    assert.equal(w.el(PAD_X).getAttribute('aria-valuenow'), '1', 'End goes to the top of X');
+    act(() => { keyEvent(w.el(PAD_X), 'keydown', 'PageDown'); });
+    act(() => { keyEvent(w.el(PAD_X), 'keyup', 'PageDown'); });
+    assert.equal(w.el(PAD_X).getAttribute('aria-valuenow'), '0.9', 'PageDown moves ten steps');
+    act(() => { keyEvent(w.el(PAD_Y), 'keydown', 'Delete'); });
+    act(() => { keyEvent(w.el(PAD_Y), 'keyup', 'Delete'); });
+    assert.deepEqual([w.el(PAD_X).getAttribute('aria-valuenow'), w.el(PAD_Y).getAttribute('aria-valuenow')], ['0.5', '0.25'], 'Delete resets both');
+    assert.deepEqual(w.bounds(), ['start', 'end', 'start', 'end', 'start', 'end', 'start', 'end'], 'each press is its own gesture');
     w.unmount();
   }
 
@@ -292,8 +324,8 @@ async function main(): Promise<void> {
   // Blur backstop.
   {
     const w = pad();
-    const el = w.el(SURFACE) as unknown as HTMLElement;
-    el.focus();
+    const el = w.el(PAD_Y) as unknown as HTMLElement;
+    act(() => { el.focus(); }); // the slider draws its focus line, a state update
     act(() => { keyEvent(el, 'keydown', 'ArrowUp'); });
     assert.deepEqual(w.bounds(), ['start']);
     act(() => { el.blur(); });

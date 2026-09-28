@@ -18,7 +18,8 @@
  *
  * 2. **Notes are edited as notes, then re-rendered.** A piano-roll clip carries
  *    the note list that produced its audio, so "quantize this" is
- *    `clipNotes.quantizeNotes` plus a re-bounce — not a guess at what quantized
+ *    `rollClip.quantizeRollClip` (clipNotes.quantizeNotes on the roll's own notes)
+ *    plus a re-bounce — not a guess at what quantized
  *    audio would sound like. Every note mutation therefore AWAITS the re-render
  *    before reporting success, and writes the same fields the timeline writes
  *    when an instrument changes (`WaveformEditor.rerenderMidiClipAudio`), so the
@@ -66,11 +67,12 @@ import {
   humanizeNotes,
   noteEndStep,
   nudgeNotes as nudgeNotesPure,
-  quantizeNotes,
   scaleVelocity as scaleVelocityPure,
   transposeNotes,
 } from '../lib/clipNotes';
 import type { OverlapMode } from '../lib/clipNotes';
+import { quantizeRollClip } from '../lib/rollClip';
+import { builtinGrooves, grooveById } from '../lib/grooveTemplate';
 import {
   DEFAULT_SAMPLE_RATE,
   applyFadesToBlob,
@@ -467,9 +469,21 @@ export interface QuantizeArgs extends ClipArgs, RenderArgs {
   strength?: unknown;
   swing?: unknown;
   quantize_ends?: unknown;
+  /** A feel laid over the grid: a groove id (lib/grooveTemplate grooveById). */
+  groove?: unknown;
+  /** How far into the groove, 0..1. Default 1. */
+  groove_strength?: unknown;
 }
 
-/** Snap a MIDI clip's notes toward a grid. */
+/**
+ * Snap a MIDI clip's notes toward a grid, and lay a groove over them.
+ *
+ * The notes go through `rollClip.quantizeRollClip`, which quantizes the
+ * roll's own lane document (`sourceRollNotes`, what EDIT IN PIANO ROLL opens)
+ * and derives the played list (`sourcePianoRoll`, what the clip renders) from
+ * the result, so the two lists never disagree. The groove pass is
+ * `applyGrooveInMeter`, which follows each bar's own meter and groups.
+ */
 export async function quantizeClip(args: QuantizeArgs): Promise<ToolResult> {
   const found = resolveMidiClip(clipRef(args));
   if (!found.ok) return fail(found.error);
@@ -483,20 +497,33 @@ export async function quantizeClip(args: QuantizeArgs): Promise<ToolResult> {
   if (strength < 0 || strength > 1) return fail('quantize: strength must be between 0 and 1');
   if (swing < -1 || swing > 1) return fail('quantize: swing must be between -1 and 1');
 
+  const grooveId = strArg(args.groove);
+  const groove = grooveId ? grooveById(grooveId) : null;
+  if (grooveId && !groove) {
+    return fail(`quantize: "${grooveId}" is not a groove. Use one of: ${builtinGrooves().map((g) => g.id).join(', ')}, or swing8:/swing16:/group8:/group16: with a percent from 50 to 75`);
+  }
+  const grooveStrength = numArg(args.groove_strength) ?? 1;
+  if (grooveStrength < 0 || grooveStrength > 1) return fail('quantize: groove_strength must be between 0 and 1');
+
   const clip = found.value;
   // A clip bounced from the roll carries its meter, so the grid restarts on its
   // bar lines (a pickup or a 7/32 bar keeps its own lines); one without a meter
   // keeps the grid from step 0.
-  const notes = quantizeNotes(clip.sourcePianoRoll, {
+  const q = quantizeRollClip(clip, {
     grid,
     strength,
     swing,
     quantizeEnds: boolArg(args.quantize_ends) ?? false,
     ...(clip.sourceMeterMap?.length ? { meterMap: clip.sourceMeterMap, pickupSteps: clip.sourcePickupSteps ?? 0 } : {}),
+    ...(groove ? { groove, grooveStrength } : {}),
   });
-  const written = await commitNotes(clip, notes, args);
+  const notes = q.sourcePianoRoll;
+  // The roll's own notes ride in the same write; a clip bounced before the roll
+  // kept its own list has none, and none is made up for it.
+  const written = await commitNotes(clip, notes, args, undefined, q.sourceRollNotes.length ? { sourceRollNotes: q.sourceRollNotes } : {});
   if (!written.ok) return fail(written.error);
-  return done(`Quantized ${notes.length} notes to ${grid} at ${Math.round(strength * 100)}% (swing ${swing}) on "${clip.label}"${written.value.lengthNote}`);
+  const feel = groove ? `, ${groove.name} at ${Math.round(grooveStrength * 100)}%` : '';
+  return done(`Quantized ${notes.length} notes to ${grid} at ${Math.round(strength * 100)}% (swing ${swing}${feel}) on "${clip.label}"${written.value.lengthNote}`);
 }
 
 export interface NudgeNotesArgs extends ClipArgs, RenderArgs {
@@ -1351,9 +1378,11 @@ export interface SetTrackArgs {
   armed?: unknown;
   frozen?: unknown;
   instrument_program?: unknown;
+  /** true: a drum track (instrument_program is a kit), false: melodic (a GM program). Omitted: the track's kind. */
+  drums?: unknown;
 }
 
-/** Set a track's mixer state, arm, default instrument, or unfreeze it. */
+/** Set a track's mixer state, arm, default instrument (and its kind: drums or melodic), or unfreeze it. */
 export function setTrack(args: SetTrackArgs): ToolResult {
   const found = resolveTrack(args.track_id ?? args.track);
   if (!found.ok) return fail(found.error);
@@ -1397,10 +1426,20 @@ export function setTrack(args: SetTrackArgs): ToolResult {
   }
 
   const program = numArg(args.instrument_program);
-  if (program !== undefined) {
-    if (!Number.isInteger(program) || program < 0 || program > 127) {
-      return fail('set_track: instrument_program must be an integer GM program 0-127');
-    }
+  if (program !== undefined && (!Number.isInteger(program) || program < 0 || program > 127)) {
+    return fail('set_track: instrument_program must be an integer 0-127 (a GM program, or a drum kit number on a drum track)');
+  }
+  // `drums` names the kind of the choice, so the program and the drum flag land together (editorStore
+  // setTrackVoice: a flip clears the clips' own programs, logs a LOG line). Without it the program is
+  // read in the track's own kind, as it always was: a kit number on a drum track, a GM program otherwise.
+  const drums = boolArg(args.drums);
+  let voice: { program: number | undefined; drums: boolean } | null = null;
+  if (drums !== undefined) {
+    const sameKind = (track.isPercussion === true) === drums;
+    voice = { program: program ?? (sameKind ? track.instrumentProgram : undefined), drums };
+    changed.push(`drums=${drums}`);
+    if (program !== undefined) changed.push(`instrument_program=${program}`);
+  } else if (program !== undefined) {
     updates.instrumentProgram = program;
     changed.push(`instrument_program=${program}`);
   }
@@ -1414,12 +1453,13 @@ export function setTrack(args: SetTrackArgs): ToolResult {
 
   const solo = boolArg(args.solo);
   if (solo === undefined && frozen === undefined && changed.length === 0) {
-    return fail('set_track: nothing to change (pass name, volume, pan, mute, solo, armed, frozen or instrument_program)');
+    return fail('set_track: nothing to change (pass name, volume, pan, mute, solo, armed, frozen, instrument_program or drums)');
   }
 
-  // ONE UNDO STEP: updateTrack, toggleSolo and unfreezeTrack, grouped (see oneStep).
+  // ONE UNDO STEP: updateTrack, setTrackVoice, toggleSolo and unfreezeTrack, grouped (see oneStep).
   oneStep(() => {
-    if (changed.length) s.updateTrack(track.id, updates);
+    if (Object.keys(updates).length) s.updateTrack(track.id, updates);
+    if (voice) s.setTrackVoice(track.id, voice.program, voice.drums);
     // Solo is exclusive in this store, so it has to go through toggleSolo rather
     // than a plain field write — otherwise two tracks could both claim it.
     if (solo !== undefined && solo !== track.solo) {

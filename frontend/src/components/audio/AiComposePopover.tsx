@@ -1,5 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
+import { useTempoField } from '../../lib/useTempoField';
 import { generatePianoFromParams, type AiComposeResult } from '../../lib/aiComposeClient';
 import { COMPOSE_MAX_BARS, composeMeterSummary } from '../../lib/aiComposeGrid';
 import type { MeterSegment } from '../../lib/meterMap';
@@ -60,6 +62,8 @@ export const AiComposePopover: React.FC<{
   const [style, setStyle] = useState('None');
   const [bars, setBars] = useState(8);
   const [bpm, setBpm] = useState(currentBpm || 120);
+  // Typing keeps a draft (lib/useTempoField) that lands on Enter or blur, clamped to 20-300; an arrow or spin step lands at once.
+  const bpmField = useTempoField(bpm, setBpm);
   const [complexity, setComplexity] = useState(0.6);
   const [withBass, setWithBass] = useState(true);
   const keyRef = useRef<HTMLButtonElement>(null);
@@ -196,11 +200,10 @@ export const AiComposePopover: React.FC<{
               id="ai-compose-bpm"
               name="ai-compose-bpm"
               type="number"
-              min={40}
-              max={240}
+              min={TEMPO_BPM_MIN}
+              max={TEMPO_BPM_MAX}
               step="any"
-              value={bpm}
-              onChange={(e) => setBpm(Math.max(40, Math.min(240, parseFloat(e.target.value) || 120)))}
+              {...bpmField}
               className={fieldCls}
             />
           </div>

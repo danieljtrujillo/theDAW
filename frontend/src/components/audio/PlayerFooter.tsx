@@ -56,6 +56,7 @@ import {
   useMetronomeStore,
   type CountInBars,
 } from '../../state/metronomeStore';
+import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type ClickMode } from '../../lib/metronome';
 import {
   PUNCH_CHOICES,
   initRecording,
@@ -730,7 +731,10 @@ export const MetronomeLevelPopover: React.FC<{
   onClose: () => void;
   volume: number;
   onChange: (v: number) => void;
-}> = ({ position, onClose, volume, onChange }) => {
+  /** What each bar's clicks fall on (metronomeStore.clickMode): the piano roll's Beat select, the same setting. */
+  clickMode?: ClickMode;
+  onChangeClickMode?: (mode: ClickMode) => void;
+}> = ({ position, onClose, volume, onChange, clickMode, onChangeClickMode }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Focus the slider on open, and hand focus back to whatever opened the
   // panel on close — same contract as ContextMenu's first-row focus. Stable
@@ -769,8 +773,8 @@ export const MetronomeLevelPopover: React.FC<{
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="Metronome level"
-      className="fixed z-10000 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] px-3 py-2 flex items-center gap-2 font-sans text-xs font-bold select-none"
+      aria-label="Metronome level and beat"
+      className="fixed z-10000 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] px-3 py-2 flex flex-wrap items-center gap-2 font-sans text-xs font-bold select-none"
       style={{ left: pos.x, top: pos.y }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
@@ -780,6 +784,27 @@ export const MetronomeLevelPopover: React.FC<{
     >
       <span className="et-ink-2 uppercase tracking-wider">Level</span>
       <MetronomeVolumeControl volume={volume} onChange={onChange} />
+      {/* The EDIT click's Beat: the piano roll's Beat select, the same one
+          setting (metronomeStore.clickMode), so 7/8 3+2+2 clicks its three
+          group starts and 6/8 its dotted beats on the timeline as well. A
+          native select with its own id, name and <label htmlFor>. */}
+      {clickMode !== undefined && onChangeClickMode && (
+        <span className="flex items-center gap-1.5" title={CLICK_MODE_TITLE[clickMode]}>
+          <label htmlFor="metronome-click-mode" className="et-ink-2 uppercase tracking-wider">Beat</label>
+          <select
+            id="metronome-click-mode"
+            name="metronomeClickMode"
+            value={clickMode}
+            onChange={(e) => onChangeClickMode(asClickMode(e.target.value))}
+            className="rounded-md bg-white/5 border border-white/10 px-1 py-0.5 text-xs font-bold text-zinc-200 hover:text-white focus:outline-hidden focus:ring-1 focus:ring-[rgb(var(--et-accent))]"
+            style={{ colorScheme: 'dark' }}
+          >
+            {CLICK_MODES.map((m) => (
+              <option key={m} value={m} title={CLICK_MODE_TITLE[m]}>{CLICK_MODE_LABEL[m]}</option>
+            ))}
+          </select>
+        </span>
+      )}
     </div>
     </div>,
     document.body,
@@ -809,8 +834,10 @@ export const MetronomeToggle: React.FC<{
   onToggle: () => void;
   volume: number;
   onChangeVolume: (v: number) => void;
+  clickMode?: ClickMode;
+  onChangeClickMode?: (mode: ClickMode) => void;
   className?: string;
-}> = ({ metronomeOn, onToggle, volume, onChangeVolume, className = '' }) => {
+}> = ({ metronomeOn, onToggle, volume, onChangeVolume, clickMode, onChangeClickMode, className = '' }) => {
   const [levelPopover, setLevelPopover] = useState<ContextMenuPosition | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -837,9 +864,9 @@ export const MetronomeToggle: React.FC<{
           const rect = btnRef.current?.getBoundingClientRect();
           setLevelPopover({ x: rect?.left ?? 0, y: rect?.bottom ?? 0 });
         }}
-        aria-label={`Metronome click ${metronomeOn ? 'on' : 'off'} - right-click for level`}
+        aria-label={`Metronome click ${metronomeOn ? 'on' : 'off'} - right-click for level and beat`}
         aria-pressed={metronomeOn}
-        title={`Metronome click ${metronomeOn ? 'on' : 'off'} - the EDIT timeline's count - right-click for level`}
+        title={`Metronome click ${metronomeOn ? 'on' : 'off'} - the EDIT timeline's count${clickMode ? `, on ${CLICK_MODE_LABEL[clickMode].toLowerCase()}` : ''} - right-click for level and beat`}
         className={`${iconButton} ${metronomeOn ? 'text-[rgb(var(--et-accent))] bg-white/5' : ''} ${className}`}
       >
         <Triangle className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth />
@@ -849,6 +876,8 @@ export const MetronomeToggle: React.FC<{
         onClose={() => setLevelPopover(null)}
         volume={volume}
         onChange={onChangeVolume}
+        clickMode={clickMode}
+        onChangeClickMode={onChangeClickMode}
       />
     </>
   );
@@ -958,6 +987,8 @@ export const PlayerFooter: React.FC = () => {
   const setMetronomeVolume = useMetronomeStore((s) => s.setVolume);
   const countInBars = useMetronomeStore((s) => s.countInBars);
   const setCountInBars = useMetronomeStore((s) => s.setCountInBars);
+  const clickMode = useMetronomeStore((s) => s.clickMode);
+  const setClickMode = useMetronomeStore((s) => s.setClickMode);
   useEffect(() => { initMetronome(); }, []);
   // A count-in in flight: the cancel that stops its clicks without ever having
   // moved the playhead. Cleared the moment the transport is released.
@@ -1334,6 +1365,8 @@ export const PlayerFooter: React.FC = () => {
               onToggle={toggleMetronome}
               volume={metronomeVolume}
               onChangeVolume={setMetronomeVolume}
+              clickMode={clickMode}
+              onChangeClickMode={setClickMode}
             />
             {/* MetronomeVolumeControl: gated `hidden 2xl:flex`, the count-in
                 select's own PUNCH-select neighbour's pattern. This is a

@@ -200,15 +200,51 @@ export function groupChoices(meter: Meter): Array<{ value: string; label: string
 export const newLaneCycle = (map: readonly MeterSegment[]): number =>
   Math.max(1, Math.round(stepsPerBar(normalizeMeterMap(map, false)[0].meter)));
 
+/** The steps a lane's span covers inside a roll of `totalSteps`, or null for a lane without a span. */
+export function laneSpanSteps(lane: Pick<PolyLane, 'span'>, totalSteps: number): number | null {
+  if (!lane.span) return null;
+  const origin = Math.max(0, Math.min(totalSteps, lane.span.start));
+  const end = Math.max(origin, Math.min(totalSteps, lane.span.end ?? totalSteps));
+  return end - origin;
+}
+
+/**
+ * A spanned lane whose loop is longer than its span: the loop and the span's
+ * length, or null. Such a lane plays its loop's first span-length once, inside
+ * the span, and the rest of the loop is never heard (laneLoop keeps the loop so
+ * that taking the span off gives it back whole). SPAN on a lane that already
+ * loops longer, a MATCH or an older file can leave a lane this way; the METER
+ * face flags the LOOP readout and SPAN says so in the LOG.
+ */
+export function loopPastSpan(lane: Pick<PolyLane, 'id' | 'span' | 'cycleSteps'>, totalSteps: number): { cycle: number; span: number } | null {
+  if (lane.id === 0 || !lane.cycleSteps || lane.cycleSteps <= 0) return null;
+  const span = laneSpanSteps(lane, totalSteps);
+  return span !== null && lane.cycleSteps > span ? { cycle: lane.cycleSteps, span } : null;
+}
+
 /**
  * LOOP: one step, or one bar of `barSteps` with Shift. A lane with no loop
  * counts as the whole roll; reaching the roll's length stops the loop (null).
  * A shorter loop always loops: from a loop at or past the roll's length it
  * lands one step inside the roll.
+ *
+ * A lane with a span (`spanSteps`, the length of the bars it plays in) counts
+ * inside its span: its loop runs from one step up to the span's length, where
+ * one pass fills the span. A press past the span's length wraps to the
+ * shortest loop (one step, or one bar with Shift), so the lane keeps looping;
+ * a loop longer than its span would play its first span-length once and never
+ * repeat. A lane with no loop counts as its whole span.
  */
-export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number): number | null {
-  const total = Math.max(1, Math.floor(totalSteps));
+export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number, spanSteps?: number | null): number | null {
   const by = byBar ? Math.max(1, Math.round(barSteps)) : 1;
+  if (spanSteps != null && Number.isFinite(spanSteps) && spanSteps > 0) {
+    const span = Math.max(1, Math.round(spanSteps));
+    const now = Math.min(Math.round(cycle ?? span), span);
+    if (dir < 0) return clamp(now - by, 1, span);
+    const next = now + by;
+    return next > span ? Math.min(by, span) : next;
+  }
+  const total = Math.max(1, Math.floor(totalSteps));
   if (dir < 0) return clamp(Math.min(Math.round(cycle ?? total), total) - by, 1, Math.max(1, total - 1));
   const next = clamp(Math.round(cycle ?? total) + by, 1, total);
   return next >= total ? null : next;
@@ -567,10 +603,25 @@ export interface TempoSummary {
   value: string;
   /** The hover: how many tempo points and fermatas follow the start, and the range. */
   title: string;
-  /** The Clear key's name, which says whether it clears tempo points, fermatas or both. */
-  clearLabel: string;
-  clearDescription: string;
+  /** Tempo points after the start (a ramp's target counts as one). */
+  points: number;
+  /** Fermatas. */
+  holds: number;
+  /**
+   * The Clear key's name and hover. It clears the tempo changes and keeps the
+   * fermatas; null when there are no tempo changes to clear.
+   */
+  clearTempo: { label: string; description: string } | null;
+  /** The Clear fermatas key's name and hover: it keeps the tempo changes. Null with no fermata. */
+  clearFermatas: { label: string; description: string } | null;
 }
+
+/** The map with its tempo changes cleared: the start tempo and every fermata, which keeps its place. */
+export const withoutTempoChanges = (map: readonly TempoEvent[]): TempoEvent[] =>
+  map.filter((e) => !!e.fermata || e.beat === 0);
+
+/** The map with its fermatas cleared: every tempo change stays. */
+export const withoutFermatas = (map: readonly TempoEvent[]): TempoEvent[] => map.filter((e) => !e.fermata);
 
 /**
  * The readout for `map` (the roll's tempo map; `startBpm` is its beat-0
@@ -591,12 +642,24 @@ export function tempoSummary(map: readonly TempoEvent[], startBpm: number): Temp
   const counted = [points > 0 ? pointText : '', holds > 0 ? holdText : ''].filter(Boolean).join(' and ');
   const range = lowText === highText ? `at ${lowText} BPM throughout` : `from ${lowText} to ${highText} BPM`;
   const title = `${counted || 'Nothing'} after the ${bpmText(startBpm)} BPM start, ${range}`;
-  const what = points > 0 && holds > 0 ? 'the tempo changes and fermatas' : holds > 0 ? 'the fermatas' : 'the tempo changes';
+  const keep = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   return {
     value,
     title,
-    clearLabel: `Clear ${what}`,
-    clearDescription: `Clear ${what}; the roll runs at ${bpmText(startBpm)} BPM throughout`,
+    points,
+    holds,
+    clearTempo: points > 0
+      ? {
+        label: 'Clear the tempo changes',
+        description: `Clear the tempo changes; the roll runs at ${bpmText(startBpm)} BPM throughout${holds > 0 ? ` and keeps its ${keep(holds, 'fermata', 'fermatas')}` : ''}`,
+      }
+      : null,
+    clearFermatas: holds > 0
+      ? {
+        label: 'Clear the fermatas',
+        description: `Clear the ${keep(holds, 'fermata', 'fermatas')}${points === 1 ? '; the tempo point stays' : points > 1 ? `; the ${points} tempo points stay` : ''}`,
+      }
+      : null,
   };
 }
 

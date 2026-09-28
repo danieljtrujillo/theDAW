@@ -68,7 +68,12 @@ interface LoomState {
   /** Lanes GROW leaves alone. */
   keepLanes: string[];
 
-  /** Plane (lanes) or colony (cells and arrows). */
+  /**
+   * The LOOM tab's view: 'colony' (cells and wires on the dish) or 'plane'
+   * (the lane score: lanes with their own grids, 1/12-1/28 tuplets and the
+   * meter directive). Chosen with the view switch in the tab's header and
+   * saved with the tab's other settings.
+   */
   mode: LoomMode;
   colonyText: string;
   colonyApplied: ColonyScore;
@@ -129,6 +134,8 @@ interface LoomState {
   addLane: () => void;
   removeLane: (lane: string) => void;
   setBpm: (bpm: number) => void;
+  /** The lane score's `meter` directive: the bar the beat clock counts while it plays; null removes it. */
+  setMeter: (meter: Meter | null) => void;
   resetStarter: () => void;
   /** GROW: a mutated child of the applied score becomes the score. */
   mutate: (intensity: number) => void;
@@ -841,6 +848,13 @@ export const useLoomStore = create<LoomState>()(
           set({ selected: null });
         },
 
+        setMeter: (meter) => {
+          const next = clone(get().applied);
+          if (meter) next.meter = { num: meter.num, den: meter.den, groups: [...meter.groups] };
+          else delete next.meter;
+          commit(next);
+        },
+
         setBpm: (bpm) => {
           const v = Math.max(20, Math.min(300, bpm));
           beatClock.setBpm(v, 'loom');
@@ -954,13 +968,16 @@ export const useLoomStore = create<LoomState>()(
     {
       name: 'thedaw-loom-v1',
       storage: persistStorage(),
-      version: 2,
-      migrate: (persisted) => ({ ...(persisted as object), mode: 'colony' }),
+      // v2 forced the colony view on every load, so the lane score had no way
+      // in; v3 keeps the view the user chose. A v1 save (the old plane-first
+      // tab) opens on the colony, as v2 did; a v2 save carries 'colony'.
+      version: 3,
+      migrate: (persisted, version) => (version < 2 ? { ...(persisted as object), mode: 'colony' } : (persisted as object)),
       partialize: (s) => ({ text: s.text, colonyText: s.colonyText, mode: s.mode, colonyPositions: s.colonyPositions }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        // The LOOM tab has one view now: the colony.
-        if (state.mode !== 'colony') useLoomStore.setState({ mode: 'colony' });
+        // A stored view that is neither known view opens the colony.
+        if (state.mode !== 'colony' && state.mode !== 'plane') useLoomStore.setState({ mode: 'colony' });
         const { score, errors } = parseLoom(state.text);
         useLoomStore.setState({ applied: score, errors, dirty: false, bpm: score.bpm ?? beatClock.bpm });
         getEngine().setScore(score);

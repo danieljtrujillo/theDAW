@@ -76,7 +76,7 @@ def _detect_aubio() -> tuple[bool, Optional[str], Optional[str]]:
         if code == 0:
             return True, "cli", None
     try:
-        import aubio  # type: ignore
+        import aubio
 
         version = getattr(aubio, "__version__", None) or getattr(aubio, "version", None)
         return True, "python", version

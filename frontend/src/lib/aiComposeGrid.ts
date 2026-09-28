@@ -11,6 +11,7 @@
  */
 import { barStartStep, bars as meterBars, beatLines, groupLines, normalizeMeterMap, type MeterSegment } from './meterMap';
 import type { Meter } from './colony';
+import { clampTempoBpm } from './tempoMap';
 import type { PianoNote } from '../state/pianoRollStore';
 
 /** The longest piece the AI key asks for, in bars after the pickup. */
@@ -155,7 +156,7 @@ const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number 
   return Math.max(lo, Math.min(hi, n));
 };
 
-/** A composed part on its grid: the notes, the tempo the model chose (fraction kept, 40-240), its summary, and the meter it was asked for. */
+/** A composed part on its grid: the notes, the tempo the model chose (fraction kept, 20-300), its summary, and the meter it was asked for. */
 export interface ComposeParsed {
   notes: PianoNote[];
   bpm: number;
@@ -191,7 +192,7 @@ export function parseComposeResponse(text: string, g: ComposeGrid, requestBpm: n
   notes.sort((a, b) => a.step - b.step);
   if (notes.length === 0) throw new Error('Model returned no notes');
   const bpm = typeof parsed.bpm === 'number' && Number.isFinite(parsed.bpm) && parsed.bpm > 0
-    ? Math.max(40, Math.min(240, parsed.bpm))
+    ? clampTempoBpm(parsed.bpm)
     : requestBpm;
   return { notes, bpm, summary: parsed.summary || '', meterMap: g.meterMap, pickupSteps: g.pickupSteps };
 }

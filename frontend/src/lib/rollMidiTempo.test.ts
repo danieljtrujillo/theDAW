@@ -94,7 +94,8 @@ const ROLL = { notes, lanes: LANE, totalSteps: 96, bpm: 54, meterMap: M44, picku
   const file = rollToMidiFile(ROLL);
   const edited: MidiFileData = { ...file, tempos: [{ tick: 0, bpm: 54 }, { tick: 8 * ROLL_PPQ, bpm: 100 }] };
   const back = midiFileToRoll(parseMidi(encodeMidi(edited)));
-  assert.equal(shape(back.tempoMap), '0:54 8:100');
+  // 54 is 1111111 us in FF 51, and an edited file reads at those microseconds.
+  assert.equal(shape(back.tempoMap), `0:${60_000_000 / 1_111_111} 8:100`);
   // A text that does not read is left alone too.
   assert.equal(parseTempoMapText('0:54;oops'), null);
   assert.equal(parseTempoMapText('0:0'), null);
@@ -110,21 +111,33 @@ const ROLL = { notes, lanes: LANE, totalSteps: 96, bpm: 54, meterMap: M44, picku
   };
   const bytes = encodeMidi(foreign);
   const back = midiFileToRoll(parseMidi(bytes));
-  assert.equal(shape(back.tempoMap), '0:80 4:96.5 8:60');
+  // 96.5 is 621762 us in FF 51, and the file reads at exactly those microseconds.
+  const at965 = 60_000_000 / 621_762;
+  assert.equal(shape(back.tempoMap), `0:80 4:${at965} 8:60`);
   // The built-in voice renders a library file at its own tempo changes.
   const rendered = midiFileRenderNotes(parseMidi(bytes));
-  near(rendered[1].startSec, 4 * (60 / 80) + 4 * (60 / 96.5), 1e-6, 'the second note after the change');
+  near(rendered[1].startSec, 4 * (60 / 80) + 4 * 0.621762, 1e-9, 'the second note after the change, to the microsecond');
   near(rendered[1].durationSec, 1, 1e-6, 'a beat at 60');
   // Send to piano roll from the library: the roll takes the file's map.
   assert.equal(loadMidiIntoPianoRoll(bytes, 'piano-roll', 'strings'), true);
-  assert.equal(shape(usePianoRollStore.getState().tempoMap), '0:80 4:96.5 8:60');
+  assert.equal(shape(usePianoRollStore.getState().tempoMap), `0:80 4:${at965} 8:60`);
 }
 
-// A tempo reads back as written, and no two tempos a file can hold read as one.
+// Every tempo reads at its exact microsecond value, with no rounding path: a
+// quarter lasts exactly the microseconds FF 51 holds, and writing that tempo
+// again gives the same microseconds, so no round trip moves it. The build
+// before this read 97 as 97 (three decimals) while its quarter lasted
+// 618557 us, which is 96.99995 BPM.
 {
   for (const bpm of [20, 20.5, 33.333, 60, 97, 97.3, 133.5, 240, 300]) {
-    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} reads back as ${bpm}`);
+    const micros = tempoMicros(bpm);
+    const read = parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm;
+    assert.equal(read, 60_000_000 / micros, `${bpm} reads at exactly ${micros} us`);
+    assert.equal(tempoMicros(read), micros, `${bpm} written again keeps ${micros} us`);
+    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm: read, tracks: [] })).bpm, read, `${bpm} survives a second trip`);
   }
+  assert.equal(tempoOfMicros(618_557), 60_000_000 / 618_557, 'no three-decimal rounding: 618557 us is not 97');
+  assert.notEqual(tempoOfMicros(618_557), 97);
   // Around 20 bpm one thousandth of a bpm spans several microseconds; each still reads as its own tempo.
   const seen = new Set<number>();
   for (let micros = 2_999_990; micros <= 3_000_010; micros += 1) {

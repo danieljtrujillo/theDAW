@@ -12,6 +12,7 @@ import { logInfo } from '../state/logStore';
 import * as editorTools from '../state/editorTools';
 import type { ToolResult } from '../state/editorTools';
 import * as editorToolBridge from './editorToolBridge';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../lib/tempoMap';
 
 export interface AssistantActionPayload {
     type: string;
@@ -288,7 +289,7 @@ async function stretchClipTool(payload: Record<string, unknown>): Promise<ToolRe
 
 const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     // -- notes ---------------------------------------------------------------
-    editor_quantize_clip: (p) => facade.quantizeClip(pick(p, [...CLIP, 'grid', 'strength', 'swing', 'quantize_ends'])),
+    editor_quantize_clip: (p) => facade.quantizeClip(pick(p, [...CLIP, 'grid', 'strength', 'swing', 'quantize_ends', 'groove', 'groove_strength'])),
     editor_get_notes: (p) => facade.getNotes(pick(p, CLIP)),
     editor_set_notes: (p) => facade.setNotes(pick(p, [...CLIP, 'notes'])),
     editor_nudge_notes: (p) => facade.nudgeNotes(pick(p, [...CLIP, 'steps', 'ms', 'ticks', 'bpm'])),
@@ -349,7 +350,7 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     // plain field write lets two tracks both claim it), and the only one that
     // knows freezing is UI-only.
     editor_set_track: (p) =>
-        facade.setTrack(pick(p, [...TRACK, 'name', 'volume', 'pan', 'mute', 'solo', 'armed', 'frozen', 'instrument_program'])),
+        facade.setTrack(pick(p, [...TRACK, 'name', 'volume', 'pan', 'mute', 'solo', 'armed', 'frozen', 'instrument_program', 'drums'])),
     editor_reorder_tracks: (p) => facade.reorderTracks(pick(p, ['track_ids'])),
     editor_duplicate_track: (p) => facade.duplicateTrack(pick(p, TRACK)),
     editor_freeze_track: (p) => facade.freezeTrack(pick(p, TRACK)),
@@ -661,7 +662,10 @@ function runtheDAWAction(action: AssistantActionPayload): ActionBranch {
 
         case 'editor_set_bpm': {
             const bpm = Number(payload?.bpm);
-            if (!Number.isFinite(bpm) || bpm < 20 || bpm > 400) return fail('editor_set_bpm: pass bpm in 20..400');
+            // The app's tempo range (lib/tempoMap): EDIT's setBpm holds 20-300, so a 350 said "BPM set to 350" and set 300.
+            if (!Number.isFinite(bpm) || bpm < TEMPO_BPM_MIN || bpm > TEMPO_BPM_MAX) {
+                return fail(`editor_set_bpm: pass bpm in ${TEMPO_BPM_MIN}..${TEMPO_BPM_MAX}`);
+            }
             useEditorStore.getState().setBpm(bpm);
             return `BPM set to ${bpm}`;
         }

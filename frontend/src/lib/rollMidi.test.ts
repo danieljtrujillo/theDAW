@@ -415,8 +415,11 @@ const bytes = encodeMidi(file);
   assert.equal(s.bpm, 97.3, 'the roll keeps the tempo it was handed');
   const bytes = encodeMidi(rollToMidiFile({ ...s, totalSteps: s.totalSteps }));
   const parsed = parseMidi(bytes);
-  assert.equal(parsed.bpm, 97.3, 'the file reads back at 97.3');
+  // FF 51 holds 616650 us and reads back at exactly that; the roll's tempo text brings 97.3 back.
+  assert.equal(parsed.bpm, 60_000_000 / 616650, 'the FF 51 reads at its exact microseconds');
+  assert.equal(parsed.dawTempoMap, '0:97.3', 'a tempo FF 51 cannot hold rides in the tempo text');
   const back = midiFileToRoll(parsed, 'rt');
+  assert.equal(back.bpm, 97.3, 'the file opens in the roll at 97.3');
   usePianoRollStore.getState().importNotes(back.notes, back.bpm, back.meter, back.bends);
   const again = usePianoRollStore.getState();
   assert.equal(again.bpm, 97.3, 'IMPORT puts the roll back at 97.3');
@@ -427,10 +430,13 @@ const bytes = encodeMidi(file);
     assert.equal(n.ticks, played[i].ticks, `note ${i} keeps its length`);
     near(secs(n.tick ?? 0, again.bpm), secs(played[i].tick ?? 0, 97.3), 1e-9, `note ${i} plays at its second`);
   });
-  // Whole BPMs, the only tempos an older build's roll wrote, read back whole.
+  // A file an older build's roll wrote (whole BPMs, no tempo text) reads at its FF 51's exact microseconds;
+  // the tempos a whole number of microseconds holds read back whole.
   for (const bpm of [60, 97, 120, 133, 240]) {
-    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} BPM reads back as ${bpm}`);
+    const micros = Math.round(60_000_000 / bpm);
+    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, 60_000_000 / micros, `${bpm} BPM reads back at ${micros} us`);
   }
+  for (const bpm of [60, 120, 240]) assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} BPM reads back whole`);
 }
 
 // Export count: one note in lane A and two in lane B is three notes exported, though lane A's track holds one.

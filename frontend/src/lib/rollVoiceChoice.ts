@@ -55,8 +55,15 @@ export function rollVoiceChoice(
 /**
  * Put the roll on `program` (null: the instrument picker). Returns where it
  * landed: `track` for a linked roll, `roll` for an unlinked one.
+ *
+ * `drums` says what the program is on a linked roll: true for a drum kit,
+ * false for a melodic instrument. A choice of the other kind than the linked
+ * track flips its drum flag (editorStore setTrackVoice, with a LOG line), so a
+ * melodic instrument chosen for a drum track turns drums off. Left out, the
+ * program keeps the track's kind, as before. An unlinked roll has no drum
+ * flag and ignores it.
  */
-export function chooseRollVoice(program: number | null): 'track' | 'roll' {
+export function chooseRollVoice(program: number | null, drums?: boolean): 'track' | 'roll' {
   const value = program === null || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
   const editor = useEditorStore.getState();
   const linked = linkedRollTarget(usePianoRollStore.getState().editingClipId, editor.clips, editor.tracks);
@@ -64,9 +71,12 @@ export function chooseRollVoice(program: number | null): 'track' | 'roll' {
     usePianoRollStore.getState().setVoiceProgram(value ?? null);
     return 'roll';
   }
+  const kind = drums ?? isPercussionTrack(linked.track);
   editor.undoGroup(() => {
-    editor.updateTrack(linked.track.id, { instrumentProgram: value });
-    if (linked.clip.instrumentProgram !== undefined) editor.updateClip(linked.clip.id, { instrumentProgram: value });
+    editor.setTrackVoice(linked.track.id, value, kind);
+    // A flip clears the clip's own program; one of the same kind is set with the track's.
+    const clip = useEditorStore.getState().clips.find((c) => c.id === linked.clip.id);
+    if (clip && clip.instrumentProgram !== undefined) editor.updateClip(clip.id, { instrumentProgram: value });
   });
   return 'track';
 }

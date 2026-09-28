@@ -10,6 +10,7 @@ import { normalizeMeterMap, roundUpToBar, sanitizeTuplet, type PolyLane } from '
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { sanitizeBends, type BendShape } from './pitchBend';
 import { playedRollNotes } from './rollClip';
+import { rollMarkerToTasmo, tasmoToRollMarkers, type TasmoRollMarker } from './rollMarkers';
 import { copyTempoMap, hasTempoChanges, sanitizeRollTempoMap } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 import { noteEndStep } from './clipNotes/units';
@@ -313,6 +314,8 @@ export interface TasmoClipInput {
   roll_bends?: TasmoLaneBend[] | null;
   /** Piano-roll clips: the tempo map, written only when the clip changes tempo. */
   tempo_map?: TasmoTempoEvent[] | null;
+  /** Piano-roll clips: the ruler's named markers (sections and movements), written only when the clip has some. */
+  roll_markers?: TasmoRollMarker[] | null;
   /** Alternate recordings of this clip, one file entry each, and the comp
    *  across them. `active_take_index` names the take the clip's OWN
    *  `audio_file` / `offset_into_source` mirror, so a reader that ignores all
@@ -481,6 +484,8 @@ export interface TasmoLoadedClip {
   roll_bends?: TasmoLaneBend[] | null;
   /** The tempo map; absent in .tasmo files written before the roll had one, and on a clip at one tempo. */
   tempo_map?: TasmoTempoEvent[] | null;
+  /** The ruler's markers; absent in .tasmo files written before the roll had them, and on a clip with none. */
+  roll_markers?: TasmoRollMarker[] | null;
   /** Alternate recordings, the comp across them, and which take the clip's own
    *  fields mirror; all three absent in .tasmo files written before takes
    *  existed, which is why the loader treats their absence as "not comped"
@@ -568,9 +573,12 @@ export interface RecentItem {
 // --- Piano-roll clip fields <-> .tasmo JSON (pure; tested in projectImport.test.ts) ---
 type ClipMeterFields = Pick<
   AudioClip,
-  'sourceRollNotes' | 'sourceTotalSteps' | 'sourceMeterMap' | 'sourcePickupSteps' | 'sourceLanes' | 'sourceBends' | 'sourceTempoMap'
+  'sourceRollNotes' | 'sourceTotalSteps' | 'sourceMeterMap' | 'sourcePickupSteps' | 'sourceLanes' | 'sourceBends' | 'sourceTempoMap' | 'sourceMarkers'
 >;
-type TasmoMeterFields = Pick<TasmoClipInput, 'roll_notes' | 'total_steps' | 'meter_map' | 'pickup_steps' | 'lanes' | 'roll_bends' | 'tempo_map'>;
+type TasmoMeterFields = Pick<
+  TasmoClipInput,
+  'roll_notes' | 'total_steps' | 'meter_map' | 'pickup_steps' | 'lanes' | 'roll_bends' | 'tempo_map' | 'roll_markers'
+>;
 
 const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
 
@@ -655,6 +663,7 @@ export const clipMeterToTasmo = (c: ClipMeterFields): TasmoMeterFields => ({
       }
     : {}),
   ...(hasTempoChanges(c.sourceTempoMap) ? { tempo_map: (c.sourceTempoMap ?? []).map(tempoEventToTasmo) } : {}),
+  ...(c.sourceMarkers?.length ? { roll_markers: c.sourceMarkers.map(rollMarkerToTasmo) } : {}),
 });
 
 /** A tempo event in the file shape: `curve` only when it ramps, `fermata` only on a hold. */
@@ -775,6 +784,9 @@ export const tasmoMeterToClip = (c: TasmoMeterFields): ClipMeterFields => {
     const map = sanitizeRollTempoMap(events, start);
     if (hasTempoChanges(map)) out.sourceTempoMap = copyTempoMap(map);
   }
+  // Junk markers are dropped (lib/rollMarkers tasmoToRollMarkers); a clip with none keeps the field unset.
+  const markers = tasmoToRollMarkers(c.roll_markers);
+  if (markers.length) out.sourceMarkers = markers;
   return out;
 };
 

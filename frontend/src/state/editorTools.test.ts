@@ -271,6 +271,49 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', strength: 3, ...seams }), 'bad strength'), /strength must be between 0 and 1/);
 }
 
+/* ── quantize a roll clip: the roll's own notes and the played list together,
+      with a groove in the clip's meter ─────────────────────────────────────── */
+// Up to afd27bea quantize wrote only the played list (sourcePianoRoll), so a
+// bounced roll clip reopened in the piano roll (which reads sourceRollNotes)
+// showed every note where it was before the quantize.
+{
+  seed();
+  const own: PianoNote[] = [
+    { id: 'a', note: 60, step: 0.3, length: 2, velocity: 100 },
+    { id: 'b', note: 62, step: 2.2, length: 2, velocity: 90 },
+    { id: 'c', note: 64, step: 4.1, length: 2, velocity: 90 },
+    { id: 'd', note: 65, step: 5.8, length: 2, velocity: 90 },
+  ];
+  useEditorStore.getState().updateClip('midi1', {
+    sourceRollNotes: own,
+    sourcePianoRoll: own,
+    sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
+    sourceMeterMap: [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }],
+    sourcePickupSteps: 0,
+    sourceTotalSteps: 14,
+  });
+  okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', strength: 1, ...seams }), 'quantize roll clip');
+  assert.deepEqual(clipOf('midi1').sourceRollNotes?.map((n) => n.step), [0, 2, 4, 6], "the roll's own notes are quantized");
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0, 2, 4, 6], 'and the played list matches them');
+  const { clipRollLoad } = await import('../lib/rollClip');
+  const { usePianoRollStore } = await import('./pianoRollStore');
+  usePianoRollStore.getState().loadFromClip(...clipRollLoad(clipOf('midi1')));
+  assert.deepEqual(usePianoRollStore.getState().notes.map((n) => n.step).sort((x, y) => x - y), [0, 2, 4, 6], 'EDIT IN PIANO ROLL opens the quantized notes');
+  okOf(tools.undo(), 'undo roll quantize');
+  assert.deepEqual(clipOf('midi1').sourceRollNotes?.map((n) => n.step), [0.3, 2.2, 4.1, 5.8], 'undo brings both lists back');
+
+  // A group swing in 7/8 3+2+2: each group's off-8th lands late, the group starts stay.
+  const res = okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'group8:66', groove_strength: 1, ...seams }), 'groove');
+  assert.match(res.message, /\(swing 0, .+ at 100%\) on "bass"/, `the result names the groove (${res.message})`);
+  const swung = clipOf('midi1').sourceRollNotes?.map((n) => n.step) ?? [];
+  assert.equal(swung[0], 0, 'group 1 starts on the bar line');
+  assert.ok(swung[1] > 2, `the off-8th of group 1 lands late (${swung[1]})`);
+  assert.equal(swung[2], 6 - 2, 'group 2 starts on its line');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), swung, 'the played list takes the same groove');
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'nope', ...seams }), 'bad groove'), /is not a groove/);
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'straight', groove_strength: 2, ...seams }), 'bad groove strength'), /groove_strength must be between 0 and 1/);
+}
+
 /* ── nudge / transpose / velocity / humanize / overlaps / filter ─────────── */
 {
   seed();
@@ -407,7 +450,7 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   seed();
   okOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 95 }), 'source bpm');
   assert.equal(clipOf('aud1').sourceBpm, 95);
-  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 5 }), 'bad bpm'), /between 40 and 240/);
+  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 5 }), 'bad bpm'), /between 20 and 300/);
 
   seed();
   const stretched = okOf(await tools.stretchClip({ clip_id: 'bass', target_bpm: 60, ...seams }), 'stretch midi');

@@ -29,7 +29,7 @@ async function main(): Promise<void> {
     pretendToBeVisual: true,
   });
   const g = globalThis as unknown as Record<string, unknown>;
-  for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'Node', 'getComputedStyle']) {
+  for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Node', 'getComputedStyle']) {
     Object.defineProperty(g, key, {
       value: (dom.window as unknown as Record<string, unknown>)[key],
       configurable: true,
@@ -125,7 +125,7 @@ async function main(): Promise<void> {
       }),
     );
   });
-  assert.equal(doc.querySelector('[aria-label="Metronome level"]'), null, 'position=null renders nothing (still closed)');
+  assert.equal(doc.querySelector('[aria-label="Metronome level and beat"]'), null, 'position=null renders nothing (still closed)');
 
   await act(async () => {
     root2.render(
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
       }),
     );
   });
-  const panel = doc.querySelector('[aria-label="Metronome level"]');
+  const panel = doc.querySelector('[aria-label="Metronome level and beat"]');
   assert.ok(panel, 'a position opens the popover panel, portaled same as ContextMenu');
   const popoverSlider = panel!.querySelector<HTMLElement>('[role="slider"]');
   assert.ok(popoverSlider, 'the popover hosts the same slider control MetronomeVolumeControl renders');
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
   // `onClose` only notifies the caller; as in real PlayerFooter usage, the
   // caller re-renders with `position: null` to actually unmount the panel —
   // done here so it doesn't linger in the document for later `[aria-label=
-  // "Metronome level"]` lookups below.
+  // "Metronome level and beat"]` lookups below.
   await act(async () => {
     root2.render(
       React.createElement(MetronomeLevelPopover, {
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
       }),
     );
   });
-  assert.equal(doc.querySelector('[aria-label="Metronome level"]'), null, 'position: null unmounts the panel');
+  assert.equal(doc.querySelector('[aria-label="Metronome level and beat"]'), null, 'position: null unmounts the panel');
 
   // Finding 1 (T25b edit B re-audit): rolling the wheel over the popover's
   // OWN hosted slider must adjust the value WITHOUT dismissing the panel —
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
   });
-  const ownSlider = doc.querySelector<HTMLElement>('[aria-label="Metronome level"] [role="slider"]');
+  const ownSlider = doc.querySelector<HTMLElement>('[aria-label="Metronome level and beat"] [role="slider"]');
   assert.ok(ownSlider, 'the popover renders its hosted slider');
   await act(async () => {
     ownSlider!.focus();
@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   });
   assert.equal(wheelClosed, 1, 'a wheel notch outside the panel still dismisses it');
   await act(async () => { root3.unmount(); });
-  assert.equal(doc.querySelector('[aria-label="Metronome level"]'), null, 'unmounting root3 clears its portaled panel');
+  assert.equal(doc.querySelector('[aria-label="Metronome level and beat"]'), null, 'unmounting root3 clears its portaled panel');
 
   // Finding 2 (T25b edit B re-audit): the predicate that gates the toggle's
   // keyboard opener, tested as its own unit so `MetronomeToggle`'s onKeyDown
@@ -256,7 +256,7 @@ async function main(): Promise<void> {
   });
   const toggleBtn1 = t1.host.querySelector<HTMLButtonElement>('button[aria-pressed]');
   assert.ok(toggleBtn1, 'renders the metronome toggle button');
-  assert.equal(doc.querySelector('[aria-label="Metronome level"]'), null, 'the level popover starts closed');
+  assert.equal(doc.querySelector('[aria-label="Metronome level and beat"]'), null, 'the level popover starts closed');
   await act(async () => {
     toggleBtn1!.click();
   });
@@ -264,7 +264,7 @@ async function main(): Promise<void> {
   await act(async () => {
     toggleBtn1!.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   });
-  assert.ok(doc.querySelector('[aria-label="Metronome level"]'), 'onContextMenu is wired on the toggle: right-click opens the level popover');
+  assert.ok(doc.querySelector('[aria-label="Metronome level and beat"]'), 'onContextMenu is wired on the toggle: right-click opens the level popover');
   await act(async () => { t1.root.unmount(); });
 
   const t2 = mountToggle();
@@ -283,7 +283,7 @@ async function main(): Promise<void> {
     toggleBtn2!.focus();
     toggleBtn2!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }));
   });
-  assert.ok(doc.querySelector('[aria-label="Metronome level"]'), 'Shift+F10 on the focused toggle opens the level popover');
+  assert.ok(doc.querySelector('[aria-label="Metronome level and beat"]'), 'Shift+F10 on the focused toggle opens the level popover');
   await act(async () => { t2.root.unmount(); });
 
   const t3 = mountToggle();
@@ -302,8 +302,53 @@ async function main(): Promise<void> {
     toggleBtn3!.focus();
     toggleBtn3!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'F10', shiftKey: false, bubbles: true, cancelable: true }));
   });
-  assert.equal(doc.querySelector('[aria-label="Metronome level"]'), null, 'bare F10 on the toggle does not open the level popover');
+  assert.equal(doc.querySelector('[aria-label="Metronome level and beat"]'), null, 'bare F10 on the toggle does not open the level popover');
   await act(async () => { t3.root.unmount(); });
+
+  // The EDIT click's Beat select: the footer's click toggle, wired to the real
+  // metronome store as PlayerFooter wires it, opens a popover whose labelled
+  // Beat select writes the same clickMode the piano roll's Beat select does, so
+  // the EDIT timeline's click counts 7/8 3+2+2 by its groups. Up to afd27bea
+  // the footer had no way to choose it.
+  {
+    const { useMetronomeStore } = await import('../../state/metronomeStore.ts');
+    const { barClicks } = await import('../../lib/metronome.ts');
+    useMetronomeStore.setState({ clickMode: 'quarter' });
+    const Wired: React.FC = () => {
+      const s = useMetronomeStore();
+      return React.createElement(MetronomeToggle, {
+        metronomeOn: s.enabled,
+        onToggle: s.toggle,
+        volume: s.volume,
+        onChangeVolume: s.setVolume,
+        clickMode: s.clickMode,
+        onChangeClickMode: s.setClickMode,
+      });
+    };
+    const t4 = mountToggle();
+    await act(async () => { t4.root.render(React.createElement(Wired)); });
+    const btn = t4.host.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+    assert.match(btn.getAttribute('aria-label') ?? '', /right-click for level and beat/);
+    await act(async () => {
+      btn.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    });
+    const select = doc.getElementById('metronome-click-mode') as HTMLSelectElement | null;
+    assert.ok(select, 'the popover has the Beat select');
+    assert.equal(select!.name, 'metronomeClickMode');
+    assert.equal(doc.querySelector('label[for="metronome-click-mode"]')?.textContent, 'Beat', 'a real <label for>');
+    assert.deepEqual([...select!.options].map((o) => o.textContent), ['Quarters', 'Groups', 'Dotted quarters']);
+    assert.equal(select!.value, 'quarter');
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(select, 'group');
+      select!.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+    assert.equal(useMetronomeStore.getState().clickMode, 'group', 'the choice is the shared click mode');
+    const clicks = barClicks({ num: 7, den: 8, groups: [3, 2, 2] }, useMetronomeStore.getState().clickMode);
+    assert.equal(clicks.length, 3, '7/8 3+2+2 now clicks its three group starts');
+    assert.equal((doc.getElementById('metronome-click-mode') as HTMLSelectElement).value, 'group');
+    await act(async () => { t4.root.unmount(); });
+  }
 
   console.log('MetronomeVolumeControl: ok');
 }

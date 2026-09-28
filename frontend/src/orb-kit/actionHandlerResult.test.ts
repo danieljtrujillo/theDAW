@@ -55,6 +55,8 @@ const failures: Array<[string, Record<string, unknown> | undefined]> = [
   ['editor_set_playhead', { seconds: -1 }],
   ['editor_set_bpm', { bpm: 5 }],
   ['editor_set_bpm', { bpm: 'fast' }],
+  ['editor_set_bpm', { bpm: 350 }], // past the app's 300: it said "BPM set to 350" and set 300
+  ['editor_set_bpm', { bpm: 19.9 }],
   ['editor_add_marker', { seconds: NaN }],
   ['dj_load_set', {}],
   ['dj_load_set', { name: 'no such set' }],
@@ -99,6 +101,17 @@ for (const [type, payload] of successes) {
 }
 
 assert.equal(useEditorStore.getState().bpm, 128, 'a success actually changed the document');
+
+// The app's tempo range, 20-300 with its fraction, is what editor_set_bpm takes and what it sets.
+for (const bpm of [20, 24.5, 280, 300]) {
+  const result = await handletheDAWActionResult({ type: 'editor_set_bpm', payload: { bpm } });
+  assert.equal(result.ok, true, `editor_set_bpm ${bpm}`);
+  assert.equal(useEditorStore.getState().bpm, bpm, `${bpm} BPM is set as asked`);
+}
+const tooFast = await handletheDAWActionResult({ type: 'editor_set_bpm', payload: { bpm: 350 } });
+assert.equal(tooFast.ok, false);
+assert.match(tooFast.message, /20\.\.300/, 'the refusal names the range');
+assert.equal(useEditorStore.getState().bpm, 300, 'a refused tempo changes nothing');
 
 // ── The string wrapper useOrbChat keeps using ─────────────────────────────
 fresh();

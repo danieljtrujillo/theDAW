@@ -7,6 +7,7 @@
  * feeds output audio blobs downstream. This module is the library-agnostic data
  * model + the node-type catalog; it has no React or DOM dependency.
  */
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from './tempoMap';
 
 export type PortType = 'audio' | 'mod';
 export type PortDir = 'in' | 'out';
@@ -399,10 +400,22 @@ export const NODE_DEFS: Record<NodeKind, NodeDef> = {
     outputs: [],
     fields: [
       { key: 'gain', label: 'Master gain', type: 'number', min: 0, max: 1.5, step: 0.05 },
-      { key: 'bpm', label: 'BPM (LFO sync)', type: 'number', min: 40, max: 220, step: 0.01 },
+      // The app's tempo range (lib/tempoMap), so a 24 BPM Grave or a 280 BPM Presto in the roll can be matched here.
+      { key: 'bpm', label: 'BPM (LFO sync)', type: 'number', min: TEMPO_BPM_MIN, max: TEMPO_BPM_MAX, step: 0.01 },
     ],
     defaults: { gain: 0.9, bpm: 120 },
   },
+};
+
+/**
+ * The live tempo a Live Out node's params hold: its `bpm`, inside the app's
+ * 20-300 BPM (a hand-edited graph cannot drive the synced LFOs outside it), or
+ * 120 when it is missing or unreadable.
+ */
+export const loutBpm = (params: Record<string, unknown>): number => {
+  const raw = params.bpm;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) && n > 0 ? clampTempoBpm(n) : 120;
 };
 
 export const NODE_ORDER: NodeKind[] = [

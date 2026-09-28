@@ -433,9 +433,10 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
             "name": "editor_set_track",
             "description": (
                 "Update an EDIT track's volume, pan, mute, solo, name, record "
-                "arm, or default MIDI instrument. Freezing is UI-only (there is "
-                "no offline renderer here) — frozen=true is refused with the "
-                "path to the freeze button; frozen=false DOES unfreeze."
+                "arm, or default MIDI instrument and its kind (drums or "
+                "melodic). Freezing is UI-only (there is no offline renderer "
+                "here) — frozen=true is refused with the path to the freeze "
+                "button; frozen=false DOES unfreeze."
             ),
             "parameters": {
                 "type": "object",
@@ -458,8 +459,21 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
                         "minimum": 0,
                         "maximum": 127,
                         "description": (
-                            "Default General MIDI program for this track's MIDI "
-                            "clips. A clip with its own instrumentProgram wins."
+                            "Default program for this track's MIDI clips: a "
+                            "General MIDI program on a melodic track, a drum kit "
+                            "number (0 = Standard) on a drum track (editorState "
+                            "tracks[].drums). A clip with its own "
+                            "instrumentProgram wins."
+                        ),
+                    },
+                    "drums": {
+                        "type": "boolean",
+                        "description": (
+                            "The kind of instrument_program: true makes this a "
+                            "drum track and reads it as a drum kit, false makes "
+                            "it melodic and reads it as a General MIDI program. "
+                            "Changing the kind clears the clips' own programs. "
+                            "Omit to keep the track's kind."
                         ),
                     },
                     "frozen": {
@@ -581,7 +595,12 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "bpm": {
                         "type": "number",
-                        "description": "Beats per minute, 20-400",
+                        "minimum": 20,
+                        "maximum": 300,
+                        "description": (
+                            "Beats per minute, 20-300 (the app's tempo range); "
+                            "a fraction is kept"
+                        ),
                     },
                 },
                 "required": ["bpm"],
@@ -734,6 +753,23 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             "quantize_ends": {
                 "type": "boolean",
                 "description": "Also snap note ends (lengths). Default false.",
+            },
+            "groove": {
+                "type": "string",
+                "description": (
+                    "A feel laid over the grid, in the clip's own meter: straight, "
+                    "swing8:<pct> or swing16:<pct> (the off-8ths or off-16ths of each "
+                    "bar), group8:<pct> or group16:<pct> (the same pairs counted from "
+                    "each of the bar's groups, so 7/8 3+2+2 swings inside each group), "
+                    "inegales:60, ddot:8 or ddot:4; pct is 50-75 (66.7 is a triplet "
+                    "feel). Omit for none."
+                ),
+            },
+            "groove_strength": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "How far into the groove, 0-1. Default 1.",
             },
         },
         ["clip_id", "grid"],
@@ -930,7 +966,7 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         "editor_detect_tempo.",
         {
             "clip_id": _CLIP_ID,
-            "bpm": {"type": "number", "minimum": 40, "maximum": 240},
+            "bpm": {"type": "number", "minimum": 20, "maximum": 300},
         },
         ["clip_id", "bpm"],
     ),
@@ -944,8 +980,8 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             "clip_id": _CLIP_ID,
             "target_bpm": {
                 "type": "number",
-                "minimum": 40,
-                "maximum": 240,
+                "minimum": 20,
+                "maximum": 300,
                 "description": "Play the clip as if it were authored at this tempo",
             },
             "target_duration_sec": {

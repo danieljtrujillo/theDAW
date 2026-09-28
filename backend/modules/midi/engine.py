@@ -332,7 +332,7 @@ def onnx_providers() -> list[str]:
     CPU otherwise. Never raises."""
     try:
         _preload_cuda_dlls()
-        import onnxruntime as ort  # type: ignore[import]
+        import onnxruntime as ort
 
         available = set(ort.get_available_providers())
     except Exception:  # noqa: BLE001
@@ -375,8 +375,8 @@ def _load_basic_pitch_model():
     log.info("midi.engine: loading basic-pitch for the first conversion")
     started = time.perf_counter()
     with _quiet_basic_pitch_import():
-        from basic_pitch import ICASSP_2022_MODEL_PATH  # type: ignore[import]
-        from basic_pitch.inference import Model  # type: ignore[import]
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+        from basic_pitch.inference import Model
 
     model = Model(ICASSP_2022_MODEL_PATH)
     providers = onnx_providers()
@@ -385,7 +385,7 @@ def _load_basic_pitch_model():
         and getattr(model, "model_type", None) == Model.MODEL_TYPES.ONNX
     ):
         try:
-            import onnxruntime as ort  # type: ignore[import]
+            import onnxruntime as ort
 
             model.model = ort.InferenceSession(
                 str(ICASSP_2022_MODEL_PATH), providers=providers
@@ -414,7 +414,7 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     # The model load logs before it imports basic_pitch.inference (the slow
     # import), so it runs first.
     model = _load_basic_pitch_model()
-    from basic_pitch.inference import predict_and_save  # type: ignore[import]
+    from basic_pitch.inference import predict_and_save
 
     # Use a tempdir adjacent to the output path so the final move is
     # always on the same volume (Path.replace() fails cross-drive on
@@ -581,7 +581,7 @@ def _ensure_piano_checkpoint() -> Path:
 
 def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
     _ensure_librosa_core_audio_shim()
-    from piano_transcription_inference import (  # type: ignore[import]
+    from piano_transcription_inference import (
         PianoTranscription,
         sample_rate,
         load_audio,
@@ -626,7 +626,7 @@ def _stamp_tempo(midi_path: Path, bpm: float) -> bool:
     keeps its placeholder tempo is still a usable file.
     """
     try:
-        import mido  # type: ignore[import]
+        import mido
     except ImportError:
         return False
     if not midi_path.is_file() or bpm <= 0:
@@ -646,7 +646,7 @@ def _stamp_tempo(midi_path: Path, bpm: float) -> bool:
             return False
         scale = old_us / new_us
         for track in mid.tracks:
-            absolute: list[tuple[int, object]] = []
+            absolute: list[tuple[int, mido.Message | mido.MetaMessage]] = []
             clock = 0
             for msg in track:
                 clock += msg.time
@@ -656,7 +656,7 @@ def _stamp_tempo(midi_path: Path, bpm: float) -> bool:
             previous = 0
             for when, msg in absolute:
                 scaled = int(round(when * scale))
-                msg.time = scaled - previous  # type: ignore[attr-defined]
+                msg.time = scaled - previous
                 previous = scaled
                 track.append(msg)
         mid.tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=new_us, time=0))
@@ -671,7 +671,7 @@ def _count_midi_notes(midi_path: Path) -> int:
     """Best-effort: read the MIDI and count Note-On events. Returns 0
     on failure rather than raising — this is informational only."""
     try:
-        import mido  # type: ignore[import]
+        import mido
     except ImportError:
         return 0
     if not midi_path.is_file():

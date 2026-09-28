@@ -1,8 +1,17 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
+import { drumKitName } from '../lib/clipProgram';
+import { gmShortName } from '../lib/gmInstruments';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
+import {
+  clipContentOrigin,
+  shiftClipTimelineMarkers,
+  splitClipTimelineMarkers,
+  withClipTimelineMarkers,
+  type RollMarker,
+} from '../lib/rollMarkers';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import {
@@ -203,6 +212,11 @@ export interface AudioClip {
    *  playback, drawing and every re-render time the notes through it. Absent on a clip
    *  at one tempo, and on clips bounced before the roll had a tempo map. */
   sourceTempoMap?: TempoEvent[];
+  /** When sourceKind === 'piano-roll', the roll's named markers at render time
+   *  (lib/rollMarkers): sections and movements by tick, which "Edit in Piano
+   *  Roll" puts back on the ruler. Absent on a clip with none, and on clips
+   *  bounced before the roll had markers. */
+  sourceMarkers?: RollMarker[];
   /** GM program (0-127) this MIDI clip plays through live on the timeline; falls
    *  back to the track default, then the global active instrument. Audio clips: undefined. */
   instrumentProgram?: number;
@@ -689,6 +703,16 @@ interface EditorStoreState {
    *  program its clips hold are cleared with the flag, and the track and its
    *  clips start on their defaults. One undo step; a flag already set writes nothing. */
   setTrackPercussion: (id: string, on: boolean) => void;
+  /**
+   * Choose a track's voice: a melodic GM program (`drums` false) or a drum kit
+   * (`drums` true); `program` undefined is the default instrument or kit. A
+   * choice of the other kind flips the track's drum flag with it: a melodic
+   * instrument on a drum track turns drums off, a kit on a melodic track turns
+   * them on, and the programs its clips hold are cleared as setTrackPercussion
+   * does, with a LOG line naming the change. One undo step; a choice the track
+   * already holds writes nothing.
+   */
+  setTrackVoice: (id: string, program: number | undefined, drums: boolean) => void;
   /** Put `orderedIds` at the top in the order given; every track not named keeps
    *  its relative position after them. Unknown ids are ignored, so a partial or
    *  stale list can reorder but never drop a track. */
@@ -1026,9 +1050,25 @@ interface EditorStoreState {
   setLoopRegion: (start: number, end: number) => void;
   clearLoop: () => void;
   addMarker: (t: number, label?: string) => void;
+  /**
+   * Put saved markers back on the timeline WITH their ids (a .tasmo reopen,
+   * lib/projectImport applyTasmoMarkersAndLoop). The id is what a roll clip's
+   * bounce finds its own EDIT markers by (`roll:<clip>:<marker>`), so a marker
+   * that came back under a fresh id would be doubled by the next bounce. A
+   * marker whose id is already on the timeline replaces it; an entry with no
+   * usable id or place gets a fresh id or is dropped. Every other marker stays.
+   */
+  restoreMarkers: (markers: readonly TimelineMarker[]) => void;
   removeMarker: (id: string) => void;
   renameMarker: (id: string, label: string) => void;
   moveMarker: (id: string, t: number) => void;
+  /**
+   * Replace the timeline markers a roll clip wrote (ids `roll:<clipId>:…`,
+   * lib/rollMarkers) with `markers`; every other marker stays. The piano roll's
+   * bounce calls it with the roll's markers at their seconds in the clip, so a
+   * second bounce moves and renames them and never doubles them.
+   */
+  setClipRollMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
 
   // Undo / redo (Phase D). Snapshots capture the document slices below; because
   // every mutation replaces arrays immutably, a snapshot just references the prior
@@ -1843,6 +1883,24 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     }));
   },
 
+  setTrackVoice: (id, program, drums) => {
+    const track = get().tracks.find((t) => t.id === id);
+    if (!track) return;
+    const prog = program === undefined || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
+    const flip = (track.isPercussion === true) !== drums;
+    if (!flip && Object.is(track.instrumentProgram, prog)) return;
+    coalesceAs(null);
+    set((s) => ({
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog } : t)),
+      clips: flip ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)) : s.clips,
+    }));
+    if (flip) {
+      logInfo('editor', drums
+        ? `Track "${track.name}": the drum kit ${drumKitName(prog ?? 0)} turned it into a drum track (Ctrl+Z undoes it)`
+        : `Track "${track.name}": the melodic instrument ${prog === undefined ? 'Default' : gmShortName(prog)} turned its drum flag off (Ctrl+Z undoes it)`);
+    }
+  },
+
   setTrackPercussion: (id, on) => {
     const track = get().tracks.find((t) => t.id === id);
     if (!track || (track.isPercussion === true) === on) return;
@@ -2100,12 +2158,22 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     // its key is, instead of starting a second one.
     if (opts?.coalesce) coalesceWithOpenStep(`clip:${id}`);
     else coalesceAs(`clip:${id}`);
-    set((s) => ({
+    set((s) => {
       // A trim / slip on a COMPED clip has to move every take's read head with
       // the clip's own, or the comp goes on playing the untrimmed takes and the
       // next take switch reverts the trim (`mirrorOntoTakes`).
-      clips: s.clips.map((c) => (c.id === id ? clipWithUpdates(c, updates) : c)),
-    }));
+      const cur = s.clips.find((c) => c.id === id) ?? target;
+      const next = clipWithUpdates(cur, updates);
+      const clips = s.clips.map((c) => (c.id === id ? next : c));
+      // The EDIT markers a roll clip's bounce wrote (lib/rollMarkers) sit on its notes, so a move or a
+      // slip carries them along in this same write, and so the same undo step. A left-edge trim moves
+      // the edge and the trim together and leaves them; a change of stretch rate leaves them to the
+      // next bounce, which places them again.
+      const rate = clipStretchRate(cur);
+      if (clipStretchRate(next) !== rate) return { clips };
+      const markers = shiftClipTimelineMarkers(s.markers, id, clipContentOrigin(next, rate) - clipContentOrigin(cur, rate));
+      return markers === s.markers ? { clips } : { clips, markers: [...markers] };
+    });
   },
 
   removeClip: (id) => {
@@ -2185,13 +2253,19 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       ...(rightTakes ? { takes: rightTakes } : {}),
       ...clampClipFades({ durationSec: rightDur, fadeInSec: 0, fadeOutSec: clip.fadeOutSec }),
     }, rightTakes, compParts.right);
-    set((s) => ({
-      // Focus follows the new right half; the multi-selection is left alone so
-      // a range command that cuts N selected clips still has N selected after
-      // (the left halves keep their ids — see `WaveformEditor`'s split menu).
-      clips: s.clips.flatMap((c) => (c.id === id ? [left, right] : [c])),
-      selectedClipId: newId,
-    }));
+    set((s) => {
+      // The EDIT markers a roll clip wrote at or past the seam go with the right half (lib/rollMarkers),
+      // so each half moves, and re-bounces, with the notes it holds.
+      const markers = splitClipTimelineMarkers(s.markers, id, newId, clip.startSec + relSplit);
+      return {
+        // Focus follows the new right half; the multi-selection is left alone so
+        // a range command that cuts N selected clips still has N selected after
+        // (the left halves keep their ids — see `WaveformEditor`'s split menu).
+        clips: s.clips.flatMap((c) => (c.id === id ? [left, right] : [c])),
+        selectedClipId: newId,
+        ...(markers === s.markers ? {} : { markers: [...markers] }),
+      };
+    });
     logInfo('editor', `Split clip at ${atSec.toFixed(2)}s → ${left.label} | ${right.label}`);
     return newId;
   },
@@ -3183,8 +3257,28 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => ({
       markers: [...s.markers, { id: uid(), t: Math.max(0, t), label: label ?? String(s.markers.length + 1) }].sort((x, y) => x.t - y.t),
     })),
+  restoreMarkers: (incoming) =>
+    set((s) => {
+      const byId = new Map<string, TimelineMarker>();
+      for (const m of incoming) {
+        if (!m || typeof m.t !== 'number' || !Number.isFinite(m.t) || m.t < 0) continue;
+        const id = typeof m.id === 'string' && m.id ? m.id : uid();
+        byId.set(id, { id, t: m.t, label: typeof m.label === 'string' && m.label ? m.label : String(byId.size + 1) });
+      }
+      if (byId.size === 0) return {};
+      const kept = s.markers.filter((m) => !byId.has(m.id));
+      return { markers: [...kept, ...byId.values()].sort((x, y) => x.t - y.t) };
+    }),
   removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
   renameMarker: (id, label) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, label } : m)) })),
+  setClipRollMarkers: (clipId, incoming) =>
+    set((s) => {
+      const markers = withClipTimelineMarkers(s.markers, clipId, incoming);
+      // Nothing written when the clip's markers are already these, so a re-bounce with no marker edit is no marker change.
+      const same = markers.length === s.markers.length
+        && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
+      return same ? {} : { markers };
+    }),
   moveMarker: (id, t) => {
     coalesceAs(`marker:${id}`); // a marker DRAG, one step per marker moved
     set((s) => ({

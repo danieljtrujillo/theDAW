@@ -626,6 +626,12 @@ const st = () => useEditorStore.getState();
           { beat: 4, bpm: 60, curve: 'step' },
           { beat: 4, bpm: 60, fermata: { beats: 1, stretch: 2 } },
         ],
+        // The ruler's markers go out as `roll_markers`: a movement, a FORM section and the user's own.
+        sourceMarkers: [
+          { id: 'mk-1', tick: 0, name: 'I. Allegro', kind: 'movement' },
+          { id: 'form-0', tick: 960, name: 'Intro', kind: 'section', origin: 'form' },
+          { id: 'mk-2', tick: 3840, name: 'B', kind: 'section' },
+        ],
       }),
       rollClip('looped', 't2', {
         sourcePianoRoll: [note('q0', 36, 0, 1), note('q1', 36, 4, 1), note('q2', 36, 8, 1), note('q3', 36, 12, 1)],

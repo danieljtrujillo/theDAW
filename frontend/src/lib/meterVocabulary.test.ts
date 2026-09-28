@@ -27,7 +27,7 @@ const resetClock = () => {
   usePianoRollStore.setState({
     _undo: [{
       notes: s.notes, bpm: s.bpm, totalSteps: s.totalSteps, lowestNote: s.lowestNote, highestNote: s.highestNote,
-      meterMap: s.meterMap, pickupSteps: s.pickupSteps, lanes: s.lanes, bends: s.bends, voiceProgram: s.voiceProgram, tempoMap: s.tempoMap,
+      meterMap: s.meterMap, pickupSteps: s.pickupSteps, lanes: s.lanes, bends: s.bends, voiceProgram: s.voiceProgram, tempoMap: s.tempoMap, markers: s.markers,
     }],
     _redo: [],
   });

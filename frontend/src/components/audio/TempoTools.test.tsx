@@ -150,7 +150,9 @@ assert.equal(roll().bpm, 64, 'SONG starts the roll at section 1 tempo');
 const sec1 = useVirtuosoStore.getState().effectiveSections()[0];
 const lastBarBeat = (sec1.bars - 1) * 4;
 assert.ok(tempoShape().includes(`${lastBarBeat}:64r`), `section 1's last bar ramps (${tempoShape().join(' ')})`);
-assert.ok(tempoShape().includes(`${sec1.bars * 4}:120`), 'section 2 is back at the roll tempo');
+assert.ok(tempoShape().includes(`${sec1.bars * 4}:64`), 'section 2 keeps section 1 tempo, as a tempo marking holds');
+assert.ok(!tempoShape().some((t) => t.endsWith(':120')), 'the roll tempo does not come back after section 1');
+assert.equal(byId<HTMLInputElement>('vt-sec-bpm-1').placeholder, '64', 'section 2 shows the tempo it keeps');
 // Clearing the field gives section 1 back to the roll's map.
 const secBpmAgain = byId<HTMLInputElement>('vt-sec-bpm-0');
 await step(() => { valueSetter.call(secBpmAgain, ''); blur(secBpmAgain); });

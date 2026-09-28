@@ -29,7 +29,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import mido  # type: ignore[import]
+import mido
 import pretty_midi
 import pytest
 
