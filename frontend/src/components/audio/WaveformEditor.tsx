@@ -1627,8 +1627,7 @@ interface PointerOp {
   dragItems?: AudioDragItem[];
   /** `ctrl-drag-pending` / its copy-move: MIDI parts in the drag with no current
    *  render. Nothing renders at the press; a drag that leaves the timeline
-   *  renders them for that drag only (state/midiRenderQueue clipsWithMidiAudio)
-   *  and hands them over when they land. */
+   *  renders them (state/clipDragOut) and hands them over when they land. */
   dragRenderIds?: string[];
   /** Undo depth when the press went down. The whole drag is ONE undo step, so a deeper stack
    *  means the drag has written something — which is exactly what Escape has to take back. */
@@ -4706,9 +4705,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     // A copy-drag that LEAVES the timeline becomes the drag to another surface it has always been
     // (the library, another tab's drop zone): the copies are taken back and the app-level drag
     // starts with the ORIGINAL clips' audio. MIDI parts with no current render are rendered for
-    // this drag only (state/clipDragOut: the MIDI render queue, one at a time, muted ones too):
-    // the drop takes them as they land, and their decoded audio is freed once the drag is over,
-    // so no part keeps a render it never asked for.
+    // this drag (state/clipDragOut: the MIDI render queue, one at a time, muted ones too): the
+    // drop takes them as they land, and once the drag is over the decoded audio of the renders
+    // made for it alone is freed. A part that plays live keeps no render from the drag.
     const dragPlan = { items: op.dragItems ?? [], renderIds: op.dragRenderIds ?? [] };
     if (op.kind === 'move' && dragOutHasContent(dragPlan)) {
       const box = timelineScrollRef.current?.getBoundingClientRect();
