@@ -74,16 +74,21 @@ const sig = (notes: readonly PianoNote[]) => notes.map((x) => `${x.note}@${x.ste
   assert.deepEqual(back.meter.lanes.map((l) => [l.id, l.cycleSteps]), [[0, null], [1, 16]], 'the lanes come back');
 }
 
-// A roll of one part writes what it always wrote, plus its program when it has one.
+// A roll of one part writes what it always wrote, plus its program when it
+// has one and its part text, so the part comes back as it was.
 {
   const plain = rollToMidiFile({ ...base, notes: migrateNotes([n(0, 60)]) });
   assert.equal(plain.tracks.length, 1);
   assert.equal(plain.tracks[0].name, 'Piano Roll');
   assert.equal(plain.tracks[0].programs, undefined, 'no program for a roll that follows the picker');
-  assert.equal(plain.tracks[0].partMeta, undefined);
+  assert.equal(plain.tracks[0].partMeta, undefined, 'a caller that hands no parts writes no part text');
   const one = makeRollTrack({ id: 'o', name: 'Oboe', program: 68, notes: migrateNotes([n(0, 70)]) }, 0);
   const withProgram = rollToMidiFile({ ...base, notes: one.notes, tracks: [one], activeTrackId: 'o' });
   assert.deepEqual(withProgram.tracks[0].programs, [{ tick: 0, channel: 0, program: 68 }]);
+  assert.equal(withProgram.tracks[0].name, 'Piano Roll', 'the track keeps the name it always had');
+  assert.ok(withProgram.tracks[0].partMeta?.includes('"name":"Oboe"'), 'and carries the part');
+  const oboe = midiFileToRollParts(parseMidi(encodeMidi(withProgram)), 'rt').parts;
+  assert.deepEqual(oboe.map((p) => [p.track.name, p.track.program]), [['Oboe', 68]], 'the part comes back from the bytes');
   const drums = makeRollTrack({ id: 'd', name: 'Kit', program: 25, channel: 10, notes: migrateNotes([n(0, 36)]) }, 0);
   const kit = rollToMidiFile({ ...base, notes: drums.notes, tracks: [drums], activeTrackId: 'd' });
   assert.equal(kit.tracks[0].notes[0].channel, 9, 'a percussion part is written on channel 10');

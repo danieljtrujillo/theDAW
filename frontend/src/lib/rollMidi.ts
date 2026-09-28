@@ -48,13 +48,18 @@
  * colour and registry instrument. With lanes past A each part writes one track
  * per lane, carrying both texts. A bent lane of a part plays on a channel of
  * its own while the file's sixteen channels last. A roll of one part writes
- * what it always wrote, plus its program when the part has one.
+ * what it always wrote, plus its program when the part has one and its
+ * `theDAW:part=` text, so an import gives the part back as it was (a part that
+ * follows the picker stays one, rather than turning into the piano its track
+ * name "Piano Roll" seems to name).
  *
  * Import reads a file into parts (midiFileToRollParts): the parts a file this
  * module wrote names, else one part per track, or per channel when one track
  * holds several (a format 0 file), each with the track's name, its first
  * program and bank, its channel (a part on MIDI channel 10 is percussion) and
- * the registry instrument its name or program names (lib/orchestra).
+ * the registry instrument its name or program names (lib/orchestra). The
+ * names the roll gives its own tracks ("Piano Roll", "Lane B") name no
+ * instrument.
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -422,19 +427,21 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   const part = parts?.[0];
   const notes = part ? part.notes : s.notes;
   const header = rollFileHeader(s, ppq);
+  // The part itself rides beside its notes, so an import gets it back exactly.
+  const meta = part ? { partMeta: partMetaText(part) } : {};
   // A percussion part is on channel 10, where its program is the kit.
   if (part && isPercussionPart(part)) {
     const drums = new Map(s.lanes.map((l) => [l.id, 9]));
     const w = writeNotes(s, notes, ppq, drums, new Set());
     const programs = partPrograms([9], part.program ?? undefined, 0);
-    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => (programs.length ? { programs } : {})) };
+    return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
   }
   // Any other roll of one part writes the channels it always did.
   const channels = laneChannels(s.lanes, s.bends);
   const w = writeNotes(s, notes, ppq, channels, bentLanes(s.lanes, s.bends));
   // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
   const programs = part && part.program !== null ? partPrograms(channels.values(), part.program, part.bank) : [];
-  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => (programs.length ? { programs } : {})) };
+  return { ...header, tracks: laneTracks(s, w, 'Piano Roll', () => ({ ...meta, ...(programs.length ? { programs } : {}) })) };
 }
 
 /** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
@@ -663,6 +670,9 @@ export interface RollMidiPart {
 /** What an import of a file into parts hands to the roll's importParts (or, for one part, importNotes). */
 export type RollMidiPartsImport = Omit<RollMidiImport, 'notes'> & { parts: RollMidiPart[] };
 
+/** The names the roll gives its own tracks when it writes no part names ("Piano Roll", "Lane B"): they name no instrument. */
+const ROLL_TRACK_NAME = /^(?:Piano Roll|Lane [A-Z]+)$/;
+
 /** A track's first program change on `channel`, else undefined. */
 const firstProgram = (programs: readonly MidiProgram[] | undefined, channel: number): MidiProgram | undefined =>
   (programs ?? []).find((p) => p.channel === channel);
@@ -740,7 +750,8 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
         : fileProgram !== undefined
           ? GM_NAMES[fileProgram]
           : `${t.name} channel ${channel + 1}`;
-    const named = guessInstrument(name);
+    // A track the roll named itself names no instrument; with a program the program decides anyway.
+    const named = fileProgram === undefined && ROLL_TRACK_NAME.test(name.trim()) ? undefined : guessInstrument(name);
     const byName = named && named.percussion === percussion && (fileProgram === undefined || named.program === fileProgram) ? named : undefined;
     const byProgram = fileProgram !== undefined ? instrumentForProgram(fileProgram, bank, percussion) : undefined;
     const inst = byName ?? byProgram;

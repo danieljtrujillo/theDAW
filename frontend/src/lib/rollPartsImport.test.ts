@@ -5,13 +5,17 @@
  * each, on the instrument the importer read (a registry id), else the one the
  * name names, else the GM program, with an unpitched part on channel 10. A
  * one-track file goes into the part being edited and keeps the other parts;
- * the part takes the file's instrument only when it has none of its own.
+ * the part takes the file's instrument only when it has none of its own. The
+ * roll's own export of a part that follows the picker comes back as that
+ * part, never as the piano its track name "Piano Roll" seems to name.
  *
  *   cd frontend && npx tsx src/lib/rollPartsImport.test.ts
  */
 import assert from 'node:assert/strict';
 import { applyRollParts, importMidiParts, importSheetParts, sheetScoreParts } from './rollPartsImport.ts';
-import { rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
+import { encodeMidi, parseMidi } from './midi.ts';
+import { rollToMidiFile } from './rollMidi.ts';
+import { activeTrackOf, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
 import type { SheetScore } from './sheetImportClient.ts';
 
 const roll = () => usePianoRollStore.getState();
@@ -91,6 +95,27 @@ const score: SheetScore = {
   roll().setActiveTrack(keep.id);
   importMidiParts(file, 't2');
   assert.equal(rollTracksOf(roll())[1].program, 19, 'a part with its own program keeps it');
+}
+
+// The roll's own export of a fresh roll (Part 1, following the picker) and
+// back through the bytes: the part keeps its name and follows the picker
+// still. A file the roll wrote before part texts (a "Piano Roll" track with no
+// program) leaves the part as it is too.
+{
+  roll().importParts([{ name: 'Part 1', notes: [{ id: 'a', note: 60, step: 0, length: 2, velocity: 90 }, { id: 'b', note: 64, step: 4, length: 2, velocity: 90 }] }], 120);
+  assert.equal(activeTrackOf(roll()).program, null);
+  const bytes = encodeMidi(rollToMidiFile(roll()));
+  const done = importMidiParts(parseMidi(bytes), 'rt');
+  assert.equal(done.into, 'active');
+  const part = rollTracksOf(roll())[0];
+  assert.deepEqual([part.name, part.program, part.instrumentId], ['Part 1', null, undefined], 'the part still follows the picker, not Acoustic Grand');
+  assert.equal(part.notes.length, 2);
+  const legacy = { ppq: 480, bpm: 120, tracks: [{ name: 'Piano Roll', notes: [{ tick: 0, note: 60, velocity: 90, durationTicks: 240, channel: 0 }] }] };
+  importMidiParts(legacy, 'old');
+  assert.deepEqual([rollTracksOf(roll())[0].program, rollTracksOf(roll())[0].instrumentId], [null, undefined], 'an older roll export names no piano either');
+  // A track a user named "Piano" still names the piano.
+  importMidiParts({ ...legacy, tracks: [{ ...legacy.tracks[0], name: 'Piano' }] }, 'user');
+  assert.equal(rollTracksOf(roll())[0].instrumentId, 'piano', "a user's own track name still names its instrument");
 }
 
 // Nothing to import changes nothing: the part being edited keeps its notes.
