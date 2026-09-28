@@ -26,6 +26,7 @@ import { BUNDLED_BANK_ID, bankSelectFor, cleanBankId, type BankPreset, type Inst
 import { isStandardTuning, resetMessages, tuningMessages, type ProjectTuning } from './tuning';
 import { RANGE_LSB_SPESSA, bendRangeMessages, controlMessage } from './midi';
 import { addWorkletModule } from './audioWorkletSupport';
+import { pairingHeaderFor } from './apiJson';
 import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
@@ -196,7 +197,8 @@ const userBankBytes = new Map<string, Promise<ArrayBuffer>>();
 function bankBytes(bank: Pick<SoundBank, 'id' | 'url'>): Promise<ArrayBuffer> {
   let p = userBankBytes.get(bank.id);
   if (!p) {
-    p = fetch(bank.url).then((r) => {
+    // The pairing header too, so a paired device's desktop UI loads the bank (backend/modules/soundfonts).
+    p = fetch(bank.url, { headers: pairingHeaderFor(bank.url) }).then((r) => {
       if (!r.ok) throw new Error(`sound bank HTTP ${r.status}`);
       return r.arrayBuffer();
     });
