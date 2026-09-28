@@ -64,16 +64,14 @@ import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
-  clipRenderIsStale,
   clipVoice,
   drumKitName,
   isPercussionTrack,
   renderedVoiceFields,
-  type ClipVoice,
 } from '../../lib/clipProgram';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { renderedWindowFields } from '../../lib/clipRenderWindow';
-import { rerenderStaleMidiClip } from '../../lib/clipRerender';
+import { claimClipRender, createStaleRerenderQueue, midiClipVoiceSig, releaseClipRender, staleMidiClipIds } from '../../lib/clipRerender';
 import { importMidiBytesAsTracks } from '../../lib/midiImportTracksApp';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
@@ -2624,34 +2622,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     void explodeClipToStems(modal.clipId, opts);
   }, [stemsModal, explodeClipToStems]);
 
-  /** The voice a MIDI clip actually sounds with (lib/clipProgram): clip
-   *  override, else track default, else the global instrument, on the drum
-   *  channel when its track is percussion — the rule liveMixer plays by. */
-  const clipVoiceOf = useCallback((clip: AudioClip): ClipVoice => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipVoice(clip, track, getGlobalVoice());
-  }, []);
-  /** True when a MIDI clip's bounce was rendered with another voice than it now has. */
-  const renderIsStale = useCallback((clip: AudioClip): boolean => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipRenderIsStale(clip, track, getGlobalVoice());
-  }, []);
-
-  /** Re-bounce a stale MIDI clip's audio through its current instrument
-   *  (lib/clipRerender), so every export plays what live playback does. */
-  const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
-    try {
-      await rerenderStaleMidiClip(clipId, {
-        render: renderStepNotesToBlob,
-        computePeaks,
-        global: getGlobalVoice,
-        ensureReady: ensureSoundfontReady,
-      });
-    } catch (e) {
-      const label = useEditorStore.getState().clips.find((c) => c.id === clipId)?.label ?? clipId;
-      logError('editor', `Instrument re-render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }, []);
+  /** Re-bounce stale MIDI clips' audio through their current instrument
+   *  (lib/clipRerender), one clip at a time, so every export plays what live
+   *  playback does. A clip's voice is the one liveMixer plays by (lib/clipProgram:
+   *  clip override, else track default, else the global instrument, on the drum
+   *  channel when its track is percussion). */
+  const rerenderQueue = useMemo(
+    () =>
+      createStaleRerenderQueue(
+        { render: renderStepNotesToBlob, computePeaks, global: getGlobalVoice, ensureReady: ensureSoundfontReady },
+        (clipId, e) => {
+          const label = useEditorStore.getState().clips.find((c) => c.id === clipId)?.label ?? clipId;
+          logError('editor', `Instrument re-render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
+        },
+      ),
+    [],
+  );
 
   // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
   // overrides, track defaults and the global picker in one place, so no individual
@@ -2662,23 +2648,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // instrument at either of those levels would leave the bounced audio stale.
   const sfActiveProgram = useSoundfontStore((s) => s.activeProgram);
   const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
+  // getGlobalVoice reads the soundfont store, so its two fields are in the dep list.
   const midiClipProgramSig = useMemo(
-    () => clips.filter((c) => c.sourceKind === 'piano-roll')
-      .map((c) => {
-        const v = clipVoiceOf(c);
-        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
-      })
-      .join('|'),
-    [clips, tracks, sfActiveProgram, sfEnabled, clipVoiceOf],
+    () => midiClipVoiceSig(clips, tracks, getGlobalVoice()),
+    [clips, tracks, sfActiveProgram, sfEnabled],
   );
   useEffect(() => {
-    const stale = useEditorStore.getState().clips.filter(
-      (c) => c.sourceKind === 'piano-roll' && c.sourcePianoRoll?.length && renderIsStale(c),
-    );
-    for (const c of stale) void rerenderMidiClipAudio(c.id);
+    const now = useEditorStore.getState();
+    // Queued, not started at once: the queue renders one clip at a time, each
+    // once while it waits or renders, and leaves a clip another path is
+    // rendering (Import as tracks, a MIDI file added below) to that path.
+    rerenderQueue.request(staleMidiClipIds(now.clips, now.tracks, getGlobalVoice()));
     // midiClipProgramSig collapses the clip list to just the voice pairing, so
     // this runs when an instrument assignment changes — not on every clip drag.
-  }, [midiClipProgramSig, renderIsStale, rerenderMidiClipAudio]);
+  }, [midiClipProgramSig, rerenderQueue]);
 
   // Tap tempo. Averages the intervals between recent taps and writes the result to
   // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
@@ -5629,13 +5612,21 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // An existing track's own instrument wins, the same order
       // `effectiveProgramFor` resolves at playback. Matching it here means the
       // `renderedProgram` written below is already right and the instrument-sync
-      // effect has nothing to re-render. A percussion track's clip keeps no
-      // program of its own: the picker's is an instrument, not a drum kit.
+      // effect has nothing to re-render once it lands. A percussion track's clip
+      // keeps no program of its own: the picker's is an instrument, not a drum kit.
       const program = isPercussionTrack(existing) ? existing?.instrumentProgram : existing?.instrumentProgram ?? globalProgram;
       const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
       const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
       const color = track?.color ?? '#a855f7';
+      // Claimed before the store holds the clip: the render below owns it, and
+      // the instrument-sync effect, which reads the silent placeholder as a
+      // stale render, leaves it alone instead of rendering it a second time.
+      const newClipId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `id-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+      claimClipRender(newClipId);
       const clipId = addClipToTrack({
+        id: newClipId,
         trackId,
         label,
         audioBlob: blob,
@@ -5666,6 +5657,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           // Re-read: the clip may have been trimmed or deleted mid-render.
           const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
           if (!live) return;
+          // Released before the write, whose voice-signature change runs the
+          // instrument-sync effect: a clip re-voiced mid-render is rendered again there.
+          releaseClipRender(clipId);
           // The bounce is derived from the clip's notes, so it adds no undo step
           // of its own (see applyClipRender). An untrimmed clip takes the
           // render's length, ring-out included (lib/clipRenderWindow).
@@ -5680,6 +5674,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
         } catch (renderErr) {
           logError('editor', `MIDI audio render failed for "${label}": ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`);
+        } finally {
+          releaseClipRender(clipId);
         }
       })();
     } catch (err) {
