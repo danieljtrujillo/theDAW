@@ -64,6 +64,7 @@ import { sanitizeRollTempoMap } from './rollTempo';
 import { clampTempoBpm, getTempoAtBeat, type TempoCurve, type TempoEvent } from './tempoMap';
 import { MIN_NOTE_STEPS, type PianoNote, type RollControl } from '../state/pianoRollStore';
 import { buildExpression } from './clipNotes/expression';
+import { humanizeSections } from './clipNotes/humanize';
 
 const RH_FLOOR = 60; // C4 — right-hand register floor
 const MEL_CENTER = 74; // D5 — melodic register center
@@ -976,6 +977,12 @@ const avg = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / 
  * synthesized (on-beats pull ahead, off-beats lay back). Bar starts take the
  * big accent and the bar's pulse (beats, or group starts in 7/8 and 5/16) the
  * small one; off-16ths count from the bar start.
+ *
+ * With `sections` (the steps each section starts on, and a step's seconds),
+ * the line is then played by section (lib/clipNotes/humanize
+ * humanizeSections): each section pushes ahead or lays back by its own
+ * seeded bias, each phrase drifts, and velocities lean toward each phrase's
+ * peak, up to 12 ms, 8 ms and 10 velocity at an amount of 1.
  */
 export function humanize(
   notes: PianoNote[],
@@ -983,8 +990,31 @@ export function humanize(
   seed = 0,
   groove?: GrooveTemplate,
   meter?: MeterOpts,
+  sections?: { starts: readonly number[]; stepSec: number },
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
+  const out = humanizeBeats(notes, amount, seed, groove, meter);
+  if (!sections || !(sections.stepSec > 0)) return out;
+  // On the step clock: the offsets in seconds become steps at the song's tempo.
+  const played = humanizeSections(
+    [{ id: 'line', notes: out.map((n, i) => ({ id: String(i), t: n.step, dur: n.length, velocity: n.velocity, note: n.note })) }],
+    {
+      sections: sections.starts,
+      onsetBias: (0.012 * amount) / sections.stepSec,
+      drift: (0.008 * amount) / sections.stepSec,
+      velocity: 10 * amount,
+      phraseGap: 4,
+      seed: seed * 7919 + 3,
+    },
+  ).get('line') ?? [];
+  return out.map((n, i) => {
+    const p = played[i];
+    return p ? mk(n.note, Math.max(0, p.t), n.length, clampVel(p.velocity)) : n;
+  });
+}
+
+/** humanize's own pass: velocity dynamics, beat accents and micro-timing. */
+function humanizeBeats(notes: PianoNote[], amount: number, seed: number, groove: GrooveTemplate | undefined, meter: MeterOpts | undefined): PianoNote[] {
   const grid = gridOf(meter);
   const meanAccent = groove ? avg(groove.accent) : 0;
   return notes.map((n, i) => {
@@ -1658,7 +1688,8 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   if (opts.amounts.harmony > 0) notes = harmonize(notes, opts.amounts.harmony * 0.5, o, 12);
   if (opts.amounts.runs > 0) notes = runsAndFlourishes(notes, opts.amounts.runs * 0.5, o, 13);
   if (opts.amounts.rhythm > 0) notes = polyrhythm(notes, opts.amounts.rhythm * 0.6, o, 14);
-  notes = humanize(notes, humAmt, 7, opts.groove, o);
+  // Played by section too: each FORM section leans its own way, each phrase drifts, velocities rise to its peak.
+  notes = humanize(notes, humAmt, 7, opts.groove, o, { starts: sectionStarts.map((sec) => sec.step), stepSec: 60 / startBpm / 4 });
   if (opts.amounts.sync > 0) notes = syncopate(notes, opts.amounts.sync, o, 15);
   if (opts.amounts.accent > 0) notes = accentGroups(notes, opts.amounts.accent, o);
 
