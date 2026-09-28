@@ -65,6 +65,19 @@ const job = { bank: 0, program: 40, note: 67, velocity: 100, cc1: 127, seconds: 
   clearSoundbankGains();
 }
 
+// ── two program changes one lookahead window queues: each brings its gain ──
+{
+  clearSoundbankGains();
+  registerSoundbankGains('orch', { playback_gain: { '0:73': 6 } }, 40);
+  const calls: number[] = [];
+  const target = { midiChannels: [{ setSystemParameter: (_p: 'gain', v: number) => calls.push(Number(v.toFixed(3))) }] };
+  applyChannelGain(target, 0, 40, 73, 0.05); // the lifted flute from +50 ms
+  applyChannelGain(target, 0, 40, 71, 0.1); // a clarinet with no gain from +100 ms
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(calls, [1.995, 1], 'the flute plays lifted, then the clarinet at unity');
+  clearSoundbankGains();
+}
+
 // ── a kit the bundled bank also has: the bundled kit plays, at unity ──────
 {
   clearSoundbankGains();

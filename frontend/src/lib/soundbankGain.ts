@@ -167,21 +167,18 @@ export interface ChannelGainTarget {
 }
 
 const applied = new WeakMap<object, Map<number, number>>();
-const pending = new WeakMap<object, Map<number, ReturnType<typeof setTimeout>>>();
 
 /**
  * Set channel `ch`'s gain for the preset it now selects. `delaySec` holds the
  * change back until a program change queued that far ahead takes effect, so
- * the note before it keeps its own gain. Setting the gain a channel already
- * has sends nothing.
+ * the note before it keeps its own gain. Every queued change takes effect at
+ * its own time, in time order, as the synth's own queue plays the program
+ * changes (a queued SpessaSynth event cannot be taken back), so two program
+ * changes one lookahead window holds each bring their preset's gain. Setting
+ * the gain a channel already has sends nothing.
  */
 export function applyChannelGain(target: ChannelGainTarget, ch: number, bankSelect: number, program: number, delaySec = 0): void {
   const gain = dbToGain(selectionGainDb(bankSelect, program, ch));
-  const timers = pending.get(target) ?? new Map<number, ReturnType<typeof setTimeout>>();
-  pending.set(target, timers);
-  const waiting = timers.get(ch);
-  if (waiting !== undefined) clearTimeout(waiting);
-  timers.delete(ch);
   const set = () => {
     const seen = applied.get(target) ?? new Map<number, number>();
     applied.set(target, seen);
@@ -193,7 +190,7 @@ export function applyChannelGain(target: ChannelGainTarget, ch: number, bankSele
       /* a channel that is not there yet keeps unity */
     }
   };
-  if (delaySec > 0.005) timers.set(ch, setTimeout(set, delaySec * 1000));
+  if (delaySec > 0.005) setTimeout(set, delaySec * 1000);
   else set();
 }
 
