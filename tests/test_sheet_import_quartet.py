@@ -350,3 +350,61 @@ def test_unpitched_notes_land_on_kit_keys(synthetic: dict) -> None:
     assert snare["instrument"] == "snare-drum" and snare["percussion"] is True
     assert [p for _, _, p, _ in _notes(synthetic, "Snare Drum")] == [38]
     assert synthetic["unpitched"] == 6 and synthetic["unmapped_unpitched"] == 0
+
+
+TWO_VOICES = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><rest/><duration>6</duration><voice>1</voice><type>half</type><dot/></note>
+      <backup><duration>8</duration></backup>
+      <note><grace slash="yes"/><pitch><step>B</step><octave>3</octave></pitch><voice>2</voice><type>eighth</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>half</type></note>
+      <note><rest/><duration>4</duration><voice>2</voice><type>half</type></note>
+    </measure>
+    <measure number="2">
+      <note><grace slash="yes"/><pitch><step>D</step><octave>5</octave></pitch><voice>1</voice><type>eighth</type></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+      <note><rest/><duration>6</duration><voice>1</voice><type>half</type><dot/></note>
+      <backup><duration>8</duration></backup>
+      <note><grace slash="yes"/><pitch><step>G</step><octave>3</octave></pitch><voice>2</voice><type>eighth</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>half</type></note>
+      <note><rest/><duration>4</duration><voice>2</voice><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"""
+
+
+def test_a_grace_note_leads_into_the_note_of_its_own_voice(tmp_path: Path) -> None:
+    """Two voices on one staff, each note on beat 1: music21 flattens voice 2's
+    grace note ahead of voice 1's note, and the grace used to take voice 1's
+    note as its principal, moving it a 32nd late while voice 2's note stayed on
+    the beat under its own grace."""
+    from backend.modules.sheetimport.parser import parse_score_path
+
+    path = tmp_path / "two-voices.musicxml"
+    path.write_text(TWO_VOICES, encoding="utf-8")
+    result = parse_score_path(str(path))
+    notes = sorted(
+        (n["tick"], n["ticks"], n["pitch"]) for n in result["tracks"][0]["notes"]
+    )
+    grace = PPQ // 8
+    bar2 = 4 * PPQ
+    assert notes == [
+        # Bar 1: voice 1's C5 keeps its beat and its quarter; voice 2's grace B3
+        # takes a 32nd on the beat and its E4 starts that much later, shorter by as much.
+        (0, grace, 59),
+        (0, PPQ, 72),
+        (grace, 2 * PPQ - grace, 64),
+        # Bar 2: each voice's grace leads into its own note.
+        (bar2, grace, 55),
+        (bar2, grace, 74),
+        (bar2 + grace, PPQ - grace, 72),
+        (bar2 + grace, 2 * PPQ - grace, 64),
+    ]
+    assert result["grace_notes"] == 3

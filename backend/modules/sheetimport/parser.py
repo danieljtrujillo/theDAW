@@ -749,6 +749,9 @@ class _Event:
     before_beat: bool = False
     element: Any = None
     ornaments: list[Any] = field(default_factory=list)
+    #: The voice the note is written in (:func:`_tag_voices`), or None on a
+    #: staff music21 keeps in one voice.
+    voice: Optional[str] = None
 
 
 def _dynamic_velocity(value: str, scalar: float) -> int:
@@ -800,47 +803,74 @@ def _level_at(levels: list[tuple[float, int]], offset: float) -> int:
     return vel
 
 
-def _place_graces(events: list[_Event]) -> tuple[list[_Event], int]:
-    """Give each group of grace notes its time before the note it leads into:
-    on the beat, a 32nd each and together at most half of that note, which
-    starts that much later (before the beat when the file says so). A grace
-    note with no note after it keeps a 32nd where it is."""
-    out: list[_Event] = []
-    pending: list[_Event] = []
-    count = 0
-    for ev in events:
-        if ev.grace:
-            pending.append(ev)
+def _tag_voices(part: Any) -> None:
+    """Write the voice each note of ``part`` is written in (its music21 Voice's
+    id) into the note's editorial as ``sheetVoice``. A flattened, tie-stripped
+    copy of the part keeps it, and :func:`_place_graces` reads it: the flat
+    stream loses the voices, and music21 orders a voice-2 grace note ahead of
+    voice 1's note on the same beat. A measure music21 keeps in one voice has
+    no Voice, and its notes stay untagged."""
+    from music21 import stream
+
+    for voice in part.recurse().getElementsByClass(stream.Voice):
+        for n in voice.notes:
+            n.editorial.sheetVoice = str(voice.id)
+
+
+def _grace_principal(events: list[_Event], i: int) -> Optional[int]:
+    """The index of the note grace note ``events[i]`` leads into: the first
+    later note (not a grace note) on its beat in its own voice. A grace note in
+    a voice and a note with none (a measure music21 keeps in one voice, after a
+    measure with two) still pair; an untagged grace note takes the first note
+    on its beat. None when no note on its beat is its."""
+    ev = events[i]
+    fallback: Optional[int] = None
+    for j in range(i + 1, len(events)):
+        other = events[j]
+        if other.offset > ev.offset + 1e-9:
+            break
+        if other.grace or abs(other.offset - ev.offset) > 1e-9:
             continue
-        if pending:
-            group = [g for g in pending if abs(g.offset - ev.offset) < 1e-9]
-            for g in pending:
-                if g not in group:
-                    g.length = GRACE_QL
-                    out.append(g)
-            if group:
-                each = min(GRACE_QL, ev.length * GRACE_SHARE / len(group))
-                if any(g.before_beat for g in group):
-                    start = max(0.0, ev.offset - each * len(group))
-                    for i, g in enumerate(group):
-                        g.offset = start + i * each
-                        g.length = each
-                        out.append(g)
-                else:
-                    for i, g in enumerate(group):
-                        g.offset = ev.offset + i * each
-                        g.length = each
-                        out.append(g)
-                    ev.offset += each * len(group)
-                    ev.length -= each * len(group)
-                count += len(group)
-            pending = []
-        out.append(ev)
-    for g in pending:
-        g.length = GRACE_QL
-        out.append(g)
+        if ev.voice is None or other.voice == ev.voice:
+            return j
+        if fallback is None and other.voice is None:
+            fallback = j
+    return fallback
+
+
+def _place_graces(events: list[_Event]) -> tuple[list[_Event], int]:
+    """Give each group of grace notes its time before the note it leads into
+    (:func:`_grace_principal`, which keeps two voices on one staff apart): on
+    the beat, a 32nd each and together at most half of that note, which starts
+    that much later (before the beat when the file says so). A grace note with
+    no note after it keeps a 32nd where it is. Returns the events, each grace
+    note timed, and how many grace notes there were."""
+    groups: dict[int, list[_Event]] = {}
+    count = 0
+    for i, ev in enumerate(events):
+        if not ev.grace:
+            continue
         count += 1
-    return out, count
+        principal = _grace_principal(events, i)
+        if principal is None:
+            ev.length = GRACE_QL
+            continue
+        groups.setdefault(principal, []).append(ev)
+    for principal, group in groups.items():
+        ev = events[principal]
+        each = min(GRACE_QL, ev.length * GRACE_SHARE / len(group))
+        if any(g.before_beat for g in group):
+            start = max(0.0, ev.offset - each * len(group))
+            for k, g in enumerate(group):
+                g.offset = start + k * each
+                g.length = each
+        else:
+            for k, g in enumerate(group):
+                g.offset = ev.offset + k * each
+                g.length = each
+            ev.offset += each * len(group)
+            ev.length -= each * len(group)
+    return list(events), count
 
 
 def _realize_ornament(ev: _Event) -> Optional[list[_Event]]:
@@ -1029,6 +1059,8 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
     }
     pedal_parts_counted: set[int] = set()
     for idx, part in enumerate(parts):
+        # Each note's voice, which the flat stream below loses (_place_graces).
+        _tag_voices(part)
         # Strip ties so a note held across a barline (or any tie) becomes ONE
         # sustained note event, not several re-articulated ones — otherwise the
         # roll would re-attack every tied note and change the sound.
@@ -1112,6 +1144,7 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
                     before_beat=bool(steal_previous),
                     element=el,
                     ornaments=ornaments,
+                    voice=el.editorial.get("sheetVoice"),
                 )
             )
 
