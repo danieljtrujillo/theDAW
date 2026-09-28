@@ -79,6 +79,7 @@ import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voic
 import { BUNDLED_BANK_ID, instrumentRefValue, parseInstrumentRefValue, presetName, type InstrumentRef } from '../../lib/bankRegistry';
 import { BankPresetOptions, isBankPreset, useSoundBanks } from './bankPresetOptions';
 import { TuningControl } from './TuningControl';
+import { TrackMidiOut } from './TrackMidiOut';
 import { DROP_RENDER_FIELDS, hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
 import { importMidiBytesAsTracks } from '../../lib/midiImportTracksApp';
 import { parseMidi } from '../../utils/midi';
@@ -1467,6 +1468,8 @@ const PopoverPortal: React.FC<{
  * The sound banks' presets follow, by bank (bankPresetOptions): a bank
  * preset sets the track's program with the bank it is picked from, and a
  * user bank's kit is a kit of the track's kind (its value starts `kit|`).
+ * The cable key beside the drum key opens the track's MIDI output (a port,
+ * its channel, clock) and its per-note expression channels (TrackMidiOut).
  */
 export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: liveMixer.LiveMidiTrackStatus }> = ({ track, status }) => {
   const setTrackVoice = useEditorStore((s) => s.setTrackVoice);
@@ -1540,6 +1543,8 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
       >
         {drums ? <Drum aria-hidden="true" className="w-3 h-3" /> : <Piano aria-hidden="true" className="w-3 h-3" />}
       </button>
+      {/* The track's MIDI output port, clock and per-note expression channels. */}
+      <TrackMidiOut track={track} />
       <label htmlFor={`editor-track-instrument-${track.id}`} className="sr-only">{`Track ${track.name} ${drums ? 'drum kit' : 'instrument'}`}</label>
       <select
         id={`editor-track-instrument-${track.id}`}
