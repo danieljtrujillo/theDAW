@@ -149,8 +149,9 @@ assert.deepEqual(landed.parts.map((p) => ed().clips.find((c) => c.id === p.clipI
   assert.deepEqual(out.file.tracks.map((t) => t.name), ['Violin I', 'Violin II', 'Viola', 'Violoncello'], 'a MIDI track per EDIT track');
   assert.equal(out.file.ppq, 960, "at the roll's own resolution");
   assert.deepEqual(out.file.tracks.map((t) => t.programs?.[0]?.program), [40, 40, 41, 42]);
-  assert.deepEqual(out.file.tracks.map((t) => t.notes[0].channel), [0, 0, 1, 2], 'the channels the parts came in on: the violins share theirs');
-  assert.deepEqual(out.sharedTracks, ['Violin I', 'Violin II'], 'and the export says so');
+  // The violins came in sharing channel 1; each EDIT track has its own fader and pan, so the second violin takes a free channel.
+  assert.deepEqual(out.file.tracks.map((t) => t.notes[0].channel), [0, 3, 1, 2], 'the channels the parts came in on, the second violin on the next free one');
+  assert.deepEqual(out.sharedTracks, [], 'no two tracks share a channel while one is free');
   assert.equal(out.noteCount, noteCounts.reduce((a, b) => a + b, 0), 'every note');
   // Each note at the second EDIT plays it: the clip's offset plus its own clock (120, then 60 from beat 251.5).
   const arrangement = [{ beat: 0, bpm: 120 }];

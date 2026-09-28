@@ -9,15 +9,18 @@
  * clips at their offsets with their own tempo maps, a trimmed clip, a drum
  * track on channel 10 with its kit, a clip on its own program partway down a
  * track, a muted track and a soloed one, a part's pedal and volume (and the
- * fader and pan over them), more than fifteen melodic tracks, the
- * arrangement's own tempo and meter maps, a span of the timeline, and the
- * scopes the export dialog and the assistant ask for.
+ * fader and pan over them), more than fifteen melodic tracks, a clip whose
+ * lane bends (and a trimmed one, and one on a drum track), two tracks whose
+ * parts name one channel, the arrangement's own tempo and meter maps, a span
+ * of the timeline, and the scopes the export dialog and the assistant ask for.
  *
  *   cd frontend && npx tsx src/lib/arrangementMidi.test.ts
  */
 import assert from 'node:assert/strict';
 import { arrangementToMidiFile, faderVolumeScale, meterMapFrom, panControlOffset, tempoMapFrom, type ArrangementMidiSource } from './arrangementMidi.ts';
 import { encodeMidi, parseMidi } from './midi.ts';
+import type { PolyLane } from './meterMap.ts';
+import { bendValueToRaw, type LaneBend } from './pitchBend.ts';
 import { beatToTime } from './tempoMap.ts';
 import type { AudioClip, EditorTrack } from '../state/editorStore.ts';
 import { useEditorStore } from '../state/editorStore.ts';
@@ -151,6 +154,68 @@ const secOf = (tick: number, map = [{ beat: 0, bpm: 120 }]) => beatToTime(map, t
   assert.ok(!channels.includes(9), 'never the drum channel');
   assert.equal(new Set(channels.slice(0, 15)).size, 15, 'fifteen channels of their own');
   assert.deepEqual(out.sharedTracks.length, 6, 'the last three share with the first three, and the export names all six');
+}
+
+// ── a clip whose lane bends: the lane on a channel of its own, with its wheel ─
+{
+  const lanes: PolyLane[] = [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: null }];
+  const own = [{ ...note(0, 60, 8), lane: 0 }, { ...note(0, 64, 8), lane: 1 }, { ...note(8, 67, 8), lane: 1 }];
+  // Lane B ramps from the centre at step 0 to its whole range up (2 semitones) at step 8, then holds.
+  const sourceBends: LaneBend[] = [
+    { lane: 1, range: 2, points: [{ id: 'p0', step: 0, value: 0, shape: 'linear' }, { id: 'p1', step: 8, value: 1, shape: 'hold' }] },
+  ];
+  const bentClip = (id: string, trackId: string, extra: Partial<AudioClip> = {}) =>
+    clip(id, trackId, 2, own.map(({ lane: _lane, ...n }) => n), { sourceRollNotes: own, sourceLanes: lanes, sourceBends, sourceTotalSteps: 16, durationSec: 2, sourceDuration: 2, ...extra });
+  const source: ArrangementMidiSource = { bpm: 120, tracks: [track('gtr', 'Guitar', { instrumentProgram: 25 })], clips: [bentClip('b', 'gtr')] };
+  const out = arrangementToMidiFile(source);
+  const t = out.file.tracks[0];
+  // The clip starts at 2 s (tick 3840): lane A's note on the track's channel, lane B's two on a channel of their own.
+  assert.deepEqual(t.notes.map((n) => [n.tick, n.note, n.channel]), [[3840, 60, 0], [3840, 64, 1], [5760, 67, 1]]);
+  assert.deepEqual(t.programs, [{ tick: 0, channel: 0, program: 25 }, { tick: 0, channel: 1, program: 25 }], 'the voice on both channels');
+  assert.deepEqual(t.bendRanges, [{ tick: 3840, channel: 1, semitones: 2 }], "lane B's range with its first message");
+  const wheel = t.bends ?? [];
+  assert.ok(wheel.length > 2 && wheel.every((b) => b.channel === 1), 'the wheel on the channel of lane B alone');
+  assert.deepEqual([wheel[0].tick, wheel[0].value], [3840, 8192], 'centre where the clip starts');
+  assert.deepEqual([wheel[wheel.length - 1].tick, wheel[wheel.length - 1].value], [5760, 16383], 'the whole range up at step 8 (3 s)');
+  assert.ok(wheel.every((b, i) => i === 0 || (b.value >= wheel[i - 1].value && b.tick > wheel[i - 1].tick)), 'rising, one message to a tick');
+  assert.equal(out.sharedTracks.length, 0);
+  // Through the bytes and back: the wheel, its range and each note's channel.
+  const back = parseMidi(encodeMidi(out.file)).tracks[0];
+  assert.deepEqual(back.bends?.map((b) => [b.tick, b.channel, b.value]), wheel.map((b) => [b.tick, b.channel, b.value]));
+  assert.deepEqual(back.bendRanges?.map((r) => [r.tick, r.channel, r.semitones]), [[3840, 1, 2]]);
+  assert.deepEqual(back.notes.map((n) => [n.tick, n.note, n.channel]), [[3840, 60, 0], [3840, 64, 1], [5760, 67, 1]]);
+
+  // Trimmed half a second (four steps) in: the wheel starts where the curve is there, halfway up.
+  const trimmed = arrangementToMidiFile({ ...source, clips: [bentClip('b', 'gtr', { offsetIntoSource: 0.5, durationSec: 1.5 })] }).file.tracks[0];
+  assert.deepEqual([trimmed.bends?.[0].tick, trimmed.bends?.[0].value], [3840, bendValueToRaw(0.5)], 'halfway up at the clip start');
+  assert.equal(trimmed.bends?.[trimmed.bends.length - 1].tick, 3840 + 960, 'the top at step 8, half a second after the trimmed start');
+
+  // A drum track has one wheel for every drum: its clip's lane bends are not written, as its render bends nothing.
+  const drums = arrangementToMidiFile({ bpm: 120, tracks: [track('kit', 'Drums', { isPercussion: true })], clips: [bentClip('d', 'kit')] }).file.tracks[0];
+  assert.equal(drums.bends, undefined);
+  assert.ok(drums.notes.every((n) => n.channel === 9));
+
+  // Fifteen melodic tracks and a bent lane need sixteen channels: the lane's track and the one it shares with are named.
+  const many = Array.from({ length: 15 }, (_, i) => track(`m${i}`, `Part ${i + 1}`, { instrumentProgram: i }));
+  const crowded = arrangementToMidiFile({
+    bpm: 120,
+    tracks: many,
+    clips: [bentClip('c0', 'm0'), ...many.slice(1).map((m, i) => clip(`c${i + 1}`, m.id, 0, [note(0, 50 + i)]))],
+  });
+  assert.deepEqual(crowded.sharedTracks, ['Part 1', 'Part 15']);
+}
+
+// ── two tracks whose parts name the same channel: the second takes a free one ─
+{
+  const part = (name: string) => ({ doc: `d-${name}`, id: name, order: 0, name, program: 40, bank: 0, channel: 1, color: '#fff', mute: false, solo: false });
+  const out = arrangementToMidiFile({
+    bpm: 120,
+    tracks: [track('a', 'Violin I'), track('b', 'Violin II')],
+    // Two files imported as tracks, each with its part on channel 1.
+    clips: [clip('ca', 'a', 0, [note(0, 76)], { sourceRollPart: part('Violin I') }), clip('cb', 'b', 0, [note(0, 72)], { sourceRollPart: part('Violin II') })],
+  });
+  assert.deepEqual(out.file.tracks.map((t) => t.notes[0].channel), [0, 1], 'channel 1 for the first, the next free one for the second');
+  assert.deepEqual(out.sharedTracks, []);
 }
 
 // ── the arrangement's own tempo and meter maps, and a span ───────────────────
