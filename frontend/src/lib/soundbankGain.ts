@@ -197,18 +197,11 @@ export interface RenderGainStep {
 }
 
 /**
- * The gain steps a render of `midi` puts on each synth output (a channel's
- * dry output, `channel % 16`) so a program change partway through the file
- * plays its new preset's playback gain. Each step is relative to the gain the
- * snapshot gave the channel (its first preset, midiChannelSelections), so a
- * channel that keeps one preset has no step and its output is left alone.
- *
- * The synth sends each channel's reverb and chorus to one shared effects
- * output, which follows the first preset's gain. An output two channels of the
- * file share (channels 16 apart, on a second port) takes no steps: a step
- * there would move the other channel too.
+ * The playback gain (dB) each channel of `midi` plays at, from its first
+ * selection (the snapshot's, midiChannelSelections) through each program
+ * change after it, at the tick it takes effect.
  */
-export function renderGainSteps(midi: BasicMIDI): Map<number, RenderGainStep[]> {
+function channelGainTimeline(midi: BasicMIDI): Map<number, Array<{ ticks: number; db: number }>> {
   interface Ev { ticks: number; ch: number; type: number; data: Uint8Array }
   const events: Ev[] = [];
   midi.tracks.forEach((track) => {
@@ -221,13 +214,10 @@ export function renderGainSteps(midi: BasicMIDI): Map<number, RenderGainStep[]> 
     }
   });
   events.sort((a, b) => a.ticks - b.ticks);
-  const first = midiChannelSelections(midi);
-  const baseDb = new Map<number, number>();
-  for (const [ch, sel] of first) baseDb.set(ch, selectionGainDb(sel.bank, sel.program, ch));
+  const out = new Map<number, Array<{ ticks: number; db: number }>>();
+  for (const [ch, sel] of midiChannelSelections(midi)) out.set(ch, [{ ticks: 0, db: selectionGainDb(sel.bank, sel.program, ch) }]);
   const bankNow = new Map<number, number>();
   const seenFirst = new Set<number>();
-  const steps = new Map<number, RenderGainStep[]>();
-  const nowDb = new Map<number, number>(baseDb);
   for (const e of events) {
     if (e.type === 0xb0) {
       if (e.data[0] === 0) bankNow.set(e.ch, e.data[1]);
@@ -242,21 +232,51 @@ export function renderGainSteps(midi: BasicMIDI): Map<number, RenderGainStep[]> 
       seenFirst.add(e.ch);
       continue;
     }
-    const db = selectionGainDb(bankNow.get(e.ch) ?? 0, e.data[0], e.ch);
-    if (db === nowDb.get(e.ch)) continue;
-    nowDb.set(e.ch, db);
-    const list = steps.get(e.ch) ?? [];
-    list.push({ sec: midi.midiTicksToSeconds(e.ticks), gain: dbToGain(db - (baseDb.get(e.ch) ?? 0)) });
-    steps.set(e.ch, list);
+    out.get(e.ch)?.push({ ticks: e.ticks, db: selectionGainDb(bankNow.get(e.ch) ?? 0, e.data[0], e.ch) });
   }
-  const byOutput = new Map<number, RenderGainStep[]>();
+  return out;
+}
+
+/**
+ * The gain steps a render of `midi` puts on each synth output (a channel's
+ * dry output, `channel % 16`) so a program change partway through the file
+ * plays its new preset's playback gain. Each step is relative to the gain the
+ * snapshot gave the channel (its first preset, midiChannelSelections), so a
+ * channel that keeps one preset has no step and its output is left alone.
+ *
+ * The synth sends each channel's reverb and chorus to one shared effects
+ * output, which follows the first preset's gain. An output two channels of the
+ * file share (channels 16 apart, on a second port) takes no steps: a step
+ * there would move the other channel too.
+ */
+export function renderGainSteps(midi: BasicMIDI): Map<number, RenderGainStep[]> {
+  const timeline = channelGainTimeline(midi);
   const usersOf = new Map<number, number>();
-  for (const ch of first.keys()) usersOf.set(ch % 16, (usersOf.get(ch % 16) ?? 0) + 1);
-  for (const [ch, list] of steps) {
-    if ((usersOf.get(ch % 16) ?? 0) > 1) continue;
+  for (const ch of timeline.keys()) usersOf.set(ch % 16, (usersOf.get(ch % 16) ?? 0) + 1);
+  const byOutput = new Map<number, RenderGainStep[]>();
+  for (const [ch, [base, ...changes]] of timeline) {
+    const list: RenderGainStep[] = [];
+    let now = base.db;
+    for (const c of changes) {
+      if (c.db === now) continue;
+      now = c.db;
+      list.push({ sec: midi.midiTicksToSeconds(c.ticks), gain: dbToGain(c.db - base.db) });
+    }
+    if (list.length === 0 || (usersOf.get(ch % 16) ?? 0) > 1) continue;
     byOutput.set(ch % 16, list);
   }
   return byOutput;
+}
+
+/**
+ * True when some channel of `midi` plays a preset whose playback gain lifts
+ * it above unity (over 0 dB) at some point: the render then puts the safety
+ * limiter after the synth (lib/synthOutputStage), so a chord in that preset
+ * cannot clip.
+ */
+export function renderBoosted(midi: BasicMIDI): boolean {
+  for (const list of channelGainTimeline(midi).values()) if (list.some((x) => x.db > 0)) return true;
+  return false;
 }
 
 /** The parts of a WorkletSynthesizer `routeRenderGains` wires. */

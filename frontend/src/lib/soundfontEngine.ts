@@ -30,7 +30,20 @@ import { pairingHeaderFor } from './apiJson';
 import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 import type { RenderNote } from './midiSynth';
 import type { GlobalVoice } from './clipProgram';
-import { applyChannelGain, renderGainSnapshot, renderGainSteps, routeRenderGains } from './soundbankGain';
+import { applyChannelGain, renderBoosted, renderGainSnapshot, renderGainSteps, routeRenderGains, selectionGainDb } from './soundbankGain';
+import {
+  createOutputStage,
+  ensureSafetyLimiter,
+  safetyLimiterFor,
+  safetyLimiterOptions,
+  setChannelLift,
+  stageConnect,
+  stageConnectChannel,
+  stageDisconnect,
+  stageDisconnectChannel,
+  SAFETY_LIMITER_NAME,
+  type OutputStage,
+} from './synthOutputStage';
 import { MAX_PREVIEW_CHANNELS, PREVIEW_CHANNEL_COUNT } from './pitchBend';
 import { MAX_EDIT_BANKS, bankOfChannel, localChannel } from './editChannels';
 import {
@@ -362,16 +375,30 @@ function getProcessorUrl(): Promise<string> {
   return processorUrlPromise;
 }
 
+/** Each live synth's output stage (lib/synthOutputStage): routing connects from it, and a lifted preset's channel gets its limiter there. */
+const outputStages = new WeakMap<WorkletSynthesizer, OutputStage>();
+const stageOf = (synth: WorkletSynthesizer): OutputStage | undefined => outputStages.get(synth);
+
 /**
- * A live synth on the engine context, wired to the master, with the default
- * soundfont loaded, the user's banks at their offsets, the voice cap raised
- * for a tutti, and the project tuning sent.
+ * A live synth on the engine context, wired to the master through its output
+ * stage, with the default soundfont loaded, the user's banks at their offsets,
+ * the voice cap raised for a tutti, and the project tuning sent.
  */
 async function createLiveSynth(wanted: Set<string> | 'all' = 'all'): Promise<WorkletSynthesizer> {
   const ctx = getEngineCtx();
   await addWorkletModule(ctx, await getProcessorUrl());
+  const limiterReady = await ensureSafetyLimiter(ctx);
   const synth = new WorkletSynthesizer(ctx);
-  synth.connect(getMasterGain());
+  const stage = createOutputStage(ctx, synth, () => {
+    if (!limiterReady) return null;
+    try {
+      return new AudioWorkletNode(ctx, SAFETY_LIMITER_NAME, safetyLimiterOptions());
+    } catch {
+      return null;
+    }
+  });
+  outputStages.set(synth, stage);
+  stageConnect(stage, getMasterGain());
   const sf = await loadDefaultSoundfont();
   // Pass a copy: the worklet transfers (detaches) the buffer it receives, and
   // the cached `sf` is reused by the offline render path too.
@@ -526,6 +553,9 @@ function setChannelProgram(
   programs.set(ch, change.key);
   // A downloaded bank's playback gain for this preset (lib/soundbankGain), from the program change on.
   applyChannelGain(synth, ch, dataByte(bank), change.program, time !== undefined ? time - getEngineCtx().currentTime : 0);
+  // A preset lifted above unity plays through the channel's safety limiter from the same moment.
+  const stage = stageOf(synth);
+  if (stage) setChannelLift(stage, ch, selectionGainDb(dataByte(bank), change.program, ch) > 0, time);
 }
 
 /**
@@ -620,9 +650,13 @@ async function renderMidiToBlob(
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, sampleRate, length });
   await addWorkletModule(ctx, await getProcessorUrl());
   const synth = new WorkletSynthesizer(ctx, { eventsEnabled: false });
-  synth.connect(ctx.destination);
+  // A file that plays a preset lifted above unity renders through the safety limiter (lib/synthOutputStage).
+  const limiter = renderBoosted(midi) ? await safetyLimiterFor(ctx) : null;
+  if (limiter) limiter.connect(ctx.destination);
+  const into = limiter ?? ctx.destination;
+  synth.connect(into);
   // A program change to a preset with another playback gain steps its channel's output there.
-  routeRenderGains(ctx, synth, ctx.destination, renderGainSteps(midi));
+  routeRenderGains(ctx, synth, into, renderGainSteps(midi));
   await synth.startOfflineRender({
     midiSequence: midi,
     // Copy: startOfflineRender transfers (detaches) the buffer, but `sf` is the
@@ -691,7 +725,10 @@ export async function renderMidiBufferToBlobSF(
  *
  * Rerouting a channel is therefore just: detach it from master, attach it to the
  * track's gain node. `connectChannel(node, ch)` maps to `worklet.connect(node,
- * ch % 16 + 1)`, so this uses the public API only. Output 0 stays on master: the
+ * ch % 16 + 1)`, so this uses the public API only. Each output plays into its
+ * node of the synth's output stage (lib/synthOutputStage), which is what gets
+ * routed, so a channel's safety limiter sits ahead of whatever its output
+ * feeds. Output 0 stays on master: the
  * effects bus is shared across all channels and cannot be attributed to one
  * track, so a track's synth reverb tail is the one part that still bypasses its
  * chain.
@@ -891,16 +928,18 @@ export function routeEditChannel(channel: number, dest: AudioNode | null): void 
   const at = editChannel(channel);
   if (!at) return;
   const master = getMasterGain();
+  const stage = stageOf(at.bank.synth);
+  if (!stage) return;
   if (at.bank.parked) {
     // Back on the master, all seventeen outputs (the effects bus included), then routed.
-    try { at.bank.synth.connect(master); } catch { /* master always valid */ }
+    try { stageConnect(stage, master); } catch { /* master always valid */ }
     at.bank.parked = false;
   }
   const current = at.bank.routes.get(at.ch) ?? master;
   const next = dest ?? master;
   if (current === next) return;
-  try { at.bank.synth.disconnectChannel(current, at.ch); } catch { /* already detached */ }
-  try { at.bank.synth.connectChannel(next, at.ch); } catch { /* node gone */ }
+  try { stageDisconnectChannel(stage, current, at.ch); } catch { /* already detached */ }
+  try { stageConnectChannel(stage, next, at.ch); } catch { /* node gone */ }
   if (dest) at.bank.routes.set(at.ch, dest);
   else at.bank.routes.delete(at.ch);
 }
@@ -910,9 +949,11 @@ export function routeEditChannel(channel: number, dest: AudioNode | null): void 
 export function resetEditRouting(): void {
   const master = getMasterGain();
   for (const bank of editBanks) {
+    const stage = stageOf(bank.synth);
     for (const [ch, node] of bank.routes) {
-      try { bank.synth.disconnectChannel(node, ch); } catch { /* already detached */ }
-      try { bank.synth.connectChannel(master, ch); } catch { /* master always valid */ }
+      if (!stage) continue;
+      try { stageDisconnectChannel(stage, node, ch); } catch { /* already detached */ }
+      try { stageConnectChannel(stage, master, ch); } catch { /* master always valid */ }
     }
     bank.routes.clear();
   }
@@ -931,7 +972,8 @@ export function parkEditRouting(): void {
   const master = getMasterGain();
   for (const bank of editBanks) {
     if (bank.parked) continue;
-    try { bank.synth.disconnect(master); } catch { /* an output already off the master */ }
+    const stage = stageOf(bank.synth);
+    if (stage) stageDisconnect(stage, master);
     bank.parked = true;
   }
 }
