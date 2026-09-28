@@ -613,7 +613,9 @@ export const dumpAudioChain = (): Record<string, unknown> => {
   return out;
 };
 
-if (typeof window !== 'undefined' && import.meta.env.DEV) {
+// `?.`: plain tsx has no import.meta.env, and a node test that installs a
+// jsdom window before importing this module still loads it.
+if (typeof window !== 'undefined' && import.meta.env?.DEV) {
   (window as unknown as { dumpAudioChain?: () => Record<string, unknown> }).dumpAudioChain =
     dumpAudioChain;
 }
