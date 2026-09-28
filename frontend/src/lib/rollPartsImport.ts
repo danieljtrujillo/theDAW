@@ -22,7 +22,7 @@
  *
  * Store-writing but free of Vite-only imports, so node tests replay it.
  */
-import { usePianoRollStore, type PianoNote, type RollMeter, type RollTrack } from '../state/pianoRollStore';
+import { MAX_ROLL_STEPS, usePianoRollStore, type PianoNote, type RollMeter, type RollTrack } from '../state/pianoRollStore';
 import type { MidiFileData } from './midi';
 import type { RollMarkerInput } from './rollMarkers';
 import { midiEventsToMeterMap, normalizeMeterMap, stepsAsMeter, type MeterEvent, type MeterSegment } from './meterMap';
@@ -48,7 +48,22 @@ export interface PartsImportResult {
   folded: number;
   /** True when the file went into the active part of a roll whose other parts hold notes, so the roll kept its own tempo map, meter, lanes and bends (pianoRollStore importNotes). */
   keptDocument: boolean;
+  /**
+   * Notes that start at or past the roll's last step (MAX_ROLL_STEPS, 65,536
+   * sixteenths): the part keeps them, but the grid ends before them, so they
+   * do not play in the roll or on EDIT's timeline. The import's log line
+   * warns when there are any (pastEndLog).
+   */
+  pastEnd: number;
 }
+
+/** The warning an import logs when a file runs past the roll's last step (PartsImportResult pastEnd). */
+export const pastEndLog = (pastEnd: number): string =>
+  `${pastEnd} note${pastEnd === 1 ? '' : 's'} start past the roll's last bar (step ${MAX_ROLL_STEPS}, 4,096 bars of 4/4): the part keeps ${pastEnd === 1 ? 'it' : 'them'}, but the roll and EDIT play up to that bar. Split the file into movements to hear the rest`;
+
+/** How many of `parts`' notes start at or past the roll's last step. */
+const notesPastEnd = (parts: readonly RollMidiPart[]): number =>
+  parts.reduce((n, p) => n + p.notes.reduce((k, x) => k + (x.step >= MAX_ROLL_STEPS - 1e-9 ? 1 : 0), 0), 0);
 
 /**
  * Put `parts` in the roll: several replace every part, one goes into the
@@ -66,10 +81,11 @@ export function applyRollParts(
   const roll = usePianoRollStore.getState();
   const notes = parts.reduce((n, p) => n + p.notes.length, 0);
   // A file with nothing in it changes nothing.
-  if (parts.length === 0) return { parts: 0, notes: 0, into: 'active', folded: 0, keptDocument: false };
+  if (parts.length === 0) return { parts: 0, notes: 0, into: 'active', folded: 0, keptDocument: false, pastEnd: 0 };
+  const pastEnd = notesPastEnd(parts);
   if (parts.length > 1) {
     roll.importParts(parts.map((p) => ({ ...p.track, notes: p.notes })), bpm, meter, bends, tempoMap, 0, markers);
-    return { parts: Math.min(parts.length, MAX_ROLL_PARTS), notes, into: 'parts', folded: Math.max(0, parts.length - MAX_ROLL_PARTS), keptDocument: false };
+    return { parts: Math.min(parts.length, MAX_ROLL_PARTS), notes, into: 'parts', folded: Math.max(0, parts.length - MAX_ROLL_PARTS), keptDocument: false, pastEnd };
   }
   const part = parts[0];
   // The file's part replaces the part's controller changes and, for a part
@@ -84,7 +100,7 @@ export function applyRollParts(
       percussion: part.track.channel === PERCUSSION_PART_CHANNEL,
     },
   });
-  return { parts: 1, notes, into: 'active', folded: 0, keptDocument };
+  return { parts: 1, notes, into: 'active', folded: 0, keptDocument, pastEnd };
 }
 
 /** A parsed MIDI file into the roll's parts (lib/rollMidi midiFileToRollParts). */

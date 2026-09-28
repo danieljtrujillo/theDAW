@@ -22,10 +22,10 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
 import { midiFileToRoll } from './rollMidi';
-import { KEPT_DOCUMENT_LOG, importMidiParts } from './rollPartsImport';
+import { KEPT_DOCUMENT_LOG, importMidiParts, pastEndLog } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
-import { logError, logInfo } from '../state/logStore';
+import { logError, logInfo, logWarn } from '../state/logStore';
 
 /** Default mime for stems / mic recordings when none provided. */
 const DEFAULT_AUDIO_MIME = 'audio/wav';
@@ -197,6 +197,7 @@ export function loadMidiIntoPianoRoll(
     );
     // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
     if (kept) logInfo('send-to', KEPT_DOCUMENT_LOG);
+    if (parts?.pastEnd) logWarn('send-to', pastEndLog(parts.pastEnd));
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);

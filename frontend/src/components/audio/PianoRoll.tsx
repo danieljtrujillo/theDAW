@@ -32,7 +32,7 @@ import {
 import { createRollScheduler, ROLL_LOOKAHEAD_SEC, ROLL_TICK_MS, type ScheduledWheel } from '../../lib/rollPartPlay';
 import { rollPartVoice, rollPartVoices, type PartVoice } from '../../lib/rollPartVoice';
 import { MAX_ROLL_PARTS, audiblePartIds, partFileChannels } from '../../lib/rollTracks';
-import { KEPT_DOCUMENT_LOG, importMidiParts, importSheetParts } from '../../lib/rollPartsImport';
+import { KEPT_DOCUMENT_LOG, importMidiParts, importSheetParts, pastEndLog } from '../../lib/rollPartsImport';
 import { RollTrackColumn } from './RollTrackColumn';
 import { RollNotesCanvas, type RollNotesCanvasHandle } from './RollNotesCanvas';
 import { RollMinimap } from './RollMinimap';
@@ -1352,6 +1352,7 @@ export const importMidiFileToRoll = (file: File): void => {
         `Imported ${done.notes} notes from "${file.name}"${where} at ${Math.round(done.bpm * 100) / 100} BPM${changes > 0 ? ` with ${changes} tempo change${changes === 1 ? '' : 's'}` : ''} in ${meterLabel(done.meterMap[0].meter)}${done.bentLanes ? `, pitch bend in ${done.bentLanes} lane${done.bentLanes === 1 ? '' : 's'}` : ''}`,
       );
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} tracks are in its last part`);
+      if (done.pastEnd) logWarn('piano-roll', pastEndLog(done.pastEnd));
       if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1389,6 +1390,7 @@ export const importSheetFileToRoll = (file: File): void => {
       );
       if (score.unmapped_unpitched) logWarn('piano-roll', `${score.unmapped_unpitched} unpitched notes of "${file.name}" name no drum; they play on the snare (key 38)`);
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} parts are in its last part`);
+      if (done.pastEnd) logWarn('piano-roll', pastEndLog(done.pastEnd));
       if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
     } catch (e) {
       logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);
