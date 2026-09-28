@@ -10,8 +10,10 @@
  * The sawtooth is byte-for-byte the voice the piano roll used inline before
  * this module existed, so previews and bounces stay consistent.
  */
-import { parseMidi, type MidiFileData } from './midi';
-import type { SmfWheel } from './midiWrite';
+import { midiStartTempo, parseMidi, type MidiFileData } from './midi';
+import type { SmfControl, SmfWheel } from './midiWrite';
+import type { RollControl } from '../state/pianoRollStore';
+import { TICKS_PER_STEP } from './rollSnap';
 import type { RollRenderBends } from './pitchBend';
 import { stepNotesToRender, voiceContext, type VoiceBend } from './pitchBendVoice';
 import { encodeWav } from './wavEncode';
@@ -32,6 +34,12 @@ export interface StepRenderOptions {
    * it starts at the render's `bpm`; left out, or one event, the render holds `bpm`.
    */
   tempoMap?: readonly TempoEvent[];
+  /**
+   * The part's controller changes on the roll's clock (RollTrack `controls`):
+   * a soundfont render plays each at its step's seconds under the tempo map, on
+   * every channel the notes play on. The built-in voices have no controllers.
+   */
+  controls?: readonly RollControl[];
 }
 
 /** One note in absolute seconds — the engine-neutral render unit. */
@@ -70,6 +78,8 @@ export interface RenderOptions {
   program?: number;
   /** Pitch wheels by channel for a soundfont render (the built-in voices bend through each note's `bend`). */
   wheel?: SmfWheel[];
+  /** Controller changes by channel, in seconds, for a soundfont render (the built-in voices have none). */
+  controls?: SmfControl[];
 }
 
 /** Built-in voices ring this long past the last note: the sawtooth's release and a margin. */
@@ -210,12 +220,22 @@ export function stepRenderRequest(
   const clock = stepClock(bpm, opts.tempoMap);
   const render = stepNotesToRender(notes, clock, opts.percussion ? undefined : opts.bends);
   const nominalSec = clock.at(totalSteps);
+  const played = opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes;
+  // A controller acts on a channel, so each change goes to every channel a note plays on (a bent lane has its own).
+  const controls: SmfControl[] = [];
+  if (opts.controls?.length) {
+    const channels = [...new Set(played.map((n) => n.channel ?? 0))].sort((a, b) => a - b);
+    for (const channel of channels) {
+      for (const c of opts.controls) controls.push({ sec: clock.at(c.tick / TICKS_PER_STEP), channel, controller: c.controller, value: c.value });
+    }
+  }
   return {
-    notes: opts.percussion ? render.notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render.notes,
+    notes: played,
     options: {
       minDurationSec: nominalSec,
       program: opts.percussion ? (opts.program ?? GM_STANDARD_KIT) : opts.program,
       ...(render.wheel.length ? { wheel: render.wheel } : {}),
+      ...(controls.length ? { controls } : {}),
     },
     nominalSec,
   };
@@ -244,14 +264,16 @@ export const renderMidiBufferToBlob = async (
 /**
  * A parsed file's notes in seconds, for the built-in voice: every tempo the
  * file sets, each at its own tick, so a file that slows down renders slowing
- * down. A file with no tempo plays at its one tempo (120 when it names none).
+ * down. A file with no tempo plays at its one tempo (120 when it names none),
+ * and a file whose first tempo comes later plays at 120 until it (lib/midi
+ * midiStartTempo), as SMF has it.
  */
 export function midiFileRenderNotes(midi: MidiFileData): RenderNote[] {
   const ppq = midi.ppq || 480;
   const tempos: TempoEvent[] = midi.tempos?.length
     ? midi.tempos.map((t) => ({ beat: t.tick / ppq, bpm: t.bpm }))
     : [{ beat: 0, bpm: midi.bpm || 120 }];
-  if (!tempos.some((t) => t.beat === 0)) tempos.unshift({ beat: 0, bpm: tempos[0].bpm });
+  if (!tempos.some((t) => t.beat === 0)) tempos.unshift({ beat: 0, bpm: midiStartTempo(midi) });
   const secOf = (tick: number) => beatToTime(tempos, tick / ppq);
   return midi.tracks.flatMap((t) =>
     t.notes.map((n) => ({

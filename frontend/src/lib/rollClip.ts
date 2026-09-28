@@ -22,12 +22,22 @@ import {
   rollMeterOf,
   sanitizeLanes,
   type PianoNote,
+  type RollControl,
   type RollMeter,
   type RollPartRef,
   type RollPartsLoad,
   type RollTrack,
 } from '../state/pianoRollStore';
-import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartChannel, cleanPartColor, cleanPartName, cleanPartProgram } from './rollTracks';
+import {
+  PERCUSSION_PART_CHANNEL,
+  cleanPartBank,
+  cleanPartChannel,
+  cleanPartColor,
+  cleanPartControls,
+  cleanPartName,
+  cleanPartProgram,
+  controlStateBefore,
+} from './rollTracks';
 import { quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGrooveInMeter, grooveLateness, type GrooveTemplate } from './grooveTemplate';
 import { barAt, laneTimeOf, normalizeMeterMap, roundUpToBar, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
@@ -35,7 +45,7 @@ import { TICKS_PER_STEP, feelNoteTicks, laneSnapGrid, snapGrid, type RollSnapId,
 import { copyBends, rollRenderBends, sanitizeBends, type LaneBend, type RollRenderBends } from './pitchBend';
 import type { MidiFileData } from './midi';
 import { midiFileToRoll } from './rollMidi';
-import { copyTempoMap, hasTempoChanges, playedTempoMap, type StepClock } from './rollTempo';
+import { copyTempoMap, hasTempoChanges, playedTempoMap, stepClock, type StepClock } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
 
 /** The roll state a bounce reads. `tempoMap` left out is one tempo at `bpm`. */
@@ -153,19 +163,64 @@ export function midiFileClipFields(data: MidiFileData, idPrefix = 'imp'): RollCl
 }
 
 /** The clip fields a render of a roll clip reads. */
-export type ClipRenderSource = Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'>;
+export type ClipRenderSource = Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> &
+  Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
 /**
- * The notes a roll clip's audio renders from over `totalSteps`. A clip whose
- * lanes bend renders the roll's own notes unrolled with their lanes, so each
- * note follows its lane's curve; any other clip renders the notes it plays.
+ * The notes a roll clip's audio renders from over `totalSteps`, and the
+ * controller changes of the part it holds (`controls`, from its
+ * `sourceRollPart`), which a render plays with them so the pedal and the
+ * volume a MIDI file gave the part are in the audio. A clip whose lanes bend
+ * renders the roll's own notes unrolled with their lanes, so each note follows
+ * its lane's curve; any other clip renders the notes it plays.
  */
-export function clipRenderInput(clip: ClipRenderSource, totalSteps: number): { notes: PianoNote[]; bends?: RollRenderBends } {
+export function clipRenderInput(
+  clip: ClipRenderSource,
+  totalSteps: number,
+): { notes: PianoNote[]; bends?: RollRenderBends; controls?: RollControl[] } {
   const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
   const own = clip.sourceRollNotes;
+  const controls = clip.sourceRollPart?.controls?.length ? clip.sourceRollPart.controls : undefined;
   const bends = clip.sourceBends?.length && own?.length ? rollRenderBends(sanitizeBends(clip.sourceBends), lanes, totalSteps) : undefined;
-  if (!bends || !own) return { notes: clip.sourcePianoRoll ?? [] };
-  return { notes: unrollLanes(own, lanes, totalSteps), bends };
+  if (!bends || !own) return { notes: clip.sourcePianoRoll ?? [], ...(controls ? { controls } : {}) };
+  return { notes: unrollLanes(own, lanes, totalSteps), bends, ...(controls ? { controls } : {}) };
+}
+
+/** A controller change at a timeline second: what a clip's part sends where EDIT plays it. */
+export interface ClipControlTime {
+  sec: number;
+  controller: number;
+  value: number;
+}
+
+/**
+ * A clip's part controller changes (its `sourceRollPart` controls) at their
+ * timeline seconds, as EDIT plays the clip: each at its tick through the
+ * clip's own clock (its tempo map, else `sourceBpm`, else `fallbackBpm`),
+ * shifted by the clip's start and trim, inside the clip's window. The value
+ * each controller holds where the window starts comes first, at the clip's
+ * start, so a trimmed clip starts with the pedal and volume it has there.
+ * The arrangement's MIDI export (lib/arrangementMidi) reads it; a live
+ * scheduler sends the same list.
+ */
+export function clipControlTimes(
+  clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourceBpm' | 'sourceTempoMap' | 'sourceRollPart'>,
+  fallbackBpm: number,
+): ClipControlTime[] {
+  const own = clip.sourceRollPart?.controls ?? [];
+  if (!own.length) return [];
+  const clock = stepClock(clip.sourceBpm ?? fallbackBpm, clip.sourceTempoMap);
+  const offset = clip.offsetIntoSource ?? 0;
+  const out: ClipControlTime[] = [];
+  // The first tick the window shows: its trim offset through the clip's clock.
+  const firstTick = Math.max(0, clock.stepAt(offset) * TICKS_PER_STEP);
+  for (const [controller, value] of controlStateBefore(own, firstTick)) out.push({ sec: clip.startSec, controller, value });
+  for (const c of own) {
+    const rel = clock.at(c.tick / TICKS_PER_STEP) - offset;
+    if (rel < 0 || rel >= clip.durationSec) continue;
+    out.push({ sec: clip.startSec + rel, controller: c.controller, value: c.value });
+  }
+  return out;
 }
 
 /**
@@ -334,7 +389,7 @@ export function feelLength(length: number, q: number): number {
 
 // ── Parts: roll parts as EDIT clips and back ────────────────────────────────
 
-/** The record a part's clip keeps of it (AudioClip `sourceRollPart`): its document, id, place and settings. */
+/** The record a part's clip keeps of it (AudioClip `sourceRollPart`): its document, id, place, settings and controller changes. */
 export function rollPartRef(part: RollTrack, order: number, doc: string): RollPartRef {
   return {
     doc,
@@ -348,6 +403,7 @@ export function rollPartRef(part: RollTrack, order: number, doc: string): RollPa
     mute: part.mute,
     solo: part.solo,
     ...(part.instrumentId ? { instrumentId: part.instrumentId } : {}),
+    ...(part.controls?.length ? { controls: part.controls.map((c) => ({ ...c })) } : {}),
   };
 }
 
@@ -361,6 +417,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
   const r = raw as Record<string, unknown>;
   if (typeof r.doc !== 'string' || !r.doc || typeof r.id !== 'string' || !r.id) return undefined;
   const order = typeof r.order === 'number' && Number.isFinite(r.order) ? Math.max(0, Math.round(r.order)) : 0;
+  const controls = cleanPartControls(r.controls);
   return {
     doc: r.doc,
     id: r.id,
@@ -373,6 +430,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
     mute: r.mute === true,
     solo: r.solo === true,
     ...(typeof r.instrumentId === 'string' && r.instrumentId ? { instrumentId: r.instrumentId } : {}),
+    ...(controls ? { controls } : {}),
   };
 }
 
@@ -394,6 +452,7 @@ function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color
       solo: ref.solo,
       notes,
       ...(ref.instrumentId ? { instrumentId: ref.instrumentId } : {}),
+      ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ ...c })) } : {}),
     };
   }
   // A clip bounced before parts: its EDIT track names it, and a drum track makes it a percussion part.

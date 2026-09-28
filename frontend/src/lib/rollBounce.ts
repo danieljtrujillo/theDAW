@@ -22,7 +22,7 @@
  * editorStore's), so node tests replay a bounce against the real stores.
  */
 import { useEditorStore } from '../state/editorStore';
-import { partLinkOf, rollTracksOf, usePianoRollStore, type RollTrack } from '../state/pianoRollStore';
+import { partLinkOf, rollTracksOf, usePianoRollStore, type RollControl, type RollTrack } from '../state/pianoRollStore';
 import { renderedVoiceFields, type GlobalVoice } from './clipProgram';
 import { unrollLanes } from './meterMap';
 import { rollRenderBends, type RollRenderBends } from './pitchBend';
@@ -36,7 +36,13 @@ export interface RollBounceDeps {
     notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
     bpm: number,
     totalSteps: number,
-    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
+    opts: {
+      program?: number;
+      percussion?: boolean;
+      bends?: RollRenderBends;
+      tempoMap?: readonly TempoEvent[];
+      controls?: readonly RollControl[];
+    },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array }>;
@@ -98,6 +104,8 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
       percussion: voice.percussion,
       bends: rollRenderBends(roll.bends, roll.lanes, totalSteps),
       ...(fields.sourceTempoMap ? { tempoMap: fields.sourceTempoMap } : {}),
+      // The part's volume, pan, expression, modulation and pedal, as PLAY sends them.
+      ...(part.controls?.length ? { controls: part.controls } : {}),
     });
     const { peaks } = await deps.computePeaks(blob, 240);
     const editor = useEditorStore.getState();

@@ -574,7 +574,9 @@ export interface RecentItem {
  * A roll part as a .tasmo clip saves it (AudioClip `sourceRollPart`): the roll
  * document shared by the clips of every part bounced from one roll, the part's
  * id and place, and its settings. `program` and `channel` are null when the
- * part follows the roll's voice or takes the next free channel.
+ * part follows the roll's voice or takes the next free channel. `controls` is
+ * the part's controller changes on the roll's clock (960 ticks to the quarter),
+ * absent when it has none; a file written before controllers opens without them.
  */
 export interface TasmoRollPart {
   doc: string;
@@ -588,6 +590,7 @@ export interface TasmoRollPart {
   mute: boolean;
   solo: boolean;
   instrument_id?: string | null;
+  controls?: Array<{ tick: number; controller: number; value: number }>;
 }
 
 /** A clip's part record in the file shape. */
@@ -603,6 +606,7 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   mute: ref.mute,
   solo: ref.solo,
   instrument_id: ref.instrumentId ?? null,
+  ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ tick: c.tick, controller: c.controller, value: c.value })) } : {}),
 });
 
 /** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */

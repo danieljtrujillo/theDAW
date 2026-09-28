@@ -104,7 +104,7 @@ import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { triggerPianoNote } from '../../lib/pianoTrigger';
-import { getGlobalVoice, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
+import { getGlobalVoice, sfControlChange, sfPitchWheel, sfPitchWheelRange } from '../../lib/soundfontEngine';
 import { drumKitName } from '../../lib/clipProgram';
 import { chooseRollVoice, rollVoiceChoice } from '../../lib/rollVoiceChoice';
 import { gmShortName } from '../../lib/gmInstruments';
@@ -378,6 +378,7 @@ export const PianoRollTransport: React.FC<{
     const send = (wheels: readonly ScheduledWheel[]) => {
       for (const w of wheels) {
         if (w.kind === 'range') sfPitchWheelRange(w.channel, w.value, w.time);
+        else if (w.kind === 'control') sfControlChange(w.channel, w.controller ?? 0, w.value, w.time);
         else sfPitchWheel(w.channel, w.value, w.time);
       }
     };
@@ -1178,7 +1179,11 @@ export const PianoRollClearKey: React.FC = () => {
     <RailKey
       onClick={() => usePianoRollStore.getState().clear()}
       aria-label={several ? `Clear every note of ${partName}` : 'Clear every note'}
-      description={several ? `Remove every note of the part ${partName}; the other parts keep theirs` : 'Remove every note from the roll'}
+      description={
+        several
+          ? `Remove every note and controller change of the part ${partName}; the other parts keep theirs`
+          : 'Remove every note and controller change from the roll'
+      }
       icon={<Trash2 className={RAIL_GLYPH} />}
       legend="Clear"
     />
@@ -1249,17 +1254,25 @@ export const importSheetFileToRoll = (file: File): void => {
         return;
       }
       // Each part of the score becomes a part of the roll on the instrument the
-      // score names (step/length already on the 16th grid from the backend); a
-      // score of one part goes into the part being edited. The score's first
-      // time signature holds for the whole roll; a score with none, or one the
-      // roll cannot draw, is 4/4 (lib/rollPartsImport importSheetParts).
+      // score names, each note at its tick; a score of one part goes into the
+      // part being edited. Every time signature (with the pickup) becomes the
+      // roll's meter map and every tempo mark its tempo map
+      // (lib/rollPartsImport importSheetParts).
       const done = importSheetParts(score);
       const meter = usePianoRollStore.getState().meterMap[0].meter;
       const where = done.into === 'parts' ? ` as ${done.parts} parts` : ` into ${activeTrackOf(usePianoRollStore.getState()).name}`;
+      const changes = [
+        done.tempoChanges ? `${done.tempoChanges} tempo change${done.tempoChanges === 1 ? '' : 's'}` : '',
+        done.meterChanges ? `${done.meterChanges} meter change${done.meterChanges === 1 ? '' : 's'}` : '',
+        score.grace_notes ? `${score.grace_notes} grace notes timed` : '',
+        score.ornaments ? `${score.ornaments} ornaments played out` : '',
+        score.chord_symbols_skipped ? `${score.chord_symbols_skipped} chord symbols left out` : '',
+      ].filter(Boolean);
       logInfo(
         'piano-roll',
-        `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}`,
+        `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}${changes.length ? `, ${changes.join(', ')}` : ''}`,
       );
+      if (score.unmapped_unpitched) logWarn('piano-roll', `${score.unmapped_unpitched} unpitched notes of "${file.name}" name no drum; they play on the snare (key 38)`);
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} parts are in its last part`);
     } catch (e) {
       logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);

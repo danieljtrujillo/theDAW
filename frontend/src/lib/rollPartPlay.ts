@@ -24,9 +24,19 @@
  * messages for the window it schedules notes in. A built-in voice follows its
  * lane's curve through automation scheduled with the note.
  *
+ * Controllers: a soundfont part's controller changes (RollTrack `controls`:
+ * modulation, volume, pan, expression, the sustain pedal) go out on every
+ * channel the part plays on, each at its step's context time, in the same
+ * window as the notes. Where playback starts, seeks, re-anchors or loops back,
+ * each channel first gets the value every controller holds there
+ * (lib/rollTracks controlStateBefore), so a part started halfway has the
+ * volume and pedal it has at that bar. A part that falls silent (muted, or
+ * another part soloed) and STOP put its controllers back where a channel
+ * starts, pedal up first, so a held pedal never outlives its part.
+ *
  * No Vite-only imports, so node tests load it.
  */
-import type { RollTrack } from '../state/pianoRollStore';
+import type { RollControl, RollTrack } from '../state/pianoRollStore';
 import { unrollLanes, type PolyLane } from './meterMap';
 import {
   BEND_CENTER,
@@ -51,14 +61,19 @@ import {
   type RollPlaySource,
   type RollPlayState,
 } from './rollTempo';
-import { REANCHOR_STEPS, shownStep, windowOnsets } from './rollTransport';
-import { audiblePartIds, rollLiveChannels, type PartLiveChannels } from './rollTracks';
+import { REANCHOR_STEPS, rollStepAt, shownStep, windowOnsets } from './rollTransport';
+import { TICKS_PER_STEP } from './rollSnap';
+import { audiblePartIds, controlStateBefore, partController, rollLiveChannels, type PartLiveChannels } from './rollTracks';
 import type { PianoNote } from '../state/pianoRollStore';
 
 /** Seconds the scheduler plans ahead each tick: its notes, and the roll's click. */
 export const ROLL_LOOKAHEAD_SEC = 0.12;
 /** Milliseconds between the scheduler's ticks. */
 export const ROLL_TICK_MS = 25;
+/** The most lap starts one window sends controller states for. */
+const MAX_LAP_STARTS = 64;
+/** The controllers of a part that has none: one list, so a rebuilt plan sees no change in them. */
+const NO_CONTROLS: readonly RollControl[] = Object.freeze([]);
 
 /** The roll as the scheduler reads it each tick. `tracks` is every part with its real notes (pianoRollStore rollTracksOf). */
 export interface RollSchedulerSource extends RollPlaySource {
@@ -93,35 +108,68 @@ export interface ScheduledRollNote {
   abs: number;
 }
 
-/** A pitch wheel message (`value` 0-16383) or a bend range (`value` in semitones) for a channel, at `time` (now when absent). */
+/**
+ * A channel message for the soundfont, at `time` (now when absent): a pitch
+ * wheel message (`value` 0-16383), a bend range (`value` in semitones), or a
+ * controller change (`controller`, `value` 0-127).
+ */
 export interface ScheduledWheel {
-  kind: 'wheel' | 'range';
+  kind: 'wheel' | 'range' | 'control';
   channel: number;
   value: number;
+  /** The controller number of a 'control' message. */
+  controller?: number;
   time?: number;
 }
 
 export interface RollTickResult {
   notes: ScheduledRollNote[];
+  /** Every pitch wheel, bend range and controller message for the window, in time order per channel. */
   wheels: ScheduledWheel[];
   /** The step the playhead shows now. */
   shownStep: number;
 }
 
-/** A part's notes as they sound (lane repeats written out) and its live channels. */
+/** A part's controller change placed on the step grid, as windowOnsets reads items. */
+interface ControlItem {
+  step: number;
+  controller: number;
+  value: number;
+}
+
+/** A part's notes as they sound (lane repeats written out), its live channels and its controller changes. */
 interface PartPlan {
   id: string;
   played: PianoNote[];
   channels: PartLiveChannels;
+  /** Every channel the part plays on (its own and its bent lanes'), each once. */
+  channelList: number[];
+  controls: readonly RollControl[];
+  controlItems: ControlItem[];
 }
 
 export interface RollScheduler {
   /** Schedule the window from the last tick to `now` + the lookahead. */
   tick: (now: number, roll: RollSchedulerSource, voiceOf: (partId: string) => SchedulerVoice | undefined) => RollTickResult;
-  /** Put every bent channel back at the centre and the default range, after every message already sent: STOP. */
+  /**
+   * Put every bent channel back at the centre and the default range, and every
+   * controller this playback sent back where a channel starts (pedal up
+   * first), after every message already sent: STOP.
+   */
   release: (now: number) => ScheduledWheel[];
   /** The lap and its clock as the last tick left them (the click reads them). */
   state: () => RollPlayState;
+}
+
+/**
+ * The controller values to send where playback lands on `tick`: each
+ * controller's state just before it (lib/rollTracks controlStateBefore),
+ * leaving out a controller that changes AT `tick`, since its change plays
+ * there in the same window.
+ */
+function stateToSend(controls: readonly RollControl[], tick: number): Array<[number, number]> {
+  const changing = new Set(controls.filter((c) => Math.abs(c.tick - tick) < 0.5).map((c) => c.controller));
+  return [...controlStateBefore(controls, tick)].filter(([controller]) => !changing.has(controller));
 }
 
 /** A scheduler for PLAY starting with absolute step 0 at context time `origin`. */
@@ -139,6 +187,18 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
   let lastWheelTime = 0;
   // The next tick first sends each bent channel where its curve is: at the start, and after a bend, lane, length, loop or seek.
   let wheelFresh = true;
+  // Controllers: each channel's controllers this playback has sent (STOP and a
+  // part falling silent put them back), the parts whose controllers are on
+  // their channels now, and the latest controller message time.
+  const controlTouched = new Map<number, Set<number>>();
+  const controlLive = new Set<string>();
+  let lastControlTime = 0;
+  // The next tick first sends every sounding part's controller state where it
+  // resumes: at the start, and after a seek, a re-anchor, or a change of the
+  // parts' controllers or channels.
+  let controlFresh = true;
+  // Each part's controllers and channels as the last plan had them, so a change is seen.
+  let controlShape = new Map<string, { controls: readonly RollControl[]; channels: string }>();
 
   const releaseWheel = (ch: number, now: number, out: ScheduledWheel[]) => {
     const at = Math.max(now, lastWheelTime) + 0.001;
@@ -147,14 +207,30 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     wheelRanges.delete(ch);
   };
 
+  /** Put `channels`' controllers back where a channel starts, at `at`: the pedal first, so nothing it held rings on. */
+  const resetControls = (channels: Iterable<number>, at: number, out: ScheduledWheel[]) => {
+    for (const ch of channels) {
+      const touched = controlTouched.get(ch);
+      if (!touched) continue;
+      const order = [...touched].sort((a, b) => (a === 64 ? -1 : b === 64 ? 1 : a - b));
+      for (const controller of order) out.push({ kind: 'control', channel: ch, controller, value: partController(controller)?.initial ?? 0, time: at });
+      controlTouched.delete(ch);
+      lastControlTime = Math.max(lastControlTime, at);
+    }
+  };
+
   const tick: RollScheduler['tick'] = (now, r, voiceOf) => {
     const { tracks, lanes, bends } = r;
     const total = Math.max(1, r.totalSteps);
     const wheels: ScheduledWheel[] = [];
     const notes: ScheduledRollNote[] = [];
     const followed = followRollPlay(playState, r, cursor);
-    // A re-anchored lap sends every bent channel where its curve is at the new place.
-    if (followed.lapState !== playState.lapState) wheelFresh = true;
+    // A re-anchored lap sends every bent channel where its curve is at the new
+    // place, and every sounding part's controllers as they are there.
+    if (followed.lapState !== playState.lapState) {
+      wheelFresh = true;
+      controlFresh = true;
+    }
     playState = followed;
     const { lapState, steps, clock: lc } = playState;
     const { lap } = lapState;
@@ -164,8 +240,31 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       if (source && source.tracks.length !== tracks.length) wheelFresh = true;
       source = { tracks, lanes, total, bends };
       const channels = rollLiveChannels(tracks, lanes, bends);
-      plans = tracks.map((t) => ({ id: t.id, played: unrollLanes(t.notes, lanes, total), channels: channels.get(t.id) as PartLiveChannels }));
+      plans = tracks.map((t) => {
+        const ch = channels.get(t.id) as PartLiveChannels;
+        const controls = t.controls ?? NO_CONTROLS;
+        return {
+          id: t.id,
+          played: unrollLanes(t.notes, lanes, total),
+          channels: ch,
+          channelList: [...new Set([ch.base, ...ch.lanes.values()])].sort((a, b) => a - b),
+          controls,
+          controlItems: controls.map((c) => ({ step: c.tick / TICKS_PER_STEP, controller: c.controller, value: c.value })),
+        };
+      });
       bent = playedRollBends(bends, lanes, total);
+      // A part whose controllers or channels changed: every channel goes back
+      // to where it starts and every sounding part sends its state again, so
+      // no channel keeps a value (a held pedal) that no part now owns.
+      const shape = new Map(plans.map((p) => [p.id, { controls: p.controls, channels: p.channelList.join(',') }]));
+      const changed = shape.size !== controlShape.size
+        || [...shape].some(([id, s]) => controlShape.get(id)?.controls !== s.controls || controlShape.get(id)?.channels !== s.channels);
+      controlShape = shape;
+      if (changed && controlTouched.size) {
+        resetControls([...controlTouched.keys()], now, wheels);
+        controlLive.clear();
+        controlFresh = true;
+      }
     }
     if (!lapCurvesOf || lapCurvesOf.bent !== bent || lapCurvesOf.start !== lap.start) {
       lapCurvesOf = { bent, start: lap.start };
@@ -204,6 +303,61 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     wheelFresh = false;
 
     const audible = audiblePartIds(tracks);
+
+    // Controllers: each sounding soundfont part's changes on every channel it
+    // plays on. A part that is not heard puts its channels back.
+    const controlOut: Array<{ time: number; order: number; msg: ScheduledWheel }> = [];
+    const sendControl = (time: number, order: number, channel: number, controller: number, value: number) => {
+      controlOut.push({ time, order, msg: { kind: 'control', channel, controller, value, time } });
+      let touched = controlTouched.get(channel);
+      if (!touched) controlTouched.set(channel, (touched = new Set()));
+      touched.add(controller);
+      lastControlTime = Math.max(lastControlTime, time);
+    };
+    // Where this window resumes: the first absolute step it can schedule, its roll tick and its time.
+    const resumeAbs = cursor + REANCHOR_STEPS;
+    const resumeTick = rollStepAt(lap, resumeAbs) * TICKS_PER_STEP;
+    const resumeTime = Math.max(now, lapTimeOf(lc, resumeAbs));
+    for (const plan of plans) {
+      const voice = voices.get(plan.id) as SchedulerVoice;
+      const sounding = voice.program !== undefined && audible.has(plan.id) && plan.controls.length > 0;
+      if (!sounding) {
+        if (controlLive.has(plan.id)) {
+          const silenced: ScheduledWheel[] = [];
+          resetControls(plan.channelList, now, silenced);
+          for (const msg of silenced) controlOut.push({ time: now, order: -1, msg });
+          controlLive.delete(plan.id);
+        }
+        continue;
+      }
+      // The state where playback resumes, once: at the start, after a re-anchor, or when the part is heard again.
+      const chased = controlFresh || !controlLive.has(plan.id);
+      if (chased) {
+        for (const [controller, value] of stateToSend(plan.controls, resumeTick)) {
+          for (const ch of plan.channelList) sendControl(resumeTime, 0, ch, controller, value);
+        }
+        controlLive.add(plan.id);
+      }
+      // Each time the lap starts over inside the window, the state where it starts.
+      const from = chased ? resumeAbs + 1e-9 : cursor;
+      const firstLap = Math.max(0, Math.floor((from - lap.base) / lap.len) + 1);
+      // At most MAX_LAP_STARTS in one window: a lap that short is a sliver of a step, not a loop anyone hears.
+      for (let k = firstLap; k < firstLap + MAX_LAP_STARTS && lap.base + k * lap.len <= targetAbs; k += 1) {
+        const at = Math.max(now, lapTimeOf(lc, lap.base + k * lap.len));
+        for (const [controller, value] of stateToSend(plan.controls, lap.start * TICKS_PER_STEP)) {
+          for (const ch of plan.channelList) sendControl(at, 0, ch, controller, value);
+        }
+      }
+      for (const { note: c, abs } of windowOnsets(plan.controlItems, lap, cursor, targetAbs)) {
+        const at = Math.max(now, lapTimeOf(lc, abs));
+        for (const ch of plan.channelList) sendControl(at, 1, ch, c.controller, c.value);
+      }
+    }
+    controlFresh = false;
+    // In time order; at one time a part's state before its changes (stable within each).
+    controlOut.sort((a, b) => a.time - b.time || a.order - b.order);
+    for (const c of controlOut) wheels.push(c.msg);
+
     for (const plan of plans) {
       if (!audible.has(plan.id)) continue;
       const voice = voices.get(plan.id) as SchedulerVoice;
@@ -250,6 +404,9 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     release: (now) => {
       const out: ScheduledWheel[] = [];
       for (const ch of [...wheelRanges.keys()]) releaseWheel(ch, now, out);
+      // After every controller change already sent, so a pedal-down in the lookahead cannot outlast STOP.
+      resetControls([...controlTouched.keys()], Math.max(now, lastControlTime) + 0.001, out);
+      controlLive.clear();
       return out;
     },
     state: () => playState,

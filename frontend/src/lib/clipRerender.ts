@@ -24,6 +24,7 @@ import { noteEndStep } from './clipNotes/units';
 import type { RollRenderBends } from './pitchBend';
 import { clipRenderInput } from './rollClip';
 import type { TempoEvent } from './tempoMap';
+import type { RollControl } from '../state/pianoRollStore';
 
 export interface ClipRerenderDeps {
   /** lib/midiSynth renderStepNotesToBlob. */
@@ -31,7 +32,13 @@ export interface ClipRerenderDeps {
     notes: Array<{ note: number; velocity: number; step: number; length: number; lane?: number }>,
     bpm: number,
     totalSteps: number,
-    opts: { program?: number; percussion?: boolean; bends?: RollRenderBends; tempoMap?: readonly TempoEvent[] },
+    opts: {
+      program?: number;
+      percussion?: boolean;
+      bends?: RollRenderBends;
+      tempoMap?: readonly TempoEvent[];
+      controls?: readonly RollControl[];
+    },
   ) => Promise<{ blob: Blob; duration: number }>;
   /** editorStore computePeaks. */
   computePeaks: (blob: Blob, bins?: number) => Promise<{ peaks: Float32Array }>;
@@ -76,6 +83,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
     bends: input.bends,
     // The clip's tempo changes, ramps and fermatas, so the new voice plays them too.
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
+    // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
+    ...(input.controls ? { controls: input.controls } : {}),
   });
   const { peaks } = await deps.computePeaks(rendered.blob, 240);
   // Re-read: the user may have deleted, trimmed or re-assigned the clip mid-render.

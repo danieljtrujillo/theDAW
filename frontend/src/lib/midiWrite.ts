@@ -17,16 +17,20 @@
  * range's CC 38 counts 1/128 semitones, the way SpessaSynth reads it, since
  * the soundfont render is what reads these wheels.
  *
+ * Controller changes are written only when given (a render of a part that
+ * carries a MIDI file's volume, pan, expression, modulation or sustain pedal):
+ * each at its tick on its channel, after the program change and before a
+ * note that starts on the same tick.
+ *
  * TIMING: this writer's input is absolute SECONDS, so it is the wrong door for
  * the roll's own .mid export — that goes through `lib/rollMidi.rollToMidiFile`,
- * which writes each note's `tick` straight out at the FILE's PPQ (480 by
- * default, so half the model's 960): no second quantise, but an odd model tick
- * rounds by at most half a file tick. Ask it for `PPQ` and nothing moves. What
- * arrives here (a vocal take, a soundfont render's note list) was never on a
- * tick grid to begin with. `SMF_PPQ` is exported so a caller that DOES hold
- * model ticks can convert once, knowingly, instead of guessing the grid.
+ * which writes each note's `tick` straight out at the roll's own 960 PPQ, so
+ * nothing moves. What arrives here (a vocal take, a soundfont render's note
+ * list) was never on a tick grid to begin with. `SMF_PPQ` is exported so a
+ * caller that DOES hold model ticks can convert once, knowingly, instead of
+ * guessing the grid.
  */
-import { RANGE_LSB_SPESSA, bendRangeMessages, meterEventMetas, pitchWheelMessage } from './midi';
+import { RANGE_LSB_SPESSA, bendRangeMessages, controlMessage, meterEventMetas, pitchWheelMessage } from './midi';
 import { meterMapToMidiEvents, type MeterEvent, type MeterSegment } from './meterMap';
 import type { RenderNote } from './midiSynth';
 
@@ -70,12 +74,20 @@ export interface SmfWheel {
   events: ReadonlyArray<{ sec: number; raw: number }>;
 }
 
+/** One controller change for notesToSmf, in seconds: a part's volume, pan, expression, modulation or sustain pedal. */
+export interface SmfControl {
+  sec: number;
+  channel: number;
+  controller: number;
+  value: number;
+}
+
 /**
  * Encode absolute-seconds notes as a single-track Standard MIDI File, with a
  * leading program change so the whole part plays on one GM instrument.
  * `signatures` sit on the grid of `bpm` (rollMeterToSmfEvents). A note with a
  * `channel` plays there, and `wheel` bends channels; every channel used gets
- * the same program.
+ * the same program. `controls` are written at their ticks on their channels.
  */
 export function notesToSmf(
   notes: RenderNote[],
@@ -84,12 +96,13 @@ export function notesToSmf(
   signatures: readonly MeterEvent[] = [],
   bpm = DEFAULT_BPM,
   wheel: readonly SmfWheel[] = [],
+  controls: readonly SmfControl[] = [],
 ): Uint8Array {
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
   interface Ev {
     tick: number;
-    order: number; // tie-break at equal ticks: meta (-1), then program and note-off (0), range (0.25), wheel (0.5), then note-on (1)
+    order: number; // tie-break at equal ticks: meta (-1), then program and note-off (0), controllers (0.1), range (0.25), wheel (0.5), then note-on (1)
     data: number[];
   }
   const evs: Ev[] = [{ tick: 0, order: 0, data: [0xc0 | ch, program & 0x7f] }];
@@ -101,6 +114,10 @@ export function notesToSmf(
   for (const s of signatures) {
     const tick = Number.isFinite(s.tick) ? Math.max(0, Math.round(s.tick)) : 0;
     for (const data of meterEventMetas(s)) evs.push({ tick, order: -1, data });
+  }
+  for (const c of controls) {
+    const tick = Number.isFinite(c.sec) ? Math.max(0, Math.round(c.sec / secPerTick)) : 0;
+    evs.push({ tick, order: 0.1, data: controlMessage(c.channel, c.controller, c.value) });
   }
   for (const w of wheel) {
     for (const data of bendRangeMessages(w.channel, w.range, RANGE_LSB_SPESSA)) evs.push({ tick: 0, order: 0.25, data });

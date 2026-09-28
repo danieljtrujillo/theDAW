@@ -69,6 +69,43 @@ def test_a_roll_part_round_trips_through_the_archive(tmp_path: Path) -> None:
     assert loaded.tracks[0].clips[0].roll_part == PART
 
 
+def test_a_parts_controller_changes_round_trip_through_the_archive(
+    tmp_path: Path,
+) -> None:
+    """A part imported from an orchestral MIDI file keeps its sustain pedal,
+    volume, pan and expression changes (``controls``, on the roll's 960 PPQ
+    clock) through a save and a reopen, so the bounced clip still renders and
+    exports them."""
+    part = {
+        **PART,
+        "controls": [
+            {"tick": 0, "controller": 7, "value": 96},
+            {"tick": 0, "controller": 10, "value": 40},
+            {"tick": 1920, "controller": 64, "value": 127},
+            {"tick": 3840, "controller": 64, "value": 0},
+            {"tick": 3840, "controller": 11, "value": 88},
+        ],
+    }
+    project = TasmoProject.model_validate(
+        {
+            "project_name": "Pedal",
+            "tempo": 90,
+            "tracks": [
+                {
+                    "id": "t1",
+                    "name": "Piano",
+                    "type": "audio",
+                    "clips": [_clip("c1", part)],
+                }
+            ],
+        }
+    )
+    out = tmp_path / "pedal.tasmo"
+    TasmoFile.save(project, str(out))
+    loaded, _ = TasmoFile.load(str(out))
+    assert loaded.tracks[0].clips[0].roll_part == part
+
+
 def test_a_clip_written_before_parts_has_no_part() -> None:
     clip = Clip.model_validate(_clip("old", None))
     assert clip.roll_part is None

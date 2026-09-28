@@ -30,6 +30,7 @@ import {
   cleanPartBank,
   cleanPartChannel,
   cleanPartColor,
+  cleanPartControls,
   cleanPartName,
   cleanPartProgram,
   isDefaultPartName,
@@ -38,7 +39,7 @@ import {
   nextPartName,
   sanitizeRollTracks,
 } from '../lib/rollTracks';
-import { orchestraInstrument } from '../lib/orchestra';
+import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -95,6 +96,20 @@ export interface PianoNote {
 }
 
 /**
+ * A controller change a part carries: the modulation wheel (1), volume (7),
+ * pan (10), expression (11) or the sustain pedal (64), as a MIDI file or a
+ * score gives them (lib/rollTracks PART_CONTROLLERS). `tick` is on the roll's
+ * clock, `PPQ` ticks to the quarter from the roll's start, as a note's is; the
+ * change acts on every note of its part from there until the next one.
+ */
+export interface RollControl {
+  tick: number;
+  controller: number;
+  /** 0-127. */
+  value: number;
+}
+
+/**
  * A part of the roll: one instrument's line in a document that can hold a
  * whole orchestra (lib/rollTracks has the rules). The tempo map, the meter
  * map, the lanes and the bends belong to the document, and every part reads
@@ -121,6 +136,13 @@ export interface RollTrack {
   notes: PianoNote[];
   /** The orchestral registry record the part was set to (lib/orchestra), when one was chosen. */
   instrumentId?: string;
+  /**
+   * The part's controller changes, sorted by tick (cleaned by lib/rollTracks
+   * cleanPartControls). Absent when it has none, as every part made before
+   * controllers existed. PLAY sends them on the part's channels, a bounce
+   * renders them, and MIDI export writes them.
+   */
+  controls?: RollControl[];
 }
 
 /**
@@ -142,6 +164,8 @@ export interface RollPartRef {
   mute: boolean;
   solo: boolean;
   instrumentId?: string;
+  /** The part's controller changes (RollTrack `controls`), on the roll's clock. Absent when it has none. */
+  controls?: RollControl[];
 }
 
 /** What loadFromClip takes to open a clip together with the clips of its other parts. */
@@ -154,6 +178,21 @@ export interface RollPartsLoad {
   activeTrackId: string;
   /** The EDIT clip each part saves into, by part id. */
   links: Record<string, string>;
+}
+
+/**
+ * What an import into the part being edited carries besides its notes
+ * (importNotes): the file part's controller changes, which replace the
+ * part's own (an empty list clears them), and its instrument, which the part
+ * takes only when it follows the roll's voice (no program of its own): the
+ * registry instrument when the file names one, else the file's program, on
+ * the percussion channel when the file's part is percussion.
+ */
+export interface RollPartImport {
+  controls?: readonly RollControl[];
+  instrumentId?: string;
+  program?: number | null;
+  percussion?: boolean;
 }
 
 /** A lane's own time as setLaneTime takes it: a field left out stays, null clears it. */
@@ -335,6 +374,8 @@ interface PianoRollState {
   setTrackColor: (id: string, color: string) => void;
   setTrackMute: (id: string, mute: boolean) => void;
   setTrackSolo: (id: string, solo: boolean) => void;
+  /** Replace a part's controller changes (cleaned; null or an empty list removes them). One undo step; no step when nothing changes. */
+  setTrackControls: (id: string, controls: readonly RollControl[] | null) => void;
   /** Replace one part's notes (the active part's through `notes`). One undo step. */
   setPartNotes: (id: string, notes: PianoNote[]) => void;
   /**
@@ -430,7 +471,7 @@ interface PianoRollState {
    * lands whole.
    */
   appendNotes: (notes: PianoNote[]) => void;
-  /** CLEAR: remove every note of the part being edited, unlink it, and clear the lanes' points. */
+  /** CLEAR: remove every note and controller change of the part being edited, unlink it, and clear the lanes' points. */
   clear: () => void;
   setEditingClip: (id: string | null) => void;
   /** Set the unlinked roll's own program (0-127), or null to follow the picker.
@@ -468,13 +509,17 @@ interface PianoRollState {
    *  cleared and its range stays, as CLEAR does, since the notes they bent are gone.
    *  `tempoMap` replaces the roll's map (a MIDI file's tempo changes); left out, a
    *  finite `bpm` makes the roll one tempo at `bpm`, since the notes were placed
-   *  at that tempo, and no `bpm` keeps the map the roll has. */
+   *  at that tempo, and no `bpm` keeps the map the roll has. `part` (a file's
+   *  one part) sets the part's controller changes and, when it follows the
+   *  roll's voice, its instrument, in the same undo step (RollPartImport);
+   *  left out, the part keeps both, as every generator's write does. */
   importNotes: (
     notes: PianoNote[],
     bpm?: number,
     meter?: Partial<RollMeter>,
     bends?: readonly LaneBend[],
     tempoMap?: readonly TempoEvent[],
+    part?: RollPartImport,
   ) => void;
   /** Place a live recording WITHOUT shrinking the grid (keeps at least the 256
    *  default, rounded up to a bar), expanding the pitch range to fit, and marks the recorded span. */
@@ -1201,6 +1246,72 @@ const patchTrack = (tracks: RollTrack[], id: string, patch: Partial<RollTrack>):
   return next;
 };
 
+/** A part with its controller changes set to `controls`: the field removed when there are none. */
+const withControls = (t: RollTrack, controls: RollControl[] | undefined): RollTrack => {
+  if (controls?.length) return { ...t, controls };
+  if (t.controls === undefined) return t;
+  const { controls: _drop, ...rest } = t;
+  return rest;
+};
+
+/** True when two controller lists hold the same changes in the same order. */
+const sameControls = (a: readonly RollControl[] | undefined, b: readonly RollControl[] | undefined): boolean => {
+  const x = a ?? [];
+  const y = b ?? [];
+  return x.length === y.length && x.every((c, i) => c.tick === y[i].tick && c.controller === y[i].controller && c.value === y[i].value);
+};
+
+/**
+ * What putting part `t` on registry instrument `inst` changes: its program, its
+ * bank (a kit takes the melodic set's), the percussion channel for a kit (off it
+ * for a melodic instrument), and its name while the part still has a default one.
+ */
+const instrumentPatchOf = (tracks: readonly RollTrack[], t: RollTrack, inst: OrchestraInstrument): Partial<RollTrack> => ({
+  instrumentId: inst.id,
+  program: inst.program,
+  bank: inst.percussion ? 0 : cleanPartBank(inst.bank),
+  channel: inst.percussion ? PERCUSSION_PART_CHANNEL : t.channel === PERCUSSION_PART_CHANNEL ? null : t.channel,
+  ...(isDefaultPartName(t.name) ? { name: uniquePartName(tracks, inst.name, t.id) } : {}),
+});
+
+/** The channel a part takes with `percussion` given: 10 for true, off 10 for false, its own when left out. */
+const percussionChannelOf = (t: RollTrack, percussion: boolean | undefined): number | null =>
+  percussion === true
+    ? PERCUSSION_PART_CHANNEL
+    : percussion === false && t.channel === PERCUSSION_PART_CHANNEL
+      ? null
+      : t.channel;
+
+/**
+ * The parts after an import into the part being edited that carries `part`
+ * (RollPartImport): its controller changes replace the part's own, and a part
+ * that follows the roll's voice takes the file's registry instrument (when the
+ * file sets no program, or that instrument's), else the file's program. An
+ * empty patch when nothing changes.
+ */
+const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<PianoRollState> => {
+  const i = s.tracks.findIndex((t) => t.id === s.activeTrackId);
+  if (i < 0) return {};
+  const before = s.tracks[i];
+  let t = before;
+  if (part.controls !== undefined) {
+    const next = cleanPartControls(part.controls);
+    if (!sameControls(t.controls, next)) t = withControls(t, next);
+  }
+  if (before.program === null) {
+    const inst = orchestraInstrument(part.instrumentId);
+    if (inst && (part.program == null || inst.program === part.program)) {
+      t = { ...t, ...instrumentPatchOf(s.tracks, t, inst) };
+    } else if (part.program != null) {
+      t = withoutInstrument({ ...t, program: cleanPartProgram(part.program), channel: percussionChannelOf(t, part.percussion) });
+    }
+  }
+  if (t === before) return {};
+  const tracks = s.tracks.slice();
+  tracks[i] = t;
+  return { tracks };
+};
+
 /**
  * The parts, active part, link and notes a history step puts back. A step
  * that carries the link, or that no longer has the part now active, goes back
@@ -1377,11 +1488,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => {
       const t = s.tracks.find((x) => x.id === id);
       if (!t) return {};
-      const channel = percussion === true
-        ? PERCUSSION_PART_CHANNEL
-        : percussion === false && t.channel === PERCUSSION_PART_CHANNEL
-          ? null
-          : t.channel;
+      const channel = percussionChannelOf(t, percussion);
       const patched = patchTrack(s.tracks, id, { program: cleanPartProgram(program), channel });
       // A program chosen by hand is no longer the registry instrument's.
       const tracks = (patched ?? s.tracks).map((x) => (x.id === id ? withoutInstrument(x) : x));
@@ -1407,15 +1514,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       }
       const inst = orchestraInstrument(instrumentId);
       if (!inst) return {};
-      const patch: Partial<RollTrack> = {
-        instrumentId: inst.id,
-        program: inst.program,
-        // A kit is chosen by its program on the percussion channel; the bank is the melodic set's.
-        bank: inst.percussion ? 0 : cleanPartBank(inst.bank),
-        channel: inst.percussion ? PERCUSSION_PART_CHANNEL : t.channel === PERCUSSION_PART_CHANNEL ? null : t.channel,
-        ...(isDefaultPartName(t.name) ? { name: uniquePartName(s.tracks, inst.name, id) } : {}),
-      };
-      const tracks = patchTrack(s.tracks, id, patch);
+      // A kit is chosen by its program on the percussion channel; the bank is the melodic set's.
+      const tracks = patchTrack(s.tracks, id, instrumentPatchOf(s.tracks, t, inst));
       return tracks ? { tracks } : {};
     }),
   setTrackColor: (id, color) =>
@@ -1433,6 +1533,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => {
       const tracks = patchTrack(s.tracks, id, { solo: solo === true });
       return tracks ? { tracks } : {};
+    }),
+  setTrackControls: (id, controls) =>
+    set((s) => {
+      const i = s.tracks.findIndex((t) => t.id === id);
+      if (i < 0) return {};
+      const next = cleanPartControls(controls ?? []);
+      // An equal list writes nothing, so it adds no undo step.
+      if (sameControls(s.tracks[i].controls, next)) return {};
+      const tracks = s.tracks.slice();
+      tracks[i] = withControls(tracks[i], next);
+      return { tracks };
     }),
   setPartNotes: (id, incoming) =>
     set((s) => {
@@ -1693,7 +1804,12 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return { notes, totalSteps, ...selectionOf(notes, added.map((n) => n.id), added[0].id) };
     }),
   clear: () =>
-    set((s) => ({ notes: [], ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) })),
+    set((s) => {
+      // The part's controller changes go with its notes, as the lanes' points do: they shaped notes that are gone.
+      const active = s.tracks.find((t) => t.id === s.activeTrackId);
+      const tracks = active?.controls ? s.tracks.map((t) => (t === active ? withControls(t, undefined) : t)) : s.tracks;
+      return { notes: [], tracks, ...noSelection(), editingClipId: null, recordedRange: null, bends: clearedBends(s.bends) };
+    }),
 
   setEditingClip: (editingClipId) => set({ editingClipId }),
   setVoiceProgram: (program) => {
@@ -1773,7 +1889,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     cutHistoryBurst();
   },
 
-  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo) =>
+  importNotes: (incoming, bpm, meter, incomingBends, incomingTempo, part) =>
     set((s) => {
       const notes = migrateNotes(incoming);
       const m = mergeMeter(s, meter);
@@ -1785,11 +1901,14 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         : finiteBpm
           ? tempoSlice(oneTempo(importedRollBpm(bpm)))
           : {};
+      // The file's part: its controller changes, and its instrument for a part that has none of its own. In this write, so one step.
+      const partSlice = part ? importedPartSlice(s, part) : {};
       if (notes.length === 0) {
-        return { notes, ...m, bends, ...tempo, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
+        return { notes, ...m, bends, ...tempo, ...partSlice, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
       return {
         notes,
+        ...partSlice,
         ...m,
         bends,
         // The notes go into the active part; the grid still holds every other part's.

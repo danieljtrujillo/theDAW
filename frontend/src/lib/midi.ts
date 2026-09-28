@@ -13,8 +13,12 @@
  * map itself rides in one text event `theDAW:tempomap=…` (lib/rollMidi reads it).
  * A track may also carry `theDAW:part=<json>` at tick 0: the piano roll part
  * it holds (its colour and registry instrument, lib/rollMidi), handed back as
- * `partMeta`. Program changes, with the bank select (CC 0) in force at each,
- * are kept per track as `programs`. Track names are written and read as UTF-8.
+ * `partMeta`. Program changes, with the bank select (CC 0, and CC 32 when the
+ * track sends one) in force at each, are kept per track as `programs`. The
+ * controllers an orchestral part is shaped with (KEPT_CONTROLLERS: modulation,
+ * volume, pan, expression and the sustain pedal) are kept per track as
+ * `controls`, and the encoder writes them back. Track names are written and
+ * read as UTF-8.
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -61,6 +65,27 @@ export interface MidiProgram {
   program: number;
   /** The bank select MSB (CC 0) in force, when the track set one. Encoded before the program change. */
   bank?: number;
+  /** The bank select LSB (CC 32) in force, when the track set one. Encoded after the MSB, before the program change. */
+  bankLsb?: number;
+}
+
+/**
+ * The controllers a track keeps and the encoder writes: modulation (1), volume
+ * (7), pan (10), expression (11) and the sustain pedal (64), the ones an
+ * orchestral part is balanced, placed and phrased with. Every other controller
+ * is read past, as before.
+ */
+export const KEPT_CONTROLLERS: readonly number[] = Object.freeze([1, 7, 10, 11, 64]);
+
+/** A controller change (B0) of one of KEPT_CONTROLLERS. */
+export interface MidiControl {
+  tick: number;
+  /** Channel 0-15; the controller acts on every note of it. */
+  channel: number;
+  /** The controller number, one of KEPT_CONTROLLERS. */
+  controller: number;
+  /** 0-127. */
+  value: number;
 }
 
 export interface MidiTrack {
@@ -68,6 +93,12 @@ export interface MidiTrack {
   notes: MidiNote[];
   /** Program changes, sorted by tick. Parsed: absent when the track has none. */
   programs?: MidiProgram[];
+  /**
+   * Changes of KEPT_CONTROLLERS, sorted by tick. Parsed: absent when the track
+   * has none. A track that carries some is kept even with no notes (a setup
+   * track sets volume and pan for channels other tracks play).
+   */
+  controls?: MidiControl[];
   /**
    * The text of the track's `theDAW:part=` event (what follows the `=`), at
    * tick 0. Parsed: absent when the track has none. A track that carries one
@@ -149,9 +180,15 @@ interface RawEvent {
 /** A track event with its place among the events at its tick. */
 type RankedEvent = RawEvent & { rank: number };
 
-/** At one tick: note-offs, then program changes, then bend ranges, then wheel messages, then note-ons, so a note that ends there is not bent and one that starts there starts bent, on its program. */
+/**
+ * At one tick: note-offs, then program changes, then controller changes, then
+ * bend ranges, then wheel messages, then note-ons, so a note that ends there is
+ * not bent and one that starts there starts bent, on its program, with the
+ * volume and pedal the same tick sets.
+ */
 const RANK_NOTE_OFF = 0;
 const RANK_PROGRAM = 0.5;
+const RANK_CONTROL = 0.75;
 const RANK_RANGE = 1;
 const RANK_WHEEL = 2;
 const RANK_NOTE_ON = 3;
@@ -213,17 +250,27 @@ const trackEvents = (t: MidiTrack): RawEvent[] => {
   return metas.length ? [...metas, ...events] : events;
 };
 
-/** A program change's bytes: CC 0 with its bank first when it has one, then C0. */
+const byte7 = (v: number): number => Math.max(0, Math.min(127, Math.round(Number.isFinite(v) ? v : 0)));
+
+/** A program change's bytes: CC 0 with its bank first when it has one, CC 32 when it has a bank LSB, then C0. */
 const programEvents = (p: MidiProgram): RankedEvent[] => {
   const ch = p.channel & 0x0f;
   const tick = tickOf(p.tick);
   const out: RankedEvent[] = [];
-  if (typeof p.bank === 'number' && Number.isFinite(p.bank)) out.push({ tick, rank: RANK_PROGRAM, bytes: [0xb0 | ch, 0, Math.max(0, Math.min(127, Math.round(p.bank)))] });
-  out.push({ tick, rank: RANK_PROGRAM, bytes: [0xc0 | ch, Math.max(0, Math.min(127, Math.round(p.program)))] });
+  if (typeof p.bank === 'number' && Number.isFinite(p.bank)) out.push({ tick, rank: RANK_PROGRAM, bytes: [0xb0 | ch, 0, byte7(p.bank)] });
+  if (typeof p.bankLsb === 'number' && Number.isFinite(p.bankLsb)) out.push({ tick, rank: RANK_PROGRAM, bytes: [0xb0 | ch, 32, byte7(p.bankLsb)] });
+  out.push({ tick, rank: RANK_PROGRAM, bytes: [0xc0 | ch, byte7(p.program)] });
   return out;
 };
 
-/** A track's notes, ranges and wheel messages (trackEvents less its lane text). */
+/** A controller change's bytes: B0, the controller, the value. */
+export const controlMessage = (channel: number, controller: number, value: number): number[] => [
+  0xb0 | (channel & 0x0f),
+  byte7(controller),
+  byte7(value),
+];
+
+/** A track's notes, programs, controllers, ranges and wheel messages (trackEvents less its lane text). */
 const trackBody = (t: MidiTrack): RawEvent[] => {
   const notes = notesToEvents(t.notes);
   const wheel: RankedEvent[] = [];
@@ -233,7 +280,9 @@ const trackBody = (t: MidiTrack): RawEvent[] => {
   }
   for (const b of t.bends ?? []) wheel.push({ tick: tickOf(b.tick), rank: RANK_WHEEL, bytes: pitchWheelMessage(b.channel, b.value) });
   for (const p of t.programs ?? []) wheel.push(...programEvents(p));
+  for (const c of t.controls ?? []) wheel.push({ tick: tickOf(c.tick), rank: RANK_CONTROL, bytes: controlMessage(c.channel, c.controller, c.value) });
   if (!wheel.length) return notes;
+  // A stable sort, so controller changes of one tick keep the order the track lists them in.
   return [...wheel, ...notes].sort(byTickAndRank);
 };
 
@@ -450,7 +499,11 @@ interface DecodedTrack {
   /** The track's `theDAW:part=` text, the last one when it has several. */
   partMeta: string | null;
   programs: MidiProgram[];
+  controls: MidiControl[];
 }
+
+/** KEPT_CONTROLLERS as a set, for the parser's per-event test. */
+const KEPT_CONTROLLER_SET: ReadonlySet<number> = new Set(KEPT_CONTROLLERS);
 
 /** A track name's bytes as text: UTF-8 when they are valid UTF-8, else one character per byte (Latin-1), as older files carry. */
 const nameText = (data: Uint8Array): string => {
@@ -469,8 +522,10 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let laneMeta: string | null = null;
   let partMeta: string | null = null;
   const programs: MidiProgram[] = [];
-  // The bank select (CC 0) each channel has, which the program change after it takes.
+  const controls: MidiControl[] = [];
+  // The bank select (CC 0, and CC 32) each channel has, which the program change after it takes.
   const bankMsb = new Map<number, number>();
+  const bankLsb = new Map<number, number>();
   const tempos: MidiTempo[] = [];
   const signatures: MeterEvent[] = [];
   const groups: DecodedTrack['groups'] = [];
@@ -575,9 +630,20 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         bends.push({ tick, channel: ch, value: d1 | (d2 << 7) });
       } else if (type === 0xc0) {
         const bank = bankMsb.get(ch);
-        programs.push({ tick, channel: ch, program: d1 & 0x7f, ...(bank !== undefined ? { bank } : {}) });
+        const lsb = bankLsb.get(ch);
+        programs.push({ tick, channel: ch, program: d1 & 0x7f, ...(bank !== undefined ? { bank } : {}), ...(lsb !== undefined ? { bankLsb: lsb } : {}) });
       } else if (type === 0xb0) {
         if (d1 === 0) bankMsb.set(ch, d2 & 0x7f);
+        else if (d1 === 32) bankLsb.set(ch, d2 & 0x7f);
+        else if (KEPT_CONTROLLER_SET.has(d1)) controls.push({ tick, channel: ch, controller: d1, value: d2 & 0x7f });
+        else if (d1 === 121) {
+          // Reset All Controllers, as RP-015 has it: modulation to 0, expression to
+          // 127, the pedal up. Volume and pan stay. Kept as those three changes, so
+          // a part read from the file plays with the values the reset gave.
+          controls.push({ tick, channel: ch, controller: 1, value: 0 });
+          controls.push({ tick, channel: ch, controller: 11, value: 127 });
+          controls.push({ tick, channel: ch, controller: 64, value: 0 });
+        }
         const sel = rpn.get(ch) ?? { msb: 127, lsb: 127, range: null };
         if (d1 === 101) {
           sel.msb = d2;
@@ -599,7 +665,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         }
         rpn.set(ch, sel);
       }
-      // Other channel events (aftertouch, other CCs) ignored
+      // Other channel events (aftertouch, the controllers KEPT_CONTROLLERS leaves out) are read past.
     }
   }
 
@@ -619,8 +685,28 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges, laneMeta, partMeta, programs };
+  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges, laneMeta, partMeta, programs, controls };
 };
+
+/** The tempo a Standard MIDI File plays at until its first tempo event: 120 BPM, as SMF 1.0 has it. */
+export const SMF_DEFAULT_BPM = 120;
+
+/**
+ * The tempo a parsed file PLAYS at from tick 0, which a tempo map starts with:
+ * its tick-0 tempo; else, when its first tempo comes later than a 64th note
+ * in, the SMF default (120) until then, so a file sliced from a score whose
+ * first mark sits at bar 97 plays its first 96 bars at 120, not at that mark;
+ * else (a writer that put the tempo a tick or two in) the first tempo. `bpm`
+ * keeps naming the file's own first tempo for readers that show one.
+ */
+export function midiStartTempo(data: Pick<MidiFileData, 'ppq' | 'bpm' | 'tempos'>): number {
+  const tempos = data.tempos ?? [];
+  if (!tempos.length) return Number.isFinite(data.bpm) && data.bpm > 0 ? data.bpm : SMF_DEFAULT_BPM;
+  const atZero = tempos.filter((t) => t.tick === 0);
+  if (atZero.length) return atZero[atZero.length - 1].bpm;
+  const first = tempos[0];
+  return first.tick <= Math.max(1, (data.ppq || 480) / 16) ? first.bpm : SMF_DEFAULT_BPM;
+}
 
 /**
  * The tempo FF 51's microseconds a quarter give. The microsecond rounding
@@ -668,8 +754,9 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     for (const e of t.pickups) pickups.push(e);
     if (t.tempoMap !== null) dawTempoMap = t.tempoMap;
     // A track that only bends is kept: its channel's wheel bends notes another
-    // track holds. So is a lane's track with no notes, so the lane comes back.
-    if (t.notes.length > 0 || t.bends.length > 0 || t.laneMeta !== null || t.partMeta !== null) {
+    // track holds. So is one that only sets controllers (a setup track's volume
+    // and pan), and a lane's track with no notes, so the lane comes back.
+    if (t.notes.length > 0 || t.bends.length > 0 || t.controls.length > 0 || t.laneMeta !== null || t.partMeta !== null) {
       tracks.push({
         name: t.name || `Track ${i}`,
         notes: t.notes,
@@ -678,6 +765,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
         ...(t.laneMeta !== null ? { laneMeta: t.laneMeta } : {}),
         ...(t.partMeta !== null ? { partMeta: t.partMeta } : {}),
         ...(t.programs.length ? { programs: t.programs } : {}),
+        ...(t.controls.length ? { controls: t.controls } : {}),
       });
     }
   }
