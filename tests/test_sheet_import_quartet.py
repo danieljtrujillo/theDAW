@@ -305,6 +305,51 @@ def test_tempo_words_and_metronome_marks(synthetic: dict) -> None:
     assert synthetic["bpm"] == 132.0
 
 
+SOUND_TEMPO = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>Violin</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>2</divisions><time><beats>3</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+      <direction placement="above"><direction-type><words>Andante con moto</words></direction-type><sound tempo="80"/></direction>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>6</duration><type>half</type><dot/></note>
+    </measure>
+    <measure number="2">
+      <direction placement="above"><direction-type><words>Allegro vivace</words></direction-type><sound tempo="120"/></direction>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>6</duration><type>half</type><dot/></note>
+    </measure>
+    <measure number="3">
+      <direction placement="above"><direction-type><words>Adagio</words></direction-type></direction>
+      <note><pitch><step>A</step><octave>5</octave></pitch><duration>6</duration><type>half</type><dot/></note>
+    </measure>
+  </part>
+</score-partwise>
+"""
+
+
+def test_a_sound_tempo_is_the_tempo_the_file_plays(tmp_path: Path) -> None:
+    """Tempo words with a ``<sound tempo>`` and no ``<metronome>``, as Finale
+    and MuseScore write them (the music21 corpus's quartets carry them): the
+    sound tempo is the tempo the file plays at, so it wins over the tempo
+    music21 guesses for the words. It used to be dropped, and Mozart's K. 458
+    opened at 160 (music21's "Allegro vivace assai") where its file plays 120.
+    Words with no sound tempo still read as music21's guess."""
+    from backend.modules.sheetimport.parser import parse_score_path
+
+    path = tmp_path / "sound-tempo.musicxml"
+    path.write_text(SOUND_TEMPO, encoding="utf-8")
+    result = parse_score_path(str(path))
+    assert [
+        (t["tick"], t["bpm"], t["text"], t["implicit"]) for t in result["tempos"]
+    ] == [
+        (0, 80.0, "Andante con moto", False),
+        (3 * PPQ, 120.0, "Allegro vivace", False),
+        (6 * PPQ, 56.0, "Adagio", True),
+    ]
+    assert result["bpm"] == 80.0
+
+
 def test_chord_symbols_are_not_notes(synthetic: dict) -> None:
     assert synthetic["chord_symbols_skipped"] == 1
     flute = _notes(synthetic, "Flute")

@@ -676,8 +676,11 @@ def _tempo_marks(
     flats: list[Any], anchors: Optional[list[int]] = None
 ) -> list[dict[str, Any]]:
     """Every tempo mark of the score at its tick, in tick order: a metronome
-    mark with a number exactly (``implicit`` False); a mark without one, or a
-    tempo word, at the tempo music21 reads for its words (``implicit`` True).
+    mark with a number exactly (``implicit`` False); a ``<sound tempo>`` with
+    no ``<metronome>`` (music21's playback-only mark, ``numberSounding``) at
+    the tempo the file plays, named by the words at its tick (``implicit``
+    False); a mark with neither, or a tempo word, at the tempo music21 reads
+    for its words (``implicit`` True).
     Each lands on the note onset or bar line nearest it (:func:`_anchor`). At
     one tick a number beats a word and the first part beats the others; a mark
     that repeats the tempo before it is left out."""
@@ -720,6 +723,13 @@ def _tempo_marks(
                     )
                     bpm = float(mm.number)
                 offer(tick, bpm, text, False)
+                continue
+            sounding = mm.numberSounding
+            if sounding is not None and float(sounding) > 0:
+                # A <sound tempo> with no <metronome>: the tempo the file plays
+                # at, in quarter notes a minute, which beats the tempo music21
+                # reads for the words beside it.
+                offer(tick, float(sounding), text or words_at.get(tick, ""), False)
                 continue
             implicit = _tempo_word(text) or _tempo_word(words_at.get(tick, ""))
             if implicit is not None:
