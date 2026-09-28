@@ -194,3 +194,79 @@ def test_a_foreign_page_and_an_unpaired_lan_caller_are_refused() -> None:
     token = pairing.get_token()
     paired = lan.post("/api/composer/plan", json=body, headers={pairing.HEADER: token})
     assert paired.status_code == 200, paired.text
+
+
+def test_form_plans_sections_with_keys_tempi_and_meters() -> None:
+    r = _client().post(
+        "/api/composer/form",
+        json={"form": "sonata", "key": "C", "seed": 1, "bars": 120},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["form"] == "sonata" and body["ppq"] == Q
+    mv = body["movements"][0]
+    assert mv["meter_map"] == [{"bar": 0, "meter": {"num": 4, "den": 4, "groups": []}}]
+    assert mv["tempo_map"][0]["bpm"] == 132.0
+    second = [s for s in mv["sections"] if s["role"] == "second_group"]
+    assert [s["key"] for s in second] == ["G major", "C major"]
+    assert all("pitches" not in c for s in mv["sections"] for c in s["chords"])
+    health = _client().get("/api/composer/").json()
+    assert "symphony" in health["forms"] and health["rondo_patterns"] == [
+        "ABACA",
+        "ABACABA",
+    ]
+
+
+def test_form_realize_voices_every_section() -> None:
+    r = _client().post(
+        "/api/composer/form/realize",
+        json={
+            "form": "minuet_and_trio",
+            "key": "F",
+            "seed": 2,
+            "meter": {"num": 3, "den": 4, "groups": []},
+            "tempo": 120,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["flag_count"] == 0
+    mv = body["movements"][0]
+    assert mv["tempo"]["bpm"] == 120
+    for sec in mv["sections"]:
+        assert sec["flags"] == []
+        assert set(sec["parts"]) == {"soprano", "alto", "tenor", "bass"}
+        assert len(sec["parts"]["bass"]) == len(sec["chords"])
+
+
+def test_form_refuses_what_it_cannot_write() -> None:
+    c = _client()
+    assert c.post("/api/composer/form", json={"form": "fugue"}).status_code == 422
+    assert c.post("/api/composer/form", json={"key": "H"}).status_code == 422
+    assert c.post("/api/composer/form", json={"bars": 8}).status_code == 422
+    too_long = c.post("/api/composer/form", json={"form": "sonata", "bars": 600})
+    assert too_long.status_code == 422
+    assert "at most 400" in too_long.json()["detail"]
+    assert (
+        c.post("/api/composer/form", json={"form": "symphony", "bars": 600}).status_code
+        == 200
+    )
+    assert c.post("/api/composer/form", json={"bars": 900}).status_code == 422
+    assert c.post("/api/composer/form", json={"rondo": "ABAB"}).status_code == 422
+
+
+def test_form_routes_take_the_same_gates() -> None:
+    body = {"form": "rondo", "key": "C"}
+    for path in ("/api/composer/form", "/api/composer/form/realize"):
+        foreign = _client().post(
+            path,
+            json=body,
+            headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        assert foreign.status_code == 403
+        lan = TestClient(_app(), client=("10.20.30.40", 51000))
+        assert lan.post(path, json=body).status_code == 403
+        paired = lan.post(
+            path, json=body, headers={pairing.HEADER: pairing.get_token()}
+        )
+        assert paired.status_code == 200, paired.text

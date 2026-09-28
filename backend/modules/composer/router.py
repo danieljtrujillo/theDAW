@@ -4,6 +4,8 @@
     POST /plan       a roman-numeral phrase in a key, voiced in SATB
     POST /check      voice-leading flags for parts in ticks
     POST /continuo   a figured bass realized in four parts
+    POST /form       a form's movements and sections with their harmonic plans
+    POST /form/realize  the same, every chord voiced in SATB, per section
 
 Notes go in and come out as ``{note, tick, ticks}`` at 960 ticks to the
 quarter, the piano roll's PPQ. Meter maps are the roll's own
@@ -30,7 +32,16 @@ from backend.lib.cross_site import (
 
 # music21 loads on the first request, not at startup: the engine modules are
 # imported inside the handlers.
-from .spec import CADENCES, DEFAULT_RANGES, FEATURES, HARMONIC_RHYTHMS, PPQ, RULES
+from .spec import (
+    CADENCES,
+    DEFAULT_RANGES,
+    FEATURES,
+    FORMS,
+    HARMONIC_RHYTHMS,
+    PPQ,
+    RONDO_PATTERNS,
+    RULES,
+)
 
 router = APIRouter(
     dependencies=[
@@ -43,6 +54,12 @@ MAX_BARS = 64
 MAX_PARTS = 8
 MAX_NOTES = 4096
 MAX_BASS = 256
+# A form's bars: a single form up to MAX_FORM_BARS, a symphony's four movements
+# together up to MAX_SYMPHONY_BARS. A 200-bar sonata voices in a few seconds.
+MIN_FORM_BARS = 16
+MAX_FORM_BARS = 400
+MAX_SYMPHONY_BARS = 800
+MAX_VARIATIONS = 12
 
 Cadence = Literal[
     "authentic_perfect",
@@ -54,6 +71,14 @@ Cadence = Literal[
 ]
 Feature = Literal["seventh", "applied", "neapolitan", "italian", "french", "german"]
 Mode = Literal["major", "minor"]
+Form = Literal[
+    "sonata",
+    "rondo",
+    "theme_and_variations",
+    "minuet_and_trio",
+    "scherzo",
+    "symphony",
+]
 
 
 class MeterIn(BaseModel):
@@ -119,6 +144,22 @@ class ContinuoRequest(BaseModel):
     pickup_steps: float = Field(default=0, ge=0)
 
 
+class FormRequest(BaseModel):
+    form: Form = "sonata"
+    key: str = Field(default="C", max_length=32)
+    mode: Optional[Mode] = None
+    seed: int = 0
+    # A symphony's bars are its four movements together.
+    bars: Optional[int] = Field(default=None, ge=MIN_FORM_BARS, le=MAX_SYMPHONY_BARS)
+    # One meter and tempo for a single form; a symphony's movements keep their own.
+    meter: Optional[MeterIn] = None
+    tempo: Optional[float] = Field(default=None, ge=20, le=300)
+    rondo: Literal["ABACA", "ABACABA"] = "ABACA"
+    variations: Optional[int] = Field(default=None, ge=1, le=MAX_VARIATIONS)
+    harmonic_rhythm: Literal["bar", "pulse"] = "bar"
+    ranges: Optional[dict[str, Range]] = None
+
+
 def _meter_map(segs: list[MeterSegmentIn]) -> list[dict[str, Any]]:
     return [s.model_dump() for s in segs]
 
@@ -143,6 +184,8 @@ def health() -> dict[str, Any]:
         "harmonic_rhythms": list(HARMONIC_RHYTHMS),
         "rules": list(RULES),
         "ranges": {k: list(v) for k, v in DEFAULT_RANGES.items()},
+        "forms": list(FORMS),
+        "rondo_patterns": list(RONDO_PATTERNS),
     }
 
 
@@ -210,6 +253,44 @@ def continuo(req: ContinuoRequest) -> dict[str, Any]:
             ranges=_ranges(req.ranges),
             meter_map=_meter_map(req.meter_map),
             pickup_steps=req.pickup_steps,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+def _form_opts(req: FormRequest) -> dict[str, Any]:
+    if req.bars is not None and req.form != "symphony" and req.bars > MAX_FORM_BARS:
+        raise HTTPException(422, f"a single form is at most {MAX_FORM_BARS} bars")
+    return {
+        "seed": req.seed,
+        "bars": req.bars,
+        "meter": req.meter.model_dump() if req.meter else None,
+        "tempo": req.tempo,
+        "rondo": req.rondo,
+        "variations": req.variations,
+        "harmonic_rhythm": req.harmonic_rhythm,
+    }
+
+
+@router.post("/form")
+def form(req: FormRequest) -> dict[str, Any]:
+    from .form import plan_form
+
+    opts = _form_opts(req)
+    try:
+        return plan_form(req.form, req.key, req.mode, **opts)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.post("/form/realize")
+def form_realize(req: FormRequest) -> dict[str, Any]:
+    from .form import realize_form
+
+    opts = _form_opts(req)
+    try:
+        return realize_form(
+            req.form, req.key, req.mode, ranges=_ranges(req.ranges), **opts
         )
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
