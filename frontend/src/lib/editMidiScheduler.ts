@@ -293,8 +293,42 @@ export type TimedClip = Pick<
   Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
 /** A clip's grid length, as its re-render reads it (lib/clipRerender). */
-const clipTotalSteps = (clip: TimedClip): number =>
+const clipTotalSteps = (clip: Partial<TimedClip>): number =>
   clip.sourceTotalSteps ?? roundUpToBar(clip.sourceMeterMap ?? [], noteEndStep(clip.sourcePianoRoll ?? [], 1), clip.sourcePickupSteps ?? 0);
+
+/**
+ * Which slot (channel of the track's) each of a clip's notes plays on: its
+ * lane's (one per bent lane and one the rest share), or, for a note whose
+ * articulation plays a soundfont preset of its own, a slot after the lanes'
+ * for that preset and the bent lane it sits in, so the lane's wheel bends it
+ * there too (`artSlots` names the lane slot each follows; null when none).
+ */
+function clipSlotPlan(clip: Parameters<typeof clipRenderInput>[0] & Partial<TimedClip>, percussion: boolean, program: number | undefined) {
+  const input = clipRenderInput(clip, clipTotalSteps(clip));
+  const bends = percussion ? undefined : input.bends;
+  const slotOf = new Map<number, number>();
+  if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
+  const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
+  const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
+  const bentLaneSlots = new Set<number>(bends ? [...bends.played.keys()].map((lane) => slotOf.get(lane) ?? 0) : []);
+  const arts = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
+  const artSlots: Array<{ follows: number | null }> = [];
+  const artIndex = new Map<string, number>();
+  const noteSlots = arts.notes.map((a) => {
+    const ls = laneSlot(a.note.lane);
+    if (!a.target) return ls;
+    const follows = bentLaneSlots.has(ls) ? ls : null;
+    const key = `${a.slot}|${follows ?? '-'}`;
+    let i = artIndex.get(key);
+    if (i === undefined) {
+      i = artSlots.length;
+      artSlots.push({ follows });
+      artIndex.set(key, i);
+    }
+    return laneSlots + i;
+  });
+  return { input, bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: laneSlots + artSlots.length };
+}
 
 /**
  * How many channels a clip plays on: one, or one per lane of its that bends
@@ -309,10 +343,13 @@ export function clipLiveSlots(
   program?: number,
 ): number {
   if (percussion) return 1;
-  const arts = articulatedNotes(clip.sourcePianoRoll ?? clip.sourceRollNotes ?? [], clipArticulationInstrument(clip, program, false)).targets.length;
-  if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1 + arts;
-  const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
-  return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + arts;
+  // No articulated note: the lanes' channels alone, counted as the bounce counts them.
+  if (!(clip.sourcePianoRoll ?? clip.sourceRollNotes ?? []).some((n) => n.articulation)) {
+    if (!clip.sourceBends?.length || !clip.sourceRollNotes?.length) return 1;
+    const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
+    return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size);
+  }
+  return clipSlotPlan(clip, false, program).slots;
 }
 
 const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
@@ -329,17 +366,11 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   const offset = clip.offsetIntoSource ?? 0;
   const dur = clip.durationSec;
   const start = clip.startSec;
-  const input = clipRenderInput(clip, clipTotalSteps(clip));
-  const bends = percussion ? undefined : input.bends;
-  const slotOf = new Map<number, number>();
-  if (bends) for (const [lane, ch] of bends.channels) slotOf.set(lane, Math.max(0, BEND_CHANNELS.indexOf(ch)));
-  const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
-  const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
-  // Each note shaped by its articulation; a preset articulation on a slot of its own after the lanes'.
-  const arts = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
+  // Each note shaped by its articulation; a preset articulation on a slot of its own after the lanes' (clipSlotPlan).
+  const { bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: used } = clipSlotPlan(clip, percussion, program);
 
   const notes: TimedNote[] = [];
-  for (const a of arts.notes) {
+  for (const [i, a] of arts.notes.entries()) {
     const n = a.played;
     const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
     if (relEnd <= 0 || relStart >= dur) continue; // outside this clip's window
@@ -348,13 +379,12 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
       off: start + Math.min(dur, relEnd),
       midi: n.note,
       velocity: n.velocity,
-      slot: a.target ? laneSlots + a.slot : laneSlot(n.lane),
+      slot: noteSlots[i],
       ...(a.target ? { program: a.target.program, bank: a.target.bank } : {}),
     });
   }
   notes.sort(byOn);
 
-  const used = laneSlots + arts.targets.length;
   const ctl: TimedCtl[] = [];
   // Every channel the clip uses opens at the clip's start: its range and its
   // wheel where the clip's source begins. A channel no lane bends goes back to
@@ -374,6 +404,14 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
         if (t > start + EPS && t < start + dur) ctl.push({ t, slot, kind: 'wheel', value: e.raw });
       }
     }
+    // An articulation slot of a bent lane takes the lane's range and wheel, so its notes bend with the lane.
+    const laneCtl = ctl.slice();
+    artSlots.forEach((a, i) => {
+      if (a.follows === null) return;
+      const slot = laneSlots + i;
+      bentSlots.add(slot);
+      for (const c of laneCtl) if (c.slot === a.follows) ctl.push({ ...c, slot });
+    });
   }
   for (let slot = 0; slot < used; slot += 1) {
     if (bentSlots.has(slot)) continue;

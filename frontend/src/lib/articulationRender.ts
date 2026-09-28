@@ -34,6 +34,8 @@ export interface ArticulatedRenderPlan {
   notes: RenderNote[];
   controls: SmfControl[];
   channelPrograms: Array<{ channel: number; program: number; bank: number }>;
+  /** The wheels: the render's own, and a copy of a bent lane's on each articulation channel that follows it. */
+  wheel: SmfWheel[];
 }
 
 /**
@@ -41,8 +43,10 @@ export interface ArticulatedRenderPlan {
  * the same order) to a channel of that preset's: the first channel no note,
  * wheel or drum uses, one per preset in `targets` order. The part's
  * controllers on its own channel (0) are copied to each such channel, so a
- * pizzicato under the part's expression swell swells too. A preset with no
- * free channel left stays on the note's own channel.
+ * pizzicato under the part's expression swell swells too. A note whose own
+ * channel bends (a bent lane's, with a wheel in `wheel`) takes a channel per
+ * preset and lane, which gets that lane's wheel too, so it bends as the lane
+ * does. A preset with no free channel left stays on the note's own channel.
  */
 export function articulatedRenderPlan(
   notes: readonly RenderNote[],
@@ -56,22 +60,35 @@ export function articulatedRenderPlan(
   for (const w of wheel) used.add(w.channel);
   const free: number[] = [];
   for (let ch = 0; ch < 16; ch += 1) if (!used.has(ch)) free.push(ch);
-  const channelOf = targets.map((_, i) => free[i]);
+  const wheelOf = new Map(wheel.map((w) => [w.channel, w]));
+  // One channel per preset and bent home channel, in first-note order.
+  const plan = new Map<string, { channel: number; target: SoundfontArticulationTarget; follows: number | null }>();
   const outNotes = notes.map((n, i) => {
     const slot = arts[i]?.slot ?? -1;
-    const ch = slot >= 0 ? channelOf[slot] : undefined;
-    return ch === undefined ? n : { ...n, channel: ch, bend: undefined };
+    if (slot < 0 || !targets[slot]) return n;
+    const home = n.channel ?? 0;
+    const follows = wheelOf.has(home) ? home : null;
+    const key = `${slot}|${follows ?? '-'}`;
+    let at = plan.get(key);
+    if (!at) {
+      const ch = free.shift();
+      if (ch === undefined) return n;
+      at = { channel: ch, target: targets[slot], follows };
+      plan.set(key, at);
+    }
+    return { ...n, channel: at.channel };
   });
   const channelPrograms: ArticulatedRenderPlan['channelPrograms'] = [];
   const outControls = [...controls];
-  targets.forEach((t, i) => {
-    const ch = channelOf[i];
-    if (ch === undefined || !outNotes.some((n) => n.channel === ch)) return;
-    channelPrograms.push({ channel: ch, program: t.program, bank: t.bank });
-    for (const c of controls) if (c.channel === 0) outControls.push({ ...c, channel: ch });
-  });
+  const outWheel = [...wheel];
+  for (const at of plan.values()) {
+    channelPrograms.push({ channel: at.channel, program: at.target.program, bank: at.target.bank });
+    for (const c of controls) if (c.channel === 0) outControls.push({ ...c, channel: at.channel });
+    const w = at.follows !== null ? wheelOf.get(at.follows) : undefined;
+    if (w) outWheel.push({ ...w, channel: at.channel });
+  }
   outControls.sort((a, b) => a.sec - b.sec);
-  return { notes: outNotes, controls: outControls, channelPrograms };
+  return { notes: outNotes, controls: outControls, channelPrograms, wheel: outWheel };
 }
 
 /** A step note as the render takes it, with the articulation a roll note carries. */
@@ -102,7 +119,7 @@ export async function renderArticulatedStepNotes(
   if (!arts.targets.length || stepOpts.program === undefined || inst.percussion) return synth.renderStepNotesToBlob(shaped, bpm, totalSteps, stepOpts);
   const request = synth.stepRenderRequest(shaped, bpm, totalSteps, stepOpts);
   const plan = articulatedRenderPlan(request.notes, arts.notes, arts.targets, request.options.controls ?? [], request.options.wheel ?? []);
-  const smf = notesToSmf(plan.notes, request.options.program ?? 0, 0, [], 120, request.options.wheel ?? [], {
+  const smf = notesToSmf(plan.notes, request.options.program ?? 0, 0, [], 120, plan.wheel, {
     bank: request.options.bank ?? 0,
     controls: plan.controls,
     channelPrograms: plan.channelPrograms,

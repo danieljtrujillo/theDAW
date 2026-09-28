@@ -48,6 +48,7 @@ import { unrollLanes, type PolyLane } from './meterMap';
 import {
   BEND_CENTER,
   DEFAULT_BEND_RANGE,
+  bentLanes,
   loopedBendAutomation,
   loopedWheelEvents,
   playedRollBends,
@@ -158,6 +159,10 @@ interface PartPlan {
   arts: Map<PianoNote, ArticulatedNote<PianoNote>>;
   /** The soundfont presets its articulations play in, one channel each (`channels.arts`). */
   artTargets: SoundfontArticulationTarget[];
+  /** Each articulated note's articulation channel, as an index into `channels.arts`. */
+  artIndex: Map<PianoNote, number>;
+  /** The bent lane each articulation channel follows (its wheel goes there too), or null. */
+  artFollows: Array<number | null>;
 }
 
 export interface RollScheduler {
@@ -182,6 +187,16 @@ export interface RollScheduler {
 function stateToSend(controls: readonly RollControl[], tick: number): Array<[number, number]> {
   const changing = new Set(controls.filter((c) => Math.abs(c.tick - tick) < 0.5).map((c) => c.controller));
   return [...controlStateBefore(controls, tick)].filter(([controller]) => !changing.has(controller));
+}
+
+/** The channels a part's bent lane `lane` bends: its own, and each articulation channel that follows it. */
+function laneWheelChannels(plan: PartPlan, lane: number): number[] {
+  const out = [plan.channels.lanes.get(lane) as number];
+  plan.artFollows.forEach((f, i) => {
+    const ch = plan.channels.arts?.[i];
+    if (f === lane && ch !== undefined) out.push(ch);
+  });
+  return out;
 }
 
 /** A scheduler for PLAY starting with absolute step 0 at context time `origin`. */
@@ -258,7 +273,28 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       const artsOf = tracks.map((t, i) =>
         articulatedNotes(unrolled[i], { instrumentId: t.instrumentId, program: t.program ?? partPrograms[i] ?? null, percussion: voiceOf(t.id)?.percussion === true }),
       );
-      const channels = rollLiveChannels(tracks, lanes, bends, new Map(tracks.map((t, i) => [t.id, artsOf[i].targets.length])));
+      // An articulation channel per preset and bent lane, so a pizzicato in a bent lane bends with it.
+      const bentSet = bentLanes(lanes, bends);
+      const artPlans = artsOf.map((arts) => {
+        const index = new Map<PianoNote, number>();
+        const follows: Array<number | null> = [];
+        const keyed = new Map<string, number>();
+        for (const a of arts.notes) {
+          if (!a.target) continue;
+          const lane = playingLane(a.note.lane, lanes);
+          const follow = bentSet.has(lane) ? lane : null;
+          const key = `${a.slot}|${follow ?? '-'}`;
+          let k = keyed.get(key);
+          if (k === undefined) {
+            k = follows.length;
+            follows.push(follow);
+            keyed.set(key, k);
+          }
+          index.set(a.note, k);
+        }
+        return { index, follows };
+      });
+      const channels = rollLiveChannels(tracks, lanes, bends, new Map(tracks.map((t, i) => [t.id, artPlans[i].follows.length])));
       plans = tracks.map((t, i) => {
         const ch = channels.get(t.id) as PartLiveChannels;
         const controls = t.controls ?? NO_CONTROLS;
@@ -271,6 +307,8 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
           controlItems: controls.map((c) => ({ step: c.tick / TICKS_PER_STEP, controller: c.controller, value: c.value })),
           arts: new Map(artsOf[i].notes.map((a) => [a.note, a])),
           artTargets: artsOf[i].targets,
+          artIndex: artPlans[i].index,
+          artFollows: artPlans[i].follows,
         };
       });
       bent = playedRollBends(bends, lanes, total);
@@ -299,7 +337,7 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     for (const plan of plans) {
       const voice = voices.get(plan.id) as SchedulerVoice;
       if (voice.program === undefined || voice.percussion) continue;
-      for (const lane of plan.channels.bent) if (lapCurves.has(lane)) bentChannels.add(plan.channels.lanes.get(lane) as number);
+      for (const lane of plan.channels.bent) if (lapCurves.has(lane)) for (const ch of laneWheelChannels(plan, lane)) bentChannels.add(ch);
     }
     // A channel whose lane stopped bending goes back to the centre.
     for (const ch of [...wheelRanges.keys()]) if (!bentChannels.has(ch)) releaseWheel(ch, now, wheels);
@@ -309,15 +347,18 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       for (const lane of plan.channels.bent) {
         const curve = lapCurves.get(lane);
         if (!curve) continue;
-        const ch = plan.channels.lanes.get(lane) as number;
-        if (wheelRanges.get(ch) !== curve.range) {
-          wheels.push({ kind: 'range', channel: ch, value: curve.range });
-          wheelRanges.set(ch, curve.range);
-        }
-        for (const e of loopedWheelEvents(curve.points, lap.len, cursor - lap.base, targetAbs - lap.base, wheelFresh, curve.range)) {
-          const at = Math.max(now, lapTimeOf(lc, e.abs + lap.base));
-          wheels.push({ kind: 'wheel', channel: ch, value: e.raw, time: at });
-          lastWheelTime = Math.max(lastWheelTime, at);
+        const events = loopedWheelEvents(curve.points, lap.len, cursor - lap.base, targetAbs - lap.base, wheelFresh, curve.range);
+        // The lane's channel, and each articulation channel that follows the lane.
+        for (const ch of laneWheelChannels(plan, lane)) {
+          if (wheelRanges.get(ch) !== curve.range) {
+            wheels.push({ kind: 'range', channel: ch, value: curve.range });
+            wheelRanges.set(ch, curve.range);
+          }
+          for (const e of events) {
+            const at = Math.max(now, lapTimeOf(lc, e.abs + lap.base));
+            wheels.push({ kind: 'wheel', channel: ch, value: e.raw, time: at });
+            lastWheelTime = Math.max(lastWheelTime, at);
+          }
         }
       }
     }
@@ -387,7 +428,8 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
         // The note as its articulation plays it, and the preset channel it plays on when it has one.
         const art = plan.arts.get(written);
         const n = art?.played ?? written;
-        const artChannel = soundfont && art?.target ? plan.channels.arts?.[art.slot] : undefined;
+        const artAt = plan.artIndex.get(written);
+        const artChannel = soundfont && art?.target && artAt !== undefined ? plan.channels.arts?.[artAt] : undefined;
         const lane = playingLane(n.lane, lanes);
         const channel = artChannel ?? plan.channels.lanes.get(lane) ?? plan.channels.base;
         const curve = soundfont ? undefined : lapCurves.get(lane);
