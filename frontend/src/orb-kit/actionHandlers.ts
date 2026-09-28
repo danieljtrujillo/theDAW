@@ -347,7 +347,7 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     // plain field write lets two tracks both claim it), and the only one that
     // knows freezing is UI-only.
     editor_set_track: (p) =>
-        facade.setTrack(pick(p, [...TRACK, 'name', 'volume', 'pan', 'mute', 'solo', 'armed', 'frozen', 'instrument_program'])),
+        facade.setTrack(pick(p, [...TRACK, 'name', 'volume', 'pan', 'mute', 'solo', 'armed', 'frozen', 'instrument_program', 'drums'])),
     editor_reorder_tracks: (p) => facade.reorderTracks(pick(p, ['track_ids'])),
     editor_duplicate_track: (p) => facade.duplicateTrack(pick(p, TRACK)),
     editor_freeze_track: (p) => facade.freezeTrack(pick(p, TRACK)),

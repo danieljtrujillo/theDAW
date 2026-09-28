@@ -433,9 +433,10 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
             "name": "editor_set_track",
             "description": (
                 "Update an EDIT track's volume, pan, mute, solo, name, record "
-                "arm, or default MIDI instrument. Freezing is UI-only (there is "
-                "no offline renderer here) — frozen=true is refused with the "
-                "path to the freeze button; frozen=false DOES unfreeze."
+                "arm, or default MIDI instrument and its kind (drums or "
+                "melodic). Freezing is UI-only (there is no offline renderer "
+                "here) — frozen=true is refused with the path to the freeze "
+                "button; frozen=false DOES unfreeze."
             ),
             "parameters": {
                 "type": "object",
@@ -458,8 +459,21 @@ PROVIDER_TOOLS: list[dict[str, Any]] = [
                         "minimum": 0,
                         "maximum": 127,
                         "description": (
-                            "Default General MIDI program for this track's MIDI "
-                            "clips. A clip with its own instrumentProgram wins."
+                            "Default program for this track's MIDI clips: a "
+                            "General MIDI program on a melodic track, a drum kit "
+                            "number (0 = Standard) on a drum track (editorState "
+                            "tracks[].drums). A clip with its own "
+                            "instrumentProgram wins."
+                        ),
+                    },
+                    "drums": {
+                        "type": "boolean",
+                        "description": (
+                            "The kind of instrument_program: true makes this a "
+                            "drum track and reads it as a drum kit, false makes "
+                            "it melodic and reads it as a General MIDI program. "
+                            "Changing the kind clears the clips' own programs. "
+                            "Omit to keep the track's kind."
                         ),
                     },
                     "frozen": {

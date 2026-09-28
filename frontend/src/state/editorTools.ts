@@ -1378,9 +1378,11 @@ export interface SetTrackArgs {
   armed?: unknown;
   frozen?: unknown;
   instrument_program?: unknown;
+  /** true: a drum track (instrument_program is a kit), false: melodic (a GM program). Omitted: the track's kind. */
+  drums?: unknown;
 }
 
-/** Set a track's mixer state, arm, default instrument, or unfreeze it. */
+/** Set a track's mixer state, arm, default instrument (and its kind: drums or melodic), or unfreeze it. */
 export function setTrack(args: SetTrackArgs): ToolResult {
   const found = resolveTrack(args.track_id ?? args.track);
   if (!found.ok) return fail(found.error);
@@ -1424,10 +1426,20 @@ export function setTrack(args: SetTrackArgs): ToolResult {
   }
 
   const program = numArg(args.instrument_program);
-  if (program !== undefined) {
-    if (!Number.isInteger(program) || program < 0 || program > 127) {
-      return fail('set_track: instrument_program must be an integer GM program 0-127');
-    }
+  if (program !== undefined && (!Number.isInteger(program) || program < 0 || program > 127)) {
+    return fail('set_track: instrument_program must be an integer 0-127 (a GM program, or a drum kit number on a drum track)');
+  }
+  // `drums` names the kind of the choice, so the program and the drum flag land together (editorStore
+  // setTrackVoice: a flip clears the clips' own programs, logs a LOG line). Without it the program is
+  // read in the track's own kind, as it always was: a kit number on a drum track, a GM program otherwise.
+  const drums = boolArg(args.drums);
+  let voice: { program: number | undefined; drums: boolean } | null = null;
+  if (drums !== undefined) {
+    const sameKind = (track.isPercussion === true) === drums;
+    voice = { program: program ?? (sameKind ? track.instrumentProgram : undefined), drums };
+    changed.push(`drums=${drums}`);
+    if (program !== undefined) changed.push(`instrument_program=${program}`);
+  } else if (program !== undefined) {
     updates.instrumentProgram = program;
     changed.push(`instrument_program=${program}`);
   }
@@ -1441,12 +1453,13 @@ export function setTrack(args: SetTrackArgs): ToolResult {
 
   const solo = boolArg(args.solo);
   if (solo === undefined && frozen === undefined && changed.length === 0) {
-    return fail('set_track: nothing to change (pass name, volume, pan, mute, solo, armed, frozen or instrument_program)');
+    return fail('set_track: nothing to change (pass name, volume, pan, mute, solo, armed, frozen, instrument_program or drums)');
   }
 
-  // ONE UNDO STEP: updateTrack, toggleSolo and unfreezeTrack, grouped (see oneStep).
+  // ONE UNDO STEP: updateTrack, setTrackVoice, toggleSolo and unfreezeTrack, grouped (see oneStep).
   oneStep(() => {
-    if (changed.length) s.updateTrack(track.id, updates);
+    if (Object.keys(updates).length) s.updateTrack(track.id, updates);
+    if (voice) s.setTrackVoice(track.id, voice.program, voice.drums);
     // Solo is exclusive in this store, so it has to go through toggleSolo rather
     // than a plain field write — otherwise two tracks could both claim it.
     if (solo !== undefined && solo !== track.solo) {

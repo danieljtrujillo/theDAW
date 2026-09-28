@@ -25,8 +25,8 @@ const context = formattheDAWAppContext({
     loop: null,
     markers: [{ id: 'm1', sec: 16, label: 'Drop' }],
     tracks: [
-      { id: 't1', name: 'Track 1', kind: 'audio', volume: 1, pan: 0, mute: false, solo: false, armed: false, frozen: false, instrumentProgram: null, fxChain: [], clipCount: 1 },
-      { id: 't2', name: 'Keys', kind: 'midi', volume: 1, pan: 0, mute: false, solo: false, armed: false, frozen: false, instrumentProgram: 4, fxChain: ['reverb'], clipCount: 1 },
+      { id: 't1', name: 'Track 1', kind: 'audio', volume: 1, pan: 0, mute: false, solo: false, armed: false, frozen: false, instrumentProgram: null, drums: false, fxChain: [], clipCount: 1 },
+      { id: 't2', name: 'Keys', kind: 'midi', volume: 1, pan: 0, mute: false, solo: false, armed: false, frozen: false, instrumentProgram: 4, drums: false, fxChain: ['reverb'], clipCount: 1 },
     ],
     clips: [
       { id: 'c1', label: 'Clip', trackId: 't1', kind: 'audio', startSec: 0, durationSec: 4, muted: false, gain: 1, fadeInSec: 0, fadeOutSec: 0, instrumentProgram: null, noteCount: null, sourceBpm: null },

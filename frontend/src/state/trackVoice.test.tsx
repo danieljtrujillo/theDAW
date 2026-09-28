@@ -92,6 +92,51 @@ async function main(): Promise<void> {
   assert.equal(clip('beat').instrumentProgram, 25, 'a clip with its own kit takes the choice');
   ed().undo();
 
+  // The assistant's editor_set_track: `drums` names the kind of the program, so a melodic program on the
+  // drum track turns the flag off (it used to write 33 as a kit number and keep the drum channel).
+  {
+    const { handletheDAWActionResult } = await import('../orb-kit/actionHandlers.ts');
+    const { summarizeEditor } = await import('../orb-kit/appContext.ts');
+    const drumsOf = (id: string) => summarizeEditor(ed()).tracks.find((t) => t.id === id)?.drums;
+    assert.equal(drumsOf('kit'), true, "the assistant's editorState shows the drum track");
+    assert.equal(drumsOf('bass'), false);
+    useLogStore.getState().clear();
+    const r = await handletheDAWActionResult({ type: 'editor_set_track', payload: { track_id: 'kit', instrument_program: 33, drums: false } });
+    assert.equal(r.ok, true, r.message);
+    assert.match(r.message, /drums=false, instrument_program=33/);
+    assert.equal(track('kit').isPercussion, undefined, 'the drum flag is off');
+    assert.equal(track('kit').instrumentProgram, 33);
+    assert.equal(clip('beat').instrumentProgram, undefined, "the clip's kit number goes with the flag");
+    assert.ok(logs().some((m) => /turned its drum flag off/.test(m)), 'the LOG says so');
+    assert.equal(drumsOf('kit'), false);
+    ed().undo();
+    assert.equal(track('kit').isPercussion, true, 'one undo step');
+    assert.equal(track('kit').instrumentProgram, 40);
+    assert.equal(clip('beat').instrumentProgram, 40);
+    // A kit on the melodic track, with its volume, in one step.
+    const k = await handletheDAWActionResult({ type: 'editor_set_track', payload: { track_id: 'bass', instrument_program: 0, drums: true, volume: 0.5 } });
+    assert.equal(k.ok, true, k.message);
+    assert.equal(track('bass').isPercussion, true);
+    assert.equal(track('bass').instrumentProgram, 0);
+    assert.equal(track('bass').volume, 0.5);
+    ed().undo();
+    assert.equal(track('bass').isPercussion, undefined, 'the kind and the volume undo together');
+    assert.equal(track('bass').volume, 0.8);
+    // drums alone turns the flag on with the standard kit (no program carried across kinds).
+    await handletheDAWActionResult({ type: 'editor_set_track', payload: { track_id: 'bass', drums: true } });
+    assert.equal(track('bass').isPercussion, true);
+    assert.equal(track('bass').instrumentProgram, undefined, 'the default kit, not program 33 read as a kit');
+    ed().undo();
+    // Without drums the program is read in the track's kind, as before: a kit number on the drum track.
+    await handletheDAWActionResult({ type: 'editor_set_track', payload: { track_id: 'kit', instrument_program: 25 } });
+    assert.equal(track('kit').isPercussion, true);
+    assert.equal(track('kit').instrumentProgram, 25);
+    ed().undo();
+    const bad = await handletheDAWActionResult({ type: 'editor_set_track', payload: { track_id: 'kit', instrument_program: 200, drums: false } });
+    assert.equal(bad.ok, false);
+    assert.equal(track('kit').isPercussion, true, 'a refused call changes nothing');
+  }
+
   // The mounted select on a drum track.
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
   const g = globalThis as unknown as Record<string, unknown>;
