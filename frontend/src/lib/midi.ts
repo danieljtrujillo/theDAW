@@ -24,6 +24,8 @@
  * FF 06 holds a name alone.
  */
 import { isArticulation, type Articulation } from './articulationMap';
+import { applyMpeImport } from './mpeMidi';
+import type { NoteExpression } from '../state/pianoRollStore';
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
 
@@ -56,6 +58,33 @@ export interface MidiNote {
    * an import reads the part's own channel and lanes. Parsed: never set.
    */
   homeChannel?: number;
+  /**
+   * The note's own expression (the roll's NoteExpression: pressure, timbre,
+   * bend and their curves, the curves' ticks on the file's clock). Parsed: a
+   * note of an MPE zone (lib/mpeMidi) takes its member channel's pressure,
+   * CC 74 and wheel here and goes back to its part's channel. Encoded: the
+   * writers (lib/rollMidi, lib/arrangementMidi) turn it into member-channel
+   * messages; the encoder itself writes nothing for it.
+   */
+  expr?: NoteExpression;
+}
+
+/** A channel pressure message (D0): its tick, channel and 0-127 value. */
+export interface MidiPressure {
+  tick: number;
+  channel: number;
+  value: number;
+}
+
+/**
+ * An MPE zone as the MPE Configuration Message (RPN 6 on a zone's manager
+ * channel) declares it: manager channel 0 (the lower zone, members 1 up) or 15
+ * (the upper zone, members 14 down), and how many member channels it has.
+ */
+export interface MidiMpeZone {
+  tick: number;
+  channel: number;
+  members: number;
 }
 
 /** A pitch wheel message (E0). */
@@ -142,6 +171,10 @@ export interface MidiTrack {
    * survives a round trip.
    */
   laneMeta?: string;
+  /** Channel pressure messages, sorted by tick. Parsed: absent when the track has none (an MPE zone's are read onto its notes). */
+  pressures?: MidiPressure[];
+  /** MPE Configuration Messages the track carries. */
+  mpeZones?: MidiMpeZone[];
 }
 
 export interface MidiTempo {
@@ -228,6 +261,7 @@ const RANK_PROGRAM = 0.5;
 const RANK_CONTROL = 0.75;
 const RANK_RANGE = 1;
 const RANK_WHEEL = 2;
+const RANK_PRESSURE = 2.5;
 const RANK_NOTE_ON = 3;
 
 const byTickAndRank = (a: RankedEvent, b: RankedEvent): number => a.tick - b.tick || a.rank - b.rank;
@@ -329,6 +363,14 @@ const trackBody = (t: MidiTrack): RawEvent[] => {
   for (const b of t.bends ?? []) wheel.push({ tick: tickOf(b.tick), rank: RANK_WHEEL, bytes: pitchWheelMessage(b.channel, b.value) });
   for (const p of t.programs ?? []) wheel.push(...programEvents(p));
   for (const c of t.controls ?? []) wheel.push({ tick: tickOf(c.tick), rank: RANK_CONTROL, bytes: controlMessage(c.channel, c.controller, c.value) });
+  for (const p of t.pressures ?? []) wheel.push({ tick: tickOf(p.tick), rank: RANK_PRESSURE, bytes: [0xd0 | (p.channel & 0x0f), byte7(p.value)] });
+  // An MPE zone's configuration: RPN 6 on its manager channel, the member count as data, the RPN deselected.
+  for (const z of t.mpeZones ?? []) {
+    const st = 0xb0 | (z.channel & 0x0f);
+    for (const bytes of [[st, 101, 0], [st, 100, 6], [st, 6, byte7(z.members)], [st, 101, 127], [st, 100, 127]]) {
+      wheel.push({ tick: tickOf(z.tick), rank: RANK_PROGRAM - 0.1, bytes });
+    }
+  }
   if (!wheel.length) return notes;
   // A stable sort, so controller changes of one tick keep the order the track lists them in.
   return [...wheel, ...notes].sort(byTickAndRank);
@@ -566,6 +608,8 @@ interface DecodedTrack {
   partMeta: string | null;
   programs: MidiProgram[];
   controls: MidiControl[];
+  pressures: MidiPressure[];
+  mpeZones: MidiMpeZone[];
 }
 
 /**
@@ -618,6 +662,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   let artMeta: string | null = null;
   const programs: MidiProgram[] = [];
   const controls: MidiControl[] = [];
+  const pressures: MidiPressure[] = [];
+  const mpeZones: MidiMpeZone[] = [];
   // The bank select (CC 0, and CC 32) each channel has, which the program change after it takes.
   const bankMsb = new Map<number, number>();
   const bankLsb = new Map<number, number>();
@@ -733,6 +779,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
         }
       } else if (type === 0xe0) {
         bends.push({ tick, channel: ch, value: d1 | (d2 << 7) });
+      } else if (type === 0xd0) {
+        pressures.push({ tick, channel: ch, value: d1 & 0x7f });
       } else if (type === 0xc0) {
         const bank = bankMsb.get(ch);
         const lsb = bankLsb.get(ch);
@@ -762,6 +810,9 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
           sel.msb = 127;
           sel.lsb = 127;
           sel.range = null;
+        } else if (d1 === 6 && sel.msb === 0 && sel.lsb === 6) {
+          // The MPE Configuration Message: this channel manages a zone of d2 member channels.
+          mpeZones.push({ tick, channel: ch, members: d2 & 0x7f });
         } else if (d1 === 6 && sel.msb === 0 && sel.lsb === 0) {
           sel.range = { tick, channel: ch, semitones: d2 };
           ranges.push(sel.range);
@@ -791,7 +842,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
 
   finished.sort((a, b) => a.tick - b.tick);
   if (artMeta !== null) applyArticulationText(finished, artMeta);
-  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, markers, markerMeta, bends, ranges, laneMeta, partMeta, programs, controls };
+  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, markers, markerMeta, bends, ranges, laneMeta, partMeta, programs, controls, pressures, mpeZones };
 };
 
 /** The tempo a Standard MIDI File plays at until its first tempo event: 120 BPM, as SMF 1.0 has it. */
@@ -866,7 +917,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     // A track that only bends is kept: its channel's wheel bends notes another
     // track holds. So is one that only sets controllers (a setup track's volume
     // and pan), and a lane's track with no notes, so the lane comes back.
-    if (t.notes.length > 0 || t.bends.length > 0 || t.controls.length > 0 || t.laneMeta !== null || t.partMeta !== null) {
+    if (t.notes.length > 0 || t.bends.length > 0 || t.controls.length > 0 || t.pressures.length > 0 || t.mpeZones.length > 0 || t.laneMeta !== null || t.partMeta !== null) {
       tracks.push({
         name: t.name || `Track ${i}`,
         notes: t.notes,
@@ -876,9 +927,13 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
         ...(t.partMeta !== null ? { partMeta: t.partMeta } : {}),
         ...(t.programs.length ? { programs: t.programs } : {}),
         ...(t.controls.length ? { controls: t.controls } : {}),
+        ...(t.pressures.length ? { pressures: t.pressures } : {}),
+        ...(t.mpeZones.length ? { mpeZones: t.mpeZones } : {}),
       });
     }
   }
+  // An MPE zone's notes back on their parts' channels, each with its member channel's expression (lib/mpeMidi).
+  applyMpeImport(tracks);
   // Stable sorts: at one tick, events keep track order, so the last one written is the one in force.
   tempos.sort((a, b) => a.tick - b.tick);
   signatures.sort((a, b) => a.tick - b.tick);

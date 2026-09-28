@@ -119,6 +119,7 @@ import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram } from './orchestra';
 import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
+import { scaleExpressionTicks } from './noteExpression';
 import {
   PERCUSSION_PART_CHANNEL,
   cleanPartBank,
@@ -820,6 +821,8 @@ function laneTracksToRoll(
         ticks,
         ...(lane.id > 0 ? { lane: lane.id } : {}),
         ...(n.articulation ? { articulation: n.articulation } : {}),
+        // An MPE note's own expression (lib/mpeMidi), its curves on the roll's clock.
+        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
       });
     }
     const channel = t.bends?.[0]?.channel ?? t.notes[0]?.channel;
@@ -911,6 +914,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
         ticks,
         ...(lane > 0 ? { lane } : {}),
         ...(n.articulation ? { articulation: n.articulation } : {}),
+        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
       };
     })
     .sort((a, b) => a.step - b.step);

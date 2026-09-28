@@ -58,6 +58,7 @@ import {
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
 import { isArticulation, type Articulation } from '../lib/articulationMap';
 import { buildExpression, withExpressionControls } from '../lib/clipNotes/expression';
+import { sanitizeNoteExpression } from '../lib/noteExpression';
 import {
   composerApi,
   type CanonResult,
@@ -96,18 +97,35 @@ import {
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
- * independent of its channel's wheel. The roll only STORES these; nothing plays
- * or writes them yet (that is #42). Ranges are fixed here so every later reader
- * agrees: `pressure` and `timbre` are 0..1, `pitchBend` is -1..1 of whatever
- * bend range the note's channel is in.
+ * independent of its channel's wheel. Ranges are fixed here so every reader
+ * agrees: `pressure` and `timbre` are 0..1, `pitchBend` is -1..1 of
+ * `bendRange` semitones when the note names one, else of whatever bend range
+ * the note's channel is in. Those are the values the note starts at; `curves`
+ * holds how each moves inside the note (lib/noteExpression). An MPE file or
+ * controller brings them in (lib/mpeMidi, lib/midiCapture), the roll's CC
+ * lane draws them for a selected note, and both MIDI writers write them as MPE.
  */
 export interface NoteExpression {
   /** Aftertouch / channel pressure, 0..1. */
   pressure?: number;
   /** The third MPE dimension (CC 74 "timbre" / slide), 0..1. */
   timbre?: number;
-  /** Bend at the note, -1..1 of its channel's range. */
+  /** Bend at the note, -1..1 of its range. */
   pitchBend?: number;
+  /** The semitones `pitchBend` ±1 is worth (an MPE member channel's range, 48 by default); absent, the channel's. */
+  bendRange?: number;
+  /** Each dimension's movement inside the note: points at ticks from its start, each holding until the next. */
+  curves?: {
+    pressure?: NoteExpressionPoint[];
+    timbre?: NoteExpressionPoint[];
+    pitchBend?: NoteExpressionPoint[];
+  };
+}
+
+/** One point of a note's expression curve: ticks from the note's start, and the value from there. */
+export interface NoteExpressionPoint {
+  tick: number;
+  value: number;
 }
 
 export interface PianoNote {
@@ -1336,15 +1354,7 @@ const validChannel = (v: unknown): number | undefined =>
 const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
 
 /** Expression with each dimension in range, or undefined when nothing is left. */
-const validExpr = (e: unknown): NoteExpression | undefined => {
-  if (!e || typeof e !== 'object') return undefined;
-  const src = e as NoteExpression;
-  const out: NoteExpression = {};
-  if (isNum(src.pressure)) out.pressure = clampUnit(src.pressure);
-  if (isNum(src.timbre)) out.timbre = clampUnit(src.timbre);
-  if (isNum(src.pitchBend)) out.pitchBend = Math.max(-1, Math.min(1, src.pitchBend));
-  return Object.keys(out).length > 0 ? out : undefined;
-};
+const validExpr = (e: unknown): NoteExpression | undefined => sanitizeNoteExpression(e);
 
 /**
  * A note with its ticks settled and `step`/`length` recomputed from them, plus
