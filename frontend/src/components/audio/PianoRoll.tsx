@@ -1382,6 +1382,8 @@ export const importSheetFileToRoll = (file: File): void => {
       // (lib/rollPartsImport importSheetParts).
       const done = importSheetParts(score);
       const meter = usePianoRollStore.getState().meterMap[0].meter;
+      // The score's printed dynamics come as expression (controller 11), which each part plays and exports.
+      const dynamics = score.tracks.reduce((n, t) => n + (t.controls ?? []).filter((c) => c.controller === 11).length, 0);
       const where = done.into === 'parts' ? ` as ${done.parts} parts` : ` into ${activeTrackOf(usePianoRollStore.getState()).name}`;
       const changes = [
         done.tempoChanges ? `${done.tempoChanges} tempo change${done.tempoChanges === 1 ? '' : 's'}` : '',
@@ -1390,6 +1392,7 @@ export const importSheetFileToRoll = (file: File): void => {
         score.ornaments ? `${score.ornaments} ornaments played out` : '',
         score.chord_symbols_skipped ? `${score.chord_symbols_skipped} chord symbols left out` : '',
         score.pedal_marks ? `${score.pedal_marks} sustain pedal mark${score.pedal_marks === 1 ? '' : 's'} as pedal changes` : '',
+        dynamics ? `${dynamics} dynamic${dynamics === 1 ? '' : 's'} as expression changes` : '',
       ].filter(Boolean);
       logInfo(
         'piano-roll',
