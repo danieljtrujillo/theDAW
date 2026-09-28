@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,35 @@ def pytest_addoption(parser):
         default=False,
         help="Save generated audio to disk. Files are written to test_audio_outputs/.",
     )
+
+
+# ---------------------------------------------------------------------------
+# The writable data root
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Point the backend's writable roots at a new directory for the session.
+
+    ``backend.lib.paths`` puts everything the backend writes under
+    ``theDAW_DATA_DIR`` (default ``<checkout>/data``) and the library under
+    ``theDAW_GENERATIONS_DIR``, and a few modules resolve a path when they are
+    imported (the VST router's preset directory). Without this, a broad run
+    wrote known_paths.json, logs, settings and VST preset files into the
+    checkout's data/, which in the live app's tree is the user's own data.
+
+    Set here, before collection imports any test module, and always, even when
+    the shell already names a root: a launcher may point these variables at the
+    live data. A test that needs a root of its own still monkeypatches them.
+    The directory is left in the system temp folder, as pytest leaves its own.
+    """
+    root = Path(tempfile.mkdtemp(prefix="thedaw-pytest-"))
+    os.environ["theDAW_DATA_DIR"] = str(root / "data")
+    os.environ["theDAW_GENERATIONS_DIR"] = str(root / "generations")
+    # The assistant's index, which backend.rag resolves when it is imported. It
+    # follows theDAW_DATA_DIR unless the shell names its own, so name it too.
+    os.environ["theDAW_RAG_INDEX_DIR"] = str(root / "rag_index")
+    config.thedaw_data_root = root
 
 
 # ---------------------------------------------------------------------------
