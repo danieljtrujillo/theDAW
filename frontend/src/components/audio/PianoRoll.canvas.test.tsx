@@ -7,9 +7,13 @@
  *
  * The sequence a user makes: the MIDI tab opens on a roll of three notes. A
  * press and click on the second note selects it; a second click deletes it;
- * undo brings it back. A drag on its right edge lengthens it. A right-click on
- * it opens its menu. Tab to the selected note: it is named; Alt+Right selects
- * the next note, Enter opens the menu. Then the window is 1920x1080, where the
+ * undo brings it back. A drag on its right edge lengthens it; released past
+ * the snapped end, or pressed on the note and let go 2 px down in the row
+ * below, the click adds no note. A right-click on it opens its menu. Tab to the
+ * selected note: it is named; Alt+Right selects the next note, Enter and Space
+ * open the menu, and Space never reaches EDIT's PLAY key. Every 4/4 bar prints
+ * its number, with or without a 2/16 bar far off screen. Then the window is
+ * 1920x1080, where the
  * shell's CSS zoom scales every client point: a click on a note selects the
  * note drawn under the pointer, a click on an empty cell adds the note there,
  * an edge drag and a marquee land in grid px, the ruler seeks the step under
@@ -227,6 +231,41 @@ assert.equal(roll().notes.find((n) => n.id === 'b')?.length, 4, 'the edge drag l
 await step(() => roll().undo());
 assert.equal(roll().notes.find((n) => n.id === 'b')?.length, 2);
 
+// The same drag 7 px further: the end snaps to step 8 with the pointer at step
+// 8.25, past the note. The click that ends the resize is the resize's own and
+// adds nothing there. Shortened the same way, the pointer ends 4 px past the
+// new end: nothing added either.
+await step(() => fire(grid, 'pointerdown', { clientX: edgeX, clientY: yOf(64) }));
+await step(() => fire(scroller, 'pointermove', { clientX: edgeX + 2 * stepPx + 7, clientY: yOf(64) }));
+await step(() => fire(scroller, 'pointerup', { clientX: edgeX + 2 * stepPx + 7, clientY: yOf(64) }));
+await step(() => fire(grid, 'click', { clientX: edgeX + 2 * stepPx + 7, clientY: yOf(64) }));
+assert.equal(roll().notes.find((n) => n.id === 'b')?.length, 4, 'the end snaps to step 8');
+assert.equal(roll().notes.length, 3, 'the click that ends a resize past the note adds no note');
+assert.deepEqual([...roll().selectedIds], ['b'], 'the resized note stays selected');
+await step(() => roll().undo());
+await step(() => fire(grid, 'pointerdown', { clientX: edgeX, clientY: yOf(64) }));
+await step(() => fire(scroller, 'pointermove', { clientX: edgeX - 9, clientY: yOf(64) }));
+await step(() => fire(scroller, 'pointerup', { clientX: edgeX - 9, clientY: yOf(64) }));
+await step(() => fire(grid, 'click', { clientX: edgeX - 9, clientY: yOf(64) }));
+assert.equal(roll().notes.find((n) => n.id === 'b')?.length, 1, 'the end snaps back to step 5');
+assert.equal(roll().notes.length, 3, 'shortened, the click past the new end adds no note');
+await step(() => roll().undo());
+assert.equal(roll().notes.find((n) => n.id === 'b')?.length, 2);
+
+// A press on the note's body 1 px above the row line under it, let go 2 px
+// lower (under the drag threshold, in E-flat4's row): a click on the note it
+// pressed, which is selected, and no note in the row below.
+const rowLine = (highest - 63) * 12;
+await step(() => roll().setSelection([]));
+await step(() => fire(grid, 'pointerdown', { clientX: xOf(5), clientY: rowLine - 1 }));
+await step(() => fire(scroller, 'pointermove', { clientX: xOf(5), clientY: rowLine + 1 }));
+await step(() => fire(scroller, 'pointerup', { clientX: xOf(5), clientY: rowLine + 1 }));
+await step(() => fire(grid, 'click', { clientX: xOf(5), clientY: rowLine + 1 }));
+assert.equal(roll().notes.length, 3, 'the wobble adds no note in the row below');
+assert.deepEqual([...roll().selectedIds], ['b'], 'the pressed note is selected');
+assert.equal(roll().notes.find((n) => n.id === 'b')?.note, 64, 'and stays in its row');
+await step(() => roll().setSelection([]));
+
 // Right-click the note: its menu, and it is selected.
 await step(() => roll().setSelection([]));
 await step(() => fire(grid, 'contextmenu', { clientX: xOf(0), clientY: yOf(60), button: 2 }));
@@ -259,6 +298,19 @@ assert.ok(q('[role="menu"]'), 'Enter opens the note menu');
 assert.equal(focusNote()?.getAttribute('aria-expanded'), 'true', 'and says it is open');
 await step(() => kb(q('[role="menu"]') as Element, 'Escape'));
 assert.equal(focusNote()?.getAttribute('aria-expanded'), 'false', 'Escape closes it');
+// Space, a button's other key, opens the menu too, and stops at the note: EDIT's
+// window key handler would take it for PLAY.
+let spaceAtWindow = 0;
+const countSpace = (e: KeyboardEvent) => {
+  if (e.key === ' ') spaceAtWindow += 1;
+};
+win.addEventListener('keydown', countSpace);
+await step(() => kb(focusNote() as Element, ' '));
+win.removeEventListener('keydown', countSpace);
+assert.ok(q('[role="menu"]'), 'Space opens the note menu');
+assert.equal(focusNote()?.getAttribute('aria-expanded'), 'true');
+assert.equal(spaceAtWindow, 0, 'and the key never reaches the window');
+await step(() => kb(q('[role="menu"]') as Element, 'Escape'));
 // With nothing selected the group takes focus and Enter picks the first note.
 await step(() => roll().setSelection([]));
 assert.equal(focusNote(), null);
@@ -325,6 +377,23 @@ await step(() => {
 });
 await scrolled(scroller);
 assert.equal(canvas.dataset.scale, '1', 'back at zoom 1');
+
+// The ruler numbers each bar by its own width: at 16 px a step every 4/4 bar
+// in view prints its number, and a 2/16 bar at bar 13, far off screen, thins
+// none of them.
+await step(() => roll().setTotalSteps(16 * 16));
+await scrolled(scroller);
+const numbersInView = () =>
+  [...win.document.querySelectorAll<HTMLElement>('[data-ruler-bar]')]
+    .filter((el) => Number.parseFloat(el.style.left) < 4 * 16 * stepPx)
+    .map((el) => el.querySelector('span:not(.et-ink)')?.textContent ?? '');
+assert.deepEqual(numbersInView(), ['1', '2', '3', '4'], 'every 4/4 bar prints its number');
+const M44 = { num: 4, den: 4, groups: [] as number[] };
+await step(() => roll().setMeterMap([{ bar: 0, meter: M44 }, { bar: 12, meter: { num: 2, den: 16, groups: [] } }, { bar: 13, meter: M44 }]));
+await scrolled(scroller);
+assert.equal(roll().meterMap.length, 3, 'the roll holds the 2/16 bar');
+assert.deepEqual(numbersInView(), ['1', '2', '3', '4'], 'one 2/16 bar at bar 13 thins no number of the wide bars');
+await step(() => roll().setMeterMap([{ bar: 0, meter: M44 }]));
 
 // The overview: a labelled slider; a click on its right half scrolls the grid there; arrows move a bar.
 const map = q<HTMLElement>('[data-roll-minimap] [role="slider"]');

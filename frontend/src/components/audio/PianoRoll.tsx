@@ -245,15 +245,22 @@ const windowPx = (win: { from: number; to: number }, stepPx: number, totalSteps:
   return { x, width: Math.max(1, right - x) };
 };
 
-/** How many bars apart the ruler prints numbers: 1, 2, 4, 8 ... so that the narrowest bar times it spans RULER_LABEL_MIN_PX. */
-const rulerLabelStride = (spans: readonly BarSpan[], stepPx: number): number => {
-  let narrow = Infinity;
-  for (const b of spans) if (b.bar >= 0 && b.len > 0) narrow = Math.min(narrow, b.len);
-  if (!Number.isFinite(narrow)) return 1;
+/**
+ * How many bars apart the numbers stand among bars `barPx` wide: 1, 2, 4, 8 ...
+ * so that the stride spans RULER_LABEL_MIN_PX. Each bar decides by its own
+ * width, so a 2/16 bar thins the numbers around itself and never the wide bars
+ * of the rest of the roll; bars all one width number as they always have.
+ */
+const rulerLabelStride = (barPx: number): number => {
+  if (!(barPx > 0)) return 1 << 16;
   let stride = 1;
-  while (narrow * stepPx * stride < RULER_LABEL_MIN_PX && stride < 1 << 16) stride *= 2;
+  while (barPx * stride < RULER_LABEL_MIN_PX && stride < 1 << 16) stride *= 2;
   return stride;
 };
+
+/** True when bar `b` prints its number: a bar counted from bar 1 at its own width's stride (rulerLabelStride). */
+const rulerShowsNumber = (b: Pick<BarSpan, 'bar' | 'len'>, stepPx: number): boolean =>
+  b.bar >= 0 && b.bar % rulerLabelStride(b.len * stepPx) === 0;
 
 /** The notes as they sound, lane repeats written out and lane ids dropped (lib/rollClip); every hand-off that plays a note list once takes it. */
 export { playedRollNotes };
@@ -1384,7 +1391,8 @@ export const importSheetFileToRoll = (file: File): void => {
  *
  * Only the bars and ticks inside `win` (the view and its overscan) render, so
  * a roll of thousands of bars draws the few dozen in view. Zoomed out, a bar
- * number prints every 2, 4, 8 ... bars (from bar 1) so the numbers never run
+ * number prints every 2, 4, 8 ... bars (from bar 1), each bar by its own width
+ * (rulerShowsNumber), so the numbers never run
  * into each other, and a tick tier whose lines stand closer than
  * MIN_TIER_GAP_PX drops out.
  */
@@ -1414,7 +1422,6 @@ const RollRuler = React.memo(function RollRuler({
     [tiers, stepPx, win, box.x],
   );
   const max = useMemo(() => lhl.reduce((m, v) => Math.max(m, v), 0), [lhl]);
-  const stride = useMemo(() => rulerLabelStride(spans, stepPx), [spans, stepPx]);
   const shown = spansWithin(spans, win.from, win.to);
 
   return (
@@ -1444,7 +1451,7 @@ const RollRuler = React.memo(function RollRuler({
             />
             {/* Orbitron's "1" carries its space on the left, so 10px keeps the bar number
                 visibly apart from the meter beside it ("1  7/8 3+2+2"). */}
-            {(b.bar >= 0 ? b.bar % stride === 0 : cellPx >= PICKUP_LEGEND_MIN_PX) && <span>{b.bar >= 0 ? b.bar + 1 : 'Pickup'}</span>}
+            {(b.bar >= 0 ? rulerShowsNumber(b, stepPx) : cellPx >= PICKUP_LEGEND_MIN_PX) && <span>{b.bar >= 0 ? b.bar + 1 : 'Pickup'}</span>}
             {change && <span className="font-extrabold et-ink">{meterLabel(b.meter)}</span>}
           </div>
         );
@@ -1947,8 +1954,9 @@ const inPortalledOverlay = (target: EventTarget | null, root: HTMLElement | null
  * With it focused, Alt+Left and Alt+Right select the note before or after in
  * time (the interval index's order), scrolling it into view; the arrow keys
  * move the selection and Delete removes it (the roll's own keys); Enter,
- * Shift+F10 or the menu key opens the note's menu. With nothing selected the
- * group itself takes focus, and Enter or Alt+Right selects the first note.
+ * Space, Shift+F10 or the menu key opens the note's menu. With nothing
+ * selected the group itself takes focus, and Enter or Alt+Right selects the
+ * first note.
  */
 const NoteFocusLayer: React.FC<{
   notes: readonly PianoNote[];
@@ -2004,7 +2012,10 @@ const NoteFocusLayer: React.FC<{
       pick(primary ? noteIdx.step(primary, e.key === 'ArrowRight' ? 1 : -1) : noteIdx.first());
       return;
     }
-    const menuKey = e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10') || e.key === 'Enter';
+    // Space activates a button as Enter does, so on the note's box it opens the
+    // menu too, and it stops here: EDIT's window keys would take it for PLAY.
+    const space = e.key === ' ' || e.key === 'Spacebar';
+    const menuKey = e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10') || e.key === 'Enter' || (space && e.target === noteRef.current);
     if (!menuKey) return;
     e.preventDefault();
     e.stopPropagation();
@@ -2048,7 +2059,7 @@ const NoteFocusLayer: React.FC<{
       )}
       <p id={helpId} className="sr-only">
         Alt+Left and Alt+Right select the note before or after. The arrow keys move the selection, a semitone or a snap cell,
-        and with Shift an octave or four cells. Delete removes it. Enter, Shift+F10 or the menu key opens the note&apos;s menu.
+        and with Shift an octave or four cells. Delete removes it. Enter, Space, Shift+F10 or the menu key opens the note&apos;s menu.
       </p>
     </div>
   );
@@ -2339,26 +2350,33 @@ export const PianoRoll: React.FC<{
       suppressClickRef.current = false;
       return;
     }
+    // A press that began on a note ends on that note, wherever the pointer is
+    // let go: a resize released past the note's snapped end, or a click that
+    // wobbled across a row line, selects the pressed note (or deletes it, as a
+    // second click does) and never adds one. The grid keeps the pointer from the
+    // press, so the click reaches it here from anywhere.
+    const press = pressRef.current;
+    if (press) {
+      pressRef.current = null;
+      const pressed = usePianoRollStore.getState().notes.find((n) => n.id === press.id);
+      if (!pressed || modifierSelect(e, pressed.id)) return;
+      if (press.wasSelected) removeNote(pressed.id);
+      else setSelectedNote(pressed.id);
+      return;
+    }
     const { x, y } = clientToLocal(e.currentTarget as HTMLDivElement, e.clientX, e.clientY);
     if (x < 0 || y < 0) return;
     const targetNote = yToNote(y);
-    // If clicked on an existing note → select it, or remove it when it was the
-    // one selected note before this press. Only stored notes count; a lane
-    // repeat is drawn, not stored, and clicks pass through it. The note is
-    // found in the interval index where the canvas draws it (lib/rollCanvas).
+    // A click with no press before it (nothing pressed on the grid first): on
+    // an existing note it selects it, or removes it when it is the one selected
+    // note. Only stored notes count; a lane repeat is drawn, not stored, and
+    // clicks pass through it. The note is found in the interval index where the
+    // canvas draws it (lib/rollCanvas).
     const hit = hitNote(noteIdx, x, y, geo, lookIndexOf, NOTE_EDGE_PX)?.note;
     if (hit) {
-      const press = pressRef.current;
-      pressRef.current = null;
       if (modifierSelect(e, hit.id)) return;
-      const wasSelected = press
-        ? press.id === hit.id && press.wasSelected
-        : selectedIds.size === 1 && selectedIds.has(hit.id);
-      if (wasSelected) {
-        removeNote(hit.id);
-      } else {
-        setSelectedNote(hit.id);
-      }
+      if (selectedIds.size === 1 && selectedIds.has(hit.id)) removeNote(hit.id);
+      else setSelectedNote(hit.id);
       return;
     }
     const placed = clickPlacement(snapLines, x, stepPx);
