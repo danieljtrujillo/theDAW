@@ -45,6 +45,7 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
+import { TrackTemplatePicker } from './TrackTemplatePicker';
 import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
@@ -7588,10 +7589,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             >
               <Plus className="w-3.5 h-3.5" />
             </button>
-            {/* Files the app saved or downloaded. A chosen one lands at the
-                playhead, on the selected track or a new one. Each list renders
-                nothing until it has a file. */}
+            {/* The track templates (a template adds its tracks after the last
+                one), then the files the app saved or downloaded: a chosen one
+                lands at the playhead, on the selected track or a new one. Each
+                file list renders nothing until it has a file. */}
             <div className="flex flex-col gap-1 p-1">
+              <TrackTemplatePicker idBase={`editor-${addInputUid}`} />
               <KnownFilesMenu
                 id={`editor-recent-audio-${addInputUid}`}
                 exts={AUDIO_ACCEPT.split(',')}
