@@ -168,6 +168,59 @@ async function main(): Promise<void> {
     assert.equal(stateOf(done.clipId), 'none', 'it plays live and renders when exported');
   });
 
+  await step('a part split in EDIT: each half sent back from the roll keeps its window; a whole part takes the new grid', async () => {
+    global = { useSoundfont: true, activeProgram: 1 };
+    roll().clear();
+    roll().setEditingClip(null);
+    roll().setTotalSteps(64);
+    for (let bar = 0; bar < 4; bar += 1) roll().addNote({ note: 60 + bar, step: bar * 16, length: 8, velocity: 100 });
+    const sent = await bounceRollToEditor(deps);
+    assert.ok(sent && sent.kind === 'created');
+    const leftId = sent.clipId;
+    const whole = clipOf(leftId);
+    const rightId = ed().splitClipAt(leftId, whole.startSec + whole.durationSec / 2);
+    assert.ok(rightId, 'the part splits in two');
+    const left0 = { ...clipOf(leftId) };
+    const right0 = { ...clipOf(rightId) };
+    assert.ok(right0.offsetIntoSource > 0, 'the right half reads from the middle of the part');
+
+    // Edit in Piano Roll on the left half, a note added inside it, EDIT.
+    roll().setEditingClip(leftId);
+    roll().addNote({ note: 72, step: 4, length: 4, velocity: 100 });
+    const left = await bounceRollToEditor(deps);
+    assert.ok(left && left.kind === 'updated' && left.clipId === leftId);
+    assert.ok(Math.abs(clipOf(leftId).durationSec - left0.durationSec) < 1e-9, 'the left half keeps its window');
+    assert.equal(clipOf(leftId).offsetIntoSource, 0);
+    assert.ok(clipOf(leftId).startSec + clipOf(leftId).durationSec <= clipOf(rightId).startSec + 1e-9, 'and never covers the right half');
+    assert.equal(clipOf(leftId).sourcePianoRoll?.length, 5, 'the new note is on the part');
+
+    // The right half, sent back the same way, keeps its place, its offset and its window.
+    roll().setEditingClip(rightId);
+    roll().addNote({ note: 74, step: 52, length: 4, velocity: 100 });
+    await bounceRollToEditor(deps);
+    const right = clipOf(rightId);
+    assert.ok(Math.abs(right.startSec - right0.startSec) < 1e-9);
+    assert.ok(Math.abs(right.offsetIntoSource - right0.offsetIntoSource) < 1e-9, 'the right half still reads from the middle');
+    assert.ok(Math.abs(right.durationSec - right0.durationSec) < 1e-9, 'and keeps its window');
+
+    // A grid cut to before the right half's window: it shows the whole new grid.
+    roll().setTotalSteps(16);
+    await bounceRollToEditor(deps);
+    assert.equal(clipOf(rightId).offsetIntoSource, 0);
+    assert.ok(Math.abs(clipOf(rightId).durationSec - midiClipNominalSec(clipOf(rightId), ed().bpm)) < 1e-9);
+
+    // An unsplit part shows its whole source, so a longer grid is its new window.
+    roll().setEditingClip(null);
+    roll().setTotalSteps(32);
+    const fresh = await bounceRollToEditor(deps);
+    assert.ok(fresh && fresh.kind === 'created');
+    roll().setTotalSteps(64);
+    await bounceRollToEditor(deps);
+    const grown = clipOf(fresh.clipId);
+    assert.ok(Math.abs(grown.durationSec - midiClipNominalSec(grown, ed().bpm)) < 1e-9, 'a whole part takes the whole new grid');
+    assert.ok(grown.durationSec > fresh.duration + 1e-9, 'which is longer');
+  });
+
   await step('an empty roll sends nothing', async () => {
     roll().clear();
     assert.equal(await bounceRollToEditor(deps), null);

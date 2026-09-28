@@ -10,7 +10,11 @@
  *
  * A clip's audio is an optional render (lib/midiRender), and the EDIT key
  * renders nothing itself. It writes the notes, the roll's meter map, pickup,
- * lanes, bends and tempo map, and the whole grid as the clip's window. A part
+ * lanes, bends and tempo map. A new part, and a linked part that shows its
+ * whole source, take the whole grid as their window; a linked part the user
+ * trimmed or split in EDIT keeps its window, shortened only where the new
+ * grid ends first (lib/midiRender midiLiveWindowFields), so a split half sent
+ * back from the roll stays that half and never covers its neighbour. A part
  * with a program plays live on EDIT's synths and renders when an export needs
  * it, so a 24-part score sent part by part holds no audio. A part with no
  * program cannot play live: its render is queued (state/midiRenderQueue, one
@@ -35,7 +39,9 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { requestMidiRender } from '../state/midiRenderQueue';
 import { logError } from '../state/logStore';
 import { rollVoice, type GlobalVoice } from './clipProgram';
-import { midiClipNominalSec } from './midiRender';
+import { midiClipNominalSec, midiLiveWindowFields } from './midiRender';
+import { showsWholeSource } from './clipRenderWindow';
+import { MIN_CLIP_SEC } from './clipDragMath';
 import { rollClipFields } from './rollClip';
 import { clipTimelineMarkers } from './rollMarkers';
 
@@ -77,29 +83,42 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
   // The whole grid under the roll's tempo map: the window a clip with no render has.
   const nominal = midiClipNominalSec(fields, bpm);
 
-  /** The roll's markers on EDIT's timeline, at their seconds in the clip at `startSec`. */
-  const markClip = (id: string, startSec: number): void =>
+  /** The roll's markers on EDIT's timeline, at their seconds in the clip's window at `startSec`. */
+  const markClip = (id: string, startSec: number, window: { offsetIntoSource: number; durationSec: number }): void =>
     useEditorStore.getState().setClipRollMarkers(
       id,
-      clipTimelineMarkers(roll.markers, { clipId: id, startSec, offsetSec: 0, durationSec: nominal, bpm, tempoMap: fields.sourceTempoMap }),
+      clipTimelineMarkers(roll.markers, {
+        clipId: id,
+        startSec,
+        offsetSec: window.offsetIntoSource,
+        durationSec: window.durationSec,
+        bpm,
+        tempoMap: fields.sourceTempoMap,
+      }),
     );
+  const wholeGrid = { offsetIntoSource: 0, sourceDuration: nominal, durationSec: nominal };
 
   let clipId: string;
   let kind: RollBounceResult['kind'];
   const linked = editingClipId ? before.clips.find((c) => c.id === editingClipId) : undefined;
   if (linked) {
-    // The whole part as its window. A render the clip holds is left for EDIT's
-    // render upkeep (lib/midiRender marks it stale against the new notes).
+    // A part showing its whole source takes the whole new grid. A part the user
+    // trimmed or split keeps its window (a trim past the new grid's end falls
+    // back to the whole grid). A render the clip holds is left for EDIT's render
+    // upkeep (lib/midiRender marks it stale against the new notes).
+    const kept = showsWholeSource(linked) ? null : midiLiveWindowFields(linked, nominal);
+    const keptSec = kept ? kept.durationSec ?? linked.durationSec : 0;
+    const window = kept && keptSec >= MIN_CLIP_SEC
+      ? { offsetIntoSource: linked.offsetIntoSource ?? 0, sourceDuration: nominal, durationSec: keptSec }
+      : wholeGrid;
     before.undoGroup(() => {
       before.updateClip(linked.id, {
         ...fields,
         sourceKind: 'piano-roll',
-        offsetIntoSource: 0,
-        sourceDuration: nominal,
-        durationSec: nominal,
+        ...window,
         label: linked.label.startsWith('roll_') ? label : linked.label,
       });
-      markClip(linked.id, linked.startSec);
+      markClip(linked.id, linked.startSec, window);
     });
     clipId = linked.id;
     kind = 'updated';
@@ -123,7 +142,7 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
         sourceKind: 'piano-roll',
         ...fields,
       });
-      markClip(id, useEditorStore.getState().clips.find((c) => c.id === id)?.startSec ?? 0);
+      markClip(id, useEditorStore.getState().clips.find((c) => c.id === id)?.startSec ?? 0, wholeGrid);
       return id;
     });
     // Bind the roll to the new clip so subsequent Send-to-Editor edits in place.
