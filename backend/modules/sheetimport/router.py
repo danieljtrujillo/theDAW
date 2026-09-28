@@ -13,6 +13,7 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from backend.lib.cross_site import (
     refuse_cross_site,
@@ -54,16 +55,20 @@ def capabilities():
 
 @router.post("/parse")
 async def parse_upload(file: UploadFile = File(...)):
-    """Parse an uploaded score into a piano-roll note batch."""
+    """Parse an uploaded score into a piano-roll note batch. music21 runs in
+    the threadpool: a long score takes seconds to parse, and the event loop
+    keeps answering every other request meanwhile."""
     from .parser import parse_score_bytes
 
-    data = await file.read()
+    data = await file.read(_MAX_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
     if len(data) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail="Score file too large")
     try:
-        return parse_score_bytes(data, file.filename or "score.musicxml")
+        return await run_in_threadpool(
+            parse_score_bytes, data, file.filename or "score.musicxml"
+        )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:  # noqa: BLE001 - surface parse errors to the client
