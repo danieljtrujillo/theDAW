@@ -1,8 +1,9 @@
 // Composer client -- typed calls to /api/composer (backend/modules/composer).
 //
 // Three actions: plan a roman-numeral phrase voiced in soprano, alto, tenor
-// and bass; check parts for voice-leading faults; realize a figured bass in
-// four parts. Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
+// and bass (optionally in a composer's style); check parts for voice-leading
+// faults; realize a figured bass in four parts. Style profiles list, load
+// and count through styles(), style() and profile(). Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
 // (lib/noteClock), and meter maps in the roll's shape (lib/meterMap), so a
 // roll clip's notes and meter go in as they are and the answer's notes can go
 // straight back.
@@ -44,6 +45,8 @@ export type VoiceLeadingRule =
   | 'unresolved_seventh';
 
 export type KeyMode = 'major' | 'minor';
+
+export type HarmonicRhythm = 'pulse' | 'bar' | 'style';
 
 /** A part's range as MIDI notes, inclusive: `{violin: [55, 103]}`. */
 export type PartRanges = Record<string, [number, number]>;
@@ -113,9 +116,13 @@ export interface PlanRequest {
   include?: ChordFeature[];
   /** A closely related key to modulate to through a pivot chord. */
   modulateTo?: string;
-  /** 'pulse' puts a chord on every group start or beat; 'bar' one per bar. */
-  harmonicRhythm?: 'pulse' | 'bar';
+  /** 'pulse' puts a chord on every group start or beat; 'bar' one per bar;
+   *  'style' (the default with a style) as often as the style changes chord. */
+  harmonicRhythm?: HarmonicRhythm;
   ranges?: PartRanges;
+  /** A style profile id from styles(): 'bach', 'debussy' ... Without a
+   *  cadence, the style's cadence frequencies pick one. */
+  style?: string;
 }
 
 export interface PlanResult {
@@ -124,6 +131,9 @@ export interface PlanResult {
   bars: number;
   seed: number;
   cadence: Cadence;
+  /** The style the plan was written in, or null. */
+  style: string | null;
+  harmonic_rhythm: HarmonicRhythm;
   ppq: number;
   meter_map: MeterSegment[];
   chords: PlannedChord[];
@@ -184,12 +194,80 @@ export interface ContinuoResult {
   flags: VoiceLeadingFlag[];
 }
 
+/** Whether a profile was counted from scores or written from textbook facts. */
+export type StyleSource = 'extracted' | 'authored';
+
+export type OrchestrationPreset =
+  | 'satb_choir'
+  | 'voice_and_continuo'
+  | 'string_quartet'
+  | 'piano'
+  | 'chamber_ensemble'
+  | 'classical_orchestra'
+  | 'romantic_orchestra'
+  | 'impressionist_orchestra'
+  | 'modern_orchestra';
+
+/** One line of GET /api/composer/styles. */
+export interface StyleSummary {
+  id: string;
+  name: string;
+  era: string;
+  source: StyleSource;
+  /** Where the numbers come from, in one line. */
+  basis: string;
+  /** How many works it was counted from (0 when authored). */
+  works: number;
+  orchestration: OrchestrationPreset;
+  chords_per_pulse: number;
+}
+
+/** A style profile (schema 'thedaw.composer.style'). Shares are 0..1. */
+export interface StyleProfile {
+  schema: 'thedaw.composer.style';
+  schemaVersion: number;
+  id: string;
+  name: string;
+  era: string;
+  source: StyleSource;
+  basis: string;
+  /** Corpus paths or ids of the works counted; [] when authored. */
+  works: string[];
+  sample: { works: number; bars?: number; harmonies?: number; cadences?: number; [k: string]: unknown };
+  modes: Record<KeyMode, number>;
+  /** Roman-numeral chords (inversion dropped: 'V7', 'ii', 'N', 'V7/V') by share, per mode. */
+  vocabulary: Record<KeyMode, Record<string, number>>;
+  cadences: Record<Cadence, number>;
+  /** Share of phrase ends that fit none of the six cadences. */
+  cadence_other: number;
+  harmonic_rhythm: { chords_per_bar: number; chords_per_pulse: number };
+  texture: { voices: number; homophony: number; polyphony: number };
+  meter: { meters: Record<string, number>; hemiola: number; syncopation: number };
+  /** Melodic intervals in semitones, '0'..'12' and '13+'. */
+  intervals: Record<string, number>;
+  orchestration: OrchestrationPreset;
+}
+
+/** Count a profile from music21 corpus piece ids (GET /api/notation/corpus)
+ *  or from a library composition's sheet; give one of the two. */
+export interface ProfileRequest {
+  corpus?: string[];
+  entryId?: string;
+  /** The new profile's id: lowercase letters, digits, '-' and '_'. */
+  id?: string;
+  name?: string;
+  /** Bars read from each work (default 96). */
+  maxBars?: number;
+}
+
 export interface ComposerCapabilities {
   module: string;
   ppq: number;
   cadences: Cadence[];
   include: ChordFeature[];
-  harmonic_rhythms: string[];
+  harmonic_rhythms: HarmonicRhythm[];
+  /** Ids of the shipped style profiles. */
+  styles: string[];
   rules: VoiceLeadingRule[];
   ranges: Record<ComposerPart, [number, number]>;
 }
@@ -229,6 +307,17 @@ export function planBody(req: PlanRequest): Record<string, unknown> {
     modulate_to: req.modulateTo,
     harmonic_rhythm: req.harmonicRhythm,
     ranges: req.ranges,
+    style: req.style,
+  });
+}
+
+export function profileBody(req: ProfileRequest): Record<string, unknown> {
+  return compact({
+    corpus: req.corpus,
+    entry_id: req.entryId,
+    id: req.id,
+    name: req.name,
+    max_bars: req.maxBars,
   });
 }
 
@@ -275,5 +364,21 @@ export const composerApi = {
   /** A figured bass realized in four parts. */
   continuo(req: ContinuoRequest): Promise<ContinuoResult> {
     return postJson<ContinuoResult>('/api/composer/continuo', continuoBody(req));
+  },
+
+  /** The shipped style profiles, one line each. */
+  async styles(): Promise<StyleSummary[]> {
+    const body = await getJson<{ styles: StyleSummary[] }>('/api/composer/styles');
+    return body.styles;
+  },
+
+  /** One shipped style profile in full. */
+  style(id: string): Promise<StyleProfile> {
+    return getJson<StyleProfile>(`/api/composer/styles/${encodeURIComponent(id)}`);
+  },
+
+  /** A style profile counted from corpus pieces or a library composition. */
+  profile(req: ProfileRequest): Promise<StyleProfile> {
+    return postJson<StyleProfile>('/api/composer/profile', profileBody(req));
   },
 };

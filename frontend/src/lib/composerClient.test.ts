@@ -133,6 +133,63 @@ assert.deepEqual(sent[0].body, {
   meter_map: [{ bar: 0, meter: { num: 7, den: 8, groups: [2, 2, 3] } }],
 });
 
+// ── plan in a style ─────────────────────────────────────────────────────────
+serve(200, { chords: [], parts: {}, flags: [], style: 'debussy', harmonic_rhythm: 'style' });
+const styled = await composerApi.plan({ key: 'C', seed: 3, style: 'debussy' });
+assert.deepEqual(sent[0].body, { key: 'C', seed: 3, style: 'debussy' }, 'no cadence: the style draws it');
+assert.equal(styled.style, 'debussy');
+serve(200, { chords: [], parts: {}, flags: [] });
+await composerApi.plan({ key: 'C', style: 'bach', harmonicRhythm: 'pulse', cadence: 'plagal' });
+assert.deepEqual(sent[0].body, { key: 'C', cadence: 'plagal', harmonic_rhythm: 'pulse', style: 'bach' });
+
+// ── styles, one style, profile ──────────────────────────────────────────────
+serve(200, {
+  styles: [
+    {
+      id: 'bach',
+      name: 'Johann Sebastian Bach',
+      era: 'Baroque',
+      source: 'extracted',
+      basis: 'counted',
+      works: 42,
+      orchestration: 'satb_choir',
+      chords_per_pulse: 1.17,
+    },
+  ],
+});
+const list = await composerApi.styles();
+assert.equal(sent[0].url, '/api/composer/styles');
+assert.equal(sent[0].method, 'GET');
+assert.deepEqual(
+  list.map((s) => [s.id, s.source]),
+  [['bach', 'extracted']],
+  'the list comes unwrapped',
+);
+
+serve(200, { schema: 'thedaw.composer.style', id: 'debussy', source: 'authored', works: [] });
+const debussy = await composerApi.style('debussy');
+assert.equal(sent[0].url, '/api/composer/styles/debussy');
+assert.equal(debussy.source, 'authored');
+serve(200, {});
+await composerApi.style('a b/c');
+assert.equal(sent[0].url, '/api/composer/styles/a%20b%2Fc', 'the id is one path segment');
+
+serve(200, { schema: 'thedaw.composer.style', id: 'mine', works: ['bach_bwv66_6_mxl'] });
+await composerApi.profile({ corpus: ['bach_bwv66_6_mxl'], id: 'mine', maxBars: 40 });
+assert.equal(sent[0].url, '/api/composer/profile');
+assert.equal(sent[0].method, 'POST');
+assert.equal(sent[0].headers['X-TheDAW-Pair'], 'pair-token');
+assert.deepEqual(sent[0].body, { corpus: ['bach_bwv66_6_mxl'], id: 'mine', max_bars: 40 });
+serve(200, {});
+await composerApi.profile({ entryId: 'entry-1', name: 'My chorale' });
+assert.deepEqual(sent[0].body, { entry_id: 'entry-1', name: 'My chorale' });
+serve(404, { detail: "no corpus piece 'nope'" });
+await assert.rejects(composerApi.profile({ corpus: ['nope'] }), (e: unknown) => {
+  assert.ok(e instanceof ApiError);
+  assert.equal(e.status, 404);
+  return true;
+});
+
 // ── capabilities is a GET ───────────────────────────────────────────────────
 serve(200, { module: 'composer', ppq: 960 });
 assert.equal((await composerApi.capabilities()).ppq, 960);
