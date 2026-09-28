@@ -82,7 +82,8 @@ preset's ``playback_gain_db``, which the app adds after the synth
 note stays under -1 dBFS. A few
 measure/adjust passes run on a PCM probe bank before the SF3 is encoded,
 then the written bank is measured again, with a clipping check at velocity
-127 on each preset's loudest zone. The manifest's ``levelling`` block holds
+127 on every key its full-velocity zones play, each held long enough for a
+swell to reach its top, whose loudest key is the preset's ``output_peak``. The manifest's ``levelling`` block holds
 the before/after table. ``--no-level`` skips all of it (no Node needed).
 """
 
@@ -1584,6 +1585,9 @@ LEVEL_VELOCITY = 100
 LEVEL_CC1 = 127
 #: Clipping is checked at full velocity and full CC1.
 CLIP_VELOCITY = 127
+#: How long each clipping-check note is held, in seconds: long enough for a
+#: swell preset to reach the top of its dynamic.
+CLIP_SECONDS = 3.0
 LEVEL_TOLERANCE_DB = 1.5
 #: Synth output peak a levelled preset may reach at full velocity.
 OUTPUT_PEAK_LIMIT = 10 ** (-1 / 20)
@@ -1660,6 +1664,18 @@ def loudest_key(instrument: Instrument, samples: Sequence[SampleData]) -> int:
     lo, hi = _zone_keys(zone)
     root = _zone_gens(zone).get(GEN_OVERRIDING_ROOT_KEY, lo)
     return max(lo, min(hi, root))
+
+
+def clip_keys(instrument: Instrument) -> list[int]:
+    """Every key the zones that play at full velocity and CC1 cover (every
+    zone's when none does): the keys the clipping check renders, so the
+    loudest one is found whichever zone and root it falls on."""
+    zones = [z for z in instrument.zones if _playing_at_full(z)] or instrument.zones
+    keys: set[int] = set()
+    for z in zones:
+        lo, hi = _zone_keys(z)
+        keys.update(range(max(0, lo), min(127, hi) + 1))
+    return sorted(keys)
 
 
 def instrument_samples(instrument: Instrument) -> list[int]:
@@ -1856,9 +1872,15 @@ def measure_with_spessasynth(
 
 
 def _job(
-    job_id: str, bank_key: str, bank: int, program: int, note: int, velocity: int
+    job_id: str,
+    bank_key: str,
+    bank: int,
+    program: int,
+    note: int,
+    velocity: int,
+    seconds: float | None = None,
 ) -> dict:
-    return {
+    job = {
         "id": job_id,
         "bankKey": bank_key,
         "bank": bank,
@@ -1867,6 +1889,9 @@ def _job(
         "velocity": velocity,
         "cc1": LEVEL_CC1,
     }
+    if seconds is not None:
+        job["seconds"] = seconds
+    return job
 
 
 @dataclass
@@ -1990,17 +2015,27 @@ def verify_levels(
     reference's program 48."""
     targets, before, gains = run.targets, run.before, run.gains
     jobs = []
-    loud = {}
+    loud: dict[str, int] = {}
+    keys: dict[str, list[int]] = {}
     for t in targets:
         jobs.append(
             _job(f"after:{t.name}", "ours", t.bank, t.program, t.note, LEVEL_VELOCITY)
         )
-        loud[t.name] = loudest_key(instruments[t.instrument], samples)
-        jobs.append(
-            _job(
-                f"clip:{t.name}", "ours", t.bank, t.program, loud[t.name], CLIP_VELOCITY
+        keys[t.name] = clip_keys(instruments[t.instrument]) or [
+            loudest_key(instruments[t.instrument], samples)
+        ]
+        for k in keys[t.name]:
+            jobs.append(
+                _job(
+                    f"clip:{t.name}:{k}",
+                    "ours",
+                    t.bank,
+                    t.program,
+                    k,
+                    CLIP_VELOCITY,
+                    CLIP_SECONDS,
+                )
             )
-        )
     ensemble = next(
         (p for p in presets if (p.bank, p.program) == (0, 48) and len(p.zones) > 1),
         None,
@@ -2023,7 +2058,11 @@ def verify_levels(
         ref = before[f"ref:{t.name}"]
         was = before[f"ours:{t.name}"]
         now = after[f"after:{t.name}"]
-        clip = after[f"clip:{t.name}"]
+        # The loudest key of the clipping check.
+        loud[t.name] = max(
+            keys[t.name], key=lambda k: after[f"clip:{t.name}:{k}"]["peak"]
+        )
+        clip = after[f"clip:{t.name}:{loud[t.name]}"]
         delta = now["rmsDb"] - ref["rmsDb"]
         play = playback_gain_db(-delta, clip["peak"])
         table.append(
@@ -2328,7 +2367,8 @@ def build(args: argparse.Namespace) -> int:
                 f"loudest 100 ms RMS of a held note, velocity {LEVEL_VELOCITY}, CC1 "
                 f"{LEVEL_CC1}, rendered by SpessaSynth; reference preset on the same "
                 f"program; tolerance {LEVEL_TOLERANCE_DB} dB; clip check at velocity "
-                f"{CLIP_VELOCITY} on each preset's loudest zone"
+                f"{CLIP_VELOCITY} on every key of each preset's full-velocity zones, "
+                f"held {CLIP_SECONDS:g} s"
             ),
             "passes": levelled.passes if levelled else 0,
             "max_limit_db": args.max_limit_db,

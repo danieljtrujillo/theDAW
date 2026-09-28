@@ -725,6 +725,54 @@ def test_a_shared_sample_takes_the_larger_gain_and_the_other_zone_attenuates():
     assert zone.generators[-1][0] == B.GEN_SAMPLE_ID
 
 
+def test_the_clip_check_plays_every_key_and_keeps_the_loudest(tmp_path):
+    samples, instruments, presets, manifest = _strings_bank()
+    fake = _fake_synth(
+        samples, instruments, presets, {40: -12.0, 41: -20.0, 42: -6.5, 43: -13.0}
+    )
+    asked: list[dict] = []
+
+    def measure(banks, jobs):
+        asked.extend(jobs)
+        out = fake(banks, jobs)
+        # One key louder than the rest: the check must find it wherever it is.
+        for job in jobs:
+            if job["id"].startswith("clip:Violins:") and job["note"] == 70:
+                out[job["id"]] = {**out[job["id"]], "peak": 0.9}
+        return out
+
+    run = B.level_bank(
+        samples,
+        instruments,
+        presets,
+        manifest,
+        {"INAM": "t"},
+        tmp_path / "bank.sf3",
+        tmp_path / "gm.sf3",
+        measure,
+    )
+    out = tmp_path / "bank.sf3"
+    B.write_soundfont(out, samples, instruments, presets, {"INAM": "t"}, compress=False)
+    rows = {
+        r["name"]: r
+        for r in B.verify_levels(
+            out, tmp_path / "gm.sf3", run, instruments, samples, measure, presets
+        )
+    }
+    violins = next(t for t in run.targets if t.name == "Violins")
+    want = B.clip_keys(instruments[violins.instrument])
+    got = sorted(j["note"] for j in asked if j["id"].startswith("clip:Violins:"))
+    assert got == want and len(want) > 1, "every key of the playing zones is checked"
+    assert all(
+        j.get("seconds") == B.CLIP_SECONDS for j in asked if j["id"].startswith("clip:")
+    )
+    row = rows["Violins"]
+    assert row["clip_check"]["note"] == 70
+    assert row["clip_check"]["output_peak"] == 0.9
+    # The loud key holds the playback gain under the output limit.
+    assert row["playback_gain_db"] <= 20 * math.log10(B.OUTPUT_PEAK_LIMIT / 0.9) + 1e-9
+
+
 def test_loudest_key_renders_the_playing_layer():
     samples, instruments, presets, manifest = _strings_bank()
     # Both violin layers share one key range rooted on 62; at full CC1 only
