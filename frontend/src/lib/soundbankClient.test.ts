@@ -92,3 +92,22 @@ const job = (status: DownloadJob['status'], over: Partial<DownloadJob> = {}): Do
 }
 
 console.log('soundbankClient: ok');
+
+// An installed bank's manifest registers its playback gains under the registry's id.
+{
+  const { selectionGainDb, clearSoundbankGains } = await import('./soundbankGain.ts');
+  const { registerInstalledSoundbankGains } = await import('./soundbankClient.ts');
+  const g = globalThis as unknown as { fetch: typeof fetch };
+  const seen: string[] = [];
+  g.fetch = (async (url: unknown) => {
+    seen.push(String(url));
+    if (String(url).includes('/sonatina-sf2/')) return new Response('{"detail":"none"}', { status: 404 });
+    return new Response(JSON.stringify({ playback_gain: { '1:73': 9.5, '0:40': 0 } }), { status: 200 });
+  }) as typeof fetch;
+  assert.equal(await registerInstalledSoundbankGains('thedaw-orchestra', 'orchestra', 0), 2);
+  assert.equal(seen[0], '/api/models/soundbanks/thedaw-orchestra/manifest');
+  assert.equal(selectionGainDb(1, 73), 9.5);
+  assert.equal(await registerInstalledSoundbankGains('sonatina-sf2', 'sso', 0), 0);
+  clearSoundbankGains();
+  console.log('soundbankClient manifest: ok');
+}

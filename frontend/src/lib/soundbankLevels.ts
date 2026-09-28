@@ -56,7 +56,16 @@ export function maxWindowRmsDb(left: Float32Array, right: Float32Array, rate = L
   return 10 * Math.log10(best + 1e-20);
 }
 
-export async function measureLevel(bank: BasicSoundBank, job: LevelJob): Promise<LevelResult> {
+/**
+ * Render and measure one held note. `afterProgram` runs once the channel has
+ * its program, before the note: the app's per-channel playback gain
+ * (lib/soundbankGain) is applied there, as the engine applies it live.
+ */
+export async function measureLevel(
+  bank: BasicSoundBank,
+  job: LevelJob,
+  afterProgram?: (synth: SpessaSynthProcessor, channel: number) => void,
+): Promise<LevelResult> {
   const synth = new SpessaSynthProcessor(LEVEL_SAMPLE_RATE, { effectsEnabled: false });
   await synth.processorInitialized;
   synth.soundBankManager.addSoundBank(bank, 'main');
@@ -70,6 +79,7 @@ export async function measureLevel(bank: BasicSoundBank, job: LevelJob): Promise
     synth.controllerChange(ch, 32, 0);
   }
   synth.programChange(ch, job.program);
+  afterProgram?.(synth, ch);
   synth.controllerChange(ch, 1, job.cc1);
   synth.noteOn(ch, job.note, job.velocity);
   const frames = Math.round((job.seconds ?? 1.5) * LEVEL_SAMPLE_RATE);

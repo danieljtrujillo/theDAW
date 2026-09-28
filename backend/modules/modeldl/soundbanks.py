@@ -202,6 +202,22 @@ def installed_files(entry: SoundbankEntry) -> list[Path]:
     )
 
 
+def installed_manifest(entry: SoundbankEntry) -> dict | None:
+    """The build manifest a download left beside its bank (``<bank>.json``,
+    written by scripts/build_orchestra_sf3.py), or None."""
+    for bank in installed_files(entry):
+        path = bank.with_suffix(".json")
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
 def public_entry(entry: SoundbankEntry) -> dict:
     """The entry as JSON for the Settings list, with what is installed."""
     out = asdict(entry)

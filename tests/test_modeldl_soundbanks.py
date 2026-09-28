@@ -271,3 +271,21 @@ def test_a_failing_hook_does_not_fail_registration(data_dir, tmp_path, monkeypat
     soundbanks.add_soundbank_hook(lambda path, entry: called.append(path))
     soundbanks.register_downloaded_bank(bank, soundbanks.get_entry("sonatina-sf2"))
     assert called == [bank]
+
+
+def test_the_installed_manifest_is_served_with_its_playback_gains(client):
+    entry = soundbanks.get_entry("thedaw-orchestra")
+    folder = soundbanks.bank_dir(entry)
+    assert (
+        client.get("/api/models/soundbanks/thedaw-orchestra/manifest").status_code
+        == 404
+    )
+    folder.mkdir(parents=True)
+    (folder / "theDAW-Orchestra.sf3").write_bytes(b"RIFF")
+    (folder / "theDAW-Orchestra.json").write_text(
+        json.dumps({"playback_gain": {"1:73": 9.5}}), encoding="utf-8"
+    )
+    resp = client.get("/api/models/soundbanks/thedaw-orchestra/manifest")
+    assert resp.status_code == 200
+    assert resp.json()["playback_gain"] == {"1:73": 9.5}
+    assert client.get("/api/models/soundbanks/nope/manifest").status_code == 404

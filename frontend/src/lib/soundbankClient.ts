@@ -4,10 +4,13 @@
 // API contract (backend, snake_case JSON, backend/modules/modeldl):
 //   GET  /api/models/soundbanks                -> { banks: SoundbankEntry[] }
 //   POST /api/models/soundbanks/{id}/download  -> { job_id, name, status }
+//   GET  /api/models/soundbanks/{id}/manifest  -> the build manifest, with
+//                                               playback_gain {"bank:program": dB}
 // A started download is an ordinary job in GET /api/models/downloads with
 // kind 'soundbank', so the DownloadDock shows its progress.
 
 import type { ClassifiedDownloadError, DownloadJob } from './modelDownloadClient';
+import { registerSoundbankGains, type SoundbankGainManifest } from './soundbankGain';
 
 export interface SoundbankLicence {
   name: string;
@@ -63,6 +66,19 @@ export async function startSoundbankDownload(id: string): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
   });
   if (!res.ok) throw new Error((await readDetail(res)) ?? `HTTP ${res.status}`);
+}
+
+/**
+ * Register an installed bank's playback gains (lib/soundbankGain) under the
+ * bank registry's `bankId`, loaded at `bankOffset`. Returns how many preset
+ * slots carry a gain; 0 when the bank has no manifest.
+ */
+export async function registerInstalledSoundbankGains(entryId: string, bankId: string, bankOffset = 0): Promise<number> {
+  const res = await fetch(`/api/models/soundbanks/${encodeURIComponent(entryId)}/manifest`);
+  if (res.status === 404) return 0;
+  if (!res.ok) throw new Error((await readDetail(res)) ?? `HTTP ${res.status}`);
+  const manifest = (await res.json()) as SoundbankGainManifest;
+  return registerSoundbankGains(bankId, manifest, bankOffset);
 }
 
 export type SoundbankState = 'link' | 'available' | 'downloading' | 'installed' | 'failed';

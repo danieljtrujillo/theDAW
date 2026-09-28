@@ -558,6 +558,19 @@ def list_soundbanks() -> dict:
     return {"banks": banks}
 
 
+@router.get("/soundbanks/{bank_id}/manifest")
+def soundbank_manifest(bank_id: str) -> dict:
+    """The installed bank's build manifest (its presets, levelling and the
+    ``playback_gain`` table the app applies), or 404 when none is installed."""
+    entry = soundbanks.get_entry(bank_id)
+    if entry is None:
+        raise HTTPException(404, f"Unknown sound bank {bank_id!r}")
+    manifest = soundbanks.installed_manifest(entry)
+    if manifest is None:
+        raise HTTPException(404, f"{entry.label} has no installed manifest")
+    return manifest
+
+
 @router.post("/soundbanks/{bank_id}/download")
 def start_soundbank_download(bank_id: str) -> dict:
     entry = soundbanks.get_entry(bank_id)
