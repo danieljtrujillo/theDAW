@@ -24,6 +24,16 @@ CADENCES = (
 FEATURES = ("seventh", "applied", "neapolitan", "italian", "french", "german")
 HARMONIC_RHYTHMS = ("pulse", "bar")
 
+FORMS = (
+    "sonata",
+    "rondo",
+    "theme_and_variations",
+    "minuet_and_trio",
+    "scherzo",
+    "symphony",
+)
+RONDO_PATTERNS = ("ABACA", "ABACABA")
+
 RULES = (
     "parallel_fifths",
     "parallel_octaves",
