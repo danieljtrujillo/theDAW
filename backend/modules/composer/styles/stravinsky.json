@@ -1,0 +1,108 @@
+{
+  "schema": "thedaw.composer.style",
+  "schemaVersion": 1,
+  "id": "stravinsky",
+  "name": "Igor Stravinsky",
+  "era": "Modernist (1882-1971)",
+  "source": "authored",
+  "basis": "authored from harmony-textbook accounts of Stravinsky (van den Toorn, Taruskin, Kostka-Payne on twentieth-century practice): octatonic and diatonic blocks, bitonal superimposition, ostinati over static harmony, few functional cadences, and shifting additive meters",
+  "works": [],
+  "sample": {
+    "works": 0,
+    "note": "written by hand from the textbook facts in basis; not counted from any score"
+  },
+  "modes": {
+    "major": 0.55,
+    "minor": 0.45
+  },
+  "vocabulary": {
+    "major": {
+      "I": 0.33,
+      "V": 0.06,
+      "bVII": 0.06,
+      "IV": 0.05,
+      "ii7": 0.05,
+      "vi": 0.05,
+      "ii": 0.04,
+      "iii": 0.04,
+      "N": 0.04,
+      "bIII": 0.04,
+      "bVI": 0.04,
+      "I7": 0.04,
+      "V7": 0.03,
+      "iv": 0.03,
+      "v": 0.03,
+      "vi7": 0.03,
+      "#ivo7": 0.02,
+      "V+": 0.02
+    },
+    "minor": {
+      "i": 0.29,
+      "VII": 0.08,
+      "iv": 0.06,
+      "v": 0.06,
+      "III": 0.06,
+      "VI": 0.06,
+      "N": 0.05,
+      "V": 0.05,
+      "viio7": 0.05,
+      "IV": 0.04,
+      "i7": 0.04,
+      "#ivo7": 0.04,
+      "V7": 0.03,
+      "iio": 0.03,
+      "VII7": 0.03,
+      "III+": 0.03
+    }
+  },
+  "cadences": {
+    "authentic_perfect": 0.15,
+    "authentic_imperfect": 0.1,
+    "half": 0.1,
+    "plagal": 0.25,
+    "deceptive": 0.25,
+    "phrygian_half": 0.15
+  },
+  "cadence_other": 0.6,
+  "harmonic_rhythm": {
+    "chords_per_bar": 0.8,
+    "chords_per_pulse": 0.25
+  },
+  "texture": {
+    "voices": 6.0,
+    "homophony": 0.55,
+    "polyphony": 0.45
+  },
+  "meter": {
+    "meters": {
+      "2/4": 0.2,
+      "4/4": 0.2,
+      "3/4": 0.15,
+      "3/8": 0.1,
+      "5/8": 0.1,
+      "7/8": 0.1,
+      "5/4": 0.05,
+      "3/16": 0.05,
+      "2/8": 0.05
+    },
+    "hemiola": 0.02,
+    "syncopation": 0.3
+  },
+  "intervals": {
+    "0": 0.18,
+    "1": 0.14,
+    "2": 0.24,
+    "3": 0.14,
+    "4": 0.07,
+    "5": 0.08,
+    "6": 0.03,
+    "7": 0.04,
+    "8": 0.015,
+    "9": 0.015,
+    "10": 0.01,
+    "11": 0.01,
+    "12": 0.015,
+    "13+": 0.015
+  },
+  "orchestration": "modern_orchestra"
+}

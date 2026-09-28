@@ -1,0 +1,103 @@
+{
+  "schema": "thedaw.composer.style",
+  "schemaVersion": 1,
+  "id": "handel",
+  "name": "George Frideric Handel",
+  "era": "Baroque (1685-1759)",
+  "source": "extracted",
+  "basis": "counted by scripts/build_style_profiles.py from 1 public-domain works in music21's core corpus (listed under works)",
+  "works": [
+    "handel/rinaldo/Lascia_chio_pianga"
+  ],
+  "sample": {
+    "works": 1,
+    "bars": 54,
+    "harmonies": 94,
+    "cadences": 2,
+    "available": 1,
+    "selection": "1 of the 1 MusicXML files under handel/ in music21's core corpus, the first 96 bars of each",
+    "max_bars_per_work": 96
+  },
+  "modes": {
+    "major": 0.6207,
+    "minor": 0.3793
+  },
+  "vocabulary": {
+    "major": {
+      "I": 0.2381,
+      "V7": 0.1905,
+      "V": 0.127,
+      "IV": 0.0794,
+      "ii7": 0.0635,
+      "ii": 0.0635,
+      "vi7": 0.0476,
+      "I7": 0.0476,
+      "IV7": 0.0476,
+      "iii": 0.0317,
+      "iii7": 0.0317,
+      "V7/IV": 0.0159,
+      "vi": 0.0159
+    },
+    "minor": {
+      "V": 0.2258,
+      "i": 0.1935,
+      "V7": 0.0968,
+      "iv": 0.0645,
+      "iio": 0.0645,
+      "v": 0.0323,
+      "viio7": 0.0323,
+      "III7": 0.0323,
+      "vii": 0.0323,
+      "VI": 0.0323,
+      "IV": 0.0323,
+      "VII": 0.0323,
+      "V7/v": 0.0323,
+      "III": 0.0323,
+      "iv7": 0.0323,
+      "iiø7": 0.0323
+    }
+  },
+  "cadences": {
+    "authentic_perfect": 0.0,
+    "authentic_imperfect": 0.0,
+    "half": 1.0,
+    "plagal": 0.0,
+    "deceptive": 0.0,
+    "phrygian_half": 0.0
+  },
+  "cadence_other": 0.0,
+  "harmonic_rhythm": {
+    "chords_per_bar": 1.741,
+    "chords_per_pulse": 0.54
+  },
+  "texture": {
+    "voices": 2.481,
+    "homophony": 0.776,
+    "polyphony": 0.224
+  },
+  "meter": {
+    "meters": {
+      "3/4": 0.7778,
+      "4/4": 0.2222
+    },
+    "hemiola": 0.0,
+    "syncopation": 0.0
+  },
+  "intervals": {
+    "0": 0.2432,
+    "1": 0.1464,
+    "2": 0.241,
+    "3": 0.0788,
+    "4": 0.0743,
+    "5": 0.0856,
+    "6": 0.0113,
+    "7": 0.0383,
+    "8": 0.027,
+    "9": 0.0158,
+    "10": 0.0068,
+    "11": 0.0,
+    "12": 0.0293,
+    "13+": 0.0023
+  },
+  "orchestration": "voice_and_continuo"
+}

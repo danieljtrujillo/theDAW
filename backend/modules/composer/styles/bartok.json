@@ -1,0 +1,108 @@
+{
+  "schema": "thedaw.composer.style",
+  "schemaVersion": 1,
+  "id": "bartok",
+  "name": "Béla Bartók",
+  "era": "Modernist (1881-1945)",
+  "source": "authored",
+  "basis": "authored from harmony-textbook accounts of Bartók (Lendvai, Antokoletz, Kostka-Payne): folk modes (Lydian, Mixolydian, Dorian, Phrygian), polymodal chromaticism, quartal and major-minor chords, tritone-related axis substitutes, additive Bulgarian meters and driving syncopation",
+  "works": [],
+  "sample": {
+    "works": 0,
+    "note": "written by hand from the textbook facts in basis; not counted from any score"
+  },
+  "modes": {
+    "major": 0.45,
+    "minor": 0.55
+  },
+  "vocabulary": {
+    "major": {
+      "I": 0.35,
+      "bVII": 0.08,
+      "II": 0.06,
+      "v": 0.05,
+      "V": 0.04,
+      "IV": 0.04,
+      "vi": 0.04,
+      "I7": 0.04,
+      "bVI": 0.04,
+      "#ivo": 0.03,
+      "ii": 0.03,
+      "iii": 0.03,
+      "V7": 0.03,
+      "bIII": 0.03,
+      "iv": 0.03,
+      "ii7": 0.03,
+      "vi7": 0.02,
+      "#IV": 0.03
+    },
+    "minor": {
+      "i": 0.35,
+      "VII": 0.07,
+      "iv": 0.06,
+      "v": 0.06,
+      "IV": 0.05,
+      "III": 0.05,
+      "N": 0.05,
+      "VI": 0.04,
+      "i7": 0.04,
+      "V": 0.04,
+      "ii7": 0.03,
+      "iio": 0.03,
+      "#ivo": 0.03,
+      "VII7": 0.03,
+      "iv7": 0.03,
+      "#IV": 0.02,
+      "III+": 0.02
+    }
+  },
+  "cadences": {
+    "authentic_perfect": 0.15,
+    "authentic_imperfect": 0.1,
+    "half": 0.1,
+    "plagal": 0.3,
+    "deceptive": 0.15,
+    "phrygian_half": 0.2
+  },
+  "cadence_other": 0.55,
+  "harmonic_rhythm": {
+    "chords_per_bar": 1.0,
+    "chords_per_pulse": 0.35
+  },
+  "texture": {
+    "voices": 4.0,
+    "homophony": 0.45,
+    "polyphony": 0.55
+  },
+  "meter": {
+    "meters": {
+      "2/4": 0.3,
+      "4/4": 0.15,
+      "3/4": 0.1,
+      "3/8": 0.1,
+      "5/8": 0.1,
+      "7/8": 0.1,
+      "9/8": 0.1,
+      "6/8": 0.05
+    },
+    "hemiola": 0.03,
+    "syncopation": 0.3
+  },
+  "intervals": {
+    "0": 0.18,
+    "1": 0.16,
+    "2": 0.22,
+    "3": 0.12,
+    "4": 0.07,
+    "5": 0.09,
+    "6": 0.04,
+    "7": 0.04,
+    "8": 0.015,
+    "9": 0.015,
+    "10": 0.01,
+    "11": 0.01,
+    "12": 0.02,
+    "13+": 0.01
+  },
+  "orchestration": "string_quartet"
+}

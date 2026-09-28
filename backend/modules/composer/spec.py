@@ -22,7 +22,20 @@ CADENCES = (
     "phrygian_half",
 )
 FEATURES = ("seventh", "applied", "neapolitan", "italian", "french", "german")
-HARMONIC_RHYTHMS = ("pulse", "bar")
+HARMONIC_RHYTHMS = ("pulse", "bar", "style")
+
+#: Orchestration presets a style profile names for the forces it writes for.
+ORCHESTRATIONS = (
+    "satb_choir",
+    "voice_and_continuo",
+    "string_quartet",
+    "piano",
+    "chamber_ensemble",
+    "classical_orchestra",
+    "romantic_orchestra",
+    "impressionist_orchestra",
+    "modern_orchestra",
+)
 
 RULES = (
     "parallel_fifths",
