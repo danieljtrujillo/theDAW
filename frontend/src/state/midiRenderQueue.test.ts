@@ -26,11 +26,12 @@ import {
   configureMidiRenderQueue,
   dropAutoRender,
   midiLiveIfHeard,
+  midiRenderPending,
   requestMidiRender,
   useMidiRenderQueue,
   withRenderTurn,
 } from './midiRenderQueue.ts';
-import { liveMidiIfHeard } from './liveMixer.ts';
+import { liveMidiIfHeard, silentMidiToReport } from './liveMixer.ts';
 import { midiRenderSig, midiRenderState, type MidiStepRender } from '../lib/midiRender.ts';
 import { rollClipFields } from '../lib/rollClip.ts';
 import { decodeCacheStats, decodeClipBlob } from '../lib/decodeCache.ts';
@@ -474,6 +475,34 @@ configureMidiRenderQueue({
   gated = false;
   await assert.rejects(withRenderTurn('x', 'broken', async () => { throw new Error('synth down'); }), /synth down/);
   assert.equal(useMidiRenderQueue.getState().failed, 0);
+}
+
+{
+  // A pass with a silent part (no render, cannot play live) asks for its render
+  // and the LOG names it. A seek and a loop wrap start two more passes while
+  // that render runs: they ask again (the queue shares the job) and name
+  // nothing, and a second silent part that turns up is named once.
+  reset();
+  ed().loadProject({ tracks: [track('t0'), track('t1')], clips: [part('a', 't0', 60), part('b', 't1', 62)] });
+  gated = true;
+  const named: string[][] = [];
+  const pass = (silent: AudioClip[]): Promise<unknown>[] => {
+    const fresh = silentMidiToReport(silent, midiRenderPending);
+    if (fresh.length) named.push(fresh.map((c) => c.label));
+    return silent.map((c) => requestMidiRender(c.id, 'cache'));
+  };
+  const first = pass([clip('a')!]);
+  assert.equal(midiRenderPending('a'), true, 'the render is waiting or running');
+  const seek = pass([clip('a')!]);
+  const wrap = pass([clip('a')!, clip('b')!]);
+  assert.deepEqual(named, [['a'], ['b']], 'each silent part is named once');
+  await gate();
+  await gate();
+  await Promise.all([...first, ...seek, ...wrap]);
+  assert.equal(calls.length, 2, 'one render a part, however many passes asked');
+  assert.equal(midiRenderPending('a'), false, 'nothing pending once the renders land');
+  assert.equal(midiRenderPending('b'), false);
+  assert.ok(clip('a')!.audioBlob instanceof Blob && clip('b')!.audioBlob instanceof Blob);
 }
 
 console.log('midiRenderQueue: ok');

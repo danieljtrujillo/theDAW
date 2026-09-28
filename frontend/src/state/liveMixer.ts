@@ -120,7 +120,7 @@ import { clipNoteSpan } from '../lib/rollClip';
 import { stepClock } from '../lib/rollTempo';
 import { editTempoAtSec } from '../lib/editTimeMap';
 import { hasMidiNotes } from '../lib/midiRender';
-import { requestMidiRender } from './midiRenderQueue';
+import { midiRenderPending, requestMidiRender } from './midiRenderQueue';
 import type { ChainEntry } from './effectChainStore';
 import {
   CONN_SIDECHAIN,
@@ -3044,6 +3044,16 @@ export function emptyLiveMidiPlan(): LiveMidiPlan {
   return { liveClipIds: new Set(), channels: planEditChannels([]) };
 }
 
+/**
+ * The silent MIDI clips of a pass (no render, not played live) the LOG names:
+ * those whose render is not already waiting or running (`pending`, the render
+ * queue's midiRenderPending). A seek or a loop wrap starts a new pass while
+ * those renders run, and each part is named once, when its render is asked for.
+ */
+export function silentMidiToReport<T extends { id: string }>(silent: readonly T[], pending: (clipId: string) => boolean): T[] {
+  return silent.filter((c) => !pending(c.id));
+}
+
 /** The fields of a clip the live MIDI plan reads. */
 export type LiveMidiClip = Pick<
   AudioClip,
@@ -3472,7 +3482,12 @@ async function start(fromSec: number): Promise<void> {
   // automatic render of, a clip the plan plays live.
   const silent = clips.filter((c) => !c.muted && hasMidiNotes(c) && !c.audioBlob && !liveMidiPlan.liveClipIds.has(c.id));
   if (silent.length > 0) {
-    logWarn('editor', `${silent.length} MIDI clip(s) cannot play live this pass and hold no render; rendering them now: ${silent.slice(0, 4).map((c) => c.label).join(', ')}${silent.length > 4 ? ', …' : ''}`);
+    // A seek or a loop wrap starts a new pass while those renders run: the
+    // LOG names a part once, when its render is first asked for.
+    const fresh = silentMidiToReport(silent, midiRenderPending);
+    if (fresh.length > 0) {
+      logWarn('editor', `${fresh.length} MIDI clip(s) cannot play live this pass and hold no render; rendering them now: ${fresh.slice(0, 4).map((c) => c.label).join(', ')}${fresh.length > 4 ? ', …' : ''}`);
+    }
     for (const c of silent) {
       requestMidiRender(c.id, plan.liveClipIds.has(c.id) ? 'keep' : 'cache').catch((e) => logError('editor', `MIDI render failed for "${c.label}": ${e instanceof Error ? e.message : String(e)}`));
     }

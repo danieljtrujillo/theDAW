@@ -247,6 +247,14 @@ export function withRenderTurn<T>(clipId: string, label: string, work: () => Pro
   });
 }
 
+/**
+ * True while a render of `clipId` waits in the queue or runs now (its own
+ * request, or another tool's render in the queue's turn).
+ */
+export function midiRenderPending(clipId: string): boolean {
+  return useMidiRenderQueue.getState().running?.clipId === clipId || jobs.some((j) => j.clipId === clipId);
+}
+
 /** Drop every waiting job (each resolves as skipped). The render running now finishes. */
 export function clearMidiRenderQueue(reason = 'the queue was cleared'): void {
   const dropped = jobs.splice(0, jobs.length);
