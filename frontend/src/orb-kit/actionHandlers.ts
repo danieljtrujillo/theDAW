@@ -12,6 +12,7 @@ import { logInfo } from '../state/logStore';
 import * as editorTools from '../state/editorTools';
 import type { ToolResult } from '../state/editorTools';
 import * as editorToolBridge from './editorToolBridge';
+import { composerTool } from './composerTools';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../lib/tempoMap';
 
 export interface AssistantActionPayload {
@@ -823,7 +824,9 @@ function runtheDAWAction(action: AssistantActionPayload): ActionBranch {
             // a `case` above keeps it — the two sets are disjoint, and letting
             // the switch win means adding a table entry can never silently
             // change the behaviour of a tool that already shipped.
-            const run = EDITOR_TOOLS[type];
+            // Then the composer and score tools (orb-kit/composerTools), which
+            // answer the same way: a sentence, or the reason nothing changed.
+            const run = EDITOR_TOOLS[type] ?? composerTool(type);
             if (!run) return fail(`Unknown action: ${type}`);
             return runEditorTool(type, run, payload ?? {});
         }
