@@ -689,12 +689,63 @@ export interface ArrangementClipTime {
 }
 
 /**
+ * The beats each fermata of `map` holds, as the tempo overlay reads them
+ * (lib/tempoMap withFermatas): in beat order, a hold that starts inside an
+ * earlier one cut to start where that one ends, and a hold before the first
+ * tempo event started at it.
+ */
+function holdWindows(map: readonly TempoEvent[]): Array<{ start: number; end: number; stretch: number }> {
+  let first = Infinity;
+  for (const e of map) if (!e.fermata && e.beat < first) first = e.beat;
+  if (!Number.isFinite(first)) first = 0;
+  const out: Array<{ start: number; end: number; stretch: number }> = [];
+  const holds = map
+    .filter((e) => !!e.fermata && isNum(e.beat) && isNum(e.fermata.beats) && e.fermata.beats > 0 && isNum(e.fermata.stretch) && e.fermata.stretch > 1)
+    .sort((a, b) => a.beat - b.beat);
+  for (const e of holds) {
+    const f = e.fermata as NonNullable<TempoEvent['fermata']>;
+    const end = e.beat + f.beats;
+    const start = Math.max(e.beat, first, out.length ? out[out.length - 1].end : -Infinity);
+    if (end > start) out.push({ start, end, stretch: f.stretch });
+  }
+  return out;
+}
+
+/**
+ * The arrangement's played tempo map cut at `startBeat`, as a part starting
+ * there holds it. The part's start tempo is the tempo underneath at that beat,
+ * read from the tempo events alone: inside a fermata the overlay slows the
+ * tempo, and a part that took the slowed tempo as its own would play every bar
+ * at it. A ramp running through the start keeps ramping. A hold sounding at the
+ * start (the part begins on its beat or inside it) carries on into the part as
+ * a fermata at beat 0 for the beats it has left, with its stretch; a hold that
+ * ended before the start is left out, and every later event moves by the start.
+ */
+function tempoFromBeat(played: readonly TempoEvent[], startBeat: number): { startBpm: number; tempoMap: TempoEvent[] } {
+  const tempos = played.filter((e) => !e.fermata);
+  const startBpm = getTempoAtBeat(tempos, startBeat);
+  let segCurve: TempoEvent['curve'] = 'step';
+  for (const e of tempos) if (e.beat <= startBeat + EPS) segCurve = e.curve ?? 'step';
+  const events: TempoEvent[] = [{ beat: 0, bpm: startBpm, curve: segCurve }];
+  const holding = holdWindows(played).find((w) => w.start <= startBeat + EPS && w.end > startBeat + EPS);
+  if (holding) events.push({ beat: 0, bpm: startBpm, fermata: { beats: holding.end - startBeat, stretch: holding.stretch } });
+  for (const e of played) {
+    if (e.beat <= startBeat + EPS) continue;
+    events.push(e.fermata
+      ? { beat: e.beat - startBeat, bpm: e.bpm, fermata: { ...e.fermata } }
+      : { beat: e.beat - startBeat, bpm: e.bpm, curve: e.curve ?? 'step' });
+  }
+  return { startBpm, tempoMap: sanitizeRollTempoMap(events, startBpm) };
+}
+
+/**
  * The time of a new MIDI clip `bars` bars long starting at 0-based arrangement
  * bar `bar`: its grid, its meters and its tempo, so the clip's bar lines and
- * seconds are the arrangement's. The tempo map is cut at the clip's first beat:
- * the tempo there becomes the clip's start tempo (a ramp going through it keeps
- * ramping), each later change moves by the clip's start, and a fermata held
- * from before the clip is left out.
+ * seconds are the arrangement's. The tempo map is cut at the clip's first beat
+ * (tempoFromBeat): the tempo underneath there becomes the clip's start tempo (a
+ * ramp going through it keeps ramping), each later change moves by the clip's
+ * start, a fermata held on or across its first beat holds on into it for the
+ * beats it has left, and a fermata that ended before the clip is left out.
  */
 export function arrangementClipTime(maps: EditTimeMaps, bar: number, bars: number): ArrangementClipTime {
   const first = Math.max(0, Math.floor(bar));
@@ -708,19 +759,7 @@ export function arrangementClipTime(maps: EditTimeMaps, bar: number, bars: numbe
     ...segs.filter((s) => s.bar > first && s.bar < first + count).map((s) => ({ bar: s.bar - first, meter: s.meter })),
   ]);
   const clock = editClock(maps.tempoMap);
-  const startBeat = startStep / STEPS_PER_BEAT;
-  const played = clock.map;
-  const startBpm = getTempoAtBeat(played, startBeat);
-  let segCurve: TempoEvent['curve'] = 'step';
-  for (const e of played) if (!e.fermata && e.beat <= startBeat + EPS) segCurve = e.curve ?? 'step';
-  const events: TempoEvent[] = [{ beat: 0, bpm: startBpm, curve: segCurve }];
-  for (const e of played) {
-    if (e.beat <= startBeat + EPS) continue;
-    events.push(e.fermata
-      ? { beat: e.beat - startBeat, bpm: e.bpm, fermata: { ...e.fermata } }
-      : { beat: e.beat - startBeat, bpm: e.bpm, curve: e.curve ?? 'step' });
-  }
-  const tempoMap = sanitizeRollTempoMap(events, startBpm);
+  const { startBpm, tempoMap } = tempoFromBeat(clock.map, startStep / STEPS_PER_BEAT);
   const changes = hasTempoChanges(tempoMap);
   return {
     startSec: clock.at(startStep),
@@ -744,19 +783,7 @@ export function arrangementClipTimeAtSec(maps: EditTimeMaps, sec: number, bars: 
   const count = Math.max(1, Math.floor(bars));
   const clock = editClock(maps.tempoMap);
   const startStep = Math.max(0, clock.stepAt(Math.max(0, sec)));
-  const startBeat = startStep / STEPS_PER_BEAT;
-  const played = clock.map;
-  const startBpm = getTempoAtBeat(played, startBeat);
-  let segCurve: TempoEvent['curve'] = 'step';
-  for (const e of played) if (!e.fermata && e.beat <= startBeat + EPS) segCurve = e.curve ?? 'step';
-  const events: TempoEvent[] = [{ beat: 0, bpm: startBpm, curve: segCurve }];
-  for (const e of played) {
-    if (e.beat <= startBeat + EPS) continue;
-    events.push(e.fermata
-      ? { beat: e.beat - startBeat, bpm: e.bpm, fermata: { ...e.fermata } }
-      : { beat: e.beat - startBeat, bpm: e.bpm, curve: e.curve ?? 'step' });
-  }
-  const tempoMap = sanitizeRollTempoMap(events, startBpm);
+  const { startBpm, tempoMap } = tempoFromBeat(clock.map, startStep / STEPS_PER_BEAT);
   return {
     startSec: Math.max(0, sec),
     sourceTotalSteps: count * stepsPerBar(here.meter),
