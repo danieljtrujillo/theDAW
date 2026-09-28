@@ -649,7 +649,11 @@ def apply_to_export(score: Any, source_path: Any) -> None:
 
 
 @dataclass
-class _Wedge:
+class Hairpin:
+    """A printed hairpin from ``start`` to ``end`` (quarters). ``target`` is
+    the velocity it arrives at, None for one level up (down) from where it
+    starts."""
+
     start: float
     end: float
     direction: int  # +1 crescendo, -1 diminuendo
@@ -661,7 +665,7 @@ class SheetExpression:
     """The playing a part's printed marks ask for."""
 
     marks: list[tuple[float, float]] = field(default_factory=list)
-    wedges: list[_Wedge] = field(default_factory=list)
+    wedges: list[Hairpin] = field(default_factory=list)
     accents: dict[float, float] = field(default_factory=dict)
 
     @property
@@ -696,7 +700,7 @@ class SheetExpression:
                 velocity = self._target(wedge, start_velocity)
         return velocity
 
-    def _target(self, wedge: _Wedge, start_velocity: float) -> float:
+    def _target(self, wedge: Hairpin, start_velocity: float) -> float:
         if wedge.target is not None:
             return wedge.target
         idx = LEVELS.index(level_for_velocity(start_velocity))
@@ -800,7 +804,7 @@ def read_sheet_expression(part: Any) -> SheetExpression:
                 ),
                 None,
             )
-            expression.wedges.append(_Wedge(start, end, direction, target))
+            expression.wedges.append(Hairpin(start, end, direction, target))
     expression.wedges.sort(key=lambda w: w.start)
     return expression
 

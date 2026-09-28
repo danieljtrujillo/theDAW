@@ -1236,3 +1236,66 @@ def get_artifact_file(artifact_id: str) -> FileResponse:
         media_type=mime or "application/octet-stream",
         filename=download_name,
     )
+
+
+class PerformRequest(BaseModel):
+    source_artifact_id: str
+    # Quarters per minute for a sheet that prints no tempo; the entry's
+    # analysed BPM when absent, and the performer's default after that.
+    bpm: Optional[float] = Field(default=None, gt=0, le=1000)
+
+
+@router.post("/{entry_id}/perform")
+def perform_artifact(entry_id: str, body: PerformRequest) -> dict[str, Any]:
+    """Play a MusicXML sheet as an expressive MIDI (the SCORE tab's EXPORT >
+    PERFORM): ritardandos into cadences, fermatas held, phrase downbeats
+    leaned on, articulation and dynamics as printed (see :mod:`.perform`).
+    The MIDI is written beside the entry's other exports and registered as a
+    ``midi`` artifact ``<source>__performed_midi``, so it lists and opens like
+    any other MIDI of the entry."""
+    store = get_library_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    if store.get_entry(entry_id) is None:
+        raise HTTPException(404, f"entry {entry_id!r} not found")
+
+    source = store.db.get_notation_artifact(body.source_artifact_id)
+    if source is None or source.get("entry_id") != entry_id:
+        raise HTTPException(
+            404,
+            f"artifact {body.source_artifact_id!r} not found for entry {entry_id!r}",
+        )
+    if source.get("kind") != "musicxml":
+        raise HTTPException(
+            422,
+            f"artifact {body.source_artifact_id!r} is a {source.get('kind')!r}; "
+            "PERFORM plays a MusicXML sheet",
+        )
+    source_path = Path(source.get("path") or "")
+    if not source_path.is_file():
+        raise HTTPException(404, f"artifact file missing on disk: {source_path}")
+
+    entry_dir = store._dir_for(entry_id)  # the route family's own convention
+    if entry_dir is None:
+        raise HTTPException(500, f"entry directory missing for {entry_id!r}")
+    slug = _song_slug(_entry_title(store, entry_id))
+    output = (
+        entry_dir
+        / "notation"
+        / _scored_name(slug, f"{source_path.stem}__performed.mid")
+    )
+
+    from .perform import perform_to_artifact
+
+    result = perform_to_artifact(
+        store.db,
+        entry_id=entry_id,
+        source_path=source_path,
+        output_path=output,
+        source_ref=body.source_artifact_id,
+        artifact_id=f"{body.source_artifact_id}__performed_midi",
+        qpm=body.bpm or _analysis_bpm(store, entry_id),
+    )
+    if not result.get("ok"):
+        raise HTTPException(501, result)
+    return result
