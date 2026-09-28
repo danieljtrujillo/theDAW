@@ -1,9 +1,14 @@
 """FastAPI router for the composer module (prefix from module.json: ``/api/composer``).
 
-    GET  /           capability report
-    POST /plan       a roman-numeral phrase in a key, voiced in SATB
-    POST /check      voice-leading flags for parts in ticks
-    POST /continuo   a figured bass realized in four parts
+    GET  /                 capability report
+    POST /plan             a roman-numeral phrase in a key, voiced in SATB,
+                           optionally in a composer's style
+    POST /check            voice-leading flags for parts in ticks
+    POST /continuo         a figured bass realized in four parts
+    GET  /styles           the shipped composer style profiles, one line each
+    GET  /styles/{id}      one style profile in full
+    POST /profile          a style profile counted from music21 corpus pieces
+                           or from a composition in the library
 
 Notes go in and come out as ``{note, tick, ticks}`` at 960 ticks to the
 quarter, the piano roll's PPQ. Meter maps are the roll's own
@@ -18,6 +23,7 @@ this machine, the desktop shell or a paired phone
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,6 +37,7 @@ from backend.lib.cross_site import (
 # music21 loads on the first request, not at startup: the engine modules are
 # imported inside the handlers.
 from .spec import CADENCES, DEFAULT_RANGES, FEATURES, HARMONIC_RHYTHMS, PPQ, RULES
+from .stylebook import ProfileError, list_styles, load_style, style_ids
 
 router = APIRouter(
     dependencies=[
@@ -43,6 +50,7 @@ MAX_BARS = 64
 MAX_PARTS = 8
 MAX_NOTES = 4096
 MAX_BASS = 256
+MAX_PROFILE_WORKS = 40
 
 Cadence = Literal[
     "authentic_perfect",
@@ -92,11 +100,25 @@ class PlanRequest(BaseModel):
     bars: int = Field(default=8, ge=2, le=MAX_BARS)
     meter_map: list[MeterSegmentIn] = Field(default_factory=list)
     seed: int = 0
-    cadence: Cadence = "authentic_perfect"
+    # Unset: authentic_perfect, or drawn from the style's cadences.
+    cadence: Optional[Cadence] = None
     include: list[Feature] = Field(default_factory=list)
     modulate_to: Optional[str] = Field(default=None, max_length=32)
-    harmonic_rhythm: Literal["pulse", "bar"] = "pulse"
+    # Unset: "pulse", or "style" when a style is given.
+    harmonic_rhythm: Optional[Literal["pulse", "bar", "style"]] = None
     ranges: Optional[dict[str, Range]] = None
+    style: Optional[str] = Field(default=None, max_length=64)
+
+
+class ProfileRequest(BaseModel):
+    """Count a profile from ``corpus`` piece ids (``GET /api/notation/corpus``)
+    or from the MusicXML sheet of the library composition ``entry_id``."""
+
+    corpus: list[str] = Field(default_factory=list, max_length=MAX_PROFILE_WORKS)
+    entry_id: Optional[str] = Field(default=None, max_length=128)
+    id: str = Field(default="custom", pattern=r"^[a-z0-9_-]{1,40}$")
+    name: str = Field(default="", max_length=80)
+    max_bars: int = Field(default=96, ge=4, le=400)
 
 
 class CheckRequest(BaseModel):
@@ -141,6 +163,7 @@ def health() -> dict[str, Any]:
         "cadences": list(CADENCES),
         "include": list(FEATURES),
         "harmonic_rhythms": list(HARMONIC_RHYTHMS),
+        "styles": style_ids(),
         "rules": list(RULES),
         "ranges": {k: list(v) for k, v in DEFAULT_RANGES.items()},
     }
@@ -162,10 +185,71 @@ def plan(req: PlanRequest) -> dict[str, Any]:
             modulate_to=req.modulate_to,
             harmonic_rhythm=req.harmonic_rhythm,
             ranges=_ranges(req.ranges),
+            style=req.style,
         )
     except ValueError as e:
         # PlanError is a ValueError: too few bars, a key that is not closely
-        # related, a chord no voicing reaches.
+        # related, a chord no voicing reaches, a style there is no profile of.
+        raise HTTPException(422, str(e)) from e
+
+
+@router.get("/styles")
+def styles() -> dict[str, Any]:
+    """The shipped style profiles: id, name, era, whether each was counted
+    from scores or authored, and its basis."""
+    return {"styles": list_styles()}
+
+
+@router.get("/styles/{style_id}")
+def style(style_id: str) -> dict[str, Any]:
+    try:
+        return load_style(style_id)
+    except ProfileError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+def _entry_sheet(entry_id: str) -> tuple[Path, str]:
+    """The MusicXML sheet of a library composition: the imported one when it
+    has one, else its newest."""
+    from backend.modules.library.router import get_store
+
+    store = get_store()
+    if store.db is None:
+        raise HTTPException(503, "library DB not available")
+    sheets = store.db.list_notation_artifacts(entry_id, kind="musicxml")
+    if not sheets:
+        raise HTTPException(404, f"no MusicXML sheet for entry {entry_id!r}")
+    imported = [a for a in sheets if a.get("engine") == "score-import"]
+    chosen = (imported or sheets)[-1]
+    path = Path(str(chosen.get("path") or ""))
+    if not path.is_file():
+        raise HTTPException(404, f"the sheet of entry {entry_id!r} is missing on disk")
+    return path, str(chosen.get("id") or entry_id)
+
+
+@router.post("/profile")
+def profile(req: ProfileRequest) -> dict[str, Any]:
+    """A style profile counted from scores (see profile.py), in the shape of
+    the shipped ones, listing the works it was counted from."""
+    from .profile import profile_from_corpus, profile_from_file
+
+    if bool(req.corpus) == bool(req.entry_id):
+        raise HTTPException(422, "give corpus piece ids or an entry_id, not both")
+    try:
+        if req.corpus:
+            from backend.modules.sheetimport.corpus import resolve
+
+            missing = [c for c in req.corpus if resolve(c) is None]
+            if missing:
+                raise HTTPException(404, f"no corpus piece {missing[0]!r}")
+            return profile_from_corpus(
+                req.corpus, style_id=req.id, name=req.name, max_bars=req.max_bars
+            )
+        path, work_id = _entry_sheet(str(req.entry_id))
+        return profile_from_file(
+            path, work_id, style_id=req.id, name=req.name, max_bars=req.max_bars
+        )
+    except ProfileError as e:
         raise HTTPException(422, str(e)) from e
 
 

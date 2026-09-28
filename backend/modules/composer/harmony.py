@@ -31,6 +31,16 @@ as the V after it, or the cadence uses IV - ii6 - V instead.
 Everything is drawn from ``random.Random(seed)``, so a seed gives the same
 phrase every time.
 
+``style`` names a composer profile (``styles/*.json``, see profile.py). The
+filler then draws from a wider vocabulary (mediants, sevenths on every
+degree, applied chords, mixture and modal chords) with each walk weighed by
+how often the style uses its chords; an unset ``cadence`` is drawn from the
+style's cadence frequencies; and an unset ``harmonic_rhythm`` becomes
+``"style"``, which keeps as many pulses of each bar as the style changes
+chord per pulse (the strongest pulses first). A styled plan that the
+checker flags is drawn again from the next sub-seed, and after that with the
+plain vocabulary, so a styled plan comes back clean too.
+
 The voicing is a Viterbi search over every SATB voicing of every chord that
 is in range, in order, spaced within an octave above the tenor, complete
 (a fifth may be left out) and never doubles a leading tone, a chordal seventh
@@ -42,6 +52,7 @@ any move it flags is forbidden before searching again.
 
 from __future__ import annotations
 
+import math
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -52,6 +63,7 @@ from music21 import key as m21key
 from music21 import roman
 
 from .meter import MeterGrid
+from .romans import vocab_label
 from .spec import CADENCES, FEATURES, HARMONIC_RHYTHMS, PPQ, SATB
 from .voiceleading import (
     Harmony,
@@ -66,7 +78,14 @@ from .voiceleading import (
     transition_forbidden,
 )
 
-__all__ = ["CADENCES", "FEATURES", "HARMONIC_RHYTHMS", "PlanError", "plan_progression"]
+__all__ = [
+    "CADENCES",
+    "FEATURES",
+    "HARMONIC_RHYTHMS",
+    "STYLE_UNITS",
+    "PlanError",
+    "plan_progression",
+]
 
 LETTERS = "CDEFGAB"
 VELOCITY = 80
@@ -186,6 +205,69 @@ FILLER_UNITS: dict[str, list[list[str]]] = {
     ],
 }
 
+# The wider vocabulary a style draws from, as (figure, kind) walks that end on
+# a tonic-family chord. Every seventh resolves down by step into the chord
+# after it and every applied chord into its own target.
+STYLE_UNITS: dict[str, list[list[tuple[str, str]]]] = {
+    "major": [
+        [("iii", "diatonic"), ("vi", "diatonic")],
+        [("iii", "diatonic"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("IV", "diatonic"), ("iii", "diatonic"), ("vi", "diatonic")],
+        [
+            ("vi", "diatonic"),
+            ("iii", "diatonic"),
+            ("IV", "diatonic"),
+            ("I", "diatonic"),
+        ],
+        [("ii7", "seventh"), ("V", "diatonic"), ("I", "diatonic")],
+        [("IV7", "seventh"), ("V", "diatonic"), ("I", "diatonic")],
+        [("vi7", "seventh"), ("ii", "diatonic"), ("V", "diatonic"), ("I", "diatonic")],
+        [("iii7", "seventh"), ("vi", "diatonic")],
+        [("I7", "seventh"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("V7", "seventh"), ("I", "diatonic")],
+        [("V7/IV", "applied_dominant"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("V/vi", "applied_dominant"), ("vi", "diatonic")],
+        [
+            ("V7/ii", "applied_dominant"),
+            ("ii", "diatonic"),
+            ("V", "diatonic"),
+            ("I", "diatonic"),
+        ],
+        [("V7/V", "applied_dominant"), ("V", "diatonic"), ("I", "diatonic")],
+        [("#ivo7", "applied_dominant"), ("V", "diatonic"), ("I", "diatonic")],
+        [("viio7", "seventh"), ("I", "diatonic")],
+        [("iv", "mixture"), ("I", "diatonic")],
+        [("bVII", "mixture"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("bVI", "mixture"), ("bVII", "mixture"), ("I", "diatonic")],
+        [("bVI", "mixture"), ("iv", "mixture"), ("I", "diatonic")],
+        [("bIII", "mixture"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("v", "mixture"), ("IV", "diatonic"), ("I", "diatonic")],
+        [("II", "mixture"), ("I", "diatonic")],
+        [("N6", "neapolitan"), ("V", "diatonic"), ("I", "diatonic")],
+    ],
+    "minor": [
+        [("III", "diatonic"), ("VI", "diatonic")],
+        [("VII", "diatonic"), ("III", "diatonic"), ("VI", "diatonic")],
+        [("III", "diatonic"), ("iv", "diatonic"), ("V", "diatonic"), ("i", "diatonic")],
+        [("VII", "diatonic"), ("i", "diatonic")],
+        [("v", "diatonic"), ("iv", "diatonic"), ("i", "diatonic")],
+        [("iv7", "seventh"), ("V", "diatonic"), ("i", "diatonic")],
+        [("VI7", "seventh"), ("iv", "diatonic"), ("V", "diatonic"), ("i", "diatonic")],
+        [("iiø7", "seventh"), ("V", "diatonic"), ("i", "diatonic")],
+        [("i7", "seventh"), ("iv", "diatonic"), ("i", "diatonic")],
+        [("V7", "seventh"), ("i", "diatonic")],
+        [("viio7", "seventh"), ("i", "diatonic")],
+        [("V7/iv", "applied_dominant"), ("iv", "diatonic"), ("i", "diatonic")],
+        [("V7/III", "applied_dominant"), ("III", "diatonic"), ("VI", "diatonic")],
+        [("IV", "mixture"), ("V", "diatonic"), ("i", "diatonic")],
+        [("N6", "neapolitan"), ("V", "diatonic"), ("i", "diatonic")],
+    ],
+}
+#: The share a style's missing chord still counts for, so no walk is impossible.
+STYLE_FLOOR = 0.002
+#: Sub-seeds a styled plan tries before it falls back to the plain vocabulary.
+STYLE_ATTEMPTS = 8
+
 # Pivot readings in the new key, most useful first (predominants lead on).
 PIVOT_PREFERENCE = ["ii", "IV", "iv", "vi", "VI", "iio", "I", "i", "iii", "III"]
 DIATONIC_TRIADS = {
@@ -255,6 +337,42 @@ def _fill(size: int, mode: str, rng: random.Random, after: str | None) -> list[s
     return out
 
 
+def unit_weight(unit: Sequence[tuple[str, str]], vocab: Mapping[str, float]) -> float:
+    """A walk's weight in a style: its length times the square of the
+    geometric mean of the style's share of each of its chords (a chord the
+    style never uses counts ``STYLE_FLOOR``). Squaring keeps a chord the
+    style seldom writes from riding in on a walk of common ones."""
+    logs = [
+        math.log(max(float(vocab.get(vocab_label(f), 0.0)), STYLE_FLOOR))
+        for f, _ in unit
+    ]
+    return len(unit) * math.exp(2 * sum(logs) / len(logs))
+
+
+def _fill_styled(
+    size: int,
+    mode: str,
+    rng: random.Random,
+    after: str | None,
+    vocab: Mapping[str, float],
+) -> list[tuple[str, str]]:
+    """The filler in a style: plain and style walks weighed by the style's
+    chord shares."""
+    pool = [[(f, "diatonic") for f in u] for u in FILLER_UNITS[mode]]
+    pool += STYLE_UNITS[mode]
+    out: list[tuple[str, str]] = []
+    last = after
+    while len(out) < size:
+        left = size - len(out)
+        units = [u for u in pool if len(u) <= left and u[0][0] != last]
+        if not units:
+            units = [u for u in pool if len(u) <= left]
+        unit = rng.choices(units, weights=[unit_weight(u, vocab) for u in units])[0]
+        out.extend(unit)
+        last = unit[-1][0]
+    return out
+
+
 def _split(total: int, parts: int, rng: random.Random) -> list[int]:
     if parts <= 1:
         return [total]
@@ -289,14 +407,32 @@ def find_pivot(a: m21key.Key, b: m21key.Key) -> tuple[str, str]:
     raise PlanError(f"no pivot chord between {key_label(a)} and {key_label(b)}")
 
 
+def chords_needed(
+    home: m21key.Key,
+    cadence: str,
+    include: Sequence[str],
+    modulate_to: m21key.Key | None,
+) -> int:
+    """The chords a plan cannot do without: the opening tonic, the chords
+    asked for, the modulation and the cadence."""
+    final = modulate_to or home
+    return (
+        1
+        + sum(len(FEATURE_UNITS[home.mode][f]) for f in dict.fromkeys(include))
+        + len(CADENCE_UNITS[final.mode][cadence])
+        + (3 if modulate_to is not None else 0)
+    )
+
+
 def build_progression(
     home: m21key.Key,
     slots: Sequence[Slot],
     *,
-    seed: int,
+    seed: int | str,
     cadence: str,
     include: Sequence[str],
     modulate_to: m21key.Key | None,
+    style: Mapping[str, Any] | None = None,
 ) -> list[PlannedChord]:
     rng = random.Random(seed)
     if cadence not in CADENCES:
@@ -304,6 +440,18 @@ def build_progression(
     unknown = [f for f in include if f not in FEATURES]
     if unknown:
         raise PlanError(f"unknown chord kinds {unknown}; use {', '.join(FEATURES)}")
+    vocab = style["vocabulary"] if style else None
+
+    def fill(chunk: int, k: m21key.Key, after: str) -> list[PlannedChord]:
+        if vocab is None:
+            return [
+                PlannedChord(f, k, "diatonic") for f in _fill(chunk, k.mode, rng, after)
+            ]
+        return [
+            PlannedChord(f, k, kind)
+            for f, kind in _fill_styled(chunk, k.mode, rng, after, vocab[k.mode])
+        ]
+
     final_key = modulate_to or home
     if modulate_to is not None and not closely_related(home, modulate_to):
         raise PlanError(
@@ -331,9 +479,7 @@ def build_progression(
     home_free = free if modulate_to is None else free // 2
     chunks = _split(home_free, len(units) + 1, rng)
     for i, chunk in enumerate(chunks):
-        after = out[-1].figure
-        for fig in _fill(chunk, home.mode, rng, after):
-            out.append(PlannedChord(fig, home, "diatonic"))
+        out.extend(fill(chunk, home, out[-1].figure))
         if i < len(units):
             for fig, kind in units[i]:
                 out.append(PlannedChord(fig, home, kind))
@@ -343,8 +489,7 @@ def build_progression(
         new_tonic = "I" if modulate_to.mode == "major" else "i"
         out.append(PlannedChord("V7", modulate_to, "seventh"))
         out.append(PlannedChord(new_tonic, modulate_to, "diatonic"))
-        for fig in _fill(free - home_free, modulate_to.mode, rng, new_tonic):
-            out.append(PlannedChord(fig, modulate_to, "diatonic"))
+        out.extend(fill(free - home_free, modulate_to, new_tonic))
     # A cadential six-four belongs on a pulse at least as strong as its V.
     cad_start = len(out)
     for j, (fig, kind) in enumerate(cad):
@@ -600,6 +745,49 @@ def realize(
     )
 
 
+def _style_slots(
+    grid: MeterGrid, bars: int, rate: float, rng: random.Random
+) -> list[Slot]:
+    """Slots for a style's harmonic rhythm: each bar but the last keeps about
+    ``rate`` of its pulses (the downbeat always, then the strongest), each
+    chord lasting until the next kept pulse."""
+    out: list[Slot] = []
+    all_bars = grid.bars(bars)
+    for b in all_bars[:-1]:
+        pulses = b.pulses()
+        n = len(pulses)
+        want = n * rate
+        count = int(want) + (1 if rng.random() < want - int(want) else 0)
+        count = min(n, max(1, count))
+        ties = [rng.random() for _ in pulses]
+        order = [0] + sorted(range(1, n), key=lambda i: (-pulses[i].accent, ties[i]))
+        keep = sorted(order[:count])
+        for j, i in enumerate(keep):
+            p = pulses[i]
+            end = pulses[keep[j + 1]].tick if j + 1 < len(keep) else b.tick + b.ticks
+            out.append(Slot(b.bar, p.beat, p.tick, end - p.tick, p.accent))
+    last = all_bars[-1]
+    out.append(Slot(last.bar, 1, last.tick, last.ticks, 1.0))
+    return out
+
+
+def load_plan_style(style: str | Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """A style profile by id, or a profile document as it is (validated)."""
+    if style is None or style == "":
+        return None
+    from .profile import ProfileError, load_style, validate_profile
+
+    if isinstance(style, Mapping):
+        errors = validate_profile(dict(style))
+        if errors:
+            raise PlanError(f"the style profile is not valid: {'; '.join(errors)}")
+        return dict(style)
+    try:
+        return load_style(str(style))
+    except ProfileError as e:
+        raise PlanError(str(e)) from e
+
+
 def plan_progression(
     tonic: str,
     mode: str | None = None,
@@ -607,34 +795,100 @@ def plan_progression(
     bars: int = 8,
     meter_map: Sequence[Any] | None = None,
     seed: int = 0,
-    cadence: str = "authentic_perfect",
+    cadence: str | None = None,
     include: Sequence[str] = (),
     modulate_to: str | None = None,
-    harmonic_rhythm: str = "pulse",
+    harmonic_rhythm: str | None = None,
     ranges: Mapping[str, Sequence[int]] | None = None,
+    style: str | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if bars < 2:
         raise PlanError("a phrase needs at least two bars")
-    if harmonic_rhythm not in HARMONIC_RHYTHMS:
+    profile = load_plan_style(style)
+    rhythm = harmonic_rhythm or ("style" if profile else "pulse")
+    if rhythm not in HARMONIC_RHYTHMS:
         raise PlanError(f"harmonic_rhythm must be one of {', '.join(HARMONIC_RHYTHMS)}")
+    if rhythm == "style" and profile is None:
+        raise PlanError('harmonic_rhythm "style" needs a style')
     home = parse_key(tonic, mode)
     target = parse_key(modulate_to) if modulate_to else None
+    unknown = [f for f in include if f not in FEATURES]
+    if unknown:
+        raise PlanError(f"unknown chord kinds {unknown}; use {', '.join(FEATURES)}")
+    # The style's own draws come from streams of their own, so the same seed
+    # in two styles draws two cadences and two rhythms.
+    salt = f"{seed}:{profile['id']}" if profile else str(seed)
+    if cadence is None and profile is not None:
+        weights = [float(profile["cadences"].get(c, 0.0)) for c in CADENCES]
+        if sum(weights) > 0:
+            cadence = random.Random(f"{salt}:cadence").choices(CADENCES, weights)[0]
+    cadence = cadence or "authentic_perfect"
+    if cadence not in CADENCES:
+        raise PlanError(f"cadence must be one of {', '.join(CADENCES)}")
     grid = MeterGrid(meter_map)
-    slots = _slots(grid, bars, harmonic_rhythm)
-    chords = build_progression(
-        home,
-        slots,
-        seed=seed,
-        cadence=cadence,
-        include=include,
-        modulate_to=target,
-    )
+    if rhythm == "style" and profile is not None:
+        per_pulse = float(profile["harmonic_rhythm"]["chords_per_pulse"])
+        rate = min(1.0, max(0.25, per_pulse))
+        need = chords_needed(home, cadence, include, target)
+        slots = _style_slots(grid, bars, rate, random.Random(f"{salt}:rhythm"))
+        # Too few slots for the chords the plan must hold: a faster rhythm.
+        while len(slots) < need and rate < 1.0:
+            rate = min(1.0, rate + 0.25)
+            slots = _style_slots(grid, bars, rate, random.Random(f"{salt}:rhythm"))
+    else:
+        slots = _slots(grid, bars, rhythm)
     final_soprano = {
         "authentic_perfect": "tonic",
         "authentic_imperfect": "not_tonic",
     }.get(cadence)
-    voicings, flags = realize(chords, slots, grid, ranges, final_soprano)
-    return plan_payload(home, bars, seed, cadence, grid, slots, chords, voicings, flags)
+
+    def attempt(sub_seed: int | str, with_style: bool) -> tuple[Any, Any, Any]:
+        chords = build_progression(
+            home,
+            slots,
+            seed=sub_seed,
+            cadence=cadence,
+            include=include,
+            modulate_to=target,
+            style=profile if with_style else None,
+        )
+        voicings, flags = realize(chords, slots, grid, ranges, final_soprano)
+        return chords, voicings, flags
+
+    if profile is None:
+        chords, voicings, flags = attempt(seed, False)
+    else:
+        # A styled draw the checker cannot clear is drawn again, then drawn
+        # with the plain vocabulary (the style's cadence and rhythm stay).
+        tries: list[tuple[int | str, bool]] = [
+            (seed if i == 0 else f"{seed}:{i}", True) for i in range(STYLE_ATTEMPTS)
+        ] + [(seed, False)]
+        result = None
+        last_error: PlanError | None = None
+        for sub_seed, with_style in tries:
+            try:
+                result = attempt(sub_seed, with_style)
+            except PlanError as e:
+                last_error = e
+                continue
+            if not result[2]:
+                break
+        if result is None:
+            raise last_error or PlanError("no plan in this style passes the rules")
+        chords, voicings, flags = result
+    return plan_payload(
+        home,
+        bars,
+        seed,
+        cadence,
+        grid,
+        slots,
+        chords,
+        voicings,
+        flags,
+        style=profile["id"] if profile else None,
+        harmonic_rhythm=rhythm,
+    )
 
 
 def plan_payload(
@@ -647,6 +901,9 @@ def plan_payload(
     chords: Sequence[PlannedChord],
     voicings: Sequence[tuple[int, ...]],
     flags: Sequence[Any],
+    *,
+    style: str | None = None,
+    harmonic_rhythm: str = "pulse",
 ) -> dict[str, Any]:
     out_chords = []
     parts: dict[str, list[dict[str, int]]] = {p: [] for p in SATB}
@@ -682,6 +939,8 @@ def plan_payload(
         "bars": bars,
         "seed": seed,
         "cadence": cadence,
+        "style": style,
+        "harmonic_rhythm": harmonic_rhythm,
         "ppq": PPQ,
         "meter_map": [
             {

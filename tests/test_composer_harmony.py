@@ -182,3 +182,107 @@ def test_custom_ranges_are_kept() -> None:
         assert 62 <= c["pitches"]["soprano"] <= 74
         assert 43 <= c["pitches"]["bass"] <= 55
     assert plan["flags"] == []
+
+
+# ---------------------------------------------------------------------------
+# style profiles
+# ---------------------------------------------------------------------------
+
+
+def _labels(plan: dict) -> set[str]:
+    from backend.modules.composer.romans import vocab_label
+
+    return {vocab_label(c["figure"]) for c in plan["chords"]}
+
+
+def test_bach_and_debussy_plans_from_one_seed_differ_in_vocabulary() -> None:
+    bach = plan_progression("C", "major", bars=8, seed=3, style="bach")
+    debussy = plan_progression("C", "major", bars=8, seed=3, style="debussy")
+    assert bach["style"] == "bach" and debussy["style"] == "debussy"
+    assert bach["flags"] == [] and debussy["flags"] == []
+    assert _recheck(bach) == [] and _recheck(debussy) == []
+    assert _labels(bach) != _labels(debussy)
+    # Debussy's walks lean on mixture and modal chords, Bach's on the dominant.
+    modal = {"bVII", "bVI", "bIII", "iv", "v", "II", "IV7", "I7"}
+    many = [
+        plan_progression("C", "major", bars=8, seed=s, style="debussy")
+        for s in range(6)
+    ]
+    assert any(_labels(p) & modal for p in many)
+    assert sum(
+        sum(c["figure"].startswith("V") for c in p["chords"]) for p in many
+    ) < sum(
+        sum(c["figure"].startswith("V") for c in p["chords"])
+        for p in (
+            plan_progression("C", "major", bars=8, seed=s, style="bach")
+            for s in range(6)
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "bach",
+        "handel",
+        "haydn",
+        "mozart",
+        "beethoven",
+        "brahms",
+        "tchaikovsky",
+        "debussy",
+        "stravinsky",
+        "bartok",
+    ],
+)
+@pytest.mark.parametrize("tonic,mode", [("D", "major"), ("G", "minor")])
+def test_every_style_plans_clean_phrases(style: str, tonic: str, mode: str) -> None:
+    plan = plan_progression(tonic, mode, bars=8, seed=5, style=style)
+    assert plan["flags"] == []
+    assert _recheck(plan) == []
+    assert plan["harmonic_rhythm"] == "style"
+
+
+def test_a_style_plan_is_the_same_plan_for_the_same_seed() -> None:
+    a = plan_progression("E", "minor", bars=6, seed=11, style="brahms")
+    b = plan_progression("E", "minor", bars=6, seed=11, style="brahms")
+    assert a == b
+
+
+def test_the_style_draws_the_cadence_unless_one_is_asked_for() -> None:
+    from collections import Counter
+
+    drawn = Counter(
+        plan_progression("C", "major", bars=6, seed=s, style="debussy")["cadence"]
+        for s in range(12)
+    )
+    assert len(drawn) > 1
+    asked = plan_progression(
+        "C", "major", bars=6, seed=0, style="debussy", cadence="authentic_perfect"
+    )
+    assert asked["cadence"] == "authentic_perfect"
+    assert asked["chords"][-1]["figure"] == "I"
+
+
+def test_a_slow_style_holds_chords_across_pulses() -> None:
+    bach = plan_progression("C", "major", bars=8, seed=0, style="bach")
+    stravinsky = plan_progression("C", "major", bars=8, seed=0, style="stravinsky")
+    # Bach changes chord on every beat; Stravinsky's profile about one in four.
+    assert len(bach["chords"]) == 29
+    assert len(stravinsky["chords"]) < len(bach["chords"])
+    held = [c for c in stravinsky["chords"][:-1] if c["ticks"] > 960]
+    assert held
+    pulse = plan_progression(
+        "C", "major", bars=8, seed=0, style="stravinsky", harmonic_rhythm="pulse"
+    )
+    assert len(pulse["chords"]) == 29
+
+
+def test_plain_plans_are_unchanged_by_the_style_machinery() -> None:
+    plan = plan_progression("C", "major", bars=8, seed=1)
+    assert plan["style"] is None and plan["harmonic_rhythm"] == "pulse"
+    assert plan["cadence"] == "authentic_perfect"
+    with pytest.raises(PlanError):
+        plan_progression("C", "major", style="palestrina")
+    with pytest.raises(PlanError):
+        plan_progression("C", "major", harmonic_rhythm="style")

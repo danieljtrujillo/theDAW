@@ -146,7 +146,9 @@ def build(style_id: str, out_dir: Path) -> dict[str, Any]:
     )
     out = out_dir / f"{style_id}.json"
     out.write_text(
-        json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(doc, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     print(
         f"{style_id}: {len(works)} works, {doc['sample']['bars']} bars, "
