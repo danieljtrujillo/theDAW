@@ -130,7 +130,7 @@ const show = (fromPx: number, toPx: number) =>
   act(async () => {
     root.render(<MidiClipNotes clip={clip} zoom={ZOOM} selected={false} height={60} visibleFromPx={fromPx} visibleToPx={toPx} />);
   });
-const canvas = () => host.querySelector<HTMLCanvasElement>('canvas[data-clip-notes]');
+const canvas = () => host.querySelector('canvas[data-clip-notes]') as HTMLCanvasElement | null;
 
 // The view at the clip's left edge: a canvas the view's width, drawing the notes in it.
 await show(0, 1000);
