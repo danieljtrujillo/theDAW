@@ -384,6 +384,8 @@ export const ROLL_TRANSFORMS: readonly RollTransformKind[] = Object.freeze(['inv
 export interface VoiceLeadingCheckOptions {
   /** Check these parts (two or more); left out, the SATB-named parts, else the four highest (lib/rollComposer checkPick). */
   partIds?: readonly string[];
+  /** Read the parts in this key (the COMPOSE column's HARMONY key when its CHECK asks); left out, or not a key, the roll's (effectiveRollKey). */
+  key?: RollKey;
 }
 
 /** The roll as a composer request reads it: its key, meter and each SATB voice's range from its part. */
@@ -556,7 +558,7 @@ interface PianoRollState {
    * `opts.partIds` when two or more are given, else the parts named Soprano,
    * Alto, Tenor and Bass when two or more are, else the four highest parts
    * (lib/rollComposer checkPick), with the roll's meter map and pickup, its
-   * key (rollKey, else read from the parts), the figures of the last plan when
+   * key (`opts.key`, else rollKey, else read from the parts), the figures of the last plan when
    * the roll holds some, and each part's range from the orchestra registry.
    * Stores the flags (`voiceLeading`) and opens the harmony row. Throws when
    * fewer than two parts hold notes, and the route's ApiError when it fails.
@@ -1896,6 +1898,8 @@ export const rollComposeContext = (s: KeySource & Pick<PianoRollState, 'meterMap
 interface PartsWrite {
   tracks: RollTrack[];
   notes: PianoNote[];
+  /** The part being edited after the write: the one before, or the first written when that one was a spare empty part the write dropped. */
+  activeId: string;
   /** The part each write went into, in the writes' order; null for one left out. */
   idsByWrite: (string | null)[];
   created: number;
@@ -1903,14 +1907,25 @@ interface PartsWrite {
 }
 
 /**
+ * An empty part a composer write into an empty roll leaves out: a default
+ * name, no notes, and nothing set on it that the write would lose (a registry
+ * instrument, figures, the cantus firmus mark).
+ */
+const isSparePart = (t: RollTrack): boolean =>
+  t.notes.length === 0 && isDefaultPartName(t.name) && !t.instrumentId && !t.cantusFirmus && !t.figuredBass?.length;
+
+/**
  * `writes` into the roll's parts: each into the part it names (a cantus into
  * the part marked as the cantus firmus first), replacing its notes, or into a
  * new part named after it on the registry instrument the write names. A part
  * takes one write at most. Past MAX_ROLL_PARTS a write that needs a new part
- * is left out.
+ * is left out. On a roll with no notes in any part the spare empty parts
+ * (isSparePart) go, so the answer becomes the roll and its first voice the
+ * part being edited.
  */
 const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite => {
   let tracks = rollTracksOf(s).slice();
+  if (writes.length > 0 && tracks.every((t) => t.notes.length === 0)) tracks = tracks.filter((t) => !isSparePart(t));
   const written = new Set<string>();
   const idsByWrite: (string | null)[] = [];
   let created = 0;
@@ -1942,8 +1957,15 @@ const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite
     idsByWrite.push(t.id);
     created += 1;
   }
-  const active = tracks.find((t) => t.id === s.activeTrackId) ?? tracks[0];
-  return { tracks, notes: active.notes, idsByWrite, created, skipped };
+  const active = tracks.find((t) => t.id === s.activeTrackId) ?? tracks.find((t) => written.has(t.id)) ?? tracks[0];
+  return { tracks, notes: active.notes, activeId: active.id, idsByWrite, created, skipped };
+};
+
+/** The part being edited moved to `done.activeId` (the write left the one before out): its clip link comes along, as setActiveTrack's does. */
+const writtenActive = (s: PianoRollState, done: PartsWrite): Partial<PianoRollState> => {
+  if (done.activeId === s.activeTrackId) return {};
+  const partLinks = withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
+  return { activeTrackId: done.activeId, editingClipId: partLinks[done.activeId] ?? null, partLinks };
 };
 
 /** The grid after a write: long enough (to a bar line) for every part's notes, never shorter than it was, and tall enough for them. */
@@ -2038,10 +2060,11 @@ const commitComposerWrite = (
     const done = writeParts(s, w.writes);
     out = writeResultOf(done);
     const key = setKey && w.key ? w.key : null;
-    const vlKey = key ?? readKey ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes });
+    const vlKey = key ?? readKey ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes, activeTrackId: done.activeId });
     return {
       tracks: done.tracks,
       notes: done.notes,
+      ...writtenActive(s, done),
       ...selectionOf(done.notes, s.selectedIds, s.selectedNoteId),
       ...grownGrid(s, done.tracks, s.meterMap, s.pickupSteps),
       ...(key && !sameRollKey(key, s.rollKey) ? { rollKey: key } : {}),
@@ -2878,7 +2901,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const s = get();
     const pick = checkPick(rollTracksOf(s), opts.partIds);
     if (!pick) throw new Error('A voice-leading check needs two parts with notes');
-    const key = effectiveRollKey(s);
+    const key = cleanRollKey(opts.key) ?? effectiveRollKey(s);
     // The roman figures of a plan, a continuo or a form say what the harmony is; a suspension's '7-6' or a bare figure does not.
     const harmony = s.harmonyChords.filter((c) => ROMAN_FIGURE.test(c.figure));
     const result = await composerApi.check({
@@ -2978,10 +3001,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       const tempo = tempoSlice(sanitizeRollTempoMap(w.tempoMap, importedRollBpm(w.bpm)));
       // FORM's markers replace the ones an earlier form wrote; the user's own stay, and win a place both hold.
       const markers = sanitizeRollMarkers([...w.markers, ...s.markers.filter((m) => m.origin !== 'form')]);
-      const key = w.key ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes });
+      const key = w.key ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes, activeTrackId: done.activeId });
       return {
         tracks: done.tracks,
         notes: done.notes,
+        ...writtenActive(s, done),
         ...selectionOf(done.notes, s.selectedIds, s.selectedNoteId),
         meterMap,
         pickupSteps: 0,

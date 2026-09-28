@@ -193,6 +193,13 @@ async function checks(): Promise<void> {
   await roll().runVoiceLeadingCheck({ partIds: [byName('Bass').id, byName('Alto').id] });
   assert.deepEqual((sent[0].body as { order: string[] }).order, ['Alto', 'Bass']);
 
+  // A key of the caller's (the COMPOSE column's HARMONY key): read in it, and the answer says so.
+  serve({ flags: [], count: 0 });
+  await roll().runVoiceLeadingCheck({ key: { tonic: 'E♭', mode: 'minor' } });
+  assert.deepEqual([sent[0].body.key, sent[0].body.mode], ['Eb', 'minor']);
+  assert.deepEqual(roll().voiceLeading?.key, { tonic: 'Eb', mode: 'minor' });
+  assert.deepEqual(roll().rollKey, { tonic: 'G', mode: 'major' }, "the roll's own key stays");
+
   // No SATB names: the four highest parts.
   freshRoll([pn('a', 40, 0)]);
   for (const [name, note] of [['Flute', 84], ['Oboe', 76], ['Viola', 60], ['Cello', 48], ['Kit', 50]] as const) {
@@ -373,9 +380,12 @@ function form(): void {
   } as unknown as FormResult;
   assert.equal(roll().writeFormMovement(result, 3), null, 'a movement the form does not have');
   const before = { meter: roll().meterMap, tempo: roll().tempoMap, markers: roll().markers };
+  const spare = parts()[0].id;
   const done = roll().writeFormMovement(result);
   assert.ok(done);
   assert.equal(done.created, 4);
+  assert.deepEqual(parts().map((p) => p.name), ['Soprano', 'Alto', 'Tenor', 'Bass'], 'a roll with no notes loses its spare empty part: the movement is the roll');
+  assert.equal(roll().activeTrackId, byName('Soprano').id, 'its top voice is the part being edited');
   assert.deepEqual(ticks(byName('Soprano')), [[0, 2880], [5760, 2880]], "both sections' notes in one part");
   assert.deepEqual(roll().meterMap.map((s) => [s.bar, s.meter.num, s.meter.den]), [[0, 3, 4]], "the movement's meter");
   assert.equal(roll().pickupSteps, 0);
@@ -396,6 +406,18 @@ function form(): void {
   assert.equal(roll().tempoMap, before.tempo, 'and the tempo map');
   assert.equal(roll().markers, before.markers, 'and the markers');
   assert.equal(parts().length, 1, 'and takes the parts away');
+  assert.equal(parts()[0].id, spare, 'the empty part comes back');
+  assert.equal(roll().activeTrackId, spare, 'as the part being edited');
+
+  // An empty part with a name of its own, or marked for a job, is no spare.
+  freshRoll([]);
+  roll().renameTrack(parts()[0].id, 'Oboe line');
+  roll().writeFormMovement(result);
+  assert.deepEqual(parts().map((p) => p.name), ['Oboe line', 'Soprano', 'Alto', 'Tenor', 'Bass']);
+  freshRoll([]);
+  roll().setCantusFirmus(parts()[0].id);
+  roll().writeFormMovement(result);
+  assert.deepEqual(parts().map((p) => p.name), ['Part 1', 'Soprano', 'Alto', 'Tenor', 'Bass'], 'the cantus firmus part stays, empty or not');
 }
 
 // ── figured bass: written, saved, reopened, realized ────────────────────────
