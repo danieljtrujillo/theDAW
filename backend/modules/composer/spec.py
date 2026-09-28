@@ -36,3 +36,48 @@ RULES = (
     "unresolved_leading_tone",
     "unresolved_seventh",
 )
+
+# Counterpoint (counterpoint.py, canon.py, fugue.py).
+SPECIES = (1, 2, 3, 4, 5)
+MODES = (
+    "major",
+    "minor",
+    "ionian",
+    "dorian",
+    "phrygian",
+    "lydian",
+    "mixolydian",
+    "aeolian",
+)
+INVERTIBLE_AT = (8, 10, 12)
+FUGUE_VOICES: dict[int, tuple[str, ...]] = {
+    2: ("soprano", "bass"),
+    3: ("soprano", "alto", "bass"),
+    4: ("soprano", "alto", "tenor", "bass"),
+}
+COUNTERPOINT_RULES = (
+    "dissonance",
+    "parallel_fifths",
+    "parallel_octaves",
+    "direct_perfect",
+    "hidden_fifths",
+    "hidden_octaves",
+    "accented_parallels",
+    "voice_crossing",
+    "voice_overlap",
+    "spacing",
+    "unison",
+    "parallel_imperfect",
+    "melodic_interval",
+    "repeated_note",
+    "leap_recovery",
+    "consecutive_leaps",
+    "eighths",
+    "ficta",
+    "line_range",
+    "climax",
+    "opening",
+    "cadence",
+    "rhythm",
+    "broken_ties",
+)
