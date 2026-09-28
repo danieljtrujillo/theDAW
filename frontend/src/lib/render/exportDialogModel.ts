@@ -108,7 +108,7 @@ const FORMATS_BY_ID: Record<ExportFormatId, ExportFormat> = {
 export const SAMPLE_RATE_LABEL = '44.1 kHz · stereo (fixed)';
 
 /** What a MIDI export holds, shown where the sample rate is for audio. */
-export const MIDI_FORMAT_LABEL = 'Type 1 · 960 PPQ · a track per EDIT track with its program, controllers, tempo map and time signatures';
+export const MIDI_FORMAT_LABEL = 'Type 1 · 960 PPQ · a track per EDIT track with its program, controllers, pitch bends, tempo map and time signatures';
 
 /** Total over `ExportFormatId` — the union already limits callers to the
  *  ids above, so there is no unknown-id case left to throw on. */
