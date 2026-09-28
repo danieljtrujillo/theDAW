@@ -1811,6 +1811,350 @@ PROVIDER_TOOLS.extend(_OVERDRIVE_TOOLS)
 
 
 # ---------------------------------------------------------------------------
+# Composer and score tools: the piano roll's COMPOSE backends
+# (backend/modules/composer) and score import / the music21 corpus
+# (backend/modules/notation).
+#
+# Executed in the browser by ``frontend/src/orb-kit/composerTools.ts``, which
+# builds each request with the COMPOSE panel's own model and writes into the
+# piano roll the way the panel does. Enums and limits are the composer
+# router's Pydantic ones; ``tests/test_assistant_composer_tools.py`` reads
+# them back from router.py and spec.py so the two cannot drift.
+# ---------------------------------------------------------------------------
+_KEY = {
+    "type": "string",
+    "description": "Tonic: 'C', 'F#', 'Bb'. A lowercase letter with no mode is minor",
+}
+_KEY_MODE = {"type": "string", "enum": ["major", "minor"]}
+_MODAL_MODE = {
+    "type": "string",
+    "enum": [
+        "major",
+        "minor",
+        "ionian",
+        "dorian",
+        "phrygian",
+        "lydian",
+        "mixolydian",
+        "aeolian",
+    ],
+}
+_SEED = {
+    "type": "integer",
+    "minimum": 0,
+    "description": "Same seed, same answer; change it for another",
+}
+_ROLL_PART = (
+    "A piano-roll part by name (case-insensitive) or id; 'active' for the part "
+    "being edited"
+)
+
+_COMPOSER_TOOLS: list[dict[str, Any]] = [
+    _fn(
+        "composer_plan",
+        "Plan a roman-numeral phrase in a key and voice it in four parts "
+        "(soprano, alto, tenor, bass) with no voice-leading faults, on the piano "
+        "roll's meter, optionally in a composer's style (ids from "
+        "composer_styles). Writes the four parts into the MIDI tab's piano roll "
+        "unless write is false: an empty roll becomes the four parts; otherwise "
+        "parts with those names are replaced and the rest kept. Answers with the "
+        "chords (bar, beat, figure, key). A phrase that cannot be planned is "
+        "refused with the reason.",
+        {
+            "key": _KEY,
+            "mode": _KEY_MODE,
+            "bars": {"type": "integer", "minimum": 2, "maximum": 64},
+            "cadence": {
+                "type": "string",
+                "enum": [
+                    "authentic_perfect",
+                    "authentic_imperfect",
+                    "half",
+                    "plagal",
+                    "deceptive",
+                    "phrygian_half",
+                ],
+                "description": "Default: perfect authentic, or drawn from the style",
+            },
+            "harmonic_rhythm": {
+                "type": "string",
+                "enum": ["pulse", "bar", "style"],
+                "description": "A chord on every pulse, one a bar, or the style's "
+                "rate ('style' needs a style)",
+            },
+            "style": {
+                "type": "string",
+                "description": "A style id from composer_styles, e.g. 'bach'",
+            },
+            "include": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "seventh",
+                        "applied",
+                        "neapolitan",
+                        "italian",
+                        "french",
+                        "german",
+                    ],
+                },
+                "description": "Chromatic and seventh chords to put in",
+            },
+            "modulate_to": {
+                "type": "string",
+                "description": "A closely related key to modulate to through a "
+                "pivot chord",
+            },
+            "seed": _SEED,
+            "write": {
+                "type": "boolean",
+                "description": "Write the parts into the piano roll (default true)",
+            },
+        },
+    ),
+    _fn(
+        "composer_check",
+        "Check every piano-roll part that has notes for voice-leading faults: "
+        "parallel and hidden fifths and octaves, crossing, overlap, spacing, "
+        "range, unresolved leading tones and sevenths. Answers with the count "
+        "by rule and each flag's bar, beat, parts and message.",
+        {
+            "key": {
+                "type": "string",
+                "description": "Read the harmony in this key (a tonic, as in "
+                "composer_plan)",
+            },
+            "mode": _KEY_MODE,
+        },
+    ),
+    _fn(
+        "composer_form",
+        "Plan a whole form: its movements and sections with their roles, keys, "
+        "bars and tempi. With realize true, every section is voiced in four "
+        "parts and one movement is written into the piano roll, REPLACING its "
+        "parts (undo brings them back), with the movement's meter map, tempo "
+        "map and a marker at each section. A symphony is four movements that "
+        "keep their own meters and tempi.",
+        {
+            "form": {
+                "type": "string",
+                "enum": [
+                    "sonata",
+                    "rondo",
+                    "theme_and_variations",
+                    "minuet_and_trio",
+                    "scherzo",
+                    "symphony",
+                ],
+            },
+            "key": _KEY,
+            "mode": _KEY_MODE,
+            "bars": {
+                "type": "integer",
+                "minimum": 16,
+                "maximum": 800,
+                "description": "Bars in all (default: the form's own). A single "
+                "form at most 400; a symphony's four movements share up to 800",
+            },
+            "tempo": {
+                "type": "number",
+                "minimum": 20,
+                "maximum": 300,
+                "description": "Quarter notes a minute (single forms only)",
+            },
+            "meter": {
+                "type": "string",
+                "description": "A single form's meter, e.g. '3/4' or '6/8'",
+            },
+            "rondo": {"type": "string", "enum": ["ABACA", "ABACABA"]},
+            "variations": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "Theme and variations: how many",
+            },
+            "seed": _SEED,
+            "realize": {
+                "type": "boolean",
+                "description": "Voice it and write a movement into the roll "
+                "(default false: plan only)",
+            },
+            "movement": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "description": "Which movement realize writes (default 1)",
+            },
+        },
+        ["form"],
+    ),
+    _fn(
+        "composer_species",
+        "Write species counterpoint (first to fifth) above or below a cantus "
+        "firmus with no rule broken, and put the line and its cantus into the "
+        "piano roll as two parts. The cantus is one of Fux's (preset) or a "
+        "roll part's notes, one a bar (cantus_part, at most 32 notes).",
+        {
+            "species": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+            "position": {"type": "string", "enum": ["above", "below"]},
+            "preset": {
+                "type": "string",
+                "enum": [
+                    "fux_dorian",
+                    "fux_phrygian",
+                    "fux_mixolydian",
+                    "fux_aeolian",
+                    "fux_ionian",
+                ],
+                "description": "One of Fux's cantus firmi (default fux_dorian)",
+            },
+            "cantus_part": {"type": "string", "description": _ROLL_PART},
+            "key": {
+                "type": "string",
+                "description": "With cantus_part: 'D' or 'D dorian'; default read "
+                "from the cantus",
+            },
+            "mode": _MODAL_MODE,
+            "invertible": {
+                "type": "integer",
+                "enum": [8, 10, 12],
+                "description": "Accept only a line that also inverts at the "
+                "octave, tenth or twelfth",
+            },
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_canon",
+        "Write a two-voice canon at an interval and a lag, closed with a "
+        "cadence, into the piano roll as the parts Leader and Follower.",
+        {
+            "key": _KEY,
+            "mode": _MODAL_MODE,
+            "interval": {
+                "type": "integer",
+                "minimum": -15,
+                "maximum": 15,
+                "description": "The follower's generic interval: 1 unison, 5 a "
+                "fifth above, 8 an octave above, -4 a fourth below (never 0 or -1)",
+            },
+            "lag_beats": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "How many quarter notes the follower comes in "
+                "after the leader",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 4,
+                "maximum": 32,
+                "description": "At least ceil((lag_beats + 1) / 4) + 2",
+            },
+            "transposition": {
+                "type": "string",
+                "enum": ["diatonic", "real"],
+                "description": "Stay in the key, or move by the exact interval",
+            },
+            "rhythm": {"type": "string", "enum": ["mixed", "halves", "quarters"]},
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_fugue",
+        "Write a fugue exposition (subject, tonal or real answer, "
+        "countersubject, episodes) with its stretto search, into the piano roll "
+        "one part a voice. The subject is written for you, or taken from a roll "
+        "part (subject_part, 2 to 32 notes, at most four bars).",
+        {
+            "key": _KEY,
+            "mode": _MODAL_MODE,
+            "voices": {"type": "integer", "enum": [2, 3, 4]},
+            "subject_part": {"type": "string", "description": _ROLL_PART},
+            "subject_start": {
+                "type": "string",
+                "enum": ["tonic", "dominant"],
+                "description": "Where a written subject starts",
+            },
+            "episodes": {"type": "integer", "enum": [0, 1, 2]},
+            "countersubject": {"type": "boolean"},
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_styles",
+        "List the composer style profiles: id, name, era, and whether each was "
+        "measured from scores or authored from textbook facts.",
+    ),
+    _fn(
+        "composer_profile",
+        "A style profile's numbers: top chords by mode, cadences, harmonic "
+        "rhythm. Count one from music21 corpus pieces (ids from "
+        "notation_corpus_search) or a library composition's score (entry_id), "
+        "or show a shipped style (style). Give exactly one of the three.",
+        {
+            "corpus": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 40,
+            },
+            "entry_id": {"type": "string"},
+            "style": {
+                "type": "string",
+                "description": "A style id from composer_styles",
+            },
+            "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9_-]{1,40}$",
+                "description": "The new profile's id",
+            },
+            "name": {"type": "string", "maxLength": 80},
+            "max_bars": {"type": "integer", "minimum": 4, "maximum": 400},
+        },
+    ),
+    _fn(
+        "notation_import",
+        "Import a score written as text (MusicXML, ABC or Humdrum **kern) as a "
+        "library composition with a MusicXML sheet for the SCORE tab, and with "
+        "into_roll true open it in the piano roll too, one part per staff.",
+        {
+            "filename": {
+                "type": "string",
+                "description": "Ends in .musicxml, .xml, .abc or .krn; names the entry",
+            },
+            "content": {"type": "string", "description": "The score file's text"},
+            "into_roll": {"type": "boolean"},
+        },
+        ["filename", "content"],
+    ),
+    _fn(
+        "notation_corpus_search",
+        "Search the music21 corpus by composer, title or movement. Each result "
+        "has the id notation_corpus_open and composer_profile take.",
+        {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        ["query"],
+    ),
+    _fn(
+        "notation_corpus_open",
+        "Import one music21 corpus piece as a library composition, and with "
+        "into_roll true open it in the piano roll too.",
+        {
+            "id": {"type": "string", "description": "From notation_corpus_search"},
+            "into_roll": {"type": "boolean"},
+        },
+        ["id"],
+    ),
+]
+
+PROVIDER_TOOLS.extend(_COMPOSER_TOOLS)
+
+
+# ---------------------------------------------------------------------------
 # MCP view
 # ---------------------------------------------------------------------------
 def thedaw_mcp_tools() -> list[dict[str, Any]]:

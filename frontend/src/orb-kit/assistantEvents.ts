@@ -129,6 +129,19 @@ export const theDAW_ACTION_TYPES = new Set([
     'dj_automix',
     'dj_transition_now',
     'dj_set_next',
+    // Composer: the piano roll's COMPOSE backends (orb-kit/composerTools).
+    'composer_plan',
+    'composer_check',
+    'composer_form',
+    'composer_species',
+    'composer_canon',
+    'composer_fugue',
+    'composer_styles',
+    'composer_profile',
+    // Scores: import a score file, search and open the music21 corpus.
+    'notation_import',
+    'notation_corpus_search',
+    'notation_corpus_open',
 ]);
 
 /** Validate an arbitrary parsed object (e.g. from a scraped <action> block)
