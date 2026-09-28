@@ -19,10 +19,10 @@ const fullCaps: NotationCapabilities = {
   engravers: { pdf: ['osmd', 'musescore'], svg: ['osmd', 'musescore'] },
   musescore_download_url: 'https://musescore.org/download',
   // The real list capabilities() returns (backend/modules/notation/engine.py):
-  // "midi" / "json" / "alphatex" are artifact kinds, never /export targets,
-  // and "chordtrack" is its own caps["chords"] flag, not a formats entry --
-  // none of the three was ever a real POST /export target.
-  formats: ['musicxml', 'abc', 'notechart', 'beatsaber', 'pdf', 'svg'],
+  // "json" / "alphatex" are artifact kinds, never /export targets, and
+  // "chordtrack" is its own caps["chords"] flag, not a formats entry. "midi"
+  // is both an artifact kind and the sounding-pitch MIDI /export target.
+  formats: ['musicxml', 'abc', 'notechart', 'beatsaber', 'midi', 'pdf', 'svg'],
 };
 
 /** Neither engraver: no node, no MuseScore — pdf and svg are not listed. */
@@ -255,6 +255,28 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   const noneFormats = none.formatsFor(none.parts[0]);
   assert.deepEqual(ids(noneFormats), ['file']);
   assert.equal(noneFormats[0].enabled, false);
+}
+
+// MIDI at sounding pitch: offered after SVG for the whole sheet and for one
+// part, exported through the route as 'midi', and its hover says what
+// "sounding" means. A backend that does not list it says so.
+{
+  const menu = buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: bandParts });
+  const all = menu.formatsFor(ALL_PARTS);
+  assert.deepEqual(ids(all).slice(4, 6), ['svg', 'midi']);
+  const midi = byId(all, 'midi');
+  assert.equal(midi.label, 'MIDI (SOUNDING)');
+  assert.equal(midi.kind, 'export');
+  assert.equal(midi.enabled, true);
+  assert.equal(routeFormatFor(midi), 'midi');
+  assert.ok(midi.title.includes('pitch it sounds') && midi.title.includes('tempo and meter'), midi.title);
+  const bass = byId(menu.formatsFor(menu.parts[1]), 'midi');
+  assert.equal(bass.partScoped, true);
+  assert.ok(bass.title.includes('Bass only'), bass.title);
+  const older: NotationCapabilities = { ...fullCaps, formats: fullCaps.formats.filter((f) => f !== 'midi') };
+  const missing = byId(buildExportMenu({ artifactKind: 'musicxml', caps: older, parts: null }).formatsFor(ALL_PARTS), 'midi');
+  assert.equal(missing.enabled, false);
+  assert.ok(missing.title.includes('not offered'), missing.title);
 }
 
 // A nameless part gets a positional label.
