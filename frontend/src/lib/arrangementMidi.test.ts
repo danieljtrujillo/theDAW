@@ -21,6 +21,7 @@ import { arrangementToMidiFile, faderVolumeScale, meterMapFrom, panControlOffset
 import { encodeMidi, parseMidi } from './midi.ts';
 import type { PolyLane } from './meterMap.ts';
 import { bendValueToRaw, type LaneBend } from './pitchBend.ts';
+import { clipRenderInput } from './rollClip.ts';
 import { beatToTime } from './tempoMap.ts';
 import type { AudioClip, EditorTrack } from '../state/editorStore.ts';
 import { useEditorStore } from '../state/editorStore.ts';
@@ -143,6 +144,81 @@ const secOf = (tick: number, map = [{ beat: 0, bpm: 120 }]) => beatToTime(map, t
   // Through the bytes and back.
   const back = parseMidi(encodeMidi(out.file));
   assert.deepEqual(back.tracks[0].controls?.map((x) => [x.tick, x.controller, x.value]), ctl.map((x) => [x.tick, x.controller, x.value]));
+}
+
+// ── a clip's controllers end with it, as its render does ─────────────────────
+// EDIT renders each clip on its own, from a channel at the General MIDI
+// defaults. A clip's pedal and volume used to stay in force in the file after
+// the clip ended, so every note of the next clip on the track sustained at
+// the earlier clip's volume.
+{
+  const part = (controls?: RollControl[]) => ({
+    doc: 'd',
+    id: 'x',
+    order: 0,
+    name: 'Piano',
+    program: 0,
+    bank: 0,
+    channel: null,
+    color: '#fff',
+    mute: false,
+    solo: false,
+    ...(controls ? { controls } : {}),
+  });
+  // Clip A: volume 40 from its start, the pedal down at beat 1 (0.5 s) and up only at beat 8 (4 s), but A is
+  // trimmed to end at 2 s. Clip B at 8 s has no controllers of its own.
+  const pedal: RollControl[] = [
+    { tick: 0, controller: 7, value: 40 },
+    { tick: 960, controller: 64, value: 127 },
+    { tick: 7680, controller: 64, value: 0 },
+  ];
+  const a = clip('a', 'pno', 0, [note(0, 48, 16)], { durationSec: 2, sourceRollPart: part(pedal) });
+  const b = clip('b', 'pno', 8, [note(0, 60), note(8, 64)], { sourceRollPart: part() });
+  /** Each controller's value in force when a note at `tick` sounds: changes at its tick come before it. */
+  const stateAt = (controls: readonly { tick: number; controller: number; value: number }[] | undefined, tick: number) => {
+    const state = new Map<number, number>([[1, 0], [7, 100], [10, 64], [11, 127], [64, 0]]);
+    for (const c of [...(controls ?? [])].sort((x, y) => x.tick - y.tick)) if (c.tick <= tick) state.set(c.controller, c.value);
+    return state;
+  };
+  const whole = parseMidi(encodeMidi(arrangementToMidiFile({ bpm: 120, tracks: [track('pno', 'Piano')], clips: [a, b] }).file)).tracks[0];
+  const bFirst = whole.notes.find((x) => x.note === 60)!.tick;
+  assert.equal(bFirst, 15360, 'clip B starts at 8 s');
+  assert.equal(clipRenderInput(b, 16).controls, undefined, "B's render has no controllers: it plays at the defaults");
+  assert.deepEqual([stateAt(whole.controls, bFirst).get(64), stateAt(whole.controls, bFirst).get(7)], [0, 100], 'the pedal is up and the volume back where B starts');
+  // A's pedal comes up where A ends (2 s, tick 3840), after its note ends there, so nothing A held rings on past it.
+  assert.deepEqual(whole.controls?.filter((c) => c.tick === 3840).map((c) => [c.controller, c.value]), [[64, 0], [7, 100]], 'pedal first, then the volume');
+  assert.equal(whole.controls?.some((c) => c.tick === 7680), false, "A's pedal-up past its end is not written");
+
+  // A span from 7 s: the file starts on the bar line at 6 s, and A, which ended at 2 s, leaves nothing in it.
+  const span = arrangementToMidiFile({ bpm: 120, tracks: [track('pno', 'Piano')], clips: [a, b] }, { range: { startSec: 7, endSec: 12 } });
+  const spanBack = parseMidi(encodeMidi(span.file)).tracks[0];
+  assert.equal(span.startSec, 6);
+  const spanFirst = spanBack.notes.find((x) => x.note === 60)!.tick;
+  assert.equal(spanFirst, 3840, 'B at 8 s is two seconds into the span');
+  assert.deepEqual([stateAt(spanBack.controls, spanFirst).get(64), stateAt(spanBack.controls, spanFirst).get(7)], [0, 100], 'a clip before the span holds no pedal or volume in it');
+  assert.equal(spanBack.controls, undefined, 'no controller change at all');
+
+  // Clip C right where A ends, with its own volume: its value takes over at that tick; the pedal still comes up.
+  const c = clip('c', 'pno', 2, [note(0, 55)], { sourceRollPart: part([{ tick: 0, controller: 7, value: 60 }]) });
+  const butt = parseMidi(encodeMidi(arrangementToMidiFile({ bpm: 120, tracks: [track('pno', 'Piano')], clips: [a, c] }).file)).tracks[0];
+  assert.deepEqual(butt.controls?.filter((x) => x.tick === 3840).map((x) => [x.controller, x.value]), [[64, 0], [7, 60]], "the pedal up, then C's volume");
+  // A clip that starts inside A owns the channel from its start: A's later changes and its reset stop there.
+  const inside = clip('in', 'pno', 1, [note(0, 57)], { durationSec: 4, sourceRollPart: part([{ tick: 0, controller: 11, value: 90 }]) });
+  const overlapped = parseMidi(encodeMidi(arrangementToMidiFile({ bpm: 120, tracks: [track('pno', 'Piano')], clips: [a, inside] }).file)).tracks[0];
+  const insideAt = overlapped.notes.find((x) => x.note === 57)!.tick;
+  assert.deepEqual([stateAt(overlapped.controls, insideAt).get(64), stateAt(overlapped.controls, insideAt).get(7), stateAt(overlapped.controls, insideAt).get(11)], [0, 100, 90]);
+  assert.equal(overlapped.controls?.some((x) => x.tick === 3840), false, "nothing of A's at its own end, inside the later clip");
+
+  // On a track off EDIT's default fader, a clip with no volume of its own plays at the fader's volume,
+  // before a clip with volume changes as well as after one.
+  const quiet = track('pno', 'Piano', { volume: 0.4 });
+  const late = { ...a, startSec: 8 };
+  const early = { ...b, startSec: 0 };
+  const faded = parseMidi(encodeMidi(arrangementToMidiFile({ bpm: 120, tracks: [quiet], clips: [early, late] }).file)).tracks[0];
+  const scaled = (v: number) => Math.round(v * Math.SQRT1_2);
+  assert.equal(stateAt(faded.controls, 0).get(7), scaled(100), 'the first clip, with none of its own, at the fader');
+  assert.equal(stateAt(faded.controls, 15360).get(7), scaled(40), "the second clip's own volume, scaled by the fader");
+  assert.equal(stateAt(faded.controls, 15360 + 3840).get(7), scaled(100), 'back at the fader where it ends');
 }
 
 // ── more than fifteen melodic tracks share channels, and say so ──────────────

@@ -26,13 +26,19 @@
  * (RollPartRef `controls`: modulation, volume, pan, expression, the sustain
  * pedal). They are written at their seconds, and where a clip's window starts
  * past some of them, the value each held there is written at the clip's start,
- * so a trimmed clip starts with its pedal and volume. The track's fader and pan
- * ride in the same controllers: a fader off EDIT's default (0.8) scales every
- * volume change on the General MIDI volume curve (gain = (CC7/127)^2), or
- * writes one volume change at tick 0 when the parts carry none; a pan off
- * centre moves every pan change, or writes one. A controller acts on a
- * channel, so every change, program change included, goes to each channel
- * the track's notes play on.
+ * so a trimmed clip starts with its pedal and volume. A clip's controllers end
+ * with it, as EDIT renders every clip on its own from a channel at the General
+ * MIDI defaults: where the clip ends, each controller it left off its default
+ * goes back, the pedal first, so nothing it held rings past the clip and the
+ * next clip on the track starts where its render starts (endClipControls). A
+ * clip that starts before the one before it ends owns the channel from its
+ * start. The track's fader and pan ride in the same controllers: a fader off
+ * EDIT's default (0.8) scales every volume change on the General MIDI volume
+ * curve (gain = (CC7/127)^2) and writes the fader's volume at tick 0 unless a
+ * clip sets one there; a pan off centre moves every pan change and writes its
+ * pan at tick 0 the same way. A controller acts on a channel, so every
+ * change, program change included, goes to each channel the track's notes
+ * play on.
  *
  * PITCH BEND: a clip whose roll lanes bend (`sourceBends`) is written as its
  * render plays it (lib/rollClip clipRenderInput, lib/pitchBendVoice): the
@@ -54,7 +60,8 @@
  *
  * RANGE: an export of a span of the timeline starts on the bar line at or
  * before the span's start, so the file's bars are the arrangement's bars, and
- * keeps the notes that start inside the span, each cut at its end.
+ * keeps the notes that start inside the span, each cut at its end. A clip that
+ * ends before the span starts leaves nothing in it.
  *
  * The resolution is the roll's own 960 PPQ. Pure (no stores), so node tests
  * run it; exportArrangementMidi (lib/arrangementMidiApp) reads the stores and
@@ -70,7 +77,7 @@ import { bendWheelEvents, playingLane } from './pitchBend';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { tempoMapText, tempoMapToMidiTempos } from './rollMidi';
 import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from './rollTempo';
-import { PERCUSSION_PART_CHANNEL, partFileChannels } from './rollTracks';
+import { PERCUSSION_PART_CHANNEL, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
 
 /** The arrangement an export reads (editorStore's fields). */
@@ -152,6 +159,8 @@ export function meterMapFrom(map: readonly MeterSegment[], bar: number): MeterSe
 /** One clip's contribution to its MIDI track, in timeline seconds. */
 interface ClipEvents {
   startSec: number;
+  /** Where the clip's window ends on the timeline. */
+  endSec: number;
   program: number | undefined;
   bank: number;
   /** Each note with the bent lane it plays in; null for a lane that does not bend (the track's own channel). */
@@ -216,12 +225,44 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const program = voice.program ?? clip.sourceRollPart?.program ?? undefined;
   return {
     startSec: clip.startSec,
+    endSec: clip.startSec + clip.durationSec,
     program: percussion ? (program ?? GM_STANDARD_KIT) : program,
     bank: percussion ? 0 : Math.max(0, Math.min(127, Math.round(clip.sourceRollPart?.bank ?? 0))),
     notes,
     controls,
     wheels,
   };
+}
+
+/** The value a channel starts at for `controller` (General MIDI's reset, lib/rollTracks PART_CONTROLLERS). */
+const controllerDefault = (controller: number): number => partController(controller)?.initial ?? 0;
+
+/**
+ * End each clip's controllers with the clip (`events` in timeline order, one
+ * track's). EDIT renders every clip on its own, from a channel at the General
+ * MIDI defaults, so where a clip ends each controller it left off its default
+ * goes back to it, the pedal first, so nothing it held rings past the clip's
+ * end. A later clip that starts before that end owns the channel from its
+ * start: the earlier clip's changes stop there and its reset lands there,
+ * leaving out the controllers the later clip sets at its own start.
+ */
+function endClipControls(events: ClipEvents[]): void {
+  events.forEach((e, i) => {
+    const next = events[i + 1];
+    const end = next && next.startSec < e.endSec - 1e-9 ? next.startSec : e.endSec;
+    const kept = e.controls.filter((c) => c.sec < end - 1e-9);
+    const state = new Map<number, number>();
+    for (const c of kept) state.set(c.controller, c.value);
+    const nextSets = new Set(
+      next && Math.abs(next.startSec - end) < 1e-9 ? next.controls.filter((c) => Math.abs(c.sec - end) < 1e-9).map((c) => c.controller) : [],
+    );
+    const resets = [...state.entries()]
+      .filter(([controller, value]) => value !== controllerDefault(controller) && !nextSets.has(controller))
+      .map(([controller]) => controller)
+      .sort((a, b) => (a === 64 ? -1 : b === 64 ? 1 : a - b))
+      .map((controller) => ({ sec: end, controller, value: controllerDefault(controller) }));
+    e.controls = kept.concat(resets);
+  });
 }
 
 /** The partFileChannels id of a track's extra channel for bent lane `lane`. */
@@ -268,11 +309,15 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   for (const track of source.tracks) {
     if (track.isFolder) continue;
     const clips = scopedClips(source, track, scope, soloed);
-    const kept = clips.filter((c) => {
-      if (c.muted) mutedClips += 1;
-      return !c.muted;
-    });
+    const kept = clips
+      .filter((c) => {
+        if (c.muted) mutedClips += 1;
+        return !c.muted;
+      })
+      // A clip that ends before the span starts has no note in it, and its controllers end with it.
+      .filter((c) => !range || c.startSec + c.durationSec > range.startSec + 1e-9);
     const events = kept.map((c) => clipEvents(c, track, global, bpm));
+    endClipControls(events);
     for (const e of events) {
       e.notes = e.notes.filter((n) => inRange(n.onSec)).map((n) => ({ ...n, offSec: cutEnd(n.offSec) }));
       e.controls = e.controls.filter((c) => !range || c.sec < range.endSec - 1e-9);
@@ -367,15 +412,17 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     // The fader and pan, on the General MIDI volume curve and around the centre.
     const scale = faderVolumeScale(track.volume);
     const panOffset = panControlOffset(track.pan);
-    const hasVolume = controls.some((c) => c.controller === 7);
-    const hasPan = controls.some((c) => c.controller === 10);
     for (const c of controls) {
       if (c.controller === 7 && Math.abs(scale - 1) > 1e-9) c.value = clamp7(c.value * scale);
       if (c.controller === 10 && panOffset !== 0) c.value = clamp7(c.value + panOffset);
     }
+    // From tick 0 each channel plays at the fader's volume and pan, unless a clip sets its own there:
+    // a clip with none of its own, before a clip that has some, plays at the track's.
+    const setAtZero = (channel: number, controller: number): boolean =>
+      controls.some((c) => c.tick === 0 && c.channel === channel && c.controller === controller);
     for (const channel of trackChannels) {
-      if (!hasVolume && Math.abs(scale - 1) > 1e-9) controls.push({ tick: 0, channel, controller: 7, value: clamp7(GM_DEFAULT_VOLUME * scale) });
-      if (!hasPan && panOffset !== 0) controls.push({ tick: 0, channel, controller: 10, value: clamp7(64 + panOffset) });
+      if (Math.abs(scale - 1) > 1e-9 && !setAtZero(channel, 7)) controls.push({ tick: 0, channel, controller: 7, value: clamp7(GM_DEFAULT_VOLUME * scale) });
+      if (panOffset !== 0 && !setAtZero(channel, 10)) controls.push({ tick: 0, channel, controller: 10, value: clamp7(64 + panOffset) });
     }
     notes.sort((a, b) => a.tick - b.tick);
     controls.sort((a, b) => a.tick - b.tick);

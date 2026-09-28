@@ -36,7 +36,7 @@ import {
   cleanPartControls,
   cleanPartName,
   cleanPartProgram,
-  controlStateBefore,
+  partController,
 } from './rollTracks';
 import { quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGrooveInMeter, grooveLateness, type GrooveTemplate } from './grooveTemplate';
@@ -199,9 +199,14 @@ export interface ClipControlTime {
  * clip's own clock (its tempo map, else `sourceBpm`, else `fallbackBpm`),
  * shifted by the clip's start and trim, inside the clip's window. The value
  * each controller holds where the window starts comes first, at the clip's
- * start, so a trimmed clip starts with the pedal and volume it has there.
- * The arrangement's MIDI export (lib/arrangementMidi) reads it; a live
- * scheduler sends the same list.
+ * start, so a trimmed clip starts with the pedal and volume it has there. A
+ * controller that changes right where the window starts is left out of that
+ * state, since its change plays there (the rule PLAY's chase follows in
+ * lib/rollPartPlay), and a change within a nanosecond of the start counts as
+ * inside the window, so rounding in the clock never drops it. The
+ * arrangement's MIDI export (lib/arrangementMidi) reads it. EDIT's live
+ * playback sends no part controllers yet; a live scheduler that does should
+ * send this list.
  */
 export function clipControlTimes(
   clip: Pick<AudioClip, 'startSec' | 'durationSec' | 'offsetIntoSource' | 'sourceBpm' | 'sourceTempoMap' | 'sourceRollPart'>,
@@ -211,16 +216,26 @@ export function clipControlTimes(
   if (!own.length) return [];
   const clock = stepClock(clip.sourceBpm ?? fallbackBpm, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
-  const out: ClipControlTime[] = [];
-  // The first tick the window shows: its trim offset through the clip's clock.
-  const firstTick = Math.max(0, clock.stepAt(offset) * TICKS_PER_STEP);
-  for (const [controller, value] of controlStateBefore(own, firstTick)) out.push({ sec: clip.startSec, controller, value });
+  // Each controller the part uses, at the value it holds where the window
+  // starts: the last change before the window, else where a channel starts.
+  const state = new Map<number, number>();
+  for (const c of own) if (!state.has(c.controller)) state.set(c.controller, partController(c.controller)?.initial ?? 0);
+  const inside: ClipControlTime[] = [];
+  const changingAtStart = new Set<number>();
+  // `own` is in tick order and the clock only moves forward, so each change is before, inside or past the window in turn.
   for (const c of own) {
     const rel = clock.at(c.tick / TICKS_PER_STEP) - offset;
-    if (rel < 0 || rel >= clip.durationSec) continue;
-    out.push({ sec: clip.startSec + rel, controller: c.controller, value: c.value });
+    if (rel < -1e-9) {
+      state.set(c.controller, c.value);
+      continue;
+    }
+    if (rel >= clip.durationSec) break;
+    if (rel <= 1e-9) changingAtStart.add(c.controller);
+    inside.push({ sec: clip.startSec + Math.max(0, rel), controller: c.controller, value: c.value });
   }
-  return out;
+  const out: ClipControlTime[] = [];
+  for (const [controller, value] of state) if (!changingAtStart.has(controller)) out.push({ sec: clip.startSec, controller, value });
+  return out.concat(inside);
 }
 
 /**
