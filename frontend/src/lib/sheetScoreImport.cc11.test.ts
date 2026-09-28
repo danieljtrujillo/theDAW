@@ -1,10 +1,12 @@
 /**
- * A score's printed dynamics, which the sheet importer sends as controller 11
+ * A score's hairpins, which the sheet importer sends as controller 11
  * (expression) changes beside the pedal's 64, land in the roll parts' own
- * controller changes and play.
+ * controller changes and play. The printed levels are the notes' velocities;
+ * CC11 is 127 where a level holds and shapes the level only inside a hairpin
+ * (backend notation/expression.py, SheetExpression.cc11).
  *
  * The sequence: a two-part score (a violin with a crescendo from p to f, a
- * piano with its pedal and a sforzando) is imported; each part keeps its
+ * piano with its pedal and a diminuendo) is imported; each part keeps its
  * expression curve at its ticks, on the roll's clock, beside the pedal. PLAY
  * (lib/rollPartPlay, the scheduler the roll's transport runs) sends every
  * expression change on its part's channel at its tick's context time, the
@@ -27,20 +29,25 @@ import { rollToMidiFile } from './rollMidi.ts';
 const roll = () => usePianoRollStore.getState();
 const note = (tick: number, ticks: number, pitch: number) => ({ pitch, step: tick / 240, length: ticks / 240, velocity: 80, tick, ticks });
 
-// p at bar 1, a hairpin up through bar 2, f at bar 3 (the importer's velocity-to-expression mapping).
+// p (velocity 49) at bar 1, a crescendo through bar 2, f (velocity 80) at bar 3,
+// sampled on each beat here. The crescendo's notes play at f's velocity, and
+// CC11 = 127 x level / 80 brings the heard level from p up to f: 127 x 49/80
+// = 78 at its start, back at 127 on the first onset after it.
 const violinDynamics = [
-  { tick: 0, controller: 11, value: 49 },
-  { tick: 3840, controller: 11, value: 64 },
-  { tick: 4800, controller: 11, value: 80 },
-  { tick: 5760, controller: 11, value: 96 },
-  { tick: 7680, controller: 11, value: 112 },
+  { tick: 3840, controller: 11, value: 78 },
+  { tick: 4800, controller: 11, value: 90 },
+  { tick: 5760, controller: 11, value: 102 },
+  { tick: 6720, controller: 11, value: 115 },
+  { tick: 7680, controller: 11, value: 127 },
 ];
+// The pedal down through bar 1, and a diminuendo from f to p over the second
+// half of bar 2: CC11 from 127 down along it, 127 again on bar 3's p note.
 const pianoControls = [
   { tick: 0, controller: 64, value: 127 },
-  { tick: 0, controller: 11, value: 80 },
   { tick: 3840, controller: 64, value: 0 },
   { tick: 5760, controller: 11, value: 127 },
-  { tick: 6720, controller: 11, value: 80 },
+  { tick: 6720, controller: 11, value: 102 },
+  { tick: 7680, controller: 11, value: 127 },
 ];
 const score: SheetScore = {
   ok: true,
@@ -67,7 +74,7 @@ const done = importSheetParts(score);
 assert.equal(done.into, 'parts');
 const [violin, piano] = rollTracksOf(roll());
 assert.deepEqual(violin.controls, violinDynamics, "the violin's crescendo as controller 11 at its ticks");
-assert.deepEqual(piano.controls, pianoControls, "the piano's pedal and sforzando, in tick order");
+assert.deepEqual(piano.controls, pianoControls, "the piano's pedal and diminuendo, in tick order");
 assert.deepEqual(
   partControlCounts(violin.controls).map((c) => [c.controller.name, c.count]),
   [['Expression', 5]],
@@ -104,12 +111,12 @@ for (const p of parts) {
 }
 // Starting inside the hairpin: the violin's channel gets the expression it has there first.
 {
-  usePianoRollStore.setState({ currentStep: 22 }); // tick 5280, after the change to 80 at 4800
+  usePianoRollStore.setState({ currentStep: 22 }); // tick 5280, after the change to 90 at 4800
   const st = roll();
   const halfway = createRollScheduler({ ...st, tracks: rollTracksOf(st) }, 50, ROLL_LOOKAHEAD_SEC);
   const first = halfway.tick(49.95, { ...st, tracks: rollTracksOf(st) }, voiceOf).wheels.filter((w) => w.kind === 'control');
   const ch = live.get(violin.id)!.base;
-  assert.equal(first.find((w) => w.channel === ch && w.controller === 11)?.value, 80, 'the expression in force where playback starts');
+  assert.equal(first.find((w) => w.channel === ch && w.controller === 11)?.value, 90, 'the expression in force where playback starts');
   usePianoRollStore.setState({ currentStep: 0 });
 }
 
@@ -134,7 +141,7 @@ for (const p of parts) {
   assert.deepEqual(active.controls, violinDynamics, "the part takes the score's dynamics in place of its own");
   assert.ok(roll()._undo.length > steps);
   roll().undo();
-  assert.deepEqual(rollTracksOf(roll()).find((t) => t.id === piano.id)?.controls, pianoControls, 'one undo puts the pedal and sforzando back');
+  assert.deepEqual(rollTracksOf(roll()).find((t) => t.id === piano.id)?.controls, pianoControls, 'one undo puts the pedal and diminuendo back');
 }
 
 console.log('sheetScoreImport.cc11: ok');

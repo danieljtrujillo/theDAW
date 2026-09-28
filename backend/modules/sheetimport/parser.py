@@ -107,7 +107,8 @@ TEMPO_SNAP_TICKS = PPQ // 8
 DEFAULT_BPM = 120.0
 #: The sustain pedal's controller number.
 SUSTAIN_CC = 64
-#: The expression controller number (the printed dynamics as a curve).
+#: The expression controller number (the hairpins as a curve; the printed
+#: levels are the notes' velocities).
 EXPRESSION_CC = 11
 #: How long a pedal change holds the pedal up before it goes down again, in
 #: quarter notes (a 64th note): a lift and a press on one tick would be one
@@ -1202,7 +1203,7 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             if controls and source not in pedal_parts_counted:
                 pedal_parts_counted.add(source)
                 stats["pedal_marks"] += sum(1 for _, _, value in changes if value > 0)
-        # The printed dynamics as an expression (CC11) curve, beside the pedal.
+        # The hairpins as an expression (CC11) curve, beside the pedal.
         curve = marks.cc11(float(ev.offset) for ev in events)
         if curve:
             controls = sorted(

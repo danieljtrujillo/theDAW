@@ -235,9 +235,10 @@ def test_sheet_import_plays_dynamics_a_hairpin_and_staccato(tmp_path):
 
     notes = parsed["tracks"][0]["notes"]
     velocities = [n["velocity"] for n in notes]
-    # Levels play at the sheet reader's velocities (music21 volume scalars).
-    assert velocities[0] == 44, "p"
-    assert velocities[:4] == sorted(velocities[:4]) and velocities[3] > velocities[0]
+    # Levels play at the sheet reader's velocities (music21 volume scalars):
+    # p is 44 and f 89. The crescendo from p to f plays its notes at f, and
+    # CC11 brings the heard level down to p at its start.
+    assert velocities[:4] == [89, 89, 89, 89], "inside the crescendo, and its end"
     assert velocities[4:] == [89, 89, 89], "f after the hairpin"
     lengths = [n["length"] for n in notes]
     steps = parsed["steps_per_quarter"]
@@ -247,9 +248,65 @@ def test_sheet_import_plays_dynamics_a_hairpin_and_staccato(tmp_path):
     cc11 = [c for c in controls if c["controller"] == 11]
     ticks = [c["tick"] for c in cc11]
     assert ticks == sorted(ticks)
+    ppq = parsed["ppq"]
+    assert ticks[0] == 0 and ticks[-1] == 2 * ppq, "from the hairpin's start to its end"
     values = [p["value"] for p in cc11]
-    assert values[0] == 44 and values[-1] == 89
-    assert values == sorted(values)
+    assert values == sorted(values) and max(values) == 127
+    # The heard level, velocity x CC11 / 127, runs from p to f exactly once.
+    assert round(velocities[0] * values[0] / 127) == 44
+    assert round(velocities[2] * values[-1] / 127) == 89
+    heard = [velocities[0] * v / 127 for v in values]
+    steps_up = [b - a for a, b in zip(heard, heard[1:])]
+    assert max(steps_up) - min(steps_up) < 1.5, "a smooth rise"
+
+
+_LEVELS_ONLY = """<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list><score-part id="P1"><part-name>Oboe</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+      <direction placement="below"><direction-type><dynamics><pp/></dynamics></direction-type></direction>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>
+    </measure>
+    <measure number="2">
+      <direction placement="below"><direction-type><dynamics><ff/></dynamics></direction-type></direction>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"""
+
+
+def test_levels_without_a_hairpin_play_by_velocity_and_write_no_cc11(tmp_path):
+    """pp on beat 0 and ff at bar 2, with no hairpin between them: each note
+    plays at its printed level, and CC11 writes nothing, or the level would
+    be applied twice (once in the velocity, once in the expression)."""
+    sheet = tmp_path / "levels.musicxml"
+    sheet.write_text(_LEVELS_ONLY, encoding="utf-8")
+
+    track = parse_score_path(str(sheet))["tracks"][0]
+
+    velocities = [n["velocity"] for n in track["notes"]]
+    assert velocities[0] < velocities[1], "pp, then ff"
+    assert not [c for c in track.get("controls", []) if c["controller"] == 11]
+
+
+def test_a_part_whose_only_mark_is_a_late_ff_writes_no_cc11(tmp_path):
+    sheet = tmp_path / "late.musicxml"
+    sheet.write_text(
+        "".join(
+            line
+            for line in _LEVELS_ONLY.splitlines(keepends=True)
+            if "<pp/>" not in line
+        ),
+        encoding="utf-8",
+    )
+    assert "<pp/>" not in sheet.read_text(encoding="utf-8")
+
+    track = parse_score_path(str(sheet))["tracks"][0]
+
+    assert not [c for c in track.get("controls", []) if c["controller"] == 11]
 
 
 def test_sheet_import_keeps_a_notes_own_velocity(tmp_path):

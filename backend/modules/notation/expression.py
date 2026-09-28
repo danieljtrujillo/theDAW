@@ -36,7 +36,8 @@ it (:data:`LEVEL_VELOCITY`), a hairpin moves the velocity from its start level
 to the level it arrives at, an accent adds :data:`ACCENT_VELOCITY_BOOST`, and
 staccato (:data:`ARTICULATION_LENGTH_SCALE`) shortens the note. A note that
 carries its own velocity (a sheet this app engraved writes one on every note)
-keeps it. The level curve also comes back as a CC11 (expression) curve.
+keeps it. A hairpin also comes back as a CC11 (expression) curve that shapes
+the level between its two ends (:meth:`SheetExpression.cc11`).
 """
 
 from __future__ import annotations
@@ -151,6 +152,8 @@ HAIRPIN_DEFAULT_STEPS = 1
 HAIRPIN_TARGET_WINDOW_QL = 4.0
 # The CC11 curve is sampled this often inside a hairpin.
 HAIRPIN_CC_STEP_QL = 0.25
+# CC11 at full expression: the note's velocity plays as it is.
+CC11_FULL = 127
 
 _EPS = 1e-6
 
@@ -781,6 +784,34 @@ class SheetExpression:
                 velocity = self._target(wedge, start_velocity)
         return velocity
 
+    def _start_velocity(self, wedge: Hairpin) -> float:
+        """The level ``wedge`` starts from: a level printed on its first note,
+        else the level just before it."""
+        mark_at, mark_velocity = self._mark_before(wedge.start)
+        if abs(wedge.start - mark_at) < _EPS:
+            return mark_velocity
+        return self.level_at(wedge.start - 2 * _EPS)
+
+    def _hairpin_at(self, offset: float) -> Optional[Hairpin]:
+        """The hairpin a note at ``offset`` is played inside: from its start
+        up to, not including, its end. A note on the end plays the level the
+        hairpin arrived at."""
+        for wedge in self.wedges:
+            if wedge.start - _EPS <= offset < wedge.end - _EPS:
+                return wedge
+        return None
+
+    def note_level(self, offset: float) -> float:
+        """The velocity a note at ``offset`` plays at before its accents: the
+        printed level, and inside a hairpin the louder of the level it starts
+        from and the level it arrives at. :meth:`cc11` brings the heard level
+        down from there along the hairpin."""
+        wedge = self._hairpin_at(offset)
+        if wedge is None:
+            return self.level_at(offset)
+        start_velocity = self._start_velocity(wedge)
+        return max(start_velocity, self._target(wedge, start_velocity))
+
     def _target(self, wedge: Hairpin, start_velocity: float) -> float:
         if wedge.target is not None:
             return wedge.target
@@ -793,7 +824,7 @@ class SheetExpression:
     def velocity(self, element: Any, offset: float) -> int:
         """The velocity the marks give a note at ``offset``: the level, the
         sforzando on that onset, and the note's accents."""
-        velocity = self.level_at(offset)
+        velocity = self.note_level(offset)
         for at, accent_velocity in self.accents.items():
             if abs(at - offset) < _EPS:
                 velocity = max(velocity, accent_velocity)
@@ -801,24 +832,68 @@ class SheetExpression:
         return int(round(max(1.0, min(127.0, velocity))))
 
     def cc11(self, onsets: Iterable[float]) -> list[tuple[float, int]]:
-        """The level curve as ``(offset, value)`` points: one at each onset,
-        and every :data:`HAIRPIN_CC_STEP_QL` through each hairpin, with
-        repeated values dropped."""
-        if not self.has_dynamics:
+        """The hairpins as a CC11 (expression) curve of ``(offset, value)``
+        points, with repeated values dropped; no points for a part that
+        prints no hairpin.
+
+        A synth plays a note at ``velocity x CC11 / 127``, so the printed
+        dynamics are applied exactly once only when one of the two carries
+        them and the other stays neutral. The velocity carries the printed
+        levels (:meth:`note_level`), and CC11 stays at 127 wherever a level
+        holds: a mark is played by velocity alone, and a part with no hairpin
+        gets no CC11, however late its first mark comes. A hairpin is the one
+        place the level moves while a note sounds, which velocity cannot do:
+        every note inside it plays at the louder end's velocity, and CC11
+        runs from ``127 x start / louder`` to ``127 x arrival / louder``,
+        sampled every :data:`HAIRPIN_CC_STEP_QL`, so the heard level moves
+        from the start level to the arrival level along the printed hairpin.
+        A crescendo's CC11 starts below 127 and rises to it; a diminuendo's
+        starts at 127 and falls. CC11 returns to 127 on the first onset at or
+        after the hairpin's end, where the arrival level is the velocity
+        again. Taking the louder end keeps CC11 at or under 127, the most it
+        can send; taking the level at each note's onset instead would apply
+        the hairpin twice, once in each note's velocity and again in CC11."""
+        if not self.wedges:
             return []
-        times = set(float(t) for t in onsets)
-        times.update(at for at, _v in self.marks)
-        for wedge in self.wedges:
-            t = wedge.start
-            while t <= wedge.end + _EPS:
-                times.add(round(t, 6))
-                t += HAIRPIN_CC_STEP_QL
+        ordered = sorted(set(float(t) for t in onsets))
+        values: dict[float, int] = {}
+        wedges = sorted(self.wedges, key=lambda w: w.start)
+        for index, wedge in enumerate(wedges):
+            span = wedge.end - wedge.start
+            if span <= _EPS:
+                continue
+            start_velocity = self._start_velocity(wedge)
+            target = self._target(wedge, start_velocity)
+            louder = max(start_velocity, target, 1.0)
+            step = 0
+            while True:
+                t = wedge.start + step * HAIRPIN_CC_STEP_QL
+                if t >= wedge.end - _EPS:
+                    break
+                level = start_velocity + (target - start_velocity) * (
+                    (t - wedge.start) / span
+                )
+                values[round(t, 6)] = _cc11_value(level, louder)
+                step += 1
+            after_index = bisect.bisect_left(ordered, wedge.end - _EPS)
+            if after_index == len(ordered):
+                continue
+            after = ordered[after_index]
+            following = wedges[index + 1] if index + 1 < len(wedges) else None
+            if following is not None and following.start <= after + _EPS:
+                # The next hairpin starts there and writes its own value.
+                continue
+            values[round(after, 6)] = CC11_FULL
         points: list[tuple[float, int]] = []
-        for t in sorted(times):
-            value = int(round(max(0.0, min(127.0, self.level_at(t)))))
-            if not points or points[-1][1] != value:
-                points.append((t, value))
+        for t in sorted(values):
+            if not points or points[-1][1] != values[t]:
+                points.append((t, values[t]))
         return points
+
+
+def _cc11_value(level: float, louder: float) -> int:
+    """CC11 that plays a note of velocity ``louder`` at ``level``."""
+    return int(round(max(0.0, min(float(CC11_FULL), CC11_FULL * level / louder))))
 
 
 def _accent_boost(element: Any) -> int:

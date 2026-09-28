@@ -26,7 +26,7 @@ export interface SheetTrack {
   program?: number | null;
   /** True for an unpitched percussion part, which the roll puts on channel 10. */
   percussion?: boolean;
-  /** The part's controller changes at ticks of `SheetScore.ppq`: its sustain pedal (64) from the score's pedal marks and its printed dynamics as expression (11). Absent when it has none, and from older backends. */
+  /** The part's controller changes at ticks of `SheetScore.ppq`: its sustain pedal (64) from the score's pedal marks and its hairpins as expression (11), 127 wherever a printed level holds. Absent when it has none, and from older backends. */
   controls?: SheetControl[];
 }
 

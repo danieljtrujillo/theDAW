@@ -382,6 +382,9 @@ def test_grace_notes_ornaments_and_dynamics(synthetic: dict) -> None:
     turn = [p for t, _, p, _ in bar2 if t >= 4 * PPQ + 5 * PPQ // 2]
     assert turn == [81, 79, 78, 79]
     assert synthetic["grace_notes"] == 1 and synthetic["ornaments"] == 3
+    # p, sfz and ff with no hairpin play by velocity alone: no CC11.
+    flute_track = next(x for x in synthetic["tracks"] if x["name"] == "Flute")
+    assert not [c for c in flute_track.get("controls", []) if c["controller"] == 11]
 
 
 def test_unpitched_notes_land_on_kit_keys(synthetic: dict) -> None:
