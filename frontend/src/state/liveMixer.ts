@@ -96,6 +96,8 @@ import { beatToTime, timeToBeat } from '../lib/tempoMap';
 import { clipVoice, effectiveProgramFor, isExternalOnly, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { trackMembers } from '../lib/mpeRotation';
+import { userBanksByEditBank } from '../lib/editBankBanks';
+import { useSoundBankStore } from './soundBankStore';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
 import {
@@ -3589,7 +3591,9 @@ async function start(fromSec: number): Promise<void> {
   }
   if (plan.liveClipIds.size > 0) {
     // The synths the pass sounds: none for an external-only track's channels, which only its port hears.
-    const ready = await ensureEditBanks(internalBanks(plan.channels, ed.tracks));
+    // Each synth holds only the user banks its tracks select (lib/editBankBanks).
+    const needs = userBanksByEditBank(plan.channels.channelsOf, clips, ed.tracks, getGlobalVoice(), useSoundBankStore.getState().banks);
+    const ready = await ensureEditBanks(internalBanks(plan.channels, ed.tracks), needs);
     if (token !== playToken) return;
     liveMidiPlan = ready ? plan : emptyLiveMidiPlan();
   } else {

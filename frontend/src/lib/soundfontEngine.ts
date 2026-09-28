@@ -22,7 +22,7 @@ import { BasicMIDI, MIDIControllers, SoundBankLoader, type BasicSoundBank, type 
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { BUNDLED_BANK_URL, useSoundBankStore } from '../state/soundBankStore';
 import { getProjectTuning, tuningForExport, useTuningStore } from '../state/tuningStore';
-import { BUNDLED_BANK_ID, bankSelectFor, cleanBankId, type BankPreset, type InstrumentRef, type SoundBank } from './bankRegistry';
+import { BUNDLED_BANK_ID, bankForSelect, bankSelectFor, cleanBankId, type BankPreset, type InstrumentRef, type SoundBank } from './bankRegistry';
 import { isStandardTuning, resetMessages, tuningMessages, type ProjectTuning } from './tuning';
 import { RANGE_LSB_SPESSA, bendRangeMessages, controlMessage } from './midi';
 import { addWorkletModule } from './audioWorkletSupport';
@@ -234,6 +234,13 @@ export function midiBankSelects(midi: Pick<BasicMIDI, 'tracks'>): Set<number> {
 
 /** The user banks each live synth holds, by id, with the offset each was loaded at. */
 const synthBanks = new WeakMap<WorkletSynthesizer, Map<string, number>>();
+/**
+ * The user banks each live synth is to hold: every listed one for the preview
+ * synth (any picker's preset plays on it), and for an EDIT bank the ones its
+ * tracks select (lib/editBankBanks), since SpessaSynth parses a copy of a
+ * bank into every worklet it is added to and shares none.
+ */
+const synthWants = new WeakMap<WorkletSynthesizer, Set<string> | 'all'>();
 /** Each synth's bank work, one change after another. */
 const synthBankQueue = new WeakMap<WorkletSynthesizer, Promise<unknown>>();
 
@@ -247,7 +254,8 @@ function syncUserBanks(synth: WorkletSynthesizer): Promise<unknown> {
   const run = (synthBankQueue.get(synth) ?? Promise.resolve()).then(async () => {
     const held = synthBanks.get(synth) ?? new Map<string, number>();
     synthBanks.set(synth, held);
-    const want = listedUsers();
+    const wanted = synthWants.get(synth) ?? 'all';
+    const want = listedUsers().filter((b) => wanted === 'all' || wanted.has(b.id));
     for (const [id] of held) {
       if (want.some((b) => b.id === id)) continue;
       try {
@@ -358,7 +366,7 @@ function getProcessorUrl(): Promise<string> {
  * soundfont loaded, the user's banks at their offsets, the voice cap raised
  * for a tutti, and the project tuning sent.
  */
-async function createLiveSynth(): Promise<WorkletSynthesizer> {
+async function createLiveSynth(wanted: Set<string> | 'all' = 'all'): Promise<WorkletSynthesizer> {
   const ctx = getEngineCtx();
   await addWorkletModule(ctx, await getProcessorUrl());
   const synth = new WorkletSynthesizer(ctx);
@@ -371,6 +379,7 @@ async function createLiveSynth(): Promise<WorkletSynthesizer> {
   synth.setSystemParameter('voiceCap', LIVE_VOICE_CAP);
   void parseBundledBank(sf);
   watchBanksAndTuning();
+  synthWants.set(synth, wanted);
   await syncUserBanks(synth);
   applyTuning(synth, 16);
   return synth;
@@ -700,17 +709,27 @@ let editBankQueue: Promise<unknown> = Promise.resolve();
 
 /**
  * Make sure `count` EDIT banks exist (at most MAX_EDIT_BANKS), creating the
- * missing ones one after another. Resolves false when a synth or the soundfont
- * cannot load, so the caller keeps playing the clips' bounced audio.
+ * missing ones one after another, and that each holds the user banks
+ * `needs[i]` names and no other (lib/editBankBanks): a bank no track of it
+ * selects any more is dropped, which frees its parsed copy. Resolves false
+ * when a synth or the soundfont cannot load, so the caller keeps playing the
+ * clips' bounced audio.
  */
-export function ensureEditBanks(count: number): Promise<boolean> {
+export function ensureEditBanks(count: number, needs: ReadonlyArray<ReadonlySet<string>> = []): Promise<boolean> {
   const want = Math.max(0, Math.min(MAX_EDIT_BANKS, Math.round(count)));
   const grown = editBankQueue.then(async () => {
     try {
       await getLiveSynth(); // the worklet module and the soundfont, loaded once
       while (editBanks.length < want) {
-        editBanks.push({ synth: await createLiveSynth(), programs: new Map(), routes: new Map(), parked: false });
+        editBanks.push({ synth: await createLiveSynth(new Set(needs[editBanks.length] ?? [])), programs: new Map(), routes: new Map(), parked: false });
         // createLiveSynth tuned the new bank's sixteen channels before it was listed here.
+      }
+      for (let i = 0; i < editBanks.length; i += 1) {
+        const next = new Set(needs[i] ?? []);
+        const now = synthWants.get(editBanks[i].synth);
+        if (now !== 'all' && now && now.size === next.size && [...next].every((id) => now.has(id))) continue;
+        synthWants.set(editBanks[i].synth, next);
+        await syncUserBanks(editBanks[i].synth);
       }
       return true;
     } catch {
@@ -752,8 +771,26 @@ export function editNoteOn(
   const at = editChannel(channel);
   if (!at) return;
   // A note with no program (an external-only track's, NO_PROGRAM) keeps whatever the channel plays.
-  if (program >= 0) setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time, bankLsb);
+  if (program >= 0) {
+    wantBankFor(at.bank.synth, bankSelect);
+    setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time, bankLsb);
+  }
   at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))), atTime(time));
+}
+
+/**
+ * A voice picked while playing whose user bank this EDIT bank does not hold
+ * yet (the plan named the banks when the pass started): the bank is loaded
+ * into it now, and plays from the notes after it arrives.
+ */
+function wantBankFor(synth: WorkletSynthesizer, bankSelect: number): void {
+  const wanted = synthWants.get(synth);
+  if (!wanted || wanted === 'all' || bankSelect <= 0) return;
+  const users = listedUsers();
+  const { bankId } = bankForSelect(bankSelect, users);
+  if (wanted.has(bankId) || !users.some((b) => b.id === bankId)) return;
+  wanted.add(bankId);
+  void syncUserBanks(synth);
 }
 
 /** Note-off on an EDIT channel at audio-context time `time` (now when absent). No-op until its bank exists. */
