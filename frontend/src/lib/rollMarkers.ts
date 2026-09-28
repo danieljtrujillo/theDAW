@@ -287,6 +287,44 @@ export const withClipTimelineMarkers = (
   incoming: readonly TimelineMarker[],
 ): TimelineMarker[] => [...existing.filter((m) => !isClipEditMarker(m, clipId)), ...incoming].sort((a, b) => a.t - b.t);
 
+/**
+ * The timeline second a clip's source starts on: its left edge less its trim,
+ * the trim counted in timeline seconds at the clip's stretch rate. A move or a
+ * slip changes it and the markers written from the clip's notes move with it;
+ * a trim of the left edge moves the edge and the trim together and leaves it.
+ */
+export const clipContentOrigin = (clip: { startSec: number; offsetIntoSource: number }, rate = 1): number =>
+  clip.startSec - clip.offsetIntoSource / (Number.isFinite(rate) && rate > 0 ? rate : 1);
+
+/**
+ * EDIT's markers with the ones clip `clipId` wrote moved by `shiftSec` (the
+ * clip moved or slipped on the timeline), sorted by time; the same array when
+ * there is nothing to move. Every other marker keeps its object.
+ */
+export const shiftClipTimelineMarkers = (existing: readonly TimelineMarker[], clipId: string, shiftSec: number): readonly TimelineMarker[] => {
+  if (!Number.isFinite(shiftSec) || Math.abs(shiftSec) < 1e-9 || !existing.some((m) => isClipEditMarker(m, clipId))) return existing;
+  return existing
+    .map((m) => (isClipEditMarker(m, clipId) ? { ...m, t: Math.max(0, m.t + shiftSec) } : m))
+    .sort((a, b) => a.t - b.t);
+};
+
+/**
+ * EDIT's markers after clip `clipId` is split at `atSec` into itself and
+ * `rightId`: a marker the clip wrote at or past the seam now belongs to the
+ * right half (its id names `rightId`), so each half moves, and re-bounces,
+ * with the notes it holds. The same array when no marker changes hands.
+ */
+export const splitClipTimelineMarkers = (
+  existing: readonly TimelineMarker[],
+  clipId: string,
+  rightId: string,
+  atSec: number,
+): readonly TimelineMarker[] => {
+  const own = `${ROLL_EDIT_MARKER_PREFIX}${clipId}:`;
+  if (!existing.some((m) => m.id.startsWith(own) && m.t >= atSec - 1e-9)) return existing;
+  return existing.map((m) => (m.id.startsWith(own) && m.t >= atSec - 1e-9 ? { ...m, id: editMarkerId(rightId, m.id.slice(own.length)) } : m));
+};
+
 // ── .tasmo ───────────────────────────────────────────────────────────────────
 
 /** A marker as a .tasmo clip stores it (`roll_markers`): `origin` only on a FORM marker. */

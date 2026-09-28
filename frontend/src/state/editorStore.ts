@@ -5,7 +5,13 @@ import { gmShortName } from '../lib/gmInstruments';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
-import { withClipTimelineMarkers, type RollMarker } from '../lib/rollMarkers';
+import {
+  clipContentOrigin,
+  shiftClipTimelineMarkers,
+  splitClipTimelineMarkers,
+  withClipTimelineMarkers,
+  type RollMarker,
+} from '../lib/rollMarkers';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import {
@@ -2152,12 +2158,22 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     // its key is, instead of starting a second one.
     if (opts?.coalesce) coalesceWithOpenStep(`clip:${id}`);
     else coalesceAs(`clip:${id}`);
-    set((s) => ({
+    set((s) => {
       // A trim / slip on a COMPED clip has to move every take's read head with
       // the clip's own, or the comp goes on playing the untrimmed takes and the
       // next take switch reverts the trim (`mirrorOntoTakes`).
-      clips: s.clips.map((c) => (c.id === id ? clipWithUpdates(c, updates) : c)),
-    }));
+      const cur = s.clips.find((c) => c.id === id) ?? target;
+      const next = clipWithUpdates(cur, updates);
+      const clips = s.clips.map((c) => (c.id === id ? next : c));
+      // The EDIT markers a roll clip's bounce wrote (lib/rollMarkers) sit on its notes, so a move or a
+      // slip carries them along in this same write, and so the same undo step. A left-edge trim moves
+      // the edge and the trim together and leaves them; a change of stretch rate leaves them to the
+      // next bounce, which places them again.
+      const rate = clipStretchRate(cur);
+      if (clipStretchRate(next) !== rate) return { clips };
+      const markers = shiftClipTimelineMarkers(s.markers, id, clipContentOrigin(next, rate) - clipContentOrigin(cur, rate));
+      return markers === s.markers ? { clips } : { clips, markers: [...markers] };
+    });
   },
 
   removeClip: (id) => {
@@ -2237,13 +2253,19 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       ...(rightTakes ? { takes: rightTakes } : {}),
       ...clampClipFades({ durationSec: rightDur, fadeInSec: 0, fadeOutSec: clip.fadeOutSec }),
     }, rightTakes, compParts.right);
-    set((s) => ({
-      // Focus follows the new right half; the multi-selection is left alone so
-      // a range command that cuts N selected clips still has N selected after
-      // (the left halves keep their ids — see `WaveformEditor`'s split menu).
-      clips: s.clips.flatMap((c) => (c.id === id ? [left, right] : [c])),
-      selectedClipId: newId,
-    }));
+    set((s) => {
+      // The EDIT markers a roll clip wrote at or past the seam go with the right half (lib/rollMarkers),
+      // so each half moves, and re-bounces, with the notes it holds.
+      const markers = splitClipTimelineMarkers(s.markers, id, newId, clip.startSec + relSplit);
+      return {
+        // Focus follows the new right half; the multi-selection is left alone so
+        // a range command that cuts N selected clips still has N selected after
+        // (the left halves keep their ids — see `WaveformEditor`'s split menu).
+        clips: s.clips.flatMap((c) => (c.id === id ? [left, right] : [c])),
+        selectedClipId: newId,
+        ...(markers === s.markers ? {} : { markers: [...markers] }),
+      };
+    });
     logInfo('editor', `Split clip at ${atSec.toFixed(2)}s → ${left.label} | ${right.label}`);
     return newId;
   },

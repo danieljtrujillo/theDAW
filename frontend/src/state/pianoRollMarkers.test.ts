@@ -218,6 +218,55 @@ async function main(): Promise<void> {
     assert.equal(ed().markers.length, before.length, 'reapplying the same locators replaces them by id');
   });
 
+  await step("moving, slipping, trimming and splitting the clip in EDIT carries its markers with its notes", async () => {
+    await pause();
+    const clip = (id = clipId) => ed().clips.find((c) => c.id === id)!;
+    const own = (id = clipId) => ed().markers.filter((m) => m.id.startsWith(`roll:${id}:`));
+    const at = () => Object.fromEntries(ed().markers.filter((m) => m.id.startsWith('roll:')).map((m) => [m.id, m.t]));
+    const before = at();
+    assert.equal(Object.keys(before).length, 4, 'Intro, Theme, Development (the renamed Chorus) and Theme 2 are on the timeline');
+    const mine = ed().markers.find((m) => m.label === 'My EDIT marker')!;
+    const depth = ed()._undo.length;
+    // A move of 2 s: the clip's markers move 2 s in the same undo step; EDIT's own marker stays.
+    ed().updateClip(clipId, { startSec: clip().startSec + 2 });
+    for (const [id, t] of Object.entries(before)) close(at()[id], t + 2, 1e-9, `${id} moved with the clip`);
+    assert.equal(ed().markers.find((m) => m.id === mine.id)!.t, mine.t, "EDIT's own marker stays");
+    assert.equal(ed()._undo.length, depth + 1, 'the move and its markers are one undo step');
+    ed().undo();
+    for (const [id, t] of Object.entries(before)) close(at()[id], t, 1e-9, `${id} back with the undo`);
+    await pause();
+    // A left-edge trim moves the edge and the trim together: the notes stay where they sound, so do the markers.
+    const c0 = clip();
+    ed().updateClip(clipId, { startSec: c0.startSec + 0.1, offsetIntoSource: c0.offsetIntoSource + 0.1, durationSec: c0.durationSec - 0.1 });
+    for (const [id, t] of Object.entries(before)) close(at()[id], t, 1e-9, `${id} stays through a left trim`);
+    ed().undo();
+    await pause();
+    // A slip slides the source under a fixed edge: the notes move, and the markers with them.
+    ed().updateClip(clipId, { offsetIntoSource: clip().offsetIntoSource + 0.25 });
+    for (const [id, t] of Object.entries(before)) close(at()[id], t - 0.25, 1e-9, `${id} slips with the notes`);
+    ed().undo();
+    await pause();
+    // A split between Theme and Development: the markers past the seam belong to the right half.
+    const times = own().map((m) => m.t).sort((a, b) => a - b);
+    const seam = (times[1] + times[2]) / 2;
+    const rightId = ed().splitClipAt(clipId, seam)!;
+    assert.ok(rightId, 'the clip splits');
+    assert.deepEqual(own().map((m) => m.label).sort(), ['Intro', 'Theme'], 'the left half keeps the markers before the seam');
+    assert.deepEqual(own(rightId).map((m) => m.label).sort(), ['Development', 'Theme 2'], 'the right half takes the rest');
+    assert.equal(ed().markers.length, Object.keys(before).length + 1, 'no marker doubled or lost');
+    await pause();
+    // Moving the right half moves only its markers.
+    const leftAt = own().map((m) => m.t);
+    const rightAt = own(rightId).map((m) => m.t);
+    ed().updateClip(rightId, { startSec: clip(rightId).startSec + 1 });
+    assert.deepEqual(own().map((m) => m.t), leftAt, "the left half's markers stay");
+    own(rightId).forEach((m, i) => close(m.t, rightAt[i] + 1, 1e-9, `${m.label} moved with the right half`));
+    ed().undo();
+    ed().undo();
+    assert.deepEqual(at(), before, 'two undos bring back the one clip and its markers');
+    assert.equal(ed().clips.filter((c) => c.id === clipId).length, 1);
+  });
+
   await step('a .tasmo save and reopen brings every marker back into the roll', () => {
     const clip = ed().clips.find((c) => c.id === clipId)!;
     const file = JSON.parse(JSON.stringify({ ...clipNotesToTasmo(clip), id: clip.id }));

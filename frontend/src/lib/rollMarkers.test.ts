@@ -23,6 +23,9 @@ import {
   rollMarkerToTasmo,
   romanNumeral,
   sanitizeRollMarkers,
+  clipContentOrigin,
+  shiftClipTimelineMarkers,
+  splitClipTimelineMarkers,
   tasmoToRollMarkers,
   withClipTimelineMarkers,
   withFormMarkers,
@@ -128,6 +131,25 @@ assert.equal(once.length, 5);
 const again = withClipTimelineMarkers(once, 'clip1', placed.slice(0, 1));
 assert.deepEqual(again.map((m) => m.id), ['user-1', editMarkerId('clip1', 'a'), editMarkerId('clip2', 'x')]);
 assert.equal(again[0], others[0], 'a marker the bounce did not write keeps its object');
+
+// A clip that moves carries its markers; a left trim leaves them; a split hands the later ones to the right half.
+assert.equal(clipContentOrigin({ startSec: 10, offsetIntoSource: 0 }), 10);
+assert.equal(clipContentOrigin({ startSec: 11, offsetIntoSource: 1 }), 10, 'a left trim moves the edge and the trim together');
+assert.equal(clipContentOrigin({ startSec: 11, offsetIntoSource: 2 }, 2), 10, 'the trim counts in timeline seconds at the stretch rate');
+const moved = shiftClipTimelineMarkers(once, 'clip1', 2.5);
+assert.deepEqual(moved.filter((m) => m.id.startsWith('roll:clip1:')).map((m) => m.t), placed.map((m) => m.t + 2.5));
+assert.equal(moved.find((m) => m.id === 'user-1'), others[0], 'a marker the clip did not write keeps its object and place');
+assert.equal(moved.find((m) => m.id === editMarkerId('clip2', 'x'))!.t, 50);
+assert.equal(shiftClipTimelineMarkers(once, 'clip1', 0), once, 'no move, the same array');
+assert.equal(shiftClipTimelineMarkers(others, 'clip1', 3), others, 'a clip with no markers changes nothing');
+assert.equal(shiftClipTimelineMarkers(once, 'clip1', -100).filter((m) => m.id.startsWith('roll:clip1:')).every((m) => m.t === 0), true, 'held at 0');
+const split = splitClipTimelineMarkers(once, 'clip1', 'clip1b', placed[1].t);
+assert.deepEqual(
+  split.filter((m) => m.id.startsWith('roll:')).map((m) => m.id),
+  [editMarkerId('clip1', 'a'), editMarkerId('clip1b', 'b'), editMarkerId('clip1b', 'c'), editMarkerId('clip2', 'x')],
+  'a marker on the seam or past it names the right half; another clip keeps its own',
+);
+assert.equal(splitClipTimelineMarkers(once, 'clip1', 'clip1b', 999), once, 'nothing past the seam, the same array');
 
 // .tasmo: a round trip through JSON keeps every field; a file without markers or with junk loads none.
 const saved = JSON.parse(JSON.stringify(first.map(rollMarkerToTasmo)));
