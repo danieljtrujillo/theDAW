@@ -354,3 +354,99 @@ def test_route_refuses_a_lan_caller_without_a_pairing_token(strings, pedalboard)
     response = lan.post("/api/vst/render-midi", json={"tracks": [_track(strings)]})
     assert response.status_code == 403
     assert pedalboard.loaded == []
+
+
+# ---------------------------------------------------------------------------
+# A state our own live host captured renders through our own host
+# ---------------------------------------------------------------------------
+
+FAKE_HOST = Path(__file__).resolve().parent / "fake_vst_host.py"
+
+
+@pytest.fixture
+def render_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "vst_render"
+    monkeypatch.setattr(vst_router, "_RENDER_DIR", root)
+    return root
+
+
+@pytest.fixture
+def fake_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.modules.vst import live_host as lh
+
+    monkeypatch.setenv(lh.HOST_ENV_VAR, str(FAKE_HOST))
+    monkeypatch.setenv("FAKE_VST_HOST_RENDER_ECHO", "1")
+
+
+def test_a_thedaw_state_renders_through_our_host_with_the_midi(
+    client, pedalboard, strings, render_root, fake_host
+):
+    response = client.post(
+        "/api/vst/render-midi",
+        json={
+            "sample_rate": 8000,
+            "tracks": [
+                _track(
+                    strings,
+                    duration=0.5,
+                    raw_state="c3RhdGU=",
+                    state_host="thedaw",
+                    events=[
+                        {"t": 0.25, "data": [0x90, 60, 127]},
+                        {"t": 0.125, "data": [0xB0, 11, 90]},
+                    ],
+                )
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert pedalboard.loaded == [], "pedalboard never sees a state our host wrote"
+    parts = _parts(response)
+    report = json.loads(parts["report"])["tracks"][0]
+    echo = report["warnings"]
+    assert "echo: state-bytes=5" in echo
+    assert "echo: tail-seconds=0" in echo, "the duration already carries the release"
+    assert "echo: midi-events=2" in echo
+    # Frame order, each at its sample at 8 kHz.
+    assert [w for w in echo if w.startswith("echo: midi ")] == [
+        "echo: midi 1000 176 11 90",
+        "echo: midi 2000 144 60 127",
+    ]
+    audio, rate = sf.read(io.BytesIO(parts[report["part"]]), dtype="float32")
+    assert rate == 8000
+    assert audio.shape == (4000, 2), "the host was handed the track's length of silence"
+    assert report["frames"] == 4000
+    assert list(render_root.iterdir()) == [], "the render's temp files are gone"
+
+
+def test_a_thedaw_render_without_a_host_is_503(
+    client, pedalboard, strings, render_root, monkeypatch, tmp_path
+):
+    from backend.modules.vst import live_host as lh
+
+    monkeypatch.delenv(lh.HOST_ENV_VAR, raising=False)
+    empty = tmp_path / "empty-root"
+    empty.mkdir()
+    monkeypatch.setattr(lh.paths, "PROJECT_ROOT", empty)
+    response = client.post(
+        "/api/vst/render-midi",
+        json={"tracks": [_track(strings, state_host="thedaw")]},
+    )
+    assert response.status_code == 503
+    assert pedalboard.loaded == [], (
+        "no quiet fall back to a renderer that cannot read the state"
+    )
+
+
+def test_state_host_is_checked_before_anything_renders(client, pedalboard, strings):
+    bad = client.post(
+        "/api/vst/render-midi",
+        json={"tracks": [_track(strings, state_host="elsewhere")]},
+    )
+    assert bad.status_code == 400
+    not_b64 = client.post(
+        "/api/vst/render-midi",
+        json={"tracks": [_track(strings, state_host="thedaw", raw_state="!!!")]},
+    )
+    assert not_b64.status_code == 400
+    assert pedalboard.loaded == []

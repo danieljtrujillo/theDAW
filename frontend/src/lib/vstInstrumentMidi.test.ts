@@ -117,6 +117,9 @@ const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
   assert.equal(plan.request.events.some((e) => e.data[1] === 64), false, 'a muted clip plays nothing');
   assert.equal(plan.request.plugin_path, strings.vst.plugin_path);
   assert.equal(plan.request.raw_state, strings.vst.raw_state, 'the state captured from the editor rides along');
+  assert.equal(plan.request.state_host, '', 'an offline-editor state prints through pedalboard');
+  const liveState = { ...strings, vst: { ...strings.vst, state_host: 'thedaw' as const } };
+  assert.equal(instrumentPrintPlan(source, track('vln', { instrument: liveState }), source.clips, { useSoundfont: false, activeProgram: 0 })?.request.state_host, 'thedaw', "a live-host state says so, and prints through our own host");
   assert.equal(instrumentPrintPlan(source, track('vln', { instrument: { ...strings, enabled: false } }), source.clips, { useSoundfont: false, activeProgram: 0 }), null, 'a switched-off slot prints nothing');
   assert.equal(instrumentPrintPlan(source, track('vln'), source.clips, { useSoundfont: false, activeProgram: 0 }), null, 'no instrument, nothing to print');
 }
@@ -173,7 +176,7 @@ const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
     form.append('track-0', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }), 'track-0.wav');
     return new Response(form);
   }) as unknown as typeof fetch;
-  const req: InstrumentRenderTrack = { track_id: 'vln', plugin_path: 'C:/VST3/Strings.vst3', raw_state: '', params: {}, duration: 1, events: [{ t: 0, data: [0x90, 60, 100] }] };
+  const req: InstrumentRenderTrack = { track_id: 'vln', plugin_path: 'C:/VST3/Strings.vst3', raw_state: '', state_host: '', params: {}, duration: 1, events: [{ t: 0, data: [0x90, 60, 100] }] };
   const out = await renderInstrumentTrack(req, 44100, fakeFetch);
   assert.ok(sent);
   assert.equal((sent as { url: string }).url, '/api/vst/render-midi');

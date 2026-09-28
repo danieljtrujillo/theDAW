@@ -13,9 +13,13 @@ Skipped as a whole when the binary has not been built.
 
 from __future__ import annotations
 
-import pytest
+import json
+import wave
 
-from tests.vst_host_client import HostProcess, host_exe
+import pytest
+import soundfile as sf
+
+from tests.vst_host_client import HostProcess, host_exe, run_host
 
 pytestmark = pytest.mark.skipif(
     host_exe() is None,
@@ -179,3 +183,48 @@ def test_midi_without_an_events_array_is_a_survivable_error():
         assert "events" in err["text"]
         header, _ = client.block(0, SILENCE, position=0)
         assert header["seq"] == 0
+
+
+def test_render_mode_plays_midi_events_into_the_plugin(tmp_path):
+    rate = 48000
+    frames = 4096
+    in_path = tmp_path / "in.wav"
+    with wave.open(str(in_path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * 2 * frames)
+    midi = tmp_path / "midi.txt"
+    midi.write_text(
+        "# frame status data1 data2\n"
+        "3000 128 60 0\n"
+        "700 144 60 127\n"
+        "900 240 1 2\n",  # SysEx: skipped and counted
+        encoding="ascii",
+    )
+    out_path = tmp_path / "out.wav"
+    proc = run_host(
+        [
+            "--render",
+            "--null-plugin",
+            "--in",
+            str(in_path),
+            "--out",
+            str(out_path),
+            "--block-size",
+            "1024",
+            "--tail-seconds",
+            "0",
+            "--midi-events",
+            str(midi),
+        ]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    report = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert report["midi_events"] == 2
+    assert any("1 line(s)" in w for w in report["warnings"])
+    audio, _ = sf.read(str(out_path), dtype="float32")
+    marked = [(i, round(float(v), 4)) for i, v in enumerate(audio[:, 0]) if v != 0.0]
+    assert marked == [(700, 1.0), (3000, -0.25)], (
+        "each message at its frame, in frame order"
+    )

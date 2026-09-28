@@ -31,7 +31,7 @@ const char* usageText() {
         "  thedaw-vst-host --null-plugin [...]      passthrough host, loads no plugin\n"
         "  thedaw-vst-host --render --plugin <path.vst3> --in <in.wav> --out <out.wav>\n"
         "                  [--plugin-name <name> | --class-id <32 hex>] [--state-file <path>]\n"
-        "                  [--params-json <json|path>] [--block-size 1024]\n"
+        "                  [--params-json <json|path>] [--midi-events <path>] [--block-size 1024]\n"
         "                  [--tail-seconds auto|N] [--host-name <name>] [--iid-log]\n"
         "                                           render a file faster than real time\n"
         "  thedaw-vst-host --list --plugin <path>   print the file's plugin classes as JSON\n"
@@ -47,6 +47,8 @@ const char* usageText() {
         "--render reads PCM 16/24/32-bit or 32-bit float RIFF/WAVE, processes it in kOffline\n"
         "mode, compensates the plugin's reported latency, renders its tail and writes a\n"
         "32-bit float WAV at the input's rate and channel count. A JSON report goes to stdout.\n"
+        "--midi-events plays MIDI into the plugin during the render (an instrument): one message\n"
+        "per line, \"<sample frame> <status> <data1> [<data2>]\" in decimal.\n"
         "\n"
         "Exit codes: 0 clean, 1 the render could not be written, 2 bad args,\n"
         "            3 plugin file not found, 4 plugin failed to load/initialize,\n"
@@ -93,6 +95,9 @@ bool parseArgs(const std::vector<std::wstring>& argv, Options& out, std::string&
         } else if (flag == "--params-json") {
             if (!needValue(i, flag, wideValue)) return false;
             options.paramsJson = wideValue;
+        } else if (flag == "--midi-events") {
+            if (!needValue(i, flag, wideValue)) return false;
+            options.midiEvents = wideValue;
         } else if (flag == "--host-name") {
             if (!needValue(i, flag, wideValue)) return false;
             options.hostName = util::wideToUtf8(wideValue);

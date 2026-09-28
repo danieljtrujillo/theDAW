@@ -98,6 +98,8 @@ export interface InstrumentRenderTrack {
   track_id: string;
   plugin_path: string;
   raw_state: string;
+  /** Which host captured `raw_state`: 'thedaw' prints through our own host, which reads it. */
+  state_host: string;
   params: Record<string, number>;
   /** Seconds to render from `startSec`, the tail included. */
   duration: number;
@@ -137,6 +139,7 @@ export function instrumentPrintPlan(
       track_id: track.id,
       plugin_path: instrument.vst.plugin_path,
       raw_state: instrument.vst.raw_state ?? '',
+      state_host: instrument.vst.state_host ?? '',
       params: {},
       duration: Math.max(0.1, lastSec - startSec) + INSTRUMENT_TAIL_SEC,
       events: messages.map((m) => ({ t: Math.max(0, m.t - startSec), data: m.data })),

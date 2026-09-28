@@ -32,6 +32,9 @@ struct Options {
     std::wstring outputPath;
     // Inline JSON when it starts with '{' or '[', otherwise the path of a JSON file.
     std::wstring paramsJson;
+    // A text file of MIDI messages the plugin plays during the render, one per line:
+    // "<sample frame> <status> <data1> [<data2>]", decimal. For an instrument.
+    std::wstring midiEvents;
     // < 0 = "auto": the plugin's reported tail, capped at kRenderTailCapSeconds, with an
     // infinite tail becoming kRenderInfiniteTailSeconds.
     double tailSeconds = -1.0;
