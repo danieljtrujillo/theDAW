@@ -12,6 +12,7 @@ possible.
 
 from __future__ import annotations
 
+import gc
 import logging
 import re
 import sqlite3
@@ -1202,10 +1203,15 @@ def test_a_hub_neighbourhood_and_a_relatives_page_are_fast(monkeypatch, library)
     client.get(neighbourhood)
     client.get(relatives, params={"direction": "down"})
 
+    # A full garbage collection first: in a long pytest run the heap holds
+    # every module collected before, and a collection falling inside the
+    # timed request measured the collector (about 150 ms), not the route.
+    gc.collect()
     started = time.perf_counter()
     assert client.get(neighbourhood).status_code == 200
     neighbourhood_ms = (time.perf_counter() - started) * 1000
 
+    gc.collect()
     started = time.perf_counter()
     assert client.get(relatives, params={"direction": "down"}).status_code == 200
     relatives_ms = (time.perf_counter() - started) * 1000
