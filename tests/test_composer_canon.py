@@ -96,18 +96,50 @@ def _probe_case(case: tuple[str, str, int, int]) -> str | None:
     return None
 
 
-def test_the_canon_probe_finds_a_canon_for_all_but_the_widest_intervals() -> None:
-    from concurrent.futures import ProcessPoolExecutor
-
-    cases = [
+def _probe_cases() -> list[tuple[str, str, int, int]]:
+    return [
         (key, mode, interval, lag)
         for key in PROBE_KEYS
         for mode in PROBE_MODES
         for interval in PROBE_INTERVALS
         for lag in PROBE_LAGS
     ]
+
+
+# The probe runs in a Python of its own with a pool of workers: 616 canons
+# take minutes on one core, and the workers' start-up and teardown stay out
+# of the test process.
+_PROBE_RUNNER = """
+import json
+from concurrent.futures import ProcessPoolExecutor
+
+from tests.test_composer_canon import _probe_case, _probe_cases
+
+if __name__ == "__main__":
     with ProcessPoolExecutor(max_workers=8) as pool:
-        errors = list(pool.map(_probe_case, cases, chunksize=4))
+        print(json.dumps(list(pool.map(_probe_case, _probe_cases(), chunksize=4))))
+"""
+
+
+def test_the_canon_probe_finds_a_canon_for_all_but_the_widest_intervals() -> None:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    run = subprocess.run(
+        [sys.executable, "-c", _PROBE_RUNNER],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr[-4000:]
+    errors = json.loads(run.stdout.strip().splitlines()[-1])
+    cases = _probe_cases()
+    assert len(errors) == len(cases) == 616
     failed = [(case, e) for case, e in zip(cases, errors) if e is not None]
 
     assert len(failed) <= PROBE_MAX_FAILURES, len(failed)
