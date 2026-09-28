@@ -1,6 +1,8 @@
 import { type NoteEvent, QuantizeValue, ScaleType, type SoundProfile } from './types';
 import { SCALES, SOUND_PROFILES } from './constants';
 import { bendRawToValue, sanitizeBendPoints, simplifyBend, trimLeadingCentre, type BendPoint } from '../../../lib/pitchBend';
+import { TEMPOMAP_TEXT, tempoMicros, tempoOfMicros } from '../../../lib/midi';
+import { tempoMapText } from '../../../lib/rollMidi';
 
 // --- Signal Processing Helpers ---
 
@@ -211,6 +213,12 @@ const toVarInt = (num: number): number[] => {
 };
 
 
+/** An FF 01 text event at delta 0: `text` in 7-bit ASCII. */
+const textMetaEvent = (text: string): number[] => {
+  const bytes = [...text].map((c) => c.charCodeAt(0) & 0x7f);
+  return [0x00, 0xFF, 0x01, ...toVarInt(bytes.length), ...bytes];
+};
+
 export interface MidiExportOptions {
   experimentalPitchBend?: boolean;
 }
@@ -324,8 +332,16 @@ export const generateMidiFile = (
     0xFF, 0x51, 0x03, // Meta event: Set Tempo
     ...numberToBytes(microsecondsPerBeat, 3)
   ];
+  // FF 51 holds whole microseconds a quarter, so a tempo it cannot hold (90
+  // BPM is 666667 us, which reads back as 89.999955) is also written as the
+  // `theDAW:tempomap=` text the piano roll's own export writes, and the roll
+  // and EDIT read the tempo back exactly (lib/rollMidi midiFileTempoMap). A
+  // tempo FF 51 holds (120 is 500000 us) writes the file as before.
+  const tempoText = tempoOfMicros(tempoMicros(bpm)) === bpm
+    ? []
+    : textMetaEvent(`${TEMPOMAP_TEXT}${tempoMapText([{ beat: 0, bpm }])}`);
   const endOfTrack1 = [0x00, 0xFF, 0x2F, 0x00];
-  const track1Data = [...tempoEvent, ...endOfTrack1];
+  const track1Data = [...tempoEvent, ...tempoText, ...endOfTrack1];
   const track1Header = [
     0x4d, 0x54, 0x72, 0x6b, // MTrk
     ...numberToBytes(track1Data.length, 4)

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { generateMidiFile, slideBendEvents, slideBendPoints, V2M_BEND_RANGE } from './audioProcessing.ts';
 import { SOUND_PROFILES } from './constants.ts';
 import { parseMidi } from '../../../lib/midi.ts';
+import { midiFileTempoMap } from '../../../lib/rollMidi.ts';
 import { bendRawToValue, bendValueAt } from '../../../lib/pitchBend.ts';
 
 const NOTES = [
@@ -24,10 +25,18 @@ const ON =
 const ON_NO_PROFILE =
   '4d546864000000060001000201e04d54726b0000000b00ff510307a12000ff2f004d54726b000000ae00e0004000903c648300e000400ce000480ce000500ce000580ce0006000903c000ce000680ce000700ce000780ce07f7f00903e5a13e00040815de0004008e0004809e0005008e0005809e0006008e0006806903e0002e0007009e0007808e07f7f0090436e13e00040812d904300826d9037508330e0004008e0004409e0004808e0004c09e0005008e000540690370002e0005809e0005c08e000600090384613e00040826d90380000ff2f00';
 
+// At 97 BPM, which FF 51 cannot hold (618557 us reads back as 96.99997), the
+// tempo track also carries the roll's tempo map text; every other byte is the
+// one captured before. At 120 (500000 us) the file is as it was.
+const TEMPO_97 = '4d54726b0000000b00ff510309703d00ff2f00';
+const TEXT_97 = Buffer.from('theDAW:tempomap=0:97', 'ascii').toString('hex');
+const DATA_97 = `00ff510309703d00ff01${(TEXT_97.length / 2).toString(16).padStart(2, '0')}${TEXT_97}00ff2f00`;
+const WITH_TEXT_97 = `4d54726b${(DATA_97.length / 2).toString(16).padStart(8, '0')}${DATA_97}`;
+
 // The file's bytes, with the option off and on.
 {
-  assert.equal(await hex(generateMidiFile(NOTES, 97, SOUND_PROFILES.DEFAULT)), OFF);
-  assert.equal(await hex(generateMidiFile(NOTES, 97, SOUND_PROFILES.DEFAULT, { experimentalPitchBend: true })), ON);
+  assert.equal(await hex(generateMidiFile(NOTES, 97, SOUND_PROFILES.DEFAULT)), OFF.replace(TEMPO_97, WITH_TEXT_97));
+  assert.equal(await hex(generateMidiFile(NOTES, 97, SOUND_PROFILES.DEFAULT, { experimentalPitchBend: true })), ON.replace(TEMPO_97, WITH_TEXT_97));
   assert.equal(await hex(generateMidiFile(NOTES, 120, undefined, { experimentalPitchBend: true })), ON_NO_PROFILE);
   assert.deepEqual(slideBendEvents([NOTES[0]], (sec) => sec), []);
 }
@@ -51,5 +60,14 @@ for (const bpm of [97, 120]) {
   assert.ok(points[0].step > 0, 'the centre at tick 0 is left out');
 }
 assert.equal(V2M_BEND_RANGE, 2);
+
+// A Vocal2MIDI export reopens at the tempo it was made at: 90 BPM (666667 us,
+// 89.999955 read from FF 51 alone) and 97 come back as 90 and 97, and 120 BPM
+// needs no text.
+for (const bpm of [90, 97, 120]) {
+  const file = parseMidi(new Uint8Array(await generateMidiFile(NOTES, bpm).arrayBuffer()));
+  assert.deepEqual(midiFileTempoMap(file).map((e) => [e.beat, e.bpm]), [[0, bpm]], `${bpm} BPM reopens as ${bpm}`);
+  assert.equal(file.dawTempoMap === undefined, bpm === 120, `${bpm} BPM ${bpm === 120 ? 'needs no' : 'writes the'} tempo text`);
+}
 
 console.log('vocal2midi audioProcessing: ok');

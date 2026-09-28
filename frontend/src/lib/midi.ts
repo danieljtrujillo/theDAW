@@ -262,7 +262,8 @@ const writeTrackChunk = (out: ByteSink, events: readonly RawEvent[], name: strin
 const GROUPS_TEXT = 'theDAW:groups=';
 const PICKUP_TEXT = 'theDAW:pickup=';
 const LANE_TEXT = 'theDAW:lane=';
-const TEMPOMAP_TEXT = 'theDAW:tempomap=';
+/** The text a file's own tempo map rides in beside its FF 51 tempos (lib/rollMidi tempoMapText). */
+export const TEMPOMAP_TEXT = 'theDAW:tempomap=';
 
 /** Text as 7-bit ASCII: every character past it written as a JSON \u escape, which JSON.parse reads back. */
 const asciiJson = (text: string): string =>
