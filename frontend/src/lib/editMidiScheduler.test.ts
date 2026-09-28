@@ -47,7 +47,8 @@ type Msg =
   | { k: 'on'; ch: number; program: number; midi: number; vel: number; t: number; at: number }
   | { k: 'off'; ch: number; midi: number; t: number; at: number }
   | { k: 'wheel'; ch: number; raw: number; t: number; at: number }
-  | { k: 'range'; ch: number; semis: number; t: number; at: number };
+  | { k: 'range'; ch: number; semis: number; t: number; at: number }
+  | { k: 'cc'; ch: number; controller: number; value: number; t: number; at: number };
 
 /** A fake audio clock, a recording synth and a recording envelope per track. */
 function rig(opts: { lookahead?: number } = {}) {
@@ -70,6 +71,7 @@ function rig(opts: { lookahead?: number } = {}) {
       noteOff: (ch, midi, t) => msgs.push({ k: 'off', ch, midi, t, at: clock.t }),
       wheel: (ch, raw, t) => msgs.push({ k: 'wheel', ch, raw, t, at: clock.t }),
       wheelRange: (ch, semis, t) => msgs.push({ k: 'range', ch, semis, t, at: clock.t }),
+      control: (ch, controller, value, t) => msgs.push({ k: 'cc', ch, controller, value, t, at: clock.t }),
     },
     clips: () => ed().clips,
     tracks: () => ed().tracks,
@@ -432,6 +434,64 @@ run('24 parts of 4000 notes: a clip is timed once per edit, and a tick costs a b
   console.log(`    96000 notes: prepare ${prep.toFixed(1)} ms, first tick ${firstTick.toFixed(3)} ms, then ${warm.toFixed(3)} ms per tick`);
   assert.ok(firstTick < prep, 'the first tick reuses the prepared timing');
   assert.ok(firstTick < 5 && warm < 5, `a tick stays well inside the ${EDIT_MIDI_TICK_MS} ms timer`);
+});
+
+// ── 9. A part's controllers play live ───────────────────────────────────────
+run("a roll part's controllers play live at their times, and each goes back to its default where the clip ends", () => {
+  ed().loadProject({ tracks: [], clips: [] });
+  const t0 = ed().tracks[0].id;
+  ed().updateTrack(t0, { instrumentProgram: 0 });
+  // Volume 96 and pan 40 from the start, the pedal down at beat 0.5 and up at beat 2, expression 80 at beat 2.
+  const controls = [
+    { tick: 0, controller: 7, value: 96 },
+    { tick: 0, controller: 10, value: 40 },
+    { tick: 480, controller: 64, value: 127 },
+    { tick: 1920, controller: 64, value: 0 },
+    { tick: 1920, controller: 11, value: 80 },
+  ];
+  const sourceRollPart = { doc: 'd', id: 'p', order: 0, name: 'Piano', program: 0, bank: 0, channel: 1, color: '#a855f7', mute: false, solo: false, controls };
+  addMidi(t0, { startSec: 1, durationSec: 4, sourcePianoRoll: [note('a', 60, 0, 4), note('b', 64, 8, 4)], sourceRollPart });
+  const { clock, msgs, sched, runFor } = rig();
+  const anchor = clock.t;
+  sched.start(passOf(), 0, anchor);
+  runFor(6);
+  sched.stop();
+  const cc = msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc');
+  const at = (sec: number) => anchor + 1 + sec;
+  assert.deepEqual(
+    cc.map((m) => [Math.round((m.t - anchor) * 1000) / 1000, m.controller, m.value]),
+    [
+      // At the clip's start, every controller the part uses at the value it holds there: the pedal
+      // up and expression at its default (their changes come later), then volume and pan's own changes.
+      [1, 64, 0],
+      [1, 11, 127],
+      [1, 7, 96],
+      [1, 10, 40],
+      // The changes at their seconds: beat 0.5 is 0.25 s at 120, beat 2 is 1 s.
+      [1.25, 64, 127],
+      [2, 64, 0],
+      [2, 11, 80],
+      // The clip ends at 5 s: volume, pan and expression go back to their defaults (the pedal is already up).
+      [5, 7, 100],
+      [5, 10, 64],
+      [5, 11, 127],
+    ],
+    'each change on the audio clock',
+  );
+  for (const m of cc) assert.ok(m.at <= m.t + 1e-12, 'handed over ahead of its time');
+  near(cc[4].t, at(0.25), 1e-9, 'the pedal goes down on its tick');
+  // Playback starting inside the clip, after the pedal went down: the chase sets the pedal and the volume there.
+  const r = rig();
+  const a2 = r.clock.t;
+  r.sched.start(passOf(), 1.5, a2);
+  r.runFor(1);
+  r.sched.stop();
+  const chased = r.msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.t <= a2 + 1e-9);
+  assert.deepEqual(
+    chased.map((m) => [m.controller, m.value]).sort((x, y) => x[0] - y[0]),
+    [[7, 96], [10, 40], [11, 127], [64, 127]],
+    'the pedal is down and the volume, pan and expression are set where playback starts',
+  );
 });
 
 console.log('editMidiScheduler: ok');

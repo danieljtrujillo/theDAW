@@ -63,6 +63,7 @@ import {
 import { logError, logWarn } from './logStore';
 import {
   ensureEditBanks,
+  editControl,
   editNoteOn,
   editNoteOff,
   editPitchWheel,
@@ -3266,7 +3267,7 @@ function liveMidiScheduler(): EditMidiScheduler {
   if (!midiScheduler) {
     midiScheduler = new EditMidiScheduler({
       now: () => getEngineCtx().currentTime,
-      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange },
+      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange, control: editControl },
       clips: () => useEditorStore.getState().clips,
       tracks: () => useEditorStore.getState().tracks,
       global: getGlobalVoice,

@@ -38,6 +38,14 @@
  *     and the wheel messages the bounce writes (bendWheelEvents), each at its
  *     own time. Every clip, bent or not, opens by setting the range and wheel
  *     of the channels it uses, so a clip after a bent one never inherits a bend.
+ *   - Its part's controllers (a roll part's modulation, volume, pan,
+ *     expression and sustain pedal: AudioClip `sourceRollPart` controls, lib/
+ *     rollClip clipControlTimes), on every channel the clip plays on, each at
+ *     its own time: the value each holds where the clip's window starts, at
+ *     the clip's start, then every change inside the window. Where the clip
+ *     ends, each controller it left off its General MIDI default goes back,
+ *     the pedal first, so nothing it held rings past it, as its render stops
+ *     there and the arrangement's MIDI export writes it (lib/arrangementMidi).
  *   - Its gain and fades: the track's MIDI goes through one envelope gain per
  *     track, which follows the clip that is playing (lib/clipFade
  *     applyFadeAutomation with the clip's gain as the peak), the curve the
@@ -85,7 +93,8 @@ import {
 } from './pitchBend';
 import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
-import { clipNoteSpan, clipRenderInput } from './rollClip';
+import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
+import { partController } from './rollTracks';
 import { stepClock } from './rollTempo';
 
 /** How far ahead of the clock a tick schedules while the page is visible. */
@@ -110,6 +119,8 @@ export interface EditMidiSink {
   noteOff(channel: number, midi: number, time: number): void;
   wheel(channel: number, raw: number, time: number): void;
   wheelRange(channel: number, semitones: number, time: number): void;
+  /** A controller change (a part's modulation, volume, pan, expression or pedal), 0-127. */
+  control(channel: number, controller: number, value: number, time: number): void;
 }
 
 /** A track's MIDI envelope gain: an AudioParam, or a recorder in tests. */
@@ -150,12 +161,18 @@ export interface TimedNote {
   slot: number;
 }
 
-/** One channel message of a clip on the transport: a bend range or a wheel position. */
+/**
+ * One channel message of a clip on the transport: a bend range, a wheel
+ * position, or a controller change (`cc`, with its `controller`); `reset` is
+ * a controller put back to its default where the clip ends.
+ */
 export interface TimedCtl {
   t: number;
   slot: number;
-  kind: 'range' | 'wheel';
+  kind: 'range' | 'wheel' | 'cc' | 'reset';
   value: number;
+  /** The controller number, for `cc` and `reset`. */
+  controller?: number;
 }
 
 /** A clip as the scheduler plays it: notes sorted by onset, channel messages sorted by time, and how many channels it uses. */
@@ -188,7 +205,8 @@ export type TimedClip = Pick<
   | 'sourceTotalSteps'
   | 'sourceMeterMap'
   | 'sourcePickupSteps'
->;
+> &
+  Partial<Pick<AudioClip, 'sourceRollPart'>>;
 
 /** A clip's grid length, as its re-render reads it (lib/clipRerender). */
 const clipTotalSteps = (clip: TimedClip): number =>
@@ -265,7 +283,24 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
     ctl.push({ t: start, slot, kind: 'range', value: DEFAULT_BEND_RANGE });
     ctl.push({ t: start, slot, kind: 'wheel', value: BEND_CENTER });
   }
-  // Stable: at one time a channel's range stays ahead of its wheel.
+  // The part's controllers act on a channel, so each goes to every channel the clip plays on.
+  const controls = clipControlTimes({ ...clip, offsetIntoSource: offset }, fallbackBpm ?? 120);
+  if (controls.length) {
+    const held = new Map<number, number>();
+    for (const c of controls) {
+      held.set(c.controller, c.value);
+      for (let slot = 0; slot < used; slot += 1) ctl.push({ t: c.sec, slot, kind: 'cc', controller: c.controller, value: c.value });
+    }
+    // Where the clip ends, each controller it left off its default goes back, the pedal first.
+    const resets = [...held.entries()]
+      .filter(([controller, value]) => value !== (partController(controller)?.initial ?? value))
+      .sort(([a], [b]) => (a === 64 ? -1 : b === 64 ? 1 : a - b));
+    for (const [controller] of resets) {
+      const value = partController(controller)?.initial ?? 0;
+      for (let slot = 0; slot < used; slot += 1) ctl.push({ t: start + dur, slot, kind: 'reset', controller, value });
+    }
+  }
+  // Stable: at one time a channel's range stays ahead of its wheel, and its controllers keep their order.
   ctl.sort((a, b) => a.t - b.t);
   return { notes, ctl, slots: used };
 }
@@ -282,7 +317,12 @@ function lowerBound<T>(xs: readonly T[], t: number, key: (x: T) => number): numb
   return lo;
 }
 
-/** A message the tick hands over, ordered at one time as a MIDI file orders them: off, range, wheel, on. */
+/**
+ * A message the tick hands over, ordered at one time as a MIDI file orders
+ * them: off, a controller put back at a clip's end, a controller change,
+ * range, wheel, on. A reset comes before a change at one time, so the next
+ * clip's own value, set where the one before it ends, stands.
+ */
 interface Out {
   time: number;
   order: number;
@@ -462,10 +502,13 @@ export class EditMidiScheduler {
     const pushCtl = (channel: number, c: TimedCtl, time: number) => {
       const floor = this.ctlFloor.get(channel);
       const at = floor !== undefined && time <= floor ? floor + AFTER_STALE_SEC : time;
+      const controller = c.controller ?? 0;
       out.push(
         c.kind === 'range'
           ? { time: at, order: 0.25, send: () => sink.wheelRange(channel, c.value, at) }
-          : { time: at, order: 0.5, send: () => sink.wheel(channel, c.value, at) },
+          : c.kind === 'wheel'
+            ? { time: at, order: 0.5, send: () => sink.wheel(channel, c.value, at) }
+            : { time: at, order: c.kind === 'reset' ? 0.1 : 0.2, send: () => sink.control(channel, controller, c.value, at) },
       );
       this.ctlQueued.set(channel, Math.max(this.ctlQueued.get(channel) ?? 0, at));
     };
@@ -526,7 +569,9 @@ export class EditMidiScheduler {
         const lastOf = new Map<string, TimedCtl>();
         for (const c of timing.ctl) {
           if (c.t > this.fromT + EPS) break;
-          lastOf.set(`${c.slot}:${c.kind}`, c);
+          // A controller keeps one value per channel, whether a change or a reset set it.
+          const kind = c.kind === 'reset' ? 'cc' : c.kind;
+          lastOf.set(`${c.slot}:${kind}:${c.controller ?? ''}`, c);
         }
         const at = this.ctxOf(this.fromT);
         for (const c of [...lastOf.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'range' ? -1 : 1))) pushCtl(chOf(c.slot), c, at);

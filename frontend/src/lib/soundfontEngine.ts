@@ -18,7 +18,7 @@
  */
 import { create } from 'zustand';
 import { WorkletSynthesizer, audioBufferToWav } from 'spessasynth_lib';
-import { BasicMIDI, SoundBankLoader } from 'spessasynth_core';
+import { BasicMIDI, MIDIControllers, SoundBankLoader, type MIDIController } from 'spessasynth_core';
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { RANGE_LSB_SPESSA, bendRangeMessages, controlMessage } from './midi';
 import { addWorkletModule } from './audioWorkletSupport';
@@ -456,6 +456,31 @@ export function editNoteOff(channel: number, midi: number, time?: number): void 
     /* ignore */
   }
 }
+
+/**
+ * A controller change on an EDIT channel at `time` (now when absent): a roll
+ * part's modulation, volume, pan, expression or sustain pedal, as its render
+ * plays it. No-op until its bank exists.
+ */
+export function editControl(channel: number, controller: number, value: number, time?: number): void {
+  const at = editChannel(channel);
+  const cc = LIVE_CONTROLLERS.get(controller);
+  if (!at || cc === undefined) return;
+  try {
+    at.bank.synth.controllerChange(at.ch, cc, Math.max(0, Math.min(127, Math.round(value))), atTime(time));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** The controllers a roll part sends live (lib/rollTracks PART_CONTROLLERS), as the synth names them. */
+const LIVE_CONTROLLERS: ReadonlyMap<number, MIDIController> = new Map<number, MIDIController>([
+  [1, MIDIControllers.modulationWheel],
+  [7, MIDIControllers.mainVolume],
+  [10, MIDIControllers.pan],
+  [11, MIDIControllers.expression],
+  [64, MIDIControllers.sustainPedal],
+]);
 
 /** Move an EDIT channel's pitch wheel (raw 0-16383, 8192 the centre) at `time` (now when absent). No-op until its bank exists. */
 export function editPitchWheel(channel: number, raw: number, time?: number): void {

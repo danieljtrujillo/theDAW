@@ -176,6 +176,7 @@ function sinkFor(synth: SpessaSynthProcessor): EditMidiSink {
     noteOff: (ch, midi, time) => send([0x80 | route(ch).low, midi, 0], ch, time),
     wheel: (ch, raw, time) => send([0xe0 | route(ch).low, raw & 0x7f, (raw >> 7) & 0x7f], ch, time),
     wheelRange: () => undefined,
+    control: (ch, controller, value, time) => send([0xb0 | route(ch).low, controller, value], ch, time),
   };
 }
 
