@@ -8,6 +8,7 @@ No network: the download reads a ``file://`` URL written by the test.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -159,3 +160,59 @@ def test_an_unreadable_download_is_not_listed(client, tmp_path, monkeypatch):
     monkeypatch.setattr(soundbanks, "plan_download", lambda entry: plan)
     _download(client)
     assert client.get("/api/soundfonts").json()["banks"] == []
+
+
+def test_a_bank_added_from_a_file_keeps_the_manifest_beside_it(client, tmp_path):
+    """The built orchestra bank added from disk (not downloaded) keeps the
+    build manifest beside it, so the app registers its playback gains."""
+    folder = tmp_path / "built"
+    folder.mkdir()
+    bank = folder / "theDAW-Orchestra.sf3"
+    bank.write_bytes(make_sf2("theDAW Orchestra", [("Flute Staccato", 73, 1)]))
+    manifest = {"playback_gain": {"1:73": 7.5}, "levelling": {"presets": []}}
+    (folder / "theDAW-Orchestra.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    added = client.post("/api/soundfonts/add-path", json={"path": str(bank)}).json()[
+        "bank"
+    ]
+    assert added["manifest"] is True
+    got = client.get(f"/api/soundfonts/{added['id']}/manifest")
+    assert got.status_code == 200
+    assert got.json()["playback_gain"] == {"1:73": 7.5}
+    # The copy is the app's: it stays when the file beside the source goes.
+    (folder / "theDAW-Orchestra.json").unlink()
+    assert client.get(f"/api/soundfonts/{added['id']}/manifest").status_code == 200
+    # Removing the bank takes the copy with it.
+    assert client.delete(f"/api/soundfonts/{added['id']}").status_code == 200
+    assert client.get(f"/api/soundfonts/{added['id']}/manifest").status_code == 404
+
+
+def test_a_bank_with_no_manifest_answers_404(client, tmp_path):
+    bank = tmp_path / "Plain.sf2"
+    bank.write_bytes(make_sf2("Plain", [("Piano", 0, 0)]))
+    added = client.post("/api/soundfonts/add-path", json={"path": str(bank)}).json()[
+        "bank"
+    ]
+    assert "manifest" not in added
+    assert client.get(f"/api/soundfonts/{added['id']}/manifest").status_code == 404
+
+
+def test_a_downloaded_banks_manifest_is_served(client, tmp_path, monkeypatch):
+    source = _serve_orchestra(tmp_path, monkeypatch)
+    (source.with_suffix(".json")).write_text(
+        json.dumps({"playback_gain": {"1:73": 7.25}}), encoding="utf-8"
+    )
+    plan = soundbanks.DownloadPlan(
+        [
+            (source.name, source.as_uri(), source.stat().st_size, None),
+            ("theDAW-Orchestra.json", source.with_suffix(".json").as_uri(), None, None),
+        ],
+        "test",
+    )
+    monkeypatch.setattr(soundbanks, "plan_download", lambda entry: plan)
+    _download(client)
+    bank = client.get("/api/soundfonts").json()["banks"][0]
+    got = client.get(f"/api/soundfonts/{bank['id']}/manifest")
+    assert got.status_code == 200
+    assert got.json()["playback_gain"] == {"1:73": 7.25}

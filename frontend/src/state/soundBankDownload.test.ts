@@ -6,7 +6,8 @@
  * GET /api/soundfonts), and the bank's manifest gains are registered at that
  * offset (lib/soundbankClient registerInstalledSoundbankGains), so a program
  * change to its Flute Staccato (bank 1, program 73) picks the gain up. The
- * bank leaving the list takes its gains with it.
+ * bank leaving the list takes its gains with it. A bank added from disk with
+ * its build manifest beside it registers its gains from the kept copy.
  *
  *   cd frontend && npx tsx src/state/soundBankDownload.test.ts
  */
@@ -56,6 +57,7 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   if (url === '/api/magenta/engine/checkpoints') return json({ detail: 'off' }, 404);
   if (url === '/api/soundfonts') return json({ banks: listed });
   if (url === '/api/models/soundbanks/thedaw-orchestra/manifest') return json({ playback_gain: { '1:73': 9.5, '0:40': 1.5 } });
+  if (url === '/api/soundfonts/sb-built0000001/manifest') return json({ playback_gain: { '1:73': 7.25 } });
   return json({ detail: `unexpected ${url}` }, 404);
 }) as typeof fetch;
 
@@ -93,5 +95,14 @@ assert.equal(asked.filter((u) => u.endsWith('/manifest')).length, manifests, 'th
 listed = [];
 await useSoundBankStore.getState().refresh();
 await settle(() => selectionGainDb(33, 73) === 0, 'a bank off the list plays no gain');
+
+// The built bank added from disk with its manifest beside it: its gains come from the copy the backend kept.
+listed = [{ id: 'sb-built0000001', name: 'theDAW Orchestra', format: 'sf3', offset: 40, span: 12, presets: [{ bank: 1, program: 73, name: 'Flute Staccato', drum: false }], manifest: true }];
+await useSoundBankStore.getState().refresh();
+await settle(() => selectionGainDb(41, 73) === 7.25, 'a bank added with its manifest plays its gains at its offset');
+assert.ok(asked.includes('/api/soundfonts/sb-built0000001/manifest'));
+listed = [];
+await useSoundBankStore.getState().refresh();
+await settle(() => selectionGainDb(41, 73) === 0, 'and drops them when removed');
 
 console.log('soundBankDownload: ok');

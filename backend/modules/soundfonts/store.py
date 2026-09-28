@@ -39,6 +39,7 @@ __all__ = [
     "USER_OFFSET_LAST",
     "add_bank",
     "add_downloaded_bank",
+    "bank_manifest",
     "on_bank_downloaded",
     "sync_downloaded",
     "allocate_offset",
@@ -139,6 +140,46 @@ def list_banks() -> list[dict[str, Any]]:
     return out
 
 
+def _manifest_beside(path: str | os.PathLike[str] | None) -> dict[str, Any] | None:
+    """The build manifest beside a bank file (``<stem>.json``, as
+    scripts/build_orchestra_sf3.py writes it) when it carries a
+    ``playback_gain`` table; else None."""
+    if not path:
+        return None
+    side = Path(path).with_suffix(".json")
+    try:
+        data = json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return (
+        data
+        if isinstance(data, dict) and isinstance(data.get("playback_gain"), dict)
+        else None
+    )
+
+
+def bank_manifest(bank_id: str) -> dict[str, Any] | None:
+    """A listed bank's build manifest, with its playback gains: the copy kept
+    when the bank was added from a file with one beside it, or the one beside
+    a downloaded bank's installed file. None when it has none."""
+    if not _ID_RE.match(bank_id or ""):
+        return None
+    for b in _load():
+        if b.get("id") != bank_id:
+            continue
+        if b.get("download_id"):
+            return _manifest_beside(_root() / str(b.get("file", "")))
+        if b.get("manifest"):
+            try:
+                data = json.loads(
+                    (_root() / f"{bank_id}.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                return None
+            return data if isinstance(data, dict) else None
+    return None
+
+
 def bank_file(bank_id: str) -> Path | None:
     if not _ID_RE.match(bank_id or ""):
         return None
@@ -187,6 +228,14 @@ def add_bank(
             }
             if source_path:
                 entry["source_path"] = source_path
+            # The build manifest beside the picked file (its playback gains) is
+            # kept with the stored copy, so the bank plays at its levels.
+            beside = _manifest_beside(source_path)
+            if beside is not None:
+                atomic_write(
+                    root / f"{bank_id}.json", json.dumps(beside).encode("utf-8")
+                )
+                entry["manifest"] = True
             banks.append(entry)
             _save(banks)
     except BankFileError as e:
@@ -323,8 +372,12 @@ def remove_bank(bank_id: str) -> bool:
         _save(keep)
     for b in gone:
         f = _root() / str(b.get("file", ""))
-        try:
-            f.unlink(missing_ok=True)
-        except OSError as e:
-            log.warning("soundfonts: could not delete %s: %s", f, e)
+        kept = [f]
+        if b.get("manifest"):
+            kept.append(_root() / f"{bank_id}.json")
+        for path in kept:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("soundfonts: could not delete %s: %s", path, e)
     return True

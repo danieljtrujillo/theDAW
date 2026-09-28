@@ -14,7 +14,9 @@
  * playback gains in its manifest: each listed one is registered with
  * lib/soundbankGain at its offset (lib/soundbankClient
  * registerInstalledSoundbankGains), and a bank that leaves the list takes its
- * gains with it. A sound bank download that finishes refreshes the list
+ * gains with it. A bank the user added from a file with its build manifest
+ * beside it (SoundBank `manifest`) has its gains registered the same way, from
+ * the copy the backend kept. A sound bank download that finishes refreshes the list
  * (state/downloadStore), so the new bank is in every picker at once.
  */
 import { create } from 'zustand';
@@ -29,7 +31,7 @@ import {
 } from '../lib/bankRegistry';
 import { notifyPlacesChanged } from '../lib/placesClient';
 import { registerInstalledSoundbankGains } from '../lib/soundbankClient';
-import { unregisterSoundbankGains } from '../lib/soundbankGain';
+import { registerSoundbankGains, unregisterSoundbankGains, type SoundbankGainManifest } from '../lib/soundbankGain';
 import { logError, logInfo, logWarn } from './logStore';
 
 /** Where the bundled bank is served from (frontend/public). */
@@ -82,6 +84,7 @@ function writeCache(banks: readonly SoundBank[]): void {
       span: b.span,
       presets: b.presets.map((p) => ({ bank: p.bank, bank_lsb: p.bankLsb, program: p.program, name: p.name, drum: p.drum })),
       ...(b.downloadId ? { download_id: b.downloadId } : {}),
+      ...(b.manifest ? { manifest: true } : {}),
     }));
     localStorage.setItem(CACHE_KEY, JSON.stringify(list));
   } catch {
@@ -109,14 +112,17 @@ export async function syncDownloadedBankGains(banks: readonly SoundBank[]): Prom
   const listed = new Set<string>();
   const waits: Promise<void>[] = [];
   for (const b of userBanks(banks)) {
-    if (!b.downloadId) continue;
+    if (!b.downloadId && !b.manifest) continue;
     listed.add(b.id);
-    const sig = `${b.downloadId}@${b.offset}`;
+    const sig = `${b.downloadId ?? 'file'}@${b.offset}`;
     if (gainsRegistered.get(b.id) === sig) continue;
     gainsRegistered.set(b.id, sig);
     const { downloadId, id, offset, name } = b;
+    const register = downloadId
+      ? registerInstalledSoundbankGains(downloadId, id, offset)
+      : getJson<SoundbankGainManifest>(`/api/soundfonts/${encodeURIComponent(id)}/manifest`).then((m) => registerSoundbankGains(id, m, offset));
     waits.push(
-      registerInstalledSoundbankGains(downloadId, id, offset).then(
+      register.then(
         (n) => {
           if (n > 0) logInfo('midi', `Sound bank "${name}": playback gains for ${n} presets`);
         },

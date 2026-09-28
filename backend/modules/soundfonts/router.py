@@ -5,6 +5,7 @@
     POST   /api/soundfonts/upload      add a bank from an uploaded .sf2/.sf3/.dls
     POST   /api/soundfonts/add-path    add a bank from a file on this machine
     GET    /api/soundfonts/{id}/file   a stored bank's bytes, for the synths
+    GET    /api/soundfonts/{id}/manifest  its build manifest (playback gains), if any
     DELETE /api/soundfonts/{id}        remove a bank and delete its file (a downloaded
                                        bank's installed file too)
 
@@ -101,6 +102,14 @@ def get_bank_file(bank_id: str) -> FileResponse:
     return FileResponse(
         f, media_type=_MEDIA.get(fmt, "application/octet-stream"), filename=f.name
     )
+
+
+@router.get("/{bank_id}/manifest")
+def get_bank_manifest(bank_id: str) -> dict[str, Any]:
+    data = store.bank_manifest(bank_id)
+    if data is None:
+        raise HTTPException(404, "That sound bank has no manifest.")
+    return data
 
 
 @router.delete("/{bank_id}")
