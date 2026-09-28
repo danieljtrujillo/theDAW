@@ -735,6 +735,23 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
                 "type": "boolean",
                 "description": "Also snap note ends (lengths). Default false.",
             },
+            "groove": {
+                "type": "string",
+                "description": (
+                    "A feel laid over the grid, in the clip's own meter: straight, "
+                    "swing8:<pct> or swing16:<pct> (the off-8ths or off-16ths of each "
+                    "bar), group8:<pct> or group16:<pct> (the same pairs counted from "
+                    "each of the bar's groups, so 7/8 3+2+2 swings inside each group), "
+                    "inegales:60, ddot:8 or ddot:4; pct is 50-75 (66.7 is a triplet "
+                    "feel). Omit for none."
+                ),
+            },
+            "groove_strength": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "How far into the groove, 0-1. Default 1.",
+            },
         },
         ["clip_id", "grid"],
     ),

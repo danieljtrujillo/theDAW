@@ -285,7 +285,7 @@ async function stretchClipTool(payload: Record<string, unknown>): Promise<ToolRe
 
 const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     // -- notes ---------------------------------------------------------------
-    editor_quantize_clip: (p) => facade.quantizeClip(pick(p, [...CLIP, 'grid', 'strength', 'swing', 'quantize_ends'])),
+    editor_quantize_clip: (p) => facade.quantizeClip(pick(p, [...CLIP, 'grid', 'strength', 'swing', 'quantize_ends', 'groove', 'groove_strength'])),
     editor_get_notes: (p) => facade.getNotes(pick(p, CLIP)),
     editor_set_notes: (p) => facade.setNotes(pick(p, [...CLIP, 'notes'])),
     editor_nudge_notes: (p) => facade.nudgeNotes(pick(p, [...CLIP, 'steps', 'ms', 'ticks', 'bpm'])),

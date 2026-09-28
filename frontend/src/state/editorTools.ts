@@ -18,7 +18,8 @@
  *
  * 2. **Notes are edited as notes, then re-rendered.** A piano-roll clip carries
  *    the note list that produced its audio, so "quantize this" is
- *    `clipNotes.quantizeNotes` plus a re-bounce — not a guess at what quantized
+ *    `rollClip.quantizeRollClip` (clipNotes.quantizeNotes on the roll's own notes)
+ *    plus a re-bounce — not a guess at what quantized
  *    audio would sound like. Every note mutation therefore AWAITS the re-render
  *    before reporting success, and writes the same fields the timeline writes
  *    when an instrument changes (`WaveformEditor.rerenderMidiClipAudio`), so the
@@ -66,11 +67,12 @@ import {
   humanizeNotes,
   noteEndStep,
   nudgeNotes as nudgeNotesPure,
-  quantizeNotes,
   scaleVelocity as scaleVelocityPure,
   transposeNotes,
 } from '../lib/clipNotes';
 import type { OverlapMode } from '../lib/clipNotes';
+import { quantizeRollClip } from '../lib/rollClip';
+import { builtinGrooves, grooveById } from '../lib/grooveTemplate';
 import {
   DEFAULT_SAMPLE_RATE,
   applyFadesToBlob,
@@ -467,9 +469,21 @@ export interface QuantizeArgs extends ClipArgs, RenderArgs {
   strength?: unknown;
   swing?: unknown;
   quantize_ends?: unknown;
+  /** A feel laid over the grid: a groove id (lib/grooveTemplate grooveById). */
+  groove?: unknown;
+  /** How far into the groove, 0..1. Default 1. */
+  groove_strength?: unknown;
 }
 
-/** Snap a MIDI clip's notes toward a grid. */
+/**
+ * Snap a MIDI clip's notes toward a grid, and lay a groove over them.
+ *
+ * The notes go through `rollClip.quantizeRollClip`, which quantizes the
+ * roll's own lane document (`sourceRollNotes`, what EDIT IN PIANO ROLL opens)
+ * and derives the played list (`sourcePianoRoll`, what the clip renders) from
+ * the result, so the two lists never disagree. The groove pass is
+ * `applyGrooveInMeter`, which follows each bar's own meter and groups.
+ */
 export async function quantizeClip(args: QuantizeArgs): Promise<ToolResult> {
   const found = resolveMidiClip(clipRef(args));
   if (!found.ok) return fail(found.error);
@@ -483,20 +497,33 @@ export async function quantizeClip(args: QuantizeArgs): Promise<ToolResult> {
   if (strength < 0 || strength > 1) return fail('quantize: strength must be between 0 and 1');
   if (swing < -1 || swing > 1) return fail('quantize: swing must be between -1 and 1');
 
+  const grooveId = strArg(args.groove);
+  const groove = grooveId ? grooveById(grooveId) : null;
+  if (grooveId && !groove) {
+    return fail(`quantize: "${grooveId}" is not a groove. Use one of: ${builtinGrooves().map((g) => g.id).join(', ')}, or swing8:/swing16:/group8:/group16: with a percent from 50 to 75`);
+  }
+  const grooveStrength = numArg(args.groove_strength) ?? 1;
+  if (grooveStrength < 0 || grooveStrength > 1) return fail('quantize: groove_strength must be between 0 and 1');
+
   const clip = found.value;
   // A clip bounced from the roll carries its meter, so the grid restarts on its
   // bar lines (a pickup or a 7/32 bar keeps its own lines); one without a meter
   // keeps the grid from step 0.
-  const notes = quantizeNotes(clip.sourcePianoRoll, {
+  const q = quantizeRollClip(clip, {
     grid,
     strength,
     swing,
     quantizeEnds: boolArg(args.quantize_ends) ?? false,
     ...(clip.sourceMeterMap?.length ? { meterMap: clip.sourceMeterMap, pickupSteps: clip.sourcePickupSteps ?? 0 } : {}),
+    ...(groove ? { groove, grooveStrength } : {}),
   });
-  const written = await commitNotes(clip, notes, args);
+  const notes = q.sourcePianoRoll;
+  // The roll's own notes ride in the same write; a clip bounced before the roll
+  // kept its own list has none, and none is made up for it.
+  const written = await commitNotes(clip, notes, args, undefined, q.sourceRollNotes.length ? { sourceRollNotes: q.sourceRollNotes } : {});
   if (!written.ok) return fail(written.error);
-  return done(`Quantized ${notes.length} notes to ${grid} at ${Math.round(strength * 100)}% (swing ${swing}) on "${clip.label}"${written.value.lengthNote}`);
+  const feel = groove ? `, ${groove.name} at ${Math.round(grooveStrength * 100)}%` : '';
+  return done(`Quantized ${notes.length} notes to ${grid} at ${Math.round(strength * 100)}% (swing ${swing}${feel}) on "${clip.label}"${written.value.lengthNote}`);
 }
 
 export interface NudgeNotesArgs extends ClipArgs, RenderArgs {
