@@ -112,6 +112,44 @@ def test_plan_refuses_what_it_cannot_write() -> None:
     assert bad_key.status_code == 422
 
 
+def test_a_tick_past_the_longest_form_is_refused() -> None:
+    """Every tick, length and start a request names is at most MAX_TICK
+    (MAX_SYMPHONY_BARS bars of the longest meter), so no request walks a
+    meter map further than a symphony reaches."""
+    from backend.modules.composer.router import (
+        LONGEST_BAR_TICKS,
+        MAX_SYMPHONY_BARS,
+        MAX_TICK,
+    )
+
+    assert MAX_TICK == MAX_SYMPHONY_BARS * LONGEST_BAR_TICKS
+    c = _client()
+
+    def check(tick: int, ticks: int = Q) -> int:
+        note = {"note": 60, "tick": tick, "ticks": ticks}
+        return c.post(
+            "/api/composer/check", json={"key": "C", "parts": {"soprano": [note]}}
+        ).status_code
+
+    assert check(MAX_TICK) == 200
+    assert check(MAX_TICK + 1) == 422
+    assert check(0, MAX_TICK + 1) == 422
+    for route in ("canon", "fugue", "species"):
+        r = c.post(f"/api/composer/{route}", json={"start_tick": MAX_TICK + 1})
+        assert r.status_code == 422, (route, r.text)
+    far_meter = c.post(
+        "/api/composer/check",
+        json={
+            "key": "C",
+            "parts": {"soprano": [{"note": 60, "tick": 0, "ticks": Q}]},
+            "meter_map": [
+                {"bar": MAX_SYMPHONY_BARS + 1, "meter": {"num": 3, "den": 4}}
+            ],
+        },
+    )
+    assert far_meter.status_code == 422
+
+
 def test_check_flags_parallel_fifths_with_bar_and_beat() -> None:
     def part(pitches: list[int]) -> list[dict]:
         return [{"note": p, "tick": i * Q, "ticks": Q} for i, p in enumerate(pitches)]

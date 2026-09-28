@@ -82,6 +82,14 @@ MAX_CANTUS = 32
 MAX_SUBJECT = 32
 MAX_CANON_BARS = 32
 BAR_TICKS = 4 * PPQ
+# The longest bar a meter here can have: 64/1, sixty-four whole notes.
+LONGEST_BAR_TICKS = 64 * 4 * PPQ
+# The latest tick a request may name: MAX_SYMPHONY_BARS bars of the longest
+# meter. Every tick, length and start is at most this.
+MAX_TICK = MAX_SYMPHONY_BARS * LONGEST_BAR_TICKS
+# A pickup is shorter than a bar: at most one bar of the longest meter, in
+# sixteenths.
+MAX_PICKUP_STEPS = LONGEST_BAR_TICKS // (PPQ // 4)
 
 Cadence = Literal[
     "authentic_perfect",
@@ -116,14 +124,14 @@ class MeterIn(BaseModel):
 
 
 class MeterSegmentIn(BaseModel):
-    bar: int = Field(ge=0)
+    bar: int = Field(ge=0, le=MAX_SYMPHONY_BARS)
     meter: MeterIn
 
 
 class NoteIn(BaseModel):
     note: int = Field(ge=0, le=127)
-    tick: int = Field(ge=0)
-    ticks: int = Field(ge=1)
+    tick: int = Field(ge=0, le=MAX_TICK)
+    ticks: int = Field(ge=1, le=MAX_TICK)
 
 
 class FiguredNoteIn(NoteIn):
@@ -131,7 +139,7 @@ class FiguredNoteIn(NoteIn):
 
 
 class ChordIn(BaseModel):
-    tick: int = Field(ge=0)
+    tick: int = Field(ge=0, le=MAX_TICK)
     figure: str = Field(min_length=1, max_length=32)
     key: Optional[str] = Field(default=None, max_length=32)
 
@@ -174,7 +182,7 @@ class CheckRequest(BaseModel):
     chords: Optional[list[ChordIn]] = None
     ranges: Optional[dict[str, Range]] = None
     meter_map: list[MeterSegmentIn] = Field(default_factory=list)
-    pickup_steps: float = Field(default=0, ge=0)
+    pickup_steps: float = Field(default=0, ge=0, le=MAX_PICKUP_STEPS)
 
 
 class ContinuoRequest(BaseModel):
@@ -183,7 +191,7 @@ class ContinuoRequest(BaseModel):
     mode: Optional[Mode] = None
     ranges: Optional[dict[str, Range]] = None
     meter_map: list[MeterSegmentIn] = Field(default_factory=list)
-    pickup_steps: float = Field(default=0, ge=0)
+    pickup_steps: float = Field(default=0, ge=0, le=MAX_PICKUP_STEPS)
 
 
 class FormRequest(BaseModel):
@@ -211,7 +219,7 @@ class SpeciesRequest(BaseModel):
     position: Literal["above", "below"] = "above"
     seed: int = 0
     invertible: Optional[Literal[8, 10, 12]] = None
-    start_tick: Optional[int] = Field(default=None, ge=0)
+    start_tick: Optional[int] = Field(default=None, ge=0, le=MAX_TICK)
 
 
 class CanonRequest(BaseModel):
@@ -223,7 +231,7 @@ class CanonRequest(BaseModel):
     seed: int = 0
     transposition: Literal["diatonic", "real"] = "diatonic"
     rhythm: Literal["mixed", "halves", "quarters"] = "mixed"
-    start_tick: int = Field(default=0, ge=0)
+    start_tick: int = Field(default=0, ge=0, le=MAX_TICK)
 
 
 class FugueRequest(BaseModel):
@@ -235,7 +243,7 @@ class FugueRequest(BaseModel):
     seed: int = 0
     episodes: int = Field(default=1, ge=0, le=2)
     countersubject: bool = True
-    start_tick: int = Field(default=0, ge=0)
+    start_tick: int = Field(default=0, ge=0, le=MAX_TICK)
 
 
 class InvertibleRequest(BaseModel):

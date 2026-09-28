@@ -20,6 +20,7 @@ Ticks are 960 to the quarter note, the roll's PPQ.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Iterable
@@ -166,23 +167,30 @@ class MeterGrid:
         segs[0] = (0, segs[0][1])
         self.segments: list[tuple[int, Meter]] = segs
         self.pickup_ticks = max(0, round(float(pickup_steps or 0) * TICKS_PER_STEP))
+        # Each segment's first bar and the tick it starts on, so a bar and the
+        # bar holding a tick are found by bisection and arithmetic: the last
+        # segment runs on for ever.
+        self._segment_bars: list[int] = [b for b, _m in segs]
+        self._segment_ticks: list[int] = []
+        tick = self.pickup_ticks
+        for i, (b, _m) in enumerate(segs):
+            if i:
+                prev_bar, prev_meter = segs[i - 1]
+                tick += (b - prev_bar) * prev_meter.bar_ticks
+            self._segment_ticks.append(tick)
+
+    def _segment_of_bar(self, bar: int) -> int:
+        return max(0, bisect.bisect_right(self._segment_bars, max(0, bar)) - 1)
 
     def meter_at(self, bar: int) -> Meter:
-        m = self.segments[0][1]
-        for b, seg_meter in self.segments:
-            if b <= max(0, bar):
-                m = seg_meter
-            else:
-                break
-        return m
+        return self.segments[self._segment_of_bar(bar)][1]
 
     def bar(self, index: int) -> Bar:
         if index < 0:
             return Bar(-1, 0, self.pickup_ticks, self.segments[0][1])
-        tick = self.pickup_ticks
-        for b in range(index):
-            tick += self.meter_at(b).bar_ticks
-        m = self.meter_at(index)
+        seg = self._segment_of_bar(index)
+        first, m = self.segments[seg]
+        tick = self._segment_ticks[seg] + (index - first) * m.bar_ticks
         return Bar(index, tick, m.bar_ticks, m)
 
     def bars(self, count: int) -> list[Bar]:
@@ -195,16 +203,13 @@ class MeterGrid:
         return out
 
     def bar_at(self, tick: int) -> Bar:
+        """The bar that holds ``tick``, in O(log segments) for any tick."""
         if self.pickup_ticks and tick < self.pickup_ticks:
             return self.bar(-1)
-        at = self.pickup_ticks
-        b = 0
-        while True:
-            m = self.meter_at(b)
-            if tick < at + m.bar_ticks:
-                return Bar(b, at, m.bar_ticks, m)
-            at += m.bar_ticks
-            b += 1
+        seg = max(0, bisect.bisect_right(self._segment_ticks, tick) - 1)
+        first, m = self.segments[seg]
+        within = max(0, tick - self._segment_ticks[seg]) // m.bar_ticks
+        return self.bar(first + within)
 
     def locate(self, tick: int) -> tuple[int, int]:
         """(bar, beat) for a tick: the meter map's bar index and the 1-based

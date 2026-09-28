@@ -173,3 +173,39 @@ def test_other_meters_count_as_the_roll_counts_them() -> None:
     assert g.bar(2).tick == 960 + 2 * 3840
     assert [p.tick - g.bar(2).tick for p in g.bar(2).pulses()] == [0, 1440]
     assert g.locate(0) == (-1, 1)
+
+
+def test_bar_at_a_far_tick_is_arithmetic_past_the_last_meter() -> None:
+    """``bar_at`` finds the segment by bisection and counts bars in it, so a
+    tick a million bars on answers at once, and every tick of the first
+    segments lands in the bar a walk from the start finds."""
+    import time
+
+    meter_map = [
+        {"bar": 0, "meter": {"num": 4, "den": 4, "groups": []}},
+        {"bar": 2, "meter": {"num": 7, "den": 8, "groups": [2, 2, 3]}},
+        {"bar": 5, "meter": {"num": 3, "den": 4, "groups": []}},
+    ]
+    grid = MeterGrid(meter_map, pickup_steps=4)
+
+    walked = []
+    tick = grid.pickup_ticks
+    for index in range(12):
+        ticks = grid.meter_at(index).bar_ticks
+        walked.append((index, tick, ticks))
+        tick += ticks
+    for index, start, ticks in walked:
+        for probe in (start, start + ticks // 2, start + ticks - 1):
+            bar = grid.bar_at(probe)
+            assert (bar.bar, bar.tick, bar.ticks) == (index, start, ticks)
+            assert grid.bar(index).tick == start
+    assert grid.bar_at(0).bar == -1, "the pickup"
+
+    far = 10**12
+    began = time.perf_counter()
+    bar = grid.bar_at(far)
+    elapsed = time.perf_counter() - began
+    assert elapsed < 0.05, f"{elapsed:.3f} s"
+    last_start = walked[5][1]
+    assert bar.bar == 5 + (far - last_start) // 2880
+    assert bar.tick <= far < bar.tick + bar.ticks
