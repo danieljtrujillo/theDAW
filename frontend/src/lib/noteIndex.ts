@@ -1,6 +1,7 @@
 /**
- * A sorted interval index over notes: range queries and hit tests in
- * O(log n + k) where the roll and EDIT used to walk every note.
+ * A sorted interval index over notes: range queries and hit tests that visit
+ * O(log n) tree nodes for each of the k notes they report, O(k log n) in all,
+ * where the roll and EDIT used to walk every note.
  *
  * The notes sit sorted by start (then pitch, then their place in the list).
  * Over that order a segment tree keeps, per node, the latest end of the notes
