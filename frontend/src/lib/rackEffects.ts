@@ -1730,6 +1730,12 @@ const makeReverbIR = (ctx: BaseAudioContext, seconds: number): AudioBuffer => {
  * swapped in then. A file that cannot load leaves the synthesized room.
  * `decay` shapes only the synthesized room: a measured hall rings as long as
  * the hall does.
+ *
+ * A measured response is one source heard by two ears, so on a hall the
+ * convolver takes its input as mono (the sum of a stereo input): a panned
+ * part excites the hall from its seat and both ears hear the room, as in the
+ * measurement. The synthesized room keeps the convolver's stereo input, left
+ * into the left response and right into the right.
  */
 const makeReverb: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
@@ -1752,11 +1758,22 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
   /** The response the params ask for, which a load in flight checks before it lands. */
   let wanted = '';
   let disposed = false;
+  /** Mono input for a measured hall, the convolver's own stereo input for the room. */
+  const setInputMono = (mono: boolean) => {
+    conv.channelCount = mono ? 1 : 2;
+    conv.channelCountMode = mono ? 'explicit' : 'clamped-max';
+  };
   const setSynthetic = (seconds: number) => {
     const key = `synth:${seconds}`;
     if (current === key) return;
     conv.buffer = makeReverbIR(ctx, seconds);
+    setInputMono(false);
     current = key;
+  };
+  const setHall = (url: string, buf: AudioBuffer) => {
+    conv.buffer = buf;
+    setInputMono(true);
+    current = url;
   };
   const setParams = (p: Record<string, number>) => {
     const seconds = clamp(p.decay ?? 2.0, 0.1, 8);
@@ -1768,15 +1785,13 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
       wanted = url;
       const ready = cachedHallIr(url, ctx.sampleRate);
       if (ready) {
-        if (current !== url) conv.buffer = ready;
-        current = url;
+        if (current !== url) setHall(url, ready);
       } else {
         // Until the file arrives the room is heard, never silence.
         if (!current) setSynthetic(seconds);
         void loadHallIr(ctx, url).then((buf) => {
           if (!buf || disposed || wanted !== url || current === url) return;
-          conv.buffer = buf;
-          current = url;
+          setHall(url, buf);
         });
       }
     }

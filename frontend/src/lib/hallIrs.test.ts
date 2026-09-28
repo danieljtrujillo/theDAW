@@ -45,6 +45,8 @@ const node = (kind: string) => ({
   delayTime: param(),
   type: '',
   buffer: null as FakeBuffer | null,
+  channelCount: 2,
+  channelCountMode: 'max' as string,
   connect(n: unknown) { return n; },
   disconnect() {},
 });
@@ -231,12 +233,15 @@ const make = (ctx: Ctx, params: Record<string, number>) => reverb.make(asCtx(ctx
   const inst = make(ctx, { hall: 2, position: 3 });
   const conv = ctx.convolvers[0];
   assert.match(conv.buffer!.tag, /^synth/, 'never silence while the file loads');
+  assert.deepEqual([conv.channelCount, conv.channelCountMode], [2, 'clamped-max'], 'the room takes stereo in');
   await flush();
   assert.equal(conv.buffer!.tag, '/irs/detmold-konzerthaus/seat-372/s3.flac');
+  assert.deepEqual([conv.channelCount, conv.channelCountMode], [1, 'explicit'], 'a measured hall takes one source in, as it was measured');
 
   // Back to the room, then to a cached hall: each lands at once.
   inst.setParams({ ...rackEffectDefaults('reverb'), hall: 0, decay: 3 });
   assert.match(conv.buffer!.tag, /^synth/);
+  assert.equal(conv.channelCount, 2, 'back to stereo in for the room');
   inst.setParams({ ...rackEffectDefaults('reverb'), hall: 2, position: 3 });
   assert.equal(conv.buffer!.tag, '/irs/detmold-konzerthaus/seat-372/s3.flac');
 }
