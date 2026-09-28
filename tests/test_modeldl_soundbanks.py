@@ -289,3 +289,25 @@ def test_the_installed_manifest_is_served_with_its_playback_gains(client):
     assert resp.status_code == 200
     assert resp.json()["playback_gain"] == {"1:73": 9.5}
     assert client.get("/api/models/soundbanks/nope/manifest").status_code == 404
+
+
+def test_a_page_outside_thedaw_cannot_start_a_download(client, monkeypatch):
+    started = []
+    monkeypatch.setattr(modeldl._EXECUTOR, "submit", lambda fn, *a: started.append(a))
+    foreign = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+    for url in (
+        "/api/models/soundbanks/sonatina-sf2/download",
+        "/api/models/stable-audio-3-small/download",
+    ):
+        assert client.post(url, headers=foreign).status_code == 403
+    assert client.get("/api/models/soundbanks", headers=foreign).status_code == 403
+    assert started == [], "nothing was fetched"
+    # theDAW's own UI passes.
+    own = {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "same-origin"}
+    assert (
+        client.post("/api/models/soundbanks/sonatina-sf2/download", headers=own).json()[
+            "status"
+        ]
+        == "queued"
+    )
+    assert len(started) == 1

@@ -35,9 +35,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from huggingface_hub.utils import tqdm
 
+from backend.lib.cross_site import refuse_cross_site
 from backend.modules.modeldl import soundbanks
 from stable_audio_3.model_configs import (
     AutoencoderModelConfig,
@@ -48,7 +49,11 @@ from stable_audio_3.model_configs import (
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+# Every route here starts a download of hundreds of megabytes onto this
+# machine's disk or reports on one, so a web page outside theDAW, which can
+# send a simple POST to 127.0.0.1 without a preflight, is refused; theDAW's own
+# UI, the desktop shell and a paired device on the LAN pass.
+router = APIRouter(dependencies=[Depends(refuse_cross_site)])
 
 # job_id -> job dict. Guarded by _LOCK for every read and write, because worker
 # threads mutate jobs while request handlers read them.
