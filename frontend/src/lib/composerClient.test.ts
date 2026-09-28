@@ -133,6 +133,49 @@ assert.deepEqual(sent[0].body, {
   meter_map: [{ bar: 0, meter: { num: 7, den: 8, groups: [2, 2, 3] } }],
 });
 
+// ── form and form/realize ───────────────────────────────────────────────────
+serve(200, { form: 'symphony', movements: [] });
+await composerApi.form({ form: 'symphony', key: 'Eb', seed: 4, bars: 320, harmonicRhythm: 'pulse' });
+assert.equal(sent[0].url, '/api/composer/form');
+assert.equal(sent[0].method, 'POST');
+assert.equal(sent[0].headers['X-TheDAW-Pair'], 'pair-token');
+assert.deepEqual(sent[0].body, { form: 'symphony', key: 'Eb', seed: 4, bars: 320, harmonic_rhythm: 'pulse' });
+
+const groups = [2, 2, 3];
+serve(200, { form: 'rondo', movements: [], flag_count: 0 });
+await composerApi.realizeForm({
+  form: 'rondo',
+  key: 'g',
+  mode: 'minor',
+  rondo: 'ABACABA',
+  meter: { num: 7, den: 8, groups },
+  tempo: 152,
+  ranges: { soprano: [60, 81] },
+});
+assert.equal(sent[0].url, '/api/composer/form/realize');
+assert.deepEqual(sent[0].body, {
+  form: 'rondo',
+  key: 'g',
+  mode: 'minor',
+  meter: { num: 7, den: 8, groups: [2, 2, 3] },
+  tempo: 152,
+  rondo: 'ABACABA',
+  ranges: { soprano: [60, 81] },
+});
+assert.notEqual((sent[0].body as { meter: { groups: number[] } }).meter.groups, groups, 'groups are copied');
+
+serve(200, { form: 'theme_and_variations', movements: [] });
+await composerApi.form({ form: 'theme_and_variations', key: 'D', variations: 6 });
+assert.deepEqual(sent[0].body, { form: 'theme_and_variations', key: 'D', variations: 6 }, 'unset options are left to the backend');
+
+serve(422, { detail: 'a single form is at most 400 bars' });
+await assert.rejects(composerApi.form({ form: 'sonata', key: 'C', bars: 700 }), (e: unknown) => {
+  assert.ok(e instanceof ApiError);
+  assert.equal(e.status, 422);
+  assert.match(e.message, /at most 400 bars/);
+  return true;
+});
+
 // ── capabilities is a GET ───────────────────────────────────────────────────
 serve(200, { module: 'composer', ppq: 960 });
 assert.equal((await composerApi.capabilities()).ppq, 960);
