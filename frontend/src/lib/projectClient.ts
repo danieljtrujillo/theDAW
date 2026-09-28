@@ -344,6 +344,10 @@ export interface TasmoClipInput {
    *  and the bank its embedded audio was rendered in; null for bank 0. */
   instrument_bank?: number | null;
   rendered_bank?: number | null;
+  /** The sound bank the clip's program is picked from (lib/bankRegistry);
+   *  null or absent is the bundled General MIDI bank, as in every file written
+   *  before sound banks. */
+  instrument_bank_id?: string | null;
   source_bpm?: number | null;
   /** The tempo the audio plays at after a beat match or a stretch, and the
    *  library entry the clip came from. Optional for the same reason. */
@@ -373,6 +377,16 @@ export interface TasmoTrackInput {
   instrument_program?: number | null;
   /** A drum track: its MIDI clips play on the drum channel and the program is the kit. */
   is_percussion?: boolean;
+  /** The bank select inside `instrument_bank_id` the track's program is
+   *  picked in, and that sound bank; null or absent for the bundled bank's
+   *  bank 0, as in every file written before sound banks. */
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+  /** Where the track's live MIDI also goes: an output port by id and name,
+   *  the channel, and whether the port gets clock. Null or absent: none. */
+  midi_out?: { port_id: string; port_label: string; channel: number; clock: boolean } | null;
+  /** The channels notes with per-note expression rotate across; null or absent: the default. */
+  mpe_channels?: number | null;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -439,6 +453,8 @@ export interface TasmoProjectInput {
   perform_routing?: PerformRoutingSnapshot | null;
   /** The piano roll's own voice (pianoRollStore voiceProgram). */
   roll_voice?: TasmoRollVoice;
+  /** The project tuning (state/tuningStore tuningToTasmo); null at A = 440 in equal temperament. */
+  tuning?: Record<string, unknown> | null;
 }
 
 // --- Load result. The backend returns the FULL TasmoProject (model_dump), so
@@ -474,6 +490,10 @@ export interface TasmoLoadedClip {
    *  rendered in; null or absent for bank 0 and in files written before them. */
   instrument_bank?: number | null;
   rendered_bank?: number | null;
+  /** The sound bank the clip's program is picked from (lib/bankRegistry);
+   *  null or absent is the bundled General MIDI bank, as in every file written
+   *  before sound banks. */
+  instrument_bank_id?: string | null;
   source_bpm?: number | null;
   /** An audio clip's tempo after a beat match or a stretch, and the library
    *  entry it came from; null or absent in files written before they were
@@ -538,6 +558,16 @@ export interface TasmoLoadedTrack {
   instrument_program?: number | null;
   /** A drum track; absent in files written before it was saved, which load melodic. */
   is_percussion?: boolean;
+  /** The bank select inside `instrument_bank_id` the track's program is
+   *  picked in, and that sound bank; null or absent for the bundled bank's
+   *  bank 0, as in every file written before sound banks. */
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+  /** Where the track's live MIDI also goes: an output port by id and name,
+   *  the channel, and whether the port gets clock. Null or absent: none. */
+  midi_out?: { port_id: string; port_label: string; channel: number; clock: boolean } | null;
+  /** The channels notes with per-note expression rotate across; null or absent: the default. */
+  mpe_channels?: number | null;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in
@@ -585,6 +615,8 @@ export interface TasmoProjectLoaded {
   /** The piano roll's own voice. Absent (or null) in files written before it
    *  was saved, which the loader leaves the live roll voice alone for. */
   roll_voice?: TasmoRollVoice | null;
+  /** The project tuning; null or absent: A = 440 in equal temperament. */
+  tuning?: Record<string, unknown> | null;
 }
 
 export interface ProjectManifest {
