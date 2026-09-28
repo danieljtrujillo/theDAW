@@ -102,6 +102,80 @@ export interface NotationCapabilities {
   /** True when an ffmpeg binary is reachable, so a Beat Saber export can
    *  encode song.ogg itself. */
   ffmpeg?: boolean;
+  /** What POST /import takes and whether the music21 corpus can be opened. */
+  score_import?: {
+    extensions: string[];
+    max_bytes: number;
+    corpus: boolean;
+  };
+}
+
+/** One piece of the music21 corpus, as GET /api/notation/corpus lists it. */
+export interface CorpusPiece {
+  /** The corpus path id POST /corpus/open takes (e.g. bach_bwv66_6_mxl). */
+  id: string;
+  composer: string;
+  title: string;
+  movement: string;
+  parts: number | null;
+  /** The file inside the corpus, e.g. bach/bwv66.6.mxl. */
+  path: string;
+  number?: number | null;
+  format?: string;
+}
+
+export interface CorpusSearchResult {
+  query: string;
+  total: number;
+  results: CorpusPiece[];
+}
+
+/** What POST /import and POST /corpus/open answer: the new composition
+ *  entry, its credit, and the sheet the SCORE tab opens. */
+export interface ScoreImportResult {
+  ok: boolean;
+  entry_id: string;
+  title: string;
+  composer: string;
+  sheet: NotationArtifact | null;
+  artifacts: NotationArtifact[];
+}
+
+/** The backend's error text from a failed notation request. */
+async function errorText(res: Response, what: string): Promise<string> {
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  const detail = (payload as { detail?: unknown }).detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (typeof detail === 'object' && detail && 'error' in detail) return String((detail as { error?: unknown }).error);
+  return `${what} HTTP ${res.status}`;
+}
+
+/** Import a score file (.musicxml, .xml, .mxl, .krn, .abc) as a composition
+ *  entry of its own: POST /api/notation/import. */
+export async function importScoreFile(file: File): Promise<ScoreImportResult> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const res = await fetch('/api/notation/import', { method: 'POST', body });
+  if (!res.ok) throw new Error(await errorText(res, 'score import'));
+  return await res.json() as ScoreImportResult;
+}
+
+/** Search the music21 corpus: GET /api/notation/corpus?q=. */
+export async function searchCorpus(query: string, signal?: AbortSignal): Promise<CorpusSearchResult> {
+  const res = await fetch(`/api/notation/corpus?q=${encodeURIComponent(query)}&limit=100`, { signal });
+  if (!res.ok) throw new Error(await errorText(res, 'corpus search'));
+  return await res.json() as CorpusSearchResult;
+}
+
+/** Import one corpus piece as a composition entry: POST /api/notation/corpus/open. */
+export async function openCorpusPiece(id: string): Promise<ScoreImportResult> {
+  const res = await fetch('/api/notation/corpus/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(await errorText(res, 'corpus open'));
+  return await res.json() as ScoreImportResult;
 }
 
 /** Options for POST /{entry}/chords (the gantasmo.chordtrack builder). */
