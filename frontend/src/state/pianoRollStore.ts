@@ -43,6 +43,8 @@ import {
   cleanPartBankLsb,
   cleanPartChannel,
   cleanPartColor,
+  cleanFigure,
+  cleanFiguredBass,
   cleanPartControls,
   cleanPartName,
   cleanPartProgram,
@@ -53,6 +55,41 @@ import {
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
+import {
+  composerApi,
+  type CanonResult,
+  type CheckResult,
+  type FormResult,
+  type FugueResult,
+  type PartRanges,
+  type PlanResult,
+  type SpeciesResult,
+  type VoiceLeadingFlag,
+} from '../lib/composerClient';
+import {
+  SATB,
+  checkPick,
+  continuoPartWrites,
+  counterpointPartWrites,
+  figuredBassLine,
+  flagNoteIds,
+  formMovementWrite,
+  partRange,
+  planPartWrites,
+  satbRoleOf,
+  type ComposerWrite,
+  type PartWrite,
+  type RollChordLabel,
+} from '../lib/rollComposer';
+import { cleanRollKey, estimateRollKey, rollKeyScale, type RollKey } from '../lib/rollKey';
+import {
+  augmentSelection,
+  diminishSelection,
+  fragmentSelection,
+  invertSelection,
+  retrogradeSelection,
+  sequenceSelection,
+} from '../lib/rollTransforms';
 
 /**
  * Per-note expression — the three MPE dimensions a note can carry on its own,
@@ -123,6 +160,18 @@ export interface RollControl {
 }
 
 /**
+ * A figure written under a note of a part's bass line (the figured-bass lane):
+ * `tick` is the note's start on the roll's clock, `figure` the figures as
+ * written ('6', '6/4', '7', '#6', '4/3'; blank is a root-position triad). The
+ * continuo realizer (composerClient continuo) reads them under the notes that
+ * start at their ticks.
+ */
+export interface FiguredBassMark {
+  tick: number;
+  figure: string;
+}
+
+/**
  * A part of the roll: one instrument's line in a document that can hold a
  * whole orchestra (lib/rollTracks has the rules). The tempo map, the meter
  * map, the lanes and the bends belong to the document, and every part reads
@@ -162,6 +211,18 @@ export interface RollTrack {
    * renders them, and MIDI export writes them.
    */
   controls?: RollControl[];
+  /**
+   * The figures under the part's bass notes, sorted by tick, one per tick
+   * (cleaned by lib/rollTracks cleanFiguredBass). Absent when it has none. The
+   * part's clip saves them (RollPartRef), and undo covers every edit.
+   */
+  figuredBass?: FiguredBassMark[];
+  /**
+   * True for the part marked as the cantus firmus: species counterpoint is
+   * written against its notes, and a counterpoint result writes its cantus
+   * back into it. At most one part of a roll carries it. Absent when false.
+   */
+  cantusFirmus?: boolean;
 }
 
 /**
@@ -187,6 +248,10 @@ export interface RollPartRef {
   instrumentId?: string;
   /** The part's controller changes (RollTrack `controls`), on the roll's clock. Absent when it has none. */
   controls?: RollControl[];
+  /** The figures under the part's bass notes (RollTrack `figuredBass`). Absent when it has none. */
+  figuredBass?: FiguredBassMark[];
+  /** The part is the roll's cantus firmus (RollTrack `cantusFirmus`). Absent when it is not. */
+  cantusFirmus?: boolean;
 }
 
 /** What loadFromClip takes to open a clip together with the clips of its other parts. */
@@ -250,6 +315,88 @@ export interface ImportNotesResult {
    * took them as a roll of one part does.
    */
   keptDocument: boolean;
+}
+
+/**
+ * The last voice-leading answer the roll holds (runVoiceLeadingCheck, or the
+ * flags a plan, a realized figured bass, a counterpoint or a form came back
+ * with): the flags, which roll part each flag's part name stands for, and the
+ * notes each of those parts had when it was checked, so the harmony row can
+ * say when a part has changed since.
+ */
+export interface RollVoiceLeading {
+  flags: VoiceLeadingFlag[];
+  /** The roll part id each part name in the flags stands for. */
+  ids: Record<string, string>;
+  /** Each checked part's note list as it was checked, by part id (the same array while the part is unchanged). */
+  notesAt: Record<string, PianoNote[]>;
+  /** The key the parts were read in. */
+  key: RollKey;
+  /** Where the flags came from. */
+  source: 'check' | 'plan' | 'continuo' | 'counterpoint' | 'form';
+}
+
+/** What a composer write did (writePlanToRoll, writeCounterpoint, writeFormMovement, realizeFiguredBass). */
+export interface RollWriteResult {
+  /** The id of the part each voice went into, in the answer's order (top voice first); a voice left out has none. */
+  partIds: string[];
+  /** Parts the write made (the rest existed and had their notes replaced). */
+  created: number;
+  /** Voices left out because the roll already held MAX_ROLL_PARTS parts. */
+  skipped: number;
+}
+
+/** The motif transforms the roll's selection takes (lib/rollTransforms). */
+export type RollTransformKind = 'invert' | 'retrograde' | 'augment' | 'diminish' | 'sequence' | 'fragment';
+
+/** The roll's selection transforms' settings; each has a default. */
+export interface RollTransformOptions {
+  /** Augment and diminish: how many times longer or shorter (default 2). */
+  factor?: number;
+  /** Sequence: statements after the selection itself (default 2). */
+  steps?: number;
+  /** Sequence: scale steps (diatonic) or semitones (chromatic) each statement moves (default -1: down a step). */
+  interval?: number;
+  /** Fragment: keep the first ('head', the default) or last onsets. */
+  part?: 'head' | 'tail';
+  /** Fragment: onsets to keep (default half the selection's, at least one). */
+  count?: number;
+  /** Invert and sequence move by scale degree in the roll's key (default true), or by semitones when false. */
+  diatonic?: boolean;
+  /** Invert: the pitch to mirror about (default the selection's first note). */
+  axis?: number;
+}
+
+/** The labels the roll's menus and keys give each transform. */
+export const ROLL_TRANSFORM_LABELS: Readonly<Record<RollTransformKind, string>> = Object.freeze({
+  invert: 'Invert',
+  retrograde: 'Retrograde',
+  augment: 'Augment',
+  diminish: 'Diminish',
+  sequence: 'Sequence',
+  fragment: 'Fragment',
+});
+
+/** The transforms in menu order. */
+export const ROLL_TRANSFORMS: readonly RollTransformKind[] = Object.freeze(['invert', 'retrograde', 'augment', 'diminish', 'sequence', 'fragment']);
+
+/** What runVoiceLeadingCheck reads. */
+export interface VoiceLeadingCheckOptions {
+  /** Check these parts (two or more); left out, the SATB-named parts, else the four highest (lib/rollComposer checkPick). */
+  partIds?: readonly string[];
+  /** Read the parts in this key (the COMPOSE column's HARMONY key when its CHECK asks); left out, or not a key, the roll's (effectiveRollKey). */
+  key?: RollKey;
+}
+
+/** The roll as a composer request reads it: its key, meter and each SATB voice's range from its part. */
+export interface RollComposeContext {
+  key: RollKey;
+  /** True when the key is the roll's own; false when it was read from the notes. */
+  keySet: boolean;
+  meterMap: MeterSegment[];
+  pickupSteps: number;
+  /** A range for each SATB voice whose roll part the orchestra registry knows. */
+  ranges: PartRanges;
 }
 
 /** A lane's own time as setLaneTime takes it: a field left out stays, null clears it. */
@@ -377,6 +524,114 @@ interface PianoRollState {
    * build writes FORM's sections here and keeps the user's own.
    */
   markers: RollMarker[];
+  /**
+   * The roll's key (lib/rollKey), which the voice-leading check, the figured
+   * bass realizer and the diatonic transforms read; null reads the key from
+   * the notes (estimateRollKey). Part of the document: undo tracks it. A plan
+   * or a form written into the roll sets it to the key it was written in.
+   */
+  rollKey: RollKey | null;
+  /**
+   * The last voice-leading answer (RollVoiceLeading), or null. Analysis, not
+   * the document: undo leaves it, and a new document (a clip, a multi-part
+   * import) clears it.
+   */
+  voiceLeading: RollVoiceLeading | null;
+  /**
+   * The roman figures of the last plan, realized figured bass or form written
+   * into the roll (a species answer's suspension figures too), by tick. The
+   * harmony row shows them beside the flags. Analysis, like voiceLeading.
+   */
+  harmonyChords: RollChordLabel[];
+  /** The harmony row over the ruler is open. A setting: persisted, never undo history. */
+  showHarmony: boolean;
+  /** The figured-bass lane under the grid is open. A setting, like showHarmony. */
+  showFiguredBass: boolean;
+  setShowHarmony: (on: boolean) => void;
+  setShowFiguredBass: (on: boolean) => void;
+  /** Set the roll's key, or null to read it from the notes. One undo step; none when it is the same. */
+  setRollKey: (key: RollKey | null) => void;
+  /** Drop the flags and the figures the harmony row shows. */
+  clearVoiceLeading: () => void;
+  /**
+   * Send the roll's parts to the voice-leading checker (composerApi.check):
+   * `opts.partIds` when two or more are given, else the parts named Soprano,
+   * Alto, Tenor and Bass when two or more are, else the four highest parts
+   * (lib/rollComposer checkPick), with the roll's meter map and pickup, its
+   * key (`opts.key`, else rollKey, else read from the parts), the figures of the last plan when
+   * the roll holds some, and each part's range from the orchestra registry.
+   * Stores the flags (`voiceLeading`) and opens the harmony row. Throws when
+   * fewer than two parts hold notes, and the route's ApiError when it fails.
+   */
+  runVoiceLeadingCheck: (opts?: VoiceLeadingCheckOptions) => Promise<CheckResult>;
+  /**
+   * Select the notes a flag is about: the flagged parts' notes sounding at its
+   * tick. When the part being edited is one of them its notes are selected;
+   * otherwise the first flagged part becomes the one being edited. The
+   * playhead moves to the flag. Returns how many notes were selected.
+   */
+  selectFlagNotes: (flag: VoiceLeadingFlag) => number;
+  /**
+   * Write `figure` under the bass note at `tick` of part `partId` (the part
+   * being edited when left out); a blank figure removes the one there. One
+   * undo step; none when nothing changes.
+   */
+  setFigure: (tick: number, figure: string, partId?: string) => void;
+  /** Replace a part's figured bass (cleaned; null or an empty list removes it). One undo step; none when nothing changes. */
+  setFiguredBass: (partId: string, marks: readonly FiguredBassMark[] | null) => void;
+  /**
+   * Realize part `partId`'s figured bass (the part being edited when left
+   * out) in four parts (composerApi.continuo): its notes, one at a time, with
+   * the figure under each, in the roll's key, meter and the ranges of the
+   * roll's Soprano, Alto and Tenor parts. The upper three voices go into the
+   * parts named Soprano, Alto and Tenor (made when the roll has none), in one
+   * undo step; the bass part keeps its notes. The harmony row gets the roman
+   * numerals and the flags. Throws when the part has no notes, and the
+   * route's ApiError when it fails.
+   */
+  realizeFiguredBass: (partId?: string) => Promise<RollWriteResult>;
+  /** Mark part `partId` as the cantus firmus (the mark leaves any other part), or clear the mark with null. One undo step. */
+  setCantusFirmus: (partId: string | null) => void;
+  /**
+   * Write a plan's (composerApi.plan) four voices into the parts named
+   * Soprano, Alto, Tenor and Bass, each at its ticks, replacing their notes; a
+   * voice with no such part gets a new one on the registry's voice of that
+   * name. One undo step. The roll takes the plan's key, and the harmony row
+   * its roman figures and flags. The meter stays the roll's: ask for the plan
+   * with rollComposeContext's meter map.
+   */
+  writePlanToRoll: (plan: PlanResult) => RollWriteResult;
+  /**
+   * Write a species, canon or fugue answer (composerApi species / canon /
+   * fugue) into the roll, each voice into the part named after it
+   * (lib/rollComposer voicePartName: "Counterpoint", "Leader", "Follower",
+   * "Soprano"...) at its ticks, replacing that part's notes, or into a new
+   * part. A species answer's cantus goes back into the part marked as the
+   * cantus firmus when there is one, else into a part named "Cantus firmus"
+   * that takes the mark. One undo step. The harmony row gets the answer's
+   * flags (and a species answer's suspension figures).
+   */
+  writeCounterpoint: (result: SpeciesResult | CanonResult | FugueResult) => RollWriteResult;
+  /**
+   * Write movement `movementIndex` (default 0) of a realized form
+   * (composerApi.realizeForm) into the roll: its SATB voices into the
+   * Soprano, Alto, Tenor and Bass parts, its meter map (no pickup) and tempo
+   * map as the document's, a movement marker with its title and a section
+   * marker at each section's start (FORM's own: they replace the markers an
+   * earlier form wrote and keep the user's), the movement's key, and every
+   * section's figures and flags for the harmony row. One undo step. Returns
+   * null for a movement the form does not have or did not realize.
+   */
+  writeFormMovement: (form: FormResult, movementIndex?: number) => RollWriteResult | null;
+  /**
+   * Transform the selected notes of the part being edited (lib/rollTransforms):
+   * invert, retrograde, augment, diminish, sequence or fragment, invert and
+   * sequence by scale degree in the roll's key unless `opts.diatonic` is
+   * false. The transformed notes (a sequence's copies with them) stay
+   * selected. One undo step. Returns how many notes are selected after, 0
+   * when nothing was selected.
+   */
+  transformSelection: (kind: RollTransformKind, opts?: RollTransformOptions) => number;
   /**
    * The roll's parts, in order (RollTrack). Always at least one. Part of the
    * document: undo tracks every part's fields and notes. The active part's
@@ -542,8 +797,8 @@ interface PianoRollState {
    */
   appendNotes: (notes: PianoNote[]) => void;
   /**
-   * CLEAR: remove every note and controller change of the part being edited
-   * and unlink it. The lanes' points bend every part's notes, so they clear
+   * CLEAR: remove every note, controller change and figure of the part being
+   * edited and unlink it. The lanes' points bend every part's notes, so they clear
    * only when no other part holds notes; their ranges stay.
    */
   clear: () => void;
@@ -707,6 +962,8 @@ interface PianoRollState {
  *  choice from the Vocal2MIDI panel is a step, and undo puts the voice before
  *  it back. The ruler's markers are here because a clip and a .tasmo save
  *  them: an add, a rename, a move (one step per drag) and a removal are steps.
+ *  The roll's key is here because a plan, a form and the key picker set it,
+ *  and the check and the transforms read it.
  *
  *  The parts are here whole (`tracks`, each with its real notes, the active
  *  one's included), with the part that was active. Undo keeps the part that is
@@ -732,6 +989,8 @@ interface RollHistorySnapshot {
   bends: LaneBend[];
   voiceProgram: number | null;
   markers: RollMarker[];
+  /** The roll's key. Absent from a step written before the roll had one, which then keeps the key the roll has. */
+  rollKey?: RollKey | null;
   /** The linked clip before the step, present only when the step's write changed it. */
   editingClipId?: string | null;
 }
@@ -1246,6 +1505,30 @@ const savePartsView = (v: { showGhosts: boolean; partsOpen: boolean }): void => 
   }
 };
 
+// ── The composer rows' settings, persisted ──────────────────────────────────
+
+const COMPOSE_VIEW_KEY = 'thedaw.roll.compose.v1';
+
+const loadComposeView = (): { showHarmony: boolean; showFiguredBass: boolean } => {
+  try {
+    if (typeof localStorage === 'undefined') throw new Error('no storage');
+    const raw = localStorage.getItem(COMPOSE_VIEW_KEY);
+    const o = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    return { showHarmony: o?.showHarmony === true, showFiguredBass: o?.showFiguredBass === true };
+  } catch {
+    return { showHarmony: false, showFiguredBass: false };
+  }
+};
+
+const saveComposeView = (v: { showHarmony: boolean; showFiguredBass: boolean }): void => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(COMPOSE_VIEW_KEY, JSON.stringify(v));
+  } catch {
+    /* private mode / quota: the rows just do not survive the reload */
+  }
+};
+
 // ── Undo / redo plumbing (module-scoped) ─────────────────────────────────────
 const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 300; // changes closer than this fold into one undo step
@@ -1298,6 +1581,9 @@ export const rollTracksOf = (s: PartsView): RollTrack[] => {
   tracksMemo = { tracks: s.tracks, active: s.activeTrackId, notes: s.notes, out };
   return out;
 };
+
+/** The part marked as the cantus firmus, with its real notes, or null: what a species request sends as its `cantus`. */
+export const cantusFirmusOf = (s: PartsView): RollTrack | null => rollTracksOf(s).find((t) => t.cantusFirmus === true) ?? null;
 
 /** The active part, as the list holds it (its notes may be stale; `notes` is its truth). */
 export const activeTrackOf = (s: Pick<PianoRollState, 'tracks' | 'activeTrackId'>): RollTrack =>
@@ -1567,6 +1853,7 @@ const docSnapshot = (s: PianoRollState): RollHistorySnapshot => ({
   bends: s.bends,
   voiceProgram: s.voiceProgram,
   markers: s.markers,
+  rollKey: s.rollKey,
 });
 
 /** Write the feel record from the store, after a write that moved one of its fields. */
@@ -1576,6 +1863,220 @@ const saveFeelOf = (s: PianoRollState): void =>
 /** `snap` carrying `link` when `step` carries a link, so the opposite stack's step puts the link back too. */
 const withLink = (snap: RollHistorySnapshot, step: RollHistorySnapshot, link: string | null): RollHistorySnapshot =>
   'editingClipId' in step ? { ...snap, editingClipId: link } : snap;
+
+// ── Composer writes ─────────────────────────────────────────────────────────
+
+type KeySource = Pick<PianoRollState, 'rollKey' | 'tracks' | 'activeTrackId' | 'notes'>;
+
+/** The key the roll reads in: its own (`rollKey`), else the key its parts' notes are in (lib/rollKey estimateRollKey). */
+export const effectiveRollKey = (s: KeySource): RollKey => s.rollKey ?? estimateRollKey(allPartNotes(rollTracksOf(s)));
+
+/**
+ * The roll as a composer request reads it (RollComposeContext): its key, its
+ * meter map and pickup, and the range of each SATB voice whose part (by name)
+ * the orchestra registry knows. A plan, a continuo or a check asked with it
+ * fits the roll it is written back into.
+ */
+export const rollComposeContext = (s: KeySource & Pick<PianoRollState, 'meterMap' | 'pickupSteps'>): RollComposeContext => {
+  const tracks = rollTracksOf(s);
+  const ranges: PartRanges = {};
+  for (const role of SATB) {
+    const t = tracks.find((x) => satbRoleOf(x.name) === role);
+    const r = t ? partRange(t) : null;
+    if (r) ranges[role] = r;
+  }
+  return {
+    key: effectiveRollKey(s),
+    keySet: s.rollKey !== null,
+    meterMap: s.meterMap.map((seg) => ({ bar: seg.bar, meter: { ...seg.meter, groups: [...seg.meter.groups] } })),
+    pickupSteps: s.pickupSteps,
+    ranges,
+  };
+};
+
+/** The parts after a composer write, the notes of the part being edited, and the part each write went into. */
+interface PartsWrite {
+  tracks: RollTrack[];
+  notes: PianoNote[];
+  /** The part being edited after the write: the one before, or the first written when that one was a spare empty part the write dropped. */
+  activeId: string;
+  /** The part each write went into, in the writes' order; null for one left out. */
+  idsByWrite: (string | null)[];
+  created: number;
+  skipped: number;
+}
+
+/**
+ * An empty part a composer write into an empty roll leaves out: a default
+ * name, no notes, and nothing set on it that the write would lose (a registry
+ * instrument, figures, the cantus firmus mark).
+ */
+const isSparePart = (t: RollTrack): boolean =>
+  t.notes.length === 0 && isDefaultPartName(t.name) && !t.instrumentId && !t.cantusFirmus && !t.figuredBass?.length;
+
+/**
+ * `writes` into the roll's parts: each into the part it names (a cantus into
+ * the part marked as the cantus firmus first), replacing its notes, or into a
+ * new part named after it on the registry instrument the write names. A part
+ * takes one write at most. Past MAX_ROLL_PARTS a write that needs a new part
+ * is left out. On a roll with no notes in any part the spare empty parts
+ * (isSparePart) go, so the answer becomes the roll and its first voice the
+ * part being edited.
+ */
+const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite => {
+  let tracks = rollTracksOf(s).slice();
+  if (writes.length > 0 && tracks.every((t) => t.notes.length === 0)) tracks = tracks.filter((t) => !isSparePart(t));
+  const written = new Set<string>();
+  const idsByWrite: (string | null)[] = [];
+  let created = 0;
+  let skipped = 0;
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  for (const w of writes) {
+    const notes = migrateNotes(w.notes);
+    const markCantus = w.cantus === true && !tracks.some((t) => t.cantusFirmus);
+    let i = w.cantus ? tracks.findIndex((t) => t.cantusFirmus && !written.has(t.id)) : -1;
+    if (i < 0) i = tracks.findIndex((t) => !written.has(t.id) && same(t.name, w.name));
+    if (i >= 0) {
+      const t = tracks[i];
+      tracks[i] = { ...t, notes, ...(markCantus ? { cantusFirmus: true } : {}) };
+      written.add(t.id);
+      idsByWrite.push(t.id);
+      continue;
+    }
+    if (tracks.length >= MAX_ROLL_PARTS) {
+      skipped += 1;
+      idsByWrite.push(null);
+      continue;
+    }
+    let t = makeRollTrack({ name: uniquePartName(tracks, w.name, ''), color: nextPartColor(tracks), notes }, tracks.length);
+    const inst = orchestraInstrument(w.instrumentId);
+    if (inst) t = { ...t, ...instrumentPatchOf(tracks, t, inst) };
+    if (markCantus) t.cantusFirmus = true;
+    tracks = [...tracks, t];
+    written.add(t.id);
+    idsByWrite.push(t.id);
+    created += 1;
+  }
+  const active = tracks.find((t) => t.id === s.activeTrackId) ?? tracks.find((t) => written.has(t.id)) ?? tracks[0];
+  return { tracks, notes: active.notes, activeId: active.id, idsByWrite, created, skipped };
+};
+
+/** The part being edited moved to `done.activeId` (the write left the one before out): its clip link comes along, as setActiveTrack's does. */
+const writtenActive = (s: PianoRollState, done: PartsWrite): Partial<PianoRollState> => {
+  if (done.activeId === s.activeTrackId) return {};
+  const partLinks = withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
+  return { activeTrackId: done.activeId, editingClipId: partLinks[done.activeId] ?? null, partLinks };
+};
+
+/** The grid after a write: long enough (to a bar line) for every part's notes, never shorter than it was, and tall enough for them. */
+const grownGrid = (
+  s: Pick<PianoRollState, 'totalSteps' | 'lowestNote' | 'highestNote'>,
+  tracks: readonly RollTrack[],
+  meterMap: MeterSegment[],
+  pickupSteps: number,
+): Pick<PianoRollState, 'totalSteps' | 'lowestNote' | 'highestNote'> => {
+  const all = allPartNotes(tracks);
+  const end = all.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+  const lo = all.reduce((m, n) => Math.min(m, n.note), 127);
+  const hi = all.reduce((m, n) => Math.max(m, n.note), 0);
+  return {
+    totalSteps: Math.min(MAX_STEPS, roundUpToBar(meterMap, Math.max(MIN_STEPS, s.totalSteps, end), pickupSteps)),
+    lowestNote: all.length ? Math.max(0, Math.min(s.lowestNote, lo - 2)) : s.lowestNote,
+    highestNote: all.length ? Math.min(127, Math.max(s.highestNote, hi + 2)) : s.highestNote,
+  };
+};
+
+/** The voice-leading answer a write came back with, its part names mapped onto the parts the write went into. */
+const writtenVoiceLeading = (
+  w: ComposerWrite,
+  done: PartsWrite,
+  source: RollVoiceLeading['source'],
+  key: RollKey,
+  extra: Record<string, string> = {},
+): RollVoiceLeading => {
+  const ids: Record<string, string> = { ...extra };
+  w.writes.forEach((wr, i) => {
+    const id = done.idsByWrite[i];
+    if (id) ids[wr.voice] = id;
+  });
+  const notesAt: Record<string, PianoNote[]> = {};
+  for (const id of Object.values(ids)) {
+    const t = done.tracks.find((x) => x.id === id);
+    if (t) notesAt[id] = t.notes;
+  }
+  return { flags: w.flags, ids, notesAt, key, source };
+};
+
+const writeResultOf = (done: PartsWrite): RollWriteResult => ({
+  partIds: done.idsByWrite.filter((id): id is string => !!id),
+  created: done.created,
+  skipped: done.skipped,
+});
+
+/** A roman numeral figure the checker reads as harmony: 'I', 'V7/V', 'bVI', 'N6', 'It6', 'Ger65'. */
+const ROMAN_FIGURE = /^[#b♭♯]*(?:[ivIV]+|N|It|Fr|Ger)/;
+
+/** True when two keys are the same key (or both none). */
+const sameRollKey = (a: RollKey | null, b: RollKey | null): boolean =>
+  a === b || (!!a && !!b && a.tonic === b.tonic && a.mode === b.mode);
+
+/** True when two figured basses hold the same figures at the same ticks. */
+const sameFigures = (a: readonly FiguredBassMark[] | undefined, b: readonly FiguredBassMark[] | undefined): boolean => {
+  const x = a ?? [];
+  const y = b ?? [];
+  return x.length === y.length && x.every((m, i) => m.tick === y[i].tick && m.figure === y[i].figure);
+};
+
+/** A part with its figured bass set to `marks`: the field removed when there are none. */
+const withFiguredBass = (t: RollTrack, marks: FiguredBassMark[] | undefined): RollTrack => {
+  if (marks?.length) return { ...t, figuredBass: marks };
+  if (t.figuredBass === undefined) return t;
+  const { figuredBass: _drop, ...rest } = t;
+  return rest;
+};
+
+/** Write the composer rows' settings from the store. */
+const saveComposeViewOf = (s: Pick<PianoRollState, 'showHarmony' | 'showFiguredBass'>): void =>
+  saveComposeView({ showHarmony: s.showHarmony, showFiguredBass: s.showFiguredBass });
+
+/**
+ * A composer answer's voices written into the roll's parts in one undo step
+ * (writeParts), the grid grown to hold them, the answer's figures and flags
+ * for the harmony row (which opens when there are any), and, with `setKey`,
+ * the answer's key as the roll's. `extraIds` maps flag part names the writes
+ * do not carry (a continuo's bass) onto their parts; `readKey` is the key the
+ * answer was asked in.
+ */
+const commitComposerWrite = (
+  w: ComposerWrite,
+  source: RollVoiceLeading['source'],
+  setKey: boolean,
+  extraIds: Record<string, string> = {},
+  readKey?: RollKey,
+): RollWriteResult => {
+  let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
+  cutHistoryBurst();
+  usePianoRollStore.setState((s) => {
+    const done = writeParts(s, w.writes);
+    out = writeResultOf(done);
+    const key = setKey && w.key ? w.key : null;
+    const vlKey = key ?? readKey ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes, activeTrackId: done.activeId });
+    return {
+      tracks: done.tracks,
+      notes: done.notes,
+      ...writtenActive(s, done),
+      ...selectionOf(done.notes, s.selectedIds, s.selectedNoteId),
+      ...grownGrid(s, done.tracks, s.meterMap, s.pickupSteps),
+      ...(key && !sameRollKey(key, s.rollKey) ? { rollKey: key } : {}),
+      harmonyChords: w.chords,
+      voiceLeading: writtenVoiceLeading(w, done, source, vlKey, extraIds),
+      ...(w.chords.length || w.flags.length ? { showHarmony: true } : {}),
+    };
+  });
+  cutHistoryBurst();
+  saveComposeViewOf(usePianoRollStore.getState());
+  return out;
+};
 
 const SEED_NOTES = seed();
 const FIRST_PART = makeRollTrack({ notes: SEED_NOTES }, 0);
@@ -1609,6 +2110,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
   ...loadFeel(),
   snap: loadSnap(),
   markers: [],
+  rollKey: null,
+  voiceLeading: null,
+  harmonyChords: [],
+  ...loadComposeView(),
   _undo: [],
   _redo: [],
 
@@ -1796,6 +2301,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         bends: replacedBends(s, m.lanes, incomingBends),
         // A new document: the file's markers, else none (the previous document's go with its parts).
         markers: sanitizeRollMarkers(incomingMarkers ?? []),
+        // Its key is read from its notes until one is chosen, and the last check's flags were about the parts it replaces.
+        rollKey: null,
+        voiceLeading: null,
+        harmonyChords: [],
         ...(all.length ? fitToNotes(all, m.meterMap, m.pickupSteps) : {}),
         ...noSelection(),
         currentStep: 0,
@@ -2022,9 +2531,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }),
   clear: () =>
     set((s) => {
-      // The part's controller changes go with its notes: they shaped notes that are gone.
+      // The part's controller changes and figures go with its notes: they shaped and figured notes that are gone.
       const active = s.tracks.find((t) => t.id === s.activeTrackId);
-      const tracks = active?.controls ? s.tracks.map((t) => (t === active ? withControls(t, undefined) : t)) : s.tracks;
+      const tracks = active?.controls || active?.figuredBass
+        ? s.tracks.map((t) => (t === active ? withFiguredBass(withControls(t, undefined), undefined) : t))
+        : s.tracks;
       return {
         notes: [],
         tracks,
@@ -2099,6 +2610,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ...(fit ? { lowestNote: fit.lowestNote, highestNote: fit.highestNote } : {}),
           editingClipId: clipId,
           markers: sanitizeRollMarkers(incomingMarkers ?? []),
+          // A clip opens with its key read from its notes, and without the flags of the roll it replaces.
+          rollKey: null,
+          voiceLeading: null,
+          harmonyChords: [],
           ...noSelection(),
           isPlaying: false,
           currentStep: 0,
@@ -2367,6 +2882,181 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return sameRollMarkers(markers, s.markers) ? {} : { markers };
     }),
 
+  setShowHarmony: (on) => {
+    set({ showHarmony: on === true });
+    saveComposeViewOf(get());
+  },
+  setShowFiguredBass: (on) => {
+    set({ showFiguredBass: on === true });
+    saveComposeViewOf(get());
+  },
+  setRollKey: (key) =>
+    set((s) => {
+      const next = key === null ? null : cleanRollKey(key);
+      if (key !== null && next === null) return {};
+      return sameRollKey(next, s.rollKey) ? {} : { rollKey: next };
+    }),
+  clearVoiceLeading: () => set((s) => (s.voiceLeading === null && s.harmonyChords.length === 0 ? {} : { voiceLeading: null, harmonyChords: [] })),
+  runVoiceLeadingCheck: async (opts = {}) => {
+    const s = get();
+    const pick = checkPick(rollTracksOf(s), opts.partIds);
+    if (!pick) throw new Error('A voice-leading check needs two parts with notes');
+    const key = cleanRollKey(opts.key) ?? effectiveRollKey(s);
+    // The roman figures of a plan, a continuo or a form say what the harmony is; a suspension's '7-6' or a bare figure does not.
+    const harmony = s.harmonyChords.filter((c) => ROMAN_FIGURE.test(c.figure));
+    const result = await composerApi.check({
+      parts: pick.parts,
+      order: pick.order,
+      key: key.tonic,
+      mode: key.mode,
+      ...(harmony.length ? { chords: harmony.map((c) => ({ tick: c.tick, figure: c.figure, ...(c.key ? { key: c.key } : {}) })) } : {}),
+      ranges: pick.ranges,
+      meterMap: s.meterMap,
+      pickupSteps: s.pickupSteps,
+    });
+    const notesAt: Record<string, PianoNote[]> = {};
+    for (const [name, id] of Object.entries(pick.ids)) notesAt[id] = pick.parts[name];
+    set({ voiceLeading: { flags: result.flags, ids: pick.ids, notesAt, key, source: 'check' }, showHarmony: true });
+    saveComposeViewOf(get());
+    return result;
+  },
+  selectFlagNotes: (flag) => {
+    const s = get();
+    const vl = s.voiceLeading;
+    if (!vl) return 0;
+    const byPart = flagNoteIds(flag, vl.ids, rollTracksOf(s));
+    const step = Math.max(0, flag.tick) / ticksPerStep();
+    const target = byPart.has(s.activeTrackId) ? s.activeTrackId : [...byPart.keys()][0];
+    if (target && target !== s.activeTrackId) get().setActiveTrack(target);
+    const ids = target ? byPart.get(target) ?? [] : [];
+    if (ids.length) get().setSelection(ids);
+    get().seek(step);
+    return ids.length;
+  },
+  setFigure: (tick, figure, partId) =>
+    set((s) => {
+      const id = partId ?? s.activeTrackId;
+      const i = s.tracks.findIndex((t) => t.id === id);
+      if (i < 0 || !isNum(tick)) return {};
+      const at = Math.max(0, Math.round(tick));
+      const text = cleanFigure(figure);
+      const rest = (s.tracks[i].figuredBass ?? []).filter((m) => m.tick !== at);
+      const next = cleanFiguredBass(text ? [...rest, { tick: at, figure: text }] : rest);
+      if (sameFigures(s.tracks[i].figuredBass, next)) return {};
+      const tracks = s.tracks.slice();
+      tracks[i] = withFiguredBass(tracks[i], next);
+      return { tracks };
+    }),
+  setFiguredBass: (partId, marks) =>
+    set((s) => {
+      const i = s.tracks.findIndex((t) => t.id === partId);
+      if (i < 0) return {};
+      const next = cleanFiguredBass(marks ?? []);
+      if (sameFigures(s.tracks[i].figuredBass, next)) return {};
+      const tracks = s.tracks.slice();
+      tracks[i] = withFiguredBass(tracks[i], next);
+      return { tracks };
+    }),
+  realizeFiguredBass: async (partId) => {
+    const s = get();
+    const part = rollTracksOf(s).find((t) => t.id === (partId ?? s.activeTrackId));
+    if (!part || part.notes.length === 0) throw new Error('The bass part has no notes to realize');
+    const ctx = rollComposeContext(s);
+    const own = partRange(part);
+    const result = await composerApi.continuo({
+      bass: figuredBassLine(part.notes, part.figuredBass),
+      key: ctx.key.tonic,
+      mode: ctx.key.mode,
+      ranges: { ...ctx.ranges, ...(own ? { bass: own } : {}) },
+      meterMap: s.meterMap,
+      pickupSteps: s.pickupSteps,
+    });
+    return commitComposerWrite(continuoPartWrites(result), 'continuo', false, { bass: part.id }, ctx.key);
+  },
+  setCantusFirmus: (partId) =>
+    set((s) => {
+      if (partId !== null && !s.tracks.some((t) => t.id === partId)) return {};
+      let changed = false;
+      const tracks = s.tracks.map((t) => {
+        const on = t.id === partId;
+        if ((t.cantusFirmus === true) === on) return t;
+        changed = true;
+        if (on) return { ...t, cantusFirmus: true };
+        const { cantusFirmus: _drop, ...rest } = t;
+        return rest;
+      });
+      return changed ? { tracks } : {};
+    }),
+  writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true),
+  writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false),
+  writeFormMovement: (form, movementIndex = 0) => {
+    const w = formMovementWrite(form, movementIndex);
+    if (!w) return null;
+    let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
+    cutHistoryBurst();
+    set((s) => {
+      const done = writeParts(s, w.writes);
+      out = writeResultOf(done);
+      const meterMap = normalizeMeterMap(w.meterMap);
+      const tempo = tempoSlice(sanitizeRollTempoMap(w.tempoMap, importedRollBpm(w.bpm)));
+      // FORM's markers replace the ones an earlier form wrote; the user's own stay, and win a place both hold.
+      const markers = sanitizeRollMarkers([...w.markers, ...s.markers.filter((m) => m.origin !== 'form')]);
+      const key = w.key ?? effectiveRollKey({ ...s, tracks: done.tracks, notes: done.notes, activeTrackId: done.activeId });
+      return {
+        tracks: done.tracks,
+        notes: done.notes,
+        ...writtenActive(s, done),
+        ...selectionOf(done.notes, s.selectedIds, s.selectedNoteId),
+        meterMap,
+        pickupSteps: 0,
+        ...tempo,
+        markers,
+        ...grownGrid(s, done.tracks, meterMap, 0),
+        ...(w.key && !sameRollKey(w.key, s.rollKey) ? { rollKey: w.key } : {}),
+        harmonyChords: w.chords,
+        voiceLeading: writtenVoiceLeading(w, done, 'form', key),
+        showHarmony: true,
+      };
+    });
+    cutHistoryBurst();
+    saveComposeViewOf(get());
+    return out;
+  },
+  transformSelection: (kind, opts = {}) => {
+    const s = get();
+    if (s.selectedIds.size === 0) return 0;
+    const scale = opts.diatonic === false ? null : rollKeyScale(effectiveRollKey(s));
+    const sel = s.selectedIds;
+    let out: PianoNote[];
+    if (kind === 'invert') out = invertSelection(s.notes, sel, { scale, ...(isNum(opts.axis) ? { axis: opts.axis } : {}) });
+    else if (kind === 'retrograde') out = retrogradeSelection(s.notes, sel);
+    else if (kind === 'augment') out = augmentSelection(s.notes, sel, isNum(opts.factor) && opts.factor > 0 ? opts.factor : 2);
+    else if (kind === 'diminish') out = diminishSelection(s.notes, sel, isNum(opts.factor) && opts.factor > 0 ? opts.factor : 2);
+    else if (kind === 'sequence') {
+      const steps = isNum(opts.steps) ? Math.max(1, Math.round(opts.steps)) : 2;
+      out = sequenceSelection(s.notes, sel, { steps, interval: isNum(opts.interval) ? Math.round(opts.interval) : -1, scale });
+    } else {
+      const onsets = new Set(s.notes.filter((n) => sel.has(n.id)).map((n) => noteTick(n))).size;
+      const count = isNum(opts.count) ? Math.max(1, Math.round(opts.count)) : Math.max(1, Math.floor(onsets / 2));
+      out = fragmentSelection(s.notes, sel, { part: opts.part === 'tail' ? 'tail' : 'head', count });
+    }
+    // A sequence's copies take ids of their own; each transformed note keeps its id and stays selected.
+    const before = new Set(s.notes.map((n) => n.id));
+    const notes = migrateNotes(out.map((n) => (before.has(n.id) ? n : { ...n, id: uid() })));
+    const picked = notes.filter((n) => sel.has(n.id) || !before.has(n.id)).map((n) => n.id);
+    cutHistoryBurst();
+    set((st) => {
+      const end = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+      return {
+        notes,
+        totalSteps: end > st.totalSteps + EPS ? Math.min(MAX_STEPS, roundUpToBar(st.meterMap, end, st.pickupSteps)) : st.totalSteps,
+        ...selectionOf(notes, picked, st.selectedNoteId),
+      };
+    });
+    cutHistoryBurst();
+    return get().selectedIds.size;
+  },
+
   undo: () => {
     const s = get();
     if (s._undo.length === 0) return;
@@ -2440,7 +3130,8 @@ usePianoRollStore.subscribe((state, prev) => {
     state.lanes === prev.lanes &&
     state.bends === prev.bends &&
     state.voiceProgram === prev.voiceProgram &&
-    state.markers === prev.markers
+    state.markers === prev.markers &&
+    state.rollKey === prev.rollKey
   ) return;
   const relinked = state.editingClipId !== prev.editingClipId;
   const revoiced = state.voiceProgram !== prev.voiceProgram;

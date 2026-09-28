@@ -6,10 +6,10 @@
  *   - the SETTINGS strip: the roll's transport, instrument, zoom and timing
  *     feel, the library song field with ANALYZE (LOAD / VALIDATE in its menu),
  *     a status readout, the note count and the MIDI mapper (MAP);
- *   - the body: the ACTION rail (REC, IMPORT, EXPORT, EDIT, AI, BEAT, ARP,
- *     VOICE, CLEAR), the roll grid (or the arpeggiator face), the vocal
- *     artifact rail when an artifact is loaded, and the Vocal2MIDI column when
- *     VOICE is on;
+ *   - the body: the ACTION rail (REC, IMPORT, EXPORT, EDIT, AI, COMPOSE, BEAT,
+ *     ARP, VOICE, CLEAR), the roll grid (or the arpeggiator face), the vocal
+ *     artifact rail when an artifact is loaded, the COMPOSE column when COMPOSE
+ *     is on, and the Vocal2MIDI column when VOICE is on;
  *   - the SHAPE row (VirtuosoControls).
  * Vocal is one INPUT option: a live mic recording is converted to notes through
  * the SAME backend basic-pitch path as "Analyze" (far better than the live YIN),
@@ -28,6 +28,7 @@ import {
   ChevronUp,
   Download,
   Drum,
+  Feather,
   FileCheck2,
   FolderOpen,
   Loader2,
@@ -88,6 +89,10 @@ import { VirtuosoControls } from '../audio/VirtuosoControls';
 import { RollSnapControls } from '../audio/RollSnapControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 import { AiComposePopover } from '../audio/AiComposePopover';
+import { ComposerPanel } from '../audio/ComposerPanel';
+import { PianoRollHarmonyKey } from '../audio/RollHarmonyRow';
+import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
+import { PianoRollTransformKey } from '../audio/RollTransforms';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
 import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
@@ -152,6 +157,8 @@ const stepSec = (bpm: number): number => 60 / bpm / 4;
 
 /** Where the VOICE key remembers whether the Vocal2MIDI column is shown. */
 const VOICE_COLUMN_KEY = 'thedaw-midi-voice-column-v1';
+/** Where the COMPOSE key remembers whether the COMPOSE column is shown. */
+const COMPOSE_COLUMN_KEY = 'thedaw-midi-compose-column-v1';
 
 const pianoToArtifact = (notes: PianoNote[], bpm: number): ArtifactNote[] => {
   const ss = stepSec(bpm);
@@ -234,6 +241,7 @@ export const MidiPanel: React.FC = () => {
   const [arpOn, setArpOn] = useState(false);
   const [arpPlaying, setArpPlaying] = useState(false);
   const [voiceOn, setVoiceOn] = useStoredToggle(VOICE_COLUMN_KEY, true);
+  const [composeOn, setComposeOn] = useStoredToggle(COMPOSE_COLUMN_KEY, false);
   // Step width is shared by the strip's zoom keys and the grid's ctrl+wheel.
   const [stepPx, setStepPx] = useState(16);
   /** The pitch bend lane under the grid; the strip's BEND key opens it. */
@@ -674,6 +682,9 @@ export const MidiPanel: React.FC = () => {
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
         <PianoRollTempoKey on={showTempo} onChange={setShowTempo} />
+        {/* The composer's rows: the harmony row over the ruler and the figured-bass lane under the grid. */}
+        <PianoRollHarmonyKey />
+        <PianoRollFiguresKey />
         <Sep />
         <RollSnapControls />
         <Sep />
@@ -981,6 +992,18 @@ export const MidiPanel: React.FC = () => {
               />
 
               <RailKey
+                onClick={() => setComposeOn(!composeOn)}
+                aria-pressed={composeOn}
+                aria-label="Compose: harmony, form, counterpoint and voice-leading check"
+                description={composeOn ? 'Hide the COMPOSE column' : 'Show the COMPOSE column: plan harmony and forms, write counterpoint, check voice leading, count style profiles'}
+                on={composeOn}
+                data-tour="midi-compose"
+                icon={<Feather className={RAIL_GLYPH} />}
+                legend="Compose"
+              />
+              {/* TRANSFORM: the motif transforms of the selected notes, beside the composer's column. */}
+              <PianoRollTransformKey />
+              <RailKey
                 onClick={() => void makeBeat()}
                 aria-label="Beat from the notes"
                 description="Render a General MIDI drum beat from the notes (low, mid and high to kick, snare and hat) and play it"
@@ -1077,6 +1100,10 @@ export const MidiPanel: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* COMPOSE column: harmony, form, counterpoint, the voice-leading
+            check and style profiles, writing into the roll. */}
+        {!arpOn && composeOn && <ComposerPanel onClose={() => setComposeOn(false)} />}
 
         {/* Vocal2MIDI suite — the full vocal-to-MIDI tool as a collapsible right
             column, shown while VOICE is on. Its recorder/AI/editor write notes

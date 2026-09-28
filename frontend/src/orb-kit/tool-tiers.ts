@@ -50,6 +50,12 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_compare_timing:'T0_silent',
   editor_get_waveform_peaks:'T0_silent',
   dj_get_state:      'T0_silent',
+  // The composer's reads: a check, the style list, a profile's numbers and a
+  // corpus search compute or look things up and change nothing in the app.
+  composer_check:    'T0_silent',
+  composer_styles:   'T0_silent',
+  composer_profile:  'T0_silent',
+  notation_corpus_search:'T0_silent',
 
   // -- T1_inform: parameter mutations (show receipt) --------------------------
   set_prompt:        'T1_inform',
@@ -118,6 +124,16 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   dj_automix:        'T1_inform',
   dj_transition_now: 'T1_inform',
   dj_set_next:       'T1_inform',
+  // The composer writes parts into the piano roll through the roll's own
+  // actions, so its undo takes each write back; the score tools add a library
+  // composition and delete nothing.
+  composer_plan:     'T1_inform',
+  composer_form:     'T1_inform',
+  composer_species:  'T1_inform',
+  composer_canon:    'T1_inform',
+  composer_fugue:    'T1_inform',
+  notation_import:   'T1_inform',
+  notation_corpus_open:'T1_inform',
 
   // -- T2_confirm: expensive / irreversible (require approval) ----------------
   // The backend emits 'generate' / 'abort'; the long names are kept as aliases.
@@ -260,6 +276,32 @@ export function describeToolCall(toolName: string, args: Record<string, unknown>
       return `Reorder ${Array.isArray(args.track_ids) ? args.track_ids.length : 0} track(s)`
     case 'editor_freeze_track':
       return `Freeze track ${args.track_id ?? ''} (not available from the assistant)`
+
+    // -- composer_* and notation_* ---------------------------------------------
+    case 'composer_plan':
+      return `Write a ${args.bars ?? 8}-bar four-part phrase in ${args.key ?? 'C'} ${args.mode ?? 'major'}${args.style ? ` in the style of ${args.style}` : ''} into the piano roll`
+    case 'composer_check':
+      return 'Check the piano roll’s parts for voice-leading faults'
+    case 'composer_form':
+      return args.realize
+        ? `Realize movement ${args.movement ?? 1} of a ${String(args.form ?? 'sonata').replace(/_/g, ' ')} into the piano roll (replaces its parts)`
+        : `Plan a ${String(args.form ?? 'sonata').replace(/_/g, ' ')} in ${args.key ?? 'C'}`
+    case 'composer_species':
+      return `Write species ${args.species ?? 1} counterpoint into the piano roll`
+    case 'composer_canon':
+      return `Write a ${args.bars ?? 8}-bar canon in ${args.key ?? 'C'} into the piano roll`
+    case 'composer_fugue':
+      return `Write a ${args.voices ?? 3}-voice fugue exposition in ${args.key ?? 'C'} into the piano roll`
+    case 'composer_styles':
+      return 'List the composer style profiles'
+    case 'composer_profile':
+      return args.style ? `Show the ${args.style} style profile` : 'Count a style profile from scores'
+    case 'notation_import':
+      return `Import the score ${truncateString(String(args.filename ?? ''), 40)} into the library`
+    case 'notation_corpus_search':
+      return `Search the music21 corpus for "${truncateString(String(args.query ?? ''), 40)}"`
+    case 'notation_corpus_open':
+      return `Open corpus piece ${args.id ?? ''} as a library composition`
 
     // -- T2_confirm -----------------------------------------------------------
     case 'generate':

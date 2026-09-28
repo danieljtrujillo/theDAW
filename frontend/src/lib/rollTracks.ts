@@ -11,7 +11,7 @@
  * channel each part takes, and which voice a part plays with. Type imports
  * only from the store, so node tests load it.
  */
-import type { PianoNote, RollControl, RollTrack } from '../state/pianoRollStore';
+import type { FiguredBassMark, PianoNote, RollControl, RollTrack } from '../state/pianoRollStore';
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { GM_STANDARD_KIT, clipVoice, type ClipVoice, type GlobalVoice, type ProgramClip, type ProgramTrack } from './clipProgram';
 import { DRUM_CHANNEL } from './editChannels';
@@ -149,6 +149,42 @@ export function cleanPartControls(raw: unknown): RollControl[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** The longest figure a part keeps: enough for '#6/4/2' or '7 #5 3'. */
+export const FIGURE_MAX = 12;
+
+/**
+ * A figure as a part keeps it: trimmed, inner spaces collapsed, only the
+ * characters figures are written with (digits, '#', 'b', 'n', '♯', '♭', '♮',
+ * '/', '+', '-', ',' and spaces), at most FIGURE_MAX characters.
+ */
+export const cleanFigure = (raw: unknown): string =>
+  typeof raw === 'string'
+    ? raw.replace(/[^0-9#bn♯♭♮/+,\- ]/g, '').replace(/\s+/g, ' ').trim().slice(0, FIGURE_MAX).trim()
+    : '';
+
+/**
+ * A part's figured bass from an edit, a clip or a file: each mark a whole
+ * tick at or after 0 with a cleaned figure, sorted by tick, one per tick (the
+ * later of two at one tick, the one written last). A blank figure is kept: it
+ * says the note is a root-position triad, which is what the lane shows when a
+ * note has none. Undefined when none is left, so a part without any carries
+ * no field.
+ */
+export function cleanFiguredBass(raw: unknown): FiguredBassMark[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const byTick = new Map<number, string>();
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const m = r as Record<string, unknown>;
+    if (!isNum(m.tick)) continue;
+    const tick = Math.max(0, Math.round(m.tick));
+    byTick.delete(tick);
+    byTick.set(tick, cleanFigure(m.figure));
+  }
+  const out = [...byTick.entries()].sort((a, b) => a[0] - b[0]).map(([tick, figure]) => ({ tick, figure }));
+  return out.length ? out : undefined;
+}
+
 /** How many changes of each controller a part carries, in PART_CONTROLLERS order: what the parts column lists. */
 export function partControlCounts(controls: readonly RollControl[] | undefined): Array<{ controller: PartController; count: number }> {
   const counts = new Map<number, number>();
@@ -195,10 +231,13 @@ export function makeRollTrack(init: RollTrackInit, index: number): RollTrack {
   if (bankLsb !== undefined) track.bankLsb = bankLsb;
   const controls = cleanPartControls(init.controls);
   if (controls) track.controls = controls;
+  const figuredBass = cleanFiguredBass(init.figuredBass);
+  if (figuredBass) track.figuredBass = figuredBass;
+  if (init.cantusFirmus === true) track.cantusFirmus = true;
   return track;
 }
 
-/** Parts with their fields cleaned and their ids unique (a repeated id gets a new one); at least one part, at most MAX_ROLL_PARTS. */
+/** Parts with their fields cleaned and their ids unique (a repeated id gets a new one); at least one part, at most MAX_ROLL_PARTS, and one cantus firmus at most. */
 export function sanitizeRollTracks(list: readonly RollTrackInit[] | null | undefined): RollTrack[] {
   const seen = new Set<string>();
   const out: RollTrack[] = [];
@@ -206,6 +245,8 @@ export function sanitizeRollTracks(list: readonly RollTrackInit[] | null | undef
     if (!init || typeof init !== 'object') continue;
     if (out.length >= MAX_ROLL_PARTS) break;
     const track = makeRollTrack(init, out.length);
+    // One cantus firmus a roll: the first part that says so keeps it.
+    if (track.cantusFirmus && out.some((t) => t.cantusFirmus)) delete track.cantusFirmus;
     if (seen.has(track.id)) track.id = partUid();
     seen.add(track.id);
     out.push(track);
