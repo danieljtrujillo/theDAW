@@ -556,3 +556,60 @@ def test_parse_path_junction_escape_is_refused(
     escaped = str(junction / "secret.abc")
     r = score_client.post("/api/sheetimport/parse-path", json={"path": escaped})
     assert r.status_code == 403, r.text
+
+
+# --------------------------------------------------------------------------
+# Every notation route that writes a file answers only this machine's own
+# UI, the desktop shell or a paired device
+# --------------------------------------------------------------------------
+
+_WRITER_POSTS = [
+    ("/api/notation/reindex", None),
+    ("/api/notation/backfill", None),
+    ("/api/notation/no_such_entry/from-midi/m1", None),
+    ("/api/notation/no_such_entry/rewrite-from-midi/a1", None),
+    (
+        "/api/notation/no_such_entry/export",
+        {"source_artifact_id": "a1", "format": "pdf"},
+    ),
+    ("/api/notation/no_such_entry/chords", {}),
+    ("/api/notation/no_such_entry/tabs", {}),
+    ("/api/notation/no_such_entry/arrange", {"style": "lead-sheet"}),
+    ("/api/notation/no_such_entry/perform", {"source_artifact_id": "a1"}),
+]
+
+
+def test_every_notation_writer_refuses_a_foreign_page_and_an_unpaired_lan_caller(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A page outside theDAW and a LAN caller without the pairing token get
+    403 from every POST that writes into the library; a paired device passes
+    the gate and reaches the route itself (200 for the library-wide passes,
+    404 for an entry that does not exist)."""
+    from backend.core import background_workers
+    from backend.lib import pairing
+
+    monkeypatch.setattr(pairing, "_TOKEN_FILE", tmp_path / "pairing_token.txt")
+    monkeypatch.setattr(pairing, "_cached", None)
+    queued: list[str] = []
+
+    class _Queue:
+        def enqueue(self, name, _job) -> None:
+            queued.append(name)
+
+    monkeypatch.setattr(background_workers, "get_background_queue", _Queue)
+    app = _routes_app(tmp_path, monkeypatch)
+    local = TestClient(app, client=LOOPBACK_PEER)
+    lan = TestClient(app, client=LAN_PEER)
+    foreign = {"origin": "https://evil.example", "sec-fetch-site": "cross-site"}
+    paired = {pairing.HEADER: pairing.get_token()}
+
+    for url, body in _WRITER_POSTS:
+        r = local.post(url, json=body, headers=foreign)
+        assert r.status_code == 403, (url, r.status_code, r.text)
+        r = lan.post(url, json=body)
+        assert r.status_code == 403, (url, r.status_code, r.text)
+        r = lan.post(url, json=body, headers=paired)
+        expected = 200 if url.endswith(("/reindex", "/backfill")) else 404
+        assert r.status_code == expected, (url, r.status_code, r.text)
+    assert queued == ["notation:backfill"]

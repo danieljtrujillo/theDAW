@@ -2799,7 +2799,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (note-chart JSON export, not MusicXML)",
         (
             "router.py",
-            1320,
+            1368,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (chords route XML patch)",

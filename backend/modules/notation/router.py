@@ -473,7 +473,13 @@ def get_identity(entry_id: str) -> dict[str, Any]:
     }
 
 
-@router.post("/reindex")
+@router.post(
+    "/reindex",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def reindex_artifacts() -> dict[str, Any]:
     """Re-register every notation artifact found on disk across the library.
 
@@ -514,7 +520,13 @@ def reindex_artifacts() -> dict[str, Any]:
     }
 
 
-@router.post("/{entry_id}/from-midi/{midi_id}")
+@router.post(
+    "/{entry_id}/from-midi/{midi_id}",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
     store = get_library_store()
     if store.db is None:
@@ -552,7 +564,13 @@ def convert_midi_artifact(entry_id: str, midi_id: str) -> dict[str, Any]:
     return result
 
 
-@router.post("/{entry_id}/rewrite-from-midi/{artifact_id}")
+@router.post(
+    "/{entry_id}/rewrite-from-midi/{artifact_id}",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def rewrite_legacy_sheet(entry_id: str, artifact_id: str) -> dict[str, Any]:
     """Engrave a sheet an older build wrote at sounding pitch again from its
     MIDI, at written pitch, over the same file (the SCORE tab's "Rewrite from
@@ -583,7 +601,13 @@ def rewrite_legacy_sheet(entry_id: str, artifact_id: str) -> dict[str, Any]:
     return result
 
 
-@router.post("/{entry_id}/export")
+@router.post(
+    "/{entry_id}/export",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def export_artifact(entry_id: str, body: ExportRequest) -> dict[str, Any]:
     """Export an existing notation artifact (MIDI or MusicXML) to another
     format and register the result. Targets: the keys of ``_EXT_FOR_FORMAT``
@@ -809,7 +833,13 @@ def _find_lead_sheet(
     return None
 
 
-@router.post("/{entry_id}/chords")
+@router.post(
+    "/{entry_id}/chords",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def make_chords(entry_id: str, body: ChordsRequest) -> dict[str, Any]:
     """Build the entry's chord track (``gantasmo.chordtrack``) and register it
     as a ``chordtrack`` notation artifact.
@@ -918,7 +948,13 @@ def make_chords(entry_id: str, body: ChordsRequest) -> dict[str, Any]:
     }
 
 
-@router.post("/{entry_id}/tabs")
+@router.post(
+    "/{entry_id}/tabs",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def make_tabs(entry_id: str, body: TabsRequest) -> dict[str, Any]:
     """Arrange a MIDI artifact into guitar/bass tablature (alphaTex).
 
@@ -992,7 +1028,13 @@ def make_tabs(entry_id: str, body: TabsRequest) -> dict[str, Any]:
     return result
 
 
-@router.post("/{entry_id}/arrange")
+@router.post(
+    "/{entry_id}/arrange",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
     """Arrange MIDI artifact(s) into a MusicXML score.
 
@@ -1082,7 +1124,13 @@ def make_arrangement(entry_id: str, body: ArrangeRequest) -> dict[str, Any]:
     return result
 
 
-@router.post("/backfill")
+@router.post(
+    "/backfill",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def backfill() -> dict[str, Any]:
     """Ensure every entry with MIDI has a titled sheet, and fix the placeholder
     title on existing sheets. Enqueued on the idle-gated background queue so a

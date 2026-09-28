@@ -607,7 +607,8 @@ def test_export_route_returns_a_beatsaber_artifact(tmp_path: Path, monkeypatch):
     app = FastAPI()
     app.include_router(library_router_module.router, prefix="/api/library")
     app.include_router(notation_router_module.router, prefix="/api/notation")
-    client = TestClient(app)
+    # This machine's own UI: a loopback peer.
+    client = TestClient(app, client=("127.0.0.1", 51000))
 
     _seed_generate_entry(tmp_path, "job_bs", 0)
     entry_id = "job_bs_00"

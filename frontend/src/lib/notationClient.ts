@@ -1,3 +1,5 @@
+import { pairingHeaderFor } from './apiJson';
+
 export interface NotationArtifact {
   id: string;
   entry_id: string;
@@ -38,10 +40,8 @@ export async function listNotationArtifacts(entryId: string, kind?: string): Pro
 }
 
 export async function convertMidiToMusicXml(entryId: string, midiId: string): Promise<NotationArtifact | null> {
-  const res = await fetch(
-    `/api/notation/${encodeURIComponent(entryId)}/from-midi/${encodeURIComponent(midiId)}`,
-    { method: 'POST' },
-  );
+  const url = `/api/notation/${encodeURIComponent(entryId)}/from-midi/${encodeURIComponent(midiId)}`;
+  const res = await fetch(url, { method: 'POST', headers: pairingHeaderFor(url) });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
   if (!res.ok) {
     const detail = (payload as { detail?: unknown }).detail;
@@ -59,10 +59,8 @@ export async function convertMidiToMusicXml(entryId: string, midiId: string): Pr
  * old file until the new one is written.
  */
 export async function rewriteSheetFromMidi(entryId: string, artifactId: string): Promise<NotationArtifact | null> {
-  const res = await fetch(
-    `/api/notation/${encodeURIComponent(entryId)}/rewrite-from-midi/${encodeURIComponent(artifactId)}`,
-    { method: 'POST' },
-  );
+  const url = `/api/notation/${encodeURIComponent(entryId)}/rewrite-from-midi/${encodeURIComponent(artifactId)}`;
+  const res = await fetch(url, { method: 'POST', headers: pairingHeaderFor(url) });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
   if (!res.ok) {
     const detail = (payload as { detail?: unknown }).detail;
@@ -161,7 +159,8 @@ async function errorText(res: Response, what: string): Promise<string> {
 export async function importScoreFile(file: File): Promise<ScoreImportResult> {
   const body = new FormData();
   body.append('file', file, file.name);
-  const res = await fetch('/api/notation/import', { method: 'POST', body });
+  const url = '/api/notation/import';
+  const res = await fetch(url, { method: 'POST', body, headers: pairingHeaderFor(url) });
   if (!res.ok) throw new Error(await errorText(res, 'score import'));
   return await res.json() as ScoreImportResult;
 }
@@ -175,9 +174,10 @@ export async function searchCorpus(query: string, signal?: AbortSignal): Promise
 
 /** Import one corpus piece as a composition entry: POST /api/notation/corpus/open. */
 export async function openCorpusPiece(id: string): Promise<ScoreImportResult> {
-  const res = await fetch('/api/notation/corpus/open', {
+  const url = '/api/notation/corpus/open';
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify({ id }),
   });
   if (!res.ok) throw new Error(await errorText(res, 'corpus open'));
@@ -215,9 +215,10 @@ export async function renderScoreAudio(
   sourceArtifactId: string,
   options?: Record<string, unknown>,
 ): Promise<ScoreAudioRender> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/export`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/export`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify({ source_artifact_id: sourceArtifactId, format: 'audio', options: options ?? {} }),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -284,9 +285,10 @@ export async function exportArtifact(
   format: string,
   options?: Record<string, unknown>,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/export`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/export`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify({ source_artifact_id: sourceArtifactId, format, options: options ?? {} }),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -311,9 +313,10 @@ export async function performScore(
   sourceArtifactId: string,
   bpm?: number,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/perform`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/perform`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(bpm ? { source_artifact_id: sourceArtifactId, bpm } : { source_artifact_id: sourceArtifactId }),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -333,9 +336,10 @@ export async function makeTabs(
   entryId: string,
   req: MakeTabsRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/tabs`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/tabs`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -353,9 +357,10 @@ export async function makeArrangement(
   entryId: string,
   req: MakeArrangementRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/arrange`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/arrange`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -376,9 +381,10 @@ export async function makeChordTrack(
   entryId: string,
   req: ChordTrackRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/chords`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/chords`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));

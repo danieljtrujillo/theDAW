@@ -142,7 +142,9 @@ def notation_client(tmp_path: Path, monkeypatch):
     app = FastAPI()
     app.include_router(library_router_module.router, prefix="/api/library")
     app.include_router(notation_router_module.router, prefix="/api/notation")
-    return TestClient(app)
+    # This machine's own UI (a loopback peer): the notation routes that write
+    # a file answer only to it, the desktop shell or a paired device.
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 @pytest.fixture

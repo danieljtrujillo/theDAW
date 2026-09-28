@@ -80,7 +80,8 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.include_router(library_router_module.router, prefix="/api/library")
     app.include_router(notation_router_module.router, prefix="/api/notation")
     return (
-        TestClient(app),
+        # This machine's own UI: a loopback peer.
+        TestClient(app, client=("127.0.0.1", 51000)),
         library_router_module.get_store(),
         tmp_path / "job_rw" / "00",
     )
