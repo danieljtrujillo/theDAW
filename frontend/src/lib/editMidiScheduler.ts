@@ -55,6 +55,24 @@
  *     a held chord plays the chord. A percussion track does not chase: a drum
  *     hit is its onset, and striking it again mid-ring is louder than the take.
  *
+ * Channel state between clips and passes
+ * --------------------------------------
+ * A render plays every clip from a channel at the General MIDI defaults, so
+ * live playback keeps the channels there between clips:
+ *   - Every pass opens each channel it plays on at those defaults (lib/
+ *     rollTracks PART_CONTROLLERS: the pedal up first, then modulation 0,
+ *     volume 100, pan 64 and expression 127), ahead of any clip's own state.
+ *     SpessaSynth's stopAll silences voices and keeps controllers, so a pass
+ *     stopped inside a pedalled clip (a stop, a seek, a loop wrap) would
+ *     otherwise hand its pedal and volume to the next pass's notes, on
+ *     whichever track the channel goes to then.
+ *   - A clip that stops playing live part way (muted, deleted, or left with
+ *     no program) after its controllers were handed over puts them back at
+ *     once, after its last queued change, as its own end would have.
+ *   - A clip that starts playing live part way (unmuted, or given a program)
+ *     sets its channels where they are at that point (range, wheel and
+ *     controllers), as a pass starting there does.
+ *
  * Late ticks
  * ----------
  * A tick that runs late (a busy main thread, a hidden tab) does not fire a
@@ -94,7 +112,7 @@ import {
 import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
-import { partController } from './rollTracks';
+import { PART_CONTROLLERS, partController } from './rollTracks';
 import { stepClock } from './rollTempo';
 
 /** How far ahead of the clock a tick schedules while the page is visible. */
@@ -108,6 +126,21 @@ export const EDIT_MIDI_LATE_SEC = 0.03;
 /** Where a held-back wheel message lands after the last stale one on its channel. */
 const AFTER_STALE_SEC = 1e-6;
 const EPS = 1e-9;
+
+/** Pedal first, then by controller number: the order controllers go back to their defaults in. */
+const pedalFirst = (a: number, b: number): number => (a === 64 ? -1 : b === 64 ? 1 : a - b);
+
+/**
+ * The value a General MIDI channel starts at for every controller a part keeps
+ * (lib/rollTracks PART_CONTROLLERS), the sustain pedal first so nothing it held
+ * rings on: what every pass opens its channels with, the state each clip's
+ * render starts from.
+ */
+export const CHANNEL_DEFAULTS: ReadonlyArray<{ controller: number; value: number }> = Object.freeze(
+  [...PART_CONTROLLERS]
+    .sort((a, b) => pedalFirst(a.controller, b.controller))
+    .map((c) => Object.freeze({ controller: c.controller, value: c.initial })),
+);
 
 /**
  * What EDIT's synths are told. Every time is audio-context seconds. `bank` is
@@ -180,6 +213,8 @@ export interface ClipTiming {
   notes: TimedNote[];
   ctl: TimedCtl[];
   slots: number;
+  /** The controllers its part changes, the pedal first; empty for a clip with none. */
+  controllers: number[];
 }
 
 /** What a pass did, for the LOG. */
@@ -285,8 +320,8 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   }
   // The part's controllers act on a channel, so each goes to every channel the clip plays on.
   const controls = clipControlTimes({ ...clip, offsetIntoSource: offset }, fallbackBpm ?? 120);
+  const held = new Map<number, number>();
   if (controls.length) {
-    const held = new Map<number, number>();
     for (const c of controls) {
       held.set(c.controller, c.value);
       for (let slot = 0; slot < used; slot += 1) ctl.push({ t: c.sec, slot, kind: 'cc', controller: c.controller, value: c.value });
@@ -294,7 +329,7 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
     // Where the clip ends, each controller it left off its default goes back, the pedal first.
     const resets = [...held.entries()]
       .filter(([controller, value]) => value !== (partController(controller)?.initial ?? value))
-      .sort(([a], [b]) => (a === 64 ? -1 : b === 64 ? 1 : a - b));
+      .sort(([a], [b]) => pedalFirst(a, b));
     for (const [controller] of resets) {
       const value = partController(controller)?.initial ?? 0;
       for (let slot = 0; slot < used; slot += 1) ctl.push({ t: start + dur, slot, kind: 'reset', controller, value });
@@ -302,7 +337,7 @@ export function clipLiveTiming(clip: TimedClip, fallbackBpm: number | undefined,
   }
   // Stable: at one time a channel's range stays ahead of its wheel, and its controllers keep their order.
   ctl.sort((a, b) => a.t - b.t);
-  return { notes, ctl, slots: used };
+  return { notes, ctl, slots: used, controllers: [...held.keys()].sort(pedalFirst) };
 }
 
 /** The first index in `xs` whose key is at or past `t`. */
@@ -319,14 +354,38 @@ function lowerBound<T>(xs: readonly T[], t: number, key: (x: T) => number): numb
 
 /**
  * A message the tick hands over, ordered at one time as a MIDI file orders
- * them: off, a controller put back at a clip's end, a controller change,
- * range, wheel, on. A reset comes before a change at one time, so the next
- * clip's own value, set where the one before it ends, stands.
+ * them: off, a channel's defaults where a pass opens it (the pedal first), a
+ * controller put back at a clip's end, a controller change, range, wheel, on.
+ * The defaults and a reset come before a change at one time, so a clip's own
+ * value, set where the pass opens or where the clip before it ends, stands.
  */
 interface Out {
   time: number;
   order: number;
   send: () => void;
+}
+
+/** The `order` of a channel's defaults where a pass opens it: after a note-off, before a clip end's reset (0.1). */
+const DEFAULTS_ORDER = 0.01;
+/** The `order` of a controller put back at a clip's end, or when a clip stops playing live part way. */
+const RESET_ORDER = 0.1;
+
+/**
+ * The controllers a live clip set on its channels this pass (ClipTiming
+ * `controllers`), so they can go back if the clip stops playing live before
+ * its end hands over its own resets.
+ */
+interface HeldControls {
+  channels: number[];
+  controllers: number[];
+  /** Where the clip ends on the transport. */
+  end: number;
+  /** The context time of its latest change handed over (it may still wait in the synth's queue). */
+  lastAt: number;
+  /** True once any of its changes was handed over. */
+  sent: boolean;
+  /** True once its end's resets were handed over. */
+  ended: boolean;
 }
 
 /** A note-on handed to the synth, until its note-off is. */
@@ -378,6 +437,10 @@ export class EditMidiScheduler {
   private ctlQueued = new Map<number, number>();
   private ctlFloor = new Map<number, number>();
   private envelopes = new Map<string, EnvelopeOwner>();
+  /** The live clips whose controllers are on their channels, by clip id (HeldControls). */
+  private held = new Map<string, HeldControls>();
+  /** The clips the last tick played live, so a clip that starts playing part way is seen. */
+  private lastLive: ReadonlySet<string> = new Set();
   private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; timing: ClipTiming }>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
 
@@ -423,6 +486,9 @@ export class EditMidiScheduler {
     this.endAt = endSec;
     this.sounding = [];
     this.envelopes = new Map();
+    // The pass opens every channel at the defaults, so no clip's controllers are held yet.
+    this.held = new Map();
+    this.lastLive = new Set();
     this.counts = { notes: 0, chased: 0, late: 0, skipped: 0 };
     // A wheel message of this pass on a channel waits until the last stale one
     // queued there has passed; a cancel only matters while it is still queued.
@@ -499,19 +565,34 @@ export class EditMidiScheduler {
     const out: Out[] = [];
     const live = new Set<string>();
 
-    const pushCtl = (channel: number, c: TimedCtl, time: number) => {
+    // A channel message at `time`, held until after the last stale one a stopped
+    // pass left queued on its channel. Returns the time it goes at.
+    const pushAt = (channel: number, time: number, order: number, send: (at: number) => void): number => {
       const floor = this.ctlFloor.get(channel);
       const at = floor !== undefined && time <= floor ? floor + AFTER_STALE_SEC : time;
-      const controller = c.controller ?? 0;
-      out.push(
-        c.kind === 'range'
-          ? { time: at, order: 0.25, send: () => sink.wheelRange(channel, c.value, at) }
-          : c.kind === 'wheel'
-            ? { time: at, order: 0.5, send: () => sink.wheel(channel, c.value, at) }
-            : { time: at, order: c.kind === 'reset' ? 0.1 : 0.2, send: () => sink.control(channel, controller, c.value, at) },
-      );
+      out.push({ time: at, order, send: () => send(at) });
       this.ctlQueued.set(channel, Math.max(this.ctlQueued.get(channel) ?? 0, at));
+      return at;
     };
+    const pushCtl = (channel: number, c: TimedCtl, time: number): number => {
+      const controller = c.controller ?? 0;
+      if (c.kind === 'range') return pushAt(channel, time, 0.25, (at) => sink.wheelRange(channel, c.value, at));
+      if (c.kind === 'wheel') return pushAt(channel, time, 0.5, (at) => sink.wheel(channel, c.value, at));
+      return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => sink.control(channel, controller, c.value, at));
+    };
+
+    // The pass opens every channel it plays on at the General MIDI defaults, the
+    // pedal first, ahead of any clip's own state at the same time.
+    if (first) {
+      const at = Math.max(now, this.ctxOf(this.fromT));
+      const channels = new Set<number>();
+      for (const chans of this.pass.channelsOf.values()) for (const ch of chans) channels.add(ch);
+      for (const channel of [...channels].sort((a, b) => a - b)) {
+        CHANNEL_DEFAULTS.forEach((d, i) => {
+          pushAt(channel, at, DEFAULTS_ORDER + i * 1e-3, (t) => sink.control(channel, d.controller, d.value, t));
+        });
+      }
+    }
 
     const pushOn = (clipId: string, channel: number, program: number, bank: number, n: TimedNote, time: number) => {
       // A note of this key still held on the channel ends where this one starts,
@@ -564,22 +645,46 @@ export class EditMidiScheduler {
         this.scheduleEnvelope(track.id, clip, nowT, now);
       }
 
-      // Channel messages: where each channel is at the start point, then the window's.
-      if (first && clip.startSec < this.fromT - EPS && clipEnd > this.fromT + EPS) {
+      // Channel messages: where each channel is at the point the clip starts being
+      // heard inside its window (the start point of a pass, or where a clip unmuted
+      // or given a program part way comes in), then the window's.
+      const joinAt = first ? this.fromT : this.lastLive.has(clip.id) ? null : from;
+      // The latest controller change of the clip handed over this tick.
+      let lastCc = -Infinity;
+      const noteCc = (c: TimedCtl, at: number) => {
+        if (c.kind === 'cc' || c.kind === 'reset') lastCc = Math.max(lastCc, at);
+      };
+      if (joinAt !== null && clip.startSec < joinAt - EPS && clipEnd > joinAt + EPS) {
         const lastOf = new Map<string, TimedCtl>();
         for (const c of timing.ctl) {
-          if (c.t > this.fromT + EPS) break;
+          if (c.t > joinAt + EPS) break;
           // A controller keeps one value per channel, whether a change or a reset set it.
           const kind = c.kind === 'reset' ? 'cc' : c.kind;
           lastOf.set(`${c.slot}:${kind}:${c.controller ?? ''}`, c);
         }
-        const at = this.ctxOf(this.fromT);
-        for (const c of [...lastOf.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'range' ? -1 : 1))) pushCtl(chOf(c.slot), c, at);
+        const at = Math.max(now, this.ctxOf(joinAt));
+        for (const c of [...lastOf.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'range' ? -1 : 1))) {
+          noteCc(c, pushCtl(chOf(c.slot), c, at));
+        }
       }
       for (let i = lowerBound(timing.ctl, from, (c) => c.t); i < timing.ctl.length; i += 1) {
         const c = timing.ctl[i];
         if (c.t >= until - EPS) break;
-        pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t)));
+        noteCc(c, pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t))));
+      }
+      // What the clip's controllers left on its channels, so they go back if it stops playing live first.
+      if (timing.controllers.length) {
+        const h = this.held.get(clip.id) ?? { channels: [], controllers: [], end: clipEnd, lastAt: -Infinity, sent: false, ended: false };
+        h.channels = [...new Set(Array.from({ length: timing.slots }, (_, slot) => chOf(slot)))];
+        h.controllers = timing.controllers;
+        h.end = clipEnd;
+        if (lastCc > -Infinity) {
+          h.sent = true;
+          h.lastAt = Math.max(h.lastAt, lastCc);
+        }
+        // The window reached its end, where its own resets go out.
+        if (clipEnd >= from - EPS && clipEnd < until - EPS) h.ended = true;
+        this.held.set(clip.id, h);
       }
 
       if (!open) continue;
@@ -610,6 +715,27 @@ export class EditMidiScheduler {
       }
     }
 
+    // A clip that stopped playing live part way (muted, deleted, left with no
+    // program), or whose end the pass went past without its resets (moved behind
+    // the playhead), puts back the controllers it set, the pedal first, after its
+    // last change that may still wait in the synth's queue.
+    for (const [clipId, h] of this.held) {
+      if (h.ended) {
+        this.held.delete(clipId);
+        continue;
+      }
+      if (live.has(clipId) && h.end >= from - EPS) continue;
+      this.held.delete(clipId);
+      if (!h.sent) continue;
+      const at = Math.max(now, h.lastAt + AFTER_STALE_SEC);
+      for (const channel of h.channels) {
+        for (const controller of h.controllers) {
+          const value = partController(controller)?.initial ?? 0;
+          pushAt(channel, at, RESET_ORDER, (t) => sink.control(channel, controller, value, t));
+        }
+      }
+    }
+
     // Note-offs: a note whose clip went away, was muted or stopped playing live
     // ends now; every other ends at its time once that falls in the window.
     const keep: Sounding[] = [];
@@ -628,5 +754,6 @@ export class EditMidiScheduler {
     out.sort((a, b) => a.time - b.time || a.order - b.order);
     for (const o of out) o.send();
     if (until > this.cursor) this.cursor = until;
+    this.lastLive = live;
   }
 }

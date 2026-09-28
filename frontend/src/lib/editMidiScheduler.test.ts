@@ -461,6 +461,12 @@ run("a roll part's controllers play live at their times, and each goes back to i
   assert.deepEqual(
     cc.map((m) => [Math.round((m.t - anchor) * 1000) / 1000, m.controller, m.value]),
     [
+      // The pass opens the channel at the General MIDI defaults a render starts from, the pedal first.
+      [0, 64, 0],
+      [0, 1, 0],
+      [0, 7, 100],
+      [0, 10, 64],
+      [0, 11, 127],
       // At the clip's start, every controller the part uses at the value it holds there: the pedal
       // up and expression at its default (their changes come later), then volume and pan's own changes.
       [1, 64, 0],
@@ -479,19 +485,153 @@ run("a roll part's controllers play live at their times, and each goes back to i
     'each change on the audio clock',
   );
   for (const m of cc) assert.ok(m.at <= m.t + 1e-12, 'handed over ahead of its time');
-  near(cc[4].t, at(0.25), 1e-9, 'the pedal goes down on its tick');
+  near(cc.find((m) => m.controller === 64 && m.value === 127)!.t, at(0.25), 1e-9, 'the pedal goes down on its tick');
   // Playback starting inside the clip, after the pedal went down: the chase sets the pedal and the volume there.
   const r = rig();
   const a2 = r.clock.t;
   r.sched.start(passOf(), 1.5, a2);
   r.runFor(1);
   r.sched.stop();
-  const chased = r.msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.t <= a2 + 1e-9);
+  const opened = r.msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.t <= a2 + 1e-9);
+  assert.deepEqual(opened.slice(0, 5).map((m) => [m.controller, m.value]), [[64, 0], [1, 0], [7, 100], [10, 64], [11, 127]], 'the pass opens the channel at the defaults first');
   assert.deepEqual(
-    chased.map((m) => [m.controller, m.value]).sort((x, y) => x[0] - y[0]),
+    opened.slice(5).map((m) => [m.controller, m.value]).sort((x, y) => x[0] - y[0]),
     [[7, 96], [10, 40], [11, 127], [64, 127]],
-    'the pedal is down and the volume, pan and expression are set where playback starts',
+    'then the pedal is down and the volume, pan and expression are set where playback starts',
   );
+});
+
+// ── 10. Channel state between passes and between clips ──────────────────────
+/**
+ * Each note-on's channel state as a synth that keeps controllers across
+ * stopAll holds it: every controller change of `msgs` applied in time order
+ * (the synth's queue keeps the order of one time), read at each note-on of a
+ * key in `midis` timed at or after `fromT`.
+ */
+function statesAtOns(msgs: Msg[], fromT: number, midis: readonly number[]): Array<{ midi: number; t: number; pedal: number; volume: number }> {
+  const state = new Map<string, number>();
+  const out: Array<{ midi: number; t: number; pedal: number; volume: number }> = [];
+  const timeline = msgs.map((m, i) => ({ m, i })).sort((a, b) => a.m.t - b.m.t || a.i - b.i).map((x) => x.m);
+  for (const m of timeline) {
+    if (m.k === 'cc') state.set(`${m.ch}:${m.controller}`, m.value);
+    else if (m.k === 'on' && m.t >= fromT - 1e-9 && midis.includes(m.midi)) {
+      out.push({ midi: m.midi, t: m.t, pedal: state.get(`${m.ch}:64`) ?? 0, volume: state.get(`${m.ch}:7`) ?? 100 });
+    }
+  }
+  return out;
+}
+
+const pedalPart = (controls: Array<{ tick: number; controller: number; value: number }>) =>
+  ({ doc: 'd', id: 'p', order: 0, name: 'Piano', program: 0, bank: 0, channel: 1, color: '#a855f7', mute: false, solo: false, controls });
+// The pedal down and the volume at 40 from the part's first tick.
+const PEDAL_DOWN = [{ tick: 0, controller: 64, value: 127 }, { tick: 0, controller: 7, value: 40 }];
+
+run('a pass stopped inside a pedalled clip leaves nothing on the channel: the next pass opens it at the defaults', () => {
+  ed().loadProject({ tracks: [], clips: [] });
+  const t0 = ed().tracks[0].id;
+  ed().updateTrack(t0, { instrumentProgram: 0 });
+  // Clip A (no controllers) at 0-4 s, clip B (pedal down, volume 40) at 4-8 s.
+  addMidi(t0, { startSec: 0, durationSec: 4, sourceTotalSteps: 32, sourcePianoRoll: [note('a1', 60, 0, 2), note('a2', 62, 8, 2), note('a3', 64, 16, 2)] });
+  addMidi(t0, { startSec: 4, durationSec: 4, sourceTotalSteps: 32, sourcePianoRoll: [note('b1', 48, 0, 2), note('b2', 50, 8, 2)], sourceRollPart: pedalPart(PEDAL_DOWN) });
+  const { clock, msgs, sched, runFor } = rig();
+  // Pass 1 plays from 5 s, inside B, and stops half a second later.
+  sched.start(passOf(), 5, clock.t);
+  runFor(0.5);
+  sched.stop();
+  clock.t += 1;
+  // Pass 2 plays from 0 s through clip A.
+  const a2 = clock.t;
+  const n0 = msgs.length;
+  sched.start(passOf(), 0, a2);
+  runFor(3);
+  sched.stop();
+  const states = statesAtOns(msgs, a2, [60, 62, 64]);
+  assert.equal(states.length, 3, "every note of clip A plays");
+  for (const s of states) assert.deepEqual([s.pedal, s.volume], [0, 100], `clip A's note ${s.midi} plays with the pedal up and the volume at 100`);
+  const firstCc = msgs.slice(n0).find((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc');
+  assert.deepEqual([firstCc?.controller, firstCc?.value], [64, 0], 'the pass lifts the pedal first');
+});
+
+run("a channel another track gets on a later pass starts at the defaults, not the last track's pedal", () => {
+  ed().loadProject({ tracks: [], clips: [] });
+  const x = ed().tracks[0].id;
+  ed().updateTrack(x, { instrumentProgram: 0 });
+  const xClip = addMidi(x, { startSec: 0, durationSec: 8, sourcePianoRoll: [note('x1', 48, 0, 4), note('x2', 50, 16, 4)], sourceRollPart: pedalPart(PEDAL_DOWN) });
+  const y = ed().addTrack({ name: 'Strings' });
+  ed().updateTrack(y, { instrumentProgram: 48 });
+  addMidi(y, { startSec: 0, durationSec: 8, sourcePianoRoll: [note('y1', 72, 0, 2), note('y2', 74, 8, 2), note('y3', 76, 16, 2)] });
+  const pass1 = passOf();
+  const { clock, msgs, sched, runFor } = rig();
+  sched.start(pass1, 1, clock.t);
+  runFor(0.5);
+  sched.stop();
+  // X's clip is muted, so the next plan gives Y the channel X held.
+  ed().updateClip(xClip, { muted: true });
+  const pass2 = passOf();
+  assert.equal(pass2.channelsOf.get(y)?.[0], pass1.channelsOf.get(x)?.[0], "Y takes X's channel");
+  clock.t += 1;
+  const a2 = clock.t;
+  sched.start(pass2, 0, a2);
+  runFor(3);
+  sched.stop();
+  const states = statesAtOns(msgs, a2, [72, 74, 76]);
+  assert.equal(states.length, 3);
+  for (const s of states) assert.deepEqual([s.pedal, s.volume], [0, 100], `Y's note ${s.midi} plays at the defaults`);
+});
+
+run('a pedalled clip muted or deleted part way puts its controllers back; unmuted, it sets them again', () => {
+  const setup = () => {
+    ed().loadProject({ tracks: [], clips: [] });
+    const t0 = ed().tracks[0].id;
+    ed().updateTrack(t0, { instrumentProgram: 0 });
+    // Clip B (pedal down, volume 40) at 0-4 s with notes at 0, 1 and 3 s; clip A (no controllers) at 4-8 s.
+    const b = addMidi(t0, { startSec: 0, durationSec: 4, sourceTotalSteps: 32, sourcePianoRoll: [note('b1', 48, 0, 2), note('b2', 50, 8, 2), note('b3', 52, 24, 2)], sourceRollPart: pedalPart(PEDAL_DOWN) });
+    addMidi(t0, { startSec: 4, durationSec: 4, sourceTotalSteps: 32, sourcePianoRoll: [note('a1', 60, 8, 2), note('a2', 62, 16, 2)] });
+    return b;
+  };
+  // Muted at 2 s: the next clip plays with the pedal up and the volume at 100.
+  {
+    const b = setup();
+    const { clock, msgs, sched, runFor } = rig();
+    const anchor = clock.t;
+    sched.start(passOf(), 0, anchor);
+    runFor(2);
+    ed().updateClip(b, { muted: true });
+    runFor(5);
+    sched.stop();
+    const states = statesAtOns(msgs, anchor, [60, 62]);
+    assert.equal(states.length, 2);
+    for (const s of states) assert.deepEqual([s.pedal, s.volume], [0, 100], `after the mute, clip A's note ${s.midi} plays at the defaults`);
+  }
+  // Deleted at 2 s: the same.
+  {
+    const b = setup();
+    const { clock, msgs, sched, runFor } = rig();
+    const anchor = clock.t;
+    sched.start(passOf(), 0, anchor);
+    runFor(2);
+    ed().removeClip(b);
+    runFor(5);
+    sched.stop();
+    for (const s of statesAtOns(msgs, anchor, [60, 62])) assert.deepEqual([s.pedal, s.volume], [0, 100], `after the delete, note ${s.midi} plays at the defaults`);
+  }
+  // Muted at 1.5 s and unmuted at 2 s: its note at 3 s plays with its own pedal and volume again.
+  {
+    const b = setup();
+    const { clock, msgs, sched, runFor } = rig();
+    const anchor = clock.t;
+    sched.start(passOf(), 0, anchor);
+    runFor(1.5);
+    ed().updateClip(b, { muted: true });
+    runFor(0.5);
+    ed().updateClip(b, { muted: false });
+    runFor(5);
+    sched.stop();
+    const [again] = statesAtOns(msgs, anchor, [52]);
+    assert.ok(again, 'its note at 3 s plays');
+    assert.deepEqual([again.pedal, again.volume], [127, 40], 'with the pedal down and the volume at 40, the state it holds there');
+    for (const s of statesAtOns(msgs, anchor, [60, 62])) assert.deepEqual([s.pedal, s.volume], [0, 100], 'and clip A still starts at the defaults');
+  }
 });
 
 console.log('editMidiScheduler: ok');
