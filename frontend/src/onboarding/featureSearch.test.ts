@@ -66,6 +66,11 @@ const FIRST_HITS: Array<[query: string, id: string]> = [
   ['import', 'import'],
   ['inputs', 'settings-io'],
   ['export', 'score-export'],
+  // The COMPOSE column (2026-09-28), by the words a composer uses for it.
+  ['counterpoint', 'midi-compose'],
+  ['fugue', 'midi-compose'],
+  ['voice leading', 'midi-compose'],
+  ['sonata', 'midi-compose'],
 ];
 for (const [query, id] of FIRST_HITS) {
   assert.equal(ids(query)[0], id, `"${query}" finds ${id} first (got ${ids(query).join(', ') || 'nothing'})`);
