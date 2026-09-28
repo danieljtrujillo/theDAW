@@ -41,7 +41,7 @@ import { effectiveZoom } from '../../lib/canvasScale';
 import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
-import { useExternalDragStore } from '../../state/externalDragStore';
+import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
 import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
@@ -1625,6 +1625,11 @@ interface PointerOp {
   initialTrackIndex: number;
   initialClips?: Array<{ id: string; startSec: number; trackIndex: number }>;
   dragItems?: AudioDragItem[];
+  /** `ctrl-drag-pending` / its copy-move: MIDI parts in the drag with no current
+   *  render. Nothing renders at the press; a drag that leaves the timeline
+   *  renders them for that drag only (state/midiRenderQueue clipsWithMidiAudio)
+   *  and hands them over when they land. */
+  dragRenderIds?: string[];
   /** Undo depth when the press went down. The whole drag is ONE undo step, so a deeper stack
    *  means the drag has written something — which is exactly what Escape has to take back. */
   undoDepthAtStart?: number;
@@ -4579,20 +4584,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const picked = ids
         .map((id) => clips.find((c) => c.id === id))
         .filter((c): c is AudioClip => !!c);
-      // A drag hands over bytes it has now. A MIDI clip with no render is
-      // rendered for the next drag and left out of this one, and the LOG says so.
-      const unrendered = picked.filter((c) => !c.audioBlob);
-      for (const c of unrendered) {
-        requestMidiRender(c.id, 'cache').catch((err) => logError('editor', `MIDI render failed for "${c.label}": ${err instanceof Error ? err.message : String(err)}`));
-      }
-      if (unrendered.length) logInfo('editor', `Rendering ${unrendered.map((c) => `"${c.label}"`).join(', ')} so it can be dragged out; drag again once it is rendered`);
-      const dragItems: AudioDragItem[] = picked
-        .filter((c) => !!c.audioBlob)
-        .map((c) => ({
-          blob: c.audioBlob,
-          mimeType: c.mimeType,
-          label: c.label,
-        }));
+      // A press renders nothing: a Ctrl+click selects and a Ctrl+drag inside
+      // the timeline copies, and neither needs audio. A drag that leaves the
+      // timeline hands over the audio the clips have now, and renders the MIDI
+      // parts with no current render for that drag only (state/clipDragOut).
+      const plan = planClipDragOut(picked, tracks, getGlobalVoice());
       opRef.current = {
         kind: 'ctrl-drag-pending',
         clipId,
@@ -4602,7 +4598,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         initialDurationSec: clip.durationSec,
         initialOffsetIntoSource: clip.offsetIntoSource,
         initialTrackIndex: Math.max(0, tracks.findIndex((t) => t.id === clip.trackId)),
-        dragItems,
+        dragItems: plan.items,
+        dragRenderIds: plan.renderIds,
         shiftKey: e.shiftKey,
       };
       return;
@@ -4708,8 +4705,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
     // A copy-drag that LEAVES the timeline becomes the drag to another surface it has always been
     // (the library, another tab's drop zone): the copies are taken back and the app-level drag
-    // starts with the ORIGINAL clips' audio.
-    if (op.kind === 'move' && op.dragItems && op.dragItems.length > 0) {
+    // starts with the ORIGINAL clips' audio. MIDI parts with no current render are rendered for
+    // this drag only (state/clipDragOut: the MIDI render queue, one at a time, muted ones too):
+    // the drop takes them as they land, and their decoded audio is freed once the drag is over,
+    // so no part keeps a render it never asked for.
+    const dragPlan = { items: op.dragItems ?? [], renderIds: op.dragRenderIds ?? [] };
+    if (op.kind === 'move' && dragOutHasContent(dragPlan)) {
       const box = timelineScrollRef.current?.getBoundingClientRect();
       const margin = 24;
       if (
@@ -4723,7 +4724,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         }
         opRef.current = null;
         showLaneInsert(null);
-        useExternalDragStore.getState().begin(op.dragItems);
+        beginClipDragOut(dragPlan);
         return;
       }
     }
