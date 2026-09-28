@@ -44,6 +44,13 @@
  * comes in as its tempos, each a step at its tick and each tempo at the exact
  * microseconds its FF 51 holds (lib/midi tempoOfMicros).
  *
+ * MARKERS: the roll's named markers (lib/rollMarkers) are written as FF 06
+ * markers at their ticks, which every program reads as names, and beside them
+ * in one `theDAW:markers=` text with each marker's kind (section or movement)
+ * and origin. Import takes that text back when its places and names are still
+ * the file's FF 06 markers; a file edited elsewhere, or written by anything
+ * else, brings its FF 06 markers in as sections.
+ *
  * PARTS: a roll of more than one part (state/pianoRollStore RollTrack) writes
  * one track per part, named after it, on the part's channel (lib/rollTracks
  * partFileChannels: its own, 10 for a percussion part, else the next free
@@ -125,6 +132,7 @@ import {
   partFileChannels,
 } from './rollTracks';
 import { hasTempoChanges, sanitizeRollTempoMap, startTempoOf } from './rollTempo';
+import { sanitizeRollMarkers, type RollMarker, type RollMarkerInput } from './rollMarkers';
 import { beatToTime, normalizeTempoMap, type TempoEvent } from './tempoMap';
 import {
   DEFAULT_LANES,
@@ -174,6 +182,8 @@ export interface RollMidiSource {
   activeTrackId?: string;
   /** The program each part sounds when it has none of its own (its linked clip's, the picker's), by part id. */
   voices?: ReadonlyMap<string, { program?: number }>;
+  /** The roll's named markers, by tick on the roll's clock; left out, none. */
+  markers?: readonly RollMarker[];
 }
 
 /** What an import hands to the roll's importNotes. */
@@ -185,6 +195,51 @@ export interface RollMidiImport {
   bends: LaneBend[];
   /** The file's tempo map (sanitized, starting at `bpm`). */
   tempoMap: TempoEvent[];
+  /** The file's markers on the roll's clock (midiFileMarkers); none when it has none. */
+  markers: RollMarker[];
+}
+
+/** The `theDAW:markers=` text of a roll's markers: each one's place (at the file's `ppq`), name, kind and origin. */
+export const markersText = (markers: readonly RollMarker[], ppq: number): string =>
+  JSON.stringify(markers.map((m) => ({
+    tick: Math.round((m.tick * ppq) / PPQ),
+    name: m.name,
+    kind: m.kind,
+    ...(m.origin ? { origin: m.origin } : {}),
+  })));
+
+/**
+ * A file's markers on the roll's clock: the `theDAW:markers=` text's, with
+ * their kinds and origins, while its places and names are still the file's
+ * FF 06 markers; else every FF 06 marker as a section. Ticks scale from the
+ * file's PPQ to the roll's.
+ */
+export function midiFileMarkers(data: Pick<MidiFileData, 'ppq' | 'markers' | 'dawMarkers'>): RollMarker[] {
+  const ppq = data.ppq || ROLL_PPQ;
+  const toModel = PPQ / ppq;
+  const plain = data.markers ?? [];
+  let own: RollMarkerInput[] | null = null;
+  if (data.dawMarkers) {
+    try {
+      const raw = JSON.parse(data.dawMarkers) as unknown;
+      if (Array.isArray(raw)) {
+        const list = raw.filter((m): m is Record<string, unknown> => !!m && typeof m === 'object');
+        // The text holds while the FF 06 markers are the ones it was written with: the same places and names, in order.
+        const same = list.length === plain.length && list.every((m, i) => m.tick === plain[i].tick && m.name === plain[i].text);
+        if (same) {
+          own = list.map((m) => ({
+            tick: typeof m.tick === 'number' ? m.tick * toModel : undefined,
+            name: typeof m.name === 'string' ? m.name : undefined,
+            kind: m.kind === 'movement' ? 'movement' : 'section',
+            ...(m.origin === 'form' ? { origin: 'form' as const } : {}),
+          }));
+        }
+      }
+    } catch {
+      /* not a text this module wrote: the FF 06 markers stand alone */
+    }
+  }
+  return sanitizeRollMarkers(own ?? plain.map((m) => ({ tick: m.tick * toModel, name: m.text, kind: 'section' as const })));
 }
 
 /** A ramp is written to a file as one tempo per this many quarter notes: a 32nd. */
@@ -379,6 +434,13 @@ function rollFileHeader(s: RollMidiSource, ppq: number): Omit<MidiFileData, 'tra
       : {}),
     // One FF 58 per meter change, a partial bar at tick 0 for a pickup.
     timeSignatures: meterMapToMidiEvents(s.meterMap, ppq, s.pickupSteps),
+    // Each marker as FF 06 at its tick, and every marker with its kind in the markers text.
+    ...(s.markers?.length
+      ? {
+          markers: s.markers.map((m) => ({ tick: Math.round((m.tick * ppq) / PPQ), text: m.name })),
+          dawMarkers: markersText(s.markers, ppq),
+        }
+      : {}),
   };
 }
 
@@ -679,11 +741,12 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
   // The file's tempo map, ramps and fermatas included when the roll wrote it.
   const tempoMap = midiFileTempoMap(data);
   const bpm = startTempoOf(tempoMap) ?? data.bpm;
+  const markers = midiFileMarkers(data);
 
   // A file the roll wrote with its lanes gives every lane back.
   if (data.tracks.some((t) => parseLaneMeta(t.laneMeta))) {
     const own = laneTracksToRoll(data, ppq, idPrefix, wheel, ranges, origins);
-    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap };
+    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap, markers };
   }
 
   const raw = data.tracks.flatMap((t) => t.notes);
@@ -735,7 +798,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
       g.bent ? [{ lane: id, ...channelBend(wheel.get(g.first) ?? [], ranges.get(g.first) ?? [], stepTicks, `bp${id}`) }] : [],
     ),
   );
-  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap };
+  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap, markers };
 }
 
 /** One part of an imported file: the part's fields and its notes. */
@@ -888,5 +951,5 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
       notes,
     };
   });
-  return { bpm: read.bpm, meter: read.meter, bends: read.bends, tempoMap: read.tempoMap, parts };
+  return { bpm: read.bpm, meter: read.meter, bends: read.bends, tempoMap: read.tempoMap, markers: read.markers, parts };
 }

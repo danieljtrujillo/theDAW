@@ -26,8 +26,12 @@
  * maps above the timeline (offerClipTimeMaps), as a clip sent from the roll
  * does; nothing changes until the offer is accepted.
  *
- * Every track and clip, and the maps an empty arrangement takes, are one undo
- * step. A clip's audio is an optional render (lib/midiRender): a part with a
+ * The file's markers (FF 06) ride on every clip (`sourceMarkers`), so any of
+ * them reopens them in the roll, and go on EDIT's timeline once, written by the
+ * first part's clip, as a send from the roll puts them.
+ *
+ * Every track and clip, the markers and the maps an empty arrangement takes,
+ * are one undo step. A clip's audio is an optional render (lib/midiRender): a part with a
  * voice plays live on EDIT's synths and renders when an export needs it, so a
  * thirty-part file holds no audio. A part with no voice (no program and the
  * picker off) cannot play live: its render is queued on EDIT's MIDI render
@@ -41,6 +45,7 @@ import { clipVoice, type GlobalVoice } from './clipProgram';
 import { roundUpToBar, type MeterSegment } from './meterMap';
 import type { MidiFileData } from './midi';
 import { rollClipFields, rollPartRef } from './rollClip';
+import { clipOwnTimelineMarkers } from './rollMarkers';
 import { midiFileToRollParts, type RollMidiPartsImport } from './rollMidi';
 import { stepClock } from './rollTempo';
 import { isPercussionPart, makeRollTrack, partVoice } from './rollTracks';
@@ -110,7 +115,7 @@ export function midiFileTrackParts(
   const parts = file.parts.filter((p) => p.notes.length > 0).map((p, i) => makeRollTrack({ ...p.track, notes: p.notes }, i));
   const noteEnd = parts.reduce((m, t) => t.notes.reduce((e, n) => Math.max(e, n.step + n.length), m), 0);
   const totalSteps = roundUpToBar(file.meter.meterMap, Math.max(1, noteEnd), file.meter.pickupSteps);
-  return { bpm: file.bpm, meter: file.meter, bends: file.bends, tempoMap: file.tempoMap, parts, totalSteps };
+  return { bpm: file.bpm, meter: file.meter, bends: file.bends, tempoMap: file.tempoMap, markers: file.markers, parts, totalSteps };
 }
 
 /**
@@ -148,7 +153,7 @@ export function importMidiAsTracks(
       const voice = partVoice(part, null, [], [], global, null);
       const percussion = isPercussionPart(part);
       const fields = {
-        ...rollClipFields({ ...file.meter, notes: part.notes, bpm, totalSteps: file.totalSteps, bends: file.bends, tempoMap: file.tempoMap }),
+        ...rollClipFields({ ...file.meter, notes: part.notes, bpm, totalSteps: file.totalSteps, bends: file.bends, tempoMap: file.tempoMap, markers: file.markers }),
         sourceRollPart: rollPartRef(part, order, doc),
       };
       const trackId = useEditorStore.getState().addTrack({
@@ -190,6 +195,9 @@ export function importMidiAsTracks(
         rendering: heard.program === undefined,
       });
     });
+    // The file's markers on EDIT's timeline, once: the first part's clip writes them.
+    const first = landed.length ? useEditorStore.getState().clips.find((c) => c.id === landed[0].clipId) : undefined;
+    if (first?.sourceMarkers?.length) useEditorStore.getState().setClipRollMarkers(first.id, clipOwnTimelineMarkers(first, bpm));
     // The file's tempo and meter from the first clip's start, for an arrangement that has nothing to keep.
     if (takesTiming && landed.length) useEditorStore.getState().adoptClipTimeMaps(landed[0].clipId);
   });

@@ -106,7 +106,8 @@ export function applyRollParts(
 /** A parsed MIDI file into the roll's parts (lib/rollMidi midiFileToRollParts). */
 export function importMidiParts(data: MidiFileData, idPrefix = 'imp'): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number } {
   const file = midiFileToRollParts(data, idPrefix);
-  const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap);
+  // The file's markers (FF 06) are the new document's; a roll that keeps its document keeps its own.
+  const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap, file.markers);
   return {
     ...result,
     bpm: file.bpm,

@@ -174,7 +174,7 @@ export function loadMidiIntoPianoRoll(
     // Every track's notes, and the file's time signatures set the roll's meter (a file with no FF 58 is
     // 4/4 by the MIDI spec). A channel whose pitch wheel moves gets its own lane and curve; every other
     // note is in lane A (lib/rollMidi).
-    const { notes, bpm, meter, bends, tempoMap } = midiFileToRoll(midi, 'pn');
+    const { notes, bpm, meter, bends, tempoMap, markers } = midiFileToRoll(midi, 'pn');
     if (notes.length === 0) {
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
@@ -182,12 +182,12 @@ export function loadMidiIntoPianoRoll(
     // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
     // The piano roll takes a file of several tracks as one part each, on its own
     // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
-    // notes in one layer, as it always has. A new file is a new document: the
-    // markers of the previous one go, unless other parts keep the document.
+    // notes in one layer, as it always has. A new file is a new document: its
+    // markers (FF 06) replace the previous one's, unless other parts keep the document.
     const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn') : null;
     const kept = parts
       ? parts.keptDocument
-      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers: [] }).keptDocument;
+      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers }).keptDocument;
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
     const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';

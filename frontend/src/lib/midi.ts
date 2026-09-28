@@ -18,7 +18,10 @@
  * controllers an orchestral part is shaped with (KEPT_CONTROLLERS: modulation,
  * volume, pan, expression and the sustain pedal) are kept per track as
  * `controls`, and the encoder writes them back. Track names are written and
- * read as UTF-8.
+ * read as UTF-8. Markers (FF 06) are written in the conductor track and read
+ * from every track, their text UTF-8; a roll's markers with their kinds also
+ * ride in one conductor text `theDAW:markers=…` (lib/rollMidi reads it), as
+ * FF 06 holds a name alone.
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
@@ -78,6 +81,13 @@ export interface MidiProgram {
 export const KEPT_CONTROLLERS: readonly number[] = Object.freeze([1, 7, 10, 11, 64]);
 
 /** A controller change (B0) of one of KEPT_CONTROLLERS. */
+/** A marker (FF 06): a named place in the file, such as a section or a movement's start. */
+export interface MidiMarker {
+  tick: number;
+  /** The marker's text (UTF-8). */
+  text: string;
+}
+
 export interface MidiControl {
   tick: number;
   /** Channel 0-15; the controller acts on every note of it. */
@@ -149,6 +159,17 @@ export interface MidiFileData {
    * it). Encoded at tick 0 when present; parsed from the last one in the file.
    */
   dawTempoMap?: string;
+  /**
+   * Every marker (FF 06), sorted by tick, merged across tracks. Parsed: absent
+   * when the file has none. Encoded in the conductor track, each at its tick.
+   */
+  markers?: MidiMarker[];
+  /**
+   * The `theDAW:markers=` text of the conductor track: the roll's markers with
+   * their kinds (lib/rollMidi writes and reads it), which FF 06 cannot say.
+   * Encoded at tick 0 when present; parsed from the last one in the file.
+   */
+  dawMarkers?: string;
 }
 
 // =============================================================================
@@ -353,6 +374,8 @@ const LANE_TEXT = 'theDAW:lane=';
 const PART_TEXT = 'theDAW:part=';
 /** The text a file's own tempo map rides in beside its FF 51 tempos (lib/rollMidi tempoMapText). */
 export const TEMPOMAP_TEXT = 'theDAW:tempomap=';
+/** The text a roll's markers ride in with their kinds beside their FF 06 names (lib/rollMidi). */
+const MARKERS_TEXT = 'theDAW:markers=';
 
 /** Text as 7-bit ASCII: every character past it written as a JSON \u escape, which JSON.parse reads back. */
 const asciiJson = (text: string): string =>
@@ -390,6 +413,12 @@ const signatureBytes = (num: number, den: number, groups: readonly number[] = []
 
 const textBytes = (text: string): number[] => [0xff, 0x01, ...writeVLQ(text.length), ...ascii(text)];
 
+/** A marker meta event (FF 06), its text as UTF-8 so a movement named "II. Adagio – più mosso" keeps its dash. */
+const markerBytes = (text: string): number[] => {
+  const bytes = Array.from(new TextEncoder().encode(text));
+  return [0xff, 0x06, ...writeVLQ(bytes.length), ...bytes];
+};
+
 const tickOf = (tick: number): number => (Number.isFinite(tick) ? Math.max(0, Math.round(tick)) : 0);
 
 /**
@@ -404,9 +433,10 @@ export const meterEventMetas = (s: MeterEvent): number[][] => {
 };
 
 /**
- * The conductor track's events: every tempo and time signature at its own tick.
- * At one tick the tempo comes first, then the signature, its groups text and
- * its pickup text. With no lists it holds one tempo and a 4/4 at tick 0.
+ * The conductor track's events: every tempo and time signature at its own tick,
+ * and every marker. At one tick the tempo comes first, then the signature, its
+ * groups text and its pickup text, then the marker. With no lists it holds one
+ * tempo and a 4/4 at tick 0.
  */
 const conductorEvents = (file: MidiFileData): RankedEvent[] => {
   const tempos = (file.tempos ?? []).map((t) => ({ tick: tickOf(t.tick), bpm: t.bpm }));
@@ -418,8 +448,10 @@ const conductorEvents = (file: MidiFileData): RankedEvent[] => {
     const tick = tickOf(s.tick);
     meterEventMetas(s).forEach((bytes, i) => events.push({ tick, rank: 1 + i, bytes }));
   }
+  for (const m of file.markers ?? []) events.push({ tick: tickOf(m.tick), rank: 50, bytes: markerBytes(m.text) });
   // After every other meta at tick 0, so a reader that stops at the first text still meets the signature's own.
   if (file.dawTempoMap) events.push({ tick: 0, rank: 100, bytes: textBytes(`${TEMPOMAP_TEXT}${file.dawTempoMap}`) });
+  if (file.dawMarkers) events.push({ tick: 0, rank: 101, bytes: textBytes(`${MARKERS_TEXT}${asciiJson(file.dawMarkers)}`) });
   events.sort(byTickAndRank);
   return events;
 };
@@ -493,6 +525,10 @@ interface DecodedTrack {
   pickups: Array<{ tick: number; steps: number }>;
   /** The last `theDAW:tempomap=` text's body, or null. */
   tempoMap: string | null;
+  /** Every FF 06 marker, in order. */
+  markers: MidiMarker[];
+  /** The last `theDAW:markers=` text's body, or null. */
+  markerMeta: string | null;
   bends: MidiBend[];
   ranges: MidiBendRange[];
   /** The track's `theDAW:lane=` text, the last one when it has several. */
@@ -532,6 +568,8 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   const groups: DecodedTrack['groups'] = [];
   const pickups: DecodedTrack['pickups'] = [];
   let tempoMap: string | null = null;
+  const markers: MidiMarker[] = [];
+  let markerMeta: string | null = null;
   // The notes held down, by `${ch}:${note}`, oldest first. A note-off ends the
   // OLDEST held note of its channel and pitch, so two notes of one pitch that
   // overlap (a unison between two voices, a repeated note played legato) are
@@ -578,7 +616,13 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
           partMeta = text.slice(PART_TEXT.length);
         } else if (text.startsWith(TEMPOMAP_TEXT)) {
           tempoMap = text.slice(TEMPOMAP_TEXT.length);
+        } else if (text.startsWith(MARKERS_TEXT)) {
+          markerMeta = text.slice(MARKERS_TEXT.length);
         }
+      } else if (meta === 0x06) {
+        // Marker: its text as UTF-8 (Latin-1 when it is not), a blank one skipped.
+        const text = nameText(data);
+        if (text) markers.push({ tick, text });
       } else if (meta === 0x51 && data.length === 3) {
         const microsPerQuarter = (data[0] << 16) | (data[1] << 8) | data[2];
         if (microsPerQuarter > 0) tempos.push({ tick, bpm: tempoOfMicros(microsPerQuarter) });
@@ -686,7 +730,7 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
   }
 
   finished.sort((a, b) => a.tick - b.tick);
-  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, bends, ranges, laneMeta, partMeta, programs, controls };
+  return { name, notes: finished, tempos, signatures, groups, pickups, tempoMap, markers, markerMeta, bends, ranges, laneMeta, partMeta, programs, controls };
 };
 
 /** The tempo a Standard MIDI File plays at until its first tempo event: 120 BPM, as SMF 1.0 has it. */
@@ -742,6 +786,8 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   const groups: DecodedTrack['groups'] = [];
   const pickups: DecodedTrack['pickups'] = [];
   let dawTempoMap: string | null = null;
+  const markers: MidiMarker[] = [];
+  let dawMarkers: string | null = null;
   for (let i = 0; i < ntrks; i += 1) {
     if (r.str(4) !== 'MTrk') throw new Error(`Track ${i} missing MTrk marker`);
     const len = r.u32();
@@ -754,6 +800,8 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     for (const e of t.groups) groups.push(e);
     for (const e of t.pickups) pickups.push(e);
     if (t.tempoMap !== null) dawTempoMap = t.tempoMap;
+    for (const m of t.markers) markers.push(m);
+    if (t.markerMeta !== null) dawMarkers = t.markerMeta;
     // A track that only bends is kept: its channel's wheel bends notes another
     // track holds. So is one that only sets controllers (a setup track's volume
     // and pan), and a lane's track with no notes, so the lane comes back.
@@ -773,6 +821,7 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   // Stable sorts: at one tick, events keep track order, so the last one written is the one in force.
   tempos.sort((a, b) => a.tick - b.tick);
   signatures.sort((a, b) => a.tick - b.tick);
+  markers.sort((a, b) => a.tick - b.tick);
   for (const g of groups) {
     for (const s of signatures) if (s.tick === g.tick) s.groups = [...g.groups];
   }
@@ -788,6 +837,8 @@ export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
     ...(signatures.length ? { timeSignatures: signatures } : {}),
     ...(tempos.length ? { tempos } : {}),
     ...(dawTempoMap !== null ? { dawTempoMap } : {}),
+    ...(markers.length ? { markers } : {}),
+    ...(dawMarkers !== null ? { dawMarkers } : {}),
   };
 };
 

@@ -20,7 +20,7 @@
  *
  * No Vite-only imports, so node tests load it.
  */
-import type { TimelineMarker } from '../state/editorStore';
+import type { AudioClip, TimelineMarker } from '../state/editorStore';
 import { barAt, type MeterSegment } from './meterMap';
 import { PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { stepClock } from './rollTempo';
@@ -279,6 +279,24 @@ export const clipTimelineMarkers = (markers: readonly RollMarker[], at: ClipMark
   }
   return out;
 };
+
+/**
+ * A roll clip's own markers (`sourceMarkers`) as EDIT timeline markers, where
+ * the clip plays them: through its tempo map (its `sourceBpm`, else
+ * `fallbackBpm`), inside its window. A clip with no markers makes none.
+ */
+export const clipOwnTimelineMarkers = (
+  clip: Pick<AudioClip, 'id' | 'startSec' | 'offsetIntoSource' | 'durationSec' | 'sourceBpm' | 'sourceTempoMap' | 'sourceMarkers'>,
+  fallbackBpm: number,
+): TimelineMarker[] =>
+  clipTimelineMarkers(clip.sourceMarkers ?? [], {
+    clipId: clip.id,
+    startSec: clip.startSec,
+    offsetSec: clip.offsetIntoSource ?? 0,
+    durationSec: clip.durationSec,
+    bpm: clip.sourceBpm ?? fallbackBpm,
+    tempoMap: clip.sourceTempoMap,
+  });
 
 /** EDIT's markers with the clip's own replaced by `incoming`, sorted by time. Every other marker keeps its object. */
 export const withClipTimelineMarkers = (

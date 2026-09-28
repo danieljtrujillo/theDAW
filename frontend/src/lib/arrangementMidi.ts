@@ -58,6 +58,11 @@
  * itself in a `theDAW:tempomap=` text), and its time signatures are the
  * arrangement's meter map (`meterMap`, else its one time signature).
  *
+ * MARKERS: EDIT's timeline markers (a roll part's sections and movements, and
+ * the user's own) are written as FF 06 markers at their seconds, through the
+ * arrangement's tempo map, the ones inside a span alone when a span is
+ * exported.
+ *
  * RANGE: an export of a span of the timeline starts on the bar line at or
  * before the span's start, so the file's bars are the arrangement's bars, and
  * keeps the notes that start inside the span, each cut at its end. A clip that
@@ -67,7 +72,7 @@
  * run it; exportArrangementMidi (lib/arrangementMidiApp) reads the stores and
  * saves the file.
  */
-import type { AudioClip, EditorTrack } from '../state/editorStore';
+import type { AudioClip, EditorTrack, TimelineMarker } from '../state/editorStore';
 import { noteEndStep } from './clipNotes/units';
 import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type GlobalVoice } from './clipProgram';
 import { barAt, barStartStep, meterAtBar, meterMapToMidiEvents, normalizeMeterMap, roundUpToBar, type MeterSegment } from './meterMap';
@@ -91,6 +96,8 @@ export interface ArrangementMidiSource {
   tempoMap?: readonly TempoEvent[];
   /** The arrangement's time signatures by bar, when EDIT holds a meter map. */
   meterMap?: readonly MeterSegment[];
+  /** EDIT's timeline markers, each at its second; written as FF 06 markers. */
+  markers?: readonly TimelineMarker[];
 }
 
 /** Which clips an export takes. `all` follows the mix (mute and solo); the other two take what they name. */
@@ -445,12 +452,18 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
 
   const fileMap = sanitizeRollTempoMap(tempoMapFrom(map, startBeat), getTempoAtBeat(map, startBeat));
   const fileMeter = startBar ? meterMapFrom(meterMap, startBar.bar) : meterMap;
+  // The timeline's markers inside the export, each at its second's tick; a blank label writes none.
+  const markers = (source.markers ?? [])
+    .filter((m) => isNum(m.t) && m.t >= startSec - 1e-9 && m.label.trim() && (!range || (m.t >= range.startSec - 1e-9 && m.t < range.endSec - 1e-9)))
+    .map((m) => ({ tick: tickOf(m.t), text: m.label.trim() }))
+    .sort((a, b) => a.tick - b.tick);
   const file: MidiFileData = {
     ppq,
     bpm: fileMap[0]?.bpm ?? bpm,
     tempos: tempoMapToMidiTempos(fileMap, ppq),
     ...(hasTempoChanges(fileMap) ? { dawTempoMap: tempoMapText(fileMap) } : {}),
     timeSignatures: meterMapToMidiEvents(fileMeter, ppq, 0),
+    ...(markers.length ? { markers } : {}),
     tracks: out,
   };
   return {

@@ -63,6 +63,7 @@ import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
+import { clipOwnTimelineMarkers } from '../../lib/rollMarkers';
 import { MidiClipNotes } from './MidiClipNotes';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
@@ -5761,25 +5762,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // the voice its track shows. A percussion track's clip keeps no program
       // of its own: the picker's is an instrument, not a drum kit.
       const program = isPercussionTrack(existing) ? existing?.instrumentProgram : existing?.instrumentProgram ?? globalProgram;
-      const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
-      const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
-      const color = track?.color ?? '#a855f7';
-      // No audio of its own: with a program the clip plays live on EDIT's
-      // synths and renders when an export needs it; without one the render
-      // queue renders it now so it can be heard (lib/midiRender).
-      const clipId = addClipToTrack({
-        trackId,
-        label,
-        mimeType: 'audio/wav',
-        sourceDuration: nominalDuration,
-        offsetIntoSource: 0,
-        durationSec: nominalDuration,
-        startSec: Math.max(0, startSec),
-        color,
-        sourceKind: 'piano-roll',
-        ...fields,
-        instrumentProgram: program,
+      // The track, the clip and the file's markers on the timeline: one undo step.
+      const { trackId, clipId } = useEditorStore.getState().undoGroup(() => {
+        const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
+        const color = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
+        // No audio of its own: with a program the clip plays live on EDIT's
+        // synths and renders when an export needs it; without one the render
+        // queue renders it now so it can be heard (lib/midiRender).
+        const clipId = addClipToTrack({
+          trackId,
+          label,
+          mimeType: 'audio/wav',
+          sourceDuration: nominalDuration,
+          offsetIntoSource: 0,
+          durationSec: nominalDuration,
+          startSec: Math.max(0, startSec),
+          color,
+          sourceKind: 'piano-roll',
+          ...fields,
+          instrumentProgram: program,
+        });
+        // The file's markers (FF 06) on EDIT's timeline, where the clip plays them.
+        const placed = useEditorStore.getState().clips.find((c) => c.id === clipId);
+        if (placed?.sourceMarkers?.length) useEditorStore.getState().setClipRollMarkers(clipId, clipOwnTimelineMarkers(placed, bpm));
+        return { trackId, clipId };
       });
+      const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
       // A file whose tempo or meter differs from the arrangement's is offered
       // for adoption (the banner above the timeline), so an orchestral file's
       // tempo and meter changes can become the arrangement's with one press.

@@ -171,6 +171,8 @@ export function midiFileClipFields(data: MidiFileData, idPrefix = 'imp'): RollCl
     totalSteps: roundUpToBar(meterMap, Math.max(1, noteEnd), pickupSteps),
     bends: file.bends,
     tempoMap: file.tempoMap,
+    // The file's markers (FF 06) travel with the clip, so it reopens in the roll with them.
+    markers: file.markers,
   });
 }
 
