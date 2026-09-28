@@ -10,6 +10,9 @@
  * Time signatures are written only when given (the .mid export), and then at
  * the roll's tempo: notesToRollSmf puts the notes and the roll's meter on that
  * tempo's grid, where a roll step is PPQ / 4 ticks, so bar lines and notes agree.
+ * The .mid export also writes the roll's tempo as a `theDAW:tempomap=` text
+ * when FF 51 cannot hold it, as the roll's own export does, so the file
+ * reopens at the tempo it was made at.
  *
  * Pitch wheels are written only when given (a soundfont render of a roll with
  * bends): each wheel's range as RPN 0/0 at tick 0 and its messages at their
@@ -26,7 +29,8 @@
  * tick grid to begin with. `SMF_PPQ` is exported so a caller that DOES hold
  * model ticks can convert once, knowingly, instead of guessing the grid.
  */
-import { RANGE_LSB_SPESSA, bendRangeMessages, meterEventMetas, pitchWheelMessage } from './midi';
+import { RANGE_LSB_SPESSA, TEMPOMAP_TEXT, bendRangeMessages, meterEventMetas, pitchWheelMessage, tempoOfMicros } from './midi';
+import { tempoMapText } from './rollMidi';
 import { meterMapToMidiEvents, type MeterEvent, type MeterSegment } from './meterMap';
 import type { RenderNote } from './midiSynth';
 
@@ -75,7 +79,8 @@ export interface SmfWheel {
  * leading program change so the whole part plays on one GM instrument.
  * `signatures` sit on the grid of `bpm` (rollMeterToSmfEvents). A note with a
  * `channel` plays there, and `wheel` bends channels; every channel used gets
- * the same program.
+ * the same program. `texts` are FF 01 text events at tick 0, after the
+ * signatures' own metas.
  */
 export function notesToSmf(
   notes: RenderNote[],
@@ -84,6 +89,7 @@ export function notesToSmf(
   signatures: readonly MeterEvent[] = [],
   bpm = DEFAULT_BPM,
   wheel: readonly SmfWheel[] = [],
+  texts: readonly string[] = [],
 ): Uint8Array<ArrayBuffer> {
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
@@ -101,6 +107,12 @@ export function notesToSmf(
   for (const s of signatures) {
     const tick = Number.isFinite(s.tick) ? Math.max(0, Math.round(s.tick)) : 0;
     for (const data of meterEventMetas(s)) evs.push({ tick, order: -1, data });
+  }
+  for (const text of texts) {
+    const bytes = [...text].map((c) => c.charCodeAt(0) & 0x7f);
+    const data = [0xff, 0x01];
+    pushVlq(data, bytes.length);
+    evs.push({ tick: 0, order: -1, data: [...data, ...bytes] });
   }
   for (const w of wheel) {
     for (const data of bendRangeMessages(w.channel, w.range, RANGE_LSB_SPESSA)) evs.push({ tick: 0, order: 0.25, data });
@@ -158,5 +170,11 @@ export function notesToRollSmf(
   notes: RenderNote[],
   meter: { meterMap: readonly MeterSegment[]; pickupSteps: number; bpm: number },
 ): Uint8Array<ArrayBuffer> {
-  return notesToSmf(notes, 0, 0, rollMeterToSmfEvents(meter.meterMap, meter.pickupSteps), meter.bpm);
+  // FF 51 holds whole microseconds a quarter: 90 BPM (666667 us) reads back as
+  // 89.999955, so the typed tempo also rides in the roll's tempo map text
+  // (lib/rollMidi midiFileTempoMap reads it back exactly). The notes stay on the
+  // FF 51 grid (tempoGrid), which is the tempo every other reader plays.
+  const { usPerQuarter } = tempoGrid(meter.bpm);
+  const texts = tempoOfMicros(usPerQuarter) === meter.bpm ? [] : [`${TEMPOMAP_TEXT}${tempoMapText([{ beat: 0, bpm: meter.bpm }])}`];
+  return notesToSmf(notes, 0, 0, rollMeterToSmfEvents(meter.meterMap, meter.pickupSteps), meter.bpm, [], texts);
 }

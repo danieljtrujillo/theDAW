@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { parseMidi } from './midi.ts';
 import { SMF_PPQ, notesToRollSmf, notesToSmf, rollMeterToSmfEvents } from './midiWrite.ts';
-import { midiFileToRoll } from './rollMidi.ts';
+import { midiFileTempoMap, midiFileToRoll } from './rollMidi.ts';
 import { PPQ, migrateNotes, noteTick, noteTicks, type PianoNote } from '../state/pianoRollStore.ts';
 
 const BPM = 120;
@@ -86,6 +86,19 @@ const SEC_PER_TICK = 60 / BPM / PPQ;
   ));
   assert.equal(parsed.ppq, SMF_PPQ);
   assert.deepEqual(parsed.timeSignatures?.map((s) => [s.tick, s.num, s.den]), [[0, 7, 8]]);
+}
+
+// The .mid export reopens at the roll's tempo: 90 BPM (666667 us, 89.999955
+// from FF 51 alone) and 97.3 carry the roll's tempo map text and read back as
+// typed; 120 BPM (500000 us) needs no text. A 7/8 still lands on its tick.
+for (const bpm of [90, 97.3, 120]) {
+  const file = parseMidi(notesToRollSmf(
+    [{ midi: 60, startSec: 0, durationSec: 0.5, velocity: 100 }],
+    { meterMap: [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }], pickupSteps: 0, bpm },
+  ));
+  assert.deepEqual(midiFileTempoMap(file).map((e) => [e.beat, e.bpm]), [[0, bpm]], `${bpm} BPM reopens as ${bpm}`);
+  assert.equal(file.dawTempoMap === undefined, bpm === 120, `${bpm} BPM ${bpm === 120 ? 'needs no' : 'writes the'} tempo text`);
+  assert.deepEqual(file.timeSignatures?.map((s) => [s.tick, s.num, s.den, (s.groups ?? []).join('+')]), [[0, 7, 8, '3+2+2']]);
 }
 
 console.log('midiWrite: ok');
