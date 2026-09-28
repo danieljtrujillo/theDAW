@@ -145,6 +145,9 @@ def perform_musicxml(
         raise PerformError(f"{Path(source).name} has no notes to perform")
 
     lookup = _note_lookup(parts)
+    onset_of = {
+        str(i): round(float(q), 6) for i, q in zip(notes["id"], notes["onset_quarter"])
+    }
     plan = _plan(parts, notes, qpm)
     base_qpm = plan.tempi[0][1]
 
@@ -196,7 +199,7 @@ def perform_musicxml(
     events: list[tuple[int, float, float, int, int]] = []  # part, on, off, pitch, vel
     for pnote in performed.notes:
         part_index, _note = lookup[str(pnote["id"])]
-        onset_q = round(float(_onset_quarter(notes, str(pnote["id"]))), 6)
+        onset_q = onset_of[str(pnote["id"])]
         on = float(pnote["note_on"]) + lead
         off = float(pnote["note_off"]) + lead
         played_at.setdefault(onset_q, on)
@@ -237,10 +240,6 @@ def _note_lookup(parts: list[Any]) -> dict[str, tuple[int, Any]]:
             key = f"P{index:02d}_{note.id}" if len(parts) > 1 else str(note.id)
             lookup[key] = (index, note)
     return lookup
-
-
-def _onset_quarter(notes: Any, note_id: str) -> float:
-    return float(notes["onset_quarter"][notes["id"] == note_id][0])
 
 
 def _plan(parts: list[Any], notes: Any, qpm: Optional[float]) -> _Plan:

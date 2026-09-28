@@ -83,15 +83,19 @@ LEVEL_FLOORS: tuple[tuple[float, str], ...] = (
     (119.5, "fff"),
 )
 
+# Onset velocities are smoothed by a running median over this many onsets
+# before any level or hairpin is read from them, so one loud or soft note
+# (an accent, a transcription glitch) moves nothing.
+DYNAMIC_SMOOTH_ONSETS = 5
 # How far (in velocity) an onset must leave the current level's band before a
 # new level is considered.
 DYNAMIC_HYSTERESIS = 4.0
 # How many onsets in a row must sit outside the band before the new level is
-# marked. A single loud note is an accent, not a new level.
-DYNAMIC_MIN_RUN = 2
+# marked.
+DYNAMIC_MIN_RUN = 3
 
 # A hairpin needs this many onsets ...
-RAMP_MIN_ONSETS = 4
+RAMP_MIN_ONSETS = 6
 # ... climbing (or falling) by at least this much velocity overall ...
 RAMP_MIN_SPAN = 16.0
 # ... with no step going the other way by more than this.
@@ -230,13 +234,15 @@ def add_expression(score: Any, *, raw: Any = None) -> dict[str, int]:
 
     ``score`` is the music21 score about to be written (flat parts, as
     :func:`.midi_read.read_midi` and ``quantize`` leave them, or measured).
-    ``raw`` is the same MIDI before quantization, part for part; its note
-    times give each note's sounding length and overlaps, which quantization
-    rounds away. Without it the notated times are used.
+    ``raw`` is how the same MIDI was played, part for part: a list with one
+    list of ``(onset, end, pitch)`` (quarters, MIDI pitch) per part, as
+    :func:`raw_for` reads it. Its note times give each note's sounding length
+    and overlaps, which quantization rounds away. Without it, or when its part
+    count differs from the score's, the notated times are used.
     """
     counts = ExpressionCounts()
     parts = list(getattr(score, "parts", []) or [])
-    raw_parts = list(getattr(raw, "parts", []) or []) if raw is not None else []
+    raw_parts: list[Any] = list(raw) if isinstance(raw, list) else []
     if len(raw_parts) != len(parts):
         raw_parts = []
     for index, part in enumerate(parts):
@@ -245,12 +251,13 @@ def add_expression(score: Any, *, raw: Any = None) -> dict[str, int]:
         events = _events(part, raw_parts[index] if raw_parts else None)
         if not events:
             continue
+        placer = _Placer(part)
         slurred: set[int] = set()
         if not _has(part, "Slur"):
-            slurred = _add_slurs(part, events, counts)
+            slurred = _add_slurs(placer, events, counts)
         _add_articulations(part, events, slurred, counts)
         if not _has(part, "Dynamic") and not _has(part, "DynamicWedge"):
-            _add_dynamics(part, events, counts)
+            _add_dynamics(placer, events, counts)
     return counts.as_dict()
 
 
@@ -283,25 +290,22 @@ def _velocity(element: Any) -> Optional[float]:
     return None
 
 
-def _pitch_key(element: Any) -> tuple[float, ...]:
-    return tuple(sorted(float(p.ps) for p in element.pitches))
-
-
-def _events(part: Any, raw_part: Any) -> list[_Event]:
+def _events(
+    part: Any, raw_part: Optional[list[tuple[float, float, int]]]
+) -> list[_Event]:
+    """The part's notes and chords in onset order, each with the times it was
+    played at: every pitch of it matched to the nearest unused played note of
+    that pitch within :data:`MATCH_WINDOW_QL`."""
     from music21 import chord
 
     flat = part.flatten()
-    raw_notes: list[tuple[float, float, tuple[float, ...]]] = []
-    if raw_part is not None:
-        raw_flat = raw_part.flatten()
-        for el in raw_flat.notes:
-            onset = float(el.getOffsetBySite(raw_flat))
-            raw_notes.append(
-                (onset, onset + float(el.duration.quarterLength), _pitch_key(el))
-            )
-        raw_notes.sort()
-    used: set[int] = set()
-    raw_onsets = [n[0] for n in raw_notes]
+    by_pitch: dict[int, list[tuple[float, float]]] = {}
+    for onset, end, pitch in raw_part or []:
+        by_pitch.setdefault(int(pitch), []).append((float(onset), float(end)))
+    for played in by_pitch.values():
+        played.sort()
+    onsets_of = {pitch: [n[0] for n in played] for pitch, played in by_pitch.items()}
+    used: set[tuple[int, int]] = set()
 
     events: list[_Event] = []
     for el in flat.notes:
@@ -309,28 +313,29 @@ def _events(part: Any, raw_part: Any) -> list[_Event]:
             continue
         onset = float(el.getOffsetBySite(flat))
         end = onset + float(el.duration.quarterLength)
-        raw_onset, raw_end = onset, end
-        if raw_notes:
-            key = _pitch_key(el)
-            lo = bisect.bisect_left(raw_onsets, onset - MATCH_WINDOW_QL)
-            hi = bisect.bisect_right(raw_onsets, onset + MATCH_WINDOW_QL)
-            best = None
-            for i in range(lo, hi):
-                if i in used or raw_notes[i][2] != key:
-                    continue
-                if best is None or abs(raw_notes[i][0] - onset) < abs(
-                    raw_notes[best][0] - onset
-                ):
-                    best = i
+        matched: list[tuple[float, float]] = []
+        for p in el.pitches:
+            pitch = int(round(p.ps))
+            played = by_pitch.get(pitch)
+            if not played:
+                continue
+            starts = onsets_of[pitch]
+            lo = bisect.bisect_left(starts, onset - MATCH_WINDOW_QL)
+            hi = bisect.bisect_right(starts, onset + MATCH_WINDOW_QL)
+            best = min(
+                (i for i in range(lo, hi) if (pitch, i) not in used),
+                key=lambda i: abs(starts[i] - onset),
+                default=None,
+            )
             if best is not None:
-                used.add(best)
-                raw_onset, raw_end = raw_notes[best][0], raw_notes[best][1]
+                used.add((pitch, best))
+                matched.append(played[best])
         events.append(
             _Event(
                 element=el,
                 onset=onset,
-                raw_onset=raw_onset,
-                raw_end=raw_end,
+                raw_onset=min((m[0] for m in matched), default=onset),
+                raw_end=max((m[1] for m in matched), default=end),
                 velocity=_velocity(el),
                 single=not isinstance(el, chord.ChordBase),
             )
@@ -350,27 +355,32 @@ def _groups(events: list[_Event]) -> list[list[_Event]]:
     return groups
 
 
-def _insert_at(part: Any, offset: float, obj: Any) -> None:
-    """Insert ``obj`` at ``offset`` of ``part``: into the part itself when it
-    is flat, into the measure holding ``offset`` when it has measures."""
-    from music21 import stream
+class _Placer:
+    """Puts marks into a part: at an offset of the part itself when it is
+    flat, into the measure holding the offset when it has measures. Inserted
+    unsorted (``ignoreSort``) with the measures looked up once: sorting the
+    part again after every mark made a long transcription take minutes."""
 
-    measures = list(part.getElementsByClass(stream.Measure))
-    if not measures:
-        part.insert(offset, obj)
-        return
-    for measure in measures:
-        start = float(measure.getOffsetBySite(part))
-        length = float(measure.duration.quarterLength)
-        if start - _EPS <= offset < start + length - _EPS:
-            measure.insert(offset - start, obj)
+    def __init__(self, part: Any) -> None:
+        from music21 import stream
+
+        self.part = part
+        self.measures = [
+            (float(m.getOffsetBySite(part)), m)
+            for m in part.getElementsByClass(stream.Measure)
+        ]
+        self.starts = [start for start, _m in self.measures]
+
+    def mark(self, offset: float, obj: Any) -> None:
+        if not self.measures:
+            self.part.insert(offset, obj, ignoreSort=True)
             return
-    last = measures[-1]
-    last.insert(max(0.0, offset - float(last.getOffsetBySite(part))), obj)
+        i = max(0, bisect.bisect_right(self.starts, offset + _EPS) - 1)
+        start, measure = self.measures[i]
+        measure.insert(max(0.0, offset - start), obj, ignoreSort=True)
 
-
-def _add_spanner(part: Any, spanner_obj: Any) -> None:
-    part.insert(0, spanner_obj)
+    def spanner(self, spanner_obj: Any) -> None:
+        self.part.insert(0, spanner_obj, ignoreSort=True)
 
 
 # -- dynamics ----------------------------------------------------------------
@@ -405,20 +415,34 @@ def _ramps(velocities: list[float]) -> dict[int, tuple[int, int]]:
     return ramps
 
 
-def _add_dynamics(part: Any, events: list[_Event], counts: ExpressionCounts) -> None:
+def _smoothed(values: list[float]) -> list[float]:
+    """A centred running median over :data:`DYNAMIC_SMOOTH_ONSETS` values
+    (shorter at the ends)."""
+    half = DYNAMIC_SMOOTH_ONSETS // 2
+    return [
+        float(statistics.median(values[max(0, i - half) : i + half + 1]))
+        for i in range(len(values))
+    ]
+
+
+def _add_dynamics(
+    placer: _Placer, events: list[_Event], counts: ExpressionCounts
+) -> None:
     from music21 import dynamics
 
     groups = [g for g in _groups(events) if any(ev.velocity is not None for ev in g)]
     if not groups:
         return
-    velocities = [
-        statistics.fmean(ev.velocity for ev in g if ev.velocity is not None)
-        for g in groups
-    ]
+    velocities = _smoothed(
+        [
+            statistics.fmean(ev.velocity for ev in g if ev.velocity is not None)
+            for g in groups
+        ]
+    )
     ramps = _ramps(velocities)
 
     def mark(index: int, level: str) -> None:
-        _insert_at(part, groups[index][0].onset, dynamics.Dynamic(level))
+        placer.mark(groups[index][0].onset, dynamics.Dynamic(level))
         counts.dynamics += 1
 
     current: Optional[str] = None
@@ -433,7 +457,7 @@ def _add_dynamics(part: Any, events: list[_Event], counts: ExpressionCounts) -> 
                 mark(i, start_level)
             wedge = dynamics.Crescendo() if direction > 0 else dynamics.Diminuendo()
             wedge.addSpannedElements([groups[k][0].element for k in range(i, j + 1)])
-            _add_spanner(part, wedge)
+            placer.spanner(wedge)
             counts.hairpins += 1
             if end_level != start_level:
                 mark(j, end_level)
@@ -462,17 +486,27 @@ def _add_dynamics(part: Any, events: list[_Event], counts: ExpressionCounts) -> 
 # -- articulation --------------------------------------------------------------
 
 
-def _strong_beat(part: Any, offset: float) -> bool:
+def _time_signatures(part: Any) -> list[tuple[float, Any]]:
+    """The part's time signatures at their offsets, in order; 4/4 at 0 when
+    it has none there."""
     from music21 import meter
 
     flat = part.flatten()
-    signatures = [
-        (float(ts.getOffsetBySite(flat)), ts)
-        for ts in flat.getElementsByClass(meter.TimeSignature)
-    ]
-    ts = meter.TimeSignature("4/4")
-    ts_at = 0.0
-    for at, sig in sorted(signatures, key=lambda s: s[0]):
+    signatures = sorted(
+        (
+            (float(ts.getOffsetBySite(flat)), ts)
+            for ts in flat.getElementsByClass(meter.TimeSignature)
+        ),
+        key=lambda s: s[0],
+    )
+    if not signatures or signatures[0][0] > _EPS:
+        signatures.insert(0, (0.0, meter.TimeSignature("4/4")))
+    return signatures
+
+
+def _strong_beat(signatures: list[tuple[float, Any]], offset: float) -> bool:
+    ts_at, ts = signatures[0]
+    for at, sig in signatures:
         if at <= offset + _EPS:
             ts, ts_at = sig, at
     bar = float(ts.barDuration.quarterLength) or 4.0
@@ -490,7 +524,9 @@ def _add_articulations(
     from music21 import articulations
 
     groups = _groups(events)
-    # (group index, ratio, raw slot, notated slot)
+    notated_before = _latest_end_before(groups, notated=True)
+    signatures: Optional[list[tuple[float, Any]]] = None
+    # (group index, ratio, notated slot)
     judged: list[tuple[int, float, float]] = []
     for gi in range(len(groups) - 1):
         group, following = groups[gi], groups[gi + 1]
@@ -514,18 +550,21 @@ def _add_articulations(
                 if not _has_articulation(ev.element, "Staccato"):
                     ev.element.articulations.append(articulations.Staccato())
                     counts.staccato += 1
+                # Filled only where nothing else sounds: one note in its
+                # onset, nothing held over it, and the slot ends at the next
+                # onset.
                 if (
                     len(group) == 1
                     and notated_slot <= STACCATO_FILL_MAX_QL + _EPS
                     and notated_slot > ev.element.duration.quarterLength
-                    and _alone(events, ev, ev.onset + notated_slot)
+                    and notated_before[gi] <= ev.onset + _EPS
                 ):
                     ev.element.duration.quarterLength = notated_slot
-        elif (
-            ratio >= TENUTO_MIN_RATIO
-            and median_ratio < TENUTO_CONTEXT_MAX_RATIO
-            and _strong_beat(part, group[0].onset)
-        ):
+        elif ratio >= TENUTO_MIN_RATIO and median_ratio < TENUTO_CONTEXT_MAX_RATIO:
+            if signatures is None:
+                signatures = _time_signatures(part)
+            if not _strong_beat(signatures, group[0].onset):
+                continue
             for ev in group:
                 if not _has_articulation(ev.element, "Tenuto"):
                     ev.element.articulations.append(articulations.Tenuto())
@@ -536,34 +575,37 @@ def _has_articulation(element: Any, name: str) -> bool:
     return any(type(a).__name__ == name for a in element.articulations)
 
 
-def _alone(events: list[_Event], ev: _Event, until: float) -> bool:
-    """No other notated note sounds between ``ev``'s onset and ``until``."""
-    for other in events:
-        if other is ev:
-            continue
-        other_end = other.onset + float(other.element.duration.quarterLength)
-        if other.onset < until - _EPS and other_end > ev.onset + _EPS:
-            return False
-    return True
+def _latest_end_before(groups: list[list[_Event]], *, notated: bool) -> list[float]:
+    """For each onset group, the latest end of any note in the groups before
+    it (notated or played times): a note still sounding from further back
+    means the line is not one voice there."""
+    out: list[float] = []
+    latest = float("-inf")
+    for group in groups:
+        out.append(latest)
+        for ev in group:
+            end = (
+                ev.onset + float(ev.element.duration.quarterLength)
+                if notated
+                else ev.raw_end
+            )
+            latest = max(latest, end)
+    return out
 
 
 # -- slurs ---------------------------------------------------------------------
 
 
-def _add_slurs(part: Any, events: list[_Event], counts: ExpressionCounts) -> set[int]:
+def _add_slurs(
+    placer: _Placer, events: list[_Event], counts: ExpressionCounts
+) -> set[int]:
     """Slur each run of legato-overlapping single notes; returns the ids of
     the elements under a slur."""
     from music21 import spanner
 
     groups = _groups(events)
     line = [g[0] if len(g) == 1 and g[0].single else None for g in groups]
-    # The latest end of every note before each group: a note still sounding
-    # from further back means the line is not one voice there.
-    before_end: list[float] = []
-    latest = float("-inf")
-    for g in groups:
-        before_end.append(latest)
-        latest = max([latest, *(ev.raw_end for ev in g)])
+    before_end = _latest_end_before(groups, notated=False)
 
     def legato(k: int) -> bool:
         a, b = line[k], line[k + 1]
@@ -587,7 +629,7 @@ def _add_slurs(part: Any, events: list[_Event], counts: ExpressionCounts) -> set
             k += 1
         run = [line[i] for i in range(start, k + 1)]
         notes = [ev.element for ev in run if ev is not None]
-        _add_spanner(part, spanner.Slur(notes))
+        placer.spanner(spanner.Slur(notes))
         counts.slurs += 1
         for ev, nxt in zip(run, run[1:]):
             assert ev is not None and nxt is not None
@@ -601,30 +643,45 @@ def _add_slurs(part: Any, events: list[_Event], counts: ExpressionCounts) -> set
     return slurred
 
 
-def raw_for(source_path: Any) -> Any:
-    """The MIDI at ``source_path`` with the times it was played at, for
+def raw_for(source_path: Any) -> Optional[list[list[tuple[float, float, int]]]]:
+    """The notes of the MIDI at ``source_path`` at the times they were played,
+    one ``(onset, end, pitch)`` list per track that has notes (quarters), for
     :func:`add_expression`'s ``raw``; None when it cannot be read.
 
     music21's MIDI reader rounds every onset and length to the notation grid
-    by default (``quantizePost``), so a note held for 0.4 of a beat reads as
-    0.5 and its staccato is gone before anything looks at it. This read turns
-    that off and lays the parts out the way :func:`.midi_read.read_midi` does,
-    so its parts line up with the sheet's one for one.
+    (``quantizePost``), so a note held for 0.4 of a beat reads as 0.5 and its
+    staccato is gone before anything looks at it. This reads the file with
+    mido, which rounds nothing. music21 makes one part of each track with
+    notes, in file order, so the lists line up with the sheet's parts; when a
+    file's parts come out differently :func:`add_expression` ignores them.
     """
-    from music21 import converter, stream
-
-    from .midi_read import _flat_part
+    import mido
 
     try:
-        parsed = converter.parse(str(source_path), forceSource=True, quantizePost=False)
-        raw = stream.Score()
-        parts = list(parsed.parts) if isinstance(parsed, stream.Score) else [parsed]
-        for part in parts:
-            raw.insert(0, _flat_part(part))
-        return raw
+        midi = mido.MidiFile(str(source_path))
     except Exception as exc:  # expression is best-effort
         log.debug("expression: could not re-read %s: %s", source_path, exc)
         return None
+    per_quarter = float(midi.ticks_per_beat or 480)
+    parts: list[list[tuple[float, float, int]]] = []
+    for track in midi.tracks:
+        now = 0
+        sounding: dict[tuple[int, int], list[int]] = {}
+        notes: list[tuple[float, float, int]] = []
+        for message in track:
+            now += message.time
+            if message.type == "note_on" and message.velocity > 0:
+                sounding.setdefault((message.channel, message.note), []).append(now)
+            elif message.type in ("note_on", "note_off"):
+                started = sounding.get((message.channel, message.note))
+                if started:
+                    start = started.pop(0)
+                    notes.append(
+                        (start / per_quarter, now / per_quarter, int(message.note))
+                    )
+        if notes:
+            parts.append(sorted(notes))
+    return parts
 
 
 def apply_to_export(score: Any, source_path: Any) -> None:
