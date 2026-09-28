@@ -118,15 +118,34 @@ def test_a_second_download_keeps_its_listing_and_offset(client, tmp_path, monkey
     assert second[0]["offset"] == first[0]["offset"]
 
 
-def test_removing_a_downloaded_bank_leaves_it_installed(client, tmp_path, monkeypatch):
+def test_removing_a_downloaded_bank_deletes_it_from_disk(client, tmp_path, monkeypatch):
     _serve_orchestra(tmp_path, monkeypatch)
     _download(client)
     bank = client.get("/api/soundfonts").json()["banks"][0]
     assert client.delete(f"/api/soundfonts/{bank['id']}").status_code == 200
+    assert not Path(bank["path"]).exists(), "the downloaded file is deleted"
+    # The next read does not list it again, and the catalog offers the download again.
     assert client.get("/api/soundfonts").json()["banks"] == []
-    assert Path(bank["path"]).is_file()
+    listed = client.get("/api/models/soundbanks").json()["banks"]
+    assert next(b for b in listed if b["id"] == "thedaw-orchestra")["installed"] == []
     # A new download lists it again.
     _download(client)
+    assert len(client.get("/api/soundfonts").json()["banks"]) == 1
+
+
+def test_a_bank_downloaded_before_the_registry_listed_downloads_is_listed(
+    client, tmp_path, monkeypatch
+):
+    _serve_orchestra(tmp_path, monkeypatch)
+    # A download made while the hook was not there (an earlier build).
+    monkeypatch.setattr(soundbanks, "_HOOKS", [])
+    _download(client)
+    assert store.list_banks() == []
+    banks = client.get("/api/soundfonts").json()["banks"]
+    assert [b["download_id"] for b in banks] == ["thedaw-orchestra"]
+    assert banks[0]["offset"] == store.USER_OFFSET_FIRST
+    # Listed once: a second read adds nothing.
+    assert store.sync_downloaded() == 0
     assert len(client.get("/api/soundfonts").json()["banks"]) == 1
 
 

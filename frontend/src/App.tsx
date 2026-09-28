@@ -30,6 +30,7 @@ import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
 import { useModuleStore } from './state/moduleStore';
 import { useDownloadStore } from './state/downloadStore';
+import { useSoundBankStore } from './state/soundBankStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
 import { startHeldNote, stopHeldNote, type HeldNote } from './lib/pianoTrigger';
 import { createKeyboardMonitor, monitorVoice } from './lib/keyboardMonitor';
@@ -125,6 +126,10 @@ export default function App() {
   useEffect(() => {
     if (!isBackendReady) return;
     void rehydrateDownloads();
+    // The sound bank list, once the backend answers: a bank downloaded in an
+    // earlier session is listed (the backend lists what the download manager
+    // installed) and its playback gains are registered before anything plays.
+    void useSoundBankStore.getState().refresh();
   }, [isBackendReady, rehydrateDownloads]);
 
   // Health polling lives here so it runs during the boot screen.

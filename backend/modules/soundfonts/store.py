@@ -40,6 +40,7 @@ __all__ = [
     "add_bank",
     "add_downloaded_bank",
     "on_bank_downloaded",
+    "sync_downloaded",
     "allocate_offset",
     "bank_file",
     "list_banks",
@@ -286,16 +287,39 @@ def on_bank_downloaded(path: Path, entry: Any) -> None:
     add_downloaded_bank(path, entry.id, getattr(entry, "label", ""))
 
 
+def sync_downloaded() -> int:
+    """List every bank file the download manager has installed that the list
+    does not hold yet (backend/modules/modeldl soundbanks): a bank downloaded
+    before this registry listed downloads, or while it was not running.
+    Returns how many were added. A file that is not a readable bank is logged
+    and skipped."""
+    from backend.modules.modeldl import soundbanks
+
+    listed = {str(b.get("id")) for b in _load()}
+    added = 0
+    for entry in soundbanks.CATALOG:
+        for path in soundbanks.installed_files(entry):
+            if _downloaded_id(entry.id, path) in listed:
+                continue
+            try:
+                add_downloaded_bank(path, entry.id, entry.label)
+                added += 1
+            except BankStoreError as e:
+                log.warning("soundfonts: downloaded %s is not listed: %s", path, e)
+    return added
+
+
 def remove_bank(bank_id: str) -> bool:
-    """Take a bank off the list and delete its stored file. A downloaded bank
-    (``download_id``) only leaves the list: its file belongs to the download
-    folder. False when no bank has that id."""
+    """Take a bank off the list and delete its file: the stored copy of a
+    bank the user added, or the installed file of a downloaded bank
+    (``download_id``), which the Banks dialog confirms first and which can be
+    downloaded again from Settings. False when no bank has that id."""
     with _LOCK:
         banks = _load()
         keep = [b for b in banks if b.get("id") != bank_id]
         if len(keep) == len(banks):
             return False
-        gone = [b for b in banks if b.get("id") == bank_id and not b.get("download_id")]
+        gone = [b for b in banks if b.get("id") == bank_id]
         _save(keep)
     for b in gone:
         f = _root() / str(b.get("file", ""))

@@ -6,6 +6,11 @@
  * instrument picker at once. Bank files the app has seen before (a pick, a
  * download) are offered again from the paths it remembered.
  *
+ * Remove deletes the bank's file: the copy stored when the user added it (the
+ * file they picked stays where it was), or, for a bank the download manager
+ * installed, the downloaded file itself. That one asks first, and says it can
+ * be downloaded again from Settings, Sound banks.
+ *
  * `SoundBanksButton` opens it: a button beside an instrument picker.
  */
 import React, { useEffect, useId, useRef, useState } from 'react';
@@ -28,6 +33,8 @@ export const SoundBanksDialog: React.FC<{ onClose: () => void }> = ({ onClose })
   const error = useSoundBankStore((s) => s.error);
   const fileRef = useRef<HTMLInputElement>(null);
   const [recent, setRecent] = useState<PlaceItem[]>([]);
+  // The downloaded bank whose Delete is waiting for a confirm.
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   useEffect(() => {
     void useSoundBankStore.getState().refresh();
@@ -87,20 +94,61 @@ export const SoundBanksDialog: React.FC<{ onClose: () => void }> = ({ onClose })
               <div className="flex-1 min-w-0 flex flex-col">
                 <span className="text-xs font-bold text-zinc-100 truncate" title={b.path}>{b.name}</span>
                 <span className="text-xs font-bold text-zinc-400 truncate" title={b.sourcePath ?? b.path}>
-                  {`${b.format.toUpperCase()} · ${b.presets.length} presets · bank select ${b.offset}${b.span > 1 ? `-${b.offset + b.span - 1}` : ''}${b.size !== undefined ? ` · ${sizeText(b.size)}` : ''}`}
+                  {`${b.downloadId ? 'Downloaded · ' : ''}${b.format.toUpperCase()} · ${b.presets.length} presets · bank select ${b.offset}${b.span > 1 ? `-${b.offset + b.span - 1}` : ''}${b.size !== undefined ? ` · ${sizeText(b.size)}` : ''}`}
                 </span>
               </div>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void useSoundBankStore.getState().remove(b.id)}
-                aria-label={`Remove sound bank ${b.name}`}
-                title="Remove this bank: parts that play its presets fall back to the bundled bank"
-                className={`${btn} flex items-center gap-1 border-red-500/30 text-red-300 hover:bg-red-500/10`}
-              >
-                <Trash2 aria-hidden="true" className="size-3" />
-                Remove
-              </button>
+              {b.downloadId ? (
+                confirming === b.id ? (
+                  <div role="group" aria-label={`Delete ${b.name} from disk?`} className="flex shrink-0 items-center gap-1.5">
+                    <span className="text-xs font-bold text-red-200">Delete from disk?</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      autoFocus
+                      onClick={() => {
+                        setConfirming(null);
+                        void useSoundBankStore.getState().remove(b.id);
+                      }}
+                      aria-label={`Delete ${b.name} from disk`}
+                      className={`${btn} border-red-500/50 bg-red-500/15 text-red-200 hover:bg-red-500/25`}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirming(null)}
+                      aria-label={`Keep ${b.name}`}
+                      className={`${btn} border-white/10 text-zinc-200 hover:bg-white/10`}
+                    >
+                      Keep
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirming(b.id)}
+                    aria-label={`Delete downloaded sound bank ${b.name}`}
+                    title="Delete the downloaded file from disk; download it again from Settings, Sound banks. Parts that play its presets fall back to the bundled bank"
+                    className={`${btn} flex items-center gap-1 border-red-500/30 text-red-300 hover:bg-red-500/10`}
+                  >
+                    <Trash2 aria-hidden="true" className="size-3" />
+                    Delete
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void useSoundBankStore.getState().remove(b.id)}
+                  aria-label={`Remove sound bank ${b.name}`}
+                  title="Remove this bank and its stored copy; the file you added it from stays. Parts that play its presets fall back to the bundled bank"
+                  className={`${btn} flex items-center gap-1 border-red-500/30 text-red-300 hover:bg-red-500/10`}
+                >
+                  <Trash2 aria-hidden="true" className="size-3" />
+                  Remove
+                </button>
+              )}
             </li>
           ))}
           {users.length === 0 && <li className="text-xs font-bold text-zinc-500">No sound banks of your own yet.</li>}

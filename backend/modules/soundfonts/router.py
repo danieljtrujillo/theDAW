@@ -1,10 +1,12 @@
 """HTTP API for the user's sound banks (store.py).
 
     GET    /api/soundfonts             every stored bank, its presets and offset
+                                       (downloaded banks not listed yet are added first)
     POST   /api/soundfonts/upload      add a bank from an uploaded .sf2/.sf3/.dls
     POST   /api/soundfonts/add-path    add a bank from a file on this machine
     GET    /api/soundfonts/{id}/file   a stored bank's bytes, for the synths
-    DELETE /api/soundfonts/{id}        remove a bank and its stored file
+    DELETE /api/soundfonts/{id}        remove a bank and delete its file (a downloaded
+                                       bank's installed file too)
 
 Every route answers this machine's own UI, the desktop shell and a paired
 device, and refuses a call a browser labels as coming from another site.
@@ -54,6 +56,9 @@ def _shown(entry: dict[str, Any], request: Request) -> dict[str, Any]:
 
 @router.get("")
 def get_banks(request: Request) -> dict[str, Any]:
+    # A bank the download manager installed before this list held downloads
+    # is listed on the first read, with no download again.
+    store.sync_downloaded()
     return {
         "banks": [_shown(b, request) for b in store.list_banks()],
         "offset_range": [store.USER_OFFSET_FIRST, store.USER_OFFSET_LAST],

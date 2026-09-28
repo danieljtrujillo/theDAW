@@ -209,7 +209,12 @@ export const useSoundBankStore = create<SoundBankState>((set, get) => ({
       const banks = withUsers(get().banks, userBanks(get().banks).filter((b) => b.id !== id));
       writeCache(banks);
       set({ banks });
-      logInfo('midi', `Sound bank "${gone?.name ?? id}" removed`);
+      logInfo(
+        'midi',
+        gone?.downloadId
+          ? `Sound bank "${gone.name}" deleted from disk; download it again from Settings, Sound banks`
+          : `Sound bank "${gone?.name ?? id}" removed`,
+      );
       return true;
     } catch (e) {
       const msg = `Sound bank was not removed: ${describe(e)}`;
