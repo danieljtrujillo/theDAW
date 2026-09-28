@@ -100,6 +100,27 @@ for (const withZone of [true, false]) {
   assert.equal(back.tracks[0].notes[0].expr, undefined);
 }
 
+// ── three instruments a channel each, each with a brightness, are three parts ──
+{
+  const line = (ch: number, base: number) => [0, 480, 960, 1440].map((t, i) => ({ tick: t, note: base + i, velocity: 90, durationTicks: 480, channel: ch }));
+  const trio: MidiFileData = {
+    ppq: 480,
+    bpm: 120,
+    tracks: [
+      {
+        name: 'Trio',
+        notes: [...line(0, 72), ...line(1, 67), ...line(2, 60)].sort((a, b) => a.tick - b.tick),
+        programs: [{ tick: 0, channel: 0, program: 73 }, { tick: 0, channel: 1, program: 68 }, { tick: 0, channel: 2, program: 71 }],
+        controls: [0, 1, 2].map((ch) => ({ tick: 0, channel: ch, controller: 74, value: 70 })),
+      },
+    ],
+  } as MidiFileData;
+  const back = parseMidi(encodeMidi(trio));
+  assert.deepEqual([...new Set(back.tracks[0].notes.map((n) => n.channel))].sort(), [0, 1, 2], 'each line keeps its channel');
+  assert.ok(back.tracks[0].notes.every((n) => n.expr === undefined), 'no note is taken for an MPE note');
+  assert.equal(midiFileToRollParts(back).parts.length, 3, 'flute, oboe and clarinet');
+}
+
 // ── a dense file reads in linear time ─────────────────────────────────────
 {
   // 40 000 notes on one channel took 5.5 s when each note copied its channel's list.

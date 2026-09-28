@@ -89,7 +89,14 @@ function findZone(tracks: readonly MidiTrack[]): { members: Set<number>; manager
   // No configuration: a track playing three or more neighbouring channels, one note at a time on each, each shaped per channel.
   const pressedChannels = new Set<number>();
   const bentChannels = new Set<number>();
+  // The programs each channel is given: an MPE controller gives all its members one patch, or none.
+  const programsOf = new Map<number, Set<number>>();
   for (const x of tracks) {
+    for (const p of x.programs ?? []) {
+      const set = programsOf.get(p.channel);
+      if (set) set.add(p.program);
+      else programsOf.set(p.channel, new Set([p.program]));
+    }
     for (const p of x.pressures ?? []) pressedChannels.add(p.channel);
     for (const c of x.controls ?? []) if (c.controller === 74) pressedChannels.add(c.channel);
     for (const b of x.bends ?? []) bentChannels.add(b.channel);
@@ -107,11 +114,13 @@ function findZone(tracks: readonly MidiTrack[]): { members: Set<number>; manager
     const shaped = (ch: number) => pressed(ch) || bentChannels.has(ch);
     const mono = (ns: MidiNote[]) => maxOverlap(ns.map((n) => ({ start: n.tick, end: n.tick + n.durationTicks }))) <= 1;
     const cands = [...byCh.keys()].filter((ch) => mono(byCh.get(ch)!) && shaped(ch)).sort((a, b) => a - b);
-    // The longest run of neighbouring channels.
+    // The longest run of neighbouring channels on one patch: three instruments a channel each (a flute, an
+    // oboe and a clarinet, each with its own brightness) are three parts, not one MPE voice.
+    const patch = (ch: number) => [...(programsOf.get(ch) ?? [])].sort((a, b) => a - b).join(',');
     let best: number[] = [];
     let run: number[] = [];
     for (const ch of cands) {
-      run = run.length && ch === run[run.length - 1] + 1 ? [...run, ch] : [ch];
+      run = run.length && ch === run[run.length - 1] + 1 && patch(ch) === patch(run[run.length - 1]) ? [...run, ch] : [ch];
       if (run.length > best.length) best = run;
     }
     if (best.length >= 3 && best.filter(pressed).length * 2 >= best.length) return { members: new Set(best), manager: null, track: k };
