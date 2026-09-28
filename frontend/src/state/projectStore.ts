@@ -340,6 +340,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           controller_mappings: doc.controllerMappings ?? null,
           perform_routing: pendingPerformRouting,
           roll_voice: doc.rollVoice,
+          tuning: doc.tuning,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
         res = await projectApi.save(project, path, embedAudio);
@@ -386,6 +387,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // The piano roll's own voice, so a reopened project's roll auditions
           // and bounces on the instrument it was left on.
           roll_voice: session.rollVoice,
+          // The project tuning, so a reopened project plays at the pitch and temperament it was left in.
+          tuning: session.tuning,
         };
         logInfo(
           'project',

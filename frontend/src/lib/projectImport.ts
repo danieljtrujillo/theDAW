@@ -35,6 +35,8 @@ import {
 } from '../state/routingGraph';
 import { normalizeComp, type ClipTake, type CompRegion } from './clipComp';
 import { MIN_NOTE_STEPS, usePianoRollStore, type PianoNote } from '../state/pianoRollStore';
+import { applyTasmoTuning, tuningToTasmo } from '../state/tuningStore';
+import { BUNDLED_BANK_ID, cleanBankId, migrateInstrumentRef } from './bankRegistry';
 import { useAppUiStore } from '../state/appUiStore';
 import type { RenderOptions } from './midiSynth';
 import {
@@ -408,6 +410,9 @@ const buildClip = async (
   // The bank the clip's own program is chosen in (a roll part's Bank) and the bank its audio holds; 0 when absent.
   const instrumentBank = bankSelectOf(c.instrument_bank);
   const renderedBank = bankSelectOf(c.rendered_bank);
+  // The sound bank the clip's program is picked from. A file written before
+  // sound banks names none, and migrates to the bundled bank it played.
+  const instrumentBankId = userBankIdOf(c);
   const meter = tasmoMeterToClip(c);
 
   // The notes the clip plays. `midi_notes` when the file carries them (every
@@ -514,6 +519,7 @@ const buildClip = async (
         }
       : {}),
     ...(sourceKind && instrumentBank > 0 ? { instrumentBank } : {}),
+    ...(sourceKind && instrumentProgram !== undefined && instrumentBankId ? { instrumentBankId } : {}),
     ...(sourceKind && renderedBank > 0 ? { renderedBank } : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
@@ -1109,6 +1115,10 @@ export async function loadProjectIntoEditor(
   project: TasmoProjectLoaded,
 ): Promise<ProjectImportResult> {
   const bpm = project.tempo || 120;
+  // The project's tuning first: each clip's render signature (lib/midiRender)
+  // names the tuning its audio was rendered in, so a clip read before the
+  // tuning is in place would read as stale.
+  applyTasmoTuning(project.tuning);
   const outTracks: EditorTrack[] = [];
   const outClips: AudioClip[] = [];
   let skipped = 0;
@@ -1139,6 +1149,11 @@ export async function loadProjectIntoEditor(
     effects += t.effect_chain?.length ?? 0;
     effectsLive += liveFxCount(t.effect_chain);
     const trackProgram = gmProgramOf(t.instrument_program);
+    // The bank the track's program is picked from, migrated as a clip's is.
+    const trackRef = trackProgram !== undefined ? migrateInstrumentRef(t) : undefined;
+    const trackBankId = trackProgram !== undefined ? userBankIdOf(t) : undefined;
+    const midiOut = trackMidiOutOf(t.midi_out);
+    const mpeChannels = typeof t.mpe_channels === 'number' && Number.isFinite(t.mpe_channels) ? Math.max(0, Math.min(15, Math.round(t.mpe_channels))) : undefined;
     const parentTrackId = nonEmpty(t.parent_track_id) ?? null;
     outTracks.push({
       id: trackId,
@@ -1156,6 +1171,11 @@ export async function loadProjectIntoEditor(
       ...(t.is_percussion === true ? { isPercussion: true } : {}),
       // The reverb send (CC 91) its channels open with, a whole 0-127.
       ...(reverbSendOf(t.synth_reverb_send) !== undefined ? { synthReverbSend: reverbSendOf(t.synth_reverb_send) } : {}),
+      ...(trackRef && trackRef.bank > 0 && t.is_percussion !== true ? { instrumentBank: trackRef.bank } : {}),
+      ...(trackBankId ? { instrumentBankId: trackBankId } : {}),
+      ...(midiOut ? { midiOut } : {}),
+      ...(mpeChannels !== undefined ? { mpeChannels } : {}),
+      ...(t.external_only === true ? { externalOnly: true } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1394,6 +1414,8 @@ export interface CapturedDocument {
   masterVstChain: TasmoChainEntry[];
   /** The automation lanes, minus any naming a track the payload will not have. */
   automationLanes: TasmoAutomationLane[];
+  /** The project tuning, as the file's `tuning` (state/tuningStore tuningToTasmo). */
+  tuning: Record<string, unknown> | null;
   /** The piano roll's own voice, as the file's `roll_voice`. Always written, so
    *  a project whose roll follows the picker says so. */
   rollVoice: TasmoRollVoice;
@@ -1411,6 +1433,29 @@ export interface CapturedSession extends CapturedDocument {
   tempoMap: TasmoTempoEvent[];
   meterMap: TasmoMeterSegment[];
   clipCount: number;
+}
+
+/**
+ * The user sound bank a saved clip's or track's program is picked from, or
+ * undefined for the bundled bank: the migration of every file written before
+ * sound banks, whose programs all name the bundled bank (lib/bankRegistry
+ * migrateInstrumentRef).
+ */
+function userBankIdOf(raw: { instrument_program?: number | null; instrument_bank?: number | null; instrument_bank_id?: string | null }): string | undefined {
+  const ref = migrateInstrumentRef(raw);
+  const id = ref ? cleanBankId(ref.bankId) : BUNDLED_BANK_ID;
+  return id === BUNDLED_BANK_ID ? undefined : id;
+}
+
+/** A saved track's MIDI output (`midi_out`) as EditorTrack midiOut, or undefined when it has none. */
+function trackMidiOutOf(raw: unknown): EditorTrack['midiOut'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.port_id === 'string' ? r.port_id : '';
+  const label = typeof r.port_label === 'string' ? r.port_label : '';
+  if (!id && !label) return undefined;
+  const ch = Number(r.channel);
+  return { id, label, channel: Number.isFinite(ch) ? Math.max(1, Math.min(16, Math.round(ch))) : 1, ...(r.clock === true ? { clock: true } : {}) };
 }
 
 /** Snapshot the live Sway auto-attach bindings for persistence into a .tasmo,
@@ -1453,6 +1498,8 @@ export function captureProjectDocument(trackIds?: readonly string[]): CapturedDo
     // The roll's own voice (the Vocal2MIDI panel's instrument). Without it a
     // reopened project's roll auditioned and bounced on the picker's program.
     rollVoice: { program: gmProgramOf(usePianoRollStore.getState().voiceProgram) ?? null },
+    // The project tuning (A4 and the temperament); null at A = 440 in equal temperament.
+    tuning: tuningToTasmo(),
   };
 }
 
@@ -1511,6 +1558,8 @@ export function captureEditorSession(): CapturedSession {
                 // The bank the clip's own program is chosen in and the bank its audio holds; null for bank 0.
                 instrument_bank: bankSelectOf(c.instrumentBank) || null,
                 rendered_bank: bankSelectOf(c.renderedBank) || null,
+                // The sound bank the clip's program is picked from; null for the bundled bank.
+                instrument_bank_id: c.instrumentProgram !== undefined && c.instrumentBankId && c.instrumentBankId !== BUNDLED_BANK_ID ? c.instrumentBankId : null,
               }
             : {}),
           // The tempo a roll clip's notes were written at, or the tempo an
@@ -1561,6 +1610,13 @@ export function captureEditorSession(): CapturedSession {
       is_percussion: t.isPercussion === true,
       // The reverb send (CC 91), written only where the track sets one.
       ...(reverbSendOf(t.synthReverbSend) !== undefined ? { synth_reverb_send: reverbSendOf(t.synthReverbSend) } : {}),
+      // The bank the track's program is picked from (null for the bundled bank's bank 0).
+      instrument_bank: t.instrumentProgram !== undefined ? bankSelectOf(t.instrumentBank) || null : null,
+      instrument_bank_id: t.instrumentProgram !== undefined && t.instrumentBankId && t.instrumentBankId !== BUNDLED_BANK_ID ? t.instrumentBankId : null,
+      // Where the track's live MIDI also goes, and the channels its expressive notes rotate across.
+      midi_out: t.midiOut ? { port_id: t.midiOut.id, port_label: t.midiOut.label, channel: t.midiOut.channel, clock: t.midiOut.clock === true } : null,
+      mpe_channels: t.mpeChannels ?? null,
+      external_only: t.externalOnly === true,
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

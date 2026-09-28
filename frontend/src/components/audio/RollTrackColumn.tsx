@@ -23,6 +23,8 @@ import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { GM_DRUM_KITS, drumKitName } from '../../lib/clipProgram';
 import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../lib/orchestra';
 import { MAX_ROLL_PARTS, isPercussionPart, partControlCounts } from '../../lib/rollTracks';
+import { bankForSelect, bankSelectFor, instrumentRefValue, parseInstrumentRefValue, presetName, type SoundBank } from '../../lib/bankRegistry';
+import { BankPresetOptions, useSoundBanks } from './bankPresetOptions';
 import { FIELD_LEGEND, FLYOUT_SELECT, KEY_ON, KEY_REST, MINI_ICON_KEY, MINI_WORD_KEY, STRIP_GLYPH } from './midiDockKit';
 
 const ORCHESTRA_GROUPS = orchestraByFamily();
@@ -35,16 +37,33 @@ export const partSoundText = (t: Pick<RollTrack, 'program' | 'channel' | 'instru
   return isPercussionPart(t) ? `${drumKitName(t.program)} kit` : gmShortName(t.program);
 };
 
-/** The sound select's value for a part: `o:<id>`, `kit:<n>`, `gm:<n>`, or '' for the roll's voice. */
-export const partSoundValue = (t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'>): string => {
+/**
+ * The sound select's value for a part: `o:<id>`, `kit:<n>`, `gm:<n>`, '' for
+ * the roll's voice, or a bank preset's `b:` value (lib/bankRegistry) when the
+ * part's bank select and program name a preset a listed bank holds.
+ */
+export const partSoundValue = (
+  t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'> & Partial<Pick<RollTrack, 'bank'>>,
+  banks: readonly SoundBank[] = [],
+): string => {
   if (t.instrumentId && orchestraInstrument(t.instrumentId)) return `o:${t.instrumentId}`;
   if (t.program === null) return '';
+  if (!isPercussionPart(t) && (t.bank ?? 0) > 0) {
+    const ref = { ...bankForSelect(t.bank ?? 0, banks), program: t.program };
+    if (presetName(banks, ref)) return instrumentRefValue(ref);
+  }
   return isPercussionPart(t) ? `kit:${t.program}` : `gm:${t.program}`;
 };
 
-/** Apply a sound select's value to part `id`. */
+/** Apply a sound select's value to part `id`. A bank preset sets the part's program and its bank select (the bank's offset plus its bank). */
 export const choosePartSound = (id: string, value: string): void => {
   const roll = usePianoRollStore.getState();
+  const ref = parseInstrumentRefValue(value);
+  if (ref) {
+    roll.setTrackProgram(id, ref.program, false);
+    usePianoRollStore.getState().setTrackBank(id, bankSelectFor(ref.bankId, ref.bank));
+    return;
+  }
   if (value.startsWith('o:')) roll.setTrackInstrument(id, value.slice(2));
   else if (value.startsWith('kit:')) roll.setTrackProgram(id, Number(value.slice(4)), true);
   else if (value.startsWith('gm:')) roll.setTrackProgram(id, Number(value.slice(3)), false);
@@ -64,7 +83,8 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
     roll().renameTrack(track.id, nameDraft);
     setNameDraft(null);
   };
-  const soundValue = partSoundValue(track);
+  const { banks, warm } = useSoundBanks();
+  const soundValue = partSoundValue(track, banks);
   const inst = orchestraInstrument(track.instrumentId);
   const controlCounts = partControlCounts(track.controls);
   const controlsHeading = `roll-part-controls-${track.id}`;
@@ -94,6 +114,7 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
           name="roll-part-sound"
           value={soundValue}
           onChange={(e) => choosePartSound(track.id, e.target.value)}
+          onFocus={warm}
           title={inst ? describeInstrument(inst) : undefined}
           className={FLYOUT_SELECT}
         >
@@ -115,6 +136,7 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
               <option key={k.program} value={`kit:${k.program}`}>{`${k.name} kit`}</option>
             ))}
           </optgroup>
+          <BankPresetOptions drums={false} />
         </select>
       </div>
       <div className="flex items-end gap-1.5">

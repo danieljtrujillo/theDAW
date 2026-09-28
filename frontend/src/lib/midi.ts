@@ -25,6 +25,7 @@
  */
 import type { MeterEvent } from './meterMap';
 import { saveFile, type SaveFileResult } from './saveFile';
+import { tuningForExport } from '../state/tuningStore';
 
 export interface MidiNote {
   /** Tick offset from the start of the track. */
@@ -472,7 +473,8 @@ export const encodeMidi = (file: MidiFileData): Uint8Array<ArrayBuffer> => {
 /** Save the file as `<baseName>-<timestamp>.mid` through saveFile, which
  *  remembers the chosen path. Resolves with the save's outcome. */
 export const downloadMidi = (file: MidiFileData, baseName = 'pattern'): Promise<SaveFileResult> => {
-  const bytes = encodeMidi(file);
+  // The project tuning's MIDI Tuning Standard messages lead the file (state/tuningStore tuningForExport).
+  const bytes = tuningForExport(encodeMidi(file));
   const blob = new Blob([bytes], { type: 'audio/midi' });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   return saveFile({ blob, suggestedName: `${baseName}-${stamp}.mid`, kind: 'midi' });

@@ -5,7 +5,10 @@ import { useSoundfontStore, ensureSoundfontReady } from '../../lib/soundfontEngi
 import { GM_NAMES } from '../../lib/gmInstruments';
 import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../lib/orchestra';
 import { SYNTH_VOICES } from '../../lib/synthVoices';
+import { instrumentRefValue, parseInstrumentRefValue, presetName } from '../../lib/bankRegistry';
 import { DOCK_SELECT } from './midiDockKit';
+import { BankPresetOptions, isBankPreset, useSoundBanks } from './bankPresetOptions';
+import { SoundBanksButton } from './SoundBanksDialog';
 
 const VOICE_GROUPS = Array.from(new Set(SYNTH_VOICES.map((v) => v.group)));
 
@@ -41,6 +44,12 @@ const useOrchestraPick = create<{ id: string | null; setId: (id: string | null) 
  *
  * `legendClassName` sets the visible "Instrument" label's type in the full
  * form, so a toolbar can print it like its other legends (the ARP face).
+ *
+ * After the General MIDI list come the sound banks' presets, one group per
+ * bank and bank select (the bundled bank's variations and every bank the
+ * user added, bankPresetOptions), and the Banks button beside the select
+ * opens the dialog that adds and removes banks. Picking a bank preset sets
+ * the picker's program with its bank (useSoundfontStore setActivePreset).
  */
 export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; legendClassName?: string }> = ({
   idPrefix = 'pr-instrument',
@@ -55,11 +64,19 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
   const setUseSoundfont = useSoundfontStore((s) => s.setUseSoundfont);
   const setActiveProgram = useSoundfontStore((s) => s.setActiveProgram);
   const setActiveSynthVoice = useSoundfontStore((s) => s.setActiveSynthVoice);
+  const setActivePreset = useSoundfontStore((s) => s.setActivePreset);
+  const activeBankId = useSoundfontStore((s) => s.activeBankId);
+  const activeBank = useSoundfontStore((s) => s.activeBank);
+  const { banks, warm } = useSoundBanks();
+  const activeRef = { bankId: activeBankId, bank: activeBank, program: activeProgram };
+  const bankPreset = isBankPreset(activeRef);
 
   const orchestraPick = useOrchestraPick((s) => s.id);
   const remember = useOrchestraPick((s) => s.setId);
   const picked = orchestraInstrument(orchestraPick);
-  const soundfontValue = picked && picked.program === activeProgram ? `o:${picked.id}` : String(activeProgram);
+  const soundfontValue = bankPreset
+    ? instrumentRefValue(activeRef)
+    : picked && picked.program === activeProgram ? `o:${picked.id}` : String(activeProgram);
   const value = activeSynthVoice ? `v:${activeSynthVoice}` : useSoundfont ? soundfontValue : 'basic';
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -74,6 +91,12 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
       return;
     }
     remember(null);
+    const ref = parseInstrumentRefValue(v);
+    if (ref) {
+      setActivePreset(ref); // a bank preset: its program with its bank (clears any synth voice)
+      void ensureSoundfontReady();
+      return;
+    }
     if (v === 'basic') {
       setUseSoundfont(false);
       setActiveSynthVoice(null);
@@ -112,6 +135,11 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
           <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
         ))}
       </optgroup>
+      <BankPresetOptions drums={false} />
+      {/* A bank preset whose bank is not listed (yet, or any more) stays listed, so the select shows what the picker holds. */}
+      {bankPreset && !presetName(banks, activeRef) && (
+        <option value={instrumentRefValue(activeRef)}>{`Bank ${activeRef.bank} · ${activeProgram + 1}`}</option>
+      )}
     </>
   );
 
@@ -128,10 +156,12 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
           aria-label="MIDI instrument"
           value={value}
           onChange={onChange}
+          onFocus={warm}
           className={`${DOCK_SELECT} w-40`}
         >
           {options}
         </select>
+        <SoundBanksButton compact />
         {loading && (
           <span className="flex et-ink-3" title="Loading the soundfont">
             <Loader2 aria-hidden="true" className="w-3 h-3 animate-spin" />
@@ -159,11 +189,13 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
         aria-label="MIDI instrument"
         value={value}
         onChange={onChange}
+        onFocus={warm}
         className="form-select px-2 py-1 text-xs font-semibold max-w-44"
         style={{ colorScheme: 'dark' }}
       >
         {options}
       </select>
+      <SoundBanksButton />
       {loading && <span className="text-xs font-semibold text-white/40">loading…</span>}
       {loadError && (
         <span className="text-xs font-semibold text-red-300" title={loadError}>

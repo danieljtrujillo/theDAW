@@ -350,9 +350,10 @@ export default function App() {
       // And the {id,label} pairs for the I/O menu: names alone are not
       // identities (two identical controllers collide, and unplug/replug
       // reorders the list).
-      const outs: Array<{ id: string; name: string; send: (data: number[]) => void }> = [];
+      // A track's MIDI output stamps each message with the moment it sounds (state/midiOutBus).
+      const outs: Array<{ id: string; name: string; send: (data: number[], timestamp?: number) => void }> = [];
       a.outputs.forEach((out) => {
-        outs.push({ id: out.id, name: out.name ?? 'unnamed', send: (data) => out.send(data) });
+        outs.push({ id: out.id, name: out.name ?? 'unnamed', send: (data, timestamp) => out.send(data, timestamp) });
       });
       setMidiOutputPorts(outs);
       useIoDevicesStore.getState().setMidiPorts(ports);

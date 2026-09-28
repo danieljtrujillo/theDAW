@@ -64,6 +64,7 @@ import {
 import { logError, logWarn } from './logStore';
 import {
   ensureEditBanks,
+  editChannelPressure,
   editControl,
   editNoteOn,
   editNoteOff,
@@ -81,9 +82,23 @@ import {
   EditMidiScheduler,
   clipLiveSlots,
   clipLiveTiming,
+  type EditMidiSink,
 } from '../lib/editMidiScheduler';
-import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import {
+  externalOnlyChannels,
+  passMidiSink,
+  startTrackRoutes,
+  startTransportClock,
+  stopTrackOutputs,
+  tickTrackOutputs,
+  trackOutputsActive,
+} from './midiOutBus';
+import { beatToTime, timeToBeat } from '../lib/tempoMap';
+import { clipVoice, effectiveProgramFor, isExternalOnly, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
+import { trackMembers } from '../lib/mpeRotation';
+import { userBanksByEditBank } from '../lib/editBankBanks';
+import { useSoundBankStore } from './soundBankStore';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
 import { warpSegments, type WarpMarker, type WarpSegment } from '../lib/audioWarp';
 import {
@@ -251,6 +266,7 @@ let lastMixSig = '';
 let lastCompSig = ''; // last alignment written by syncTrackLatency (skip no-op writes)
 let lastTimePush = 0; // throttle playerStore.currentTime writes
 let midiTimer = 0; // setInterval handle driving the live MIDI scheduler (lib/editMidiScheduler)
+let clockTimer = 0; // setInterval handle sending MIDI clock ahead to the tracks' clocked ports (state/midiOutBus)
 // One envelope gain per track with live MIDI: its channels -> this -> the
 // track's gain node. It carries the playing clip's gain and fades.
 let midiEnvGains = new Map<string, GainNode>();
@@ -3078,7 +3094,8 @@ export type LiveMidiClip = Pick<
   | 'sourceBends'
 >;
 /** The fields of a track the live MIDI plan reads. */
-export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'instrument'>>;
+export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'> &
+  Partial<Pick<EditorTrack, 'instrument' | 'mpeChannels' | 'instrumentBank' | 'instrumentBankId' | 'externalOnly'>>;
 
 /**
  * Decide which MIDI clips play live and on which channels. A clip plays live
@@ -3088,7 +3105,9 @@ export type LiveMidiTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPe
  * melodic tracks never on a drum channel and percussion tracks always on one.
  * A melodic track whose clips bend takes one channel per bent lane and one its
  * other lanes share (lib/editMidiScheduler clipLiveSlots), the most any of its
- * clips needs, so each lane bends on its own channel as it does in the bounce.
+ * clips needs, so each lane bends on its own channel as it does in the bounce,
+ * and the member channels its expressive notes rotate across (lib/mpeRotation,
+ * the track's `mpeChannels`).
  */
 export function planLiveMidi(
   clips: readonly LiveMidiClip[],
@@ -3101,13 +3120,15 @@ export function planLiveMidi(
   for (const clip of clips) {
     if (clip.muted || !isMidiClip(clip)) continue;
     const track = trackById.get(clip.trackId);
-    if (!track || effectiveProgramFor(clip, track, global) === undefined) continue;
-    // A track whose instrument slot holds a VST3 plays through it, not on EDIT's synths.
+    // An external-only track plays live to its MIDI port with no instrument of theDAW's.
+    if (!track || (!isExternalOnly(track) && effectiveProgramFor(clip, track, global) === undefined)) continue;
+    // A track whose instrument slot holds a VST3 plays through it, not on EDIT's synths
+    // (activeTrackInstrument is null on an external-only track).
     if (activeTrackInstrument(track)) continue;
     const ids = wanted.get(track.id);
     if (ids) ids.push(clip.id);
     else wanted.set(track.id, [clip.id]);
-    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track))));
+    slots.set(track.id, Math.max(slots.get(track.id) ?? 1, clipLiveSlots(clip, isPercussionTrack(track), trackMembers(track.mpeChannels))));
   }
   const channels = planEditChannels(
     tracks
@@ -3167,6 +3188,8 @@ export function liveMidiIfHeard(
 export interface LiveMidiTrackStatus {
   /** 'live': EDIT's synths play the notes; 'bounce': the rendered audio plays. */
   mode: 'live' | 'bounce';
+  /** Live to its MIDI out port alone (an external-only track): no synth of theDAW's sounds it. */
+  external?: boolean;
   /** Why, in a few words, for the status's title. */
   reason: string;
   /** Channels the track plays on while live. */
@@ -3199,7 +3222,14 @@ export function liveMidiTrackStatus(
       continue;
     }
     const chans = plan.channels.channelsOf.get(t.id);
-    if (chans) {
+    if (chans && isExternalOnly(t)) {
+      out.set(t.id, {
+        mode: 'live',
+        external: true,
+        channels: chans.length,
+        reason: "External only: its notes go to its MIDI out port on the audio clock, and no synth of theDAW's plays them",
+      });
+    } else if (chans) {
       out.set(t.id, {
         mode: 'live',
         channels: chans.length,
@@ -3255,8 +3285,9 @@ export function liveMidiNotes(
     const chans = plan.channels.channelsOf.get(clip.trackId);
     const program = effectiveProgramFor(clip, track, global);
     if (!chans?.length || program === undefined) continue;
-    const bank = clipBank(clip, track);
-    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track)).notes) {
+    // The bank select the scheduler sends: the clip's, its track's or the picker's program's (lib/clipProgram clipVoice).
+    const bank = clipVoice(clip, track, global).bank ?? 0;
+    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), trackMembers(track.mpeChannels)).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
       out.push({
@@ -3274,6 +3305,16 @@ export function liveMidiNotes(
   return out;
 }
 
+/** How many EDIT banks a plan's channels need once its external-only tracks' channels are left out (they sound on no synth). */
+export function internalBanks(channels: EditChannelPlan, tracks: readonly LiveMidiTrack[]): number {
+  let banks = 0;
+  for (const t of tracks) {
+    if (isExternalOnly(t)) continue;
+    for (const ch of channels.channelsOf.get(t.id) ?? []) banks = Math.max(banks, Math.floor(ch / 16) + 1);
+  }
+  return banks;
+}
+
 /** The live MIDI scheduler, one for the session: it outlives a pass so a seek sees what the pass before it queued. */
 let midiScheduler: EditMidiScheduler | null = null;
 
@@ -3281,11 +3322,42 @@ let midiScheduler: EditMidiScheduler | null = null;
 const midiLookaheadSec = (): number =>
   typeof document !== 'undefined' && document.hidden ? EDIT_MIDI_HIDDEN_LOOKAHEAD_SEC : EDIT_MIDI_LOOKAHEAD_SEC;
 
+/** This pass's track outputs (state/midiOutBus): what EDIT's synths are told also goes to each track's MIDI port. Null with none. */
+let trackOut: EditMidiSink | null = null;
+
+/** The live channels of this pass's external-only tracks: they go to the tracks' ports and to no synth of theDAW's. */
+let externalChans: ReadonlySet<number> = new Set();
+
+/** EDIT's synths, less an external-only track's channels, and the tracks' MIDI output ports while a pass has any. */
+const liveSink: EditMidiSink = passMidiSink(
+  {
+    noteOn: editNoteOn,
+    noteOff: editNoteOff,
+    wheel: editPitchWheel,
+    wheelRange: editPitchWheelRange,
+    control: editControl,
+    pressure: editChannelPressure,
+  },
+  () => trackOut,
+  () => externalChans,
+);
+
+/** An audio-context time as performance.now() milliseconds, the clock Web MIDI stamps messages with. */
+function contextToPerf(ctx: AudioContext): (t: number) => number {
+  return (t: number) => {
+    const stamp = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null;
+    if (stamp && typeof stamp.contextTime === 'number' && typeof stamp.performanceTime === 'number') {
+      return stamp.performanceTime + (t - stamp.contextTime) * 1000;
+    }
+    return performance.now() + (t - ctx.currentTime) * 1000;
+  };
+}
+
 function liveMidiScheduler(): EditMidiScheduler {
   if (!midiScheduler) {
     midiScheduler = new EditMidiScheduler({
       now: () => getEngineCtx().currentTime,
-      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange, control: editControl },
+      sink: liveSink,
       clips: () => useEditorStore.getState().clips,
       tracks: () => useEditorStore.getState().tracks,
       global: getGlobalVoice,
@@ -3327,6 +3399,10 @@ function scheduleMidiClips(fromSec: number, plan: LiveMidiPlan): void {
     for (const ch of chans) routeEditChannel(ch, env);
   }
   const scheduler = liveMidiScheduler();
+  // A track with a MIDI output sends what it plays to that port too; an external-only track sends it there alone.
+  const ed = useEditorStore.getState();
+  externalChans = externalOnlyChannels(ed.tracks, plan.channels.channelsOf);
+  trackOut = startTrackRoutes({ tracks: ed.tracks, channelsOf: plan.channels.channelsOf, now: () => ctx.currentTime, toPerf: contextToPerf(ctx) });
   scheduler.start(
     { liveClipIds: plan.liveClipIds, channelsOf: plan.channels.channelsOf },
     fromSec,
@@ -3336,11 +3412,38 @@ function scheduleMidiClips(fromSec: number, plan: LiveMidiPlan): void {
   midiTimer = window.setInterval(() => scheduler.tick(), EDIT_MIDI_TICK_MS);
 }
 
+/**
+ * MIDI clock, song position and Start/Continue to every port a track sends
+ * clock to, for a pass that plays `fromSec` at the pass's anchor, on EDIT's
+ * tempo map, whatever the pass plays (an arrangement of audio alone too),
+ * ticked ahead on its own timer until the pass stops.
+ */
+function startPassClock(fromSec: number): void {
+  const ctx = getEngineCtx();
+  const ed = useEditorStore.getState();
+  const tempoMap = ed.tempoMap;
+  const started = startTransportClock({
+    tracks: ed.tracks,
+    fromSec,
+    anchorCtx: startCtxTime,
+    now: () => ctx.currentTime,
+    toPerf: contextToPerf(ctx),
+    beatAt: (sec) => timeToBeat(tempoMap, sec),
+    secAt: (beat) => beatToTime(tempoMap, beat),
+    lookaheadSec: midiLookaheadSec(),
+  });
+  if (started) clockTimer = window.setInterval(() => tickTrackOutputs(midiLookaheadSec()), EDIT_MIDI_TICK_MS);
+}
+
 /** Stop the live MIDI scheduler and silence EDIT's synths. The preview synth (the roll, the arpeggiator, the keyboard) keeps sounding. */
 function clearMidiTimers(): void {
   if (midiTimer) {
     clearInterval(midiTimer);
     midiTimer = 0;
+  }
+  if (clockTimer) {
+    clearInterval(clockTimer);
+    clockTimer = 0;
   }
   if (midiScheduler?.isRunning) {
     midiScheduler.stop();
@@ -3349,6 +3452,13 @@ function clearMidiTimers(): void {
       logWarn('editor', `Live MIDI fell behind the audio clock: ${late} note(s) started late, ${skipped} skipped (the app was busy or hidden)`);
     }
   }
+  // The tracks' MIDI ports: every note they were sent ends, and a clocked port gets Stop.
+  if (trackOutputsActive()) {
+    const ctx = getEngineCtx();
+    stopTrackOutputs(contextToPerf(ctx)(ctx.currentTime));
+  }
+  trackOut = null;
+  externalChans = new Set();
   editAllNotesOff();
   clearInstrumentTracks();
 }
@@ -3592,7 +3702,10 @@ async function start(fromSec: number): Promise<void> {
     logWarn('editor', `${plan.channels.dropped.length} MIDI track(s) past the last live channel play their bounced audio`);
   }
   if (plan.liveClipIds.size > 0) {
-    const ready = await ensureEditBanks(plan.channels.banks);
+    // The synths the pass sounds: none for an external-only track's channels, which only its port hears.
+    // Each synth holds only the user banks its tracks select (lib/editBankBanks).
+    const needs = userBanksByEditBank(plan.channels.channelsOf, clips, ed.tracks, getGlobalVoice(), useSoundBankStore.getState().banks);
+    const ready = await ensureEditBanks(internalBanks(plan.channels, ed.tracks), needs);
     if (token !== playToken) return;
     liveMidiPlan = ready ? plan : emptyLiveMidiPlan();
   } else {
@@ -3667,6 +3780,7 @@ async function start(fromSec: number): Promise<void> {
   startFxAutomation();        // ~40 Hz lookahead writer for FX-param lanes
   if (liveMidiPlan.liveClipIds.size > 0) scheduleMidiClips(begin, liveMidiPlan);
   if (instrumentPlan.length > 0) scheduleInstrumentTracks(begin, instrumentPlan);
+  startPassClock(begin);
 
   playing = true;
   usePlayerStore.setState({

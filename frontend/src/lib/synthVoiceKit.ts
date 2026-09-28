@@ -6,6 +6,8 @@
  * connects into a single `dest` node.
  */
 
+import { keyHz } from './tuning';
+
 export type VoiceTrigger = (
   ctx: BaseAudioContext,
   dest: AudioNode,
@@ -24,8 +26,8 @@ export interface SynthVoice {
   trigger: VoiceTrigger;
 }
 
-/** MIDI note number to frequency in Hz (A4 = 69 = 440 Hz). */
-export const mtof = (midi: number): number => 440 * Math.pow(2, (midi - 69) / 12);
+/** MIDI note number to frequency in Hz in the project tuning (lib/tuning keyHz: A4 = 69 at the project's reference, in its temperament). */
+export const mtof = (midi: number): number => keyHz(midi);
 
 // Soft-clip distortion curves, cached by drive amount (building one per note is wasteful).
 const distCurves = new Map<number, Float32Array<ArrayBuffer>>();

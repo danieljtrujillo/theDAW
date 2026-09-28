@@ -37,6 +37,7 @@ import {
 import type { ChainEntry } from '../state/effectChainStore';
 import { ensureSoundfontReady, liveNoteOff, liveNoteOn } from './soundfontEngine';
 import { drawStrokeChannel } from './pitchBend';
+import { keyHz } from './tuning';
 
 // ── musical constants (from art2music) ────────────────────────────────────────
 const SCALE = ['B3', 'Db4', 'Eb4', 'F4', 'G4', 'A4', 'B4', 'Db5', 'Eb5', 'F5', 'G5', 'A5', 'B5', 'Db6'];
@@ -61,7 +62,8 @@ const noteToMidi = (n: string): number => {
   if (!m) return 60;
   return (parseInt(m[2], 10) + 1) * 12 + (SEMI[m[1]] ?? 0);
 };
-const midiToFreq = (m: number): number => 440 * 2 ** ((m - 69) / 12);
+/** A key's frequency in the project tuning (lib/tuning keyHz). */
+const midiToFreq = (m: number): number => keyHz(m);
 
 // ── tiny vec + rng helpers ────────────────────────────────────────────────────
 interface Pt { x: number; y: number }

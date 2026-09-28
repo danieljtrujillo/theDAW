@@ -79,6 +79,10 @@ import {
   isPercussionTrack,
 } from '../../lib/clipProgram';
 import { DEFAULT_VOICE_VALUE, parseVoiceValue, voiceValue } from '../../lib/voiceOptions';
+import { BUNDLED_BANK_ID, instrumentRefValue, parseInstrumentRefValue, presetName, type InstrumentRef } from '../../lib/bankRegistry';
+import { BankPresetOptions, isBankPreset, useSoundBanks } from './bankPresetOptions';
+import { TuningControl } from './TuningControl';
+import { TrackMidiOut } from './TrackMidiOut';
 import { DROP_RENDER_FIELDS, hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
 import { importMidiBytesAsTracks } from '../../lib/midiImportTracksApp';
 import { parseMidi } from '../../utils/midi';
@@ -1468,6 +1472,9 @@ const PopoverPortal: React.FC<{
   );
 };
 
+/** The track instrument select's value for an external-only track (EditorTrack externalOnly). */
+const EXTERNAL_ONLY_VALUE = 'external';
+
 /**
  * Compact per-track instrument selector (channel-rack style). "Default" leaves
  * the track on the global Piano Roll instrument; picking a GM program assigns it
@@ -1484,19 +1491,47 @@ const PopoverPortal: React.FC<{
  * the next play: Live, on EDIT's synths on the audio clock
  * (lib/editMidiScheduler), or Bounce, its rendered audio; its title says why
  * and how many channels a live track holds.
+ *
+ * The sound banks' presets follow, by bank (bankPresetOptions): a bank
+ * preset sets the track's program with the bank it is picked from, and a
+ * user bank's kit is a kit of the track's kind (its value starts `kit|`).
+ * The cable key beside the drum key opens the track's MIDI output (a port,
+ * its channel, clock) and its per-note expression channels (TrackMidiOut).
+ * "External only" plays the track through that port alone: EDIT schedules
+ * its notes to the port and no synth of theDAW's sounds them; its status
+ * reads Port.
  */
 export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: liveMixer.LiveMidiTrackStatus }> = ({ track, status }) => {
   const setTrackVoice = useEditorStore((s) => s.setTrackVoice);
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
   const drums = isPercussionTrack(track);
-  const value = voiceValue(track.instrumentProgram, drums);
+  const { banks, warm } = useSoundBanks();
+  const trackRef: InstrumentRef | null = track.instrumentProgram === undefined
+    ? null
+    : { bankId: track.instrumentBankId ?? BUNDLED_BANK_ID, bank: track.instrumentBank ?? 0, program: track.instrumentProgram };
+  const refValue = trackRef && isBankPreset(trackRef) ? `${drums ? 'kit|' : ''}${instrumentRefValue(trackRef)}` : null;
+  const value = track.externalOnly ? EXTERNAL_ONLY_VALUE : refValue ?? voiceValue(track.instrumentProgram, drums);
   const defaultLabel = drums
     ? `Default (${drumKitName(0)} kit)`
     : globalSoundfont ? `Default (${gmShortName(globalProgram)})` : 'Default (Basic)';
 
+  const updateTrack = useEditorStore((s) => s.updateTrack);
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const pick = parseVoiceValue(e.target.value, drums);
+    const v = e.target.value;
+    if (v === EXTERNAL_ONLY_VALUE) {
+      // Its MIDI out port alone plays it: no program of theDAW's (TrackMidiOut picks the port).
+      updateTrack(track.id, { externalOnly: true, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined });
+      return;
+    }
+    const kit = v.startsWith('kit|');
+    const ref = parseInstrumentRefValue(kit ? v.slice(4) : v);
+    if (ref) {
+      setTrackVoice(track.id, ref.program, kit, { bankId: ref.bankId, bank: ref.bank });
+      void ensureSoundfontReady();
+      return;
+    }
+    const pick = parseVoiceValue(v, drums);
     setTrackVoice(track.id, pick.program, pick.drums);
     if (pick.program !== undefined) void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
@@ -1514,6 +1549,14 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
       {GM_NAMES.map((nm, i) => <option key={nm} value={voiceValue(i, false)}>{`${i + 1}. ${nm}`}</option>)}
     </optgroup>
   );
+  const bankPresets = [
+    <BankPresetOptions key="bank-instruments" drums={false} />,
+    <BankPresetOptions key="bank-kits" drums valuePrefix="kit|" skipBundledKits={GM_DRUM_KITS.map((k) => k.program)} />,
+  ];
+  // A bank preset whose bank is not listed (yet, or any more) stays listed, so the select shows what the track holds.
+  const unlisted = refValue && trackRef && !presetName(banks, trackRef, drums)
+    ? <option key="unlisted" value={refValue}>{`Bank ${trackRef.bank} · ${trackRef.program + 1}`}</option>
+    : null;
 
   // A program means an instrument on a melodic track and a kit on a drum
   // track, so switching clears the track's and its clips' programs and they
@@ -1536,25 +1579,31 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
       >
         {drums ? <Drum aria-hidden="true" className="w-3 h-3" /> : <Piano aria-hidden="true" className="w-3 h-3" />}
       </button>
+      {/* The track's MIDI output port, clock and per-note expression channels. */}
+      <TrackMidiOut track={track} />
       <label htmlFor={`editor-track-instrument-${track.id}`} className="sr-only">{`Track ${track.name} ${drums ? 'drum kit' : 'instrument'}`}</label>
       <select
         id={`editor-track-instrument-${track.id}`}
         name={`editor-track-instrument-${track.id}`}
         value={value}
         onChange={onChange}
+        onFocus={warm}
         className="flex-1 min-w-0 form-select px-1 py-0.5 text-xs font-bold"
         style={{ colorScheme: 'dark' }}
       >
         <option value={DEFAULT_VOICE_VALUE}>{defaultLabel}</option>
+        <option value={EXTERNAL_ONLY_VALUE}>{track.midiOut ? `External only (${track.midiOut.label})` : 'External only (MIDI out port)'}</option>
         {drums ? [kits, instruments] : [instruments, kits]}
+        {bankPresets}
+        {unlisted}
       </select>
       {status && (
         <span
-          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
+          className={`flex items-center gap-1 shrink-0 font-sans text-xs font-bold ${status.external ? 'text-sky-300' : status.mode === 'live' ? 'text-emerald-300' : 'text-zinc-400'}`}
           title={status.reason}
         >
-          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
-          {status.mode === 'live' ? 'Live' : 'Bounce'}
+          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${status.external ? 'bg-sky-400' : status.mode === 'live' ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+          {status.external ? 'Port' : status.mode === 'live' ? 'Live' : 'Bounce'}
           <span className="sr-only">{`: ${status.reason}`}</span>
         </span>
       )}
@@ -1609,7 +1658,9 @@ export const TrackReverbSendInput: React.FC<{ track: EditorTrack }> = ({ track }
  * Per-clip instrument override. "Track default" leaves the clip on its track's
  * instrument (or the global one); picking a GM program assigns it to this clip
  * only, so its MIDI notes play that voice live regardless of the track default.
- * On a drum track the list is the drum kits.
+ * On a drum track the list is the drum kits. The sound banks' presets follow,
+ * by bank: a bank preset sets the clip's program with its bank and bank
+ * select (AudioClip instrumentBankId, instrumentBank).
  */
 export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) => {
   const updateClip = useEditorStore((s) => s.updateClip);
@@ -1617,21 +1668,40 @@ export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) =>
   const globalProgram = useSoundfontStore((s) => s.activeProgram);
   const globalSoundfont = useSoundfontStore((s) => s.useSoundfont);
   const drums = isPercussionTrack(track);
-  const value = clip.instrumentProgram === undefined ? 'default' : String(clip.instrumentProgram);
+  const { banks, warm } = useSoundBanks();
+  const clipRef: InstrumentRef | null = clip.instrumentProgram === undefined
+    ? null
+    : { bankId: clip.instrumentBankId ?? BUNDLED_BANK_ID, bank: clip.instrumentBank ?? 0, program: clip.instrumentProgram };
+  // A bank preset shows by its bank value; a bundled program in a Bank the bundled bank does not list shows as the program, its Bank beside it.
+  const refValue = clipRef && (clipRef.bankId !== BUNDLED_BANK_ID || (clipRef.bank > 0 && presetName(banks, clipRef, drums)))
+    ? instrumentRefValue(clipRef)
+    : null;
+  const value = refValue ?? (clip.instrumentProgram === undefined ? 'default' : String(clip.instrumentProgram));
   const effective = clipVoice({}, track, { useSoundfont: globalSoundfont, activeProgram: globalProgram }).program;
   const defaultLabel = effective === undefined
     ? 'Track default (Basic)'
     : `Track default (${drums ? `${drumKitName(effective)} kit` : gmShortName(effective)})`;
 
   // A bank belongs to the program it was chosen with (a roll part's Bank, lib/clipProgram clipBank), so a new pick drops it.
-  const bank = clipBank(clip, track);
+  // The badge is the clip's own program's bank select; a clip on its track's program shows none.
+  const bank = clip.instrumentProgram !== undefined ? clipBank(clip, track) : 0;
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     if (v === 'default') {
-      updateClip(clip.id, { instrumentProgram: undefined, instrumentBank: undefined });
+      updateClip(clip.id, { instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined });
       return;
     }
-    updateClip(clip.id, { instrumentProgram: Number(v), instrumentBank: undefined });
+    const ref = parseInstrumentRefValue(v);
+    if (ref) {
+      updateClip(clip.id, {
+        instrumentProgram: ref.program,
+        instrumentBank: ref.bank > 0 ? ref.bank : undefined,
+        instrumentBankId: ref.bankId === BUNDLED_BANK_ID ? undefined : ref.bankId,
+      });
+      void ensureSoundfontReady();
+      return;
+    }
+    updateClip(clip.id, { instrumentProgram: Number(v), instrumentBank: undefined, instrumentBankId: undefined });
     void ensureSoundfontReady(); // warm worklet + soundfont while the user looks
   };
 
@@ -1644,6 +1714,7 @@ export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) =>
         name={`editor-clip-instrument-${clip.id}`}
         value={value}
         onChange={onChange}
+        onFocus={warm}
         className="flex-1 min-w-0 form-select px-1.5 py-1 text-xs font-bold"
         style={{ colorScheme: 'dark' }}
       >
@@ -1654,6 +1725,11 @@ export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) =>
         {/* A program set before the track became a drum track stays listed, so the select shows what the clip holds. */}
         {drums && clip.instrumentProgram !== undefined && !GM_DRUM_KITS.some((k) => k.program === clip.instrumentProgram) && (
           <option value={clip.instrumentProgram}>{`${drumKitName(clip.instrumentProgram)} kit`}</option>
+        )}
+        <BankPresetOptions drums={drums} skipBundledKits={GM_DRUM_KITS.map((k) => k.program)} />
+        {/* A bank preset whose bank is not listed (yet, or any more) stays listed, so the select shows what the clip holds. */}
+        {refValue && clipRef && !presetName(banks, clipRef, drums) && (
+          <option value={refValue}>{`Bank ${clipRef.bank} · ${clipRef.program + 1}`}</option>
         )}
       </select>
       {bank > 0 && (
@@ -6415,6 +6491,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 defined in terms of it — a bar/triplet grid is meaningless without
                 a tempo the user can actually set. */}
             <EditorBpmField bpm={projectBpm} onChange={setBpm} />
+            {/* The project tuning sits with the tempo: both are what every part is played against. */}
+            <TuningControl />
             <button
               type="button"
               onClick={() => {

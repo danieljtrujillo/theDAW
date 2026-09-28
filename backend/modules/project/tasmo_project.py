@@ -359,6 +359,12 @@ class Clip(BaseModel):
     # every clip in bank 0 as before.
     instrument_bank: int | None = None
     rendered_bank: int | None = None
+    # MIDI clips: the sound bank (a user SF2/SF3/DLS bank's id, see
+    # backend/modules/soundfonts) the clip's own program is picked from, with
+    # instrument_bank its bank select inside that bank. None is the bundled
+    # General MIDI bank. Defaulted, so older files load every clip on the
+    # bundled bank, the sound they were saved with.
+    instrument_bank_id: str | None = None
     source_bpm: float | None = None
     # Audio clips: the tempo the audio plays at after a beat match or a
     # stretch (EDIT's SYNC and BPM readout read it), and the library entry the
@@ -495,6 +501,21 @@ class Track(BaseModel):
     # The reverb send (CC 91, 0-127) this track's MIDI channels open with;
     # None leaves the synth's own. Defaulted, so older files load without one.
     synth_reverb_send: int | None = None
+    # The sound bank the track's program is picked from and its bank select
+    # there (None: the bundled General MIDI bank, bank 0). Defaulted, so older
+    # files load every track on the bundled bank.
+    instrument_bank: int | None = None
+    instrument_bank_id: str | None = None
+    # Where the track's live MIDI also goes: {port_id, port_label, channel,
+    # clock}. None keeps the track's MIDI inside theDAW. Opaque, like
+    # perform_routing: the frontend reads it (projectImport trackMidiOutOf).
+    midi_out: dict | None = None
+    # How many channels notes with per-note expression rotate across (0-15);
+    # None is the frontend's default.
+    mpe_channels: int | None = None
+    # The track plays through its MIDI out port alone, with no instrument of
+    # theDAW's. Defaulted, so older files load every track on its instrument.
+    external_only: bool = False
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is
@@ -648,3 +669,7 @@ class TasmoProject(BaseModel):
     # alone; RollVoice(program=None) says this project's roll follows the
     # picker, and the reader sets it so.
     roll_voice: RollVoice | None = None
+    # The project tuning: {reference_hz, temperament, root, scala?} (the
+    # frontend's state/tuningStore tuningToTasmo). None is A = 440 in equal
+    # temperament, and what every file written before it reads as.
+    tuning: dict | None = None

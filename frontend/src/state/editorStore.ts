@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
 import { drumKitName } from '../lib/clipProgram';
+import { BUNDLED_BANK_ID } from '../lib/bankRegistry';
 import { gmShortName } from '../lib/gmInstruments';
 import type { PianoNote, RollPartRef } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
@@ -326,6 +327,11 @@ export interface AudioClip {
    *  written by the bounce. Absent is bank 0, the General MIDI set. It never
    *  applies to the track's or the picker's program, nor on a drum track. */
   instrumentBank?: number;
+  /** The sound bank `instrumentProgram` and `instrumentBank` are picked from
+   *  (lib/bankRegistry): absent is the bundled General MIDI bank. A user bank's
+   *  `instrumentBank` is its own bank select, which the bank's offset turns
+   *  into the one sent (lib/clipProgram clipBank). */
+  instrumentBankId?: string;
   /** The GM program `audioBlob` was actually rendered with. The live scheduler
    *  synthesises MIDI clips from `sourcePianoRoll` and honours instrumentProgram,
    *  but every offline bounce reads the pre-rendered blob — so the two diverge the
@@ -418,6 +424,25 @@ export interface EditorTrack {
    *  (lib/arrangementMidi); undefined leaves the synth's own. The symphony
    *  template sets 0, so the synth's reverb does not double the hall send. */
   synthReverbSend?: number;
+  /** The bank select inside `instrumentBankId` that `instrumentProgram` is
+   *  picked in (a bank preset picked for the track). Absent is 0. */
+  instrumentBank?: number;
+  /** The sound bank the track's program is picked from (lib/bankRegistry);
+   *  absent is the bundled General MIDI bank. */
+  instrumentBankId?: string;
+  /** Where the track's live MIDI also goes (state/midiOutBus): an output port,
+   *  the channel its first live channel maps to (1-16), and whether the port
+   *  also gets MIDI clock and song position from the transport. Absent: the
+   *  track's MIDI stays inside theDAW. */
+  midiOut?: { id: string; label: string; channel: number; clock?: boolean };
+  /** The track's MIDI plays through its MIDI out port alone: EDIT schedules
+   *  its notes live to the port with no program change, and no synth of
+   *  theDAW's sounds them (lib/clipProgram isExternalOnly). Absent: false. */
+  externalOnly?: boolean;
+  /** How many channels the track rotates notes with per-note expression
+   *  across (lib/mpeRotation), 0 to play them on the track's own channel.
+   *  Absent: MPE_DEFAULT_MEMBERS. */
+  mpeChannels?: number;
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
    *  the track fader and its panner during live playback and offline bounce. */
   fxChain?: ChainEntry[];
@@ -551,9 +576,11 @@ export interface TimelineMarker {
 /** Clip gain as a safe multiplier — unity for undefined, NaN, or negative values.
  *  Every scheduling path (live + the three offline bounces) reads clip gain through
  *  this, so a malformed value can never silence or invert a clip. */
-/** The track's instrument entry when it is switched on and names a plugin, else null. */
-export const activeTrackInstrument = (track: Pick<EditorTrack, 'instrument'> | undefined): ChainEntry | null =>
-  track?.instrument?.enabled && track.instrument.vst ? track.instrument : null;
+/** The track's instrument entry when it is switched on and names a plugin, else null. An
+ *  external-only track plays through its MIDI out port alone (lib/clipProgram isExternalOnly),
+ *  so its slot is null there too. */
+export const activeTrackInstrument = (track: Pick<EditorTrack, 'instrument' | 'externalOnly'> | undefined): ChainEntry | null =>
+  track?.externalOnly !== true && track?.instrument?.enabled && track.instrument.vst ? track.instrument : null;
 
 /** The chain a track sounds through: its instrument (when on) ahead of its inserts. */
 export const trackSoundChain = (track: Pick<EditorTrack, 'instrument' | 'fxChain'>): ChainEntry[] => {
@@ -924,7 +951,8 @@ interface EditorStoreState {
    * does, with a LOG line naming the change. One undo step; a choice the track
    * already holds writes nothing.
    */
-  setTrackVoice: (id: string, program: number | undefined, drums: boolean) => void;
+  /** Set a track's instrument: a program (a kit on a drum track), and for a bank preset the bank it is picked from and its bank select there. */
+  setTrackVoice: (id: string, program: number | undefined, drums: boolean, sound?: { bankId: string; bank: number }) => void;
   /** Put `orderedIds` at the top in the order given; every track not named keeps
    *  its relative position after them. Unknown ids are ignored, so a partial or
    *  stale list can reorder but never drop a track. */
@@ -2175,18 +2203,22 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     }));
   },
 
-  setTrackVoice: (id, program, drums) => {
+  setTrackVoice: (id, program, drums, sound) => {
     const track = get().tracks.find((t) => t.id === id);
     if (!track) return;
     const prog = program === undefined || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
     const flip = (track.isPercussion === true) !== drums;
-    if (!flip && Object.is(track.instrumentProgram, prog)) return;
+    // A bank preset keeps its bank and bank select; a bare program is the bundled bank's bank 0.
+    const bankId = prog !== undefined && sound && sound.bankId !== BUNDLED_BANK_ID ? sound.bankId : undefined;
+    const bank = prog !== undefined && sound && sound.bank > 0 ? Math.max(0, Math.min(127, Math.round(sound.bank))) : undefined;
+    if (!flip && Object.is(track.instrumentProgram, prog) && track.instrumentBankId === bankId && track.instrumentBank === bank && !track.externalOnly) return;
     coalesceAs(null);
     set((s) => ({
-      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog } : t)),
+      // A voice of theDAW's ends external-only playing: the track sounds through its instrument again.
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog, instrumentBank: bank, instrumentBankId: bankId, externalOnly: undefined } : t)),
       // A flip clears each clip's own program, and the bank that program was chosen in (lib/clipProgram clipBank).
       clips: flip
-        ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined, instrumentBank: undefined } : c))
+        ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined } : c))
         : s.clips,
     }));
     if (flip) {
@@ -2201,8 +2233,9 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     if (!track || (track.isPercussion === true) === on) return;
     coalesceAs(null);
     set((s) => ({
-      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: on ? true : undefined, instrumentProgram: undefined } : t)),
-      clips: s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)),
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: on ? true : undefined, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined } : t)),
+      // Each clip's own program goes, with the bank it was picked in (lib/clipProgram clipBank).
+      clips: s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined, instrumentBank: undefined, instrumentBankId: undefined } : c)),
     }));
   },
 

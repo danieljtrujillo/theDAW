@@ -38,6 +38,8 @@ import type { RollRenderBends } from './pitchBend';
 import { clipRenderInput } from './rollClip';
 import { stepClock } from './rollTempo';
 import type { TempoEvent } from './tempoMap';
+import { getProjectTuning } from '../state/tuningStore';
+import { tuningSignature } from './tuning';
 
 /** lib/midiSynth renderStepNotesToBlob, injected so node tests render without Web Audio. */
 export type MidiStepRender = (
@@ -153,6 +155,11 @@ export function midiRenderSig(clip: MidiRenderSource): string {
     ...(controls?.length ? [controls.map((c) => [c.tick, c.controller, c.value])] : []),
   ]);
   const parts = [hashNotes(clip.sourcePianoRoll), hashNotes(clip.sourceRollNotes), fnv1a(small)];
+  // A render in a tuning other than A = 440 equal temperament names it, so a
+  // tuning change renders the clip again; standard tuning adds nothing, so
+  // every render made before project tuning keeps its signature.
+  const tuning = tuningSignature(getProjectTuning());
+  if (tuning) parts.push(fnv1a(tuning));
   return parts.map((p) => p.toString(16).padStart(8, '0')).join('');
 }
 

@@ -10,7 +10,8 @@
  * planned the way play() plans it, and the scheduler is ticked; every
  * note-on hands the sink the part's LSB. Picking another instrument in EDIT
  * (which drops the clip's bank) plays it with no LSB. Then the synth side:
- * the controller messages the live synth gets before each program change.
+ * the controller messages the live synth gets before each program change:
+ * CC 0 and CC 32 before every one.
  *
  *   cd frontend && npx tsx src/lib/editMidiScheduler.bankLsb.test.ts
  */
@@ -124,10 +125,13 @@ ed().updateClip(clipId, { instrumentProgram: 60, instrumentBank: 1 });
   assert.deepEqual(lsbOnly.controllers, [[0, 1], [32, 4]], 'a new LSB selects the bank again');
   const cleared = programSwitch(first.key, 56, 0);
   assert.deepEqual(cleared.controllers, [[0, 0], [32, 0]], 'a part with no LSB clears the one the channel holds');
+  // Every program change carries its whole bank select, so the preset never depends on what the channel was left with.
   const plain = programSwitch(undefined, 40, 0);
-  assert.deepEqual([plain.controllers, plain.program], [[], 40], 'the General MIDI set: a program change alone');
+  assert.deepEqual([plain.controllers, plain.program], [[[0, 0], [32, 0]], 40], 'the General MIDI set: CC 0 and CC 32 at 0, then the program');
   const msbOnly = programSwitch(plain.key, 40, 2);
-  assert.deepEqual(msbOnly.controllers, [[0, 2]], 'no LSB anywhere: CC 0 alone, as before');
+  assert.deepEqual(msbOnly.controllers, [[0, 2], [32, 0]], 'no LSB anywhere: CC 32 goes out as 0');
+  const again = programSwitch(msbOnly.key, 41, 2);
+  assert.deepEqual([again.controllers, again.program], [[[0, 2], [32, 0]], 41], 'a new program in the same bank still sends the bank select');
 }
 
 console.log('editMidiScheduler.bankLsb: ok');
