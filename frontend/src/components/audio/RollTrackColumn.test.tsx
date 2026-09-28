@@ -11,6 +11,10 @@
  * Every control is checked for its label: the native fields by <label for>,
  * the keys by aria-label and aria-pressed.
  *
+ * The notes draw on a canvas (RollNotesCanvas): the counts it drew sit on the
+ * canvas as data attributes, and a recording 2D context stands in for the
+ * browser's so the ghost colour is read off the real paint calls.
+ *
  * Client-rendered (createRoot on jsdom), in the MidiPanel.test.tsx pattern.
  *
  *   cd frontend && npx tsx src/components/audio/RollTrackColumn.test.tsx
@@ -73,7 +77,43 @@ const setValue = (el: HTMLInputElement | HTMLSelectElement, value: string) => {
   Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, value);
   el.dispatchEvent(new win.Event(el instanceof win.HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
 };
-const ghostRects = () => win.document.querySelectorAll('[data-ghost-notes] rect').length;
+/** A 2D context that records each fill: its style, strength and the rects in the path. A paint starts with clearRect. */
+class RecordingContext {
+  fillStyle: unknown = '';
+  strokeStyle: unknown = '';
+  globalAlpha = 1;
+  lineWidth = 1;
+  path: number[][] = [];
+  fills: { style: string; alpha: number; rects: number[][] }[] = [];
+  beginPath() { this.path = []; }
+  rect(x: number, y: number, w: number, h: number) { this.path.push([x, y, w, h]); }
+  fill() { this.fills.push({ style: String(this.fillStyle), alpha: this.globalAlpha, rects: [...this.path] }); }
+  stroke() {}
+  fillRect(x: number, y: number, w: number, h: number) { this.fills.push({ style: String(this.fillStyle), alpha: this.globalAlpha, rects: [[x, y, w, h]] }); }
+  clearRect() { this.fills = []; }
+  setTransform() {}
+}
+const contexts = new WeakMap<object, RecordingContext>();
+Object.defineProperty(win.HTMLCanvasElement.prototype, 'getContext', {
+  configurable: true,
+  value(this: object) {
+    let ctx = contexts.get(this);
+    if (!ctx) {
+      ctx = new RecordingContext();
+      contexts.set(this, ctx);
+    }
+    return ctx;
+  },
+});
+const notesCanvas = () => q<HTMLCanvasElement>('canvas[data-roll-notes]');
+const ghostRects = () => Number(notesCanvas()?.dataset.ghosts ?? 0);
+const drawnNotes = () => Number(notesCanvas()?.dataset.notes ?? 0);
+/** The rects the last paint filled in `color`. */
+const filledIn = (color: string) => {
+  const canvas = notesCanvas();
+  const ctx = canvas ? contexts.get(canvas) : undefined;
+  return (ctx?.fills ?? []).filter((f) => f.style === color).reduce((n, f) => n + f.rects.length, 0);
+};
 
 const host = win.document.createElement('div');
 win.document.body.appendChild(host);
@@ -112,7 +152,7 @@ const secondId = roll().activeTrackId;
 assert.notEqual(secondId, firstId, 'the new part is the one being edited');
 assert.equal(win.document.querySelectorAll('[data-roll-part]').length, 2, 'two rows');
 assert.equal(ghostRects(), 3, "the first part's three notes draw as ghosts");
-assert.equal(win.document.querySelectorAll('[data-piano-note]').length, 0, 'the new part has no notes of its own');
+assert.equal(drawnNotes(), 0, 'the new part has no notes of its own');
 
 // Rename it and give it the viola.
 await step(() => setValue(field<HTMLInputElement>('roll-part-name', /Name/), 'Viola 1'));
@@ -147,9 +187,9 @@ assert.deepEqual(roll().tracks.map((t) => t.solo), [false, false], 'and again cl
 // Back to the first part: its notes in the grid, the viola's as a ghost.
 await step(() => key('Edit part Part 1, Roll voice, 3 notes').click());
 assert.equal(roll().activeTrackId, firstId);
-assert.equal(win.document.querySelectorAll('[data-piano-note]').length, 3);
+assert.equal(drawnNotes(), 3);
 assert.equal(ghostRects(), 1, "the viola's note is a ghost");
-assert.equal(q(`[data-ghost-part="${secondId}"] rect`)?.getAttribute('fill') ?? q(`[data-ghost-part="${secondId}"]`)?.getAttribute('fill'), viola.color, 'in the viola’s colour');
+assert.equal(filledIn(viola.color), 1, 'in the viola’s colour');
 
 // GHOSTS off and on.
 await step(() => key('Ghost notes: draw the other parts behind this one').click());

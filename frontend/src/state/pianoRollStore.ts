@@ -4,6 +4,7 @@ import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from '../lib/noteClock';
 import {
   DEFAULT_BEND_RANGE,
   MAX_BENT_LANES,
+  MAX_BEND_STEP,
   bentLanes,
   capBentLanes,
   clampBendRange,
@@ -578,7 +579,10 @@ interface RollHistorySnapshot {
 const DEFAULT_STEPS = 256;
 
 const MIN_STEPS = 16;
-const MAX_STEPS = 4096; // ~256 bars; enough for full-song MIDI imports
+// The roll's longest grid: 65,536 sixteenths, 4,096 bars of 4/4, a symphony
+// movement. It is the bend lane's MAX_BEND_STEP, so the two limits never part:
+// a bend point can sit wherever a note can.
+const MAX_STEPS = MAX_BEND_STEP;
 /** The longest the roll grows: a paste past it leaves out the notes that start beyond it. */
 export const MAX_ROLL_STEPS = MAX_STEPS;
 const EPS = 1e-9;

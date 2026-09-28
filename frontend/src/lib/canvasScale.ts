@@ -75,6 +75,20 @@ export function effectiveZoom(el: Element | null | undefined): number {
   return isFinitePositive(zoom) ? zoom : 1;
 }
 
+/**
+ * A client point (`event.clientX` / `clientY`) in `el`'s own LOCAL css px,
+ * from the top-left of its border box. The point and `el`'s rect are both
+ * viewport px, so their difference is divided by the cumulative CSS zoom:
+ * the space `style.left`, `scrollLeft` and every length drawn inside `el`
+ * speak. Skipping the division puts a pointer at 1920x1080 (zoom 1.1) a tenth
+ * further from the element's left edge than it is.
+ */
+export function clientToLocal(el: Element, clientX: number, clientY: number): { x: number; y: number } {
+  const rect = el.getBoundingClientRect();
+  const zoom = effectiveZoom(el);
+  return { x: (clientX - rect.left) / zoom, y: (clientY - rect.top) / zoom };
+}
+
 /** Pure arithmetic behind {@link measureCanvasBox}; exported for tests. */
 export function computeCanvasBox(
   rectWidth: number,

@@ -80,8 +80,13 @@ export const WHEEL_STEP_CENTS = 3.125;
 export const BEND_IMPORT_CENTS = 3;
 /** Linear pieces a `smooth` segment is scheduled as on a Web Audio parameter. */
 export const SMOOTH_SEGMENTS = 16;
-/** The furthest step a bend point may sit at (the roll's longest grid). */
-export const MAX_BEND_STEP = 4096;
+/**
+ * The furthest step a bend point may sit at: the roll's longest grid, 65,536
+ * sixteenths (4,096 bars of 4/4, about 68 minutes at 60 BPM), enough for a
+ * symphony movement. The roll's MAX_ROLL_STEPS is this same number, so a bend
+ * point can sit anywhere a note can.
+ */
+export const MAX_BEND_STEP = 65536;
 /** MIDI channels a file gives lanes, in the order lanes take them. Zero-based channel 9 (MIDI channel 10, General MIDI drums) is skipped. */
 export const BEND_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
 /**
@@ -158,7 +163,7 @@ const shapeOf = (shape: unknown): BendShape => ((SHAPES as readonly unknown[]).i
 
 /**
  * Sorted by step, one point per step (the later one in the list wins), steps 0
- * to 4096, values -1 to 1, a shape on every point. A point with no id, or an id
+ * to MAX_BEND_STEP, values -1 to 1, a shape on every point. A point with no id, or an id
  * already taken, gets `<idPrefix>-<index>`.
  */
 export function sanitizeBendPoints(points: readonly Partial<BendPointInput>[] | null | undefined, idPrefix = 'bp'): BendPoint[] {
