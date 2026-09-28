@@ -174,7 +174,10 @@ export function onClipRenderHandedBack(listener: () => void): () => void {
 /** True while another path owns `clipId`'s render. */
 export const clipRenderClaimed = (clipId: string): boolean => claimedRenders.has(clipId);
 
-type VoiceClip = Pick<AudioClip, 'id' | 'trackId' | 'sourceKind' | 'sourcePianoRoll' | 'instrumentProgram' | 'renderedProgram' | 'renderedPercussion'>;
+type VoiceClip = Pick<
+  AudioClip,
+  'id' | 'trackId' | 'sourceKind' | 'sourcePianoRoll' | 'instrumentProgram' | 'instrumentBank' | 'renderedProgram' | 'renderedPercussion' | 'renderedBank'
+>;
 type VoiceTrack = Pick<EditorTrack, 'id' | 'instrumentProgram' | 'isPercussion'>;
 
 /**
@@ -187,7 +190,7 @@ export function midiClipVoiceSig(clips: readonly VoiceClip[], tracks: readonly V
     .filter((c) => c.sourceKind === 'piano-roll')
     .map((c) => {
       const v = clipVoice(c, tracks.find((t) => t.id === c.trackId), global);
-      return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
+      return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}b${v.bank ?? 0}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}b${c.renderedBank ?? 0}`;
     })
     .join('|');
 }
