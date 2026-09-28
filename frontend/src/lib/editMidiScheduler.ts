@@ -86,10 +86,15 @@
  * clear the queue. So `stop()` answers every note-on still waiting in the
  * queue with a note-off at the same time (the queue is stable, so the off runs
  * after the on), which ends that voice at the synth's shortest note. A pass
- * that starts while those cancels are still queued (a seek) strikes a note of
- * its own again right after a cancel that would cut it, and holds its wheel
- * messages on a channel until the last stale one has passed. The lookahead is
- * short while the page is visible so that window stays small (liveMixer).
+ * that starts while those pairs are still queued (a seek) sends its own notes
+ * as they are: SpessaSynth gives each note-on of a key a note id and ends the
+ * OLDEST sounding one of that key at each note-off, so a stale pair adds one
+ * voice and takes one away. A note of the new pass sounding when the pair comes
+ * goes on as the stale note's voice (struck again there) and its own note-off
+ * ends it; striking it again after the cancel would leave a voice more than
+ * note-offs, sounding until the next stop. The pass holds its wheel messages on
+ * a channel until the last stale one has passed. The lookahead is short while
+ * the page is visible so that window stays small (liveMixer).
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -431,8 +436,6 @@ export class EditMidiScheduler {
   private endAt: () => number = () => Infinity;
   private sounding: Sounding[] = [];
   private queued: Queued[] = [];
-  /** Note-offs `stop()` queued to cancel a note-on, still ahead of the clock. */
-  private cancels: Queued[] = [];
   /** Per channel: the latest wheel or range message queued, so a new pass's wheel waits for it. */
   private ctlQueued = new Map<number, number>();
   private ctlFloor = new Map<number, number>();
@@ -491,9 +494,8 @@ export class EditMidiScheduler {
     this.lastLive = new Set();
     this.counts = { notes: 0, chased: 0, late: 0, skipped: 0 };
     // A wheel message of this pass on a channel waits until the last stale one
-    // queued there has passed; a cancel only matters while it is still queued.
+    // queued there has passed.
     this.ctlFloor = new Map([...this.ctlQueued].filter(([, t]) => t > now));
-    this.cancels = this.cancels.filter((c) => c.time > now);
     this.queued = [];
     this.running = true;
     this.first = true;
@@ -511,7 +513,6 @@ export class EditMidiScheduler {
     for (const q of this.queued) {
       if (q.time <= now) continue;
       this.deps.sink.noteOff(q.channel, q.midi, q.time);
-      this.cancels.push(q);
     }
     this.queued = [];
     this.sounding = [];
@@ -554,7 +555,6 @@ export class EditMidiScheduler {
     const first = this.first;
     this.first = false;
     this.queued = this.queued.filter((q) => q.time > now);
-    this.cancels = this.cancels.filter((c) => c.time > now);
 
     const clips = this.deps.clips();
     const tracks = this.deps.tracks();
@@ -604,12 +604,6 @@ export class EditMidiScheduler {
         this.sounding.splice(i, 1);
       }
       out.push({ time, order: 1, send: () => sink.noteOn(channel, program, n.midi, n.velocity, time, bank) });
-      // A cancel `stop()` left for this key, still ahead: strike this note again right after it.
-      for (const c of this.cancels) {
-        if (c.channel !== channel || c.midi !== n.midi || c.time < time - EPS) continue;
-        const again = c.time;
-        out.push({ time: again, order: 1, send: () => sink.noteOn(channel, program, n.midi, n.velocity, again, bank) });
-      }
       if (time > now) this.queued.push({ channel, midi: n.midi, time });
       this.sounding.push({ clipId, channel, midi: n.midi, off: n.off });
       this.counts.notes += 1;

@@ -366,7 +366,34 @@ run('nothing is scheduled at or past the loop end', () => {
   assert.deepEqual(on, [60], 'only the note before the loop end');
 });
 
-run('stop cancels queued note-ons; a seek strikes its own note again after a cancel that would cut it', () => {
+/**
+ * The voices still sounding on each key once every message has played, as
+ * SpessaSynth's queue plays them: in time order (a stable sort, so messages at
+ * one time keep the order they were sent in), each note-off ending the OLDEST
+ * sounding note-on of its channel and key (SpessaSynth's note ids). Each of
+ * `stops` is liveMixer's editAllNotesOff after a stop: every voice sounding at
+ * its time ends, and the messages still queued stay queued.
+ */
+function voicesLeft(msgs: readonly Msg[], stops: ReadonlyArray<{ index: number; t: number }> = []): Array<[string, number]> {
+  const events: Array<{ t: number; i: number; m: Msg | null }> = msgs.map((m, i) => ({ t: m.t, i, m }));
+  for (const s of stops) events.push({ t: s.t, i: s.index - 0.5, m: null });
+  events.sort((a, b) => a.t - b.t || a.i - b.i);
+  const sounding = new Map<string, number>();
+  for (const e of events) {
+    if (!e.m) {
+      sounding.clear();
+      continue;
+    }
+    if (e.m.k !== 'on' && e.m.k !== 'off') continue;
+    const k = `${e.m.ch}:${e.m.midi}`;
+    const n = sounding.get(k) ?? 0;
+    if (e.m.k === 'on') sounding.set(k, n + 1);
+    else if (n > 0) sounding.set(k, n - 1);
+  }
+  return [...sounding].filter(([, n]) => n > 0);
+}
+
+run('stop cancels queued note-ons; a seek back strikes its own note once, and no voice is left sounding', () => {
   ed().loadProject({ tracks: [], clips: [] });
   const t0 = ed().tracks[0].id;
   ed().updateTrack(t0, { instrumentProgram: 40 });
@@ -381,13 +408,48 @@ run('stop cancels queued note-ons; a seek strikes its own note again after a can
   sched.stop();
   const cancel = offs(msgs).find((m) => m.midi === 60)!;
   near(cancel.t, queued.t, 1e-12, 'a note-off at the queued note-on\'s own time');
+  const stops = [{ index: msgs.length, t: clock.t }];
   // Seek back 0.02 s while the cancel is still queued: the pass's own note at the
-  // same key falls before the cancel, so it is struck again right after it.
+  // same key falls before the cancel. The stale note-on and its cancel add one
+  // voice and end one, so the note goes on (as the stale voice from the
+  // cancel's time) and its own note-off ends it. A second strike after the
+  // cancel was one voice more than note-offs: SpessaSynth pairs a note-off with
+  // the oldest note-on of its key, so that voice sounded until the next stop.
   const n0 = msgs.length;
   sched.start(passOf(), 8 * STEP - 0.02, clock.t);
-  const again = ons(msgs.slice(n0)).filter((m) => m.midi === 60);
-  assert.equal(again.length, 2, 'struck, then struck again after the cancel');
-  assert.ok(again[1].t >= cancel.t - 1e-12);
+  const struck = ons(msgs.slice(n0)).filter((m) => m.midi === 60);
+  assert.equal(struck.length, 1, 'the note is struck once');
+  near(struck[0].t, clock.t + 0.02, 1e-9, 'at its own time');
+  assert.ok(struck[0].t < cancel.t, 'before the cancel still queued');
+  clock.t += 1;
+  sched.tick();
+  assert.deepEqual(voicesLeft(msgs, stops), [], 'once the note is over, no voice of it sounds');
+});
+
+run('a seek to where the playhead is strikes each queued note once, and leaves no voice sounding', () => {
+  ed().loadProject({ tracks: [], clips: [] });
+  const t0 = ed().tracks[0].id;
+  ed().updateTrack(t0, { instrumentProgram: 40 });
+  // Two notes a 16th apart (1 s and 1.125 s), both inside the lookahead when the seek comes.
+  addMidi(t0, { startSec: 0, durationSec: 8, sourcePianoRoll: [note('a', 60, 8, 4), note('b', 64, 9, 4)] });
+  const { clock, msgs, sched } = rig({ lookahead: 0.25 });
+  // Binary fractions, so the old and the new pass put each note on the very same context time.
+  clock.t = 100;
+  sched.start(passOf(), 0, 100);
+  clock.t = 100.9375;
+  sched.tick();
+  assert.equal(ons(msgs).length, 2, 'both notes queued ahead of the clock');
+  sched.stop();
+  assert.equal(offs(msgs).length, 2, 'both cancelled');
+  const stops = [{ index: msgs.length, t: clock.t }];
+  const n0 = msgs.length;
+  // The seek lands on the transport second the playhead is at: each note falls on its cancel's time.
+  sched.start(passOf(), 0.9375, clock.t);
+  const again = ons(msgs.slice(n0));
+  assert.deepEqual(again.map((m) => [m.midi, m.t]), [[60, 101], [64, 101.125]], 'each note struck once, at its own time');
+  clock.t += 2;
+  sched.tick();
+  assert.deepEqual(voicesLeft(msgs, stops), [], 'once both are over, no voice sounds');
 });
 
 // ── 7. Status for the header ─────────────────────────────────────────────────
