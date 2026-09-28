@@ -9,23 +9,24 @@
  *
  * This worker runs the exact same {@link analyzeChannels} function the
  * in-process path runs, on transferred COPIES of the buffer's channel data,
- * so the result is identical arithmetic on identical `Float32Array`s. The
- * main thread's job is reduced to one copy per channel.
+ * so the result is identical arithmetic on identical `Float32Array`s.
+ *
+ * It keeps the channel data of the LAST buffer it analysed for
+ * {@link WORKER_RETAIN_MS}, so another analysis of the same audio (a resize
+ * or a zoom that changes the bin count, a `normalize` flip) arrives without
+ * any channel data and costs the main thread no copy. A request for audio it
+ * no longer holds is answered `missing`, and the main thread sends it.
  *
  * Instantiated lazily by `djSemanticWaveformAnalysis.analyzeBufferAsync`;
  * where `Worker` does not exist (node/tsx tests, inside a worker) that module
  * falls back to the synchronous path and this file is never loaded.
  */
-import { analyzeChannels, type AnalyzeResponse } from './djSemanticWaveformAnalysis';
-
-type AnalyzeRequest = {
-  id: number;
-  channels: Float32Array[];
-  length: number;
-  sampleRate: number;
-  bins: number;
-  normalize: boolean;
-};
+import {
+  WORKER_RETAIN_MS,
+  analyzeChannels,
+  type AnalyzeRequest,
+  type AnalyzeResponse,
+} from './djSemanticWaveformAnalysis';
 
 /** The worker globals this file uses. Declared structurally rather than as
  *  `DedicatedWorkerGlobalScope`: the project's `lib` is the DOM one, and
@@ -37,11 +38,37 @@ type WorkerScope = {
 
 const scope = self as unknown as WorkerScope;
 
+type HeldAudio = { dataKey: string; channels: Float32Array[]; length: number; sampleRate: number };
+let held: HeldAudio | null = null;
+let dropTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Keep `held` for another {@link WORKER_RETAIN_MS}, then let it go. */
+function keepHeld(): void {
+  if (dropTimer !== null) clearTimeout(dropTimer);
+  dropTimer = setTimeout(() => {
+    dropTimer = null;
+    held = null;
+  }, WORKER_RETAIN_MS);
+}
+
 scope.onmessage = (event: MessageEvent<AnalyzeRequest>) => {
-  const { id, channels, length, sampleRate, bins, normalize } = event.data;
+  const request = event.data;
+  if (request.type === 'drop') {
+    if (request.dataKey === null || held?.dataKey === request.dataKey) held = null;
+    return;
+  }
+  const { id, dataKey, channels, length, sampleRate, bins, normalize } = request;
+  if (channels) {
+    held = { dataKey, channels, length, sampleRate };
+  } else if (held?.dataKey !== dataKey) {
+    scope.postMessage({ id, missing: true });
+    return;
+  }
+  keepHeld();
+  const audio = held as HeldAudio;
   let response: AnalyzeResponse;
   try {
-    response = { id, bins: analyzeChannels(channels, length, sampleRate, bins, normalize) };
+    response = { id, bins: analyzeChannels(audio.channels, audio.length, audio.sampleRate, bins, normalize) };
   } catch (err) {
     response = { id, error: err instanceof Error ? err.message : 'waveform analysis failed' };
   }

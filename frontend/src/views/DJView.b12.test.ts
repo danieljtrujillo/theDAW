@@ -95,6 +95,7 @@ const { useDjSampler } = await import('../state/djSamplerStore.ts');
 uninstallJsdomGlobals();
 
 const {
+  automixKeylockStep,
   automixTransitionDue,
   automixTransitionSteps,
   samplerLoopToggle,
@@ -137,7 +138,7 @@ const {
 
 /* ------------------------------ automixTransitionSteps ------------------------------ */
 {
-  const steps = automixTransitionSteps('B', 12.5);
+  const steps = automixTransitionSteps('B', 12.5, { masterPlaying: true, keylock: null });
   assert.deepEqual(
     steps,
     [
@@ -154,11 +155,38 @@ const {
 
   // The other deck is addressed throughout, and the cue-in point is carried
   // through untouched (0 is a legitimate cue-in, not "unset").
-  assert.deepEqual(automixTransitionSteps('A', 0), [
+  assert.deepEqual(automixTransitionSteps('A', 0, { masterPlaying: true, keylock: null }), [
     { type: 'seek', deck: 'A', to: 0 },
     { type: 'play', deck: 'A' },
     { type: 'sync', deck: 'A' },
   ]);
+
+  // Key-lock is set BEFORE play (PR #207 review): engaging it swaps the
+  // insert and moves this deck's delay line, silent on a deck that has not
+  // started and a warble on one that has.
+  const locked = automixTransitionSteps('B', 0, { masterPlaying: true, keylock: true });
+  assert.deepEqual(locked.map((s) => s.type), ['seek', 'keylock', 'play', 'sync']);
+  assert.deepEqual(locked[1], { type: 'keylock', deck: 'B', on: true });
+  assert.deepEqual(automixTransitionSteps('B', 0, { masterPlaying: true, keylock: false })[1], { type: 'keylock', deck: 'B', on: false });
+
+  // The dead-air rescue: the outgoing deck is not playing, so there is
+  // nothing to sync to. With one deck playing syncDeck picks the STOPPED one
+  // as its follower, so the rescue used to pitch the finished outgoing deck.
+  assert.deepEqual(
+    automixTransitionSteps('A', 0, { masterPlaying: false, keylock: null }).map((s) => s.type),
+    ['seek', 'play'],
+    'no sync without a playing master',
+  );
+}
+
+/* ------------------------------ automixKeylockStep ------------------------------ */
+{
+  assert.equal(automixKeylockStep({ pullPct: 4, masterPlaying: true, lockedByAutomix: false }), true, 'a real pull engages');
+  assert.equal(automixKeylockStep({ pullPct: -4, masterPlaying: true, lockedByAutomix: false }), true, 'either direction');
+  assert.equal(automixKeylockStep({ pullPct: 2, masterPlaying: true, lockedByAutomix: true }), false, 'a small pull releases a lock automix owns');
+  assert.equal(automixKeylockStep({ pullPct: 2, masterPlaying: true, lockedByAutomix: false }), null, 'and leaves the DJ\'s own lock alone');
+  assert.equal(automixKeylockStep({ pullPct: 8, masterPlaying: false, lockedByAutomix: false }), null,
+    'the rescue has no playing master, so no pull to compensate');
 }
 
 /* ------------------------------ source: syncDeckRef, never a bare syncDeck(nxt) ------------------------------
@@ -294,7 +322,7 @@ const {
   const seed = automix.slice(automix.indexOf('const curEntry ='), automix.indexOf('const id = window.setInterval'));
 
   // fix 1 — the bass swap runs on every tick of the fade, per deck.
-  assert.ok(/eqSwap\(progress\)/.test(interval), 'the fade computes an EQ swap from its progress');
+  assert.ok(/eqSwap\(step\.progress\)/.test(interval), 'the fade computes an EQ swap from its progress (blendTick)');
   assert.ok(/setDeckEq\((cur|nxt), 'low'/.test(interval), 'and pushes it to the deck EQ (setDeckEq was never called here before)');
   assert.equal((interval.match(/setDeckEq\(/g) ?? []).length >= 4, true,
     'both decks during the fade, and both restored when it finishes');
@@ -318,7 +346,7 @@ const {
   // gone — but only a lock they engaged themselves. The release half and the
   // ownership flag are pinned in the DJ-5 review block below; the original
   // intent here is unchanged: key-lock follows the size of the pitch pull.
-  assert.ok(/setDeckKeylock\(nxt, true\)/.test(interval), 'key-lock engages for the automix follower on a real pull');
+  assert.ok(/setDeckKeylock\(step\.deck, true\)/.test(interval), 'key-lock engages for the automix follower on a real pull');
   assert.ok(/setDeckKeylock\(follower, true\)/.test(sync), 'and for a manual SYNC');
   assert.ok(/KEYLOCK_PITCH_PCT/.test(interval) && /KEYLOCK_PITCH_PCT/.test(sync), 'both off the same threshold');
 
@@ -330,9 +358,17 @@ const {
   assert.ok(/const now = cs\.ctxTime/.test(interval), 'the fade is timed off the AudioContext clock');
   assert.ok(!/performance\.now\(\)/.test(code(interval)), 'THE BUG: performance.now() skews against the audio it is fading');
 
-  // fix 7 — the fade always lands exactly on its destination.
-  assert.ok(/applyCrossfade\(fadeStep\(/.test(interval), 'the fader position comes from fadeStep');
-  assert.ok(/applyCrossfade\(mix\.fadeTo\)/.test(interval), 'and the swap branch writes the destination outright');
+  // fix 7 — the fade always lands exactly on its destination. The position
+  // comes from blendTick (which runs fadeStep, and holds the fade while a deck
+  // is paused), and the swap writes the destination outright.
+  assert.ok(/blendTick\(mix\.blend, now, outRun, inRun, AUTOMIX_RESCUE_XFADE\)/.test(interval), 'the fade is stepped by blendTick');
+  assert.ok(/applyCrossfade\(step\.fader\)/.test(interval), 'the fader position comes from it');
+  assert.ok(/applyCrossfade\(mix\.blend\.fadeTo\)/.test(interval), 'and the swap branch writes the destination outright');
+  // PR #207 review: the swap used to run on `progress >= 1 || !outPlaying`,
+  // which cut the rescue's fade off (its outgoing deck is already stopped)
+  // and handed a paused blend over. Only blendTick's `finish` swaps now.
+  assert.ok(/if \(step\.action === 'finish'\)/.test(interval), 'the swap waits for the fade to finish');
+  assert.ok(!/progress >= 1 \|\| !outPlaying/.test(code(interval)), 'THE BUG: a stopped outgoing deck swapped mid-fade');
 
   // fix 8/11 — the seed block owns both the fader normalisation and the wait
   // for analysis before the first track starts.
@@ -355,8 +391,9 @@ const {
     'the effect teardown puts both decks\' low EQ back');
   assert.ok(/setSyncLock\(null\)/.test(teardown), 'and drops the PLL it armed');
 
-  // fix 10 — the next track may be chosen harmonically.
-  assert.ok(/chooseNextIndex\(/.test(automix), 'the next track goes through the harmonic chooser');
+  // fix 10 — the next track may be chosen harmonically, through the run's
+  // queue (lib/djAutomixPlan createAutomixQueue), behind the persisted toggle.
+  assert.ok(/createAutomixQueue\(/.test(automix), 'the next track goes through the harmonic queue');
   assert.ok(/preferHarmonic/.test(automix), 'behind a flag');
 }
 
@@ -397,10 +434,13 @@ const {
   assert.ok(seed.indexOf('AUTOMIX_LOAD_TIMEOUT_MS') < seed.indexOf('if (!st.hasBuffer'),
     'THE BUG: the no-buffer branch returned before any deadline was ever checked');
 
-  // 6 — no cast onto a store field that does not exist.
+  // 6 — no cast onto a store field that does not exist. The store has one
+  // now (djAutomixPrefsStore, the "Harmonic order" toggle), so the local
+  // constant that stood in for it is gone.
   assert.ok(!/as \{ preferHarmonic/.test(automix),
     'THE BUG: preferHarmonic was read through a cast on a non-existent store field');
-  assert.ok(/PREFER_HARMONIC/.test(automix), 'a named local constant carries it until the store has one');
+  assert.ok(/useDjAutomixPrefs\.getState\(\)\.preferHarmonic/.test(automix), 'the sequencer reads the persisted toggle');
+  assert.ok(!/PREFER_HARMONIC/.test(code(automix)), 'no hard-wired constant is left');
 
   // 7 — the shared frozen empties cannot be mutated through the status type.
   const engine = readFileSync(fileURLToPath(new URL('../state/djEngine.ts', import.meta.url)), 'utf8');
@@ -514,10 +554,12 @@ const {
   // track. Both sync paths must write the boolean, not just the `true` case.
   assert.ok(/setDeckKeylock\(follower, false\)/.test(sync),
     'syncDeck releases key-lock once the pull no longer warrants it');
-  assert.ok(/setDeckKeylock\(nxt, false\)/.test(interval),
-    'the automix post-play key-lock releases it too');
+  // The automix site now sets key-lock BEFORE play (PR #207 review), from
+  // the pull the tempo match will need, through automixKeylockStep.
+  assert.ok(/setDeckKeylock\(step\.deck, false\)/.test(interval),
+    'the automix key-lock step releases it too');
   assert.ok(/const want = Math\.abs\(pct\) > KEYLOCK_PITCH_PCT/.test(sync)
-    && /const want = Math\.abs\(followerPitch\) > KEYLOCK_PITCH_PCT/.test(interval),
+    && /automixKeylockStep\(\{\s*pullPct: pull\.appliedPct/.test(interval),
     'THE BUG: key-lock was only ever turned ON — both sites now decide from the pull itself');
 
   // 4 — …but a key-lock the USER engaged by hand is not automix's to release.
@@ -527,7 +569,7 @@ const {
   // is left exactly as the user set it.
   assert.ok(/autoKeylockRef\.current\[follower\]/.test(sync),
     'syncDeck only releases a key-lock it engaged itself');
-  assert.ok(/autoKeylockRef\.current\[nxt\]/.test(interval),
+  assert.ok(/lockedByAutomix: autoKeylockRef\.current\[nxt\]/.test(interval),
     'and the automix site only releases its own too');
   // …and it only CLAIMS one it actually engaged. `setDeckKeylock` early-returns
   // when the deck is already locked (djEngine.ts: `if (d.keylock === on)
@@ -537,8 +579,8 @@ const {
   assert.ok(/const wasOn = djEngine\.getStatus\(follower\)\.keylock/.test(sync)
     && /if \(!wasOn\) autoKeylockRef\.current\[follower\] = true/.test(sync),
     'syncDeck claims ownership only when the engine lock was actually OFF');
-  assert.ok(/const wasOn = djEngine\.getStatus\(nxt\)\.keylock/.test(interval)
-    && /if \(!wasOn\) autoKeylockRef\.current\[nxt\] = true/.test(interval),
+  assert.ok(/const wasOn = djEngine\.getStatus\(step\.deck\)\.keylock/.test(interval)
+    && /if \(!wasOn\) autoKeylockRef\.current\[step\.deck\] = true/.test(interval),
     'and so does the automix site (THE BUG: both claimed unconditionally on a >3 % pull)');
   const keylockToggle = src.slice(src.indexOf('setKeylock: (on: boolean)'), src.indexOf('setSlip: (on: boolean)'));
   assert.ok(keylockToggle.length > 0 && keylockToggle.length < 600, 'found the deck Key-Lock toggle handler');

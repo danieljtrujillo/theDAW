@@ -1,10 +1,16 @@
 import asyncio
 import uuid
-import time
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
+from backend.lib.stamps import IncreasingClock
+
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
+
+# created_at / updated_at, strictly increasing: _prune_jobs evicts the least
+# recently updated first, and jobs updated in one 15.6 ms tick of Windows'
+# clock tied (backend/lib/stamps.py).
+_stamp = IncreasingClock()
 
 
 @dataclass
@@ -15,8 +21,8 @@ class Job:
     status: JobStatus = "queued"
     progress: float = 0.0
     message: str = ""
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=_stamp)
+    updated_at: float = field(default_factory=_stamp)
     result: Optional[dict] = None
     error: Optional[str] = None
     _subscribers: list = field(default_factory=list, repr=False)
@@ -33,7 +39,7 @@ class Job:
             self.progress = progress
         if message:
             self.message = message
-        self.updated_at = time.time()
+        self.updated_at = _stamp()
         payload = dict(status=self.status, progress=self.progress, message=self.message)
         for q in self._subscribers:
             q.put_nowait(payload)

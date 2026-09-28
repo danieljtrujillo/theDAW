@@ -12,7 +12,8 @@
  * alpha in [0, 1]; `barWidthPx` is the bar-line width in local CSS px.
  */
 import { create } from 'zustand';
-import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /** Identical to `WheelProfileId` in lib/timeline/viewport.ts. */
 export type WheelProfileId = 'thedaw' | 'reaper';
@@ -156,27 +157,6 @@ export function sanitizeTimelinePrefs<S extends PrefsData>(persisted: unknown, c
   };
 }
 
-// Node (tests) and locked-down browsers have no usable localStorage; fall back
-// to an in-memory map so the store still works and persist never warns.
-const memory = new Map<string, string>();
-const memoryStorage: StateStorage = {
-  getItem: (k) => memory.get(k) ?? null,
-  setItem: (k, v) => {
-    memory.set(k, v);
-  },
-  removeItem: (k) => {
-    memory.delete(k);
-  },
-};
-function backend(): StateStorage {
-  try {
-    if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
-  } catch {
-    /* access denied (sandboxed iframe, privacy mode) */
-  }
-  return memoryStorage;
-}
-
 export const useTimelinePrefs = create<TimelinePrefsState>()(
   persist(
     (set) => ({
@@ -216,7 +196,7 @@ export const useTimelinePrefs = create<TimelinePrefsState>()(
     {
       name: 'thedaw.timelineprefs.v1',
       version: 1,
-      storage: createJSONStorage(backend),
+      storage: persistStorage(),
       partialize: (s): PrefsData => ({
         wheelProfile: s.wheelProfile,
         fineZoomSpeed: s.fineZoomSpeed,

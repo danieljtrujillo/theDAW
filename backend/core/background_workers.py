@@ -20,13 +20,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from backend.lib.stamps import IncreasingClock
+
 from .idle import IdleManager, get_idle_manager
+
+# queued_at / started_at / finished_at, strictly increasing: list_jobs orders
+# newest first by them, and jobs stamped in one 15.6 ms tick of Windows' clock
+# tied and listed oldest first (backend/lib/stamps.py).
+_stamp = IncreasingClock()
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +47,7 @@ class BackgroundJob:
     fn: JobFunc
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
-    queued_at: float = field(default_factory=time.time)
+    queued_at: float = field(default_factory=_stamp)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     status: str = "queued"  # queued | running | done | failed | cancelled
@@ -218,7 +224,7 @@ class BackgroundQueue:
         caller sets ``status`` itself first), drop it from the active-name
         index (so its name can be reused), and queue it for pruning."""
         if job.finished_at is None:
-            job.finished_at = time.time()
+            job.finished_at = _stamp()
         if self._active_by_name.get(job.name) is job:
             del self._active_by_name[job.name]
         self._finished_order.append(job.id)
@@ -273,7 +279,7 @@ class BackgroundQueue:
                 self._mark_finished(job)
                 raise
 
-            job.started_at = time.time()
+            job.started_at = _stamp()
             job.status = "running"
             log.info("background_workers: running job %s (%s)", job.name, job.id)
             try:
@@ -291,7 +297,7 @@ class BackgroundQueue:
                     e,
                 )
             finally:
-                job.finished_at = time.time()
+                job.finished_at = _stamp()
                 self._mark_finished(job)
 
 

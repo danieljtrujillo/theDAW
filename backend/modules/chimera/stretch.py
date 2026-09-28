@@ -23,6 +23,7 @@ from typing import Optional, TypedDict
 import numpy as np
 
 from .config import probe
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -126,7 +127,7 @@ def normalize_to_target(
 ) -> str:
     """Decode arbitrary audio (mp3/m4a/wav/flac/ogg) to WAV at a fixed sr/channel count."""
     cmd = [
-        "ffmpeg",
+        ffmpeg_tools.ffmpeg_exe(),
         "-nostdin",
         "-y",
         "-hide_banner",
@@ -171,7 +172,7 @@ def _build_rubberband_cmd(
     span: Optional[tuple[float, float]] = None,
 ) -> list[str]:
     return [
-        "ffmpeg",
+        ffmpeg_tools.ffmpeg_exe(),
         "-nostdin",
         "-y",
         "-hide_banner",
@@ -193,7 +194,7 @@ def _build_atempo_cmd(
     span: Optional[tuple[float, float]] = None,
 ) -> list[str]:
     return [
-        "ffmpeg",
+        ffmpeg_tools.ffmpeg_exe(),
         "-nostdin",
         "-y",
         "-hide_banner",

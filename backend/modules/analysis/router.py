@@ -24,6 +24,7 @@ from .engine import (
     ANALYSIS_VERSION,
     PROFILE_DJ,
     PROFILE_FULL,
+    AnalysisBusy,
     analyze_and_persist,
     profile_of_row,
 )
@@ -179,6 +180,10 @@ def run_analysis(
             store=store,
             profile=profile,
         )
+    except AnalysisBusy as e:
+        # Another run of this entry is still going (a slow decode). Nothing
+        # was cancelled; the client's queue retries on its own schedule.
+        raise HTTPException(503, str(e)) from e
     finally:
         try:
             from backend.core.idle import get_idle_manager

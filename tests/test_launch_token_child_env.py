@@ -570,6 +570,8 @@ def test_the_magenta_engine_starts_without_the_token(
     monkeypatch.setattr(sidecar, "_ENGINE_SCRIPT", script)
     monkeypatch.setattr(sidecar, "_NATIVE_PYTHON", str(python))
     monkeypatch.setattr(sidecar, "_LOG_DIR", tmp_path / "logs")
+    # The native spawn records the engine pid; it belongs in tmp_path.
+    monkeypatch.setattr(sidecar, "_PID_FILE", tmp_path / "magenta_engine.pid")
     monkeypatch.setattr(sidecar, "_wsl_distro", lambda: "Ubuntu")
     monkeypatch.setattr(sidecar, "_resolve_start_model", lambda: ("mrt2_small", None))
     spawns = _Spawns().install(monkeypatch, sidecar)

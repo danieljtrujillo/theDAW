@@ -1,29 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { GitBranch, CornerDownRight, Disc3, Network, Loader2 } from 'lucide-react';
 import type { LibraryEntry } from '../state/libraryEntry';
 import { useLibraryStore } from '../state/libraryStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { ProviderBadge } from '../components/library/ProviderBadge';
+import { LineageFamilyNotice, RelativeList, useLineageFamily } from '../components/library/LineageFamilyNotice';
+import type { LineageNode } from '../lib/lineageInsights';
 
-/** Shapes returned by GET /api/library/{id}/lineage?depth=N. */
-interface LineageNode {
-  id: string;
-  kind: string;            // 'entry' | 'external' | 'stem' | 'midi' | ...
-  title?: string | null;
-  source?: string | null;
-  duration_sec?: number | null;
-}
-interface LineageEdge {
-  from_id: string;
-  to_id: string;
-  kind: string;            // 'variation' | 'inpaint' | 'remaster' | ...
-  weight?: number;
-}
-interface LineageResponse {
-  root: string;
-  nodes: LineageNode[];
-  edges: LineageEdge[];
-}
+const OPEN_KEY =
+  'flex items-center gap-1.5 rounded border border-white/10 px-2 py-1 text-xs font-bold text-zinc-300 transition-colors hover:border-purple-400/50 hover:text-zinc-100';
 
 interface Props {
   entry: LibraryEntry;
@@ -33,34 +18,31 @@ interface Props {
  * CatalogueLineage — DETAILED lineage viewer, modeled on SunoHarvester's
  * remaster-chain / ancestry UI.
  *
- * Fetches the lineage graph for the entry, then renders:
+ * Reads the lineage graph for the entry (the screen route, cut at the
+ * server's node cap, with the whole family one press away), then renders:
  *   1. a LINEAR ancestor chain (walk parent edges up to the root),
  *   2. the current entry highlighted (amber),
  *   3. its direct CHILDREN (derivatives),
  *   4. SIBLINGS (other children of this entry's parent).
  * Each row is clickable → `setSelectedEntry` so the inspector re-targets.
- * "Open in graph" jumps to the 3D LineageView in the LEARN center-tab.
+ * "Open in graph" selects the entry and opens the LEARN center tab, whose
+ * lineage view is the scale view or the classic graph (LearnHost decides).
  */
 export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const setCenterTab = useAppUiStore((s) => s.setCenterTab);
 
-  const [data, setData] = useState<LineageResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setData(null);
-    void fetch(`/api/library/${entry.id}/lineage?depth=3`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((json: LineageResponse) => { if (!cancelled) setData(json); })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [entry.id]);
+  const lineage = useLineageFamily(entry.id, 3);
+  const data = lineage.family;
+  const { loading, error } = lineage;
+  const notice = data ? (
+    <LineageFamilyNotice
+      family={data}
+      busy={lineage.wholeBusy}
+      error={lineage.wholeError}
+      onLoadWhole={lineage.loadWhole}
+    />
+  ) : null;
 
   // Build directed adjacency from edges (from = parent, to = child).
   const { ancestorChain, children, siblings, nodeMap } = useMemo(() => {
@@ -118,18 +100,18 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center gap-1.5 py-4 text-zinc-600">
-        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        <span className="text-[9px] font-mono">loading lineage…</span>
+      <div className="flex items-center justify-center gap-1.5 py-4 text-zinc-500">
+        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        <span className="text-xs font-bold">Reading lineage…</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center py-3 text-zinc-600 gap-1">
-        <span className="text-[9px] font-mono text-red-400/70">lineage unavailable</span>
-        <span className="text-[8px] font-mono text-zinc-700">{error}</span>
+      <div className="flex flex-col items-center justify-center py-3 gap-1">
+        <span className="text-xs font-bold text-red-300">Lineage unavailable</span>
+        <span className="text-xs font-bold text-zinc-500">{error}</span>
       </div>
     );
   }
@@ -139,19 +121,21 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
   if (!hasRelations) {
     return (
       <div className="flex flex-col gap-2 py-2">
-        <div className="flex flex-col items-center justify-center py-3 text-zinc-600 gap-1.5">
-          <GitBranch className="w-5 h-5 opacity-40" />
-          <span className="text-[9px] font-mono">original — no lineage yet</span>
-          <span className="text-[8px] font-mono text-zinc-700 text-center px-2">
+        {notice}
+        <div className="flex flex-col items-center justify-center py-3 text-zinc-500 gap-1.5">
+          <GitBranch className="size-5 opacity-40" aria-hidden="true" />
+          <span className="text-xs font-bold">Original: no lineage yet</span>
+          <span className="text-xs font-bold text-zinc-500 text-center px-2">
             Generate with this track as init / inpaint to spawn a descendant.
           </span>
         </div>
         <button
+          type="button"
           onClick={openInGraph}
-          className="mono-tag self-center bg-white/5! text-zinc-400! flex items-center gap-1"
-          title="Open the 3D lineage graph"
+          className={`${OPEN_KEY} self-center`}
+          title="Open the lineage graph in LEARN"
         >
-          <Network className="w-2.5 h-2.5" /> Open in graph
+          <Network className="size-3.5" aria-hidden="true" /> Open in graph
         </button>
       </div>
     );
@@ -185,11 +169,11 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
         {/* A lineage node knows its `source` and nothing else, so this badge
             is the derived half of the same one provider the rows show. */}
         <ProviderBadge entry={{ source: node?.source }} className="shrink-0" />
-        <span className={`text-[9px] font-mono truncate flex-1 ${isCurrent ? 'text-amber-200 font-bold' : 'text-zinc-400'}`}>
+        <span className={`text-xs font-bold truncate flex-1 ${isCurrent ? 'text-amber-200' : 'text-zinc-400'}`}>
           {title}
         </span>
         {node?.kind && node.kind !== 'entry' && (
-          <span className="text-[7px] font-mono text-zinc-600 shrink-0 uppercase">{node.kind}</span>
+          <span className="text-xs font-bold text-zinc-500 shrink-0 uppercase">{node.kind}</span>
         )}
       </button>
     );
@@ -197,6 +181,7 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
 
   return (
     <div className="flex flex-col gap-1 px-1 py-1">
+      {notice}
       {/* Ancestor chain (root → entry) */}
       {ancestorChain.map((id, i) =>
         renderNodeRow(id, { current: id === entry.id, depth: i }),
@@ -205,11 +190,17 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
       {/* Direct children / derivatives */}
       {children.length > 0 && (
         <div className="mt-1 pt-1 border-t border-white/5">
-          <span className="text-[7px] font-mono uppercase tracking-widest text-zinc-600 px-1.5">
+          <span className="text-xs font-bold text-zinc-500 px-1.5">
             {children.length} descendant{children.length === 1 ? '' : 's'}
           </span>
-          {children.map((id) =>
-            renderNodeRow(id, { depth: ancestorChain.length, childOf: 'child' }),
+          {data && (
+            <RelativeList
+              as="div"
+              items={children}
+              family={data}
+              className="flex flex-col"
+              render={(id) => renderNodeRow(id, { depth: ancestorChain.length, childOf: 'child' })}
+            />
           )}
         </div>
       )}
@@ -217,19 +208,28 @@ export const CatalogueLineage: React.FC<Props> = ({ entry }) => {
       {/* Siblings (other children of the same parent) */}
       {siblings.length > 0 && (
         <div className="mt-1 pt-1 border-t border-white/5">
-          <span className="text-[7px] font-mono uppercase tracking-widest text-zinc-600 px-1.5">
+          <span className="text-xs font-bold text-zinc-500 px-1.5">
             {siblings.length} sibling{siblings.length === 1 ? '' : 's'}
           </span>
-          {siblings.map((id) => renderNodeRow(id, { childOf: 'sibling' }))}
+          {data && (
+            <RelativeList
+              as="div"
+              items={siblings}
+              family={data}
+              className="flex flex-col"
+              render={(id) => renderNodeRow(id, { childOf: 'sibling' })}
+            />
+          )}
         </div>
       )}
 
       <button
+        type="button"
         onClick={openInGraph}
-        className="mono-tag self-center mt-1.5 bg-white/5! text-zinc-400! flex items-center gap-1"
-        title="Open the 3D lineage graph"
+        className={`${OPEN_KEY} self-center mt-1.5`}
+        title="Open the lineage graph in LEARN"
       >
-        <Network className="w-2.5 h-2.5" /> Open in graph
+        <Network className="size-3.5" aria-hidden="true" /> Open in graph
       </button>
     </div>
   );

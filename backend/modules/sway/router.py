@@ -357,5 +357,9 @@ async def sway_projects() -> dict:
         rows.append(
             {"name": p.stem, "path": str(p), "mtime": st.st_mtime, "builtin": builtin}
         )
+    # Newest first; scenes written in one tick of the file clock (15.6 ms on
+    # Windows, a whole install at once) list by name, not in whatever order
+    # the folder happened to be read.
+    rows.sort(key=lambda r: r["name"].casefold())
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return {"projects": rows}

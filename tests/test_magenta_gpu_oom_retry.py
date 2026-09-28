@@ -17,6 +17,7 @@ import asyncio
 import pytest
 
 import backend.modules.magenta.router as router
+import backend.modules.magenta.sidecar as real_sidecar
 
 OOM = (
     "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to "
@@ -153,7 +154,16 @@ class _Sidecar:
 
     def stop_engine(self):
         self.stops += 1
-        return True
+        return {
+            "terminated": False,
+            "reaped": [],
+            "survivors": [],
+            "left_running": [],
+            "listed": True,
+        }
+
+    engines_still_running = staticmethod(real_sidecar.engines_still_running)
+    elsewhere_detail = staticmethod(real_sidecar.elsewhere_detail)
 
     def gpu_free_gb(self):
         return 9.3

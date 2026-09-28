@@ -481,13 +481,10 @@ function drawGrain(ctx, W, H, data, params) {
 // ═══════════════════════════════════════════════════════════════════════
 function drawXY(ctx, W, H, data, params) {
   const pad = 24, pw = W - pad * 2, ph = H - pad * 2;
-  // Some tools sharing this viz (e.g. TimbreForge) only expose a Y-axis
-  // param (timbreBlend) — structureWeight/morphPosition are what would
-  // drive X, and a tool with neither declared must not show a dead,
-  // never-moving X axis labeled STRUCTURE. Mirror case: crossfade_morph
-  // declares morphPosition (X) but no timbreBlend (Y) — same treatment,
-  // applied to the Y axis, so it doesn't show a permanently-centered
-  // TIMBRE axis reading a hardcoded Y:0.50.
+  // X is structureWeight (TimbreForge) or morphPosition (crossfade_morph);
+  // Y is timbreBlend (TimbreForge). An axis whose param the tool does not
+  // declare is not drawn: crossfade_morph has no timbreBlend, so it gets no
+  // permanently-centered TIMBRE axis reading a hardcoded Y:0.50.
   const hasX = params.structureWeight !== undefined || params.morphPosition !== undefined;
   const hasY = params.timbreBlend !== undefined;
   // pad background

@@ -20,9 +20,12 @@
     -VstHost        only run the native live-VST host build offer, then exit
                     (theDAW.bat calls this when scripts/check_vst_host.py
                     reports the host exe missing and CMake is on PATH)
+    -FFmpegCheck    only look for an FFmpeg with libsoxr, print nothing, and
+                    exit 0 when one is found, 1 when none is (theDAW.bat calls
+                    this when the first ffmpeg on PATH has no libsoxr)
 #>
 [CmdletBinding()]
-param([switch]$Yes, [switch]$UnderfitVenv, [switch]$VstHost)
+param([switch]$Yes, [switch]$UnderfitVenv, [switch]$VstHost, [switch]$FFmpegCheck)
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------------- #
@@ -203,6 +206,94 @@ function Install-AppInstaller(){
   }
 }
 
+# FFmpeg: theDAW needs a build with libsoxr. Classical Upsample, Super-Res and
+# High-Quality SRC resample through it, and gyan.dev's "essentials" build, which
+# other apps ship and put on PATH, has none. The backend
+# (backend/lib/ffmpeg_tools.py) probes these same places in this same order and
+# runs the first build that passes, so a full build anywhere here is enough.
+function Get-FFmpegCandidates(){
+  $list = New-Object System.Collections.ArrayList
+  if($env:THEDAW_FFMPEG){
+    $p = $env:THEDAW_FFMPEG.Trim().Trim('"')
+    if(Test-Path -LiteralPath $p -PathType Container){ $p = Join-Path $p 'ffmpeg.exe' }
+    [void]$list.Add($p)
+  }
+  foreach($c in @(Get-Command ffmpeg -All -CommandType Application -ErrorAction SilentlyContinue)){
+    [void]$list.Add($c.Path)
+  }
+  $bases = @()
+  if($env:LOCALAPPDATA){ $bases += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet') }
+  if($env:ProgramFiles){ $bases += (Join-Path $env:ProgramFiles 'WinGet') }
+  foreach($base in $bases){
+    [void]$list.Add((Join-Path $base 'Links\ffmpeg.exe'))
+    $packages = Join-Path $base 'Packages'
+    if(Test-Path -LiteralPath $packages){
+      foreach($pkg in @(Get-ChildItem -LiteralPath $packages -Directory -Filter 'Gyan.FFmpeg*' -ErrorAction SilentlyContinue)){
+        foreach($ver in @(Get-ChildItem -LiteralPath $pkg.FullName -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)){
+          [void]$list.Add((Join-Path $ver.FullName 'bin\ffmpeg.exe'))
+        }
+      }
+    }
+  }
+  if($env:USERPROFILE){ [void]$list.Add((Join-Path $env:USERPROFILE 'scoop\shims\ffmpeg.exe')) }
+  if($env:ProgramData){ [void]$list.Add((Join-Path $env:ProgramData 'chocolatey\bin\ffmpeg.exe')) }
+  $seen = @{}
+  $out = New-Object System.Collections.ArrayList
+  foreach($p in $list){
+    if(-not $p){ continue }
+    if(-not (Test-Path -LiteralPath $p -PathType Leaf)){ continue }
+    $k = $p.ToLowerInvariant()
+    if($seen.ContainsKey($k)){ continue }
+    $seen[$k] = $true
+    [void]$out.Add($p)
+  }
+  return ,$out
+}
+
+# A 50 ms sine resampled through soxr into the null muxer: exit 0 only when the
+# build has libsoxr. Run through Process directly so ffmpeg's stderr never
+# becomes a PowerShell error record under $ErrorActionPreference = 'Stop'.
+function Test-FFmpegSoxr($exe){
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '-hide_banner -nostdin -loglevel error -f lavfi -i sine=d=0.05 -af aresample=48000:resampler=soxr -f null -'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    $null = $proc.StandardOutput.ReadToEnd()
+    if(-not $proc.WaitForExit(20000)){
+      try { $proc.Kill() } catch { }
+      return $false
+    }
+    $null = $errTask.Result
+    return ($proc.ExitCode -eq 0)
+  } catch {
+    return $false
+  }
+}
+
+# State = 'ok' (a build with libsoxr, at Path), 'nosoxr' (FFmpeg present, none
+# with libsoxr; Path is the one theDAW would run) or 'missing'.
+function Get-FFmpegState(){
+  $candidates = Get-FFmpegCandidates
+  if($candidates.Count -eq 0){ return [pscustomobject]@{ State='missing'; Path=$null } }
+  foreach($c in $candidates){
+    if(Test-FFmpegSoxr $c){ return [pscustomobject]@{ State='ok'; Path=$c } }
+  }
+  return [pscustomobject]@{ State='nosoxr'; Path=$candidates[0] }
+}
+
+# Dedicated mode: theDAW.bat calls `setup.ps1 -FFmpegCheck` when the first
+# ffmpeg on PATH fails the soxr probe, to learn whether a full build is
+# installed somewhere else the backend looks. Silent; the exit code is the answer.
+if($FFmpegCheck){
+  if((Get-FFmpegState).State -eq 'ok'){ exit 0 } else { exit 1 }
+}
+
 # Dedicated mode: theDAW.bat calls `setup.ps1 -UnderfitVenv` after the main venv
 # bootstrap to create the optional Underfit trainer env if it's missing.
 if($UnderfitVenv){ Initialize-UnderfitVenv; exit 0 }
@@ -266,7 +357,18 @@ function Need($present, $name, $label, $size, $required, $action){
 
 Need (Have 'uv')     'uv'     'uv (Python env manager)'  '~15 MB'  $true  'uv'
 Need (Have 'node')   'node'   'Node.js LTS + npm'        '~30 MB'  $true  'OpenJS.NodeJS.LTS'
-Need (Have 'ffmpeg') 'ffmpeg' 'FFmpeg (all audio I/O)'   '~80 MB'  $false 'Gyan.FFmpeg'
+# FFmpeg counts as present only when a build with libsoxr is found. One without
+# it is offered the full build (winget Gyan.FFmpeg) through the same consent.
+$ffmpeg = Get-FFmpegState
+if($ffmpeg.State -eq 'ok'){
+  OK "FFmpeg with libsoxr found ($($ffmpeg.Path))"
+} elseif($ffmpeg.State -eq 'nosoxr'){
+  WARN "FFmpeg at $($ffmpeg.Path) has no libsoxr (recommended: the full build)"
+  Info "Classical Upsample, Super-Res and High-Quality SRC resample with libsoxr and fail on this build."
+  [void]$todo.Add([pscustomobject]@{ Name='ffmpeg'; Label='FFmpeg full build (libsoxr resampler)'; Size='~80 MB'; Required=$false; Action='Gyan.FFmpeg' })
+} else {
+  Need $false 'ffmpeg' 'FFmpeg full build (all audio I/O)' '~80 MB' $false 'Gyan.FFmpeg'
+}
 Need (Have 'git')    'git'    'Git'                      '~60 MB'  $false 'Git.Git'
 
 # MuseScore engraves SVG score exports. PDF does NOT need it (that renders

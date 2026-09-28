@@ -18,6 +18,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.lib import known_paths
 from backend.modules.library import router as library_router_module
 from backend.modules.library import store as store_mod
 from backend.modules.library.db import EntryFilters, LibraryDB
@@ -429,6 +430,11 @@ def test_reindex_is_still_idempotent(tmp_path: Path):
 def client_with_root(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setattr(library_router_module, "_store", None)
     monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path / "library"))
+    # /import-folder records the folder as the next picker's start
+    # (known_paths.record). Left at its default, that wrote the test's tmp
+    # folders into data/known_paths.json of the checkout running the suite.
+    monkeypatch.setattr(known_paths, "_STORE_PATH", tmp_path / "known_paths.json")
+    monkeypatch.setattr(known_paths, "_GRANTS", {})
     app = FastAPI()
     app.include_router(library_router_module.router, prefix="/api/library")
     return TestClient(app)

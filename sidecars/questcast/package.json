@@ -9,12 +9,16 @@
     "postinstall": "node node_modules/@yume-chan/fetch-scrcpy-server/bin/fetch-server.js 3.3.3"
   },
   "dependencies": {
-    "@yume-chan/adb": "^2.6.0",
+    "@yume-chan/adb": "^2.6.4",
     "@yume-chan/adb-scrcpy": "^2.3.2",
     "@yume-chan/adb-server-node-tcp": "^2.5.2",
+    "@yume-chan/fetch-scrcpy-server": "^1.0.0",
     "@yume-chan/scrcpy": "^2.3.0",
     "@yume-chan/stream-extra": "^2.6.1",
-    "@yume-chan/fetch-scrcpy-server": "^1.0.0",
-    "ws": "^8.18.0"
+    "node-domexception": "file:vendor/node-domexception",
+    "ws": "^8.22.0"
+  },
+  "overrides": {
+    "node-domexception": "$node-domexception"
   }
 }

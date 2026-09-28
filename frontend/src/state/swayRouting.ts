@@ -13,6 +13,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { BindableTarget } from '../components/surface/widgetTypes';
 import { subscribeSwayValue, type SwayDim } from './swayBus';
 // Static import (not the lazy `import()` machinery below): neither vstLive module pulls in React, an AudioContext, or the DJ catalogue.
@@ -60,7 +61,7 @@ export const useSwayRoutingStore = create<SwayRoutingState>()(
           return { routes: next };
         }),
     }),
-    { name: 'thedaw-sway-routes-v1' },
+    { name: 'thedaw-sway-routes-v1', storage: persistStorage() },
   ),
 );
 

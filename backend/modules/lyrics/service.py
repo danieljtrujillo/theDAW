@@ -625,7 +625,7 @@ async def _resolve_vocal_audio(
     and backup mixed together); the stemmer run now when it is installed and
     ``isolate`` is on; the mid/side isolation of the mix into ``work``; the
     mix itself."""
-    store = get_store()
+    store = await asyncio.to_thread(get_store)
     stems = _vocal_stem_paths(entry_id)
     if stems:
         return _mix_stems(stems, work / "vocals_mix.wav"), "stem"
@@ -734,7 +734,7 @@ async def run_transcribe(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                 progress=0.2,
                 message=f"transcribing ({cfg.model} on {cfg.device}; first run installs whisper)",
             )
-            record = get_store().get_entry(entry_id)
+            record = (await asyncio.to_thread(get_store)).get_entry(entry_id)
             title = Path(str(getattr(record, "title", "") or "")).stem
             res = await transcription.transcribe(
                 path, language, extra=decode_options(None, title)
@@ -785,7 +785,9 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             if existing is not None and existing.text.strip():
                 text = existing.text
             else:
-                derived, _ = derive_untimed_doc(get_store(), entry_id)
+                derived, _ = derive_untimed_doc(
+                    await asyncio.to_thread(get_store), entry_id
+                )
                 text = derived.text
         if not str(text or "").strip():
             raise RuntimeError("no lyrics to align: paste or transcribe them first")
@@ -796,7 +798,7 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             path, audio_source = await _resolve_vocal_audio(
                 entry_id, Path(td), bool(req.get("isolate", True)), job
             )
-            src = get_store().get_audio_path(entry_id)
+            src = (await asyncio.to_thread(get_store)).get_audio_path(entry_id)
             scale = _frame_ratio(Path(src), path) if src else 1.0
             if abs(scale - 1.0) > 1e-3:
                 log.info("lyrics: rescaling ASR times by %.4f for %s", scale, entry_id)
@@ -912,7 +914,7 @@ async def run_review(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             path, audio_source = await _resolve_vocal_audio(
                 entry_id, Path(td), True, job
             )
-            src = get_store().get_audio_path(entry_id)
+            src = (await asyncio.to_thread(get_store)).get_audio_path(entry_id)
             scale = _frame_ratio(Path(src), path) if src else 1.0
             duration_ms = _duration_ms(entry_id, Path(src) if src else path)
             cfg = transcription.resolve_config()

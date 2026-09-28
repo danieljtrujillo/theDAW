@@ -40,6 +40,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -225,16 +226,107 @@ def cert_matches(
     return all(_normalise_san(entry) in present for entry in sans)
 
 
+def _openssl_candidates() -> list[str]:
+    """Every openssl on this machine, in the order they are tried.
+
+    Each PATH directory in PATH order, then the Git for Windows locations.
+    Taking only the first hit on PATH was the bug: Miniconda puts an openssl
+    on PATH that starts fine and answers ``openssl version``, but it was built
+    to read an ``openssl.cnf`` that the install does not ship, so every
+    ``openssl req`` exits with "Can't open ... openssl.cnf for reading". The
+    certificate was never made and LAN HTTPS never started, while a working
+    Git openssl sat a few PATH entries further on.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            found.append(path)
+
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory.strip():
+            continue
+        hit = shutil.which("openssl", path=directory)
+        if hit:
+            add(hit)
+    for candidate in _WINDOWS_OPENSSL_FALLBACKS:
+        if Path(candidate).is_file():
+            add(candidate)
+    return found
+
+
+def _req_argv(
+    binary: str, subject: str, sans: list[str], key: Path, cert: Path
+) -> list[str]:
+    """The ``openssl req`` that makes a self-signed LAN certificate.
+
+    One definition for the real generation and the probe in
+    :func:`_openssl_works`, so a binary that passes the probe is known to
+    accept every option the generation uses.
+    """
+    return [
+        binary,
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-sha256",
+        "-days",
+        str(CERT_DAYS),
+        "-subj",
+        subject,
+        "-addext",
+        "subjectAltName=" + ",".join(sans),
+        "-addext",
+        "keyUsage=digitalSignature,keyEncipherment",
+        "-addext",
+        "extendedKeyUsage=serverAuth",
+        "-keyout",
+        str(key),
+        "-out",
+        str(cert),
+    ]
+
+
+def _openssl_works(binary: str) -> bool:
+    """True when ``binary`` can make a LAN certificate.
+
+    ``openssl version`` proves nothing here: the Miniconda build answers it and
+    still fails every ``req``. So the test is the generation itself, into a
+    throwaway directory: the same options, loopback-only SANs, and the probe's
+    key and certificate are deleted with the directory. Nothing is logged.
+    """
+    with tempfile.TemporaryDirectory(prefix="thedaw-openssl-probe-") as tmp:
+        key = Path(tmp) / "probe-key.pem"
+        cert = Path(tmp) / "probe-cert.pem"
+        argv = _req_argv(
+            binary, "/CN=theDAW openssl probe", ["IP:127.0.0.1"], key, cert
+        )
+        try:
+            done = _run(argv, timeout=60.0)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return done.returncode == 0 and cert.is_file() and cert.stat().st_size > 0
+
+
 def find_openssl(explicit: str | None = None) -> str | None:
-    """The openssl executable to use, or None when there is none."""
+    """The first openssl on this machine that can make a certificate, or None.
+
+    ``explicit`` is used as given when it exists: the caller chose it. Without
+    it, every candidate from :func:`_openssl_candidates` is tried in order and
+    the first that passes :func:`_openssl_works` wins; a broken one is skipped
+    with a debug line naming it.
+    """
     if explicit:
         return explicit if Path(explicit).exists() or shutil.which(explicit) else None
-    found = shutil.which("openssl")
-    if found:
-        return found
-    for candidate in _WINDOWS_OPENSSL_FALLBACKS:
-        if Path(candidate).exists():
+    for candidate in _openssl_candidates():
+        if _openssl_works(candidate):
             return candidate
+        log.debug("lan-cert: skipping %s - it cannot make a certificate", candidate)
     return None
 
 
@@ -354,6 +446,39 @@ def _cleanup(*items: Path) -> None:
             log.debug("lan-cert: leftover temp file %s", item)
 
 
+def _reusable_pair(
+    candidates: list[str], cert: Path, key: Path, sans: list[str], now: datetime
+) -> bool:
+    """True when the pair on disk covers ``sans``, has life left and belongs
+    together, read with the first candidate that can read it.
+
+    Reading a certificate needs no openssl.cnf, so this runs before any
+    candidate is probed with a key generation: a launch that keeps its
+    certificate, which is almost every launch, generates no key at all. A
+    candidate that cannot read the certificate is skipped. Once one can,
+    what the certificate says settles it; a key that one binary cannot open
+    is tried with the next before the pair counts as mismatched, since
+    replacing the pair makes every device on the LAN show the certificate
+    warning again.
+    """
+    if not (cert.exists() and key.exists()) or not _key_is_pem(key):
+        return False
+    read = False
+    for candidate in candidates:
+        described = _describe_existing(candidate, cert)
+        if described is None:
+            continue
+        if not read:
+            if not cert_matches(described, sans, now):
+                return False
+            read = True
+        # The pair is replaced in two steps, and an interrupted launch leaves
+        # two halves that every other check here accepts forever.
+        if _pair_matches(candidate, cert, key):
+            return True
+    return False
+
+
 def ensure_lan_cert(
     lan_ips: list[str],
     *,
@@ -363,45 +488,51 @@ def ensure_lan_cert(
     """The certificate covering ``lan_ips``, generating one if need be.
 
     Returns the existing pair untouched when it already covers every address,
-    has more than a month left, and still has a readable PEM key beside it;
-    otherwise generates a fresh self-signed certificate into
-    ``data/lan-cert/``.
+    has more than a month left, and still has its own PEM key beside it; that
+    check reads files and generates no key. Otherwise generates a fresh
+    self-signed certificate into ``data/lan-cert/`` with the first openssl
+    that can (:func:`find_openssl`).
 
     Returns None -- never raises -- when openssl is missing or fails, after
     logging exactly one warning that names the fix. A LAN listener is a
     convenience: the app must start without it.
     """
     now = now or datetime.now(timezone.utc)
-    binary = find_openssl(openssl)
-    if binary is None:
-        log.warning(
-            "lan-cert: no HTTPS certificate for the LAN because openssl was "
-            "not found - %s. theDAW still runs; other devices will reach it "
-            "over plain http, where browsers block audio, mic and MIDI.",
-            _HOW_TO_FIX,
-        )
-        return None
-
     hostname = ""
     try:
         hostname = socket.gethostname()
     except OSError:
         pass
     sans = desired_sans(lan_ips, hostname)
-
     cert, key = cert_file(), key_file()
-    if cert.exists() and key.exists():
-        described = _describe_existing(binary, cert)
-        if (
-            described
-            and cert_matches(described, sans, now)
-            and _key_is_pem(key)
-            # ...and the key on disk is actually THIS certificate's key: the
-            # pair is replaced in two steps, and an interrupted launch leaves
-            # two halves that every other check here accepts forever.
-            and _pair_matches(binary, cert, key)
-        ):
-            return CertPaths(cert=cert, key=key)
+
+    if openssl:
+        readers = [openssl] if find_openssl(openssl) else []
+    else:
+        readers = _openssl_candidates()
+    if _reusable_pair(readers, cert, key, sans, now):
+        return CertPaths(cert=cert, key=key)
+
+    binary = find_openssl(openssl)
+    if binary is None:
+        tried = [] if openssl else _openssl_candidates()
+        if tried:
+            log.warning(
+                "lan-cert: no HTTPS certificate for the LAN because no openssl "
+                "on this machine could make one (tried %s) - %s. theDAW still "
+                "runs; other devices will reach it over plain http, where "
+                "browsers block audio, mic and MIDI.",
+                ", ".join(tried),
+                _HOW_TO_FIX,
+            )
+        else:
+            log.warning(
+                "lan-cert: no HTTPS certificate for the LAN because openssl was "
+                "not found - %s. theDAW still runs; other devices will reach it "
+                "over plain http, where browsers block audio, mic and MIDI.",
+                _HOW_TO_FIX,
+            )
+        return None
 
     tmp_cert = temp_sibling(cert)
     tmp_key = temp_sibling(key)
@@ -409,29 +540,13 @@ def ensure_lan_cert(
         cert_dir().mkdir(parents=True, exist_ok=True)
         _ensure_key_placeholder(tmp_key)
         done = _run(
-            [
+            _req_argv(
                 binary,
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-sha256",
-                "-days",
-                str(CERT_DAYS),
-                "-subj",
                 f"/CN=theDAW LAN ({hostname or 'this computer'})",
-                "-addext",
-                "subjectAltName=" + ",".join(sans),
-                "-addext",
-                "keyUsage=digitalSignature,keyEncipherment",
-                "-addext",
-                "extendedKeyUsage=serverAuth",
-                "-keyout",
-                str(tmp_key),
-                "-out",
-                str(tmp_cert),
-            ],
+                sans,
+                tmp_key,
+                tmp_cert,
+            ),
             timeout=120.0,
         )
         if done.returncode != 0 or not tmp_cert.exists():

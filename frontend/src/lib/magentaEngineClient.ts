@@ -23,6 +23,15 @@
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { dismissFeatureGate, requireFeature, useFeatureGateStore } from '../notices/featureGateStore';
 import { logError, logInfo } from '../state/logStore';
+import { postStatus } from '../state/statusNoticeStore';
+import {
+  describeEngines,
+  enginesLeftRunning,
+  handleEngineElsewhere,
+  raiseMagentaElsewhereGate,
+  readEngineElsewhere,
+  type MagentaElsewhereDetail,
+} from './magentaElsewhere';
 
 const READY_DEADLINE_MS = 10 * 60_000; // model load + one-time JAX compile
 const POLL_INTERVAL_MS = 3000;
@@ -86,6 +95,10 @@ export interface MagentaEngineStatus {
   setup_required?: boolean;
   setup?: MagentaSetupState;
   installable?: boolean;
+  /** Why the last start ended without an engine (state "not_running"). */
+  start_error?: string;
+  /** The last start met a Magenta engine this copy did not start. */
+  blocked?: MagentaElsewhereDetail;
 }
 
 /** The 412 detail shape (backend `_gate_detail`). */
@@ -381,6 +394,11 @@ export function ensureMagentaEngine(): Promise<boolean> {
             raiseMagentaSetupGate(detail.message, detail.installable !== false, st);
             return false;
           }
+          if (r.status === 409 && handleEngineElsewhere(detail, 'This copy’s Magenta engine cannot start beside it.')) {
+            dismissFeatureGate(MAGENTA_ENGINE_NOTICE_ID);
+            setField('magentaEngine', 'error');
+            return false;
+          }
           throw new Error(detail.message || `engine start → HTTP ${r.status}`);
         }
         logInfo('magenta', 'Engine starting: SA3 parked, WSL2 sidecar spawning');
@@ -412,8 +430,17 @@ export function ensureMagentaEngine(): Promise<boolean> {
           return false;
         }
         if (s.state === 'not_running' && !s.process_alive) {
-          // The process died before opening its port — the log has the why.
-          throw new Error('the engine process exited before it was ready (see logs/magenta-sidecar.log)');
+          const blocked = readEngineElsewhere(s);
+          if (blocked) {
+            // The queued start met another copy's engine and did not spawn.
+            dismissFeatureGate(MAGENTA_ENGINE_NOTICE_ID);
+            setField('magentaEngine', 'error');
+            raiseMagentaElsewhereGate(blocked, 'This copy’s Magenta engine cannot start beside it.');
+            return false;
+          }
+          // The start failed, or the process died before opening its port —
+          // the backend's reason when it has one, else the log has the why.
+          throw new Error(s.start_error || 'the engine process exited before it was ready (see logs/magenta-sidecar.log)');
         }
         progress(s.status ? `Engine: ${s.status}` : 'Waiting for the engine to answer…');
       }
@@ -438,12 +465,29 @@ export function ensureMagentaEngine(): Promise<boolean> {
   return _ensureInFlight;
 }
 
-/** Stop every Magenta engine and restore Stable Audio to the GPU. */
+/**
+ * Stop this copy's Magenta engine and restore Stable Audio to the GPU. An
+ * engine another copy of theDAW started is left running by the backend; the
+ * reply lists it, and then Stable Audio stays parked (the backend skips the
+ * restore), the LOG and the status bubble say which engine is still running,
+ * and its card offers to stop it.
+ */
 export async function stopMagentaEngine(): Promise<void> {
   const r = await fetch('/api/magenta/engine/stop', { method: 'POST' });
   if (!r.ok) throw new Error(await readErrorMessage(r, `engine stop → HTTP ${r.status}`));
+  const reply: unknown = await r.json().catch(() => null);
   setField('magentaAvailable', false);
   setField('magentaEngine', 'off');
+  const still = enginesLeftRunning(reply);
+  if (still.length > 0) {
+    const text = `Engine stopped; another Magenta engine is still running, ${describeEngines(still)}, so Stable Audio stays off the GPU`;
+    postStatus(`MAGENTA ENGINE STILL RUNNING: ${describeEngines(still)}`, { source: 'magenta', level: 'warn' });
+    raiseMagentaElsewhereGate(
+      { state: 'engine_elsewhere', engines: still, message: text },
+      'Stable Audio stays off the GPU until it stops.',
+    );
+    return;
+  }
   logInfo('magenta', 'Engine stopped; SA3 restored to the GPU');
 }
 
@@ -455,6 +499,10 @@ export async function restartMagentaEngine(): Promise<boolean> {
     const detail = readMagentaGate(await r.json().catch(() => null));
     if (r.status === 412) {
       raiseMagentaSetupGate(detail.message, detail.installable !== false, magentaGateState(detail));
+      return false;
+    }
+    if (r.status === 409 && handleEngineElsewhere(detail, 'This copy’s Magenta engine cannot start beside it.')) {
+      setField('magentaEngine', 'error');
       return false;
     }
     throw new Error(detail.message || `engine restart → HTTP ${r.status}`);

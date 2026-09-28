@@ -37,10 +37,15 @@ const EMBEDDED_INFO = `Tags embedded INSIDE the audio file itself (ID3 / iTunes 
 const SPECTROGRAM_INFO = `On-demand visual frequency analysis. Click GENERATE to fetch the bytes and render four views:\n\n• MEL — mel-scaled spectrogram (perceptual)\n• STFT — raw short-time Fourier transform\n• CHROMA — pitch-class energy (great for key/harmony)\n• CQT — constant-Q transform (log-frequency)\n\nFetched only when you ask, so opening the inspector stays fast.`;
 const LINEAGE_INFO = `How this track relates to others — modeled on the Suno remaster/ancestry view.\n\n• The ANCESTOR CHAIN (root → this track) up the parent edges.\n• Direct CHILDREN (derivatives spawned from it).\n• SIBLINGS (other children of the same parent).\n\nClick any related track to inspect it. “Open in graph” jumps to the 3D lineage view.`;
 
+/** A section title: bold sans at 12px, the inspector's one heading style. */
+const SECTION_LABEL = 'text-xs font-bold uppercase tracking-wider text-zinc-400';
+/** A small key (GENERATE, the spectrogram views, a tag). */
+const CHIP = 'rounded border px-1.5 py-1 text-xs font-bold uppercase leading-none';
+
 /** One label/value metadata row. */
 const Field: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
-  <div className="flex items-center justify-between gap-2 text-[9px] font-mono py-0.5">
-    <span className="text-zinc-600 uppercase tracking-wider">{label}</span>
+  <div className="flex items-center justify-between gap-2 text-xs py-0.5">
+    <span className="font-bold text-zinc-500 uppercase tracking-wider">{label}</span>
     <span className="text-zinc-300 truncate text-right">{value}</span>
   </div>
 );
@@ -180,11 +185,13 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
     <div className="w-85 shrink-0 h-full border-l border-white/10 bg-[#0a080f] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-white/2">
-        <span className="mono-label text-[10px]! truncate pr-2">{entry.title}</span>
+        <span className="text-xs font-bold uppercase tracking-wider text-zinc-300 truncate pr-2">{entry.title}</span>
         <button
+          type="button"
           onClick={() => setSelectedEntry(null)}
           className="p-1 hover:bg-white/10 rounded shrink-0"
           title="Close"
+          aria-label="Close the inspector"
         >
           <X className="w-3.5 h-3.5 text-zinc-500" />
         </button>
@@ -205,18 +212,36 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         {/* Favorite / rating + provider */}
         <div className="flex items-center gap-2">
           <HoverTip text={entry.favorite ? 'Remove from favorites.' : 'Mark as a favorite (star).'}>
-            <button onClick={() => void toggleFavorite(entry.id)} className="p-1.5 rounded hover:bg-white/10">
-              <Star className={`w-3.5 h-3.5 ${entry.favorite ? 'text-yellow-500 fill-current' : 'text-zinc-600'}`} />
+            <button
+              type="button"
+              onClick={() => void toggleFavorite(entry.id)}
+              className="p-1.5 rounded hover:bg-white/10"
+              aria-label="Favorite"
+              aria-pressed={entry.favorite}
+            >
+              <Star className={`w-3.5 h-3.5 ${entry.favorite ? 'text-yellow-500 fill-current' : 'text-zinc-600'}`} aria-hidden="true" />
             </button>
           </HoverTip>
           <HoverTip text="Like — toggle a thumbs-up rating on this track.">
-            <button onClick={() => void setRating(entry.id, entry.rating === 'like' ? null : 'like')} className="p-1.5 rounded hover:bg-white/10">
-              <ThumbsUp className={`w-3.5 h-3.5 ${entry.rating === 'like' ? 'text-emerald-400 fill-current' : 'text-zinc-600'}`} />
+            <button
+              type="button"
+              onClick={() => void setRating(entry.id, entry.rating === 'like' ? null : 'like')}
+              className="p-1.5 rounded hover:bg-white/10"
+              aria-label="Like"
+              aria-pressed={entry.rating === 'like'}
+            >
+              <ThumbsUp className={`w-3.5 h-3.5 ${entry.rating === 'like' ? 'text-emerald-400 fill-current' : 'text-zinc-600'}`} aria-hidden="true" />
             </button>
           </HoverTip>
           <HoverTip text="Dislike — toggle a thumbs-down rating on this track.">
-            <button onClick={() => void setRating(entry.id, entry.rating === 'dislike' ? null : 'dislike')} className="p-1.5 rounded hover:bg-white/10">
-              <ThumbsDown className={`w-3.5 h-3.5 ${entry.rating === 'dislike' ? 'text-red-400 fill-current' : 'text-zinc-600'}`} />
+            <button
+              type="button"
+              onClick={() => void setRating(entry.id, entry.rating === 'dislike' ? null : 'dislike')}
+              className="p-1.5 rounded hover:bg-white/10"
+              aria-label="Dislike"
+              aria-pressed={entry.rating === 'dislike'}
+            >
+              <ThumbsDown className={`w-3.5 h-3.5 ${entry.rating === 'dislike' ? 'text-red-400 fill-current' : 'text-zinc-600'}`} aria-hidden="true" />
             </button>
           </HoverTip>
           <div className="flex-1" />
@@ -230,18 +255,20 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
           <div className="flex items-center gap-1.5">
             <HoverTip text="Send this Suno clip to the Suno panel as a COVER source. (Suno tracks only.)">
               <button
-                className="mono-tag flex-1 bg-purple-500/10! text-purple-300! border-purple-500/30! flex items-center justify-center gap-1"
+                type="button"
+                className={`${CHIP} flex-1 bg-purple-500/10 text-purple-300 border-purple-500/30 flex items-center justify-center gap-1`}
                 onClick={() => sunoActions.sendToCover(entry)}
               >
-                <Cloud className="w-2.5 h-2.5" /> Cover
+                <Cloud className="size-3" aria-hidden="true" /> Cover
               </button>
             </HoverTip>
             <HoverTip text="Send this Suno clip to the Suno panel as a MASHUP base. (Suno tracks only.)">
               <button
-                className="mono-tag flex-1 bg-purple-500/10! text-purple-300! border-purple-500/30! flex items-center justify-center gap-1"
+                type="button"
+                className={`${CHIP} flex-1 bg-purple-500/10 text-purple-300 border-purple-500/30 flex items-center justify-center gap-1`}
                 onClick={() => sunoActions.sendToMashup(entry)}
               >
-                <Shuffle className="w-2.5 h-2.5" /> Mashup
+                <Shuffle className="size-3" aria-hidden="true" /> Mashup
               </button>
             </HoverTip>
           </div>
@@ -266,22 +293,22 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
             label="Last played"
             value={entry.lastPlayedAt ? formatDate(new Date(entry.lastPlayedAt * 1000).toISOString()) : '—'}
           />
-          <Field label="ID" value={<span className="text-[8px]">{entry.id.slice(0, 16)}…</span>} />
+          <Field label="ID" value={`${entry.id.slice(0, 16)}…`} />
         </div>
 
         {/* Prompt */}
         {entry.prompt && (
           <div className="flex flex-col gap-1">
-            <span className="mono-label text-[9px]!">PROMPT</span>
-            <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
+            <span className={SECTION_LABEL}>PROMPT</span>
+            <p className="text-xs text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
               {entry.prompt}
             </p>
           </div>
         )}
         {entry.negativePrompt && (
           <div className="flex flex-col gap-1">
-            <span className="mono-label text-[9px]! text-red-400/70!">NEGATIVE</span>
-            <p className="text-[9px] font-mono text-zinc-500 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
+            <span className="text-xs font-bold uppercase tracking-wider text-red-400/80">NEGATIVE</span>
+            <p className="text-xs text-zinc-500 leading-relaxed bg-black/30 rounded p-2 wrap-break-word">
               {entry.negativePrompt}
             </p>
           </div>
@@ -292,18 +319,18 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               <Mic2 className="w-3 h-3 text-orange-400" />
-              <span className="mono-label text-[9px]!">{isSuno ? 'SUNO' : 'LYRICS'}</span>
+              <span className={SECTION_LABEL}>{isSuno ? 'SUNO' : 'LYRICS'}</span>
             </div>
             {style && <Field label="Style" value={style} />}
             {lyrics && (
               <div className="flex flex-col gap-0.5">
-                <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Lyrics</span>
-                <p className="text-[9px] font-mono text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">
+                <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Lyrics</span>
+                <p className="text-xs text-zinc-400 leading-relaxed bg-black/30 rounded p-2 wrap-break-word whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">
                   {lyrics}
                 </p>
                 <button
                   type="button"
-                  className="btn-ghost text-[8px] py-0.5 px-1.5 self-start text-rose-200"
+                  className="btn-ghost text-xs font-bold py-0.5 px-1.5 self-start text-rose-200"
                   onClick={() => useBottomPanelStore.getState().showTab('sing')}
                   title="Sing along, edit or time these lyrics in the SING tab"
                 >
@@ -319,7 +346,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               <Activity className="w-3 h-3 text-purple-400" />
-              <span className="mono-label text-[9px]!">ANALYSIS</span>
+              <span className={SECTION_LABEL}>ANALYSIS</span>
               <InfoTip title="Analysis" body={ANALYSIS_INFO} />
             </div>
             <div className="flex flex-col bg-black/20 rounded p-1.5">
@@ -334,7 +361,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         {embeddedEntries.length > 0 && (
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
-              <span className="mono-label text-[9px]!">EMBEDDED TAGS</span>
+              <span className={SECTION_LABEL}>EMBEDDED TAGS</span>
               <InfoTip title="Embedded Tags" body={EMBEDDED_INFO} />
             </div>
             <div className="flex flex-col bg-black/20 rounded p-1.5">
@@ -350,13 +377,14 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1">
               <Activity className="w-3 h-3 text-purple-400" />
-              <span className="mono-label text-[9px]!">SPECTROGRAM</span>
+              <span className={SECTION_LABEL}>SPECTROGRAM</span>
               <InfoTip title="Spectrogram" body={SPECTROGRAM_INFO} />
             </div>
             {!specs && (
               <HoverTip text="Fetch the audio and render MEL / STFT / CHROMA / CQT spectrograms (on demand).">
                 <button
-                  className="mono-tag bg-purple-600/20! text-purple-300! border-purple-500/40!"
+                  type="button"
+                  className={`${CHIP} bg-purple-600/20 text-purple-300 border-purple-500/40`}
                   onClick={() => void loadSpectrogram()}
                   disabled={specLoading}
                 >
@@ -365,15 +393,17 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
               </HoverTip>
             )}
           </div>
-          {specError && <span className="text-[8px] font-mono text-red-400/70">{specError}</span>}
+          {specError && <span role="alert" className="text-xs font-bold text-red-400/80">{specError}</span>}
           {specs && (
             <>
               <div className="flex gap-1">
                 {SPEC_TABS.map((t) => (
                   <button
                     key={t.key}
+                    type="button"
                     onClick={() => setSpecTab(t.key)}
-                    className={`mono-tag flex-1 ${specTab === t.key ? 'bg-purple-600/20! text-purple-300!' : 'bg-white/5! text-zinc-500!'}`}
+                    aria-pressed={specTab === t.key}
+                    className={`${CHIP} flex-1 ${specTab === t.key ? 'bg-purple-600/20 text-purple-300 border-purple-500/40' : 'bg-white/5 text-zinc-400 border-white/10'}`}
                   >
                     {t.label}
                   </button>
@@ -382,7 +412,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
               <div className="aspect-10/3 bg-black/40 rounded flex items-center justify-center overflow-hidden">
                 {activeSpec
                   ? <img src={`data:image/png;base64,${activeSpec}`} alt={`${specTab} spectrogram`} className="w-full h-full object-cover" />
-                  : <span className="text-[8px] font-mono text-zinc-700">No {specTab.toUpperCase()} image</span>}
+                  : <span className="text-xs font-bold text-zinc-600">No {specTab.toUpperCase()} image</span>}
               </div>
             </>
           )}
@@ -392,7 +422,7 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-1">
             <GitBranch className="w-3 h-3 text-cyan-400" />
-            <span className="mono-label text-[9px]!">LINEAGE</span>
+            <span className={SECTION_LABEL}>LINEAGE</span>
             <InfoTip title="Lineage" body={LINEAGE_INFO} />
           </div>
           <div className="bg-black/20 rounded">
@@ -402,17 +432,25 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
 
         {/* Tags editor */}
         <div className="flex flex-col gap-1">
-          <span className="mono-label text-[9px]!">TAGS</span>
+          <label htmlFor="catalog-add-tag" className={SECTION_LABEL}>TAGS</label>
           <div className="flex flex-wrap gap-1">
             {entry.tags.map((t) => (
-              <button key={t} className="mono-tag bg-white/5! text-zinc-300!" onClick={() => removeTag(t)} title="Remove tag">
-                {t} <X className="w-2 h-2 inline" />
+              <button
+                key={t}
+                type="button"
+                className={`${CHIP} bg-white/5 text-zinc-300 border-white/10`}
+                onClick={() => removeTag(t)}
+                title="Remove tag"
+                aria-label={`Remove tag ${t}`}
+              >
+                {t} <X className="size-3 inline" aria-hidden="true" />
               </button>
             ))}
           </div>
           <input
+            id="catalog-add-tag"
             name="catalog-add-tag"
-            className="compact-input w-full"
+            className="compact-input w-full text-xs font-sans"
             placeholder="ADD TAG + ENTER"
             value={tagDraft}
             onChange={(e) => setTagDraft(e.target.value)}
@@ -422,10 +460,11 @@ export const CatalogueInspector: React.FC<Props> = ({ entry }) => {
 
         {/* Notes editor */}
         <div className="flex flex-col gap-1">
-          <span className="mono-label text-[9px]!">NOTES</span>
+          <label htmlFor="catalog-notes" className={SECTION_LABEL}>NOTES</label>
           <textarea
+            id="catalog-notes"
             name="catalog-notes"
-            className="compact-input w-full min-h-16 resize-y"
+            className="compact-input w-full min-h-16 resize-y text-xs font-sans"
             placeholder="Notes…"
             value={notesDraft}
             onChange={(e) => setNotesDraft(e.target.value)}

@@ -8,3 +8,8 @@ resources/notation-renderer/
 # scripts/stage-vst-host.mjs from native/vst-host/bin. See electron-builder.yml
 # (win.extraResources) for where it lands in the packaged app.
 build-resources/vst-host/
+
+# Apple Silicon FFmpeg (ffmpeg, ffprobe, ffmpeg-libs/), built by
+# scripts/build-ffmpeg-macos.sh in the macos-dmg release job and copied into
+# resources/tools by scripts/fetch-runtime-tools.mjs.
+build-resources/ffmpeg-macos-arm64/

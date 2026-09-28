@@ -1,0 +1,8 @@
+{
+  "name": "node-domexception",
+  "version": "1.0.0-native",
+  "private": true,
+  "description": "node-domexception, as its own deprecation notice asks: the platform's native DOMException (global in Node 17+ and every browser). fetch-blob, via node-fetch 3, still imports node-domexception, and the published package is deprecated.",
+  "main": "index.js",
+  "license": "MIT"
+}

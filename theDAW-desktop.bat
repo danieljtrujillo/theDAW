@@ -126,6 +126,20 @@ if not exist "electron-ui\node_modules\electron\dist\electron.exe" (
     exit /b 1
 )
 
+:: -- The window's address must be free ---------------------------------
+:: The desktop window loads http://localhost:5173, and its saved settings and
+:: mic/MIDI permissions belong to that address. When another program holds
+:: 5173 the launch stops here with that program's name, since on any other
+:: port the window would open with all of them empty.
+ver >nul
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --require-frontend-port
+if errorlevel 1 (
+    echo.
+    echo theDAW ^(desktop^) did not start. Press any key to close this window...
+    pause >nul
+    exit /b 1
+)
+
 :: -- Launch the Electron desktop shell ---------------------------------
 :: electron-vite serves the frontend in the Electron window, and the Electron
 :: main process spawns a fresh supervised backend

@@ -28,22 +28,26 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
+
+from backend.lib.stamps import IncreasingClock
 
 from .provider import PROVIDER_SLUG_MAX, detect_provider
 
 log = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 #: How long a statement waits for another connection's write lock before it
 #: gives up with "database is locked". Python's sqlite3 default is 5 s;
@@ -370,70 +374,174 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
 ]
 
 
-# ---- Full-text search ------------------------------------------------------
+# ---- Search index ----------------------------------------------------------
 #
-# ``entries_fts`` is a CONTENTLESS fts5 table (``content=''``): it stores the
-# inverted index only, keyed by ``entries.rowid``. That keeps it small, but it
-# also means a row can only be removed by handing fts5 back the EXACT values
-# that were inserted for it. Hence the invariant every writer below obeys:
+# What a library search matches is what the client-side matcher on main
+# matched (``getFiltered`` in frontend/src/state/libraryStore.ts at 851f6a0,
+# kept as ``applyClientQuery`` for an unpaged backend): a case-insensitive
+# SUBSTRING over title, prompt, negative prompt, model, notes, source, MIME
+# type, rating, tags, chimera sources, every analysis value (BPM and key
+# included), every embedded file tag (artist, album, ...), and -- for a
+# numeric query -- the duration in seconds or minutes. On top of that it
+# matches the lyrics and the provider's slug and label.
 #
-#   For each ``entries.rowid``, ``entries_fts`` holds exactly the values
-#   ``_fts_projection()`` produces for that row against the committed state of
-#   ``entries`` + ``tag_index``. Any statement that changes those inputs must,
-#   in the SAME transaction, run the 'delete' form BEFORE the change and the
-#   insert form AFTER it.
+# The text lives in two PLAIN tables that only this module writes:
 #
-# Deriving both forms from one projection is what makes that hold: the delete
-# reads the pre-write state, so the values always match what was indexed.
-# ``tests/test_library_paging.py`` checks the index against a brute-force scan
-# after a churn of edits and deletes, because a mismatched delete corrupts the
-# index silently (phantom hits, no error).
+#   ``entries_search_head``  the short values (<= SEARCH_SHORT_VALUE_MAX
+#                            characters, plus the title and the tags always),
+#                            one row per entry;
+#   ``entries_search_body``  the long values (lyrics, a Suno prompt that holds
+#                            the lyrics, long notes), only for entries that
+#                            have one.
+#
+# ``entries_search`` is an fts5 TRIGRAM index over both, with the view
+# ``entries_search_text`` as its external content. A trigram index answers a
+# substring query of three or more characters from the index, so "shine"
+# finds "sunshine" and "120" finds a 120.0 BPM without reading a row.
+#
+# A trigram index cannot answer a word of one or two characters, so a second
+# fts5 index, ``entries_search_short``, answers those: it holds, per entry,
+# every distinct character and every distinct pair of adjacent characters of
+# the head and body text (:func:`short_grams`), each spelled as one plain
+# ASCII token. "4k" is then one term lookup, wherever in the entry it occurs
+# -- a title, a tag, or the middle of a 3,000-character prompt. It is
+# contentless; its rows are removed with the grams recomputed from
+# ``entries_search_text``, the same exact-delete rule as the trigram index.
+#
+# Keeping the indexed text in tables this module owns is what makes the index
+# impossible to corrupt from outside. An fts5 row can only be removed by
+# handing back the values it was indexed with, and those are read out of
+# ``entries_search_text`` -- never re-derived from ``entries``, which an older
+# build rewrites without knowing the index exists. The head/body rows and the
+# fts5 rows are always written together in one transaction, so the view
+# always holds exactly what the index holds.
+#
+# Nothing that writes ``entries`` has to know any of this. Triggers on
+# ``entries``, ``tag_index`` and ``analysis`` put the touched rowid into
+# ``search_dirty``, and :meth:`LibraryDB._txn` re-indexes those rows before it
+# commits. The triggers are part of the database file, so they also fire for
+# a build that predates the index -- main's schema-6 code writes rows and the
+# rowids wait in ``search_dirty`` until this build next opens the file.
 
-_FTS_COLUMNS = ("title", "prompt", "tags", "notes", "lyrics")
+#: How many characters a value may have and still be kept in
+#: ``entries_search_head``. Longer values go to ``entries_search_body``. Both
+#: are searched for every word, whatever its length; the split keeps the
+#: head, which the title lookups read, small.
+SEARCH_SHORT_VALUE_MAX = 200
 
-#: ``schema_meta`` key holding the highest ``entries.rowid`` that
-#: ``_backfill_fts`` has durably indexed. Written in the same commit as the
-#: batch it covers so the backfill can resume after a crash instead of
-#: re-scanning from the top.
+#: The version of what :func:`search_text` and :func:`short_grams` index.
+#: Bump it when either changes: the next open rebuilds the index from
+#: scratch.
+SEARCH_TEXT_VERSION = 3
+
+#: ``schema_meta`` key holding the highest ``entries.rowid`` an in-progress
+#: (re)build of the search index has durably indexed. Written in the same
+#: commit as the batch it covers, so a build interrupted by a crash or a kill
+#: resumes from that row instead of starting again from the top.
 FTS_BACKFILL_ROWID_KEY = "fts_backfill_rowid"
 
-#: fts5 spells "remove this rowid" as an insert whose first value is the
-#: literal string 'delete', followed by the values originally indexed.
-_FTS_DELETE_LEAD = "'delete'"
+#: ``schema_meta`` key naming the index a finished build produced, e.g.
+#: ``v1:fts``. Anything else -- absent, another text version, or ``plain``
+#: when this SQLite has fts5 -- means the index has to be (re)built.
+SEARCH_STATE_KEY = "search_index"
 
-_FTS_TABLE_SQL = """
-    CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-        title, prompt, tags, notes, lyrics, content=''
+#: ``schema_meta`` key naming the index an in-progress build is producing.
+#: The cursor in :data:`FTS_BACKFILL_ROWID_KEY` belongs to this target only.
+SEARCH_TARGET_KEY = "search_index_target"
+
+#: The contentless fts5 table the first paged-library build kept, and its
+#: done flag. Both are removed the first time this build opens the file: that
+#: build maintained the table only from its own writes, so it goes stale under
+#: every other writer, and without the flag that build rebuilds the table from
+#: scratch if it is ever run against this file again.
+LEGACY_FTS_TABLE = "entries_fts"
+LEGACY_FTS_BACKFILL_KEY = "fts_backfill"
+
+#: The most rows indexed per commit while the index is (re)built. A batch is
+#: usually smaller: its size follows :data:`SEARCH_BATCH_TARGET_SEC`.
+SEARCH_BACKFILL_BATCH = 2000
+
+#: ``schema_meta`` key present while the store reads every ``metadata.json``
+#: into a database that had none of them (a first start, or a lost or deleted
+#: ``library.db`` beside a full library). Written before the read starts and
+#: removed after its last batch, so a read cut short by a close or a crash
+#: runs again on the next start instead of leaving the library half listed:
+#: without it the next start saw a non-empty database and never read the rest.
+DISK_READ_PENDING_KEY = "disk_read_pending"
+
+#: The name of the thread a background build of the index runs on.
+SEARCH_BUILD_THREAD = "library-search-build"
+
+#: The rowids ``search_dirty`` lists, each once (the table holds repeats; see
+#: migration step 13).
+_DIRTY_ROWIDS_SQL = "SELECT DISTINCT rid FROM search_dirty WHERE rid IS NOT NULL"
+
+_SEARCH_FTS_SQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_search USING fts5(
+        head, body,
+        content='entries_search_text', content_rowid='rid',
+        tokenize='trigram case_sensitive 0'
     )
 """
 
+#: The one- and two-character index (see "Search index"). ``detail=none``
+#: keeps only which rows hold a term, which is all a word match needs, and
+#: the ``ascii`` tokenizer reads each gram token back exactly as written.
+_SEARCH_SHORT_FTS_SQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_search_short USING fts5(
+        grams, content='', detail='none', columnsize=0, tokenize='ascii'
+    )
+"""
 
-def _fts_projection(lead: str = "") -> str:
-    """The indexed text for a set of entries, straight from SQL.
+#: Words shorter than this are answered by ``entries_search_short``; the
+#: rest by the trigram index.
+SHORT_WORD_MAX = 2
 
-    ``lead`` is prepended as an extra leading column, used to emit the literal
-    ``'delete'`` fts5 expects as the first value of a removal. ``json_extract``
-    is guarded by ``json_valid`` inside a CASE so a hand-edited or truncated
-    ``metadata_json`` degrades to an empty lyrics field instead of aborting the
-    transaction.
-    """
-    prefix = f"{lead}, " if lead else ""
-    return f"""
-        SELECT {prefix}e.rowid, e.title, e.prompt,
-               COALESCE((SELECT group_concat(t.tag, ' ') FROM tag_index t
-                         WHERE t.entry_id = e.id), ''),
-               e.notes,
-               COALESCE(CASE WHEN json_valid(e.metadata_json)
-                             THEN json_extract(e.metadata_json, '$.lyrics') END, '')
-        FROM entries e
-    """
+#: The ``analysis`` columns a library entry carries as ``entry.analysis``
+#: (``router._analysis_payload``), and so the ones main's matcher searched.
+ANALYSIS_SCALAR_KEYS = (
+    "bpm",
+    # The tempo detector's own confidence in ``bpm``, 0..1 (clamped where it
+    # is measured). Without it only GET /api/analysis/{id} carried the number
+    # and every list-driven surface saw a BPM with no confidence behind it.
+    "bpm_confidence",
+    "key",
+    "key_confidence",
+    "scale",
+    "pitch_mean_hz",
+    "pitch_std_hz",
+    "loudness_lufs",
+    "rms_db",
+    "bars_estimated",
+    "genre",
+    "genre_confidence",
+    "prompt_guess",
+    "prompt_confidence",
+    "analyzed_at",
+)
+
+#: The ffprobe ``_summary`` keys an entry carries in ``entry.analysis``.
+FFPROBE_SUMMARY_KEYS = (
+    "sample_rate",
+    "channels",
+    "bit_depth",
+    "bit_depth_is_float",
+    "sample_fmt",
+    "codec",
+    "container",
+    "duration_sec",
+)
+
+#: Where the analysis engine records which profile wrote a row
+#: (``backend.modules.analysis.engine.PROFILE_MARKER_KEY``; that module
+#: imports this one, so the name is repeated here and a test pins the two).
+ANALYSIS_PROFILE_MARKER_KEY = "_analysis_profile"
 
 
-#: Letters and digits only (underscore excluded, matching fts5's unicode61
-#: tokenizer, which treats it as a separator). Everything a user can type that
-#: fts5 would read as an operator -- quotes, ``*``, ``^``, ``NEAR()``, ``:`` --
-#: is dropped here rather than escaped later, so a search string is never a
-#: query expression.
+#: Letters and digits only (underscore excluded). Everything a user can type
+#: that fts5 would read as an operator -- quotes, ``*``, ``^``, ``NEAR()``,
+#: ``:`` -- is dropped here rather than escaped later, so a search string is
+#: never a query expression.
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 #: Bounds the cost of a pathological query string.
@@ -441,17 +549,209 @@ MAX_SEARCH_TOKENS = 16
 
 
 def search_tokens(q: Optional[str]) -> list[str]:
-    """The searchable tokens in ``q``. Empty when the string holds nothing a
-    tokenizer would keep -- in which case the search matches NOTHING, in both
-    the fts5 and the LIKE path, rather than silently matching everything."""
+    """The runs of letters and digits in ``q``, lowercased. The lineage
+    explorer's sanitiser; library search matches :func:`search_words`."""
     return [t.lower() for t in _TOKEN_RE.findall(q or "")][:MAX_SEARCH_TOKENS]
 
 
-def _fts_match_expr(tokens: Sequence[str]) -> str:
-    """An fts5 MATCH expression: every token quoted as a string literal and
-    prefix-matched, implicitly ANDed. ``_TOKEN_RE`` already excludes ``"``; the
-    doubling is kept so the quoting stays correct if the tokenizer widens."""
-    return " ".join('"' + t.replace('"', '""') + '"*' for t in tokens)
+def search_words(q: Optional[str]) -> list[str]:
+    """The words of a library search: ``q`` split at whitespace, lowercased,
+    punctuation kept. Each word must occur, as written, in an entry's search
+    text for the entry to match -- so "f#" finds the key F# and not every
+    entry with an "f" in it, as main's substring test did. Every word is bound
+    as a parameter, and handed to fts5 only as a quoted string literal, so no
+    search string is ever read as a query expression."""
+    return [w.lower() for w in (q or "").split()][:MAX_SEARCH_TOKENS]
+
+
+def _gram_token(gram: str) -> str:
+    """One gram (a character, or two adjacent ones) as the ASCII token
+    ``entries_search_short`` stores: ``u`` and the code point in hex for one
+    character, ``b``, the first code point, ``g`` and the second for two.
+    Letters and digits only, so the ``ascii`` tokenizer keeps it whole."""
+    if len(gram) == 1:
+        return f"u{ord(gram):x}"
+    return f"b{ord(gram[0]):x}g{ord(gram[1]):x}"
+
+
+def short_grams(head: str, body: str) -> str:
+    """Every distinct character and pair of adjacent characters in the words
+    of ``head`` and ``body``, as space-separated :func:`_gram_token` tokens in
+    a fixed order. A search word never holds whitespace, so pairs that span a
+    space or a newline are left out. Deterministic: the index removes a row
+    by being handed this exact text again."""
+    grams: set[str] = set()
+    for text in (head, body):
+        for word in text.split():
+            grams.update(word)
+            grams.update([word[i : i + 2] for i in range(len(word) - 1)])
+    cache = _GRAM_TOKENS
+    if len(cache) > _GRAM_TOKENS_MAX:
+        cache.clear()
+    tokens: list[str] = []
+    for gram in grams:
+        token = cache.get(gram)
+        if token is None:
+            token = cache[gram] = _gram_token(gram)
+        tokens.append(token)
+    tokens.sort()
+    return " ".join(tokens)
+
+
+#: :func:`_gram_token` answers, remembered: the same few thousand grams make
+#: up nearly every entry, and an index build spells each one per entry.
+_GRAM_TOKENS: dict[str, str] = {}
+_GRAM_TOKENS_MAX = 200_000
+
+
+def _fts_phrase(text: str) -> str:
+    """``text`` as one fts5 string literal. Under the trigram tokenizer a
+    string literal matches wherever the text occurs, inside a word or not."""
+    return '"' + text.replace('"', '""') + '"'
+
+
+#: JavaScript's ``parseFloat``: the longest numeric prefix of a trimmed
+#: string.
+_JS_FLOAT_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def js_parse_float(text: str) -> Optional[float]:
+    """What ``parseFloat(text)`` returns in a browser, or None for NaN.
+
+    Main's matcher treated any query ``parseFloat`` could read -- "120",
+    "120 bpm", "5min", "3:30" -- as a duration as well as text, and this is
+    the same reading. ``parseFloat`` also reads ``Infinity``, which matches no
+    duration, so it is None here.
+    """
+    match = _JS_FLOAT_RE.match(text)
+    if not match:
+        return None
+    value = float(match.group(0))
+    return value if math.isfinite(value) else None
+
+
+def js_round(value: float) -> int:
+    """JavaScript's ``Math.round``: halves round towards +infinity."""
+    return math.floor(value + 0.5)
+
+
+def _js_float_text(value: float) -> str:
+    """``String(value)`` for a finite JavaScript number: ``120`` rather than
+    Python's ``120.0``; other values already agree (shortest round trip)."""
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def _search_values(value: Any) -> Iterator[str]:
+    """Every searchable text inside one stored value, spelled the way main's
+    matcher saw it (``String(v)`` in JavaScript). A list gives its elements;
+    a mapping gives its values, which is what a person searching a nested tag
+    means (JavaScript would have indexed ``[object Object]``)."""
+    if value is None:
+        return
+    if isinstance(value, bool):
+        yield "true" if value else "false"
+    elif isinstance(value, int):
+        yield str(value)
+    elif isinstance(value, float):
+        if math.isfinite(value):
+            yield _js_float_text(value)
+    elif isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _search_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _search_values(item)
+    else:
+        yield str(value)
+
+
+def _loose_json_value(text: Any) -> Any:
+    """A stored JSON column decoded, or None when it is absent or broken."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def search_text(row: Mapping[str, Any]) -> tuple[str, str]:
+    """``(head, body)``: the text one entry is found by, from one row of
+    :func:`_search_rows_sql`. Both are lowercased, so every word, whatever
+    its length, matches case-insensitively in every script.
+
+    Short values go to the head and long ones to the body (see
+    :data:`SEARCH_SHORT_VALUE_MAX`); the title and the tags are always head,
+    which is what the title lookups read. Values are
+    newline-separated, and no token or query spans a newline, so a match can
+    never straddle two fields.
+    """
+    head: dict[str, None] = {}
+    body: dict[str, None] = {}
+
+    def put(value: Any, *, always_head: bool = False) -> None:
+        for text in _search_values(value):
+            text = " ".join(text.split())
+            if not text:
+                continue
+            short = always_head or len(text) <= SEARCH_SHORT_VALUE_MAX
+            (head if short else body)[text] = None
+
+    put(row["title"], always_head=True)
+    for tag in str(row["tags"] or "").split("\n"):
+        put(tag, always_head=True)
+    for column in (
+        "prompt",
+        "negative_prompt",
+        "model",
+        "notes",
+        "source",
+        "mime",
+        "m_mime",
+        "rating",
+    ):
+        put(row[column])
+    slug = row["provider_slug"]
+    put(slug)
+    put(row["m_provider_label"])
+    if slug in DERIVED_PROVIDERS:
+        put(DERIVED_PROVIDERS[slug][0])
+    lyrics = row["m_lyrics"]
+    # A Suno entry's prompt frame IS its lyrics (provider.py copies one into
+    # the other), so the same text is indexed once.
+    if isinstance(lyrics, str) and lyrics.strip() != str(row["prompt"] or "").strip():
+        put(lyrics)
+    put(_loose_json_value(row["m_chimera"]))
+    if row["analyzed"]:
+        for key in ANALYSIS_SCALAR_KEYS:
+            put(row[key])
+        bpm = row["bpm"]
+        if isinstance(bpm, (int, float)) and math.isfinite(bpm) and bpm > 0:
+            # "120 bpm" -- what main's own comment promised a search could say.
+            put(f"{js_round(float(bpm))} bpm")
+        put(_loose_json_value(row["semantic_tags_json"]))
+        summary = _loose_json_value(row["ff_summary"])
+        if isinstance(summary, Mapping):
+            for key in FFPROBE_SUMMARY_KEYS:
+                put(summary.get(key))
+        profile = row["ff_profile"]
+        put(profile if profile in ("full", "dj") else "full")
+        put(_loose_json_value(row["embedded_tags_json"]))
+    return "\n".join(head).lower(), "\n".join(body).lower()
+
+
+#: JavaScript ``foldTitle`` in frontend/src/state/shardIndexStore.ts.
+_FOLD_EXTENSION_RE = re.compile(r"\.[a-z0-9]{2,4}\Z")
+_FOLD_SEPARATORS_RE = re.compile(r"[\s_\-–—.]+")
+
+
+def fold_title(text: str) -> str:
+    """A title as LOOM compares it: lowercased, a file extension dropped,
+    every run of spaces, underscores, dashes and dots one space."""
+    lowered = _FOLD_EXTENSION_RE.sub("", (text or "").lower())
+    return _FOLD_SEPARATORS_RE.sub(" ", lowered).strip()
 
 
 @dataclass(frozen=True)
@@ -484,6 +784,9 @@ _SORT_SQL: dict[str, str] = {
     "plays_desc": "e.play_count DESC, e.rowid ASC",
     "duration_desc": "e.duration_sec DESC, e.rowid DESC",
     "duration_asc": "e.duration_sec ASC, e.rowid ASC",
+    # The EDIT library picker's "Favorites first" order: starred rows, then
+    # the rest, each by name. Walked from idx_entries_kind_fav_title (step 13).
+    "favorites_first": "e.favorite DESC, e.title COLLATE NOCASE ASC, e.rowid ASC",
 }
 
 #: The sort keys the API accepts, in the order they are documented.
@@ -922,6 +1225,136 @@ _MIGRATIONS.append(
 )
 
 
+_MIGRATIONS.append(
+    (
+        13,
+        [
+            # The search index's text (see "Search index" above). Plain tables,
+            # written only by this module and always together with the fts5
+            # index over them, so what the index holds can be read back out --
+            # which is what an exact fts5 delete needs. The fts5 table itself
+            # is created by `_ensure_search`, because fts5 is a property of the
+            # SQLite build rather than of this file.
+            """
+            CREATE TABLE IF NOT EXISTS entries_search_head (
+                rid INTEGER PRIMARY KEY,
+                head TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS entries_search_body (
+                rid INTEGER PRIMARY KEY,
+                body TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE VIEW IF NOT EXISTS entries_search_text AS
+                SELECT h.rid AS rid, h.head AS head, COALESCE(b.body, '') AS body
+                FROM entries_search_head h
+                LEFT JOIN entries_search_body b ON b.rid = h.rid
+            """,
+            # Rowids whose indexed text may be stale. The triggers below are
+            # stored in the file, so every writer fires them -- this build, and
+            # a build that has never heard of the index (main's schema-6 code
+            # keeps opening this file). `_txn` drains the table before each
+            # commit; what an older build leaves behind is drained on open.
+            #
+            # The table has NO key and NO constraint, and a rowid may be listed
+            # many times. That is what keeps a trigger from ever failing the
+            # write that fired it: SQLite applies the OUTER statement's
+            # conflict policy to a trigger's inserts, so an `INSERT OR IGNORE`
+            # into a keyed table still aborts main's `INSERT ... ON CONFLICT
+            # DO UPDATE` the moment a rowid is listed twice. A plain insert
+            # into an unconstrained table cannot conflict under any policy;
+            # the readers de-duplicate.
+            """
+            CREATE TABLE IF NOT EXISTS search_dirty (
+                rid INTEGER
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_search_dirty_rid ON search_dirty(rid)",
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_entry_insert
+            AFTER INSERT ON entries BEGIN
+                INSERT INTO search_dirty (rid) VALUES (NEW.rowid);
+            END
+            """,
+            # Only the columns the index reads: a play-count bump or a status
+            # change re-indexes nothing.
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_entry_update
+            AFTER UPDATE OF title, prompt, negative_prompt, model, notes, source,
+                mime, rating, provider, metadata_json
+            ON entries BEGIN
+                INSERT INTO search_dirty (rid) VALUES (OLD.rowid);
+                INSERT INTO search_dirty (rid) VALUES (NEW.rowid);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_entry_delete
+            AFTER DELETE ON entries BEGIN
+                INSERT INTO search_dirty (rid) VALUES (OLD.rowid);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_tag_insert
+            AFTER INSERT ON tag_index BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id = NEW.entry_id;
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_tag_update
+            AFTER UPDATE ON tag_index BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id IN (OLD.entry_id, NEW.entry_id);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_tag_delete
+            AFTER DELETE ON tag_index BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id = OLD.entry_id;
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_analysis_insert
+            AFTER INSERT ON analysis BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id = NEW.entry_id;
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_analysis_update
+            AFTER UPDATE ON analysis BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id IN (OLD.entry_id, NEW.entry_id);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS search_dirty_analysis_delete
+            AFTER DELETE ON analysis BEGIN
+                INSERT INTO search_dirty (rid)
+                    SELECT rowid FROM entries WHERE id = OLD.entry_id;
+            END
+            """,
+            # The favourites / size / duration totals (`entry_stats`): every
+            # column the aggregate reads, after the `kind` every tab but "all"
+            # constrains, so the sums are a covering index scan and never open
+            # an entries row.
+            "CREATE INDEX IF NOT EXISTS idx_entries_kind_stats "
+            "ON entries(kind, favorite, duration_sec, file_size_bytes)",
+            # The `favorites_first` sort, walked in order on a kind tab. The
+            # EDIT picker, its one user, always asks for one kind (audio), so
+            # the "all" shape is left to a sort rather than taxing every insert
+            # with a third index.
+            "CREATE INDEX IF NOT EXISTS idx_entries_kind_fav_title "
+            "ON entries(kind, favorite DESC, title COLLATE NOCASE)",
+        ],
+    )
+)
+
+
 # ---- Facets ----------------------------------------------------------------
 #
 # The filter dropdowns. ``model``, ``source`` and ``kind`` are columns and are
@@ -965,6 +1398,7 @@ DEFAULT_DELETE_BATCH = 500
 _ANALYSIS_LIST_COLUMNS = (
     "entry_id",
     "bpm",
+    "bpm_confidence",
     "key",
     "key_confidence",
     "scale",
@@ -1010,8 +1444,16 @@ def _chunks(items: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
         yield items[start : start + size]
 
 
+# created_at / updated_at, strictly increasing within this process: every
+# listing orders entries newest first by created_at, and two entries saved in
+# one 15.6 ms tick of Windows' clock tied, so the one saved second could list
+# after the first (backend/lib/stamps.py). A bulk batch still shares one stamp
+# on purpose; the listings break that tie by rowid.
+_clock = IncreasingClock()
+
+
 def _now() -> float:
-    return time.time()
+    return _clock()
 
 
 # Sub-folder each artifact kind is superseded into. Kept out of the live
@@ -1268,6 +1710,272 @@ _UPSERT_ENTRY_SQL = """
 """
 
 
+def _search_rows_sql(marks: str) -> str:
+    """Everything :func:`search_text` reads for the entries whose rowid is in
+    ``(marks)``: the entry columns, the few ``metadata_json`` keys a record
+    exposes, the tags, and the analysis row.
+
+    Every ``json_extract`` is guarded by ``json_valid`` inside a CASE, so a
+    hand-edited or truncated blob indexes as absent rather than aborting the
+    write that triggered the re-index.
+    """
+    meta = (
+        "CASE WHEN json_valid(e.metadata_json) "
+        "THEN json_extract(e.metadata_json, '{path}') END"
+    )
+    probe = (
+        "CASE WHEN json_valid(a.ffprobe_json) "
+        "THEN json_extract(a.ffprobe_json, '{path}') END"
+    )
+    analysis = ", ".join(f'a."{key}" AS "{key}"' for key in ANALYSIS_SCALAR_KEYS)
+    return f"""
+        SELECT e.rowid AS rid, e.title AS title, e.prompt AS prompt,
+               e.negative_prompt AS negative_prompt, e.model AS model,
+               e.notes AS notes, e.source AS source, e.mime AS mime,
+               e.rating AS rating,
+               {PROVIDER_SQL} AS provider_slug,
+               {meta.format(path="$.lyrics")} AS m_lyrics,
+               {meta.format(path="$.mime_type")} AS m_mime,
+               {meta.format(path="$.provider_label")} AS m_provider_label,
+               {meta.format(path="$.chimera_sources")} AS m_chimera,
+               (SELECT group_concat(t.tag, char(10)) FROM tag_index t
+                 WHERE t.entry_id = e.id) AS tags,
+               a.entry_id IS NOT NULL AS analyzed,
+               {analysis},
+               a.semantic_tags_json AS semantic_tags_json,
+               a.embedded_tags_json AS embedded_tags_json,
+               {probe.format(path="$._summary")} AS ff_summary,
+               {probe.format(path="$." + ANALYSIS_PROFILE_MARKER_KEY)} AS ff_profile
+        FROM entries e
+        LEFT JOIN analysis a ON a.entry_id = e.id
+        WHERE e.rowid IN ({marks})
+    """
+
+
+class SearchIndexFailed(RuntimeError):
+    """A background build of the search index stopped part way. Searches
+    raise it until the next open resumes the build from its cursor."""
+
+
+#: The long jobs opening a library can run, in the order they run and the
+#: order :meth:`LibraryProgress.snapshot` reports them: the schema upgrade,
+#: the read of every ``metadata.json`` into an empty (or half-filled)
+#: database, and the search index build.
+PROGRESS_TASKS: tuple[str, ...] = ("upgrade", "read", "index")
+
+#: What each task is called on the LIBRARY tab's progress bar.
+PROGRESS_LABELS: dict[str, str] = {
+    "upgrade": "Upgrading the library database",
+    "read": "Reading the library from disk",
+    "index": "Building the search index",
+}
+
+
+class LibraryProgress:
+    """How far the long jobs of opening a library have got, readable from any
+    thread without touching the database.
+
+    ``GET /api/library/index-status`` answers from :meth:`snapshot` while the
+    schema upgrade still holds the write lock, so nothing here may take that
+    lock or read the file. Each task counts its own units -- migration
+    statements, top-level library folders, entries -- and an ETA comes from
+    the rate of the units done since the task (re)started, so a build that
+    resumes at row 150,000 does not claim it did those rows in no time.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tasks: dict[str, dict[str, Any]] = {}
+        self._error: Optional[str] = None
+        self._error_label = ""
+        self._opened = False
+
+    def begin(self, task: str, total: int, done: int = 0) -> None:
+        with self._lock:
+            self._tasks[task] = {
+                "total": max(0, int(total)),
+                "done": max(0, int(done)),
+                "base": max(0, int(done)),
+                "items": 0,
+                "started": time.monotonic(),
+                "finished": False,
+            }
+
+    def advance(self, task: str, units: int = 0, *, items: int = 0) -> None:
+        """Add ``units`` of progress (and ``items`` counted alongside, such as
+        the entries a folder walk found) to a running task."""
+        with self._lock:
+            state = self._tasks.get(task)
+            if state is None or state["finished"]:
+                return
+            state["done"] = min(state["total"], state["done"] + int(units))
+            state["items"] += int(items)
+
+    def finish(self, task: str) -> None:
+        with self._lock:
+            state = self._tasks.get(task)
+            if state is not None:
+                state["done"] = state["total"]
+                state["finished"] = True
+
+    def fail(
+        self, message: str, *, label: str = "The library could not be opened"
+    ) -> None:
+        with self._lock:
+            self._error = message
+            self._error_label = label
+
+    def clear_failure(self) -> None:
+        """Forget a failure, for a task that is being started again (a search
+        index build restarted by the Retry button)."""
+        with self._lock:
+            self._error = None
+            self._error_label = ""
+
+    def mark_opened(self) -> None:
+        """The store answers requests from here on (a task may still run)."""
+        with self._lock:
+            self._opened = True
+
+    def snapshot(self) -> dict[str, Any]:
+        """``{phase, label, done, total, items, eta_sec, opened, error}``.
+
+        ``phase`` is the first running task of :data:`PROGRESS_TASKS`,
+        ``"opening"`` before the store has opened with nothing running yet,
+        ``"failed"`` when the open or a task stopped, else ``"ready"``.
+        ``eta_sec`` is None until a task has a rate to go by."""
+        with self._lock:
+            now = time.monotonic()
+            if self._error is not None:
+                return {
+                    "phase": "failed",
+                    "label": self._error_label,
+                    "done": 0,
+                    "total": 0,
+                    "items": 0,
+                    "eta_sec": None,
+                    "opened": self._opened,
+                    "error": self._error,
+                }
+            for task in PROGRESS_TASKS:
+                state = self._tasks.get(task)
+                if state is None or state["finished"]:
+                    continue
+                gained = state["done"] - state["base"]
+                elapsed = now - state["started"]
+                remaining = state["total"] - state["done"]
+                eta: Optional[float] = None
+                if gained > 0 and elapsed > 0:
+                    eta = round(remaining * elapsed / gained, 1)
+                return {
+                    "phase": task,
+                    "label": PROGRESS_LABELS[task],
+                    "done": state["done"],
+                    "total": state["total"],
+                    "items": state["items"],
+                    "eta_sec": eta,
+                    "opened": self._opened,
+                    "error": None,
+                }
+            return {
+                "phase": "ready" if self._opened else "opening",
+                "label": "Ready" if self._opened else "Opening the library",
+                "done": 0,
+                "total": 0,
+                "items": 0,
+                "eta_sec": None,
+                "opened": self._opened,
+                "error": None,
+            }
+
+
+#: How long one batch of a search index build may hold the write lock. Every
+#: library read takes that lock too, so this is the longest one read waits on
+#: the build; a list request makes three or four of them. The batch size
+#: follows the measured rate toward it. At 0.1 s a search during the build
+#: measured 0.26-0.36 s; each commit costs little next to the rows it holds.
+SEARCH_BATCH_TARGET_SEC = 0.05
+
+#: The smallest batch a build shrinks to on a slow disk.
+SEARCH_BATCH_MIN = 50
+
+#: Rows per hold of the write lock when a whole ``entries`` read runs
+#: (:meth:`LibraryDB._entry_rows_in_chunks`).
+WHOLE_TABLE_READ_CHUNK = 1000
+
+
+class FairRLock:
+    """A re-entrant lock that is handed to its waiters in the order they
+    arrived.
+
+    :class:`LibraryDB` serializes every read and write of its one connection
+    on this lock. ``threading.RLock`` is not fair: a thread that releases it
+    and asks again at once usually gets it back, however long another thread
+    has waited. With the search index build (one batch after another) and the
+    notation backfill (several calls per entry over 200,000 entries) both
+    looping on it after a start, a library search measured a 4 s wait for its
+    turn at 200,000 rows. Here a release hands the lock straight to the
+    longest waiter, so a request waits for the critical sections queued ahead
+    of it and no longer.
+
+    Same use as ``RLock``: ``with lock:``, ``acquire(blocking, timeout)``,
+    ``release()``, re-entrant for the owning thread.
+    """
+
+    def __init__(self) -> None:
+        self._mutex = threading.Lock()
+        self._owner: Optional[int] = None
+        self._depth = 0
+        self._queue: deque[tuple[int, threading.Lock]] = deque()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        me = threading.get_ident()
+        with self._mutex:
+            if self._owner == me:
+                self._depth += 1
+                return True
+            if self._owner is None and not self._queue:
+                self._owner = me
+                self._depth = 1
+                return True
+            if not blocking:
+                return False
+            gate = threading.Lock()
+            gate.acquire()
+            ticket = (me, gate)
+            self._queue.append(ticket)
+        # release() makes this thread the owner BEFORE it opens the gate.
+        if gate.acquire(timeout=timeout):
+            return True
+        with self._mutex:
+            if self._owner == me:
+                # Handed over just as the wait ran out: it is ours.
+                return True
+            self._queue.remove(ticket)
+            return False
+
+    def release(self) -> None:
+        with self._mutex:
+            if self._owner != threading.get_ident():
+                raise RuntimeError("cannot release un-acquired lock")
+            self._depth -= 1
+            if self._depth:
+                return
+            if self._queue:
+                owner, gate = self._queue.popleft()
+                self._owner = owner
+                self._depth = 1
+                gate.release()
+            else:
+                self._owner = None
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
 class LibraryDB:
     """Thin DAO over a single SQLite file.
 
@@ -1280,10 +1988,22 @@ class LibraryDB:
     #: opened database.
     _fts_warned = False
 
-    def __init__(self, path: Path, *, enable_fts: bool = True) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        enable_fts: bool = True,
+        build_search_in_background: bool = False,
+        progress: Optional[LibraryProgress] = None,
+    ) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._writelock = threading.RLock()
+        #: What the schema upgrade and the search index build report to, read
+        #: by ``GET /api/library/index-status`` (see :class:`LibraryProgress`).
+        self.progress = progress if progress is not None else LibraryProgress()
+        #: Fair, so a request never starves behind a background loop
+        #: (:class:`FairRLock`).
+        self._writelock = FairRLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         # FIRST, before any statement that can need a lock. sqlite3.connect's
@@ -1307,17 +2027,53 @@ class LibraryDB:
         # WAL gives us readers concurrent with writers.
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        # Statement journals in memory. A statement on a table with a trigger
+        # (the search-index triggers of migration step 13) opens a statement
+        # journal every time it runs; in a temp FILE that is a file created
+        # and removed per row of an executemany, measured at 0.4 ms a row on
+        # Windows -- four times the cost of the insert itself.
+        self._conn.execute("PRAGMA temp_store = MEMORY")
         self._enable_fts = bool(enable_fts)
         #: Whether library search runs on fts5. False when this SQLite build
-        #: lacks the module or a caller asked for the LIKE path; read it rather
-        #: than assuming, and see :meth:`_search_clause` for what changes.
+        #: lacks the module or a caller asked for the instr path; read it rather
+        #: than assuming, and see :meth:`_text_match_sql` for what changes.
         self.fts_enabled = False
-        self._migrate()
-        self._ensure_fts()
+        #: Whether the search tables exist (see :meth:`_ensure_search`).
+        self.search_ready = False
+        #: Set once the search index answers for every entry. Only a build
+        #: running in the background leaves it clear past the constructor; a
+        #: search meanwhile answers from the rows indexed so far and says so
+        #: (:meth:`search_status`).
+        self._search_built = threading.Event()
+        #: What stopped a background build, raised to every search after it.
+        self._search_build_error: Optional[BaseException] = None
+        #: Set by :meth:`close`; a background build stops at its next batch.
+        self._closed = False
+        #: Open :meth:`checkpoint_once` blocks, and the autocheckpoint
+        #: setting the outermost one restores.
+        self._checkpoint_depth = 0
+        self._checkpoint_previous = 1000
+        try:
+            self._migrate()
+            self._ensure_search(background=build_search_in_background)
+        except BaseException:
+            # An open that failed part way must not keep the file open: the
+            # backend retries a failed open, and every attempt would leave a
+            # connection behind.
+            self.close()
+            raise
 
     def close(self) -> None:
         with self._writelock:
+            self._closed = True
             self._conn.close()
+        self._search_built.set()
+
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` has run: a job queued against this database
+        before the library was closed or replaced finds it closed."""
+        return self._closed
 
     # ---- Schema -------------------------------------------------------------
 
@@ -1371,6 +2127,15 @@ class LibraryDB:
         """
         with self._writelock:
             current = self._current_schema_version()
+            pending = [
+                statements
+                for target_version, statements in _MIGRATIONS
+                if target_version > current
+            ]
+            if pending:
+                # One unit per statement: an index build over 200,000 rows is
+                # the slow part, and every CREATE INDEX is one statement.
+                self.progress.begin("upgrade", sum(len(s) for s in pending))
             for target_version, statements in _MIGRATIONS:
                 if target_version <= current:
                     continue
@@ -1385,8 +2150,10 @@ class LibraryDB:
                                 "finishing an interrupted migration",
                                 *column,
                             )
+                            self.progress.advance("upgrade", 1)
                             continue
                         self._conn.execute(stmt)
+                        self.progress.advance("upgrade", 1)
                     self._conn.execute(
                         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
                         (str(target_version),),
@@ -1407,6 +2174,8 @@ class LibraryDB:
                     )
                     raise
                 current = target_version
+            if pending:
+                self.progress.finish("upgrade")
 
     def _has_column(self, table: str, column: str) -> bool:
         rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -1414,103 +2183,591 @@ class LibraryDB:
 
     # ---- Search index -------------------------------------------------------
 
-    def _ensure_fts(self) -> None:
-        """Create ``entries_fts`` and backfill it once.
+    def _ensure_search(self, *, background: bool = False) -> None:
+        """Bring the search index up to date on open.
 
-        Deliberately NOT a migration statement: FTS5 is a property of the
-        SQLite build, not of the database file. A library first opened by a
-        Python without the module must pick the index up when it is next opened
-        by one that has it, which a bumped ``schema_version`` would prevent.
+        1. Create the fts5 trigram index and the one- and two-character
+           index when this SQLite has fts5 and the
+           trigram tokenizer. Not a migration step: both are properties of the
+           SQLite build, not of the file, so a library first opened without
+           them picks the index up the next time a build that has them opens
+           it.
+        2. Drop the first paged build's contentless ``entries_fts``.
+        3. Build the index when it is missing, from an older text version, or
+           was built without fts5 -- resuming an interrupted build from
+           :data:`FTS_BACKFILL_ROWID_KEY`.
+        4. Re-index whatever another build changed since this one last had the
+           file (:meth:`_reconcile_search`).
+
+        A file whose migrations stop short of step 13 has none of the search
+        tables; the index then stays off (:attr:`search_ready` is False) and
+        writes carry on without it. Only a test that migrates a file part way
+        opens one: a real open either reaches ``SCHEMA_VERSION`` or raises.
+
+        With ``background`` the rows of step 3, and step 4 after them, are
+        indexed on a thread of their own, which takes the write lock one short
+        batch at a time (:data:`SEARCH_BATCH_TARGET_SEC`). The backend opens
+        the library off its startup, and a 200,000-entry build takes minutes.
+        Writes keep their own rows indexed meanwhile (:meth:`_sync_dirty`), and
+        a search answers at once from the rows indexed so far, with
+        :meth:`search_status` saying how far the build has got.
         """
-        if not self._enable_fts:
+        with self._writelock:
+            self.search_ready = (
+                self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' "
+                    "AND name IN ('entries_search_head', 'entries_search_body', "
+                    "'search_dirty')"
+                ).fetchone()["n"]
+                == 3
+            )
+            if not self.search_ready:
+                self._search_built.set()
+                return
+            if self._enable_fts:
+                try:
+                    self._conn.execute(_SEARCH_FTS_SQL)
+                    self._conn.execute(_SEARCH_SHORT_FTS_SQL)
+                    # A table created by a SQLite that had the trigram
+                    # tokenizer exists even where this one lacks it; asking it
+                    # something is what proves it is usable here.
+                    self._conn.execute(
+                        "SELECT rowid FROM entries_search "
+                        "WHERE entries_search MATCH '\"abc\"' LIMIT 1"
+                    ).fetchall()
+                    self._conn.execute(
+                        "SELECT rowid FROM entries_search_short "
+                        "WHERE entries_search_short MATCH 'u61' LIMIT 1"
+                    ).fetchall()
+                    self._conn.commit()
+                    self.fts_enabled = True
+                except sqlite3.OperationalError as e:
+                    self._conn.rollback()
+                    if not LibraryDB._fts_warned:
+                        LibraryDB._fts_warned = True
+                        log.warning(
+                            "library.db: this SQLite build has no FTS5 trigram "
+                            "index (%s); library search scans the search text "
+                            "tables instead",
+                            e,
+                        )
+            if self.fts_enabled:
+                self._drop_legacy_fts()
+            start = self._start_search_build()
+            if start is None:
+                self._reconcile_search()
+                self._search_built.set()
+                return
+            if not background:
+                self._index_search_rows(start)
+                self._reconcile_search()
+                self._search_built.set()
+                return
+            # Counted here, under the lock, so the progress bar has its total
+            # before the first batch runs.
+            self._begin_index_progress(start)
+        log.info(
+            "library.db: building the search index in the background; "
+            "a search answers from the rows indexed so far until it finishes"
+        )
+        threading.Thread(
+            target=self._finish_search_build,
+            args=(start,),
+            name=SEARCH_BUILD_THREAD,
+            daemon=True,
+        ).start()
+
+    def _begin_index_progress(self, start: int) -> None:
+        """Start the ``index`` task of :attr:`progress`: every entry, the ones
+        at or below ``start`` (a resumed build's cursor) already done."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "COALESCE(SUM(CASE WHEN rowid <= ? THEN 1 ELSE 0 END), 0) AS done "
+            "FROM entries",
+            (start,),
+        ).fetchone()
+        self.progress.begin("index", int(row["n"]), int(row["done"]))
+
+    def _finish_search_build(self, start: int) -> None:
+        """The background half of :meth:`_ensure_search`: index the rows,
+        then reconcile. Whatever stops it is kept and raised to every search
+        after it (:meth:`_raise_if_search_failed`); the next open resumes the
+        build from its last committed batch.
+
+        A finished build moves ``library_revision`` once, after the index
+        answers for every entry: every search answer a client cached while it
+        ran (pages, facets, the stats chips, all keyed by revision) covered
+        part of the library, and the bump is what tells it to ask again.
+        Never per batch, which would make every client refetch hundreds of
+        times over a 200,000-row build."""
+        finished = False
+        try:
+            finished = self._index_search_rows(start)
+            if finished:
+                self._reconcile_search()
+        except BaseException as e:
+            finished = False
+            self._search_build_error = e
+            self.progress.fail(
+                f"the search index build stopped ({e}); it resumes from where it "
+                "stopped the next time theDAW starts",
+                label="The search index build stopped",
+            )
+            log.exception("library.db: the search index build stopped")
+        finally:
+            self.progress.finish("index")
+            self._search_built.set()
+        if not finished:
             return
+        try:
+            with self._writelock:
+                if not self._closed:
+                    with self._txn() as cur:
+                        cur.execute("SELECT 1")
+        except sqlite3.Error:
+            log.warning(
+                "library.db: the search index is built, but announcing it to "
+                "the clients failed; they see it on the next library write",
+                exc_info=True,
+            )
+
+    @property
+    def search_complete(self) -> bool:
+        """Whether the search index answers for every entry."""
+        return self._search_built.is_set() and self._search_build_error is None
+
+    def search_status(self) -> dict[str, Any]:
+        """``{"complete": True}`` once the index answers for every entry;
+        while a background build runs, ``{"complete": False, "indexed",
+        "total", "eta_sec"}`` -- a search then covers the ``indexed`` rows.
+        A build that stopped answers ``{"complete": False, "failed": True,
+        "error"}``: nothing finishes it until :meth:`restart_search_build`
+        or the next open. Reads no row and takes no lock."""
+        if self.search_complete:
+            return {"complete": True}
+        error = self._search_build_error
+        if error is not None:
+            return {
+                "complete": False,
+                "failed": True,
+                "error": str(error) or type(error).__name__,
+                "indexed": 0,
+                "total": 0,
+                "eta_sec": None,
+            }
+        snap = self.progress.snapshot()
+        if snap["phase"] == "index":
+            return {
+                "complete": False,
+                "indexed": snap["done"],
+                "total": snap["total"],
+                "eta_sec": snap["eta_sec"],
+            }
+        return {"complete": False, "indexed": 0, "total": 0, "eta_sec": None}
+
+    def restart_search_build(self) -> bool:
+        """Start a background search index build that stopped again, from its
+        last committed batch (the LIBRARY tab's Retry button). False when
+        there is nothing to restart: no build failed, or the database is
+        closed."""
+        with self._writelock:
+            if self._closed or self._search_build_error is None:
+                return False
+            self._search_build_error = None
+            self._search_built.clear()
+            self.progress.clear_failure()
+        log.info("library.db: restarting the search index build")
+        try:
+            self._ensure_search(background=True)
+        except BaseException as e:
+            self._search_build_error = e
+            self._search_built.set()
+            self.progress.fail(
+                f"the search index build could not be restarted ({e})",
+                label="The search index build stopped",
+            )
+            log.exception("library.db: restarting the search index build failed")
+            return False
+        return True
+
+    def _raise_if_search_failed(self) -> None:
+        """Raise :class:`SearchIndexFailed` when a background build of the
+        index stopped: the index then holds part of the library and nothing
+        is filling in the rest until the next open resumes the build. A build
+        still running raises nothing; the search answers from the rows done
+        so far (:meth:`search_status`)."""
+        if self._search_build_error is not None:
+            raise SearchIndexFailed(
+                f"the library search index could not be built: "
+                f"{self._search_build_error}"
+            ) from self._search_build_error
+
+    def _unindexed_after(self) -> Optional[int]:
+        """The rowid a running build has indexed up to, or None when the index
+        answers for every entry. Rows above it hold no search text yet unless
+        a write indexed them. Call it holding :attr:`_writelock`."""
+        if self.search_complete:
+            return None
+        cursor = self._meta_value(FTS_BACKFILL_ROWID_KEY)
+        return None if cursor is None else int(cursor)
+
+    def _meta_value(self, key: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def get_flag(self, key: str) -> Optional[str]:
+        """A ``schema_meta`` value, or None. For the store's bookkeeping
+        (:data:`DISK_READ_PENDING_KEY`), never for library data."""
+        with self._writelock:
+            return self._meta_value(key)
+
+    def set_flag(self, key: str, value: Optional[str]) -> None:
+        """Write (or, with None, remove) a ``schema_meta`` value, committed at
+        once. Bookkeeping, not a library mutation: ``library_revision`` does
+        not move, so no client refetches for it."""
         with self._writelock:
             try:
-                self._conn.execute(_FTS_TABLE_SQL)
-                self._conn.commit()
-            except sqlite3.OperationalError as e:
-                self._conn.rollback()
-                if not LibraryDB._fts_warned:
-                    LibraryDB._fts_warned = True
-                    log.warning(
-                        "library.db: this SQLite build has no FTS5 (%s); "
-                        "library search falls back to LIKE",
-                        e,
+                if value is None:
+                    self._conn.execute("DELETE FROM schema_meta WHERE key = ?", (key,))
+                else:
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+                        (key, str(value)),
                     )
-                return
-            self.fts_enabled = True
-            self._backfill_fts()
-
-    def _backfill_fts(self, *, batch: int = 5000) -> None:
-        """Index every pre-existing entry, in batches, exactly once.
-
-        Commits directly instead of going through ``_txn``: building an index
-        is not a library mutation, and a 200k backfill would otherwise push
-        ``library_revision`` forward 40 times on first open and make every
-        connected client refetch.
-        """
-        cur = self._conn.cursor()
-        try:
-            done = cur.execute(
-                "SELECT value FROM schema_meta WHERE key = 'fts_backfill'"
-            ).fetchone()
-            if done and str(done["value"]) == "1":
-                return
-            indexed = 0
-            last_rowid = 0
-            while True:
-                rows = cur.execute(
-                    "SELECT rowid FROM entries WHERE rowid > ? ORDER BY rowid LIMIT ?",
-                    (last_rowid, batch),
-                ).fetchall()
-                if not rows:
-                    break
-                lo, hi = last_rowid, int(rows[-1]["rowid"])
-                cur.execute(
-                    f"INSERT INTO entries_fts(rowid, {', '.join(_FTS_COLUMNS)}) "
-                    f"{_fts_projection()} WHERE e.rowid > ? AND e.rowid <= ?",
-                    (lo, hi),
-                )
-                indexed += len(rows)
-                last_rowid = hi
                 self._conn.commit()
-            cur.execute(
-                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('fts_backfill', '1')"
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def _search_state(self) -> str:
+        """The :data:`SEARCH_STATE_KEY` value a finished build leaves here."""
+        return f"v{SEARCH_TEXT_VERSION}:{'fts' if self.fts_enabled else 'plain'}"
+
+    def _drop_legacy_fts(self) -> None:
+        """Remove the first paged build's ``entries_fts`` and its done flag.
+
+        That build filled the table once and then maintained it from its own
+        writes, deleting with values re-derived from ``entries``. Every write
+        this build or main makes leaves it stale, and a stale contentless
+        index corrupts on the next delete. With the table and the flag gone,
+        that build recreates and backfills it from scratch if it is run
+        against this file again.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (LEGACY_FTS_TABLE,),
+        ).fetchone()
+        flagged = self._meta_value(LEGACY_FTS_BACKFILL_KEY) is not None
+        if not exists and not flagged:
+            return
+        try:
+            if exists:
+                self._conn.execute(f"DROP TABLE {LEGACY_FTS_TABLE}")
+            self._conn.execute(
+                "DELETE FROM schema_meta WHERE key = ?", (LEGACY_FTS_BACKFILL_KEY,)
             )
             self._conn.commit()
-            if indexed:
-                log.info("library.db: indexed %d entries for search", indexed)
+        except Exception:
+            self._conn.rollback()
+            raise
+        log.info("library.db: removed the previous search index (%s)", LEGACY_FTS_TABLE)
+
+    def _start_search_build(self) -> Optional[int]:
+        """Get a build of the search index ready to run: None when the index
+        is already the one this build keeps, else the rowid to index after.
+
+        The cursor in :data:`FTS_BACKFILL_ROWID_KEY` belongs to the target
+        named in :data:`SEARCH_TARGET_KEY`; a cursor left by a build of a
+        different target is discarded and the build starts over, and a start
+        from the top clears the index first. That part is cheap and runs
+        under the caller's write lock; the rows are indexed by
+        :meth:`_index_search_rows`.
+
+        Commits directly instead of going through ``_txn``: building an index
+        is not a library mutation, and a 200k build would otherwise push
+        ``library_revision`` forward once per batch and make every connected
+        client refetch.
+        """
+        expected = self._search_state()
+        cursor_text = self._meta_value(FTS_BACKFILL_ROWID_KEY)
+        if self._meta_value(SEARCH_STATE_KEY) == expected and cursor_text is None:
+            return None
+        if self._meta_value(SEARCH_TARGET_KEY) == expected and cursor_text is not None:
+            last_rowid = int(cursor_text)
+            log.info(
+                "library.db: resuming the search index build after row %d",
+                last_rowid,
+            )
+            return last_rowid
+        cur = self._conn.cursor()
+        try:
+            # From the top. Everything indexed so far was indexed for a
+            # different target, so it goes -- the head and body rows and,
+            # when there is an fts5 index, every row of it -- and the dirty
+            # list with it, since this pass covers every row.
+            cur.execute("DELETE FROM entries_search_head")
+            cur.execute("DELETE FROM entries_search_body")
+            if self.fts_enabled:
+                cur.execute(
+                    "INSERT INTO entries_search(entries_search) VALUES('delete-all')"
+                )
+                cur.execute(
+                    "INSERT INTO entries_search_short(entries_search_short) "
+                    "VALUES('delete-all')"
+                )
+            cur.execute("DELETE FROM search_dirty")
+            cur.execute("DELETE FROM schema_meta WHERE key = ?", (SEARCH_STATE_KEY,))
+            cur.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+                (SEARCH_TARGET_KEY, expected),
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, '0')",
+                (FTS_BACKFILL_ROWID_KEY,),
+            )
+            self._conn.commit()
         except Exception:
             self._conn.rollback()
             raise
         finally:
             cur.close()
+        return 0
 
-    def _fts_forget(self, cur: sqlite3.Cursor, entry_ids: Sequence[str]) -> None:
-        """Remove these entries from the search index, using the values the
-        index currently holds. MUST run BEFORE the rows change."""
-        if not self.fts_enabled or not entry_ids:
-            return
-        for chunk in _chunks(entry_ids, _MAX_SQL_PARAMS):
-            marks = ", ".join("?" * len(chunk))
-            cur.execute(
-                f"INSERT INTO entries_fts(entries_fts, rowid, {', '.join(_FTS_COLUMNS)}) "
-                f"{_fts_projection(_FTS_DELETE_LEAD)} WHERE e.id IN ({marks})",
-                list(chunk),
-            )
+    def _index_search_rows(
+        self, last_rowid: int, *, batch: int = SEARCH_BACKFILL_BATCH
+    ) -> bool:
+        """Index every entry after ``last_rowid``, in batches, then record the
+        finished index. True when it finished; False when :meth:`close` ran
+        first.
 
-    def _fts_index(self, cur: sqlite3.Cursor, entry_ids: Sequence[str]) -> None:
-        """Add these entries to the search index. MUST run AFTER the rows (and
-        their tags) are written."""
-        if not self.fts_enabled or not entry_ids:
+        Each batch takes the write lock and commits together with
+        :data:`FTS_BACKFILL_ROWID_KEY`, the highest rowid it covered, so a
+        build interrupted by a crash, a kill or a full disk resumes after the
+        last committed batch. A row a write changes meanwhile is indexed by
+        that write (:meth:`_sync_dirty`) and again when the build reaches it,
+        the same text both times. Commits directly, for the reason
+        :meth:`_start_search_build` gives.
+
+        Every library read takes the same lock, so a batch is sized to hold
+        it for about :data:`SEARCH_BATCH_TARGET_SEC`: the size follows the
+        measured rate, between :data:`SEARCH_BATCH_MIN` and ``batch``. At
+        2,000 rows a batch held the lock for 0.3 s on a fast disk and more
+        than a second on a slow one, and every read waited that long. The
+        lock is fair (:class:`FairRLock`), so a read that arrives during a
+        batch runs before the next one.
+        """
+        expected = self._search_state()
+        indexed = 0
+        reported = time.monotonic()
+        top: Optional[int] = None
+        size = max(1, min(batch, 500))
+        while True:
+            with self._writelock:
+                if self._closed:
+                    return False
+                began = time.perf_counter()
+                cur = self._conn.cursor()
+                try:
+                    if top is None:
+                        top = cur.execute(
+                            "SELECT MAX(rowid) AS m FROM entries"
+                        ).fetchone()["m"]
+                    rows = cur.execute(
+                        "SELECT rowid FROM entries WHERE rowid > ? "
+                        "ORDER BY rowid LIMIT ?",
+                        (last_rowid, size),
+                    ).fetchall()
+                    if rows:
+                        rids = [int(r["rowid"]) for r in rows]
+                        self._sync_search(cur, rids)
+                        last_rowid = rids[-1]
+                        cur.execute(
+                            "INSERT OR REPLACE INTO schema_meta (key, value) "
+                            "VALUES (?, ?)",
+                            (FTS_BACKFILL_ROWID_KEY, str(last_rowid)),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT OR REPLACE INTO schema_meta (key, value) "
+                            "VALUES (?, ?)",
+                            (SEARCH_STATE_KEY, expected),
+                        )
+                        cur.execute(
+                            "DELETE FROM schema_meta WHERE key IN (?, ?)",
+                            (SEARCH_TARGET_KEY, FTS_BACKFILL_ROWID_KEY),
+                        )
+                    self._conn.commit()
+                except Exception:
+                    self._conn.rollback()
+                    raise
+                finally:
+                    cur.close()
+                held = time.perf_counter() - began
+            if not rows:
+                break
+            indexed += len(rows)
+            self.progress.advance("index", len(rows))
+            if held > 0:
+                size = int(len(rows) * SEARCH_BATCH_TARGET_SEC / held)
+            size = max(min(SEARCH_BATCH_MIN, batch), min(batch, size))
+            if time.monotonic() - reported >= 10.0:
+                reported = time.monotonic()
+                log.info(
+                    "library.db: search index build at row %d of %s (%d indexed)",
+                    last_rowid,
+                    top,
+                    indexed,
+                )
+        if indexed:
+            log.info("library.db: indexed %d entries for search", indexed)
+        return True
+
+    def _reconcile_search(self, *, batch: int = SEARCH_BACKFILL_BATCH) -> None:
+        """Re-index every row the index may be wrong about, on open.
+
+        * ``search_dirty``: rows another build changed -- one that predates
+          the index, whose writes the triggers recorded -- and rows a writer
+          in this process committed without going through ``_txn``.
+        * rows with no head row, and head rows with no entry: whatever a
+          writer the triggers could not see left behind -- an ``INSERT OR
+          REPLACE`` into ``entries`` (its implied delete fires no trigger
+          unless recursive triggers are on), or a hand edit.
+          The two rowid lists are read and compared as sets: at 200,000
+          rows that is about 0.1 s per list, where ``rowid NOT IN (SELECT rid
+          FROM entries_search_head)`` took 1.1 s -- it walks ``entries`` in
+          an index's order and looks every rowid up in the head table's
+          text-laden pages at random, all of it under the write lock.
+
+        Takes the write lock per list and per batch, and commits per batch,
+        directly, for the reason ``_start_search_build`` gives. A write that
+        lands between the two lists only adds a rowid to re-index, and
+        re-indexing a row that needs nothing writes back the same text; a
+        row a write re-indexes in between is indexed again here with the
+        same text.
+        """
+        with self._writelock:
+            if self._closed:
+                return
+            todo = {int(r["rid"]) for r in self._conn.execute(_DIRTY_ROWIDS_SQL)}
+            entry_rowids = {
+                int(r["rowid"]) for r in self._conn.execute("SELECT rowid FROM entries")
+            }
+        with self._writelock:
+            if self._closed:
+                return
+            head_rowids = {
+                int(r["rid"])
+                for r in self._conn.execute("SELECT rid FROM entries_search_head")
+            }
+        todo.update(entry_rowids.symmetric_difference(head_rowids))
+        if not todo:
             return
-        for chunk in _chunks(entry_ids, _MAX_SQL_PARAMS):
+        ordered = sorted(todo)
+        for chunk in _chunks(ordered, batch):
+            with self._writelock:
+                if self._closed:
+                    return
+                cur = self._conn.cursor()
+                try:
+                    self._sync_search(cur, chunk)
+                    for part in _chunks(list(chunk), _MAX_SQL_PARAMS):
+                        marks = ", ".join("?" * len(part))
+                        cur.execute(
+                            f"DELETE FROM search_dirty WHERE rid IN ({marks})",
+                            list(part),
+                        )
+                    self._conn.commit()
+                except Exception:
+                    self._conn.rollback()
+                    raise
+                finally:
+                    cur.close()
+        log.info(
+            "library.db: re-indexed %d entries changed outside this build",
+            len(ordered),
+        )
+
+    def _sync_search(self, cur: sqlite3.Cursor, rids: Sequence[int]) -> None:
+        """Make the index hold exactly the current text of these rowids.
+
+        For each chunk: remove what the index holds for them -- the fts5
+        'delete's read the indexed values back out of ``entries_search_text``,
+        which is the only place they can come from exactly (the grams are
+        recomputed from those same values) -- then write the text of every
+        rowid that is still an entry. A rowid with no entry (deleted, by this
+        build or another) is simply left out.
+        """
+        ids = sorted({int(rid) for rid in rids})
+        for chunk in _chunks(ids, _MAX_SQL_PARAMS):
             marks = ", ".join("?" * len(chunk))
+            params = list(chunk)
+            if self.fts_enabled:
+                self._unindex_search(cur, marks, params)
             cur.execute(
-                f"INSERT INTO entries_fts(rowid, {', '.join(_FTS_COLUMNS)}) "
-                f"{_fts_projection()} WHERE e.id IN ({marks})",
-                list(chunk),
+                f"DELETE FROM entries_search_head WHERE rid IN ({marks})", params
             )
+            cur.execute(
+                f"DELETE FROM entries_search_body WHERE rid IN ({marks})", params
+            )
+            texts = [
+                (int(row["rid"]), *search_text(row))
+                for row in cur.execute(_search_rows_sql(marks), params).fetchall()
+            ]
+            if not texts:
+                continue
+            cur.executemany(
+                "INSERT INTO entries_search_head (rid, head) VALUES (?, ?)",
+                [(rid, head) for rid, head, _ in texts],
+            )
+            cur.executemany(
+                "INSERT INTO entries_search_body (rid, body) VALUES (?, ?)",
+                [(rid, body) for rid, _, body in texts if body],
+            )
+            if self.fts_enabled:
+                cur.executemany(
+                    "INSERT INTO entries_search (rowid, head, body) VALUES (?, ?, ?)",
+                    texts,
+                )
+                cur.executemany(
+                    "INSERT INTO entries_search_short (rowid, grams) VALUES (?, ?)",
+                    [(rid, short_grams(head, body)) for rid, head, body in texts],
+                )
+
+    @staticmethod
+    def _unindex_search(cur: sqlite3.Cursor, marks: str, params: list[Any]) -> None:
+        """Remove the fts5 rows of the rowids in ``params`` (``marks`` is its
+        placeholder list), handing each index back exactly what it was given.
+        The head and body rows are left for the caller."""
+        indexed = cur.execute(
+            f"SELECT rid, head, body FROM entries_search_text WHERE rid IN ({marks})",
+            params,
+        ).fetchall()
+        if not indexed:
+            return
+        cur.executemany(
+            "INSERT INTO entries_search(entries_search, rowid, head, body) "
+            "VALUES ('delete', ?, ?, ?)",
+            [(r["rid"], r["head"], r["body"]) for r in indexed],
+        )
+        cur.executemany(
+            "INSERT INTO entries_search_short(entries_search_short, rowid, grams) "
+            "VALUES ('delete', ?, ?)",
+            [(r["rid"], short_grams(r["head"], r["body"])) for r in indexed],
+        )
+
+    def _sync_dirty(self, cur: sqlite3.Cursor) -> None:
+        """Re-index the rows this transaction's writes touched (the triggers
+        listed them in ``search_dirty``), inside the same transaction, so a
+        committed write and its index entry can never disagree."""
+        if not self.search_ready:
+            return
+        rids = [int(r["rid"]) for r in cur.execute(_DIRTY_ROWIDS_SQL)]
+        if not rids:
+            return
+        self._sync_search(cur, rids)
+        cur.execute("DELETE FROM search_dirty")
 
     # ---- Connection helper --------------------------------------------------
 
@@ -1530,9 +2787,13 @@ class LibraryDB:
     # changes nothing a client caches -- no column any list shows, no tag, no
     # index, no ordering -- must not fire it, or an ordinary first scroll
     # through the library becomes cache thrash. Reserved for exactly that:
-    # today only :meth:`set_entry_metadata`, whose added keys are read by SQL
-    # and were already in the response that caused the write. Anything that
+    # :meth:`set_entry_metadata` and :meth:`fill_entry_providers`, whose
+    # values were already in the response that caused the write, and the
+    # analysis engine's status updates when it asks for it. Anything that
     # changes what a client could be showing keeps the default.
+    #
+    # Every transaction also brings the search index along before it commits
+    # (:meth:`_sync_dirty`), whichever way the revision goes.
     _BUMP_REVISION_SQL = """
         INSERT INTO schema_meta (key, value) VALUES ('library_revision', '1')
         ON CONFLICT(key) DO UPDATE
@@ -1545,6 +2806,7 @@ class LibraryDB:
             cur = self._conn.cursor()
             try:
                 yield cur
+                self._sync_dirty(cur)
                 if bump_revision:
                     cur.execute(self._BUMP_REVISION_SQL)
                 self._conn.commit()
@@ -1562,10 +2824,9 @@ class LibraryDB:
         now = _now()
         row = _entry_row(payload)
         entry_id = row["id"]
+        # The search index follows by itself: the triggers list this row as
+        # dirty and `_txn` re-indexes it before the commit.
         with self._txn() as cur:
-            # Before the row changes: the index still holds the OLD values, and
-            # a contentless fts5 table can only be corrected with those.
-            self._fts_forget(cur, [entry_id])
             existing = cur.execute(
                 "SELECT created_at FROM entries WHERE id = ?", (entry_id,)
             ).fetchone()
@@ -1589,9 +2850,6 @@ class LibraryDB:
                 "INSERT INTO prompt_corpus (entry_id, prompt_kind, prompt_text) VALUES (?, ?, ?)",
                 _entry_prompt_rows(row),
             )
-            # After the row AND its tags are final, so the indexed values are
-            # exactly what the next _fts_forget will hand back.
-            self._fts_index(cur, [entry_id])
 
     def upsert_entries_bulk(
         self,
@@ -1627,8 +2885,8 @@ class LibraryDB:
     def _write_entry_batch(self, payloads: list[dict[str, Any]]) -> int:
         now = _now()
         rows = [_entry_row(p) for p in payloads]
-        # A payload repeated inside one batch must not be forgotten/indexed
-        # twice: the IN-list statements below are set operations.
+        # A payload repeated inside one batch is still one row: the IN-list
+        # statements below name each id once.
         unique_ids = list(dict.fromkeys(r["id"] for r in rows))
         tag_rows: list[tuple[str, str]] = []
         prompt_rows: list[tuple[str, str, str]] = []
@@ -1637,7 +2895,6 @@ class LibraryDB:
             prompt_rows.extend(_entry_prompt_rows(row))
 
         with self._txn() as cur:
-            self._fts_forget(cur, unique_ids)
             cur.executemany(
                 _UPSERT_ENTRY_SQL,
                 [{**r, "created_at": now, "updated_at": now} for r in rows],
@@ -1660,7 +2917,6 @@ class LibraryDB:
                 "INSERT INTO prompt_corpus (entry_id, prompt_kind, prompt_text) VALUES (?, ?, ?)",
                 prompt_rows,
             )
-            self._fts_index(cur, unique_ids)
         return len(rows)
 
     def set_entry_metadata(
@@ -1671,10 +2927,11 @@ class LibraryDB:
         Deliberately narrower than :meth:`upsert_entry`, which is the path a
         user edit takes: no column is written, so ``updated_at`` keeps the
         value the last real edit left on it and every sort order stays where
-        it was; the tag index, the prompt corpus and the fts index are not
-        rebuilt; and an id with no row inserts nothing. That is what lets the
-        read path record a fact it DERIVED about a row without the row looking
-        edited.
+        it was; the tag index and the prompt corpus are not rebuilt; and an id
+        with no row inserts nothing. That is what lets the read path record a
+        fact it DERIVED about a row without the row looking edited. The search
+        index does follow the new metadata, as it follows every write: the
+        triggers list the row and ``_txn`` re-indexes it.
 
         The ONE exception is the ``provider`` column, which is written in the
         same statement from the same dict (:func:`resolved_provider_slug`).
@@ -1683,12 +2940,11 @@ class LibraryDB:
         renamed an entry's provider while leaving the column behind would
         label the row one way and file it another, which is the exact
         disagreement this method's caller exists to end. Neither is an edit:
-        no sort order, index or timestamp can notice either.
+        no sort order or timestamp can notice either.
 
-        Otherwise only safe for metadata keys nothing else mirrors.
-        ``$.lyrics`` is projected into the fts index and the remaining entry
+        Otherwise only safe for metadata keys no column mirrors: the entry
         columns are written from their own payload fields, so a caller that
-        changes either of those must go through :meth:`upsert_entry` instead.
+        changes one of those must go through :meth:`upsert_entry` instead.
         Its one caller, :meth:`~.store.LibraryStore.record_detected_providers`,
         adds only the ``provider*`` keys.
 
@@ -1771,14 +3027,47 @@ class LibraryDB:
             cur.close()
             return dict(row) if row else None
 
+    def _entry_rows_in_chunks(
+        self, columns: str, *, chunk: int = WHOLE_TABLE_READ_CHUNK
+    ) -> list[dict[str, Any]]:
+        """Every ``entries`` row's ``columns``, read ``chunk`` rows at a time
+        in rowid order, with the write lock taken per chunk.
+
+        A whole-table read under one hold of the lock kept every other
+        library call waiting for it: at 200,000 rows ``SELECT * FROM
+        entries`` (the notation backfill runs it on every start) held the
+        lock for seconds, longer still while another thread kept the GIL
+        busy, and a library search waited behind it. A write that lands
+        between two chunks is seen or not depending on its rowid, which is
+        what a read a moment earlier or later would have seen too."""
+        out: list[dict[str, Any]] = []
+        last = -(2**63)
+        while True:
+            with self._writelock:
+                rows = self._conn.execute(
+                    f"SELECT rowid AS _chunk_rowid, {columns} FROM entries "
+                    "WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                    (last, chunk),
+                ).fetchall()
+            if not rows:
+                return out
+            last = int(rows[-1]["_chunk_rowid"])
+            for row in rows:
+                item = dict(row)
+                del item["_chunk_rowid"]
+                out.append(item)
+            if len(rows) < chunk:
+                return out
+
     def list_entries(self) -> list[dict[str, Any]]:
-        with self._writelock:
-            cur = self._conn.cursor()
-            rows = cur.execute(
-                "SELECT * FROM entries ORDER BY created_at DESC"
-            ).fetchall()
-            cur.close()
-            return [dict(r) for r in rows]
+        """Every entry, newest first. Read in chunks
+        (:meth:`_entry_rows_in_chunks`) and sorted here, so no single hold of
+        the write lock lasts the whole table. The chunks arrive in rowid
+        order and the sort is stable, so entries created in one clock tick
+        keep rowid order (``created_at DESC, rowid ASC``)."""
+        rows = self._entry_rows_in_chunks("*")
+        rows.sort(key=lambda r: r.get("created_at") or 0.0, reverse=True)
+        return rows
 
     def list_entries_filtered(
         self,
@@ -1802,7 +3091,7 @@ class LibraryDB:
         sql = f"""
             SELECT e.* FROM entries e {join}
             {where}
-            ORDER BY e.created_at DESC
+            ORDER BY e.created_at DESC, e.rowid ASC
             {limit_sql}
         """
         with self._writelock:
@@ -1822,7 +3111,7 @@ class LibraryDB:
                 a.bpm, a.key, a.scale, a.genre, a.loudness_lufs, a.bars_estimated
             FROM entries e
             LEFT JOIN analysis a ON a.entry_id = e.id
-            ORDER BY e.created_at DESC
+            ORDER BY e.created_at DESC, e.rowid ASC
         """
         with self._writelock:
             cur = self._conn.cursor()
@@ -1832,8 +3121,6 @@ class LibraryDB:
 
     def delete_entry(self, entry_id: str) -> bool:
         with self._txn() as cur:
-            # While the row is still there to be read back out of the index.
-            self._fts_forget(cur, [entry_id])
             cur.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
             deleted = cur.rowcount > 0
             # ``relations`` is polymorphic (from_id / to_id may reference a
@@ -1970,10 +3257,11 @@ class LibraryDB:
         rows actually removed.
 
         Does exactly what :meth:`delete_entry` does, a batch at a time: the
-        search index is corrected from the values it currently holds BEFORE the
-        rows change, the rows go (cascading to analysis / stems / midis / tags /
-        prompts / notation / shards), and the polymorphic ``relations`` edges
-        that name these ids are wiped by hand because they have no foreign key.
+        rows go (cascading to analysis / stems / midis / tags / prompts /
+        notation / shards), the polymorphic ``relations`` edges that name these
+        ids are wiped by hand because they have no foreign key, and the search
+        index drops them before the batch commits (the delete trigger lists
+        them for ``_txn``).
 
         One revision bump per batch, not per row: clearing 50,000 entries must
         not push ``library_revision`` forward 50,000 times and make every
@@ -1987,27 +3275,62 @@ class LibraryDB:
         # so a batch can never exceed the parameter ceiling.
         size = max(1, min(int(batch), _MAX_SQL_PARAMS))
         removed = 0
-        for chunk in _chunks(ids, size):
-            marks = ", ".join("?" * len(chunk))
-            params = list(chunk)
-            with self._txn() as cur:
-                # While the rows are still there to be read back out of it.
-                self._fts_forget(cur, chunk)
-                cur.execute(f"DELETE FROM entries WHERE id IN ({marks})", params)
-                removed += cur.rowcount
-                # Split rather than ``from_id IN (...) OR to_id IN (...)`` so
-                # one batch is never two parameter lists wide, and so each half
-                # can use its own index.
-                cur.execute(f"DELETE FROM relations WHERE from_id IN ({marks})", params)
-                cur.execute(f"DELETE FROM relations WHERE to_id IN ({marks})", params)
+        with self.checkpoint_once():
+            for chunk in _chunks(ids, size):
+                marks = ", ".join("?" * len(chunk))
+                params = list(chunk)
+                with self._txn() as cur:
+                    cur.execute(f"DELETE FROM entries WHERE id IN ({marks})", params)
+                    removed += cur.rowcount
+                    # Split rather than ``from_id IN (...) OR to_id IN (...)``
+                    # so one batch is never two parameter lists wide, and so
+                    # each half can use its own index.
+                    cur.execute(
+                        f"DELETE FROM relations WHERE from_id IN ({marks})", params
+                    )
+                    cur.execute(
+                        f"DELETE FROM relations WHERE to_id IN ({marks})", params
+                    )
         return removed
 
-    def all_entry_ids(self) -> list[str]:
+    @contextmanager
+    def checkpoint_once(self) -> Iterator[None]:
+        """Hold WAL checkpoints back for a run of batch commits, then run ONE.
+
+        Every batch of a bulk delete rewrites the same hot pages -- the
+        entries indexes, the search index, the cascade tables -- and past
+        ``wal_autocheckpoint`` pages each commit copies them all back into the
+        database file again: measured at half the time of a 10,000-row delete.
+        Deferred, each page is copied once. The checkpoint at the end is
+        PASSIVE, so it never waits on, or blocks, a reader or another writer;
+        whatever it cannot copy is left to the next automatic one.
+
+        Nests: only the outermost block checkpoints. The store wraps its whole
+        bulk delete in one, because it calls :meth:`delete_entries_bulk` once
+        per batch, and a checkpoint per 500-row batch cost 10 of the 21 s a
+        50,000-row delete took.
+        """
         with self._writelock:
-            cur = self._conn.cursor()
-            rows = cur.execute("SELECT id FROM entries").fetchall()
-            cur.close()
-            return [r["id"] for r in rows]
+            outermost = self._checkpoint_depth == 0
+            self._checkpoint_depth += 1
+            if outermost:
+                row = self._conn.execute("PRAGMA wal_autocheckpoint").fetchone()
+                self._checkpoint_previous = int(row[0]) if row is not None else 1000
+                self._conn.execute("PRAGMA wal_autocheckpoint = 0")
+        try:
+            yield
+        finally:
+            with self._writelock:
+                self._checkpoint_depth -= 1
+                if outermost:
+                    self._conn.execute(
+                        f"PRAGMA wal_autocheckpoint = {self._checkpoint_previous}"
+                    )
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchall()
+
+    def all_entry_ids(self) -> list[str]:
+        """Every entry id, read in chunks (:meth:`_entry_rows_in_chunks`)."""
+        return [r["id"] for r in self._entry_rows_in_chunks("id")]
 
     def count_entries(self) -> int:
         with self._writelock:
@@ -2023,58 +3346,170 @@ class LibraryDB:
     # play_count read from the row it belongs to instead of a second pass over
     # the whole table. The store builds records for the PAGE only.
 
-    def _search_clause(self, tokens: Sequence[str]) -> tuple[str, list[Any]]:
-        """``(clause, params)`` for a free-text search.
+    def _search_rids_sql(self, q: str) -> Optional[tuple[str, list[Any]]]:
+        """``(select, params)``: one ``SELECT rid`` of the rowids a free-text
+        search matches -- main's matcher in SQL -- or None when ``q`` says
+        nothing (a blank search matches nothing; the list without a search is
+        the request that omits ``q``).
 
-        With fts5 this is a prefix MATCH per token, implicitly ANDed, phrased
-        as ``rowid IN (subquery)``. The phrasing is load-bearing, not style:
-        written as ``JOIN entries_fts ON entries_fts.rowid = e.rowid``, SQLite
-        drives the query from the ``kind`` index and asks fts5 "does THIS rowid
-        match?" once per row, re-running the full-text query 200,000 times --
-        measured at 18.8 s for one page and 5 minutes for the COUNT. The
-        subquery is materialized once instead: 5-32 ms for a page and <100 ms
-        for the count across every match size from 0 to 200,000 rows.
+        An entry matches when every word of ``q`` (:func:`search_words`)
+        occurs in its search text (see "Search index"), OR -- when ``q`` reads
+        as a number the way ``parseFloat`` reads it -- when its duration
+        rounds to that number of seconds or of minutes. Main tested the whole
+        query as one substring, and every word of a substring that occurs
+        occurs too, so this finds everything main's matcher found.
 
-        Without fts5 (a SQLite built without the module) the fallback is an
-        index-usable prefix LIKE on ``title`` plus an unindexed substring LIKE
-        on prompt / notes / tags / lyrics -- slower, and title matches are
-        anchored at the start rather than at any word, which is why it is only
-        ever the fallback. ``search_tokens`` has already dropped every fts5
-        operator, so neither form can be injected into.
+        The rowids are never matched one entry at a time: written as a join
+        that SQLite drives from the ``kind`` index, fts5 is asked "does THIS
+        rowid match?" once per row -- measured at 18.8 s for one page on
+        200,000 rows. :meth:`_filter_sql` and :meth:`_source_sql` use this
+        select only as a whole set.
+
+        No rowid is listed twice, so an aggregate can drive from the select
+        as it stands. The duration arm seeks ``idx_entries_duration`` and
+        leaves out the rows the text arm already lists, by testing the same
+        words on those rows' text; a ``UNION`` would instead sort every
+        matching rowid into a temporary b-tree to remove the repeats.
+
+        While a background build of the index runs, the select matches the
+        rows indexed so far and never waits for the rest: a search that waited
+        held a request thread for the whole build, 52 to 170 s at 200,000
+        rows. :meth:`search_status` says how much of the library that is. A
+        build that stopped raises :class:`SearchIndexFailed` here
+        (:meth:`_raise_if_search_failed`).
         """
-        if not tokens:
-            # A search string with nothing searchable in it matches nothing.
-            return "0", []
+        raw = q.strip()
+        if not raw:
+            return None
+        self._raise_if_search_failed()
+        words = search_words(raw)
+        text_sql, params = self._text_match_sql(words)
+        number = js_parse_float(raw)
+        if number is None:
+            return text_sql, params
+        # Math.round(duration) === Math.round(n), and the same in minutes.
+        target = js_round(number)
+        bounds = [
+            bound
+            for scale in (1.0, 60.0)
+            for bound in ((target - 0.5) * scale, (target + 0.5) * scale)
+        ]
+        in_text = " AND ".join(
+            "(instr(COALESCE(h.head, ''), ?) > 0 OR instr(COALESCE(b.body, ''), ?) > 0)"
+            for _ in words
+        )
+        duration_sql = (
+            "SELECT d.rowid AS rid FROM entries d "
+            "LEFT JOIN entries_search_head h ON h.rid = d.rowid "
+            "LEFT JOIN entries_search_body b ON b.rid = d.rowid "
+            "WHERE ((d.duration_sec >= ? AND d.duration_sec < ?) "
+            "OR (d.duration_sec >= ? AND d.duration_sec < ?)) "
+            f"AND NOT ({in_text})"
+        )
+        params.extend(bounds)
+        params.extend(v for w in words for v in (w, w))
+        # Each arm wrapped, so nothing inside one can bind to its neighbour.
+        return (
+            f"SELECT rid FROM ({text_sql}) UNION ALL SELECT rid FROM ({duration_sql})",
+            params,
+        )
+
+    def _text_match_sql(self, tokens: Sequence[str]) -> tuple[str, list[Any]]:
+        """One ``SELECT rid`` of the rowids whose search text holds every one
+        of ``tokens`` (at least one; :meth:`_search_rids_sql` never passes
+        none), in the head or the body alike.
+
+        Words of three characters or more are answered by the trigram index
+        and shorter ones by ``entries_search_short``. When a query has both,
+        the trigram index narrows and each short word is tested with
+        ``instr`` on the candidates' head and body, looked up by primary key:
+        measured at 200,000 rows that is cheaper than intersecting two fts5
+        results, which sorts both sets into a temporary b-tree.
+
+        Without fts5 the text tables are scanned with ``instr``: slower, the
+        same answers.
+        """
+        long_tokens = [t for t in tokens if len(t) > SHORT_WORD_MAX]
+        short_tokens = [t for t in tokens if len(t) <= SHORT_WORD_MAX]
+        in_text = "(instr(h.head, ?) > 0 OR instr(COALESCE(b.body, ''), ?) > 0)"
         if self.fts_enabled:
+            match = " ".join(_fts_phrase(t) for t in long_tokens)
+            if not short_tokens:
+                return (
+                    "SELECT rowid AS rid FROM entries_search "
+                    "WHERE entries_search MATCH ?",
+                    [match],
+                )
+            if not long_tokens:
+                return (
+                    "SELECT rowid AS rid FROM entries_search_short "
+                    "WHERE entries_search_short MATCH ?",
+                    [" ".join(_gram_token(t) for t in short_tokens)],
+                )
             return (
-                "e.rowid IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?)",
-                [_fts_match_expr(tokens)],
+                "SELECT h.rid AS rid FROM entries_search s "
+                "CROSS JOIN entries_search_head h ON h.rid = s.rowid "
+                "LEFT JOIN entries_search_body b ON b.rid = h.rid "
+                "WHERE s.entries_search MATCH ? AND "
+                + " AND ".join(in_text for _ in short_tokens),
+                [match, *(v for t in short_tokens for v in (t, t))],
             )
-        parts: list[str] = []
-        params: list[Any] = []
-        for token in tokens:
-            parts.append(
-                "(e.title LIKE ?"
-                " OR e.prompt LIKE ?"
-                " OR e.notes LIKE ?"
-                " OR COALESCE(CASE WHEN json_valid(e.metadata_json)"
-                "             THEN json_extract(e.metadata_json, '$.lyrics') END, '') LIKE ?"
-                " OR EXISTS (SELECT 1 FROM tag_index t"
-                "            WHERE t.entry_id = e.id AND t.tag LIKE ?))"
-            )
-            # Tokens are letters and digits only, so they carry no LIKE
-            # wildcard and need no ESCAPE clause.
-            params.extend([f"{token}%", *([f"%{token}%"] * 4)])
-        return " AND ".join(parts), params
+        return (
+            "SELECT h.rid AS rid FROM entries_search_head h "
+            "LEFT JOIN entries_search_body b ON b.rid = h.rid WHERE "
+            + " AND ".join(in_text for _ in tokens),
+            [v for t in tokens for v in (t, t)],
+        )
 
     def _filter_sql(self, filters: EntryFilters) -> tuple[str, list[Any]]:
-        """``(where, params)`` for one :class:`EntryFilters`."""
+        """``(where, params)`` for one :class:`EntryFilters`, the search as
+        ``e.rowid IN (...)``: the shape for a sorted page, which walks the
+        sort's index and stops after one page, however many rows match."""
         clauses: list[str] = []
         params: list[Any] = []
         if filters.q is not None:
-            search_clause, search_params = self._search_clause(search_tokens(filters.q))
-            clauses.append(search_clause)
-            params.extend(search_params)
+            search = self._search_rids_sql(filters.q)
+            if search is None:
+                clauses.append("0")
+            else:
+                clauses.append(f"e.rowid IN ({search[0]})")
+                params.extend(search[1])
+        rest, rest_params = self._column_filter_sql(filters)
+        clauses.extend(rest)
+        params.extend(rest_params)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
+    def _source_sql(self, filters: EntryFilters) -> tuple[str, list[Any]]:
+        """``(from_and_where, params)`` for an aggregate over everything
+        ``filters`` matches (a count, the stats chips). A text search drives:
+        its rowids come out of fts5 in rowid order, and each entry is looked
+        up by primary key in that order, where the ``IN`` shape first copies
+        every matching rowid into a temporary index (measured at 200,000
+        matches: 67 ms against 162 ms for a count, 104 ms against 155 ms for
+        the stats).
+
+        A query that also reads as a duration keeps the ``IN`` shape: the
+        duration arm lists rowids in duration order, and looking those up one
+        by one in the table reads its pages at random (145 ms for the 7,821
+        rows three minutes matched on 200,000)."""
+        search = None if filters.q is None else self._search_rids_sql(filters.q)
+        if search is None or js_parse_float(filters.q.strip()) is not None:
+            where, params = self._filter_sql(filters)
+            return f"entries e {where}", params
+        clauses, params = self._column_filter_sql(filters)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return (
+            f"({search[0]}) s CROSS JOIN entries e NOT INDEXED ON e.rowid = s.rid "
+            f"{where}",
+            [*search[1], *params],
+        )
+
+    @staticmethod
+    def _column_filter_sql(filters: EntryFilters) -> tuple[list[str], list[Any]]:
+        """The clauses and params of every filter but the search."""
+        clauses: list[str] = []
+        params: list[Any] = []
         if filters.kinds is not None:
             kinds = sorted(filters.kinds)
             if not kinds:
@@ -2101,8 +3536,7 @@ class LibraryDB:
             # is folded to match.
             clauses.append(f"{PROVIDER_SQL} = ?")
             params.append(str(filters.provider).strip().lower())
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        return where, params
+        return clauses, params
 
     @staticmethod
     def _order_sql(sort: str) -> str:
@@ -2140,12 +3574,10 @@ class LibraryDB:
     def count_entries_filtered(self, filters: EntryFilters) -> int:
         """How many entries match ``filters`` -- the ``total`` a paged client
         sizes its scrollbar from."""
-        where, params = self._filter_sql(filters)
+        source, params = self._source_sql(filters)
         with self._writelock:
             cur = self._conn.cursor()
-            row = cur.execute(
-                f"SELECT COUNT(*) AS c FROM entries e {where}", params
-            ).fetchone()
+            row = cur.execute(f"SELECT COUNT(*) AS c FROM {source}", params).fetchone()
             cur.close()
             return int(row["c"]) if row else 0
 
@@ -2172,6 +3604,108 @@ class LibraryDB:
             ).fetchall()
             cur.close()
         return [str(r["id"]) for r in rows]
+
+    def entry_stats(self, filters: EntryFilters) -> dict[str, Any]:
+        """Totals over EVERYTHING ``filters`` matches -- the favourites, size
+        and duration chips above the library list, which must not change as
+        the user scrolls pages in and out.
+
+        One aggregate over the same filters as the page query, so the chips
+        and the list can never be about different rows. With a kind (and a
+        favourite) filter it is a covering scan of ``idx_entries_kind_stats``;
+        a search drives from its matching rowids (:meth:`_source_sql`) with a
+        primary-key lookup per match, and a provider filter adds a row lookup
+        per row.
+        """
+        source, params = self._source_sql(filters)
+        with self._writelock:
+            cur = self._conn.cursor()
+            try:
+                row = cur.execute(
+                    "SELECT COUNT(*) AS n, TOTAL(e.favorite) AS favorites, "
+                    "TOTAL(e.file_size_bytes) AS size_bytes, "
+                    "TOTAL(e.duration_sec) AS duration_sec "
+                    f"FROM {source}",
+                    params,
+                ).fetchone()
+            finally:
+                cur.close()
+        return {
+            "count": int(row["n"]),
+            "favorites": int(row["favorites"]),
+            "size_bytes": int(row["size_bytes"]),
+            "duration_sec": float(row["duration_sec"]),
+        }
+
+    def resolve_entry_ref(self, ref: str) -> Optional[str]:
+        """The audio entry a LOOM score or template names, or None.
+
+        ``resolveEntryRef`` in frontend/src/state/shardIndexStore.ts, answered
+        over the whole library instead of the rows a browser happens to hold,
+        in the same order of preference: the exact id; an id that starts with
+        ``ref`` (eight characters or more); then by title, folded the way
+        :func:`fold_title` folds it -- equal, then starting with, then
+        containing. Among several, the newest wins, which is the order the
+        browser's list was in.
+
+        Title candidates come from the search index (every token of the folded
+        reference occurs in a folded title that contains it), so only the
+        matching rows' ids and titles are read. While a background build of
+        the index runs, the rows it has not reached yet are candidates too:
+        their titles are folded and tested here, so a score opened during the
+        build still finds its track.
+        """
+        text = str(ref or "")
+        if not text.strip():
+            return None
+        with self._writelock:
+            cur = self._conn.cursor()
+            try:
+                row = cur.execute(
+                    "SELECT id FROM entries WHERE id = ? AND kind = 'audio'", (text,)
+                ).fetchone()
+                if row is not None:
+                    return str(row["id"])
+                if len(text) >= 8:
+                    row = cur.execute(
+                        "SELECT e.id AS id FROM entries e WHERE e.id >= ? "
+                        "AND substr(e.id, 1, ?) = ? "
+                        f"AND e.kind = 'audio' ORDER BY {_SORT_SQL[DEFAULT_SORT]} LIMIT 1",
+                        (text, len(text), text),
+                    ).fetchone()
+                    if row is not None:
+                        return str(row["id"])
+                needle = fold_title(text)
+                if not needle:
+                    return None
+                search = self._search_rids_sql(needle)
+                assert search is not None  # a folded needle is never blank
+                match = f"e.rowid IN ({search[0]})"
+                params = list(search[1])
+                floor = self._unindexed_after()
+                if floor is not None:
+                    match = f"({match} OR e.rowid > ?)"
+                    params.append(floor)
+                titled = [
+                    (str(r["id"]), fold_title(str(r["title"] or "")))
+                    for r in cur.execute(
+                        "SELECT e.id AS id, e.title AS title FROM entries e "
+                        f"WHERE {match} AND e.kind = 'audio' "
+                        f"ORDER BY {_SORT_SQL[DEFAULT_SORT]}",
+                        params,
+                    ).fetchall()
+                ]
+            finally:
+                cur.close()
+        for accept in (
+            lambda t: t == needle,
+            lambda t: t.startswith(needle),
+            lambda t: needle in t,
+        ):
+            for entry_id, folded in titled:
+                if accept(folded):
+                    return entry_id
+        return None
 
     # ---- Facets --------------------------------------------------------------
 

@@ -56,6 +56,7 @@ import {
 import { IoSurfaceSelect } from '../audio/IoDeviceSelect';
 import { useIoDevicesStore, useResolvedSurface } from '../../state/ioDevicesStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { isAudioEntry } from '../../state/libraryEntry';
 import { logInfo, logWarn } from '../../state/logStore';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
@@ -208,10 +209,15 @@ const RecLevel: React.FC<{ monitorRef: React.MutableRefObject<InputMonitor | nul
   );
 };
 
+/** Songs the asset field's list offers at once. */
+const ASSET_MATCHES = 12;
+
 export const MidiPanel: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
-  const entries = useLibraryStore((s) => s.entries);
   const [assetId, setAssetId] = useState('');
+  // The field's id once it is known to name an audio entry (MATCH reads that
+  // song's rhythm analysis). Set by a pick, or by looking the id up.
+  const [songAudioId, setSongAudioId] = useState('');
   // What the search box shows (a friendly title); the actual API uses assetId.
   const [assetQuery, setAssetQuery] = useState('');
   const [assetOpen, setAssetOpen] = useState(false);
@@ -326,8 +332,10 @@ export const MidiPanel: React.FC = () => {
   useEffect(() => {
     if (selectedEntryId && !assetId) {
       setAssetId(selectedEntryId);
-      const sel = useLibraryStore.getState().entries.find((e) => e.id === selectedEntryId);
-      if (sel) setAssetQuery(sel.title);
+      // The selection can be a row on no loaded page: look it up by id.
+      void useLibraryStore.getState().ensureEntry(selectedEntryId).then((sel) => {
+        if (sel) setAssetQuery((shown) => shown || sel.title);
+      });
     }
   }, [selectedEntryId, assetId]);
 
@@ -338,6 +346,23 @@ export const MidiPanel: React.FC = () => {
     setAssetOpen(false);
   }, []);
 
+  // Whether the field's id names an audio entry, over the whole library. A
+  // pause first, so typing a name does not look up every keystroke.
+  useEffect(() => {
+    const id = assetId;
+    if (!id) return undefined;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void useLibraryStore.getState().ensureEntry(id).then((e) => {
+        if (live && e && isAudioEntry(e)) setSongAudioId(id);
+      });
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [assetId]);
+
   // A song sent from outside the dock (the footer track menu) replaces whatever
   // the box holds, and the Vocal2MIDI column that shows the box comes on. A
   // request made while the tab was closed is taken when the panel mounts.
@@ -345,18 +370,26 @@ export const MidiPanel: React.FC = () => {
   useEffect(() => {
     if (!songBoxRequest) return;
     useMidiSongBoxRequest.getState().consume();
-    const requested = useLibraryStore.getState().entries.find((e) => e.id === songBoxRequest);
+    const lib = useLibraryStore.getState();
+    const requested = lib.getById(songBoxRequest);
     pickAsset(songBoxRequest, requested?.title ?? songBoxRequest);
+    if (!requested) {
+      // On no loaded page: show its title once the lookup lands, unless the
+      // box has moved on to something else by then.
+      void lib.ensureEntry(songBoxRequest).then((e) => {
+        if (e) setAssetQuery((shown) => (shown === songBoxRequest ? e.title : shown));
+      });
+    }
     setVoiceOn(true);
   }, [songBoxRequest, pickAsset, setVoiceOn]);
 
-  // Library entries whose title matches the current search text (cap the list).
-  const assetMatches = (() => {
-    const q = assetQuery.trim().toLowerCase();
-    const audio = entries.filter(isAudioEntry);
-    const list = q ? audio.filter((e) => e.title.toLowerCase().includes(q)) : audio;
-    return list.slice(0, 12);
-  })();
+  // Library songs matching the search text, over the whole library (the
+  // first 12), asked only while the list is open.
+  const assetSearch = useLibrarySearch(
+    { q: assetQuery, kind: 'audio', sort: 'created_desc' },
+    { enabled: assetOpen, pageSize: ASSET_MATCHES },
+  );
+  const assetMatches = assetSearch.rows.slice(0, ASSET_MATCHES);
 
   const refreshInputs = useCallback(async () => {
     await useIoDevicesStore.getState().refresh();
@@ -608,7 +641,7 @@ export const MidiPanel: React.FC = () => {
   const listOpen = assetOpen && assetMatches.length > 0;
   // MATCH reads a library song's rhythm analysis, so it gets the field's id only
   // when that id names an audio entry; typed text that matches none leaves it off.
-  const songEntryId = entries.some((e) => isAudioEntry(e) && e.id === assetId) ? assetId : undefined;
+  const songEntryId = assetId && songAudioId === assetId ? assetId : undefined;
 
   return (
     // data-keyscope: this tab and the EDIT timeline both bind Delete; see
@@ -658,8 +691,12 @@ export const MidiPanel: React.FC = () => {
                 pickAsset(first.id, first.title);
                 if (!id) logInfo('vocal', `Imported "${first.title}" from the desktop into the song box`);
               } else if (id) {
-                // An id the library does not know: keep the raw id, as before.
+                // An id on no loaded page: keep the raw id, and show its
+                // title if the whole library knows it.
                 pickAsset(id, id);
+                void useLibraryStore.getState().ensureEntry(id).then((found) => {
+                  if (found) setAssetQuery((shown) => (shown === id ? found.title : shown));
+                });
               }
             });
           }}
@@ -702,7 +739,10 @@ export const MidiPanel: React.FC = () => {
                   role="option"
                   aria-selected={e.id === assetId}
                   onMouseDown={(ev) => ev.preventDefault()}
-                  onClick={() => pickAsset(e.id, e.title)}
+                  onClick={() => {
+                    pickAsset(e.id, e.title);
+                    setSongAudioId(e.id);
+                  }}
                   className={`w-full text-left px-2 py-1.5 text-[12px] font-semibold border-b border-white/5 last:border-0 transition-shadow hover:shadow-[inset_0_0_0_100px_rgba(255,255,255,0.06)] ${
                     e.id === assetId ? 'text-[rgb(var(--et-accent))]' : 'text-zinc-200'
                   }`}

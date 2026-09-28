@@ -91,6 +91,40 @@ def test_add_candidate_writes_audio_and_meta(store: CandidateStore) -> None:
     assert meta["seed"] == 42
 
 
+def test_a_take_cut_off_mid_write_leaves_nothing_at_its_name(
+    store: CandidateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk fills halfway through the take. Written in place, the take's
+    own name held half a file for the next save or a re-scan to trip on; the
+    atomic write leaves the set as it was: no take, no meta, no temp file."""
+    set_id = store.create_set(
+        source={"id": "abc"}, provider="suno", params={}, label="x"
+    )
+    before = sorted(p.name for p in (store.root / set_id).iterdir())
+    real_write_bytes = Path.write_bytes
+
+    def disk_fills(self: Path, data: bytes) -> int:
+        real_write_bytes(self, data[: len(data) // 2])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", disk_fills)
+    with pytest.raises(OSError, match="No space"):
+        store.add_candidate(
+            set_id,
+            audio_bytes=_wav_bytes(4096),
+            filename="take.wav",
+            mime_type="audio/wav",
+            provider_job_id=None,
+            params={},
+            seed=None,
+        )
+    monkeypatch.undo()
+
+    assert sorted(p.name for p in (store.root / set_id).iterdir()) == before
+    listed = next(s for s in store.list_sets() if s["id"] == set_id)
+    assert listed["candidates"] == []
+
+
 def test_add_candidate_rejects_empty_and_oversize(store: CandidateStore) -> None:
     set_id = store.create_set(
         source={"id": "abc"}, provider="suno", params={}, label="x"
@@ -234,6 +268,38 @@ def test_mark_accepted_sets_status_and_library_entry_id(store: CandidateStore) -
     on_disk = json.loads(meta_path.read_text(encoding="utf-8"))
     assert on_disk["status"] == "accepted"
     assert on_disk["library_entry_id"] == "lib-entry-1"
+
+
+def test_sets_and_candidates_made_in_one_clock_tick_keep_their_order(
+    store: CandidateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows' time.time() moves in 15.6 ms steps, so sets and candidates
+    made in quick succession got the same created_at. list_sets then fell
+    back to folder order (random ids), and "newest first" was a coin toss:
+    test_list_sets_filters_by_source_id failed on a full-suite run here."""
+    import time
+
+    monkeypatch.setattr(time, "time", lambda: 1_790_000_000.0)
+    made = [
+        store.create_set(source={"id": "t"}, provider="suno", params={}, label=str(i))
+        for i in range(6)
+    ]
+    assert [s["id"] for s in store.list_sets()] == made[::-1]
+
+    added = [
+        store.add_candidate(
+            made[0],
+            audio_bytes=_wav_bytes(),
+            filename=f"take{i}.wav",
+            mime_type="audio/wav",
+            provider_job_id=None,
+            params={},
+            seed=None,
+        )
+        for i in range(6)
+    ]
+    listed = next(s for s in store.list_sets() if s["id"] == made[0])
+    assert [c["id"] for c in listed["candidates"]] == added
 
 
 def test_list_sets_filters_by_source_id(store: CandidateStore) -> None:

@@ -11,6 +11,9 @@ Endpoints:
   * POST /api/underfit/stop   — terminates the sidecar (only a process
                                 we spawned; a manual instance is left
                                 alone, and training runs always survive).
+  * GET  /api/underfit/assistant/status — is the UNDERFIT assistant backend
+                                (underfit/assistant-backend, :5473) running?
+  * POST /api/underfit/assistant/start — start it; returns once it answers.
   * GET  /api/underfit/update-status — is dada-bots/underfit ahead of us?
   * POST /api/underfit/update — pull upstream into the vendored subrepo.
   * GET  /api/underfit/runs — the dashboard's training runs (id, name, status).
@@ -23,8 +26,9 @@ The four run routes exist for the footer's TRAIN key, which starts a run from
 the last one's settings and stops the live one: the dashboard sends no CORS
 headers, so the app cannot read it directly.
 
-The module auto-spawns the dashboard at backend startup (unless
-``theDAW_UNDERFIT_NO_AUTO_SPAWN`` is set) so the Underfit tab — which
+The module auto-spawns the dashboard, and the assistant backend its orb talks
+to, at backend startup (unless ``theDAW_UNDERFIT_NO_AUTO_SPAWN`` is set;
+``theDAW_UNDERFIT_ASSISTANT_NO_AUTO_SPAWN`` skips only the assistant) so the Underfit tab — which
 polls :8791 directly and never calls this router — connects without the
 user launching anything by hand.
 """
@@ -37,10 +41,11 @@ import threading
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from . import sidecar, updater
+from . import assistant_sidecar, sidecar, updater
 from backend.core.startup import register_startup_hook
+from backend.lib.cross_site import refuse_cross_site
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +97,24 @@ def post_start() -> dict:
 def post_stop() -> dict:
     stopped = sidecar.stop()
     return {"ok": True, "stopped": stopped}
+
+
+@router.get("/assistant/status")
+def get_assistant_status() -> dict:
+    """The UNDERFIT assistant backend's state, for the orb's status line."""
+    return assistant_sidecar.probe()
+
+
+@router.post("/assistant/start", dependencies=[Depends(refuse_cross_site)])
+def post_assistant_start() -> dict:
+    """Start the assistant backend (installing its packages the first time).
+    Blocks until it answers. The orb calls this from the dashboard's own origin,
+    a loopback page, which refuse_cross_site lets through."""
+    try:
+        url = assistant_sidecar.ensure_running()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"ok": True, "url": url}
 
 
 @router.get("/runs")
@@ -228,7 +251,7 @@ def startup_underfit() -> None:
                     "underfit.router: upstream update available (%s)",
                     status.get("upstream"),
                 )
-        except Exception as e:  # noqa: BLE001 — log and swallow
+        except Exception as e:  # log and swallow
             log.warning("underfit.router: update check failed: %s", e)
 
     threading.Thread(target=_check, daemon=True, name="underfit-update-check").start()
@@ -240,10 +263,25 @@ def startup_underfit() -> None:
         try:
             url = sidecar.ensure_running()
             log.info("underfit.router: auto-spawn ready at %s", url)
-        except Exception as e:  # noqa: BLE001 — log and swallow
+        except Exception as e:  # log and swallow
             log.warning("underfit.router: auto-spawn failed: %s", e)
 
     threading.Thread(target=_spawn, daemon=True, name="underfit-auto-spawn").start()
+
+    if os.environ.get("theDAW_UNDERFIT_ASSISTANT_NO_AUTO_SPAWN"):
+        return
+
+    def _spawn_assistant() -> None:
+        try:
+            url = assistant_sidecar.ensure_running()
+            log.info("underfit.router: assistant ready at %s", url)
+        except RuntimeError as e:
+            # probe() keeps the reason; the orb shows it next to its Start key.
+            log.warning("underfit.router: assistant auto-start failed: %s", e)
+
+    threading.Thread(
+        target=_spawn_assistant, daemon=True, name="underfit-assistant-auto-spawn"
+    ).start()
 
 
 # Runs from the app lifespan (core/startup.py) rather than off the deprecated

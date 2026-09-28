@@ -28,7 +28,7 @@ const SEND_INTERVAL_MS = 33; // ~30 Hz
 let running = false;
 let rafId = 0;
 let lastSend = 0;
-let timeBuf: Uint8Array | null = null;
+let timeBuf: Uint8Array<ArrayBuffer> | null = null;
 
 function sendWaveform(): void {
   let analyser: AnalyserNode;

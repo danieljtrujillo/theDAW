@@ -15,7 +15,8 @@
  * anywhere — the paths stay on this machine, exactly as the scan cache does.
  */
 import { create } from 'zustand';
-import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /** Where the plugin's native editor window lives while it is open. */
 export type VstEditorMode = 'embedded' | 'floating';
@@ -89,29 +90,6 @@ export function sanitizeVstEditorPrefs<S extends VstEditorPrefsData>(
   };
 }
 
-// Node (tests) and locked-down browsers have no usable localStorage; fall back
-// to an in-memory map so the store still works and persist never warns. Same
-// shape as timelinePrefsStore's backend — kept local because the two stores
-// share no module and this ticket adds no new lib file.
-const memory = new Map<string, string>();
-const memoryStorage: StateStorage = {
-  getItem: (k) => memory.get(k) ?? null,
-  setItem: (k, v) => {
-    memory.set(k, v);
-  },
-  removeItem: (k) => {
-    memory.delete(k);
-  },
-};
-function backend(): StateStorage {
-  try {
-    if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
-  } catch {
-    /* access denied (sandboxed iframe, privacy mode) */
-  }
-  return memoryStorage;
-}
-
 export const useVstEditorPrefs = create<VstEditorPrefsState>()(
   persist(
     (set, get) => ({
@@ -142,7 +120,7 @@ export const useVstEditorPrefs = create<VstEditorPrefsState>()(
     {
       name: 'thedaw.vsteditorprefs.v1',
       version: 1,
-      storage: createJSONStorage(backend),
+      storage: persistStorage(),
       partialize: (s): VstEditorPrefsData => ({
         byPluginPath: s.byPluginPath,
         defaultMode: s.defaultMode,

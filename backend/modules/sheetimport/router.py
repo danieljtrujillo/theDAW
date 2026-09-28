@@ -11,8 +11,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
+
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,7 +70,13 @@ async def parse_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Could not parse score: {e}")
 
 
-@router.post("/parse-path")
+@router.post(
+    "/parse-path",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 def parse_path(req: PathRequest):
     """Parse a score already on disk (native file-picker flow).
 
@@ -75,6 +86,13 @@ def parse_path(req: PathRequest):
     paths. Resolution happens before the check, so a ``..`` segment or a
     symlink pointing outside those roots cannot slip through, and a path
     that resolves outside them is refused before the filesystem is ever read.
+
+    Those roots include ``data/`` and every folder an opened project drew
+    from, and the answer tells a missing file (404) from an unparseable one
+    (422) with the parser's error text. A bare LAN script sending no
+    ``Origin``/``Referer``/``Sec-Fetch-Site`` passed ``refuse_cross_site``
+    alone, so the route is held to the gate ``/clip-audio`` uses: this
+    machine's UI, the desktop shell or a paired phone.
     """
     from backend.modules.project.media_access import resolve_media_path
 

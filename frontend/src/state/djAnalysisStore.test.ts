@@ -420,6 +420,85 @@ const drain = async (): Promise<void> => {
   assert.equal(st().byId['stuck_p'].status, 'ready');
 }
 
+// ── PR #207 review: a deck load never waits behind the sweep ──────────────
+// The sequence from the DJ tab: the browsing sweep's row is inside its POST
+// (a full backend decode, seconds long) when the user loads a track on a
+// deck. Both lanes fed ONE serial consumer, so the deck's run could not start
+// until the sweep row came back.
+{
+  posts.length = 0;
+  const hold = deferred();
+  holds.set('sweep_busy', hold);
+  void st().analyzeAll(['sweep_busy', 'sweep_next'], { cap: 2 });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(posts, ['sweep_busy'], 'the sweep row is in flight');
+
+  const deckLoad = st().ensureAnalyzed('deck_live');
+  assert.equal(await raceTimeout(deckLoad, 500), 'settled',
+    'the deck load waited for the sweep row the queue was on');
+  assert.deepEqual(posts, ['sweep_busy', 'deck_live'],
+    'the deck run started while the sweep row was still decoding');
+  assert.equal((await deckLoad)?.bpm, 120, 'and resolves with the deck’s analysis');
+
+  hold.resolve();
+  await drain();
+  assert.deepEqual(posts, ['sweep_busy', 'deck_live', 'sweep_next'], 'the sweep carries on after it');
+  assert.equal(posts.filter((id) => id === 'deck_live').length, 1, 'the deck row is not re-run by the queue');
+}
+
+// A paused queue holds the sweep, not the user: a deck load still runs.
+{
+  posts.length = 0;
+  st().pauseQueue();
+  await st().analyzeAll(['paused_row'], { cap: 1 });
+  assert.equal(await raceTimeout(st().ensureAnalyzed('deck_while_paused'), 500), 'settled',
+    'a deck load waited for resumeQueue');
+  assert.deepEqual(posts, ['deck_while_paused'], 'and the paused sweep still did not start');
+  st().resumeQueue();
+  await drain();
+  assert.deepEqual(posts, ['deck_while_paused', 'paused_row']);
+}
+
+// ── ensureAnalyzed on a RUNNING entry waits for that run and returns its data ─
+// The sequence: a deck load starts the run, and a second caller (the second
+// deck loading the same track, or chimeraClient reading beats for a clip)
+// asks while it is in flight. The second call used to return at once — the
+// entry was 'running', so not eligible — and the caller read an empty row.
+{
+  posts.length = 0;
+  const hold = deferred();
+  holds.set('twice', hold);
+  const first = st().ensureAnalyzed('twice');
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(st().byId['twice'].status, 'running');
+
+  const second = st().ensureAnalyzed('twice');
+  assert.equal(await raceTimeout(second, 50), 'timeout',
+    'ensureAnalyzed returned while the entry was still running');
+  hold.resolve();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(b?.bpm, 120, 'the second caller gets the run’s result');
+  assert.deepEqual(a, b);
+  assert.deepEqual(posts, ['twice'], 'one run served both callers');
+}
+
+// The same when the run in flight is the SWEEP's: a deck load for the row the
+// consumer is on joins that run instead of returning empty-handed.
+{
+  posts.length = 0;
+  const hold = deferred();
+  holds.set('swept_then_loaded', hold);
+  void st().analyzeAll(['swept_then_loaded'], { cap: 1 });
+  await new Promise((r) => setTimeout(r, 5));
+  const deckLoad = st().ensureAnalyzed('swept_then_loaded');
+  assert.equal(await raceTimeout(deckLoad, 50), 'timeout',
+    'the deck load returned before the sweep’s run of its row finished');
+  hold.resolve();
+  assert.equal((await deckLoad)?.bpm, 120);
+  await drain();
+  assert.deepEqual(posts, ['swept_then_loaded'], 'the row was decoded once');
+}
+
 // ── DJView hands the sweep its ranking, not the raw row order ──────────────
 // A source pin (b12/dj3 style): the cap only means anything if the caller
 // ranks what it passes, and that ranking lives in DJView's one sweep call.

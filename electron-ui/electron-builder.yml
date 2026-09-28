@@ -190,8 +190,9 @@ extraResources:
   # uv + ffmpeg + ffprobe, downloaded by scripts/fetch-runtime-tools.mjs before
   # the build. Prepended to the spawned backend's PATH at runtime. The contents
   # are HOST-PLATFORM-SPECIFIC (Windows: uv.exe/ffmpeg.exe/ffprobe.exe, macOS:
-  # uv/ffmpeg/ffprobe), so a Windows installer must be built on Windows and a
-  # mac dmg on macOS with a freshly fetched tools dir.
+  # uv/ffmpeg/ffprobe, plus ffmpeg-libs/ on Apple Silicon, the dylibs that
+  # ffmpeg and ffprobe load from @loader_path), so a Windows installer must be
+  # built on Windows and a mac dmg on macOS with a freshly fetched tools dir.
   - from: resources/tools
     to: tools
     filter:

@@ -39,16 +39,10 @@
 #include "pluginterfaces/vst/ivstplugview.h"
 #include "pluginterfaces/vst/ivstprefetchablesupport.h"
 #include "pluginterfaces/vst/ivstremapparamid.h"
-// This vendored header carries inline helpers that call strcpy; it is third-party ABI and is
-// included verbatim, so its deprecation notice is silenced here rather than in our own code.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
+// This vendored header's RepresentationInfo constructor copies into its fixed char arrays with
+// strcpy. The library builds with _CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES (see CMakeLists.txt),
+// so those calls resolve to the CRT's bounded strcpy_s template overload.
 #include "pluginterfaces/vst/ivstrepresentation.h"
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
 #include "pluginterfaces/vst/ivsttransportcontrol.h"
 #include "pluginterfaces/vst/ivstunits.h"
 

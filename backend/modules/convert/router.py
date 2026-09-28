@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -25,7 +24,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from ...lib import ffmpeg
+from ...lib import ffmpeg, ffmpeg_tools
 from ..library.router import get_store as get_library_store
 
 router = APIRouter(tags=["convert"])
@@ -270,8 +269,8 @@ def _safe_stem(name: str) -> str:
     return stem[:120] or "converted"
 
 
-def _ensure_ffmpeg() -> None:
-    if shutil.which("ffmpeg") is None:
+async def _ensure_ffmpeg() -> None:
+    if (await ffmpeg_tools.aresolve()).build is None:
         raise HTTPException(
             status_code=503,
             detail="ffmpeg was not found on PATH. The desktop app bundles it; if running the "
@@ -340,8 +339,8 @@ def list_formats() -> dict:
 async def convert_library_entry(entry_id: str, body: ConvertRequest) -> Response:
     """Convert a library entry (audio/video/image) to the requested format and
     return the converted bytes as a download."""
-    _ensure_ffmpeg()
-    store = get_library_store()
+    await _ensure_ffmpeg()
+    store = await asyncio.to_thread(get_library_store)
 
     record = store.get_entry(entry_id)
     if record is None:
@@ -373,7 +372,7 @@ async def convert_upload(
 ) -> Response:
     """Convert an uploaded file to the requested format and return the bytes.
     Used for arbitrary files that are not library entries."""
-    _ensure_ffmpeg()
+    await _ensure_ffmpeg()
 
     tmp = Path(tempfile.mkdtemp(prefix="convert_up_"))
     in_suffix = Path(file.filename or "input").suffix or ".bin"

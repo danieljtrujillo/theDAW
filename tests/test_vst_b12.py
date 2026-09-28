@@ -110,6 +110,17 @@ def vst3_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root.mkdir()
     monkeypatch.setattr(scanner, "_default_vst3_dirs", lambda: [root])
     monkeypatch.setattr(path_policy, "allowed_roots", lambda: [root.resolve()])
+    # A /scan call saves the scan cache. Unpatched, that is
+    # backend/modules/vst/vst3_scan_cache.json in the tree running the suite,
+    # and a run in the app's own tree replaced the user's real cache (every
+    # probed plugin name and category) with this empty tmp root's.
+    cache = tmp_path / "vst3_scan_cache.json"
+    monkeypatch.setattr(scanner, "_cache_path", lambda: cache)
+    # The editor routes save each plugin's window rect and size under
+    # data/vst_presets, the same folder as the user's plugin state; left
+    # unpatched, the loopback /editor-rect tests wrote Ozone11_*.rect.json
+    # into the checkout running the suite.
+    monkeypatch.setattr(vst_router, "_PRESET_DIR", tmp_path / "vst_presets")
     return root
 
 
@@ -1167,6 +1178,23 @@ def test_scan_from_loopback_is_accepted(client: TestClient, vst3_root: Path) -> 
     response = client.get("/api/vst/scan?enrich=false")
 
     assert response.status_code == 200, response.text
+
+
+def test_a_scan_in_this_suite_never_writes_the_apps_own_scan_cache(
+    client: TestClient, vst3_root: Path, tmp_path: Path
+) -> None:
+    """The sequence a developer runs: the app has scanned (its cache sits
+    beside scanner.py), then the suite runs a /scan. The suite's scan must
+    land in its own tmp cache and leave the app's cache as it was."""
+    real = Path(scanner.__file__).parent / scanner._CACHE_FILENAME
+    before = real.stat().st_mtime_ns if real.exists() else None
+
+    response = client.get("/api/vst/scan?enrich=false")
+
+    assert response.status_code == 200, response.text
+    after = real.stat().st_mtime_ns if real.exists() else None
+    assert after == before, "the suite rewrote backend/modules/vst's scan cache"
+    assert (tmp_path / "vst3_scan_cache.json").is_file()
 
 
 def test_scan_custom_from_a_lan_caller_is_403(

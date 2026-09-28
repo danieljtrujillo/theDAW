@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, Copy, Download, FilePlus2, FileText, Link2, Link2Off, Save, Trash2, X } from 'lucide-react';
 import { useLibraryStore } from '../../../state/libraryStore';
+import { useLibrarySearch } from '../../../state/useLibrarySearch';
 import { useLyricStudioStore } from '../../../state/lyricStudioStore';
 
 /** A key: 28px tall, 12px bold, the theme accent on hover. */
@@ -26,7 +27,9 @@ const GROUP = 'font-display text-xs font-bold uppercase text-zinc-500';
  * separate moves on purpose. SAVE writes the words into the entry's lyrics
  * (through /api/lyrics, so SING sees them timed the same way) and IMPORT starts
  * a new draft from words that already exist; neither makes the draft belong to
- * the library, so it stays here and stays editable.
+ * the library, so it stays here and stays editable. The song list is the
+ * panel's own search over the whole library, independent of what the LIBRARY
+ * tab has loaded.
  *
  * The title field is the one place the draft's name is shown.
  */
@@ -34,6 +37,7 @@ export const DocumentRail: React.FC = () => {
   const uid = useId();
   const titleId = `lyric-studio-title-${uid}`;
   const songId = `lyric-studio-song-${uid}`;
+  const findId = `lyric-studio-find-${uid}`;
   const panelId = `lyric-studio-file-${uid}`;
 
   const documents = useLyricStudioStore((s) => s.documents);
@@ -43,17 +47,21 @@ export const DocumentRail: React.FC = () => {
   const error = useLyricStudioStore((s) => s.error);
   const store = useLyricStudioStore.getState;
 
-  const entries = useLibraryStore((s) => s.entries);
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
-  const songs = entries.filter((e) => !e.kind || e.kind === 'audio');
-  // The song the song moves act on: whatever this draft is already attached
-  // to, else the library selection, else the first song.
-  const [pickedSong, setPickedSong] = useState('');
-  const targetId = pickedSong || attachedId || selectedEntryId || songs[0]?.id || '';
-  const target = songs.find((e) => e.id === targetId) ?? null;
-  const attachedTitle = attachedId ? entries.find((e) => e.id === attachedId)?.title ?? attachedId : '';
-
+  const getById = useLibraryStore((s) => s.getById);
+  // Re-render when an entry `getById` had to fetch arrives.
+  useLibraryStore((s) => s.lookupVersion);
   const [open, setOpen] = useState(false);
+  const [find, setFind] = useState('');
+  const songs = useLibrarySearch({ q: find, kind: 'audio', sort: 'title_asc' }, { enabled: open });
+  // The song the song moves act on: whatever this draft is already attached
+  // to, else the library selection, else the first song found.
+  const [pickedSong, setPickedSong] = useState('');
+  const targetId = pickedSong || attachedId || selectedEntryId || songs.rows[0]?.id || '';
+  const targetEntry = songs.rows.find((e) => e.id === targetId) ?? (targetId ? getById(targetId) : undefined);
+  const target = targetEntry && (targetEntry.kind ?? 'audio') === 'audio' ? targetEntry : null;
+  const attachedTitle = attachedId ? getById(attachedId)?.title ?? attachedId : '';
+
   // Delete asks once, in place: a browser confirm() steals focus from the
   // editor and cannot be styled to say which draft is going.
   const [confirming, setConfirming] = useState(false);
@@ -173,20 +181,50 @@ export const DocumentRail: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-1.5 border-t border-white/10 pt-3">
+              <label htmlFor={findId} className={GROUP}>Find a song</label>
+              <input
+                id={findId}
+                name={findId}
+                type="search"
+                className="form-select h-7 px-1.5 text-xs font-bold cursor-text"
+                value={find}
+                onChange={(e) => setFind(e.target.value)}
+                placeholder="title, artist, bpm, key…"
+                spellCheck={false}
+              />
               <label htmlFor={songId} className={GROUP}>Song</label>
               <select
                 id={songId}
                 name={songId}
                 className="form-select h-7 px-1.5 text-xs font-bold"
-                value={targetId}
+                value={target ? target.id : ''}
                 onChange={(e) => setPickedSong(e.target.value)}
-                disabled={songs.length === 0}
+                disabled={songs.rows.length === 0 && !target}
               >
-                {songs.length === 0 && <option value="">no songs in the library</option>}
-                {songs.map((e) => (
+                {songs.rows.length === 0 && !target && (
+                  <option value="">
+                    {songs.loading ? 'searching…' : find.trim() ? 'no song matches' : 'no songs in the library'}
+                  </option>
+                )}
+                {target && !songs.rows.some((e) => e.id === target.id) && (
+                  <option value={target.id}>{target.title}</option>
+                )}
+                {songs.rows.map((e) => (
                   <option key={e.id} value={e.id}>{e.title}</option>
                 ))}
               </select>
+              {songs.error && <span className="text-red-300">Could not search the library: {songs.error}</span>}
+              {songs.hasMore && (
+                <button
+                  type="button"
+                  className={`${KEY} self-start`}
+                  onClick={songs.loadMore}
+                  disabled={songs.loading}
+                  title="List the next songs that match"
+                >
+                  More songs ({(songs.total - songs.rows.length).toLocaleString()} left)
+                </button>
+              )}
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"

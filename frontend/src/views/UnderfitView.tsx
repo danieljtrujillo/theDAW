@@ -25,6 +25,18 @@ const DEFAULT_UNDERFIT_PORT = 8791;
 const urlForPort = (port: number) => `http://localhost:${port}`;
 const PING_INTERVAL_MS = 3000;
 
+/**
+ * The dashboard URL the iframe loads. `assistant_api` tells the assistant orb
+ * inside the dashboard where its backend listens, from the port theDAW's
+ * backend reports (GET /api/underfit/assistant/status), so a moved port
+ * (theDAW_UNDERFIT_ASSISTANT_PORT) reaches the orb too.
+ */
+export function underfitFrameSrc(underfitUrl: string, reloadKey: number, assistantUrl: string | null): string {
+  const params = new URLSearchParams({ _t: String(reloadKey) });
+  if (assistantUrl) params.set('assistant_api', assistantUrl);
+  return `${underfitUrl}/?${params.toString()}`;
+}
+
 /** Sidecar probe payload from GET /api/underfit/status (backend/modules/underfit). */
 interface UnderfitStatus {
   ok: boolean;
@@ -151,6 +163,22 @@ export const UnderfitView: React.FC = () => {
   // down→up transition (not on every successful poll).
   const wasReachable = useRef(false);
   const diagInFlight = useRef(false);
+  /** Where the UNDERFIT assistant backend listens, once the backend said. */
+  const [assistantUrl, setAssistantUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/underfit/assistant/status', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { url?: unknown } | null) => {
+        if (!cancelled && body && typeof body.url === 'string') setAssistantUrl(body.url);
+      })
+      .catch(() => {
+        // Backend not up yet: the orb falls back to its default port.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Tab + OS/browser page visibility — pauses the reachability ping while the
   // Underfit tab is hidden (warm-mounted behind another center tab) or the
@@ -359,8 +387,8 @@ export const UnderfitView: React.FC = () => {
         <div className="flex items-center gap-2 min-w-0">
           <FlaskConical className="w-4 h-4 text-sky-300" />
           <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-widest text-sky-100">Underfit</div>
-            <div className="text-[8px] font-mono uppercase tracking-wider text-zinc-600 truncate">
+            <div className="text-xs font-black uppercase tracking-widest text-sky-100">Underfit</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-zinc-600 truncate">
               LoRA trainer · localhost:{underfitPort} · {reachable ? 'connected' : 'waiting for server'}
             </div>
           </div>
@@ -375,7 +403,7 @@ export const UnderfitView: React.FC = () => {
             type="button"
             onClick={() => void checkForUpdate(true)}
             disabled={checkingUpdate}
-            className={`px-1.5 py-0.5 rounded border text-[8px] font-mono uppercase tracking-widest flex items-center gap-1 transition-colors disabled:opacity-60 disabled:pointer-events-none ${
+            className={`px-1.5 py-0.5 rounded border text-xs font-bold uppercase tracking-widest flex items-center gap-1 transition-colors disabled:opacity-60 disabled:pointer-events-none ${
               updateStatus?.error
                 ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
                 : updateStatus?.update_available
@@ -393,7 +421,7 @@ export const UnderfitView: React.FC = () => {
               type="button"
               onClick={() => void applyUpdate()}
               disabled={applyingUpdate}
-              className="px-1.5 py-0.5 rounded border border-amber-500/50 bg-amber-500/15 text-[8px] font-mono uppercase tracking-widest text-amber-200 hover:bg-amber-500/25 flex items-center gap-1 disabled:opacity-60 disabled:pointer-events-none"
+              className="px-1.5 py-0.5 rounded border border-amber-500/50 bg-amber-500/15 text-xs font-bold uppercase tracking-widest text-amber-200 hover:bg-amber-500/25 flex items-center gap-1 disabled:opacity-60 disabled:pointer-events-none"
               title="Pull the upstream update into the vendored subrepo and restart the dashboard"
               aria-label="Apply Underfit update"
             >
@@ -426,7 +454,7 @@ export const UnderfitView: React.FC = () => {
       {updateResult && !updateResult.ok && (
         <p
           role="alert"
-          className="shrink-0 px-3 py-1.5 border-b border-rose-500/40 bg-rose-500/10 text-[10px] font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word"
+          className="shrink-0 px-3 py-1.5 border-b border-rose-500/40 bg-rose-500/10 text-xs font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word"
         >
           {updateResult.message ?? 'Underfit update failed.'}
         </p>
@@ -443,12 +471,12 @@ export const UnderfitView: React.FC = () => {
             </span>
             <ul className="max-w-xl space-y-1.5">
               {installIssues.map((issue) => (
-                <li key={issue} className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                <li key={issue} className="text-xs font-semibold tabular-nums text-zinc-400 leading-relaxed">
                   • {issue}
                 </li>
               ))}
             </ul>
-            <div className="max-w-xl text-center text-[11px] text-zinc-500 leading-relaxed">
+            <div className="max-w-xl text-center text-xs font-semibold text-zinc-500 leading-relaxed">
               {needsRepair
                 ? 'A previous setup did not finish, so the environment has an interpreter but no packages. Rerunning it installs only what is missing.'
                 : 'theDAW can build the trainer environment here. This runs a one-time dependency sync. The model packs download later, on demand.'}
@@ -458,7 +486,7 @@ export const UnderfitView: React.FC = () => {
             </div>
             {setupMsg && (
               <div
-                className={`max-w-xl text-center text-[11px] font-mono leading-relaxed ${
+                className={`max-w-xl text-center text-xs font-semibold tabular-nums leading-relaxed ${
                   setupState === 'error' ? 'text-red-300' : 'text-zinc-400'
                 }`}
               >
@@ -468,7 +496,7 @@ export const UnderfitView: React.FC = () => {
             {setupState === 'running' && setupLog && (
               <pre
                 aria-live="polite"
-                className="max-w-xl w-full max-h-32 overflow-y-auto rounded border border-white/10 bg-black/40 px-2.5 py-2 text-[9px] font-mono leading-relaxed text-zinc-400 whitespace-pre-wrap wrap-break-word text-left"
+                className="max-w-xl w-full max-h-32 overflow-y-auto rounded border border-white/10 bg-black/40 px-2.5 py-2 text-xs font-mono leading-relaxed text-zinc-400 whitespace-pre-wrap wrap-break-word text-left"
               >
                 {setupLog}
               </pre>
@@ -478,7 +506,7 @@ export const UnderfitView: React.FC = () => {
                 type="button"
                 onClick={() => void createEnv()}
                 disabled={setupState === 'running'}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-[11px] text-sky-200 disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-xs font-semibold text-sky-200 disabled:opacity-50"
               >
                 {setupState === 'running' ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -494,7 +522,7 @@ export const UnderfitView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void fetchDiag()}
-                className="px-3 py-1.5 rounded border border-white/10 hover:bg-white/5 text-[11px] text-zinc-300"
+                className="px-3 py-1.5 rounded border border-white/10 hover:bg-white/5 text-xs font-semibold text-zinc-300"
               >
                 Re-check
               </button>
@@ -505,12 +533,12 @@ export const UnderfitView: React.FC = () => {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
             <FlaskConical className="w-5 h-5 text-sky-300" />
             <span className="text-sm">Underfit is installed but not running</span>
-            <span className="text-[10px] font-mono text-zinc-600">{diag.project_path} · port {diag.port}</span>
+            <span className="text-xs font-semibold tabular-nums text-zinc-600">{diag.project_path} · port {diag.port}</span>
             <button
               type="button"
               onClick={() => void startServer()}
               disabled={starting}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-[11px] text-sky-200 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/30 hover:bg-sky-500/15 text-xs font-semibold text-sky-200 disabled:opacity-50"
             >
               {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
               {starting ? 'Starting…' : 'Start Underfit'}
@@ -518,7 +546,7 @@ export const UnderfitView: React.FC = () => {
             {startError && (
               <p
                 role="alert"
-                className="max-w-lg rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-[10px] font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word text-left"
+                className="max-w-lg rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-xs font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word text-left"
               >
                 {startError}
               </p>
@@ -529,7 +557,7 @@ export const UnderfitView: React.FC = () => {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
             <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
             <span className="text-sm">Connecting to Underfit…</span>
-            <span className="text-[10px] font-mono text-zinc-600">
+            <span className="text-xs font-semibold tabular-nums text-zinc-600">
               Waiting for the dashboard server on :{underfitPort} (auto-retrying every 3s)
             </span>
           </div>
@@ -537,7 +565,7 @@ export const UnderfitView: React.FC = () => {
         {reachable && (
           <iframe
             key={reloadKey}
-            src={`${underfitUrl}/?_t=${reloadKey}`}
+            src={underfitFrameSrc(underfitUrl, reloadKey, assistantUrl)}
             allow="clipboard-write; fullscreen; autoplay"
             className="w-full h-full border-0 bg-black"
             title="Underfit"

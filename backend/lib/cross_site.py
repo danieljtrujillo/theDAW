@@ -77,10 +77,13 @@ def require_loopback_launch_or_pairing_token(request: Request) -> None:
     token (``backend.lib.pairing``).
 
     Deliberately a separate function, not an extra branch inside
-    ``require_loopback_or_launch_token``: pairing is the phone's substitute
-    for the (browser-unreachable) launch token on a route the phone
-    legitimately uses -- project save/export -- but does NOT unlock a route
-    like plugin ``/reveal``, which stays loopback-or-launch-token only.
+    ``require_loopback_or_launch_token``: pairing is a paired device's
+    substitute for the (browser-unreachable) launch token on a route that
+    device legitimately uses -- project save/open/export, known places, the
+    VST scan and render routes -- but does NOT unlock a route that acts on
+    this machine's own desktop, like plugin ``/reveal``, the plugin editor
+    window, or moving the projects folder, which stay loopback-or-launch-
+    token only.
     """
     if caller_is_loopback(request):
         return
@@ -89,5 +92,5 @@ def require_loopback_launch_or_pairing_token(request: Request) -> None:
     if pairing.header_matches(request):
         return
     raise HTTPException(
-        403, "This request must come from theDAW's desktop shell or a paired phone."
+        403, "This request must come from theDAW's desktop shell or a paired device."
     )

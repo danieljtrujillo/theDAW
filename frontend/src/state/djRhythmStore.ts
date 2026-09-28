@@ -22,6 +22,7 @@
  *      not re-ask. Not persisted: the cache it mirrors lives on disk and can
  *      change between sessions.
  */
+import { useEffect } from 'react';
 import { create } from 'zustand';
 
 export interface DjRhythm {
@@ -41,6 +42,11 @@ export interface DjRhythm {
 
 interface DjRhythmState {
   byEntry: Record<string, DjRhythm>;
+  /** Bumped per entry by `invalidateRhythm`. A deck watches its entry's
+   *  number (see `useDeckRhythm`) so it asks again even when there was
+   *  nothing in `byEntry` to delete: an invalidation that retires a GET still
+   *  on the wire leaves `byEntry[id]` undefined before and after. */
+  revision: Record<string, number>;
   /** What is already known about an entry; never fetches. */
   rhythmFor: (entryId: string | null) => DjRhythm | null;
   /** Fetch once (GET only) and remember. Resolves null when there is
@@ -86,6 +92,7 @@ const miss = (): DjRhythm => ({ ready: false, downbeats: null, bars: null, check
 
 export const useDjRhythmStore = create<DjRhythmState>()((set, get) => ({
   byEntry: {},
+  revision: {},
   rhythmFor: (entryId) => (entryId ? get().byEntry[entryId] ?? null : null),
   ensureRhythm: async (entryId) => {
     if (!entryId) return null;
@@ -142,10 +149,10 @@ export const useDjRhythmStore = create<DjRhythmState>()((set, get) => ({
 }));
 
 /** Forget what is known about one entry, so the next `ensureRhythm` asks the
- *  backend again. For the caller that has just made the cache change — a
- *  finished `/run` elsewhere in the app, or a re-analysis — and does not want
- *  to wait out `RHYTHM_MISS_TTL_MS`. A no-op for an id nothing is known
- *  about, so it is always safe to call. */
+ *  backend again, and tell a deck holding it to ask now. For the caller that
+ *  has just made the cache change — a finished `/run` elsewhere in the app,
+ *  or a re-analysis — and does not want to wait out `RHYTHM_MISS_TTL_MS`.
+ *  Leaves every other entry's data alone, so it is always safe to call. */
 export function invalidateRhythm(entryId: string): void {
   if (!entryId) return;
   // Retire any run that is already out on the wire BEFORE forgetting the
@@ -154,9 +161,31 @@ export function invalidateRhythm(entryId: string): void {
   generation.set(entryId, (generation.get(entryId) ?? 0) + 1);
   inflight.delete(entryId);
   useDjRhythmStore.setState((s) => {
-    if (!(entryId in s.byEntry)) return s;
+    const revision = { ...s.revision, [entryId]: (s.revision[entryId] ?? 0) + 1 };
+    if (!(entryId in s.byEntry)) return { revision };
     const next = { ...s.byEntry };
     delete next[entryId];
-    return { byEntry: next };
+    return { byEntry: next, revision };
   }, false);
+}
+
+/** The rhythm a loaded deck draws its bar lines and cues from.
+ *
+ *  Cheap GET only: a cache miss is left alone, because `/run` is a full
+ *  re-analysis and has no business firing because a deck loaded. Asks when
+ *  the entry loads and again whenever `invalidateRhythm` names it, so a
+ *  finished rhythm run elsewhere in the app reaches the deck at once. That
+ *  includes a run that lands while the deck's own GET is still out: the
+ *  retired GET stores nothing, `byEntry` never changes, and only the
+ *  revision tells the deck to ask again. */
+export function useDeckRhythm(entryId: string | null): DjRhythm | undefined {
+  const ensureRhythm = useDjRhythmStore((s) => s.ensureRhythm);
+  const rhythm = useDjRhythmStore((s) => (entryId ? s.byEntry[entryId] : undefined));
+  const revision = useDjRhythmStore((s) => (entryId ? s.revision[entryId] ?? 0 : 0));
+  useEffect(() => {
+    // `ensureRhythm` honours the miss window, so a remembered miss is not
+    // asked about again until it goes stale.
+    if (entryId && !rhythm?.ready) void ensureRhythm(entryId);
+  }, [entryId, rhythm, revision, ensureRhythm]);
+  return rhythm;
 }

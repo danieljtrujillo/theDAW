@@ -84,7 +84,7 @@ export function notesToSmf(
   signatures: readonly MeterEvent[] = [],
   bpm = DEFAULT_BPM,
   wheel: readonly SmfWheel[] = [],
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   const ch = channel & 0x0f;
   const { usPerQuarter, secPerTick } = tempoGrid(bpm);
   interface Ev {
@@ -157,6 +157,6 @@ export function notesToSmf(
 export function notesToRollSmf(
   notes: RenderNote[],
   meter: { meterMap: readonly MeterSegment[]; pickupSteps: number; bpm: number },
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   return notesToSmf(notes, 0, 0, rollMeterToSmfEvents(meter.meterMap, meter.pickupSteps), meter.bpm);
 }

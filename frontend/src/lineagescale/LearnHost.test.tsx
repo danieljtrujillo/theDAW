@@ -2,16 +2,21 @@
 //
 // The LEARN tab's host, which decides WHICH lineage view the user gets.
 //
-// The one rule everything here serves: on a library too big to draw, the
-// classic view is never mounted. Mounting it is what fires the whole-library
-// request — 194,833 nodes, 475,174 links, 128 MB, and a dead page. So the
-// classic pane's ELEMENT is not constructed in that state, which means its
-// lazy import does not run either. The test proves that with a stand-in that
-// throws if it is ever rendered: a passing run is a run in which it was not.
+// The rule the default serves: past the backend's limit, the classic view is
+// not mounted until the user asks for it. Mounting it is what fires the
+// whole-library request — 194,833 nodes, 475,174 links, 128 MB on the library
+// this was written against. So by default the classic pane's ELEMENT is not
+// constructed in that state, which means its lazy import does not run either.
+// The test proves that with a stand-in that throws if it is ever rendered: a
+// passing run is a run in which it was not.
 //
-// And the other half of the same promise: on a small library nothing changes.
-// `full_view_ok` from the backend means the classic view opens, exactly as the
-// tab does today, and a backend too old to answer at all gets the same.
+// The rule the user is owed: the limit is a threshold nobody measured, so the
+// disabled Classic tab carries the warning and an "Open anyway" key, and a
+// summary that failed to load warns and does not take the view away.
+//
+// And on a small library nothing changes. `full_view_ok` from the backend
+// means the classic view opens, exactly as the tab always did, and a backend
+// too old to answer at all gets the same.
 import assert from 'node:assert/strict';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -70,10 +75,13 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
 {
   // Unreadable summary — a 404 from a backend that predates this module, or
   // any other failure. That is today's behaviour, unchanged and unannounced.
-  assert.deepEqual(decideLearnMode(null, null), { mode: 'classic', classicAllowed: true, reason: '' });
+  assert.deepEqual(
+    decideLearnMode(null, null),
+    { mode: 'classic', classicAllowed: true, reason: '', canOpenAnyway: false },
+  );
   assert.deepEqual(
     decideLearnMode(null, 'scale'),
-    { mode: 'classic', classicAllowed: true, reason: '' },
+    { mode: 'classic', classicAllowed: true, reason: '', canOpenAnyway: false },
     'and a remembered choice cannot be honoured when nothing is known',
   );
 
@@ -82,16 +90,33 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   assert.equal(decideLearnMode(SMALL, null).classicAllowed, true);
   assert.equal(decideLearnMode(SMALL, null).reason, '');
 
-  // A big one: the new view, and the classic one refused with its reason.
+  // A big one: the new view by default, and the classic one behind "Open
+  // anyway" with the warning.
   const big = decideLearnMode(BIG, null);
   assert.equal(big.mode, 'scale');
   assert.equal(big.classicAllowed, false);
+  assert.equal(big.canOpenAnyway, true);
   assert.equal(
     big.reason,
-    'The classic graph draws every song at once. This library has 173,565 connected songs, so it cannot load here.',
+    'The classic graph draws every song at once. This library has 173,565 connected songs, past the 2,000 where LEARN opens the scale view instead, so the classic graph may be slow or stop responding.',
   );
   assert.equal(big.reason, classicUnavailableReason(BIG));
-  assert.ok(big.reason.includes('173,565'), 'the refusal quotes the library’s own number');
+  assert.ok(big.reason.includes('173,565'), 'the warning quotes the library’s own number');
+  assert.ok(!/cannot load/.test(big.reason), 'and claims nothing the 2,000 limit never measured');
+
+  // The warning quotes the limit the backend decided with. A backend whose
+  // limit moved to 5,000 says so in /summary, and a 6,000-song library is
+  // told it is past 5,000, not past a 2,000 copied into this file.
+  const moved = { ...summaryOf(6000, false), full_view_limit: 5000 };
+  const movedReason = decideLearnMode(moved, null).reason;
+  assert.ok(movedReason.includes('past the 5,000 where LEARN'), `the backend’s own limit is quoted: ${movedReason}`);
+  assert.ok(!movedReason.includes('2,000'), 'and not the fallback');
+  assert.ok(big.reason.includes('past the 2,000 where LEARN'), 'a backend that does not send it gets the fallback');
+
+  // "Open anyway" mounts the classic view, still with the warning.
+  assert.deepEqual(decideLearnMode(BIG, null, false, true), {
+    mode: 'classic', classicAllowed: true, reason: big.reason, canOpenAnyway: false,
+  });
 
   // A remembered choice counts only where there is a choice to be had.
   assert.equal(decideLearnMode(SMALL, 'scale').mode, 'scale', 'honoured on a small library');
@@ -99,9 +124,9 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   assert.equal(
     decideLearnMode(BIG, 'classic').mode,
     'scale',
-    'and ignored where the classic view cannot load — it is not a matter of taste',
+    'past the limit a stored choice alone does not mount it; the scale view stays the default',
   );
-  assert.equal(decideLearnMode(BIG, 'classic').classicAllowed, false);
+  assert.equal(decideLearnMode(BIG, 'classic').canOpenAnyway, true, 'the press does');
 }
 
 // ── when the summary is read at all ─────────────────────────────────────────
@@ -167,7 +192,18 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
     'which is on the page for that id to point at',
   );
   assert.ok(html.includes('173,565 connected songs'), 'in the library’s own numbers');
-  assert.ok(!html.includes('open anyway'), 'there is no escape hatch into a certain crash');
+  assert.ok(!/<button[^>]*>Open anyway<\/button>/.test(html), 'no key without a handler to press');
+
+  // The host passes its handler: the key is there, described by the warning.
+  const offered = surface({
+    read: true, summary: BIG, chosen: null, onOpenAnyway: () => {},
+    scaleView: spyView('scale', []), classicView: Forbidden,
+  });
+  const key = offered.match(/<button[^>]*>Open anyway<\/button>/)?.[0] ?? '';
+  assert.ok(key, `the disabled Classic tab offers Open anyway: ${offered}`);
+  assert.ok(key.includes('type="button"'));
+  assert.ok(key.includes('aria-describedby="lineage-scale-classic-unavailable"'), 'with the warning as its description');
+  assert.ok(offered.includes('disabled=""'), 'while the tab itself stays disabled until pressed');
 }
 
 // ── a small library: today's behaviour, untouched ───────────────────────────
@@ -314,20 +350,26 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
 // brings back "Maximum call stack size exceeded". So the decision splits on the
 // status, not on "did it work".
 {
-  // A 404: no such route. Exactly today's behaviour, nothing alarming said.
+  // A 404: no such route. Exactly the old behaviour, nothing alarming said.
   assert.deepEqual(
     decideLearnMode(null, null, false),
-    { mode: 'classic', classicAllowed: true, reason: '' },
+    { mode: 'classic', classicAllowed: true, reason: '', canOpenAnyway: false },
   );
-  // Anything else: the new view stays up and the classic one is refused.
+  // Anything else: the new view opens, and the classic one is offered with
+  // the unknown-size warning, not refused.
   assert.deepEqual(
     decideLearnMode(null, null, true),
-    { mode: 'scale', classicAllowed: false, reason: classicUnknownSizeReason },
+    { mode: 'scale', classicAllowed: true, reason: classicUnknownSizeReason, canOpenAnyway: false },
+  );
+  assert.equal(
+    decideLearnMode(null, 'classic', true, false, 'classic').mode,
+    'classic',
+    'the user’s pick on this mount is honoured when the size is unknown',
   );
   assert.equal(
     decideLearnMode(null, 'classic', true).mode,
     'scale',
-    'a remembered choice cannot override a library of unknown size either',
+    'a choice remembered from before a reload does not mount the classic graph on an unknown size',
   );
 
   // The 404 branch, through the host: classic mounts, no banner.
@@ -335,8 +377,8 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   assert.ok(absent.includes('data-view="classic"'), absent);
   assert.ok(!absent.includes('Could not read'), 'a 404 is not an error to show');
 
-  // The failure branch: the SCALE view mounts, the classic one is not built,
-  // the reason is on screen, and there is a Retry.
+  // The failure branch: the SCALE view mounts, the classic one is not built
+  // until picked, the warning is on screen, and there is a Retry.
   const seen: LearnViewProps[] = [];
   const failed = surface({
     summary: null,
@@ -348,7 +390,8 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   assert.ok(failed.includes('Could not read'), failed);
   assert.ok(failed.includes('HTTP 500'), 'and it says what happened');
   assert.ok(/<button[^>]*>Retry<\/button>/.test(failed), 'with a way to try again');
-  assert.ok(failed.includes('disabled=""'), 'and the classic option is refused, not offered');
+  assert.ok(!failed.includes('disabled=""'), 'and the classic option is offered, not refused');
+  assert.ok(failed.includes('size is unknown'), 'with the warning beside it');
 }
 
 // ── what a probe LEAVES BEHIND, and what Retry does to it ──────────────────
@@ -372,12 +415,12 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   assert.equal(decideLearnMode(null, null, false).mode, 'classic');
 
   // A REJECTED probe: the size is unknown, so the failure is carried and the
-  // decision it feeds is the new view with the classic one refused.
+  // decision it feeds is the new view, with the classic one offered and warned.
   const failed = summaryFromFailure(new Error('HTTP 500'));
   assert.deepEqual(failed, { summary: null, failure: 'HTTP 500', read: true });
   assert.deepEqual(
     decideLearnMode(failed.summary, null, failed.failure !== null),
-    { mode: 'scale', classicAllowed: false, reason: classicUnknownSizeReason },
+    { mode: 'scale', classicAllowed: true, reason: classicUnknownSizeReason, canOpenAnyway: false },
   );
   assert.equal(
     summaryFromFailure('the connection went away').failure,
@@ -399,7 +442,7 @@ const surface = (props: Partial<React.ComponentProps<typeof LearnHostSurface>>):
   );
 
   // The failure state, rendered: the banner and its Retry are what the user
-  // gets, and the classic view is still not built.
+  // gets, and the classic view is not built until it is picked.
   const html = surface({ ...failed, scaleView: spyView('scale', []), classicView: Forbidden });
   assert.ok(html.includes('HTTP 500'), html);
   assert.ok(/<button[^>]*>Retry<\/button>/.test(html));

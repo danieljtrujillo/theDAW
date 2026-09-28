@@ -52,11 +52,21 @@ def test_v7_file_gains_io_without_losing_existing_choices():
 
     merged = _merge_defaults(old)
 
-    assert merged["schema_version"] == SCHEMA_VERSION == 10
+    assert merged["schema_version"] == SCHEMA_VERSION == 12
     assert merged["io"] == DEFAULT_SETTINGS["io"]
     # v9 -> v10 added the library section; a file that predates it gets the
     # empty list rather than a missing key the media-root index would trip on.
     assert merged["library"] == {"media_roots": []}
+    # v10 -> v11 added the assistant section, ON: the in-app Claude keeps the
+    # user's own Claude settings and MCP servers it had before.
+    assert merged["assistant"] == {
+        "use_user_claude_config": True,
+        "always_allow_rules": [],
+    }
+    # v11 -> v12 moved the LAN HTTPS switch into a section of its own; absent
+    # means on.
+    assert merged["lan"] == {"https": True}
+    assert "lan_https" not in merged["app"]
     assert merged["io"] is not DEFAULT_SETTINGS["io"], "must be a deep copy"
     assert merged["app"]["launch_mode"] == "desktop"
     assert merged["stems"]["device"] == "cpu"
@@ -240,3 +250,97 @@ def test_a_lan_patch_does_not_read_the_folder_lists_back(tmp_path, monkeypatch):
     mine = local.patch("/api/settings", json={"stems": {"auto_on_import": False}})
     assert needle in mine.text
     assert mine.json()["library"]["media_roots"] == [str(folder)]
+
+
+# ---------------------------------------------------------------------------
+# lan.https decides whether the next launch opens the LAN HTTPS listener. A
+# device on the LAN must not be able to switch it for everyone else.
+# ---------------------------------------------------------------------------
+
+
+def test_a_lan_caller_cannot_switch_the_lan_https_listener(tmp_path, monkeypatch):
+    lan = _settings_app(tmp_path, monkeypatch, ("10.20.30.40", 51000))
+
+    refused = lan.patch("/api/settings", json={"lan": {"https": False}})
+
+    assert refused.status_code == 403
+    on_disk = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["lan"] == {"https": True}
+
+
+def test_this_machine_can_switch_the_lan_https_listener(tmp_path, monkeypatch):
+    local = _settings_app(tmp_path, monkeypatch, ("127.0.0.1", 51000))
+
+    ok = local.patch("/api/settings", json={"lan": {"https": False}})
+
+    assert ok.status_code == 200
+    assert ok.json()["lan"] == {"https": False}
+
+
+# ---------------------------------------------------------------------------
+# A backup restore copies settings.json over the file while the backend runs.
+# The store must build the next change on the restored file, not on the copy
+# it held from before the restore.
+# ---------------------------------------------------------------------------
+
+
+def _restore_settings(tmp_path, payload: dict) -> None:
+    """Run the real backup import over an archive holding ``payload`` as
+    data/settings.json (theDAW_DATA_DIR must point at the data dir)."""
+    import zipfile
+
+    from backend.modules.backup import service as backup_service
+
+    archive = tmp_path / "Downloads" / "theDAW-backup-restore.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            backup_service.MANIFEST_NAME,
+            json.dumps({"app": "theDAW", "roots": [{"id": "settings"}]}),
+        )
+        zf.writestr("roots/settings/settings.json", json.dumps(payload))
+    job = backup_service._register_job("import")
+    backup_service._run_import(job, archive, "replace")
+    assert job.state == "done", job
+
+
+def test_a_restored_settings_file_is_what_the_next_change_builds_on(
+    tmp_path, monkeypatch
+):
+    from backend.lib import known_paths
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("theDAW_DATA_DIR", str(data))
+    monkeypatch.delenv("theDAW_SETTINGS_PATH", raising=False)
+    monkeypatch.setattr(known_paths, "_STORE_PATH", data / "known_paths.json")
+    store = SettingsStore(data / "settings.json")
+    store.patch({"notation": {"artist": "BEFORE THE RESTORE"}})
+
+    restored = store.get_all()
+    restored["notation"]["artist"] = "FROM THE BACKUP"
+    restored["stems"]["auto_on_import"] = True
+    _restore_settings(tmp_path, restored)
+
+    # What the running store serves now is the restored file.
+    assert store.get_value("notation", "artist") == "FROM THE BACKUP"
+    # The next change lands on top of it instead of writing the old copy back.
+    store.patch({"idle": {"min_idle_seconds": 45}})
+    on_disk = json.loads((data / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["notation"]["artist"] == "FROM THE BACKUP"
+    assert on_disk["stems"]["auto_on_import"] is True
+    assert on_disk["idle"]["min_idle_seconds"] == 45
+
+
+def test_a_settings_file_caught_mid_copy_leaves_the_store_as_it_was(tmp_path):
+    """The restore copies in place, so a read can see half a file. That read
+    changes nothing; the next one after the copy finishes takes the file."""
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    store.patch({"notation": {"artist": "KEPT"}})
+    whole = path.read_text(encoding="utf-8").replace("KEPT", "RESTORED")
+
+    path.write_text(whole[: len(whole) // 2], encoding="utf-8")
+    assert store.get_value("notation", "artist") == "KEPT"
+
+    path.write_text(whole, encoding="utf-8")
+    assert store.get_value("notation", "artist") == "RESTORED"

@@ -29,7 +29,8 @@ import { useSetlistStore } from '../../state/setlistStore';
 import { logError } from '../../state/logStore';
 import { deriveLyrics, deriveStyle } from '../../catalog/catalogSearch';
 import { fetchBlobWithRetry } from '../../lib/fetchRetry';
-import { edgeColor, relationWords, relativesOf, type LineageEdge, type LineageNode } from '../../lib/lineageInsights';
+import { edgeColor, relationWords, relativesOf, type LineageNode } from '../../lib/lineageInsights';
+import { LineageFamilyNotice, RelativeList, useLineageFamily } from './LineageFamilyNotice';
 import { FLYOUT_CARD } from '../audio/midiDockKit';
 import {
   ASSET_INSPECTOR_TAB_STORAGE_KEY,
@@ -145,7 +146,6 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
   );
   // Per-tab, per-entry loads. `null` means "not fetched yet for this entry".
   const [stemRows, setStemRows] = useState<Array<Record<string, unknown>> | null>(null);
-  const [lineage, setLineage] = useState<{ nodes: LineageNode[]; edges: LineageEdge[] } | null>(null);
   const [bundledSetlists, setBundledSetlists] = useState<Array<{ id: string; name: string; entries: Array<{ entryId: string | null }> }> | null>(null);
   const [raw, setRaw] = useState<unknown>(null);
   const [rawFailed, setRawFailed] = useState(false);
@@ -174,7 +174,6 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
   /* A new asset drops everything the previous one loaded. */
   useEffect(() => {
     setStemRows(null);
-    setLineage(null);
     setBundledSetlists(null);
     setRaw(null);
     setRawFailed(false);
@@ -216,21 +215,10 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
     };
   }, [entryId, needsStems, stemRows]);
 
-  useEffect(() => {
-    if (!entryId || !needsLineage || lineage !== null) return undefined;
-    let cancelled = false;
-    void fetch(`/api/library/${encodeURIComponent(entryId)}/lineage?depth=4`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j: { nodes?: LineageNode[]; edges?: LineageEdge[] } | null) => {
-        if (!cancelled) setLineage({ nodes: j?.nodes ?? [], edges: j?.edges ?? [] });
-      })
-      .catch(() => {
-        if (!cancelled) setLineage({ nodes: [], edges: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [entryId, needsLineage, lineage]);
+  // The capped family (read when a tab needs it, kept for this asset), and
+  // the whole one when the user asks for it.
+  const lineageState = useLineageFamily(entryId, 4, needsLineage);
+  const lineage = lineageState.family;
 
   useEffect(() => {
     if (!entryId || tab !== 'usedIn' || bundledSetlists !== null) return undefined;
@@ -374,7 +362,7 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
     if (!entry || !lineage) return null;
     const byId: Record<string, LineageNode> = {};
     for (const n of lineage.nodes) byId[n.id] = n;
-    return { byId, ...relativesOf(entry.id, lineage.edges) };
+    return { read: lineage, byId, ...relativesOf(entry.id, lineage.edges) };
   }, [entry, lineage]);
   const usedIn = useMemo(() => {
     if (!entry) return [];
@@ -593,10 +581,22 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
               >
                 <Network className="size-3.5" aria-hidden="true" /> Open lineage graph
               </button>
+              {lineage && (
+                <LineageFamilyNotice
+                  family={lineage}
+                  busy={lineageState.wholeBusy}
+                  error={lineageState.wholeError}
+                  onLoadWhole={lineageState.loadWhole}
+                />
+              )}
               {!family ? (
-                <Empty>
-                  <Loader2 className="mr-1 inline size-3.5 animate-spin" aria-hidden="true" /> Reading lineage…
-                </Empty>
+                lineageState.error ? (
+                  <Empty>Could not read the lineage: {lineageState.error}</Empty>
+                ) : (
+                  <Empty>
+                    <Loader2 className="mr-1 inline size-3.5 animate-spin" aria-hidden="true" /> Reading lineage…
+                  </Empty>
+                )
               ) : family.incoming.length === 0 && family.outgoing.length === 0 ? (
                 <Empty>No relatives: nothing made this asset and nothing was made from it.</Empty>
               ) : (
@@ -610,8 +610,11 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
                   {family.incoming.length > 0 && (
                     <>
                       <span className="text-xs font-bold text-zinc-500">Came from ({family.incoming.length})</span>
-                      <ul className="flex flex-col gap-0.5">
-                        {family.incoming.map((e, i) => (
+                      <RelativeList
+                        items={family.incoming}
+                        family={family.read}
+                        className="flex flex-col gap-0.5"
+                        render={(e, i) => (
                           <RelativeRow
                             key={`in-${e.from_id}-${e.kind}-${i}`}
                             kind={e.kind}
@@ -619,15 +622,18 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
                             title={family.byId[e.from_id]?.title}
                             onReveal={revealInLibrary}
                           />
-                        ))}
-                      </ul>
+                        )}
+                      />
                     </>
                   )}
                   {family.outgoing.length > 0 && (
                     <>
                       <span className="text-xs font-bold text-zinc-500">Led to ({family.outgoing.length})</span>
-                      <ul className="flex flex-col gap-0.5">
-                        {family.outgoing.map((e, i) => (
+                      <RelativeList
+                        items={family.outgoing}
+                        family={family.read}
+                        className="flex flex-col gap-0.5"
+                        render={(e, i) => (
                           <RelativeRow
                             key={`out-${e.to_id}-${e.kind}-${i}`}
                             kind={e.kind}
@@ -635,8 +641,8 @@ export const AssetInspectorModal: React.FC<Props> = ({ entryId, onClose, initial
                             title={family.byId[e.to_id]?.title}
                             onReveal={revealInLibrary}
                           />
-                        ))}
-                      </ul>
+                        )}
+                      />
                     </>
                   )}
                 </section>

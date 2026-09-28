@@ -7,14 +7,18 @@ verify), High-Quality SRC, Dither, Metadata and Batch Export.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import weakref
+from collections import deque
 from pathlib import Path
 
 from ...core.module_base import build_router
 from ...lib import audio_analysis, ffmpeg
 from ...lib.params import ParamSpec as P
 from ...lib.params import ToolSpec
+from ...lib.resampler import hq_resampler
 
 FAMILY = "delivery"
 
@@ -49,15 +53,63 @@ CODEC_ARGS: dict[str, list[str]] = {
 # doesn't already match the target container.
 assert set(CODEC_ARGS) == {"wav", "flac", "mp3", "aac", "m4a", "opus", "ogg"}
 
+# Codec Matrix at quality "max": every codec at its top setting. The lossy
+# codecs take their highest bitrate or quality (MP3 320k CBR, AAC 320k, Opus
+# 510k, Vorbis q10), WAV is 32-bit float so a float master keeps its overs,
+# and FLAC takes its tightest compression (identical audio, smaller file).
+# libopus accepts at most 256 kbps per channel, so a mono file gets 256k
+# (see _opus_max_bitrate). Quality "high" is CODEC_ARGS.
+CODEC_ARGS_MAX: dict[str, list[str]] = {
+    "wav": ["-c:a", "pcm_f32le"],
+    "flac": ["-c:a", "flac", "-compression_level", "12"],
+    "mp3": ["-c:a", "libmp3lame", "-b:a", "320k"],
+    "aac": ["-c:a", "aac", "-b:a", "320k"],
+    "m4a": ["-c:a", "aac", "-b:a", "320k"],
+    "opus": ["-c:a", "libopus", "-b:a", "510k", "-vbr", "on"],
+    "ogg": ["-c:a", "libvorbis", "-q:a", "10"],
+}
+assert set(CODEC_ARGS_MAX) == set(CODEC_ARGS)
+
+
+OPUS_MAX_BPS = 510_000
+OPUS_MAX_BPS_PER_CHANNEL = 256_000
+
+
+async def _opus_max_bitrate(inp: Path) -> int:
+    """The highest bitrate libopus accepts for this input: 510 kbps, capped at
+    256 kbps per channel. libopus rejects anything above the per-channel cap
+    ("Invalid argument"), so 510k failed every mono upload. When the channel
+    count cannot be probed, 256k, which every channel count accepts."""
+    from backend.modules.analysis.ffprobe import probe_file
+
+    try:
+        info = await asyncio.to_thread(probe_file, inp)
+        channels = int((info.get("_summary") or {}).get("channels") or 0)
+    except Exception:
+        log.warning("codec_matrix: could not probe %s for its channel count", inp)
+        channels = 0
+    if channels < 1:
+        return OPUS_MAX_BPS_PER_CHANNEL
+    return min(OPUS_MAX_BPS, OPUS_MAX_BPS_PER_CHANNEL * channels)
+
 
 async def _codec_matrix(inp: Path, out: Path, params: dict) -> None:
+    """Encode at the Quality the page asks for; the dropdown was declared and
+    never read, so "max" encoded exactly like "high"."""
     ext = out.suffix.lstrip(".").lower()
-    await ffmpeg.render(inp, out, [], extra_out_args=CODEC_ARGS.get(ext, []))
+    quality_max = params.get("quality", "high") == "max"
+    args = list((CODEC_ARGS_MAX if quality_max else CODEC_ARGS).get(ext, []))
+    if quality_max and ext == "opus":
+        args[args.index("-b:a") + 1] = str(await _opus_max_bitrate(inp))
+    await ffmpeg.render(inp, out, [], extra_out_args=args)
 
 
 def _hq_src(params: dict) -> list[str]:
+    """libsoxr at 28 bits, or swr at its matching quality when this ffmpeg
+    has no libsoxr (see backend/lib/resampler.py); a hard-coded soxr failed
+    the render outright on such a build."""
     sr = int(float(params["targetSR"]))
-    return ["-af", "aresample=resampler=soxr:precision=28", "-ar", str(sr)]
+    return ["-af", f"aresample={hq_resampler(28)}", "-ar", str(sr)]
 
 
 def _wave_tags(out: Path):
@@ -424,41 +476,151 @@ async def _metadata(inp: Path, out: Path, params: dict) -> None:
         pass
 
 
-# A cap on how many Batch Export renders run at once, server-wide, across
-# all concurrent /process requests for this tool. Earlier revisions took a
-# per-request `parallelJobs` and additionally tried to encode several target
-# formats per call — but /process (module_base.py) returns exactly one file,
-# so rendering extra formats nobody could receive was wasted CPU and a new
-# failure mode. Reverted to a single encode; the only thing worth bounding
-# here is concurrent *request* load, which a semaphore does without a
-# per-request knob.
-#
-# A single module-level `asyncio.Semaphore` cannot do this safely: a
-# Semaphore binds its internal wait queue to whichever event loop first
-# awaits it. FastAPI's TestClient (and, more importantly, every real
-# request-serving worker loop) can run more than one event loop over the
-# process lifetime — a second loop awaiting the same Semaphore instance
-# raises "got Future <Future pending> attached to a different loop", which
-# surfaced as a bare 500. Keep one Semaphore per running loop instead, in a
-# WeakKeyDictionary so a finished loop's entry is dropped automatically.
-_BATCH_EXPORT_SEMS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+# Batch Export's Jobs knob: how many Batch Export renders may run at once,
+# server-wide, the one being asked for included. /process (module_base.py)
+# returns exactly one file per request, so a batch is a run of requests (one
+# per stem, format or platform) and Jobs is how many of them encode side by
+# side. Every running render's Jobs value holds for as long as it runs: a
+# render that asked for Jobs=1 runs alone, even when later requests ask for
+# more. The knob's own range (1-8) is the server-wide ceiling: no request can
+# raise concurrency past 8, whatever it sends.
+BATCH_JOBS_MAX = 8
 
 
-def _batch_sem() -> asyncio.Semaphore:
+def _affinity_cpus() -> int | None:
+    """How many CPUs this process's affinity mask allows, from psutil (a base
+    dependency), which reads it on Windows (GetProcessAffinityMask), Linux and
+    the BSDs. None where psutil cannot read it: macOS has no affinity call, and
+    Windows reports an empty mask for a process whose threads span processor
+    groups."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        read = getattr(psutil.Process(), "cpu_affinity", None)
+        if read is None:
+            return None
+        count = len(read())
+    except (OSError, psutil.Error) as e:
+        log.debug("delivery: CPU affinity unreadable: %s", e)
+        return None
+    return count or None
+
+
+def _usable_cpus() -> int | None:
+    """The logical CPUs this process may run on, or None when unknown.
+
+    The smallest of the counts the platform offers: the affinity mask
+    (:func:`_affinity_cpus`), ``os.process_cpu_count`` (Python 3.13+, which also
+    honours ``PYTHON_CPU_COUNT``), ``os.sched_getaffinity`` where it exists,
+    and the machine's total. Python 3.12 on Windows has neither os function,
+    so there the mask is read through psutil."""
+    counts: list[int] = []
+    affinity = _affinity_cpus()
+    if affinity:
+        counts.append(affinity)
+    counter = getattr(os, "process_cpu_count", None)
+    if counter is not None and (n := counter()):
+        counts.append(n)
+    sched = getattr(os, "sched_getaffinity", None)
+    if sched is not None and (n := len(sched(0))):
+        counts.append(n)
+    if not counts and (n := os.cpu_count()):
+        counts.append(n)
+    return min(counts) if counts else None
+
+
+def default_batch_jobs(cpus: int | None) -> int:
+    """The Jobs knob's default for a machine with ``cpus`` logical CPUs: half
+    of them, at least 1, at most the knob's ceiling. Each render is one ffmpeg
+    encode; half the logical CPUs is one per physical core on the usual
+    two-threads-per-core machine, and leaves the rest to playback and the UI.
+    An unknown count gets 1, the one value that is safe everywhere."""
+    if not cpus or cpus < 1:
+        return 1
+    return max(1, min(BATCH_JOBS_MAX, cpus // 2))
+
+
+BATCH_JOBS_DEFAULT = default_batch_jobs(_usable_cpus())
+
+
+class _ExportJobGate:
+    """First-come admission for Batch Export renders on one event loop.
+
+    A request waits until it is the oldest one waiting and fewer renders are
+    running than both its own Jobs value and the lowest Jobs value among the
+    renders already running, so no running render ever has more company than
+    it asked for. A waiter that is cancelled (client gone) leaves the queue,
+    so it never blocks the requests behind it.
+    """
+
+    def __init__(self) -> None:
+        # the Jobs value of each render running now, one entry per render
+        self._limits: list[int] = []
+        self._queue: deque[object] = deque()
+        self._cond = asyncio.Condition()
+
+    @property
+    def running(self) -> int:
+        return len(self._limits)
+
+    def _admits(self, jobs: int) -> bool:
+        return len(self._limits) < min([jobs, *self._limits])
+
+    @contextlib.asynccontextmanager
+    async def slot(self, jobs: int):
+        ticket = object()
+        async with self._cond:
+            self._queue.append(ticket)
+            try:
+                await self._cond.wait_for(
+                    lambda: self._queue[0] is ticket and self._admits(jobs)
+                )
+            except BaseException:
+                self._queue.remove(ticket)
+                self._cond.notify_all()
+                raise
+            self._queue.popleft()
+            self._limits.append(jobs)
+            # the next waiter may fit too
+            self._cond.notify_all()
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._limits.remove(jobs)
+                self._cond.notify_all()
+
+
+# One gate per running event loop. asyncio's Condition (like a Semaphore)
+# binds its wait queue to whichever loop first awaits it. FastAPI's
+# TestClient (and, more importantly, every real request-serving worker loop)
+# can run more than one event loop over the process lifetime — a second loop
+# awaiting the same instance raises "got Future <Future pending> attached to
+# a different loop", which surfaced as a bare 500. The WeakKeyDictionary drops
+# a finished loop's entry automatically.
+_BATCH_EXPORT_GATES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _ExportJobGate]" = weakref.WeakKeyDictionary()
+
+
+def _batch_gate() -> _ExportJobGate:
     loop = asyncio.get_running_loop()
-    sem = _BATCH_EXPORT_SEMS.get(loop)
-    if sem is None:
-        sem = asyncio.Semaphore(2)
-        _BATCH_EXPORT_SEMS[loop] = sem
-    return sem
+    gate = _BATCH_EXPORT_GATES.get(loop)
+    if gate is None:
+        gate = _ExportJobGate()
+        _BATCH_EXPORT_GATES[loop] = gate
+    return gate
 
 
 # ── Batch Export (process) ───────────────────────────────────────────────────
 async def _batch_export(inp: Path, out: Path, params: dict) -> None:
-    """Single-file encode, bounded by a server-wide concurrency cap."""
+    """Single-file encode, admitted once fewer than parallelJobs Batch Export
+    renders are running (see ``_ExportJobGate``)."""
+    jobs = int(params.get("parallelJobs", BATCH_JOBS_DEFAULT))
+    jobs = max(1, min(BATCH_JOBS_MAX, jobs))
     ext = out.suffix.lstrip(".").lower()
     codec_args = CODEC_ARGS.get(ext, [])
-    async with _batch_sem():
+    async with _batch_gate().slot(jobs):
         await ffmpeg.render(inp, out, [], extra_out_args=codec_args)
 
 
@@ -512,9 +674,13 @@ TOOLS: list[ToolSpec] = [
         family=FAMILY,
         viz="delivery",
         license="LGPL",
-        engine="ffmpeg:soxr VHQ",
+        engine="ffmpeg:soxr VHQ (swr HQ without libsoxr)",
+        prefers=("soxr",),
         handler=_hq_src,
-        description="Mastering-grade libsoxr sample-rate conversion for delivery.",
+        description=(
+            "Mastering-grade libsoxr sample-rate conversion for delivery "
+            "(ffmpeg's swr at matching quality when ffmpeg lacks libsoxr)."
+        ),
         params=[
             P(
                 "targetSR",
@@ -586,10 +752,23 @@ TOOLS: list[ToolSpec] = [
         engine="ffmpeg encoders",
         handler=_batch_export,
         description=(
-            "Encode to the requested output format; concurrent requests to "
-            "this tool are capped server-side."
+            "Encode to the requested output format. Jobs caps how many Batch "
+            "Export renders run at once, this one included; the rest wait "
+            "their turn."
         ),
-        params=[],
+        params=[
+            P(
+                "parallelJobs",
+                "int",
+                1,
+                BATCH_JOBS_MAX,
+                BATCH_JOBS_DEFAULT,
+                "",
+                "ParamKnob",
+                "Jobs",
+                help="The most Batch Export renders that may run while this one runs, this one included.",
+            )
+        ],
     ),
 ]
 

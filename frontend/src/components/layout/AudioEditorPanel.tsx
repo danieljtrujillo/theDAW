@@ -37,6 +37,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Crosshair, Play, RotateCcw, Square, VolumeX, ZoomIn, ZoomOut } from 'lucide-react';
 import { SemanticWave } from '../audio/SemanticWave';
+import { WaveformModeToggle } from '../audio/WaveformModeControl';
 import {
   beginUndoStep,
   clipPeakGain,
@@ -77,12 +78,12 @@ import {
 
 /* ── shared class strings (the dock's own idiom) ───────────────────────────── */
 
-const LABEL = 'font-display text-[10px] font-bold uppercase tracking-wider et-ink-2';
-const DOMAIN = 'font-mono text-[9px] uppercase tracking-widest text-purple-300/70';
+const LABEL = 'font-display text-xs font-bold uppercase tracking-wider et-ink-2';
+const DOMAIN = 'text-xs font-bold uppercase tracking-widest text-purple-300/70';
 const FIELD =
-  'w-20 px-1.5 py-0.5 rounded border border-white/10 bg-black/40 font-mono text-[11px] et-ink tabular-nums focus-visible:outline focus-visible:outline-purple-400';
+  'w-20 px-1.5 py-0.5 rounded border border-white/10 bg-black/40 text-xs font-semibold et-ink tabular-nums focus-visible:outline focus-visible:outline-purple-400';
 const BTN =
-  'inline-flex items-center gap-1 px-2 py-1 rounded border border-white/10 et-ink-2 hover:et-ink hover:bg-white/5 font-display text-[10px] font-bold uppercase tracking-wider transition-colors focus-visible:outline focus-visible:outline-purple-400 disabled:opacity-40';
+  'inline-flex items-center gap-1 px-2 py-1 rounded border border-white/10 et-ink-2 hover:et-ink hover:bg-white/5 font-display text-xs font-bold uppercase tracking-wider transition-colors focus-visible:outline focus-visible:outline-purple-400 disabled:opacity-40';
 const BTN_ON = 'border-[rgb(var(--et-accent)/0.6)] bg-white/10 text-[rgb(var(--et-accent))]';
 const EMPTY = 'h-full flex items-center justify-center px-6 text-center font-sans text-xs et-ink-2';
 
@@ -167,7 +168,7 @@ const NumField: React.FC<{
             }
           }}
         />
-        <span aria-hidden="true" className="font-mono text-[9px] et-ink-2">
+        <span aria-hidden="true" className="tabular-nums text-xs font-semibold et-ink-2">
           {unit}
         </span>
       </div>
@@ -502,23 +503,26 @@ export const AudioEditorPanel: React.FC = () => {
       {/* ── breadcrumb + actions ─────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between gap-2 px-2 py-1 border-b border-white/5 bg-black/30">
         <nav aria-label="Clip being edited" className="flex items-center gap-1.5 min-w-0">
-          <span className="truncate et-ink-2 font-display text-[11px] font-bold uppercase tracking-wider">
+          <span className="truncate et-ink-2 font-display text-xs font-bold uppercase tracking-wider">
             {trackName}
           </span>
           <span aria-hidden="true" className="et-ink-2 opacity-50">
             ›
           </span>
-          <span className="truncate font-display text-[11px] font-bold uppercase tracking-wider text-[rgb(var(--et-accent))]">
+          <span className="truncate font-display text-xs font-bold uppercase tracking-wider text-[rgb(var(--et-accent))]">
             {clip.label}
           </span>
           <span aria-hidden="true" className="et-ink-2 opacity-50">
             ›
           </span>
-          <span className="truncate font-mono text-[10px] et-ink-2" title={sourceAsset ?? undefined}>
+          <span className="truncate font-sans text-xs font-bold et-ink-2" title={sourceAsset ?? undefined}>
             {sourceAsset ?? 'Embedded audio'}
           </span>
         </nav>
         <div className="flex items-center gap-1 shrink-0">
+          {/* The waveform colour mode lives up here: in the waveform's corner
+              it sat over the trim-end and fade-out handles. */}
+          <WaveformModeToggle variant="toolbar" />
           <button
             type="button"
             onClick={() => {
@@ -580,6 +584,7 @@ export const AudioEditorPanel: React.FC = () => {
               viewportStart={win.startFrac}
               viewportEnd={Math.max(win.startFrac + 1e-4, win.endFrac)}
               transparentBg
+              showModeToggle={false}
             />
           )}
 
@@ -721,7 +726,7 @@ export const AudioEditorPanel: React.FC = () => {
           onChange={(e) => setViewScrollSec(Number(e.target.value))}
           className="grow min-w-0 accent-[rgb(var(--et-accent))] disabled:opacity-30"
         />
-        <span className="shrink-0 font-mono text-[10px] et-ink-2 tabular-nums">
+        <span className="shrink-0 text-xs font-semibold et-ink-2 tabular-nums">
           {secs(win.startSec, 2)}–{secs(win.endSec, 2)} / {secs(sourceDuration, 2)} s
         </span>
       </div>
@@ -778,7 +783,7 @@ export const AudioEditorPanel: React.FC = () => {
             <label htmlFor={`${ids}-gain`} className={LABEL}>
               Clip gain
             </label>
-            <output htmlFor={`${ids}-gain`} className="font-mono text-[10px] et-ink-2 tabular-nums">
+            <output htmlFor={`${ids}-gain`} className="text-xs font-semibold et-ink-2 tabular-nums">
               {gainDb.toFixed(1)} dB
             </output>
           </div>

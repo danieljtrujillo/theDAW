@@ -9,10 +9,14 @@
  *                                               ├▶ djMaster ─▶ engine master
  *   bufSrc B ─▶ lowB ─▶ midB ─▶ highB ─▶ gainB ─┘        (shared: playerStore)
  *
- * Memory: a decoded full song is ~100 MB. We decode ONLY a loaded deck and free
- * the buffer the moment the deck is cleared, so at most ~2 are resident — bounded
- * and released on unload. Browsing/preview elsewhere still streams (wavesurfer
- * fetches its own peaks); the deck engine itself is pure Web Audio.
+ * Memory: a decoded full song is ~100 MB. A deck's audio comes from the DJ-wide
+ * decode cache (`lib/djAudioCache`), the same buffers the deck waveform lanes
+ * draw from, so a loaded track is fetched and decoded once for the deck and its
+ * lanes together. That cache holds at most `DJ_AUDIO_CACHE_MAX` buffers (both
+ * decks plus the pair either side of a transition); a cleared deck drops its
+ * reference and the cache's LRU decides when the memory goes. Browsing/preview
+ * elsewhere still streams (wavesurfer fetches its own peaks); the deck engine
+ * itself is pure Web Audio.
  *
  * `playbackRate` on the source doubles as the turntable pitch (speed+pitch
  * together, like a real deck's pitch fader).
@@ -33,6 +37,7 @@ import { getEngineCtx, getMasterGain } from './playerStore';
 import { logError } from './logStore';
 import { summingDelaysSec } from '../lib/rackEffects';
 import { addWorkletModule } from '../lib/audioWorkletSupport';
+import { getDecodedAudio, setDecodeContext } from '../lib/djAudioCache';
 
 export type DeckId = 'A' | 'B';
 
@@ -55,6 +60,12 @@ export interface DeckStatus {
   slip: boolean;
   pitchPct: number;
   keylock: boolean;
+  /** Seconds between the source position (`currentTime`) and what reaches the
+   *  speakers: this deck's latency-match delay plus its key-lock insert.
+   *  Anything lining two decks up by ear (phase sync) must compare
+   *  `currentTime - latencySec * rate`, since a key-locked deck plays late by
+   *  its insert's latency whenever the delay line cannot make up the rest. */
+  latencySec: number;
   // Readonly: the no-stems case hands back one shared frozen empty rather
   // than allocating per frame (see statusOf), so the type must not let a
   // caller write into what every other deck/frame is also reading.
@@ -88,6 +99,7 @@ interface DeckStem {
 
 interface Deck {
   delayComp: DelayNode; // A/B latency match when one deck is key-locked
+  delaySec: number; // the delay last asked of delayComp (sec)
   trim: GainNode; // auto-gain / leveling trim (independent of crossfader)
   vol: GainNode; // channel volume fader (manual), post-trim
   low: BiquadFilterNode;
@@ -218,31 +230,89 @@ function deckInputNode(d: Deck): AudioNode {
   return d.keylock && d.stretch ? d.stretch : d.delayComp;
 }
 
-/** Re-balance the two decks' output latency so a key-locked deck (which adds the
- *  stretch node's latency) stays beat-aligned with a non-key-locked one: delay
- *  each deck up to the larger of the two engaged stretch latencies.
- *
- *  That is the general summing rule at N = 2, so it runs on the shared one
- *  (`lib/rackEffects.summingDelaysSec`) rather than a second copy of the
- *  arithmetic — the same function the EDIT mixer aligns its tracks with. The
- *  numbers are identical to the hand-rolled form; `liveMixer.latency.test.ts`
- *  pins that against the previous code, transcribed verbatim. */
-function updateLatencyComp(): void {
-  const ctx = getEngineCtx();
-  const da = decks['A'];
-  const db = decks['B'];
-  const la = da?.keylock ? da.stretchLatency : 0;
-  const lb = db?.keylock ? db.stretchLatency : 0;
-  const [ca, cb] = summingDelaysSec([la, lb]);
-  if (da) da.delayComp.delayTime.setTargetAtTime(ca, ctx.currentTime, 0.01);
-  if (db) db.delayComp.delayTime.setTargetAtTime(cb, ctx.currentTime, 0.01);
+/** The latency a deck's key-lock insert adds while it is engaged (sec). */
+function ownLatency(d: Deck): number {
+  return d.keylock && d.stretch ? d.stretchLatency : 0;
 }
 
-/** Push the key-lock pitch correction (cancel the playbackRate pitch shift). */
-function applyKeylockPitch(d: Deck): void {
-  if (d.keylock && d.stretch) {
-    void d.stretch.schedule({ semitones: -12 * Math.log2(d.rate) });
+function setDelay(d: Deck, sec: number): void {
+  const v = Number.isFinite(sec) ? Math.max(0, sec) : 0;
+  d.delaySec = v;
+  d.delayComp.delayTime.setTargetAtTime(v, getEngineCtx().currentTime, 0.01);
+}
+
+/** Re-balance the two decks' output latency after `changed` engaged or
+ *  released key-lock, so a key-locked deck (which adds the stretch node's
+ *  latency) stays beat-aligned with a non-key-locked one.
+ *
+ *  With nothing playing on the other deck this is the general summing rule
+ *  at N = 2 — delay each deck up to the larger of the two engaged latencies —
+ *  so it runs on the shared one (`lib/rackEffects.summingDelaysSec`), the
+ *  same function the EDIT mixer aligns its tracks with.
+ *
+ *  While the OTHER deck is playing, its delay is never touched. Moving a
+ *  delay line under a playing deck sweeps it in about 50 ms, an audible
+ *  warble on the track the audience is hearing, and automix engaged key-lock
+ *  on the incoming deck mid-blend, so every automatic engage or release
+ *  swept the loud outgoing deck. The deck that changed absorbs the
+ *  difference instead; what the delay cannot make up (its insert adds more
+ *  latency than the playing deck has) shows as `DeckStatus.latencySec`,
+ *  which phase sync compares by. */
+function updateLatencyComp(changed: DeckId): void {
+  const dc = decks[changed];
+  const other = decks[changed === 'A' ? 'B' : 'A'];
+  if (dc && other?.playing) {
+    setDelay(dc, other.delaySec + ownLatency(other) - ownLatency(dc));
+    return;
   }
+  const da = decks['A'];
+  const db = decks['B'];
+  const [ca, cb] = summingDelaysSec([da ? ownLatency(da) : 0, db ? ownLatency(db) : 0]);
+  if (da) setDelay(da, ca);
+  if (db) setDelay(db, cb);
+}
+
+/** Spacing of the key-lock corrections scheduled along a phase bend (sec). */
+const KEYLOCK_BEND_STEP_SEC = 0.025;
+
+/**
+ * The playback rates a phase bend passes through, sampled every
+ * `stepSec` from `now` to the bend's end (inclusive), for the key-lock insert
+ * to cancel one by one. A bend is a linear `playbackRate` ramp from `fromRate`
+ * to `toRate`; correcting only for the deck's own rate left the bend's pitch
+ * in the output, up to 1.3 semitones at the full 8 %.
+ */
+export function bendRateSteps(
+  ramp: { start: number; end: number; fromRate: number; toRate: number },
+  now: number,
+  stepSec = KEYLOCK_BEND_STEP_SEC,
+): Array<{ at: number; rate: number }> {
+  const span = ramp.end - ramp.start;
+  if (!(span > 0) || !(stepSec > 0) || !Number.isFinite(now)) return [{ at: now, rate: ramp.toRate }];
+  const rateAt = (t: number) => ramp.fromRate + (ramp.toRate - ramp.fromRate) * clamp((t - ramp.start) / span, 0, 1);
+  const out: Array<{ at: number; rate: number }> = [];
+  const from = Math.max(now, ramp.start);
+  for (let t = from; t < ramp.end; t += stepSec) out.push({ at: t, rate: rateAt(t) });
+  out.push({ at: Math.max(from, ramp.end), rate: ramp.toRate });
+  return out;
+}
+
+/** Push the key-lock pitch correction (cancel the playbackRate pitch shift).
+ *  During a phase bend the correction follows the bend's rate. Each change
+ *  is scheduled for when the audio it corrects leaves the insert (its own
+ *  latency later), and scheduling one drops every change queued after it. */
+function applyKeylockPitch(d: Deck): void {
+  if (!d.keylock || !d.stretch) return;
+  const now = ctxNow();
+  const lat = d.stretchLatency;
+  const ramp = d.transportRamp;
+  if (ramp?.kind === 'bend' && ramp.end > now) {
+    for (const step of bendRateSteps(ramp, now)) {
+      void d.stretch.schedule({ output: step.at + lat, semitones: -12 * Math.log2(step.rate) });
+    }
+    return;
+  }
+  void d.stretch.schedule({ output: now + lat, semitones: -12 * Math.log2(d.rate) });
 }
 
 /** Equal-power crossfader gains for a position in [-1, 1]. */
@@ -293,7 +363,7 @@ function buildDeck(id: DeckId): Deck {
   cueSend.connect(ensureCueBus());
 
   const deck: Deck = {
-    delayComp, trim, vol, low, mid, high, filter, gain, srcBus, cueSend,
+    delayComp, delaySec: 0, trim, vol, low, mid, high, filter, gain, srcBus, cueSend,
     stretch: null, stretchLatency: 0, keylock: false,
     buffer: null, srcs: [], stems: null, stemMode: false, playing: false, startCtxTime: 0, startOffset: 0, rate: 1,
     loadedUrl: null, label: null, pitchPct: 0, decoding: false,
@@ -324,10 +394,19 @@ function audiblePos(d: Deck): number {
   const elapsed = ctxNow() - d.startCtxTime;
   let pos = d.startOffset + elapsed * d.rate;
   if (d.transportRamp) {
+    // The ramp's area up to now (a linear ramp averages its two ends), and
+    // once it is over, the target rate. The old form kept multiplying the
+    // whole elapsed time by the ramp's average rate after the ramp ended, so
+    // the position drifted until the timer that clears the ramp fired —
+    // late whenever the tab was throttled.
     const ramp = d.transportRamp;
-    const t = clamp((ctxNow() - ramp.start) / Math.max(0.001, ramp.end - ramp.start), 0, 1);
-    const avgRate = ramp.fromRate + (ramp.toRate - ramp.fromRate) * t * 0.5;
-    pos = d.startOffset + Math.max(0, ctxNow() - ramp.start) * avgRate;
+    const span = Math.max(0.001, ramp.end - ramp.start);
+    const el = Math.max(0, ctxNow() - ramp.start);
+    const inRamp = Math.min(el, span);
+    const t = inRamp / span;
+    pos = d.startOffset
+      + inRamp * (ramp.fromRate + (ramp.toRate - ramp.fromRate) * t * 0.5)
+      + Math.max(0, el - span) * ramp.toRate;
   }
   if (d.loopActive && d.loopOut > d.loopIn && pos >= d.loopOut) {
     const span = d.loopOut - d.loopIn;
@@ -427,7 +506,7 @@ const NO_STEM_LEVELS: Readonly<Record<string, number>> = Object.freeze({});
 const blankStatus = (): DeckStatus => ({
   loadedUrl: null, label: null, playing: false, decoding: false, hasBuffer: false,
   currentTime: 0, duration: 0, ctxTime: 0, loopActive: false, loopIn: null, loopOut: null,
-  slip: false, pitchPct: 0, keylock: false,
+  slip: false, pitchPct: 0, keylock: false, latencySec: 0,
   stems: NO_STEMS, stemLevels: NO_STEM_LEVELS,
 });
 
@@ -468,6 +547,7 @@ function statusOf(id: DeckId): DeckStatus {
   out.slip = d.slip;
   out.pitchPct = d.pitchPct;
   out.keylock = d.keylock;
+  out.latencySec = d.delaySec + ownLatency(d);
   // Skip both containers entirely in full-track mode (the usual case).
   out.stems = d.stems ? d.stems.map((s) => s.name) : NO_STEMS;
   out.stemLevels = d.stems
@@ -508,10 +588,44 @@ export function getStatus(id: DeckId): DeckStatus {
   return statusOf(id);
 }
 
-/** Load a track URL into a deck: fetch + decode to an AudioBuffer (frees the
- *  prior one). Pass null to clear + free. */
+/** Decode deck tracks and waveform lanes through ONE context, the engine's,
+ *  so both land on the same `lib/djAudioCache` entry.
+ *
+ *  The cache keys a buffer on its URL and on the rate it was resampled to, and
+ *  a waveform lane asks for its audio without naming a context. Unregistered,
+ *  the lanes decode through the cache's 44.1 kHz offline fallback while the
+ *  deck decodes at the engine's own rate (48 kHz on most Windows devices): two
+ *  keys, so two fetches and two decodes of the same file. With the engine
+ *  context registered the lanes resolve to the deck's key. Idempotent. DJView
+ *  calls it on mount, before any lane exists; loadDeck calls it before each
+ *  decode. */
+export function shareDecodeContext(): AudioContext {
+  const ctx = getEngineCtx();
+  setDecodeContext(ctx);
+  return ctx;
+}
+
+/** Load a track URL into a deck: its decoded audio comes from the shared
+ *  decode cache, and the prior track's reference is dropped. Pass null to
+ *  clear.
+ *
+ *  The same URL again is a no-op while the deck already has it: decoded,
+ *  still decoding, or split into stems. DJView re-runs its deck-load effect
+ *  whenever the library resolves an entry, and each of those re-runs used to
+ *  land here and stop the deck, rewind it to 0:00, drop its stems and decode
+ *  the whole file again, so a playing deck cut out every time an unrelated
+ *  library lookup landed. A URL whose last load failed (no buffer, nothing in
+ *  flight) loads again, so a retry still works. */
 export async function loadDeck(id: DeckId, url: string | null, label: string | null): Promise<void> {
   const d = getDeck(id);
+  const holdsUrl = d.buffer !== null || d.decoding || (d.stemMode && !!d.stems?.length);
+  if (url !== null && d.loadedUrl === url && holdsUrl) {
+    if (label !== null && label !== d.label) {
+      d.label = label;
+      emit();
+    }
+    return;
+  }
   stopSource(d);
   teardownStems(d); // the previous track's stems no longer apply
   d.playing = false;
@@ -520,7 +634,7 @@ export async function loadDeck(id: DeckId, url: string | null, label: string | n
   d.rollResume = false;
 
   if (!url) {
-    d.buffer = null; // free decoded audio
+    d.buffer = null; // drop the deck's reference; the shared cache's LRU frees it
     d.loadedUrl = null;
     d.label = null;
     d.decoding = false;
@@ -535,18 +649,11 @@ export async function loadDeck(id: DeckId, url: string | null, label: string | n
   emit();
 
   try {
-    // TODO(dj-audio-cache): route this fetch+decode through
-    // `lib/djAudioCache.getDecodedAudio(url)` once that module lands (another
-    // builder owns it). Automix loads the same track onto the idle deck ahead
-    // of every transition, and a set that loops or revisits a track re-fetches
-    // and re-decodes the whole file each time — the cache is what makes an
-    // incoming deck ready before the outgoing one's tail (see the automix
-    // 'incoming-not-ready' path in DJView/djAutomixPlan).
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`fetch ${resp.status}`);
-    const arr = await resp.arrayBuffer();
-    const ctx = getEngineCtx();
-    const buf = await ctx.decodeAudioData(arr);
+    // One fetch and one decode per URL for the whole DJ tab: the deck's two
+    // waveform lanes ask the same cache for the same buffer, and a set that
+    // revisits a track still resident finds it decoded. Decoding through the
+    // engine's context lands the buffer at the rate playback runs at.
+    const buf = await getDecodedAudio(url, shareDecodeContext());
     // Guard: the deck may have been re-loaded with a different track meanwhile.
     if (d.loadedUrl !== url) return;
     d.buffer = buf;
@@ -693,8 +800,12 @@ export function setDeckPitch(id: DeckId, pct: number): void {
 /** Hardest a phase nudge is allowed to bend the deck's rate (fraction). ~8 %
  *  is a hand-on-the-platter nudge: clearly a nudge, never a rewind. */
 const MAX_PHASE_BEND = 0.08;
-/** Shortest / longest a bend window may be (sec). */
-const MIN_BEND_SEC = 0.12;
+/** Shortest / longest a bend window may be (sec). The shortest is what makes
+ *  the bend proportional: every shift up to `MIN_BEND_SEC · rate ·
+ *  MAX_PHASE_BEND / 2` (40 ms at 1×) is delivered in this window, so a small
+ *  error gets a small bend. With a 0.12 s floor every shift over 5 ms took
+ *  the full 8 %. */
+const MIN_BEND_SEC = 1;
 const MAX_BEND_SEC = 4;
 
 /**
@@ -755,6 +866,9 @@ export function nudgePhase(id: DeckId, seconds: number): number {
     } catch { /* ramp is best-effort; the deck keeps playing at its own rate */ }
   }
   d.transportRamp = { kind: 'bend', start: now, end: now + want, fromRate: safeBent, toRate: rate, targetOffset: d.startOffset };
+  // Key-lock follows the bend: correcting for `d.rate` alone let the bend's
+  // pitch through.
+  applyKeylockPitch(d);
   d.transportRampTimer = window.setTimeout(() => {
     const dd = decks[id];
     if (!dd || dd.transportRamp?.kind !== 'bend') return;
@@ -781,19 +895,24 @@ export function hasPendingBend(id: DeckId): boolean {
   return decks[id]?.transportRamp?.kind === 'bend';
 }
 
-const _stretchPending: Partial<Record<DeckId, boolean>> = {};
+const _stretchPending: Partial<Record<DeckId, Promise<boolean>>> = {};
+/** The key-lock state last asked for per deck. The stretcher loads
+ *  asynchronously on first use, and a release that arrived during that load
+ *  used to be dropped (the deck was not locked YET, so "off" looked like a
+ *  no-op); the load then finished and engaged a lock nobody owned. The load
+ *  now applies whatever was asked for last. */
+const _keylockWant: Partial<Record<DeckId, boolean>> = {};
 
-/** Key-lock / master tempo: speed changes (pitch fader / SYNC) keep the original
- *  pitch. Inserts a Signalsmith Stretch node as a live pitch corrector; bypassed
- *  when off. Async because the worklet + WASM load lazily on first enable. */
-export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
+/** Load the deck's stretch insert if it has none. Resolves true once the
+ *  deck has one; false when it cannot be loaded. One load per deck at a time. */
+function ensureStretch(id: DeckId): Promise<boolean> {
   const d = getDeck(id);
-  if (d.keylock === on) return;
-
-  if (on && !d.stretch && !_stretchPending[id]) {
-    _stretchPending[id] = true;
+  if (d.stretch) return Promise.resolve(true);
+  const pending = _stretchPending[id];
+  if (pending) return pending;
+  const load = (async () => {
     try {
-      // Lazy-load the WASM stretcher only when key-lock is first enabled, so its
+      // Lazy-load the WASM stretcher only when key-lock is first wanted, so its
       // ~100 KB (embedded WASM) never weighs down initial load for users who
       // don't use it. Cached by the bundler after the first import.
       const { default: SignalsmithStretch } = await import('signalsmith-stretch');
@@ -805,23 +924,49 @@ export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
       } catch {
         d.stretchLatency = 0;
       }
+      return true;
     } catch (e) {
       logError('dj', `Deck ${id} key-lock unavailable: ${e instanceof Error ? e.message : String(e)}`);
-      _stretchPending[id] = false;
-      return; // leave key-lock off; turntable mode still works
+      return false; // leave key-lock off; turntable mode still works
+    } finally {
+      delete _stretchPending[id];
     }
-    _stretchPending[id] = false;
-  }
-  if (on && !d.stretch) return; // creation lost a race / failed
+  })();
+  _stretchPending[id] = load;
+  return load;
+}
 
-  d.keylock = on;
-  if (on && d.stretch) {
+/** Load a deck's key-lock insert ahead of need, without engaging it. Automix
+ *  calls this for the incoming deck when its match will need key-lock, so the
+ *  engage right before that deck starts does not wait on a WASM load and land
+ *  after it is already playing. */
+export function prepareKeylock(id: DeckId): void {
+  void ensureStretch(id);
+}
+
+/** Key-lock / master tempo: speed changes (pitch fader / SYNC) keep the original
+ *  pitch. Inserts a Signalsmith Stretch node as a live pitch corrector; bypassed
+ *  when off. Async because the worklet + WASM load lazily on first enable. */
+export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
+  const d = getDeck(id);
+  _keylockWant[id] = on;
+  if (on && !d.stretch) {
+    const ok = await ensureStretch(id);
+    if (!ok) return;
+  }
+  // Apply the LATEST request: another call may have come in during the load.
+  const want = _keylockWant[id] === true;
+  if (d.keylock === want) return;
+  if (want && !d.stretch) return;
+
+  d.keylock = want;
+  if (want && d.stretch) {
     void d.stretch.start();
     applyKeylockPitch(d);
-  } else if (!on && d.stretch) {
+  } else if (!want && d.stretch) {
     void d.stretch.stop(); // idle the worklet so it costs ~0 CPU while bypassed
   }
-  updateLatencyComp();
+  updateLatencyComp(id);
   // Route the source bus through (or around) the stretch insert — no restart needed
   // (works for both full-track and live-stem sources, which all feed srcBus).
   try { d.srcBus.disconnect(); } catch { /* not connected */ }
@@ -829,11 +974,19 @@ export async function setDeckKeylock(id: DeckId, on: boolean): Promise<void> {
   emit();
 }
 
+/** Deepest cut a deck EQ band takes (dB). Automix's bass swap cuts
+ *  `EQ_KILL_DB` (−26) below the DJ's own Lo setting, and the Lo knob goes to
+ *  −12, so the floor has to reach −38. A −24 floor clamped every bass swap
+ *  short of the kill it asked for. */
+export const DECK_EQ_FLOOR_DB = -40;
+/** Largest boost a deck EQ band takes (dB). */
+export const DECK_EQ_CEIL_DB = 24;
+
 export function setDeckEq(id: DeckId, band: 'low' | 'mid' | 'high', db: number): void {
   const d = getDeck(id);
   const ctx = getEngineCtx();
   const node = band === 'low' ? d.low : band === 'mid' ? d.mid : d.high;
-  node.gain.setTargetAtTime(clamp(db, -24, 24), ctx.currentTime, RAMP_TC);
+  node.gain.setTargetAtTime(clamp(db, DECK_EQ_FLOOR_DB, DECK_EQ_CEIL_DB), ctx.currentTime, RAMP_TC);
 }
 
 /** Auto-gain / leveling trim in dB (independent of the crossfader). 0 = unity. */
@@ -1197,7 +1350,7 @@ export async function loadDeckStems(id: DeckId, stems: Array<{ name: string; url
     return { name, buffer, gain: g, level: 1 };
   });
   d.stemMode = true;
-  d.buffer = null; // stems replace the full buffer for playback (frees ~85 MB)
+  d.buffer = null; // stems replace the full buffer for playback; the shared cache keeps it while resident
   const dur = deckDuration(d);
   if (wasPlaying) startSource(d, clamp(pos, 0, dur));
   else d.startOffset = clamp(pos, 0, dur);
@@ -1224,9 +1377,9 @@ export async function unloadDeckStems(id: DeckId): Promise<void> {
   d.decoding = true;
   emit();
   try {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`fetch ${resp.status}`);
-    const buf = await getEngineCtx().decodeAudioData(await resp.arrayBuffer());
+    // The same shared decode loadDeck uses: the track is usually still
+    // resident, so switching stems off costs no download at all.
+    const buf = await getDecodedAudio(url, shareDecodeContext());
     if (d.loadedUrl !== url) return; // re-loaded with a different track meanwhile
     stopSource(d);
     teardownStems(d);

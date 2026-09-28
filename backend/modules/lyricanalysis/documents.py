@@ -46,6 +46,7 @@ from .schema import (
     UpdateLyricDocumentRequest,
 )
 from backend.lib import paths
+from backend.lib.stamps import IncreasingClock
 
 log = logging.getLogger(__name__)
 
@@ -107,15 +108,15 @@ def new_mark_id() -> str:
 # are therefore handed out strictly increasing. They stay honest wall-clock
 # times — the nudge is a microsecond — and the counter is seeded from the
 # newest stamp already on disk so the guarantee survives a restart.
+_stamps = IncreasingClock()
 _stamp_lock = threading.Lock()
-_last_stamp = 0.0
 _stamp_seeded = False
 
 
 def _seed_stamp() -> None:
     """Read the newest stamp on disk once, so a restart cannot hand out a
     stamp behind a document written by the previous run."""
-    global _last_stamp, _stamp_seeded
+    global _stamp_seeded
     newest = 0.0
     try:
         for path in documents_dir().glob("*.json"):
@@ -128,21 +129,16 @@ def _seed_stamp() -> None:
                 newest = float(stamp)
     except OSError:
         pass
-    _last_stamp = max(_last_stamp, newest)
+    _stamps.advance_past(newest)
     _stamp_seeded = True
 
 
 def now_stamp() -> float:
     """Wall-clock, never equal to or behind the last stamp handed out."""
-    global _last_stamp
     with _stamp_lock:
         if not _stamp_seeded:
             _seed_stamp()
-        now = time.time()
-        if now <= _last_stamp:
-            now = _last_stamp + 1e-6
-        _last_stamp = now
-        return now
+    return _stamps()
 
 
 def is_document_id(doc_id: Any) -> bool:

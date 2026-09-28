@@ -291,8 +291,12 @@ DEFAULT_BUDGET = 400
 GROUP_THRESHOLD = 12
 #: How many ids a group carries so the UI can show a preview.
 GROUP_SAMPLE_IDS = 5
-#: ``full_view_ok``: below this many linked songs a drawing of everything is
-#: still a drawing rather than a hang.
+#: ``full_view_ok``: at or below this many linked songs LEARN opens the
+#: classic whole-library drawing by default; past it, the scale view. A
+#: threshold, not a measurement of where the drawing stops responding, which
+#: is why LEARN keeps the classic view reachable past it. ``/summary`` sends
+#: it as ``full_view_limit`` so the UI's warning quotes the number that
+#: decided.
 FULL_VIEW_LIMIT = 2000
 #: Rows one ranked list returns before clamping.
 DEFAULT_RANKING_LIMIT = 50
@@ -913,6 +917,7 @@ def compute_library_stats(
         "largest_connected": connected.largest_component(entry_id_set),
         "largest_tree": tree.largest_component(entry_id_set),
         "full_view_ok": with_lineage <= FULL_VIEW_LIMIT,
+        "full_view_limit": FULL_VIEW_LIMIT,
         "revision": revision,
     }
     return LibraryStats(summary=summary, rankings=rankings, revision=revision)

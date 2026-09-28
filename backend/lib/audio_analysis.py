@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from . import ffmpeg
+from . import ffmpeg, ffmpeg_tools
 
 
 # loudnorm's own documented AVOption ranges (`ffmpeg -h filter=loudnorm`):
@@ -58,7 +58,7 @@ async def measure_loudness(
     would itself reject.
     """
     cmd = [
-        "ffmpeg",
+        await ffmpeg_tools.ffmpeg_exe_async(),
         "-i",
         str(path),
         "-af",
@@ -112,7 +112,7 @@ def _read_audio_guarded(path: Path, **kwargs):
             try:
                 subprocess.run(
                     [
-                        "ffmpeg",
+                        ffmpeg_tools.ffmpeg_exe(),
                         "-y",
                         "-i",
                         str(path),
@@ -158,7 +158,7 @@ def decoded_frame_count(path: Path) -> int | None:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffmpeg_tools.ffprobe_exe(),
                 "-v",
                 "error",
                 "-select_streams",

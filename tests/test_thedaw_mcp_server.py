@@ -476,13 +476,15 @@ def test_an_unreachable_backend_becomes_a_tool_error(child, relay):
     assert "relay" in response["result"]["content"][0]["text"].lower()
 
 
-def test_a_socket_timeout_is_reported_as_a_timeout_not_as_unreachable():
+def test_a_socket_timeout_is_reported_as_a_timeout_not_as_unreachable(monkeypatch):
     module = _load_server_module(1)
 
     def fake_urlopen(*_args, **_kwargs):
         raise urllib.error.URLError(TimeoutError("timed out"))
 
-    module.urllib.request.urlopen = fake_urlopen
+    # monkeypatch: module.urllib is the process-wide urllib, and a bare
+    # assignment left every later test in the run talking to this fake.
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
     payload = module.relay_call("generate", {})
 
     assert payload["ok"] is False
@@ -490,7 +492,7 @@ def test_a_socket_timeout_is_reported_as_a_timeout_not_as_unreachable():
     assert "unreachable" not in payload["error"]
 
 
-def test_a_nonjson_relay_body_is_reported_rather_than_raised():
+def test_a_nonjson_relay_body_is_reported_rather_than_raised(monkeypatch):
     module = _load_server_module(1)
 
     class FakeResponse:
@@ -503,7 +505,9 @@ def test_a_nonjson_relay_body_is_reported_rather_than_raised():
         def __exit__(self, *_exc):
             return False
 
-    module.urllib.request.urlopen = lambda *_a, **_k: FakeResponse()
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *_a, **_k: FakeResponse()
+    )
     payload = module.relay_call("generate", {})
 
     assert payload["ok"] is False

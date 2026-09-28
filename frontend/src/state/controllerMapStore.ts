@@ -17,6 +17,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export interface MidiBinding {
   kind: 'cc' | 'note';
@@ -85,6 +86,7 @@ export const useControllerMapStore = create<ControllerMapState>()(
     }),
     {
       name: 'thedaw-controller-map-v1',
+      storage: persistStorage(),
       // Only the learned bindings persist; map-mode/learn state is per session.
       partialize: (s) => ({ bindings: s.bindings }),
     },

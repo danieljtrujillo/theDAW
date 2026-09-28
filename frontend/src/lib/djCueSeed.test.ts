@@ -14,6 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import { seedCues } from './djCueSeed';
+import { buildBeatgrid } from './beatgrid';
 
 let passed = 0;
 const test = (name: string, fn: () => void) => {
@@ -167,6 +168,32 @@ test('the result is a fresh array each call (never shared state)', () => {
   assert.ok(a && b);
   assert.notEqual(a, b);
   assert.deepEqual(a, b);
+});
+
+/* ── what DJView really passes: the constant beatgrid ── */
+
+test('with the grid the deck passes, cue 1 is the first detected beat', () => {
+  // PR #207 review: every test above fed raw beats, but DJView passes
+  // `gridBeats` — buildBeatgrid's constant grid, whose first line is the grid
+  // line nearest 0:00. After a 3.2 s intro that line is at 0.2 s, six beats
+  // before the music, and cue 1 and every phrase cue landed there.
+  const raw = beatsFrom(3.2, 390);
+  const grid = buildBeatgrid({ bpm: BPM, beats: raw, duration: 200 });
+  assert.ok(grid);
+  assert.equal(grid.beats[0], 0.2, 'the grid the deck builds starts before the music');
+  const out = seedCues({ beats: grid.beats, firstBeat: raw[0], bpm: BPM, duration: 200 });
+  assert.ok(out);
+  assert.equal(out[0], 3.2, 'THE BUG: cue 1 sat on the grid line nearest 0:00');
+  assert.deepEqual(out, [3.2, 3.2 + PHRASE, 3.2 + 2 * PHRASE, 3.2 + 3 * PHRASE], 'phrase cues count from the first beat');
+});
+
+test('cached downbeats still win over the first beat', () => {
+  const raw = beatsFrom(3.2, 390);
+  const grid = buildBeatgrid({ bpm: BPM, beats: raw, duration: 200 });
+  assert.ok(grid);
+  const out = seedCues({ beats: grid.beats, firstBeat: raw[0], bpm: BPM, duration: 200, downbeats: beatsFrom(4.2, 90, 4 * BEAT) });
+  assert.ok(out);
+  assert.equal(out[0], 4.2);
 });
 
 console.log(`\ndjCueSeed: ${passed} passed`);

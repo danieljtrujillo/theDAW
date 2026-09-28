@@ -26,12 +26,17 @@ from fastapi.testclient import TestClient
 
 from backend.modules.library import router as library_router_module
 from backend.modules.library.db import SORTS, EntryFilters, LibraryDB
+from tests.test_library_search_parity import (
+    _assert_search_index_intact as check_search_index,
+)
 from tests.test_library_store import _seed_generate_entry
 
 # Budgets from the ticket, at 200,000 rows.
 PAGE_BUDGET_MS = 250.0
 SEARCH_BUDGET_MS = 300.0
 COUNT_BUDGET_MS = 150.0
+#: The stats chips are one more request per search, held to a page's budget.
+STATS_BUDGET_MS = PAGE_BUDGET_MS
 PERF_ROWS = 200_000
 
 
@@ -71,14 +76,22 @@ def _ids(rows: list[dict]) -> list[str]:
 
 
 def _build_has_fts5() -> bool:
+    """Whether this SQLite has fts5 AND its trigram tokenizer, which is what
+    the library's search index needs."""
     probe = sqlite3.connect(":memory:")
     try:
-        probe.execute("CREATE VIRTUAL TABLE t USING fts5(a, content='')")
+        probe.execute("CREATE VIRTUAL TABLE t USING fts5(a, tokenize='trigram')")
         return True
     except sqlite3.OperationalError:
         return False
     finally:
         probe.close()
+
+
+def _assert_search_index_intact(db: LibraryDB) -> None:
+    """fts5's own integrity checks, and the one- and two-character index
+    compared with the text it was built from (see the parity suite)."""
+    check_search_index(db)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +141,8 @@ def test_every_documented_sort_orders_the_page(seeded_db: LibraryDB):
         "title_desc": ["e4", "e3", "e2", "e1", "e0"],
         "duration_desc": ["e0", "e1", "e2", "e3", "e4"],
         "duration_asc": ["e4", "e3", "e2", "e1", "e0"],
+        # starred rows (e0, e2, e4) by name, then the rest by name
+        "favorites_first": ["e0", "e2", "e4", "e1", "e3"],
     }
     for sort, order in expected.items():
         rows = seeded_db.list_entries_page(EntryFilters(), sort=sort, limit=10)
@@ -241,6 +256,9 @@ def test_search_matches_by_prefix_across_the_indexed_columns(
     assert found("neon") == {"neon", "drift"}
     # Prefix, not whole word.
     assert found("neo") == {"neon", "drift"}
+    # Inside a word too, as main's substring matcher found it.
+    assert found("ynthw") == {"neon"}
+    assert found("rifting") == {"drift"}
     # Prompt text is searched too.
     assert found("synthwave") == {"neon"}
     # Tokens are ANDed: only the entry with both wins.
@@ -263,7 +281,8 @@ def test_search_input_is_escaped_not_interpreted(tmp_path: Path, enable_fts: boo
     # OR is not an operator here: the three tokens are ANDed, and nothing has
     # all three.
     assert db.list_entries_page(EntryFilters(q="neon OR calm"), limit=50) == []
-    # A query with nothing searchable in it matches nothing rather than
+    # Punctuation alone is matched literally, as main's substring matcher
+    # matched it: nothing here contains "!!! ---", and it never matches
     # everything.
     assert db.list_entries_page(EntryFilters(q="!!! ---"), limit=50) == []
 
@@ -295,7 +314,7 @@ def test_search_index_follows_edits_and_deletes(tmp_path: Path):
 
     db.delete_entry("x")
     assert db.list_entries_page(EntryFilters(q="renamed"), limit=5) == []
-    db._conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('integrity-check')")
+    _assert_search_index_intact(db)
 
 
 def test_an_existing_library_gains_the_search_index_on_reopen(tmp_path: Path):
@@ -324,18 +343,16 @@ def test_an_existing_library_gains_the_search_index_on_reopen(tmp_path: Path):
     # contentless index holding two copies of every row).
     again = LibraryDB(path)
     assert len(again.list_entries_page(EntryFilters(q="harbor"), limit=3000)) == 2500
-    again._conn.execute(
-        "INSERT INTO entries_fts(entries_fts) VALUES('integrity-check')"
-    )
+    _assert_search_index_intact(again)
     again.delete_entry("o7")
     assert len(again.list_entries_page(EntryFilters(q="harbor"), limit=3000)) == 2499
 
 
 def test_search_index_agrees_with_a_brute_force_scan(tmp_path: Path):
-    """A contentless FTS5 index is only correctable by deleting the exact values
-    that were inserted, so a wrong delete leaves phantom hits that no query ever
-    reports as an error. This churns writes and then checks the index against a
-    scan of the source columns."""
+    """An fts5 row is only correctable by deleting the exact values that were
+    inserted, so a wrong delete leaves phantom hits that no query ever reports
+    as an error. This churns writes and then checks the index against a scan of
+    the source columns."""
     db = LibraryDB(tmp_path / "churn.db")
     if not db.fts_enabled:
         pytest.skip("build has no FTS5")
@@ -352,14 +369,7 @@ def test_search_index_agrees_with_a_brute_force_scan(tmp_path: Path):
     live = db._conn.execute("SELECT id, title, prompt FROM entries").fetchall()
     for word in words:
         via_fts = set(_ids(db.list_entries_page(EntryFilters(q=word), limit=100)))
-        brute = {
-            r["id"]
-            for r in live
-            if any(
-                tok.startswith(word)
-                for tok in f"{r['title']} {r['prompt']}".lower().split()
-            )
-        }
+        brute = {r["id"] for r in live if word in f"{r['title']} {r['prompt']}".lower()}
         assert via_fts == brute, word
 
 
@@ -550,6 +560,27 @@ def test_two_hundred_thousand_rows_stay_inside_the_budget(tmp_path: Path):
     search_ms = (time.perf_counter() - t0) * 1000
     assert hits, "the two-token search must match the synthesized titles"
 
+    # Words of one and two characters, which match most of the library, and
+    # the stats chips for them: what a user typing "a" or "ne" waits on.
+    short_timings: dict[str, tuple[float, float, float]] = {}
+    for q, expect_all in (("a", True), ("ne", False), ("3", False)):
+        searched = EntryFilters(kinds=frozenset({"audio"}), q=q)
+        runs: list[tuple[float, float, float]] = []
+        for _ in range(3):
+            t0 = time.perf_counter()
+            rows = db.list_entries_page(searched, limit=200)
+            t1 = time.perf_counter()
+            n = db.count_entries_filtered(searched)
+            t2 = time.perf_counter()
+            stats = db.entry_stats(searched)
+            t3 = time.perf_counter()
+            runs.append(((t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000))
+        assert len(rows) == 200, q
+        assert stats["count"] == n, q
+        if expect_all:
+            assert n == PERF_ROWS, q
+        short_timings[q] = tuple(sorted(r[i] for r in runs)[1] for i in range(3))
+
     t0 = time.perf_counter()
     capped = db.list_entry_ids(audio, cap=50_000)
     ids_ms = (time.perf_counter() - t0) * 1000
@@ -561,8 +592,17 @@ def test_two_hundred_thousand_rows_stay_inside_the_budget(tmp_path: Path):
     )
     for sort, ms in timings.items():
         print(f"[200k] page limit=200 offset={deep} sort={sort}: {ms:.1f}ms")
+    for q, (page_ms, n_ms, stats_ms) in short_timings.items():
+        print(
+            f"[200k] q={q!r} (median of 3): page={page_ms:.1f}ms "
+            f"count={n_ms:.1f}ms stats={stats_ms:.1f}ms"
+        )
 
     assert count_ms < COUNT_BUDGET_MS, f"count took {count_ms:.1f}ms"
     assert search_ms < SEARCH_BUDGET_MS, f"search took {search_ms:.1f}ms"
     for sort, ms in timings.items():
         assert ms < PAGE_BUDGET_MS, f"{sort} page took {ms:.1f}ms"
+    for q, (page_ms, n_ms, stats_ms) in short_timings.items():
+        assert page_ms < PAGE_BUDGET_MS, f"q={q!r} page took {page_ms:.1f}ms"
+        assert n_ms < COUNT_BUDGET_MS, f"q={q!r} count took {n_ms:.1f}ms"
+        assert stats_ms < STATS_BUDGET_MS, f"q={q!r} stats took {stats_ms:.1f}ms"

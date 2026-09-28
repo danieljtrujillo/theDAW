@@ -22,11 +22,13 @@ copy of that logic here. See :func:`_metadata_guard`.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import os
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -131,67 +133,276 @@ def profile_of_row(row: Optional[dict[str, Any]]) -> str:
 #: preference.
 MAX_CONCURRENT_ANALYSES = 2
 
-_analysis_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ANALYSES)
+#: How long one run may hold a slot before the gate takes it back.
+#:
+#: A run that is still going after this long is either stuck -- the ffmpeg
+#: fallback decode in ``backend/lib/audio_io.py`` waits up to 600 s -- or a
+#: file long enough that it should not keep every other analysis waiting.
+#: The run is not stopped (a thread cannot be); it carries on outside the cap
+#: and its slot goes to the next caller. Two such runs used to block every
+#: analysis caller in the process for ten minutes.
+SLOT_LEASE_S = 120.0
+
+#: How long a caller that joined a run already computing its entry waits for
+#: that run before it gives up with :class:`AnalysisBusy`. Longer than the
+#: slot lease, so a run that lost its slot still has time to finish.
+FOLLOWER_WAIT_S = 180.0
+
+
+class AnalysisBusy(TimeoutError):
+    """The run already computing this entry did not finish within
+    :data:`FOLLOWER_WAIT_S`. The caller may retry; nothing was cancelled."""
+
+
+class _Gate:
+    """:data:`MAX_CONCURRENT_ANALYSES` slots, handed out DJ runs first, each
+    on a lease of :data:`SLOT_LEASE_S`.
+
+    A plain semaphore served callers in no particular order, so a deck load's
+    2-second ``dj`` run could wait behind two 20-second full runs from the
+    background queue or the LOOM shard pipeline. Here every caller takes a
+    ticket in one of two lines, and the next free slot goes to the head of the
+    priority line whenever it has anyone in it.
+
+    A slot whose lease has run out is counted free again, even though the run
+    holding it is still going; that run's later :meth:`release` is then a
+    no-op. Waiters re-check at the earliest lease deadline, so a stuck run
+    frees its slot on time without any timer thread.
+
+    A run that a priority caller joins while it is still waiting for a slot
+    moves to the priority line (:meth:`promote`). Without that, a deck load
+    that found the background queue's full run of the same track waiting in
+    the ordinary line waited behind every full run queued before it.
+    """
+
+    def __init__(self, slots: int) -> None:
+        self._slots = slots
+        self._cond = threading.Condition()
+        #: lease ticket -> monotonic deadline
+        self._holders: dict[int, float] = {}
+        self._lines: tuple[deque[int], deque[int]] = (deque(), deque())
+        self._next_ticket = 0
+
+    def _reclaim_expired(self, now: float) -> None:
+        for ticket, deadline in list(self._holders.items()):
+            if now >= deadline:
+                del self._holders[ticket]
+                log.warning(
+                    "analysis.engine: a run held its slot past %.0f s; the slot "
+                    "goes to the next caller and the run finishes outside the cap",
+                    SLOT_LEASE_S,
+                )
+
+    def _head(self) -> Optional[int]:
+        for line in self._lines:
+            if line:
+                return line[0]
+        return None
+
+    def acquire(self, *, priority: bool, run: Optional["_InFlight"] = None) -> int:
+        """Wait for a slot and return its lease ticket.
+
+        ``run`` is the single-flight run this caller leads. Its ticket is
+        recorded on it, and a run already promoted before it got here queues
+        in the priority line, all under the gate's lock so :meth:`promote`
+        can never miss it.
+        """
+        with self._cond:
+            self._next_ticket += 1
+            ticket = self._next_ticket
+            if run is not None:
+                priority = priority or run.promoted
+                run.ticket = ticket
+            self._lines[0 if priority else 1].append(ticket)
+            try:
+                while True:
+                    now = time.monotonic()
+                    self._reclaim_expired(now)
+                    if self._head() == ticket and len(self._holders) < self._slots:
+                        break
+                    # Wake at the earliest lease deadline, so an expired slot
+                    # is reclaimed without anyone having to release it.
+                    timeout = (
+                        max(0.0, min(self._holders.values()) - now)
+                        if self._holders
+                        else None
+                    )
+                    self._cond.wait(timeout)
+            except BaseException:
+                for line in self._lines:
+                    if ticket in line:
+                        line.remove(ticket)
+                self._cond.notify_all()
+                raise
+            for line in self._lines:
+                if line and line[0] == ticket:
+                    line.popleft()
+                    break
+            self._holders[ticket] = time.monotonic() + SLOT_LEASE_S
+            # The next head may fit in a slot that is still free.
+            self._cond.notify_all()
+            return ticket
+
+    def release(self, ticket: int) -> None:
+        with self._cond:
+            if self._holders.pop(ticket, None) is not None:
+                self._cond.notify_all()
+
+    def promote(self, run: "_InFlight") -> None:
+        """Serve ``run`` from the priority line from now on.
+
+        Marks the run first, so a leader that has not reached :meth:`acquire`
+        yet queues in the priority line; a leader already waiting in the
+        ordinary line moves to the back of the priority line. A run that
+        already holds a slot has nothing left to wait for.
+        """
+        with self._cond:
+            run.promoted = True
+            ticket = run.ticket
+            ordinary, first = self._lines[1], self._lines[0]
+            if ticket is not None and ticket in ordinary:
+                ordinary.remove(ticket)
+                first.append(ticket)
+                self._cond.notify_all()
+
+
+_gate = _Gate(MAX_CONCURRENT_ANALYSES)
 
 
 class _InFlight:
     """One running analysis, and the place its result is published.
 
     Followers wait on ``done`` and read ``payload``/``error``; they hold no
-    semaphore slot while waiting, which is what keeps single-flight from
-    deadlocking against the concurrency cap (a waiter can never be the thing
-    the leader is waiting for). ``followers`` is how many callers joined this
-    run instead of starting their own.
+    slot while waiting, which is what keeps single-flight from deadlocking
+    against the concurrency cap (a waiter can never be the thing the leader
+    is waiting for). ``followers`` is how many callers joined this run
+    instead of starting their own; ``profile`` is the profile it computes.
+    ``ticket`` is the leader's gate ticket once it has queued, and
+    ``promoted`` says a priority caller joined it (see :meth:`_Gate.promote`);
+    both are read and written under the gate's lock.
     """
 
-    __slots__ = ("done", "payload", "error", "followers")
+    __slots__ = (
+        "done",
+        "payload",
+        "error",
+        "followers",
+        "profile",
+        "ticket",
+        "promoted",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, profile: str) -> None:
         self.done = threading.Event()
         self.payload: Optional[dict] = None
         self.error: Optional[BaseException] = None
         self.followers = 0
+        self.profile = profile
+        self.ticket: Optional[int] = None
+        self.promoted = False
 
 
 _inflight_lock = threading.Lock()
-#: (entry_id, profile) -> the run currently computing it.
+#: entry_id -> the run currently analysing that entry. At most ONE run per
+#: entry, whatever its profile.
 #:
-#: Keyed on the profile as well as the id on purpose: joining a ``dj`` run
-#: would hand a full-profile caller a payload with no pitch and no LUFS, which
-#: is a wrong answer, not a shared one. Two profiles of one entry at the same
-#: instant is rare, both results are correct, and the semaphore still bounds
-#: the total work.
-_inflight: dict[tuple[str, str], _InFlight] = {}
+#: This used to be keyed per (entry_id, profile), so a ``dj`` run and a full
+#: run of one entry could overlap. Both read the stored row for the
+#: carry-forward and both write the whole row, so whichever saved second won:
+#: a dj save landing after a full one wrote the full run's pitch and prompt
+#: back under the dj label, and a dj run that read the row before the full
+#: run saved overwrote the fresh full result with the older values.
+_inflight: dict[str, _InFlight] = {}
 
 
-def _single_flight(key: tuple[str, str], work: Callable[[], dict]) -> dict:
-    """Run ``work`` under the concurrency cap, once per ``key``.
+def _answers(running: str, wanted: str) -> bool:
+    """Whether a run of profile ``running`` is a correct answer for a caller
+    that asked for ``wanted``. A full run measures everything a dj run does,
+    so it answers both; a dj run has no pitch and no LUFS, so joining it would
+    hand a full-profile caller a wrong answer."""
+    return running == wanted or running == PROFILE_FULL
 
-    A second request for a key already running does not start a second
-    analysis: it waits for the first and returns (a copy of) its result, or
-    re-raises its exception. Before this, a deck load and the browser sweep
-    racing on the same track decoded that track twice.
+
+def _follower_error(err: BaseException) -> BaseException:
+    """A per-follower copy of the leader's exception, chained to it.
+
+    Re-raising the one shared object from every follower thread appended each
+    thread's frames to its traceback, so it grew with every raise.
     """
-    with _inflight_lock:
-        run = _inflight.get(key)
-        leader = run is None
-        if run is None:
-            run = _InFlight()
-            _inflight[key] = run
-        else:
-            run.followers += 1
+    try:
+        clone = copy.copy(err)
+    except Exception:  # an exception type copy cannot rebuild
+        return err
+    clone.__traceback__ = None
+    clone.__cause__ = err
+    return clone
 
-    if not leader:
-        log.debug("analysis.engine: joining the run already computing %s", key)
-        run.done.wait()
-        if run.error is not None:
-            raise run.error
-        # A copy per follower: nobody mutates a payload another caller holds.
-        return dict(run.payload or {})
+
+def _single_flight(
+    key: tuple[str, str],
+    work: Callable[[], dict],
+    *,
+    priority: Optional[bool] = None,
+) -> dict:
+    """Run ``work`` under the concurrency cap, one run per entry at a time.
+
+    ``key`` is ``(entry_id, profile)``. A request for an entry whose running
+    analysis answers it (the same profile, or a full run for a dj request)
+    does not start a second analysis: it waits for that run and returns (a
+    copy of) its result, or re-raises (a copy of) its exception. A full
+    request that finds a dj run in flight waits for it to finish and then runs
+    its own, so two runs of one entry never overlap.
+
+    Waiting is bounded by :data:`FOLLOWER_WAIT_S` (then :class:`AnalysisBusy`);
+    the slot a leader holds is bounded by :data:`SLOT_LEASE_S`. ``priority``
+    defaults to True for the dj profile: the gate serves DJ runs first, and a
+    priority caller that joins a run still waiting for its slot moves that run
+    to the priority line.
+    """
+    entry_id, profile = key
+    if priority is None:
+        priority = profile == PROFILE_DJ
+    deadline = time.monotonic() + FOLLOWER_WAIT_S
+    while True:
+        with _inflight_lock:
+            run = _inflight.get(entry_id)
+            if run is None:
+                run = _InFlight(profile)
+                _inflight[entry_id] = run
+                break
+            joined = _answers(run.profile, profile)
+            if joined:
+                run.followers += 1
+        if joined:
+            log.debug("analysis.engine: joining the run already computing %s", key)
+            if priority:
+                _gate.promote(run)
+        else:
+            log.debug(
+                "analysis.engine: %s waits for the %s run of the same entry",
+                key,
+                run.profile,
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not run.done.wait(remaining):
+            raise AnalysisBusy(
+                f"analysis of {entry_id!r} is still running after "
+                f"{FOLLOWER_WAIT_S:.0f} s"
+            )
+        if joined:
+            if run.error is not None:
+                raise _follower_error(run.error)
+            # A copy per follower: nobody mutates a payload another caller holds.
+            return dict(run.payload or {})
+        # The run that was in the way has finished: go round again, to lead
+        # the next run or join whichever one got there first.
 
     try:
-        with _analysis_slots:
+        ticket = _gate.acquire(priority=priority, run=run)
+        try:
             payload = work()
+        finally:
+            _gate.release(ticket)
         run.payload = payload
         return payload
     except BaseException as e:
@@ -202,7 +413,8 @@ def _single_flight(key: tuple[str, str], work: Callable[[], dict]) -> dict:
         # point must be able to start a fresh run rather than latch onto a
         # finished one.
         with _inflight_lock:
-            _inflight.pop(key, None)
+            if _inflight.get(entry_id) is run:
+                del _inflight[entry_id]
         run.done.set()
 
 
@@ -306,8 +518,13 @@ def analyze_audio(
         # confidence; the librosa path derives one from beat-interval
         # spread) and it was thrown away here. A DJ needs it: a 0.1
         # confidence BPM is a number to show greyed out, not to beatmatch on.
-        conf = tempo.get("confidence")
-        out["bpm_confidence"] = float(conf) if isinstance(conf, (int, float)) else None
+        #
+        # Clamped HERE, where it is produced, so the /run response, the
+        # metadata.json backup and the stored column all carry the same
+        # number: the aubio path averages its per-hop confidences with no
+        # bound, and a clamp applied only on the way into the column let the
+        # response hand the deck a raw 1.7.
+        out["bpm_confidence"] = _unit_or_none(tempo.get("confidence"))
     except Exception as e:
         log.info("analysis.engine: tempo failed for %s: %s", p.name, e)
         out["bpm"] = None
@@ -491,11 +708,10 @@ def persist_analysis(
     """
     db_payload = {
         "bpm": payload.get("bpm"),
-        # Clamped HERE, at the one door into the column: the aubio path
-        # averages its per-hop confidences with no bound while the librosa
-        # path clamps, so the two detectors disagreed about what the range
-        # even is. A deck renders this as a bar -- >1 overflows it, <0 draws
-        # backwards -- and every reader would otherwise have to re-clamp.
+        # Clamped again at the one door into the column: analyze_audio clamps
+        # what it measures, but a payload can reach here from elsewhere (a
+        # carried-forward row, a script), and a deck renders this as a bar --
+        # >1 overflows it, <0 draws backwards.
         "bpm_confidence": _unit_or_none(payload.get("bpm_confidence")),
         "beats": payload.get("beats") or [],
         "key": payload.get("key"),
@@ -560,11 +776,13 @@ def analyze_and_persist(
     """Run one analysis for one entry, under the process-wide gate.
 
     EVERY caller enters here -- the ``/run`` endpoint, the library store's
-    background queue, scripts -- so this is where the two guarantees live:
+    background queue, scripts -- so this is where the guarantees live:
 
-      * at most :data:`MAX_CONCURRENT_ANALYSES` analyses run at once, and
-      * two callers asking for the same ``(entry_id, profile)`` at the same
-        time share ONE run instead of decoding the same file twice.
+      * at most :data:`MAX_CONCURRENT_ANALYSES` analyses hold a slot at once,
+        DJ runs first, none for longer than :data:`SLOT_LEASE_S`;
+      * at most one run of an entry at a time: a caller whose request the
+        running analysis answers shares it instead of decoding the same file
+        twice, and any other caller waits for it (see :func:`_single_flight`).
 
     See :func:`_analyze_and_persist` for what a run actually does.
     """
@@ -650,8 +868,21 @@ def _analyze_and_persist(
             except (OSError, json.JSONDecodeError):
                 pass
 
+        if profile != PROFILE_FULL:
+            prior = _carry_forward_partial(db, entry_id, payload, embedded)
+        else:
+            prior = _stored_row(db, entry_id)
+        _keep_stored_probe(prior, payload)
+        if profile != PROFILE_FULL:
+            _keep_full_label(prior, payload)
+
         # Fold any embedded tags into a richer prompt than the analysis-only
-        # baseline computed in analyze_audio.
+        # baseline computed in analyze_audio. AFTER the carry-forward: a dj
+        # run measures no pitch and no loudness, and building the prompt from
+        # its own payload wrote a prompt with no timbre or energy words over
+        # the full run's, every time a tagged track was loaded on a deck.
+        # Built from the merged row, it keeps what the full run knew and
+        # takes the fresh BPM and key.
         if embedded:
             from .prompt import generate_prompt
 
@@ -664,9 +895,6 @@ def _analyze_and_persist(
             payload["prompt_guess"] = regenerated["prompt_guess"]
             payload["prompt_confidence"] = regenerated["prompt_confidence"]
             payload["semantic_tags"] = regenerated["semantic_tags"]
-
-        if profile != PROFILE_FULL:
-            _carry_forward_partial(db, entry_id, payload, embedded)
 
         persist_analysis(
             db,
@@ -695,13 +923,95 @@ def _loads_list(raw: Any) -> list:
     return out if isinstance(out, list) else []
 
 
+def _stored_row(db: LibraryDB, entry_id: str) -> Optional[dict[str, Any]]:
+    """The entry's stored analysis row, or None when there is none (or the
+    read fails -- a broken database fails loudly at persist instead)."""
+    try:
+        return db.get_analysis(entry_id)
+    except Exception as e:  # pragma: no cover - a broken DB fails at persist
+        log.debug("analysis.engine: no prior row for %s: %s", entry_id, e)
+        return None
+
+
+#: The flat payload fields ``analyze_audio`` copies out of the ffprobe summary.
+_PROBE_SUMMARY_FIELDS = (
+    "sample_rate",
+    "channels",
+    "bit_depth",
+    "bit_depth_is_float",
+    "codec",
+    "container",
+    "duration_sec",
+)
+
+
+def _keep_stored_probe(
+    prior: Optional[dict[str, Any]], payload: dict[str, Any]
+) -> None:
+    """Keep the stored ffprobe data when this run's ffprobe measured nothing.
+
+    ``probe_file`` returns ``{}`` when ffprobe is missing or times out (20 s,
+    a sleeping external drive is enough), and ``upsert_analysis`` writes the
+    whole row, so one slow probe used to erase the sample rate, bit depth,
+    codec and duration the library and the Details panel read -- in a full
+    run and a dj run alike. A probe that did measure (it has a ``_summary``)
+    always wins; only an empty one falls back to the stored blob. The profile
+    marker is this run's, never the stored one's.
+    """
+    probe = payload.get("ffprobe")
+    probe = probe if isinstance(probe, dict) else {}
+    if probe.get("_summary") or not prior:
+        return
+    try:
+        stored = json.loads(prior.get("ffprobe_json") or "{}")
+    except (TypeError, ValueError):
+        return
+    if not isinstance(stored, dict) or not isinstance(stored.get("_summary"), dict):
+        return
+    kept = {k: v for k, v in stored.items() if k != PROFILE_MARKER_KEY}
+    if PROFILE_MARKER_KEY in probe:
+        kept[PROFILE_MARKER_KEY] = probe[PROFILE_MARKER_KEY]
+    payload["ffprobe"] = kept
+    summary = kept["_summary"]
+    for field in _PROBE_SUMMARY_FIELDS:
+        if payload.get(field) is None and summary.get(field) is not None:
+            payload[field] = summary[field]
+
+
+def _keep_full_label(prior: Optional[dict[str, Any]], payload: dict[str, Any]) -> None:
+    """A partial run over a FULL row leaves the row labelled full.
+
+    The carry-forward keeps every field the full run measured (pitch, LUFS,
+    the prompt built from them), so what gets saved is full data with a
+    fresh BPM, key and RMS on top. Stamping it with the dj marker told every
+    reader -- ``GET /api/analysis/{id}``, ``entry.analysis`` -- that a
+    complete row was a partial one, and any pass that upgrades dj rows would
+    re-analyse it for nothing.
+
+    Only a CURRENT full row keeps the label. A full row from an older
+    ``ANALYSIS_VERSION`` is stale -- ``GET /api/analysis/{id}`` reports it
+    pending so it gets re-measured -- and its carried pitch, LUFS and prompt
+    are old data. Saving that as a current full row hid it from the version
+    heal for good, so it is saved as a dj row and a full pass re-measures it.
+    """
+    if not prior or profile_of_row(prior) != PROFILE_FULL:
+        return
+    if int(prior.get("version") or 0) < ANALYSIS_VERSION:
+        return
+    probe = payload.get("ffprobe")
+    if isinstance(probe, dict):
+        probe.pop(PROFILE_MARKER_KEY, None)
+    payload["profile"] = PROFILE_FULL
+
+
 def _carry_forward_partial(
     db: LibraryDB,
     entry_id: str,
     payload: dict[str, Any],
     embedded: Optional[dict[str, Any]] = None,
-) -> None:
-    """Keep everything a partial run did not produce.
+) -> Optional[dict[str, Any]]:
+    """Keep everything a partial run did not produce, and return the stored
+    row it read (None when there was none).
 
     INVARIANT: a partial (``dj``) analysis never erases a persisted field it
     did not measure -- whether it skipped that step on purpose or the step
@@ -720,17 +1030,13 @@ def _carry_forward_partial(
     Only empty fields are restored, so everything the partial run DID measure
     still wins -- a dj re-run of an old row is an update, not a no-op.
 
-    ``ffprobe`` is deliberately NOT carried forward: it is the blob the
-    profile marker lives in, and restoring an older one would relabel this
-    partial row as the full row that wrote it.
+    ``ffprobe`` is not carried forward here: it is the blob the profile
+    marker lives in. :func:`_keep_stored_probe` restores it when this run's
+    probe measured nothing, and :func:`_keep_full_label` decides the label.
     """
-    try:
-        prior = db.get_analysis(entry_id)
-    except Exception as e:  # pragma: no cover - a broken DB fails at persist
-        log.debug("analysis.engine: no prior row for %s: %s", entry_id, e)
-        return
+    prior = _stored_row(db, entry_id)
     if not prior:
-        return
+        return None
     carried: set[str] = set()
     for field in _PARTIAL_PROFILE_FIELDS:
         if payload.get(field) is None and prior.get(field) is not None:
@@ -775,6 +1081,7 @@ def _carry_forward_partial(
             tags = []
         if isinstance(tags, list) and tags:
             payload["semantic_tags"] = tags
+    return prior
 
 
 def _set_status(

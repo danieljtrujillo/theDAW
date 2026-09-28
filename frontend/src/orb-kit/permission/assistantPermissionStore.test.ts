@@ -26,6 +26,7 @@ const {
   PERMISSION_MODE_OPTIONS,
   normalizePermissionMode,
   postPermissionMode,
+  sendPermissionMode,
   useAssistantPermissionStore,
 } = await import('./assistantPermissionStore.ts');
 
@@ -99,6 +100,18 @@ assert.equal(await postPermissionMode('conv-42', 'ask'), false);
 
 globalThis.fetch = (async () => ({ ok: false, status: 404 }) as Response) as typeof globalThis.fetch;
 assert.equal(await postPermissionMode('conv-42', 'ask'), false);
+
+// A switch that stopped a running turn says so; an older backend's reply
+// without the field, or one with no JSON body, reads as not interrupted.
+globalThis.fetch = (async () =>
+  new Response(JSON.stringify({ ok: true, interrupted: true }), { status: 200 })) as typeof globalThis.fetch;
+assert.deepEqual(await sendPermissionMode('conv-42', 'ask'), { ok: true, interrupted: true });
+globalThis.fetch = (async () =>
+  new Response(JSON.stringify({ ok: true }), { status: 200 })) as typeof globalThis.fetch;
+assert.deepEqual(await sendPermissionMode('conv-42', 'ask'), { ok: true, interrupted: false });
+globalThis.fetch = (async () => ({ ok: true, status: 200 }) as Response) as typeof globalThis.fetch;
+assert.deepEqual(await sendPermissionMode('conv-42', 'ask'), { ok: true, interrupted: false });
+assert.deepEqual(await sendPermissionMode(null, 'ask'), { ok: false, interrupted: false });
 
 globalThis.fetch = originalFetch;
 

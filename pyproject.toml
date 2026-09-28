@@ -3,7 +3,7 @@ name = "stable-audio-3"
 version = "0.2.0"
 description = "Stable Audio 3: A state-of-the-art open platform for fast, high-quality generated audio and music"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "einops>=0.8.2",
     "einops-exts>=0.0.4",
@@ -74,7 +74,7 @@ dependencies = [
     "pretty_midi>=0.2.11",
     "mido>=1.3.3",
     # notation module — symbolic music conversion / analysis backbone.
-    "music21>=9.7.1,<10.3.0",
+    "music21>=9.7.1",
     "partitura>=1.9.0",
     # controllervision module — classical CV (Hough/contours) to infer a MIDI
     # controller's layout from a product photo. Headless (no GUI libs). The
@@ -122,7 +122,7 @@ ui = [
 ]
 
 lora = [
-  "pytorch_lightning==2.6.5",
+  "pytorch_lightning==2.6.6",
   "dill>=0.4.1",
 ]
 
@@ -158,9 +158,9 @@ flash-attn = [
 # 2.x); the Windows wheel is built the same way. Platforms without a wheel here
 # (e.g. linux aarch64) fall back to the PyPI sdist.
 aubio = [
-  { path = "wheels/aubio-0.4.9-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" },
-  { path = "wheels/aubio-0.4.9-cp312-cp312-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
-  { path = "wheels/aubio-0.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64' and python_version == '3.12'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'" },
 ]
 torch = [
   { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },

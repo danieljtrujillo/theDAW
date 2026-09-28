@@ -24,14 +24,24 @@ if not defined UV_CACHE_DIR set "UV_CACHE_DIR=%~dp0.uv-cache"
 :: -- Preflight: required tools ------------------------------------------
 :: uv  = Python env manager (creates .venv, installs torch/CUDA + flash-attn)
 :: node/npm = frontend dev server + the VJ sidecar
-:: ffmpeg = all audio I/O (effects, exports, library ingest, MIDI, YouTube)
+:: ffmpeg = all audio I/O (effects, exports, library ingest, MIDI, YouTube).
+::   It must be a build with libsoxr: Classical Upsample, Super-Res and
+::   High-Quality SRC resample with it, and gyan.dev's "essentials" build, which
+::   other apps put on PATH, has none. The quick check resamples 50 ms of sine
+::   through soxr with the first ffmpeg on PATH; only when that fails does
+::   setup.ps1 -FFmpegCheck look in the other places the backend looks (winget's
+::   Gyan.FFmpeg, scoop, Chocolatey, THEDAW_FFMPEG). No libsoxr anywhere counts
+::   as missing, so setup.ps1 offers the full build with the usual consent.
 :: The public tunnel (localtunnel "lt") is optional and auto-detected by the
 :: dev stack at the end.
 set "MISSING="
 where uv     >nul 2>&1 || set "MISSING=%MISSING% uv"
 where node   >nul 2>&1 || set "MISSING=%MISSING% node"
 where npm    >nul 2>&1 || set "MISSING=%MISSING% npm"
-where ffmpeg >nul 2>&1 || set "MISSING=%MISSING% ffmpeg"
+set "FFMPEG_SOXR=0"
+where ffmpeg >nul 2>&1 && ffmpeg -hide_banner -nostdin -loglevel error -f lavfi -i sine=d=0.05 -af aresample=48000:resampler=soxr -f null - >nul 2>&1 && set "FFMPEG_SOXR=1"
+if "%FFMPEG_SOXR%"=="0" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\setup.ps1" -FFmpegCheck >nul 2>&1 && set "FFMPEG_SOXR=1"
+if "%FFMPEG_SOXR%"=="0" set "MISSING=%MISSING% ffmpeg-full-build"
 where git    >nul 2>&1 || set "MISSING=%MISSING% git"
 if defined MISSING (
     echo   Missing tools:%MISSING%
@@ -45,7 +55,11 @@ if defined MISSING (
 where uv   >nul 2>&1 || goto :needtools
 where node >nul 2>&1 || goto :needtools
 where npm  >nul 2>&1 || goto :needtools
-where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
+:: A declined FFmpeg offer is not fatal; say what stays broken. FFMPEG_SOXR is
+:: from the check above: setup.ps1 sends a launch that installed something back
+:: through :rerun, so a value still at 0 here means nothing was installed. The
+:: IF governs the whole line, && and || included.
+if "%FFMPEG_SOXR%"=="0" where ffmpeg >nul 2>&1 && echo   [!] This FFmpeg has no libsoxr - Classical Upsample, Super-Res and High-Quality SRC fail until the full FFmpeg build is installed. || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
 
 :: -- Bootstrap Python deps if the venv is missing OR incomplete --------
 :: A previous `uv sync` can be interrupted AFTER uv creates the venv but
@@ -236,6 +250,14 @@ if not exist "electron-ui\node_modules\electron\dist\electron.exe" (
     python -m backend._devstack
     goto :stopped
 )
+
+:: The desktop window loads http://localhost:5173 as well, and its saved
+:: settings and mic/MIDI permissions belong to that address. When another
+:: program holds 5173 the launch stops here with that program's name, since
+:: on any other port the window would open with all of them empty.
+ver >nul
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --require-frontend-port
+if errorlevel 1 goto :stopped
 
 pushd electron-ui
 call npm run dev

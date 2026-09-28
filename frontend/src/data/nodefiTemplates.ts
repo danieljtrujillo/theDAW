@@ -46,7 +46,8 @@ export interface NodefiTemplate {
   edges: NodefiTemplateEdge[];
 }
 
-/** Resolve a template's source song against the loaded library entries. */
+/** Resolve a template's source song against a list of entries in hand;
+ *  `findTemplateSource` (lib/nodefiTemplateSource.ts) asks the whole library. */
 export function resolveTemplateSource(
   tpl: NodefiTemplate,
   entries: LibraryEntry[],

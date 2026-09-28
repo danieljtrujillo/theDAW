@@ -10,8 +10,9 @@ but the sidecar's own loopback origin.
 
 The flow, per :func:`sync_generations`:
 
-  1. Nothing is listening on the sidecar's port -> no-op, with a reason. The
-     sidecar is started by the panel, never by a sync.
+  1. Nothing is listening on the sidecar's port, or what listens there does
+     not answer as Lyria (``sidecar._is_lyria_server``) -> no-op, with a
+     reason. The sidecar is started by the panel, never by a sync.
   2. ``GET http://127.0.0.1:<port>/api/generations`` -- the unmodified app's
      own listing, newest first.
   3. Ids already in the seen map (``data/lyria_imports.json``, a
@@ -118,7 +119,7 @@ def load_seen_map() -> dict[str, str]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except Exception as exc:  # noqa: BLE001 - a bad file is an empty map
+    except Exception as exc:  # a bad file is an empty map
         log.warning("lyria.importer: unreadable seen map %s: %s", path, exc)
         return {}
     if not isinstance(raw, dict):
@@ -297,6 +298,15 @@ async def sync_generations(include_mock: bool = False) -> dict[str, Any]:
     listening = await asyncio.to_thread(sidecar._port_is_listening, port)
     if not listening:
         return {"imported": [], "skipped": 0, "reason": "sidecar not running"}
+    # An open port is not proof it is Lyria: another program on the port would
+    # be asked for /api/generations every 30 s. The same identity check probe()
+    # and ensure_running() use (a blocking HTTP call, so off the loop too).
+    if not await asyncio.to_thread(sidecar._is_lyria_server, port):
+        return {
+            "imported": [],
+            "skipped": 0,
+            "reason": f"port {port} is held by a program that is not Lyria",
+        }
 
     origin = f"http://127.0.0.1:{port}"
     async with _sync_lock:
@@ -325,7 +335,7 @@ async def _sync_locked(origin: str, port: int, include_mock: bool) -> dict[str, 
             resp = await client.get(f"{origin}/api/generations")
             resp.raise_for_status()
             payload = resp.json()
-        except Exception as exc:  # noqa: BLE001 - a sync never raises at a route
+        except Exception as exc:  # a sync never raises at a route
             log.warning("lyria.importer: could not list generations: %s", exc)
             return {"imported": [], "skipped": 0, "reason": f"listing failed: {exc}"}
 
@@ -363,7 +373,7 @@ async def _sync_locked(origin: str, port: int, include_mock: bool) -> dict[str, 
                 audio = await client.get(audio_url, timeout=DOWNLOAD_TIMEOUT_SEC)
                 audio.raise_for_status()
                 audio_bytes = audio.content
-            except Exception as exc:  # noqa: BLE001 - one bad download, not a run
+            except Exception as exc:  # one bad download, not a run
                 log.warning("lyria.importer: download failed for %s: %s", gen_id, exc)
                 skipped += 1
                 continue
@@ -382,7 +392,7 @@ async def _sync_locked(origin: str, port: int, include_mock: bool) -> dict[str, 
                     MIME_BY_FORMAT[fmt],
                     metadata,
                 )
-            except Exception as exc:  # noqa: BLE001 - one bad entry, not a run
+            except Exception as exc:  # one bad entry, not a run
                 log.warning("lyria.importer: import failed for %s: %s", gen_id, exc)
                 skipped += 1
                 continue
@@ -393,7 +403,7 @@ async def _sync_locked(origin: str, port: int, include_mock: bool) -> dict[str, 
             # import and the write is what re-imports a track on the next sync.
             try:
                 save_seen_map(seen)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("lyria.importer: could not persist seen map: %s", exc)
 
     return {"imported": imported, "skipped": skipped}

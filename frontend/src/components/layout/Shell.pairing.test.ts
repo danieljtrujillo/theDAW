@@ -251,4 +251,32 @@ assert.match(
     'that notice is what the affected device actually sees',
 );
 
+// ── revoking the links handed out so far ───────────────────────────────────
+//
+// The token now rides the Share URL as well as the companion link, so a link
+// that went somewhere it should not must be revocable from the same panel.
+// POST /api/pairing/token/regenerate existed with no UI calling it.
+//
+// The click sequence itself (arm, confirm, fail, time out) runs in
+// src/lib/pairingRevoke.test.ts; this checks the panel drives that module with
+// its own state and adopts the new token into the state every link reads.
+const revokeStart = source.indexOf('const revokePairing = () =>');
+assert.ok(revokeStart >= 0, 'the share panel must offer a way to replace the pairing token');
+const revokeBody = source.slice(revokeStart, source.indexOf('\n    });', revokeStart));
+assert.match(revokeBody, /clickNewPairingLink\(\{/, 'the button runs the two-click sequence');
+assert.match(revokeBody, /armed: revokeArmed,/, 'with the armed state this render shows');
+assert.match(revokeBody, /state: revokeState,/, 'and the request state, so a click while busy is ignored');
+assert.match(
+  revokeBody,
+  /adoptToken: setLanPairingToken,/,
+  'and adopts the new token, so the QR codes and both links switch to it at once',
+);
+assert.match(
+  source,
+  /React\.useEffect\(\(\) => scheduleDisarm\(revokeArmed, setRevokeArmed\), \[revokeArmed\]\);/,
+  'the arm runs out on its own',
+);
+assert.match(source, /onClick=\{\(\) => void revokePairing\(\)\}/, 'the New pairing link button calls it');
+assert.match(source, /'Confirm: old links stop working'/, 'the armed button says what the second click does');
+
 console.log('Shell.pairing: all assertions passed');

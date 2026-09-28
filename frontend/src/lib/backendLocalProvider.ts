@@ -18,6 +18,7 @@ import { fetchBlobWithRetry } from './fetchRetry';
 import type { LibraryFacetField, LibraryFacetValue, LibraryFacets } from './libraryFacets';
 import { stripSourceId } from './displayName';
 import { logWarn } from '../state/logStore';
+import { asSearchCoverage, openingErrorFrom, type LibrarySearchCoverage } from './libraryIndexStatus';
 
 export type {
   LibraryFacetField,
@@ -416,7 +417,9 @@ export type LibraryServerSort =
   | 'title_desc'
   | 'plays_desc'
   | 'duration_desc'
-  | 'duration_asc';
+  | 'duration_asc'
+  /** Starred rows first, then the rest, each by name (the EDIT picker's order). */
+  | 'favorites_first';
 
 /** The filter/sort state a paged request is made of. */
 export interface LibraryQuery {
@@ -473,6 +476,12 @@ export interface LibraryPage {
   limit: number;
   /** The `library_revision` the page was read at. */
   revision: number;
+  /**
+   * A searched page's `search_index`, or null when the page was not searched
+   * (or the backend does not say). `complete: false` means the search index
+   * is still being built and the page covers the indexed entries only.
+   */
+  searchIndex?: LibrarySearchCoverage | null;
 }
 
 /**
@@ -492,6 +501,21 @@ export interface LibraryListResult {
   entries: LibraryEntry[] | null;
 }
 
+/**
+ * Raised by `fetchLibraryList` when the backend refuses the query's sort (400
+ * naming the sort): a backend from before that sort existed. The backend has
+ * no auto-reload, so a frontend that already knows a new sort can be talking
+ * to one that does not; the caller picks a sort the backend has.
+ */
+export class LibrarySortUnsupportedError extends Error {
+  readonly sort: LibraryServerSort;
+  constructor(sort: LibraryServerSort, detail: string) {
+    super(`library.page: ${detail}`);
+    this.name = 'LibrarySortUnsupportedError';
+    this.sort = sort;
+  }
+}
+
 /** Raised by `fetchLibraryIds` when the filters match more ids than the cap. */
 export class LibraryIdCapError extends Error {
   readonly cap: number;
@@ -501,6 +525,35 @@ export class LibraryIdCapError extends Error {
     );
     this.name = 'LibraryIdCapError';
     this.cap = cap;
+  }
+}
+
+/**
+ * Raised by `fetchLibraryIds` (select-all) and by a bulk delete by a searched
+ * filter while the search index does not cover the library: 409 while it is
+ * still being built (a search then matches only the entries indexed so far,
+ * and both act on every match), 503 when the build stopped. The message is
+ * the backend's, which says how far the build has got and what to do.
+ */
+export class LibrarySearchIndexBuildingError extends Error {
+  constructor(detail: string) {
+    super(detail.charAt(0).toUpperCase() + detail.slice(1));
+    this.name = 'LibrarySearchIndexBuildingError';
+  }
+}
+
+/**
+ * The `LibrarySearchIndexBuildingError` a refusal carrying `search_index`
+ * describes, or null for any other response. Reads a clone of the body.
+ */
+async function searchIndexRefusalFrom(r: Response): Promise<LibrarySearchIndexBuildingError | null> {
+  if (r.status !== 409 && r.status !== 503) return null;
+  try {
+    const body = (await r.clone().json()) as { detail?: unknown; search_index?: unknown };
+    if (!body || typeof body !== 'object' || !body.search_index || typeof body.detail !== 'string') return null;
+    return new LibrarySearchIndexBuildingError(body.detail);
+  } catch {
+    return null;
   }
 }
 
@@ -525,6 +578,7 @@ const asPage = (body: unknown): LibraryPage | null => {
     offset?: unknown;
     limit?: unknown;
     revision?: unknown;
+    search_index?: unknown;
   };
   if (typeof b.total !== 'number' || !Number.isFinite(b.total)) return null;
   if (!Array.isArray(b.entries)) return null;
@@ -534,6 +588,7 @@ const asPage = (body: unknown): LibraryPage | null => {
     offset: typeof b.offset === 'number' ? b.offset : 0,
     limit: typeof b.limit === 'number' ? b.limit : LIBRARY_PAGE_SIZE,
     revision: typeof b.revision === 'number' ? b.revision : 0,
+    searchIndex: asSearchCoverage(b.search_index),
   };
 };
 
@@ -563,33 +618,73 @@ export async function fetchLibraryList(
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const r = await fetch(`${base}/entries?${params.toString()}`, { signal });
-  if (!r.ok) throw new Error(`library.page: ${await errorText(r)}`);
+  if (!r.ok) {
+    // 503 while the library is still opening: the caller shows the progress.
+    const opening = await openingErrorFrom(r);
+    if (opening) throw opening;
+    const detail = await errorText(r);
+    if (r.status === 400 && detail.startsWith('sort must be one of')) {
+      throw new LibrarySortUnsupportedError(query.sort, detail);
+    }
+    throw new Error(`library.page: ${detail}`);
+  }
   const body: unknown = await r.json();
   const page = asPage(body);
   if (page) return { paged: true, page, entries: null };
   return { paged: false, page: null, entries: asEntryList(body) };
 }
 
+/** What `fetchLibraryIds` answers. */
+export interface LibraryIdsResult {
+  ids: string[];
+  total: number;
+  /**
+   * A searched answer's `search_index`: `complete: false` while the search
+   * index is still being built, when `ids` are the matches indexed so far
+   * (only a `partial` request gets that answer). Null when not searched.
+   */
+  searchIndex: LibrarySearchCoverage | null;
+}
+
 /**
  * Every id matching `query`, in the query's own order — what select-all and a
  * shift-range need without loading a single row.
  *
- * Throws `LibraryIdCapError` when the backend refuses (413), and returns null
- * when the route does not exist at all (an older backend), which tells the
- * caller to fall back to the rows it already holds.
+ * `partial` is for callers that follow the list on screen (play the list, a
+ * shift-click range, revealing a track): while the search index is still
+ * being built they get the ids the list shows. Without it (select-all) a
+ * search then throws `LibrarySearchIndexBuildingError`.
+ *
+ * Throws `LibraryIdCapError` when the backend refuses (413),
+ * `LibraryOpeningError` while the library is still opening (503), and returns
+ * null when the route does not exist at all (an older backend), which tells
+ * the caller to fall back to the rows it already holds.
  */
 export async function fetchLibraryIds(
   query: LibraryQuery,
   signal?: AbortSignal,
   base: string = DEFAULT_BASE,
-): Promise<{ ids: string[]; total: number } | null> {
-  const r = await fetch(`${base}/entries/ids?${queryParams(query).toString()}`, { signal });
+  options: { partial?: boolean } = {},
+): Promise<LibraryIdsResult | null> {
+  const params = queryParams(query);
+  if (options.partial) params.set('partial', 'true');
+  const r = await fetch(`${base}/entries/ids?${params.toString()}`, { signal });
   if (r.status === 413) throw new LibraryIdCapError();
   if (r.status === 404 || r.status === 405) return null;
-  if (!r.ok) throw new Error(`library.ids: ${await errorText(r)}`);
-  const body = (await r.json()) as { ids?: unknown; total?: unknown };
+  if (!r.ok) {
+    const opening = await openingErrorFrom(r);
+    if (opening) throw opening;
+    const refusal = await searchIndexRefusalFrom(r);
+    if (refusal) throw refusal;
+    throw new Error(`library.ids: ${await errorText(r)}`);
+  }
+  const body = (await r.json()) as { ids?: unknown; total?: unknown; search_index?: unknown };
   const ids = Array.isArray(body.ids) ? body.ids.filter((v): v is string => typeof v === 'string') : [];
-  return { ids, total: typeof body.total === 'number' ? body.total : ids.length };
+  return {
+    ids,
+    total: typeof body.total === 'number' ? body.total : ids.length,
+    searchIndex: asSearchCoverage(body.search_index),
+  };
 }
 
 /* ════════════════════════════ facets ═══════════════════════════════════════
@@ -650,7 +745,12 @@ export async function fetchLibraryFacets(
   params.set('fields', fields.join(','));
   const r = await fetch(`${base}/entries/facets?${params.toString()}`, { signal });
   if (r.status === 404 || r.status === 405) return null;
-  if (!r.ok) throw new Error(`library.facets: ${await errorText(r)}`);
+  if (!r.ok) {
+    // 503 while the library is still opening: not a failure to log.
+    const opening = await openingErrorFrom(r);
+    if (opening) throw opening;
+    throw new Error(`library.facets: ${await errorText(r)}`);
+  }
   const body = (await r.json()) as { facets?: unknown; revision?: unknown };
   const raw = body.facets && typeof body.facets === 'object'
     ? (body.facets as Record<string, unknown>)
@@ -676,6 +776,86 @@ export async function fetchLibraryMatchCount(
   const result = await fetchLibraryList(query, 0, 1, signal, base);
   if (!result.paged || !result.page) return null;
   return result.page.total;
+}
+
+/* ════════════════════════════ stats ════════════════════════════════════════
+ *
+ * `GET /api/library/entries/stats?<the page filters>` answers
+ * `{count, favorites, size_bytes, duration_sec, revision}` over EVERY row the
+ * filters match, so the chips above the list describe the whole query rather
+ * than the pages this client happens to hold.
+ */
+
+/** Totals over a whole query. */
+export interface LibraryStats {
+  count: number;
+  favorites: number;
+  sizeBytes: number;
+  durationSec: number;
+  /** The `library_revision` the totals were read at; 0 when unknown. */
+  revision: number;
+}
+
+const finiteOr0 = (v: unknown): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : 0;
+
+/**
+ * The totals of everything `query` matches. Null against a backend with no
+ * stats route: an older one answers the path with its `/entries/{id}` route,
+ * which is a 404, and the caller then sums the rows it holds.
+ */
+export async function fetchLibraryStats(
+  query: LibraryQuery,
+  signal?: AbortSignal,
+  base: string = DEFAULT_BASE,
+): Promise<LibraryStats | null> {
+  const params = queryParams(query);
+  params.delete('sort');
+  const r = await fetch(`${base}/entries/stats?${params.toString()}`, { signal });
+  if (r.status === 404 || r.status === 405) return null;
+  if (!r.ok) {
+    const opening = await openingErrorFrom(r);
+    if (opening) throw opening;
+    throw new Error(`library.stats: ${await errorText(r)}`);
+  }
+  const body = (await r.json()) as Record<string, unknown>;
+  return {
+    count: finiteOr0(body.count),
+    favorites: finiteOr0(body.favorites),
+    sizeBytes: finiteOr0(body.size_bytes),
+    durationSec: finiteOr0(body.duration_sec),
+    revision: finiteOr0(body.revision),
+  };
+}
+
+/* ═════════════════════════ entry references ═══════════════════════════════
+ *
+ * `GET /api/library/entries/resolve?ref=` names the audio entry a LOOM score or
+ * template means by an id, an id prefix or a title fragment, over the whole
+ * library. `{id: null}` when nothing matches.
+ */
+
+/**
+ * The entry id `ref` names, null when the library has none, or undefined
+ * against a backend with no resolve route (a 404 from its `/entries/{id}`),
+ * which tells the caller to look through the rows it holds instead. Throws
+ * `LibraryOpeningError` while the library is still opening (503).
+ */
+export async function resolveLibraryEntryRef(
+  ref: string,
+  signal?: AbortSignal,
+  base: string = DEFAULT_BASE,
+): Promise<string | null | undefined> {
+  const params = new URLSearchParams({ ref });
+  const r = await fetch(`${base}/entries/resolve?${params.toString()}`, { signal });
+  if (r.status === 404 || r.status === 405) return undefined;
+  if (!r.ok) {
+    const opening = await openingErrorFrom(r);
+    if (opening) throw opening;
+    throw new Error(`library.resolve: ${await errorText(r)}`);
+  }
+  const body = (await r.json()) as { id?: unknown };
+  return typeof body.id === 'string' ? body.id : null;
 }
 
 /* ═════════════════════════ bulk delete ═════════════════════════════════════
@@ -812,6 +992,12 @@ export async function bulkDeleteLibraryEntries(
     signal,
   });
   if (r.status === 404 || r.status === 405) return null;
+  // A searched filter while the search index does not cover the library: not
+  // a count conflict, and there is no count to re-confirm with.
+  const refusal = await searchIndexRefusalFrom(r);
+  if (refusal) throw refusal;
+  const opening = await openingErrorFrom(r);
+  if (opening) throw opening;
   if (r.status === 409) {
     const conflict = (await r.json().catch(() => ({}))) as { detail?: unknown; total_matched?: unknown };
     const detail = typeof conflict.detail === 'string'

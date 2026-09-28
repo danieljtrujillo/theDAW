@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { GraphEdge, GraphNode } from '../lib/nodefiTypes';
 
 export interface SavedNodeSet {
@@ -73,7 +74,7 @@ export const useNodefiSetsStore = create<NodefiSetsState>()(
     }),
     // Pre-rename key kept deliberately — see nodefiStore. Renaming it would
     // orphan every saved set.
-    { name: 'thedaw-audimate-sets-v1', version: 1 },
+    { name: 'thedaw-audimate-sets-v1', storage: persistStorage(), version: 1 },
   ),
 );
 

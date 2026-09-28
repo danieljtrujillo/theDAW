@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from '../../state/persistStorage';
 import {
   ArrowRight,
   Compass,
@@ -72,6 +73,7 @@ export const useHomeScreenStore = create<HomeScreenState>()(
     }),
     {
       name: 'thedaw-home-screen-v1',
+      storage: persistStorage(),
       partialize: (s) => ({ showAtStartup: s.showAtStartup }),
     },
   ),

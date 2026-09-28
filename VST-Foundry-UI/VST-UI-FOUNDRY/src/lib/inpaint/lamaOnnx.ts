@@ -222,7 +222,7 @@ function toMaskTensor(rgba: Uint8ClampedArray): ort.Tensor {
   return new ort.Tensor("float32", f, [1, 1, SIZE, SIZE]);
 }
 
-function outputToRgba(data: Float32Array): Uint8ClampedArray {
+function outputToRgba(data: Float32Array): Uint8ClampedArray<ArrayBuffer> {
   const n = SIZE * SIZE;
   const rgba = new Uint8ClampedArray(n * 4);
   for (let i = 0; i < n; i++) {
@@ -239,7 +239,7 @@ async function runLama512(
   crop512: HTMLCanvasElement,
   maskCrop512: HTMLCanvasElement,
   session: ort.InferenceSession,
-): Promise<Uint8ClampedArray> {
+): Promise<Uint8ClampedArray<ArrayBuffer>> {
   const imgData = ctxOf(crop512).getImageData(0, 0, SIZE, SIZE).data;
   const maskData = ctxOf(maskCrop512).getImageData(0, 0, SIZE, SIZE).data;
   const feeds: Record<string, ort.Tensor> = {

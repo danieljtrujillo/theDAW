@@ -15,6 +15,7 @@ from backend.lib.audio_depth import (
     probe_depth,
     widest,
 )
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 router = APIRouter()
@@ -128,14 +129,15 @@ _librubberband: bool | None = None
 
 
 def _has_librubberband() -> bool:
-    """Whether the FFmpeg on PATH was built with the (GPL) rubberband filter.
+    """Whether the resolved FFmpeg (``backend.lib.ffmpeg_tools``) was built
+    with the (GPL) rubberband filter.
     Cached after the first probe. Rubberband gives high-quality independent
     time/pitch; without it we fall back to built-in atempo + resample tricks."""
     global _librubberband
     if _librubberband is None:
         try:
             out = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-filters"],
+                [ffmpeg_tools.ffmpeg_exe(), "-hide_banner", "-filters"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -531,8 +533,9 @@ async def studio_process(
             else ffmpeg_pcm_args(widest(probe_depth(input_path), floor), output_format)
         )
 
+        resolution = await ffmpeg_tools.aresolve()
         cmd = [
-            "ffmpeg",
+            resolution.build.ffmpeg if resolution.build else "ffmpeg",
             "-y",
             "-i",
             str(input_path),
@@ -540,6 +543,9 @@ async def studio_process(
             *depth_args,
             str(output_path),
         ]
+        problem = ffmpeg_tools.soxr_problem(cmd, resolution)
+        if problem:
+            raise HTTPException(status_code=500, detail=problem)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

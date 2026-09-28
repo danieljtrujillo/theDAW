@@ -22,8 +22,12 @@
  * AudioContext clock, so a stalled/throttled timer cannot skew a fade).
  */
 
-/** dB the bass is cut to while the other deck owns the low end. */
-const EQ_KILL_DB = -26;
+import { camelotCodesCompatible, toCamelot } from './camelot';
+
+/** dB the bass is cut to, relative to the DJ's own low EQ, while the other
+ *  deck owns the low end. The engine's EQ floor (`djEngine.DECK_EQ_FLOOR_DB`)
+ *  sits below this plus the lowest the Lo knob goes, so the cut always lands. */
+export const EQ_KILL_DB = -26;
 /** Beats in a phrase. Dance music is built in 4-bar phrases; a blend that
  *  starts anywhere else sounds like a mistake even when it is beatmatched. */
 export const PHRASE_BEATS = 16;
@@ -37,8 +41,50 @@ export const MIN_PLAY_FRACTION = 0.5;
 /** Phase error (sec) below which a nudge is not worth scheduling. */
 export const PHASE_DEADBAND_SEC = 0.008;
 
+/** Within this of its end, a stopped deck ran out rather than being paused.
+ *  The engine parks a naturally ended deck exactly on its duration. */
+const END_EPS_SEC = 0.05;
+
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 const finite = (x: number | null | undefined): x is number => typeof x === 'number' && Number.isFinite(x);
+
+/* ──────────────────────────────── deck state ────────────────────────────── */
+
+/** What a deck is doing, as automix needs to tell it apart. */
+export type DeckRun =
+  /** Making sound. */
+  | 'playing'
+  /** Stopped with track left to play: the DJ paused it, or a new track is
+   *  still decoding onto it. It will play again, so automix waits for it. */
+  | 'paused'
+  /** Ran out at the end of its track, or holds nothing any more (ejected).
+   *  There is nothing to resume, so automix moves the set on. */
+  | 'ended';
+
+/**
+ * Tell a pause from a track that ran out.
+ *
+ * `playing: false` covers both. A paused deck read as finished made automix
+ * start the next track within one 500 ms tick of the user pressing pause,
+ * and a pause during a blend skipped a whole track. The engine parks a deck
+ * that reached its end exactly on its duration (`djEngine` `onended`), so the
+ * position says which one this is.
+ */
+export function deckRun(s: {
+  playing: boolean;
+  currentTime: number;
+  duration: number;
+  /** False once the deck holds no audio. Absent counts as true. */
+  hasBuffer?: boolean;
+  /** A new track is decoding onto the deck. */
+  decoding?: boolean;
+}): DeckRun {
+  if (s.playing) return 'playing';
+  if (s.decoding) return 'paused';
+  if (s.hasBuffer === false) return 'ended';
+  if (s.duration > 0 && s.currentTime >= s.duration - END_EPS_SEC) return 'ended';
+  return 'paused';
+}
 
 /* ─────────────────────────────── transition ─────────────────────────────── */
 
@@ -66,6 +112,10 @@ export interface AutomixOutgoing {
    *  the bare grid: a downbeat that is a whole number of phrases from the
    *  first one is a real phrase start, not just a multiple of 16 beats. */
   downbeats?: number[] | null;
+  /** The deck holds audio (see `deckRun`). Absent counts as true. */
+  hasBuffer?: boolean;
+  /** A new track is decoding onto the deck (see `deckRun`). */
+  decoding?: boolean;
 }
 
 /** The incoming (staged) deck. */
@@ -84,8 +134,11 @@ export type TransitionReason =
   | 'no-incoming'
   /** The incoming deck has audio but no tempo yet; still waiting. */
   | 'incoming-not-ready'
-  /** The outgoing deck stopped; start the incoming one immediately. */
+  /** The outgoing deck ran out; start the incoming one immediately. */
   | 'outgoing-stopped'
+  /** The outgoing deck is paused mid-track. A pause is the DJ's call, not
+   *  dead air: the plan holds until it plays again. */
+  | 'outgoing-paused'
   /** The outgoing deck has never played — it is still loading/decoding, or
    *  its start was given up on. There is nothing to transition OUT of yet, so
    *  the blend waits rather than "rescuing" a set that never began. */
@@ -225,24 +278,35 @@ export function planTransition(args: {
     };
   }
 
-  // Dead air (fix 6): the outgoing deck is not running — it ended while the
-  // incoming track was still decoding, or something else stopped it. Waiting
-  // for a mix-out point on a stopped clock means waiting forever.
+  // Dead air (fix 6): the outgoing deck ran out while the incoming track was
+  // still decoding, or was ejected. Waiting for a mix-out point on a stopped
+  // clock means waiting forever.
   //
   // …but ONLY once that deck has actually played (DJ-5). A deck that is still
   // decoding also reads `playing: false`, and treating that as dead air made
   // every 500 ms tick "rescue" the set into the next track: nothing ever
   // played, and a new track was loaded every few seconds forever.
+  //
+  // And never for a PAUSE. A deck the DJ paused mid-track also reads
+  // `playing: false`; rescuing it started the next track within one tick of
+  // the pause button. The plan holds and picks up where it was on resume.
   if (!o.playing) {
-    return o.started
-      ? {
-        ...base, start: true, immediate: true, startAt: o.currentTime,
-        phraseAligned: false, matched: bothTempos, reason: 'outgoing-stopped',
-      }
-      : {
+    if (!o.started) {
+      return {
         ...base, start: false, startAt: null,
         phraseAligned: false, matched: false, reason: 'outgoing-not-started',
       };
+    }
+    if (deckRun(o) === 'paused') {
+      return {
+        ...base, start: false, startAt: null,
+        phraseAligned: false, matched: false, reason: 'outgoing-paused',
+      };
+    }
+    return {
+      ...base, start: true, immediate: true, startAt: o.currentTime,
+      phraseAligned: false, matched: bothTempos, reason: 'outgoing-stopped',
+    };
   }
 
   // Where the blend is meant to begin, phrase-quantised.
@@ -294,6 +358,100 @@ export function fadeStep(t0: number, now: number, fadeSec: number, from: number,
   if (!finite(t) || t >= 1) return to;
   if (t <= 0) return from;
   return from + (to - from) * t;
+}
+
+/** One running automix blend: the fade's clock and where it is going. */
+export interface BlendState {
+  /** Fade clock t0, on the caller's audio clock. Moved forward while the
+   *  blend is held, so a paused blend resumes where it stopped. */
+  fadeStart: number;
+  fadeSec: number;
+  fadeFrom: number;
+  fadeTo: number;
+  /** Bass-swap progress at `fadeStart` (0 for a fresh blend). A blend cut
+   *  over to the short rescue fade carries on from where its swap had got to
+   *  instead of putting the incoming bass back under the kill. */
+  progressFrom: number;
+  /** The outgoing deck is already silent: this is the short rescue fade. */
+  rescue: boolean;
+  /** `now` at the previous tick, for moving `fadeStart` while held. */
+  lastTick: number;
+}
+
+export type BlendAction =
+  /** A deck is paused: nothing moves, the fade clock stops. */
+  | 'hold'
+  /** Keep fading: write `fader` and the bass swap at `progress`. */
+  | 'fade'
+  /** The fade is over: land on `fadeTo` and hand the set to the incoming deck. */
+  | 'finish';
+
+/** Start a blend at `now` from fader position `from` towards `to`. */
+export function startBlend(now: number, fadeSec: number, from: number, to: number, rescue: boolean): BlendState {
+  return { fadeStart: now, fadeSec, fadeFrom: from, fadeTo: to, progressFrom: 0, rescue, lastTick: now };
+}
+
+/** Bass-swap progress (0 → 1) of a blend at `now`. */
+function blendProgress(s: BlendState, now: number): number {
+  const from = clamp(finite(s.progressFrom) ? s.progressFrom : 0, 0, 1);
+  if (!finite(s.fadeSec) || s.fadeSec <= 0 || !finite(now) || !finite(s.fadeStart)) return 1;
+  const t = clamp((now - s.fadeStart) / s.fadeSec, 0, 1);
+  return from + (1 - from) * t;
+}
+
+/**
+ * One automix tick during a blend.
+ *
+ * - The incoming deck paused (alone, or both decks by the master transport):
+ *   `hold`. The fade clock stops with the music and nothing is handed over.
+ *   The old tick treated the paused outgoing deck as finished, swapped
+ *   straight away, and the next tick rescued the freshly paused incoming
+ *   deck into a third track.
+ * - The outgoing deck went silent mid-blend while the incoming one plays (its
+ *   track ran out, or the DJ paused it to cut to the new track): the rest of
+ *   the fade is cut over to the rescue length, starting from wherever the
+ *   fader is, so the silent deck is not held half-open for the rest of a
+ *   long fade and nothing jumps.
+ * - Otherwise the fade runs to its end, and only then `finish`. The rescue's
+ *   own one-second fade used to be cut off by the next tick (its outgoing
+ *   deck is already stopped), which jumped the fader from halfway to the end.
+ */
+export function blendTick(
+  s: BlendState,
+  now: number,
+  outRun: DeckRun,
+  inRun: DeckRun,
+  rescueSec: number,
+): { state: BlendState; action: BlendAction; fader: number; progress: number } {
+  const dt = finite(now) && finite(s.lastTick) ? Math.max(0, now - s.lastTick) : 0;
+  let st: BlendState = { ...s, lastTick: now };
+  if (inRun === 'paused') {
+    st = { ...st, fadeStart: s.fadeStart + dt };
+    return {
+      state: st,
+      action: 'hold',
+      fader: fadeStep(st.fadeStart, now, st.fadeSec, st.fadeFrom, st.fadeTo),
+      progress: blendProgress(st, now),
+    };
+  }
+  if (outRun !== 'playing' && !s.rescue) {
+    const remaining = finite(s.fadeSec) ? s.fadeStart + s.fadeSec - now : 0;
+    st = {
+      ...st,
+      fadeFrom: fadeStep(s.fadeStart, now, s.fadeSec, s.fadeFrom, s.fadeTo),
+      progressFrom: blendProgress(s, now),
+      fadeStart: now,
+      fadeSec: clamp(finite(remaining) ? remaining : 0, 0, Math.max(0, rescueSec)),
+      rescue: true,
+    };
+  }
+  const progress = blendProgress(st, now);
+  return {
+    state: st,
+    action: progress >= 1 ? 'finish' : 'fade',
+    fader: fadeStep(st.fadeStart, now, st.fadeSec, st.fadeFrom, st.fadeTo),
+    progress,
+  };
 }
 
 /**
@@ -357,34 +515,26 @@ export function tempoMatch(masterBpm: number | null, followerBpm: number | null,
 
 /* ─────────────────────────────── next track ─────────────────────────────── */
 
-/** Parse "8A" / "12B" into its ring position. Null for anything else. */
-function parseCamelot(code: string | null | undefined): { num: number; letter: 'A' | 'B' } | null {
-  if (!code) return null;
-  const m = /^([0-9]{1,2})([AB])$/.exec(code.trim().toUpperCase());
-  if (!m) return null;
-  const num = Number(m[1]);
-  if (!(num >= 1 && num <= 12)) return null;
-  return { num, letter: m[2] as 'A' | 'B' };
-}
+/** Lowest key-profile correlation (`key_confidence`, −1…1 from
+ *  `backend/modules/analysis/key.py`) the harmonic choice trusts. Below it the
+ *  winning key barely stands out from its neighbours, and reordering a set
+ *  around a guessed key trades the DJ's order for a coin flip. */
+export const KEY_CONFIDENCE_MIN = 0.5;
 
-/** True when two Camelot codes mix harmonically: same code, ±1 on the same
- *  ring (a fifth), or the relative major/minor (same number, other ring). */
-export function camelotCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
-  const ca = parseCamelot(a);
-  const cb = parseCamelot(b);
-  if (!ca || !cb) return false;
-  if (ca.letter === cb.letter) {
-    const d = Math.abs(ca.num - cb.num);
-    return d === 0 || d === 1 || d === 11; // 11 = the 12 → 1 wrap
-  }
-  return ca.num === cb.num;
+/** The Camelot code automix may reorder on, or null when the key is unknown,
+ *  its confidence was not reported, or it is under `KEY_CONFIDENCE_MIN`. */
+export function automixCamelot(
+  a: { key: string | null; scale: string | null; key_confidence: number | null } | null | undefined,
+): string | null {
+  if (!a || !finite(a.key_confidence) || a.key_confidence < KEY_CONFIDENCE_MIN) return null;
+  return toCamelot(a.key, a.scale)?.code ?? null;
 }
 
 /**
  * Which track in the set plays next (fix 10).
  *
  * Strict set order unless the DJ left room to be choosy: with at least 3
- * tracks still to come and a key clash straight ahead, skip to the nearest
+ * tracks still to come and a key clash straight ahead, pick the nearest
  * harmonically compatible one. An unanalysed track is never skipped over — an
  * unknown key is not a known clash.
  *
@@ -406,9 +556,87 @@ export function chooseNextIndex(args: {
   if (candidates.length - next < minRemaining) return next;
   const straightAhead = candidates[next]?.camelot ?? null;
   // Unknown key ahead: leave the DJ's order alone rather than guess.
-  if (!straightAhead || camelotCompatible(currentCamelot, straightAhead)) return next;
+  if (!straightAhead || camelotCodesCompatible(currentCamelot, straightAhead)) return next;
   for (let i = next + 1; i < candidates.length; i++) {
-    if (camelotCompatible(currentCamelot, candidates[i]?.camelot ?? null)) return i;
+    if (camelotCodesCompatible(currentCamelot, candidates[i]?.camelot ?? null)) return i;
   }
   return next;
+}
+
+/** "Play `id` right before `beforeId`": one harmonic choice, kept for the
+ *  rest of an automix run. */
+export interface HarmonicMove {
+  id: string;
+  beforeId: string;
+}
+
+/**
+ * The set order with the run's harmonic choices applied.
+ *
+ * A choice moves the compatible track up to play next and leaves every track
+ * it jumped over in place after it. The old sequencer played the chosen track
+ * and then carried on from the track AFTER it, so everything jumped over was
+ * never played. A choice that no longer applies (either track removed, or the
+ * DJ reordered them) is skipped, so a mid-show reorder still wins.
+ */
+export function applyHarmonicMoves(order: readonly string[], moves: readonly HarmonicMove[]): string[] {
+  const out = order.slice();
+  for (const m of moves) {
+    const from = out.indexOf(m.id);
+    const to = out.indexOf(m.beforeId);
+    if (from < 0 || to < 0 || from <= to) continue;
+    out.splice(from, 1);
+    out.splice(to, 0, m.id);
+  }
+  return out;
+}
+
+/**
+ * The automix run's play queue: the active set in its order, plus the run's
+ * harmonic choices.
+ *
+ * The choice for a track is made ONCE, the first time the queue is asked what
+ * follows it (when the idle deck is loaded), and kept. The old sequencer
+ * recomputed it on every 500 ms tick, so a key landing mid-track swapped the
+ * track already loaded on the idle deck.
+ *
+ * No choice is made for a prepared set (it plays as prepared), with the
+ * preference off, or on a key under `KEY_CONFIDENCE_MIN`.
+ */
+export function createAutomixQueue(src: {
+  /** The active set's playable entry ids, in set order, read live. */
+  order: () => string[];
+  /** Trusted Camelot code for an entry (`automixCamelot`), or null. */
+  camelotOf: (entryId: string) => string | null;
+  /** The DJ's "Harmonic order" setting, read live. */
+  preferHarmonic: () => boolean;
+  /** The active set carries prepared mix points (a performance set). */
+  prepared: () => boolean;
+}): { nextAfter: (entryId: string | null) => string | null; order: () => string[] } {
+  const moves: HarmonicMove[] = [];
+  const decided = new Set<string>();
+  const order = () => applyHarmonicMoves(src.order(), moves);
+  const nextAfter = (entryId: string | null): string | null => {
+    let l = order();
+    const i = entryId ? l.indexOf(entryId) : -1;
+    // A deck holding a track that is not in the set has always meant "track 1
+    // is playing" here: keep that, don't restart the set.
+    const from = i >= 0 ? i : 0;
+    if (entryId && !decided.has(entryId)) {
+      decided.add(entryId);
+      const idx = chooseNextIndex({
+        fromIndex: from,
+        candidates: l.map((id) => ({ camelot: src.camelotOf(id) })),
+        currentCamelot: src.camelotOf(entryId),
+        preferHarmonic: src.preferHarmonic() && !src.prepared(),
+      });
+      if (idx != null && idx !== from + 1 && l[from + 1] != null) {
+        moves.push({ id: l[idx], beforeId: l[from + 1] });
+        l = order();
+      }
+    }
+    const n = from + 1;
+    return n < l.length ? l[n] ?? null : null;
+  };
+  return { nextAfter, order };
 }

@@ -6,8 +6,8 @@ import { useOnboardingStore } from '../onboarding/onboardingStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useEditorStore } from '../state/editorStore';
 import { summarizeEditor } from './appContext';
-import { useSetlistStore } from '../state/setlistStore';
-import { useDjAutomix } from '../state/djAutomixStore';
+import { isBundledSetId, isPendingBundledRow, useSetlistStore } from '../state/setlistStore';
+import { readyActiveSetForAutomix, useDjAutomix } from '../state/djAutomixStore';
 import { logInfo } from '../state/logStore';
 import * as editorTools from '../state/editorTools';
 import type { ToolResult } from '../state/editorTools';
@@ -39,8 +39,11 @@ interface ActionFailure {
 type ActionOutcome = string | ActionFailure;
 
 /** What a branch answers with. The editor tools re-render audio or call the
- *  backend, so their outcome only exists once that work is done; everything in
- *  the switch below still answers synchronously and must keep doing so. */
+ *  backend, so their outcome only exists once that work is done. So do the DJ
+ *  actions that register a bundled set with the backend (`dj_load_set` on a
+ *  set nobody has opened, `dj_automix` on), which answer once the register
+ *  has landed. Everything else in the switch below answers synchronously and
+ *  must keep doing so. */
 type ActionBranch = ActionOutcome | Promise<ActionOutcome>;
 
 const fail = (message: string): ActionFailure => ({ failed: true, message });
@@ -710,15 +713,43 @@ function runtheDAWAction(action: AssistantActionPayload): ActionBranch {
             if (!match) return fail(`No setlist named "${name}". Known sets: ${Object.values(sl.setlists).map((s) => s.name).join(', ') || 'none'}`);
             sl.setActive(match.id);
             useAppUiStore.getState().setCenterTab('dj');
-            return `Active set is now "${match.name}" (${match.entries.length} tracks). Say dj_automix on to run it.`;
+            const loaded = `Active set is now "${match.name}" (${match.entries.length} tracks).`;
+            // Loading a set is opening it. A bundled set nobody has opened
+            // lists its tracks with no library ids, and nothing registered
+            // them on this path, so the next dj_automix found nothing to
+            // sequence. Register now, as a click on its row does. The set is
+            // active either way, so a failed register is still a change made.
+            if (!isBundledSetId(match.id) || !match.entries.some(isPendingBundledRow)) {
+                return `${loaded} Say dj_automix on to run it.`;
+            }
+            return sl.registerBundled(match.id).then((registered) =>
+                registered === null
+                    ? `${loaded} Its tracks could not be registered (see the log); dj_automix on will try again.`
+                    : `${loaded} Say dj_automix on to run it.`,
+            );
         }
 
         case 'dj_automix': {
             const on = booleanValue(action.payload, ['on', 'enabled'], true);
             if (on) {
-                useAppUiStore.getState().setCenterTab('dj');
-                useDjAutomix.getState().requestStart();
-                return 'Automix start requested — the DJ tab will run the active set.';
+                // The active set has to be something automix can sequence
+                // BEFORE the request goes out: a bundled set registers here.
+                // This used to answer "requested" and leave the DJ tab to stop
+                // at once on an unregistered set, which the model never heard
+                // about. `continue`: a deck that is playing keeps playing.
+                return readyActiveSetForAutomix().then((ready) => {
+                    // A register that ran wrote library entries and patched
+                    // the set's ids, so the app DID change even though automix
+                    // did not start; fail() would tell the model otherwise.
+                    // dj_load_set answers the same case the same way.
+                    if (!ready.ok && ready.registered) {
+                        return `Registered the tracks of "${ready.name}", but automix did not start: ${ready.message}`;
+                    }
+                    if (!ready.ok) return fail(`Automix not started: ${ready.message}`);
+                    useAppUiStore.getState().setCenterTab('dj');
+                    useDjAutomix.getState().requestStart('continue');
+                    return `Automix start requested — the DJ tab will run "${ready.name}" (${ready.playable} playable tracks).`;
+                });
             }
             useDjAutomix.getState().requestStop();
             return 'Automix stop requested.';
@@ -792,8 +823,9 @@ const settle = (outcome: ActionOutcome): AssistantActionResult =>
  * its own "Executed action: X" instead. `ok:false` means the app is UNCHANGED,
  * which is the one thing the message alone cannot be relied on to convey.
  *
- * Answers synchronously for everything in the switch; only the editor tool
- * table (audio re-renders, backend DSP) hands back a promise.
+ * Answers synchronously for everything in the switch but the DJ actions that
+ * register a bundled set with the backend; those and the editor tool table
+ * (audio re-renders, backend DSP) hand back a promise.
  */
 export function handletheDAWActionResult(
     action: AssistantActionPayload,

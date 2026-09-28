@@ -15,6 +15,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { usePianoRollStore, type PianoNote } from './pianoRollStore';
 import {
   renderVirtuoso,
@@ -371,6 +372,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
     },
     {
       name: 'thedaw-virtuoso-v1',
+      storage: persistStorage(),
       // State saved before sync, accent and section meters existed loads with
       // those amounts at 0 and its sections without a meter.
       merge: (persisted, current) => {

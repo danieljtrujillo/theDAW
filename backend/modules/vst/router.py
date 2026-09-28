@@ -45,10 +45,14 @@ from backend.modules.vst import path_policy
 from backend.modules.vst.path_policy import (
     PluginPathError,
     check_plugin_path,
-    root_contains,
 )
 from backend.modules.genaiproxy.access import _caller_is_loopback
-from backend.lib.cross_site import refuse_cross_site, require_loopback_or_launch_token
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+    require_loopback_or_launch_token,
+)
+from backend.lib.lan_paths import require_project_root_for_lan
 from backend.lib.known_paths import is_remote_or_device_path
 from backend.lib import paths
 from backend.lib.launch_token import child_env
@@ -100,15 +104,39 @@ def _require_loopback(request: Request) -> None:
         )
 
 
+def _require_this_machine_for_editor(request: Request) -> None:
+    """403 for the plugin editor routes unless this machine's own UI or the
+    desktop shell is asking.
+
+    A paired device passes the scan and render routes, but a plugin's own
+    window opens on the computer running theDAW, where a user on another
+    device can neither see nor close it (and closing it is what captures the
+    plugin's settings). So these stay loopback-or-launch-token, and the
+    refusal says why in words the MIX error line can show as-is."""
+    try:
+        require_loopback_or_launch_token(request)
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Plugin windows open on the computer running theDAW. Open this "
+                "plugin's window there."
+            ),
+        ) from e
+
+
 def _validated_plugin_path(raw: str) -> Path:
     """A browser-supplied ``plugin_path``, policed by ``path_policy`` (R5-2).
 
     Validates shape (a real ``.vst3`` path, no UNC/network path) and
     containment inside ``path_policy.allowed_roots()`` — the same directories
-    the scanner offers in the UI. Deliberately does not check existence:
-    ``path_policy.check_plugin_path`` never touches the filesystem beyond
-    ``resolve()``, so callers that want a specific "not found" message do
-    that check themselves, afterward, using the returned path.
+    the scanner offers in the UI, a plugin linked into one of them included
+    (``path_policy.is_allowed``). Deliberately does not check existence:
+    ``path_policy.check_plugin_path`` reads the filesystem only to resolve
+    the path and, for a path outside every root once resolved, to find the
+    links inside the roots; it never asks whether the plugin itself exists.
+    Callers that want a specific "not found" message do that check
+    themselves, afterward, using the returned path.
     """
     try:
         return check_plugin_path(raw)
@@ -131,8 +159,8 @@ def _validated_scan_directory(raw: str) -> Path:
         resolved = Path(raw).resolve(strict=False)
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="path could not be resolved.")
-    roots = path_policy.allowed_roots()
-    if not any(root_contains(root, resolved) for root in roots):
+    if not path_policy.is_allowed(raw, resolved):
+        roots = path_policy.allowed_roots()
         if not roots:
             # "not inside any of the 0 allowed VST3 directories" tells the
             # user nothing they can act on — this is the one case where NO
@@ -310,10 +338,9 @@ def scan_vst3(
     plugins another chance. Plugins this host cannot load are withheld unless
     ``include_unloadable`` asks for them, so the UI never offers a dead tile.
 
-    Gated: this is what hands a LAN caller the absolute plugin paths that
-    make finding a ``/load``/``/process``/``/process-file`` LAN reachability
-    gap exploitable in the first place -- enumerating installed plugins is
-    itself information this machine's filesystem layout should not leak.
+    Gated: this hands a caller the absolute plugin paths of this machine, and
+    enumerating installed plugins is itself information this machine's
+    filesystem layout should not leak to an unknown LAN caller.
 
     This route IS reachable from the LAN, not just from this machine's own
     UI: ``frontend/vite.config.ts`` and ``electron-ui/electron.vite.config.ts``
@@ -325,16 +352,14 @@ def scan_vst3(
     arrives here as a genuine LAN peer -- uvicorn's ``forwarded_allow_ips``
     is pinned to ``127.0.0.1`` in ``backend/run.py``, so ``request.client``
     is rewritten from ``X-Forwarded-For`` only for a proxy connecting from
-    loopback, and this gate then 403s it like any other LAN caller. That is
-    the point of this gate, not a theoretical case: without it, a LAN
-    browser that loaded the desktop UI could scan for installed plugins.
-    The failure is visible to the user of that LAN session --
-    ``frontend/src/state/vstStore.ts`` writes ``VST SCAN FAILED: <msg>`` to
-    the status bar -- and MIX over LAN could not have worked regardless,
-    since ``/load``, ``/process-file`` and ``/open-editor`` are gated the
-    same way.
+    loopback. The gate therefore accepts the LAN pairing token the same way
+    the project routes do: a device opened from the Mobile Access share link
+    (which carries ``#pair=<token>``, see ``frontend/src/lib/pairing.ts``)
+    sends it on every request and gets MIX, and an unpaired LAN browser is
+    refused. ``frontend/src/state/vstStore.ts`` shows that refusal in the
+    MIX effects browser as "pair this device", not as a failure.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     plugins: list[Vst3PluginInfo] | None = None
     if not refresh:
         plugins = load_cached_scan()
@@ -378,10 +403,10 @@ def scan_vst3_custom(path: str, request: Request, include_unloadable: bool = Fal
     ``...\\Common Files\\VST3\\`` — which ``/scan`` (no ``path``) does not
     offer on its own since it always walks every standard root at once.
 
-    Gated for the same reason ``/scan`` is: it hands back absolute plugin
-    paths.
+    Gated for the same reason, and the same way, ``/scan`` is: it hands back
+    absolute plugin paths.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     resolved = _validated_scan_directory(path)
     plugins = scan_vst3_directories(extra_paths=[str(resolved)])
     return ScanResponse(plugins=_plugin_dicts(plugins, include_unloadable))
@@ -392,11 +417,12 @@ def load_vst(req: LoadRequest, request: Request):
     """Load a VST3 plugin and return its parameter descriptors.
 
     Gated: this initializes a third-party native DLL inside the server
-    process and leaks an instance into ``_instances`` with no cap -- a LAN
-    caller looping this with a fresh ``instance_id`` each time must not be
-    able to.
+    process and leaks an instance into ``_instances`` with no cap -- an
+    unknown LAN caller looping this with a fresh ``instance_id`` each time
+    must not be able to. A paired device is a known caller, the same as for
+    the project routes.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     resolved = _validated_plugin_path(req.plugin_path)
     try:
         inst = load_plugin(str(resolved), req.instance_id)
@@ -416,11 +442,12 @@ def load_vst(req: LoadRequest, request: Request):
 def get_loaded_plugins(request: Request):
     """List all currently loaded plugin instances.
 
-    Gated: this hands back absolute plugin paths (the same leak ``/scan``'s
-    docstring already flags) and the live ``instance_id``s that a LAN caller
-    would need to target ``/param/{instance_id}`` or ``/unload/{instance_id}``.
+    Gated like ``/scan``: this hands back absolute plugin paths (the same
+    leak ``/scan``'s docstring already flags) and the live ``instance_id``s
+    that a caller would need to target ``/param/{instance_id}`` or
+    ``/unload/{instance_id}``.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     return list_instances()
 
 
@@ -444,11 +471,18 @@ def process_audio(req: ProcessRequest, request: Request):
     has only ONE leading backslash, so the raw-text regex misses it, but
     Windows honours the prefix and ``Path.resolve()`` normalises it to
     ``\\\\host\\share\\x``, which the same check then catches.
+
+    A paired device passes the gate the same way it does on the project
+    routes, and is confined the same way too: both paths must sit inside the
+    projects folder or the library tree (``backend.lib.lan_paths``), checked
+    before the file is touched so a refusal says nothing about what exists.
+    This machine's own UI keeps naming any local path.
     """
-    require_loopback_or_launch_token(request)
-    import soundfile as sf
+    require_loopback_launch_or_pairing_token(request)
+    import numpy as np
 
     from backend.lib.audio_depth import write_like_source
+    from backend.lib.audio_io import load_audio_array
 
     def _reject_remote_or_device(raw: str) -> Path:
         """The resolved ``Path`` for ``raw``, after rejecting it (400) as a
@@ -477,17 +511,23 @@ def process_audio(req: ProcessRequest, request: Request):
         return resolved
 
     src = _reject_remote_or_device(req.audio_path)
+    require_project_root_for_lan(str(src), request, what="audio_path")
     resolved_output_path = None
     if req.output_path:
         resolved_output_path = _reject_remote_or_device(req.output_path)
+        require_project_root_for_lan(
+            str(resolved_output_path), request, what="output_path"
+        )
 
     if not src.is_file():
         raise HTTPException(
             status_code=404, detail=f"Audio file not found: {req.audio_path}"
         )
     try:
-        # soundfile returns (frames, channels) float32 — the layout pedalboard expects.
-        audio, sr = sf.read(str(src), dtype="float32", always_2d=True)
+        # load_audio_array answers (channels, frames) float32; pedalboard and
+        # write_like_source below both want (frames, channels).
+        channels_first, sr = load_audio_array(src)
+        audio = np.ascontiguousarray(channels_first.T)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read audio: {e}")
 
@@ -815,10 +855,14 @@ async def process_file(
     path and receives processed WAV back. The plugin is loaded fresh and
     discarded (never added to the instance registry).
 
-    Gated: this loads and runs a plugin, same as ``/load`` and ``/process``.
+    Gated: this loads and runs a plugin, same as ``/load`` and ``/process``,
+    and a paired device passes the same way (MIX on a device opened from the
+    share link renders its VST stages here).
     """
-    require_loopback_or_launch_token(request)
-    import soundfile as sf
+    require_loopback_launch_or_pairing_token(request)
+    import numpy as np
+
+    from backend.lib.audio_io import load_audio_array, save_audio
 
     resolved = _validated_plugin_path(plugin_path)
     if not resolved.exists():
@@ -928,8 +972,10 @@ async def process_file(
 
     try:
         data = await audio.read()
-        # soundfile returns (frames, channels) float32 — the layout pedalboard expects.
-        signal, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+        # load_audio_array answers (channels, frames) float32; pedalboard wants
+        # (frames, channels).
+        channels_first, sr = load_audio_array(data)
+        signal = np.ascontiguousarray(channels_first.T)
     except Exception as e:
         raise HTTPException(
             status_code=400, detail=f"Could not read uploaded audio: {e}"
@@ -956,8 +1002,9 @@ async def process_file(
 
     buf = io.BytesIO()
     # Float WAV: this is one stage of a chain, and 16-bit here would requantize
-    # the signal at every plugin it passes through.
-    sf.write(buf, processed, sr, format="WAV", subtype="FLOAT")
+    # the signal at every plugin it passes through. save_audio takes
+    # (channels, frames); processed is (frames, channels).
+    save_audio(buf, np.asarray(processed).T, sr, format="wav", subtype="FLOAT")
     headers: dict[str, str] = {}
     if warnings:
         # The body is audio, so a state or parameter that did not apply has to
@@ -978,11 +1025,12 @@ def open_editor(req: EditorRequest, request: Request):
     at process time.
 
     A LAN caller must not be able to pop a native plugin GUI open on this
-    machine's desktop — ``require_loopback_or_launch_token``, not the local
-    ``_require_loopback``, because the desktop shell (not only this machine's
-    browser tab) legitimately opens editors too.
+    machine's desktop, paired or not (``_require_this_machine_for_editor``:
+    loopback or the launch token, not the local ``_require_loopback``,
+    because the desktop shell, not only this machine's browser tab,
+    legitimately opens editors too).
     """
-    require_loopback_or_launch_token(request)
+    _require_this_machine_for_editor(request)
     resolved = _validated_plugin_path(req.plugin_path)
     if not resolved.exists():
         raise HTTPException(
@@ -1101,7 +1149,7 @@ def editor_rect(req: EditorRectRequest, request: Request):
     the (session-scoped) plugin_path for -- but that is not a reason to leave
     it reachable from the LAN.
     """
-    require_loopback_or_launch_token(request)
+    _require_this_machine_for_editor(request)
     plugin_path = _canonical_plugin_key(req.plugin_path)
     rect_file = _rect_path(plugin_path)
     if not rect_file.parent.exists():
@@ -1133,7 +1181,7 @@ def editor_size(plugin_path: str, request: Request):
     Gated: a LAN caller who guesses a plugin path can otherwise poll another
     session's editor state.
     """
-    require_loopback_or_launch_token(request)
+    _require_this_machine_for_editor(request)
     plugin_path = _canonical_plugin_key(plugin_path)
     size_file = _size_path(plugin_path)
     if not size_file.is_file():
@@ -1161,7 +1209,7 @@ def editor_result(plugin_path: str, request: Request):
     not be able to read that state back or force a live session's tracking
     entry into an error.
     """
-    require_loopback_or_launch_token(request)
+    _require_this_machine_for_editor(request)
     plugin_path = _canonical_plugin_key(plugin_path)
     out = _preset_path(plugin_path)
     if not out.is_file():
@@ -1241,10 +1289,11 @@ def _editor_failure_detail(preset_out: Path) -> str:
 def get_params(instance_id: str, request: Request):
     """Read all current parameter values on a loaded plugin.
 
-    Gated: matches the write half of this pair (``PUT /param``) -- a LAN
-    caller must not be able to read a loaded plugin's live parameter state.
+    Gated: matches the write half of this pair (``PUT /param``) -- an
+    unknown LAN caller must not be able to read a loaded plugin's live
+    parameter state. A paired device passes, as on ``/load``.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     try:
         inst = get_instance(instance_id)
     except KeyError as e:
@@ -1256,10 +1305,11 @@ def get_params(instance_id: str, request: Request):
 def set_param(instance_id: str, req: SetParamRequest, request: Request):
     """Set a single parameter value on a loaded plugin.
 
-    Gated: this mutates a loaded plugin's live parameter state; a LAN caller
-    must not be able to change what the user's own mix is doing.
+    Gated: this mutates a loaded plugin's live parameter state; an unknown
+    LAN caller must not be able to change what the user's own mix is doing.
+    A paired device passes, as on ``/load``.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     try:
         inst = get_instance(instance_id)
     except KeyError as e:
@@ -1287,11 +1337,11 @@ def set_param(instance_id: str, req: SetParamRequest, request: Request):
 def unload_vst(instance_id: str, request: Request):
     """Unload a plugin instance.
 
-    Gated: this destroys server-side state; a LAN caller must not be able to
-    unload instances out from under the session the desktop UI still
-    believes exist.
+    Gated: this destroys server-side state; an unknown LAN caller must not be
+    able to unload instances out from under the session the desktop UI still
+    believes exist. A paired device passes, as on ``/load``.
     """
-    require_loopback_or_launch_token(request)
+    require_loopback_launch_or_pairing_token(request)
     try:
         unload_plugin(instance_id)
     except KeyError as e:

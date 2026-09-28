@@ -42,12 +42,13 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from backend.admin_routes import SHUTDOWN_HANDLERS_STATE
 from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
 from backend.assistant_routes import mcp_relay_router
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
-from backend.lib import pairing, paths
+from backend.lib import ffmpeg_tools, pairing, paths
 from backend.lib.atomic import atomic_write
 from backend.lib.cross_site import refuse_cross_site, require_loopback_or_launch_token
 from backend.lib.launch_token import child_env
@@ -66,11 +67,17 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def _lifespan(_: FastAPI):
+async def _lifespan(app_: FastAPI):
     """FastAPI lifespan (replaces the deprecated on_event hooks). The startup
     and shutdown bodies live in `_on_startup` / `_on_shutdown` below; globals
-    resolve at call time, so their later definition is fine."""
+    resolve at call time, so their later definition is fine.
+
+    `_on_shutdown` is also published on `app.state` for POST
+    /api/admin/shutdown and /restart: they end the process with os._exit, which
+    never reaches the code after `yield`, so they run the same handlers first
+    (backend/admin_routes.py)."""
     await _on_startup()
+    setattr(app_.state, SHUTDOWN_HANDLERS_STATE, _on_shutdown)
     yield
     await _on_shutdown()
 
@@ -175,7 +182,7 @@ def _configure_console_logging() -> None:
 # in between.
 try:
     _configure_console_logging()
-except Exception:  # noqa: BLE001 — logging must never block boot
+except Exception:  # logging must never block boot
     pass
 
 # Install the LOG-panel ring handler BEFORE modules load, so module-load
@@ -185,7 +192,7 @@ try:
     from backend.log_ring import install_log_ring as _install_log_ring
 
     _install_log_ring()
-except Exception:  # noqa: BLE001 — logging must never block boot
+except Exception:  # logging must never block boot
     pass
 
 app.state.loaded_modules = load_modules(app, MODULES_DIR)
@@ -275,7 +282,7 @@ def _warm_heavy() -> None:
         importlib.import_module("stable_audio_3.inference.distribution_shift")
 
         logger.info("startup: heavy imports warmed (torch + stable_audio_3 ready)")
-    except Exception as e:  # noqa: BLE001 — warming is best-effort
+    except Exception as e:  # warming is best-effort
         logger.warning("startup: heavy-import warm failed: %s", e)
 
 
@@ -380,7 +387,17 @@ def _ensure_gpu_clear_of_magenta() -> None:
     AND several GB of host commit through the WSL2 VM, and stacking the SA3
     checkpoint load on top is exactly the combination that exhausts the
     Windows commit limit (os error 1455 -> access-violation crash).
+
+    stop_engine stops only this checkout's engines. When a magenta engine keeps
+    running afterwards (another copy of theDAW's, one started by hand, or ours
+    refusing to die) the load is refused with a 409 whose detail names it
+    (``state`` "engine_elsewhere"); the UI shows that as a card with a
+    confirmed "Stop that engine" action. An engine that cannot be identified
+    (the process list could not be read) is only logged: nothing proves it is
+    an engine, and refusing on a bare port would block Stable Audio for good
+    beside any program that happens to use 8777.
     """
+    still_running: list[dict] = []
     try:
         import socket
 
@@ -388,8 +405,9 @@ def _ensure_gpu_clear_of_magenta() -> None:
 
         listening = magenta_sidecar.engine_process_alive()
         if not listening:
-            # Engines started outside this process (the .vbs launcher, a
-            # manual run): probe the two known ports cheaply.
+            # Engines started outside this process (a backend of this checkout
+            # that restarted, this checkout's .vbs Studio launcher, another
+            # copy of theDAW): probe the two known ports cheaply.
             for port in (8777, 8778):
                 try:
                     with socket.create_connection(("127.0.0.1", port), timeout=0.25):
@@ -399,12 +417,26 @@ def _ensure_gpu_clear_of_magenta() -> None:
                     continue
         if listening:
             logger.info("model.swap: stopping resident MRT2 engine before SA3 load")
-            magenta_sidecar.stop_engine()
+            stopped = magenta_sidecar.stop_engine()
+            still_running = magenta_sidecar.engines_still_running(stopped)
+            if not stopped.get("listed"):
+                logger.warning(
+                    "model.swap: the engine side's processes could not be listed; "
+                    "an engine another copy started may still hold the GPU"
+                )
     except Exception:
         # WARNING, not debug: if this guard fails, the SA3 load proceeds into
         # exactly the GPU-commit-exhaustion crash it exists to prevent, and
         # the user needs to see why.
         logger.warning("model.swap: magenta engine pre-clear failed", exc_info=True)
+    if still_running:
+        from backend.modules.magenta import sidecar as magenta_sidecar
+
+        detail = magenta_sidecar.elsewhere_detail(
+            still_running, "Stable Audio will not load"
+        )
+        logger.warning("model.swap: SA3 load refused: %s", detail["message"])
+        raise HTTPException(status_code=409, detail=detail)
 
 
 def _get_or_load_generation_pipeline(model_name: str):
@@ -1154,6 +1186,14 @@ async def _on_startup():
     # server must come up independently of any checkpoint.
     threading.Thread(target=_warm_heavy, name="warm-heavy", daemon=True).start()
 
+    # Choose the FFmpeg build once, off the request path: every candidate is
+    # probed for libsoxr (backend.lib.ffmpeg_tools), which takes a few hundred
+    # ms per build. The choice and any missing libsoxr are logged, and
+    # GET /api/health reports them once this finishes.
+    threading.Thread(
+        target=ffmpeg_tools.resolve, name="ffmpeg-resolve", daemon=True
+    ).start()
+
     logger.info(
         "startup: server ready in %.2fs — generation models load on demand "
         "(default %r loads on first use)",
@@ -1179,17 +1219,32 @@ async def _on_startup():
     # (and existing sheets get their "Music21 Fragment" placeholder replaced
     # with the real song name). Idempotent + serialized, so it's safe to run
     # every launch — it only does work where a sheet is missing or mistitled.
+    # The library opens on a thread of its own (library.router.start_opening):
+    # a schema upgrade of a 200,000-entry library from main's schema 6 builds
+    # indexes for seconds to minutes, and the lifespan must not wait for it --
+    # /api/health and every other route answer meanwhile, and the LIBRARY tab
+    # shows the upgrade's progress from GET /api/library/index-status.
+    try:
+        from backend.modules.library.router import start_opening as _open_library
+
+        _open_library()
+    except Exception as e:
+        logger.warning("startup: opening the library failed to start: %s", e)
+
     try:
         from backend.core.background_workers import get_background_queue
         from backend.modules.library.router import get_store as _get_lib_store
         from backend.modules.notation.backfill import backfill_scores
 
-        _bf_store = _get_lib_store()
+        def _backfill_when_open() -> None:
+            # get_store() waits for the open on this worker thread, never on
+            # the event loop.
+            backfill_scores(_get_lib_store())
 
         async def _run_backfill() -> None:
             import asyncio
 
-            await asyncio.to_thread(backfill_scores, _bf_store)
+            await asyncio.to_thread(_backfill_when_open)
 
         get_background_queue().enqueue("notation:backfill", _run_backfill)
     except Exception as e:
@@ -1197,13 +1252,28 @@ async def _on_startup():
 
     # Module startup hooks (core/startup.py): what routers used to hang off the
     # deprecated @router.on_event("startup"). Last, so a module finds the
-    # background queue and the library store already up.
+    # background queue up and the library opening; a hook that needs the
+    # library store gets it through get_store() on a thread of its own.
     from backend.core.startup import run_startup_hooks
 
     run_startup_hooks()
 
 
 async def _on_shutdown() -> None:
+    # The live VST hosts go first. POST /api/admin/shutdown gives this whole
+    # function one time budget (admin_routes.SHUTDOWN_HANDLER_BUDGET_SEC), and
+    # the sidecar stops below can wait many seconds each; the plugin state the
+    # hosts save is the user's work, and a slow sidecar must never cut it off.
+    try:
+        from backend.modules.vst.live_host import kill_all as stop_live_vst_hosts
+
+        # One native plugin host per live chain entry; each is asked to save
+        # its state before it is signalled, so this blocks — off the loop too.
+        await asyncio.to_thread(stop_live_vst_hosts)
+    except Exception:
+        # Never blocks the exit, but a failed stop can drop plugin state and
+        # leave host processes running; this line is the only trace of why.
+        logger.warning("shutdown: stopping the live VST hosts failed", exc_info=True)
     try:
         from backend.core.background_workers import get_background_queue
 
@@ -1228,15 +1298,7 @@ async def _on_shutdown() -> None:
         # Off the loop: sidecar stops block on process waits.
         await asyncio.to_thread(stop_all_sidecars)
     except Exception:
-        pass
-    try:
-        from backend.modules.vst.live_host import kill_all as stop_live_vst_hosts
-
-        # One native plugin host per live chain entry; each is asked to save
-        # its state before it is signalled, so this blocks — off the loop too.
-        await asyncio.to_thread(stop_live_vst_hosts)
-    except Exception:
-        pass
+        logger.warning("shutdown: stopping the sidecars failed", exc_info=True)
 
 
 @app.get("/api/modules")
@@ -1553,6 +1615,10 @@ async def health():
         # (pyproject gates the wheel to win32) — the SDPA fallback is used.
         "flash_attention_installed": _flash_attn_installed(),
         "flash_attention_active": _flash_attn_active(),
+        # The FFmpeg build every tool runs, and whether it has libsoxr (the
+        # resampler Classical Upsample, Super-Res and High-Quality SRC need).
+        # Read from the cache the startup probe fills; never probes here.
+        "ffmpeg": ffmpeg_tools.status(),
     }
 
 
@@ -2337,7 +2403,9 @@ async def _run_generate_job(
                             _maybe_enqueue_stems,
                         )
 
-                        _lib_store = _get_library_store()
+                        # Off the loop: the first call after a start can wait
+                        # for the library to finish opening (library.router).
+                        _lib_store = await asyncio.to_thread(_get_library_store)
                         _entry_id = f"{job_id}_{i:02d}"
                         _record = _lib_store.get_entry(_entry_id)
                         if _record is not None and _lib_store.db is not None:
@@ -2867,7 +2935,7 @@ try:
         _vj_sidecar.STATIC_MOUNT_PATH,
         _vj_sidecar.resolve_dist_dir() or "(none staged yet)",
     )
-except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
+except Exception as _vj_mount_err:  # never block boot on VJ
     logger.warning("vj: static route not registered: %s", _vj_mount_err)
 
 # SwayCommand cockpit served as a static embed build, same shape as the VJ mount
@@ -2894,7 +2962,7 @@ try:
         _sway_sidecar.STATIC_MOUNT_PATH,
         _sway_sidecar.resolve_dist_dir() or "(none staged yet)",
     )
-except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Sway
+except Exception as _sway_mount_err:  # never block boot on Sway
     logger.warning("sway: static route not registered: %s", _sway_mount_err)
 
 # Single-container / companion UI serving. Every API route lives under /api and
@@ -2905,9 +2973,9 @@ except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Swa
 # packaged desktop bundles ship a dist), so the desktop UI AND the phone
 # companion entry (frontend/mobile.html -> /mobile.html, with /assets at root)
 # are both reachable over http on the LAN. In pure dev (no dist) it is a no-op:
-# Vite serves the UI on ports.frontend_port() — :5173 unless another program
-# held it and the launcher moved the UI to the next free port — proxies /api to
-# :8600, and the phone loads http://<lan-ip>:<that port>/mobile.html directly.
+# Vite serves the UI on ports.frontend_port() -- :5173, the only port the
+# launchers start it on -- proxies /api to :8600, and the phone loads
+# http://<lan-ip>:<that port>/mobile.html directly.
 # GET /api/network/lan hands out that address; never hard-code 5173 here.
 _ui_dist = PROJECT_ROOT / "frontend" / "dist"
 _serve_ui = (

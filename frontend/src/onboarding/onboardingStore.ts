@@ -20,6 +20,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from '../state/persistStorage';
 
 interface OnboardingState {
   /** The tour has been completed, skipped, or dismissed at least once. */
@@ -97,6 +98,7 @@ export const useOnboardingStore = create<OnboardingState>()(
     }),
     {
       name: 'thedaw-onboarding',
+      storage: persistStorage(),
       // The "should it ever auto-start" flags, plus which chapters are behind
       // you. The cursor deliberately does not persist — see the docstring.
       partialize: (s) => ({

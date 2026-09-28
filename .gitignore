@@ -22,10 +22,15 @@ data/performance-sets/
 # The LYRIC tab's notebook: drafts the writer has not published anywhere.
 data/lyric-documents/
 data/settings.json
+# The LAN HTTPS switch as this build last wrote it into settings.json
+# (backend/lib/lan_https.py record_path), per machine like settings.json
+data/lan_https.json
 data/recent_projects.json
 # Paths theDAW saved, installed, picked or downloaded (absolute, per machine)
 data/known_paths.json
-# Per-machine media roots (absolute paths to the user's audio folders)
+# Per-machine /clip-audio folder grants (absolute paths to the user's audio
+# folders): this build's file, and the list older builds read
+data/clip_audio_roots.json
 data/media_roots.json
 # Cockpit-saved Sway projects (contain absolute paths to the user's media)
 data/sway-projects/
@@ -411,6 +416,9 @@ video-scripts/
 /lyria/
 data/magenta_engine.json
 data/lyria_gemini_key.json
+data/lyria_provider_keys.json
+# Lyria checkouts an Update moved whose npm install has not finished
+data/lyria_deps_pending.json
 logs/magenta-download-*.log
 
 # Chimera v2 per-clip analysis cache (sha256-keyed JSON)

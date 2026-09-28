@@ -27,6 +27,7 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional
@@ -35,8 +36,10 @@ from . import media_roots
 from .db import (
     DEFAULT_DELETE_BATCH,
     DEFAULT_SORT,
+    DISK_READ_PENDING_KEY,
     EntryFilters,
     LibraryDB,
+    LibraryProgress,
     bounded_provider_slug,
     derived_provider_wire,
     resolved_provider_slug,
@@ -1374,16 +1377,24 @@ class LibraryStore:
     representation.
 
     On init we open the DB, run schema migrations, and — if the DB is
-    empty but filesystem entries exist — auto-``reindex()`` so the query
-    layer is immediately useful without a manual step. Setting
-    ``db_path=False`` disables the DB entirely (only for unit tests that
-    pre-date the DB; the default tests run with the DB in tmp_path)."""
+    empty but filesystem entries exist, or a previous read of them was cut
+    short — read every ``metadata.json`` into it (:meth:`read_disk_into_db`)
+    so the query layer is immediately useful without a manual step. The
+    backend constructs the store on a thread of its own
+    (``router.start_opening``), so neither the upgrade nor this read holds its
+    startup; ``progress`` is what the LIBRARY tab's progress bar reads
+    meanwhile. Setting ``db_path=False`` disables the DB entirely (only for
+    unit tests that pre-date the DB; the default tests run with the DB in
+    tmp_path)."""
 
     def __init__(
         self,
         root: Path,
         api_prefix: str = "/api/library",
         db_path: Optional[Path] | bool = None,
+        *,
+        build_search_in_background: bool = False,
+        progress: Optional[LibraryProgress] = None,
     ) -> None:
         self.root = root
         self.api_prefix = api_prefix
@@ -1395,20 +1406,29 @@ class LibraryStore:
             resolved_db_path = (
                 db_path if isinstance(db_path, Path) else self.root / "library.db"
             )
-            self.db = LibraryDB(resolved_db_path)
-            # Auto-reindex on a fresh DB so the query layer is hot. This runs
-            # any time the DB is empty -- first boot, but also a lost,
+            self.db = LibraryDB(
+                resolved_db_path,
+                build_search_in_background=build_search_in_background,
+                progress=progress,
+            )
+            # Read the disk into a fresh DB so the query layer is hot. This
+            # runs any time the DB is empty -- first boot, but also a lost,
             # deleted, or rebuilt DB file next to a library that already has
-            # 200,000 entries on disk. With no stored rows every entry looks
-            # "new", so this must never enqueue analysis: that would queue
-            # the entire library the instant the app opens, not just what
-            # actually changed. reindex()'s own default is now False for
-            # exactly this reason (a bare call must never enqueue); passed
-            # explicitly here anyway so this call stays correct even if that
-            # default ever changes. A user wanting analysis on a manual
-            # reindex opts in via POST /reindex?analyze=true.
-            if self.db.count_entries() == 0:
-                self.reindex(enqueue_analysis=False)
+            # 200,000 entries on disk -- and whenever the flag says a read
+            # like that was cut short.
+            try:
+                if (
+                    self.db.get_flag(DISK_READ_PENDING_KEY) is not None
+                    or self.db.count_entries() == 0
+                ):
+                    self.read_disk_into_db()
+            except BaseException:
+                # Nobody gets this store, so nobody else would close its
+                # database: its connection, and a search index build it
+                # started, would outlive the failed open, one more for every
+                # retry. The flag keeps a cut-short read resumable.
+                self.db.close()
+                raise
 
         #: Entry ids whose missing cover art has already been looked for, so a
         #: track that simply has none costs one tag read per process rather
@@ -1465,7 +1485,10 @@ class LibraryStore:
     # ---- Read ---------------------------------------------------------------
 
     def _iter_disk_entries(
-        self, kinds: Optional[Iterable[str]] = None
+        self,
+        kinds: Optional[Iterable[str]] = None,
+        *,
+        progress: Optional[LibraryProgress] = None,
     ) -> Iterator[tuple[LibraryRecord, dict[str, Any], Path]]:
         """Walk the filesystem yielding ``(record, metadata, entry_dir)``.
 
@@ -1473,13 +1496,23 @@ class LibraryStore:
         metadata alongside the record is what lets :meth:`reindex` read each
         ``metadata.json`` ONCE -- it used to walk with ``list_entries`` and
         then read every file a second time to get the same dict back.
+
+        ``progress`` gets a ``read`` task counted in top-level folders -- the
+        one number known before the walk starts -- with every entry found
+        counted alongside as an item.
         """
         if not self.root.is_dir():
             return
         kind_set = set(kinds) if kinds is not None else None
-        for child in sorted(self.root.iterdir()):
-            if not child.is_dir():
-                continue
+        # Folders only: library.db and its -wal/-shm sit beside them.
+        folders = [child for child in sorted(self.root.iterdir()) if child.is_dir()]
+        if progress is not None:
+            progress.begin("read", len(folders))
+        for child in folders:
+            if progress is not None:
+                # Counted as the folder is reached: a generator stops where
+                # its consumer stops, so a count after the yield would lag.
+                progress.advance("read", 1)
             # Generate flow has been writing data/generations/<job_id>/<index>/
             # i.e. nested two levels. Walk down one if we see no metadata.json
             # at the top.
@@ -1487,6 +1520,8 @@ class LibraryStore:
             if direct_meta is not None:
                 record = _record_from_metadata(child, direct_meta, self.api_prefix)
                 if record is not None and (kind_set is None or record.kind in kind_set):
+                    if progress is not None:
+                        progress.advance("read", items=1)
                     yield record, direct_meta, child
                 continue
             for inner in sorted(child.iterdir()):
@@ -1514,6 +1549,8 @@ class LibraryStore:
                 else:
                     record.media_url = _media_url_for(self.api_prefix, entry_id)
                     record.audio_url = record.media_url
+                if progress is not None:
+                    progress.advance("read", items=1)
                 yield record, meta, inner
 
     def list_entries(
@@ -2054,31 +2091,34 @@ class LibraryStore:
             targets.append((entry_id, entry_dir))
 
         size = max(1, int(batch))
-        for start in range(0, len(targets), size):
-            chunk = targets[start : start + size]
-            if self.db is not None:
-                # One transaction, one revision bump, for this whole chunk.
-                self.db.delete_entries_bulk(
-                    [entry_id for entry_id, _ in chunk], batch=len(chunk)
-                )
-            for entry_id, entry_dir in chunk:
-                if entry_dir is None:
+        # One WAL checkpoint for the whole request, not one per batch.
+        deferred = self.db.checkpoint_once() if self.db is not None else nullcontext()
+        with deferred:
+            for start in range(0, len(targets), size):
+                chunk = targets[start : start + size]
+                if self.db is not None:
+                    # One transaction, one revision bump, for this whole chunk.
+                    self.db.delete_entries_bulk(
+                        [entry_id for entry_id, _ in chunk], batch=len(chunk)
+                    )
+                for entry_id, entry_dir in chunk:
+                    if entry_dir is None:
+                        result.deleted += 1
+                        continue
+                    try:
+                        shutil.rmtree(entry_dir)
+                    except OSError as e:
+                        log.warning(
+                            "library.store: deleted row %r but failed to remove %s: %s",
+                            entry_id,
+                            entry_dir,
+                            e,
+                        )
+                        result.failed.append(
+                            {"id": entry_id, "error": f"could not remove folder: {e}"}
+                        )
+                        continue
                     result.deleted += 1
-                    continue
-                try:
-                    shutil.rmtree(entry_dir)
-                except OSError as e:
-                    log.warning(
-                        "library.store: deleted row %r but failed to remove %s: %s",
-                        entry_id,
-                        entry_dir,
-                        e,
-                    )
-                    result.failed.append(
-                        {"id": entry_id, "error": f"could not remove folder: {e}"}
-                    )
-                    continue
-                result.deleted += 1
         return result
 
     def import_blob(
@@ -2549,6 +2589,7 @@ class LibraryStore:
         enqueue_analysis: bool = False,
         max_enqueue: Optional[int] = MAX_REINDEX_ANALYSIS_ENQUEUE,
         report: Optional[dict[str, Any]] = None,
+        progress: Optional[LibraryProgress] = None,
     ) -> int:
         """Walk the filesystem and upsert every entry into the DB.
         Returns the number of entries indexed. Idempotent.
@@ -2588,6 +2629,9 @@ class LibraryStore:
         (``POST /api/library/reindex``) can report what happened without
         changing this method's ``int`` return value, which existing callers
         rely on.
+
+        ``progress``, when given, gets the walk's ``read`` task (see
+        :meth:`_iter_disk_entries`); the caller finishes it.
         """
         if self.db is None:
             return 0
@@ -2613,7 +2657,7 @@ class LibraryStore:
             self.db.upsert_entries_bulk(payloads, batch=len(payloads))
             payloads = []
 
-        for record, meta, _entry_dir in self._iter_disk_entries():
+        for record, meta, _entry_dir in self._iter_disk_entries(progress=progress):
             payloads.append(_db_payload(record, meta))
             edges.extend(_chimera_edges(record.id, meta))
             count += 1
@@ -2638,6 +2682,34 @@ class LibraryStore:
             report["changed"] = changed_count
             report["enqueued"] = enqueued
             report["analysis_skipped"] = skipped
+        return count
+
+    def read_disk_into_db(self) -> int:
+        """Read every ``metadata.json`` into the DB: what a first start, or a
+        start beside a lost ``library.db``, needs before the list shows
+        anything. Returns the number of entries read.
+
+        :data:`~.db.DISK_READ_PENDING_KEY` is written before the walk and
+        removed after its last batch, so a read cut short by a close, a crash
+        or a kill runs again on the next start; every batch it did commit is
+        kept and simply upserted again. Without the flag the next start saw a
+        non-empty database and never read the rest.
+
+        With no stored rows every entry looks "new", so this never enqueues
+        analysis: that would queue the entire library the instant the app
+        opens, not just what actually changed. A user wanting analysis on a
+        manual reindex opts in via POST /reindex?analyze=true.
+        """
+        if self.db is None:
+            return 0
+        progress = self.db.progress
+        self.db.set_flag(DISK_READ_PENDING_KEY, str(time.time()))
+        try:
+            count = self.reindex(enqueue_analysis=False, progress=progress)
+        finally:
+            progress.finish("read")
+        self.db.set_flag(DISK_READ_PENDING_KEY, None)
+        log.info("library.store: read %d entries from disk into the database", count)
         return count
 
     # ---- Helpers ------------------------------------------------------------
@@ -2676,7 +2748,8 @@ def _maybe_enqueue_analysis(
     count real enqueues, not attempts skipped by the settings gate, a
     missing audio file, or a queue failure.
     """
-    if store.db is None:
+    db = store.db
+    if db is None:
         return False
     try:
         from backend.core.background_workers import get_background_queue
@@ -2704,6 +2777,16 @@ def _maybe_enqueue_analysis(
 
         from backend.modules.analysis.engine import analyze_and_persist
 
+        # The job waits for an idle moment, and the library can be closed or
+        # replaced meanwhile (a library folder change, a retried open). Its
+        # entry belongs to the database it was queued for; that one is gone.
+        if db.closed:
+            log.info(
+                "library.store: analysis for %s skipped: its library was closed",
+                entry_id,
+            )
+            return
+
         # Off the loop, like every other job here. The queue's consumer awaits
         # job.fn directly, so a coroutine that does its CPU work inline stalls
         # the whole event loop — not just analysis, every request behind it.
@@ -2712,7 +2795,7 @@ def _maybe_enqueue_analysis(
         # when ANALYSIS_VERSION changes.
         await asyncio.to_thread(
             analyze_and_persist,
-            store.db,  # type: ignore[arg-type]  # checked above
+            db,
             entry_id,
             audio_path,
             metadata_path=metadata_path,

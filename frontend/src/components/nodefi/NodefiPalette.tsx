@@ -12,10 +12,10 @@ import { paletteGroups, nodeDef, type NodeKind } from '../../lib/nodefiTypes';
 import { NODE_ICONS } from './nodeIcons';
 import {
   NODEFI_TEMPLATES,
-  resolveTemplateSource,
   type NodefiTemplate,
 } from '../../data/nodefiTemplates';
-import { useLibraryStore } from '../../state/libraryStore';
+import { useLibraryCounts } from '../../state/libraryCountsStore';
+import { findTemplateSource } from '../../lib/nodefiTemplateSource';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useNodefiSetsStore, setToFile, type SavedNodeSet } from '../../state/nodefiSetsStore';
 import { logError, logInfo } from '../../state/logStore';
@@ -114,15 +114,32 @@ export function NodefiPalette({ onAdd, onOrbDown, onLoadTemplate, onLoadSet }: N
   const [query, setQuery] = useState('');
   const [setName, setSetName] = useState('');
   const importRef = useRef<HTMLInputElement | null>(null);
-  const entries = useLibraryStore((s) => s.entries);
-  const loadLibrary = useLibraryStore((s) => s.load);
+  // Which sets' songs the library holds, asked of the whole library and asked
+  // again whenever the library moves (a new revision).
+  const revision = useLibraryCounts((s) => s.revision);
+  const [sourceFound, setSourceFound] = useState<Record<string, boolean>>({});
   const savedSets = useNodefiSetsStore((s) => s.sets);
   const saveSet = useNodefiSetsStore((s) => s.saveSet);
   const deleteSet = useNodefiSetsStore((s) => s.deleteSet);
   const hasGraph = useNodefiStore((s) => s.nodes.length > 0);
   useEffect(() => {
-    if (!entries.length) void loadLibrary();
-  }, [entries.length, loadLibrary]);
+    let live = true;
+    void Promise.all(
+      NODEFI_TEMPLATES.map(async (t) => {
+        try {
+          return [t.id, (await findTemplateSource(t)) !== null] as const;
+        } catch {
+          // Backend unreachable: say nothing rather than "needs import".
+          return [t.id, true] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (live) setSourceFound(Object.fromEntries(pairs));
+    });
+    return () => {
+      live = false;
+    };
+  }, [revision]);
 
   const saveCurrent = () => {
     const st = useNodefiStore.getState();
@@ -230,7 +247,7 @@ export function NodefiPalette({ onAdd, onOrbDown, onLoadTemplate, onLoadSet }: N
                 <TemplateRow
                   key={t.id}
                   tpl={t}
-                  resolved={!!resolveTemplateSource(t, entries)}
+                  resolved={sourceFound[t.id] !== false}
                   onLoad={onLoadTemplate}
                 />
               ))}

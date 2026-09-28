@@ -13,6 +13,7 @@ Endpoints (prefix from module.json → ``/api/stems``):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -171,7 +172,7 @@ async def run_separation(
 ) -> dict:
     if stems not in (2, 4, 6, 12):
         raise HTTPException(400, "stems must be 2, 4, 6, or 12")
-    store = get_library_store()
+    store = await asyncio.to_thread(get_library_store)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     record = store.get_entry(entry_id)

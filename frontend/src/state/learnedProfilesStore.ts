@@ -26,6 +26,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { ControllerProfile, ControllerSection } from './controllerProfiles';
 import { setLearnedProfiles } from './controllerProfiles';
 import { subscribeToMidi } from './midiBus';
@@ -217,6 +218,7 @@ export const useLearnedProfilesStore = create<LearnedProfilesState>()(
     }),
     {
       name: 'thedaw-learned-profiles-v1',
+      storage: persistStorage(),
       partialize: (s) => ({ profiles: s.profiles }),
       // On rehydrate, push learned profiles into the catalog + re-seed their maps.
       onRehydrateStorage: () => (state) => {

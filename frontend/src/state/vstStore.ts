@@ -4,28 +4,40 @@ import { vstApi, type Vst3PluginInfo } from '../lib/vstClient';
 import { logError, logInfo } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
 
-/** True when the backend refused the scan because VST hosting only exists in
- *  the desktop shell — a 403, or any other 4xx that says so in its own words.
+/** True when the backend refused the scan because this page may not host VSTs
+ *  as it stands — a 403, or any other 4xx that says so in its own words.
  *
- *  This is not a failure. `/api/vst/scan` is gated (backend/lib/cross_site.py)
- *  and a plain browser tab is *supposed* to be turned away; treating that as an
- *  error put "VST SCAN FAILED: This request must come from theDAW's desktop
- *  shell." in the log and the status bar on every browser launch. */
+ *  This is not a failure. `/api/vst/scan` is gated (backend/lib/cross_site.py):
+ *  it answers this machine's own UI, the desktop shell and a paired device, and
+ *  a page on another machine that was never paired is *supposed* to be turned
+ *  away; treating that as an error put "VST SCAN FAILED: ..." in the log and the
+ *  status bar on every such launch. */
 export const isDesktopOnlyRefusal = (e: unknown): boolean => {
   if (!(e instanceof ApiError)) return false;
   if (e.status === 403) return true;
   return e.status >= 400 && e.status < 500 && /desktop shell|desktop app/i.test(e.message);
 };
 
+/** True when the refusal is the pairing gate's (its message names a paired
+ *  device): pairing this device is what would make VST effects work here. */
+export const refusalNeedsPairing = (reason: string | null | undefined): boolean =>
+  /paired/i.test(reason ?? '');
+
+/** What MIX tells an unpaired device, in place of the backend's words. */
+export const PAIR_THIS_DEVICE_TEXT =
+  'VST effects work on this device once it is paired. On the computer running theDAW, open Mobile Access and open its share link or QR code on this device.';
+
 /** What the MIX effects browser shows where the plugin tiles would be.
  *
  *  An empty list with no explanation is the browser build's worst answer: the
- *  user clicks Rescan, nothing happens, and nothing ever says that VST hosting
- *  needs the desktop app. `unavailableReason` carries the backend's own words
- *  when the scan was refused rather than failed. */
+ *  user clicks Rescan, nothing happens, and nothing ever says why.
+ *  `unavailableReason` carries the backend's own words when the scan was
+ *  refused rather than failed. A pairing refusal says how to pair; any other
+ *  refusal is the desktop-only one. */
 export const vstBrowserEmptyText = (scanning: boolean, unavailableReason: string | null): string => {
   if (scanning) return 'Scanning…';
   const reason = unavailableReason?.trim();
+  if (reason && refusalNeedsPairing(reason)) return PAIR_THIS_DEVICE_TEXT;
   if (reason) return `VST hosting is desktop-only. ${reason}`;
   return 'No VST3 plugins found. Click Rescan.';
 };
@@ -79,7 +91,9 @@ export const useVstStore = create<VstState>()((set) => ({
         set({ scanning: false, scanned: true, plugins: [], error: null, unavailableReason: msg });
         if (!desktopOnlyNoticeShown) {
           desktopOnlyNoticeShown = true;
-          useStatusBarStore.getState().setText('VST: desktop app only');
+          useStatusBarStore
+            .getState()
+            .setText(refusalNeedsPairing(msg) ? 'VST: pair this device' : 'VST: desktop app only');
         }
         return;
       }

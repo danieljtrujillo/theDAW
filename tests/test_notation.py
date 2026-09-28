@@ -37,6 +37,20 @@ from backend.modules.notation.engine import (
     stage_parts,
 )
 from backend.modules.notation.exporters import beatsaber
+from backend.modules.settings import router as settings_router
+from backend.modules.settings.store import SettingsStore
+
+
+@pytest.fixture(autouse=True)
+def _own_settings_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine reads the artist credit and the MuseScore path from the
+    process-wide settings store, which is data/settings.json: tests read and
+    migrated the checkout's real file, and a sheet took the credit of whoever
+    ran them. Each test gets a store of its own; a test that sets up its own
+    settings replaces this one."""
+    monkeypatch.setattr(
+        settings_router, "_store", SettingsStore(tmp_path / "settings.json")
+    )
 
 
 def _write_scale_midi(path: Path) -> None:

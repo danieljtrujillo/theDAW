@@ -21,10 +21,12 @@
  */
 import assert from 'node:assert/strict';
 import {
+  MAX_CANVAS_DEVICE_WIDTH,
   analyzeBuffer,
   analyzeBufferAsync,
   analyzeBufferMemo,
   binCountFor,
+  canvasWindowFor,
   drawWaveform,
   drawWaveformCached,
   evictAnalysis,
@@ -166,6 +168,12 @@ const BOX: CanvasBox = { cssWidth: 200, cssHeight: 64, deviceWidth: 200, deviceH
     String(strokes[0].style).includes('255, 89, 64'),
     'the error state must use the failure colour, not the neutral "no data" colour',
   );
+  // Its label is bold and at least 12 px, even on a short lane (it was 9 px).
+  const shortLane = makeFakeCanvas();
+  drawWaveform(shortLane.canvas, { ...BOX, cssHeight: 16, deviceHeight: 16 }, [], 0, 1, false, 'Unable to load audio waveform: 404');
+  const font = String((shortLane.canvas.getContext('2d') as unknown as { font: string }).font);
+  const px = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 0);
+  assert.ok(font.startsWith('bold ') && px >= 12, `the failure label must be bold 12 px or more, got "${font}"`);
 }
 
 {
@@ -179,25 +187,44 @@ const BOX: CanvasBox = { cssWidth: 200, cssHeight: 64, deviceWidth: 200, deviceH
 
 // ══ DJ-2: the deck's main-thread burst at load ═════════════════════════════
 
-// ── bins come from the CONSUMING canvas width, not a flat 6,400 ────────────
+// ── bins come from the width the WHOLE track spans at the lane's zoom ──────
 
 {
-  // Unchanged behaviour when nothing says how wide the canvas is.
+  // Unchanged behaviour when nothing says how wide the track is drawn.
   assert.equal(binCountFor(210, undefined), 6400, 'no width: the historical 6,400 cap');
   assert.equal(binCountFor(210, 0), 6400, 'a not-yet-measured (zero) width falls back to the cap too');
 
-  // A 34-44 px overview lane used to compute the full 6,400 bins — 4*width
-  // is far below the 900 floor, so it settles on the floor.
-  assert.equal(binCountFor(210, 40), 900, 'a 40 px overview lane computes the floor, not 6,400 bins');
+  // PR #207 review: the width is the lane's width over the fraction of the
+  // track it shows. The DJ detail lane runs at zoom 8 (span 0.125); passed the
+  // lane's own ~900 px, the PR analysed 3,840 bins for the whole track, i.e.
+  // 480 across the visible lane where main drew 800. At zoom it gets main's
+  // full resolution back.
+  const mainBins = 6400; // main: clamp(round(210 * 32), 900, 6400)
+  const detail = binCountFor(210, 900 / 0.125);
+  assert.ok(detail >= mainBins, `the zoom-8 detail lane must keep main's ${mainBins} bins, got ${detail}`);
+  assert.ok(detail * 0.125 >= 800, 'at least the 800 bins main showed across the visible lane');
+  // Deeper zoom never lowers it, and nothing exceeds the historical count.
+  for (const zoom of [2, 8, 16, 36]) {
+    assert.equal(binCountFor(210, 900 * zoom), mainBins, `zoom ${zoom}: main's count, never above it`);
+  }
 
-  // A wide zoomed lane: capped at 4 bins per pixel, still under 6,400.
-  assert.equal(binCountFor(210, 1200), 4800, '4 bins per pixel caps a 1200 px lane');
+  // A whole-track overview lane 40 px wide needs far fewer: at least 4 bins
+  // per pixel and the 900 floor, rounded up to a power of two.
+  assert.equal(binCountFor(210, 40), 1024, 'a 40 px overview lane computes ~1k bins, not 6,400');
 
-  // A short track still never drops below the 900 floor.
+  // A short track still never goes above its own natural count.
   assert.equal(binCountFor(20, 1200), 900, 'the 900-bin floor is unchanged');
-
-  // And the width cap never INCREASES the bin count past the old behaviour.
   assert.equal(binCountFor(210, 4000), 6400, 'the absolute 6,400 cap still wins over 4*width');
+
+  // The count moves in powers of two, so a lane resized pixel by pixel keeps
+  // one count across a wide band of widths (every 64 px step used to be a new
+  // analysis). 900..1023 px of whole-track width all ask for 4,096.
+  const band = new Set<number>();
+  for (let w = 900; w < 1024; w += 1) band.add(binCountFor(210, w));
+  assert.deepEqual([...band], [4096], 'one bin count across a 900-1023 px resize');
+  for (let w = 40; w <= 4000; w += 7) {
+    assert.ok(binCountFor(210, w) >= Math.min(6400, w * 4), `at least 4 bins per px at ${w} px (or the cap)`);
+  }
 }
 
 // ── the analysis is memoised per (url, normalize, bins) ────────────────────
@@ -239,6 +266,9 @@ function countingBuffer(seed: number, counter: { calls: number }, duration = 210
   // A different bin count (a wider lane) is also a different key.
   analyzeBufferMemo('memo-a.wav', buffer, { normalize: true, width: 1200 });
   assert.equal(counter.calls, 3, 'a wider lane analyses at its own bin count');
+  // ...and an explicit count is the same key as the width that yields it.
+  analyzeBufferMemo('memo-a.wav', buffer, { normalize: true, bins: binCountFor(210, 1200) });
+  assert.equal(counter.calls, 3, 'opts.bins names the same analysis as the width behind it');
 
   // The async entry point (the one the component calls) resolves to the same
   // memoised array without re-analysing when no Worker exists — which is the
@@ -345,27 +375,49 @@ const REAL_BINS = analyzeBuffer(countingBuffer(2, { calls: 0 }));
   assert.equal(offscreens.length, 0, 'and allocates no offscreen canvas at all');
 }
 
+/** Forget what a fake canvas recorded, so the next frame is counted alone. */
+function clearFrame(fake: ReturnType<typeof makeFakeCanvas>): void {
+  fake.calls.length = 0;
+  fake.images.length = 0;
+  fake.gradients.length = 0;
+}
+
+/** The distinct columns a frame painted (one fill per column minimum). */
+function columnsPainted(fake: ReturnType<typeof makeFakeCanvas>): number {
+  return new Set(fake.calls.filter((c) => c.kind === 'fillRect' && c.w === 1).map((c) => c.x)).size;
+}
+
 {
+  // One lane, frame after frame — the way a deck's canvas is really driven.
   offscreens.length = 0;
-  const first = makeFakeCanvas();
-  drawWaveformCached(first.canvas, BOX, REAL_BINS, 0.2, 0.4, false, null, 'zoomed');
-  assert.equal(offscreens.length, 1, 'a zoomed view renders the whole track once, offscreen');
-  const paintedOnce = offscreens[0].calls.length;
-  assert.ok(paintedOnce > 0, 'the offscreen actually holds a rendered waveform');
-  assert.equal(first.images.length, 1, 'and the visible slice is blitted onto the real canvas');
+  const lane = makeFakeCanvas();
+  drawWaveformCached(lane.canvas, BOX, REAL_BINS, 0.2, 0.4, false, null, 'zoomed');
+  assert.equal(offscreens.length, 0, 'the first frame at a zoom is drawn directly: nothing to reuse yet');
+  assert.equal(lane.images.length, 0);
+  assert.ok(columnsPainted(lane) <= BOX.cssWidth, 'and it paints one lane-width of columns, not the track');
 
   // The hot path: the viewport moves ~6x/second per deck while a deck plays.
-  const panned = makeFakeCanvas();
-  drawWaveformCached(panned.canvas, BOX, REAL_BINS, 0.25, 0.45, false, null, 'zoomed');
-  assert.equal(offscreens.length, 1, 'panning the viewport must NOT re-render the waveform');
-  assert.equal(offscreens[0].calls.length, paintedOnce, 'the cached offscreen is never repainted');
-  assert.equal(panned.images.length, 1, 'the pan is one blit');
-  assert.notEqual(first.images[0].sx, panned.images[0].sx, 'at a shifted source offset');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, BOX, REAL_BINS, 0.21, 0.41, false, null, 'zoomed');
+  assert.equal(offscreens.length, 1, 'once it scrolls, the window around the viewport is rendered once');
+  const paintedOnce = offscreens[0].calls.length;
+  assert.ok(paintedOnce > 0, 'the offscreen actually holds a rendered waveform');
+  assert.equal(lane.images.length, 1, 'and the visible slice is blitted onto the real canvas');
+  const firstSx = lane.images[0].sx;
 
-  // Changing the ZOOM (the span) is a different render and does rebuild.
-  const zoomed = makeFakeCanvas();
-  drawWaveformCached(zoomed.canvas, BOX, REAL_BINS, 0.25, 0.65, false, null, 'zoomed');
-  assert.equal(offscreens.length, 2, 'a different zoom span rebuilds the offscreen render');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, BOX, REAL_BINS, 0.25, 0.45, false, null, 'zoomed');
+  assert.equal(offscreens.length, 1, 'panning inside the window must NOT re-render the waveform');
+  assert.equal(offscreens[0].calls.length, paintedOnce, 'the window is never repainted');
+  assert.equal(lane.images.length, 1, 'the pan is one blit');
+  assert.notEqual(lane.images[0].sx, firstSx, 'at a shifted source offset');
+
+  // Changing the ZOOM (the span) is drawn directly again — one lane-width of
+  // columns, never a render of the whole track at the new zoom.
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, BOX, REAL_BINS, 0.25, 0.65, false, null, 'zoomed');
+  assert.equal(lane.images.length, 0, 'a new zoom never blits the old zoom’s window');
+  assert.ok(columnsPainted(lane) <= BOX.cssWidth);
 }
 
 // DJ-2R item 4: a golden of the PRE-DJ-2 full-view render.
@@ -400,6 +452,7 @@ function goldenBins(): WaveBin[] {
       bright: ((i + 2) % 5) / 4,
       transient: (i % 6) / 5,
       color: colors[i % colors.length],
+      clipped: 0,
     });
   }
   return out;
@@ -558,21 +611,57 @@ const GOLDEN_GRADIENTS: string[] = [
   "rgba(0,0,0,0.36)",
 ];
 
+/**
+ * The precision the golden's colour alphas are compared at: 12 decimal places.
+ *
+ * The alphas come out of `Math.pow(peak, 0.58)`, and ECMAScript leaves
+ * `Math.pow` implementation-approximated: V8's result can differ in the last
+ * bit between builds and CPUs, which is exactly how this golden broke — a
+ * 16th significant digit, 0.5750685450389379 against the ...378 it was
+ * generated with. Twelve places is a thousand times finer than any colour a
+ * canvas can show (8 bits per channel) and still catches every real change to
+ * the drawing, so the golden keeps proving what it proves on every machine.
+ */
+const ALPHA_DECIMALS = 12;
+
+/** `s` with every number of more than {@link ALPHA_DECIMALS} decimals rounded
+ *  to that many. Geometry is already fixed at 4 decimals by `serialize`. */
+function atGoldenPrecision(s: string): string {
+  return s.replace(/\d+\.\d{13,}/g, (n) => String(Number(Number(n).toFixed(ALPHA_DECIMALS))));
+}
+
 /** One line per paint op, so a mismatch names the op that moved. */
 function serialize(calls: { kind: string; style: unknown; x: number; y: number; w: number; h: number }[]): string[] {
-  return calls.map(
-    (c) =>
+  return calls.map((c) =>
+    atGoldenPrecision(
       `${c.kind}|${typeof c.style === 'object' && c.style !== null ? 'gradient' : String(c.style)}` +
-      `|${c.x.toFixed(4)}|${c.y.toFixed(4)}|${c.w.toFixed(4)}|${c.h.toFixed(4)}`,
+        `|${c.x.toFixed(4)}|${c.y.toFixed(4)}|${c.w.toFixed(4)}|${c.h.toFixed(4)}`,
+    ),
   );
 }
 
 {
+  // The rounding itself: last-bit noise disappears, a real change does not.
+  assert.equal(
+    atGoldenPrecision('rgba(255, 89, 64, 0.5750685450389379)'),
+    atGoldenPrecision('rgba(255, 89, 64, 0.5750685450389378)'),
+    'two alphas one ulp apart compare equal',
+  );
+  assert.notEqual(
+    atGoldenPrecision('rgba(255, 89, 64, 0.5750685450389378)'),
+    atGoldenPrecision('rgba(255, 89, 64, 0.5750685450399378)'),
+    'a difference in the 12th decimal is still caught',
+  );
+  assert.equal(atGoldenPrecision('rgba(255, 182, 65, 0.28)'), 'rgba(255, 182, 65, 0.28)', 'short numbers are untouched');
+}
+
+{
+  const golden = GOLDEN_CALLS.map(atGoldenPrecision);
   const direct = makeFakeCanvas();
   drawWaveform(direct.canvas, GOLDEN_BOX, goldenBins(), 0, 1, false, null);
   assert.deepEqual(
     serialize(direct.calls),
-    GOLDEN_CALLS,
+    golden,
     'drawWaveform must paint exactly what it painted before DJ-2 split it into helpers',
   );
   assert.deepEqual(direct.gradients, GOLDEN_GRADIENTS, 'including every gradient stop, in order');
@@ -581,67 +670,135 @@ function serialize(calls: { kind: string; style: unknown; x: number; y: number; 
   drawWaveformCached(cached.canvas, GOLDEN_BOX, goldenBins(), 0, 1, false, null, 'golden');
   assert.deepEqual(
     serialize(cached.calls),
-    GOLDEN_CALLS,
+    golden,
     'and the full view through drawWaveformCached reproduces the same pre-DJ-2 output',
   );
   assert.deepEqual(cached.gradients, GOLDEN_GRADIENTS);
 }
 
-// DJ-2R item 1: the cache must engage at the geometry the APP actually uses.
+// DJ-2R item 1: the window must engage at the geometry the APP actually uses.
 // `DJView`'s detail lane runs at zoom 8 (span 0.125) with
 // `viewMin = -visibleFrac / 2`, so the viewport starts BEFORE the track for
-// the first ~6% of it and runs past the end for the last ~6%; and its
-// `box.scale` is zoom x dpr, which pushes the whole-track offscreen render
-// past any fixed device-width ceiling. Rejecting either case sent every
-// detail-lane frame - six a second per playing deck - down the slow path,
-// which is the entire cost this cache exists to remove.
+// the first ~6% of it and runs past the end for the last ~6%. Rejecting that
+// case sent every detail-lane frame - six a second per playing deck - down
+// the slow path, which is the entire cost the window exists to remove.
 const LANE: CanvasBox = { cssWidth: 600, cssHeight: 64, deviceWidth: 1200, deviceHeight: 128, scale: 2, zoom: 8, dpr: 2 };
+
+const near = (a: number, b: number, what: string) => assert.ok(Math.abs(a - b) < 1e-6, `${what}: ${a} vs ${b}`);
 
 {
   offscreens.length = 0;
-  // Start of the track: half the lane is off the left-hand end.
-  const head = makeFakeCanvas();
-  drawWaveformCached(head.canvas, LANE, REAL_BINS, -0.0625, 0.0625, false, null, 'detail-lane');
-
-  assert.equal(offscreens.length, 1, 'the app\u2019s real detail lane must build an offscreen render');
-  assert.equal(head.images.length, 1, 'and blit the in-range part of it');
-  // The out-of-range half is left as background: the blit starts halfway
-  // across the lane and covers only the half that has audio behind it.
-  assert.equal(head.images[0].dx, 300, 'the blit is inset by the part of the viewport before the track');
-  assert.equal(head.images[0].dw, 300, 'and covers only the half that has audio');
-  assert.equal(head.images[0].sx, 0, 'reading from the very start of the render');
+  const lane = makeFakeCanvas();
+  // Start of the track: half the lane is off the left-hand end. The first
+  // frame is direct; the next one (the deck playing on) builds the window.
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, -0.0625, 0.0625, false, null, 'detail-lane');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, -0.06, 0.065, false, null, 'detail-lane');
+  assert.equal(offscreens.length, 1, 'the app’s real detail lane must build a window render');
+  assert.equal(lane.images.length, 1, 'and blit the in-range part of it');
+  // The out-of-range part is left as background: the blit is inset by the
+  // part of the viewport before the track and covers only what has audio.
+  near(lane.images[0].dx, (0.06 / 0.125) * 600, 'the blit is inset by the part of the viewport before the track');
+  near(lane.images[0].dw, (0.065 / 0.125) * 600, 'and covers only the part that has audio');
+  assert.equal(lane.images[0].sx, 0, 'reading from the very start of the render');
 
   // End of the track: the overhang is on the right instead.
-  const tail = makeFakeCanvas();
-  drawWaveformCached(tail.canvas, LANE, REAL_BINS, 0.9375, 1.0625, false, null, 'detail-lane');
-  assert.equal(offscreens.length, 1, 'the same zoom reuses the same offscreen render');
-  assert.equal(tail.images.length, 1);
-  assert.equal(tail.images[0].dx, 0, 'an overhang past the END starts the blit at the left edge');
-  assert.equal(tail.images[0].dw, 300, 'and still covers only the half that has audio');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.9375, 1.0625, false, null, 'detail-lane');
+  assert.equal(lane.images.length, 1);
+  assert.equal(lane.images[0].dx, 0, 'an overhang past the END starts the blit at the left edge');
+  near(lane.images[0].dw, 300, 'and still covers only the half that has audio');
 
-  // And the ordinary mid-track pan at that zoom fills the lane edge to edge.
-  const mid = makeFakeCanvas();
-  drawWaveformCached(mid.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'detail-lane');
-  assert.equal(offscreens.length, 1, 'panning still never re-renders');
-  assert.equal(mid.images[0].dx, 0);
-  assert.equal(mid.images[0].dw, 600, 'a fully in-range viewport blits the whole lane');
-  assert.ok(mid.images[0].sx > 0, 'from further into the render');
+  // And the ordinary mid-track pan at that zoom fills the lane edge to edge,
+  // one device pixel of the window per device pixel of the lane.
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'detail-lane');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.41, 0.535, false, null, 'detail-lane');
+  assert.equal(lane.images[0].dx, 0);
+  near(lane.images[0].dw, 600, 'a fully in-range viewport blits the whole lane');
+  assert.ok(lane.images[0].sx > 0, 'from further into the render');
+  assert.equal(lane.images[0].sw, Math.round(lane.images[0].dw * LANE.scale), 'at 1:1, never resampled');
+}
+
+// PR #207 review: deep zoom stays SHARP and costs one window, not the track.
+// At 36x on a 1,300 px lane at dpr 2 the whole track is 93,600 device px. The
+// PR rendered all 46,800 columns into an offscreen clamped to 8,192 px and
+// stretched a ~230 px slice of it across the 2,600 px lane.
+const DEEP: CanvasBox = { cssWidth: 1300, cssHeight: 64, deviceWidth: 2600, deviceHeight: 128, scale: 2, zoom: 1, dpr: 2 };
+
+{
+  offscreens.length = 0;
+  const lane = makeFakeCanvas();
+  const span = 1 / 36;
+  drawWaveformCached(lane.canvas, DEEP, REAL_BINS, 0.5, 0.5 + span, false, null, 'deep');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, DEEP, REAL_BINS, 0.5005, 0.5005 + span, false, null, 'deep');
+  assert.equal(offscreens.length, 1);
+  const win = offscreens[0];
+  assert.ok(win.canvas.width <= MAX_CANVAS_DEVICE_WIDTH, `the window fits one canvas, got ${win.canvas.width}`);
+  assert.ok(
+    columnsPainted(win) <= DEEP.cssWidth * 3 + 2,
+    `the window paints about three lane widths of columns, not the whole track (${columnsPainted(win)})`,
+  );
+  assert.equal(lane.images.length, 1);
+  assert.equal(
+    lane.images[0].sw,
+    Math.round(lane.images[0].dw * DEEP.scale),
+    'the blit copies device pixels 1:1 — the 8,192 px clamp stretched them into a blur',
+  );
+}
+
+// PR #207 review: continuous wheel zoom on one deck never evicts the other.
+// The sequence from the DJ tab: deck B is playing (its lane has a window);
+// the user wheel-zooms deck A, one event per notch. Every event was a new key
+// in ONE 4-slot cache shared by every lane, so the fifth notch pushed deck B
+// out and deck B re-rendered its whole track on its next frame.
+{
+  offscreens.length = 0;
+  const deckB = makeFakeCanvas();
+  drawWaveformCached(deckB.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'deck-b');
+  drawWaveformCached(deckB.canvas, LANE, REAL_BINS, 0.401, 0.526, false, null, 'deck-b');
+  assert.equal(offscreens.length, 1, 'deck B has its window');
+  const deckBWindow = offscreens[0];
+  const deckBPaint = deckBWindow.calls.length;
+
+  const deckA = makeFakeCanvas();
+  for (const zoom of [8, 9.5, 11, 13, 15, 18, 21, 25, 30, 36]) {
+    clearFrame(deckA);
+    const span = 1 / zoom;
+    drawWaveformCached(deckA.canvas, LANE, REAL_BINS, 0.3 - span / 2, 0.3 + span / 2, false, null, 'deck-a');
+    assert.ok(
+      columnsPainted(deckA) <= LANE.cssWidth,
+      `a wheel notch at ${zoom}x paints one lane width (${columnsPainted(deckA)} columns)`,
+    );
+  }
+  assert.equal(offscreens.length, 1, 'wheel zoom renders no offscreen track at every notch');
+
+  const beforeNext = deckB.images.length;
+  drawWaveformCached(deckB.canvas, LANE, REAL_BINS, 0.402, 0.527, false, null, 'deck-b');
+  assert.equal(offscreens.length, 1, 'deck B’s next frame needs no new render');
+  assert.equal(deckBWindow.calls.length, deckBPaint, 'its window was never repainted');
+  assert.equal(deckB.images.length, beforeNext + 1, 'it is still one blit');
 }
 
 {
-  // The offscreen is bounded rather than abandoned: at zoom 8 / dpr 2 the
-  // whole-track render would want 600/0.125 * 2 = 9,600 device px, past the
-  // 8,192 ceiling. It is clamped (and resampled on the way out) instead of
-  // falling back to the per-frame render.
+  // DJView passes `viewEnd = viewStart + visibleFrac`, so the span it hands
+  // over wobbles in its last bits from frame to frame (0.335 - 0.21 is
+  // 0.12500000000000003). A playing deck at a steady zoom must still be one
+  // window and a blit per frame, not a fresh direct draw every time.
   offscreens.length = 0;
-  const wide = makeFakeCanvas();
-  drawWaveformCached(wide.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'bounded');
-  assert.equal(offscreens.length, 1, 'a render wider than the device-width ceiling is CLAMPED, not skipped');
-  assert.equal(wide.images.length, 1);
-  assert.ok(
-    wide.images[0].sx + wide.images[0].sw <= 8192,
-    'and every blit stays inside the clamped render',
-  );
+  const lane = makeFakeCanvas();
+  const visibleFrac = 0.125;
+  let blits = 0;
+  for (let frame = 0; frame < 12; frame += 1) {
+    const viewStart = 0.21 + frame * 0.0071;
+    clearFrame(lane);
+    drawWaveformCached(lane.canvas, LANE, REAL_BINS, viewStart, viewStart + visibleFrac, false, null, 'playing');
+    blits += lane.images.length;
+  }
+  assert.equal(offscreens.length, 1, 'one window serves the steady zoom');
+  assert.equal(blits, 11, 'every frame after the first is a blit');
 }
 
 {
@@ -650,43 +807,49 @@ const LANE: CanvasBox = { cssWidth: 600, cssHeight: 64, deviceWidth: 1200, devic
   offscreens.length = 0;
   const whole = makeFakeCanvas();
   drawWaveformCached(whole.canvas, LANE, REAL_BINS, -0.1, 1.1, false, null, 'whole');
+  drawWaveformCached(whole.canvas, LANE, REAL_BINS, -0.1, 1.1, false, null, 'whole');
   assert.equal(offscreens.length, 0, 'a whole-track viewport builds no offscreen render');
   assert.equal(whole.images.length, 0, 'and blits nothing');
 }
 
-// The EDIT timeline's ClipWave renders a clip's FULL, untrimmed source
-// (viewportStart 0, viewportEnd 1) at whatever CSS width its duration * the
-// timeline's zoom comes out to, with no cap of its own. A 220 s clip at
-// 400 px/s is a ~88,000 px wide box - the regression that shipped as a blank
-// clip at extreme zoom, because "whole track" used to always skip the clamp.
-const HUGE: CanvasBox = { cssWidth: 20000, cssHeight: 64, deviceWidth: 20000, deviceHeight: 64, scale: 1, zoom: 1, dpr: 1 };
-
+// The EDIT timeline's ClipWave box is the clip's duration times the
+// timeline's zoom: a 220 s clip at 400 px/s is an 88,000 px wide wrapper. A
+// canvas that fills it asks for a backing store no browser allocates (the
+// blank-clip regression); the PR instead drew it into an 8,192 px offscreen
+// and stretched that over the box, so EDIT chops blurred at deep zoom.
+// `canvasWindowFor` puts the visible canvas over the on-screen part only, at
+// full resolution.
 {
-  offscreens.length = 0;
-  const huge = makeFakeCanvas();
-  drawWaveformCached(huge.canvas, HUGE, REAL_BINS, 0, 1, false, null, 'huge-full-view');
-  assert.equal(
-    offscreens.length, 1,
-    'a full-track view wide enough to overflow the device-width ceiling must still go through the clamp-and-blit path',
-  );
-  assert.ok(
-    offscreens[0].canvas.width <= 8192,
-    `the offscreen render itself must never exceed the device-width cap - got ${offscreens[0].canvas.width}`,
-  );
-  assert.equal(huge.images.length, 1, 'and blit the clamped render onto the (still huge) visible canvas');
-  assert.ok(
-    huge.images[0].sx + huge.images[0].sw <= 8192,
-    'the blit source stays inside the clamped render',
-  );
-  assert.equal(huge.images[0].dx, 0, 'a full, non-overscrolled view fills from the left edge');
-  assert.equal(huge.images[0].dw, HUGE.cssWidth, 'and covers the whole (huge) width');
+  const wrapWidth = 88_000;
+  const fits = canvasWindowFor({ wrapLeft: 0, wrapWidth: 12_000, visibleLeft: 0, visibleRight: 1600, zoom: 1, dpr: 1 });
+  assert.equal(fits, null, 'a wrapper one canvas can back keeps the plain full-size canvas');
 
-  // Ordinary sizes below the ceiling are untouched: still the plain direct
-  // path, matching the LANE-sized "whole" case above.
+  const atStart = canvasWindowFor({ wrapLeft: 0, wrapWidth, visibleLeft: 0, visibleRight: 1600, zoom: 1, dpr: 1 });
+  assert.ok(atStart, 'an 88,000 px clip gets a window');
+  assert.ok(atStart.width <= MAX_CANVAS_DEVICE_WIDTH, 'no wider than one canvas');
+  assert.ok(atStart.left <= 0 && atStart.left + atStart.width >= 1600, 'covering what is on screen');
+
+  // The timeline scrolled: the clip's left edge is now 40,000 px off-screen.
+  const scrolled = canvasWindowFor({ wrapLeft: -40_000, wrapWidth, visibleLeft: 0, visibleRight: 1600, zoom: 1, dpr: 1 });
+  assert.ok(scrolled);
+  assert.ok(scrolled.left <= 40_000 && scrolled.left + scrolled.width >= 41_600, 'the window follows the scroll');
+
+  // At a CSS zoom of 1.25 on a dpr-2 display the device budget is in device px.
+  const hiDpi = canvasWindowFor({ wrapLeft: 0, wrapWidth: wrapWidth * 1.25, visibleLeft: 0, visibleRight: 2000, zoom: 1.25, dpr: 2 });
+  assert.ok(hiDpi && hiDpi.width * 1.25 * 2 <= MAX_CANVAS_DEVICE_WIDTH, 'the budget counts device pixels');
+
+  // Drawn the way DJSemanticWaveform draws the window: the viewport slice
+  // under the canvas, into a box the canvas can back, column for column.
   offscreens.length = 0;
-  const normal = makeFakeCanvas();
-  drawWaveformCached(normal.canvas, BOX, REAL_BINS, 0, 1, false, null, 'normal-full-view');
-  assert.equal(offscreens.length, 0, 'a normal-sized full view still has nothing to gain from caching');
+  const win = scrolled;
+  const box: CanvasBox = { cssWidth: win.width, cssHeight: 64, deviceWidth: Math.round(win.width), deviceHeight: 64, scale: 1, zoom: 1, dpr: 1 };
+  const clip = makeFakeCanvas();
+  drawWaveformCached(clip.canvas, box, REAL_BINS, win.left / wrapWidth, (win.left + win.width) / wrapWidth, false, null, 'edit-clip');
+  assert.equal(clip.canvas.width, box.deviceWidth, 'the visible canvas is backed at full resolution');
+  assert.ok(clip.canvas.width <= MAX_CANVAS_DEVICE_WIDTH);
+  assert.equal(clip.images.length, 0, 'drawn directly, nothing stretched');
+  assert.ok(columnsPainted(clip) >= Math.floor(win.width) - 1, 'one column per pixel of the window');
+  assert.equal(offscreens.length, 0);
 }
 
 {
@@ -715,10 +878,10 @@ function normalizeCalls(calls: ReturnType<typeof makeFakeCanvas>['calls']) {
 
 function modeBins(): WaveBin[] {
   return [
-    // Loud, near full-scale: the case 'clipping' mode must flag.
-    { peak: 0.99, rms: 0.7, min: -0.98, max: 0.99, low: 0.6, mid: 0.2, bright: 0.1, transient: 0.1, color: '#ff3f4f' },
+    // Holds clipped samples: the case 'clipping' mode must flag.
+    { peak: 0.99, rms: 0.7, min: -0.98, max: 0.99, low: 0.6, mid: 0.2, bright: 0.1, transient: 0.1, color: '#ff3f4f', clipped: 3 },
     // Ordinary level: must NOT be flagged, in either non-semantic mode.
-    { peak: 0.5, rms: 0.3, min: -0.45, max: 0.5, low: 0.1, mid: 0.6, bright: 0.2, transient: 0.05, color: '#72ee78' },
+    { peak: 0.5, rms: 0.3, min: -0.45, max: 0.5, low: 0.1, mid: 0.6, bright: 0.2, transient: 0.05, color: '#72ee78', clipped: 0 },
   ];
 }
 const MODE_BOX: CanvasBox = { cssWidth: 2, cssHeight: 16, deviceWidth: 2, deviceHeight: 16, scale: 1, zoom: 1, dpr: 1 };
@@ -752,8 +915,8 @@ const MODE_BOX: CanvasBox = { cssWidth: 2, cssHeight: 16, deviceWidth: 2, device
 }
 
 {
-  // 'clipping': the loud bin (peak 0.99) is flagged red; the ordinary bin
-  // (peak 0.5) stays the plain neutral colour, same as 'plain' mode.
+  // 'clipping': the bin holding clipped samples is flagged red; the ordinary
+  // bin stays the plain neutral colour, same as 'plain' mode.
   const clipping = makeFakeCanvas();
   drawWaveform(clipping.canvas, MODE_BOX, modeBins(), 0, 1, false, null, 'clipping');
   const bodyFills = clipping.calls.filter(
@@ -761,39 +924,47 @@ const MODE_BOX: CanvasBox = { cssWidth: 2, cssHeight: 16, deviceWidth: 2, device
       && ((c.style as string).startsWith('rgba(255, 61, 79') || (c.style as string).startsWith('rgba(188, 196, 214')),
   );
   assert.equal(bodyFills.length, 2, 'one body fill per column at this box width');
-  assert.ok((bodyFills[0].style as string).startsWith('rgba(255, 61, 79'), `column 0 (peak 0.99) must be flagged red, got ${bodyFills[0].style}`);
-  assert.ok((bodyFills[1].style as string).startsWith('rgba(188, 196, 214'), `column 1 (peak 0.5) must stay plain, got ${bodyFills[1].style}`);
+  assert.ok((bodyFills[0].style as string).startsWith('rgba(255, 61, 79'), `column 0 (clipped samples) must be flagged red, got ${bodyFills[0].style}`);
+  assert.ok((bodyFills[1].style as string).startsWith('rgba(188, 196, 214'), `column 1 (none clipped) must stay plain, got ${bodyFills[1].style}`);
 
-  // A bin just under the threshold is not flagged.
-  const belowThreshold = makeFakeCanvas();
-  drawWaveform(belowThreshold.canvas, MODE_BOX, [
-    { peak: 0.98, rms: 0.6, min: -0.9, max: 0.98, low: 0.5, mid: 0.2, bright: 0.1, transient: 0.1, color: '#ff3f4f' },
+  // The drawn peak says nothing about clipping: a normalised waveform's
+  // loudest bin is 1.0 whatever the file's level. Only the clip count flags.
+  const loudestOfNormalised = makeFakeCanvas();
+  drawWaveform(loudestOfNormalised.canvas, MODE_BOX, [
+    { peak: 1, rms: 0.6, min: -1, max: 1, low: 0.5, mid: 0.2, bright: 0.1, transient: 0.1, color: '#ff3f4f', clipped: 0 },
     modeBins()[1],
   ], 0, 1, false, null, 'clipping');
-  const belowFill = belowThreshold.calls.find(
+  const loudestFill = loudestOfNormalised.calls.find(
     (c) => c.kind === 'fillRect' && typeof c.style === 'string'
       && ((c.style as string).startsWith('rgba(255, 61, 79') || (c.style as string).startsWith('rgba(188, 196, 214')),
   );
-  assert.ok(belowFill && (belowFill.style as string).startsWith('rgba(188, 196, 214'), 'peak just under the threshold is not flagged');
+  assert.ok(loudestFill && (loudestFill.style as string).startsWith('rgba(188, 196, 214'), 'a peak of 1.0 with no clipped sample is not flagged');
 }
 
 {
-  // drawWaveformCached: a cached render is keyed on mode too, so switching
-  // modes on an otherwise-unchanged zoomed view invalidates the cache
-  // instead of blitting the wrong colours.
+  // drawWaveformCached: a window is rasterised body, so switching modes on an
+  // otherwise-unchanged zoomed lane must redraw in the new colours instead of
+  // blitting the old mode's window.
   offscreens.length = 0;
-  const semanticCached = makeFakeCanvas();
-  drawWaveformCached(semanticCached.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'mode-key', 'semantic');
-  assert.equal(offscreens.length, 1);
+  const lane = makeFakeCanvas();
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'mode-key', 'semantic');
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.401, 0.526, false, null, 'mode-key', 'semantic');
+  assert.equal(offscreens.length, 1, 'the semantic window');
 
-  const plainCached = makeFakeCanvas();
-  drawWaveformCached(plainCached.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'mode-key', 'plain');
-  assert.equal(offscreens.length, 2, 'a mode switch at the same cacheKey/viewport builds a NEW offscreen render, not a stale blit');
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.402, 0.527, false, null, 'mode-key', 'plain');
+  assert.equal(lane.images.length, 0, 'a mode switch never blits the old mode’s window');
+  assert.ok(
+    lane.calls.some((c) => typeof c.style === 'string' && c.style.startsWith('rgba(188, 196, 214')),
+    'the switched frame is painted in the plain colour',
+  );
 
-  // Same mode, same everything again: reuses the render already built.
-  const plainCached2 = makeFakeCanvas();
-  drawWaveformCached(plainCached2.canvas, LANE, REAL_BINS, 0.4, 0.525, false, null, 'mode-key', 'plain');
-  assert.equal(offscreens.length, 2, 'the same mode still reuses its own cached render');
+  // Scrolling on in the new mode builds a window of its own, in its colours.
+  clearFrame(lane);
+  drawWaveformCached(lane.canvas, LANE, REAL_BINS, 0.403, 0.528, false, null, 'mode-key', 'plain');
+  assert.equal(offscreens.length, 2, 'a new window for the new mode');
+  assert.ok(offscreens[1].calls.some((c) => typeof c.style === 'string' && c.style.startsWith('rgba(188, 196, 214')));
+  assert.equal(lane.images.length, 1);
 }
 
 console.log('DJSemanticWaveform.b12.test.ts OK');

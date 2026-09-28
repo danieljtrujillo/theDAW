@@ -596,8 +596,10 @@ def test_step_eleven_rebuilds_the_expression_indexes_and_rewrites_no_row(
     before = _row_dump(old, V9_COLUMNS)
     old.close()
 
+    # A v10 file opens at the current version, which step 11 is no longer the
+    # last of; every later step must leave the entry rows alone too.
     db = LibraryDB(v10_library)
-    assert db.schema_version() == SCHEMA_VERSION == PROVIDER_CHIRP_VERSION
+    assert db.schema_version() == SCHEMA_VERSION >= PROVIDER_CHIRP_VERSION
     assert _row_dump(db._conn, V9_COLUMNS) == before
     assert set(PROVIDER_INDEXES) <= _indexes(db._conn)
 

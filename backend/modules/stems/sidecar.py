@@ -179,8 +179,9 @@ def resolve_config() -> SidecarConfig:
         # Default to the package's dedicated, isolated venv. We create it
         # on demand (see _bootstrap_sidecar_venv) so the sidecar's heavy
         # ML deps never collide with the main app's environment. The
-        # integration-package's requirements.txt pins scipy==1.11.4 etc.
-        # which is incompatible with our main venv's numpy/scipy stack.
+        # integration-package's requirements.txt pins its own exact versions
+        # (demucs, torchcodec, LARSNET's stack), which must not be resolved
+        # together with the main venv's packages.
         python_exe = _sidecar_venv_python(package_path)
     port_env = os.getenv("theDAW_STEMS_PORT")
     port = int(port_env) if (port_env and port_env.isdigit()) else None
@@ -715,10 +716,9 @@ def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
 
     Prefer ``uv pip install --python <exe>`` because the host project
     is uv-based and uv resolves conflicts that classic pip rejects with
-    ResolutionImpossible (matters here because integration-package's
-    requirements.txt pins old scipy/numpy that pip refuses to reconcile
-    against the main env's modern versions, but uv handles via a fresh
-    resolver pass when targeting a clean venv).
+    ResolutionImpossible (integration-package's requirements.txt pins
+    exact versions and takes torch from the PyTorch CUDA index, which uv
+    resolves in one fresh pass when targeting a clean venv).
     """
     # Prefer uv when available — it's the host project's package manager
     # and side-steps pip's classic resolver entirely.
@@ -910,9 +910,12 @@ def _ensure_windows_decode_support(cfg: SidecarConfig) -> dict:
 def _materialize_filtered_requirements(cfg: SidecarConfig) -> Path:
     """Read requirements.txt, drop entries in _FILTERED_REQS, write the
     cleaned list to ``<pkg>/.sidecar_venv_requirements.txt`` and return
-    that path. We do this because audio-separator's newer versions pull
-    scipy>=1.13.0 while the integration-package pins scipy==1.11.4 →
-    ResolutionImpossible. The package gracefully degrades without it."""
+    that path. audio-separator was filtered because it needed
+    scipy>=1.13.0 while the integration-package pinned scipy==1.11.4
+    (ResolutionImpossible). The requirements now pin scipy 1.18.1, with
+    which audio-separator 0.47.0 resolves, but it stays filtered until a
+    sidecar install with it is tested. The package gracefully degrades
+    without it."""
     src = cfg.package_path / "requirements.txt"
     dst = cfg.package_path / ".sidecar_venv_requirements.txt"
     cleaned_lines: list[str] = []

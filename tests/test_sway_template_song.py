@@ -54,7 +54,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sidecar, "STATIC_MOUNTED", True)
     monkeypatch.setattr(catalog, "EXAMPLES_DIR", examples)
     monkeypatch.setattr(sway_api, "_template_media_registered", False)
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     monkeypatch.setattr(media_access, "_stand_ins", {})
     monkeypatch.delenv("theDAW_MEDIA_ROOTS", raising=False)

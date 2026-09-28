@@ -11,7 +11,7 @@
 export class Analyser {
   private analyser: AnalyserNode;
   private source: AudioNode;
-  private dataArray: Uint8Array;
+  private dataArray: Uint8Array<ArrayBuffer>;
 
   constructor(node: AudioNode) {
     this.source = node;

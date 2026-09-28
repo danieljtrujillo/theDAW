@@ -23,6 +23,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import {
   MetronomeScheduler,
   METRONOME_TICK_MS,
@@ -75,6 +76,7 @@ export const useMetronomeStore = create<MetronomeState>()(
     }),
     {
       name: 'thedaw-metronome',
+      storage: persistStorage(),
       version: 1,
       // Settings saved before the click mode existed load with quarters; a
       // stored count-in or mode the UI does not offer loads as its default.

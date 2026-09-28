@@ -28,8 +28,8 @@ export interface SynthVoice {
 export const mtof = (midi: number): number => 440 * Math.pow(2, (midi - 69) / 12);
 
 // Soft-clip distortion curves, cached by drive amount (building one per note is wasteful).
-const distCurves = new Map<number, Float32Array>();
-export const distCurve = (amount: number): Float32Array => {
+const distCurves = new Map<number, Float32Array<ArrayBuffer>>();
+export const distCurve = (amount: number): Float32Array<ArrayBuffer> => {
   const cached = distCurves.get(amount);
   if (cached) return cached;
   const n = 1024;

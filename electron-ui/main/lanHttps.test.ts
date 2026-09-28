@@ -173,8 +173,8 @@ const ENABLED = {
   );
 }
 
-// rendererDevPort: the port the renderer dev server really got (it steps past
-// 5173 when another program holds it), or null when there is no dev server.
+// rendererDevPort: the port the renderer dev server really got, read from the
+// URL electron-vite hands the main process, or null when there is no dev server.
 {
   assert.equal(rendererDevPort('http://localhost:5175/'), 5175);
   assert.equal(rendererDevPort('http://127.0.0.1:5173'), 5173);

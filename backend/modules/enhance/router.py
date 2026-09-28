@@ -3,6 +3,8 @@
 All 5 are implemented via FFmpeg DSP:
   - Classical Upsample: libsoxr VHQ sample-rate conversion.
   - Super-Res:          soxr upsample + aexciter + treble shelf for bandwidth extension.
+  (Both fall back to swr at matching quality when this ffmpeg has no libsoxr —
+  see backend/lib/resampler.py; a hard-coded soxr failed the render there.)
   - Un-Crush:           afftdn denoiser + equalizer dip + aexciter for codec artifact removal.
   - Studio Enhance:     afftdn + presence EQ boost + EBU R128 loudnorm.
   - Neural Codec:       Opus encode/decode re-synthesis for RVQ-like degradation.
@@ -34,6 +36,7 @@ from ...lib import audio_analysis, ffmpeg
 from ...lib.audio_depth import ffmpeg_pcm_args, probe_depth
 from ...lib.params import ParamSpec as P
 from ...lib.params import ToolSpec
+from ...lib.resampler import hq_resampler
 
 FAMILY = "enhance"
 
@@ -81,7 +84,7 @@ def _wet_dry_filter_args(
     their own filter_complex in ``_render_with_source_rate`` instead.
 
     Both branches read from the same ``[0:a]`` input stream at the same
-    native sample rate/channel layout, and the wet chain here (soxr
+    native sample rate/channel layout, and the wet chain here (soxr/swr
     precision-only resample, aexciter, treble) does not change sample count
     or channel layout — so no explicit reformatting is needed before
     ``amix``. ``normalize=0`` + explicit weights makes ``amix`` do a true
@@ -221,7 +224,7 @@ async def _render_with_source_rate(
 def _upsample(params: dict) -> list[str]:
     sr = int(float(params["targetSR"]))
     prec = int(params["precision"])
-    return ["-af", f"aresample=resampler=soxr:precision={prec}", "-ar", str(sr)]
+    return ["-af", f"aresample={hq_resampler(prec)}", "-ar", str(sr)]
 
 
 # ── Super-Res / Bandwidth Extension (filter) ─────────────────────────────────
@@ -234,8 +237,9 @@ def _super_res(params: dict) -> list[str]:
     # Map guidance (1-7) to aexciter amount (2-14) and treble gain (1-6 dB)
     exciter_amount = guidance * 2
     treble_gain = max(1.0, guidance * 0.86)  # ~1-6 dB
+    hq = hq_resampler(28)
     wet_effect = (
-        f"aresample=resampler=soxr:precision=28,"
+        f"aresample={hq},"
         f"aexciter=amount={exciter_amount:.1f}:freq=7500,"
         f"treble=g={treble_gain:.1f}:f=12000"
     )
@@ -256,10 +260,7 @@ def _super_res(params: dict) -> list[str]:
     # `latency=true` makes alimiter compensate its own ~5ms lookahead
     # buffering so the limiter doesn't reintroduce a timeline offset of
     # its own (verified: impulse lag 219 samples without it, 0 with it).
-    final_stage = (
-        f"aresample={sr}:resampler=soxr:precision=28,"
-        f"alimiter=limit=0.98:level=false:latency=true"
-    )
+    final_stage = f"aresample={sr}:{hq},alimiter=limit=0.98:level=false:latency=true"
     if mix >= 1.0:
         return ["-af", f"{wet_effect},{final_stage}"]
     if mix <= 0.0:
@@ -268,7 +269,7 @@ def _super_res(params: dict) -> list[str]:
         # it anyway silently squashed a legitimate 1.0 peak to 0.98. Only
         # the target-rate resample still applies (the resolution change
         # this tool exists for, independent of mix).
-        return ["-af", f"anull,aresample={sr}:resampler=soxr:precision=28"]
+        return ["-af", f"anull,aresample={sr}:{hq}"]
     return _wet_dry_filter_args(wet_effect, mix, final_stage)
 
 
@@ -497,7 +498,8 @@ TOOLS: list[ToolSpec] = [
         gpu=False,
         flagship=True,
         license="MIT (weights CC-BY-NC, OK free-use)",
-        engine="soxr + exciter (AudioSR later)",
+        engine="soxr (swr HQ without libsoxr) + exciter (AudioSR later)",
+        prefers=("soxr",),
         handler=_super_res,
         description="Reconstruct missing highs; upscale low-rate audio to 48 kHz studio quality.",
         params=[
@@ -574,9 +576,13 @@ TOOLS: list[ToolSpec] = [
         family=FAMILY,
         viz="spectro",
         license="LGPL",
-        engine="ffmpeg:soxr",
+        engine="ffmpeg:soxr (swr HQ without libsoxr)",
+        prefers=("soxr",),
         handler=_upsample,
-        description="Transparent libsoxr VHQ sample-rate conversion (the non-neural fallback).",
+        description=(
+            "Transparent libsoxr VHQ sample-rate conversion (the non-neural "
+            "fallback); ffmpeg's swr at matching quality when ffmpeg lacks libsoxr."
+        ),
         params=[
             P(
                 "targetSR",

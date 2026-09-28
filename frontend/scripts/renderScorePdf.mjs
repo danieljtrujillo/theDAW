@@ -797,8 +797,11 @@ if (args.svg) {
     if (i === 0) bytesWritten = Buffer.byteLength(text, 'utf8');
   }
 } else {
-  // Node resolves the UMD build, so the named export arrives under default.
-  const svg2pdfModule = await import('svg2pdf.js');
+  // The ES build, named: svg2pdf.js 2.8 marks its package "type": "module"
+  // while "main" is still the UMD build, and Node then runs that UMD file as
+  // an ES module, where it reads jsPDF off an undefined `this` and throws.
+  // The ES build is the one bundlers already pick through "module".
+  const svg2pdfModule = await import('svg2pdf.js/dist/svg2pdf.es.min.js');
   const svg2pdf = svg2pdfModule.svg2pdf || svg2pdfModule.default?.svg2pdf;
   if (typeof svg2pdf !== 'function') fail('svg2pdf.js did not export svg2pdf');
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });

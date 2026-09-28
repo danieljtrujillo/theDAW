@@ -86,6 +86,9 @@ class _SidecarState:
         self.audio: dict[str, bytes] = {}
         self.audio_hits: list[str] = []
         self.listing_hits = 0
+        # False makes it a squatter: it serves the same listing path but does
+        # not answer Lyria's /api/settings/status the way the real app does.
+        self.is_lyria = True
 
 
 def _handler_for(state: _SidecarState) -> type[http.server.BaseHTTPRequestHandler]:
@@ -101,6 +104,17 @@ def _handler_for(state: _SidecarState) -> type[http.server.BaseHTTPRequestHandle
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib method name
+            if self.path == "/api/settings/status" and state.is_lyria:
+                # The shape sidecar._is_lyria_server checks for.
+                body = json.dumps(
+                    {
+                        "geminiServerKey": False,
+                        "openRouterServerKey": False,
+                        "defaultProvider": "gemini",
+                    }
+                ).encode("utf-8")
+                self._send(200, body, "application/json")
+                return
             if self.path == "/api/generations":
                 state.listing_hits += 1
                 body = json.dumps({"generations": state.generations}).encode("utf-8")
@@ -325,6 +339,29 @@ def test_sidecar_not_running_is_a_no_op_with_a_reason(
     result = asyncio.run(importer.sync_generations())
 
     assert result == {"imported": [], "skipped": 0, "reason": "sidecar not running"}
+    assert _entries() == []
+    assert not importer.seen_map_path().exists()
+
+
+def test_another_program_on_the_port_is_never_asked_for_generations(
+    lyria_env: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Some other HTTP server holds the sidecar's port and happens to serve a
+    /api/generations path. The 30 s sync must check it is Lyria first: it is
+    never asked for a listing, nothing is downloaded, nothing is imported."""
+    state = _SidecarState()
+    state.is_lyria = False
+    state.generations = [_generation("squat-1", title="Not Lyria")]
+    state.audio = {"/generations/squat-1.wav": WAV_ONE}
+
+    with _fake_sidecar(state) as port:
+        _point_sidecar_at(monkeypatch, port)
+        result = asyncio.run(importer.sync_generations())
+
+    assert result["imported"] == []
+    assert "not Lyria" in result["reason"]
+    assert state.listing_hits == 0
+    assert state.audio_hits == []
     assert _entries() == []
     assert not importer.seen_map_path().exists()
 

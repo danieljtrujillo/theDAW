@@ -70,6 +70,13 @@ export default defineConfig({
     },
     server: {
       port: 5173,
+      // Never slide to 5174. The window's saved settings (every persisted store
+      // in localStorage) and its mic/MIDI permissions belong to the ORIGIN, and
+      // the port is part of it, so a silent move opened the app with all of them
+      // empty. The launchers stop first and name whatever holds 5173
+      // (python -m backend.ports --require-frontend-port); this makes a program
+      // that grabs the port after that check a loud error, not a new origin.
+      strictPort: true,
       // Bind ALL interfaces (not loopback) so a phone on the LAN can reach the
       // companion (mobile.html + the /api control-bus proxy) while the DESKTOP
       // app is the host. electron-vite/Vite default to localhost-only, which is

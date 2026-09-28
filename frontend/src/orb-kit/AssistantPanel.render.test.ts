@@ -16,9 +16,17 @@
  * exactly ONE live indicator — the Transcript's — and `statusText` appears
  * only here, in the composer footer.
  *
+ * Plus the settings drawer (Model Info): its tab strip is a real tablist, and
+ * nothing in the drawer is drawn under 12px or as a small mono label.
+ *
  *   cd frontend && npx tsx src/orb-kit/AssistantPanel.render.test.ts
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 // The panel's module graph reaches zustand `persist` stores, which read
 // localStorage as soon as they are created. Give them one before importing.
@@ -46,6 +54,9 @@ const {
     composerStatusIsLiveRegion,
     contextMeterView,
     seedConversationId,
+    AssistantSettingsTabs,
+    settingsTabId,
+    settingsPanelId,
 } = await import('./AssistantPanel.tsx');
 
 /** Defaults for the composer-status helpers; each case overrides what it tests. */
@@ -196,5 +207,47 @@ assert.equal(contextMeterView(usage, 100).barClass, 'bg-red-500');
 // The colour is the percentage's business, not the reading's: an estimate that
 // says the window is nearly full is just as urgent.
 assert.equal(contextMeterView(null, 95).barClass, 'bg-red-500');
+
+// ---------------------------------------------------------------------------
+// The settings drawer — a real tablist, 12px and up
+// ---------------------------------------------------------------------------
+
+/** Text-size classes under 12px (text-[8px] .. text-[11.5px]). */
+const SMALL_TEXT = /text-\[(?:[0-9]|1[01])(?:\.[0-9]+)?px\]/;
+
+for (const active of ['model', 'keys'] as const) {
+    const other = active === 'model' ? 'keys' : 'model';
+    const html = renderToStaticMarkup(createElement(AssistantSettingsTabs, { active, onSelect: () => {} }));
+    assert.ok(html.includes('role="tablist"'), 'the strip is a tablist');
+    assert.ok(html.includes('aria-label="Assistant settings"'), 'the tablist is named');
+    assert.equal(html.split('role="tab"').length - 1, 2, 'two tabs');
+    const tabTag = (tab: string) => html.match(new RegExp(`<button[^>]*id="${settingsTabId(tab as 'model')}"[^>]*>`))?.[0] ?? '';
+    assert.match(tabTag(active), /aria-selected="true"/, `${active} says it is selected`);
+    assert.match(tabTag(other), /aria-selected="false"/, `${other} says it is not`);
+    assert.ok(tabTag(active).includes(`aria-controls="${settingsPanelId(active)}"`), 'the selected tab names its panel');
+    assert.ok(!tabTag(other).includes('aria-controls'), 'a tab whose panel is not rendered names none');
+    assert.match(tabTag(active), /tabindex="0"/);
+    assert.match(tabTag(other), /tabindex="-1"/);
+    assert.ok(html.includes('Chat') && html.includes('Keys'));
+    assert.ok(!SMALL_TEXT.test(html), 'no tab text under 12px');
+    assert.ok(tabTag(active).includes('text-xs font-bold'), 'tabs are bold 12px sans');
+}
+
+// The drawer's own markup, read from the source: the block between the
+// Model Info switch and the transcript. Every class there is 12px or more,
+// and no label is small uppercase mono.
+{
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'AssistantPanel.tsx'), 'utf8');
+    const start = source.indexOf('{showModelInfo && (');
+    const end = source.indexOf('{/* Messages */}', start);
+    assert.ok(start > 0 && end > start, 'found the settings drawer');
+    const drawer = source.slice(start, end);
+    const small = drawer.match(new RegExp(SMALL_TEXT.source, 'g')) ?? [];
+    assert.deepEqual(small, [], 'no text under 12px in the settings drawer');
+    assert.ok(!/font-mono uppercase/.test(drawer), 'no small uppercase mono labels in the settings drawer');
+    assert.ok(drawer.includes('role="tabpanel"'), 'the panels are tabpanels');
+    assert.ok(drawer.includes("aria-labelledby={settingsTabId('model')}"));
+    assert.ok(drawer.includes("aria-labelledby={settingsTabId('keys')}"));
+}
 
 console.log('AssistantPanel render decisions: all assertions passed');

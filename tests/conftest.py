@@ -36,6 +36,27 @@ def pytest_addoption(parser):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="session", autouse=True)
+def settings_file_outside_the_checkout(tmp_path_factory):
+    """The process-wide settings store reads theDAW_SETTINGS_PATH, else
+    data/settings.json of the checkout running the suite. Any test reaching
+    it without its own store (the notation engine reads its section on every
+    arrangement) opened that file, and a file at another schema was migrated
+    and written back: run from the app tree, that rewrote the user's
+    settings. The session gets a settings file of its own; a test that sets
+    the variable or the store itself still wins."""
+    from backend.modules.settings import router as settings_router
+
+    patch = pytest.MonkeyPatch()
+    patch.setenv(
+        "theDAW_SETTINGS_PATH",
+        str(tmp_path_factory.mktemp("settings") / "settings.json"),
+    )
+    patch.setattr(settings_router, "_store", None)
+    yield
+    patch.undo()
+
+
 @pytest.fixture(scope="session")
 def device():
     """Best available compute device for this session."""
@@ -119,7 +140,8 @@ def test_flash_attention_available(sa3_model, request):
     except ImportError:
         pytest.fail(
             "flash_attn is not importable. It is a base dependency on Windows "
-            "(pyproject pins a cu128/cp310 wheel gated to sys_platform == 'win32'), "
+            "(pyproject pins a torch 2.14 / cu130 wheel per Python minor, gated to "
+            "sys_platform == 'win32'), "
             "so on Windows run `uv sync` and check the wheel matches this torch/CUDA/"
             "Python — see docs/windows/troubleshooting.md. On Linux/macOS it is not "
             "installed by design and the model uses the SDPA fallback; this check is "

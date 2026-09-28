@@ -41,7 +41,10 @@ credentialed response. The middleware now only credentials loopback origins
 from __future__ import annotations
 
 import json
+import threading
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -58,6 +61,8 @@ from backend.modules.plugin.gan_manifest import GanManifest
 from backend.modules.project import media_access
 from backend.modules.project import router as project_router
 from backend.modules.project.router import router as project_api
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _request(headers: dict[str, str], client: tuple[str, int] | None) -> Request:
@@ -693,7 +698,9 @@ def test_save_without_embed_audio_does_not_widen_clip_audio_for_an_unauthenticat
     must never reach ``_register_project_media`` -> ``media_access.register_paths``
     -> ``register_root``, which would otherwise permanently widen the
     ``/clip-audio`` allowlist to whatever folder the request body named."""
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     widened = tmp_path / "windows-temp"
     widened.mkdir()
@@ -830,15 +837,18 @@ def _known_project_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     on-disk mirror, and the project router's recent-files list -- into
     ``tmp_path``. Without this, a save/load/save-session test that reaches
     ``media_access.register_root`` calls the real ``_persist()`` against the
-    live ``data/media_roots.json`` (and the live ``data/recent_projects.json``
-    via the recent-files list), same as two tests already did individually
-    before this was hoisted; a whole run of this file previously left dozens
-    of pytest temp-dir paths in both files on disk."""
+    live ``data/clip_audio_roots.json`` and ``data/media_roots.json`` (and the
+    live ``data/recent_projects.json`` via the recent-files list), same as two
+    tests already did individually before this was hoisted; a whole run of
+    this file previously left dozens of pytest temp-dir paths in those files
+    on disk."""
     projects = tmp_path / "known-projects"
     library = tmp_path / "known-library"
     monkeypatch.setattr(known_paths, "projects_dir", lambda: projects)
     monkeypatch.setattr(backend_paths, "library_root", lambda: library)
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     monkeypatch.setattr(project_router, "_RECENT_PATH", tmp_path / "recent.json")
     monkeypatch.setattr(project_router, "_recent_files", [])
@@ -851,21 +861,28 @@ def _isolated_media_and_recent_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Safety net, autouse for every test in this file: redirects
-    ``media_access``'s session-root allowlist (and its on-disk mirror) and
-    the project router's recent-files list into this test's own
-    ``tmp_path`` before the test body runs, so a test that reaches
-    ``media_access.register_root`` -- directly, or indirectly via
+    ``media_access``'s session-root allowlist (and its on-disk mirror), the
+    project router's recent-files list and the known-paths registry into
+    this test's own ``tmp_path`` before the test body runs, so a test that
+    reaches ``media_access.register_root`` -- directly, or indirectly via
     ``/save``/``/load``/``/save-session`` -- can never touch the real
-    ``data/media_roots.json`` or ``data/recent_projects.json``, even if it
-    forgets to call ``_known_project_roots`` itself. ``_known_project_roots``
-    re-applies the same patches (redundant but harmless -- same test, same
-    ``tmp_path``, same ``monkeypatch`` instance) when a test also needs
+    ``data/clip_audio_roots.json``, ``data/media_roots.json``,
+    ``data/recent_projects.json`` or ``data/known_paths.json`` (the recent
+    list records every saved or opened file there), even if it forgets to call
+    ``_known_project_roots`` itself. ``_known_project_roots`` re-applies the
+    same patches (redundant but harmless -- same test, same ``tmp_path``,
+    same ``monkeypatch`` instance) when a test also needs
     ``known_paths.projects_dir()``/``paths.library_root()`` redirected."""
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
+    monkeypatch.setattr(media_access, "_needs_write", False)
     monkeypatch.setattr(project_router, "_RECENT_PATH", tmp_path / "recent.json")
     monkeypatch.setattr(project_router, "_recent_files", [])
     monkeypatch.setattr(project_router, "_recent_seen", None)
+    monkeypatch.setattr(known_paths, "_STORE_PATH", tmp_path / "known_paths.json")
+    monkeypatch.setattr(known_paths, "_GRANTS", {})
 
 
 # ---------------------------------------------------------------------------
@@ -929,7 +946,9 @@ def test_load_does_not_widen_clip_audio_for_an_unauthenticated_lan_caller(
     project_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A refused /load must never reach _register_project_media."""
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     resp = project_client.post(
         "/api/project/load", json={"path": str(tmp_path / "song.tasmo")}
@@ -1343,16 +1362,128 @@ def test_extract_audio_reports_the_real_extracted_path_not_a_hand_built_one(
 
 
 # ---------------------------------------------------------------------------
+# The real app, lifespan included
+# ---------------------------------------------------------------------------
+
+
+def _checkout_state() -> dict[str, tuple[int, int]]:
+    """Every file under the checkout's data/ and logs/, with its size and
+    mtime: what a test that starts the real app must leave as it found."""
+    state: dict[str, tuple[int, int]] = {}
+    for top in (REPO / "data", REPO / "logs"):
+        if not top.is_dir():
+            continue
+        for path in top.rglob("*"):
+            if path.is_file():
+                st = path.stat()
+                state[str(path.relative_to(REPO))] = (st.st_size, st.st_mtime_ns)
+    return state
+
+
+#: Threads the startup hooks leave running after the lifespan has started:
+#: the bundled plugin build, the underfit update check and the two lineage
+#: cache warmers (each opens the library store). Joined before the fixture
+#: compares data/ and before its patches are undone: a warmer that outlived
+#: the test opened the store at the checkout's data/generations.
+_STARTUP_WRITERS = (
+    # The library opens off the startup (library.router.start_opening); one
+    # that outlived the test would publish its store after the fixture's
+    # patches were undone.
+    "library-open",
+    "plugin-bundled",
+    "underfit-update-check",
+    "lineagescale-warm",
+    "lineagescale-explore-warm",
+)
+
+
+def _stop_no_sidecars() -> None:
+    """Stands in for core/teardown.stop_all_sidecars under ``real_app``. The
+    real one also stops the magenta engine and the other sidecars this
+    checkout started; run from the app tree, those are the running app's."""
+
+
+@pytest.fixture
+def real_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
+    """backend.server's app, set up by :func:`real_app_context`."""
+    with real_app_context(tmp_path, monkeypatch) as app:
+        yield app
+
+
+@contextmanager
+def real_app_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[FastAPI]:
+    """backend.server's app with every data folder its lifespan writes moved
+    into tmp_path. The startup reads and migrates settings.json, opens the
+    library database, builds the bundled plugins into data/plugins, caches the
+    underfit update check and runs every other module's startup hook; run
+    as-is from a checkout, all of that landed in the checkout's own data/
+    (the live app's, from the app tree). The settings and library stores are
+    process-wide and may already point at data/ from an earlier test, so both
+    are dropped and rebuilt under the redirected folders; the plugin folder
+    and the update-check file are module constants fixed at import, so they
+    are moved by hand. The shutdown's sidecar sweep is replaced (see
+    ``_stop_no_sidecars``). Fails when data/ or logs/ changed anyway."""
+    from backend.core import teardown
+    from backend.modules.library import router as library_router
+    from backend.modules.lineagescale import explore as lineage_explore
+    from backend.modules.lineagescale import router as lineage_router
+    from backend.modules.settings import router as settings_router
+    from backend.modules.underfit import updater as underfit_updater
+    from backend.server import app
+
+    data = tmp_path / "app-data"
+    data.mkdir()
+    monkeypatch.setenv("theDAW_DATA_DIR", str(data))
+    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path / "app-generations"))
+    monkeypatch.setenv("theDAW_SETTINGS_PATH", str(data / "settings.json"))
+    # The dashboard is a separate process; a test has no use for one.
+    monkeypatch.setenv("theDAW_UNDERFIT_NO_AUTO_SPAWN", "1")
+    monkeypatch.setattr(teardown, "stop_all_sidecars", _stop_no_sidecars)
+    monkeypatch.setattr(settings_router, "_store", None)
+    monkeypatch.setattr(library_router, "_store", None)
+    monkeypatch.setattr(plugin_router, "GAN_DIR", data / "plugins")
+    monkeypatch.setattr(plugin_router, "RUNTIME_DIR", data / "plugins" / "_runtime")
+    monkeypatch.setattr(underfit_updater, "_STATE", data / "underfit_update.json")
+    # The warmers sleep before they start (20 s and 5 s) so a real start is
+    # not slowed; the fixture joins them, so they start at once here.
+    monkeypatch.setattr(lineage_explore, "WARM_DELAY_SEC", 0.0)
+    monkeypatch.setattr(lineage_router, "WARM_DELAY_SEC", 0.0)
+    before = _checkout_state()
+    try:
+        yield app
+    finally:
+        for thread in threading.enumerate():
+            if thread.name in _STARTUP_WRITERS:
+                thread.join(timeout=120)
+        database = getattr(library_router._store, "db", None)
+        if database is not None:
+            database.close()
+    assert _checkout_state() == before
+
+
+def test_the_real_app_starts_without_touching_the_checkout_data(
+    real_app: FastAPI, tmp_path: Path
+) -> None:
+    """The startup writes the redirected settings file; the checkout's data/
+    is compared by the fixture after the lifespan has run."""
+    with TestClient(real_app, client=("127.0.0.1", 51000)) as client:
+        assert client.get("/api/build-info").status_code == 200
+    assert (tmp_path / "app-data" / "settings.json").is_file()
+
+
+# ---------------------------------------------------------------------------
 # CSRF -- the real GET /api/pairing/token and POST .../regenerate wiring
 # ---------------------------------------------------------------------------
 
 
-def test_real_pairing_routes_refuse_a_csrf_page_from_loopback() -> None:
+def test_real_pairing_routes_refuse_a_csrf_page_from_loopback(
+    real_app: FastAPI,
+) -> None:
     """Proves the actual routes registered in backend/server.py carry
     refuse_cross_site, not just the mirror above."""
-    from backend.server import app
-
-    with TestClient(app, client=("127.0.0.1", 51000)) as client:
+    with TestClient(real_app, client=("127.0.0.1", 51000)) as client:
         get_resp = client.get(
             "/api/pairing/token", headers={"origin": "https://evil.example"}
         )
@@ -1367,10 +1498,10 @@ def test_real_pairing_routes_refuse_a_csrf_page_from_loopback() -> None:
         assert pairing.get_token() == old
 
 
-def test_real_pairing_route_answers_the_desktop_shell_over_loopback() -> None:
-    from backend.server import app
-
-    with TestClient(app, client=("127.0.0.1", 51000)) as client:
+def test_real_pairing_route_answers_the_desktop_shell_over_loopback(
+    real_app: FastAPI,
+) -> None:
+    with TestClient(real_app, client=("127.0.0.1", 51000)) as client:
         resp = client.get("/api/pairing/token")
         assert resp.status_code == 200
         assert resp.json()["token"] == pairing.get_token()
@@ -1381,10 +1512,10 @@ def test_real_pairing_route_answers_the_desktop_shell_over_loopback() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cors_loopback_dev_origin_allowed_without_credentials() -> None:
-    from backend.server import app
-
-    with TestClient(app) as client:
+def test_cors_loopback_dev_origin_allowed_without_credentials(
+    real_app: FastAPI,
+) -> None:
+    with TestClient(real_app) as client:
         resp = client.options(
             "/api/build-info",
             headers={
@@ -1402,10 +1533,8 @@ def test_cors_loopback_dev_origin_allowed_without_credentials() -> None:
         }
 
 
-def test_cors_packaged_app_exact_origin() -> None:
-    from backend.server import app
-
-    with TestClient(app) as client:
+def test_cors_packaged_app_exact_origin(real_app: FastAPI) -> None:
+    with TestClient(real_app) as client:
         resp = client.options(
             "/api/build-info",
             headers={
@@ -1416,14 +1545,14 @@ def test_cors_packaged_app_exact_origin() -> None:
         assert resp.headers.get("access-control-allow-origin") == "app://."
 
 
-def test_cors_refuses_an_app_scheme_host_the_packaged_app_never_uses() -> None:
+def test_cors_refuses_an_app_scheme_host_the_packaged_app_never_uses(
+    real_app: FastAPI,
+) -> None:
     """The renderer's ``scheme: 'app'`` registration has no host, so
     ``app://.`` is the only origin it can ever produce -- a bare
     ``app://.*`` would also match ``app://evil``, which that scheme can
     never actually emit but a forged Origin header could still claim."""
-    from backend.server import app
-
-    with TestClient(app) as client:
+    with TestClient(real_app) as client:
         resp = client.options(
             "/api/build-info",
             headers={
@@ -1434,10 +1563,8 @@ def test_cors_refuses_an_app_scheme_host_the_packaged_app_never_uses() -> None:
         assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}
 
 
-def test_cors_refuses_a_remote_site_origin() -> None:
-    from backend.server import app
-
-    with TestClient(app) as client:
+def test_cors_refuses_a_remote_site_origin(real_app: FastAPI) -> None:
+    with TestClient(real_app) as client:
         resp = client.options(
             "/api/build-info",
             headers={

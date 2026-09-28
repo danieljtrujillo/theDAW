@@ -7,22 +7,29 @@ import { formatCount } from './lineageScaleModel';
  *
  * The classic graph (`LineageModal`'s `LineageView`) draws every song in the
  * library at once. On a small library that is the right picture and nothing
- * here changes it. On the user's real library it is 194,833 nodes, 475,174
- * links and a 128 MB answer, and the page dies — so on a library that size the
- * classic view is not offered as a choice the user can make and regret: the
- * button is there, disabled, saying why, and it is NEVER MOUNTED, because
- * mounting it is what fires the request.
+ * here changes it. On the library this host was written against it was
+ * 194,833 nodes, 475,174 links and a 128 MB answer, and the page died. So past
+ * the backend's limit the scale view opens by default and the classic view is
+ * NOT MOUNTED until the user asks for it, because mounting it is what fires
+ * the request.
+ * The Classic tab stays on screen, disabled, with the warning and an "Open
+ * anyway" key beside it: the 2,000 limit is a threshold, not a measurement of
+ * where the drawing fails, and a view that works on this library stays
+ * reachable.
  *
- * Which view opens is therefore the backend's call, not a preference:
- * `/summary`'s `full_view_ok` (with_lineage <= 2000). A backend that does not
- * have this module at all answers 404 — an older build — and that falls back
- * to exactly today's behaviour, the classic view, with nothing alarming shown.
+ * Which view opens by default is the backend's call: `/summary`'s
+ * `full_view_ok` (with_lineage <= `full_view_limit`, 2,000). A backend that does not have this
+ * module at all answers 404 — an older build — and that falls back to exactly
+ * the old behaviour, the classic view, with nothing alarming shown.
  *
  * ONLY a 404 means that. Any other failure — a 500, a 503 while the library is
- * still opening, a dropped request — leaves the library's size unknown, and
- * "unknown" must never be read as "small": on the real library that mounts the
- * classic view and brings back the crash. So a non-404 failure stays on the new
- * view, says so, and offers a retry.
+ * still opening, a dropped request — leaves the library's size unknown. The
+ * scale view opens, the failure is said with a Retry, and the Classic tab is
+ * enabled with a warning that the size is unknown: not knowing the size is a
+ * reason to say so, not to take the view away. Only a pick made on this mount
+ * opens the classic view then; a choice remembered from before a reload does
+ * not, because a reload is how a user leaves a drawing that stopped
+ * responding, and a 503 while the library opens must not put them back in it.
  *
  * The props are the ones `DAWCenterPanel` already passes to `LineageView`, so
  * mounting this instead is a one-line change at the import.
@@ -40,59 +47,71 @@ const CHOICE_KEY = 'thedaw.learnMode';
 
 /* ─────────────────────────────── the decision ────────────────────────────── */
 
+/** The limit the warning quotes when `/summary` does not send
+ *  `full_view_limit` (a backend older than that field). The backend's own
+ *  number, when sent, is the one that decided, so it is the one quoted. */
+export const FULL_VIEW_LIMIT = 2000;
+
 export interface LearnDecision {
   mode: LearnMode;
-  /** False when the classic view would certainly fail to load. */
+  /** False while the Classic tab waits behind "Open anyway". */
   classicAllowed: boolean;
-  /** Why it is not allowed, in the library's real numbers. '' when allowed. */
+  /** The warning about the classic view, in the library's real numbers. ''
+   *  when there is nothing to warn about. */
   reason: string;
+  /** The Classic tab is disabled and "Open anyway" mounts it. */
+  canOpenAnyway: boolean;
 }
 
 /**
  * Why `with_lineage`: the classic view draws the songs that HAVE relationships
- * — that is the drawing that will not fit — and it is the number the backend
- * already counts for `full_view_ok`.
+ * — that is the drawing that grows with the library — and it is the number the
+ * backend already counts for `full_view_ok`.
  */
 export const classicUnavailableReason = (summary: LineageSummary): string =>
-  `The classic graph draws every song at once. This library has ${formatCount(summary.with_lineage)} connected songs, so it cannot load here.`;
+  `The classic graph draws every song at once. This library has ${formatCount(summary.with_lineage)} connected songs, past the ${formatCount(summary.full_view_limit ?? FULL_VIEW_LIMIT)} where LEARN opens the scale view instead, so the classic graph may be slow or stop responding.`;
 
-/**
- * Why the classic view is refused when the summary could not be read at all.
- * Not knowing the size is not permission to try the drawing that dies.
- */
+/** The warning when the summary could not be read at all. */
 export const classicUnknownSizeReason =
-  'The lineage summary could not be read, so this library’s size is unknown. The classic graph is not offered until it is.';
+  'The lineage summary could not be read, so this library’s size is unknown. The classic graph draws every song at once and may be slow or stop responding on a large library.';
 
 /**
  * Which view to open, once the summary has been asked for. The caller shows
  * its own loading state until then and mounts NEITHER view, because rendering
- * the classic one is what starts the 128 MB request.
+ * the classic one is what starts the whole-library request.
  *
  *  * `failed` — the route answered something other than 404. The size is
- *    unknown, so the new view stays up with its own error state and the
- *    classic one is refused. This case is NOT the old behaviour and must not
- *    be collapsed into it.
+ *    unknown: the scale view opens unless the user picked the classic one on
+ *    this mount (`picked`; `remembered` alone does not count), and the
+ *    Classic tab is enabled with the unknown-size warning.
  *  * `summary === null` and not `failed` — a 404: a backend that predates this
  *    module. That is the classic view, exactly what this tab did before, with
  *    nothing alarming said.
  *  * `full_view_ok` → the classic view by default, so a small library sees no
  *    change at all. The user may switch, and that choice is remembered.
- *  * not `full_view_ok` → the new view, and the classic one is refused. A
- *    remembered choice does not override this; it is not a matter of taste.
+ *  * not `full_view_ok` → the scale view by default, and the Classic tab waits
+ *    behind "Open anyway" with the warning. `openedAnyway` is that press: it
+ *    lasts while the tab is mounted, so a reload opens the scale view again,
+ *    and a remembered choice alone never mounts the classic view here.
  */
 export function decideLearnMode(
   summary: LineageSummary | null,
   remembered: LearnMode | null,
   failed = false,
+  openedAnyway = false,
+  picked: LearnMode | null = null,
 ): LearnDecision {
   if (failed) {
-    return { mode: 'scale', classicAllowed: false, reason: classicUnknownSizeReason };
+    return { mode: picked ?? 'scale', classicAllowed: true, reason: classicUnknownSizeReason, canOpenAnyway: false };
   }
-  if (!summary) return { mode: 'classic', classicAllowed: true, reason: '' };
+  if (!summary) return { mode: 'classic', classicAllowed: true, reason: '', canOpenAnyway: false };
   if (!summary.full_view_ok) {
-    return { mode: 'scale', classicAllowed: false, reason: classicUnavailableReason(summary) };
+    const reason = classicUnavailableReason(summary);
+    return openedAnyway
+      ? { mode: 'classic', classicAllowed: true, reason, canOpenAnyway: false }
+      : { mode: 'scale', classicAllowed: false, reason, canOpenAnyway: true };
   }
-  return { mode: remembered ?? 'classic', classicAllowed: true, reason: '' };
+  return { mode: remembered ?? 'classic', classicAllowed: true, reason: '', canOpenAnyway: false };
 }
 
 /* ────────────────────── what one summary probe settles ───────────────────── */
@@ -188,18 +207,26 @@ export interface LearnSwitchProps {
   classicAllowed: boolean;
   reason: string;
   onSelect: (mode: LearnMode) => void;
+  /** Present when the Classic tab is disabled behind "Open anyway". */
+  onOpenAnyway?: () => void;
 }
 
-const TAB_BASE = 'px-2 py-1 rounded text-[9px] font-mono uppercase tracking-widest border';
+const TAB_BASE = 'px-2 py-1 rounded text-xs font-bold border';
 const TAB_ON = 'bg-purple-500/20 text-purple-200 border-purple-400/50';
 const TAB_OFF = 'bg-black/40 text-zinc-400 border-white/10 hover:text-zinc-200';
 const TAB_DEAD = 'bg-black/40 text-zinc-600 border-white/5 cursor-not-allowed';
+const ANYWAY =
+  'shrink-0 rounded border border-amber-400/40 px-2 py-1 text-xs font-bold text-amber-100 hover:border-amber-300/70 hover:text-white';
 
-/** The two-option switch. */
+/**
+ * The two-option switch. The warning is shown whenever there is one, and it
+ * describes both the disabled Classic tab and the "Open anyway" key that
+ * mounts it.
+ */
 export const LearnSwitch: React.FC<LearnSwitchProps> = ({
-  mode, classicAllowed, reason, onSelect,
+  mode, classicAllowed, reason, onSelect, onOpenAnyway,
 }) => (
-  <div className="flex items-center gap-1 border-b border-white/10 px-2 py-1">
+  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/10 px-2 py-1">
     <div role="group" aria-label="Lineage view" className="flex items-center gap-1">
       <button
         type="button"
@@ -214,7 +241,7 @@ export const LearnSwitch: React.FC<LearnSwitchProps> = ({
         onClick={() => onSelect('classic')}
         aria-pressed={mode === 'classic'}
         disabled={!classicAllowed}
-        aria-describedby={classicAllowed ? undefined : REASON_ID}
+        aria-describedby={reason ? REASON_ID : undefined}
         className={`${TAB_BASE} ${
           !classicAllowed ? TAB_DEAD : mode === 'classic' ? TAB_ON : TAB_OFF
         }`}
@@ -222,10 +249,15 @@ export const LearnSwitch: React.FC<LearnSwitchProps> = ({
         Classic graph
       </button>
     </div>
-    {!classicAllowed && (
-      <p id={REASON_ID} className="ml-1 truncate text-[9px] font-mono text-zinc-500">
+    {reason && (
+      <p id={REASON_ID} className="min-w-0 flex-1 text-xs font-bold text-zinc-400">
         {reason}
       </p>
+    )}
+    {!classicAllowed && onOpenAnyway && (
+      <button type="button" onClick={onOpenAnyway} aria-describedby={REASON_ID} className={ANYWAY}>
+        Open anyway
+      </button>
     )}
   </div>
 );
@@ -246,7 +278,7 @@ const DefaultClassicView = lazy(() =>
 );
 
 const Waiting: React.FC<{ what: string }> = ({ what }) => (
-  <p className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-zinc-500">
+  <p className="absolute inset-0 flex items-center justify-center text-xs font-bold text-zinc-500">
     {what}
   </p>
 );
@@ -262,14 +294,20 @@ export interface LearnHostSurfaceProps extends LearnViewProps {
   summary: LineageSummary | null;
   /**
    * The message from a failure that was NOT a 404, or null. Set means the
-   * library's size is unknown, so the classic view stays unmounted.
+   * library's size is unknown: the classic view is offered with a warning and
+   * mounts only when the user picks it.
    */
   failure?: string | null;
   /** Ask for the summary again after a failure. */
   onRetry?: () => void;
   /** The session's remembered choice, if any. */
   chosen: LearnMode | null;
+  /** The choice made since this host mounted, if any. */
+  picked?: LearnMode | null;
   onSelect: (mode: LearnMode) => void;
+  /** The user pressed "Open anyway" past the limit. */
+  openedAnyway?: boolean;
+  onOpenAnyway?: () => void;
   /** Swapped in tests, so a render test never pulls in either real view. */
   scaleView?: React.ComponentType<LearnViewProps>;
   classicView?: React.ComponentType<LearnViewProps>;
@@ -282,13 +320,13 @@ export interface LearnHostSurfaceProps extends LearnViewProps {
  *
  * The classic pane is not merely hidden when it is not the mode: the element is
  * never constructed, so neither the lazy import nor the mount that fires the
- * whole-library request can happen.
+ * whole-library request can happen until the user picks it.
  */
 export const LearnHostSurface: React.FC<LearnHostSurfaceProps> = ({
-  read, summary, failure = null, onRetry, chosen, onSelect,
+  read, summary, failure = null, onRetry, chosen, picked = null, onSelect, openedAnyway = false, onOpenAnyway,
   rootEntryId = null, visible = true, scaleView, classicView,
 }) => {
-  const decision = decideLearnMode(summary, chosen, failure !== null);
+  const decision = decideLearnMode(summary, chosen, failure !== null, openedAnyway, picked);
   const Scale = scaleView ?? DefaultScaleView;
   const Classic = classicView ?? DefaultClassicView;
 
@@ -309,19 +347,20 @@ export const LearnHostSurface: React.FC<LearnHostSurfaceProps> = ({
         classicAllowed={decision.classicAllowed}
         reason={decision.reason}
         onSelect={onSelect}
+        onOpenAnyway={decision.canOpenAnyway ? onOpenAnyway : undefined}
       />
       {failure !== null && (
         <div
           role="status"
           className="flex items-center gap-2 border-b border-amber-400/30 bg-amber-500/10 px-2 py-1"
         >
-          <p className="min-w-0 grow truncate text-[9px] font-mono text-amber-200">
+          <p className="min-w-0 grow truncate text-xs font-bold text-amber-200">
             {`Could not read this library’s lineage summary: ${failure}`}
           </p>
           <button
             type="button"
             onClick={onRetry}
-            className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-[9px] font-mono uppercase tracking-widest text-amber-100 hover:border-amber-300/70 hover:text-white"
+            className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-xs font-bold text-amber-100 hover:border-amber-300/70 hover:text-white"
           >
             Retry
           </button>
@@ -342,7 +381,7 @@ export interface LearnHostProps extends LearnViewProps {
   /**
    * Swapped in tests. The default reads `/api/lineage-scale/summary` and
    * reports `{kind: 'absent'}` for a 404 ONLY; anything else it rejects with,
-   * which is what keeps the classic view unmounted on an unknown library.
+   * which is what keeps an unknown library on the scale view by default.
    */
   loadSummary?: () => Promise<SummaryProbe>;
   scaleView?: React.ComponentType<LearnViewProps>;
@@ -358,6 +397,13 @@ export const LearnHost: React.FC<LearnHostProps> = ({
 }) => {
   const [state, setState] = useState<SummaryReadState>(UNREAD_SUMMARY);
   const [chosen, setChosen] = useState<LearnMode | null>(() => rememberedMode());
+  // The pick made on this mount, which is all a failed summary honours.
+  const [picked, setPicked] = useState<LearnMode | null>(null);
+  // "Open anyway" past the limit. Held here, not in storage: the tab stays
+  // mounted while theDAW runs, so the press lasts across tab switches, and a
+  // reload (the way out of a drawing that stopped responding) opens the scale
+  // view again.
+  const [openedAnyway, setOpenedAnyway] = useState(false);
   const { summary, failure, read } = state;
 
   useEffect(() => {
@@ -379,8 +425,14 @@ export const LearnHost: React.FC<LearnHostProps> = ({
 
   const onSelect = useCallback((mode: LearnMode) => {
     setChosen(mode);
+    setPicked(mode);
     rememberMode(mode);
+    // Going back to the scale view puts the Classic tab behind "Open anyway"
+    // again; picking Classic keeps a press that is already in effect.
+    if (mode === 'scale') setOpenedAnyway(false);
   }, []);
+
+  const onOpenAnyway = useCallback(() => setOpenedAnyway(true), []);
 
   const onRetry = useCallback(() => setState(summaryRearmed), []);
 
@@ -391,7 +443,10 @@ export const LearnHost: React.FC<LearnHostProps> = ({
       failure={failure}
       onRetry={onRetry}
       chosen={chosen}
+      picked={picked}
       onSelect={onSelect}
+      openedAnyway={openedAnyway}
+      onOpenAnyway={onOpenAnyway}
       rootEntryId={rootEntryId}
       visible={visible}
       scaleView={scaleView}

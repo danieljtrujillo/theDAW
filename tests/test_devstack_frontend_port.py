@@ -1,23 +1,30 @@
-"""The web launcher never needs another program's port.
+"""The web launcher never moves theDAW to a new browser origin.
 
 The launchers stop only theDAW's own stale listeners (``backend.ports
---free``). Whatever is still on 5173 after that belongs to someone else -- on
-the machine this was written for, another project's Vite -- and the web UI
-must come up beside it on a free port rather than die on Vite's strictPort or
-send the browser to the other program.
+--free``). Whatever is still on 5173 after that belongs to someone else --
+another project's Vite, or theDAW from another folder. A browser keeps
+theDAW's saved settings and its microphone and MIDI permissions per origin,
+and the port is part of the origin, so starting the web UI on 5174 opened the
+app with every setting at its default and said so only in a console that had
+already been minimized. The stack now stops before anything starts and names
+the program holding the port; the other program is left running.
 """
 
 from __future__ import annotations
+
+import io
+import os
+import socket
+from contextlib import closing
+from pathlib import Path
 
 import pytest
 
 from backend import _devstack, ports
 
 
-def _busy(*held: int):
-    """An ``is_port_free`` that reports exactly ``held`` as taken."""
-    taken = set(held)
-    return lambda port, host="0.0.0.0": port not in taken
+class _StackStarted(Exception):
+    """Raised by the stand-in spawner: the stack started a child process."""
 
 
 @pytest.fixture(autouse=True)
@@ -26,47 +33,73 @@ def _restore_frontend_port():
     _devstack._use_frontend_port(ports.FRONTEND_PORT)
 
 
-@pytest.fixture(autouse=True)
-def _empty_listening_table(monkeypatch):
-    """No real listener answers for these tests: what is busy is whatever the
-    test's own ``is_port_free`` says. A test that cares about the table
-    re-stubs ``holders`` in its own body."""
+@pytest.fixture
+def held_port():
+    """A port another program (this test process) is listening on."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        yield srv.getsockname()[1]
+
+
+@pytest.fixture
+def unused_port() -> int:
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_a_held_web_ui_port_stops_the_stack_before_anything_starts(
+    held_port: int, monkeypatch: pytest.MonkeyPatch
+):
+    """The launch sequence with another program on the web UI's port: nothing
+    is spawned, the console is NOT minimized, the one line names the program,
+    and main() exits non-zero so theDAW.bat's "press any key" keeps it on
+    screen."""
+    monkeypatch.setattr(ports, "FRONTEND_PORT", held_port)
+    lines: list[str] = []
+    minimized: list[bool] = []
+
+    def spawn(cmd, cwd=None, env=None):
+        raise _StackStarted(cmd)
+
+    monkeypatch.setattr(_devstack, "_spawn", spawn)
+    monkeypatch.setattr(_devstack, "_emit", lambda tag, line: lines.append(line))
+    monkeypatch.setattr(_devstack, "_minimize_console", lambda: minimized.append(True))
+    monkeypatch.setattr(_devstack, "_enable_ansi", lambda: True)
+
+    try:
+        rc = _devstack.main()
+    except _StackStarted as started:
+        pytest.fail(f"the stack started {started.args[0]!r} on a new origin")
+
+    assert rc != 0
+    assert minimized == [], "the console was hidden behind the only message"
+    said = "\n".join(lines)
+    assert "cannot start" in said
+    assert str(held_port) in said
+    assert f"pid {os.getpid()}" in said
+    assert "saved settings" in said
+
+
+def test_the_blocker_is_none_when_the_web_ui_port_is_free(
+    unused_port: int, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(ports, "FRONTEND_PORT", unused_port)
+    assert _devstack._frontend_blocker() is None
+
+
+def test_an_unreadable_process_table_still_stops_with_a_reason(
+    held_port: int, monkeypatch: pytest.MonkeyPatch
+):
+    """The listening table can be unreadable (no rights). The port is still
+    taken, so the stack still stops, and the sentence says what it can."""
+    monkeypatch.setattr(ports, "FRONTEND_PORT", held_port)
     monkeypatch.setattr(_devstack.ports, "holders", lambda wanted: [])
-
-
-def test_the_preferred_port_when_nobody_holds_it(monkeypatch):
-    monkeypatch.setattr(_devstack.ports, "is_port_free", _busy())
-    assert _devstack._choose_frontend_port() == ports.FRONTEND_PORT
-
-
-def test_the_next_free_port_when_another_program_holds_the_preferred_one(monkeypatch):
-    monkeypatch.setattr(_devstack.ports, "is_port_free", _busy(ports.FRONTEND_PORT))
-    assert _devstack._choose_frontend_port() == ports.FRONTEND_PORT + 1
-
-
-def test_the_search_skips_the_ports_theDAW_reserves_for_itself(monkeypatch):
-    # Everything from 5173 up to just below the first reserved sidecar port is
-    # taken, and the sidecar ports themselves look free: they must still be
-    # skipped, because theDAW's own VJ/Sway servers will want them.
-    reserved = sorted(p for p in ports.ALL_PORTS if p > ports.FRONTEND_PORT)
-    first = reserved[0]
-    monkeypatch.setattr(
-        _devstack.ports,
-        "is_port_free",
-        _busy(*range(ports.FRONTEND_PORT, first)),
-    )
-    chosen = _devstack._choose_frontend_port()
-    assert chosen not in ports.ALL_PORTS
-    assert chosen > first
-
-
-def test_a_full_range_falls_back_to_the_preferred_port(monkeypatch):
-    """Nothing free in the range: Vite's own strictPort error is the honest
-    report, so the preferred port is returned rather than a made-up one."""
-    monkeypatch.setattr(
-        _devstack.ports, "is_port_free", lambda port, host="0.0.0.0": False
-    )
-    assert _devstack._choose_frontend_port() == ports.FRONTEND_PORT
+    reason = _devstack._frontend_blocker()
+    assert reason is not None
+    assert "cannot see which program" in reason
+    reason.encode("ascii")
 
 
 def test_the_preferred_port_keeps_the_dev_script():
@@ -89,9 +122,8 @@ def test_the_browser_and_readiness_probe_follow_the_chosen_port():
 
 def test_the_backend_child_is_told_which_port_the_web_ui_took(monkeypatch):
     """The backend advertises the web UI's address to other devices
-    (GET /api/network/lan), so it has to learn the port the launcher actually
-    chose -- otherwise a phone is sent to whatever program holds 5173."""
-    import io
+    (GET /api/network/lan), so it has to learn the port the launcher serves it
+    on."""
 
     class _Proc:
         pid = 4242
@@ -124,52 +156,13 @@ def test_the_backend_child_is_told_which_port_the_web_ui_took(monkeypatch):
     assert spawns[0].get("theDAW_FRONTEND_PORT") == "5179"
 
 
-def test_the_port_note_names_the_holder_without_telling_anyone_to_close_it(
-    monkeypatch, capsys
-):
-    """The line says the other program is LEFT RUNNING, so it must not also
-    tell the user to close it -- describe_occupant's sentence does."""
-    holder = ports.Holder(
-        port=ports.FRONTEND_PORT,
-        pid=9191,
-        name="node.exe",
-        cmdline="node vite",
-        ours=False,
+def test_the_web_launcher_waits_for_a_key_after_the_stack_stops():
+    """main() returning is what puts the reason on screen for good: theDAW.bat
+    goes to :stopped, which pauses, after backend._devstack exits."""
+    bat = (Path(__file__).resolve().parent.parent / "theDAW.bat").read_text(
+        encoding="utf-8"
     )
-    monkeypatch.setattr(_devstack.ports, "holders", lambda wanted: [holder])
-    line = _devstack._frontend_port_note(5174)
-    assert "node.exe" in line
-    assert "9191" in line
-    assert "Close it" not in line
-    assert "5174" in line
-
-
-def test_an_unreadable_process_table_still_produces_a_note(monkeypatch):
-    monkeypatch.setattr(_devstack.ports, "holders", lambda wanted: [])
-    line = _devstack._frontend_port_note(5174)
-    assert "another program" in line
-    assert "Close it" not in line
-
-
-def test_the_candidate_search_enumerates_the_listening_table_once(monkeypatch):
-    """holders() walks every TCP connection on the machine. The search walks it
-    ONCE for the whole candidate range; candidates the table already rejects
-    never reach a probe at all."""
-    calls: list[list[int]] = []
-
-    def counting_holders(wanted):
-        wanted = list(wanted)
-        calls.append(wanted)
-        return [
-            ports.Holder(port=p, pid=1, name="other", cmdline="other", ours=False)
-            for p in wanted
-            if p < ports.FRONTEND_PORT + 3
-        ]
-
-    monkeypatch.setattr(_devstack.ports, "holders", counting_holders)
-    monkeypatch.setattr(
-        _devstack.ports, "is_port_free", lambda port, host="0.0.0.0": True
-    )
-    chosen = _devstack._choose_frontend_port()
-    assert chosen == ports.FRONTEND_PORT + 3
-    assert len(calls) == 1, f"holders() was called {len(calls)} times"
+    web = bat.index("python -m backend._devstack")
+    label = bat.index("\n:stopped\n")
+    assert bat.index("goto :stopped", web) < label
+    assert "pause" in bat[label : label + 200]

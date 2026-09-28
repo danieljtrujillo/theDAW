@@ -29,11 +29,9 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # uv is installed with pipx, the same first-party-only pattern lint.yml
-  # uses for ruff. Pinned so a uv release can never quietly change what CI
-  # resolves out of uv.lock. Bump deliberately.
-  UV_VERSION: "0.9.5"
+# uv is installed with pipx, the same first-party-only pattern lint.yml uses
+# for ruff, at its latest release; uv.lock and --frozen are what fix the
+# resolved packages, so a newer uv cannot change them quietly.
 
 jobs:
   # uv.lock must install on every platform theDAW ships to, not only on this
@@ -46,12 +44,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
       - name: Install uv
-        run: pipx install "uv==${{ env.UV_VERSION }}"
+        run: pipx install uv
       - name: uv.lock is current and installs on Linux x86_64 and Windows
         run: python scripts/check_lock.py
 
@@ -69,7 +67,7 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # ffmpeg/ffprobe back the analysis probe, the chimera mashup endpoint
       # and the library video-thumbnail tests. Every one of those tests skips
@@ -84,12 +82,12 @@ jobs:
       # .python-version is the repo's interpreter pin (3.12). Reading it here
       # means this job can never drift from what developers and theDAW.bat
       # use, and it gives pipx an interpreter to install uv against.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
 
       - name: Install uv
-        run: pipx install "uv==${{ env.UV_VERSION }}"
+        run: pipx install uv
 
       # --frozen turns a pyproject edit that was never re-locked into a
       # failure here rather than a silent resolution that differs from what
@@ -148,8 +146,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # frontend/.nvmrc is the single source of truth for the Node
           # version, so this job cannot drift from a developer's shell.
@@ -169,8 +167,32 @@ jobs:
       # executed them.
       - name: Frontend tests
         run: npm test
-      # electron-ui has no test runner of its own; its three suites cover code that
-      # ships (download naming, the LAN HTTPS helper, VST-host staging) and run
-      # on this job's toolchain.
+      # electron-ui has no test runner of its own; its five suites cover code that
+      # ships (download naming, the dialog start folder, the LAN HTTPS helper,
+      # stopping the backend, VST-host staging) and run on this job's toolchain.
       - name: Electron shell tests
         run: npm run test:electron
+
+  # Underfit's assistant backend (underfit/assistant-backend/server.ts) is the
+  # server the dashboard orb talks to. Its type check and its CORS test run
+  # against the real server with its own express, which the frontend job does
+  # not install.
+  assistant-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: underfit/assistant-backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: underfit/assistant-backend/package-lock.json
+      - name: Install assistant backend dependencies
+        run: npm ci
+      - name: tsc --noEmit
+        run: npm run lint
+      - name: CORS test against the real server
+        run: npm test

@@ -100,7 +100,7 @@ def test_v8_file_gains_models_without_losing_existing_choices():
 
     merged = _merge_defaults(old)
 
-    assert merged["schema_version"] == SCHEMA_VERSION == 10
+    assert merged["schema_version"] == SCHEMA_VERSION == 12
     assert merged["models"] == {"extra_folders": []}
     assert merged["models"] is not DEFAULT_SETTINGS["models"], "must be a deep copy"
     assert merged["app"]["launch_mode"] == "desktop"
@@ -126,7 +126,7 @@ def test_v8_partial_file_migrates_and_persists_the_key(tmp_path):
     SettingsStore(path)
 
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["schema_version"] == SCHEMA_VERSION == 10
+    assert on_disk["schema_version"] == SCHEMA_VERSION == 12
     assert on_disk["models"]["extra_folders"] == []
 
 

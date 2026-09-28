@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
+import { setDecodeContext } from '../lib/djAudioCache';
 
 /**
  * Global playback engine — a single HTMLAudioElement piped through a single
@@ -84,6 +85,12 @@ export const ensureEngine = (): EngineHandles => {
     (window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
   const ctx = new Ctor();
+  // Every waveform decode made from here on runs through this context, so
+  // it lands at the rate playback runs at and shares its cache entry with
+  // the deck that plays the same file (lib/djAudioCache). Before this the
+  // cache never learned the engine existed and decoded everything at the
+  // offline fallback's 44.1 kHz.
+  setDecodeContext(ctx);
   const master = ctx.createGain();
   master.gain.value = 1;
   const analyser = ctx.createAnalyser();

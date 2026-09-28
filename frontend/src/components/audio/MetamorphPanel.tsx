@@ -3,7 +3,8 @@
  *
  * Pick a DONOR (A, the "identity") and a HOST (B, the structure). Sources are the
  * clips already on the timeline first (stems, layers, anything you dropped in),
- * with the wider library underneath. Press play to hear B rebuilt out of A's grains
+ * with the wider library underneath: the panel's own search over the whole
+ * library, independent of what the LIBRARY tab has loaded. Press play to hear B rebuilt out of A's grains
  * in real time; `Bleed` crossfades dry-B into the mosaic, `Match` sets how strictly
  * grains are chosen. "Send to editor" renders one pass and drops it on a new track,
  * where it is an ordinary clip you can trim, FX, and export.
@@ -13,6 +14,7 @@ import { useEffect, useState } from 'react';
 import { Play, Square, Download } from 'lucide-react';
 import { SlideTrack } from './SlideTrack';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { useMorphStore, type MorphParams, type MorphSource } from '../../state/morphEngine';
 
@@ -30,10 +32,8 @@ const SLIDERS: { key: keyof MorphParams; label: string; min: number; max: number
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 export function MetamorphPanel() {
-  const entries = useLibraryStore((s) => s.entries);
-  const loaded = useLibraryStore((s) => s.loaded);
-  const load = useLibraryStore((s) => s.load);
-  const audio = entries.filter((e) => (e.kind ?? 'audio') === 'audio');
+  const [find, setFind] = useState('');
+  const songs = useLibrarySearch({ q: find, kind: 'audio', sort: 'title_asc' });
 
   const clips = useEditorStore((s) => s.clips);
   const tracks = useEditorStore((s) => s.tracks);
@@ -56,7 +56,6 @@ export function MetamorphPanel() {
 
   const [sending, setSending] = useState(false);
 
-  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   // Silence the morph when the panel unmounts (closed, or leaving the editor).
   useEffect(() => () => useMorphStore.getState().stop(), []);
 
@@ -67,7 +66,8 @@ export function MetamorphPanel() {
       return c ? { id: val, title: c.label || trackName(c.trackId), blob: c.audioBlob } : null;
     }
     if (val.startsWith('lib:')) {
-      const e = audio.find((x) => `lib:${x.id}` === val);
+      const id = val.slice('lib:'.length);
+      const e = songs.rows.find((x) => x.id === id) ?? (await useLibraryStore.getState().ensureEntry(id));
       if (!e) return null;
       const blob = await useLibraryStore.getState().fetchAudioBlob(e);
       return { id: val, title: e.title, blob };
@@ -110,6 +110,19 @@ export function MetamorphPanel() {
 
   const ready = status === 'ready' || (!!aId && !!bId);
 
+  // A song already loaded as A or B stays in both lists after the search
+  // moves on, so each select still shows what it holds.
+  const held = [
+    { id: aId, title: aTitle },
+    { id: bId, title: bTitle },
+  ].filter(
+    (h, i, all): h is { id: string; title: string } =>
+      !!h.id &&
+      h.id.startsWith('lib:') &&
+      !songs.rows.some((e) => `lib:${e.id}` === h.id) &&
+      all.findIndex((o) => o.id === h.id) === i,
+  );
+
   const SourceOptions = () => (
     <>
       <option value="">— choose —</option>
@@ -120,9 +133,10 @@ export function MetamorphPanel() {
           ))}
         </optgroup>
       )}
-      {audio.length > 0 && (
+      {(songs.rows.length > 0 || held.length > 0) && (
         <optgroup label="Library">
-          {audio.map((e) => (<option key={`lib:${e.id}`} value={`lib:${e.id}`}>{e.title}</option>))}
+          {held.map((h) => (<option key={h.id} value={h.id}>{h.title || h.id.slice('lib:'.length, 12)}</option>))}
+          {songs.rows.map((e) => (<option key={`lib:${e.id}`} value={`lib:${e.id}`}>{e.title}</option>))}
         </optgroup>
       )}
     </>
@@ -130,6 +144,36 @@ export function MetamorphPanel() {
 
   return (
     <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-1">
+        <label htmlFor="morph-find" className="font-sans text-xs font-bold text-zinc-400">Find a library song</label>
+        <div className="flex items-center gap-2">
+          <input
+            id="morph-find"
+            name="morph-find"
+            type="search"
+            value={find}
+            onChange={(e) => setFind(e.target.value)}
+            placeholder="title, artist, bpm, key…"
+            className="flex-1 min-w-0 rounded border border-white/10 bg-black/30 px-2 py-1 font-sans text-xs font-bold text-zinc-200 focus:outline-none focus:border-purple-400/60"
+          />
+          <span className="font-sans text-xs font-bold text-zinc-500 tabular-nums" aria-live="polite">
+            {songs.loading && songs.rows.length === 0
+              ? 'searching…'
+              : `${songs.total.toLocaleString()} ${songs.total === 1 ? 'song' : 'songs'}`}
+          </span>
+          {songs.hasMore && (
+            <button
+              type="button"
+              onClick={songs.loadMore}
+              disabled={songs.loading}
+              className="px-2 py-1 rounded border border-white/10 font-sans text-xs font-bold text-zinc-300 hover:bg-white/5 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+            >
+              More songs
+            </button>
+          )}
+        </div>
+        {songs.error && <p className="font-sans text-xs font-bold text-red-300">Could not search the library: {songs.error}</p>}
+      </div>
       <div className="grid grid-cols-2 gap-2">
         <div className="flex flex-col gap-1">
           <label htmlFor="morph-donor" className="font-sans text-xs font-bold text-zinc-400">Donor A (identity)</label>

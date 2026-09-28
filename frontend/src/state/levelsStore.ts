@@ -24,6 +24,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { getEngineCtx, getMeterTap } from './playerStore';
 import { addWorkletModule, audioWorkletAvailable } from '../lib/audioWorkletSupport';
 
@@ -99,6 +100,7 @@ export const useLevelsStore = create<LevelsState>()(
     }),
     {
       name: 'thedaw-levels-v1',
+      storage: persistStorage(),
       version: 2,
       // v1 persisted the six-view switcher's `view`; v2 is the single meter
       // bridge, so drop it and derive the preset from the remembered target.

@@ -10,6 +10,7 @@
  */
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { EFFECT_DEFAULTS } from './effectChainStore';
 import { rackEffectDefaults } from '../lib/rackEffects';
 import { nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from '../lib/nodefiTypes';
@@ -433,6 +434,7 @@ export const useNodefiStore = create<NodefiState>()(
       // a name. Renaming it to 'thedaw-nodefi-v1' would strand every saved
       // graph in localStorage under a key nothing reads.
       name: 'thedaw-audimate-v1',
+      storage: persistStorage(),
       version: 2,
       // v2: effect nodes now carry their effect's numeric params from creation.
       // Seed any persisted effect node that predates that so Run can't 400.

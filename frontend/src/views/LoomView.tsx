@@ -19,6 +19,7 @@ import { Play, Dices } from 'lucide-react';
 import { useLoomStore, type EdgeSel } from '../state/loomStore';
 import { useShardIndexStore, type ShardRow } from '../state/shardIndexStore';
 import { useLibraryStore } from '../state/libraryStore';
+import { useLibrarySearch } from '../state/useLibrarySearch';
 import { LOOM_TEMPLATES } from '../data/loomTemplates';
 import { LOOM_ROLES, tupletGrids, type LockParam, type LoomRole } from '../lib/loomScore';
 import { beatClock } from '../lib/beatClock';
@@ -36,7 +37,28 @@ type Pane = 'cell' | 'code' | 'crate';
 const label = 'text-xs font-mono font-semibold uppercase tracking-wider et-ink-2';
 const input = 'compact-input rounded border border-white/25 bg-black/30 px-2 py-1 text-[13px] font-mono et-ink focus:outline-none focus:border-amber-300';
 const btn = 'rounded-md border border-white/25 px-2.5 py-1 text-xs font-mono font-semibold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+/** Bold sans label, field and button for the crate's library controls. */
+const labelSans = 'text-xs font-bold uppercase tracking-wider et-ink-2';
+const inputSans = 'compact-input rounded border border-white/25 bg-black/30 px-2 py-1 text-[13px] font-sans font-semibold et-ink focus:outline-none focus:border-amber-300';
+const btnSans = 'rounded-md border border-white/25 px-2.5 py-1 text-xs font-sans font-bold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
 const chip = 'rounded-md border px-2 py-1 text-xs font-mono font-semibold et-ink transition-colors';
+
+/**
+ * An entry's title by id, over the whole library: `getById` answers from the
+ * loaded pages or the single-entry cache and fetches an id it does not hold;
+ * `lookupVersion` re-renders the caller when that fetch lands.
+ */
+function useEntryTitle(): (id: string) => string {
+  const entries = useLibraryStore((s) => s.entries);
+  const getById = useLibraryStore((s) => s.getById);
+  // Bumped when a single-entry lookup lands: the one answer `getById` gives
+  // that `entries` does not carry.
+  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
+  return useMemo(() => {
+    const loaded = new Map(entries.map((e) => [e.id, e.title]));
+    return (id: string) => loaded.get(id) ?? getById(id)?.title ?? id.slice(0, 8);
+  }, [entries, getById, lookupVersion]);
+}
 
 export function LoomView(): React.ReactElement {
   const running = useLoomStore((s) => s.running);
@@ -417,8 +439,7 @@ function nodeLine(n: ColonyNode): string {
 
 const LoopEditor: React.FC<{ id: string; node: LoopNode; set: (n: ColonyNode) => void }> = ({ id, node, set }) => {
   const crate = useShardIndexStore((s) => s.crate);
-  const entries = useLibraryStore((s) => s.entries);
-  const title = (eid: string) => entries.find((e) => e.id === eid)?.title ?? eid.slice(0, 8);
+  const title = useEntryTitle();
   const setQuery = (q: Partial<LoopNode['query']>) => set({ ...node, query: { ...node.query, ...q } });
   const setBeats = (beats: number) => set({ ...node, beats, query: { ...node.query, beats: [1, 4, 8, 16].includes(beats) ? beats : undefined } });
   return (
@@ -630,7 +651,7 @@ const ColonyCodePane: React.FC = () => {
     <div className="flex flex-col h-full">
       <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 border-b border-white/10">
         <label htmlFor="loom-colony-template" className={label}>sample</label>
-        <select id="loom-colony-template" name="loom-colony-template" value="" onChange={(e) => { if (e.target.value) loadTemplate(e.target.value); }} className={`${input} form-select max-w-44`} style={{ colorScheme: 'dark' }}>
+        <select id="loom-colony-template" name="loom-colony-template" value="" onChange={(e) => { if (e.target.value) void loadTemplate(e.target.value); }} className={`${input} form-select max-w-44`} style={{ colorScheme: 'dark' }}>
           <option value="">— load a colony —</option>
           {LOOM_TEMPLATES.filter((t) => t.mode === 'colony').map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
@@ -664,9 +685,7 @@ const ColonyCodePane: React.FC = () => {
 /* ── CRATE ───────────────────────────────────────────────────────────────── */
 
 const CratePane: React.FC = () => {
-  const entries = useLibraryStore((s) => s.entries);
-  const loaded = useLibraryStore((s) => s.loaded);
-  const load = useLibraryStore((s) => s.load);
+  const title = useEntryTitle();
   const crate = useShardIndexStore((s) => s.crate);
   const status = useShardIndexStore((s) => s.status);
   const byEntry = useShardIndexStore((s) => s.byEntry);
@@ -677,10 +696,11 @@ const CratePane: React.FC = () => {
   const update = useLoomStore((s) => s.updateColonyNode);
   const [browse, setBrowse] = useState<string>('');
   const [role, setRole] = useState<string>('drums');
-
-  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
-  const audio = entries.filter((e) => (e.kind ?? 'audio') === 'audio');
-  const title = (id: string) => entries.find((e) => e.id === id)?.title ?? id.slice(0, 8);
+  const [find, setFind] = useState('');
+  // The crate's own search, over the whole library, independent of whatever
+  // the LIBRARY tab is showing.
+  const songs = useLibrarySearch({ q: find, kind: 'audio', sort: 'title_asc' });
+  const addable = songs.rows.filter((e) => !crate.includes(e.id));
   const browseId = browse || crate[0] || '';
   const rows: ShardRow[] = useMemo(() => {
     const all = byEntry[browseId] ?? [];
@@ -703,18 +723,40 @@ const CratePane: React.FC = () => {
   return (
     <div className="flex flex-col gap-3 p-3 text-[13px] font-mono et-ink">
       <div className="flex flex-col gap-1">
-        <label htmlFor="loom-crate-add" className={label}>add a song to the crate</label>
+        <label htmlFor="loom-crate-find" className={labelSans}>find a song in the library</label>
+        <input
+          id="loom-crate-find"
+          name="loom-crate-find"
+          type="search"
+          value={find}
+          onChange={(e) => setFind(e.target.value)}
+          placeholder="title, artist, bpm, key…"
+          className={`${inputSans} w-full`}
+        />
+        <label htmlFor="loom-crate-add" className={labelSans}>add a song to the crate</label>
         <select
           id="loom-crate-add"
           name="loom-crate-add"
           value=""
           onChange={(e) => { if (e.target.value) addToCrate(e.target.value); }}
-          className={`${input} form-select w-full`}
+          className={`${inputSans} form-select w-full`}
           style={{ colorScheme: 'dark' }}
         >
-          <option value="">— choose —</option>
-          {audio.filter((e) => !crate.includes(e.id)).map((e) => <option key={e.id} value={e.id}>{e.title}</option>)}
+          <option value="">
+            {songs.loading && songs.rows.length === 0
+              ? 'searching…'
+              : `— choose (${songs.total.toLocaleString()} ${songs.total === 1 ? 'match' : 'matches'}) —`}
+          </option>
+          {addable.map((e) => <option key={e.id} value={e.id}>{e.title}</option>)}
         </select>
+        {songs.error && (
+          <p className="text-xs font-sans font-semibold et-ink-2">Could not search the library: {songs.error}</p>
+        )}
+        {songs.hasMore && (
+          <button type="button" onClick={songs.loadMore} disabled={songs.loading} className={`${btnSans} self-start`}>
+            {songs.loading ? 'loading…' : `more songs (${(songs.total - songs.rows.length).toLocaleString()} left)`}
+          </button>
+        )}
       </div>
       <ul className="flex flex-col gap-1">
         {crate.length === 0 && <li className="et-ink-2">Empty crate: loops search the whole index.</li>}

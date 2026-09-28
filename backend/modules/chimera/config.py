@@ -12,6 +12,8 @@ import logging
 import shutil
 import subprocess
 from typing import Optional, TypedDict
+
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -84,18 +86,20 @@ def _detect_aubio() -> tuple[bool, Optional[str], Optional[str]]:
 
 
 def _detect_ffmpeg() -> tuple[bool, bool, bool, Optional[str]]:
-    """Return ``(ffmpeg, librubberband, rubberband_pitch, version)``."""
-    if not shutil.which("ffmpeg"):
+    """Return ``(ffmpeg, librubberband, rubberband_pitch, version)`` for the
+    build ``backend.lib.ffmpeg_tools`` chose."""
+    ffmpeg = ffmpeg_tools.find_ffmpeg()
+    if not ffmpeg:
         return False, False, False, None
-    code, out = _run(["ffmpeg", "-version"])
+    code, out = _run([ffmpeg, "-version"])
     if code != 0:
         return False, False, False, None
     version = _first_line(out)
-    code, filters = _run(["ffmpeg", "-hide_banner", "-filters"])
+    code, filters = _run([ffmpeg, "-hide_banner", "-filters"])
     librubberband = code == 0 and "rubberband" in filters.lower()
     rubberband_pitch = False
     if librubberband:
-        code, help_out = _run(["ffmpeg", "-hide_banner", "-h", "filter=rubberband"])
+        code, help_out = _run([ffmpeg, "-hide_banner", "-h", "filter=rubberband"])
         rubberband_pitch = (
             code == 0 and "pitch" in help_out and "transients" in help_out
         )

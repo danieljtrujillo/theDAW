@@ -8,7 +8,11 @@ Endpoints (prefix from module.json → ``/api/settings``):
 The PATCH body is a partial nested object: only the sections / keys you
 want to change need to be present. Unknown sections / keys are dropped,
 not rejected, so the frontend never gets a 400 for sending a slightly
-newer or older shape than the backend knows about.
+newer or older shape than the backend knows about. The folder lists and
+the assistant's Claude-setup switch are the exceptions: a PATCH touching
+one is refused (403) unless this machine's own UI or the desktop shell
+sends it, and a ``media_roots`` that is not a list or a switch that is not
+a boolean is a 400.
 """
 
 from __future__ import annotations
@@ -43,6 +47,12 @@ router = APIRouter()
 #: the caller's choosing, so they are held to the strict tier even though the
 #: rest of this route is a feature-toggle panel the phone companion uses.
 _FOLDER_LIST_KEYS = (("library", "media_roots"), ("models", "extra_folders"))
+
+#: Sections that decide how this machine serves the network. ``lan.https``
+#: says whether the next launch opens the LAN HTTPS listener, so a device on
+#: the LAN could otherwise switch the secure address off for every other
+#: device, or back on after the user turned it off. Held to the strict tier.
+_LOCAL_ONLY_SECTIONS = ("lan",)
 
 
 def _caller_may_see_folders(request: Request) -> bool:
@@ -79,11 +89,30 @@ def _redacted_for(request: Request, settings: dict[str, Any]) -> dict[str, Any]:
     return settings
 
 
-def _folder_lists_touched(payload: dict[str, Any]) -> bool:
+#: Keys that decide what the in-app Claude Code session may load and do without
+#: asking. Turning ``use_user_claude_config`` on hands the session the user's
+#: own allow rules, hooks and MCP servers, and ``always_allow_rules`` lets
+#: matched calls run unasked in Ask mode, so a LAN caller must never be able to
+#: change either; reading them back is harmless, so they are not redacted.
+_ASSISTANT_KEYS = (
+    ("assistant", "use_user_claude_config"),
+    ("assistant", "always_allow_rules"),
+)
+
+
+def _touched(payload: dict[str, Any], keys: tuple[tuple[str, str], ...]) -> bool:
     return any(
         isinstance(payload.get(section), dict) and key in payload[section]
-        for section, key in _FOLDER_LIST_KEYS
+        for section, key in keys
     )
+
+
+def _folder_lists_touched(payload: dict[str, Any]) -> bool:
+    return _touched(payload, _FOLDER_LIST_KEYS)
+
+
+def _local_only_touched(payload: dict[str, Any]) -> bool:
+    return any(section in payload for section in _LOCAL_ONLY_SECTIONS)
 
 
 @router.get("")
@@ -103,6 +132,22 @@ def patch_settings(
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _redacted_for(request, get_store().get_all())
+    if _touched(payload, _ASSISTANT_KEYS):
+        # 403 unless this machine's own UI or the desktop shell is asking.
+        require_loopback_or_launch_token(request)
+        assistant = payload["assistant"]
+        if "use_user_claude_config" in assistant and not isinstance(
+            assistant["use_user_claude_config"], bool
+        ):
+            raise HTTPException(400, "use_user_claude_config must be true or false")
+        if "always_allow_rules" in assistant and not (
+            isinstance(assistant["always_allow_rules"], list)
+            and all(isinstance(r, str) for r in assistant["always_allow_rules"])
+        ):
+            raise HTTPException(400, "always_allow_rules must be a list of rules")
+    if _local_only_touched(payload):
+        # 403 unless this machine's own UI or the desktop shell is asking.
+        require_loopback_or_launch_token(request)
     if _folder_lists_touched(payload):
         # 403 unless this machine's own UI or the desktop shell is asking.
         require_loopback_or_launch_token(request)

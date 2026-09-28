@@ -19,6 +19,8 @@ from fastapi.testclient import TestClient
 from backend.modules.library import media_roots
 from backend.modules.library import router as library_router_module
 from backend.modules.library.store import LibraryStore
+from backend.modules.settings import router as settings_router
+from backend.modules.settings.store import SettingsStore
 from tests.test_library_store import _seed_generate_entry
 
 UUID_A = "c27de18c-1b0e-4a2f-8b71-9d0c5f2a1e33"
@@ -26,9 +28,17 @@ UUID_B = "aa11bb22-3c4d-4e5f-8aa9-0b1c2d3e4f50"
 
 
 @pytest.fixture(autouse=True)
-def _clean_index(monkeypatch):
+def _clean_index(monkeypatch, tmp_path):
     """Every test starts with no index, no roots, no scan in flight and no
-    remembered CDN refusals (all three are process-lifetime state)."""
+    remembered CDN refusals (all three are process-lifetime state).
+
+    With no env var, configured_roots() falls back to the process-wide
+    settings store over data/settings.json: a route test (a rescan) read and
+    migrated the checkout's real file, and walked whatever media roots it
+    named. Each test gets a settings store of its own instead."""
+    monkeypatch.setattr(
+        settings_router, "_store", SettingsStore(tmp_path / "settings.json")
+    )
     monkeypatch.delenv(media_roots.ENV_VAR, raising=False)
     media_roots.reset()
     library_router_module._cdn_refused.clear()
@@ -612,6 +622,72 @@ def test_a_dropped_connection_is_retried_next_time(client, tmp_path, monkeypatch
     assert client.get(f"/api/library/audio/{UUID_A}").status_code == 404
     assert client.get(f"/api/library/audio/{UUID_A}").status_code == 404
     assert len(calls) == 2
+
+
+class _RespOk:
+    status_code = 200
+
+    def __init__(self, content: bytes):
+        self.content = content
+
+    def raise_for_status(self):
+        return None
+
+
+def test_a_disk_full_during_the_cdn_cache_write_never_serves_a_cut_file(
+    client, tmp_path, monkeypatch
+):
+    """A track only the CDN holds: the first play fetches it and caches it
+    next to the entry. The disk fills halfway through that write. The cache
+    was written straight over its final name, so the half file stayed there,
+    and every later play served it as the track. Written aside and renamed,
+    the next play fetches again, and the one after serves the whole file."""
+    entry_dir = _cdn_entry(tmp_path / "lib", UUID_A)
+    track = b"ID3" + bytes(range(256)) * 64
+    calls: list[str] = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            calls.append(url)
+            return _RespOk(track)
+
+    monkeypatch.setattr(library_router_module.httpx, "AsyncClient", _Client)
+
+    real_write_bytes = Path.write_bytes
+    disk_full = [True]
+    writes_on_loop: list[bool] = []
+
+    def filling_disk(self: Path, data: bytes) -> int:
+        if entry_dir in self.parents:
+            writes_on_loop.append(_on_the_event_loop())
+            if disk_full[0]:
+                disk_full[0] = False
+                real_write_bytes(self, data[: len(data) // 2])
+                raise OSError(28, "No space left on device")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", filling_disk)
+
+    first = client.get(f"/api/library/audio/{UUID_A}")
+    assert first.status_code == 200 and first.content == track
+    second = client.get(f"/api/library/audio/{UUID_A}")
+    assert second.status_code == 200 and second.content == track
+    third = client.get(f"/api/library/audio/{UUID_A}")
+    assert third.status_code == 200 and third.content == track
+    assert len(calls) == 2, "the complete cache serves the third play"
+    assert sorted(p.name for p in entry_dir.iterdir()) == sorted(
+        ["metadata.json", f"{UUID_A}.mp3"]
+    ), "no temp file is left beside the cache"
+    assert writes_on_loop == [False, False], "the cache write blocks the event loop"
 
 
 # ---- r3: nothing touches the filesystem on the event loop ------------------

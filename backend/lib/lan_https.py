@@ -52,9 +52,15 @@ __all__ = [
     "listener_command",
     "listener_env",
     "listener_port",
+    "parse_flag",
     "plan_lan_https",
+    "read_record",
     "read_settings",
+    "reconcile",
+    "record_for",
+    "record_path",
     "resolve_plan",
+    "stored_off_key",
 ]
 
 #: The environment the listener itself reads (``frontend/vite.lan.config.ts``).
@@ -66,10 +72,28 @@ ENV_PORT = "theDAW_HTTPS_PORT"
 #: a one-off run: ``theDAW_LAN_HTTPS=0`` turns the listener off for this launch.
 ENV_ENABLED = "theDAW_LAN_HTTPS"
 
-#: ``settings.json`` -> ``app.lan_https``. Absent means ON: the whole point is
-#: that a second device works without anyone configuring anything.
-SETTING_SECTION = "app"
-SETTING_KEY = "lan_https"
+#: ``settings.json`` -> ``lan.https``. Absent means ON: the whole point is that
+#: a second device works without anyone configuring anything.
+#:
+#: The switch has a top-level section of its own because a build that predates
+#: it keeps a whole section it does not know, while it drops the keys it does
+#: not know inside a section it does know. Schema 10 kept the switch in
+#: ``app``; one run of an older build rewrote ``app`` without it, and a user's
+#: "off" came back on.
+SETTING_SECTION = "lan"
+SETTING_KEY = "https"
+
+#: Where schema 10 kept the switch. An off there still counts: a launcher reads
+#: the raw file before the backend's store has moved the value to
+#: ``lan.https``, and a build that still writes the old key may have run since.
+LEGACY_SETTING_SECTION = "app"
+LEGACY_SETTING_KEY = "lan_https"
+
+#: The file beside ``settings.json`` where this build records the switch as it
+#: last wrote it there (see :func:`reconcile`). Neither main nor the schema-10
+#: build knows the file, so neither rewrites it, and an older build's save of
+#: ``settings.json`` can no longer erase what this build knew.
+RECORD_NAME = "lan_https.json"
 
 #: What the listener is started WITH, after the binary, from ``frontend/``.
 LISTENER_ARGS: tuple[str, ...] = ("--config", "vite.lan.config.ts")
@@ -148,6 +172,106 @@ def _flag(raw: object) -> Optional[bool]:
     return None
 
 
+def stored_off_key(settings: Mapping[str, Any]) -> Optional[str]:
+    """The ``section.key`` in ``settings`` that switches the listener off, or
+    None when nothing stored says off.
+
+    ``lan.https`` is asked first, then the schema-10 ``app.lan_https``. An off
+    in either wins: the one thing this setting must never do is come back on
+    after the user switched it off.
+    """
+    for section_name, key in (
+        (SETTING_SECTION, SETTING_KEY),
+        (LEGACY_SETTING_SECTION, LEGACY_SETTING_KEY),
+    ):
+        section = settings.get(section_name)
+        stored = section.get(key) if isinstance(section, Mapping) else None
+        if _flag(stored) is False:
+            return f"{section_name}.{key}"
+    return None
+
+
+def parse_flag(raw: object) -> Optional[bool]:
+    """A stored yes/no as True/False, or None when it says neither (the
+    parsing the launchers apply to ``settings.json``)."""
+    return _flag(raw)
+
+
+def _stored(settings: Mapping[str, Any], section_name: str, key: str) -> Optional[bool]:
+    section = settings.get(section_name)
+    return _flag(section.get(key)) if isinstance(section, Mapping) else None
+
+
+def record_path(settings_path: Path) -> Path:
+    """Where the record for the settings file at ``settings_path`` lives."""
+    return Path(settings_path).with_name(RECORD_NAME)
+
+
+def record_for(settings: Mapping[str, Any]) -> dict[str, Optional[bool]]:
+    """The record of ``settings`` as this build writes them: the switch at
+    ``lan.https`` and the copy at the schema-10 ``app.lan_https`` (None when
+    the key is absent)."""
+    return {
+        "lan_https": _stored(settings, SETTING_SECTION, SETTING_KEY),
+        "app_lan_https": _stored(settings, LEGACY_SETTING_SECTION, LEGACY_SETTING_KEY),
+    }
+
+
+def read_record(settings_path: Path) -> Optional[dict[str, Optional[bool]]]:
+    """The record beside ``settings_path``, or None when there is none or it
+    does not hold the two values :func:`record_for` writes."""
+    try:
+        raw = json.loads(record_path(settings_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    lan = raw.get("lan_https")
+    app = raw.get("app_lan_https")
+    if not isinstance(lan, bool) or not (app is None or isinstance(app, bool)):
+        return None
+    return {"lan_https": lan, "app_lan_https": app}
+
+
+def reconcile(
+    settings: Mapping[str, Any], record: Optional[Mapping[str, Optional[bool]]]
+) -> bool:
+    """Whether the listener is on, from ``settings.json`` as it is on disk and
+    the record of how this build last wrote it.
+
+    Three builds write the file, and each loses something: main 851f6a0 drops
+    ``app.lan_https`` on every save, the schema-10 build (8039b45) reads and
+    writes only ``app.lan_https``, and this build writes ``lan.https`` with a
+    copy at ``app.lan_https`` while it is off. A value that differs from the
+    record was set since this build last wrote the file, by the user in
+    another build or by hand, and is the latest choice: the schema-10 build's
+    on after this build's off is honoured, where the old "an off anywhere
+    wins" rule kept it off forever. A value that went missing was dropped by a
+    build that does not know it, which is not a choice, so the record stands:
+    main's save no longer decides anything. Two values that changed and
+    disagree resolve to off, the one direction this switch must never fail in.
+
+    Without a record (this build has not written the file yet) an off stored
+    at either key wins, as before. An off saved in the schema-10 build and
+    then dropped by main before this build ran leaves no trace in either
+    file: no rule here can see it.
+    """
+    lan_now = _stored(settings, SETTING_SECTION, SETTING_KEY)
+    app_now = _stored(settings, LEGACY_SETTING_SECTION, LEGACY_SETTING_KEY)
+    if record is None:
+        if stored_off_key(settings) is not None:
+            return False
+        return True if lan_now is None else lan_now
+    changed = []
+    if lan_now is not None and lan_now != record.get("lan_https"):
+        changed.append(lan_now)
+    if app_now is not None and app_now != record.get("app_lan_https"):
+        changed.append(app_now)
+    if changed:
+        return all(changed)
+    return bool(record.get("lan_https"))
+
+
 def listener_port(env: Mapping[str, str]) -> int:
     """The port the LAN listener uses: ``theDAW_HTTPS_PORT`` or the default.
 
@@ -187,13 +311,11 @@ def blocking_reason(
         return f"turned off for this launch by {ENV_ENABLED}"
 
     if override is None:
-        section = settings.get(SETTING_SECTION)
-        stored = section.get(SETTING_KEY) if isinstance(section, Mapping) else None
-        if _flag(stored) is False:
+        turned_off_by = stored_off_key(settings)
+        if turned_off_by is not None:
             return (
-                f"turned off in data/settings.json "
-                f"({SETTING_SECTION}.{SETTING_KEY}) - set {ENV_ENABLED}=1 "
-                f"for one launch"
+                f"turned off in data/settings.json ({turned_off_by}) - "
+                f"set {ENV_ENABLED}=1 for one launch"
             )
 
     if lan_address(lan_ips) is None:
@@ -216,7 +338,8 @@ def plan_lan_https(
     Pure. Three things have to be true, and each failure names itself:
 
     * the user has not turned it off (``theDAW_LAN_HTTPS``, then
-      ``settings.app.lan_https``; absent means on),
+      ``settings.lan.https`` or the schema-10 ``settings.app.lan_https``;
+      absent means on),
     * this machine has a LAN address to be reached at,
     * a certificate exists for it.
     """
@@ -310,21 +433,41 @@ def detect_lan_ips() -> list[str]:
 
 
 def read_settings() -> dict[str, Any]:
-    """``settings.json`` as it is on disk, or ``{}`` when it cannot be read.
+    """``settings.json`` as it is on disk, with the LAN switch settled against
+    this build's record (:func:`reconcile`), or ``{}`` when the file cannot be
+    read.
 
     Deliberately the raw file rather than ``SettingsStore``: a launcher runs
     before the backend exists, and building a store would create the file and
-    take its lock. An unreadable or half-written file means "no preference
-    recorded", which is the default -- on.
+    take its lock. It reads the record and writes nothing. An unreadable or
+    half-written file means "no preference recorded", which is the default --
+    on.
     """
     try:
         from backend.modules.settings.store import default_settings_path
 
-        raw = json.loads(Path(default_settings_path()).read_text(encoding="utf-8"))
+        settings_path = Path(default_settings_path())
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
     except Exception as exc:
         log.debug("lan-https: no readable settings (%s) - using the defaults", exc)
         return {}
-    return raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    settled = dict(raw)
+    on = reconcile(raw, read_record(settings_path))
+    lan = settled.get(SETTING_SECTION)
+    settled[SETTING_SECTION] = {
+        **(lan if isinstance(lan, dict) else {}),
+        SETTING_KEY: on,
+    }
+    if on:
+        # An off left at the old key would otherwise win (stored_off_key).
+        app = settled.get(LEGACY_SETTING_SECTION)
+        if isinstance(app, dict) and LEGACY_SETTING_KEY in app:
+            settled[LEGACY_SETTING_SECTION] = {
+                k: v for k, v in app.items() if k != LEGACY_SETTING_KEY
+            }
+    return settled
 
 
 def resolve_plan(env: Optional[Mapping[str, str]] = None) -> LanHttpsPlan:

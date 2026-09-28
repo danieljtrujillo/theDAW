@@ -176,9 +176,10 @@ export function lanListenerEnv(
 /**
  * The port the electron-vite renderer dev server actually got, read from the
  * ELECTRON_RENDERER_URL it hands the main process, or null outside dev (a
- * packaged build loads files and has no dev server). The server steps past
- * 5173 when another program holds it, so the backend is told this port as
- * theDAW_FRONTEND_PORT and /api/network/lan reports the one in use.
+ * packaged build loads files and has no dev server). The server runs on 5173
+ * with strictPort (electron.vite.config.ts), and the backend is told the port
+ * it read here as theDAW_FRONTEND_PORT, so /api/network/lan reports the
+ * address that is actually serving rather than one assumed from the config.
  */
 export function rendererDevPort(url: string | undefined): number | null {
   if (!url) return null

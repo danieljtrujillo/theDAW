@@ -21,14 +21,13 @@ NOT rescale here — re-scaling would only soften a clean capture.
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
 import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from backend.lib import paths
+from backend.lib import ffmpeg_tools, paths
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -150,7 +149,7 @@ def transcode(src_webm: Path, codec: str, out_dir: Path) -> Path:
     """Transcode ``src_webm`` into ``codec`` inside ``out_dir`` and return
     the written path. Raises RuntimeError on unknown codec / ffmpeg error.
     """
-    if shutil.which("ffmpeg") is None:
+    if ffmpeg_tools.find_ffmpeg() is None:
         raise RuntimeError("ffmpeg is not installed or not on PATH.")
 
     codec = codec.lower().strip()
@@ -167,7 +166,7 @@ def transcode(src_webm: Path, codec: str, out_dir: Path) -> Path:
 
     out_path = _unique_path(out_dir / f"{stem}.{spec.ext}")
     cmd = [
-        "ffmpeg",
+        ffmpeg_tools.ffmpeg_exe(),
         "-hide_banner",
         "-y",
         "-i",
@@ -192,7 +191,7 @@ def _export_png_sequence(src_webm: Path, out_dir: Path, stem: str) -> Path:
         frame_pat = str(tmp_dir / "frame_%05d.png")
         _run_ffmpeg(
             [
-                "ffmpeg",
+                ffmpeg_tools.ffmpeg_exe(),
                 "-hide_banner",
                 "-y",
                 "-i",
@@ -208,7 +207,7 @@ def _export_png_sequence(src_webm: Path, out_dir: Path, stem: str) -> Path:
         try:
             _run_ffmpeg(
                 [
-                    "ffmpeg",
+                    ffmpeg_tools.ffmpeg_exe(),
                     "-hide_banner",
                     "-y",
                     "-i",

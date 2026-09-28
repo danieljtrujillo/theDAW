@@ -96,9 +96,15 @@ from typing import Any, Optional
 
 from backend.lib import paths
 from backend.lib.launch_token import child_env
+from backend.lib.stamps import IncreasingClock
 from backend.modules.vst.path_policy import PluginPathError, check_plugin_path
 
 log = logging.getLogger(__name__)
+
+# A session's started_at, strictly increasing: list() orders sessions newest
+# first by it, and two opened in one 15.6 ms tick of Windows' clock tied and
+# listed oldest first (backend/lib/stamps.py).
+_session_stamp = IncreasingClock()
 
 __all__ = [
     "DEAD_SESSION_TTL",
@@ -455,10 +461,11 @@ def _validate_plugin(plugin_path: Any) -> str:
     ``plugin_path`` is browser-supplied, untrusted input, so it goes through
     ``path_policy.check_plugin_path`` first (R5-2): the raw text must name a
     ``.vst3`` file or bundle, must not be a network/device path (UNC paths
-    included), and must resolve inside one of the scanned VST3 roots — the
-    same directories the scanner itself offers in the UI. Only after that
+    included), and must sit inside one of the scanned VST3 roots — the
+    same directories the scanner itself offers in the UI, a plugin linked
+    into one of them included (``path_policy.is_allowed``). Only after that
     does existence get checked; ``check_plugin_path`` validates shape and
-    containment without touching the filesystem.
+    containment and never asks whether the plugin itself exists.
     """
     raw = str(plugin_path or "").strip()
     if not raw:
@@ -859,7 +866,7 @@ class LiveSessionManager:
             str(native_log_path),
         ]
 
-        started_at = time.time()
+        started_at = _session_stamp()
         log_handle = None
         try:
             log_handle = open(log_path, "ab")

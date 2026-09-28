@@ -235,7 +235,7 @@ class ByteSink {
   }
 
   /** The bytes written so far, in an array of their own. */
-  take(): Uint8Array {
+  take(): Uint8Array<ArrayBuffer> {
     return this.buf.slice(0, this.len);
   }
 }
@@ -335,7 +335,7 @@ const conductorEvents = (file: MidiFileData): RankedEvent[] => {
 };
 
 /** A format-1 file: the header, the conductor track ("Tempo"), then one chunk per track. */
-export const encodeMidi = (file: MidiFileData): Uint8Array => {
+export const encodeMidi = (file: MidiFileData): Uint8Array<ArrayBuffer> => {
   const out = new ByteSink();
   out.bytes(ascii('MThd'));
   out.bytes(u32be(6));

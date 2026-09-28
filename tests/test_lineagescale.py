@@ -802,6 +802,27 @@ def test_a_connected_component_is_not_a_family(library):
     assert summary["largest_connected"] > summary["largest_tree"] * 4
 
 
+def test_the_summary_sends_the_limit_full_view_ok_was_decided_by(
+    monkeypatch, small_library
+):
+    """LEARN's warning quotes ``full_view_limit``. It has to be the number
+    ``full_view_ok`` was decided against, so a limit that moves moves both,
+    and the warning never quotes a stale copy."""
+    summary = _stats(small_library).summary
+    assert summary["full_view_limit"] == graph.FULL_VIEW_LIMIT
+    with_lineage = summary["with_lineage"]
+
+    monkeypatch.setattr(graph, "FULL_VIEW_LIMIT", with_lineage - 1)
+    moved = _stats(small_library).summary
+    assert moved["full_view_limit"] == with_lineage - 1
+    assert moved["full_view_ok"] is False
+
+    monkeypatch.setattr(graph, "FULL_VIEW_LIMIT", with_lineage)
+    at = _stats(small_library).summary
+    assert at["full_view_limit"] == with_lineage
+    assert at["full_view_ok"] is True
+
+
 def test_full_view_ok_is_true_while_the_library_is_still_small(small_library):
     summary = _stats(small_library).summary
     assert summary["full_view_ok"] is True
@@ -913,6 +934,7 @@ def test_the_summary_route_answers_the_contract(monkeypatch, library):
         "largest_connected",
         "largest_tree",
         "full_view_ok",
+        "full_view_limit",
         "revision",
         # A superset of the original contract: whether these numbers came
         # out of the cache or this request ran the pass for them.
@@ -1194,15 +1216,14 @@ def test_the_summary_is_computed_once_and_then_served_from_the_cache(
     monkeypatch, library
 ):
     client = _client(monkeypatch, library)
+    passes = lineage_router._stats_cache.passes
     started = time.perf_counter()
     cold = client.get(f"{PREFIX}/summary")
     cold_seconds = time.perf_counter() - started
     assert cold.status_code == 200
     assert cold_seconds < 3.0, f"first summary took {cold_seconds:.2f} s"
 
-    started = time.perf_counter()
     warm = client.get(f"{PREFIX}/summary")
-    warm_ms = (time.perf_counter() - started) * 1000
     # Every number is the same; the one thing that changes is the honest
     # report of which request paid for them.
     assert cold.json()["warm"] is False
@@ -1210,7 +1231,37 @@ def test_the_summary_is_computed_once_and_then_served_from_the_cache(
     assert {k: v for k, v in warm.json().items() if k != "warm"} == {
         k: v for k, v in cold.json().items() if k != "warm"
     }
-    assert warm_ms < 20, f"cached summary took {warm_ms:.0f} ms"
+    assert lineage_router._stats_cache.passes == passes + 1, (
+        "the warm request ran the pass"
+    )
+
+    # What the cache costs, timed apart from the test client. A TestClient
+    # round trip to a route that does nothing takes 15-55 ms on a machine
+    # that is also running the app, so a stopwatch around ``client.get``
+    # measured the client and failed with the cache path at 8 ms. The cache
+    # path is timed on its own, and the request is timed against the same
+    # client's round trip to an empty route: best of five each, so one
+    # scheduler hiccup does not decide it.
+    def best_ms(call: Any) -> float:
+        runs = []
+        for _ in range(5):
+            started = time.perf_counter()
+            call()
+            runs.append((time.perf_counter() - started) * 1000)
+        return min(runs)
+
+    cache_ms = best_ms(lambda: lineage_router._summary_sync(library.db))
+    client.app.add_api_route("/empty", lambda: {})
+    empty_ms = best_ms(lambda: client.get("/empty"))
+    request_ms = best_ms(lambda: client.get(f"{PREFIX}/summary"))
+    assert lineage_router._stats_cache.passes == passes + 1, (
+        "a warm request ran the pass"
+    )
+    assert cache_ms < 20, f"the cached summary took {cache_ms:.1f} ms to serve"
+    assert request_ms - empty_ms < 20, (
+        f"the cached summary request took {request_ms:.1f} ms against "
+        f"{empty_ms:.1f} ms for an empty route"
+    )
 
 
 def test_a_new_song_invalidates_the_cached_pass(monkeypatch, tmp_path):

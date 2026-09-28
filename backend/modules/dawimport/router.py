@@ -44,7 +44,7 @@ def _finish_import(project, source_path: str) -> dict:
     of media_access's static roots.
 
     That produced the single most confusing symptom in the DAW-import feature:
-    session roots are PERSISTED to data/media_roots.json, so the same .als was
+    session roots are PERSISTED (data/clip_audio_roots.json), so the same .als was
     silent on a clean install and worked afterwards if any earlier project save
     or load had happened to name a file in that folder. Registering the source
     file's own folder covers Samples/Imported and Samples/Recorded in one grant.

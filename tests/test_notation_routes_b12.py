@@ -7,7 +7,8 @@ SCORE-008: GET /api/notation/pack/{artifact_id} reuses an existing, fresh PDF
     artifact instead of re-engraving on every download.
 SCORE-009: GET /api/notation/{id}/artifacts is a pure read.
 SEC-005: POST /api/sheetimport/parse-path only reads inside the library root
-    / the app's other allowed import directories.
+    / the app's other allowed import directories, and answers only to this
+    machine, the desktop shell or a paired phone.
 """
 
 from __future__ import annotations
@@ -23,8 +24,11 @@ from fastapi.testclient import TestClient
 from tests.test_library_store import _seed_generate_entry
 
 
-@pytest.fixture
-def routes_client(tmp_path: Path, monkeypatch) -> TestClient:
+LOOPBACK_PEER = ("127.0.0.1", 51000)
+LAN_PEER = ("10.20.30.40", 51000)
+
+
+def _routes_app(tmp_path: Path, monkeypatch) -> FastAPI:
     from backend.modules.library import router as library_router_module
     from backend.modules.notation import router as notation_router_module
     from backend.modules.sheetimport import router as sheetimport_router_module
@@ -35,7 +39,19 @@ def routes_client(tmp_path: Path, monkeypatch) -> TestClient:
     app.include_router(library_router_module.router, prefix="/api/library")
     app.include_router(notation_router_module.router, prefix="/api/notation")
     app.include_router(sheetimport_router_module.router, prefix="/api/sheetimport")
-    return TestClient(app)
+    return app
+
+
+@pytest.fixture
+def routes_client(tmp_path: Path, monkeypatch) -> TestClient:
+    return TestClient(_routes_app(tmp_path, monkeypatch))
+
+
+@pytest.fixture
+def score_client(tmp_path: Path, monkeypatch) -> TestClient:
+    """The same app reached from this machine's own UI (a loopback peer), the
+    caller /parse-path answers."""
+    return TestClient(_routes_app(tmp_path, monkeypatch), client=LOOPBACK_PEER)
 
 
 # --------------------------------------------------------------------------
@@ -424,61 +440,87 @@ _ABC_TUNE = "X:1\nT:Test Tune\nM:4/4\nL:1/4\nK:C\nC D E F|\n"
 
 
 def test_parse_path_inside_library_root_succeeds(
-    routes_client: TestClient, tmp_path: Path
+    score_client: TestClient, tmp_path: Path
 ):
     score = tmp_path / "inside.abc"
     score.write_text(_ABC_TUNE, encoding="utf-8")
 
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": str(score)})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": str(score)})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+
+
+def test_parse_path_answers_a_lan_caller_only_with_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare LAN script sends no Origin, Referer or Sec-Fetch-Site, so it
+    passed refuse_cross_site and read scores out of the library, data/ and
+    every granted project folder: parsed notes for a score, 404 or 422 with
+    the parser's error text for anything else. It gets 403 for all of them
+    now, while this machine's own UI still parses the same file."""
+    score = tmp_path / "inside.abc"
+    score.write_text(_ABC_TUNE, encoding="utf-8")
+    not_a_score = tmp_path / "notes.abc"
+    not_a_score.write_text("not a tune", encoding="utf-8")
+    app = _routes_app(tmp_path, monkeypatch)
+    lan = TestClient(app, client=LAN_PEER)
+
+    for path in (score, not_a_score, tmp_path / "missing.abc"):
+        r = lan.post("/api/sheetimport/parse-path", json={"path": str(path)})
+        assert r.status_code == 403, (path, r.status_code, r.text)
+        assert "tune" not in r.text.lower()
+
+    local = TestClient(app, client=LOOPBACK_PEER)
+    r = local.post("/api/sheetimport/parse-path", json={"path": str(score)})
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
 
 
 def test_parse_path_outside_allowed_roots_is_refused(
-    routes_client: TestClient, tmp_path_factory: pytest.TempPathFactory
+    score_client: TestClient, tmp_path_factory: pytest.TempPathFactory
 ):
     outside_dir = tmp_path_factory.mktemp("outside_sec005")
     score = outside_dir / "outside.abc"
     score.write_text(_ABC_TUNE, encoding="utf-8")
 
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": str(score)})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": str(score)})
     assert r.status_code == 403, r.text
 
 
 def test_parse_path_dotdot_traversal_is_refused(
-    routes_client: TestClient, tmp_path: Path
+    score_client: TestClient, tmp_path: Path
 ):
     # tmp_path IS the configured library root; ".." resolves to its parent,
     # which is not one of the allowed roots.
     escaped = str(tmp_path / ".." / "escaped.abc")
 
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": escaped})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": escaped})
     assert r.status_code == 403, r.text
 
 
 def test_parse_path_different_drive_letter_is_refused(
-    routes_client: TestClient, tmp_path: Path
+    score_client: TestClient, tmp_path: Path
 ):
     this_drive = (tmp_path.drive or "C:").upper()
     other_drive = "Z:" if this_drive != "Z:" else "Y:"
     escaped = f"{other_drive}\\thedaw-sec005-nonexistent\\escaped.abc"
 
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": escaped})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": escaped})
     assert r.status_code == 403, r.text
 
 
-def test_parse_path_unc_path_is_refused(routes_client: TestClient):
+def test_parse_path_unc_path_is_refused(score_client: TestClient):
     # A UNC path never resolves inside a local library root / app data dir,
     # existing target or not -- containment is checked before any read.
     unc = r"\\evil-server\share\secret.abc"
 
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": unc})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": unc})
     assert r.status_code in (403, 400, 422), r.text
     assert r.status_code != 200
 
 
 def test_parse_path_junction_escape_is_refused(
-    routes_client: TestClient, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    score_client: TestClient, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ):
     """A directory link planted INSIDE the library root but pointing OUTSIDE
     it must not let a path reached through the link escape containment:
@@ -512,5 +554,5 @@ def test_parse_path_junction_escape_is_refused(
             pytest.skip(f"could not create a directory symlink: {e}")
 
     escaped = str(junction / "secret.abc")
-    r = routes_client.post("/api/sheetimport/parse-path", json={"path": escaped})
+    r = score_client.post("/api/sheetimport/parse-path", json={"path": escaped})
     assert r.status_code == 403, r.text

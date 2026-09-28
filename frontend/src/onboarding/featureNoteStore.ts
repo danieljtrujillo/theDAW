@@ -22,6 +22,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from '../state/persistStorage';
 
 export type NotePlacement = 'left' | 'right' | 'top' | 'bottom';
 
@@ -83,6 +84,7 @@ export const useFeatureNoteStore = create<FeatureNoteState>()(
     }),
     {
       name: 'thedaw-feature-notes',
+      storage: persistStorage(),
       partialize: (s) => ({ dismissed: s.dismissed, enabled: s.enabled }),
     },
   ),

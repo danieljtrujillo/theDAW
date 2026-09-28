@@ -6,8 +6,12 @@ default — nothing is loaded in a CI-like run:
 * the probe binary must exist. It is not built by ``uv sync``; point
   ``THEDAW_VST3_PROBE`` at it, or build it with::
 
-      cmake -S native/vst-host/src/vst3 -B <build dir> -A x64
+      cmake -S native/vst-host/src/vst3 -B <build dir> -G "Visual Studio 17 2022" -A x64
       cmake --build <build dir> --config Release
+
+  naming the Visual Studio generator you have installed ("Visual Studio 16
+  2019" for the 2019 build tools): ``-A`` is accepted only by the Visual Studio
+  generators, and a CMake whose default is Ninja rejects it.
 
 * ``THEDAW_TEST_VST3`` must name the plugins to try, separated by ``os.pathsep``
   (``;`` on Windows). The first entry that loads is used; the rest are the

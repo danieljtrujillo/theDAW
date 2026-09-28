@@ -322,7 +322,7 @@ assert.match(
  * which is where ffmpeg writes its encoder tag — a parser that assumes `data`
  * sits at byte 36 reads the LIST chunk as audio.
  */
-const f32Wav = (seconds: number, { sampleRate = 8000, channels = 2, withList = false } = {}): Uint8Array => {
+const f32Wav = (seconds: number, { sampleRate = 8000, channels = 2, withList = false } = {}): Uint8Array<ArrayBuffer> => {
   const frames = Math.round(seconds * sampleRate);
   const dataBytes = frames * channels * 4;
   const list = withList ? 4 + 'ISFTLavf61.1.100\0\0'.length + 8 : 0; // 'INFO' + one ISFT sub-chunk
@@ -344,7 +344,7 @@ const f32Wav = (seconds: number, { sampleRate = 8000, channels = 2, withList = f
   return new Uint8Array(buf);
 };
 
-const wavReply = (bytes: Uint8Array) => () => new Response(bytes, { status: 200, headers: { 'content-type': 'audio/wav' } });
+const wavReply = (bytes: Uint8Array<ArrayBuffer>) => () => new Response(bytes, { status: 200, headers: { 'content-type': 'audio/wav' } });
 
 // The header parser, on its own: the length is read from the file, not assumed.
 assert.equal(bridge.wavDurationSec(f32Wav(4).buffer), 4);

@@ -21,7 +21,8 @@
  * the user can toggle any step by hand at any time.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
+import type { Feature, LineString } from 'geojson';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './tourMap.css';
 import { List, type ListImperativeAPI } from 'react-window';
@@ -658,7 +659,7 @@ export const TourView: React.FC = () => {
         if (src) map.removeSource('tour-route');
         return;
       }
-      const data: GeoJSON.Feature<GeoJSON.LineString> = {
+      const data: Feature<LineString> = {
         type: 'Feature',
         properties: {},
         geometry: { type: 'LineString', coordinates: route.geometry },

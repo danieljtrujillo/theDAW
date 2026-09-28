@@ -29,7 +29,9 @@ from backend.modules.project.tasmo_project import Clip, Take, TasmoProject, Trac
 def clean_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """An empty session allowlist, persisted nowhere near the repo's data dir."""
     monkeypatch.delenv("theDAW_MEDIA_ROOTS", raising=False)
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     return media_access._session_roots
 

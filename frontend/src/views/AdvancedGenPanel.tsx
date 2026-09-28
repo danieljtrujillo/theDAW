@@ -30,11 +30,13 @@ import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { fetchMagentaEngineStatus, installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
+import { handleEngineElsewhere } from '../lib/magentaElsewhere';
 import { CLOUD_MODELS } from '../lib/cloudModels';
 import {
   fetchCheckpoints, pickFile, setLocalOnly, storageErrorStatus, type RegisteredCheckpoint,
 } from '../lib/storageClient';
 import { basenameOf, isLocalClient, placesApi } from '../lib/placesClient';
+import { pairingHeaderFor } from '../lib/apiJson';
 import { describeHttpError } from '../lib/httpError';
 import { classifyModelGate } from '../lib/modelDownloadClient';
 import { requireFeature } from '../notices/featureGateStore';
@@ -397,8 +399,14 @@ export const AdvancedGenPanel: React.FC<{
       form.append('model', model);
       const r = await fetch('/api/model/load', { method: 'POST', body: form });
       if (!r.ok) {
-        const detail = await r.json().then((j) => j?.detail).catch(() => null);
-        throw new Error(typeof detail === 'string' ? detail : `HTTP ${r.status}`);
+        const detail: unknown = await r.json().then((j) => j?.detail).catch(() => null);
+        // Another copy's Magenta engine holds the GPU: its card names the
+        // engine and offers to stop it.
+        handleEngineElsewhere({ detail }, 'Stable Audio cannot load beside it.');
+        const message = (detail as { message?: unknown } | null)?.message;
+        throw new Error(
+          typeof detail === 'string' ? detail : typeof message === 'string' ? message : `HTTP ${r.status}`,
+        );
       }
       const d = await r.json();
       // Echo the backend's resolution trail: the exact file paths used and
@@ -524,7 +532,8 @@ export const AdvancedGenPanel: React.FC<{
     const name = basenameOf(path);
     setLoraLoadingIdx(i);
     try {
-      const res = await fetch(placesApi.fileUrl(path));
+      const url = placesApi.fileUrl(path);
+      const res = await fetch(url, { headers: pairingHeaderFor(url) });
       if (!res.ok) throw new Error(await describeHttpError(res));
       const blob = await res.blob();
       setLoraFile(i, new File([blob], name, { type: blob.type || 'application/octet-stream' }));

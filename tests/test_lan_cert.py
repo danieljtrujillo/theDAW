@@ -16,9 +16,12 @@ without it.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -254,6 +257,160 @@ def test_a_failed_generation_leaves_no_temp_files_behind(
 
 def test_find_openssl_rejects_a_name_that_does_not_exist():
     assert lan_cert.find_openssl("C:/nope/openssl-not-here.exe") is None
+
+
+# --------------------------------------------------------------------------
+# an openssl that starts but cannot make a certificate (Miniconda's)
+# --------------------------------------------------------------------------
+
+
+def _broken_openssl(folder: Path) -> Path:
+    """An openssl that behaves like Miniconda's on Windows: ``version`` works,
+    and everything else exits 1 because its openssl.cnf does not exist."""
+    folder.mkdir(parents=True)
+    cnf = 'Can\'t open "C:\\Program Files\\Common Files\\ssl/openssl.cnf" for reading'
+    if sys.platform == "win32":
+        (folder / "openssl.cmd").write_text(
+            "@echo off\r\n"
+            'if "%~1"=="version" (echo OpenSSL 3.4.0 22 Oct 2024& exit /b 0)\r\n'
+            f"echo {cnf} 1>&2\r\n"
+            "exit /b 1\r\n",
+            encoding="ascii",
+        )
+    else:
+        script = folder / "openssl"
+        script.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = version ]; then echo "OpenSSL 3.4.0 22 Oct 2024"; exit 0; fi\n'
+            f"echo '{cnf}' >&2\n"
+            "exit 1\n",
+            encoding="ascii",
+        )
+        script.chmod(0o755)
+    return folder
+
+
+def _working_openssl_dir() -> Path | None:
+    """A directory holding an openssl that really makes a certificate, found
+    here rather than through lan_cert so the test does not lean on the code it
+    is testing."""
+    found: list[str] = []
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        hit = shutil.which("openssl", path=directory) if directory.strip() else None
+        if hit:
+            found.append(hit)
+    found += [c for c in lan_cert._WINDOWS_OPENSSL_FALLBACKS if Path(c).is_file()]
+    for binary in found:
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                done = subprocess.run(
+                    [
+                        binary,
+                        "req",
+                        "-x509",
+                        "-newkey",
+                        "rsa:2048",
+                        "-nodes",
+                        "-days",
+                        "1",
+                        "-subj",
+                        "/CN=probe",
+                        "-addext",
+                        "subjectAltName=IP:127.0.0.1",
+                        "-keyout",
+                        str(Path(tmp) / "k.pem"),
+                        "-out",
+                        str(Path(tmp) / "c.pem"),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if done.returncode == 0:
+                return Path(binary).parent
+    return None
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def test_a_broken_openssl_first_on_path_is_skipped_for_a_working_one(
+    data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The machine this was reported on: Miniconda's openssl is first on PATH
+    and Git's is further down. The first hit was taken without a test, every
+    ``openssl req`` failed on the missing openssl.cnf, and LAN HTTPS never
+    started."""
+    working = _working_openssl_dir()
+    if working is None:
+        pytest.skip("no openssl on this machine can make a certificate")
+    broken = _broken_openssl(tmp_path / "Miniconda3" / "Library" / "bin")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(broken), str(working)]))
+    monkeypatch.setattr(lan_cert, "_WINDOWS_OPENSSL_FALLBACKS", ())
+
+    pair = lan_cert.ensure_lan_cert(["192.168.1.34"])
+
+    assert pair is not None, "the broken openssl was used and no certificate was made"
+    assert pair.cert.read_bytes().startswith(b"-----BEGIN CERTIFICATE-----")
+    chosen = lan_cert.find_openssl()
+    assert chosen is not None and _same_file(Path(chosen).parent, working)
+
+
+def test_a_launch_that_keeps_its_certificate_generates_no_key(
+    data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two launches with Mobile Access on, Miniconda's openssl first on PATH.
+    The first makes the certificate. The second keeps it, and still ran a
+    full RSA key generation with every openssl in turn to pick one, only to
+    read the certificate with it."""
+    working = _working_openssl_dir()
+    if working is None:
+        pytest.skip("no openssl on this machine can make a certificate")
+    broken = _broken_openssl(tmp_path / "Miniconda3" / "Library" / "bin")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(broken), str(working)]))
+    monkeypatch.setattr(lan_cert, "_WINDOWS_OPENSSL_FALLBACKS", ())
+
+    first = lan_cert.ensure_lan_cert(["192.168.1.34"])
+    assert first is not None
+    before = first.cert.read_bytes()
+
+    commands: list[str] = []
+    real_run = lan_cert._run
+
+    def recording_run(argv, *args, **kwargs):
+        commands.append(argv[1])
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(lan_cert, "_run", recording_run)
+    again = lan_cert.ensure_lan_cert(["192.168.1.34"])
+
+    assert again is not None
+    assert again.cert.read_bytes() == before
+    assert "req" not in commands, f"the second launch generated a key: {commands}"
+
+
+def test_answering_version_is_not_enough_to_be_chosen(tmp_path: Path):
+    broken = _broken_openssl(tmp_path / "bin")
+    binary = shutil.which("openssl", path=str(broken))
+    assert binary is not None
+    assert lan_cert._openssl_works(binary) is False
+
+
+def test_every_candidate_failing_warns_once_and_names_them(
+    data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+):
+    broken = _broken_openssl(tmp_path / "bin")
+    monkeypatch.setenv("PATH", str(broken))
+    monkeypatch.setattr(lan_cert, "_WINDOWS_OPENSSL_FALLBACKS", ())
+    with caplog.at_level(logging.WARNING, logger="backend.lib.lan_cert"):
+        assert lan_cert.ensure_lan_cert(["192.168.1.34"]) is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert str(broken) in warnings[0].getMessage()
+    assert not lan_cert.cert_file().exists()
 
 
 # --------------------------------------------------------------------------

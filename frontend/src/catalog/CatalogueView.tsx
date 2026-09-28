@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Database, Loader2, Minimize2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../state/libraryStore';
+import { LibraryIndexProgress } from '../components/library/LibraryIndexProgress';
+import { useLibraryIndexStatus } from '../state/libraryIndexStatusStore';
+import { libraryOpeningText } from '../lib/libraryIndexStatus';
 import { useCatalogueUiStore, selectSearchState } from './catalogueUiStore';
 import { applyCatalogueServerQuery, filterAndSort, isServerOnly } from './catalogSearch';
 import { CatalogueFilterBar } from './CatalogueFilterBar';
@@ -32,14 +35,13 @@ import type { LibraryEntry } from '../state/libraryEntry';
  */
 export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollapse }) => {
   // Library store (source of truth).
-  const loaded = useLibraryStore((s) => s.loaded);
   const entries = useLibraryStore((s) => s.entries);
   const total = useLibraryStore((s) => s.total);
   const pagesLoading = useLibraryStore((s) => s.pagesLoading);
   const pageError = useLibraryStore((s) => s.pageError);
+  const libraryOpening = useLibraryStore((s) => s.libraryOpening);
+  const indexStatus = useLibraryIndexStatus((s) => s.status);
   const entryAt = useLibraryStore((s) => s.entryAt);
-  const getById = useLibraryStore((s) => s.getById);
-  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
   const ensureRange = useLibraryStore((s) => s.ensureRange);
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
@@ -61,10 +63,10 @@ export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollaps
   // that registered into the library after the first (empty) load never appeared
   // until a hard reload.
   useEffect(() => {
-    if (!loaded) void useLibraryStore.getState().load();
-    else void useLibraryStore.getState().refresh();
-    // run once per mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Read at mount, never subscribed: this runs once per mount.
+    const library = useLibraryStore.getState();
+    if (!library.loaded) void library.load();
+    else void library.refresh();
   }, []);
 
   // Drive the SERVER query from the filter bar — text, favourites, sort,
@@ -95,12 +97,10 @@ export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollaps
     void ensureRange(start, end);
   }, [ensureRange]);
 
-  const selectedEntry = useMemo(
-    () => (selectedEntryId ? getById(selectedEntryId) ?? null : null),
-    // `lookupVersion` bumps when a single-entry fetch lands; `entries` when a
-    // page does. Either can be what makes this id resolvable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEntryId, getById, entries, lookupVersion],
+  // A store selector: it runs again on every store change, so a page landing
+  // or a single-entry fetch that makes this id resolvable re-renders here.
+  const selectedEntry = useLibraryStore((s) =>
+    selectedEntryId ? s.getById(selectedEntryId) ?? null : null,
   );
 
   const handleContextMenu = (e: React.MouseEvent, entry: LibraryEntry) => {
@@ -130,7 +130,7 @@ export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollaps
 
       {/* One honest line about what was searched, plus the loading and error
           states the paged store reports. */}
-      <div className="shrink-0 flex items-center gap-2 px-2 pb-1 text-[9px] font-mono text-zinc-600">
+      <div className="shrink-0 flex items-center gap-2 px-2 pb-1 text-xs font-bold text-zinc-400">
         <span>
           {rowCount.toLocaleString()} {rowCount === 1 ? 'track' : 'tracks'}
           {searchState.query.trim() ? ` · showing results for “${searchState.query.trim()}”` : ''}
@@ -144,10 +144,15 @@ export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollaps
           <Loader2 className="w-2.5 h-2.5 animate-spin text-purple-400" aria-label="Loading more rows" />
         )}
       </div>
+      {/* The backend opening the library (upgrade, first read, search index
+          build); hidden once it is ready. */}
+      <div className="shrink-0 mx-2 mb-1 empty:hidden">
+        <LibraryIndexProgress />
+      </div>
       {pageError && (
         <div
           role="alert"
-          className="shrink-0 mx-2 mb-1 flex items-center gap-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[9px] font-mono text-rose-200"
+          className="shrink-0 mx-2 mb-1 flex items-center gap-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs font-bold text-rose-200"
         >
           <span className="flex-1 min-w-0 truncate" title={pageError}>{pageError}</span>
           <button
@@ -165,10 +170,12 @@ export const CatalogueView: React.FC<{ onCollapse?: () => void }> = ({ onCollaps
           {rowCount === 0 && pagesLoading === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-30 italic gap-2">
               <Database className="w-8 h-8" />
-              {searchState.query.trim() || !serverOnly || searchState.onlyFavorites ? (
-                <p className="text-[11px]">No entries match your search.</p>
+              {libraryOpening ? (
+                <p className="text-xs font-bold not-italic">{libraryOpeningText(indexStatus)}</p>
+              ) : searchState.query.trim() || !serverOnly || searchState.onlyFavorites ? (
+                <p className="text-xs font-bold">No entries match your search.</p>
               ) : (
-                <p className="text-[11px]">Library is empty — generate or import a track.</p>
+                <p className="text-xs font-bold">Library is empty — generate or import a track.</p>
               )}
             </div>
           ) : viewMode === 'list' ? (

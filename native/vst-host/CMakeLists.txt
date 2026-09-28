@@ -54,10 +54,26 @@ target_compile_definitions(thedaw-vst-host PRIVATE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
-    _CRT_SECURE_NO_WARNINGS
 )
 
 if(MSVC)
+    # /Zc:preprocessor turns on MSVC's standards-conforming preprocessor, which
+    # reports warning C5105 for a macro whose expansion produces `defined`.
+    # winbase.h in Windows SDK 10.0.19041 writes exactly that:
+    #   #if !defined(MICROSOFT_WINDOWS_WINBASE_H_DEFINE_INTERLOCKED_CPLUSPLUS_OVERLOADS)
+    #   #define MICROSOFT_WINDOWS_WINBASE_H_DEFINE_INTERLOCKED_CPLUSPLUS_OVERLOADS (_WIN32_WINNT >= 0x0502 || !defined(_WINBASE_))
+    #   #endif
+    #   #if MICROSOFT_WINDOWS_WINBASE_H_DEFINE_INTERLOCKED_CPLUSPLUS_OVERLOADS
+    # and /WX turned that into a failed build on every machine with that SDK.
+    # The header leaves the macro to the includer when it is already defined
+    # (its own comment names defining it as the switch), so it is defined here
+    # to the value its expression gives for every Windows 10 target
+    # (_WIN32_WINNT >= 0x0502, inside winbase.h where _WINBASE_ is set): 1. No
+    # macro expansion produces `defined` any more, and the Interlocked C++
+    # overloads are declared exactly as before.
+    target_compile_definitions(thedaw-vst-host PRIVATE
+        MICROSOFT_WINDOWS_WINBASE_H_DEFINE_INTERLOCKED_CPLUSPLUS_OVERLOADS=1
+    )
     target_compile_options(thedaw-vst-host PRIVATE
         /W4
         /permissive-

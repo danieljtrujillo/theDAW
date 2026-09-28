@@ -20,6 +20,25 @@ that dialog issued, once.
 CORS is open on this server, so a page on another site could otherwise list the
 recent files and then read them. Every route refuses a call that the browser
 labels as coming from such a page (``backend.lib.cross_site``).
+
+That label is only a header, and a bare script on the LAN sends none, so the
+routes also check who is asking, the same way the project router does:
+
+* The reads and ``/record`` answer this machine's own UI, the desktop shell,
+  and a paired device (the desktop UI opened from the Mobile Access share
+  link, which carries the pairing token). An unknown LAN caller could
+  otherwise list every path theDAW remembers -- the very leak the project
+  router's ``/recent`` and ``/default-dir`` are gated against -- and read the
+  servable ones.
+* ``/reveal`` opens a window on this machine's desktop, and ``PUT
+  /projects-dir`` moves the one folder a paired device may save into and open
+  from (``backend.lib.lan_paths``), so both answer only this machine's own UI
+  and the desktop shell. Letting a LAN caller move that folder would let it
+  widen its own sandbox to the whole disk.
+* ``/recent`` offers a caller on another machine only the ``.tasmo``
+  projects it may open: ``/api/project/load`` refuses it any project outside
+  the projects folder and the library tree.
+* ``/save`` spends a grant only a native Save dialog on this machine issues.
 """
 
 from __future__ import annotations
@@ -37,14 +56,34 @@ from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.lib import known_paths, launch_token, reveal
+from backend.lib import known_paths, lan_paths, launch_token, reveal
 from backend.lib.atomic import atomic_replace, temp_sibling
-from backend.lib.cross_site import refuse_cross_site
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+    require_loopback_or_launch_token,
+)
+from backend.modules.genaiproxy.access import caller_is_loopback
 
 log = logging.getLogger(__name__)
 
 
 router = APIRouter(dependencies=[Depends(refuse_cross_site)])
+
+
+def _require_this_machine(request: Request, refusal: str) -> None:
+    """403 with ``refusal`` unless this machine's own UI or the desktop shell
+    is asking (``require_loopback_or_launch_token``); the words say what only
+    works on the computer running theDAW, for the UI to show as-is."""
+    try:
+        require_loopback_or_launch_token(request)
+    except HTTPException as e:
+        raise HTTPException(403, refusal) from e
+
+
+def _is_tasmo(path: str) -> bool:
+    return path.lower().endswith(".tasmo")
+
 
 # One save at a time, from the grant check to spending it, so two requests
 # holding the same grant cannot both write.
@@ -60,22 +99,38 @@ class PathBody(BaseModel):
     path: str
 
 
-@router.get("/folder")
+@router.get("/folder", dependencies=[Depends(require_loopback_launch_or_pairing_token)])
 def get_folder(kind: str = Query("")) -> dict[str, Any]:
     return {"kind": kind, "folder": known_paths.last_folder(kind or None)}
 
 
-@router.get("/recent")
+@router.get("/recent", dependencies=[Depends(require_loopback_launch_or_pairing_token)])
 def get_recent(
+    request: Request,
     kind: str = Query(""),
     exts: str = Query("", description="comma-separated, e.g. .mid,.midi"),
     limit: int = Query(20),
 ) -> dict[str, Any]:
     wanted = [e for e in exts.split(",") if e.strip()] or None
-    return {"items": known_paths.recent(kind or None, wanted, limit)}
+    if caller_is_loopback(request):
+        # This machine's own UI: every remembered path.
+        return {"items": known_paths.recent(kind or None, wanted, limit)}
+    # A caller on another machine: a .tasmo it could not open (see the module
+    # docstring) is left out, and the limit counts only what is kept.
+    keep = max(0, min(limit, known_paths.MAX_RECENT_LIMIT))
+    rows = [
+        row
+        for row in known_paths.recent(
+            kind or None, wanted, known_paths.MAX_RECENT_LIMIT
+        )
+        if not _is_tasmo(row["path"]) or lan_paths.inside_project_roots(row["path"])
+    ]
+    return {"items": rows[:keep]}
 
 
-@router.post("/record")
+@router.post(
+    "/record", dependencies=[Depends(require_loopback_launch_or_pairing_token)]
+)
 def post_record(body: RecordBody, request: Request) -> dict[str, Any]:
     # The body names the path. Only the desktop shell that started this backend
     # holds the launch token, and it sends it for a download it finished, so
@@ -102,7 +157,12 @@ def get_launch_token_check(request: Request) -> dict[str, bool]:
 
 
 @router.post("/reveal")
-def post_reveal(body: PathBody) -> dict[str, Any]:
+def post_reveal(body: PathBody, request: Request) -> dict[str, Any]:
+    _require_this_machine(
+        request,
+        "Show in folder opens a window on the computer running theDAW, so it "
+        "works only there.",
+    )
     try:
         shown = reveal.reveal(body.path)
     except FileNotFoundError as e:
@@ -114,7 +174,7 @@ def post_reveal(body: PathBody) -> dict[str, Any]:
     return {"status": "ok", "path": shown}
 
 
-@router.get("/file")
+@router.get("/file", dependencies=[Depends(require_loopback_launch_or_pairing_token)])
 def get_file(path: str = Query("")) -> FileResponse:
     served = known_paths.find_servable(path)
     if served is None:
@@ -170,7 +230,9 @@ def post_save(
     }
 
 
-@router.get("/projects-dir")
+@router.get(
+    "/projects-dir", dependencies=[Depends(require_loopback_launch_or_pairing_token)]
+)
 def get_projects_dir() -> dict[str, Any]:
     return {
         "path": str(known_paths.projects_dir()),
@@ -179,7 +241,11 @@ def get_projects_dir() -> dict[str, Any]:
 
 
 @router.put("/projects-dir")
-def put_projects_dir(body: PathBody) -> dict[str, str]:
+def put_projects_dir(body: PathBody, request: Request) -> dict[str, str]:
+    _require_this_machine(
+        request,
+        "The projects folder can be changed only on the computer running theDAW.",
+    )
     try:
         chosen = known_paths.set_projects_dir(body.path)
     except ValueError as e:

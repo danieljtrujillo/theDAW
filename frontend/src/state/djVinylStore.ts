@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* DJ scratch character (vinyl mode), persisted. 'classic' = a clean
  * turntable resample; 'cyber' = fragmented, bit-crushed glitch. Shared by both
@@ -20,6 +21,6 @@ export const useDjVinyl = create<DjVinylState>()(
       setMode: (mode) => set({ mode }),
       toggle: () => set((s) => ({ mode: s.mode === 'classic' ? 'cyber' : 'classic' })),
     }),
-    { name: 'thedaw.dj.vinyl.v1' },
+    { name: 'thedaw.dj.vinyl.v1', storage: persistStorage() },
   ),
 );

@@ -8,6 +8,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { DEFAULT_MODE_SLOTS } from '../lib/drawEngine';
 
 interface DrawModeState {
@@ -30,6 +31,7 @@ export const useDrawModeStore = create<DrawModeState>()(
     }),
     {
       name: 'thedaw-draw-modes',
+      storage: persistStorage(),
       version: 1,
       partialize: (s) => ({ slots: s.slots }),
       // v0 persisted 12 slots; reset to the 8-slot default on upgrade.

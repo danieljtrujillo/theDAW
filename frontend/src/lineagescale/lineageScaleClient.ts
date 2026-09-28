@@ -74,8 +74,12 @@ export interface LineageSummary {
   largest_connected: number;
   /** Largest component over `ancestry` links only — the largest real family. */
   largest_tree: number;
-  /** True only for a library small enough to draw whole (with_lineage <= 2000). */
+  /** True when LEARN opens the classic drawing by default
+   *  (with_lineage <= full_view_limit). */
   full_view_ok: boolean;
+  /** The `with_lineage` count `full_view_ok` is decided against. Absent on
+   *  older backends that did not send it. */
+  full_view_limit?: number;
   revision: number;
   /**
    * True when this answer came from the cache; false means this request ran

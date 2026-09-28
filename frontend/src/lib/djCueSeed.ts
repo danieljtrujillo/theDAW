@@ -15,8 +15,9 @@
  *     expensive. So downbeats are an optional upgrade, never a requirement.
  *
  * The rule is the one a DJ uses by hand: cue 1 on the first downbeat (the
- * first beat when no downbeats are known), then the starts of the 16, 32 and
- * 48-bar phrases after it — the three points a mix in/out most often lands on.
+ * first detected beat when no downbeats are known), then the starts of the
+ * 16, 32 and 48-bar phrases after it — the three points a mix in/out most
+ * often lands on.
  *
  * Pure: no store, no fetch, no clock. `DJView` calls it once per track when
  * the analysis lands and hands the result to `djCuesStore.seedCues`.
@@ -38,8 +39,14 @@ export const CUE_BEATS_PER_BAR = 4;
 export type SeededCues = [number | null, number | null, number | null, number | null];
 
 export interface SeedCuesArgs {
-  /** Every beat position in seconds, from `djAnalysisStore` (`a.beats`). */
+  /** Beat positions in seconds. DJView passes its constant beatgrid, whose
+   *  first line is the grid line nearest 0:00 — whole beats BEFORE the music
+   *  starts on a track with an intro — so it is never the anchor when
+   *  `firstBeat` is known. */
   beats: number[] | null | undefined;
+  /** The first beat the analysis detected (`a.beats[0]`). The anchor for cue
+   *  1 and the phrase cues when no downbeats are cached. */
+  firstBeat?: number | null;
   /** Tracked tempo. Without it there is no phrase length and no seed. */
   bpm: number | null | undefined;
   /** Track length in seconds; `0`/absent simply skips the clamp. */
@@ -68,9 +75,13 @@ export function seedCues(args: SeedCuesArgs): SeededCues | null {
   const beatLen = 60 / (bpm as number);
 
   const beats = clean(args.beats);
-  // An explicit bar list wins over downbeats; downbeats win over raw beats.
+  // An explicit bar list wins over downbeats; downbeats win over the first
+  // detected beat; the first entry of `beats` is the last resort. Anchoring
+  // on the beatgrid's first line put cue 1 and every phrase cue whole beats
+  // off the music on any track whose first beat comes after one beat length.
   const grid = clean(args.bars) ?? clean(args.downbeats);
-  const anchor = grid ? grid[0] : beats ? beats[0] : null;
+  const first = Number.isFinite(args.firstBeat ?? NaN) && (args.firstBeat as number) >= 0 ? (args.firstBeat as number) : null;
+  const anchor = grid ? grid[0] : first ?? (beats ? beats[0] : null);
   if (anchor == null) return null;
 
   const duration = Number.isFinite(args.duration ?? NaN) ? (args.duration as number) : 0;

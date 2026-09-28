@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export type SwayPadMode = 'drums' | 'track' | 'piano';
 
@@ -54,7 +55,7 @@ export const useSwaySurfaceStore = create<SwaySurfaceState>()(
         if (!get().touched) set({ enabled: true });
       },
     }),
-    { name: 'thedaw-sway-surface-v1' },
+    { name: 'thedaw-sway-surface-v1', storage: persistStorage() },
   ),
 );
 

@@ -598,8 +598,8 @@ const makeSpatializer: RackEffectFactory = (ctx, params) => {
   };
 
   // Live-only buffers (allocated in ensureAutopilot so offline never allocates them).
-  let freqBuf: Uint8Array | null = null;
-  let timeBuf: Uint8Array | null = null;
+  let freqBuf: Uint8Array<ArrayBuffer> | null = null;
+  let timeBuf: Uint8Array<ArrayBuffer> | null = null;
   let prevFreq: Uint8Array | null = null;
   let bands: Array<{ lo: number; hi: number }> = [];
   const agcState: Record<string, { min: number; max: number }> = {};
@@ -1044,7 +1044,7 @@ const makeGater: RackEffectFactory = (ctx, params) => {
    A stepped waveshaper quantizes the signal to 2^bits levels for lo-fi crunch,
    blended against the dry signal. (Sample-rate reduction, the other half of a
    classic crusher, needs a per-sample worklet and lands with the chop suite.) */
-const bitcrushCurve = (bits: number): Float32Array => {
+const bitcrushCurve = (bits: number): Float32Array<ArrayBuffer> => {
   const n = 2048;
   const curve = new Float32Array(n);
   const levels = Math.pow(2, clamp(bits, 1, 16));

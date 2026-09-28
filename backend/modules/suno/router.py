@@ -311,7 +311,7 @@ async def _register_completed_job(job: dict[str, Any]) -> Optional[str]:
     try:
         from backend.modules.library.router import get_store
 
-        store = get_store()
+        store = await asyncio.to_thread(get_store)
         rec = store.import_blob(
             mp3_bytes,
             filename,

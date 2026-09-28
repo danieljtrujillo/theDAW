@@ -17,7 +17,7 @@
 //     npx vite --config vite.lan.config.ts
 import fs from 'node:fs';
 import { defineConfig, type UserConfig } from 'vite';
-import base from './vite.config';
+import base from './vite.config.ts';
 
 /** Mirrors `backend.ports.LAN_HTTPS_PORT`: the one port the LAN listener uses
  *  unless `theDAW_HTTPS_PORT` says otherwise. */

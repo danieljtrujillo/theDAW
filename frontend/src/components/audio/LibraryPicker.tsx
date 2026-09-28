@@ -7,10 +7,13 @@
  * fixed below.
  *
  * What it browses: the three library kinds that can become a clip — audio
- * takes (`libraryStore.entries`), separated stems and converted MIDI. Video and
- * image entries are filtered out on purpose: the editor store has exactly two
- * clip kinds (`'audio' | 'piano-roll'`), so there is nothing a video could
- * become on a track. A caller narrows the tabs further with `tabs`.
+ * takes, separated stems and converted MIDI. Audio takes are searched over the
+ * WHOLE library through the backend with the picker's own query, sort and
+ * favourites filter (`useLibrarySearch`), a page at a time; the LIBRARY tab's
+ * query and loaded pages play no part. Video and image entries are not asked
+ * for: the editor store has exactly two clip kinds (`'audio' | 'piano-roll'`),
+ * so there is nothing a video could become on a track. A caller narrows the
+ * tabs further with `tabs`.
  *
  * Two shapes, and the ARIA matches whichever is in use:
  *   - ANCHORED (`anchor` given): a popover. No overlay at all, dismissed by an
@@ -50,7 +53,9 @@ import {
   type LibraryMidiRow,
   type LibraryStemRow,
 } from '../../lib/libraryIndex';
-import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import type { LibraryEntry } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
+import type { LibraryServerSort } from '../../lib/backendLocalProvider';
 import { logError } from '../../state/logStore';
 
 export interface PickerAnchor {
@@ -110,10 +115,20 @@ const TAB_LABEL: Record<LibraryPickerTab, string> = {
   midi: 'MIDI',
 };
 
-/** Rendered at once. A library of thousands of takes would otherwise build
- *  thousands of DOM rows on every keystroke; the footer says what is hidden and
- *  search narrows to it. */
+/** Stem and MIDI rows rendered at once. Those indexes arrive whole, and a
+ *  long one would otherwise build thousands of DOM rows on every keystroke; the
+ *  footer says what is hidden and search narrows to it. Audio takes arrive a
+ *  page at a time, so they need no cap. */
 const MAX_ROWS = 300;
+
+type PickerSort = 'favorites' | 'name' | 'newest';
+
+/** The picker's sort orders, as the backend spells them for audio takes. */
+const SERVER_SORT: Record<PickerSort, LibraryServerSort> = {
+  favorites: 'favorites_first',
+  name: 'title_asc',
+  newest: 'created_desc',
+};
 
 /** Extensions the MIDI tab's Recent menu offers. */
 const RECENT_MIDI_EXTS = MIDI_EXTS.map((e) => `.${e}`);
@@ -240,7 +255,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
   const [tab, setTab] = useState<LibraryPickerTab>(initialTab ?? tabList[0]);
   const [query, setQuery] = useState('');
   const [favOnly, setFavOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<'favorites' | 'name' | 'newest'>('favorites');
+  const [sortBy, setSortBy] = useState<PickerSort>('favorites');
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
 
@@ -249,10 +264,17 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
   const [loading, setLoading] = useState<Partial<Record<LibraryPickerTab, boolean>>>({});
   const [errors, setErrors] = useState<Partial<Record<LibraryPickerTab, string>>>({});
 
-  const entries = useLibraryStore((s) => s.entries);
-  const loadLibrary = useLibraryStore((s) => s.load);
-  const refreshLibrary = useLibraryStore((s) => s.refresh);
-  const libraryLoaded = useLibraryStore((s) => s.loaded);
+  // Audio takes: the picker's own search, over the whole library.
+  const audio = useLibrarySearch(
+    {
+      q: query,
+      kind: 'audio',
+      favorite: favOnly ? true : null,
+      sort: SERVER_SORT[sortBy],
+    },
+    { enabled: open && tab === 'audio' },
+  );
+  const refreshAudio = audio.refresh;
 
   const cardRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -261,31 +283,24 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
   const [pos, setPos] = useState<PickerAnchor | null>(null);
 
   // Reopening resets the transient view state but keeps whatever is cached.
+  // Keyed on the first tab's NAME, not the `tabs` array: a caller may pass an
+  // inline array, which is a new object on every render.
+  const firstTab = tabList[0];
   useEffect(() => {
     if (!open) return;
-    setTab(initialTab ?? tabList[0]);
+    setTab(initialTab ?? firstTab);
     setQuery('');
     setActive(0);
     setBusy(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- open is the reset edge
-  }, [open, initialTab]);
+  }, [open, initialTab, firstTab]);
 
   const refresh = useCallback(
     (which: LibraryPickerTab, force: boolean) => {
       setErrors((e) => ({ ...e, [which]: undefined }));
       if (which === 'audio') {
-        // Audio takes live in a store the whole app keeps current, so opening
-        // the picker does not refetch them — only the explicit reload does.
-        if (!force && libraryLoaded) return;
-        setLoading((l) => ({ ...l, audio: true }));
-        void (force ? refreshLibrary() : loadLibrary())
-          .catch((e: unknown) =>
-            setErrors((prev) => ({
-              ...prev,
-              audio: e instanceof Error ? e.message : String(e),
-            })),
-          )
-          .finally(() => setLoading((l) => ({ ...l, audio: false })));
+        // The audio search fetches its first page when the tab opens and
+        // again when the library moves; only the explicit reload asks here.
+        if (force) refreshAudio();
         return;
       }
       const load = which === 'stems' ? loadLibraryStems : loadLibraryMidi;
@@ -303,7 +318,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
         )
         .finally(() => setLoading((l) => ({ ...l, [which]: false })));
     },
-    [libraryLoaded, loadLibrary, refreshLibrary],
+    [refreshAudio],
   );
 
   // Revalidate the visible tab each time the picker opens (and when the user
@@ -312,22 +327,21 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
   useEffect(() => {
     if (!open) return;
     // The two index fetches are small, so they revalidate every open — a stale
-    // index would hide MIDI the user converted a minute ago. The audio tab
-    // reads the already-live library store instead.
+    // index would hide MIDI the user converted a minute ago. The audio tab's
+    // search starts itself.
     refresh(tab, tab !== 'audio');
   }, [open, tab, refresh]);
 
+  const audioRows = audio.rows;
   const rows = useMemo((): PickerRow[] => {
-    if (tab === 'audio') {
-      // Video and image entries have no clip kind; they are not offered rather
-      // than offered and then rejected at insert time.
-      return entries.filter((e) => (e.kind ?? 'audio') === 'audio').map(entryRow);
-    }
+    // Audio rows arrive already searched, filtered and sorted by the backend.
+    if (tab === 'audio') return audioRows.map(entryRow);
     if (tab === 'stems') return (stems ?? []).map(stemRow);
     return (midis ?? []).map(midiRow);
-  }, [tab, entries, stems, midis]);
+  }, [tab, audioRows, stems, midis]);
 
   const visible = useMemo(() => {
+    if (tab === 'audio') return rows;
     const q = query.trim().toLowerCase();
     const matched = rows.filter((r) => {
       if (favOnly && !r.favorite) return false;
@@ -342,10 +356,12 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
       return fav !== 0 ? fav : byName(a, b);
     });
     return sorted;
-  }, [rows, query, favOnly, sortBy]);
+  }, [tab, rows, query, favOnly, sortBy]);
 
-  const shown = visible.slice(0, MAX_ROWS);
+  const shown = tab === 'audio' ? visible : visible.slice(0, MAX_ROWS);
   const hidden = visible.length - shown.length;
+  /** How many rows the tab's query matches, loaded or not. */
+  const matching = tab === 'audio' ? audio.total : visible.length;
 
   useEffect(() => {
     setActive(0);
@@ -362,10 +378,9 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
   useEffect(() => {
     if (!open) return;
     listRef.current
-      ?.querySelector(`#${CSS.escape(optionId(active))}`)
+      ?.querySelector(`#${CSS.escape(`libpick-${uid}-opt-${active}`)}`)
       ?.scrollIntoView({ block: 'nearest' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- optionId is derived from uid
-  }, [active, open, shown.length]);
+  }, [active, open, shown.length, uid]);
 
   /* --- Position ----------------------------------------------------------
      Portaled to document.body: the Shell scales the DAW with CSS `zoom`
@@ -551,8 +566,8 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
 
   if (!open) return null;
 
-  const isLoading = !!loading[tab];
-  const error = errors[tab];
+  const isLoading = tab === 'audio' ? audio.loading : !!loading[tab];
+  const error = errors[tab] ?? (tab === 'audio' ? (audio.error ?? undefined) : undefined);
   const RowIcon = TAB_ICON[tab];
   const emptyText =
     tab === 'audio'
@@ -581,11 +596,11 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
       {/* Title + where the pick is going */}
       <div className="flex items-start justify-between gap-2 px-3 py-2 border-b border-white/10 shrink-0">
         <div className="min-w-0">
-          <div id={titleId} className="text-[11px] font-black uppercase tracking-widest text-purple-300 truncate">
+          <div id={titleId} className="text-xs font-black uppercase tracking-widest text-purple-300 truncate">
             {title}
           </div>
           {subtitle != null && (
-            <div className="text-[9px] font-mono text-zinc-500 truncate">{subtitle}</div>
+            <div className="text-xs font-semibold text-zinc-500 truncate">{subtitle}</div>
           )}
         </div>
         <button
@@ -612,7 +627,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
                 aria-selected={on}
                 aria-controls={panelId}
                 onClick={() => setTab(t)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-t text-[10px] uppercase tracking-wider transition-colors ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-t text-xs font-semibold uppercase tracking-wider transition-colors ${
                   on
                     ? 'bg-purple-500/20 text-purple-200 border-b border-purple-400'
                     : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
@@ -647,7 +662,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onSearchKeyDown}
             placeholder="Search — arrows to move, Enter to add"
-            className="flex-1 min-w-0 bg-transparent border-none outline-none py-1 text-[10px] text-zinc-200 placeholder:text-zinc-600"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none py-1 text-xs text-zinc-200 placeholder:text-zinc-500"
           />
           <button
             type="button"
@@ -662,7 +677,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
         <div className="flex items-center gap-2">
           <label
             htmlFor={`${searchId}-fav`}
-            className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-zinc-500 cursor-pointer"
+            className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-400 cursor-pointer"
           >
             <input
               id={`${searchId}-fav`}
@@ -675,7 +690,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
             Favourites only
           </label>
           <span className="grow" />
-          <label htmlFor={`${searchId}-sort`} className="text-[9px] uppercase tracking-wider text-zinc-500">
+          <label htmlFor={`${searchId}-sort`} className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
             Sort
           </label>
           <select
@@ -683,7 +698,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
             name={`${searchId}-sort`}
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-            className="bg-black/40 border border-white/10 rounded px-1.5 py-0.5 text-[9px] text-zinc-300 outline-none"
+            className="bg-black/40 border border-white/10 rounded px-1.5 py-0.5 text-xs text-zinc-300 outline-none"
             style={{ colorScheme: 'dark' }}
           >
             <option value="favorites">Favourites first</option>
@@ -699,7 +714,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
                 // Synchronous inside the click: any await here loses the user
                 // activation and the browser silently refuses to open the dialog.
                 onClick={() => fileRef.current?.click()}
-                className="flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 rounded bg-white/3 hover:bg-white/8 border border-white/10 text-[10px] text-zinc-200 transition-colors"
+                className="flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 rounded bg-white/3 hover:bg-white/8 border border-white/10 text-xs text-zinc-200 transition-colors"
               >
                 <FolderOpen className="w-3.5 h-3.5 text-purple-300 shrink-0" />
                 From a file on disk…
@@ -749,7 +764,7 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
         className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-0.5 p-2"
       >
         {error && (
-          <div className="m-1 px-2 py-2 rounded border border-red-500/40 bg-red-500/10 text-[9px] text-red-200 flex flex-col gap-1.5">
+          <div className="m-1 px-2 py-2 rounded border border-red-500/40 bg-red-500/10 text-xs text-red-200 flex flex-col gap-1.5">
             <span className="wrap-break-word">Could not load {TAB_LABEL[tab]}: {error}</span>
             <button
               type="button"
@@ -761,11 +776,17 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
           </div>
         )}
         {isLoading && shown.length === 0 && (
-          <span className="text-[9px] font-mono text-zinc-600 px-2 py-3 text-center">loading…</span>
+          <span className="text-xs font-semibold text-zinc-500 px-2 py-3 text-center">Loading…</span>
         )}
         {!isLoading && !error && shown.length === 0 && (
-          <span className="text-[9px] font-mono text-zinc-600 px-2 py-3 text-center">
-            {rows.length === 0 ? emptyText : 'No matches'}
+          <span className="text-xs font-semibold text-zinc-500 px-2 py-3 text-center">
+            {tab === 'audio'
+              ? query.trim() || favOnly
+                ? 'No matches'
+                : emptyText
+              : rows.length === 0
+                ? emptyText
+                : 'No matches'}
           </span>
         )}
         <div
@@ -796,9 +817,9 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
                 <RowIcon className="w-3 h-3 text-zinc-600 shrink-0" />
               )}
               <span className="flex-1 min-w-0 flex flex-col">
-                <span className="truncate text-[10px] text-zinc-200">{row.label}</span>
+                <span className="truncate text-xs text-zinc-200">{row.label}</span>
                 {row.meta.length > 0 && (
-                  <span className="truncate text-[8px] font-mono text-zinc-600">
+                  <span className="truncate text-xs text-zinc-500">
                     {row.meta.join(' · ')}
                   </span>
                 )}
@@ -807,14 +828,30 @@ export const LibraryPicker: React.FC<LibraryPickerProps> = ({
           ))}
         </div>
         {hidden > 0 && (
-          <span className="text-[8px] font-mono text-zinc-600 px-2 py-2 text-center">
+          <span className="text-xs font-semibold text-zinc-500 px-2 py-2 text-center">
             {hidden} more — narrow the search to reach them
           </span>
         )}
+        {tab === 'audio' && audio.hasMore && (
+          <button
+            type="button"
+            onClick={audio.loadMore}
+            disabled={audio.loading}
+            className="self-center my-1 px-3 py-1 rounded border border-purple-400/40 hover:bg-purple-500/20 text-xs font-semibold text-purple-100 transition-colors disabled:opacity-50"
+          >
+            {audio.loading
+              ? 'Loading…'
+              : `Show more (${(audio.total - shown.length).toLocaleString()} left)`}
+          </button>
+        )}
       </div>
 
-      <div className="px-3 py-1.5 border-t border-white/5 text-[8px] font-mono text-zinc-600 shrink-0">
-        {busy ? 'loading the pick…' : `${visible.length} of ${rows.length} ${TAB_LABEL[tab].toLowerCase()}`}
+      <div className="px-3 py-1.5 border-t border-white/5 text-xs font-semibold text-zinc-500 shrink-0">
+        {busy
+          ? 'Loading the pick…'
+          : tab === 'audio'
+            ? `${shown.length.toLocaleString()} of ${matching.toLocaleString()} ${TAB_LABEL[tab].toLowerCase()}`
+            : `${visible.length} of ${rows.length} ${TAB_LABEL[tab].toLowerCase()}`}
       </div>
     </div>
   );

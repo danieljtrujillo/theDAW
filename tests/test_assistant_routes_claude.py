@@ -52,6 +52,19 @@ def _make_app() -> FastAPI:
 APP = _make_app()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path, monkeypatch):
+    """Every Claude turn reads the app settings (``assistant.
+    use_user_claude_config``). Give each test its own file, so no test reads or
+    writes the checkout's data/settings.json and none sees another's choice."""
+    from backend.modules.settings import router as settings_router
+    from backend.modules.settings.store import SettingsStore
+
+    monkeypatch.setattr(
+        settings_router, "_store", SettingsStore(tmp_path / "settings.json")
+    )
+
+
 def client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=APP), base_url="http://test"
@@ -613,6 +626,8 @@ def test_permission_mode_route_updates_policy_and_forwards_to_the_cli():
             "mode": "accept_edits",
             "cliMode": "default",
             "acknowledged": True,
+            # No turn is running, so nothing is interrupted.
+            "interrupted": False,
         }
         assert session.permission_mode == "accept_edits"
 

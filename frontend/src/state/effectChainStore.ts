@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistBackend, persistStorage } from './persistStorage';
 import { uuid } from '../orb-kit/utils';
 import { RACK_EFFECTS, rackEffectDefaults } from '../lib/rackEffects';
 // Value import, not just the type this file already needed: `recreate()`'s
@@ -345,7 +346,7 @@ const writePersisted = (): void => {
   if (!opts.storage || !opts.name || !opts.partialize) return;
   const next = opts.partialize(useEffectChainStore.getState()) as { chain: ChainEntry[] };
   try {
-    const stored = globalThis.localStorage?.getItem(opts.name) ?? null;
+    const stored = persistBackend.getItem(opts.name);
     const storedShape = chainShape(stored);
     const nextShape = JSON.stringify(
       next.chain.map((e) => (e.vst ? { ...e, vst: { ...e.vst, raw_state: undefined } } : e)),
@@ -769,6 +770,9 @@ export const useEffectChainStore = create<EffectChainState>()(
     }),
     {
       name: STORAGE_NAME,
+      // A refused write (quota) still throws here, after the shared backend
+      // has kept the value in memory: every action reports its own failed save.
+      storage: persistStorage({ reportWriteErrors: true }),
       // Bumped from the implicit 0: version 0 payloads carried `vst.raw_state`
       // inline (see `migrate` below); version 1 never does.
       version: 1,
@@ -816,8 +820,10 @@ export const useEffectChainStore = create<EffectChainState>()(
   ),
 );
 
-// No storage at all (no `window`, as in plain-node tools): persist never
-// hydrates, so nothing is loading and there is nothing to collect.
+// The persist backend is synchronous, so hydration above has already started
+// the startup pass (from localStorage, or from the in-memory fallback when
+// there is none). If it somehow did not, nothing is loading and there is
+// nothing to collect.
 if (!startupStarted) finishStartup(false, new Set());
 
 // The live node re-reads a MIX entry through this once the states have loaded.

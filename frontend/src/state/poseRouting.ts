@@ -8,6 +8,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { BindableTarget } from '../components/surface/widgetTypes';
 import { subscribePoseValue, type PoseChannel } from './poseBus';
 import { loadSwayTargets } from './swayRouting';
@@ -32,7 +33,7 @@ export const usePoseRoutingStore = create<PoseRoutingState>()(
           return { routes: next };
         }),
     }),
-    { name: 'thedaw-pose-routes-v1' },
+    { name: 'thedaw-pose-routes-v1', storage: persistStorage() },
   ),
 );
 

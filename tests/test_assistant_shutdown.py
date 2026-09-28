@@ -60,6 +60,20 @@ def stub_startup(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def sidecar_stops(monkeypatch) -> list[bool]:
+    """The real ``_on_shutdown`` ends with ``teardown.stop_all_sidecars``,
+    which also stops the magenta engine and the other sidecars this checkout
+    started; run from the app tree, those are the running app's. A recorder
+    stands in for it, so a test run leaves the user's engines alone and still
+    sees that shutdown reached the sidecar stop."""
+    stopped: list[bool] = []
+    monkeypatch.setattr(
+        "backend.core.teardown.stop_all_sidecars", lambda: stopped.append(True)
+    )
+    return stopped
+
+
+@pytest.fixture(autouse=True)
 def no_leaked_sessions():
     """A test that fails mid-way must not leave a child behind for the next."""
     yield
@@ -80,7 +94,7 @@ async def _spawn_fake_session(conversation_id: str) -> cs.ClaudeSession:
 # ---------------------------------------------------------------------------
 # F1a — the shutdown hook
 # ---------------------------------------------------------------------------
-def test_app_shutdown_kills_every_persistent_claude_child(monkeypatch):
+def test_app_shutdown_kills_every_persistent_claude_child(monkeypatch, sidecar_stops):
     use_fake_cli(monkeypatch)
     stub_startup(monkeypatch)
 
@@ -92,15 +106,17 @@ def test_app_shutdown_kills_every_persistent_claude_child(monkeypatch):
 
     assert cs.sessions == {}
     assert proc.returncode is not None
+    assert sidecar_stops == [True]
 
 
-def test_app_shutdown_is_safe_with_no_sessions(monkeypatch):
+def test_app_shutdown_is_safe_with_no_sessions(monkeypatch, sidecar_stops):
     stub_startup(monkeypatch)
 
     with TestClient(server.app):
         pass
 
     assert cs.sessions == {}
+    assert sidecar_stops == [True]
 
 
 def test_a_failed_reap_is_logged_and_shutdown_still_completes(monkeypatch, caplog):

@@ -44,8 +44,9 @@ export interface LyriaProviderExtras {
   gemini_key_source: LyriaKeySource;
   openrouter_key?: boolean;
   openrouter_key_source?: LyriaKeySource;
-  /** How many keys the sidecar is handed per provider (counts, never values):
-   *  the child tries them in order and skips a rejected one. */
+  /** How many keys theDAW holds for the sidecar per provider (counts, never
+   *  values). A checkout with server/keys.ts gets up to ten and skips a
+   *  rejected one; an older checkout gets the first only. */
   gemini_keys?: number;
   openrouter_keys?: number;
   /** The provider the user pinned for the child, null for "let Lyria decide". */

@@ -1,7 +1,7 @@
 """Batch-12 T13 tests: FX-003 (Parametric EQ sends/applies all 5 bands, with
 ranges matching what the pages can send) and FX-006 (Smart Export true-peak
 is measured, surfaced via a valid WAV tag, and logged; Batch Export is a
-single-file encode bounded by a server-wide concurrency cap)."""
+single-file encode whose Jobs knob sets how many run at once)."""
 
 from __future__ import annotations
 
@@ -408,15 +408,16 @@ def test_metadata_wav_tagging_keeps_valid_riff_container(tmp_path: Path, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# FX-006b — Batch Export: single-file encode, capped server-wide
+# FX-006b — Batch Export: single-file encode; Jobs caps the concurrency
 # ---------------------------------------------------------------------------
 #
-# Lead decision on audit (T13c): /process returns exactly one file, so the
-# earlier per-request `parallelJobs` + multi-`formats` concurrent encode was
-# wasted CPU and a new failure mode. Reverted to a single encode of the
-# requested output_format, bounded by ONE module-level
-# `delivery_router._BATCH_EXPORT_SEM` (cap 2) shared across all concurrent
-# /process requests for this tool — not a per-request knob.
+# /process returns exactly one file, so Batch Export renders only the
+# requested output_format (no per-call multi-format encode). Its Jobs knob
+# (parallelJobs, main's 1-8, default half the machine's logical CPUs within
+# that range) caps how many Batch Export renders
+# run at once, server-wide, with one admission gate per event loop; every
+# running render's cap holds while it runs, and 8 is the ceiling no request
+# can raise.
 
 
 def test_batch_export_produces_only_the_requested_file(tmp_path: Path, monkeypatch):
@@ -441,14 +442,14 @@ def test_batch_export_produces_only_the_requested_file(tmp_path: Path, monkeypat
 def test_batch_export_concurrency_capped_across_separate_event_loops(
     tmp_path: Path, monkeypatch
 ):
-    """T13d audit item 1: a module-level `asyncio.Semaphore` binds its wait
-    queue to whichever event loop first awaits it — a SECOND `asyncio.run()`
-    burst (a fresh loop) awaiting that same instance raises "Future attached
-    to a different loop", which surfaced as a bare 500.
+    """T13d audit item 1: an asyncio primitive binds its wait queue to
+    whichever event loop first awaits it — a SECOND `asyncio.run()` burst (a
+    fresh loop) awaiting that same instance raised "Future attached to a
+    different loop", which surfaced as a bare 500.
 
-    Uses the REAL `_batch_sem()` (no swapped-in semaphore): two separate
-    `asyncio.run()` bursts of 4 concurrent requests each must both succeed,
-    with the cap held at 2 in each burst.
+    Uses the REAL `_batch_gate()`: two separate `asyncio.run()` bursts of 4
+    concurrent requests at Jobs=2 must both succeed, with the cap held at 2
+    in each burst.
     """
     in_flight = 0
     max_in_flight = 0
@@ -470,15 +471,18 @@ def test_batch_export_concurrency_capped_across_separate_event_loops(
     monkeypatch.setattr(delivery_router.ffmpeg, "render", _tracked_render)
 
     inp = _write_wav(tmp_path / "in.wav")
+    jobs = {"parallelJobs": 2}
 
     async def _run_burst(tag: str):
         nonlocal max_in_flight
         max_in_flight = 0
         outs = [tmp_path / f"out_{tag}_{i}.wav" for i in range(4)]
-        await asyncio.gather(*(delivery_router._batch_export(inp, o, {}) for o in outs))
+        await asyncio.gather(
+            *(delivery_router._batch_export(inp, o, jobs) for o in outs)
+        )
         return outs
 
-    # Burst 1: a fresh event loop binds `_batch_sem()`'s Semaphore for the
+    # Burst 1: a fresh event loop builds `_batch_gate()`'s gate for the
     # first time.
     outs1 = asyncio.run(_run_burst("a"))
     assert max_in_flight <= 2
@@ -486,35 +490,149 @@ def test_batch_export_concurrency_capped_across_separate_event_loops(
     assert all(o.exists() for o in outs1)
 
     # Burst 2: a DIFFERENT event loop (asyncio.run always creates a new one).
-    # Before the fix, this raised "Future ... attached to a different loop".
+    # Before the per-loop fix, this raised "Future ... attached to a different loop".
     outs2 = asyncio.run(_run_burst("b"))
     assert max_in_flight <= 2
     assert max_in_flight >= 2, "burst 2 renders never overlapped"
     assert all(o.exists() for o in outs2)
 
 
-def test_batch_export_toolspec_declares_no_params_and_is_honest():
+def test_batch_export_toolspec_declares_jobs_and_is_honest():
     spec = next(t for t in delivery_router.TOOLS if t.id == "batch_export")
-    assert spec.params == []
+    # main's Jobs knob, restored with main's range; its default is this
+    # machine's (default_batch_jobs, tested below).
+    assert [p.name for p in spec.params] == ["parallelJobs"]
+    jobs = spec.params[0]
+    assert (jobs.type, jobs.lo, jobs.hi, jobs.default, jobs.label) == (
+        "int",
+        1,
+        8,
+        delivery_router.default_batch_jobs(delivery_router._usable_cpus()),
+        "Jobs",
+    )
+    assert jobs.default == delivery_router.BATCH_JOBS_DEFAULT
     # T13d audit item 2: the old name "Stems / Batch / Multiformat" claimed
     # both stem-splitting and multi-format output; neither exists.
     assert spec.name == "Batch Export (single format)"
     assert "stem" not in spec.name.lower()
     assert "multiformat" not in spec.name.lower()
     # Honesty check: batch_export neither splits stems nor encodes multiple
-    # formats per call — the description must not claim it does.
+    # formats per call — the description must not claim it does, and it
+    # says what Jobs does.
     assert "stem" not in spec.description.lower()
     assert "multiple format" not in spec.description.lower()
+    assert "jobs" in spec.description.lower()
 
 
-def test_batch_export_ignores_stale_parallel_jobs_from_old_clients(
+@pytest.mark.parametrize(
+    ("cpus", "jobs"),
+    [
+        (None, 1),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 2),
+        (6, 3),
+        (8, 4),
+        (12, 6),
+        (16, 8),
+        (32, 8),
+        (128, 8),
+    ],
+)
+def test_batch_export_jobs_default_is_half_the_cpus_within_the_knob(cpus, jobs) -> None:
+    """One ffmpeg encode per render: half the logical CPUs (one per physical
+    core on a two-threads-per-core machine), never below 1, never past the
+    knob's ceiling of 8; an unknown count gets 1."""
+    assert delivery_router.default_batch_jobs(cpus) == jobs
+
+
+def test_batch_export_counts_the_cpus_this_process_may_use(monkeypatch) -> None:
+    """The smallest count the platform offers wins over the machine's total: a
+    backend pinned to 4 of 32 CPUs defaults to 2 Jobs, not 8."""
+    monkeypatch.setattr(delivery_router, "_affinity_cpus", lambda: None)
+    monkeypatch.setattr(
+        delivery_router.os, "process_cpu_count", lambda: 4, raising=False
+    )
+    monkeypatch.setattr(delivery_router.os, "cpu_count", lambda: 32)
+    assert delivery_router._usable_cpus() == 4
+    assert delivery_router.default_batch_jobs(delivery_router._usable_cpus()) == 2
+
+    monkeypatch.delattr(delivery_router.os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(
+        delivery_router.os,
+        "sched_getaffinity",
+        lambda pid: {0, 1, 2, 3, 4, 5},
+        raising=False,
+    )
+    assert delivery_router._usable_cpus() == 6
+
+    monkeypatch.delattr(delivery_router.os, "sched_getaffinity", raising=False)
+    assert delivery_router._usable_cpus() == 32
+
+    monkeypatch.setattr(delivery_router, "_affinity_cpus", lambda: 3)
+    assert delivery_router._usable_cpus() == 3
+
+
+_REPORT_CPUS = (
+    "import sys\n"
+    "sys.stdin.readline()\n"
+    "from backend.modules.delivery import router\n"
+    "print(router._usable_cpus(), router.default_batch_jobs(router._usable_cpus()))\n"
+)
+
+
+def test_batch_export_on_a_backend_pinned_to_four_cpus_defaults_to_two_jobs(
+    tmp_path: Path,
+) -> None:
+    """A real process whose affinity is cut to four CPUs after it starts (as
+    ``start /affinity`` or a job object does), then asked for its count. On
+    Python 3.12 for Windows neither os.process_cpu_count nor
+    os.sched_getaffinity exists, so a count that ignores the mask reads the
+    machine's total there."""
+    import os
+    import subprocess
+    import sys
+
+    psutil = pytest.importorskip("psutil")
+    if not hasattr(psutil.Process(), "cpu_affinity"):
+        pytest.skip("this platform has no CPU affinity")
+    mine = psutil.Process().cpu_affinity()
+    if len(mine) < 8:
+        pytest.skip("needs at least 8 CPUs to tell 4 from the total")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["theDAW_DATA_DIR"] = str(tmp_path / "data")
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    child = subprocess.Popen(
+        [sys.executable, "-c", _REPORT_CPUS],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        psutil.Process(child.pid).cpu_affinity(mine[:4])
+        out, err = child.communicate("go\n", timeout=120)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+    assert child.returncode == 0, err
+    assert out.split() == ["4", "2"]
+
+
+def test_batch_export_keeps_jobs_and_drops_the_retired_formats_key(
     tmp_path: Path, monkeypatch
 ):
-    """An old client still sending the retired `parallelJobs`/`formats` keys
-    must not error — validate_params drops undeclared keys."""
+    """An old client still sending the retired `formats` key must not error
+    — validate_params drops undeclared keys — while `parallelJobs` is a
+    declared param again and reaches the handler."""
     spec = next(t for t in delivery_router.TOOLS if t.id == "batch_export")
     validated = spec.validate_params({"parallelJobs": 8, "formats": "wav,mp3"})
-    assert validated == {}
+    assert validated == {"parallelJobs": 8}
 
     async def _fake_render(inp, out, filter_args, extra_out_args=None, timeout=600.0):
         out.write_bytes(b"fake-render")
@@ -763,6 +881,97 @@ def test_codec_args_covers_every_mime_output_format():
         "opus",
         "ogg",
     }
+
+
+def _codec_matrix_post(client, src: Path, quality: str, fmt: str) -> bytes:
+    """What tool.html posts for Codec Matrix: a Quality value taken from the
+    manifest's dropdown options, and the chosen output format."""
+    spec = client.get("/tools/codec_matrix").json()
+    quality_param = next(p for p in spec["params"] if p["name"] == "quality")
+    assert quality in quality_param["options"]
+    res = client.post(
+        "/process",
+        data={
+            "effect": "codec_matrix",
+            "params": f'{{"quality": "{quality}"}}',
+            "output_format": fmt,
+        },
+        files={"audio": ("in.wav", src.read_bytes(), "audio/wav")},
+    )
+    assert res.status_code == 200, res.text
+    return res.content
+
+
+def test_codec_matrix_quality_max_encodes_at_the_top_setting(tmp_path: Path):
+    """The Quality dropdown was declared and never read: "max" and "high"
+    came back as the same file. A float master with overs picked at "max"
+    now stays 32-bit float in WAV, overs intact (24-bit at "high" clips
+    them), and MP3 at "max" is 320 kbps CBR (VBR q0 at "high")."""
+    _needs_ffmpeg()
+    import io
+
+    from mutagen.mp3 import MP3, BitrateMode
+
+    src = tmp_path / "in.wav"
+    sf.write(str(src), 6.0 * _tone(seconds=2.0), SR, subtype="FLOAT")  # peak 1.2
+    with _metadata_client() as client:
+        high_wav = _codec_matrix_post(client, src, "high", "wav")
+        max_wav = _codec_matrix_post(client, src, "max", "wav")
+        high_mp3 = _codec_matrix_post(client, src, "high", "mp3")
+        max_mp3 = _codec_matrix_post(client, src, "max", "mp3")
+
+    orig, _ = sf.read(str(src), dtype="float32")
+    assert sf.info(io.BytesIO(high_wav)).subtype == "PCM_24"
+    assert sf.info(io.BytesIO(max_wav)).subtype == "FLOAT"
+    kept, _ = sf.read(io.BytesIO(max_wav), dtype="float32")
+    assert np.array_equal(kept, orig)
+    clipped, _ = sf.read(io.BytesIO(high_wav), dtype="float32")
+    assert float(np.max(np.abs(clipped))) <= 1.0 < float(np.max(np.abs(orig)))
+
+    (tmp_path / "high.mp3").write_bytes(high_mp3)
+    (tmp_path / "max.mp3").write_bytes(max_mp3)
+    top = MP3(str(tmp_path / "max.mp3")).info
+    assert top.bitrate == 320000
+    assert top.bitrate_mode != BitrateMode.VBR
+    assert MP3(str(tmp_path / "high.mp3")).info.bitrate_mode == BitrateMode.VBR
+
+
+def test_codec_matrix_quality_max_encodes_a_mono_upload_to_opus(
+    tmp_path: Path, monkeypatch
+):
+    """Quality "max" asked libopus for 510 kbps on every file, and libopus
+    takes at most 256 kbps per channel, so a mono upload to Opus failed the
+    render ("Invalid argument") while the same upload at "high" encoded. The
+    page's sequence: a mono upload at "high", then at "max", then a stereo
+    upload at "max"; every render comes back, each at the top bitrate its
+    channel count allows."""
+    _needs_ffmpeg()
+    from mutagen.oggopus import OggOpus
+
+    asked: list[str] = []
+    real_render = delivery_router.ffmpeg.render
+
+    async def _spy(inp, out, filter_args, extra_out_args=None, timeout=600.0):
+        args = list(extra_out_args or [])
+        asked.append(args[args.index("-b:a") + 1])
+        return await real_render(inp, out, filter_args, extra_out_args, timeout)
+
+    monkeypatch.setattr(delivery_router.ffmpeg, "render", _spy)
+    mono = tmp_path / "mono.wav"
+    sf.write(str(mono), _tone(seconds=1.0), SR, subtype="PCM_16")
+    stereo = tmp_path / "stereo.wav"
+    sf.write(str(stereo), np.stack([_tone(seconds=1.0)] * 2, axis=1), SR)
+    with _metadata_client() as client:
+        renders = [
+            _codec_matrix_post(client, mono, "high", "opus"),
+            _codec_matrix_post(client, mono, "max", "opus"),
+            _codec_matrix_post(client, stereo, "max", "opus"),
+        ]
+
+    assert asked == ["192k", "256000", "510000"]
+    for i, (data, channels) in enumerate(zip(renders, (1, 1, 2))):
+        (tmp_path / f"r{i}.opus").write_bytes(data)
+        assert OggOpus(str(tmp_path / f"r{i}.opus")).info.channels == channels
 
 
 def test_metadata_wav_to_wav_still_copies(tmp_path: Path, monkeypatch):

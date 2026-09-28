@@ -480,8 +480,10 @@ def _summary_sync(db: Any) -> dict[str, Any]:
 async def get_summary() -> dict[str, Any]:
     """The library's lineage in one object.
 
-    ``full_view_ok`` is the honest answer to "can the old whole-library
-    drawing work here": below 2,000 linked songs, yes. ``revision`` is the
+    ``full_view_ok`` says whether LEARN opens the old whole-library drawing
+    by default: at or below ``full_view_limit`` linked songs (2,000), yes.
+    ``full_view_limit`` is sent so the UI's warning quotes the number that
+    decided. ``revision`` is the
     identity of the link signature (see :class:`_LinkSignature`) -- compare
     it for equality, never for order.
 

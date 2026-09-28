@@ -43,8 +43,20 @@ import { autoKeylockRef, DJ_TARGETS, setUserKeylock } from '../state/bindableTar
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
 import { useAppUiStore } from '../state/appUiStore';
-import { useSetlistStore, type SetlistEntry } from '../state/setlistStore';
-import { useDjAutomix } from '../state/djAutomixStore';
+import {
+  isBundledSetId,
+  isPendingBundledRow,
+  useSetlistStore,
+  type SetlistEntry,
+} from '../state/setlistStore';
+import {
+  AUTO_DJ_MIN_TRACKS,
+  djAutomixEntries,
+  firstPlayableOfActiveSet,
+  readyActiveSetForAutomix,
+  useDjAutomix,
+  type AutomixStartMode,
+} from '../state/djAutomixStore';
 import { useDjDeckLoad } from '../state/djDeckLoadStore';
 import { useLibraryStore } from '../state/libraryStore';
 import type { LibraryEntry } from '../state/libraryStore';
@@ -52,13 +64,18 @@ import { fetchLibraryMatchCount, plainLibraryQuery } from '../lib/backendLocalPr
 import type { LibrarySortBy } from '../lib/libraryRows';
 import { useDjAnalysisStore } from '../state/djAnalysisStore';
 import { useDjCuesStore, HOTCUE_SLOTS } from '../state/djCuesStore';
-import { useDjRhythmStore } from '../state/djRhythmStore';
+import { useDeckRhythm } from '../state/djRhythmStore';
 import { seedCues as computeSeedCues } from '../lib/djCueSeed';
 import { toCamelot, keyLabel } from '../lib/camelot';
 import { buildBeatgrid } from '../lib/beatgrid';
-import { chooseNextIndex, eqSwap, fadeStep, mixOutPoint, PHASE_DEADBAND_SEC, planTransition, residualNudge, tempoMatch } from '../lib/djAutomixPlan';
+import {
+  automixCamelot, blendTick, createAutomixQueue, deckRun, eqSwap, mixOutPoint, PHASE_DEADBAND_SEC,
+  planTransition, residualNudge, startBlend, tempoMatch, type BlendState,
+} from '../lib/djAutomixPlan';
+import { useDjAutomixPrefs } from '../state/djAutomixPrefsStore';
 import { rgb, rgba, type RGB } from '../lib/trackColor';
 import { DJSemanticWaveform } from '../components/audio/DJSemanticWaveform';
+import { WaveformModeLegend, WaveformModeToggle } from '../components/audio/WaveformModeControl';
 import { SlideKnob } from '../components/audio/SlideKnob';
 import { SlideFader } from '../components/audio/SlideFader';
 import { SlidePad } from '../components/audio/SlidePad';
@@ -162,23 +179,186 @@ export function automixTransitionDue(args: {
 /** One djEngine call the automix transition into `nxt` must make, in order. */
 export type AutomixTransitionStep =
   | { type: 'seek'; deck: djEngine.DeckId; to: number }
+  | { type: 'keylock'; deck: djEngine.DeckId; on: boolean }
   | { type: 'play'; deck: djEngine.DeckId }
   | { type: 'sync'; deck: djEngine.DeckId };
 
 /** The ordered engine calls an automix transition into `nxt` makes: seek to
- *  the incoming track's start point, start it playing, THEN beatmatch it.
- *  `sync` must come after `play` — syncDeck's phase-align branch (see
- *  syncDeck below) only nudges playback into phase when BOTH decks already
- *  read as playing; called before `play`, the incoming deck always reads
- *  not-playing there, so only the tempo (pitch) half of the beatmatch would
- *  ever apply and phase never would. Pure so the ORDER is testable without
- *  the engine. */
-export function automixTransitionSteps(nxt: djEngine.DeckId, cueIn: number): AutomixTransitionStep[] {
-  return [
-    { type: 'seek', deck: nxt, to: cueIn },
-    { type: 'play', deck: nxt },
-    { type: 'sync', deck: nxt },
-  ];
+ *  the incoming track's start point, set its key-lock, start it playing,
+ *  THEN beatmatch it.
+ *
+ *  - `keylock` comes before `play`: engaging or releasing it swaps the insert
+ *    and re-balances this deck's delay line, which is silent on a deck that
+ *    has not started and a warble on one that has. It used to run after the
+ *    whole transition, on a playing deck.
+ *  - `sync` must come after `play` — syncDeck's phase-align branch (see
+ *    syncDeck below) only nudges playback into phase when BOTH decks already
+ *    read as playing; called before `play`, the incoming deck always reads
+ *    not-playing there, so only the tempo (pitch) half of the beatmatch would
+ *    ever apply and phase never would.
+ *  - `sync` is left out when the outgoing deck is not playing (the dead-air
+ *    rescue). There is nothing to match, and with one deck playing syncDeck
+ *    picks the stopped one as the follower, so the rescue pitched the
+ *    finished outgoing deck to the incoming one.
+ *
+ *  Pure so the ORDER is testable without the engine. */
+export function automixTransitionSteps(
+  nxt: djEngine.DeckId,
+  cueIn: number,
+  opts: { masterPlaying: boolean; keylock: boolean | null },
+): AutomixTransitionStep[] {
+  const steps: AutomixTransitionStep[] = [{ type: 'seek', deck: nxt, to: cueIn }];
+  if (opts.keylock != null) steps.push({ type: 'keylock', deck: nxt, on: opts.keylock });
+  steps.push({ type: 'play', deck: nxt });
+  if (opts.masterPlaying) steps.push({ type: 'sync', deck: nxt });
+  return steps;
+}
+
+/** What automix does with the incoming deck's key-lock: engage it when the
+ *  beatmatch pulls the pitch past `KEYLOCK_PITCH_PCT`, release it when a
+ *  smaller pull follows a lock automix engaged itself, and otherwise leave it
+ *  (a lock the DJ set by hand is theirs). No match without a playing master:
+ *  the rescue has no pull to compensate for. */
+export function automixKeylockStep(args: { pullPct: number; masterPlaying: boolean; lockedByAutomix: boolean }): boolean | null {
+  if (args.masterPlaying && Math.abs(args.pullPct) > KEYLOCK_PITCH_PCT) return true;
+  return args.lockedByAutomix ? false : null;
+}
+
+/** The decks the DJ master transport's play resumes, or null to start the set.
+ *
+ *  The master pause remembers which decks it paused, and play puts back
+ *  exactly those. Play used to start every deck holding a track, which during
+ *  automix also started the track staged on the idle deck. With nothing
+ *  remembered and automix running, play resumes the deck automix is on (and
+ *  the incoming one when a blend was running). */
+export function masterResumeDecks(args: {
+  paused: readonly djEngine.DeckId[] | null;
+  holds: (d: djEngine.DeckId) => boolean;
+  automix: { current: djEngine.DeckId; blending: boolean } | null;
+}): djEngine.DeckId[] | null {
+  const remembered = (args.paused ?? []).filter(args.holds);
+  if (remembered.length) return remembered;
+  if (args.automix) {
+    const other: djEngine.DeckId = args.automix.current === 'A' ? 'B' : 'A';
+    const decks = (args.automix.blending ? [args.automix.current, other] : [args.automix.current]).filter(args.holds);
+    if (decks.length) return decks;
+  }
+  return null;
+}
+
+/** Where a deck is as the listener hears it (sec): its source position less
+ *  what its delay line and key-lock insert hold back (`latencySec`, in track
+ *  time at its rate). Phase sync compares these; two decks aligned by source
+ *  position play out of time whenever one of them carries more latency. */
+export function heardTime(st: djEngine.DeckStatus): number {
+  return st.currentTime - st.latencySec * (1 + st.pitchPct / 100);
+}
+
+/** How far the follower's beat is behind the master's, as heard, in beats,
+ *  wrapped to (−½, ½]. Positive = the follower is late and must move
+ *  forward. Shared by syncDeck (× the beat length, for a nudge) and the
+ *  sync-lock PLL. */
+export function beatPhaseError(
+  master: djEngine.DeckStatus,
+  follower: djEngine.DeckStatus,
+  masterBeats: number[] | null,
+  followerBeats: number[] | null,
+): number {
+  let d = beatPhase(heardTime(master), masterBeats) - beatPhase(heardTime(follower), followerBeats);
+  if (d > 0.5) d -= 1;
+  if (d < -0.5) d += 1;
+  return d;
+}
+
+/** One step a start request makes, in order. */
+export type AutomixStartStep = 'drop-transition' | 'eject' | 'on' | 'reseed';
+
+/** The steps a start request takes once its set is ready, by how it treats
+ *  the decks (see `AutomixStartMode`). `continue` only switches automix on:
+ *  the automix effect seeds from whichever deck is playing, so a start pressed
+ *  mid-track carries the set on from that track, as the Automix chip always
+ *  has. `fresh` drops a stale "transition now", ejects both decks, switches
+ *  automix on and bumps the restart counter, so a mix that is already running
+ *  reseeds from track 1. START AUTO DJ used to take the `fresh` path through
+ *  the Send-to-DJ bridge, which stopped a playing track dead and restarted the
+ *  set. Pure so the order is testable without the engine. */
+export function automixStartSteps(mode: AutomixStartMode): AutomixStartStep[] {
+  return mode === 'fresh' ? ['drop-transition', 'eject', 'on', 'reseed'] : ['on'];
+}
+
+/** What one run of a deck-load effect tells the engine, and which library
+ *  entry the deck holds afterwards (`holds`). */
+export type DeckLoadStep =
+  | { kind: 'keep'; holds: string | null }
+  | { kind: 'clear'; holds: null }
+  | { kind: 'load'; url: string; label: string | null; holds: string };
+
+/**
+ * The deck-load effect's decision.
+ *
+ * The effect re-runs whenever the library resolves an entry, because a deck
+ * can hold a track on no loaded page (a Send-to-DJ id, a bundled-set id) and
+ * only lands its audio once the single-entry lookup comes back. Those re-runs
+ * used to call `djEngine.loadDeck` every time: a lookup for ANY other id
+ * reloaded both decks and rewound a playing one to 0:00, and while the deck's
+ * own entry was unresolved (its lookup in flight, or `refresh()` had just
+ * dropped the id cache) the run passed a null URL and ejected the deck.
+ *
+ * - no entry id: clear the deck if it holds anything;
+ * - an entry still unresolved: a deck already holding THAT entry keeps it; a
+ *   deck asked for a different track stops the old one now and loads the new
+ *   one when its lookup lands;
+ * - a resolved entry whose URL the engine already holds, decoded or still
+ *   decoding: nothing to do;
+ * - otherwise load it. That includes the same URL after its load failed, so
+ *   the next resolve of the entry retries it, as `djEngine.loadDeck` allows.
+ *
+ * @param entry        what `libraryStore.getById(entryId)` answers now; null
+ *                     or undefined while it is unresolved.
+ * @param loadedEntryId the entry this deck was last loaded with.
+ * @param loadedUrl    the URL the engine holds (`djEngine.getStatus(deck)`).
+ * @param holdsAudio   the engine has that URL's audio or is decoding it; false
+ *                     after a failed load.
+ */
+export function deckLoadStep(args: {
+  entryId: string | null;
+  entry: Pick<LibraryEntry, 'audioUrl' | 'title'> | null | undefined;
+  loadedEntryId: string | null;
+  loadedUrl: string | null;
+  holdsAudio: boolean;
+}): DeckLoadStep {
+  const { entryId, entry, loadedEntryId, loadedUrl, holdsAudio } = args;
+  if (!entryId) return loadedUrl ? { kind: 'clear', holds: null } : { kind: 'keep', holds: null };
+  if (!entry) {
+    if (entryId === loadedEntryId) return { kind: 'keep', holds: loadedEntryId };
+    return loadedUrl ? { kind: 'clear', holds: null } : { kind: 'keep', holds: null };
+  }
+  const url = entry.audioUrl || null;
+  if (!url) return loadedUrl ? { kind: 'clear', holds: null } : { kind: 'keep', holds: null };
+  if (url === loadedUrl && holdsAudio) return { kind: 'keep', holds: entryId };
+  return { kind: 'load', url, label: entry.title ?? null, holds: entryId };
+}
+
+/** Run one deck-load step against the engine and record what the deck holds.
+ *  The deck-load effects call this and nothing else. */
+export function syncDeckToEntry(
+  deck: djEngine.DeckId,
+  entryId: string | null,
+  entry: LibraryEntry | null | undefined,
+  held: Record<djEngine.DeckId, string | null>,
+): DeckLoadStep {
+  const st = djEngine.getStatus(deck);
+  const step = deckLoadStep({
+    entryId,
+    entry,
+    loadedEntryId: held[deck],
+    loadedUrl: st.loadedUrl,
+    holdsAudio: st.hasBuffer || st.decoding,
+  });
+  held[deck] = step.holds;
+  if (step.kind === 'load') void djEngine.loadDeck(deck, step.url, step.label);
+  else if (step.kind === 'clear') void djEngine.loadDeck(deck, null, null);
+  return step;
 }
 const PITCH_RANGES = [10, 15] as const;
 type PitchRange = typeof PITCH_RANGES[number];
@@ -213,24 +393,11 @@ export interface StartAutoDjState {
   reason: string | null;
 }
 
-/** Automix needs two tracks to have anything to mix between. */
-export const AUTO_DJ_MIN_TRACKS = 2;
-
-/** The rows the automix sequencer can actually put on a deck: a registered
- *  library id and nothing else. The one predicate behind both the effect's
- *  `list.length < AUTO_DJ_MIN_TRACKS` bail-out and the counting below, so the
- *  two can never drift. */
-export function djAutomixEntries(
-  entries: readonly SetlistEntry[] | null | undefined,
-): Array<SetlistEntry & { entryId: string }> {
-  return (entries ?? []).filter((e): e is SetlistEntry & { entryId: string } => !!e.entryId);
-}
-
-/** A bundled row with no id yet that `registerBundled` WILL fill in. An
- *  ad-hoc/VJ row (it has a `url`) or a non-audio slot has no library entry
- *  waiting for it and never will, so neither counts. */
-const isRegisterableBundledRow = (e: SetlistEntry): boolean =>
-  e.entryId === null && !e.url && e.kind === 'audio';
+// The minimum and the playable-row predicate live in djAutomixStore, next to
+// `readyActiveSetForAutomix`, which every start path (the assistant's
+// included) runs before automix turns on. Re-exported so this view stays the
+// one import for the DJ-3 decisions.
+export { AUTO_DJ_MIN_TRACKS, djAutomixEntries };
 
 /** How many tracks of a set the START button may offer to play: the rows
  *  automix can sequence right now, plus — for a bundled set — the rows that
@@ -241,12 +408,13 @@ const isRegisterableBundledRow = (e: SetlistEntry): boolean =>
  *
  *  The gap this leaves is real and is the caller's job: while the rows are
  *  still unregistered this count is ABOVE what `djAutomixEntries` finds, so
- *  anything that starts the mix must register first. See `onStartAutoDj`. */
+ *  anything that starts the mix must register first. See
+ *  `readyActiveSetForAutomix`, which every start path runs. */
 export function djPlayableCount(
   set: { bundled: boolean; entries: readonly SetlistEntry[] } | null | undefined,
 ): number {
   if (!set) return 0;
-  const pending = set.bundled ? set.entries.filter(isRegisterableBundledRow).length : 0;
+  const pending = set.bundled ? set.entries.filter(isPendingBundledRow).length : 0;
   return djAutomixEntries(set.entries).length + pending;
 }
 
@@ -312,7 +480,7 @@ export const StartAutoDjButton: React.FC<{
       aria-disabled={!state.enabled}
       aria-label={START_AUTO_DJ_ARIA[state.intent]}
       title={START_AUTO_DJ_TITLE[state.intent]}
-      className={`shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md border text-[11px] font-black uppercase tracking-[0.14em] transition-colors ${
+      className={`shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-md border text-xs font-black uppercase tracking-[0.14em] transition-colors ${
         running
           ? 'border-rose-400/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30'
           : state.enabled
@@ -337,12 +505,34 @@ export const StartAutoDjButton: React.FC<{
  *  it swallowing clicks meant for the decks, and that is the whole job. */
 export const DjStartHint: React.FC = () => (
   <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 -translate-y-1/2 flex justify-center px-4">
-    <div className="max-w-md rounded-lg border border-white/10 bg-black/70 px-4 py-3 text-[11px] font-mono leading-relaxed text-zinc-400 backdrop-blur-sm">
+    <div className="max-w-md rounded-lg border border-white/10 bg-black/70 px-4 py-3 text-xs font-bold leading-relaxed text-zinc-400 backdrop-blur-sm">
       <div data-dj-hint-line className="text-zinc-200 font-bold">1 · Pick a set in the list on the left</div>
       <div data-dj-hint-line>2 · Press START AUTO DJ above the decks</div>
       <div data-dj-hint-line>3 · Or drag a track straight onto a deck</div>
     </div>
   </div>
+);
+
+/** The "Harmonic order" switch in the START AUTO DJ row. On, automix may play
+ *  a Camelot-compatible track ahead of a key clash; every track it plays
+ *  ahead of stays in the queue, a prepared performance set still plays as
+ *  prepared, and only keys the analysis is confident in count. Off, the set
+ *  plays strictly in order. Persisted (`djAutomixPrefsStore`); it used to be a
+ *  constant with no way to turn it off. */
+export const HarmonicOrderToggle: React.FC<{ on: boolean; onToggle: () => void }> = ({ on, onToggle }) => (
+  <button
+    type="button"
+    aria-pressed={on}
+    onClick={onToggle}
+    title={on
+      ? 'Harmonic order is on: Auto-DJ may play a key-compatible track ahead of a clash. Prepared sets always play as prepared.'
+      : 'Harmonic order is off: Auto-DJ plays the set strictly in order.'}
+    className={`ml-auto shrink-0 px-2 py-0.5 rounded-md border text-xs font-bold transition-colors ${
+      on ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200' : 'border-white/10 text-zinc-400 hover:text-zinc-200'
+    }`}
+  >
+    Harmonic order
+  </button>
 );
 
 /** One row of the Source Tree's "Sets" group. Extracted so its state — which
@@ -363,7 +553,7 @@ export const DjSetRow: React.FC<{
 }> = ({ name, count, isActive, playable, busy, onOpen, onPlay }) => (
   <div
     aria-busy={busy}
-    className={`w-full flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 text-[10px] font-mono rounded transition-colors ${isActive ? 'bg-purple-500/15 text-purple-200' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'}`}
+    className={`w-full flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 text-xs font-bold rounded transition-colors ${isActive ? 'bg-purple-500/15 text-purple-200' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'}`}
   >
     <span className={`w-1 h-1 rounded-full shrink-0 ${isActive ? 'bg-purple-300' : 'bg-zinc-700'}`} />
     <button
@@ -377,13 +567,13 @@ export const DjSetRow: React.FC<{
       {name}
     </button>
     {isActive && (
-      <span className="shrink-0 rounded-sm bg-purple-400/20 px-1 text-[7px] font-black tracking-widest text-purple-200">
+      <span className="shrink-0 rounded-sm bg-purple-400/20 px-1 text-xs font-black tracking-widest text-purple-200">
         ACTIVE
       </span>
     )}
     {busy
       ? <Loader2 className="w-2.5 h-2.5 shrink-0 animate-spin text-purple-300" aria-hidden="true" />
-      : <span className="text-[8px] text-zinc-600 shrink-0" title={`${count} tracks`}>{count}</span>}
+      : <span className="text-xs font-bold text-zinc-500 shrink-0" title={`${count} tracks`}>{count}</span>}
     <button
       type="button"
       onClick={() => { if (playable && !busy) onPlay(); }}
@@ -423,7 +613,9 @@ export const DjSetRow: React.FC<{
 const MIN_BEAT_TICK_PX = 3;
 /** Used when the lane has not been measured yet (first paint). */
 const ASSUMED_LANE_PX = 600;
-/** Half a beat at 200bpm — tight enough not to catch the neighbouring beat. */
+/** A grid beat this close to a detected downbeat is that bar line, not a
+ *  tick of its own. Half a beat at 200bpm — tight enough not to swallow the
+ *  neighbouring beat. */
 const DOWNBEAT_EPS = 0.08;
 
 export function beatMarkPositions(args: {
@@ -443,25 +635,50 @@ export function beatMarkPositions(args: {
   const onScreen = Math.max(1, beats.length * visibleFrac);
   const dense = width / onScreen >= MIN_BEAT_TICK_PX;
 
-  const useReal = !!downbeats && downbeats.length > 0;
-  let di = 0;
+  const place = (t: number): number | null => {
+    const pos = t / dur;
+    return pos < viewStart || pos > viewEnd ? null : ((pos - viewStart) / visibleFrac) * 100;
+  };
   const out: Array<{ left: number; down: boolean }> = [];
+
+  if (!downbeats || downbeats.length === 0) {
+    for (let i = 0; i < beats.length; i++) {
+      const down = i % 4 === 0;
+      if (!dense && !down) continue;
+      const left = place(beats[i]);
+      if (left != null) out.push({ left, down });
+    }
+    return out;
+  }
+
+  // Real bar lines: the detected downbeats themselves. They used to be
+  // matched against the constant grid within DOWNBEAT_EPS, so on a track
+  // whose tempo drifts off its grid every bar past the first few failed the
+  // match — and at overview zoom, where only bar lines are drawn, the lane
+  // showed no grid at all. Grid beats are ticks between them (dense only),
+  // skipping any that sit on a bar line. Both lists are in time order, so
+  // one forward pass merges them.
+  let di = 0;
+  const pushDownbeatsUpTo = (limit: number) => {
+    while (di < downbeats.length && downbeats[di] <= limit) {
+      const left = place(downbeats[di]);
+      if (left != null) out.push({ left, down: true });
+      di++;
+    }
+  };
+  let near = 0;
   for (let i = 0; i < beats.length; i++) {
     const t = beats[i];
-    let down: boolean;
-    if (useReal) {
-      // Both lists are in time order, so the downbeat cursor only moves
-      // forward — no per-beat scan of the whole downbeat list.
-      while (di < downbeats.length - 1 && downbeats[di] < t - DOWNBEAT_EPS) di++;
-      down = Math.abs(downbeats[di] - t) <= DOWNBEAT_EPS;
-    } else {
-      down = i % 4 === 0;
-    }
-    if (!dense && !down) continue;
-    const pos = t / dur;
-    if (pos < viewStart || pos > viewEnd) continue;
-    out.push({ left: ((pos - viewStart) / visibleFrac) * 100, down });
+    pushDownbeatsUpTo(t);
+    if (!dense) continue;
+    while (near < downbeats.length - 1 && downbeats[near + 1] <= t) near++;
+    const onBar = Math.abs(downbeats[near] - t) <= DOWNBEAT_EPS
+      || (near + 1 < downbeats.length && Math.abs(downbeats[near + 1] - t) <= DOWNBEAT_EPS);
+    if (onBar) continue;
+    const left = place(t);
+    if (left != null) out.push({ left, down: false });
   }
+  pushDownbeatsUpTo(Number.POSITIVE_INFINITY);
   return out;
 }
 
@@ -661,7 +878,7 @@ function DjBrowserRowView({
         ev.dataTransfer.setData(DJ_TRACK_MIME, r.entryId);
         ev.dataTransfer.setData('text/plain', r.title);
       }}
-      className="grid items-center gap-1 px-2 overflow-hidden text-[9px] font-mono text-zinc-400 hover:bg-white/5 border-b border-white/3 group/row cursor-grab active:cursor-grabbing"
+      className="grid items-center gap-1 px-2 overflow-hidden text-xs font-semibold tabular-nums text-zinc-400 hover:bg-white/5 border-b border-white/3 group/row cursor-grab active:cursor-grabbing"
     >
       <span className="text-right text-zinc-600">{String(r.order).padStart(2, '0')}</span>
       <span className="truncate text-zinc-600" title={r.date ?? undefined}>{djDateLabel(r.date)}</span>
@@ -679,8 +896,8 @@ function DjBrowserRowView({
           </span>
         ) : null}
         {r.entryId && <button onClick={() => onStage(r.entryId!, r.title)} className="hidden group-hover/row:inline p-0.5 text-zinc-600 hover:text-purple-300" title="Stage in Next queue"><ListMusic className="w-2.5 h-2.5" /></button>}
-        <button onClick={() => r.entryId && onLoadDeck(r.entryId, 'A')} disabled={!r.entryId} className="px-1 py-0.5 rounded text-[8px] font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
-        <button onClick={() => r.entryId && onLoadDeck(r.entryId, 'B')} disabled={!r.entryId} className="px-1 py-0.5 rounded text-[8px] font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
+        <button onClick={() => r.entryId && onLoadDeck(r.entryId, 'A')} disabled={!r.entryId} className="px-1 py-0.5 rounded text-xs font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
+        <button onClick={() => r.entryId && onLoadDeck(r.entryId, 'B')} disabled={!r.entryId} className="px-1 py-0.5 rounded text-xs font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
         {!isSet && r.entryId && <button onClick={() => onSendVj(r)} className="hidden group-hover/row:inline p-0.5 text-zinc-600 hover:text-cyan-300" title="Send to VJ"><Cast className="w-2.5 h-2.5" /></button>}
       </span>
     </div>
@@ -786,18 +1003,16 @@ function useDeck(deckId: djEngine.DeckId, entryId: string | null, hasTrack: bool
   // slots only; never on a track the user has touched), so this side can
   // stay a plain "whenever the inputs improve, offer a seed".
   const seedCuesInto = useDjCuesStore((s) => s.seedCues);
-  const ensureRhythm = useDjRhythmStore((s) => s.ensureRhythm);
-  const rhythm = useDjRhythmStore((s) => (entryId ? s.byEntry[entryId] : undefined));
+  // Cheap GET only, re-asked whenever a rhythm run elsewhere in the app calls
+  // `invalidateRhythm` for this entry. See `useDeckRhythm`.
+  const rhythm = useDeckRhythm(entryId);
   const durationSec = a?.duration_sec ?? 0;
-
-  // Cheap GET only. A cache miss is left alone — `/run` is a full re-analysis
-  // and has no business firing because a deck loaded. See djRhythmStore.
-  useEffect(() => { if (entryId) void ensureRhythm(entryId); }, [entryId, ensureRhythm]);
 
   useEffect(() => {
     if (!entryId) return;
     const times = computeSeedCues({
       beats: gridBeats,
+      firstBeat,
       bpm,
       duration: durationSec,
       downbeats: rhythm?.downbeats ?? null,
@@ -807,7 +1022,7 @@ function useDeck(deckId: djEngine.DeckId, entryId: string | null, hasTrack: bool
     // moves the phrase cues onto real bar lines — but only while every cue on
     // the track is still one this store placed.
     if (times) seedCuesInto(entryId, times);
-  }, [entryId, bpm, gridBeats, durationSec, rhythm, seedCuesInto]);
+  }, [entryId, bpm, gridBeats, firstBeat, durationSec, rhythm, seedCuesInto]);
 
   // Trim follows loudness-matched auto-gain when enabled, else the manual GAIN knob.
   const autoTrim = a?.rms_db != null ? Math.max(-15, Math.min(15, AUTO_GAIN_TARGET_DB - a.rms_db)) : 0;
@@ -930,7 +1145,7 @@ function EditableBpmField({
         onMouseEnter={beginEdit}
         onClick={beginEdit}
       >
-        <span className="text-[7px] font-black uppercase tracking-[0.22em]" style={{ color: rgba(color, 0.85) }}>BPM</span>
+        <span className="text-xs font-black uppercase tracking-[0.22em]" style={{ color: rgba(color, 0.85) }}>BPM</span>
         {editing ? (
           <input
             ref={inputRef}
@@ -1081,7 +1296,9 @@ export const DJView: React.FC = () => {
   // `started`: has the deck in `current` actually PLAYED during this automix
   // run? A deck that is still decoding reads `playing: false` exactly like a
   // track that ran out, and planTransition needs to tell the two apart (DJ-5).
-  const automixRef = useRef<{ current: djEngine.DeckId; started: boolean; fading: boolean; fadeStart: number; fadeFrom: number; fadeTo: number; fadeSec: number } | null>(null);
+  // `blend`: the running crossfade (lib/djAutomixPlan `BlendState`), null
+  // between transitions.
+  const automixRef = useRef<{ current: djEngine.DeckId; started: boolean; blend: BlendState | null } | null>(null);
   const [source, setSource] = useState<Source>({ kind: 'library' });
   // Lifted out of the old Mixer so the surface widget closures can drive them.
   const [limiterOn, setLimiterOn] = useState(() => djEngine.getLimiter());
@@ -1099,6 +1316,8 @@ export const DJView: React.FC = () => {
   const libTotal = useLibraryStore((s) => s.total);
   const libLookupVersion = useLibraryStore((s) => s.lookupVersion);
   const analyzeAll = useDjAnalysisStore((s) => s.analyzeAll);
+  const preferHarmonic = useDjAutomixPrefs((s) => s.preferHarmonic);
+  const setPreferHarmonic = useDjAutomixPrefs((s) => s.setPreferHarmonic);
   const djTabActive = useAppUiStore((s) => s.centerTab === 'dj');
   const setlists = useSetlistStore((s) => s.setlists);
   const activeId = useSetlistStore((s) => s.activeId);
@@ -1106,14 +1325,14 @@ export const DJView: React.FC = () => {
   const createSetlist = useSetlistStore((s) => s.create);
   const setActiveSetlist = useSetlistStore((s) => s.setActive);
   const importBundledSetlists = useSetlistStore((s) => s.importBundled);
-  // The header START button registers a bundled set before it starts it —
-  // see `onStartAutoDj`. The ref is that call's in-flight guard, the same job
-  // `registeringId` does for the Sets rows: two fast presses used to be two
-  // POSTs to /register.
-  const registerBundled = useSetlistStore((s) => s.registerBundled);
-  const startRegisterRef = useRef(false);
   const activeSet = activeId ? setlists[activeId] : null;
   useEffect(() => { void importBundledSetlists(); }, [importBundledSetlists]);
+  // Deck tracks and their waveform lanes decode through the engine's context,
+  // so both land on one `djAudioCache` entry. Registered here, on mount, while
+  // no deck holds a track yet: a lane's effect runs before this view's
+  // deck-load effect, so registering only inside `loadDeck` left the first
+  // track of a session decoded twice.
+  useEffect(() => { djEngine.shareDecodeContext(); }, []);
 
   // A deck can hold a track whose page the library's LRU dropped an hour ago,
   // so this goes through the store's id lookup (which fetches the one row it
@@ -1123,10 +1342,12 @@ export const DJView: React.FC = () => {
     void entries;
     return id ? useLibraryStore.getState().getById(id) ?? null : null;
   };
-  const deckATitle = trackById(deckATrack)?.title ?? null;
-  const deckBTitle = trackById(deckBTrack)?.title ?? null;
-  const deckAUrl = trackById(deckATrack)?.audioUrl ?? null;
-  const deckBUrl = trackById(deckBTrack)?.audioUrl ?? null;
+  const deckAEntry = trackById(deckATrack);
+  const deckBEntry = trackById(deckBTrack);
+  const deckATitle = deckAEntry?.title ?? null;
+  const deckBTitle = deckBEntry?.title ?? null;
+  const deckAUrl = deckAEntry?.audioUrl ?? null;
+  const deckBUrl = deckBEntry?.audioUrl ?? null;
 
   const ctlA = useDeck('A', deckATrack, !!deckATrack, quantize, autoGain, gainA);
   const ctlB = useDeck('B', deckBTrack, !!deckBTrack, quantize, autoGain, gainB);
@@ -1143,6 +1364,9 @@ export const DJView: React.FC = () => {
   deckBTrackRef.current = deckBTrack;
   const pendingPlayRef = useRef<djEngine.DeckId | null>(null);
   const masterPlayingRef = useRef(false);
+  // The decks the master transport last paused (see masterResumeDecks).
+  // Forgotten as soon as any deck plays again.
+  const masterPausedRef = useRef<djEngine.DeckId[] | null>(null);
 
   const loadDeck = (entryId: string, deck: djEngine.DeckId) => { if (deck === 'A') setDeckATrack(entryId); else setDeckBTrack(entryId); };
   const loadDropOntoDeck = async (event: React.DragEvent, deck: djEngine.DeckId): Promise<boolean> => {
@@ -1185,6 +1409,7 @@ export const DJView: React.FC = () => {
         if (st.hasBuffer && !st.decoding && !st.playing) { djEngine.playDeck(pend); pendingPlayRef.current = null; }
       }
       const playing = a.playing || b.playing;
+      if (playing) masterPausedRef.current = null;
       if (playing !== masterPlayingRef.current) { masterPlayingRef.current = playing; reportDjMasterState(playing ? 'playing' : 'paused'); }
     });
   }, []);
@@ -1193,18 +1418,36 @@ export const DJView: React.FC = () => {
     const startSet = () => {
       const aHas = !!deckATrackRef.current;
       const bHas = !!deckBTrackRef.current;
+      const mix = automixRef.current;
+      const resume = masterResumeDecks({
+        paused: masterPausedRef.current,
+        holds: (d) => (d === 'A' ? aHas : bHas),
+        automix: mix ? { current: mix.current, blending: !!mix.blend } : null,
+      });
+      masterPausedRef.current = null;
+      if (resume) { for (const d of resume) djEngine.playDeck(d); return; }
       if (aHas || bHas) { if (aHas) djEngine.playDeck('A'); if (bHas) djEngine.playDeck('B'); return; }
-      const sl = useSetlistStore.getState();
-      const set = sl.activeId ? sl.setlists[sl.activeId] : null;
-      const first = set?.entries.find((e) => e.entryId) ?? null;
-      if (first?.entryId) { pendingPlayRef.current = 'A'; setDeckATrack(first.entryId); }
+      // The active set's first track goes on Deck A and plays. A bundled set
+      // nobody has opened is registered first; it used to have no entry id
+      // to find, and play did nothing.
+      void firstPlayableOfActiveSet().then((firstId) => {
+        // The user may have loaded a deck while a register was out.
+        if (!firstId || deckATrackRef.current || deckBTrackRef.current) return;
+        pendingPlayRef.current = 'A';
+        setDeckATrack(firstId);
+      });
     };
     return registerDjMasterHandler({
       toggle: () => {
         const aPlaying = djEngine.getStatus('A').playing;
         const bPlaying = djEngine.getStatus('B').playing;
-        if (aPlaying || bPlaying) { if (aPlaying) djEngine.pauseDeck('A'); if (bPlaying) djEngine.pauseDeck('B'); reportDjMasterState('paused'); }
-        else { startSet(); reportDjMasterState('playing'); }
+        if (aPlaying || bPlaying) {
+          const paused: djEngine.DeckId[] = [];
+          if (aPlaying) { djEngine.pauseDeck('A'); paused.push('A'); }
+          if (bPlaying) { djEngine.pauseDeck('B'); paused.push('B'); }
+          masterPausedRef.current = paused;
+          reportDjMasterState('paused');
+        } else { startSet(); reportDjMasterState('playing'); }
       },
       getState: () => djEngine.getStatus('A').playing || djEngine.getStatus('B').playing ? 'playing' : 'paused',
     });
@@ -1242,24 +1485,24 @@ export const DJView: React.FC = () => {
     });
   }, [pitchRange]);
 
-  // `libLookupVersion` is load-bearing, not decoration (DJ-3): `trackById`
-  // goes through `libraryStore.getById`, which returns undefined for a track
-  // on no loaded page and kicks off an async single-entry fetch. With
-  // `[deckATrack]` alone nothing re-ran when that fetch landed, so the deck
-  // was loaded with `null` and stayed silently empty — which is every
-  // Send-to-DJ id and every bundled-set id, and is why automix then stalled
-  // on `incomingHasBuffer` forever. Re-running on the lookup bump is cheap:
-  // `loadDeck` no-ops when the url has not changed.
+  // The resolved entry is load-bearing (DJ-3): `trackById` goes through
+  // `libraryStore.getById`, which returns undefined for a track on no loaded
+  // page and kicks off an async single-entry fetch. With `[deckATrack]` alone
+  // nothing re-ran when that fetch landed, so the deck was loaded with `null`
+  // and stayed silently empty — which is every Send-to-DJ id and every
+  // bundled-set id, and is why automix then stalled on `incomingHasBuffer`
+  // forever. `lookupVersion` re-renders this view when the fetch lands, and
+  // the new entry object re-runs the effect. What a re-run may do is
+  // `deckLoadStep`'s call: an entry still unresolved and a URL the deck
+  // already holds both leave the deck alone, so a playing track is never
+  // rewound or ejected by a lookup for some other row.
+  const deckEntryRef = useRef<Record<djEngine.DeckId, string | null>>({ A: null, B: null });
   useEffect(() => {
-    const t = trackById(deckATrack);
-    void djEngine.loadDeck('A', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deckATrack, libLookupVersion]);
+    syncDeckToEntry('A', deckATrack, deckAEntry, deckEntryRef.current);
+  }, [deckATrack, deckAEntry]);
   useEffect(() => {
-    const t = trackById(deckBTrack);
-    void djEngine.loadDeck('B', t ? (t.audioUrl ?? null) : null, t?.title ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deckBTrack, libLookupVersion]);
+    syncDeckToEntry('B', deckBTrack, deckBEntry, deckEntryRef.current);
+  }, [deckBTrack, deckBEntry]);
 
   useEffect(() => {
     if (!flash) return;
@@ -1345,9 +1588,9 @@ export const DJView: React.FC = () => {
     // nothing and the platter pull is audible for no reason.
     if (match.matched && followerBeats && masterBeats && ms.playing && fs.playing) {
       const interval = 60 / (followerBpm * match.rate);
-      let delta = (beatPhase(ms.currentTime, masterBeats) - beatPhase(fs.currentTime, followerBeats)) * interval;
-      if (delta > interval / 2) delta -= interval;
-      if (delta < -interval / 2) delta += interval;
+      // By ear, not by source position: a key-locked deck plays its
+      // insert's latency behind its own clock (see heardTime).
+      const delta = beatPhaseError(ms, fs, masterBeats, followerBeats) * interval;
       // Nudge the platter instead of seeking: seekDeck restarts the source
       // node, which right after playDeck is an audible stutter/restart. A big
       // correction comes back short (the bend is bounded), so hand the
@@ -1422,9 +1665,7 @@ export const DJView: React.FC = () => {
       }
       const mEff = mBpm * (1 + ms.pitchPct / 100);
       const base = tempoMatch(mEff, fBpm, pitchRange);
-      let dPhase = beatPhase(ms.currentTime, mBeats) - beatPhase(fs.currentTime, fBeats);
-      if (dPhase > 0.5) dPhase -= 1;
-      if (dPhase < -0.5) dPhase += 1;
+      const dPhase = beatPhaseError(ms, fs, mBeats, fBeats);
       // DJ-5: a tempo the pitch fader cannot reach cannot be HELD either.
       // Bending around a clamped pitch just walks the follower to its rail and
       // parks it there, 350 ms at a time. Apply 0 and add no bend instead.
@@ -1487,7 +1728,7 @@ export const DJView: React.FC = () => {
     djEngine.stopDeck(which, { windDown: spin, targetOffset: target });
     setFlash(`Deck ${which} cue -> ${fmtTime(target)}`);
   };
-  const applyCrossfade = (v: number) => { setCrossfader(v); djEngine.setCrossfade(v); };
+  const applyCrossfade = useCallback((v: number) => { setCrossfader(v); djEngine.setCrossfade(v); }, []);
 
   // DJ MIDI-learn (D6): rebuild the action→handler map each render (cheap; closes
   // over current state) and read it from a ref inside the one midiBus subscriber.
@@ -1565,22 +1806,47 @@ export const DJView: React.FC = () => {
     });
   }, []);
 
-  // "Send to DJ" bridge: a caller (suggester, imported performance set)
-  // staged the active setlist and tripped the one-shot pendingStart flag —
-  // consume it and switch automix on so the prepared set runs itself.
+  // The one way into automix. START AUTO DJ, the Automix chip and every
+  // bridged request (a Sets row's play button, Send to DJ, the assistant) come
+  // through here, so each of them registers a bundled set before automix turns
+  // on: the automix effect sequences entry ids only, and an unregistered set
+  // used to stop it at once with "needs ≥2 tracks". `mode` says what happens
+  // to the decks (see `automixStartSteps`). The crossfade normalisation lives
+  // in the automix seed block below, so every path gets it.
+  const beginAutomix = async (mode: AutomixStartMode): Promise<void> => {
+    const sl = useSetlistStore.getState();
+    const set = sl.activeId ? sl.setlists[sl.activeId] : null;
+    if (set && isBundledSetId(set.id) && set.entries.some(isPendingBundledRow)) {
+      setFlash('Registering the set…');
+    }
+    const ready = await readyActiveSetForAutomix();
+    if (!ready.ok) {
+      // Never a silent no-op. A register failure was already logged by the
+      // store; "not enough tracks" goes to the log here, where the user reads
+      // failures, as well as to the footer.
+      if (ready.reason === 'too-few') logWarn('dj', ready.message);
+      setFlash(ready.message);
+      return;
+    }
+    for (const step of automixStartSteps(mode)) {
+      if (step === 'drop-transition') useDjAutomix.getState().consumeTransition(); // so a restart does not blend off track 1
+      else if (step === 'eject') { ejectDeck('A'); ejectDeck('B'); }
+      else if (step === 'on') setAutomixOn(true);
+      else setAutomixRestart((n) => n + 1); // re-run the automix effect for a fresh seed even if already on
+    }
+  };
+  const beginAutomixRef = useLatestRef(beginAutomix);
+
+  // "Send to DJ" bridge: a caller (suggester, a Sets row, the assistant)
+  // staged the active setlist and asked for a start, with how that start
+  // treats the decks. Consume it and take the one start path above.
   const automixPendingStart = useDjAutomix((s) => s.pendingStart);
   const automixPendingStop = useDjAutomix((s) => s.pendingStop);
   useEffect(() => {
     if (!automixPendingStart) return;
     useDjAutomix.getState().consumeStart();
-    useDjAutomix.getState().consumeTransition(); // drop a stale "transition now" so the restart doesn't blend off track 1
-    ejectDeck('A'); ejectDeck('B');            // clear decks so the sequencer seeds from track 1
-    // The crossfade normalisation moved into the automix seed block below, so
-    // the manual Automix toggle gets it too (it never did — a parked fader
-    // silenced the deck the seed had just loaded).
-    setAutomixOn(true);
-    setAutomixRestart((n) => n + 1);           // re-run the automix effect for a fresh seed even if already on
-  }, [automixPendingStart]);
+    void beginAutomixRef.current(automixPendingStart);
+  }, [automixPendingStart, beginAutomixRef]);
   useEffect(() => {
     if (!automixPendingStop) return;
     useDjAutomix.getState().consumeStop();
@@ -1616,34 +1882,18 @@ export const DJView: React.FC = () => {
       entryId ? seqEntries().find((e) => e.entryId === entryId)?.perf : undefined;
     const list = seq();
     if (list.length < AUTO_DJ_MIN_TRACKS) { setFlash(`Automix needs an active set with ≥${AUTO_DJ_MIN_TRACKS} tracks`); setAutomixOn(false); return; }
-    // Harmonic next-track preference. Lives here as a named constant until
-    // `preferHarmonic` exists on djAutomixStore (outside this ticket's write
-    // set); swap this for the store selector when it lands.
-    const PREFER_HARMONIC = true;
     const other = (d: djEngine.DeckId): djEngine.DeckId => (d === 'A' ? 'B' : 'A');
     const loadOnto = (d: djEngine.DeckId, entryId: string) => (d === 'A' ? setDeckATrack : setDeckBTrack)(entryId);
-    /** Camelot code for a set entry, from the shared analysis store. */
-    const camelotOf = (entryId: string | null): string | null => {
-      if (!entryId) return null;
-      const data = useDjAnalysisStore.getState().byId[entryId]?.data;
-      return data ? toCamelot(data.key, data.scale)?.code ?? null : null;
-    };
-    const nextEntryIdAfter = (entryId: string | null): string | null => {
-      const l = seq();
-      const i = entryId ? l.indexOf(entryId) : -1;
-      // Harmonic preference (fix 10): with room to spare, skip a key clash
-      // straight ahead for the nearest compatible track. Strict set order
-      // otherwise — and whenever the flag is off.
-      const idx = chooseNextIndex({
-        // A deck holding a track that is not in the set has always meant
-        // "track 1 is playing" here — keep that, don't restart the set.
-        fromIndex: i >= 0 ? i : 0,
-        candidates: l.map((id) => ({ camelot: camelotOf(id) })),
-        currentCamelot: camelotOf(entryId),
-        preferHarmonic: PREFER_HARMONIC,
-      });
-      return idx != null ? l[idx] ?? null : null;
-    };
+    // The run's play queue (fix 10): set order, plus a harmonic choice made
+    // once per track when "Harmonic order" is on. A prepared set plays as
+    // prepared, and a key under KEY_CONFIDENCE_MIN is not trusted to reorder.
+    const queue = createAutomixQueue({
+      order: seq,
+      camelotOf: (entryId) => automixCamelot(useDjAnalysisStore.getState().byId[entryId]?.data),
+      preferHarmonic: () => useDjAutomixPrefs.getState().preferHarmonic,
+      prepared: () => seqEntries().some((e) => e.perf != null),
+    });
+    const nextEntryIdAfter = queue.nextAfter;
     const loadNextAfter = (entryId: string | null, onto: djEngine.DeckId) => {
       const nextId = nextEntryIdAfter(entryId);
       if (nextId && nextId !== deckATrackRef.current && nextId !== deckBTrackRef.current) loadOnto(onto, nextId);
@@ -1717,8 +1967,8 @@ export const DJView: React.FC = () => {
           djEngine.seekDeck(current, firstBeat);
         }
         djEngine.playDeck(current);
-        // The set has begun: from here a `playing: false` reading on this deck
-        // really does mean the track ran out, and the dead-air rescue applies.
+        // The set has begun: a deck that stops at its end (or is ejected) is
+        // now dead air and is rescued; a paused deck holds the plan (deckRun).
         if (automixRef.current) automixRef.current.started = true;
         if (!analyzed) setFlash('Automix: starting before analysis landed — first mix may be unmatched');
       }, 150);
@@ -1727,10 +1977,7 @@ export const DJView: React.FC = () => {
     // bridge, or the user hit play first): it has played, so the dead-air
     // rescue is allowed from the first tick. Otherwise the seed poll above
     // flips this the moment it actually starts the deck.
-    automixRef.current = {
-      current, started: djEngine.getStatus(current).playing,
-      fading: false, fadeStart: 0, fadeFrom: 0, fadeTo: 0, fadeSec: AUTOMIX_XFADE,
-    };
+    automixRef.current = { current, started: djEngine.getStatus(current).playing, blend: null };
     useDjAutomix.getState().setNowPlaying(curEntry ?? list[0]);
     loadNextAfter(curEntry ?? list[0], other(current));
     setFlash('Automix on — sequencing the set');
@@ -1749,19 +1996,25 @@ export const DJView: React.FC = () => {
       const outDur = cs.duration;
       const outPlaying = cs.playing;
       const outPitchPct = cs.pitchPct;
+      const outHasBuffer = cs.hasBuffer;
+      const outDecoding = cs.decoding;
       const inHasBuffer = ns.hasBuffer;
+      const inRun = deckRun(ns);
       // The AudioContext clock, not performance.now(): a fade timed off the
       // wall clock drifts against the audio it is fading whenever the tab is
       // throttled, and the interval's own 500 ms cadence is not reliable.
       const now = cs.ctxTime;
       const outCtl = cur === 'A' ? ctlARef.current : ctlBRef.current;
       const inCtl = nxt === 'A' ? ctlARef.current : ctlBRef.current;
-      // The constant grid's phase + spacing: gridBeats[0] IS the grid anchor
-      // (buildBeatgrid emits from it), and beatLen is its interval.
+      // Phrase lines count from the first REAL beat. gridBeats[0] is the grid
+      // line nearest 0:00, which sits whole beats before the first detected
+      // beat on any track with an intro, so every "phrase" it produced was
+      // that many beats off the music. With downbeats cached the plan
+      // prefers those anyway.
       const outGrid = outCtl.gridBeats;
-      const outAnchor = outGrid && outGrid.length > 0 ? outGrid[0] : null;
+      const outAnchor = outCtl.firstBeat ?? (outGrid && outGrid.length > 0 ? outGrid[0] : null);
       const outBeatLen = outCtl.beatLen ?? (outGrid && outGrid.length > 1 ? outGrid[1] - outGrid[0] : null);
-      if (!mix.fading) {
+      if (!mix.blend) {
         const outEntry = cur === 'A' ? deckATrackRef.current : deckBTrackRef.current;
         // Reconcile the idle deck every tick: a mid-show reorder (assistant
         // dj_set_next) must replace a stale pre-load. No-op when it already
@@ -1792,8 +2045,11 @@ export const DJView: React.FC = () => {
             mixOut: outPerf?.mixOut,
             // Real bar lines when djRhythmStore has them cached (DJ-3), so a
             // blend starts on an actual phrase and not merely on a 16-beat
-            // multiple of the grid anchor; null falls back to the grid.
+            // multiple of the first beat; null falls back to the grid.
             downbeats: outCtl.downbeats,
+            // Tells a pause from a track that ran out (see deckRun).
+            hasBuffer: outHasBuffer,
+            decoding: outDecoding,
           },
           incoming: { bpm: inCtl.bpm, hasBuffer: inHasBuffer, cueIn: inPerf?.cueIn },
           fadeSec: outPerf?.transitionSec != null && outPerf.transitionSec > 0 ? outPerf.transitionSec : AUTOMIX_XFADE,
@@ -1801,20 +2057,48 @@ export const DJView: React.FC = () => {
           now,
           forced: useDjAutomix.getState().pendingTransition,
         });
+        // The tempo pull the incoming deck will need, from the same inputs
+        // syncDeck uses. Known before it plays, so key-lock can be set while
+        // the deck is still silent.
+        const pull = tempoMatch((outCtl.bpm ?? 0) * (1 + outPitchPct / 100), inCtl.bpm, pitchRangeRef.current);
+        // Load the key-lock insert ahead of the blend that will need it, so
+        // engaging it before `play` does not wait on the WASM load.
+        if (inHasBuffer && outPlaying && Math.abs(pull.appliedPct) > KEYLOCK_PITCH_PCT) djEngine.prepareKeylock(nxt);
         if (plan.start) {
           useDjAutomix.getState().consumeTransition();
-          // Dispatches automixTransitionSteps' order verbatim — seek, then
-          // play, THEN sync — rather than three calls written out by hand,
-          // so the tested order and the executed order can never drift
-          // apart. syncDeck's phase-align branch (see syncDeck above,
+          // Only a playing outgoing deck can be matched. In the dead-air
+          // rescue nothing is playing: no sync, no sync-lock, no key-lock pull.
+          const masterPlaying = outPlaying;
+          const lockStep = automixKeylockStep({
+            pullPct: pull.appliedPct,
+            masterPlaying,
+            lockedByAutomix: autoKeylockRef.current[nxt],
+          });
+          // Dispatches automixTransitionSteps' order verbatim — seek, key-lock,
+          // play, THEN sync — rather than calls written out by hand, so the
+          // tested order and the executed order can never drift apart.
+          // syncDeck's phase-align branch (see syncDeck above,
           // `masterStatus.playing && followerStatus.playing`) only nudges
           // playback into phase when BOTH decks already read as playing —
           // dispatched before `play`, the incoming deck always reads
-          // not-playing there, so only the tempo (pitch) half of the
-          // beatmatch would ever apply and phase never would.
-          for (const step of automixTransitionSteps(nxt, plan.cueIn)) {
+          // not-playing there, so only the tempo (pitch) half of the beatmatch
+          // would ever apply and phase never would. Key-lock goes before
+          // `play` so its insert and delay line change on a silent deck.
+          for (const step of automixTransitionSteps(nxt, plan.cueIn, { masterPlaying, keylock: lockStep })) {
             if (step.type === 'seek') djEngine.seekDeck(step.deck, step.to);
-            else if (step.type === 'play') djEngine.playDeck(step.deck);
+            else if (step.type === 'keylock') {
+              // Ownership, same rule as syncDeck: only a lock this path
+              // switched on is one it may switch off; a lock the DJ set by
+              // hand survives.
+              if (step.on) {
+                const wasOn = djEngine.getStatus(step.deck).keylock;
+                void djEngine.setDeckKeylock(step.deck, true);
+                if (!wasOn) autoKeylockRef.current[step.deck] = true;
+              } else {
+                void djEngine.setDeckKeylock(step.deck, false);
+                autoKeylockRef.current[step.deck] = false;
+              }
+            } else if (step.type === 'play') djEngine.playDeck(step.deck);
             else syncDeckRef.current(step.deck);   // via ref: see syncDeckRef
           }
           // Hold the beatmatch for the whole blend (fix 3): syncDeck matches
@@ -1822,58 +2106,44 @@ export const DJView: React.FC = () => {
           // real tempos drift apart audibly over a 10 s fade. The sync-lock
           // PLL already exists — automix just never armed it, because only the
           // user's SYNC-LOCK button ever did.
-          setSyncLock(nxt);
-          // Key-lock the follower when the match needed a real pull (fix 5).
-          const followerPitch = djEngine.getStatus(nxt).pitchPct;
-          // Engage AND release — same reason as syncDeck above: an automix run
-          // that key-locked one follower left every later deck locked too,
-          // because nothing in either path ever turned it back off. Guarded by
-          // the same ownership flag, so a lock the user set by hand survives.
-          // This runs AFTER the seek→play→sync steps above because the pull it
-          // decides from is the one syncDeck just applied, and `sync` must stay
-          // the last step (dispatched before `play`, syncDeck's phase-align
-          // branch sees a not-yet-playing deck and never aligns). The window is
-          // the same few ms the pitch change itself already occupies.
-          const want = Math.abs(followerPitch) > KEYLOCK_PITCH_PCT;
-          if (want) {
-            // Same ownership rule as syncDeck: only a lock this path actually
-            // switched on is a lock it may later switch off.
-            const wasOn = djEngine.getStatus(nxt).keylock;
-            void djEngine.setDeckKeylock(nxt, true);
-            if (!wasOn) autoKeylockRef.current[nxt] = true;
-          } else if (autoKeylockRef.current[nxt]) {
-            void djEngine.setDeckKeylock(nxt, false);
-            autoKeylockRef.current[nxt] = false;
-          }
-          mix.fading = true; mix.fadeStart = now; mix.fadeFrom = djEngine.getCrossfade(); mix.fadeTo = nxt === 'B' ? 1 : -1;
+          if (masterPlaying) setSyncLock(nxt);
           // Dead air: the outgoing deck is already silent, so a 10 s fade is
           // 10 s of a half-open fader. Get the incoming track up fast instead.
-          mix.fadeSec = plan.immediate ? AUTOMIX_RESCUE_XFADE : plan.fadeSec;
+          mix.blend = startBlend(
+            now,
+            plan.immediate ? AUTOMIX_RESCUE_XFADE : plan.fadeSec,
+            djEngine.getCrossfade(),
+            nxt === 'B' ? 1 : -1,
+            plan.immediate,
+          );
           // Say what actually happened. The old flash claimed a blend even
           // when the tempo was a guess or the pitch fader could not reach it.
-          const tm = tempoMatch((outCtl.bpm ?? 0) * (1 + outPitchPct / 100), inCtl.bpm, pitchRangeRef.current);
           const honest = !plan.matched
             ? (inCtl.bpm == null ? 'incoming BPM unknown' : 'outgoing BPM unknown')
-            : !tm.matched ? `BPM out of the ±${pitchRangeRef.current}% range` : null;
+            : !pull.matched ? `BPM out of the ±${pitchRangeRef.current}% range` : null;
           setFlash(honest
             ? `Automix: mixing unmatched → Deck ${nxt} (${honest})`
             : `Automix: blending → Deck ${nxt}${plan.phraseAligned ? ', on the phrase' : ''}`);
         }
       } else {
-        const progress = mix.fadeSec > 0 ? Math.min(1, Math.max(0, (now - mix.fadeStart) / mix.fadeSec)) : 1;
-        applyCrossfade(fadeStep(mix.fadeStart, now, mix.fadeSec, mix.fadeFrom, mix.fadeTo));
+        // The fade (lib/djAutomixPlan `blendTick`): held while either deck is
+        // paused, cut over to the short rescue fade from where the fader is
+        // when the outgoing track runs out, and handed over only when the
+        // fade has run its length.
+        const outRun = deckRun({ playing: outPlaying, currentTime: outPos, duration: outDur, hasBuffer: outHasBuffer, decoding: outDecoding });
+        const step = blendTick(mix.blend, now, outRun, inRun, AUTOMIX_RESCUE_XFADE);
+        mix.blend = step.state;
+        if (step.action === 'hold') return;
+        applyCrossfade(step.fader);
         // Bass swap (fix 1): two basslines on top of each other for ten
         // seconds is the sound of an amateur automix. Hand the low end over
         // across the middle third of the fade, relative to the DJ's own EQ.
-        const swap = eqSwap(progress);
+        const swap = eqSwap(step.progress);
         djEngine.setDeckEq(cur, 'low', eqLowRef.current[cur] + swap.outLowDb);
         djEngine.setDeckEq(nxt, 'low', eqLowRef.current[nxt] + swap.inLowDb);
-        if (progress >= 1 || !outPlaying) {
-          // Land the fader EXACTLY on the destination (fix 7). The outgoing
-          // track ending mid-fade used to take this branch straight after a
-          // partial write, leaving the crossfader parked at e.g. 0.3 with the
-          // finished track still half in the mix.
-          applyCrossfade(mix.fadeTo);
+        if (step.action === 'finish') {
+          // Land the fader EXACTLY on the destination (fix 7).
+          applyCrossfade(mix.blend.fadeTo);
           djEngine.setDeckEq(cur, 'low', eqLowRef.current[cur]);
           djEngine.setDeckEq(nxt, 'low', eqLowRef.current[nxt]);
           if (outPlaying) djEngine.pauseDeck(cur);
@@ -1888,7 +2158,7 @@ export const DJView: React.FC = () => {
           // sound. Read the deck instead — and never clear a `started` the run
           // has already earned, since a track that ran out still counts.
           mix.started = djEngine.getStatus(nxt).playing || mix.started;
-          mix.fading = false;
+          mix.blend = null;
           const nowEntry = nxt === 'A' ? deckATrackRef.current : deckBTrackRef.current;
           useDjAutomix.getState().setNowPlaying(nowEntry);
           loadNextAfter(nowEntry, cur); // queue the following track on the freed deck
@@ -1901,14 +2171,18 @@ export const DJView: React.FC = () => {
       // Switching automix off mid-blend must not leave the half-swapped state
       // behind: a deck stuck at −26 dB of bass, and a sync-lock the user never
       // armed still bending its pitch. The swap branch undoes both; so does this.
-      if (automixRef.current?.fading) {
+      if (automixRef.current?.blend) {
         djEngine.setDeckEq('A', 'low', eqLowRef.current.A);
         djEngine.setDeckEq('B', 'low', eqLowRef.current.B);
         setSyncLock(null);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [automixOn, automixRestart]);
+    // Re-runs only on the two inputs that start a run. Everything else it
+    // reads is stable: state setters, `applyCrossfade` (useCallback over a
+    // setter), and refs to the live per-render values (useLatestRef), which
+    // is how the interval sees current deck state without restarting the
+    // sequence on every render.
+  }, [automixOn, automixRestart, applyCrossfade, ctlARef, ctlBRef, pitchRangeRef, eqLowRef, syncDeckRef]);
 
   /* ── DJ-3: the header START AUTO DJ button ── */
   // Same count the Sets rows use: registered entries plus the bundled rows
@@ -1922,52 +2196,32 @@ export const DJView: React.FC = () => {
     playableCount: autoDjPlayable,
     automixOn,
   });
+  // A register is out for some set: the store's one in-flight guard, shared
+  // with the Sets rows. A press then says so and does nothing else; a button
+  // that does nothing at all reads as broken, which is the complaint DJ-3
+  // started from.
+  const registerBusy = (): boolean => {
+    if (!useSetlistStore.getState().registeringId) return false;
+    setFlash('Registering the set…');
+    return true;
+  };
+  const onToggleAutomix = () => {
+    if (automixOn) { setAutomixOn(false); return; }
+    if (registerBusy()) return;
+    void beginAutomix('continue');
+  };
   const onStartAutoDj = async (intent: StartAutoDjIntent) => {
     switch (intent) {
-      // Both go through the djAutomix bridge rather than `setAutomixOn`, so
-      // the button inherits exactly what Send-to-DJ gets: eject both decks,
-      // reset the crossfader to full Deck A, reseed from track 1.
       case 'start': {
+        if (registerBusy()) return;
         // `autoDjPlayable` counts bundled rows that have no library entry
         // yet, so the button offers to start a set the automix effect would
-        // find EMPTY (it sequences `entryId`s only) — it would bail on
-        // `< AUTO_DJ_MIN_TRACKS`, un-toggle itself and flash for 2.2s.
-        // Register first, exactly as the Sets row's ▶ does (see `openSet`):
-        // same order, same in-flight guard, same ProcessingLog warning.
-        if (activeSet && isBundledSetId(activeSet.id)
-            && activeSet.entries.some(isRegisterableBundledRow)) {
-          if (startRegisterRef.current) {
-            // A register is already in flight. Say so — a button that does
-            // nothing at all reads as broken, which is the whole complaint
-            // this ticket started from.
-            setFlash('Registering the set…');
-            return;
-          }
-          startRegisterRef.current = true;
-          try {
-            const registered = await registerBundled(activeSet.id);
-            // The register is a network round-trip and the user can switch
-            // sets while it is out. Starting the mix on the set that was
-            // active when the press happened would eject both decks and
-            // sequence a set nobody is looking at.
-            if (useSetlistStore.getState().activeId !== activeSet.id) {
-              setFlash('The active set changed — press START AUTO DJ again');
-              return;
-            }
-            if (registered === null) return;      // registerBundled already logged why
-            const playable = djAutomixEntries(registered).length;
-            if (playable < AUTO_DJ_MIN_TRACKS) {
-              logWarn(
-                'dj',
-                `"${activeSet.name}" has ${playable} playable track${playable === 1 ? '' : 's'} — Auto-DJ needs ${AUTO_DJ_MIN_TRACKS}.`,
-              );
-              return;
-            }
-          } finally {
-            startRegisterRef.current = false;
-          }
-        }
-        useDjAutomix.getState().requestStart();
+        // find empty until it is registered; `beginAutomix` registers first.
+        // `continue`, the Automix chip's behavior: a deck that is playing
+        // keeps playing and the set runs on from that track. Through the
+        // Send-to-DJ bridge this press ejected both decks and restarted the
+        // set from track 1 under a playing track.
+        await beginAutomix('continue');
         break;
       }
       case 'stop': useDjAutomix.getState().requestStop(); break;
@@ -2012,7 +2266,7 @@ export const DJView: React.FC = () => {
     vinylSpinA, setVinylSpinA, vinylSpinB, setVinylSpinB,
     limiterOn, setLimiterOn, cueSupported,
     midiMapOn: midiMapOpen, onToggleMidiMap: () => setMidiMapOpen((v) => !v),
-    automixOn, onToggleAutomix: () => setAutomixOn((v) => !v),
+    automixOn, onToggleAutomix,
   });
 
   return (
@@ -2023,13 +2277,14 @@ export const DJView: React.FC = () => {
           something a user can drag away (or lose) in Design Mode. */}
       <div className="shrink-0 flex items-center gap-2 px-2 py-1 border-b border-white/5 bg-black/30">
         <StartAutoDjButton state={startAutoDj} onActivate={onStartAutoDj} />
-        <span className="min-w-0 truncate text-[9px] font-mono text-zinc-500">
+        <span className="min-w-0 truncate text-xs font-bold text-zinc-400">
           {automixOn
             ? `Auto-DJ running · ${activeSet?.name ?? 'set'}`
             : activeSet
               ? `${activeSet.name} · ${autoDjPlayable} playable`
               : startAutoDj.reason ?? ''}
         </span>
+        <HarmonicOrderToggle on={preferHarmonic} onToggle={() => setPreferHarmonic(!preferHarmonic)} />
       </div>
       {showStartHint && <DjStartHint />}
       {/* The console is laid out on fr fractions of its area, so on a short
@@ -2069,7 +2324,7 @@ export const DJView: React.FC = () => {
           filled each time. */}
       <div className="shrink-0 flex items-center justify-between gap-2 px-2 py-0.5 border-t border-white/5 bg-black/40">
         <div role="status" aria-live="polite" className="min-w-0 flex-1">
-          {flash && <span className="block truncate text-[10px] font-mono font-bold text-purple-300">{flash}</span>}
+          {flash && <span className="block truncate text-xs tabular-nums font-bold text-purple-300">{flash}</span>}
         </div>
         <InfiNightCredit feature="DJ" />
       </div>
@@ -2116,12 +2371,12 @@ const WaveLane: React.FC<WaveLaneProps> = ({ deckId, accent, hasTrack, audioUrl,
       onDrop={(e) => { void onDrop(e); }}
     >
       {!compact && (
-        <span className={`absolute top-1 left-2 z-30 flex items-center gap-1 text-[8px] font-black uppercase tracking-[0.18em] pointer-events-none ${accentText}`}>
+        <span className={`absolute top-1 left-2 z-30 flex items-center gap-1 text-xs font-black uppercase tracking-[0.18em] pointer-events-none ${accentText}`}>
           <Disc className="w-2.5 h-2.5" /> Deck {deckId} · {mode === 'overview' ? 'overview' : 'scroll'}
         </span>
       )}
       {audioUrl ? <DeckWaveform deckId={deckId} audioUrl={audioUrl} beats={ctl.gridBeats} downbeats={ctl.downbeats} cues={ctl.cues ?? null} accent={accent} height={height} mode={mode} />
-        : <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-700">{hasTrack ? '…' : 'drop a song here →'}</div>}
+        : <div className="h-full grid place-items-center text-xs font-semibold tabular-nums text-zinc-700">{hasTrack ? '…' : 'drop a song here →'}</div>}
     </div>
   );
 };
@@ -2166,7 +2421,7 @@ const PlatterDropTarget: React.FC<{
       <JogWheel deckId={deckId} color={color} bpm={bpm} pitchPct={pitchPct} disabled={!hasTrack} fill fillScale={0.88} />
       {dropHover && (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
-          <div className="rounded bg-black/75 border px-2 py-1 text-[8px] font-black uppercase tracking-wider" style={{ borderColor: rgba(color, 0.7), color: rgb(color), boxShadow: `0 0 14px ${rgba(color, 0.35)}` }}>
+          <div className="rounded bg-black/75 border px-2 py-1 text-xs font-black uppercase tracking-wider" style={{ borderColor: rgba(color, 0.7), color: rgb(color), boxShadow: `0 0 14px ${rgba(color, 0.35)}` }}>
             Drop on {deckId}
           </div>
         </div>
@@ -2266,8 +2521,8 @@ const SamplerRail: React.FC = () => {
     <div className="hardware-card flex flex-col min-h-0 overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         <Sparkles className="w-3 h-3 text-amber-300 shrink-0" />
-        <span className="text-[9px] font-black uppercase tracking-wider text-amber-200 leading-tight">Sampler</span>
-        <span className="ml-auto text-[7px] font-mono text-zinc-600">drag tracks →</span>
+        <span className="text-xs font-black uppercase tracking-wider text-amber-200 leading-tight">Sampler</span>
+        <span className="ml-auto text-xs font-semibold tabular-nums text-zinc-600">drag tracks →</span>
       </div>
       <div className="flex-1 min-h-0 grid grid-cols-2 gap-1 p-1.5 content-start">
         {Array.from({ length: SAMPLER_SLOTS }, (_, i) => {
@@ -2292,8 +2547,8 @@ const SamplerRail: React.FC = () => {
                     : pad ? 'border-amber-500/40 bg-amber-500/8 text-amber-200 hover:bg-amber-500/15'
                       : 'border-white/10 bg-black/40 text-zinc-600 hover:border-white/20'
                 }`}>
-                <span className="text-[11px] font-black leading-none">{i === 9 ? 0 : i + 1}</span>
-                <span className="text-[7px] font-mono uppercase tracking-wide leading-none truncate max-w-full px-0.5">{pad ? pad.name : '—'}</span>
+                <span className="text-xs font-black leading-none">{i === 9 ? 0 : i + 1}</span>
+                <span className="text-xs font-bold uppercase tracking-wide leading-none truncate max-w-full px-0.5">{pad ? pad.name : '—'}</span>
               </button>
               {/* A sibling, not a child of the pad button — a nested button is
                   invalid DOM (see the Sets-row comment further down this file
@@ -2321,13 +2576,13 @@ const SamplerRail: React.FC = () => {
         return (
           <div id={SAMPLER_PAD_OPTIONS_ID} className="shrink-0 border-t border-white/5 px-1.5 py-1.5 flex flex-col gap-1">
             <div className="flex items-center justify-between gap-1">
-              <span className="min-w-0 truncate text-[8px] font-mono uppercase tracking-wide text-amber-200">Pad {i === 9 ? 0 : i + 1} · {pad.name}</span>
+              <span className="min-w-0 truncate text-xs font-bold uppercase tracking-wide text-amber-200">Pad {i === 9 ? 0 : i + 1} · {pad.name}</span>
               <button type="button" onClick={() => setEditingPad(null)} aria-label="Close pad options" title="Close" className="shrink-0 text-zinc-500 hover:text-zinc-200">
                 <X className="w-2.5 h-2.5" />
               </button>
             </div>
             <div className="flex items-center gap-1.5">
-              <label htmlFor={gainId} className="shrink-0 text-[7px] font-mono uppercase tracking-wide text-zinc-500">Gain</label>
+              <label htmlFor={gainId} className="shrink-0 text-xs font-bold uppercase tracking-wide text-zinc-500">Gain</label>
               <input
                 id={gainId}
                 name={gainId}
@@ -2339,7 +2594,7 @@ const SamplerRail: React.FC = () => {
                 onChange={(e) => setPadOpts(i, { gain: Number(e.target.value) })}
                 className="flex-1 accent-amber-400"
               />
-              <span className="w-7 shrink-0 text-right text-[7px] font-mono tabular-nums text-zinc-400">{Math.round(opts.gain * 100)}%</span>
+              <span className="w-9 shrink-0 text-right text-xs font-semibold tabular-nums text-zinc-400">{Math.round(opts.gain * 100)}%</span>
             </div>
             <div className="flex items-center gap-1">
               <button type="button" aria-pressed={opts.loop} onClick={() => {
@@ -2347,13 +2602,13 @@ const SamplerRail: React.FC = () => {
                 setPadOpts(i, { loop });
                 if (stopSample) djEngine.stopSample(`sampler:${i}`);
               }}
-                className={`flex-1 flex items-center justify-center gap-1 rounded border px-1 py-0.5 text-[7px] font-black uppercase tracking-wide ${
+                className={`flex-1 flex items-center justify-center gap-1 rounded border px-1 py-0.5 text-xs font-black uppercase tracking-wide ${
                   opts.loop ? 'border-amber-400/70 bg-amber-500/20 text-amber-200' : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
                 }`} title="Loop the sample; re-press the pad to stop">
                 <Repeat className="w-2.5 h-2.5" /> Loop
               </button>
               <button type="button" aria-pressed={opts.choke} onClick={() => setPadOpts(i, { choke: !opts.choke })}
-                className={`flex-1 flex items-center justify-center gap-1 rounded border px-1 py-0.5 text-[7px] font-black uppercase tracking-wide ${
+                className={`flex-1 flex items-center justify-center gap-1 rounded border px-1 py-0.5 text-xs font-black uppercase tracking-wide ${
                   opts.choke ? 'border-amber-400/70 bg-amber-500/20 text-amber-200' : 'border-white/10 text-zinc-500 hover:text-zinc-200 hover:border-white/25'
                 }`} title="Choke group: firing this pad cuts every other choke pad">
                 <Ban className="w-2.5 h-2.5" /> Choke
@@ -2362,7 +2617,7 @@ const SamplerRail: React.FC = () => {
           </div>
         );
       })()}
-      <div className="shrink-0 px-1.5 pb-1.5 text-[7px] font-mono text-zinc-600 text-center">click fires · right-click clears · gear = gain/loop/choke</div>
+      <div className="shrink-0 px-1.5 pb-1.5 text-xs font-semibold tabular-nums text-zinc-600 text-center">click fires · right-click clears · gear = gain/loop/choke</div>
     </div>
   );
 };
@@ -2377,7 +2632,7 @@ const DeckTimes: React.FC<{ deckId: djEngine.DeckId; mirror?: boolean }> = ({ de
     if (remRef.current) remRef.current.textContent = '-' + fmtTime(Math.max(0, st.duration - st.currentTime));
   }), [deckId]);
   return (
-    <span className={`flex items-center gap-1.5 text-[8px] font-mono tabular-nums text-zinc-500 leading-tight ${mirror ? 'flex-row-reverse' : ''}`}>
+    <span className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums text-zinc-500 leading-tight ${mirror ? 'flex-row-reverse' : ''}`}>
       <span ref={elapRef}>0:00</span>
       <span className="text-zinc-700" ref={remRef}>-0:00</span>
     </span>
@@ -2385,7 +2640,7 @@ const DeckTimes: React.FC<{ deckId: djEngine.DeckId; mirror?: boolean }> = ({ de
 };
 
 /* ═══════════════════════════════ OnboardFxPanel (FX + STEMS) ════════════════ */
-const FX_PAD_BT = 'w-full h-full px-1 py-1 text-[7px] min-w-0 tracking-normal leading-tight';
+const FX_PAD_BT = 'w-full h-full px-1 py-1 min-w-0 tracking-normal leading-tight';
 const STEM_COUNT_OPTIONS = [2, 4, 6, 12] as const;
 type StemCount = typeof STEM_COUNT_OPTIONS[number];
 const toStemCount = (n: number | undefined): StemCount =>
@@ -2464,7 +2719,7 @@ const StemLoadPad: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
       on={busy}
       disabled={!entryId || busy}
       onClick={() => void load()}
-      className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden"
+      className="w-full h-full px-1 py-1 min-w-0 min-h-0 overflow-hidden"
       shape={shape}
       title={entryId ? `Load or separate ${stemCount} stems for Deck ${deck}` : 'Load a track first'}
     >
@@ -2499,7 +2754,7 @@ const StemTogglePad: React.FC<{
         }
         else onPrepare?.();
       }}
-      className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden"
+      className="w-full h-full px-1 py-1 min-w-0 min-h-0 overflow-hidden"
       title={name ? `Deck ${deck} ${name}: ${on ? 'click to mute' : 'click to restore'}` : canPrepare ? `Prepare stems for Deck ${deck}` : 'Load a track first'}
     >
       {preparing && !name ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
@@ -2550,7 +2805,7 @@ const StemPadBank: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
         />
       );
     }),
-    <SlidePad key="fx" disabled className="w-full h-full px-1 py-1 text-[7px] min-w-0 min-h-0 overflow-hidden" title="Open slot for the next stem layer">
+    <SlidePad key="fx" disabled className="w-full h-full px-1 py-1 min-w-0 min-h-0 overflow-hidden" title="Open slot for the next stem layer">
       FX
     </SlidePad>,
   ];
@@ -2573,8 +2828,8 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
   const triggerFx = (k: djEngine.DjFx, amount = 0.72) => onFx(k, fx[k] > 0.001 ? 0 : amount);
   const padLabel = (top: string, bottom: string) => (
     <span className="flex flex-col items-center gap-0.5 leading-none">
-      <span className="text-[7px] font-black">{top}</span>
-      <span className="text-[8px] font-black">{bottom}</span>
+      <span className="text-xs font-black">{top}</span>
+      <span className="text-xs font-black">{bottom}</span>
     </span>
   );
 
@@ -2582,7 +2837,7 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
     <div className="hardware-card h-full w-full min-h-0 min-w-0 overflow-hidden p-1.5">
       <div className="h-full w-full min-h-0 grid grid-cols-[1.15fr_1.2fr_1.05fr_1.15fr] gap-1.5 items-stretch">
         <div className="min-w-0 flex flex-col gap-1">
-          <div className={`flex items-center gap-1 text-[8px] font-black uppercase tracking-widest ${accentText}`}>
+          <div className={`flex items-center gap-1 text-xs font-black uppercase tracking-widest ${accentText}`}>
             <Sparkles className="w-3 h-3 shrink-0" />
             <span className="truncate">Onboard FX {deck}</span>
           </div>
@@ -2596,7 +2851,7 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
           </div>
         </div>
         <div className="min-w-0 flex flex-col gap-1">
-          <div className="flex items-center gap-1 text-[7px] font-black uppercase tracking-widest text-zinc-500">
+          <div className="flex items-center gap-1 text-xs font-black uppercase tracking-widest text-zinc-500">
             <Magnet className="w-2.5 h-2.5" />
             <span>Beat Grid</span>
           </div>
@@ -2609,7 +2864,7 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
           </div>
         </div>
         <div className="min-w-0 flex flex-col gap-1">
-          <div className="flex items-center gap-1 text-[7px] font-black uppercase tracking-widest text-zinc-500">
+          <div className="flex items-center gap-1 text-xs font-black uppercase tracking-widest text-zinc-500">
             <Link2 className="w-2.5 h-2.5" />
             <span>Loop Roll</span>
           </div>
@@ -2640,7 +2895,7 @@ const OnboardFxPanel: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cyan'; ent
   );
 };
 
-const PERF_PAD_BT = 'w-full h-full px-1 py-0.5 text-[7px] min-w-0 min-h-0 overflow-hidden tracking-normal leading-tight';
+const PERF_PAD_BT = 'w-full h-full px-1 py-0.5 min-w-0 min-h-0 overflow-hidden tracking-normal leading-tight';
 /** Pad grids are height size-containers (index.css .dj-pad-grid) so the pads
  *  take the cell's height instead of overflowing it and being clipped. */
 const PERF_PAD_GRID = 'dj-pad-grid grid gap-1 flex-1 min-h-0 auto-rows-fr';
@@ -2651,15 +2906,15 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
   const hasTrack = !!entryId;
   const padLabel = (top: string, bottom: string) => (
     <span className="flex flex-col items-center gap-0.5 leading-none">
-      <span className="dj-pad-top text-[6px] font-black opacity-80">{top}</span>
-      <span className="text-[8px] font-black">{bottom}</span>
+      <span className="dj-pad-top text-xs font-black opacity-80">{top}</span>
+      <span className="text-xs font-black">{bottom}</span>
     </span>
   );
   return (
     <div className="hardware-card h-full w-full min-h-0 min-w-0 overflow-hidden p-1.5">
       <div className="h-full w-full min-h-0 grid grid-cols-[0.8fr_1.15fr_1.35fr] gap-1.5 items-stretch">
         <div className="min-w-0 flex flex-col gap-1">
-          <div className={`text-[7px] font-black uppercase tracking-widest ${accentText}`}>Hot Cues</div>
+          <div className={`text-xs font-black uppercase tracking-widest ${accentText}`}>Hot Cues</div>
           <div className={`${PERF_PAD_GRID} grid-cols-4`}>
             {Array.from({ length: HOTCUE_SLOTS }, (_, i) => {
               const c = ctl.cues?.[i] ?? null;
@@ -2682,7 +2937,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
           </div>
         </div>
         <div className="min-w-0 flex flex-col gap-1">
-          <div className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Beat Loops</div>
+          <div className="text-xs font-black uppercase tracking-widest text-zinc-500">Beat Loops</div>
           <div className={`${PERF_PAD_GRID} grid-cols-6`}>
             {BEAT_SIZES.map((b) => (
               <SlidePad key={b.label} className={PERF_PAD_BT} on={ctl.loopActive && ctl.activeLoopBeats === b.beats} color={color} disabled={!hasTrack} onClick={() => ctl.toggleBeatLoop(b.beats)} title={`${b.label}-beat loop`}>
@@ -2695,7 +2950,7 @@ const CompactPerformancePads: React.FC<{ deck: 'A' | 'B'; accent: 'purple' | 'cy
           </div>
         </div>
         <div className="min-w-0 flex flex-col gap-1">
-          <div className="text-[7px] font-black uppercase tracking-widest text-zinc-500">Roll / Jump</div>
+          <div className="text-xs font-black uppercase tracking-widest text-zinc-500">Roll / Jump</div>
           <div className={`${PERF_PAD_GRID} grid-cols-8`}>
             {ROLL_SIZES.map((b) => (
               <SlidePad
@@ -2812,8 +3067,8 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
       {/* header band */}
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         <ListMusic className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-        <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Next</span>
-        <span className="text-[8px] font-mono text-zinc-600 tabular-nums">{items.length}</span>
+        <span className="text-xs font-black uppercase tracking-widest text-purple-300">Next</span>
+        <span className="text-xs font-semibold text-zinc-600 tabular-nums">{items.length}</span>
         <div className="flex items-center gap-0.5 ml-auto">
           <button onClick={() => sortQueue('title')} disabled={items.length < 2} className="p-0.5 text-zinc-500 hover:text-purple-300 disabled:opacity-25" title="Sort queue by title"><ArrowDownAZ className={`w-3 h-3 ${sortIconClass('title')}`} /></button>
           <button onClick={() => sortQueue('bpm')} disabled={items.length < 2} className="p-0.5 text-zinc-500 hover:text-purple-300 disabled:opacity-25" title="Sort queue by BPM"><Gauge className={`w-3 h-3 ${sortIconClass('bpm')}`} /></button>
@@ -2825,7 +3080,7 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
       {/* staged-track list (vertical, fills the cell) */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {items.length === 0 ? (
-          <div className="h-full grid place-items-center text-[9px] font-mono text-zinc-600 px-3 text-center">Drag tracks here to stage them play-next.</div>
+          <div className="h-full grid place-items-center text-xs font-semibold tabular-nums text-zinc-600 px-3 text-center">Drag tracks here to stage them play-next.</div>
         ) : items.map((it, i) => {
           // The queue holds ids and its own labels, so a staged track stays
           // usable while its library row is on no loaded page: the store
@@ -2841,17 +3096,17 @@ const SideListLane: React.FC<{ onLoadDeck: (entryId: string, deck: djEngine.Deck
               style={{ gridTemplateColumns: '1.4rem minmax(0,1fr) 2.4rem 3.6rem' }}
               title={lib ? it.label : `${it.label} — no longer in library`}
             >
-              <span className="text-[8px] font-mono text-zinc-600 tabular-nums text-right">{String(i + 1).padStart(2, '0')}</span>
-              <span className="text-[10px] font-mono text-zinc-300 truncate">{it.label}</span>
-              <span className="text-[8px] font-mono text-zinc-500 tabular-nums text-right">{bpm != null ? bpm.toFixed(0) : '—'}</span>
+              <span className="text-xs font-semibold text-zinc-600 tabular-nums text-right">{String(i + 1).padStart(2, '0')}</span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-300 truncate">{it.label}</span>
+              <span className="text-xs font-semibold text-zinc-500 tabular-nums text-right">{bpm != null ? bpm.toFixed(0) : '—'}</span>
               <span className="flex items-center justify-end gap-0.5">
                 <span className="hidden group-hover/chip:flex items-center gap-0.5">
                   <button onClick={() => reorder(i, i - 1)} disabled={i === 0} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move earlier"><ChevronDown className="w-2.5 h-2.5 rotate-180" /></button>
                   <button onClick={() => reorder(i, i + 1)} disabled={i === items.length - 1} className="text-zinc-600 hover:text-zinc-200 disabled:opacity-20" title="Move later"><ChevronDown className="w-2.5 h-2.5" /></button>
                   <button onClick={() => remove(it.entryId)} className="text-zinc-600 hover:text-rose-400" title="Remove from queue"><X className="w-2.5 h-2.5" /></button>
                 </span>
-                <button onClick={() => lib && onLoadDeck(it.entryId, 'A')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
-                <button onClick={() => lib && onLoadDeck(it.entryId, 'B')} disabled={!lib} className="px-0.5 rounded text-[8px] font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
+                <button onClick={() => lib && onLoadDeck(it.entryId, 'A')} disabled={!lib} className="px-0.5 rounded text-xs font-black text-purple-300 hover:bg-purple-500/20 disabled:opacity-30" title="Load onto Deck A">→A</button>
+                <button onClick={() => lib && onLoadDeck(it.entryId, 'B')} disabled={!lib} className="px-0.5 rounded text-xs font-black text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-30" title="Load onto Deck B">→B</button>
               </span>
             </div>
           );
@@ -3241,14 +3496,14 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
               onChange={(e) => setEditName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditing(false); }}
               onBlur={commitRename}
-              className="bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-[10px] text-zinc-100 focus:outline-none w-36"
+              className="bg-black/50 border border-purple-400/50 rounded px-1.5 py-0.5 text-xs text-zinc-100 focus:outline-none w-36"
             />
           </>
         ) : (
-          <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 truncate max-w-40" title={sourceLabel}>{sourceLabel}</span>
+          <span className="text-xs font-black uppercase tracking-wider text-purple-300 truncate max-w-40" title={sourceLabel}>{sourceLabel}</span>
         )}
         <span
-          className="text-[8px] font-mono text-zinc-600"
+          className="text-xs font-semibold tabular-nums text-zinc-600"
           title={!isSet && !serverSort ? 'BPM, KEY and SOURCE can only be ordered over the tracks already loaded — scroll to bring more in, or sort by #, Date, Title or Len to order the whole library.' : undefined}
         >
           {countLabel}
@@ -3257,7 +3512,7 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
           <Loader2 role="img" className="w-2.5 h-2.5 animate-spin text-purple-300/70" aria-label="Loading more of the library" />
         )}
         {stemRun && (
-          <span className="min-w-0 max-w-48 truncate text-[8px] font-mono text-emerald-300" title={`${stemRun.title}: ${stemRun.phase}`}>
+          <span className="min-w-0 max-w-48 truncate text-xs font-semibold tabular-nums text-emerald-300" title={`${stemRun.title}: ${stemRun.phase}`}>
             stems · {stemRun.progress > 0 ? `${Math.round(stemRun.progress)}%` : stemRun.phase}
           </span>
         )}
@@ -3272,7 +3527,7 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
             value={q}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="search…"
-            className="flex-1 min-w-0 bg-transparent text-[10px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600"
+            className="flex-1 min-w-0 bg-transparent text-xs font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600"
           />
         </div>
         {isSet && set && (
@@ -3287,7 +3542,7 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
       </div>
 
       {/* column header */}
-      <div className="shrink-0 grid items-center gap-1 px-2 py-0.5 border-b border-white/5 text-[7px] font-black uppercase tracking-wider text-zinc-600" style={{ gridTemplateColumns: DJ_BROWSER_GRID }}>
+      <div className="shrink-0 grid items-center gap-1 px-2 py-0.5 border-b border-white/5 text-xs font-black uppercase tracking-wider text-zinc-600" style={{ gridTemplateColumns: DJ_BROWSER_GRID }}>
         <SortHeader id="order" align="right">#</SortHeader>
         <SortHeader id="date">Date</SortHeader>
         <SortHeader id="title">Title</SortHeader>
@@ -3301,7 +3556,7 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
       {/* rows */}
       <div className="flex-1 min-h-0">
         {rowCount === 0 ? (
-          <div className="h-full grid place-items-center text-[9px] font-mono text-zinc-600 px-3 text-center">
+          <div className="h-full grid place-items-center text-xs font-semibold tabular-nums text-zinc-600 px-3 text-center">
             {isSet ? 'Empty set — drag tracks here, or Save a loaded deck.' : (libTotal === 0 && !q.trim() ? 'Library empty — generate or import audio.' : 'No matches.')}
           </div>
         ) : (
@@ -3344,10 +3599,6 @@ const TrackBrowser: React.FC<{ source: Source; setSource: (s: Source) => void; o
 /** Source tree — every entry is live: filtered views over the library
  *  (Library / Favorites / Generated / Imports), real Online Download, and the
  *  user's Sets. No placeholder/streaming stubs. */
-/** Backend-bundled sets are `zad-…`; only those have tracks a register call
- *  can fill in (see `state/setlistStore`). */
-const isBundledSetId = (id: string): boolean => id.startsWith('zad-');
-
 const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; libCount: number }> = ({ source, setSource, libCount }) => {
   const entries = useLibraryStore((s) => s.entries);
   const libRevision = useLibraryStore((s) => s.revision);
@@ -3358,36 +3609,34 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
   const activeSetId = useSetlistStore((s) => s.activeId);
   const registerBundled = useSetlistStore((s) => s.registerBundled);
   const sets = Object.values(setlists).sort((a, b) => b.updatedAt - a.updatedAt);
-  // Which set has a `/register` POST in flight. Doubles as the double-click
-  // guard: the old row fired `registerBundled` un-awaited with no busy state,
-  // so two fast clicks POSTed twice.
-  const [registeringId, setRegisteringId] = useState<string | null>(null);
+  // Which set has a `/register` POST in flight: the store's one guard, shared
+  // with START AUTO DJ and the Automix chip, so a row pressed while either of
+  // those is registering cannot POST again. The rows used to keep their own
+  // flag, which the header never saw.
+  const registeringId = useSetlistStore((s) => s.registeringId);
 
   /** Activate + register a set. Reports through the ProcessingLog instead of
    *  the 2.2-second footer flash, which is where the user already reads
    *  failures — and never returns silently on "not enough tracks", which used
    *  to be an outright no-op. */
   const openSet = async (id: string, name: string, autoDj: boolean): Promise<void> => {
-    if (registeringId) return;
+    if (useSetlistStore.getState().registeringId) return;
     setActive(id);
     setSource({ kind: 'set', id });
-    setRegisteringId(id);
-    try {
-      const registered = await registerBundled(id);
-      if (registered === null) return; // registerBundled already logged why
-      const playable = djAutomixEntries(registered).length;
-      if (!autoDj) return;
-      if (playable < AUTO_DJ_MIN_TRACKS) {
-        logWarn(
-          'dj',
-          `"${name}" has ${playable} playable track${playable === 1 ? '' : 's'} — Auto-DJ needs ${AUTO_DJ_MIN_TRACKS}.`,
-        );
-        return;
-      }
-      useDjAutomix.getState().requestStart();
-    } finally {
-      setRegisteringId((cur) => (cur === id ? null : cur));
+    const registered = await registerBundled(id);
+    if (registered === null) return; // registerBundled already logged why
+    const playable = djAutomixEntries(registered).length;
+    if (!autoDj) return;
+    if (playable < AUTO_DJ_MIN_TRACKS) {
+      logWarn(
+        'dj',
+        `"${name}" has ${playable} playable track${playable === 1 ? '' : 's'} — Auto-DJ needs ${AUTO_DJ_MIN_TRACKS}.`,
+      );
+      return;
     }
+    // This set's play button means "play this set", from the top, even
+    // over a mix already running on another set.
+    useDjAutomix.getState().requestStart('fresh');
   };
 
   /**
@@ -3453,14 +3702,14 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
   // (FE-032-adjacent: this repo doesn't ship unreachable disabled-state code).
   const Item: React.FC<{ active?: boolean; onClick?: () => void; children: React.ReactNode; right?: React.ReactNode; title?: string }> = ({ active, onClick, children, right, title }) => (
     <button type="button" onClick={onClick} title={title}
-      className={`w-full flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 text-[10px] font-mono rounded transition-colors ${active ? 'bg-purple-500/15 text-purple-200' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'}`}>
+      className={`w-full flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 text-xs font-semibold tabular-nums rounded transition-colors ${active ? 'bg-purple-500/15 text-purple-200' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'}`}>
       <span className={`w-1 h-1 rounded-full shrink-0 ${active ? 'bg-purple-300' : 'bg-zinc-700'}`} />
       <span className="flex-1 truncate text-left">{children}</span>
       {right}
     </button>
   );
   const Group: React.FC<{ icon?: React.ReactNode; label: string; right?: React.ReactNode }> = ({ icon, label, right }) => (
-    <div className="flex items-center gap-1 px-1 mt-1.5 mb-0.5 text-[8px] font-black uppercase tracking-widest text-zinc-500">
+    <div className="flex items-center gap-1 px-1 mt-1.5 mb-0.5 text-xs font-black uppercase tracking-widest text-zinc-500">
       <ChevronRight className="w-2.5 h-2.5" />{icon}{label}{right}
     </div>
   );
@@ -3469,14 +3718,14 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
     <div className="hardware-card h-full w-full flex flex-col min-h-0 overflow-hidden">
       <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 border-b border-white/5">
         <LibraryIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-        <span className="text-[10px] font-black uppercase tracking-wider text-purple-300 leading-tight">Source Tree</span>
+        <span className="text-xs font-black uppercase tracking-wider text-purple-300 leading-tight">Source Tree</span>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-1">
         <Group label="Library" />
-        <Item active={source.kind === 'library'} onClick={() => setSource({ kind: 'library' })} right={<span className="text-[8px] text-zinc-600">{libCount}</span>} title="All of your generated + imported audio">Library</Item>
-        <Item active={source.kind === 'favorites'} onClick={() => setSource({ kind: 'favorites' })} right={<span className="text-[8px] text-zinc-600">{favCount}</span>} title="Tracks you've starred">Favorites</Item>
-        <Item active={source.kind === 'gen'} onClick={() => setSource({ kind: 'gen' })} right={<span className="text-[8px] text-zinc-600">{genCount}</span>} title="Tracks made in MAKE / MIX">Generated</Item>
-        <Item active={source.kind === 'import'} onClick={() => setSource({ kind: 'import' })} right={<span className="text-[8px] text-zinc-600">{impCount}</span>} title="Tracks imported from disk or online">Imports</Item>
+        <Item active={source.kind === 'library'} onClick={() => setSource({ kind: 'library' })} right={<span className="text-xs font-semibold text-zinc-600">{libCount}</span>} title="All of your generated + imported audio">Library</Item>
+        <Item active={source.kind === 'favorites'} onClick={() => setSource({ kind: 'favorites' })} right={<span className="text-xs font-semibold text-zinc-600">{favCount}</span>} title="Tracks you've starred">Favorites</Item>
+        <Item active={source.kind === 'gen'} onClick={() => setSource({ kind: 'gen' })} right={<span className="text-xs font-semibold text-zinc-600">{genCount}</span>} title="Tracks made in MAKE / MIX">Generated</Item>
+        <Item active={source.kind === 'import'} onClick={() => setSource({ kind: 'import' })} right={<span className="text-xs font-semibold text-zinc-600">{impCount}</span>} title="Tracks imported from disk or online">Imports</Item>
 
         <Group label="Online Music" />
         <Item active={dlOpen} onClick={() => setDlOpen((v) => !v)} title="Download a track from a YouTube / SoundCloud / Bandcamp URL straight into your library">
@@ -3489,19 +3738,19 @@ const SourceTree: React.FC<{ source: Source; setSource: (s: Source) => void; lib
               <label htmlFor="dj-online-download-url" className="sr-only">Online import URL</label>
               <input id="dj-online-download-url" name="dj-online-download-url" value={dlUrl} onChange={(e) => setDlUrl(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void runImport(); }}
                 placeholder="paste URL…" disabled={dlBusy}
-                className="flex-1 min-w-0 bg-transparent text-[9px] font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600 disabled:opacity-50" />
+                className="flex-1 min-w-0 bg-transparent text-xs font-mono text-zinc-200 py-1 focus:outline-none placeholder:text-zinc-600 disabled:opacity-50" />
               <button onClick={() => void runImport()} disabled={dlBusy || !dlUrl.trim()} className="shrink-0 text-purple-300 hover:text-purple-100 disabled:opacity-30" title="Download into library">
                 {dlBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
               </button>
             </div>
-            {dlErr && <span className="text-[8px] font-mono text-rose-400 px-1 truncate" title={dlErr}>{dlErr}</span>}
-            <span className="text-[7px] font-mono text-zinc-600 px-1 leading-tight">YouTube · SoundCloud · Bandcamp — Spotify is DRM-locked</span>
+            {dlErr && <span className="text-xs font-semibold tabular-nums text-rose-400 px-1 truncate" title={dlErr}>{dlErr}</span>}
+            <span className="text-xs font-semibold tabular-nums text-zinc-600 px-1 leading-tight">YouTube · SoundCloud · Bandcamp — Spotify is DRM-locked</span>
           </div>
         )}
 
         <Group label="Sets" right={<button onClick={() => { const id = createSetlist(`Set ${new Date().toLocaleDateString()}`); setActive(id); setSource({ kind: 'set', id }); }} className="ml-auto p-0.5 text-purple-300 hover:text-purple-100" title="New set"><Plus className="w-3 h-3" /></button>} />
         {sets.length === 0 ? (
-          <div className="pl-4 pr-1.5 py-0.5 text-[9px] font-mono text-zinc-700 leading-tight">
+          <div className="pl-4 pr-1.5 py-0.5 text-xs font-semibold tabular-nums text-zinc-700 leading-tight">
             No sets yet — click + above, then drag tracks in and press START AUTO DJ.
           </div>
         ) : sets.map((s) => {
@@ -3590,27 +3839,27 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       <div className="w-115 max-h-[82%] overflow-y-auto rounded-lg border border-purple-500/30 bg-[#0c0a14] shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-white/5 sticky top-0 bg-[#0c0a14]">
           <Piano className="w-3.5 h-3.5 text-purple-300 shrink-0" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 shrink-0">DJ MIDI Map</span>
-          <span className="text-[8px] font-mono text-zinc-500 truncate">Click Learn, then move a control</span>
-          <button onClick={clearAll} className="ml-auto shrink-0 text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-rose-300">Clear all</button>
+          <span className="text-xs font-black uppercase tracking-widest text-purple-300 shrink-0">DJ MIDI Map</span>
+          <span className="text-xs font-semibold tabular-nums text-zinc-500 truncate">Click Learn, then move a control</span>
+          <button onClick={clearAll} className="ml-auto shrink-0 text-xs font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-zinc-400 hover:text-rose-300">Clear all</button>
           <button onClick={onClose} className="shrink-0 p-1 text-zinc-500 hover:text-white rounded hover:bg-white/5"><X className="w-3.5 h-3.5" /></button>
         </div>
         <div className="p-3 flex flex-col gap-2">
           <div className="rounded border border-white/8 bg-black/30 p-2 flex flex-col gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <Plug className={`w-3.5 h-3.5 shrink-0 ${midiInputs.length ? 'text-emerald-300' : 'text-zinc-600'}`} />
-              <span className="flex-1 min-w-0 text-[8px] font-mono text-zinc-500 truncate">
+              <span className="flex-1 min-w-0 text-xs font-semibold tabular-nums text-zinc-500 truncate">
                 {midiInputs.length ? midiInputs.join(', ') : 'Waiting for a MIDI input'}
               </span>
               {lastSeen && (
                 <>
-                  <span className="shrink-0 text-[8px] font-mono text-emerald-300">
+                  <span className="shrink-0 text-xs font-semibold tabular-nums text-emerald-300">
                     {sigLabel(lastSeen)}
                   </span>
                   <button
                     type="button"
                     onClick={() => ignoreControl({ kind: lastSeen.kind, number: lastSeen.number, channel: lastSeen.channel ?? 0 })}
-                    className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-[8px] font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/20"
+                    className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-xs font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/20"
                     title={`Ignore ${sigLabel(lastSeen)}`}
                   >
                     <Ban className="w-2.5 h-2.5" /> Ignore
@@ -3618,7 +3867,7 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   <button
                     type="button"
                     onClick={() => ignoreControl({ kind: lastSeen.kind, number: lastSeen.number, channel: lastSeen.channel ?? 0 }, { anyChannel: true })}
-                    className="shrink-0 px-1.5 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 text-[8px] font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/15"
+                    className="shrink-0 px-1.5 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 text-xs font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/15"
                     title={`Ignore ${lastSeen.kind.toUpperCase()} ${lastSeen.number} on any MIDI channel`}
                   >
                     Any ch
@@ -3627,7 +3876,7 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <button
                       type="button"
                       onClick={() => { if (lastSeen.channel !== null) ignoreChannel(lastSeen.kind, lastSeen.channel); }}
-                      className="shrink-0 px-1.5 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 text-[8px] font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/15"
+                      className="shrink-0 px-1.5 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 text-xs font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/15"
                       title={`Ignore all ${lastSeen.kind.toUpperCase()} messages on channel ${lastSeen.channel + 1}`}
                     >
                       Ch
@@ -3643,7 +3892,7 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     key={control.id}
                     type="button"
                     onClick={() => removeIgnoredControl(control.id)}
-                    className="inline-flex items-center gap-1 rounded border border-rose-500/25 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider text-rose-200 hover:bg-rose-500/20"
+                    className="inline-flex items-center gap-1 rounded border border-rose-500/25 bg-rose-500/10 px-1.5 py-0.5 text-xs font-bold uppercase tracking-wider text-rose-200 hover:bg-rose-500/20"
                     title="Stop ignoring this MIDI control"
                   >
                     <Ban className="w-2.5 h-2.5" />
@@ -3654,7 +3903,7 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <button
                   type="button"
                   onClick={clearIgnoredControls}
-                  className="inline-flex items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider text-zinc-500 hover:text-zinc-200 hover:bg-white/5"
+                  className="inline-flex items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-500 hover:text-zinc-200 hover:bg-white/5"
                   title="Clear all ignored MIDI controls"
                 >
                   Clear
@@ -3667,14 +3916,14 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 id="dj-midi-preset"
                 value={selectedPresetId}
                 onChange={(e) => setSelectedPresetId(e.target.value)}
-                className="min-w-0 flex-1 bg-black/50 border border-white/10 rounded px-2 py-1 text-[9px] font-mono text-zinc-200 focus:outline-none focus:border-purple-400"
+                className="min-w-0 flex-1 bg-black/50 border border-white/10 rounded px-2 py-1 text-xs font-mono text-zinc-200 focus:outline-none focus:border-purple-400"
               >
                 {DJ_MIDI_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
               </select>
               <button
                 onClick={applyPreset}
                 disabled={!selectedPreset}
-                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/10 text-[8px] font-black uppercase tracking-wider text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/10 text-xs font-black uppercase tracking-wider text-purple-200 hover:bg-purple-500/20 disabled:opacity-40"
                 title="Load the selected preset mappings"
               >
                 <Wand2 className="w-3 h-3" /> Apply
@@ -3683,16 +3932,16 @@ const DjMidiMap: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
           {DJ_MIDI_GROUPS.map((g) => (
             <div key={g}>
-              <div className="text-[8px] font-black uppercase tracking-widest text-zinc-500 mb-1">{g}</div>
+              <div className="text-xs font-black uppercase tracking-widest text-zinc-500 mb-1">{g}</div>
               <div className="grid grid-cols-2 gap-1">
                 {MIDI_ACTIONS.filter((a) => a.group === g).map((a) => {
                   const sig = bindings[a.id];
                   const learning = learnAction === a.id;
                   return (
                     <div key={a.id} className={`flex items-center gap-1 px-1.5 py-1 rounded border ${learning ? 'border-amber-400/60 bg-amber-500/10' : 'border-white/8 bg-black/30'}`}>
-                      <span className="flex-1 min-w-0 text-[9px] font-mono text-zinc-300 truncate" title={a.label}>{a.label}</span>
-                      <span className={`text-[8px] font-mono shrink-0 ${sig ? 'text-emerald-300' : 'text-zinc-600'}`}>{sigLabel(sig)}</span>
-                      <button onClick={() => arm(learning ? null : a.id)} className={`shrink-0 text-[8px] font-bold uppercase px-1 py-0.5 rounded border ${learning ? 'border-amber-400 text-amber-300 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100'}`}>{learning ? '…' : 'Learn'}</button>
+                      <span className="flex-1 min-w-0 text-xs font-semibold tabular-nums text-zinc-300 truncate" title={a.label}>{a.label}</span>
+                      <span className={`text-xs font-semibold tabular-nums shrink-0 ${sig ? 'text-emerald-300' : 'text-zinc-600'}`}>{sigLabel(sig)}</span>
+                      <button onClick={() => arm(learning ? null : a.id)} className={`shrink-0 text-xs font-bold uppercase px-1 py-0.5 rounded border ${learning ? 'border-amber-400 text-amber-300 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100'}`}>{learning ? '…' : 'Learn'}</button>
                       {sig && <button onClick={() => clear(a.id)} className="shrink-0 text-zinc-600 hover:text-rose-400" title="Clear binding"><X className="w-2.5 h-2.5" /></button>}
                     </div>
                   );
@@ -3885,9 +4134,9 @@ const DeckWaveform: React.FC<{
         if (c == null) return null;
         const pos = c / dur;
         if (pos < viewStart || pos > viewEnd) return null;
-        return (<div key={i} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left: `${((pos - viewStart) / visibleFrac) * 100}%`, width: '2px', background: accentColor }}><span className="absolute top-0 left-0 text-[6px] font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>{i + 1}</span></div>);
+        return (<div key={i} className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left: `${((pos - viewStart) / visibleFrac) * 100}%`, width: '2px', background: accentColor }}><span className="absolute top-0 left-0 text-xs font-black text-black px-0.5 leading-tight" style={{ background: accentColor }}>{i + 1}</span></div>);
       })}
-      {zoom > 1.04 && <div className="absolute bottom-1 right-1 z-30 rounded bg-black/70 px-1.5 py-0.5 text-[8px] font-mono text-white/70 pointer-events-none">{zoom.toFixed(2)}x</div>}
+      {zoom > 1.04 && <div className="absolute bottom-1 right-1 z-30 rounded bg-black/70 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-white/70 pointer-events-none">{zoom.toFixed(2)}x</div>}
       <div ref={playheadRef} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: '0%', width: '2px', background: '#ffffff', boxShadow: '0 0 4px rgba(255,255,255,0.8)' }} />
     </div>
   );
@@ -3939,9 +4188,10 @@ interface DjRegArgs {
   automixOn: boolean; onToggleAutomix: () => void;
 }
 
-const PAD_SM = 'px-1.5 py-1 text-[8px] min-w-0';
-const PAD_HC = 'w-8 py-1 text-[8px]';
-const PAD_BT = 'w-7 py-1 text-[8px]';
+const PAD_SM = 'px-1.5 py-1 min-w-0';
+// min-w, not w: a 12px label that needs more room widens its pad by that much.
+const PAD_HC = 'min-w-8 px-1 py-1';
+const PAD_BT = 'min-w-7 px-1 py-1';
 
 function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   const reg: WidgetRegistry = {};
@@ -4024,11 +4274,19 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
     <WaveLane deckId="B" accent="cyan" entryId={p.deckBTrack} hasTrack={p.hasB} audioUrl={p.deckBUrl} ctl={p.ctlB} onLoadDrop={p.loadDropOntoDeck} mode="overview" compact />
   ));
   pinned('hero', 'Waveforms', (
-    <div className="relative h-full w-full flex flex-col gap-1.5">
-      <WaveLane deckId="A" accent="purple" entryId={p.deckATrack} hasTrack={p.hasA} audioUrl={p.deckAUrl} ctl={p.ctlA} onLoadDrop={p.loadDropOntoDeck} mode="detail" />
-      <WaveLane deckId="B" accent="cyan" entryId={p.deckBTrack} hasTrack={p.hasB} audioUrl={p.deckBUrl} ctl={p.ctlB} onLoadDrop={p.loadDropOntoDeck} mode="detail" />
-      <div className="absolute top-0 bottom-0 left-1/2 z-40 w-px -translate-x-1/2 pointer-events-none bg-white shadow-[0_0_7px_rgba(255,255,255,0.95)]">
-        <div className="absolute -top-0.5 left-1/2 h-0 w-0 -translate-x-1/2 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-white" />
+    <div className="h-full w-full flex flex-col gap-1">
+      {/* The decks draw in the app-wide waveform colour mode: its legend and
+          its toggle sit here, above the lanes, where the colours are. */}
+      <div className="shrink-0 flex items-center gap-2 min-w-0">
+        <WaveformModeToggle variant="toolbar" className="shrink-0" />
+        <WaveformModeLegend className="flex-1" />
+      </div>
+      <div className="relative flex-1 min-h-0 flex flex-col gap-1.5">
+        <WaveLane deckId="A" accent="purple" entryId={p.deckATrack} hasTrack={p.hasA} audioUrl={p.deckAUrl} ctl={p.ctlA} onLoadDrop={p.loadDropOntoDeck} mode="detail" />
+        <WaveLane deckId="B" accent="cyan" entryId={p.deckBTrack} hasTrack={p.hasB} audioUrl={p.deckBUrl} ctl={p.ctlB} onLoadDrop={p.loadDropOntoDeck} mode="detail" />
+        <div className="absolute top-0 bottom-0 left-1/2 z-40 w-px -translate-x-1/2 pointer-events-none bg-white shadow-[0_0_7px_rgba(255,255,255,0.95)]">
+          <div className="absolute -top-0.5 left-1/2 h-0 w-0 -translate-x-1/2 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-white" />
+        </div>
       </div>
     </div>
   ));
@@ -4075,7 +4333,7 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
               ev.dataTransfer.setData(DJ_TRACK_MIME, entryId);
               ev.dataTransfer.setData('text/plain', title ?? `Deck ${d} track`);
             }}
-            className={`text-[10px] font-bold text-zinc-200 truncate max-w-full leading-tight ${entryId ? 'cursor-grab active:cursor-grabbing hover:text-white' : ''}`}
+            className={`text-xs font-bold text-zinc-200 truncate max-w-full leading-tight ${entryId ? 'cursor-grab active:cursor-grabbing hover:text-white' : ''}`}
             title={entryId ? `Drag "${title ?? 'this track'}" into a set or playlist` : ''}
           >
             {title ?? 'Empty deck'}
@@ -4112,14 +4370,14 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
             }}
             title={`Camelot ${cam.code} — mixes with ${cam.compatible.join(', ')}`}
           >
-            <span className="grid place-items-center w-5 h-5 rounded-full text-[8px] font-black shrink-0" style={{ background: `hsl(${cam.hue} 85% 62%)`, color: '#0a0a0a', boxShadow: `0 0 6px hsl(${cam.hue} 85% 60% / 0.7)` }}>
+            <span className="grid place-items-center size-6 rounded-full text-xs font-black shrink-0" style={{ background: `hsl(${cam.hue} 85% 62%)`, color: '#0a0a0a', boxShadow: `0 0 6px hsl(${cam.hue} 85% 60% / 0.7)` }}>
               {cam.code.replace(/[AB]/i, '')}
             </span>
             <span className="text-[15px] font-black leading-none" style={{ color: `hsl(${cam.hue} 85% 70%)`, textShadow: `0 0 8px hsl(${cam.hue} 80% 55% / 0.55)` }}>{cam.code}</span>
           </div>
         ) : (
           <div className="flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-black/40">
-            <span className="text-[7px] font-black uppercase tracking-[0.22em] text-zinc-500">KEY</span>
+            <span className="text-xs font-black uppercase tracking-[0.22em] text-zinc-500">KEY</span>
             <span className="text-[13px] font-black leading-none text-zinc-300">{ctl.a?.key ? keyLabel(ctl.a.key, ctl.a.scale) : '—'}</span>
           </div>
         )}
@@ -4190,7 +4448,7 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
             const current = djEngine.getStemGain(d, name);
             djEngine.setStemGain(d, name, current > 0.001 ? 0 : 1);
           }}
-          className="px-1 py-1 text-[7px] min-w-0"
+          className="px-1 py-1 min-w-0"
           title={name ? `Deck ${d} ${name}: ${on ? 'click to mute' : 'click to restore'}` : 'Load stems first'}
         >
           <span className="truncate">{label}</span>
@@ -4265,7 +4523,7 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
     reg[`pitch${d}`] = { id: `pitch${d}`, label: `Pitch ${d}`, group: grp, kind: 'fader', source: 'builtin', render: () => (
       <div className="h-full w-full min-h-0 flex flex-col items-center">
         <div className="flex-1 min-h-0 flex justify-center"><SlideFader label={`Pch ${d}`} value={pitch} onChange={(v) => p.onPitch(d, v)} min={-p.pitchRange} max={p.pitchRange} step={0.1} rulerSide={d === 'A' ? 'left' : 'right'} /></div>
-        <span className="shrink-0 text-[8px] font-mono tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm}</span>
+        <span className="shrink-0 text-xs font-semibold tabular-nums text-zinc-500" title="Effective BPM at this pitch">{effBpm}</span>
       </div>
     ) };
   };
@@ -4280,8 +4538,8 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
       title="Pitch range"
       className="flex flex-col items-center justify-center gap-0.5 min-w-12 px-2 py-1 rounded-md border border-amber-400/50 bg-amber-500/15 text-amber-100 shadow-[0_0_14px_rgba(245,158,11,0.25)] hover:bg-amber-500/25 transition-colors"
     >
-      <span className="text-[7px] font-black uppercase tracking-wider leading-none">Range</span>
-      <span className="text-[12px] font-black font-mono tabular-nums leading-none">±{p.pitchRange}%</span>
+      <span className="text-xs font-black uppercase tracking-wider leading-none">Range</span>
+      <span className="text-[12px] font-black tabular-nums leading-none">±{p.pitchRange}%</span>
     </button>
   ) };
   reg.qtz = { id: 'qtz', label: 'Quantize', group: 'Mixer', kind: 'toggle', source: 'builtin', render: (s, opts) => center(<RoundToggle label="Qtz" icon={Magnet} on={p.quantize} onChange={p.setQuantize} box={toggleBox(s, opts)} />) };
@@ -4292,22 +4550,22 @@ function buildDjRegistry(p: DjRegArgs): WidgetRegistry {
   reg.crossfader = { id: 'crossfader', label: 'Crossfader', group: 'Mixer', kind: 'crossfader', source: 'builtin', render: () => (
     <div className="h-full w-full flex flex-col justify-center px-1">
       <div className="flex items-center gap-1">
-        <span className="text-[9px] font-black text-purple-300">A</span>
+        <span className="text-xs font-black text-purple-300">A</span>
         <div className="flex-1"><SlideCrossfader value={p.crossfader} onChange={p.onCrossfade} ariaLabel="Crossfader" title="Crossfade A ↔ B (double-click to center)" /></div>
-        <span className="text-[9px] font-black text-cyan-300">B</span>
+        <span className="text-xs font-black text-cyan-300">B</span>
       </div>
-      <div className="text-center text-[8px] font-mono text-zinc-600 tabular-nums leading-tight mt-0.5">{p.crossfader < -0.05 ? `A ${Math.round(-p.crossfader * 100)}%` : p.crossfader > 0.05 ? `B ${Math.round(p.crossfader * 100)}%` : 'CENTER'}</div>
+      <div className="text-center text-xs font-semibold text-zinc-600 tabular-nums leading-tight mt-0.5">{p.crossfader < -0.05 ? `A ${Math.round(-p.crossfader * 100)}%` : p.crossfader > 0.05 ? `B ${Math.round(p.crossfader * 100)}%` : 'CENTER'}</div>
     </div>
   ) };
 
   reg.automix = { id: 'automix', label: 'Automix', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(
-    <button onClick={p.onToggleAutomix} title="Automix — auto-sequence + beatmatch-crossfade the active set" className={`w-full min-w-0 px-1 py-0.5 rounded text-[8px] font-black uppercase tracking-wider truncate border transition-colors ${p.automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>{p.automixOn ? 'Automix ●' : 'Automix'}</button>
+    <button type="button" onClick={p.onToggleAutomix} aria-pressed={p.automixOn} title="Automix — auto-sequence + beatmatch-crossfade the active set" className={`w-full min-w-0 px-1 py-0.5 rounded font-sans text-xs font-black uppercase tracking-wider truncate border transition-colors ${p.automixOn ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 animate-pulse' : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:border-white/25'}`}>{p.automixOn ? 'Automix ●' : 'Automix'}</button>
   ) };
 
   reg.keymatch = { id: 'keymatch', label: 'Key Match', group: 'Mixer', kind: 'button', source: 'builtin', render: () => center(
     p.camA && p.camB ? (
-      <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border ${p.harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={p.harmonic ? `In key — ${p.camA.code} / ${p.camB.code}` : `Key clash — ${p.camA.code} vs ${p.camB.code}`}><Music2 className="w-2.5 h-2.5" />{p.harmonic ? 'In Key' : 'Clash'}</div>
-    ) : <span className="text-[7px] font-mono text-zinc-700">key</span>
+      <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold border ${p.harmonic ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`} title={p.harmonic ? `In key — ${p.camA.code} / ${p.camB.code}` : `Key clash — ${p.camA.code} vs ${p.camB.code}`}><Music2 className="w-2.5 h-2.5" />{p.harmonic ? 'In Key' : 'Clash'}</div>
+    ) : <span className="text-xs font-semibold tabular-nums text-zinc-700">key</span>
   ) };
 
   reg.cueDevice = { id: 'cueDevice', label: 'Cue Output', group: 'Mixer', kind: 'button', source: 'builtin', render: () => (

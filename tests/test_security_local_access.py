@@ -55,7 +55,9 @@ def media_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("theDAW_MEDIA_ROOTS", raising=False)
     # Keep the session-root registry out of the repo's data dir, and empty, so
     # containment is judged only by what this test grants.
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     return {"root": root, "clip": clip, "outside": outside, "secret": secret}
 

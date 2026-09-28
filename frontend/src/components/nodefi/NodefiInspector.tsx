@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Trash2 } from 'lucide-react';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { EFFECT_CATEGORIES, EFFECT_DEFAULTS, EFFECT_LABELS } from '../../state/effectChainStore';
 import { RACK_EFFECTS, getRackEffect, rackEffectDefaults } from '../../lib/rackEffects';
 import { nodeDef, type GraphNode, type ParamField } from '../../lib/nodefiTypes';
@@ -115,33 +116,72 @@ function SelectField({ node, field }: { node: GraphNode; field: ParamField }): R
   );
 }
 
+/**
+ * A library song for a node. The list is the field's own search over the
+ * whole library, independent of what the LIBRARY tab has loaded; the song
+ * already picked keeps its row whatever the search shows.
+ */
 function LibraryField({ node, field }: { node: GraphNode; field: ParamField }): React.ReactElement {
   const updateParam = useNodefiStore((s) => s.updateParam);
-  const entries = useLibraryStore((s) => s.entries);
-  const load = useLibraryStore((s) => s.load);
-  useEffect(() => {
-    if (!entries.length) void load();
-  }, [entries.length, load]);
+  const getById = useLibraryStore((s) => s.getById);
+  // Re-render when an entry `getById` had to fetch arrives.
+  useLibraryStore((s) => s.lookupVersion);
+  const [find, setFind] = useState('');
+  const songs = useLibrarySearch({ q: find, kind: 'audio', sort: 'title_asc' });
   const id = fieldId(node.id, field.key);
+  const findId = `${id}-find`;
+  const value = String(node.params[field.key] ?? '');
+  const picked = value && !songs.rows.some((e) => e.id === value) ? getById(value) : undefined;
   return (
     <div>
+      <label htmlFor={findId} className="block mb-0.5 text-xs font-bold">
+        Find a song
+      </label>
+      <input
+        id={findId}
+        name={findId}
+        type="search"
+        className="form-select w-full px-1.5 py-1 mb-1 text-xs font-bold cursor-text"
+        value={find}
+        onChange={(e) => setFind(e.target.value)}
+        placeholder="title, artist, bpm, key…"
+        spellCheck={false}
+      />
       <label htmlFor={id} className="mono-label block mb-0.5">
         {field.label}
       </label>
       <select
         id={id}
         name={id}
-        className="form-select w-full px-1.5 py-1 text-[11px]"
-        value={String(node.params[field.key] ?? '')}
+        className="form-select w-full px-1.5 py-1 text-xs"
+        value={value}
         onChange={(e) => updateParam(node.id, field.key, e.target.value)}
       >
-        <option value="">— pick an entry —</option>
-        {entries.map((e) => (
+        <option value="">
+          {songs.loading && songs.rows.length === 0
+            ? 'searching…'
+            : `— pick an entry (${songs.total.toLocaleString()} ${songs.total === 1 ? 'match' : 'matches'}) —`}
+        </option>
+        {value && !songs.rows.some((e) => e.id === value) && (
+          <option value={value}>{picked?.title || value}</option>
+        )}
+        {songs.rows.map((e) => (
           <option key={e.id} value={e.id}>
             {e.title || e.id}
           </option>
         ))}
       </select>
+      {songs.error && <div className="mt-0.5 text-xs font-bold text-red-300">Could not search the library: {songs.error}</div>}
+      {songs.hasMore && (
+        <button
+          type="button"
+          onClick={songs.loadMore}
+          disabled={songs.loading}
+          className="mt-1 rounded border border-white/15 px-2 py-0.5 text-xs font-bold text-zinc-300 hover:bg-white/5 disabled:opacity-40"
+        >
+          More songs ({(songs.total - songs.rows.length).toLocaleString()} left)
+        </button>
+      )}
     </div>
   );
 }

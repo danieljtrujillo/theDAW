@@ -1,4 +1,5 @@
 import { magentaFetch } from '../lib/magentaEngineClient';
+import { handleEngineElsewhere } from '../lib/magentaElsewhere';
 import { create } from 'zustand';
 import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
@@ -313,6 +314,12 @@ const getErrorMessage = (payload: unknown, fallback: string): string => {
     }
     if (typeof maybe.detail === 'string') {
       return maybe.detail;
+    }
+    // A structured refusal (the Magenta engine_elsewhere 409) carries its
+    // sentence in `message`.
+    const message = (maybe.detail as { message?: unknown } | null)?.message;
+    if (typeof message === 'string' && message) {
+      return message;
     }
   }
   return fallback;
@@ -801,7 +808,10 @@ const runHealPass = async (
       if (jobId) void confirmCancel(jobId, store.getState().isGenerating ? -1 : store.getState().pollRunId, '/api/jobs');
       return null;
     }
-    if (!response.ok) throw new Error(getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`));
+    if (!response.ok) {
+      handleEngineElsewhere(payload, 'Stable Audio cannot load beside it.');
+      throw new Error(getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`));
+    }
     if (!jobId) throw new Error('Backend did not return a job id for the heal pass.');
     store.setState({ currentJobId: jobId, jobStatus: 'queued', statusLabel: 'HEALING SEAMS...' });
     logInfo('generate', `[${elapsed()}] Heal pass queued: ${jobId.slice(0, 8)}`);
@@ -1205,6 +1215,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       if (!response.ok) {
         const detail = getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`);
         logError('generate', `POST ${genEndpoint} → ${response.status} ${response.statusText} — ${detail}`);
+        // Another copy's Magenta engine holds the GPU: its card names the
+        // engine and offers to stop it.
+        if (!isMagenta) handleEngineElsewhere(payload, 'Stable Audio cannot load beside it.');
         throw new Error(detail);
       }
 

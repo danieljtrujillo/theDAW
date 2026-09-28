@@ -216,7 +216,10 @@ const { jsPDF } = await import('jspdf');
 // named export is not reliably reachable across build shapes (in Node the
 // module resolves with only default/module.exports), so prefer the plugin
 // method and fall back to whichever named form is present.
-const svg2pdfModule = await import('svg2pdf.js');
+// The ES build, named: svg2pdf.js 2.8 marks its package "type": "module"
+// while "main" is still the UMD build, which then throws when Node loads it
+// as an ES module (it reads jsPDF off an undefined `this`).
+const svg2pdfModule = await import('svg2pdf.js/dist/svg2pdf.es.min.js');
 const svg2pdfFn = svg2pdfModule.svg2pdf || svg2pdfModule.default?.svg2pdf || svg2pdfModule.default;
 
 const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });

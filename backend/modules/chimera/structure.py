@@ -279,6 +279,9 @@ def beat_features(
         hop_length=_CHROMA_HOP,
         fmin=librosa.note_to_hz("C2"),
         n_octaves=_CHROMA_OCTAVES,
+        # Silence has no tuning to estimate (librosa warns on the empty
+        # frequency set); its chroma is zero at any tuning.
+        tuning=None if y.any() else 0.0,
     )
     chroma = np.repeat(
         np.nan_to_num(np.asarray(chroma_c, dtype=np.float64)),

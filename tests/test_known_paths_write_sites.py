@@ -62,8 +62,8 @@ def _configure_client_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         known_paths, "_STORE_PATH", tmp_path / "state" / "known_paths.json"
     )
     monkeypatch.setattr(known_paths, "_GRANTS", {})
-    # Opening a project allowlists its folders in data/media_roots.json; keep
-    # that file out of the test.
+    # Opening a project allowlists its folders in data/clip_audio_roots.json
+    # (and its data/media_roots.json mirror); keep those files out of the test.
     monkeypatch.setattr(media_access, "register_paths", lambda paths: list(paths))
 
     monkeypatch.setattr(

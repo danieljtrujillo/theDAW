@@ -12,20 +12,24 @@
  * Three things changed, and this file measures each of them separately
  * rather than asserting one opaque total:
  *
- *  1. **bins are sized from the consuming canvas** — a 40 px overview lane
- *     asked for 6,400 bins and got 900's worth of visible detail;
+ *  1. **bins are sized from the width the whole track is drawn at** — the
+ *     lane's width over the fraction of the track it shows. A 40 px overview
+ *     lane asked for 6,400 bins and got ~1k bins' worth of visible detail; the
+ *     zoom-8 detail lane still needs (and gets) every one of main's 6,400;
  *  2. **the result is memoised** per (url, normalize, binCount), so the
  *     second instance for a deck pays nothing;
  *  3. **the loop runs in a Worker**, leaving the main thread only the
- *     per-channel `Float32Array` copy that is handed to `postMessage`.
+ *     per-channel `Float32Array` copy that is handed to `postMessage` — once
+ *     per track: the Worker keeps the audio, so the deck's second lane (a
+ *     different bin count of the same audio) sends none.
  *
- * On the assertions: every one of them is a RATIO between two measurements
+ * On the assertions: every timed one is a RATIO between two measurements
  * taken in this same process, never a wall-clock budget, because
  * `scripts/run-tests.mjs` runs four suites at a time and an absolute number
- * would mean nothing. The tightest is the sync-fallback roll-up, which
- * measures ~0.43 against a 0.75 threshold (—1.7x of headroom); the rest sit
- * between 4x and 7x, and the bin-count claims are exact. The printed table is
- * the real evidence; run it directly to read it:
+ * would mean nothing; the timed ones measured with 2x or more of headroom. The
+ * roll-ups and the bin-count claims are exact: analysis work is proportional
+ * to the bin count, so they are asserted on bins and the milliseconds are
+ * printed. The printed table is the real evidence; run it directly to read it:
  *
  *   npx tsx src/components/audio/djSemanticWaveformAnalysis.cost.test.ts
  *
@@ -45,12 +49,16 @@ const SAMPLE_RATE = 44100;
 const DURATION_S = 210; // 3 min 30 s
 const LENGTH = SAMPLE_RATE * DURATION_S;
 
-/** The two lane widths the DJ layout actually renders at (see `DJView`): a
- *  wide zoomed lane and a narrow overview lane. */
+/** The two lanes the DJ layout actually renders (see `DJView`): a wide lane
+ *  zoomed to 8x and a narrow overview lane showing the whole track. The bin
+ *  count is sized from the width the WHOLE track spans in each. */
 const ZOOMED_LANE_PX = 1200;
+const ZOOMED_LANE_ZOOM = 8;
 const OVERVIEW_LANE_PX = 40;
 /** Two lanes per deck, two decks in an automix transition. */
 const INSTANCES = 4;
+/** main: clamp(round(duration * 32), 900, 6400). */
+const MAIN_BINS = Math.min(6400, Math.max(900, Math.round(DURATION_S * 32)));
 
 // ── the fixture: a real, varied 3.5-minute stereo signal ──────────────────
 
@@ -101,26 +109,25 @@ const buffer = makeStereoBuffer();
   );
 }
 
-// ── 1. bins sized from the consuming canvas ───────────────────────────────
+// ── 1. bins sized from the width the whole track is drawn at ──────────────
 
-// BEFORE: every instance, whatever its lane width, analysed at the flat cap.
+// BEFORE: every instance, whatever its lane, analysed at the flat cap.
 const before = timed(() => analyzeBuffer(buffer));
-assert.equal(before.value.length, 6400, 'the pre-DJ-2 call still analyses at the flat 6,400-bin cap');
+assert.equal(before.value.length, MAIN_BINS, 'the pre-DJ-2 call still analyses at the flat 6,400-bin cap');
 
-const zoomed = timed(() => analyzeBuffer(buffer, { width: ZOOMED_LANE_PX }));
+const zoomedWidth = ZOOMED_LANE_PX * ZOOMED_LANE_ZOOM;
+const zoomed = timed(() => analyzeBuffer(buffer, { width: zoomedWidth }));
 const overview = timed(() => analyzeBuffer(buffer, { width: OVERVIEW_LANE_PX }));
-assert.equal(zoomed.value.length, binCountFor(DURATION_S, ZOOMED_LANE_PX));
+assert.equal(zoomed.value.length, binCountFor(DURATION_S, zoomedWidth));
 assert.equal(overview.value.length, binCountFor(DURATION_S, OVERVIEW_LANE_PX));
 
-// Deterministic, not timed: this one only ever had ~1.4x of headroom, and
-// `scripts/run-tests.mjs` runs four suites at once, so the two measurements
-// were not competing for the same CPU evenly. What it was reaching for — the
-// wide lane does less work than the flat cap — is a fact about the bin count,
-// so assert THAT and leave the clock out of it.
+// The zoomed lane shows an eighth of the track across 1,200 px: it needs
+// main's full resolution, and a count sized from the lane alone (4,800 bins
+// for the whole track) drew 600 across it where main drew 800.
+assert.equal(zoomed.value.length, MAIN_BINS, 'the zoom-8 lane keeps main’s full resolution');
 assert.ok(
-  zoomed.value.length < before.value.length,
-  `a 1200 px lane must analyse at fewer bins than the flat cap ` +
-    `(${zoomed.value.length} vs ${before.value.length} bins)`,
+  overview.value.length < MAIN_BINS / 4,
+  `a ${OVERVIEW_LANE_PX} px overview lane needs a fraction of the bins (${overview.value.length})`,
 );
 assert.ok(
   overview.ms < before.ms * 0.6,
@@ -131,8 +138,8 @@ assert.ok(
 // ── 2. the memo: the deck's SECOND instance ───────────────────────────────
 
 evictAnalysis('cost.wav');
-const firstInstance = timed(() => analyzeBufferMemo('cost.wav', buffer, { width: ZOOMED_LANE_PX }));
-const secondInstance = timed(() => analyzeBufferMemo('cost.wav', buffer, { width: ZOOMED_LANE_PX }));
+const firstInstance = timed(() => analyzeBufferMemo('cost.wav', buffer, { width: zoomedWidth }));
+const secondInstance = timed(() => analyzeBufferMemo('cost.wav', buffer, { width: zoomedWidth }));
 assert.equal(secondInstance.value, firstInstance.value, 'the second instance gets the identical bins array');
 assert.ok(
   secondInstance.ms < before.ms * 0.05,
@@ -144,7 +151,7 @@ assert.ok(
 // `analyzeBufferAsync` copies each channel (the buffer's own arrays must not
 // be transferred — that would detach the audio the engine is playing) and
 // hands the copies to the worker. That copy is the entire main-thread residue
-// of an offloaded analysis.
+// of an offloaded analysis, paid once per track while the Worker holds it.
 const handoff = timed(() => getChannels(buffer).map((ch) => new Float32Array(ch)));
 assert.equal(handoff.value.length, 2);
 assert.ok(
@@ -153,17 +160,19 @@ assert.ok(
     `(${handoff.ms.toFixed(1)}ms vs ${before.ms.toFixed(1)}ms)`,
 );
 
-// ── the roll-up: main-thread milliseconds at deck load ────────────────────
+// ── the roll-up: main-thread work at deck load ────────────────────────────
 
 // BEFORE: four instances, four full flat-cap analyses, all on the main thread.
 const beforeTotal = before.ms * INSTANCES;
+const beforeBins = before.value.length * INSTANCES;
 // AFTER, no Worker (this node/tsx fallback, and any CSP that forbids workers):
 // each deck analyses once per DISTINCT bin count — its zoomed lane and its
 // overview lane — and the second instance of each is a memo hit.
 const afterSyncTotal = (zoomed.ms + overview.ms) * 2;
+const afterSyncBins = (zoomed.value.length + overview.value.length) * 2;
 // AFTER, with a Worker (every browser the app ships in): the main thread only
-// does the channel copies, one per distinct analysis.
-const afterWorkerTotal = handoff.ms * 2 * 2;
+// copies each deck's audio once; the second lane's analysis sends none.
+const afterWorkerTotal = handoff.ms * 2;
 
 const row = (label: string, ms: number, bins: number | string) =>
   `  ${label.padEnd(44)} ${`${ms.toFixed(1)} ms`.padStart(10)}   ${String(bins).padStart(6)} bins`;
@@ -175,14 +184,14 @@ console.log(
     '',
     '  PER INSTANCE',
     row('before: flat cap (analyzeBuffer, no width)', before.ms, before.value.length),
-    row(`after:  zoomed lane (${ZOOMED_LANE_PX}px)`, zoomed.ms, zoomed.value.length),
+    row(`after:  zoomed lane (${ZOOMED_LANE_PX}px at ${ZOOMED_LANE_ZOOM}x)`, zoomed.ms, zoomed.value.length),
     row(`after:  overview lane (${OVERVIEW_LANE_PX}px)`, overview.ms, overview.value.length),
     row('after:  memo hit (2nd instance, same lane)', secondInstance.ms, secondInstance.value.length),
     row('after:  worker hand-off (2 channel copies)', handoff.ms, '—'),
     '',
     `  MAIN THREAD AT DECK LOAD (${INSTANCES} waveform instances = 2 lanes x 2 decks)`,
-    row('before', beforeTotal, '—'),
-    row('after, no Worker (sync fallback)', afterSyncTotal, '—'),
+    row('before', beforeTotal, beforeBins),
+    row('after, no Worker (sync fallback)', afterSyncTotal, afterSyncBins),
     row('after, with Worker', afterWorkerTotal, '—'),
     '',
     `  sync fallback: ${(beforeTotal / Math.max(afterSyncTotal, 1e-6)).toFixed(1)}x less main-thread work`,
@@ -192,9 +201,9 @@ console.log(
 );
 
 assert.ok(
-  afterSyncTotal < beforeTotal * 0.75,
+  afterSyncBins < beforeBins * 0.75,
   `even the Worker-less fallback must cut deck-load analysis substantially ` +
-    `(${afterSyncTotal.toFixed(1)}ms vs ${beforeTotal.toFixed(1)}ms)`,
+    `(${afterSyncBins} vs ${beforeBins} bins analysed)`,
 );
 assert.ok(
   afterWorkerTotal < beforeTotal * 0.5,

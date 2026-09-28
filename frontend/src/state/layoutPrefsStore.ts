@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* Global control-surface preferences (client-only, separate from the backend
  * /api/settings feature toggles). These apply to every surface instance:
@@ -62,6 +63,6 @@ export const useLayoutPrefs = create<LayoutPrefsState>()(
       setUiScale: (v) => set({ uiScale: clamp(Math.round(v * 100) / 100, UI_SCALE_MIN, UI_SCALE_MAX) }),
       reset: () => set({ fillMode: 'scale', gapPx: DEFAULT_GAP, snapPx: DEFAULT_SNAP, showGuides: true, matchSizes: true, uiScale: DEFAULT_UI_SCALE }),
     }),
-    { name: 'thedaw.layoutprefs.v1' },
+    { name: 'thedaw.layoutprefs.v1', storage: persistStorage() },
   ),
 );

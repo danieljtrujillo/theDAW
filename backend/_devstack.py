@@ -35,11 +35,9 @@ from backend.lib import lan_https, launch_token
 
 RESTART_EXIT_CODE = 88
 FRONTEND_URL = f"http://localhost:{ports.FRONTEND_PORT}"
-#: The port the web UI actually binds this launch. ports.FRONTEND_PORT unless
-#: another program already holds it; see _choose_frontend_port.
+#: The port the web UI binds this launch: ports.FRONTEND_PORT. main() stops the
+#: stack instead of moving it; see ports.frontend_port_blocker for why.
 _frontend_port = ports.FRONTEND_PORT
-#: How far past ports.FRONTEND_PORT to look for a free one.
-_FRONTEND_PORT_SEARCH = 26
 IS_WINDOWS = os.name == "nt"
 
 # One ANSI color per stream so the merged feed stays readable. Blanked at
@@ -397,53 +395,17 @@ def _port_open(host: str, port: int) -> bool:
         return False
 
 
-def _choose_frontend_port() -> int:
-    """The port the web UI binds: ports.FRONTEND_PORT, unless another program has it.
+def _frontend_blocker() -> str | None:
+    """Why the web UI cannot start, or None when its port is free.
 
     The launchers stop only theDAW's own stale listeners (backend.ports --free),
-    so anything still on the port by now belongs to another program -- on this
-    kind of machine, often another project's Vite on 5173. That program is left
-    running and theDAW takes the next free port instead, skipping the ports
-    theDAW itself reserves. If the whole range is taken, the preferred port is
-    returned and Vite's own strictPort error says so.
-
-    The listening table is walked ONCE, for the whole candidate range: every
-    candidate it already shows as held is rejected without a syscall, so the
-    per-candidate ``is_port_free`` probe (which would walk that table again,
-    per candidate) runs only for candidates that still look free.
+    so anything still on the port by now belongs to another program -- another
+    project's Vite, or theDAW from another folder. That program is left running
+    and theDAW does not start: moving to 5174 would open the app on a new
+    browser origin with none of its saved settings and none of its microphone
+    or MIDI permissions (ports.frontend_port_blocker has the whole reason).
     """
-    preferred = ports.FRONTEND_PORT
-    span = range(preferred, preferred + 1 + _FRONTEND_PORT_SEARCH)
-    held = {holder.port for holder in ports.holders(span)}
-    if preferred not in held and ports.is_port_free(preferred):
-        return preferred
-    for candidate in range(preferred + 1, preferred + 1 + _FRONTEND_PORT_SEARCH):
-        if candidate in ports.ALL_PORTS or candidate in held:
-            continue
-        if ports.is_port_free(candidate):
-            return candidate
-    return preferred
-
-
-def _frontend_port_note(port: int) -> str:
-    """The log line for "someone else has 5173, we took another port".
-
-    Names the holder from the listening table directly rather than through
-    ``ports.describe_occupant``, whose sentence ends "Close it and start theDAW
-    again" -- the opposite of what happens here, where the other program is
-    deliberately left running and theDAW moves.
-    """
-    found = ports.holders([ports.FRONTEND_PORT])
-    if found:
-        holder = found[0]
-        safe = holder.name.encode("ascii", "backslashreplace").decode("ascii")
-        who = f"{safe}, pid {holder.pid}"
-    else:
-        who = "another program"
-    return (
-        f"port {ports.FRONTEND_PORT} is in use and left running ({who}); "
-        f"the web UI takes :{port} instead"
-    )
+    return ports.frontend_port_blocker(ports.FRONTEND_PORT)
 
 
 def _use_frontend_port(port: int) -> None:
@@ -462,7 +424,7 @@ def _frontend_command(port: int) -> str:
     ``npm run dev --`` reaches Vite as a list rather than a number.
 
     ``strictPort`` stays on, deliberately. The port was free when
-    ``_choose_frontend_port`` looked, and something else can still take it in
+    ``_frontend_blocker`` looked, and something else can still take it in
     the moment between that check and Vite's bind. With strictPort on, that
     race fails LOUDLY through Vite's own error, which the frontend pump prints
     in this console; with it off, Vite would silently slide to another port and
@@ -535,11 +497,6 @@ def _warm_sidecars() -> None:
 
 
 def main() -> int:
-    # Drop the launcher console immediately so the user sees only the app, never
-    # the log stream. It keeps running (restorable from the taskbar);
-    # theDAW_KEEP_CONSOLE=1 keeps it in front for debugging.
-    _minimize_console()
-
     if not _enable_ansi():
         for key in COLORS:
             COLORS[key] = ""
@@ -551,12 +508,24 @@ def main() -> int:
 
     _emit("stack", "theDAW dev stack — one console for backend + frontend + tunnel")
 
+    # Before anything starts and before the console is minimized: when another
+    # program holds the web UI's port, the stack stops here and this console,
+    # still in front, says which program it is. theDAW.bat then waits for a
+    # key, so the sentence stays on screen; theDAW.sh leaves it in its terminal.
+    blocker = _frontend_blocker()
+    if blocker:
+        _emit("stack", f"theDAW cannot start: {blocker}")
+        return 1
+
+    # Drop the launcher console now so the user sees only the app, never the
+    # log stream. It keeps running (restorable from the taskbar);
+    # theDAW_KEEP_CONSOLE=1 keeps it in front for debugging.
+    _minimize_console()
+
     # Frontend (Vite). ENABLE_HMR mirrors the previous launcher behavior.
     fe_env = os.environ.copy()
     fe_env["ENABLE_HMR"] = "true"
-    port = _choose_frontend_port()
-    if port != ports.FRONTEND_PORT:
-        _emit("stack", _frontend_port_note(port))
+    port = ports.FRONTEND_PORT
     _use_frontend_port(port)
     frontend = _spawn(_frontend_command(port), cwd=frontend_dir, env=fe_env)
     children.append(frontend)

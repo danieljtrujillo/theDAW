@@ -31,7 +31,7 @@ export const ProviderBadge: React.FC<{
       aria-label={info.accessibleName}
       title={info.accessibleName}
       data-provider={info.slug}
-      className={`inline-flex items-center rounded border px-1 py-px text-[7px] font-mono uppercase tracking-wider leading-none ${providerBadgeClass(info.slug)} ${className ?? ''}`}
+      className={`inline-flex items-center rounded border px-1 py-px text-xs font-bold uppercase tracking-wider leading-none ${providerBadgeClass(info.slug)} ${className ?? ''}`}
     >
       {info.text}
     </span>

@@ -55,8 +55,8 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /<QRCode\s+value=\{shareUrl\}/,
-  'the mobile-access QR must render locally from shareUrl',
+  /<QRCode\s+value=\{pairedShareUrl\}/,
+  'the mobile-access QR must render locally from pairedShareUrl (the Share URL plus the LAN pairing token, see lib/shareLink.ts)',
 );
 assert.match(
   source,

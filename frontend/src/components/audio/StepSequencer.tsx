@@ -261,7 +261,7 @@ const buildMidiFile = (
   tracks: Track[],
   bpm: number,
   mode: 'single' | 'multi',
-): Uint8Array => {
+): Uint8Array<ArrayBuffer> => {
   const conductor = buildConductorTrack(bpm);
   const noteChunks: number[][] = [];
   if (mode === 'single') {

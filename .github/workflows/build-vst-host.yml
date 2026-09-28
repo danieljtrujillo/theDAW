@@ -25,9 +25,8 @@ on:
 permissions:
   contents: read
 
-env:
-  # Mirrors the UV_VERSION pin in test.yml / lint.yml -- bump all three together.
-  UV_VERSION: "0.9.5"
+# uv is installed at its latest release, as in test.yml, the Dockerfile's
+# ghcr.io/astral-sh/uv:latest and electron-ui/scripts/fetch-runtime-tools.mjs.
 
 jobs:
   windows-x86_64:
@@ -40,17 +39,17 @@ jobs:
         shell: pwsh
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version-file: '.python-version'
 
       - name: Install uv
         # pipx, not astral-sh/setup-uv@v5: house style (lint.yml, test.yml) keeps
         # third-party Actions out of the tooling chain in favour of pip/pipx installs.
-        run: pipx install "uv==${{ env.UV_VERSION }}"
+        run: pipx install uv
 
       # cmake and the MSVC toolchain (Build Tools + Windows SDK) are preinstalled on the
       # windows-latest image, so there is no setup step for either one.
@@ -133,7 +132,7 @@ jobs:
           Get-Content native/vst-host/bin/SHA256SUMS
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: thedaw-vst-host-win64
           path: |

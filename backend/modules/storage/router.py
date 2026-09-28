@@ -678,9 +678,11 @@ def _lyria_provider_status() -> dict:
     """Lyria runs as an embedded sidecar with its own key handling, so
     "configured" here means the checkout is present and startable, not that a
     key exists: the app's own Settings modal accepts a key at runtime, and the
-    sidecar also passes every Gemini and OpenRouter key theDAW already holds
-    through to the child, which tries them in order. Mock mode needs no key at
-    all, which is the default.
+    sidecar also hands the child the keys from the environment and the Lyria
+    card (plus the assistant's pool: its first Gemini key when nothing else has
+    one, all of it once the user shares it) -- one per provider for an older
+    checkout, an ordered list it fails over through for one with
+    server/keys.ts. Mock mode needs no key at all, which is the default.
     """
     try:
         from backend.modules.lyria.sidecar import is_mock, probe
@@ -712,7 +714,9 @@ def _lyria_provider_status() -> dict:
             if external:
                 summary = (
                     "Running, but not started by theDAW (an external process "
-                    "already holds the port): its cost mode is unknown."
+                    "already holds the port): its cost mode is unknown. Press "
+                    "Restart with current keys in the Lyria tab to hand it "
+                    "theDAW's keys and cost mode."
                 )
             else:
                 summary = (

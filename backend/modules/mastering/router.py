@@ -22,7 +22,7 @@ import numpy as np
 import soundfile as sf
 
 from ...core.module_base import build_router
-from ...lib import audio_analysis, ffmpeg, fir_utils
+from ...lib import audio_analysis, ffmpeg, ffmpeg_tools, fir_utils
 from ...lib.audio_depth import ffmpeg_pcm_args, probe_depth
 from ...lib.params import ParamSpec as P
 from ...lib.params import ToolSpec
@@ -118,7 +118,7 @@ def _guarded_sf_read(path: Path, **kwargs):
             try:
                 subprocess.run(
                     [
-                        "ffmpeg",
+                        ffmpeg_tools.ffmpeg_exe(),
                         "-y",
                         "-i",
                         str(path),

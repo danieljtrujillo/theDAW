@@ -45,6 +45,7 @@ Lifecycle:
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import logging
@@ -52,6 +53,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -61,9 +63,10 @@ import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
-from typing import IO, Iterator, Optional
+from threading import Lock, RLock
+from typing import IO, Callable, Iterator, Optional
 from backend.lib import paths
+from backend.lib.atomic import atomic_write
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -117,20 +120,36 @@ _STOPPING_WAIT_TIMEOUT_SEC = 2 * _TERMINATE_WAIT_SEC + 2.0
 SIDECAR_LOG_PATH = paths.data_path("logs", "lyria-sidecar.log")
 
 # The upstream project the sidecar embeds (module.json / the docstrings name
-# it as StarskreamEXE/lyria-3-pro). ``start_install`` clones exactly this.
+# it as StarskreamEXE/lyria-3-pro). Install clones the latest commit of its
+# default branch, and Update in the Lyria panel fast-forwards a clean checkout
+# to the latest again (_fast_forward_checkout). No commit id is frozen here:
+# what a checkout reads is decided from the checkout itself
+# (checkout_key_slots), so an older checkout and the latest one both get keys
+# in the variables they read. Every fetch comes from this URL, whatever the
+# checkout's own origin says.
 LYRIA_REPO = "StarskreamEXE/lyria-3-pro"
 LYRIA_REPO_URL = f"https://github.com/{LYRIA_REPO}.git"
 GIT_CLONE_TIMEOUT_SEC = 900.0
+# One fetch of the default branch, per Update press, and one ls-remote per
+# check_latest.
+GIT_FETCH_TIMEOUT_SEC = 120.0
+# check_latest asks GitHub at most once per this long, unless forced.
+CHECKOUT_RETRY_SEC = 600.0
+# How many keys per provider a list-reading checkout takes when its keys.ts
+# does not say (numberedEnvValues' own default is 10: <VAR>_2 up to <VAR>_10).
+CHILD_KEY_LIMIT = 10
 
 # The provider keys theDAW hands the child (see _child_env). Per provider the
 # order is: the OS environment's value(s), then what was stored here (POST
-# /api/lyria/key[s]), then the assistant's key pool, so a key pasted for the
-# assistant serves Lyria too. EVERY key is passed, not just the first: the
-# embedded app takes an ordered comma-separated list per provider and fails
-# over from a rejected key (invalid, out of credit, or a quota wall) to the
-# next one -- see its server/keys.ts. That matters because Google's free tier
-# grants zero Lyria requests per day, so a lone Gemini key is often a dead end
-# that the next key, or an OpenRouter key, recovers from.
+# /api/lyria/key[s]), then keys from the assistant's key pool. From the pool
+# the child gets the FIRST Gemini key when neither of the other sources has
+# one (what theDAW always handed it), and every pooled Gemini, OpenRouter and
+# openrouter-free key only after the user turns on "share the key pool" in the
+# Lyria card (share_pool in the key file). A checkout with server/keys.ts
+# fails over from a rejected key (invalid, out of credit, or a quota wall) to
+# the next one, which matters because Google's free tier grants zero Lyria
+# requests per day; an older checkout reads one key per provider, so it is
+# handed only the first (see checkout_key_slots).
 #
 # The file name still says "gemini" although its CONTENTS are now per-provider
 # (see _read_store): .gitignore ignores exactly ``data/lyria_gemini_key.json``,
@@ -141,6 +160,24 @@ _KEY_FILE_VERSION = 2
 # Copy of the pre-migration (single-Gemini) file, kept once, the first time the
 # new shape is written over the old one. ``*.bak`` is already gitignored.
 _KEY_FILE_BACKUP = _KEY_FILE.with_name(_KEY_FILE.name + ".bak")
+# Every write stores the same payload here too (_key_copy_file), with a record
+# of the key file it wrote. main's POST /api/lyria/key writes ``{"key": ...}``
+# over the whole key file and its DELETE unlinks it; 8039b45 writes its own
+# lists over it. No build before this one knows this file, so it still holds
+# this build's store when this build opens again, and the record tells which
+# build changed the key file since (_reconcile). Named in .gitignore, and in
+# every backup (backend/modules/backup/service.py restores both files through
+# restore_key_files).
+_KEY_COPY_NAME = "lyria_provider_keys.json"
+
+# Checkouts whose dependencies changed under them (Update moved one
+# to a commit with a different package.json / package-lock.json) and whose npm
+# install has not finished yet. Written before the move and cleared only when
+# npm install succeeds, so a failed or interrupted install is run again on the
+# next start: node_modules still exists at that point (the old one, or a
+# half-written one), so its presence alone says nothing. Kept in theDAW's data
+# folder, never in the user's checkout.
+_DEPS_PENDING_FILE = paths.data_path("lyria_deps_pending.json")
 
 # The providers theDAW can hand keys to. Both are the embedded app's own
 # (server.ts reads GEMINI_API_KEY and OPENROUTER_API_KEY).
@@ -151,14 +188,17 @@ _PROVIDER_ENV_VAR = {
 }
 # key_pool pools that hold keys for each provider. "openrouter-free" is its own
 # pool in backend/key_pool.py (PROVIDER_ENV_MAP) with its own entries, so it is
-# folded in rather than assumed to be the same list as "openrouter".
+# folded in rather than assumed to be the same list as "openrouter". Read in
+# full only when the user shares the pool (see resolved_keys).
 _PROVIDER_POOLS = {
     "gemini": ("gemini",),
     "openrouter": ("openrouter", "openrouter-free"),
 }
 # Serializes the read-modify-write of the key file so two concurrent route
-# handlers (add + remove, say) cannot lose one another's edit.
-_key_file_lock = Lock()
+# handlers (add + remove, say) cannot lose one another's edit. Reentrant:
+# _read_store takes it to write another build's change back into both files,
+# and the writers call _read_store while they hold it.
+_key_file_lock = RLock()
 
 
 @contextmanager
@@ -257,20 +297,119 @@ def resolve_config() -> LyriaConfig:
     )
 
 
+def _numbered_vars(var: str, limit: int = CHILD_KEY_LIMIT) -> list[str]:
+    """``<var>_2`` .. ``<var>_<limit>``: the extra slots a checkout's
+    numberedEnvValues reads, in order."""
+    return [f"{var}_{n}" for n in range(2, limit + 1)]
+
+
+# ``numberedEnvValues(process.env, 'GEMINI_API_KEY')``, or with an explicit
+# third argument, ``numberedEnvValues(process.env, "X", 5)``: the call a
+# checkout makes for every provider whose numbered slots it reads.
+_NUMBERED_CALL = re.compile(
+    r"numberedEnvValues\(\s*process\.env\s*,\s*(['\"`])(?P<var>[A-Za-z0-9_]+)\1"
+    r"\s*(?:,\s*(?P<max>\d+)\s*)?\)"
+)
+# The default ``max`` in keys.ts's own signature:
+# ``function numberedEnvValues(env: NodeJS.ProcessEnv, prefix: string, max = 10)``.
+_NUMBERED_DEFAULT = re.compile(
+    r"function\s+numberedEnvValues\s*\([^)]*?\bmax\s*(?::\s*number\s*)?=\s*(\d+)"
+)
+# A checkout's own number, however large, is capped here: the slots are
+# environment variables, and a typo like ``max = 100000`` must not make
+# theDAW clear a hundred thousand of them on every spawn.
+_CHILD_KEY_SLOTS_CAP = 50
+
+
+def _checkout_sources(project_path: Path) -> list[str]:
+    """The server-side TypeScript a checkout runs: server.ts and the files in
+    server/, test files left out. Unreadable files are skipped."""
+    files = [project_path / "server.ts"]
+    server_dir = project_path / "server"
+    if server_dir.is_dir():
+        files.extend(
+            sorted(
+                p
+                for p in server_dir.glob("*.ts")
+                if not p.name.endswith((".test.ts", ".spec.ts"))
+            )
+        )
+    out: list[str] = []
+    for path in files:
+        try:
+            out.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def checkout_key_slots(project_path: Path) -> dict[str, int]:
+    """How many keys each provider variable of this checkout takes, read from
+    the checkout's own source.
+
+    theDAW tracks the Lyria repo's latest commit, and what a commit reads has
+    changed over time: a checkout from before server/keys.ts reads
+    ``process.env.GEMINI_API_KEY`` as ONE key (its server.ts:13), so a list in
+    that variable is sent to Google as a single invalid key; from server/keys.ts
+    on, server.ts calls ``numberedEnvValues(process.env, 'GEMINI_API_KEY')``,
+    which reads ``GEMINI_API_KEY_2`` up to ``_<max>``. So the answer comes from
+    the checkout itself, never from a commit id: 1 for a variable with no
+    numberedEnvValues call (the unnumbered variable always carries exactly one
+    key, which every checkout reads), otherwise ``max`` from the call, or the
+    default in keys.ts's own signature, or CHILD_KEY_LIMIT when neither says.
+    A call only counts when server/keys.ts defines numberedEnvValues, so a
+    half-merged tree reads as a single-key checkout."""
+    slots = {var: 1 for var in _PROVIDER_ENV_VAR.values()}
+    try:
+        keys_ts = (project_path / "server" / "keys.ts").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return slots
+    if "function numberedEnvValues" not in keys_ts:
+        return slots
+    default_match = _NUMBERED_DEFAULT.search(keys_ts)
+    default_max = int(default_match.group(1)) if default_match else CHILD_KEY_LIMIT
+    for text in _checkout_sources(project_path):
+        for call in _NUMBERED_CALL.finditer(text):
+            var = call.group("var")
+            if var not in slots:
+                continue
+            limit = int(call.group("max")) if call.group("max") else default_max
+            slots[var] = min(max(slots[var], limit, 1), _CHILD_KEY_SLOTS_CAP)
+    return slots
+
+
+def checkout_reads_key_lists(project_path: Path) -> bool:
+    """True when the checkout takes more than one key for any provider (see
+    checkout_key_slots)."""
+    return any(n > 1 for n in checkout_key_slots(project_path).values())
+
+
+def checkout_compat(project_path: Path) -> dict:
+    """What the Lyria panel and the Settings card show about this checkout:
+    whether it has server/keys.ts and how many keys each variable takes."""
+    slots = checkout_key_slots(project_path)
+    return {
+        "keys_ts": (project_path / "server" / "keys.ts").is_file(),
+        "key_slots": slots,
+        "reads_key_lists": any(n > 1 for n in slots.values()),
+    }
+
+
 def _child_env(cfg: LyriaConfig) -> dict[str, str]:
     """Build the child's environment.
 
     theDAW owns the spawn, so it owns the env -- this is what lets us drive
-    Lyria's cost mode and key resolution WITHOUT modifying its source. Lyria
-    already reads all of these (server.ts:10 dotenv, :13 GEMINI_API_KEY,
-    :33-36 OPENROUTER_API_KEY, :102 PORT), and its in-app Settings modal still
-    overrides the keys per-request via x-*-api-key headers, so a user who
-    prefers the in-app flow is unaffected.
+    Lyria's cost mode and key resolution WITHOUT modifying its source. Every
+    Lyria checkout reads ``GEMINI_API_KEY``, ``OPENROUTER_API_KEY``,
+    ``AI_PROVIDER``, ``LYRIA_MOCK`` and ``PORT`` from its environment, and its
+    in-app Settings modal still overrides the keys per request via
+    x-*-api-key headers, so a user who prefers the in-app flow is unaffected.
 
-    Both provider variables are handed the FULL ordered list theDAW knows
-    about, comma-separated, because the child walks that list and skips a
-    rejected key (server/keys.ts). Passing one key throws away the failover
-    the child was built for. No key value is ever logged.
+    ``GEMINI_API_KEY`` and ``OPENROUTER_API_KEY`` each carry exactly ONE key,
+    the first of the provider's ordered list, because that is all a checkout
+    without server/keys.ts can read. The rest of the list goes into the
+    numbered ``_2`` .. ``_<max>`` variables, and only as many as the checkout
+    reads (checkout_key_slots). No key value is ever logged.
     """
     env = child_env()
     env["PORT"] = str(cfg.port)
@@ -280,27 +419,43 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
         # Explicit opt-in to real spending: clear any inherited mock flag so a
         # stale value in the parent's environment can't silently re-enable it.
         env.pop("LYRIA_MOCK", None)
-    # Pass through every key theDAW already holds so the user needn't re-enter
-    # them. A provider with no keys has its variable REMOVED rather than left
-    # at whatever the parent inherited (a blank or whitespace-only value would
-    # otherwise reach the child); Lyria then reports it as unconfigured via its
-    # own /api/settings/status, and its Settings modal still works.
+    # Every provider slot is cleared first and then filled from the resolved
+    # list, so nothing the parent inherited (a blank value, a stale numbered
+    # key the list no longer holds) reaches the child behind theDAW's back.
+    # env_keys() already folded the OS environment's own values into the list.
+    # A provider with no keys is left unset; Lyria then reports it as
+    # unconfigured via its own /api/settings/status, and its Settings modal
+    # still works.
+    slots = checkout_key_slots(cfg.project_path)
     resolved: dict[str, list[str]] = {}
+    passed: dict[str, int] = {}
     for provider in LYRIA_PROVIDERS:
         keys, _source = resolved_keys(provider)
         resolved[provider] = keys
         var = _PROVIDER_ENV_VAR[provider]
-        if keys:
-            env[var] = ",".join(keys)
-        else:
-            env.pop(var, None)
+        limit = slots.get(var, 1)
+        env.pop(var, None)
+        for numbered in _numbered_vars(var, max(limit, CHILD_KEY_LIMIT)):
+            env.pop(numbered, None)
+        if not keys:
+            passed[provider] = 0
+            continue
+        env[var] = keys[0]
+        extra = keys[1:limit]
+        for numbered, key in zip(_numbered_vars(var, limit), extra):
+            env[numbered] = key
+        passed[provider] = 1 + len(extra)
     ai_provider = _child_ai_provider(resolved)
     if ai_provider:
         env["AI_PROVIDER"] = ai_provider
     log.info(
-        "lyria.sidecar: child keys -- gemini=%d openrouter=%d provider=%s",
+        "lyria.sidecar: child keys -- gemini=%d/%d openrouter=%d/%d "
+        "(handed/held; this checkout takes %s) provider=%s",
+        passed["gemini"],
         len(resolved["gemini"]),
+        passed["openrouter"],
         len(resolved["openrouter"]),
+        ", ".join(f"{var} x{n}" for var, n in slots.items()),
         ai_provider or "child default",
     )
     return env
@@ -385,23 +540,23 @@ def _split_keys(raw: object) -> list[str]:
     return out
 
 
-def _read_store() -> dict:
-    """The stored per-provider key lists and provider preference.
-
-    Migrates the legacy single-Gemini shape (``{"key": "..."}``) transparently
-    on read: that key becomes the FIRST Gemini entry, so the key a user
-    already saved keeps being the one tried first. Never raises -- an
-    unreadable or corrupt file reads as "nothing stored", exactly as the
-    single-key version did.
-    """
-    store: dict = {
+def _empty_store() -> dict:
+    return {
         "providers": {provider: [] for provider in LYRIA_PROVIDERS},
         "provider_preference": None,
+        "share_pool": False,
     }
-    try:
-        raw = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return store
+
+
+def _store_from_payload(raw: object) -> dict:
+    """A store from one parsed key-file payload, whichever build wrote it.
+
+    Migrates the legacy single-Gemini shape (``{"key": "..."}``) on the way:
+    that key becomes the FIRST Gemini entry, so the key a user already saved
+    keeps being the one tried first. _write_store keeps that ``key`` field in
+    step with the first stored Gemini key, so reading it back changes
+    nothing."""
+    store = _empty_store()
     if not isinstance(raw, dict):
         return store
     providers = raw.get("providers")
@@ -410,16 +565,292 @@ def _read_store() -> dict:
             store["providers"][provider] = _split_keys(providers.get(provider))
     legacy = _split_keys(raw.get("key"))
     if legacy:
-        gemini = list(store["providers"]["gemini"])
-        for key in reversed(legacy):
-            if key in gemini:
-                gemini.remove(key)
-            gemini.insert(0, key)
-        store["providers"]["gemini"] = gemini
+        store["providers"]["gemini"] = _keys_first(legacy, store["providers"]["gemini"])
     preference = raw.get("provider_preference")
     if isinstance(preference, str) and preference.strip().lower() in LYRIA_PROVIDERS:
         store["provider_preference"] = preference.strip().lower()
+    # Only a literal true shares the pool: a hand-edited "yes" or 1 fails safe.
+    store["share_pool"] = raw.get("share_pool") is True
     return store
+
+
+def _keys_first(first: list[str], rest: list[str]) -> list[str]:
+    """``first`` in order, then every key of ``rest`` it does not hold."""
+    return [*first, *(key for key in rest if key not in first)]
+
+
+def _copy_store(store: dict) -> dict:
+    return {
+        "providers": {
+            provider: list(store["providers"].get(provider, []))
+            for provider in LYRIA_PROVIDERS
+        },
+        "provider_preference": store.get("provider_preference"),
+        "share_pool": store.get("share_pool") is True,
+    }
+
+
+def _forget_gemini(store: dict) -> dict:
+    """``store`` with its Gemini list emptied."""
+    out = _copy_store(store)
+    out["providers"]["gemini"] = []
+    return out
+
+
+def _all_keys(store: dict) -> set[str]:
+    return {key for keys in store["providers"].values() for key in keys}
+
+
+def _union_stores(first: dict, second: dict) -> dict:
+    """Every key of both, ``first``'s ahead of ``second``'s, per provider, and
+    ``first``'s preference unless it has none. The pool switch is
+    ``first``'s; ``second``'s counts only when ``first`` holds no key and no
+    preference (an empty store has no switch worth keeping)."""
+    out = _copy_store(first)
+    for provider in LYRIA_PROVIDERS:
+        out["providers"][provider] = _keys_first(
+            first["providers"][provider], second["providers"][provider]
+        )
+    if out["provider_preference"] is None:
+        out["provider_preference"] = second.get("provider_preference")
+    if not _all_keys(first) and first.get("provider_preference") is None:
+        out["share_pool"] = second.get("share_pool") is True
+    return out
+
+
+@dataclass(frozen=True)
+class _KeyFileView:
+    """The key file as the reader found it: whether it exists, its parsed
+    JSON (None when it does not parse), the sha256 of its bytes, and its file
+    identity (volume, file index) when the filesystem has one."""
+
+    exists: bool
+    raw: object
+    digest: Optional[str]
+    identity: Optional[tuple[int, int]]
+
+
+def _file_identity(path: Path) -> Optional[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of ``path``, or None when the file is missing or
+    the filesystem reports no file index (st_ino 0, as FAT does)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not st.st_ino:
+        return None
+    return (int(st.st_dev), int(st.st_ino))
+
+
+def _view_bytes(data: Optional[bytes]) -> _KeyFileView:
+    """A view of key-file bytes that did not come from disk (a backup)."""
+    if data is None:
+        return _KeyFileView(False, None, None, None)
+    try:
+        raw: object = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raw = None
+    return _KeyFileView(True, raw, hashlib.sha256(data).hexdigest(), None)
+
+
+def _view_key_file(path: Path) -> _KeyFileView:
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return _KeyFileView(False, None, None, None)
+    except OSError:
+        return _KeyFileView(True, None, None, None)
+    view = _view_bytes(data)
+    return _KeyFileView(True, view.raw, view.digest, _file_identity(path))
+
+
+def _recorded_identity(record: object) -> Optional[tuple[int, int]]:
+    if not isinstance(record, dict):
+        return None
+    ident = record.get("id")
+    if (
+        isinstance(ident, list)
+        and len(ident) == 2
+        and all(isinstance(n, int) and not isinstance(n, bool) for n in ident)
+    ):
+        return (ident[0], ident[1])
+    return None
+
+
+def _written_from_mains_file(written: dict, base: dict) -> bool:
+    """True when an 8039b45 store over the key file shows no sign of having
+    been written from this build's store (``base``), so it must have been
+    written from a file main had overwritten.
+
+    8039b45 opened on main's ``{"key": ...}`` sees that one key as its first
+    Gemini key and nothing else: no other key and no preference. main's card
+    shows the first Gemini key this build wrote into ``key``, so main saving
+    it again is ordinary and that key is left out of the test. A write from
+    this build's store carries every key the user did not remove and the
+    preference the user did not change, so either of these is the sign:
+      * another key of ``base`` is in the write;
+      * the write holds ``base``'s preference (main's file has none to give).
+    Without either sign the write never saw ``base``'s keys and could not
+    have removed them. An empty write is the user clearing every key and
+    counts as seen; so does any write when ``base`` holds no key."""
+    written_keys = _all_keys(written)
+    base_keys = _all_keys(base)
+    if not written_keys or not base_keys:
+        return False
+    mains_key = set(written["providers"]["gemini"][:1])
+    if (written_keys - mains_key) & base_keys:
+        return False
+    preference = base.get("provider_preference")
+    return preference is None or written.get("provider_preference") != preference
+
+
+def _reconcile(key_file: _KeyFileView, copy: object) -> tuple[dict, str]:
+    """The store the key file and the copy beside it describe, and how the
+    key file got the way it is.
+
+    Three builds write ``data/lyria_gemini_key.json``, each its own way:
+      * main (851f6a0 and before) writes ``{"key": ...}`` over the whole
+        file in place (``write_text``) and its DELETE unlinks the file. It
+        reads ``.get("key")`` only.
+      * 8039b45 (the first multi-key build) writes the whole per-provider
+        store in place, without ``key`` or ``share_pool``, from whatever it
+        read: every list when this build wrote last, or main's one key when
+        main did.
+      * this build writes the key file atomically (a new file each time)
+        with ``key`` repeating the first Gemini key, then the same store to
+        ``lyria_provider_keys.json`` (the copy, which neither older build
+        knows) with a record of the key file it wrote: its sha256 and its
+        file identity.
+    The record is what tells them apart. Bytes that match it are this
+    build's own last write. A missing file is main's DELETE: the Gemini
+    keys go, as this build's own DELETE /api/lyria/key does, and nothing
+    else. A file with another identity on the same volume was created again
+    after this build wrote it, which only happens after main's DELETE (main
+    and 8039b45 overwrite in place), so that DELETE is applied first.
+    Otherwise main's one key goes first and the rest stay behind it; and an
+    8039b45 store replaces the lists, unless it shows no sign of having read
+    the copy's store (_written_from_mains_file) -- then it was written from
+    a file main had overwritten, never saw this build's keys, and could not
+    have removed them, so they stay behind its own. Without a copy each file
+    is read on its own terms, as before the copy existed.
+
+    Kinds: ``none``, ``legacy`` and ``torn`` (nothing to reconcile, nothing
+    rewritten); ``ours``; everything else is a change another build made,
+    which _read_store writes back into both files at once."""
+    base = (
+        _store_from_payload(copy)
+        if isinstance(copy, dict) and isinstance(copy.get("providers"), dict)
+        else None
+    )
+    record = copy.get("key_file") if isinstance(copy, dict) else None
+    recorded_digest = record.get("sha256") if isinstance(record, dict) else None
+    if base is not None and key_file.exists and key_file.digest is not None:
+        if key_file.digest == recorded_digest:
+            return base, "ours"
+    raw = key_file.raw
+    if not key_file.exists:
+        if base is None:
+            return _empty_store(), "none"
+        return _forget_gemini(base), "main_deleted"
+    if not isinstance(raw, dict):
+        # A torn write (main's write_text cut short) or junk.
+        if base is None:
+            return _empty_store(), "torn"
+        return base, "torn_copy"
+    recorded_id = _recorded_identity(record)
+    recreated = (
+        recorded_id is not None
+        and key_file.identity is not None
+        and recorded_id[0] == key_file.identity[0]
+        and recorded_id[1] != key_file.identity[1]
+    )
+    if not isinstance(raw.get("providers"), dict):
+        # main's single-key shape.
+        if base is None:
+            return _store_from_payload(raw), "legacy"
+        main_keys = _split_keys(raw.get("key"))
+        store = _forget_gemini(base) if recreated else _copy_store(base)
+        store["providers"]["gemini"] = _keys_first(
+            main_keys, store["providers"]["gemini"]
+        )
+        return store, "main_resaved" if recreated else "main_saved"
+    written = _store_from_payload(raw)
+    if "share_pool" in raw:
+        # This build's own shape, but not the write the copy records (the
+        # copy predates the record, or a crash fell between the two writes):
+        # the key file is complete and is the newer of the two.
+        return written, "ours_unrecorded"
+    # 8039b45's shape. It has no pool switch, so this build's stays.
+    if base is None:
+        return written, "older_list"
+    if recreated:
+        store, kind = (
+            _union_stores(written, _forget_gemini(base)),
+            "older_list_after_delete",
+        )
+    elif _written_from_mains_file(written, base):
+        store, kind = _union_stores(written, base), "older_list_blind"
+    else:
+        store, kind = written, "older_list"
+    store["share_pool"] = base["share_pool"]
+    return store, kind
+
+
+# Kinds _reconcile reports that leave nothing to write back.
+_SETTLED_KINDS = frozenset({"none", "legacy", "torn", "ours"})
+
+
+def _read_store() -> dict:
+    """The stored per-provider key lists, provider preference and pool share.
+
+    Reads the key file and the copy beside it and reconciles them
+    (_reconcile). When another build changed the key file, the result is
+    written back into both files at once, so main finds the first Gemini key
+    in ``key`` again, 8039b45 finds every list, and the copy's record matches
+    the key file for the next read. Never raises -- an unreadable or corrupt
+    file with no copy reads as "nothing stored", exactly as the single-key
+    version did, and a write-back that fails is logged and tried again on
+    the next read.
+    """
+    with _key_file_lock:
+        key_file = _view_key_file(_KEY_FILE)
+        _copy_exists, copy = _read_key_json(_key_copy_file())
+        store, kind = _reconcile(key_file, copy)
+        if kind not in _SETTLED_KINDS:
+            log.info(
+                "lyria.sidecar: %s was changed by another build (%s); "
+                "writing the reconciled keys back",
+                _KEY_FILE.name,
+                kind,
+            )
+            try:
+                _write_store(store)
+            except OSError as e:
+                log.warning(
+                    "lyria.sidecar: could not write the reconciled keys back: %s", e
+                )
+        return store
+
+
+def _key_copy_file() -> Path:
+    """Where every write keeps a second copy of the key payload: beside the
+    key file, so it follows the key file wherever that is pointed."""
+    return _KEY_FILE.with_name(_KEY_COPY_NAME)
+
+
+def _read_key_json(path: Path) -> tuple[bool, object]:
+    """``(the file exists, its parsed JSON or None)``. A file that exists but
+    does not parse -- main's plain write_text cut short -- is (True, None)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None
+    try:
+        return True, json.loads(text)
+    except ValueError:
+        return True, None
 
 
 def _is_legacy_file() -> bool:
@@ -438,11 +869,23 @@ def _write_store(store: dict) -> None:
     The backup exists because this is user data theDAW did not create: a
     migration that turns out to be wrong must not be the end of the key the
     user saved months ago.
+
+    Every file is written with atomic_write, so a crash mid-write leaves the
+    previous file whole: _read_store reads a torn file as "nothing stored",
+    and the next add_key would then write that empty list over every key.
+
+    ``key`` repeats the first stored Gemini key in the single-key shape main
+    reads (``json.loads(...).get("key")``), so a user who runs main against
+    this data dir keeps the Gemini key they saved here. The key file goes
+    first; the copy follows with the record of what was just written (its
+    sha256 and file identity), which is how _reconcile recognises this
+    build's own write. A crash between the two leaves a key file in this
+    build's shape that the copy does not record, and _reconcile believes the
+    key file then.
     """
-    _KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     if _is_legacy_file() and not _KEY_FILE_BACKUP.exists():
         try:
-            _KEY_FILE_BACKUP.write_bytes(_KEY_FILE.read_bytes())
+            atomic_write(_KEY_FILE_BACKUP, _KEY_FILE.read_bytes(), mode=0o600)
             log.info(
                 "lyria.sidecar: migrated %s to per-provider keys (backup: %s)",
                 _KEY_FILE.name,
@@ -450,15 +893,98 @@ def _write_store(store: dict) -> None:
             )
         except OSError as e:
             log.warning("lyria.sidecar: could not back up %s: %s", _KEY_FILE.name, e)
-    payload = {
-        "version": _KEY_FILE_VERSION,
-        "providers": {
-            provider: list(store["providers"].get(provider, []))
-            for provider in LYRIA_PROVIDERS
-        },
-        "provider_preference": store.get("provider_preference"),
+    providers = {
+        provider: list(store["providers"].get(provider, []))
+        for provider in LYRIA_PROVIDERS
     }
-    _KEY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    payload: dict = {
+        "version": _KEY_FILE_VERSION,
+        "providers": providers,
+        "provider_preference": store.get("provider_preference"),
+        "share_pool": store.get("share_pool") is True,
+    }
+    if providers["gemini"]:
+        payload["key"] = providers["gemini"][0]
+    data = json.dumps(payload, indent=2).encode("utf-8")
+    atomic_write(_KEY_FILE, data, mode=0o600)
+    identity = _file_identity(_KEY_FILE)
+    copy = {
+        **payload,
+        "key_file": {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "id": list(identity) if identity is not None else None,
+        },
+    }
+    atomic_write(
+        _key_copy_file(), json.dumps(copy, indent=2).encode("utf-8"), mode=0o600
+    )
+
+
+def settle_key_files() -> None:
+    """Reconcile the key file and its copy now, writing back whatever another
+    build changed. The backup export runs this first, so the archive holds a
+    key file and a copy that agree."""
+    _read_store()
+
+
+def restore_key_files(
+    key_file_bytes: Optional[bytes], copy_bytes: Optional[bytes], mode: str
+) -> bool:
+    """Bring the Lyria keys in a backup archive back. Returns True when the
+    archive held a store to restore.
+
+    The backup service hands both files here instead of writing them itself:
+    written as plain files, a main backup's ``{"key": ...}`` would sit
+    beside this build's copy, and the restored file's new identity would read
+    as main having deleted and saved it (_reconcile), forgetting every other
+    Gemini key. Here each archive is read on its own terms -- the archive's
+    copy with its key file, never this machine's file identities -- and:
+      * ``replace``: the archive's store becomes the store, except that an
+        archive holding main's single key only (a backup of main's own data
+        folder) cannot express the other keys, so its key goes first and the
+        keys held now stay behind it, as main saving that key would;
+      * ``merge``: every key held now stays first, the archive's follow.
+    Both files are then written together (_write_store). Raises OSError when
+    they cannot be written."""
+    view = _view_bytes(key_file_bytes)
+    copy: object = None
+    if copy_bytes is not None:
+        try:
+            copy = json.loads(copy_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            copy = None
+    if not view.exists and not isinstance(copy, dict):
+        return False
+    archived, kind = _reconcile(view, copy)
+    if kind in ("none", "torn"):
+        return False
+    with _key_file_lock:
+        current = _read_store()
+        if mode == "merge":
+            store = _union_stores(current, archived)
+        elif kind == "legacy":
+            store = _copy_store(current)
+            store["providers"]["gemini"] = _keys_first(
+                archived["providers"]["gemini"], current["providers"]["gemini"]
+            )
+            if store["provider_preference"] is None:
+                store["provider_preference"] = archived["provider_preference"]
+        else:
+            store = archived
+            if kind == "older_list" and not isinstance(copy, dict):
+                # A backup of 8039b45's own folder: that build has no pool
+                # switch, so the one set here stays.
+                store["share_pool"] = current["share_pool"]
+        _write_store(store)
+    log.info(
+        "lyria.sidecar: restored Lyria keys from a backup (%s, %s): gemini=%d "
+        "openrouter=%d",
+        mode,
+        kind,
+        len(store["providers"]["gemini"]),
+        len(store["providers"]["openrouter"]),
+    )
+    return True
 
 
 def stored_keys(provider: str) -> list[str]:
@@ -467,14 +993,38 @@ def stored_keys(provider: str) -> list[str]:
 
 
 def env_keys(provider: str) -> list[str]:
-    """The OS environment's keys for a provider, in order. The variable may
-    itself hold a comma/newline-separated list."""
-    return _split_keys(os.getenv(_PROVIDER_ENV_VAR[normalize_provider(provider)]))
+    """The OS environment's keys for a provider, in order: the variable itself
+    (which may hold a comma/newline-separated list), then the numbered
+    ``_2`` .. ``_10`` variables server/keys.ts also reads. _child_env clears
+    those slots and refills them from the resolved list, so they are read
+    here or they would be dropped."""
+    var = _PROVIDER_ENV_VAR[normalize_provider(provider)]
+    raw = [os.getenv(var) or ""]
+    raw.extend(os.getenv(numbered) or "" for numbered in _numbered_vars(var))
+    return _split_keys(raw)
+
+
+def pool_shared() -> bool:
+    """True when the user turned on "share the key pool" in the Lyria card."""
+    return _read_store()["share_pool"]
+
+
+def set_pool_shared(share: bool) -> bool:
+    """Store the pool-share switch. Returns the stored value."""
+    value = share is True
+    with _key_file_lock:
+        store = _read_store()
+        store["share_pool"] = value
+        _write_store(store)
+    log.info(
+        "lyria.sidecar: key pool %s with Lyria", "shared" if value else "not shared"
+    )
+    return value
 
 
 def pooled_keys(provider: str) -> list[str]:
     """Every key the assistant's key pool holds for a provider, in order,
-    across each pool that feeds it."""
+    across each pool that feeds it -- whether or not it is shared."""
     provider = normalize_provider(provider)
     out: list[str] = []
     try:
@@ -485,19 +1035,39 @@ def pooled_keys(provider: str) -> list[str]:
                 value = (key or "").strip()
                 if value and value not in out:
                     out.append(value)
-    except Exception:  # noqa: BLE001 - the pool is optional here
+    except Exception:  # the pool is optional here
         return out
     return out
 
 
+def _pool_keys_for_child(
+    provider: str, env: list[str], stored: list[str], share: bool
+) -> list[str]:
+    """The pooled keys the child may have for a provider.
+
+    Shared pool: all of them. Otherwise only the first pooled GEMINI key, and
+    only when the environment and the Lyria card hold no Gemini key -- the
+    one pooled key theDAW has always handed the child, so a key pasted for
+    the assistant still starts Lyria. OpenRouter and openrouter-free keys
+    were never handed over and stay with the assistant until the user shares
+    the pool."""
+    if share:
+        return pooled_keys(provider)
+    if provider == "gemini" and not env and not stored:
+        return pooled_keys("gemini")[:1]
+    return []
+
+
 def resolved_keys(provider: str) -> tuple[list[str], str]:
-    """Every key the child will be handed for a provider, in the order it will
-    try them, plus where the FIRST one comes from: ``env`` | ``file`` |
-    ``pool`` | ``none`` (the source labels the UI has always shown)."""
+    """Every key theDAW holds for the child for a provider, in the order it
+    will try them, plus where the FIRST one comes from: ``env`` | ``file`` |
+    ``pool`` | ``none`` (the source labels the UI has always shown). How many
+    of them a checkout actually receives is _child_env's business: one, or up
+    to CHILD_KEY_LIMIT for a checkout that reads lists."""
     provider = normalize_provider(provider)
     env = env_keys(provider)
     stored = stored_keys(provider)
-    pooled = pooled_keys(provider)
+    pooled = _pool_keys_for_child(provider, env, stored, pool_shared())
     ordered: list[str] = []
     for key in (*env, *stored, *pooled):
         if key not in ordered:
@@ -595,25 +1165,44 @@ def remove_key(provider: str, index: int) -> bool:
 def key_summary() -> dict:
     """Counts and sources only -- never a key value, not even a prefix.
 
-    ``count`` is what the child is handed (de-duplicated across sources), so
-    it can be smaller than ``env + stored + pool`` when the same key reaches
-    us twice. ``stored`` is the length of the removable list, which is what
-    DELETE /api/lyria/keys indexes into.
+    ``count`` is what theDAW holds for the child (de-duplicated across
+    sources), so it can be smaller than ``env + stored + pool`` when the same
+    key reaches us twice. ``handed`` is how many of those the configured
+    checkout receives: as many as its variable takes (checkout_key_slots), one
+    for a checkout without server/keys.ts. ``stored`` is the length of the
+    removable list, which is what DELETE /api/lyria/keys indexes into.
+    ``pool`` counts the pooled keys that go to the child; ``pool_available``
+    counts every key the pool holds, so the card can say what sharing it
+    would add. ``key_limit`` is the largest number of keys any variable of
+    this checkout takes.
     """
+    share = pool_shared()
+    slots = checkout_key_slots(resolve_config().project_path)
+    reads_lists = any(n > 1 for n in slots.values())
+    limit = max(slots.values())
     providers: dict[str, dict] = {}
     for provider in LYRIA_PROVIDERS:
         keys, source = resolved_keys(provider)
+        env = env_keys(provider)
+        stored = stored_keys(provider)
+        taken = slots[_PROVIDER_ENV_VAR[provider]]
         providers[provider] = {
             "count": len(keys),
+            "handed": min(len(keys), taken),
+            "key_slots": taken,
             "source": source,
             "configured": bool(keys),
-            "env": len(env_keys(provider)),
-            "stored": len(stored_keys(provider)),
-            "pool": len(pooled_keys(provider)),
+            "env": len(env),
+            "stored": len(stored),
+            "pool": len(_pool_keys_for_child(provider, env, stored, share)),
+            "pool_available": len(pooled_keys(provider)),
         }
     return {
         "providers": providers,
         "provider_preference": provider_preference(),
+        "share_pool": share,
+        "reads_key_lists": reads_lists,
+        "key_limit": limit,
         "mock": is_mock(),
     }
 
@@ -705,8 +1294,52 @@ def _is_lyria_server(port: int) -> bool:
     )
 
 
+def _pending_projects() -> list[str]:
+    try:
+        raw = json.loads(_DEPS_PENDING_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    projects = raw.get("projects") if isinstance(raw, dict) else None
+    if not isinstance(projects, list):
+        return []
+    return [p for p in projects if isinstance(p, str)]
+
+
+def deps_pending(project: Path) -> bool:
+    """True when an Update moved ``project`` to a commit with other
+    dependencies and their npm install has not succeeded since."""
+    return _norm(str(project)) in _pending_projects()
+
+
+def _set_deps_pending(project: Path, pending: bool) -> None:
+    """Record or clear ``project`` in _DEPS_PENDING_FILE. Raises OSError when
+    the record cannot be written."""
+    key = _norm(str(project))
+    current = _pending_projects()
+    if (key in current) == pending:
+        return
+    projects = [*current, key] if pending else [p for p in current if p != key]
+    atomic_write(_DEPS_PENDING_FILE, json.dumps({"projects": projects}, indent=2))
+
+
+def _clear_deps_pending(project: Path) -> None:
+    """Clear ``project`` from _DEPS_PENDING_FILE after its npm install
+    succeeded. A record that cannot be cleared costs one more npm install on
+    the next start, so it is logged and the start goes on."""
+    try:
+        _set_deps_pending(project, False)
+    except OSError as e:
+        log.warning(
+            "lyria.sidecar: could not clear %s (%s); npm install runs again on "
+            "the next start",
+            _DEPS_PENDING_FILE.name,
+            e,
+        )
+
+
 def _ensure_deps(cfg: LyriaConfig) -> None:
-    """Install node_modules when missing.
+    """Install node_modules when missing, or when a checkout move left its
+    dependencies uninstalled (deps_pending).
 
     Hoisted into its own function deliberately: vj/sidecar.py has this check
     inline in ensure_running() only, so its _ensure_build() path can run
@@ -721,38 +1354,54 @@ def _ensure_deps(cfg: LyriaConfig) -> None:
     """
     with _spawn_lock:
         node_modules = cfg.project_path / "node_modules"
-        if node_modules.is_dir():
+        pending = deps_pending(cfg.project_path)
+        if node_modules.is_dir() and not pending:
             return
-        log.info("lyria.sidecar: node_modules missing -- running npm install")
-        try:
-            # Output goes to the sidecar log so install failures are
-            # diagnosable; the timeout stops a hung npm (network stall) from
-            # pinning _spawn_lock forever.
-            with _sidecar_log_handle() as install_log:
-                rc = subprocess.call(
-                    [cfg.npm_path, "install"],
-                    cwd=str(cfg.project_path),
-                    stdout=install_log,
-                    stderr=subprocess.STDOUT,
-                    shell=False,
-                    timeout=NPM_INSTALL_TIMEOUT_SEC,
-                    env=child_env(),
-                )
-        except FileNotFoundError as e:
-            raise RuntimeError(
-                f"Lyria sidecar: npm not found ({e}). Install Node.js."
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError(
-                f"npm install timed out after {int(NPM_INSTALL_TIMEOUT_SEC)}s in "
-                f"{cfg.project_path} -- check the network, then retry."
-            ) from e
-        if rc != 0:
-            raise RuntimeError(
-                f"npm install failed in {cfg.project_path} (rc={rc}). See "
-                f"{SIDECAR_LOG_PATH} for the full output, then retry."
+        if pending:
+            log.info(
+                "lyria.sidecar: the checkout moved and its npm install did not "
+                "finish -- running npm install"
             )
-        log.info("lyria.sidecar: npm install complete")
+        else:
+            log.info("lyria.sidecar: node_modules missing -- running npm install")
+        _run_npm_install(cfg)
+        if pending:
+            _clear_deps_pending(cfg.project_path)
+
+
+def _run_npm_install(cfg: LyriaConfig) -> None:
+    """``npm install`` in the checkout. The caller holds _spawn_lock: this is
+    the body _ensure_deps and _fast_forward_checkout share, and neither may run it
+    while the other is."""
+    try:
+        # Output goes to the sidecar log so install failures are diagnosable;
+        # the timeout stops a hung npm (network stall) from pinning
+        # _spawn_lock forever.
+        with _sidecar_log_handle() as install_log:
+            rc = subprocess.call(
+                [cfg.npm_path, "install"],
+                cwd=str(cfg.project_path),
+                stdout=install_log,
+                stderr=subprocess.STDOUT,
+                shell=False,
+                timeout=NPM_INSTALL_TIMEOUT_SEC,
+                env=child_env(),
+            )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"Lyria sidecar: npm not found ({e}). Install Node.js."
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"npm install timed out after {int(NPM_INSTALL_TIMEOUT_SEC)}s in "
+            f"{cfg.project_path} -- check the network, then retry."
+        ) from e
+    if rc != 0:
+        raise RuntimeError(
+            f"npm install failed in {cfg.project_path} (rc={rc}). See "
+            f"{SIDECAR_LOG_PATH} for the full output, then retry."
+        )
+    log.info("lyria.sidecar: npm install complete")
 
 
 def detect_lan_ip() -> Optional[str]:
@@ -809,7 +1458,7 @@ def probe() -> dict:
     openrouter_list, or_key_source = resolved_keys("openrouter")
     key = gemini_list[0] if gemini_list else None
     or_key = openrouter_list[0] if openrouter_list else None
-    deps_installed = (pkg / "node_modules").is_dir()
+    deps_installed = (pkg / "node_modules").is_dir() and not deps_pending(pkg)
     install = install_status()
     installing = install.get("status") in ("cloning", "installing")
 
@@ -880,10 +1529,17 @@ def probe() -> dict:
         "gemini_key_source": key_source,
         "openrouter_key": bool(or_key),
         "openrouter_key_source": or_key_source,
-        # Counts, never values: how many keys the child would be handed.
+        # Counts, never values: how many keys theDAW holds for the child.
         "gemini_keys": len(gemini_list),
         "openrouter_keys": len(openrouter_list),
         "provider_preference": provider_preference(),
+        # Whether this checkout takes a key list (server/keys.ts) or one key
+        # per provider, read from the checkout itself, and what the last
+        # Update or latest-commit check found.
+        "reads_key_lists": checkout_reads_key_lists(pkg),
+        "compat": checkout_compat(pkg),
+        "checkout": checkout_state(),
+        "update": update_status(),
         "listening": listening,
         "process_alive": _proc is not None and _proc.poll() is None,
         "url": _resolved_url or f"http://127.0.0.1:{cfg.port}",
@@ -922,6 +1578,563 @@ def _set_install(**fields: object) -> None:
         _install_state.update(fields)
 
 
+# ── the latest commit: Install clones it, Update fast-forwards to it ────────
+
+
+def _git_env() -> dict[str, str]:
+    """child_env() plus GIT_TERMINAL_PROMPT=0: a repo that asks for
+    credentials fails at once instead of waiting on a prompt nobody sees."""
+    env = child_env()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _git_creationflags() -> int:
+    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _git_run(
+    git: str, args: list[str], cwd: Path, timeout: float = 60.0
+) -> subprocess.CompletedProcess[str]:
+    """One git command in ``cwd``, output captured. Never raises for a
+    non-zero exit; a timeout raises subprocess.TimeoutExpired."""
+    return subprocess.run(
+        [git, *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        creationflags=_git_creationflags(),
+        env=_git_env(),
+        check=False,
+    )
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _remove_staging(path: Path) -> None:
+    """Delete a staging folder this module created. git marks its pack files
+    read-only, which stops shutil.rmtree on Windows, so the handler clears
+    that bit and retries once. The folder only ever holds a fresh clone, never
+    a node_modules or a junction."""
+
+    def _clear_readonly(
+        func: Callable[[str], object], target: str, _exc: BaseException
+    ) -> None:
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if path.exists():
+        shutil.rmtree(path, onexc=_clear_readonly)
+
+
+def _clone_latest(git: str, target: Path, out: IO[bytes] | int) -> str:
+    """Clone LYRIA_REPO_URL's default branch at its latest commit to
+    ``target`` and return that commit.
+
+    A full clone, not ``--depth 1``: Update fast-forwards the checkout later,
+    and a fast-forward is only provable when the old commit's history is
+    there. The clone runs in a staging folder beside ``target`` and is renamed
+    into place at the end, so a failure at any step leaves ``target`` as it
+    was (missing or empty) and removes the staging folder; Install can simply
+    run again. Raises RuntimeError naming the step, or
+    subprocess.TimeoutExpired."""
+    staging = target.with_name(f".{target.name}.install-staging")
+    _remove_staging(staging)
+    try:
+        rc = subprocess.call(
+            [git, "clone", "-q", "--no-tags", LYRIA_REPO_URL, str(staging)],
+            cwd=str(target.parent),
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            shell=False,
+            timeout=GIT_CLONE_TIMEOUT_SEC,
+            creationflags=_git_creationflags(),
+            env=_git_env(),
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"git clone failed (rc={rc}) while fetching {LYRIA_REPO}. See "
+                f"{SIDECAR_LOG_PATH} for the output (network? GitHub reachable?), "
+                "then retry."
+            )
+        head = _git_run(git, ["rev-parse", "HEAD"], staging)
+        commit = head.stdout.strip()
+        if head.returncode != 0 or not commit:
+            raise RuntimeError(
+                f"git cannot read the fresh clone of {LYRIA_REPO} "
+                f"({_last_line(head.stderr) or f'rc={head.returncode}'}), then retry."
+            )
+        if target.exists():
+            target.rmdir()  # empty: _install_worker refuses a non-empty one
+        staging.rename(target)
+        return commit
+    except BaseException:
+        try:
+            _remove_staging(staging)
+        except OSError as e:
+            log.warning("lyria.sidecar: could not remove %s: %s", staging, e)
+        raise
+
+
+_checkout_lock = Lock()
+_checkout_state: dict = {
+    # unchecked | current | updated | newer | diverged | dirty | branch
+    # | failed | managed | not_git
+    "state": "unchecked",
+    "commit": None,
+    # The newest commit of LYRIA_REPO's default branch theDAW has seen, from
+    # the last Update or the last check (check_latest), and when.
+    "latest": None,
+    "latest_checked_at": None,
+    "reason": "",
+    "checked_at": None,
+}
+
+
+def checkout_state() -> dict:
+    """What the last Update or check found or did. ``reason`` is a sentence
+    for the Lyria panel whenever the checkout was left where it is, and says
+    what moved when it moved."""
+    with _checkout_lock:
+        return dict(_checkout_state)
+
+
+def _set_checkout(state: str, commit: Optional[str], reason: str = "") -> dict:
+    with _checkout_lock:
+        _checkout_state.update(
+            state=state, commit=commit, reason=reason, checked_at=time.time()
+        )
+        return dict(_checkout_state)
+
+
+def _set_latest(latest: Optional[str]) -> None:
+    with _checkout_lock:
+        _checkout_state.update(latest=latest, latest_checked_at=time.time())
+
+
+def _claim_latest_check(force: bool) -> bool:
+    """True when check_latest should ask GitHub now, and the time of this ask
+    recorded in the same step: forced, or no ask began in the last
+    CHECKOUT_RETRY_SEC. Recorded before the ask, so a failed ask (offline,
+    GitHub unreachable) counts too, and panels opened while one ask is still
+    waiting on the network do not start another."""
+    with _checkout_lock:
+        last = _checkout_state["latest_checked_at"]
+        now = time.time()
+        if not force and last is not None and now - last < CHECKOUT_RETRY_SEC:
+            return False
+        _checkout_state["latest_checked_at"] = now
+        return True
+
+
+def _is_ancestor(git: str, project: Path, older: str, newer: str) -> bool:
+    return (
+        _git_run(git, ["merge-base", "--is-ancestor", older, newer], project).returncode
+        == 0
+    )
+
+
+def _fast_forward_checkout(
+    cfg: LyriaConfig, before_move: Optional[Callable[[], None]] = None
+) -> dict:
+    """Fast-forward an existing checkout to the latest commit of LYRIA_REPO's
+    default branch, when that is safe. POST /api/lyria/update runs it.
+
+    It leaves the checkout alone, and says why in checkout_state(), when:
+      * theDAW_LYRIA_PROJECT names it (a checkout the user manages),
+      * it is not a git checkout, or git is missing,
+      * it has local changes to tracked files (``dirty``),
+      * it is on a branch of its own: only a detached HEAD, or the default
+        branch tracking origin (the two shapes an Install leaves), is moved
+        (``branch``),
+      * it already holds commits the latest does not have: ``newer`` when
+        the latest is in its history, ``diverged`` when neither contains the
+        other -- a fast-forward is the only move made,
+      * the fetch or the move fails (``failed``, with git's own message).
+    The fetch always comes from LYRIA_REPO_URL, whatever the checkout's own
+    origin points at. Untracked files (the app's own generations and
+    projects) survive the move; git refuses one that would overwrite them,
+    which lands in ``failed``. ``before_move`` runs right before the move and
+    only when there is one to make: start_update() stops the Lyria running
+    from the tree there. When package.json or package-lock.json differ, or
+    node_modules is missing, the checkout is recorded in _DEPS_PENDING_FILE
+    before the move and npm install runs after it; the record is cleared only
+    when that install succeeds, so _ensure_deps runs it again after a failure.
+    Raises RuntimeError only for that npm install."""
+    project = cfg.project_path
+    if os.getenv("theDAW_LYRIA_PROJECT"):
+        return _set_checkout(
+            "managed",
+            None,
+            f"theDAW_LYRIA_PROJECT points at {project}, a checkout you manage, so "
+            "theDAW does not update it. Pull it yourself, then restart Lyria.",
+        )
+    git = _git_path()
+    if not git or not (project / ".git").exists():
+        return _set_checkout(
+            "not_git",
+            None,
+            f"{project} is not a git checkout theDAW can update"
+            + ("" if git else " (git is not installed)")
+            + ", so it stays as it is.",
+        )
+    with _spawn_lock:
+        head: Optional[str] = None
+        try:
+            rev = _git_run(git, ["rev-parse", "HEAD"], project)
+            head = rev.stdout.strip()
+            if rev.returncode != 0 or not head:
+                return _set_checkout(
+                    "not_git",
+                    None,
+                    f"git cannot read {project} "
+                    f"({_last_line(rev.stderr) or f'rc={rev.returncode}'}), so it "
+                    "stays as it is.",
+                )
+            dirty = _git_run(
+                git, ["status", "--porcelain", "--untracked-files=no"], project
+            )
+            if dirty.returncode != 0 or dirty.stdout.strip():
+                return _set_checkout(
+                    "dirty",
+                    head,
+                    f"The Lyria checkout at {project} has local changes to tracked "
+                    f"files, so theDAW left it at {head[:7]}. Commit or discard "
+                    "them, then press Update again.",
+                )
+            branch = _own_branch(git, project)
+            if branch:
+                return _set_checkout(
+                    "branch",
+                    head,
+                    f"The Lyria checkout at {project} is on its own branch "
+                    f"'{branch}', so theDAW left it at {head[:7]}. Switch it to "
+                    "its default branch, then press Update again.",
+                )
+            fetch = _git_run(
+                git,
+                ["fetch", "-q", "--no-tags", LYRIA_REPO_URL, "HEAD"],
+                project,
+                timeout=GIT_FETCH_TIMEOUT_SEC,
+            )
+            if fetch.returncode != 0:
+                return _set_checkout(
+                    "failed",
+                    head,
+                    f"Could not fetch {LYRIA_REPO}, so Lyria stays at "
+                    f"{head[:7]}: {_last_line(fetch.stderr) or f'rc={fetch.returncode}'}",
+                )
+            latest_rev = _git_run(git, ["rev-parse", "FETCH_HEAD"], project)
+            latest = latest_rev.stdout.strip()
+            if latest_rev.returncode != 0 or not latest:
+                return _set_checkout(
+                    "failed",
+                    head,
+                    f"git fetched {LYRIA_REPO} but cannot read the commit, so "
+                    f"Lyria stays at {head[:7]}.",
+                )
+            _set_latest(latest)
+            if latest == head:
+                return _set_checkout(
+                    "current", head, f"Lyria is at the latest commit, {head[:7]}."
+                )
+            if _is_ancestor(git, project, latest, head):
+                return _set_checkout(
+                    "newer",
+                    head,
+                    f"The Lyria checkout at {project} is at {head[:7]}, which "
+                    f"already contains the latest commit {latest[:7]}.",
+                )
+            if not _is_ancestor(git, project, head, latest):
+                return _set_checkout(
+                    "diverged",
+                    head,
+                    f"The Lyria checkout at {project} has commits the latest "
+                    f"({latest[:7]}) does not, so theDAW left it at {head[:7]}. "
+                    "A fast-forward is the only move theDAW makes.",
+                )
+            deps_same = _git_run(
+                git,
+                [
+                    "diff",
+                    "--quiet",
+                    head,
+                    latest,
+                    "--",
+                    "package.json",
+                    "package-lock.json",
+                ],
+                project,
+            )
+            needs_install = (
+                deps_same.returncode != 0 or not (project / "node_modules").is_dir()
+            )
+            if before_move is not None:
+                before_move()
+            if needs_install:
+                # Recorded BEFORE the move: a crash between the two costs
+                # one extra npm install, never a checkout left on the old
+                # dependencies.
+                _set_deps_pending(project, True)
+            on_branch = (
+                _git_run(git, ["symbolic-ref", "-q", "HEAD"], project).returncode == 0
+            )
+            if on_branch:
+                moved = _git_run(git, ["merge", "-q", "--ff-only", latest], project)
+            else:
+                moved = _git_run(git, ["checkout", "-q", "--detach", latest], project)
+            if moved.returncode != 0:
+                if needs_install:
+                    _clear_deps_pending(project)
+                return _set_checkout(
+                    "failed",
+                    head,
+                    f"git could not move the Lyria checkout from {head[:7]} to "
+                    f"{latest[:7]}: {_last_line(moved.stderr) or f'rc={moved.returncode}'}",
+                )
+            if on_branch:
+                _advance_tracking_ref(git, project, latest)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return _set_checkout(
+                "failed",
+                head,
+                f"Could not update the Lyria checkout, so it stays as it is: {e}",
+            )
+        log.info("lyria.sidecar: moved %s from %s to %s", project, head[:7], latest[:7])
+        if needs_install:
+            log.info("lyria.sidecar: dependencies changed -- running npm install")
+            _run_npm_install(cfg)
+            _clear_deps_pending(project)
+        return _set_checkout(
+            "updated", latest, f"Updated Lyria from {head[:7]} to {latest[:7]}."
+        )
+
+
+def _advance_tracking_ref(git: str, project: Path, latest: str) -> None:
+    """After a fast-forward of the default branch, point its origin
+    tracking ref at the same commit when origin IS LYRIA_REPO_URL, so git
+    status in the checkout does not report the update as local commits.
+    Best effort: a failure changes nothing about what runs."""
+    url = _git_run(git, ["remote", "get-url", "origin"], project).stdout.strip()
+    if url != LYRIA_REPO_URL:
+        return
+    upstream = _git_run(
+        git,
+        ["rev-parse", "--symbolic-full-name", "@{upstream}"],
+        project,
+    ).stdout.strip()
+    if upstream.startswith("refs/remotes/origin/"):
+        _git_run(git, ["update-ref", upstream, latest], project)
+
+
+def _own_branch(git: str, project: Path) -> Optional[str]:
+    """The checkout's branch when it is one theDAW must not move: None for a
+    detached HEAD (what an earlier Install left) or for the default branch
+    tracking origin's (what `git clone` leaves), the branch name for anything
+    else."""
+    current = _git_run(git, ["symbolic-ref", "-q", "--short", "HEAD"], project)
+    if current.returncode != 0:
+        return None  # detached
+    name = current.stdout.strip()
+    upstream = _git_run(
+        git,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        project,
+    ).stdout.strip()
+    default = _git_run(
+        git, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], project
+    ).stdout.strip()
+    if upstream == f"origin/{name}" and default == f"origin/{name}":
+        return None
+    return name
+
+
+def check_latest(*, force: bool = False) -> dict:
+    """Ask GitHub for the latest commit of LYRIA_REPO's default branch
+    (``git ls-remote``, no download) and compare it with the checkout's HEAD.
+
+    Asked at most once per CHECKOUT_RETRY_SEC unless ``force``, whether the
+    last ask was answered or not (_claim_latest_check), so opening the Lyria
+    panel repeatedly, or while GitHub cannot be reached, does not start a
+    git ls-remote each time. Returns ``{"head", "latest", "available"}``:
+    ``available`` is True when the latest differs from HEAD (the Update press
+    then says whether it is a fast-forward). Never raises; a failed ask
+    leaves ``latest`` as it was."""
+    cfg = resolve_config()
+    git = _git_path()
+    head: Optional[str] = None
+    if git and (cfg.project_path / ".git").exists():
+        try:
+            rev = _git_run(git, ["rev-parse", "HEAD"], cfg.project_path)
+            head = rev.stdout.strip() or None if rev.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            head = None
+    if git and _claim_latest_check(force):
+        cwd = cfg.project_path if cfg.project_path.is_dir() else _REPO_ROOT
+        try:
+            remote = _git_run(
+                git,
+                ["ls-remote", LYRIA_REPO_URL, "HEAD"],
+                cwd,
+                timeout=GIT_FETCH_TIMEOUT_SEC,
+            )
+            first = remote.stdout.split()
+            if (
+                remote.returncode == 0
+                and first
+                and re.fullmatch(r"[0-9a-f]{40,64}", first[0])
+            ):
+                _set_latest(first[0])
+            else:
+                log.info(
+                    "lyria.sidecar: could not ask %s for its latest commit: %s",
+                    LYRIA_REPO,
+                    _last_line(remote.stderr) or f"rc={remote.returncode}",
+                )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.info(
+                "lyria.sidecar: could not ask %s for its latest commit: %s",
+                LYRIA_REPO,
+                e,
+            )
+    latest = checkout_state()["latest"]
+    return {
+        "head": head,
+        "latest": latest,
+        "available": bool(head and latest and head != latest),
+    }
+
+
+# ── Update: fast-forward in the background, from the Lyria panel ────────────
+
+_update_lock = Lock()
+_update_state: dict = {
+    "status": "idle",  # idle | running | done | error
+    "message": "",
+    "error": None,
+    # Lyria was stopped for the move and started again.
+    "restarted": False,
+    # Lyria was stopped for the move and is not running now (the update or
+    # the restart failed): the panel reloads so it does not sit on a dead
+    # frame.
+    "stopped": False,
+    "started_at": None,
+    "finished_at": None,
+}
+
+
+def update_status() -> dict:
+    with _update_lock:
+        return dict(_update_state)
+
+
+def _set_update(**fields: object) -> None:
+    with _update_lock:
+        _update_state.update(fields)
+
+
+def _stop_for_update() -> bool:
+    """Stop the Lyria that runs from the checkout before its files move:
+    theDAW's own child, and an adopted one that restart() would end. Returns
+    True when one was running. A port held by something stop_adopted() will
+    not end (not Lyria, a Lyria from another folder) does not run from this
+    checkout, so the update goes on."""
+    stopped = stop()
+    try:
+        stopped = stop_adopted() or stopped
+    except RestartRefused as e:
+        log.info("lyria.sidecar: update goes on beside the process on the port: %s", e)
+    return stopped
+
+
+def _update_worker(cfg: LyriaConfig) -> None:
+    was_running = False
+
+    def _before_move() -> None:
+        nonlocal was_running
+        _set_update(message="Stopping Lyria to update it")
+        was_running = _stop_for_update()
+        _set_update(message="Moving the checkout to the latest commit")
+
+    try:
+        # _run_lock keeps ensure_running() from spawning a child between the
+        # stop and the move. It is released before the restart below, which
+        # takes it itself.
+        with _run_lock:
+            state = _fast_forward_checkout(cfg, before_move=_before_move)
+    except Exception as e:  # every failure must land in the status
+        log.warning("lyria.sidecar: update failed: %s", e)
+        _set_update(
+            status="error",
+            error=str(e),
+            restarted=False,
+            stopped=was_running,
+            finished_at=time.time(),
+        )
+        return
+    reason = state.get("reason") or ""
+    if was_running:
+        _set_update(message="Starting Lyria again")
+        try:
+            ensure_running()
+        except Exception as e:  # every failure must land in the status
+            log.warning("lyria.sidecar: Lyria did not start after the update: %s", e)
+            _set_update(
+                status="error",
+                error=f"{reason} Lyria did not start again: {e}".strip(),
+                restarted=False,
+                stopped=True,
+                finished_at=time.time(),
+            )
+            return
+    _set_update(
+        status="done",
+        message=reason,
+        error=None,
+        restarted=was_running,
+        stopped=False,
+        finished_at=time.time(),
+    )
+
+
+def start_update() -> dict:
+    """Fast-forward the checkout to the latest commit on a background thread
+    (_fast_forward_checkout), stopping Lyria for the move and starting it
+    again afterwards when it was running. Returns the update state; poll
+    update_status(). Raises RuntimeError when the checkout is missing or an
+    Install is running in it."""
+    cfg = resolve_config()
+    if not project_present(cfg):
+        raise RuntimeError(
+            f"There is no Lyria checkout at {cfg.project_path} to update. Press "
+            "Install on the Lyria card in Settings > Models first."
+        )
+    if install_status().get("status") in ("cloning", "installing"):
+        raise RuntimeError("Lyria is being installed. Update once that finishes.")
+    with _update_lock:
+        if _update_state["status"] == "running":
+            return {**_update_state, "already_running": True}
+        _update_state.update(
+            status="running",
+            message=f"Fetching the latest {LYRIA_REPO}",
+            error=None,
+            restarted=False,
+            stopped=False,
+            started_at=time.time(),
+            finished_at=None,
+        )
+    threading.Thread(
+        target=_update_worker, args=(cfg,), daemon=True, name="lyria-update"
+    ).start()
+    return update_status()
+
+
 def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
     try:
         if need_clone:
@@ -935,27 +2148,13 @@ def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
             _set_install(
                 status="cloning",
                 step="clone",
-                message=f"Cloning {LYRIA_REPO} into {target}",
+                message=f"Cloning the latest {LYRIA_REPO} into {target}",
             )
-            log.info("lyria.sidecar: git clone %s -> %s", LYRIA_REPO_URL, target)
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW
+            log.info("lyria.sidecar: clone %s -> %s", LYRIA_REPO_URL, target)
             with _sidecar_log_handle() as out:
-                rc = subprocess.call(
-                    [git, "clone", "--depth", "1", LYRIA_REPO_URL, str(target)],
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    shell=False,
-                    timeout=GIT_CLONE_TIMEOUT_SEC,
-                    creationflags=creationflags,
-                    env=child_env(),
-                )
-            if rc != 0:
-                raise RuntimeError(
-                    f"git clone failed (rc={rc}). See {SIDECAR_LOG_PATH} for the "
-                    "output (network? GitHub reachable?), then retry."
-                )
+                commit = _clone_latest(git, target, out)
+            _set_latest(commit)
+            _set_checkout("current", commit, f"Installed at {commit[:7]}.")
         _set_install(
             status="installing",
             step="npm",
@@ -971,10 +2170,13 @@ def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
     except subprocess.TimeoutExpired:
         _set_install(
             status="error",
-            error=f"git clone timed out after {int(GIT_CLONE_TIMEOUT_SEC)}s.",
+            error=(
+                f"Fetching {LYRIA_REPO} timed out after {int(GIT_CLONE_TIMEOUT_SEC)}s "
+                "-- check the network, then retry."
+            ),
             finished_at=time.time(),
         )
-    except Exception as e:  # noqa: BLE001 - every failure must land in the status
+    except Exception as e:  # every failure must land in the status
         log.warning("lyria.sidecar: install failed: %s", e)
         _set_install(status="error", error=str(e), finished_at=time.time())
 
@@ -1001,7 +2203,11 @@ def start_install() -> dict:
             "Node.js is not installed (npm/node not on PATH). Install Node.js LTS "
             "(nodejs.org), restart theDAW, then press Install again."
         )
-    if not need_clone and (cfg.project_path / "node_modules").is_dir():
+    if (
+        not need_clone
+        and (cfg.project_path / "node_modules").is_dir()
+        and not deps_pending(cfg.project_path)
+    ):
         _set_install(
             status="done",
             step=None,
@@ -1016,7 +2222,7 @@ def start_install() -> dict:
         status="cloning" if need_clone else "installing",
         step="clone" if need_clone else "npm",
         message=(
-            f"Cloning {LYRIA_REPO} into {cfg.project_path}"
+            f"Cloning the latest {LYRIA_REPO} into {cfg.project_path}"
             if need_clone
             else "Installing Node dependencies (npm install)"
         ),
@@ -1155,7 +2361,9 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
     """Spawn the Lyria Express server if it isn't already, and return the URL
     it serves on. Safe to call repeatedly -- no-ops if the port is already
     listening AND confirmed to be our sidecar (INT-001), even if some other
-    process started it."""
+    process started it. The checkout is run as it is: moving it to the latest
+    commit is the Update button's job (start_update), never a side effect of
+    opening the Lyria tab."""
     global _proc, _resolved_url, _stop_requested
     cfg = resolve_config()
     # 127.0.0.1, not localhost -- see _port_is_listening for why.
@@ -1197,9 +2405,9 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             if not proc_alive:
                 if not cfg.project_path.is_dir():
                     raise RuntimeError(
-                        f"Lyria project not found at {cfg.project_path}. Clone "
-                        "StarskreamEXE/lyria-3-pro beside this repo, or set "
-                        "theDAW_LYRIA_PROJECT to override."
+                        f"Lyria project not found at {cfg.project_path}. Press "
+                        "Install on the Lyria card in Settings > Models, or set "
+                        "theDAW_LYRIA_PROJECT to an existing checkout."
                     )
                 # A stop() from BEFORE this attempt began is stale -- clear it
                 # so a fresh attempt isn't haunted by an old request that
@@ -1339,3 +2547,185 @@ def stop() -> bool:
     finally:
         _stopping.clear()
     return True
+
+
+# ── an adopted Lyria: one this process did not spawn ─────────────────────────
+#
+# ensure_running() adopts a confirmed Lyria that is already on the port -- most
+# often a child an earlier backend session spawned and a crash left behind.
+# That process keeps the keys and cost mode of the session that started it, and
+# stop() cannot end it (it holds no handle). restart() below is the way out:
+# it ends such a process, but only one that answers as Lyria AND runs from the
+# configured checkout, so it can never kill another program on the port.
+
+
+class RestartRefused(RuntimeError):
+    """stop_adopted() will not end what holds the port; the message says what
+    the user can do instead. POST /restart answers it with a 409."""
+
+
+@dataclass(frozen=True)
+class _Listener:
+    pid: int
+    name: str
+    cwd: str
+    cmdline: str
+    create_time: Optional[float]
+
+
+def _port_listeners(port: int) -> Optional[list[_Listener]]:
+    """The processes listening on ``port``, or None when the connection table
+    cannot be read (that can need administrator rights)."""
+    try:
+        import psutil
+    except ImportError:  # psutil is a base dependency (pyproject.toml)
+        return None
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, PermissionError, OSError):
+        return None
+    found: list[_Listener] = []
+    seen: set[int] = set()
+    for conn in conns:
+        if conn.status != psutil.CONN_LISTEN or not conn.laddr:
+            continue
+        if conn.laddr.port != port or conn.pid is None or conn.pid in seen:
+            continue
+        seen.add(conn.pid)
+        name, cwd, cmdline, created = "", "", "", None
+        try:
+            proc = psutil.Process(conn.pid)
+            name = proc.name()
+            cmdline = " ".join(proc.cmdline())
+            created = proc.create_time()
+            try:
+                cwd = proc.cwd()
+            except (psutil.AccessDenied, OSError):
+                cwd = ""
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        found.append(_Listener(conn.pid, name, cwd, cmdline, created))
+    return found
+
+
+def _norm(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").lower()
+
+
+def _runs_from_checkout(listener: _Listener, project: Path) -> bool:
+    """True when the process's working directory is the checkout (``npm run
+    dev`` runs there) or its command line names a file inside it. Compared
+    case-insensitively with both separators, as Windows mixes them."""
+    root = _norm(str(project))
+    cwd = _norm(listener.cwd)
+    if cwd and (cwd == root or cwd.startswith(root + "/")):
+        return True
+    return (root + "/") in _norm(listener.cmdline)
+
+
+def _kill_listener(listener: _Listener) -> None:
+    """End one listener's process tree, after checking the PID still belongs
+    to the process that was identified (Windows reuses PIDs quickly)."""
+    try:
+        import psutil
+    except ImportError:
+        return
+    try:
+        proc = psutil.Process(listener.pid)
+        if (
+            listener.create_time is not None
+            and abs(proc.create_time() - listener.create_time) > 0.001
+        ):
+            return
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return
+    if sys.platform == "win32":
+        subprocess.call(
+            ["taskkill", "/PID", str(listener.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=child_env(),
+        )
+        return
+    try:
+        tree = [*proc.children(recursive=True), proc]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        tree = [proc]
+    for member in tree:
+        try:
+            member.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _gone, alive = psutil.wait_procs(tree, timeout=_TERMINATE_WAIT_SEC)
+    for member in alive:
+        try:
+            member.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
+def adopted_running() -> bool:
+    """True when a confirmed Lyria serves the port and this process did not
+    spawn it, i.e. it runs with keys and a cost mode theDAW did not hand it."""
+    if owns_process():
+        return False
+    port = resolve_config().port
+    return _port_is_listening(port) and _is_lyria_server(port)
+
+
+def stop_adopted() -> bool:
+    """End an adopted Lyria that runs from the configured checkout. Returns
+    True when one was stopped, False when there was none. Raises
+    RestartRefused, naming what to do, when the port is held by something
+    that is not Lyria, by a Lyria from another folder, or by a process this
+    user cannot see; RuntimeError when the process does not exit."""
+    cfg = resolve_config()
+    if owns_process() or not _port_is_listening(cfg.port):
+        return False
+    if not _is_lyria_server(cfg.port):
+        raise RestartRefused(str(_port_collision_error(cfg)))
+    found = _port_listeners(cfg.port)
+    if not found:
+        raise RestartRefused(
+            f"A Lyria started outside this session holds port {cfg.port}, but "
+            "theDAW cannot see which process it is (that can need administrator "
+            "rights). Close it, then press Restart again."
+        )
+    strangers = [
+        item for item in found if not _runs_from_checkout(item, cfg.project_path)
+    ]
+    if strangers:
+        where = strangers[0].cwd or strangers[0].name or f"pid {strangers[0].pid}"
+        raise RestartRefused(
+            f"The Lyria on port {cfg.port} runs from {where}, not from "
+            f"{cfg.project_path}. Stop it there, then press Restart again."
+        )
+    # Held for the whole teardown, as stop() does, so a concurrent
+    # ensure_running() waits instead of adopting the server that is exiting.
+    _stopping.set()
+    try:
+        for listener in found:
+            _kill_listener(listener)
+        deadline = time.monotonic() + _STOPPING_WAIT_TIMEOUT_SEC
+        while _port_is_listening(cfg.port) and time.monotonic() < deadline:
+            time.sleep(PORT_POLL_INTERVAL_SEC)
+    finally:
+        _stopping.clear()
+    if _port_is_listening(cfg.port):
+        raise RuntimeError(
+            f"The Lyria on port {cfg.port} did not stop. Close it, then press "
+            "Restart again."
+        )
+    log.info("lyria.sidecar: stopped an adopted Lyria on port %d", cfg.port)
+    return True
+
+
+def restart() -> str:
+    """Stop the Lyria serving the port -- this process's child, or an adopted
+    one from the configured checkout -- and start a fresh child, which reads
+    the current keys, provider and cost mode at spawn. Returns its URL.
+    Raises RestartRefused or RuntimeError as stop_adopted() and
+    ensure_running() do."""
+    stop()
+    stop_adopted()
+    return ensure_running()

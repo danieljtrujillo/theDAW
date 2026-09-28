@@ -3,7 +3,7 @@
 // developer's own :5173 / :8600 pair. Run:
 //   SA3_SHOTS_BACKEND=http://localhost:8601 npx vite --config vite.shots.config.ts
 import { defineConfig, type UserConfig } from 'vite';
-import base from './vite.config';
+import base from './vite.config.ts';
 
 const BACKEND = process.env.SA3_SHOTS_BACKEND ?? 'http://localhost:8601';
 const PORT = Number(process.env.SA3_SHOTS_PORT ?? 5174);

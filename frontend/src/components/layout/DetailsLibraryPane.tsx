@@ -51,6 +51,9 @@ import { pagedIndexOf } from '../../lib/pagedIndexOf';
 import { setAudioDragData } from '../../lib/audioDnD';
 import { sendAudioToEditor, sendAudioToInit, type SendableAudio } from '../../lib/sendToTargets';
 import { LIBRARY_PAGE_SIZE, useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import { LibraryIndexProgress } from '../library/LibraryIndexProgress';
+import { useLibraryIndexStatus } from '../../state/libraryIndexStatusStore';
+import { libraryOpeningText } from '../../lib/libraryIndexStatus';
 import { usePlayerStore } from '../../state/playerStore';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { logError, logInfo, logWarn } from '../../state/logStore';
@@ -182,12 +185,12 @@ function PaneRow({
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1">
-            <p className="text-[10px] font-bold text-zinc-200 truncate">{text.title}</p>
+            <p className="text-xs leading-4 font-bold text-zinc-200 truncate">{text.title}</p>
             {entry.favorite && (
               <Star className="w-2.5 h-2.5 shrink-0 text-yellow-500 fill-current" aria-hidden="true" />
             )}
           </div>
-          <p className="text-[8px] font-mono text-zinc-600 truncate">{text.meta}</p>
+          <p className="text-xs leading-4 font-bold text-zinc-500 truncate">{text.meta}</p>
         </div>
         {sounding && <Volume2 className="w-3 h-3 shrink-0 text-purple-300" aria-hidden="true" />}
       </div>
@@ -201,6 +204,8 @@ export const DetailsLibraryPane: React.FC = () => {
   const entryAt = useLibraryStore((s) => s.entryAt);
   const ensureRange = useLibraryStore((s) => s.ensureRange);
   const loaded = useLibraryStore((s) => s.loaded);
+  const libraryOpening = useLibraryStore((s) => s.libraryOpening);
+  const indexStatus = useLibraryIndexStatus((s) => s.status);
   const loading = useLibraryStore((s) => s.loading);
   const pageError = useLibraryStore((s) => s.pageError);
   const sortBy = useLibraryStore((s) => s.sortBy);
@@ -218,6 +223,13 @@ export const DetailsLibraryPane: React.FC = () => {
   const [dragOver, setDragOver] = useState(false);
   /** The row the keyboard is on — the list's one tab stop lives on the list. */
   const [focusIndex, setFocusIndex] = useState(0);
+  // The focus as of the last commit, for the selection follower below: it
+  // reads the focus but must not run again when only the focus moves (the
+  // keyboard moving off the selected row would be pulled straight back).
+  const focusIndexRef = useRef(focusIndex);
+  useEffect(() => {
+    focusIndexRef.current = focusIndex;
+  }, [focusIndex]);
   const listRef = useRef<ListImperativeAPI | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const rowMenu = useContextMenu<LibraryEntry>();
@@ -243,15 +255,14 @@ export const DetailsLibraryPane: React.FC = () => {
   // page is left alone rather than chased: the list is where the user is.
   useEffect(() => {
     if (!selectedEntryId) return;
-    if (entryAt(focusIndex)?.id === selectedEntryId) return;
+    if (entryAt(focusIndexRef.current)?.id === selectedEntryId) return;
     const at = pagedIndexOf(selectedEntryId, total, entryAt, LIBRARY_PAGE_SIZE);
     if (at < 0) return;
     setFocusIndex(at);
     listRef.current?.scrollToRow({ index: at, align: 'smart' });
     // `entries` is in the deps because a page landing can make a previously
-    // unlocatable selection locatable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedEntryId, entries, total]);
+    // unlocatable selection locatable; `entryAt` reads the pages it holds.
+  }, [selectedEntryId, entries, total, entryAt]);
 
   const playEntry = useCallback(async (entry: LibraryEntry) => {
     const player = usePlayerStore.getState();
@@ -356,6 +367,7 @@ export const DetailsLibraryPane: React.FC = () => {
 
   const emptyMessage = (): string => {
     if (pageError) return `The library could not be read: ${pageError}`;
+    if (libraryOpening) return libraryOpeningText(indexStatus);
     if (!loaded) return loading ? 'Loading the library…' : 'Waiting for the backend…';
     if (searchQuery.trim()) return `No track matches “${searchQuery.trim()}”.`;
     return 'The library is empty — drop audio files here, or click IMPORT.';
@@ -402,7 +414,7 @@ export const DetailsLibraryPane: React.FC = () => {
     <div className="h-full flex flex-col bg-[#0a080f]">
       {/* Toolbar: what the list is showing, and the keyboard route to import. */}
       <div className="flex items-center justify-between gap-2 px-2 py-1 border-b border-white/5 bg-black/40 shrink-0">
-        <span className="text-[9px] font-mono text-zinc-500 truncate flex items-center gap-1.5">
+        <span className="text-xs font-bold text-zinc-400 truncate flex items-center gap-1.5">
           <Library className="w-3 h-3 text-purple-300 shrink-0" aria-hidden="true" />
           {countLabel}
         </span>
@@ -438,12 +450,18 @@ export const DetailsLibraryPane: React.FC = () => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="btn-ghost text-[9px] py-1 flex items-center gap-1.5 shrink-0"
+            className="btn-ghost text-xs font-bold py-1 flex items-center gap-1.5 shrink-0"
             title="Import audio files into the library — or drop them anywhere in this list"
           >
             <FolderPlus className="w-3 h-3 text-purple-300" aria-hidden="true" /> IMPORT
           </button>
         </div>
+      </div>
+
+      {/* The backend opening the library (upgrade, first read, search index
+          build); hidden once it is ready. */}
+      <div className="px-2 pt-1.5 empty:hidden">
+        <LibraryIndexProgress />
       </div>
 
       {/* Filter + sort. Both are the LIBRARY's own and the backend applies
@@ -463,7 +481,7 @@ export const DetailsLibraryPane: React.FC = () => {
           }}
           placeholder="Search title / prompt / tags…"
           spellCheck={false}
-          className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-purple-400/50"
+          className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-bold text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-purple-400/50"
         />
         <label htmlFor={SORT_ID} className="sr-only">Sort the library</label>
         <select
@@ -471,7 +489,7 @@ export const DetailsLibraryPane: React.FC = () => {
           name={SORT_ID}
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as LibrarySortBy)}
-          className="bg-black/40 border border-white/10 rounded px-1 py-1 text-[9px] font-mono text-zinc-300 focus:outline-none focus:border-purple-400/50"
+          className="bg-black/40 border border-white/10 rounded px-1 py-1 text-xs font-bold text-zinc-300 focus:outline-none focus:border-purple-400/50"
           title="The library's sort order"
         >
           {SORT_OPTIONS.map((o) => (
@@ -497,7 +515,7 @@ export const DetailsLibraryPane: React.FC = () => {
             ) : (
               <Library className="w-6 h-6" aria-hidden="true" />
             )}
-            <p className="text-[10px] font-mono uppercase tracking-widest">{emptyMessage()}</p>
+            <p className="text-xs font-bold font-sans not-italic">{emptyMessage()}</p>
           </div>
         ) : (
           <List

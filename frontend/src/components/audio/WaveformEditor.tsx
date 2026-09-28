@@ -13,6 +13,7 @@ import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { stripSourceId } from '../../lib/displayName';
 import { SlideTrack } from './SlideTrack';
 import { SemanticWave } from './SemanticWave';
+import { WaveformModeToggle } from './WaveformModeControl';
 import { MetamorphPanel } from './MetamorphPanel';
 import { useMorphStore } from '../../state/morphEngine';
 import { useMetamorphPanelRequest } from '../../state/metamorphPanelRequestStore';
@@ -28,6 +29,7 @@ import {
   type BounceRequest, type RenderDeps,
 } from '../../lib/renderCore';
 import { crossfadeRegions } from '../../lib/crossfade';
+import { pairingHeader } from '../../lib/pairing';
 import {
   MIN_CLIP_SEC,
   resizeLeft as resizeClipLeft,
@@ -127,8 +129,8 @@ import { useEditThemeStore } from '../../state/editThemeStore';
 import { TimelineGridLayer } from './TimelineGridLayer';
 import { TimelinePrefsPanel } from './TimelinePrefsPanel';
 import {
-  ZOOM_FOLLOW_HOLD_MS, ZOOM_STEP_FACTOR, clipChromeLayout, createZoomCoalescer, fitProjectZoom, fitRangeZoom,
-  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerBarLabels, rulerTimeTicks, shouldRescrollAfterZoom,
+  ZOOM_FOLLOW_HOLD_MS, ZOOM_STEP_FACTOR, barLabelUnderReadout, clipChromeLayout, createZoomCoalescer, fitProjectZoom, fitRangeZoom,
+  followHoldActive, localViewportWidth, planZoom, resolveAnchorSec, rulerBarLabels, rulerReadoutSpanPx, rulerTimeTicks, shouldRescrollAfterZoom,
   spanOfClips, viewportWindowSec, wheelDispatch, type ZoomAnchor, type ZoomCoalescer,
 } from './timelineZoom';
 import {
@@ -161,6 +163,8 @@ import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import { punchWindowFrom, useRecordingPrefs, useRecordingStore, type RecordingStatus } from '../../state/recordingStore';
 import type { LevelFrame } from '../../lib/recordingEngine';
 import { SurfaceAudio } from './IoDeviceSelect';
+import { acquireObjectUrl } from '../../lib/sharedObjectUrl';
+import { handleEngineElsewhere } from '../../lib/magentaElsewhere';
 
 const TRACK_HEADER_PX = 180;
 
@@ -551,7 +555,9 @@ const processThroughVst = async (file: File, vst: VstNode, name: string): Promis
   // case is sent: absent means the pedalboard path the backend has always
   // taken, so every old project and every older backend behaves identically.
   if (vst.state_host === 'thedaw') form.append('state_host', 'thedaw');
-  const res = await fetch('/api/vst/process-file', { method: 'POST', body: form });
+  // pairingHeader(): a device opened from the Mobile Access share link renders
+  // through the same route, paired; {} on this machine's own UI.
+  const res = await fetch('/api/vst/process-file', { method: 'POST', body: form, headers: pairingHeader() });
   if (!res.ok) {
     // Surfaced as the backend words it, and NOT retried through pedalboard: a
     // silent fall back would print a state that host cannot read and report a
@@ -1013,7 +1019,7 @@ const RenderJobsPill: React.FC = () => {
   if (!live) {
     return (
       <div className="flex items-center gap-1.5 rounded border border-white/10 bg-black/40 px-2 py-0.5">
-        <span className="font-mono text-[9px] text-zinc-500 tabular-nums">
+        <span className="text-xs font-semibold text-zinc-500 tabular-nums">
           {finishedCount} render{finishedCount === 1 ? '' : 's'} finished
         </span>
         <button
@@ -1040,7 +1046,7 @@ const RenderJobsPill: React.FC = () => {
       className="flex items-center gap-1.5 rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5"
     >
       <Loader2 className={`w-3 h-3 text-purple-300 ${active ? 'animate-spin' : 'opacity-50'}`} />
-      <span className="font-mono text-[9px] text-purple-100 max-w-32 truncate" title={live.label}>
+      <span className="tabular-nums text-xs font-semibold text-purple-100 max-w-32 truncate" title={live.label}>
         {live.label}
       </span>
       <progress
@@ -1060,7 +1066,7 @@ const RenderJobsPill: React.FC = () => {
           onClick={() => cancel(queued[queued.length - 1].id)}
           aria-label="Cancel the last queued render"
           title="Cancel the render at the back of the queue"
-          className="font-mono text-[9px] text-purple-300/70 tabular-nums rounded px-1 hover:text-white hover:bg-white/10"
+          className="text-xs font-semibold text-purple-300/70 tabular-nums rounded px-1 hover:text-white hover:bg-white/10"
         >
           +{pending} queued
         </button>
@@ -1220,7 +1226,7 @@ const TrackArmButton: React.FC<{
       {counting && (
         <span
           aria-hidden="true"
-          className="font-mono text-[8px] uppercase tracking-wider text-red-400 shrink-0"
+          className="text-xs font-bold uppercase tracking-wider text-red-400 shrink-0"
         >
           count-in
         </span>
@@ -1272,8 +1278,9 @@ const TrackInputMeter: React.FC<{ trackId: string; trackName: string }> = ({ tra
 /**
  * ClipWave — the DJ-style semantic waveform for a timeline audio clip. Renders
  * only the clip's trim window of its source audio (viewport mapped from
- * offsetIntoSource/sourceDuration). Owns one object URL per clip, revoked on
- * unmount. No per-clip playhead — the timeline draws a global one over clips.
+ * offsetIntoSource/sourceDuration). Shares one object URL per source Blob
+ * (`lib/sharedObjectUrl`), revoked a few seconds after the last clip using it
+ * unmounts. No per-clip playhead — the timeline draws a global one over clips.
  *
  * `normalize={false}` (D16): the EDIT timeline draws every clip at its
  * ABSOLUTE amplitude, not scaled up to fill the lane by each clip's own
@@ -1286,22 +1293,25 @@ const TrackInputMeter: React.FC<{ trackId: string; trackName: string }> = ({ tra
  * The DJ decks (a different surface, a different job: cueing one track at a
  * time, not comparing levels across an arrangement) keep `SemanticWave`'s
  * own default of `true`.
+ *
+ * `showModeToggle={false}`: the clip body carries the trim handles, the fade
+ * grips and the inpaint drag target, and a narrow clip is all body. The
+ * colour mode toggle lives in the EDIT toolbar instead.
  */
 const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }> = ({ clip, height, selected }) => {
-  // The object URL is minted INSIDE the effect that revokes it, so each mount
-  // owns exactly the URL its own cleanup tears down. Creating it in a useMemo
-  // and revoking it from a cleanup keyed on the same value is what left every
-  // clip blank in dev: StrictMode's mount -> cleanup -> remount revoked the URL
-  // before the remount handed that very same (now dead) blob: URL to
-  // SemanticWave, whose fetch then failed with "TypeError: Failed to fetch" and
-  // left the bin list empty. A fresh URL per mount survives the double-invoke.
+  // One object URL per source Blob, acquired inside the effect that releases
+  // it. The URL is the waveform decode cache's key, so a fresh URL per mount
+  // made every remount a second fetch and decode and filled the cache with
+  // keys nobody read again. Releasing only schedules the revoke: StrictMode's
+  // mount -> cleanup -> remount gets the same, still-live URL back (revoking
+  // on cleanup is what once left every clip blank with "Failed to fetch").
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    const objectUrl = URL.createObjectURL(clip.audioBlob);
-    setUrl(objectUrl);
+    const shared = acquireObjectUrl(clip.audioBlob);
+    setUrl(shared.url);
     return () => {
-      setUrl((current) => (current === objectUrl ? null : current));
-      try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+      setUrl((current) => (current === shared.url ? null : current));
+      shared.release();
     };
   }, [clip.audioBlob]);
   const dur = clip.sourceDuration > 0 ? clip.sourceDuration : clip.durationSec || 1;
@@ -1313,7 +1323,7 @@ const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }>
   return (
     <div className="h-full w-full" style={{ opacity: selected ? 1 : 0.85 }}>
       {url && (
-        <SemanticWave audioUrl={url} height={height} viewportStart={viewportStart} viewportEnd={Math.max(viewportStart + 1e-4, viewportEnd)} transparentBg normalize={false} />
+        <SemanticWave audioUrl={url} height={height} viewportStart={viewportStart} viewportEnd={Math.max(viewportStart + 1e-4, viewportEnd)} transparentBg normalize={false} showModeToggle={false} />
       )}
     </div>
   );
@@ -1602,22 +1612,22 @@ const TimePitchControls: React.FC<{ busy: boolean; onApply: (tempo: number, semi
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Tempo</span>
+        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Tempo</span>
         <SlideTrack value={tempo} min={0.25} max={4} step={0.01} defaultValue={1} ariaLabel="Tempo (time-stretch)" className="flex-1" onChange={setTempo} />
-        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
+        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{tempo.toFixed(2)}x</span>
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Pitch</span>
+        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Pitch</span>
         <SlideTrack value={semitones} min={-12} max={12} step={1} defaultValue={0} ariaLabel="Pitch (semitones)" className="flex-1" onChange={(v) => setSemitones(Math.round(v))} />
-        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
+        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">{semitones >= 0 ? '+' : ''}{semitones} st</span>
       </div>
-      <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+      <p className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
         Tempo keeps pitch; pitch keeps length. Rendered on the backend and baked into the clip.
       </p>
       <button
         onClick={() => onApply(tempo, Math.round(semitones))}
         disabled={busy || (tempo === 1 && semitones === 0)}
-        className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+        className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-xs font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
       >
         {busy ? 'Rendering…' : 'Apply'}
       </button>
@@ -1708,7 +1718,7 @@ const ClipGainControls: React.FC<{ gain: number; onChange: (gain: number) => voi
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-[9px] font-mono text-zinc-500 w-14 shrink-0">Gain</span>
+        <span className="text-xs font-semibold tabular-nums text-zinc-500 w-14 shrink-0">Gain</span>
         <SlideTrack
           value={Math.max(-24, Math.min(12, db))}
           min={-24}
@@ -1719,18 +1729,18 @@ const ClipGainControls: React.FC<{ gain: number; onChange: (gain: number) => voi
           className="flex-1"
           onChange={(v) => onChange(10 ** (v / 20))}
         />
-        <span className="text-[9px] font-mono text-zinc-400 w-12 shrink-0 text-right tabular-nums">
+        <span className="text-xs font-semibold text-zinc-400 w-12 shrink-0 text-right tabular-nums">
           {db > -0.05 && db < 0.05 ? '0.0' : `${db > 0 ? '+' : ''}${db.toFixed(1)}`} dB
         </span>
       </div>
-      <p className="text-[8px] font-mono text-zinc-600 leading-relaxed">
+      <p className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
         Sits before the track fader and its insert FX, so gain-staging changes what the
         track&apos;s compressor hears. Non-destructive — the clip&apos;s audio is untouched.
       </p>
       <button
         onClick={() => onChange(1)}
         disabled={db > -0.05 && db < 0.05}
-        className="w-full py-1.5 rounded bg-white/5 border border-white/10 text-zinc-300 text-[9px] font-black uppercase tracking-widest hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+        className="w-full py-1.5 rounded bg-white/5 border border-white/10 text-zinc-300 text-xs font-black uppercase tracking-widest hover:bg-white/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
       >
         Reset to unity
       </button>
@@ -1760,7 +1770,7 @@ const MarkerFlag: React.FC<{
           onBlur={commit}
           onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
           aria-label="Marker name"
-          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-[8px] font-mono text-cyan-100 outline-none"
+          className="absolute top-0 left-0 w-20 bg-zinc-900 border border-cyan-500/50 rounded px-1 text-xs font-semibold tabular-nums text-cyan-100 outline-none"
         />
       ) : (
         <button
@@ -1768,7 +1778,7 @@ const MarkerFlag: React.FC<{
           onDoubleClick={() => { setDraft(marker.label); setEditing(true); }}
           onContextMenu={(e) => { e.preventDefault(); onDelete(); }}
           title={`${marker.label} — click to seek, double-click to rename, Alt or right-click to delete`}
-          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 bg-cyan-500/20 border border-cyan-400/40 rounded-br text-[8px] font-mono text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
+          className="absolute top-0 left-0 flex items-center gap-0.5 px-1 h-3.5 leading-none bg-cyan-500/20 border border-cyan-400/40 rounded-br text-xs font-semibold tabular-nums text-cyan-200 hover:bg-cyan-500/35 whitespace-nowrap max-w-24"
         >
           <Flag className="w-2 h-2 shrink-0" /> <span className="truncate">{marker.label}</span>
         </button>
@@ -1824,7 +1834,7 @@ const NativeFader: React.FC<{
     />
     {automated && (
       <span
-        className="text-[7px] font-mono font-black text-emerald-400 shrink-0"
+        className="text-xs tabular-nums font-black text-emerald-400 shrink-0"
         title="An automation lane drives this parameter — the fader shows the lane's value at the playhead. Disable the lane to take the control back."
       >A</span>
     )}
@@ -3114,7 +3124,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         let detail = '';
         try {
           const body = await res.json() as { detail?: unknown };
-          detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? '');
+          const message = (body.detail as { message?: unknown } | null)?.message;
+          detail = typeof body.detail === 'string'
+            ? body.detail
+            : typeof message === 'string'
+              ? message
+              : JSON.stringify(body.detail ?? '');
+          // Another copy's Magenta engine holds the GPU: its card names the
+          // engine and offers to stop it.
+          handleEngineElsewhere(body, 'Stable Audio cannot load beside it.');
         } catch {
           try { detail = await res.text(); } catch { /* body already consumed */ }
         }
@@ -5861,6 +5879,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const barLabels = gridWindow
     ? rulerBarLabels({ startSec: gridWindow.startSec, endSec: gridWindow.endSec, bpm: projectBpm, zoom })
     : [];
+  /** The time range's readout, and the ruler px its pill can cover. It shares
+   *  the ruler's top row with the bar numbers, so the numbers under it hide. */
+  const rangeReadout = timeSelection ? formatRangeReadout(timeSelection) : null;
+  const rangeReadoutSpan = timeSelection && rangeReadout ? rulerReadoutSpanPx(timeSelection.startSec, zoom, rangeReadout) : null;
   /** Is this clip's action menu the one on screen? (`aria-expanded` for its trigger buttons.) */
   const clipMenuOpenFor = (clipId: string): boolean => clipMenu.position !== null && clipMenu.payload?.clipId === clipId;
   /** Open a clip's menu under one of its header buttons (compact / handle chrome). */
@@ -6236,7 +6258,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             >
               <ZoomOut className="w-3 h-3" />
             </button>
-            <span className="text-xs font-bold text-zinc-400 w-20 text-center tabular-nums">{zoom.toFixed(2)}px/s</span>
+            <span className="text-xs font-bold tabular-nums text-zinc-400 min-w-20 text-center">{zoom.toFixed(2)}px/s</span>
             <button
               type="button"
               onClick={() => zoomStepBy('in')}
@@ -6275,6 +6297,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             >
               <BoxSelect className="w-3 h-3" />
             </button>
+            {/* The waveform colour mode for every clip (and every waveform in
+                the app); a button inside each clip covered its trim handle
+                and fade grip. */}
+            <WaveformModeToggle variant="toolbar" />
             <button
               onClick={() => setShowShortcuts(true)}
               aria-label="Keyboard shortcuts"
@@ -6444,7 +6470,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-[9px] font-mono text-zinc-500 tabular-nums">
+          <span className="text-xs font-semibold text-zinc-500 tabular-nums">
             <span ref={headerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
           <label htmlFor="editor-mixdown-name" className="sr-only">Mixdown filename</label>
@@ -6455,7 +6481,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             value={mixdownName}
             onChange={(e) => setMixdownName(e.target.value)}
             placeholder="mixdown name…"
-            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
+            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-mono text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
             title="Optional filename for the committed mixdown"
           />
           {/* What the queue is doing right now: the active job, its progress
@@ -6485,7 +6511,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             // cancel it) instead of being swallowed. Only an empty timeline has
             // nothing to render.
             disabled={clips.length === 0}
-            className="btn-primary py-1! px-2! text-[9px] flex items-center gap-1.5 disabled:opacity-40"
+            className="btn-primary py-1! px-2! text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
             title={isCommitting
               ? 'A mixdown is already rendering — pressing this queues another behind it'
               : 'Render all clips to a single audio file and save it to the library'}
@@ -6620,14 +6646,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           >
             <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2 shrink-0">
               <Music className="w-3.5 h-3.5 text-cyan-300" />
-              <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-300">Magenta RT2</span>
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-cyan-300">Magenta RT2</span>
               <div className="flex items-center gap-1 ml-2">
                 {MAGENTA_TOOLS.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setMagentaToolId(t.id)}
                     title={t.desc}
-                    className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${magentaTool.id === t.id ? 'bg-cyan-600/20 border-cyan-500/40 text-cyan-200' : 'border-white/8 text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
+                    className={`px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider border transition-colors ${magentaTool.id === t.id ? 'bg-cyan-600/20 border-cyan-500/40 text-cyan-200' : 'border-white/8 text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
                   >
                     {t.name}
                   </button>
@@ -6745,7 +6771,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {!stemsJob.phase.startsWith('failed') && (
             <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-300" />
           )}
-          <span className="text-[10px] font-mono text-zinc-200">
+          <span className="text-xs font-semibold tabular-nums text-zinc-200">
             {stemsJob.phase.startsWith('failed')
               ? `Stem separation ${stemsJob.phase}`
               : `Separating stems — ${stemsJob.phase} ${stemsJob.pct}%`}
@@ -6753,7 +6779,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {stemsJob.entryId && !stemsJob.phase.startsWith('failed') && (
             <button
               onClick={abortStemsJob}
-              className="px-2 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-200 text-[9px] font-black uppercase tracking-widest hover:bg-red-500/20"
+              className="px-2 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-200 text-xs font-black uppercase tracking-widest hover:bg-red-500/20"
             >
               Abort
             </button>
@@ -6772,7 +6798,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           maxHeight="70vh"
           className="fixed z-50 w-72 hardware-card bg-black/90 border border-amber-500/30 rounded-lg shadow-2xl shadow-amber-900/30 p-3 flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300">Automation Lanes</span>
+            <span className="font-display text-xs font-bold uppercase tracking-wider text-amber-300">Automation Lanes</span>
             <button
               onClick={() => setAutomationEdit(false)}
               aria-label="Close automation editor"
@@ -6799,7 +6825,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onChange={(e) => setAddLaneKey(e.target.value)}
               disabled={addLaneOptions.length === 0}
               title="Add an automation lane for a parameter you have not ridden yet"
-              className="flex-1 min-w-0 bg-black/40 text-zinc-300 border border-white/10 rounded px-1.5 py-1 text-[9px] font-mono focus:outline-hidden focus:ring-1 focus:ring-amber-500/60 disabled:opacity-40"
+              className="flex-1 min-w-0 bg-black/40 text-zinc-300 border border-white/10 rounded px-1.5 py-1 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-amber-500/60 disabled:opacity-40"
             >
               <option value="">{addLaneOptions.length === 0 ? 'No parameters left to automate' : 'Choose a parameter…'}</option>
               {addLaneOptions.map((o) => (
@@ -6823,7 +6849,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </button>
           </div>
           {automationLanes.length === 0 ? (
-            <span className="text-[9px] font-mono text-zinc-600 leading-relaxed">
+            <span className="text-xs font-semibold tabular-nums text-zinc-600 leading-relaxed">
               No lanes yet. Pick a parameter above, or turn on WRITE and ride a fader or FX control while playing to record one.
             </span>
           ) : (
@@ -6846,7 +6872,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     />
                     <button
                       onClick={() => setActiveLaneId(lane.id)}
-                      className={`flex-1 text-left text-[9px] font-mono truncate ${active ? 'text-amber-100' : 'text-zinc-300 hover:text-white'}`}
+                      className={`flex-1 text-left text-xs font-semibold tabular-nums truncate ${active ? 'text-amber-100' : 'text-zinc-300 hover:text-white'}`}
                       title="Select this lane to edit its breakpoints"
                     >
                       {laneLabel(lane)} <span className="text-zinc-600">({lane.points.length})</span>
@@ -6855,7 +6881,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       onClick={() => clearAutomationLane(lane.id)}
                       aria-label={`Clear ${laneLabel(lane)}`}
                       title="Clear all breakpoints in this lane"
-                      className="px-1 py-0.5 rounded text-[8px] font-mono text-zinc-500 hover:text-amber-300 hover:bg-white/5 shrink-0"
+                      className="px-1 py-0.5 rounded text-xs font-semibold tabular-nums text-zinc-500 hover:text-amber-300 hover:bg-white/5 shrink-0"
                     >
                       CLR
                     </button>
@@ -6873,7 +6899,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </div>
           )}
           {activeLaneId && (
-            <p className="text-[8px] font-mono text-zinc-500 leading-relaxed border-t border-white/5 pt-2">
+            <p className="text-xs font-semibold tabular-nums text-zinc-500 leading-relaxed border-t border-white/5 pt-2">
               Editing the highlighted lane: click the curve to add a point, drag a point to move it, Alt-click or right-click a point to delete it.
             </p>
           )}
@@ -6893,7 +6919,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className="fixed z-50 w-66 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
           >
             <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400 truncate">
                 Clip instrument — <span style={{ color: clip.color }}>{clip.label}</span>
               </span>
               <button
@@ -6923,7 +6949,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
           >
             <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400 truncate">
                 Time / Pitch — <span style={{ color: clip.color }}>{clip.label}</span>
               </span>
               <button
@@ -6958,7 +6984,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className="hardware-card bg-[#0c0a12] border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-4 max-w-2xl w-full max-h-full overflow-y-auto"
           >
             <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2 mb-3">
-              <h2 id="editor-shortcuts-title" className="text-[10px] font-mono uppercase tracking-widest text-zinc-300">
+              <h2 id="editor-shortcuts-title" className="font-display text-xs font-bold uppercase tracking-widest text-zinc-300">
                 Edit — keyboard shortcuts
               </h2>
               <button
@@ -6973,11 +6999,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
               {EDIT_SHORTCUTS.map((section) => (
                 <div key={section.group} className="flex flex-col gap-1">
-                  <span className="text-[9px] font-mono uppercase tracking-widest text-purple-300/70">{section.group}</span>
+                  <span className="font-display text-xs font-bold uppercase tracking-widest text-purple-300/70">{section.group}</span>
                   {section.keys.map(([k, desc]) => (
                     <div key={k} className="flex items-baseline justify-between gap-3">
-                      <kbd className="text-[9px] font-mono text-zinc-200 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">{k}</kbd>
-                      <span className="text-[9px] font-mono text-zinc-500 text-right">{desc}</span>
+                      <kbd className="text-xs font-semibold tabular-nums text-zinc-200 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">{k}</kbd>
+                      <span className="text-xs font-semibold tabular-nums text-zinc-500 text-right">{desc}</span>
                     </div>
                   ))}
                 </div>
@@ -6999,7 +7025,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3 flex flex-col gap-2"
           >
             <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 truncate">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400 truncate">
                 Clip gain — <span style={{ color: clip.color }}>{clip.label}</span>
               </span>
               <button
@@ -7049,7 +7075,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 setClipNamePanel(null);
               }}
             >
-              <label htmlFor="editor-clip-name" className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">Clip name</label>
+              <label htmlFor="editor-clip-name" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Clip name</label>
               <input
                 id="editor-clip-name"
                 name="clip-name"
@@ -7060,7 +7086,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 className="w-full rounded border border-white/10 bg-black/40 px-2 py-1 font-sans text-xs text-zinc-100 focus:border-purple-400/60 focus:outline-hidden"
               />
               <div className="flex items-center gap-2">
-                <label htmlFor="editor-clip-color" className="text-[10px] font-mono uppercase tracking-wider text-zinc-400">
+                <label htmlFor="editor-clip-color" className="text-xs font-bold uppercase tracking-wider text-zinc-400">
                   Colour{targets.length > 1 ? ` (${targets.length} clips)` : ''}
                 </label>
                 <input
@@ -7074,14 +7100,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 <button
                   type="button"
                   onClick={() => paint(trackColor)}
-                  className="rounded border border-white/10 px-2 py-1 font-display text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white"
+                  className="rounded border border-white/10 px-2 py-1 font-display text-xs font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white"
                   title="Use the track's colour again"
                 >
                   Track colour
                 </button>
                 <button
                   type="submit"
-                  className="ml-auto rounded border border-purple-500/40 bg-purple-500/15 px-2 py-1 font-display text-[10px] font-bold uppercase tracking-wider text-purple-200 hover:bg-purple-500/25"
+                  className="ml-auto rounded border border-purple-500/40 bg-purple-500/15 px-2 py-1 font-display text-xs font-bold uppercase tracking-wider text-purple-200 hover:bg-purple-500/25"
                 >
                   Done
                 </button>
@@ -7096,7 +7122,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         {/* Track headers (sticky, not scrolled) */}
         <div ref={trackHeaderColRef} className="shrink-0 bg-[#0c0a12] border-r border-[#1a1528] overflow-hidden flex flex-col" style={{ width: TRACK_HEADER_PX }}>
           {/* Ruler row spacer */}
-          <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-[8px] font-mono text-zinc-700 uppercase">tracks</div>
+          <div className="h-6 border-b border-white/5 bg-black/30 flex items-center justify-center text-xs font-bold text-zinc-700 uppercase">tracks</div>
           {/* One live region for the whole column — the count-in belongs to the
               pass, not to a track. See CountInAnnouncement. */}
           <CountInAnnouncement />
@@ -7298,15 +7324,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             {renderRuler.map((tick) => (
               <div
                 key={tick.sec}
-                className="absolute top-0 bottom-0 flex items-center px-1 border-l border-white/5 pointer-events-none"
+                className="absolute top-0 bottom-0 flex items-end pb-0.5 px-1 border-l border-white/5 pointer-events-none"
                 style={{ left: tick.sec * zoom }}
               >
-                <span className={`text-[8px] font-mono ${tick.major ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                {/* Bold 12 px sans in the ruler's lower half; bar numbers take
+                    the upper half. RULER_TIME_LABEL_MIN_PX is sized for it. */}
+                <span className={`font-sans text-xs font-bold leading-none tabular-nums ${tick.major ? 'text-zinc-300' : 'text-zinc-500'}`}>
                   {formatTimecode(tick.sec).replace(/\.00$/, '')}
                 </span>
               </div>
             ))}
-            {/* Bar numbers (F05) at bar lines, once bars are >= 24 px apart. */}
+            {/* Bar numbers (F05) at bar lines, once bars are RULER_BAR_LABEL_MIN_PX apart.
+                A number the range readout would cover keeps its bar line only. */}
             {barLabels.map((b) => (
               <div
                 key={`bar-${b.bar}`}
@@ -7314,7 +7343,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 className="absolute top-0 h-2.5 border-l border-purple-300/40 pointer-events-none"
                 style={{ left: b.sec * zoom }}
               >
-                <span className="absolute top-0 left-0.5 text-[8px] font-mono leading-none text-purple-300/80">{b.bar}</span>
+                {!(rangeReadoutSpan && barLabelUnderReadout(b, zoom, rangeReadoutSpan)) && (
+                  <span className="absolute top-0 left-0.5 font-sans text-xs font-bold leading-none tabular-nums text-purple-300">{b.bar}</span>
+                )}
               </div>
             ))}
             {/* Loop region (shift-drag the ruler to set; LOOP toggles it) */}
@@ -7325,15 +7356,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               />
             )}
             {/* Time range on the ruler (F03): the stronger band, with its
-                start – end · duration readout. A picture of state: no pointer. */}
+                start – end · duration readout on an opaque pill in the top row
+                (the bar numbers it would cover are hidden above). A picture of
+                state: no pointer. */}
             {timeSelection && (
               <div
                 aria-hidden="true"
                 className="absolute top-0 bottom-0 z-10 pointer-events-none bg-sky-400/30 border-x border-sky-300"
                 style={{ left: timeSelection.startSec * zoom, width: (timeSelection.endSec - timeSelection.startSec) * zoom }}
               >
-                <span className="absolute top-0.5 left-1 text-[8px] font-mono text-sky-100 leading-none whitespace-nowrap">
-                  {formatRangeReadout(timeSelection)}
+                <span className="absolute top-0 left-1 px-1 rounded-sm bg-sky-900 font-sans text-xs font-bold text-sky-100 leading-none whitespace-nowrap tabular-nums">
+                  {rangeReadout}
                 </span>
               </div>
             )}
@@ -7639,7 +7672,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                         background: 'rgba(168, 85, 247, 0.18)',
                       }}
                     >
-                      <span className="absolute top-0.5 left-1 text-[8px] font-mono text-purple-300 pointer-events-none leading-none">
+                      <span className="absolute top-0.5 left-1 text-xs font-semibold tabular-nums text-purple-300 pointer-events-none leading-none">
                         {(inpaintSelection.endSec - inpaintSelection.startSec).toFixed(2)}s
                       </span>
                     </div>
@@ -7764,7 +7797,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 className="absolute left-0 border-t border-amber-500/30 bg-amber-500/4 pointer-events-none"
                 style={{ top: tracks.length * trackH + 34, width: timelineWidthPx, height: MASTER_STRIP_H }}
               >
-                <span className="absolute top-1 left-2 text-[8px] font-mono uppercase tracking-widest text-amber-400/70">Master FX</span>
+                <span className="absolute top-1 left-2 font-display text-xs font-bold uppercase tracking-widest text-amber-400/70">Master FX</span>
               </div>
             )}
             {automationEdit && masterLanes.map((lane) => {
@@ -7861,7 +7894,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
             {/* Drop-here-for-new-track strip — directly below the last lane */}
             <div
-              className="absolute left-0 right-0 border-t border-dashed border-purple-500/30 bg-purple-500/4 flex items-center justify-center text-[9px] font-mono uppercase tracking-widest text-purple-400/60 pointer-events-none"
+              className="absolute left-0 right-0 border-t border-dashed border-purple-500/30 bg-purple-500/4 flex items-center justify-center text-xs font-bold uppercase tracking-widest text-purple-400/60 pointer-events-none"
               style={{ top: tracks.length * trackH, height: 34 }}
             >
               Drop here to create a new track
@@ -7886,20 +7919,20 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       {/* Status bar */}
       <div className="h-6 border-t border-white/5 bg-black/60 flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-3">
-          <span className="text-[9px] font-mono text-zinc-500 tabular-nums">
+          <span className="text-xs font-semibold text-zinc-500 tabular-nums">
             <span ref={footerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
-          <span className="text-[8px] font-mono text-zinc-600">
+          <span className="text-xs font-semibold tabular-nums text-zinc-600">
             {clips.length} clips · {tracks.length} tracks
           </span>
         </div>
         <div className="flex items-center gap-3">
           {selectedClip ? (
-            <span className="text-[8px] font-mono text-purple-300 uppercase tracking-wider">
+            <span className="text-xs font-bold text-purple-300 uppercase tracking-wider">
               SEL: {selectedClip.label} · {selectedClip.startSec.toFixed(2)}s → {(selectedClip.startSec + selectedClip.durationSec).toFixed(2)}s
             </span>
           ) : (
-            <span className="text-[8px] font-mono text-zinc-700 uppercase tracking-wider">
+            <span className="text-xs font-bold text-zinc-700 uppercase tracking-wider">
               {clips.length === 0 ? 'No clips yet — right-click a lane to add, or drag from LIBRARY' : 'No selection'}
             </span>
           )}
@@ -8618,7 +8651,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         >
           {/* Header */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">
+            <span className="font-display text-xs font-black uppercase tracking-widest text-purple-300 flex items-center gap-1.5">
               <Paintbrush className="w-3 h-3" /> Inpaint Region
             </span>
             <button onClick={rejectInpaint} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white transition-colors">
@@ -8632,7 +8665,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               {inpaintPanel.error && (
                 <p
                   role="alert"
-                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-[9px] font-mono leading-relaxed text-rose-200 wrap-break-word"
+                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 text-xs font-semibold tabular-nums leading-relaxed text-rose-200 wrap-break-word"
                 >
                   {inpaintPanel.error}
                 </p>
@@ -8644,32 +8677,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 placeholder="Describe what to generate in this region…"
                 value={inpaintPrompt}
                 onChange={(e) => setInpaintPrompt(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-purple-500/50 transition-colors"
+                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 resize-none outline-none focus:border-purple-500/50 transition-colors"
                 rows={3}
                 autoFocus
               />
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-mono text-zinc-500">Steps</span>
-                  <span className="text-[9px] font-mono text-zinc-400">{inpaintSteps}</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-500">Steps</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-400">{inpaintSteps}</span>
                 </div>
                 <SlideTrack min={4} max={20} step={1} value={inpaintSteps}
                   onChange={(v) => setInpaintSteps(v)} className="w-full" ariaLabel="Inpaint steps" />
               </div>
               <div className="flex items-center gap-2">
-                <label htmlFor="inpaint-seed" className="text-[9px] font-mono text-zinc-500 shrink-0">Seed</label>
+                <label htmlFor="inpaint-seed" className="text-xs font-semibold tabular-nums text-zinc-500 shrink-0">Seed</label>
                 <input
                   id="inpaint-seed"
                   type="number" name="inpaint-seed" value={inpaintSeed}
                   onChange={(e) => setInpaintSeed(parseInt(e.target.value) || -1)}
-                  className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
+                  className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-mono text-zinc-200 outline-none focus:border-purple-500/50 transition-colors"
                   placeholder="-1 (random)"
                 />
               </div>
               <button
                 onClick={() => void submitInpaint()}
                 disabled={!inpaintPrompt.trim()}
-                className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-[9px] font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                className="w-full py-1.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 text-xs font-black uppercase tracking-widest hover:bg-purple-600/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
               >
                 Generate
               </button>
@@ -8680,8 +8713,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {inpaintPanel.kind === 'generating' && (
             <div className="flex flex-col items-center gap-3 py-4">
               <div className="w-5 h-5 border-2 border-purple-500/40 border-t-purple-400 rounded-full animate-spin" />
-              <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">Generating…</span>
-              <button onClick={rejectInpaint} className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors">
+              <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Generating…</span>
+              <button onClick={rejectInpaint} className="text-xs font-semibold tabular-nums text-zinc-600 hover:text-zinc-400 transition-colors">
                 cancel
               </button>
             </div>
@@ -8696,13 +8729,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <div className="flex gap-2">
                 <button
                   onClick={() => acceptInpaint(inpaintPanel.blob)}
-                  className="flex-1 py-1.5 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600/50 transition-colors"
+                  className="flex-1 py-1.5 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 text-xs font-black uppercase tracking-widest hover:bg-emerald-600/50 transition-colors"
                 >
                   Accept
                 </button>
                 <button
                   onClick={rejectInpaint}
-                  className="flex-1 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-600/40 transition-colors"
+                  className="flex-1 py-1.5 rounded bg-red-600/20 border border-red-500/30 text-red-300 text-xs font-black uppercase tracking-widest hover:bg-red-600/40 transition-colors"
                 >
                   Reject
                 </button>

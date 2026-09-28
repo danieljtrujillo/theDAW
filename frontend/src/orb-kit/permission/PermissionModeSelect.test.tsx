@@ -74,4 +74,12 @@ const compactHtml = renderToStaticMarkup(<PermissionModeSelect compact />);
 assert.ok(compactHtml.includes('for="assistant-permission-mode"'), 'compact keeps the label');
 assert.ok(compactHtml.includes('sr-only'), 'compact hides the label visually only');
 
+// Readable in both forms: the visible label is bold sans at 12px and the
+// select text is 12px, never a 10px/11px arbitrary size.
+for (const rendered of [html, compactHtml]) {
+  assert.ok(!/text-\[(?:[0-9]|1[01])(?:\.\d+)?px\]/.test(rendered), 'no text under 12px');
+  assert.ok(/<select[^>]*class="[^"]*\btext-xs\b/.test(rendered), 'the select text is 12px');
+}
+assert.ok(/<label[^>]*class="[^"]*\btext-xs\b[^"]*\bfont-bold\b/.test(html), 'the label is bold 12px');
+
 console.log('PermissionModeSelect regression passed');

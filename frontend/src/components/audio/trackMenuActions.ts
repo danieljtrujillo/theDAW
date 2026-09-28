@@ -75,6 +75,7 @@ import {
 } from '../../lib/notationClient';
 import { refreshCoverArt } from '../../lib/mediaLibrary';
 import { saveFile } from '../../lib/saveFile';
+import { saveWholeLineage } from '../../lib/lineageFamily';
 import { convertLibraryEntry, entryAudioFileName, entryFileName, loadConvertFormats } from '../../convert/convertClient';
 import { placesApi } from '../../lib/placesClient';
 import { backendHttpBase } from '../../lib/backendBase';
@@ -878,12 +879,10 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       return;
     }
     case 'save-lineage': {
+      // The whole family, never the lineage window's capped answer; its size
+      // goes to the status bar and the LOG before the Save dialog opens.
       const entry = requireEntry(subject);
-      await saveFile({
-        url: `/api/library/${encodeURIComponent(entry.id)}/lineage?depth=8`,
-        suggestedName: entryFileName(`${entry.title}-lineage`, 'json'),
-        kind: 'lineage-json',
-      });
+      await saveWholeLineage(entry, entryFileName(`${entry.title}-lineage`, 'json'));
       return;
     }
     case 'save-lrc':

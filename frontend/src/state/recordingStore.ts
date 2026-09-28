@@ -138,6 +138,7 @@
 
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { persistBackend } from './persistStorage';
 import {
   RecordingError,
   createRecordingEngine,
@@ -355,24 +356,11 @@ export function setRecordingPrefsStorage(storage: PrefsStorageLike | null): void
   prefsStorage = storage;
 }
 
-/** Where the preference goes when there is nowhere to put it — a server render,
- *  a locked-down iframe, a browser with storage disabled. It keeps the value
- *  for the session and loses it on reload, which is the right failure. */
-const memoryStorage = new Map<string, string>();
-
-const backend = (): PrefsStorageLike => {
-  if (prefsStorage) return prefsStorage;
-  try {
-    if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
-  } catch {
-    /* accessing it can itself throw */
-  }
-  return {
-    getItem: (k) => memoryStorage.get(k) ?? null,
-    setItem: (k, v) => { memoryStorage.set(k, v); },
-    removeItem: (k) => { memoryStorage.delete(k); },
-  };
-};
+/** Where the preference goes without a host override: the shared persist
+ *  backend, which keeps the value in memory for the session (and says so once
+ *  in the LOG) when a server render, a locked-down iframe or a browser with
+ *  storage disabled leaves no localStorage. */
+const backend = (): PrefsStorageLike => prefsStorage ?? persistBackend;
 
 /**
  * ONE object handed to `persist`, which resolves the real backend per call.

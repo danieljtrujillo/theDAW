@@ -20,6 +20,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Activity, ChevronDown, Download, Loader2, Waves } from 'lucide-react';
 import { logError, logInfo } from '../../state/logStore';
+import { invalidateRhythm } from '../../state/djRhythmStore';
 import { saveFile } from '../../lib/saveFile';
 import { dataFromResult, describeSegment, type MapSegment } from '../../lib/meterMapLayout';
 import {
@@ -114,6 +115,9 @@ export const RhythmBlock: React.FC<{
       const r = await fetch(`/api/rhythm/${encodeURIComponent(entryId)}/run`, { method: 'POST' });
       if (!r.ok) throw new Error(await r.text());
       const j = (await r.json()) as RhythmResult;
+      // The backend cache changed: a DJ deck holding this track re-reads its
+      // bar lines now instead of trusting the miss it remembered.
+      invalidateRhythm(entryId);
       setResult(j);
       setPicked(null);
       logInfo('rhythm', `Mapped ${title}${j.elapsed_sec ? ` in ${j.elapsed_sec}s` : ''}`);

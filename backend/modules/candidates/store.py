@@ -33,7 +33,6 @@ import logging
 import os
 import re
 import shutil
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +40,7 @@ from typing import Any
 
 from backend.lib import paths
 from backend.lib.atomic import atomic_write
+from backend.lib.stamps import IncreasingClock
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,14 @@ def default_candidates_root() -> Path:
     """Where candidate sets live: a sibling of the library root, NEVER inside
     it — an unaccepted candidate must not appear in a library scan/reindex."""
     return paths.library_root().parent / "candidates"
+
+
+# list_sets orders sets newest first and each set's candidates oldest first
+# by ``created_at``. Windows' clock moves in 15.6 ms steps, so two made in
+# quick succession got the same value and fell back to folder order, whose
+# names are random ids; the stamps are strictly increasing instead
+# (backend/lib/stamps.py).
+_created_at = IncreasingClock()
 
 
 def new_token() -> str:
@@ -201,7 +209,7 @@ class CandidateStore:
             "provider": provider,
             "params": dict(params),
             "label": label,
-            "created_at": time.time(),
+            "created_at": _created_at(),
         }
         _write_json(set_dir / _SET_FILENAME, header)
         return set_id
@@ -230,7 +238,10 @@ class CandidateStore:
         if suffix not in _AUDIO_SUFFIXES:
             suffix = ".wav"
         audio_name = f"{candidate_id}{suffix}"
-        (set_dir / audio_name).write_bytes(audio_bytes)
+        # Atomic, like the meta beside it: a write cut off halfway (disk full,
+        # the backend stopped) leaves no half-written take at the take's name,
+        # and the meta that would point at one is never written.
+        atomic_write(set_dir / audio_name, audio_bytes)
 
         meta = {
             "id": candidate_id,
@@ -242,7 +253,7 @@ class CandidateStore:
             "params": dict(params),
             "seed": seed,
             "file_size_bytes": len(audio_bytes),
-            "created_at": time.time(),
+            "created_at": _created_at(),
             "library_entry_id": None,
         }
         _write_json(set_dir / f"{candidate_id}.json", meta)

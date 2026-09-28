@@ -15,6 +15,7 @@ import {
 import { useAdvancedEditorSourceStore } from './advancedEditorStore';
 import { getRackEffect, buildEffectChain, ensureChopModule, ensureGranularModule } from '../lib/rackEffects';
 import { encodeWav } from '../lib/wavEncode';
+import { pairingHeader } from '../lib/pairing';
 
 interface StudioHistoryEntry {
   id: string;
@@ -270,9 +271,13 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     if (stateHost === 'thedaw') form.append('state_host', 'thedaw');
 
     try {
+      // The pairing header is what lets a device opened from the Mobile Access
+      // share link render VST stages (backend/lib/cross_site.py); it is {} on
+      // this machine's own UI.
       const response = await fetchWithTimeout('/api/vst/process-file', {
         method: 'POST',
         body: form,
+        headers: pairingHeader(),
       });
       if (!response.ok) {
         const detail = await parseErrorText(response);

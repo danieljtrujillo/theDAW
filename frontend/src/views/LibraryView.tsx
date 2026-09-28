@@ -10,7 +10,8 @@ import {
 } from 'lucide-react';
 import { CoverArt } from '../catalog/CoverArt';
 import { importUrlToLibrary } from '../lib/onlineImport';
-import { importFolder } from '../lib/mediaLibrary';
+import { importFolderToLibrary } from '../lib/folderImport';
+import { formatDuration, formatSize } from '../lib/libraryFormat';
 import { startQueue } from '../state/playlistQueue';
 import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
 import { midiRowPart, type LibraryMidiRow } from '../lib/libraryIndex';
@@ -25,9 +26,14 @@ import { ProviderBadge } from '../components/library/ProviderBadge';
 import { MicRecorder } from '../components/audio/MicRecorder';
 import { Section } from '../components/ui/Section';
 import { useLibraryStore, LibraryIdCapError, type LibraryEntry } from '../state/libraryStore';
+import { LibraryStatsStrip } from '../components/library/LibraryStatsStrip';
+import { LibraryIndexProgress } from '../components/library/LibraryIndexProgress';
+import { useLibraryIndexStatus } from '../state/libraryIndexStatusStore';
+import { libraryOpeningText } from '../lib/libraryIndexStatus';
 import {
   describeBulkConflict,
   LibraryBulkConflictError,
+  LibrarySearchIndexBuildingError,
   fetchLibraryMatchCount,
   plainLibraryQuery,
 } from '../lib/backendLocalProvider';
@@ -41,6 +47,7 @@ import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { saveFile, extOfName } from '../lib/saveFile';
+import { saveWholeLineage } from '../lib/lineageFamily';
 import { basenameOf } from '../lib/placesClient';
 import { KnownFilesMenu } from '../components/ui/KnownFilesMenu';
 import {
@@ -64,26 +71,12 @@ import {
 } from '../lib/sendToTargets';
 
 
-const formatDuration = (sec: number): string => {
-  if (!Number.isFinite(sec) || sec <= 0) return '--:--';
-  const total = Math.round(sec);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-};
-
 const formatDate = (iso: string): string => {
   try {
     return new Date(iso).toLocaleDateString();
   } catch {
     return iso;
   }
-};
-
-const formatSize = (bytes: number): string => {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
 };
 
 // Every save in this view goes through saveFile: Save As opens in the folder
@@ -923,6 +916,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const total = useLibraryStore((s) => s.total);
   const pagesLoading = useLibraryStore((s) => s.pagesLoading);
   const pageError = useLibraryStore((s) => s.pageError);
+  const libraryOpening = useLibraryStore((s) => s.libraryOpening);
+  const indexStatus = useLibraryIndexStatus((s) => s.status);
   const entryAt = useLibraryStore((s) => s.entryAt);
   const ensureRange = useLibraryStore((s) => s.ensureRange);
   const getById = useLibraryStore((s) => s.getById);
@@ -1126,7 +1121,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     setSelectedEntry(id);
     setPinnedEntry(null);
     try {
-      const ids = await useLibraryStore.getState().listFilteredIds();
+      // The list's own matches: during a search index build that is the part
+      // of the library the list shows, which is where the row can be scrolled.
+      const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
       const at = ids.indexOf(id);
       if (at >= 0) {
         setSelectionNotice(null);
@@ -1181,7 +1178,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       // comes from the server's id list, never from the rows on screen.
       void (async () => {
         try {
-          const ids = await useLibraryStore.getState().listFilteredIds();
+          const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
           const anchorIndex = ids.indexOf(selectionAnchorId);
           const targetIndex = ids.indexOf(entry.id);
           if (anchorIndex < 0 || targetIndex < 0) {
@@ -1504,7 +1501,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     // re-resolves each id as it reaches it, so a track whose page was evicted
     // an hour into the set still plays.
     try {
-      const ids = await useLibraryStore.getState().listFilteredIds();
+      // partial: while the search index builds, the queue is the matches the
+      // list shows (it says how much of the library that is).
+      const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
       const at = ids.indexOf(entry.id);
       if (at >= 0) {
         setSelectionNotice(null);
@@ -1526,40 +1525,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     setPlayingId(entry.id);
   };
 
-  const handleImportFolder = async () => {
-    try {
-      const res = await importFolder();
-      if (res.cancelled) return;
-      await useLibraryStore.getState().refresh();
-      logInfo(
-        'library',
-        `Added ${res.entries.length} track${res.entries.length === 1 ? '' : 's'} from ${res.folder}`,
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      logError('library', `Folder import failed: ${msg}`);
-      useStatusBarStore.getState().setText(`FOLDER IMPORT FAILED: ${msg}`);
-    }
-  };
+  const handleImportFolder = importFolderToLibrary;
 
-  // Compact analytics strip at the very top of the panel — the user
-  // wanted the prior "LIBRARY ANALYSIS" section's stats hoisted up
-  // here as small chip-style features instead of taking up real
-  // estate at the bottom of the panel.
-  // Sums are over the rows in hand, not the whole library: at 200,000 entries
-  // the browser never holds them all, and the backend does not total them.
-  // The entry COUNT is the server's `total`, which is the real one.
-  const loadedStats = useMemo(() => {
-    let bytes = 0;
-    let seconds = 0;
-    let favorites = 0;
-    for (const e of entries) {
-      bytes += e.fileSizeBytes;
-      seconds += e.duration;
-      if (e.favorite) favorites += 1;
-    }
-    return { bytes, seconds, favorites };
-  }, [entries]);
   /** "200,134 tracks", with the query echoed when one is active. */
   const totalLabel = `${total.toLocaleString()} ${total === 1 ? 'track' : 'tracks'}`;
 
@@ -1708,33 +1675,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
       {/* Top stats strip — compact "features" version of the old
           LIBRARY ANALYSIS section. */}
-      <div className="shrink-0 flex items-center gap-1 flex-wrap text-[8px] font-mono uppercase tracking-widest text-zinc-500 pb-1 border-b border-white/5">
-        <span
-          className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
-          title={searchQuery.trim() ? `Matching “${searchQuery.trim()}”` : 'Every entry in the library'}
-        >
-          <span className="text-zinc-300">{total.toLocaleString()}</span> entries
-        </span>
-        <span
-          className="px-1.5 py-0.5 rounded bg-yellow-500/10 border border-yellow-500/20"
-          title="Favorites among the rows loaded so far"
-        >
-          <Star className="w-2 h-2 fill-current inline-block text-yellow-400 -mt-0.5" />{' '}
-          <span className="text-yellow-200">{loadedStats.favorites}</span>
-        </span>
-        <span
-          className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
-          title={`Size of the ${loadedStats.bytes > 0 ? entries.length : 0} rows loaded so far`}
-        >
-          <span className="text-zinc-300">{formatSize(loadedStats.bytes)}</span>
-        </span>
-        <span
-          className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
-          title="Total length of the rows loaded so far"
-        >
-          <span className="text-zinc-300">{formatDuration(loadedStats.seconds)}</span>
-        </span>
-      </div>
+      <LibraryStatsStrip total={total} searchQuery={searchQuery} loadedRows={entries.length} />
+
+      {/* The backend opening the library: schema upgrade, first read, search
+          index build. Hidden once the library is ready. */}
+      <LibraryIndexProgress />
 
       {/* Stems running banner. Shows live phase + progress + an Abort
           button so the user can bail without right-click-finding the
@@ -2016,7 +1961,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
                 setSelectionNotice(null);
               } catch (e) {
                 setSelectionNotice(
-                  e instanceof LibraryIdCapError
+                  e instanceof LibraryIdCapError || e instanceof LibrarySearchIndexBuildingError
                     ? e.message
                     : `Select-all failed: ${e instanceof Error ? e.message : String(e)}`,
                 );
@@ -2217,7 +2162,9 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           {total === 0 && pagesLoading === 0 && !pageError ? (
             <div className="py-8 flex flex-col items-center justify-center opacity-30 italic gap-2">
               <Database className="w-8 h-8" />
-              {searchQuery.trim() || onlyFavorites ? (
+              {libraryOpening ? (
+                <p className="text-xs font-bold not-italic">{libraryOpeningText(indexStatus)}</p>
+              ) : searchQuery.trim() || onlyFavorites ? (
                 <p>No entries match your filter.</p>
               ) : (
                 <>
@@ -2571,8 +2518,8 @@ interface LibraryActionsToolbarProps {
  *  anchored to the click. Empty selection disables destructive actions
  *  (delete / fuse / inpaint) but leaves SELECT / DOWNLOAD / OPTIONS
  *  usable so the user can act on the visible set without selecting
- *  first. */
-const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
+ *  first. Exported so its DOWNLOAD menu is tested on its own. */
+export const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
   selectedEntries,
   selectedCount,
   totalCount,
@@ -2626,11 +2573,8 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
           kind: 'zip',
         });
       } else if (kind === 'lineage') {
-        result = await saveFile({
-          url: `/api/library/${entry.id}/lineage?depth=8`,
-          suggestedName: `${fileSafe(entry.title)}-lineage.json`,
-          kind: 'lineage-json',
-        });
+        // The whole family of each song, with its size said before its dialog.
+        result = await saveWholeLineage(entry, `${fileSafe(entry.title)}-lineage.json`);
       } else {
         // Build a metadata JSON client-side from what the store already
         // has cached — no backend round-trip. If the user needs the

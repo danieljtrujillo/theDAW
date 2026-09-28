@@ -16,11 +16,18 @@
  * — hundreds — and each one is a foreground decode on the backend. The deck the
  * user actually just loaded then queued behind all of them. Two rules fix that:
  *
- *   * a *request* lane (`ensureAnalyzed`, `analyzeEntries`) that jumps ahead of
- *     the browsing sweep and is never discarded, and
+ *   * a *request* lane (`analyzeEntries`) that jumps ahead of the browsing
+ *     sweep and is never discarded, and
  *   * a *sweep* lane (`analyzeAll`) that is a capped, REPLACEABLE working set:
  *     the rows currently worth pre-analysing. Scrolling replaces it, so rows
  *     that left the viewport stop costing decodes.
+ *
+ * Both lanes feed one serial consumer. A deck load (`ensureAnalyzed` at its
+ * default priority) does not queue at all: it starts its run at once, beside
+ * whatever the consumer is doing, the way it did before the lanes existed.
+ * Queued behind the consumer it waited for the sweep row already in flight,
+ * a full backend decode. The backend's gate still bounds the total and serves
+ * the deck's `dj` run first.
  */
 import { create } from 'zustand';
 import { logError } from './logStore';
@@ -88,6 +95,10 @@ const _hot: string[] = [];
 let _sweep: string[] = [];
 const _queued = new Set<string>();
 const _waiters = new Map<string, Array<() => void>>();
+/** Runs in progress, by id — the consumer's and the direct ones alike. A
+ *  caller asking for an id in here waits for that run instead of starting a
+ *  second one or returning before it has data. */
+const _running = new Map<string, Promise<void>>();
 /** id -> when its last run failed, and how many failures it has had. */
 const _failures = new Map<string, { at: number; attempts: number }>();
 let _processing = false;
@@ -150,6 +161,64 @@ function _enqueue(id: string, priority: boolean): void {
   _queued.add(id);
 }
 
+/** Take `id` out of both lanes, so the consumer does not run it a second time
+ *  after a direct run has. Its awaiters stay registered: the run settles them. */
+function _dequeue(id: string): void {
+  const inHot = _hot.indexOf(id);
+  if (inHot >= 0) _hot.splice(inHot, 1);
+  const inSweep = _sweep.indexOf(id);
+  if (inSweep >= 0) _sweep.splice(inSweep, 1);
+  _queued.delete(id);
+}
+
+/**
+ * Run `id` once: a second call while it runs gets the same promise. Every
+ * path that analyses goes through here — the consumer and a deck load alike —
+ * so `_running` always knows what is in flight.
+ *
+ * Whatever happens — analysed, failed, or an unexpected throw on the way (a
+ * subscriber blowing up inside setState, say) — the promise resolves. A throw
+ * that escaped used to leave every `await ensureAnalyzed(...)` in the app
+ * pending forever AND kill the consumer, so the queue behind it never moved
+ * again. Whoever started the run releases the id's queued awaiters
+ * (`_settle`) once it resumes: the consumer in its loop, a deck load in
+ * `ensureAnalyzed`.
+ */
+function _run(id: string): Promise<void> {
+  const existing = _running.get(id);
+  if (existing) return existing;
+  const job = (async () => {
+    try {
+      await _runOne(id);
+    } catch (e) {
+      // The throw left the entry mid-run, i.e. status 'running' — which is
+      // never eligible, so every later sweep would pass it over and the row
+      // would stay empty for the rest of the session. Record the failure
+      // instead: 'error' is retryable, and a priority request clears the
+      // backoff outright.
+      try {
+        _markError(id);
+      } catch {
+        // The write that threw can throw again for the same reason (a
+        // subscriber that is broken for good). Losing the consumer here
+        // would undo the whole point of this catch — and the entry is NOT
+        // left mid-run by it: zustand commits the next state before it
+        // notifies listeners, so `_markError`'s 'error' write has already
+        // landed; only its delivery exploded. What must not survive is the
+        // failure it recorded on the way in: that failure belongs to the
+        // subscriber, not to the file, so charging it to this id's retry
+        // ladder would keep the sweep off a perfectly good track.
+        _failures.delete(id);
+      }
+      logError('dj', `Analysis step failed for ${id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })().finally(() => {
+    if (_running.get(id) === job) _running.delete(id);
+  });
+  _running.set(id, job);
+  return job;
+}
+
 async function _processQueue(): Promise<void> {
   if (_processing || _paused) return;
   _processing = true;
@@ -158,35 +227,12 @@ async function _processQueue(): Promise<void> {
       const id = _hot.shift() ?? _sweep.shift();
       if (id === undefined) break;
       _queued.delete(id);
-      // Whatever happens to this id — skipped, analysed, or an unexpected
-      // throw on the way (a subscriber blowing up inside setState, say) — its
-      // awaiters are released. A throw that escaped this loop used to leave
-      // every `await ensureAnalyzed(...)` in the app pending forever AND kill
-      // the consumer, so the queue behind it never moved again.
+      // A deck load already started this one directly; it releases the id's
+      // awaiters when its run ends, so it is not settled (or re-run) here.
+      if (_running.has(id)) continue;
       try {
         if (!_eligible(id, Date.now())) continue;
-        await _runOne(id);
-      } catch (e) {
-        // The throw left the entry mid-run, i.e. status 'running' — which is
-        // never eligible, so every later `ensureAnalyzed(id)` would return
-        // having done nothing and the row would stay empty for the rest of
-        // the session. Record the failure instead: 'error' is retryable, and
-        // a priority request clears the backoff outright.
-        try {
-          _markError(id);
-        } catch {
-          // The write that threw can throw again for the same reason (a
-          // subscriber that is broken for good). Losing the consumer here
-          // would undo the whole point of this catch — and the entry is NOT
-          // left mid-run by it: zustand commits the next state before it
-          // notifies listeners, so `_markError`'s 'error' write has already
-          // landed; only its delivery exploded. What must not survive is the
-          // failure it recorded on the way in: that failure belongs to the
-          // subscriber, not to the file, so charging it to this id's retry
-          // ladder would keep the sweep off a perfectly good track.
-          _failures.delete(id);
-        }
-        logError('dj', `Analysis queue step failed for ${id}: ${e instanceof Error ? e.message : String(e)}`);
+        await _run(id);
       } finally {
         _settle(id);
       }
@@ -243,14 +289,19 @@ interface DjAnalysisState {
   fetch: (entryId: string) => Promise<void>;
   /**
    * "I need this entry's analysis now." Resolves once the entry is ready or
-   * failed. Safe to call repeatedly — ready / in-flight entries are skipped.
+   * failed, with its data (null when it failed). Safe to call repeatedly: a
+   * ready entry resolves at once, and an entry whose run is in flight — from
+   * the queue or another caller — resolves when that run does, with its
+   * result. It used to return straight away for a running entry, so the
+   * caller read an empty row as a finished one.
    *
-   * `priority` defaults to TRUE: the entry jumps ahead of everything
-   * `analyzeAll` has queued, which is the point of calling this instead. A
-   * deck load should use the default; pass `{ priority: false }` only for
-   * speculative work that may politely wait behind the browsing sweep.
+   * `priority` defaults to TRUE: the run starts NOW, beside whatever the
+   * queue is doing and whether or not it is paused, which is the point of
+   * calling this instead. A deck load should use the default; pass
+   * `{ priority: false }` only for speculative work that may politely wait
+   * behind the browsing sweep.
    */
-  ensureAnalyzed: (entryId: string, opts?: { priority?: boolean }) => Promise<void>;
+  ensureAnalyzed: (entryId: string, opts?: { priority?: boolean }) => Promise<DjAnalysis | null>;
   /**
    * Set the browsing sweep's working set: the rows worth pre-analysing right
    * now, in priority order, capped at `cap` (default {@link DJ_SWEEP_CAP}).
@@ -266,8 +317,9 @@ interface DjAnalysisState {
    * not wait for the analyses.
    */
   analyzeAll: (entryIds: string[], opts?: { cap?: number }) => Promise<void>;
-  /** Stop starting new analyses (the one in flight finishes). Use while the
-   *  user is doing something latency-sensitive — a live set. */
+  /** Stop starting new QUEUED analyses (the one in flight finishes). Use
+   *  while the user is doing something latency-sensitive — a live set. A deck
+   *  load's `ensureAnalyzed` still runs: it is the user asking. */
   pauseQueue: () => void;
   /** Resume after {@link pauseQueue} and drain whatever is still queued. */
   resumeQueue: () => void;
@@ -359,14 +411,33 @@ export const useDjAnalysisStore = create<DjAnalysisState>()((set, get) => ({
   },
 
   ensureAnalyzed: async (entryId, opts) => {
-    if (!entryId) return;
-    const priority = opts?.priority !== false;
-    if (priority) _forgetFailure(entryId);
-    if (!_eligible(entryId, Date.now())) return;
+    if (!entryId) return null;
+    const dataOf = () => get().byId[entryId]?.data ?? null;
+    // In flight already: wait for THAT run and hand back what it produced.
+    const running = _running.get(entryId);
+    if (running) {
+      await running;
+      return dataOf();
+    }
+    if (opts?.priority !== false) {
+      _forgetFailure(entryId);
+      if (get().byId[entryId]?.status === 'ready') return dataOf();
+      // Out of the lanes, so the consumer does not run it again afterwards,
+      // and started here — never behind the sweep row the consumer is on.
+      // A 'running' status with no run behind it (a write that threw) is
+      // run too: nothing else would ever finish it.
+      _dequeue(entryId);
+      await _run(entryId);
+      // Anyone who queued for it (a `priority: false` caller) is done too.
+      _settle(entryId);
+      return dataOf();
+    }
+    if (!_eligible(entryId, Date.now())) return dataOf();
     const settled = _waitFor(entryId);
-    _enqueue(entryId, priority);
+    _enqueue(entryId, false);
     void _processQueue();
     await settled;
+    return dataOf();
   },
 
   analyzeAll: async (entryIds, opts) => {

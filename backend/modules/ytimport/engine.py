@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from backend.lib import ffmpeg_tools
+
 log = logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ class DownloadedAudio:
 def _ffmpeg_dir() -> str | None:
     """Directory containing ffmpeg, if discoverable, so yt-dlp finds it even when
     PATH differs between the shell and the server process."""
-    ff = shutil.which("ffmpeg")
+    ff = ffmpeg_tools.find_ffmpeg()
     return str(Path(ff).parent) if ff else None
 
 

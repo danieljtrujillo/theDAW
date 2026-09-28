@@ -14,7 +14,8 @@ const DESKTOP_ONLY = "This request must come from theDAW's desktop shell.";
 let nextResponse: Response = new Response('{"plugins":[]}', { status: 200 });
 globalThis.fetch = (async () => nextResponse.clone()) as typeof fetch;
 
-const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText } = await import('./vstStore.ts');
+const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText, PAIR_THIS_DEVICE_TEXT } =
+  await import('./vstStore.ts');
 const { useStatusBarStore } = await import('./statusBarStore.ts');
 const { useLogStore } = await import('./logStore.ts');
 const { ApiError } = await import('../lib/apiJson.ts');
@@ -106,6 +107,29 @@ const reset = (body: string, status: number): void => {
   // Nothing refused: the message that was always there.
   assert.equal(vstBrowserEmptyText(false, null), 'No VST3 plugins found. Click Rescan.');
   assert.equal(vstBrowserEmptyText(false, '   '), 'No VST3 plugins found. Click Rescan.');
+}
+
+// --- an unpaired device on the LAN is told how to pair ----------------------
+//
+// The VST routes accept a paired device now (backend/modules/vst/router.py).
+// A device on another machine that was never paired gets the pairing gate's
+// 403, in the backend's exact words; MIX must say how to pair, not claim VST
+// hosting is desktop-only, which is no longer true.
+{
+  const PAIRING_GATE = "This request must come from theDAW's desktop shell or a paired device.";
+  reset(JSON.stringify({ detail: PAIRING_GATE }), 403);
+  const errorsBefore = errorLogCount();
+
+  await useVstStore.getState().scan();
+
+  const s = useVstStore.getState();
+  assert.equal(s.error, null, 'still a refusal, not a failure');
+  assert.equal(s.unavailableReason, PAIRING_GATE);
+  assert.equal(useStatusBarStore.getState().text, 'VST: pair this device');
+  assert.equal(errorLogCount(), errorsBefore, 'nothing was logged as an error');
+  assert.equal(vstBrowserEmptyText(false, s.unavailableReason), PAIR_THIS_DEVICE_TEXT);
+  assert.doesNotMatch(PAIR_THIS_DEVICE_TEXT, /desktop-only/);
+  assert.match(PAIR_THIS_DEVICE_TEXT, /Mobile Access/, 'it names where the paired link comes from');
 }
 
 console.log('vstStore.test.ts: all assertions passed');

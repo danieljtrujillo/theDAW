@@ -18,6 +18,10 @@ Driven by two environment variables:
     ``silent``       emits ``init`` and then nothing at all (stall watchdog).
     ``chatty``       six text deltas 0.1s apart, then a ``result`` — long, but
                      never silent, so an inactivity watchdog must NOT fire.
+    ``until_interrupt`` one text delta, then the turn stays open until an
+                     ``interrupt`` control_request ends it with a ``result``,
+                     as the real CLI does. Every engine-initiated
+                     control_request gets a success ``control_response``.
 
 ``FAKE_CLI_LOG``
     Optional path; every raw stdin line is appended verbatim, one per line, so
@@ -90,6 +94,7 @@ def main() -> int:
 
     turn = 0
     awaiting_control = False
+    turn_open = False
 
     for raw in iter(sys.stdin.readline, ""):
         line = raw.strip()
@@ -112,6 +117,21 @@ def main() -> int:
         if kind == "control_request":
             # An interrupt (or any engine-initiated control request). Stay
             # alive and keep waiting — the child must survive an interrupt.
+            if MODE == "until_interrupt":
+                request = data.get("request") or {}
+                emit(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": data.get("request_id"),
+                            "response": {},
+                        },
+                    }
+                )
+                if request.get("subtype") == "interrupt" and turn_open:
+                    turn_open = False
+                    emit(result_event(turn))
             continue
 
         if kind != "user":
@@ -133,6 +153,10 @@ def main() -> int:
                     },
                 }
             )
+            continue
+        if MODE == "until_interrupt":
+            turn_open = True
+            emit(text_event("working "))
             continue
         if MODE == "chatty":
             for index in range(6):

@@ -12,21 +12,32 @@
  *   eqSwap        — the bass swap across the middle third of the fade.
  *   tempoMatch    — never claims a beatmatch the pitch range cannot deliver.
  *   chooseNextIndex — harmonic next-track preference (Camelot).
+ *   deckRun / blendTick — a pause holds the plan and the blend; a track that
+ *     ran out is rescued, and the rescue's fade runs its whole length.
+ *   createAutomixQueue — a harmonic choice keeps every track it plays ahead
+ *     of, is made once per track, and never reorders a prepared set.
  *
  * Run: `npx tsx src/lib/djAutomixPlan.test.ts` — `npm test` discovers it.
  */
 import assert from 'node:assert/strict';
 import {
-  camelotCompatible,
+  automixCamelot,
+  blendTick,
   chooseNextIndex,
+  createAutomixQueue,
+  deckRun,
+  EQ_KILL_DB,
   eqSwap,
   fadeStep,
+  KEY_CONFIDENCE_MIN,
   planTransition,
   residualNudge,
+  startBlend,
   tempoMatch,
   type AutomixIncoming,
   type AutomixOutgoing,
 } from './djAutomixPlan';
+import { camelotCodesCompatible as camelotCompatible } from './camelot';
 
 const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
@@ -121,9 +132,20 @@ const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
   assert.equal(plan({ currentTime: 300, playing: false }, { hasBuffer: false }).start, false,
     'nothing decoded to play: stay put');
   assert.equal(plan({ currentTime: 300, playing: false }, { hasBuffer: false }).reason, 'no-incoming');
-  // A paused-but-not-finished deck is the same dead-air case: automix never
-  // pauses the outgoing deck itself before the swap.
-  assert.equal(plan({ currentTime: 12, playing: false }).immediate, true, 'a stopped deck mid-track is still dead air');
+  // A PAUSED deck is not dead air (PR #207 review). This line used to pin the
+  // opposite ("a stopped deck mid-track is still dead air"), and that is the
+  // bug: the DJ pressed pause and the next track started within 500 ms.
+  const ppause = plan({ currentTime: 12, playing: false });
+  assert.equal(ppause.start, false, 'a deck paused mid-track holds the plan');
+  assert.equal(ppause.immediate, false);
+  assert.equal(ppause.reason, 'outgoing-paused');
+  assert.equal(plan({ currentTime: 285, playing: false }).start, false,
+    'paused inside the mix-out window: still held, the blend waits for play');
+  // A deck that was ejected holds nothing to resume: that is dead air.
+  assert.equal(plan({ currentTime: 0, duration: 0, playing: false, hasBuffer: false }).reason, 'outgoing-stopped',
+    'an ejected outgoing deck moves the set on');
+  // A new track decoding onto the outgoing deck is waited for.
+  assert.equal(plan({ currentTime: 0, duration: 0, playing: false, hasBuffer: false, decoding: true }).reason, 'outgoing-paused');
 
   // ── DJ-5: a deck that NEVER started is not dead air ──────────────────────
   // THE BUG, seen in the live app on a bundled 18-track set: Deck A was
@@ -143,7 +165,7 @@ const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
   // Mid-track, still never started: same answer — the position is irrelevant.
   assert.equal(plan({ currentTime: 12, playing: false, started: false }).start, false,
     'a non-zero position on a deck that never played changes nothing');
-  // Once the deck HAS played, the dead-air rescue is exactly as before.
+  // Once the deck HAS played and run out, the dead-air rescue is as before.
   const pran = plan({ currentTime: 300, playing: false, started: true });
   assert.equal(pran.start, true, 'a deck that played and stopped is still rescued');
   assert.equal(pran.immediate, true);
@@ -379,6 +401,237 @@ const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
   assert.equal(pick({
     fromIndex: -1, candidates: set(['8A', '3A']), currentCamelot: null, preferHarmonic: true,
   }), 0, 'not in the set: start at the first track');
+}
+
+/* ═════════════════════════════ deckRun ═══════════════════════════════════ */
+{
+  assert.equal(deckRun({ playing: true, currentTime: 12, duration: 300 }), 'playing');
+  assert.equal(deckRun({ playing: false, currentTime: 12, duration: 300 }), 'paused', 'mid-track and stopped: a pause');
+  assert.equal(deckRun({ playing: false, currentTime: 300, duration: 300 }), 'ended', 'parked on its duration: ran out');
+  assert.equal(deckRun({ playing: false, currentTime: 299.97, duration: 300 }), 'ended', 'inside the end epsilon');
+  assert.equal(deckRun({ playing: false, currentTime: 0, duration: 300 }), 'paused', 'cued at the top: not ended');
+  assert.equal(deckRun({ playing: false, currentTime: 0, duration: 0, hasBuffer: false }), 'ended', 'empty deck');
+  assert.equal(deckRun({ playing: false, currentTime: 0, duration: 0, hasBuffer: false, decoding: true }), 'paused', 'decoding');
+}
+
+/* ════════════════════ the automix tick, replayed over time ════════════════ */
+{
+  // The interval's two decisions, run tick by tick the way DJView runs them:
+  // planTransition while no blend runs, blendTick while one does. Deck A plays
+  // track 1 (300 s, 128 BPM), deck B holds track 2 decoded and waiting.
+  const beatLen = 60 / 128;
+  type Deck = { playing: boolean; t: number; dur: number };
+  const A: Deck = { playing: true, t: 200, dur: 300 };
+  const B: Deck = { playing: false, t: 0, dur: 280 };
+  let clock = 1000;
+  let blend: ReturnType<typeof startBlend> | null = null;
+  let current: 'A' | 'B' = 'A';
+  let fader = -1;
+  let incomingReady = true;
+  const faderWrites: number[] = [];
+  const log: string[] = [];
+  const tick = (sec: number) => {
+    for (let i = 0; i < Math.round(sec / 0.5); i++) {
+      // Half a second passes for whatever is playing; a deck that reaches
+      // its end parks there, as the engine does.
+      clock += 0.5;
+      for (const d of [A, B]) if (d.playing) d.t = Math.min(d.dur, d.t + 0.5);
+      for (const d of [A, B]) if (d.playing && d.t >= d.dur) d.playing = false;
+      const out = current === 'A' ? A : B;
+      const inc = current === 'A' ? B : A;
+      if (!blend) {
+        const p = planTransition({
+          outgoing: {
+            currentTime: out.t, duration: out.dur, bpm: 128, gridAnchor: 0.5, beatLen,
+            playing: out.playing, started: true, mixOut: null, downbeats: null, hasBuffer: true,
+          },
+          incoming: { bpm: 126, hasBuffer: incomingReady, cueIn: 0 },
+          fadeSec: 10, tailSec: 18, now: clock,
+        });
+        if (p.start) {
+          inc.t = p.cueIn; inc.playing = true;
+          blend = startBlend(clock, p.immediate ? 1 : p.fadeSec, fader, current === 'A' ? 1 : -1, p.immediate);
+          log.push(`${current}->${current === 'A' ? 'B' : 'A'} ${p.reason}`);
+        }
+      } else {
+        const outRun = deckRun({ playing: out.playing, currentTime: out.t, duration: out.dur });
+        const inRun = deckRun({ playing: inc.playing, currentTime: inc.t, duration: inc.dur });
+        const st = blendTick(blend, clock, outRun, inRun, 1);
+        blend = st.state;
+        if (st.action === 'hold') continue;
+        fader = st.fader;
+        faderWrites.push(fader);
+        if (st.action === 'finish') {
+          fader = blend.fadeTo;
+          faderWrites.push(fader);
+          out.playing = false;
+          current = current === 'A' ? 'B' : 'A';
+          blend = null;
+          log.push(`now ${current}`);
+        }
+      }
+    }
+  };
+
+  // ── playing → pause → 2 s → resume continues the same track ─────────────
+  tick(5);
+  assert.deepEqual(log, [], 'nothing due at 205 s');
+  A.playing = false; // the DJ presses pause (deck or master)
+  const pausedAt = A.t;
+  tick(2);
+  assert.deepEqual(log, [], 'THE BUG: a pause started the next track');
+  assert.equal(B.playing, false, 'the waiting deck stays silent through the pause');
+  assert.equal(A.t, pausedAt, 'and deck A stays where it was paused');
+  A.playing = true; // resume
+  tick(2);
+  assert.equal(current, 'A', 'the same track carries on');
+  assert.ok(A.t > pausedAt && A.t <= pausedAt + 2 + 1e-9, `deck A resumed from ${pausedAt}, now ${A.t}`);
+  assert.deepEqual(log, []);
+
+  // ── a pause mid-blend holds the blend and never skips a track ───────────
+  tick(278.5 - A.t); // the phrase line at 278 s: the blend starts
+  assert.deepEqual(log, ['A->B phrase']);
+  tick(3);
+  const midFader = fader;
+  assert.ok(midFader > -1 && midFader < 1, `mid-fade ${midFader}`);
+  A.playing = false; B.playing = false; // master pause
+  tick(4);
+  assert.equal(fader, midFader, 'THE BUG: the fader moved while both decks were paused');
+  assert.deepEqual(log, ['A->B phrase'], 'THE BUG: the paused blend was handed over');
+  A.playing = true; B.playing = true; // master play resumes both
+  tick(8);
+  assert.deepEqual(log, ['A->B phrase', 'now B'], 'the blend finishes once, into track 2');
+  assert.equal(B.playing, true, 'track 2 is playing, not skipped');
+  assert.equal(fader, 1);
+
+  // ── the rescue's fade runs its whole length, with no jump ───────────────
+  // Track 2 runs out while the next track is still decoding; once it lands,
+  // the rescue starts it with a 1 s fade, which the very next tick used to
+  // cut off at halfway.
+  A.t = 0; A.playing = false; A.dur = 300;
+  B.t = 279; incomingReady = false;
+  tick(1); // B reaches 280 and ends
+  assert.equal(B.playing, false);
+  incomingReady = true;
+  faderWrites.length = 0;
+  tick(0.5);
+  assert.deepEqual(log.slice(-1), ['B->A outgoing-stopped'], 'dead air: the rescue starts');
+  tick(0.5);
+  assert.equal(current, 'B', 'THE BUG: the rescue fade was handed over at halfway');
+  assert.ok(Math.abs(fader - 0) < 1e-9, `fader halfway: ${fader}`);
+  tick(0.5);
+  assert.equal(current, 'A', 'handed over once the fade has run');
+  assert.equal(fader, -1);
+  let prev = 1;
+  for (const w of faderWrites) {
+    assert.ok(Math.abs(w - prev) <= 1 + 1e-9, `no jump bigger than half the travel: ${faderWrites.join(', ')}`);
+    prev = w;
+  }
+}
+
+/* ═════════════════════════════ blendTick ═════════════════════════════════ */
+{
+  // The outgoing track runs out 2 s into a 10 s fade: the rest is cut over to
+  // the 1 s rescue from where the fader is, and the bass swap carries on.
+  const b0 = startBlend(0, 10, -1, 1, false);
+  const s1 = blendTick(b0, 2, 'playing', 'playing', 1);
+  assert.equal(s1.action, 'fade');
+  assert.ok(Math.abs(s1.fader - -0.6) < 1e-9, `2 s in: ${s1.fader}`);
+  const s2 = blendTick(s1.state, 2.5, 'ended', 'playing', 1);
+  assert.equal(s2.state.rescue, true, 'cut over to the rescue');
+  assert.ok(Math.abs(s2.state.fadeFrom - -0.5) < 1e-9, 'from the position the fader had reached');
+  assert.ok(s2.progress >= s1.progress, 'the bass swap does not go backwards');
+  const s3 = blendTick(s2.state, 3.5, 'ended', 'playing', 1);
+  assert.equal(s3.action, 'finish');
+  assert.equal(s3.fader, 1);
+  // A paused incoming deck holds the blend, whatever the outgoing one does.
+  const h = blendTick(s1.state, 5, 'playing', 'paused', 1);
+  assert.equal(h.action, 'hold');
+  assert.ok(Math.abs(h.state.fadeStart - 3) < 1e-9, 'the fade clock moved on by the held time');
+  assert.ok(Math.abs(blendTick(h.state, 6, 'playing', 'playing', 1).fader - -0.4) < 1e-9, 'and resumes where it stopped');
+  assert.equal(blendTick(s1.state, 5, 'paused', 'paused', 1).action, 'hold', 'both paused (master transport): held');
+  // The DJ pauses the OUTGOING deck while the incoming one plays: a cut to
+  // the new track. It finishes over the rescue length from where the fader
+  // is; nothing is skipped (the incoming track is the one that stays).
+  const cut = blendTick(s1.state, 2.5, 'paused', 'playing', 1);
+  assert.equal(cut.state.rescue, true);
+  assert.equal(cut.action, 'fade');
+  assert.equal(blendTick(cut.state, 3.5, 'paused', 'playing', 1).action, 'finish');
+}
+
+/* ═══════════════════════ EQ kill vs the engine floor ══════════════════════ */
+{
+  // djEngine clamps EQ at DECK_EQ_FLOOR_DB (−40). The swap writes the Lo
+  // knob's setting (down to −12) plus EQ_KILL_DB, so that sum must fit.
+  assert.ok(EQ_KILL_DB - 12 >= -40, 'the kill below the lowest Lo setting is inside the engine floor');
+  assert.equal(eqSwap(1).outLowDb, EQ_KILL_DB);
+}
+
+/* ═════════════════════ harmonic queue, replayed ═══════════════════════════ */
+{
+  // t1 (10A) clashes with t0 (8A) but mixes with t2 (9A), so once t2 has
+  // played ahead of it, t1 is the natural next track.
+  const keys: Record<string, string> = { t0: '8A', t1: '10A', t2: '9A', t3: '5A', t4: '8B', t5: '3A' };
+  const set = ['t0', 't1', 't2', 't3', 't4', 't5'];
+  const q = createAutomixQueue({
+    order: () => set.slice(),
+    camelotOf: (id) => keys[id] ?? null,
+    preferHarmonic: () => true,
+    prepared: () => false,
+  });
+  // t0 (8A) with a clash (3A) straight ahead: 9A plays next...
+  assert.equal(q.nextAfter('t0'), 't2', 'the compatible track plays ahead of the clash');
+  // ...and asked again on every tick, the answer does not change.
+  assert.equal(q.nextAfter('t0'), 't2');
+  // After t2, the track it played ahead of is still in the queue.
+  assert.equal(q.nextAfter('t2'), 't1', 'THE BUG: the jumped-over track was dropped');
+  assert.deepEqual(q.order(), ['t0', 't2', 't1', 't3', 't4', 't5'], 'every track still plays exactly once');
+}
+{
+  // Computed once per track: a key that lands after the idle deck was loaded
+  // does not swap it.
+  const keys: Record<string, string> = { t0: '8A', t1: '3A', t2: '9A', t3: '5A' };
+  const known = new Set<string>(['t0']);
+  const q = createAutomixQueue({
+    order: () => ['t0', 't1', 't2', 't3'],
+    camelotOf: (id) => (known.has(id) ? keys[id] : null),
+    preferHarmonic: () => true,
+    prepared: () => false,
+  });
+  assert.equal(q.nextAfter('t0'), 't1', 'unknown key ahead: set order');
+  known.add('t1'); known.add('t2'); known.add('t3');
+  assert.equal(q.nextAfter('t0'), 't1', 'THE BUG: a key landing later swapped the track already loaded');
+}
+{
+  // A prepared set plays as prepared; the toggle off plays in order.
+  const keys: Record<string, string> = { t0: '8A', t1: '3A', t2: '9A', t3: '5A' };
+  const mk = (prefer: boolean, prepared: boolean) => createAutomixQueue({
+    order: () => ['t0', 't1', 't2', 't3'],
+    camelotOf: (id) => keys[id],
+    preferHarmonic: () => prefer,
+    prepared: () => prepared,
+  });
+  assert.equal(mk(true, true).nextAfter('t0'), 't1', 'THE BUG: a prepared set was reordered');
+  assert.equal(mk(false, false).nextAfter('t0'), 't1', 'toggle off: strict order');
+  assert.equal(mk(true, false).nextAfter('t0'), 't2', 'toggle on: harmonic choice');
+}
+{
+  // A mid-show reorder still wins over an earlier choice.
+  let order = ['t0', 't1', 't2', 't3'];
+  const keys: Record<string, string> = { t0: '8A', t1: '3A', t2: '9A', t3: '5A' };
+  const q = createAutomixQueue({ order: () => order, camelotOf: (id) => keys[id], preferHarmonic: () => true, prepared: () => false });
+  assert.equal(q.nextAfter('t0'), 't2');
+  order = ['t0', 't3', 't1', 't2'];
+  assert.equal(q.nextAfter('t0'), 't3', 'the DJ moved t3 up: it plays next');
+}
+{
+  // key_confidence: a weak key never reorders.
+  assert.equal(automixCamelot({ key: 'A', scale: 'minor', key_confidence: 0.8 }), '8A');
+  assert.equal(automixCamelot({ key: 'A', scale: 'minor', key_confidence: KEY_CONFIDENCE_MIN - 0.01 }), null,
+    'THE BUG: a low-confidence key was trusted');
+  assert.equal(automixCamelot({ key: 'A', scale: 'minor', key_confidence: null }), null, 'no confidence reported: not trusted');
+  assert.equal(automixCamelot({ key: null, scale: null, key_confidence: 0.9 }), null);
+  assert.equal(automixCamelot(null), null);
 }
 
 console.log('djAutomixPlan: ok');

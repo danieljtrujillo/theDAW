@@ -117,7 +117,7 @@ function clickBurst(lengthSamples: number): Float32Array {
  * duration gives an EMPTY array rather than a buffer of NaN: the caller then
  * has nothing to play and nothing to correlate, which is the honest outcome.
  */
-export function makeProbe(sampleRate: number, opts: ProbeOptions = {}): Float32Array {
+export function makeProbe(sampleRate: number, opts: ProbeOptions = {}): Float32Array<ArrayBuffer> {
   const { kind = 'chirp', durationSec = PROBE_DEFAULT_DURATION_SEC } = opts;
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) return new Float32Array(0);
   if (!Number.isFinite(durationSec) || durationSec <= 0) return new Float32Array(0);

@@ -73,7 +73,7 @@ const clampN = (v: number, lo: number, hi: number): number => Math.max(lo, Math.
 const easeOutQuart = (t: number): number => 1 - --t * t * t * t;
 
 // ── waveshaper curves ─────────────────────────────────────────────────────────
-const driveCurve = (k: number): Float32Array => {
+const driveCurve = (k: number): Float32Array<ArrayBuffer> => {
   const n = 1024;
   const c = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -82,7 +82,7 @@ const driveCurve = (k: number): Float32Array => {
   }
   return c;
 };
-const bitCurve = (bits: number): Float32Array => {
+const bitCurve = (bits: number): Float32Array<ArrayBuffer> => {
   const n = 2048;
   const c = new Float32Array(n);
   const levels = Math.pow(2, clampN(bits, 1, 16));
@@ -93,7 +93,7 @@ const bitCurve = (bits: number): Float32Array => {
   }
   return c;
 };
-const softClipCurve = (drive: number): Float32Array => {
+const softClipCurve = (drive: number): Float32Array<ArrayBuffer> => {
   const n = 1024;
   const c = new Float32Array(n);
   const d = Math.tanh(drive);

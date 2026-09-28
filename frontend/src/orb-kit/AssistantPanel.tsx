@@ -24,6 +24,8 @@ import {
 } from './assistantEffort';
 import { contextPercentage, fetchContextUsage, type ContextUsage } from './contextUsage';
 import { PermissionModeSelect } from './permission/PermissionModeSelect';
+import { UserClaudeConfigToggle } from './permission/UserClaudeConfigToggle';
+import { AllowRulesList } from './permission/AllowRulesList';
 import { useAssistantPermissionStore } from './permission/assistantPermissionStore';
 import {
     loadConversations,
@@ -325,6 +327,70 @@ export function seedConversationId(
     return restored?.sessionId || tabSessionId || null;
 }
 
+/** The two tabs of the panel's settings drawer (Model Info). */
+export type AssistantSettingsTab = 'model' | 'keys';
+
+const SETTINGS_TABS: ReadonlyArray<{ id: AssistantSettingsTab; label: string }> = [
+    { id: 'model', label: 'Chat' },
+    { id: 'keys', label: 'Keys' },
+];
+
+export const settingsTabId = (tab: AssistantSettingsTab) => `assistant-settings-tab-${tab}`;
+export const settingsPanelId = (tab: AssistantSettingsTab) => `assistant-settings-panel-${tab}`;
+
+/**
+ * The settings drawer's tab strip: a tablist whose tabs say which one is
+ * selected (aria-selected) and which panel it shows (aria-controls, on the
+ * selected tab only, since only that panel is in the DOM). Arrow keys, Home
+ * and End move between tabs; only the selected tab is in the Tab order.
+ */
+export function AssistantSettingsTabs({
+    active,
+    onSelect,
+}: {
+    active: AssistantSettingsTab;
+    onSelect: (tab: AssistantSettingsTab) => void;
+}) {
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+        const count = SETTINGS_TABS.length;
+        const index = SETTINGS_TABS.findIndex((t) => t.id === active);
+        let next: number;
+        if (event.key === 'ArrowRight') next = (index + 1) % count;
+        else if (event.key === 'ArrowLeft') next = (index - 1 + count) % count;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = count - 1;
+        else return;
+        event.preventDefault();
+        const tab = SETTINGS_TABS[next].id;
+        onSelect(tab);
+        document.getElementById(settingsTabId(tab))?.focus();
+    };
+    return (
+        <div role="tablist" aria-label="Assistant settings" className="flex border-b border-white/5">
+            {SETTINGS_TABS.map((tab) => {
+                const selected = tab.id === active;
+                return (
+                    <button
+                        key={tab.id}
+                        type="button"
+                        role="tab"
+                        id={settingsTabId(tab.id)}
+                        aria-selected={selected}
+                        aria-controls={selected ? settingsPanelId(tab.id) : undefined}
+                        tabIndex={selected ? 0 : -1}
+                        onClick={() => onSelect(tab.id)}
+                        onKeyDown={handleKeyDown}
+                        className={`flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-bold transition-colors ${selected ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}
+                    >
+                        {tab.id === 'keys' && <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />}
+                        {tab.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 function timeAgo(ts: number): string {
     const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
     if (s < 60) return 'just now';
@@ -359,7 +425,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
     attachmentsRef.current = attachments;
     const [currentHint, setCurrentHint] = useState(0);
     const [showModelInfo, setShowModelInfo] = useState(false);
-    const [settingsTab, setSettingsTab] = useState<'model' | 'keys'>('model');
+    const [settingsTab, setSettingsTab] = useState<AssistantSettingsTab>('model');
     const [selectedProvider, setSelectedProvider] = useState<string>(initialAssistantSelection.provider);
 
     const [selectedModel, setSelectedModel] = useState<string>(initialAssistantSelection.model);
@@ -1175,7 +1241,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         </div>
                         <span className="font-semibold text-sm">theDAW</span>
                         {messages.length > 0 && (
-                            <span className="text-[10px] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
+                            <span className="text-xs font-semibold px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
                                 {messages.length}
                             </span>
                         )}
@@ -1225,7 +1291,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         <h2 className="font-bold text-sm truncate">
                             GANTASMO-b0t
                         </h2>
-                        <p className="text-[10px] text-muted truncate">Stable Audio 3 expert</p>
+                        <p className="text-xs font-semibold text-muted truncate">Stable Audio 3 expert</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-1 min-w-0">
@@ -1284,12 +1350,12 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
             {showHistory && (
                 <div className="border-b border-border bg-surface/95 max-h-72 overflow-y-auto custom-scrollbar">
                     <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
-                        <span className="text-[10px] font-semibold text-muted uppercase tracking-wide">History</span>
+                        <span className="text-xs font-semibold text-muted uppercase tracking-wide">History</span>
                         <div className="flex items-center gap-3">
                             <button
                                 type="button"
                                 onClick={handleClearHistory}
-                                className="inline-flex items-center gap-1 text-[10px] text-primary hover:text-white transition-colors"
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:text-white transition-colors"
                                 title="Start a new chat"
                             >
                                 <Plus size={12} /> New chat
@@ -1299,14 +1365,14 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 onClick={handleClearAll}
                                 title="Delete all saved chats"
                                 aria-label="Clear all history"
-                                className="inline-flex items-center gap-1 text-[10px] text-rose-400/80 hover:text-rose-300 transition-colors"
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400/80 hover:text-rose-300 transition-colors"
                             >
                                 Clear all
                             </button>
                         </div>
                     </div>
                     {conversations.length === 0 ? (
-                        <div className="px-3 py-3 text-[10px] text-muted italic">No saved conversations yet.</div>
+                        <div className="px-3 py-3 text-xs font-semibold text-muted italic">No saved conversations yet.</div>
                     ) : (
                         conversations.map((c) => (
                             <div
@@ -1320,8 +1386,8 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 className={`group flex items-center gap-2 px-3 py-2 border-b border-white/5 last:border-0 cursor-pointer hover:bg-white/5 ${c.id === activeConvIdRef.current ? 'bg-primary/10' : ''}`}
                             >
                                 <div className="flex-1 min-w-0">
-                                    <div className="text-[11px] text-white truncate">{c.title}</div>
-                                    <div className="text-[9px] text-muted">{timeAgo(c.updatedAt)} · {c.messages.length} msgs</div>
+                                    <div className="text-xs font-semibold text-white truncate">{c.title}</div>
+                                    <div className="text-xs font-semibold text-muted">{timeAgo(c.updatedAt)} · {c.messages.length} msgs</div>
                                 </div>
                                 <button
                                     onClick={(e) => { e.stopPropagation(); removeConversation(c.id); }}
@@ -1339,13 +1405,15 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
 
             {showModelInfo && (
                 <div className="border-b border-border">
-                    <div className="flex border-b border-white/5">
-                        <button onClick={() => setSettingsTab('model')} className={`flex-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'model' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}>Chat</button>
-                        <button onClick={() => setSettingsTab('keys')} className={`flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'keys' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}><KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />Keys</button>
-                    </div>
+                    <AssistantSettingsTabs active={settingsTab} onSelect={setSettingsTab} />
 
                     {settingsTab === 'model' && (
-                        <div className="px-4 py-2.5 bg-linear-to-r from-blue-500/10 to-purple-500/10 space-y-2">
+                        <div
+                            role="tabpanel"
+                            id={settingsPanelId('model')}
+                            aria-labelledby={settingsTabId('model')}
+                            className="px-4 py-2.5 bg-linear-to-r from-blue-500/10 to-purple-500/10 space-y-2"
+                        >
                             <ProviderModelSelector
                                 providers={providers}
                                 selectedProvider={selectedProvider}
@@ -1367,13 +1435,13 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 <label htmlFor> for free. */}
                             {shouldShowPermissionSelect(selectedProvider) && (
                                 <div>
-                                    <label htmlFor="assistant-effort" className="text-[10px] text-muted block mb-0.5">Effort</label>
+                                    <label htmlFor="assistant-effort" className="text-xs font-bold text-muted block mb-0.5">Effort</label>
                                     <select
                                         id="assistant-effort"
                                         name="assistant-effort"
                                         value={effort}
                                         onChange={(e) => setEffort(normalizeEffort(e.target.value))}
-                                        className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-[11px] text-white cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary/50 transition-colors"
+                                        className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-white cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary/50 transition-colors"
                                     >
                                         {EFFORT_OPTIONS.map((level) => (
                                             <option key={level} value={level} className="bg-black text-white">
@@ -1383,18 +1451,26 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     </select>
                                 </div>
                             )}
-                            <div className="flex items-center justify-between text-[10px] pt-0.5">
+                            {/* Whether the Claude CLI loads the user's own
+                                ~/.claude settings, CLAUDE.md, skills, agents and
+                                MCP servers. An app setting (data/settings.json),
+                                read by the backend on every turn; Claude only. */}
+                            {shouldShowPermissionSelect(selectedProvider) && <UserClaudeConfigToggle />}
+                            {/* The loaded allow rules; in Ask mode each one asks
+                                unless marked Always allow. Claude only. */}
+                            {shouldShowPermissionSelect(selectedProvider) && <AllowRulesList />}
+                            <div className="flex items-center justify-between text-xs pt-0.5">
                                 {/* The CLI reports the model it actually loaded,
                                     which can differ from the one requested (a
                                     fallback model, an alias resolved server-side).
                                     Show what is running, not what was asked for. */}
                                 <span className="text-muted">
-                                    Active: <span className="font-mono text-primary">{cliModel ?? selectedModel}</span>
+                                    Active: <span className="font-bold text-primary">{cliModel ?? selectedModel}</span>
                                     {cliModel && cliModel !== selectedModel && (
                                         <span className="text-muted/60"> (asked for {selectedModel})</span>
                                     )}
                                 </span>
-                                <span className="inline-flex items-center gap-1 font-mono text-green-400">
+                                <span className="inline-flex items-center gap-1 font-bold text-green-400">
                                     {selectedProvider === CLAUDE_PROVIDER_ID ? (
                                         `effort ${effort}`
                                     ) : (
@@ -1414,7 +1490,12 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                     )}
 
                     {settingsTab === 'keys' && (
-                        <div className="px-4 py-2.5 bg-linear-to-r from-purple-500/10 to-pink-500/10 space-y-1 max-h-56 overflow-y-auto custom-scrollbar">
+                        <div
+                            role="tabpanel"
+                            id={settingsPanelId('keys')}
+                            aria-labelledby={settingsTabId('keys')}
+                            className="px-4 py-2.5 bg-linear-to-r from-purple-500/10 to-pink-500/10 space-y-1 max-h-56 overflow-y-auto custom-scrollbar"
+                        >
                             {providerCatalog.filter(p => p.id !== 'claude' && !p.is_local).map(p => {
                                 const pool = keyPools[p.id];
                                 const keyCount = pool?.total || 0;
@@ -1425,23 +1506,23 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 return (
                                 <div key={p.id} className="py-1.5 border-b border-white/5 last:border-0">
                                     <div className="flex items-center gap-2">
-                                        <span className="text-[10px] text-muted w-20 shrink-0 truncate" title={p.label}>{p.label}</span>
+                                        <span className="text-xs font-bold text-muted w-20 shrink-0 truncate" title={p.label}>{p.label}</span>
                                         <div className="flex-1 flex items-center gap-1.5">
                                             {keyCount > 0 ? (
-                                                <span className="text-[9px] font-mono">
+                                                <span className="text-xs font-bold">
                                                     <span className="text-green-400">{availCount}</span>
                                                     <span className="text-muted">/{keyCount} keys</span>
                                                     {pool && pool.cooldown > 0 && <span className="text-yellow-400 ml-1">({pool.cooldown} cooling)</span>}
                                                 </span>
                                             ) : (
-                                                <span className="text-[9px] text-muted/50">{p.has_key ? 'env only' : 'no keys'}</span>
+                                                <span className="text-xs text-muted/50">{p.has_key ? 'env only' : 'no keys'}</span>
                                             )}
                                             <button
                                                 onClick={() => { setEditingKeyProvider(editingKeyProvider === p.id ? null : p.id); setKeyInput(''); }}
                                                 aria-expanded={editingKeyProvider === p.id}
                                                 aria-controls={editingKeyProvider === p.id ? keyFieldId : undefined}
                                                 title={editingKeyProvider === p.id ? `Close the ${p.label} key field` : `Paste ${p.label} API keys`}
-                                                className="ml-auto inline-flex items-center gap-1 text-[9px] text-primary/70 hover:text-primary"
+                                                className="ml-auto inline-flex items-center gap-1 text-xs font-bold text-primary/70 hover:text-primary"
                                             >
                                                 {editingKeyProvider === p.id
                                                     ? <X className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -1453,7 +1534,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                     onClick={() => clearProviderKeys(p.id)}
                                                     aria-label={`Clear every ${p.label} key`}
                                                     title={`Forget every ${p.label} key`}
-                                                    className="inline-flex items-center gap-1 text-[9px] text-red-400/50 hover:text-red-400"
+                                                    className="inline-flex items-center gap-1 text-xs font-bold text-red-400/50 hover:text-red-400"
                                                 >
                                                     <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
                                                     Clear
@@ -1470,7 +1551,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                 and unmarked on screen. */}
                                             <SecretFieldLabel
                                                 htmlFor={keyFieldId}
-                                                className="text-[9px] font-mono uppercase tracking-wider text-muted"
+                                                className="text-xs font-bold text-muted"
                                                 iconClassName="w-3 h-3 shrink-0 text-primary/70"
                                             >
                                                 {p.label} API keys
@@ -1481,17 +1562,17 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                 value={keyInput}
                                                 onChange={e => setKeyInput(e.target.value)}
                                                 placeholder="Paste keys (one per line, or comma/semicolon separated)..."
-                                                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-white focus:outline-none focus:border-primary/50 resize-none"
+                                                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-primary/50 resize-none"
                                                 rows={3}
                                                 autoFocus
                                                 onKeyDown={e => { if (e.key === 'Enter' && e.ctrlKey && keyInput.trim()) ingestKeys(p.id, keyInput); }}
                                             />
                                             <div className="flex items-center gap-1.5">
-                                                <span className="text-[9px] text-muted/40 flex-1">Ctrl+Enter to save. Comma, newline, or semicolon separated.</span>
+                                                <span className="text-xs text-muted/40 flex-1">Ctrl+Enter to save. Comma, newline, or semicolon separated.</span>
                                                 <button
                                                     onClick={() => ingestKeys(p.id, keyInput)}
                                                     disabled={!keyInput.trim() || ingestingKeys}
-                                                    className="px-2.5 py-0.5 bg-primary/20 text-primary text-[9px] rounded hover:bg-primary/30 disabled:opacity-50"
+                                                    className="px-2.5 py-0.5 bg-primary/20 text-primary text-xs font-bold rounded hover:bg-primary/30 disabled:opacity-50"
                                                 >{ingestingKeys ? 'Saving...' : 'Ingest Keys'}</button>
                                             </div>
                                         </div>
@@ -1501,10 +1582,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     {pool?.keys && pool.keys.length > 0 && editingKeyProvider !== p.id && (
                                         <div className="mt-1 space-y-0.5">
                                             {pool.keys.map((k) => (
-                                                <div key={k.id} className="flex items-center gap-1.5 pl-2 text-[9px]">
+                                                <div key={k.id} className="flex items-center gap-1.5 pl-2 text-xs">
                                                     <span className={`w-1.5 h-1.5 rounded-full ${k.available ? 'bg-green-400' : 'bg-yellow-400'}`} title={k.available ? 'Available' : 'Cooling down'} />
                                                     <KeyRound className="w-3 h-3 shrink-0 text-muted/60" aria-hidden="true" />
-                                                    <span className="font-mono text-muted">{k.masked}</span>
+                                                    <span className="tabular-nums font-semibold text-muted">{k.masked}</span>
                                                     <span className="text-muted/40">{k.source}</span>
                                                     {k.fail_count > 0 && <span className="text-red-400/60">{k.fail_count}x fail</span>}
                                                     {k.source !== 'env' && (
@@ -1524,7 +1605,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 </div>
                                 );
                             })}
-                            <div className="pt-1 text-[9px] text-muted/40 italic">Keys persisted on backend. Env vars auto-detected.</div>
+                            <div className="pt-1 text-xs text-muted/40 italic">Keys persisted on backend. Env vars auto-detected.</div>
                         </div>
                     )}
                 </div>
@@ -1538,10 +1619,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             <Sparkles size={28} className="text-primary" />
                         </div>
                         <h3 className="text-base font-bold mb-1">How can I help?</h3>
-                        <p className="text-[11px] text-muted max-w-xs mb-1">
+                        <p className="text-xs font-semibold text-muted max-w-xs mb-1">
                             I have <span className="text-primary font-semibold">full access</span> to all app capabilities.
                         </p>
-                        <p className="text-[10px] text-muted/70 mb-4 italic">
+                        <p className="text-xs font-semibold text-muted/70 mb-4 italic">
                             {CAPABILITY_HINTS[currentHint]}
                         </p>
 
@@ -1551,7 +1632,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 <button
                                     key={i}
                                     onClick={() => handleQuickCommand(cmd.command)}
-                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-primary/30 rounded-full text-[11px] font-medium transition-all hover:scale-105"
+                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-primary/30 rounded-full text-xs font-semibold transition-all hover:scale-105"
                                 >
                                     {cmd.label}
                                 </button>
@@ -1615,7 +1696,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 <div
                                     key={key}
                                     title={resolved.detail}
-                                    className={`flex items-center gap-1.5 max-w-full rounded-full border px-2 py-1 text-[10px] ${missing
+                                    className={`flex items-center gap-1.5 max-w-full rounded-full border px-2 py-1 text-xs font-semibold ${missing
                                         ? 'border-red-500/40 bg-red-500/10 text-red-300 line-through'
                                         : resolved.status === 'changed'
                                             ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
@@ -1641,7 +1722,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 {attachments.length > 0 && (
                     <div className="mb-2 flex flex-wrap gap-1.5">
                         {attachments.map(item => (
-                            <div key={item.id} className="flex items-center gap-1.5 max-w-full rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-[10px] text-primary">
+                            <div key={item.id} className="flex items-center gap-1.5 max-w-full rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
                                 {renderAttachmentIcon(item.mime)}
                                 <span className="max-w-48 truncate" title={item.name}>{item.name}</span>
                                 <span className="text-primary/60">{formatBytes(item.size)}</span>
@@ -1669,7 +1750,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 <div className="mb-2 flex items-center gap-2 px-0.5">
                     {statusLine && (
                         <div
-                            className="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] text-muted"
+                            className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-muted"
                             role={statusIsLive ? 'status' : undefined}
                             aria-live={statusIsLive ? 'polite' : undefined}
                         >
@@ -1690,7 +1771,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         aria-valuenow={contextPercent}
                         aria-label={contextMeter.ariaLabel}
                         title={contextMeter.title}
-                        className="ml-auto flex shrink-0 items-center gap-1.5 text-[10px] text-muted"
+                        className="ml-auto flex shrink-0 items-center gap-1.5 text-xs font-semibold text-muted"
                     >
                         <span>{contextMeter.label}</span>
                         <div className="h-1 w-16 overflow-hidden rounded-full bg-white/6">
@@ -1699,7 +1780,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 style={{ width: `${contextPercent}%` }}
                             />
                         </div>
-                        <span className="font-mono">{contextPercent}%</span>
+                        <span className="tabular-nums font-semibold">{contextPercent}%</span>
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -1724,7 +1805,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                     >
                         <Paperclip size={14} aria-hidden="true" />
                         {attachments.length > 0 && (
-                            <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-[9px] font-bold text-white">
+                            <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-xs font-bold text-white">
                                 {attachments.length}
                             </span>
                         )}
@@ -1823,7 +1904,7 @@ const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) 
                 {caps.map((c) => (
                     <span
                         key={c}
-                        className={`text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                        className={`text-xs font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
                             CAP_TINT[c] ?? 'border-zinc-500/20 text-zinc-400 bg-white/3'
                         }`}
                     >
@@ -1832,12 +1913,12 @@ const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) 
                 ))}
             </div>
             {nonChat.length > 0 && (
-                <div className="text-[9px] text-amber-300 bg-amber-500/8 border border-amber-500/30 rounded px-2 py-1 leading-snug">
-                    This model is built for <span className="font-bold">{nonChat.join(' / ')}</span> — chat requests will likely error. Pick a model with <span className="font-mono">tools</span> or <span className="font-mono">reasoning</span> for normal conversation.
+                <div className="text-xs font-semibold text-amber-300 bg-amber-500/8 border border-amber-500/30 rounded px-2 py-1 leading-snug">
+                    This model is built for <span className="font-bold">{nonChat.join(' / ')}</span> — chat requests will likely error. Pick a model with <span className="font-bold">tools</span> or <span className="font-bold">reasoning</span> for normal conversation.
                 </div>
             )}
             {isDeprecated && (
-                <div className="text-[9px] text-red-300 bg-red-500/8 border border-red-500/30 rounded px-2 py-1 leading-snug">
+                <div className="text-xs font-semibold text-red-300 bg-red-500/8 border border-red-500/30 rounded px-2 py-1 leading-snug">
                     Deprecated — Google will shut this model down soon. Migrate to a 3.x model when convenient.
                 </div>
             )}

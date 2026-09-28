@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export type MidiIgnoredKind = 'cc' | 'note';
 
@@ -88,7 +89,7 @@ export const useMidiIgnoreStore = create<MidiIgnoreState>()(
         set((s) => ({ controls: s.controls.filter((c) => c.id !== id) })),
       clearIgnoredControls: () => set({ controls: [] }),
     }),
-    { name: 'thedaw.midiIgnore.v1' },
+    { name: 'thedaw.midiIgnore.v1', storage: persistStorage() },
   ),
 );
 

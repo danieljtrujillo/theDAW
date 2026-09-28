@@ -18,6 +18,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 // FE-025: import the id from controllerProfileIds.ts, NOT controllerProfiles.ts
 // — this store is reachable eagerly (App -> Shell -> BottomMultiTabPanel ->
 // slideStore), and importing the constant from controllerProfiles.ts used to
@@ -240,6 +241,7 @@ export const useSlideStore = create<SlideState>()(
     }),
     {
       name: 'thedaw-slide-v1',
+      storage: persistStorage(),
       partialize: (s) => ({
         content: s.content,
         view: s.view,

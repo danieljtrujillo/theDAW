@@ -580,3 +580,215 @@ def test_a_re_measured_key_keeps_the_confidence_already_stored_for_it():
     assert different.get("key_confidence") is None, (
         "a different key inherited the previous key's confidence"
     )
+
+
+# ---------------------------------------------------------------------------
+# PR #207 review: labels, the /run payload, and what a slow probe erased.
+# ---------------------------------------------------------------------------
+
+
+def _seed_tagged_tone(tmp_path: Path, entry_id: str) -> Path:
+    """`_seed_tone`, plus embedded tags in metadata.json -- the case where the
+    engine rebuilds the prompt from the tags."""
+    audio_path = _seed_tone(tmp_path, entry_id)
+    meta_path = audio_path.parent / "metadata.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["embedded_tags"] = {"artist": "Tester", "genre": "Ambient"}
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    return audio_path
+
+
+def test_a_dj_run_over_a_full_row_keeps_the_full_label(tmp_path: Path):
+    """The sequence: the library's background pass analyses a track in full,
+    then the user loads it on a deck and the DJ tab runs its dj profile.
+    The carry-forward keeps every field the full run measured, so the row
+    still holds full data -- and the dj marker used to relabel it 'dj', so
+    GET /api/analysis/{id} and entry.analysis reported a complete row as a
+    partial one."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+
+    from backend.modules.analysis.engine import PROFILE_DJ, profile_of_row
+    from backend.modules.library.store import LibraryStore
+
+    audio_path = _seed_tone(tmp_path, "label")
+    store = LibraryStore(tmp_path)
+    assert store.db is not None
+    entry_dir = store._dir_for("label")
+    metadata_path = (entry_dir / "metadata.json") if entry_dir else None
+
+    analyze_and_persist(store.db, "label", audio_path, metadata_path=metadata_path)
+    full_row = store.db.get_analysis("label")
+    assert profile_of_row(full_row) == "full"
+
+    out = analyze_and_persist(
+        store.db, "label", audio_path, metadata_path=metadata_path, profile=PROFILE_DJ
+    )
+    row = store.db.get_analysis("label")
+    assert profile_of_row(row) == "full", "a dj run relabelled a full row as dj"
+    assert out["profile"] == "full", "the /run payload disagrees with the stored label"
+    assert row["pitch_mean_hz"] == full_row["pitch_mean_hz"]
+    assert row["loudness_lufs"] == full_row["loudness_lufs"]
+
+
+def test_a_dj_run_over_a_stale_full_row_is_labelled_dj(tmp_path: Path):
+    """The sequence: an older analyzer (version 2) wrote a full row, this
+    build's GET reports that row pending, and the DJ tab answers by running
+    the dj profile. The carry-forward keeps the v2 pitch, LUFS and prompt, and
+    keeping the full label saved that old data as a current full row, so GET
+    called it complete and the version heal never re-measured it."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+    import sqlite3
+    from unittest.mock import patch
+
+    from backend.modules.analysis.engine import (
+        ANALYSIS_VERSION,
+        PROFILE_DJ,
+        profile_of_row,
+    )
+    from backend.modules.analysis.router import get_analysis as get_route
+    from backend.modules.library.store import LibraryStore
+
+    audio_path = _seed_tone(tmp_path, "stale")
+    store = LibraryStore(tmp_path)
+    assert store.db is not None
+    entry_dir = store._dir_for("stale")
+    metadata_path = (entry_dir / "metadata.json") if entry_dir else None
+
+    analyze_and_persist(store.db, "stale", audio_path, metadata_path=metadata_path)
+    # Rewind the full row to what the version-2 analyzer left behind.
+    raw = sqlite3.connect(str(store.db.path))
+    raw.execute(
+        "UPDATE analysis SET version = ? WHERE entry_id = ?",
+        (ANALYSIS_VERSION - 1, "stale"),
+    )
+    raw.commit()
+    raw.close()
+    stale = store.db.get_analysis("stale")
+    assert profile_of_row(stale) == "full"
+    assert int(stale["version"]) < ANALYSIS_VERSION
+
+    with patch("backend.modules.analysis.router.get_library_store", return_value=store):
+        assert get_route("stale")["status"] == "pending"
+        out = analyze_and_persist(
+            store.db,
+            "stale",
+            audio_path,
+            metadata_path=metadata_path,
+            profile=PROFILE_DJ,
+        )
+        row = store.db.get_analysis("stale")
+        assert profile_of_row(row) == PROFILE_DJ, (
+            "a dj run saved a stale full row as a current full one"
+        )
+        assert out["profile"] == PROFILE_DJ
+        assert get_route("stale")["profile"] == PROFILE_DJ
+
+
+def test_a_dj_run_on_a_fresh_entry_is_still_labelled_dj(tmp_path: Path):
+    """The label still means something: with no full row behind it, a dj
+    run's row says dj."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+
+    from backend.modules.analysis.engine import PROFILE_DJ, profile_of_row
+    from backend.modules.library.db import LibraryDB
+
+    audio_path = _seed_tone(tmp_path, "fresh")
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "fresh"})
+    out = analyze_and_persist(db, "fresh", audio_path, profile=PROFILE_DJ)
+    assert out["profile"] == PROFILE_DJ
+    assert profile_of_row(db.get_analysis("fresh")) == PROFILE_DJ
+
+
+def test_the_run_payload_reports_a_clamped_bpm_confidence(tmp_path: Path, monkeypatch):
+    """The aubio path averages per-hop confidences with no bound. The clamp
+    lived only on the way into the column, so POST /run answered the deck with
+    the raw value (1.7 here) while the database said 1.0."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+
+    from backend.modules.analysis.engine import PROFILE_DJ
+    from backend.modules.chimera import detect as chimera_detect
+    from backend.modules.library.db import LibraryDB
+
+    audio_path = _seed_tone(tmp_path, "conf")
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "conf"})
+
+    def _overconfident(*_a, **_k):
+        return {"bpm": 128.0, "beats": [0.5, 1.0, 1.5], "confidence": 1.7}
+
+    monkeypatch.setattr(chimera_detect, "detect_tempo_and_beats", _overconfident)
+    out = analyze_and_persist(db, "conf", audio_path, profile=PROFILE_DJ)
+    assert out["bpm_confidence"] == 1.0, "the /run payload carried the raw confidence"
+    row = db.get_analysis("conf")
+    assert row is not None and row["bpm_confidence"] == 1.0
+
+
+def test_a_probe_that_measures_nothing_keeps_the_stored_file_details(
+    tmp_path: Path, monkeypatch
+):
+    """ffprobe answers {} when it times out (a sleeping drive) or is missing,
+    and the whole row is rewritten, so one slow probe erased the sample rate,
+    codec and duration the library and Details read -- in a dj run and a full
+    run alike."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+
+    from backend.modules.analysis import engine as analysis_engine
+    from backend.modules.library.db import LibraryDB
+
+    audio_path = _seed_tone(tmp_path, "probe")
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "probe"})
+    stored = {"_summary": {"sample_rate": 48000, "codec": "flac", "duration_sec": 3.0}}
+    persist_analysis(
+        db, "probe", {"version": ANALYSIS_VERSION, "bpm": 120.0, "ffprobe": stored}
+    )
+
+    monkeypatch.setattr(analysis_engine, "probe_file", lambda _p: {})
+    for profile in (analysis_engine.PROFILE_DJ, analysis_engine.PROFILE_FULL):
+        out = analyze_and_persist(db, "probe", audio_path, profile=profile)
+        row = db.get_analysis("probe")
+        assert row is not None
+        blob = json.loads(row["ffprobe_json"])
+        assert blob.get("_summary", {}).get("sample_rate") == 48000, (
+            f"a {profile} run whose probe measured nothing erased the stored file details"
+        )
+        assert out["sample_rate"] == 48000
+        assert out["codec"] == "flac"
+
+
+def test_a_dj_run_keeps_the_full_prompt_of_a_tagged_track(tmp_path: Path):
+    """A track with embedded tags gets its prompt rebuilt from those tags.
+    The dj run rebuilt it from its OWN payload, which has no pitch and no
+    loudness, and wrote that weaker prompt over the full run's every time the
+    track was loaded on a deck. Rebuilt from the merged row, it matches."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("soundfile")
+
+    from backend.modules.analysis.engine import PROFILE_DJ
+    from backend.modules.library.store import LibraryStore
+
+    audio_path = _seed_tagged_tone(tmp_path, "tagged")
+    store = LibraryStore(tmp_path)
+    assert store.db is not None
+    entry_dir = store._dir_for("tagged")
+    metadata_path = (entry_dir / "metadata.json") if entry_dir else None
+
+    analyze_and_persist(store.db, "tagged", audio_path, metadata_path=metadata_path)
+    full_row = store.db.get_analysis("tagged")
+    assert full_row is not None and full_row["prompt_guess"]
+    assert full_row["pitch_mean_hz"] is not None
+
+    analyze_and_persist(
+        store.db, "tagged", audio_path, metadata_path=metadata_path, profile=PROFILE_DJ
+    )
+    dj_row = store.db.get_analysis("tagged")
+    assert dj_row is not None
+    assert dj_row["prompt_guess"] == full_row["prompt_guess"], (
+        "the dj run replaced the full prompt with one built without pitch or loudness"
+    )

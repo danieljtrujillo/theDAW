@@ -295,7 +295,7 @@ class MeterFakeWritable {
 }
 
 class MeterFakeFileHandle {
-  bytes = new Uint8Array();
+  bytes: Uint8Array = new Uint8Array();
   async getFile(): Promise<{ text(): Promise<string>; arrayBuffer(): Promise<ArrayBuffer> }> {
     const bytes = this.bytes;
     return {
@@ -389,7 +389,7 @@ async function writeMeterManifest(bytes: Uint8Array): Promise<void> {
 }
 
 /** The 7/8 manifest the first block writes, reused by the legacy block. */
-let meterSaved = new Uint8Array();
+let meterSaved: Uint8Array = new Uint8Array();
 
 async function theMeterSurvivesASaveAndRestoreRoundTrip(): Promise<void> {
   Object.defineProperty(globalThis, 'navigator', {

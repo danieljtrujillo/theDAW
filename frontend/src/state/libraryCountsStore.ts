@@ -17,12 +17,16 @@
  *   - a payload that is not five non-negative integers plus a revision is
  *     refused rather than half-rendered;
  *   - `invalidate()` coalesces bursts: one request in flight, at most one
- *     queued behind it, however many mutations land meanwhile.
+ *     queued behind it, however many mutations land meanwhile;
+ *   - a 503 that says the library is still opening (`library_status`) is
+ *     status `opening`, not `error`: the tabs keep `…` and show no Retry
+ *     button, and the progress store asks again once the library has opened.
  *
  * DOM-free and store-free: only `fetch` + zustand.
  */
 
 import { create } from 'zustand';
+import { openingErrorFrom } from '../lib/libraryIndexStatus';
 
 /** The summary endpoint. Counts come from one consistent read server-side. */
 const SUMMARY_URL = '/api/library/summary';
@@ -39,7 +43,7 @@ export const LIBRARY_COUNT_KEYS: readonly LibraryCountKey[] = [
   'score',
 ];
 
-export type LibraryCountsStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type LibraryCountsStatus = 'idle' | 'loading' | 'ready' | 'opening' | 'error';
 
 export interface LibraryCountsState {
   /** The last good snapshot, or null while none has ever arrived. */
@@ -107,7 +111,14 @@ export const useLibraryCounts = create<LibraryCountsState>()((set, get) => ({
     const run: Promise<void> = (async () => {
       try {
         const res = await fetch(SUMMARY_URL, { signal: ctrl.signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          const opening = await openingErrorFrom(res);
+          if (opening) {
+            if (mine === seq) set({ status: 'opening', error: null });
+            return;
+          }
+          throw new Error(`HTTP ${res.status}`);
+        }
         const snapshot = parseSnapshot(await res.json());
         if (mine !== seq) return;
         const current = get();

@@ -21,8 +21,11 @@
  *
  * Also pinned as source assertions (behavior that lives inside a 3,500-line
  * component and cannot be reached without the whole DJ engine):
- *   - both deck-load effects depend on `libLookupVersion`, the fix for a
- *     Send-to-DJ / bundled-set track silently leaving its deck empty;
+ *   - both deck-load effects re-run when the deck's entry resolves, the fix
+ *     for a Send-to-DJ / bundled-set track silently leaving its deck empty,
+ *     and run `syncDeckToEntry`, which leaves a playing deck alone (checked
+ *     against the real engine at the end of this file);
+ *   - every start path goes through `beginAutomix`, which registers first;
  *   - `setlistStore.registerBundled` queues analysis for the ids it filled.
  *
  * Run: `npx tsx src/views/DJView.dj3.test.ts` — `npm test` discovers it.
@@ -53,7 +56,7 @@ delete g.window;
 
 const {
   startAutoDjState, StartAutoDjButton, DjStartHint, DjSetRow, beatMarkPositions,
-  djPlayableCount, djAutomixEntries, AUTO_DJ_MIN_TRACKS,
+  djPlayableCount, djAutomixEntries, AUTO_DJ_MIN_TRACKS, automixStartSteps, syncDeckToEntry,
 } = await import('./DJView.tsx');
 
 let passed = 0;
@@ -474,76 +477,132 @@ const setlistSrc = readFileSync(
   'utf8',
 );
 
-test('both deck-load effects re-run when a single-entry lookup lands', () => {
+test('both deck-load effects re-run when the deck entry resolves, and only sync the deck', () => {
   // `trackById` goes through `libraryStore.getById`, which returns undefined
   // for a track on no loaded page and kicks an async fetch. With
   // `[deckATrack]` alone nothing re-ran when that fetch landed, so every
   // Send-to-DJ and bundled-set id loaded a silently empty deck and automix
-  // stalled on `incomingHasBuffer`.
+  // stalled on `incomingHasBuffer`. The resolved entry is now a dependency;
+  // what a re-run may do to the deck is `syncDeckToEntry`'s call.
   for (const deck of ['A', 'B'] as const) {
     const re = new RegExp(
-      `djEngine\\.loadDeck\\('${deck}'[\\s\\S]{0,400}?\\}, \\[([^\\]]*)\\]\\);`,
+      `useEffect\\(\\(\\) => \\{\\s*syncDeckToEntry\\('${deck}', deck${deck}Track, deck${deck}Entry, deckEntryRef\\.current\\);\\s*\\}, \\[([^\\]]*)\\]\\);`,
     );
     const m = djViewSrc.match(re);
     assert.ok(m, `deck ${deck} load effect not found`);
-    assert.match(m[1], /libLookupVersion/, `deck ${deck} deps: ${m[1]}`);
-    assert.match(m[1], new RegExp(`deck${deck}Track`), `deck ${deck} deps: ${m[1]}`);
+    assert.equal(m[1], `deck${deck}Track, deck${deck}Entry`, `deck ${deck} deps: ${m[1]}`);
   }
+  // THE BUG: the effect body called djEngine.loadDeck directly on every
+  // lookup bump. Nothing but syncDeckToEntry may load a deck from here.
+  const loads = djViewSrc.match(/djEngine\.loadDeck\(/g) ?? [];
+  assert.equal(loads.length, 2, 'only syncDeckToEntry (load + clear) calls djEngine.loadDeck');
+  assert.doesNotMatch(djViewSrc, /\[deckATrack, libLookupVersion\]|\[deckBTrack, libLookupVersion\]/);
 });
 
-test("the header START registers a bundled set before it asks automix to start", () => {
-  // `autoDjPlayable` counts bundled rows that have no entry id yet, so the
-  // button offers to start a set the automix effect cannot sequence. The
-  // 'start' branch therefore has to do what the Sets row's ▶ does: register
-  // first, THEN requestStart — same order, same busy guard, same logWarn on
-  // "not enough tracks" (never a silent 2.2-second flash).
+test('every start path goes through beginAutomix, which registers before it switches automix on', () => {
+  // A bundled set lists every track as `entryId: null` until it is
+  // registered, and the automix effect sequences entry ids only. The header,
+  // the Automix chip and the bridge (a Sets row, Send to DJ, the assistant)
+  // each used to start automix their own way, and only the header
+  // registered first. readyActiveSetForAutomix (djAutomixStore) is the
+  // register-then-count step; its sequences are tested in
+  // src/state/djAutomixStore.ready.test.ts.
+  const from = djViewSrc.indexOf('const beginAutomix = async');
+  assert.ok(from > 0, 'no beginAutomix');
+  const body = djViewSrc.slice(from, djViewSrc.indexOf('const beginAutomixRef', from));
+  const ready = body.indexOf('await readyActiveSetForAutomix()');
+  const steps = body.indexOf('automixStartSteps(mode)');
+  assert.ok(ready > 0, `beginAutomix never readies the set:\n${body}`);
+  assert.ok(steps > ready, `automix is switched on before the set is ready:\n${body}`);
+  assert.doesNotMatch(body.slice(0, steps), /setAutomixOn\(true\)/);
+  assert.match(body, /logWarn\(\s*'dj'/, `no logWarn('dj', …) on the "not enough tracks" path:\n${body}`);
+
+  // The bridge takes that path with the mode the caller asked for.
+  const bridge = djViewSrc.slice(djViewSrc.indexOf('const automixPendingStart'), djViewSrc.indexOf('// Deck-load bridge'));
+  assert.match(bridge, /beginAutomixRef\.current\(automixPendingStart\)/);
+  assert.doesNotMatch(bridge, /ejectDeck\(/, 'THE BUG: the bridge ejected both decks for every caller');
+
+  // The Automix chip takes it too, instead of flipping automixOn directly.
+  assert.match(djViewSrc, /automixOn, onToggleAutomix,/);
+  assert.doesNotMatch(djViewSrc, /onToggleAutomix: \(\) => setAutomixOn/);
+  const toggle = djViewSrc.slice(djViewSrc.indexOf('const onToggleAutomix = () => {'));
+  assert.match(toggle.slice(0, 300), /beginAutomix\('continue'\)/);
+});
+
+test('START AUTO DJ keeps a playing deck: it takes the continue path, never the eject', () => {
+  // THE BUG: the header went through the Send-to-DJ bridge, which ejected
+  // both decks and restarted the set from track 1 while a track played. The
+  // Automix chip always kept the playing deck; the header now does the same.
   const from = djViewSrc.indexOf("case 'start':");
   assert.ok(from > 0, "no 'start' branch in onStartAutoDj");
   const branch = djViewSrc.slice(from, djViewSrc.indexOf("case 'stop':", from));
-  const reg = branch.indexOf('registerBundled(');
-  const req = branch.indexOf('requestStart(');
-  assert.ok(reg > 0, `the 'start' branch never registers:\n${branch}`);
-  assert.ok(req > 0, `the 'start' branch never starts:\n${branch}`);
-  assert.ok(reg < req, `registerBundled must run BEFORE requestStart:\n${branch}`);
-  assert.match(branch, /await registerBundled\(/, branch);
-  assert.match(branch, /logWarn\(\s*'dj'/, `no logWarn('dj', …) on the failure path:\n${branch}`);
+  assert.match(branch, /await beginAutomix\('continue'\)/, branch);
+  assert.doesNotMatch(branch, /requestStart\(/, `the header must not take the bridge's fresh path:\n${branch}`);
+  assert.doesNotMatch(branch, /ejectDeck\(/, branch);
+  // A press while any register is out says so: the store's one guard.
+  assert.ok(branch.indexOf('registerBusy()') >= 0 && branch.indexOf('registerBusy()') < branch.indexOf('beginAutomix('),
+    `no in-flight guard before the start:\n${branch}`);
+  const busy = djViewSrc.slice(djViewSrc.indexOf('const registerBusy = (): boolean => {'));
+  assert.match(busy.slice(0, 300), /useSetlistStore\.getState\(\)\.registeringId/);
+  assert.match(busy.slice(0, 300), /setFlash\(/, 'the dropped press says why');
 });
 
-test('a start that outlives its set bails, and the dropped press says why', () => {
-  // `registerBundled` is a network round-trip. The user can switch sets
-  // while it is out, and the old code then started the automix on whatever
-  // set was active when the press happened — ejecting the decks and mixing
-  // a set nobody is looking at. The re-read after the await is the guard.
-  const from = djViewSrc.indexOf("case 'start':");
-  assert.ok(from > 0, "no 'start' branch in onStartAutoDj");
-  const branch = djViewSrc.slice(from, djViewSrc.indexOf("case 'stop':", from));
-  const await_ = branch.indexOf('await registerBundled(');
-  const reread = branch.indexOf('useSetlistStore.getState().activeId');
-  const req = branch.indexOf('requestStart(');
-  assert.ok(reread > await_, `the active set is never re-read after the register:
-${branch}`);
-  assert.ok(reread < req, `the re-read must happen BEFORE requestStart:
-${branch}`);
-  // A press that is dropped because a register is already in flight is not
-  // allowed to look like a dead button.
-  const guard = branch.indexOf('startRegisterRef.current)');
-  assert.ok(guard > 0, `no in-flight guard:
-${branch}`);
-  assert.match(
-    branch.slice(guard, guard + 400),
-    /setFlash\(/,
-    `the dropped second press says nothing:
-${branch}`,
-  );
+test('the continue path is one step; the fresh path ejects and reseeds', () => {
+  assert.deepEqual(automixStartSteps('continue'), ['on']);
+  assert.deepEqual(automixStartSteps('fresh'), ['drop-transition', 'eject', 'on', 'reseed']);
+});
+
+test('the Sets rows and the header share the store guard', () => {
+  const tree = djViewSrc.slice(djViewSrc.indexOf('const SourceTree: React.FC'));
+  assert.match(tree.slice(0, 2000), /const registeringId = useSetlistStore\(\(s\) => s\.registeringId\)/);
+  assert.doesNotMatch(tree.slice(0, 2000), /useState<string \| null>\(null\)/, 'THE BUG: the rows kept their own flag');
+  assert.doesNotMatch(djViewSrc, /startRegisterRef/, 'THE BUG: the header kept its own flag');
 });
 
 test('registerBundled queues analysis for the ids it filled in', () => {
-  const body = setlistSrc.slice(setlistSrc.indexOf('registerBundled: async'));
+  const body = setlistSrc.slice(setlistSrc.indexOf('async function postRegister('));
   assert.match(body, /analyzeEntries\(filled\)/);
 });
 
 test('the DJ path never POSTs the heavy rhythm /run', () => {
   assert.doesNotMatch(djViewSrc, /rhythm\/[^'"`]*\/run/);
 });
+
+/* ══════════════════ a re-run against the real engine ══════════════════ */
+
+console.log('DJ-3 · a deck-load re-run leaves a playing deck alone');
+
+{
+  // The same schedule the old effect ran on: every lookup bump re-ran it and
+  // called djEngine.loadDeck, which stopped the deck and rewound it to 0:00.
+  const djEngine = await import('../state/djEngine.ts');
+  const { useLibraryStore } = await import('../state/libraryStore.ts');
+  const { installDjEngineRig } = await import('../state/djEngineTestRig.ts');
+  const rig = installDjEngineRig(48000);
+  rig.rows.set('x', { title: 'Track X' });
+  const held: Record<'A' | 'B', string | null> = { A: null, B: null };
+  const entry = () => useLibraryStore.getState().getById('x') ?? null;
+
+  syncDeckToEntry('A', 'x', entry(), held);     // lookup goes out
+  await rig.settle();
+  syncDeckToEntry('A', 'x', entry(), held);     // lands: load
+  await rig.settle();
+  djEngine.playDeck('A');
+  rig.advance(25);
+
+  // Another row's lookup lands and the effect runs again, twice.
+  useLibraryStore.getState().getById('someone-else');
+  await rig.settle();
+  syncDeckToEntry('A', 'x', entry(), held);
+  syncDeckToEntry('A', 'x', entry(), held);
+  await rig.settle();
+
+  const st = djEngine.getStatus('A');
+  assert.equal(st.playing, true, 'THE BUG: the re-run stopped the playing deck');
+  assert.ok(Math.abs(st.currentTime - 25) < 1e-6, `THE BUG: the re-run rewound the deck to ${st.currentTime}s`);
+  assert.equal(rig.fetches.filter((f) => f === rig.audioUrlOf('x')).length, 1, 'fetched once');
+  passed++;
+  console.log('  ok a playing deck survives two re-runs after an unrelated lookup');
+}
 
 console.log(`\nDJ-3: ${passed} passed`);

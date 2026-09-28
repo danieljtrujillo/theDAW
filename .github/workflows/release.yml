@@ -37,20 +37,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Node.js major version used to build the frontend bundle and the
-  # Electron shell. KEEP IN SYNC with the Node version documented in
-  # docs/RELEASING.md (section "Local builds").
-  NODE_VERSION: "22"
   # SwayCommand (the SWAY tab's cockpit) is public, so the installer jobs check
   # it out with the built-in GITHUB_TOKEN and build the embed bundle from it
   # (electron-ui/scripts/fetch-sway-build.mjs via SWAY_PROJECT). It used to be
   # private, which is why SWAY_REPO_TOKEN exists; the secret is still honoured
   # when present so a fork with its own PAT keeps working, and its absence no
-  # longer fails the build. SWAY_REF pins the commit the packaged app ships;
-  # bump it deliberately, the same way VJ_COMMIT is pinned in
-  # fetch-vj-build.mjs.
+  # longer fails the build. SWAY_REF is the branch whose newest commit the
+  # packaged app ships; the checkout step logs the commit it built.
   SWAY_REPO: danieljtrujillo/SwayCommand
-  SWAY_REF: ec1683f9e141ec1e929426be1e0e6b7104f1f33f
+  SWAY_REF: main
 
 jobs:
   # Resolves the release version and fails fast on any version drift
@@ -66,7 +61,7 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Resolve and verify the release version
         id: resolve
         run: |
@@ -134,10 +129,12 @@ jobs:
     env:
       VERSION: ${{ needs.version-check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          # frontend/.nvmrc is the single Node pin for CI, the frontend and the
+          # Electron shell (test.yml reads the same file).
+          node-version-file: frontend/.nvmrc
           cache: npm
           cache-dependency-path: |
             frontend/package-lock.json
@@ -152,7 +149,7 @@ jobs:
       # at it. The script installs its deps and runs
       # `npm run build:renderer:embed` (renderer only; no Electron download).
       - name: Check out SwayCommand
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.SWAY_REPO }}
           ref: ${{ env.SWAY_REF }}
@@ -224,10 +221,12 @@ jobs:
       # happens to expose; the build is intentionally unsigned.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          # frontend/.nvmrc is the single Node pin for CI, the frontend and the
+          # Electron shell (test.yml reads the same file).
+          node-version-file: frontend/.nvmrc
           cache: npm
           cache-dependency-path: |
             frontend/package-lock.json
@@ -246,15 +245,48 @@ jobs:
       # at it. The script installs its deps and runs
       # `npm run build:renderer:embed` (renderer only; no Electron download).
       - name: Check out SwayCommand
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.SWAY_REPO }}
           ref: ${{ env.SWAY_REF }}
           token: ${{ secrets.SWAY_REPO_TOKEN || github.token }}
           path: SwayCommand
+      # FFmpeg for the Apple Silicon app, built from the latest FFmpeg release
+      # with libsoxr and librubberband (no maintained static arm64 build has
+      # both). electron-ui/scripts/build-ffmpeg-macos.sh verifies the tarball's
+      # signature, links Homebrew's libraries, and relinks every dylib into
+      # ffmpeg-libs/ beside the binaries so the app never loads the user's
+      # Homebrew. The build is cached under a key made of the FFmpeg version,
+      # a hash of every Homebrew formula version it links, and the script
+      # itself, so it rebuilds only when one of those changes.
+      - name: Resolve the FFmpeg build key
+        id: ffmpeg-key
+        run: |
+          brew update --quiet
+          key="$(bash electron-ui/scripts/build-ffmpeg-macos.sh key)"
+          echo "FFmpeg build key: $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: Restore the built FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v6
+        with:
+          path: electron-ui/build-resources/ffmpeg-macos-arm64
+          key: ffmpeg-macos-arm64-${{ steps.ffmpeg-key.outputs.key }}-${{ hashFiles('electron-ui/scripts/build-ffmpeg-macos.sh') }}
+      - name: Build FFmpeg from source
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: bash electron-ui/scripts/build-ffmpeg-macos.sh build
+      # Runs on a cache hit too: the soxr and rubberband probes, the encoders
+      # theDAW uses, code signatures, and no /opt/homebrew or /usr/local path
+      # left in any `otool -L` or rpath. Any failure fails the job.
+      - name: Verify the built FFmpeg
+        run: bash electron-ui/scripts/build-ffmpeg-macos.sh verify
       - name: Build the macOS disk image
         env:
           SWAY_PROJECT: ${{ github.workspace }}/SwayCommand
+          # The tool fetch must use the FFmpeg built above, never fall back.
+          THEDAW_MAC_FFMPEG_REQUIRED: "1"
         run: npm run dist:mac:ci
         working-directory: electron-ui
       - uses: actions/upload-artifact@v7
@@ -287,7 +319,7 @@ jobs:
     env:
       VERSION: ${{ needs.version-check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Plain `docker login` with the default token keeps this job free of
       # third-party actions (house rule from lint.yml).
       - name: Log in to the GitHub Container Registry

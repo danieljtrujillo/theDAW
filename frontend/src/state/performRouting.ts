@@ -22,6 +22,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { SWAY_DIMS, seedSwayBinding, type SwayDim } from './swayBus';
 import { resolveLiveEffectId, translateDawParam } from '../lib/dawEffectMap';
 import { getRackEffect } from '../lib/rackEffects';
@@ -190,6 +191,7 @@ export const usePerformRoutingStore = create<PerformRoutingState>()(
     }),
     {
       name: 'thedaw-perform-routing-v1',
+      storage: persistStorage(),
       partialize: (s) => ({ transport: s.transport, sceneCtrls: s.sceneCtrls, trackMods: s.trackMods }),
     },
   ),

@@ -77,6 +77,10 @@ function errText(payload: unknown, fallback: string): string {
   const p = payload as { error?: unknown; detail?: unknown } | null;
   if (p && typeof p.error === 'string' && p.error) return p.error;
   if (p && typeof p.detail === 'string' && p.detail) return p.detail;
+  // A structured refusal (the desktop's Magenta engine_elsewhere 409) carries
+  // its sentence in `message`.
+  const message = (p?.detail as { message?: unknown } | null | undefined)?.message;
+  if (typeof message === 'string' && message) return message;
   return fallback;
 }
 

@@ -33,11 +33,11 @@ struct ParamEdit {
     bool fromHost = false;
 };
 
-// Bounded MPSC ring. Producers claim a slot with one fetch_add and publish it by bumping that
-// slot's sequence; the consumer only reads a slot whose sequence says it is published. No
-// producer ever waits for another producer, so a stalled thread cannot stall the audio thread —
-// it can only make the queue look momentarily full, and a dropped parameter edit is recoverable
-// (the next edit of that parameter carries the current value anyway).
+// Bounded MPSC ring. Producers claim a slot with a compare-exchange on the write index and
+// publish it by bumping that slot's sequence; the consumer only reads a slot whose sequence says
+// it is published. No producer ever waits for another producer, so a stalled thread cannot stall
+// the audio thread — it can only make the queue look momentarily full, and a dropped parameter
+// edit is recoverable (the next edit of that parameter carries the current value anyway).
 class EditRing {
 public:
     explicit EditRing(std::size_t capacityPowerOfTwo);
@@ -55,11 +55,25 @@ private:
         ParamEdit edit;
     };
 
+    // The producers' fields, the consumer's field and the fields no thread writes after
+    // construction each sit a full cache line of padding away from the next group, so a push
+    // never invalidates the line the audio thread's pop reads, nor the reverse. Explicit padding
+    // does this at whatever address the ring is allocated: every field here is 8 bytes on an
+    // 8-byte boundary, so two fields with 64 bytes between them can never share a 64-byte line.
+    static constexpr std::size_t kCacheLine = 64;
+    using Index = std::atomic<std::uint64_t>;
+
+    // Written only by the constructor.
     std::vector<Slot> slots_;
     std::size_t mask_ = 0;
-    alignas(64) std::atomic<std::uint64_t> writeIndex_{0};
-    alignas(64) std::atomic<std::uint64_t> readIndex_{0};
-    std::atomic<std::uint64_t> dropped_{0};
+    char padAfterConstants_[kCacheLine]{};
+    // Written by the producers.
+    Index writeIndex_{0};
+    Index dropped_{0};
+    char padAfterProducers_[kCacheLine]{};
+    // Written by the consumer.
+    Index readIndex_{0};
+    char padAfterConsumer_[kCacheLine]{};
 };
 
 // One parameter's points inside a block. Fixed capacity, filled either by us (input) or by the

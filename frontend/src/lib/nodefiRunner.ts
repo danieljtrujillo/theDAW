@@ -1,4 +1,5 @@
 import { magentaFetch } from './magentaEngineClient';
+import { handleEngineElsewhere } from './magentaElsewhere';
 /**
  * Nodefi runner — drives a node graph to produce audio.
  *
@@ -173,7 +174,16 @@ export function runGraph(
         };
         const form = buildGenerateJobFormData(p, p.prompt.trim());
         const res = await fetch('/api/generate-jobs', { method: 'POST', body: form, signal: ac.signal });
-        if (!res.ok) throw new Error(`submit failed: ${res.status}`);
+        if (!res.ok) {
+          const body: unknown = await res.json().catch(() => null);
+          // Another copy's Magenta engine holds the GPU: its card names the
+          // engine and offers to stop it, and the node reports why.
+          if (handleEngineElsewhere(body, 'Stable Audio cannot load beside it.')) {
+            const message = (body as { detail?: { message?: string } }).detail?.message;
+            throw new Error(`submit failed: ${res.status}${message ? ` — ${message}` : ''}`);
+          }
+          throw new Error(`submit failed: ${res.status}`);
+        }
         const { job } = (await res.json()) as { job?: { id?: string } };
         if (!job?.id) throw new Error('no job id');
         return pollJob('/api/jobs', job.id, ac.signal, ensureLive);

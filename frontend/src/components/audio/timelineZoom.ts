@@ -2,7 +2,8 @@
  * Pure glue between the EDIT timeline (WaveformEditor) and lib/timeline/viewport:
  * the one zoom request every entry point goes through, the fit helpers, the
  * rAF coalescer for wheel bursts, the wheel -> action dispatch, the grid window,
- * ruler bar labels and the clip-chrome layout.
+ * ruler bar labels, the range readout's room on the ruler and the clip-chrome
+ * layout.
  *
  * DOM-free, React-free, store-free. Units:
  *  - `*Sec` values are seconds on the arrangement timeline;
@@ -28,10 +29,15 @@ export const ZOOM_STEP_FACTOR = 1.25;
 export const FIT_MARGIN_FRAC = 0.05;
 /** Width (local px) of each clip's resize-handle zone the header must leave free. */
 export const CLIP_EDGE_ZONE_PX = 6;
-/** Bar numbers show on the ruler once bars are at least this far apart (local px). */
-export const RULER_BAR_LABEL_MIN_PX = 24;
-/** Time labels (mm:ss) never render closer together than this (local px). */
-export const RULER_TIME_LABEL_MIN_PX = 50;
+/** Bar numbers show on the ruler once bars are at least this far apart (local
+ *  px). Sized for the ruler's bold 12 px numbers: a four-digit bar number is
+ *  about 29 px wide, and at the old 24 px three digits already touched. */
+export const RULER_BAR_LABEL_MIN_PX = 36;
+/** Time labels (mm:ss) never render closer together than this (local px).
+ *  Sized for the ruler's bold 12 px labels: "mm:ss" is about 32 px plus 4 px
+ *  of padding, "mmm:ss" past 100 minutes about 39 px, so neighbours keep a
+ *  gap of at least a dozen px. */
+export const RULER_TIME_LABEL_MIN_PX = 56;
 /** Follow-playhead paging holds off this long (ms) after the last zoom. */
 export const ZOOM_FOLLOW_HOLD_MS = 400;
 /**
@@ -312,6 +318,44 @@ export function rulerBarLabels(a: {
   const first = Math.max(0, Math.ceil(a.startSec / barSec - 1e-9));
   for (let i = first; i * barSec <= a.endSec + 1e-9; i++) out.push({ bar: i + 1, sec: i * barSec });
   return out;
+}
+
+/** Upper bound (local px) of one character of the ruler's bold 12 px sans
+ *  text, digits, colons, dashes and dots alike. Deliberately generous: it
+ *  only decides which bar numbers the range readout hides. */
+export const RULER_CHAR_MAX_PX = 8;
+/** Where the range readout sits in its band: `left-1` (4 px) from the band's
+ *  start, with `px-1` (4 px) of opaque pill on each side of its text. */
+const RULER_READOUT_INSET_PX = 4;
+const RULER_READOUT_PAD_PX = 4;
+/** A bar number starts `left-0.5` (2 px) past its bar line. */
+const RULER_BAR_LABEL_INSET_PX = 2;
+
+/**
+ * The local-px extent the range readout's pill can cover on the ruler, for a
+ * readout `text` drawn at the start of a range beginning at `startSec`.
+ */
+export function rulerReadoutSpanPx(startSec: number, zoom: number, text: string): { leftPx: number; rightPx: number } {
+  finite(startSec, 'startSec');
+  finite(zoom, 'zoom');
+  const leftPx = startSec * zoom + RULER_READOUT_INSET_PX;
+  return { leftPx, rightPx: leftPx + 2 * RULER_READOUT_PAD_PX + [...text].length * RULER_CHAR_MAX_PX };
+}
+
+/**
+ * Whether a bar number's text could reach under the range readout. The
+ * readout and the bar numbers share the ruler's top row, so the ruler hides
+ * these numbers while a range is up (the readout's opaque pill would
+ * otherwise cut through them); its bar line stays.
+ */
+export function barLabelUnderReadout(
+  b: { bar: number; sec: number },
+  zoom: number,
+  readout: { leftPx: number; rightPx: number },
+): boolean {
+  const left = b.sec * zoom + RULER_BAR_LABEL_INSET_PX;
+  const right = left + String(b.bar).length * RULER_CHAR_MAX_PX;
+  return left < readout.rightPx && right > readout.leftPx;
 }
 
 /** "Nice" time-tick spacings (seconds) the ruler steps through as it zooms

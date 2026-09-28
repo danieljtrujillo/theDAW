@@ -72,7 +72,9 @@ def projects(home: Path, tmp_path: Path) -> Path:
 def backup(home: Path) -> TestClient:
     app = FastAPI()
     app.include_router(backup_router.router, prefix="/api/backup")
-    return TestClient(app)
+    # A loopback TCP peer: the backup routes answer only to this machine's own
+    # UI, and TestClient's default peer ("testclient") is not an address.
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 def _wait(client: TestClient, url: str, job: str) -> dict[str, Any]:

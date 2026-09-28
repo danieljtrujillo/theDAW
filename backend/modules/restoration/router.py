@@ -4,14 +4,17 @@ All 11 tools are implemented:
  - FFmpeg filter-mode: De-Hum, De-Ess, De-Click, De-Clip.
  - FFmpeg process-mode (afftdn-based, needs the real source rate to
    compensate afftdn's own algorithmic delay exactly — see
-   ``_afftdn_delay_samples``): Neural Denoise, De-Reverb, Restore All.
- - Process mode (numpy/scipy/librosa): Vocal Isolate, Stem Separation,
-   Spectral Repair, Breath Removal.
+   ``_afftdn_delay_samples``): Neural Denoise, De-Reverb, Restore All (whose
+   prompt adds the repairs it names — see ``_restore_prompt_plan``).
+ - Process mode (numpy/scipy/librosa): Vocal Isolate & Cleanup (with its
+   denoise and dereverb stages), Stem Separation, Spectral Repair, Breath /
+   Mouth-Click Removal.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -234,15 +237,107 @@ async def _dereverb(input_path: Path, output_path: Path, params: dict) -> None:
     )
 
 
+# Restore All's prompt vocabulary: each word set names one repair. The chain
+# has no text model, so the prompt steers it by these words; anything else in
+# the prompt is ignored.
+_PROMPT_DECLIP = {
+    "clip",
+    "clipped",
+    "clipping",
+    "distorted",
+    "distortion",
+    "overdriven",
+}
+_PROMPT_DECLICK = {
+    "click",
+    "clicks",
+    "clicky",
+    "crackle",
+    "crackles",
+    "crackling",
+    "pop",
+    "pops",
+    "popping",
+    "vinyl",
+    "scratchy",
+}
+_PROMPT_HUM = {"hum", "hums", "humming", "buzz", "buzzing", "mains"}
+_PROMPT_HISS = {"hiss", "hissy", "hissing", "noise", "noisy", "static", "fuzz"}
+_PROMPT_RUMBLE = {"rumble", "rumbly", "wind", "handling", "thump", "thumps"}
+_PROMPT_MUDDY = {"muddy", "mud", "boomy", "boxy", "woolly"}
+_PROMPT_HARSH = {"harsh", "shrill", "piercing", "brittle"}
+_PROMPT_SIBILANT = {"sibilance", "sibilant", "esses", "essy"}
+_PROMPT_DULL = {"dull", "muffled", "dark", "veiled", "lifeless"}
+_PROMPT_THIN = {"thin", "tinny"}
+_PROMPT_REVERB = {"reverb", "reverby", "echo", "echoey", "echoy", "room", "roomy"}
+
+RESTORE_PROMPT_HELP = (
+    "Words that steer the chain: hum or buzz (add 50 for 50 Hz mains, 60 Hz "
+    "otherwise), hiss or noise, rumble or wind, muddy or boxy, harsh, "
+    "sibilance, dull or muffled, thin or tinny, clicks, crackle or vinyl, "
+    "clipping or distorted, reverb, echo or room."
+)
+
+
+def _restore_prompt_plan(prompt: str) -> tuple[float, list[str]]:
+    """Turn Restore All's prompt into extra repair stages.
+
+    Returns the extra afftdn reduction in dB and the ffmpeg stages to run
+    after afftdn, in a fixed order: the waveform repairs (declip, then
+    declick) come before the tonal moves, so no EQ boost ever reaches the
+    click detector. Every stage here is delay-free (measured against real
+    ffmpeg with band-limited noise at 22.05, 44.1, 48 and 96 kHz: zero lag,
+    same length), so the chain's afftdn delay compensation still holds. An
+    empty prompt, or one with none of these words, returns ``(0.0, [])`` and
+    leaves the chain unchanged.
+    """
+    words = set(re.findall(r"[a-z0-9]+", prompt.lower()))
+    extra_nr = 0.0
+    stages: list[str] = []
+    if words & _PROMPT_DECLIP:
+        stages.append("adeclip")
+    if words & _PROMPT_DECLICK:
+        stages.append("adeclick")
+    if words & _PROMPT_HUM:
+        mains = 50.0 if words & {"50", "50hz"} else 60.0
+        stages += [
+            f"equalizer=f={mains * k:.0f}:width_type=q:w=30:g=-30" for k in range(1, 6)
+        ]
+    if words & _PROMPT_HISS:
+        extra_nr += 12.0
+    if words & _PROMPT_REVERB:
+        # De-Reverb's downward expansion at its full amount: quiet tails sink.
+        stages.append(
+            "compand=attacks=0.01:decays=0.1:points=-80/-80|-45/-45|-30/-40|0/0"
+        )
+        extra_nr += 5.0
+    if words & _PROMPT_RUMBLE:
+        stages.append("highpass=f=80")
+    if words & _PROMPT_MUDDY:
+        stages.append("equalizer=f=300:width_type=o:w=1:g=-4")
+    if words & _PROMPT_HARSH:
+        stages.append("equalizer=f=3500:width_type=o:w=1:g=-4")
+    if words & _PROMPT_SIBILANT:
+        stages.append("deesser=i=0.5:m=0.5:f=0.5:s=o")
+    if words & _PROMPT_DULL:
+        stages.append("treble=g=4:f=6000")
+    if words & _PROMPT_THIN:
+        stages.append("bass=g=3:f=150")
+    return extra_nr, stages
+
+
 async def _restore_all(input_path: Path, output_path: Path, params: dict) -> None:
-    """DSP restore chain: afftdn + presence EQ + loudnorm. Process-mode for
-    the same exact-delay-compensation reason as ``_neural_denoise``."""
+    """DSP restore chain: afftdn + presence EQ + loudnorm, plus the repairs
+    the prompt names (see ``_restore_prompt_plan``). Process-mode for the
+    same exact-delay-compensation reason as ``_neural_denoise``."""
     strength = float(params["strength"])
-    nr = strength * 25.0 + 5.0  # 5-30 dB noise reduction
+    extra_nr, prompt_stages = _restore_prompt_plan(str(params.get("prompt", "")))
+    nr = strength * 25.0 + 5.0 + extra_nr  # 5-30 dB noise reduction, + prompt
     # Presence boost around 3-5 kHz scaled by strength
     eq_gain = strength * 3.0  # 0-3 dB
     afftdn_stage = f"afftdn=nr={nr:.0f}:nt=w"
     tail_parts = [
+        *prompt_stages,
         f"equalizer=f=4000:width_type=o:w=1.5:g={eq_gain:.1f}",
         "loudnorm=I=-14:TP=-1:LRA=11",
     ]
@@ -312,9 +407,13 @@ TOOLS: list[ToolSpec] = [
         gpu=False,
         flagship=True,
         license="MIT",
-        engine="mid/side extraction (Mel-Roformer later)",
+        engine="mid/side extraction + spectral cleanup (Mel-Roformer later)",
         handler=_vocal_isolate,
-        description="Vocal extraction via mid/side stereo processing with wet/dry blend.",
+        description=(
+            "Vocal extraction via mid/side stereo processing with wet/dry "
+            "blend, then cleanup: spectral-subtraction denoise and "
+            "late-reverb suppression."
+        ),
         params=[
             P("processAmount", "float", 0, 1, 0.87, "", "ParamKnobMacro", "Process"),
             P(
@@ -324,6 +423,28 @@ TOOLS: list[ToolSpec] = [
                 options=["vocals", "instrumental"],
                 control="RoundToggle",
                 label="Output",
+            ),
+            P(
+                "denoiseAmount",
+                "float",
+                0,
+                1,
+                0.5,
+                "",
+                "ParamKnob",
+                "Denoise",
+                help="Spectral-subtraction noise reduction; 0 is off, 1 cuts noise up to 30 dB.",
+            ),
+            P(
+                "dereverbAmount",
+                "float",
+                0,
+                1,
+                0.0,
+                "",
+                "ParamKnob",
+                "Dereverb",
+                help="Late-reverb suppression; 0 is off, 1 removes the room tail hardest.",
             ),
         ],
     ),
@@ -401,9 +522,21 @@ TOOLS: list[ToolSpec] = [
         license="Apache-2.0",
         engine="DSP restore chain (SonicMaster later)",
         handler=_restore_all,
-        description="One-click restoration: denoise + presence EQ + loudnorm.",
+        description=(
+            "One-click restoration: denoise + presence EQ + loudnorm. The "
+            "prompt adds the repairs it names: hum, hiss, rumble, muddy, "
+            "harsh, sibilance, dull, thin, clicks, clipping, reverb."
+        ),
         params=[
             P("strength", "float", 0, 1, 0.7, "", "ParamKnob", "Strength"),
+            P(
+                "prompt",
+                "string",
+                default="",
+                control="TextInput",
+                label="Prompt",
+                help=RESTORE_PROMPT_HELP,
+            ),
         ],
     ),
     ToolSpec(
@@ -420,16 +553,30 @@ TOOLS: list[ToolSpec] = [
     ),
     ToolSpec(
         id="breath_removal",
-        name="Breath Removal",
+        name="Breath / Mouth-Click Removal",
         family=FAMILY,
         viz="wave",
         mode="process",
         license="BSD",
-        engine="numpy breath detect",
+        engine="numpy breath + click detect",
         handler=_breath_removal,
-        description="Auto-detect and attenuate breaths via RMS + spectral centroid analysis.",
+        description=(
+            "Auto-detect and attenuate breaths (RMS + spectral centroid) and "
+            "mouth clicks (short high-frequency bursts)."
+        ),
         params=[
             P("breathReduction", "float", 0, 1, 0.8, "", "ParamKnob", "Breath"),
+            P(
+                "clickReduction",
+                "float",
+                0,
+                1,
+                0.7,
+                "",
+                "ParamKnob",
+                "Clicks",
+                help="Mouth-click removal; higher finds quieter clicks and removes more of each.",
+            ),
         ],
     ),
     # ── existing FFmpeg tools (untouched) ──

@@ -11,6 +11,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export const HOTCUE_SLOTS = 4;
 
@@ -114,6 +115,6 @@ export const useDjCuesStore = create<DjCuesState>()(
         };
       }),
     }),
-    { name: 'thedaw.djcues.v1' },
+    { name: 'thedaw.djcues.v1', storage: persistStorage() },
   ),
 );

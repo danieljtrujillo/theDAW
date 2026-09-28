@@ -16,7 +16,7 @@
 //
 // Run:  node scripts/fetch-vj-build.mjs
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, existsSync, rmSync, cpSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,12 +27,13 @@ const repoRoot = resolve(__dirname, '..', '..') // stable-audio-3
 const stageDir = resolve(__dirname, '..', 'resources', 'vj-dist')
 
 const VJ_REPO = process.env.VJ_REPO || 'https://github.com/gantasmo/VJ-9000.git'
-// The VJ branch that carries the '/vj-app/' build base, PINNED to a commit so
-// releases are reproducible and keep building after the branch merges/deletes.
-// Bump VJ_COMMIT deliberately when the VJ app updates. Only used for the clone
-// fallback (a local VJ checkout, when present, is built directly).
+// The clone fallback (a local VJ checkout, when present, is built directly)
+// builds the newest commit of VJ_REF, the branch that carries the '/vj-app/'
+// build base, or of the repository's default branch once VJ_REF is merged and
+// deleted. The commit it built is logged. VJ_COMMIT, when set, builds that
+// exact commit instead, to reproduce an earlier release.
 const VJ_REF = process.env.VJ_REF || 'feat/vj-redesign-vfx'
-const VJ_COMMIT = process.env.VJ_COMMIT || 'ff7430b1bf66524cc30e509b56f1e743443798fb'
+const VJ_COMMIT = process.env.VJ_COMMIT || ''
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const gitCmd = process.platform === 'win32' ? 'git.exe' : 'git'
@@ -66,14 +67,20 @@ function resolveSource() {
   // path escapes the root ("../../..") and rollup rejects it. The .native
   // variant is required: plain realpathSync resolves symlinks and ".." but
   // does NOT expand 8.3 short names, so it would leave RUNNER~1 in place.
-  const dest = join(realpathSync.native(tmpdir()), `vj-9000-${VJ_COMMIT.slice(0, 12)}`)
+  const dest = join(realpathSync.native(tmpdir()), 'vj-9000-build')
   rmSync(dest, { recursive: true, force: true })
-  console.log(`[fetch-vj] cloning ${VJ_REPO}@${VJ_REF} -> ${dest} (pin ${VJ_COMMIT.slice(0, 12)})`)
-  // Clone the branch, then hard-pin to the vetted commit: an unpinned clone
-  // makes releases non-reproducible and breaks entirely if the branch is
-  // merged and deleted upstream.
-  run(gitCmd, ['clone', '--branch', VJ_REF, VJ_REPO, dest])
-  run(gitCmd, ['checkout', '--detach', VJ_COMMIT], dest)
+  const hasRef =
+    spawnSync(gitCmd, ['ls-remote', '--exit-code', '--heads', VJ_REPO, VJ_REF], { stdio: 'ignore' }).status === 0
+  if (hasRef) {
+    console.log(`[fetch-vj] cloning ${VJ_REPO}@${VJ_REF} -> ${dest}`)
+    run(gitCmd, ['clone', '--branch', VJ_REF, VJ_REPO, dest])
+  } else {
+    console.warn(`[fetch-vj] ${VJ_REF} no longer exists on ${VJ_REPO}; cloning its default branch -> ${dest}`)
+    run(gitCmd, ['clone', VJ_REPO, dest])
+  }
+  if (VJ_COMMIT) run(gitCmd, ['checkout', '--detach', VJ_COMMIT], dest)
+  const head = execFileSync(gitCmd, ['rev-parse', 'HEAD'], { cwd: dest, encoding: 'utf8' }).trim()
+  console.log(`[fetch-vj] building VJ commit ${head}`)
   return { path: dest, cloned: true }
 }
 

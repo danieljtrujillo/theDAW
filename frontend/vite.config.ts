@@ -3,8 +3,8 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {createLogger, defineConfig, loadEnv} from 'vite';
-import {buildInfoDefines} from './buildInfo.config';
-import {plainAscii} from './src/lib/plainText';
+import {buildInfoDefines} from './buildInfo.config.ts';
+import {plainAscii} from './src/lib/plainText.ts';
 
 // During startup the frontend comes up before the backend binds :8600, so every
 // proxied /api request (health, modules, library, assistant, …) fails with
@@ -101,6 +101,16 @@ const embedHeaders = (proxyRes: {headers: Record<string, string | string[] | und
   proxyRes.headers['cross-origin-resource-policy'] = 'same-origin';
 };
 
+// A module-id test for one or more npm packages: true when the module sits in
+// that package's directory under node_modules, on POSIX and Windows paths alike.
+const vendorTest = (...pkgs: string[]) => {
+  const dirs = pkgs.map((p) => `/node_modules/${p}/`);
+  return (id: string): boolean => {
+    const posix = id.replaceAll('\\', '/');
+    return dirs.some((d) => posix.includes(d));
+  };
+};
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
@@ -121,11 +131,11 @@ export default defineConfig(({mode}) => {
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       // __APP_BUILD_SHA__ / __APP_BUILD_TIME__ — shown in the Update dialog.
-      ...buildInfoDefines(__dirname),
+      ...buildInfoDefines(import.meta.dirname),
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     // Web workers are emitted as ES MODULES, not the iife Vite defaults to.
@@ -143,14 +153,14 @@ export default defineConfig(({mode}) => {
     build: {
       // Modern output → less transpilation across the ~3.5k modules.
       target: 'es2022',
-      rollupOptions: {
+      rolldownOptions: {
         // Two entries: the desktop app (index.html) and the phone companion
         // (mobile.html -> src/mobile/main.tsx). The mobile tree never imports
         // three/alphaTab/force-graph, so its chunk stays small; the phone never
         // downloads the desktop bundle.
         input: {
-          main: path.resolve(__dirname, 'index.html'),
-          mobile: path.resolve(__dirname, 'mobile.html'),
+          main: path.resolve(import.meta.dirname, 'index.html'),
+          mobile: path.resolve(import.meta.dirname, 'mobile.html'),
         },
         output: {
           // Split the big, stable leaf vendors into their own long-cached
@@ -159,18 +169,22 @@ export default defineConfig(({mode}) => {
           // LiquidChromeTitle) and lazily (the visualizer), so giving it a
           // dedicated chunk keeps exactly one cached copy and pulls ~600KB out of
           // the entry chunk. (react-force-graph stays code-split via LineageModal.)
-          manualChunks: {
-            'react-vendor': ['react', 'react-dom'],
-            three: ['three'],
-            wavesurfer: ['wavesurfer.js', '@wavesurfer/react'],
-            icons: ['lucide-react'],
-            // Heavy leaf libs pulled in by specific features; give them their own
-            // long-cached chunks so they leave the main entry chunk (and an app
-            // edit never busts them). Behaviour is unchanged — pure bundling.
-            genai: ['@google/genai'],
-            markdown: ['react-markdown', 'remark-gfm', 'marked'],
-            spessasynth: ['spessasynth_core', 'spessasynth_lib'],
-            maplibre: ['maplibre-gl'],
+          // Vite 8 bundles with Rolldown, which takes named groups matched by
+          // module path (Rollup's object-form manualChunks is not accepted).
+          codeSplitting: {
+            groups: [
+              {name: 'react-vendor', test: vendorTest('react', 'react-dom')},
+              {name: 'three', test: vendorTest('three')},
+              {name: 'wavesurfer', test: vendorTest('wavesurfer.js', '@wavesurfer/react')},
+              {name: 'icons', test: vendorTest('lucide-react')},
+              // Heavy leaf libs pulled in by specific features; give them their own
+              // long-cached chunks so they leave the main entry chunk (and an app
+              // edit never busts them). Behaviour is unchanged — pure bundling.
+              {name: 'genai', test: vendorTest('@google/genai')},
+              {name: 'markdown', test: vendorTest('react-markdown', 'remark-gfm', 'marked')},
+              {name: 'spessasynth', test: vendorTest('spessasynth_core', 'spessasynth_lib')},
+              {name: 'maplibre', test: vendorTest('maplibre-gl')},
+            ],
           },
         },
       },

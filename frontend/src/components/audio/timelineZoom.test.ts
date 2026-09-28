@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { WHEEL_PROFILES } from '../../lib/timeline/viewport';
+import { formatRangeReadout } from './timelineInteraction';
 import {
   CLIP_EDGE_ZONE_PX,
   MIN_CONTENT_WIDTH_PX,
+  RULER_BAR_LABEL_MIN_PX,
+  RULER_CHAR_MAX_PX,
+  RULER_TIME_LABEL_MIN_PX,
   ZOOM_FOLLOW_HOLD_MS,
+  barLabelUnderReadout,
   clipChromeLayout,
   createZoomCoalescer,
   fitProjectZoom,
@@ -13,6 +18,7 @@ import {
   planZoom,
   resolveAnchorSec,
   rulerBarLabels,
+  rulerReadoutSpanPx,
   rulerTimeTicks,
   shouldRescrollAfterZoom,
   spanOfClips,
@@ -231,11 +237,11 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
 
 // --- Ruler bar numbers -------------------------------------------------------
 {
-  // 120 bpm, 4/4: a bar is 2 s. At 12 px/s bars are 24 px apart: labelled.
-  const labels = rulerBarLabels({ startSec: 0, endSec: 7, bpm: 120, zoom: 12 });
+  // 120 bpm, 4/4: a bar is 2 s. At 18 px/s bars are 36 px apart: labelled.
+  const labels = rulerBarLabels({ startSec: 0, endSec: 7, bpm: 120, zoom: 18 });
   assert.deepEqual(labels, [{ bar: 1, sec: 0 }, { bar: 2, sec: 2 }, { bar: 3, sec: 4 }, { bar: 4, sec: 6 }]);
-  // 11 px/s: 22 px apart, too dense: none.
-  assert.deepEqual(rulerBarLabels({ startSec: 0, endSec: 7, bpm: 120, zoom: 11 }), []);
+  // 17 px/s: 34 px apart, too dense for bold 12 px numbers: none.
+  assert.deepEqual(rulerBarLabels({ startSec: 0, endSec: 7, bpm: 120, zoom: 17 }), []);
   // Windowed: starts at the first bar inside the window.
   assert.deepEqual(rulerBarLabels({ startSec: 3, endSec: 6, bpm: 120, zoom: 50 }), [{ bar: 3, sec: 4 }, { bar: 4, sec: 6 }]);
   assert.throws(() => rulerBarLabels({ startSec: 0, endSec: 1, bpm: NaN, zoom: 10 }), RangeError);
@@ -248,9 +254,10 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
   // step no matter what (15 px apart, below any legible width); the fixed
   // step must widen until labels are readable.
   const farOut = rulerTimeTicks({ startSec: 0, endSec: 300, zoom: 1.51 });
-  for (const t of farOut) assert.ok(t.sec === 0 || t.sec * 1.51 >= 50, `${t.sec}s at 1.51px/s is ${t.sec * 1.51}px from 0, below 50px`);
+  const minPx = RULER_TIME_LABEL_MIN_PX;
+  for (const t of farOut) assert.ok(t.sec === 0 || t.sec * 1.51 >= minPx, `${t.sec}s at 1.51px/s is ${t.sec * 1.51}px from 0, below ${minPx}px`);
   for (let i = 1; i < farOut.length; i++) {
-    assert.ok((farOut[i].sec - farOut[i - 1].sec) * 1.51 >= 50 - 1e-9, 'consecutive ticks must be >= minPx apart');
+    assert.ok((farOut[i].sec - farOut[i - 1].sec) * 1.51 >= minPx - 1e-9, 'consecutive ticks must be >= minPx apart');
   }
   assert.deepEqual(farOut.map((t) => t.sec), [0, 60, 120, 180, 240, 300]);
 
@@ -274,12 +281,97 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
   const veryFarOut = rulerTimeTicks({ startSec: 0, endSec: 14400, zoom: 0.02 });
   assert.ok(veryFarOut.length >= 2, 'must still produce ticks for a long session at extreme zoom-out');
   for (let i = 1; i < veryFarOut.length; i++) {
-    assert.ok((veryFarOut[i].sec - veryFarOut[i - 1].sec) * 0.02 >= 50 - 1e-9);
+    assert.ok((veryFarOut[i].sec - veryFarOut[i - 1].sec) * 0.02 >= RULER_TIME_LABEL_MIN_PX - 1e-9);
   }
 
   assert.deepEqual(rulerTimeTicks({ startSec: 5, endSec: 1, zoom: 10 }), []);
   assert.throws(() => rulerTimeTicks({ startSec: 0, endSec: 1, zoom: 0 }), RangeError);
   assert.throws(() => rulerTimeTicks({ startSec: 0, endSec: 1, zoom: NaN }), RangeError);
+}
+
+// --- Ruler labels at their real size: bold 12 px, never touching ------------
+{
+  // The ruler draws its labels in bold 12 px sans (WaveformEditor.tsx). A
+  // tabular digit there is at most ~7.2 px, a colon ~3.5 px, and a time label
+  // starts 4 px past its tick. Sweep the whole zoom range the way a user
+  // zooms out from the deepest zoom, over a 2 h session, and check every pair
+  // of neighbours on screen keeps a gap. Before, the spacing was chosen for
+  // 8 px mono text: at 12 px, bar numbers from 100 up touched at 24 px apart.
+  const DIGIT_PX = 7.2;
+  const COLON_PX = 3.5;
+  const GAP_PX = 6;
+  const timeLabel = (sec: number) => `${Math.floor(sec / 60).toString().padStart(2, '0')}:${Math.floor(sec % 60).toString().padStart(2, '0')}`;
+  const labelPx = (text: string) => [...text].reduce((w, ch) => w + (ch === ':' ? COLON_PX : DIGIT_PX), 0);
+  const sessionSec = 2 * 3600;
+  for (let zoom = 400; zoom >= 0.25; zoom /= 1.25) {
+    // Look at two screens around 1:50:00, where labels are widest.
+    const startSec = Math.max(0, 6600 - 1920 / zoom);
+    const endSec = Math.min(sessionSec, 6600 + 1920 / zoom);
+    const ticks = rulerTimeTicks({ startSec, endSec, zoom });
+    for (let i = 1; i < ticks.length; i++) {
+      const prevRight = ticks[i - 1].sec * zoom + 4 + labelPx(timeLabel(ticks[i - 1].sec));
+      assert.ok(
+        ticks[i].sec * zoom - prevRight >= GAP_PX,
+        `time labels ${timeLabel(ticks[i - 1].sec)} and ${timeLabel(ticks[i].sec)} at ${zoom.toFixed(2)} px/s leave ${(ticks[i].sec * zoom - prevRight).toFixed(1)} px`,
+      );
+    }
+    const bars = rulerBarLabels({ startSec, endSec, bpm: 174, zoom });
+    for (let i = 1; i < bars.length; i++) {
+      const prevRight = bars[i - 1].sec * zoom + 2 + labelPx(String(bars[i - 1].bar));
+      assert.ok(
+        bars[i].sec * zoom - prevRight >= 4,
+        `bar numbers ${bars[i - 1].bar} and ${bars[i].bar} at ${zoom.toFixed(2)} px/s overlap`,
+      );
+    }
+  }
+  assert.ok(RULER_BAR_LABEL_MIN_PX >= 2 + 4 * DIGIT_PX + 4, 'a four-digit bar number fits between bar lines');
+}
+
+// --- The range readout never draws over a bar number ------------------------
+{
+  // The sequence from the review: EDIT at 120 bpm, zoomed in until bar
+  // numbers show, then a time range dragged across bars 5 to 8. The readout
+  // and the bar numbers are both bold 12 px in the ruler's top row, so
+  // "00:08.000 – 00:16.000 · 8.000s" was drawn through 6, 7 and 8. Sweep the
+  // zoom from far out to deep in: every bar number left on screen must clear
+  // the readout's real text, and the bound the ruler hides by must cover it.
+  const DIGIT_PX = 7.2;
+  const bpm = 120;
+  const range = { startSec: 8, endSec: 16, scope: { kind: 'all-tracks' as const } };
+  const readout = formatRangeReadout(range);
+  assert.equal(readout, '00:08.000 – 00:16.000 · 8.000s');
+  // The widest the readout's pill really gets: text at the digit width plus
+  // its 4 px of padding each side, from 4 px into the band.
+  const realLeft = (zoom: number) => range.startSec * zoom + 4;
+  const realRight = (zoom: number) => realLeft(zoom) + 8 + [...readout].length * DIGIT_PX;
+  let sawHidden = false;
+  for (let zoom = 400; zoom >= 2; zoom /= 1.25) {
+    const bars = rulerBarLabels({ startSec: 0, endSec: 60, bpm, zoom });
+    const span = rulerReadoutSpanPx(range.startSec, zoom, readout);
+    assert.ok(span.leftPx <= realLeft(zoom) && span.rightPx >= realRight(zoom), 'the hide bound covers the readout');
+    for (const b of bars) {
+      const left = b.sec * zoom + 2;
+      const right = left + String(b.bar).length * DIGIT_PX;
+      const hidden = barLabelUnderReadout(b, zoom, span);
+      sawHidden ||= hidden;
+      if (!hidden) {
+        assert.ok(
+          right <= realLeft(zoom) || left >= realRight(zoom),
+          `bar ${b.bar} at ${zoom.toFixed(2)} px/s is drawn under the range readout`,
+        );
+      }
+    }
+  }
+  assert.ok(sawHidden, 'the sweep reached a zoom where bar numbers sit under the readout');
+  // Bars clear of the readout keep their numbers: bar 3 (4 s) and a bar well
+  // past the pill at a zoom where the readout ends before it.
+  const zoom = 40;
+  const span = rulerReadoutSpanPx(range.startSec, zoom, readout);
+  assert.equal(barLabelUnderReadout({ bar: 3, sec: 4 }, zoom, span), false);
+  assert.equal(barLabelUnderReadout({ bar: 6, sec: 10 }, zoom, span), true);
+  const firstClear = Math.ceil(span.rightPx / zoom / 2) + 1;
+  assert.equal(barLabelUnderReadout({ bar: firstClear, sec: (firstClear - 1) * 2 }, zoom, span), false);
+  assert.ok(RULER_CHAR_MAX_PX >= DIGIT_PX, 'the character bound is at least a bold 12 px digit');
 }
 
 // --- Clip chrome: header inside the visible part, off the resize zones -------
