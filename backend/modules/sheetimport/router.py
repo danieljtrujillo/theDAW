@@ -19,6 +19,7 @@ from backend.lib.cross_site import (
     refuse_cross_site,
     require_loopback_launch_or_pairing_token,
 )
+from backend.modules.notation.mxl_guard import MxlRefused
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -71,6 +72,8 @@ async def parse_upload(file: UploadFile = File(...)):
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except MxlRefused as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     except Exception as e:  # noqa: BLE001 - surface parse errors to the client
         raise HTTPException(status_code=422, detail=f"Could not parse score: {e}")
 
@@ -113,5 +116,7 @@ def parse_path(req: PathRequest):
         return parse_score_path(str(resolved))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except MxlRefused as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     except Exception as e:  # noqa: BLE001 - surface parse errors to the client
         raise HTTPException(status_code=422, detail=f"Could not parse score: {e}")

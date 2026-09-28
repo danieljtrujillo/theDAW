@@ -948,6 +948,16 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
     src = Path(path)
     if not src.exists():
         raise FileNotFoundError(f"Score not found: {path}")
+    if src.suffix.lower() == ".mxl":
+        # Refused before music21 unzips it: an archive declaring more than a
+        # score's ceiling unpacked, or holding another archive (MxlRefused).
+        from backend.modules.notation.mxl_guard import check_mxl
+        from backend.modules.notation.score_import import (
+            MAX_IMPORT_BYTES,
+            MXL_EXPANSION_LIMIT,
+        )
+
+        check_mxl(src, MXL_EXPANSION_LIMIT * MAX_IMPORT_BYTES)
 
     try:
         from music21 import chord as m21chord

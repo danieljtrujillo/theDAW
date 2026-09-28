@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 from backend.lib.atomic import atomic_write
 
+from .mxl_guard import MxlRefused, check_mxl
 from .engine import (
     _musicxml_prolog_extras,
     _song_slug,
@@ -62,6 +63,10 @@ IMPORT_SUFFIXES: tuple[str, ...] = tuple(KIND_FOR_IMPORT_SUFFIX)
 #: Scores are small; this only guards against an accidental huge upload. The
 #: same ceiling the sheet parser (``/api/sheetimport/parse``) applies.
 MAX_IMPORT_BYTES = 25 * 1024 * 1024
+#: A compressed score (``.mxl``) may unpack to this many times
+#: ``MAX_IMPORT_BYTES``; its members' declared sizes are summed before music21
+#: unzips it (:mod:`.mxl_guard`).
+MXL_EXPANSION_LIMIT = 4
 
 #: The ``engine`` every artifact of an imported score is registered with, and
 #: the flag its metadata carries: the file is the user's, not an engraving.
@@ -126,7 +131,9 @@ def parse_score_bytes(data: bytes, filename: str) -> Any:
     music21 picks its reader from the suffix (and unzips ``.mxl`` itself).
     ``forceSource`` keeps music21's parse cache out of it. Raises
     :class:`ScoreImportError` for a suffix the import does not take, a file
-    music21 cannot read, or a score with no notes.
+    music21 cannot read, or a score with no notes, and for an ``.mxl`` whose
+    members declare more than ``MXL_EXPANSION_LIMIT x MAX_IMPORT_BYTES``
+    (413) or hold another archive, before music21 unzips it.
     """
     name = safe_filename(filename)
     suffix = Path(name).suffix.lower()
@@ -136,6 +143,11 @@ def parse_score_bytes(data: bytes, filename: str) -> Any:
             f"{', '.join(IMPORT_SUFFIXES)}",
             status=415,
         )
+    if suffix == ".mxl":
+        try:
+            check_mxl(data, MXL_EXPANSION_LIMIT * MAX_IMPORT_BYTES)
+        except MxlRefused as exc:
+            raise ScoreImportError(f"{name}: {exc}", status=exc.status) from exc
     from music21 import converter
 
     with tempfile.TemporaryDirectory(prefix="thedaw-score-import-") as scratch:

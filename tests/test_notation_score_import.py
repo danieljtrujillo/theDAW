@@ -461,6 +461,78 @@ def test_upload_guards(library, tmp_path, monkeypatch):
     assert not (tmp_path / "x.abc").exists()
 
 
+def _declaring_zip(declared: int) -> bytes:
+    """A small .mxl whose one member says it unpacks to ``declared`` bytes:
+    the size fields of its local and central headers are rewritten, the way
+    a zip bomb states a size its few compressed bytes never hold."""
+    import io
+    import struct
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("score.musicxml", b"<score-partwise/>")
+    raw = bytearray(buf.getvalue())
+    local = raw.find(b"PK\x03\x04")
+    central = raw.find(b"PK\x01\x02")
+    struct.pack_into("<I", raw, local + 22, declared)
+    struct.pack_into("<I", raw, central + 24, declared)
+    return bytes(raw)
+
+
+def test_an_mxl_that_unpacks_past_the_ceiling_is_refused(library, tmp_path):
+    """The archive's directory is read before music21 unzips it: members that
+    declare more than four times MAX_IMPORT_BYTES answer 413, and nothing is
+    written."""
+    bomb = tmp_path / "bomb.mxl"
+    bomb.write_bytes(_declaring_zip(4 * score_import.MAX_IMPORT_BYTES + 1))
+    assert bomb.stat().st_size < 1024
+
+    r = _upload(library["client"], bomb)
+
+    assert r.status_code == 413, r.text
+    assert "unpacks" in r.json()["detail"]
+    assert _score_entries(library["store"]) == []
+
+
+def test_an_mxl_holding_another_archive_is_refused(library, tmp_path):
+    import io
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("score.musicxml", b"<score-partwise/>")
+    for member in ("nested.zip", "score.musicxml"):
+        outer = tmp_path / f"outer-{member}.mxl"
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr(member, inner.getvalue())
+
+        r = _upload(library["client"], outer, name="outer.mxl")
+
+        assert r.status_code == 422, (member, r.text)
+        assert "another archive" in r.json()["detail"], member
+    assert _score_entries(library["store"]) == []
+
+
+def test_the_sheet_parser_refuses_the_same_mxl(tmp_path):
+    """The roll's own score import (``/api/sheetimport/parse``) reads .mxl
+    through the same check."""
+    from backend.modules.sheetimport import router as sheetimport_router
+
+    app = FastAPI()
+    app.include_router(sheetimport_router.router, prefix="/api/sheetimport")
+    client = TestClient(app, client=("127.0.0.1", 51000))
+    r = client.post(
+        "/api/sheetimport/parse",
+        files={
+            "file": (
+                "bomb.mxl",
+                _declaring_zip(4 * score_import.MAX_IMPORT_BYTES + 1),
+                "application/octet-stream",
+            )
+        },
+    )
+    assert r.status_code == 413, r.text
+
+
 def test_mxl_original_is_served_as_compressed_musicxml(library, tmp_path):
     client = library["client"]
     entry_id = _upload(client, _write_fixture(tmp_path, ".mxl")).json()["entry_id"]
