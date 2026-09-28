@@ -12,7 +12,8 @@ unpitched notes, timed grace notes, played-out ornaments and dynamics as
 velocity.
 
 The quartet is bars 530-640 of Beethoven's Op. 132 from music21's corpus
-(``tests/fixtures/quartet``, written by ``scripts/make_quartet_fixture.py``).
+(``tests/fixtures/quartet``, written by ``scripts/make_quartet_fixture.py``,
+whose docstring gives the encoding's public-domain source).
 """
 
 from __future__ import annotations
@@ -61,8 +62,8 @@ def test_notes_come_back_on_the_rolls_960_ppq_clock(quartet: dict) -> None:
                 1 / 240, n["ticks"] / 240
             )
         # Every onset the score writes on a whole tick is in the part at that
-        # tick (a grace note's principal moves later by its graces, so only
-        # notes with no grace before them are held to their written place).
+        # tick. A note with grace notes before it starts later by their time,
+        # and its written onset is still there: the grace notes sound on it.
         written = {
             round(float(el.offset) * PPQ)
             for el in part.flatten().stripTies().notes
@@ -71,7 +72,7 @@ def test_notes_come_back_on_the_rolls_960_ppq_clock(quartet: dict) -> None:
         }
         onsets = {n["tick"] for n in track["notes"]}
         missing = [t for t in sorted(written) if t not in onsets]
-        assert len(missing) <= 30, f"{track['name']}: onsets moved {missing[:10]}"
+        assert not missing, f"{track['name']}: onsets moved {missing[:10]}"
 
 
 def test_every_time_signature_comes_back_at_its_bar(quartet: dict) -> None:

@@ -1,11 +1,19 @@
 """Write the string quartet test fixtures from the music21 corpus.
 
 The fixtures are a real multi-part score for the import tests: bars 530-640
-of Beethoven's String Quartet in A minor, Op. 132 (the composition is in the
-public domain; the encoding ships with music21's corpus, which carries no
-restriction for this file). The slice holds four parts, four time signatures
-(4/4, 3/8, 4/4, 3/8), a metronome mark (andantino, 80) and three tempo words
-(Andante, Molto Adagio, Andante), grace notes and trills.
+of Beethoven's String Quartet in A minor, Op. 132. The slice holds four
+parts, four time signatures (4/4, 3/8, 4/4, 3/8), a metronome mark
+(andantino, 80) and three tempo words (Andante, Molto Adagio, Andante),
+grace notes and trills.
+
+Where the encoding comes from: music21's corpus file beethoven/opus132.mxl
+is one of the Project Gutenberg MusicXML scores. music21's About page says
+"Project Gutenberg houses public domain music, including the quartets of
+Beethoven, Haydn, and Mozart, in musicxml format which we have been able to
+include in music21", and the file came into the corpus in music21's commit
+e8e460e, "restore Gutenberg files!", with the other Gutenberg quartets. The
+composition (1825) and that encoding are in the public domain; the file
+embeds no <rights> element, and the slice written here carries none.
 
 Two files are written to ``tests/fixtures/quartet``:
 
