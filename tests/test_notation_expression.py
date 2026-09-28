@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pretty_midi
+import pytest
 from music21 import converter, dynamics, meter, note, spanner, stream
 
 from backend.modules.notation import engine as notation_engine
@@ -323,3 +324,101 @@ def test_sheet_import_keeps_a_notes_own_velocity(tmp_path):
     assert notes[0]["velocity"] == round(50 * 90 / 100), (
         "dynamics=50 is half of forte (90)"
     )
+
+
+def _chained_hairpins_sheet(bars: int) -> str:
+    """A violin at p, then a hairpin on every bar, each one ending on the
+    next bar's first note where the next one starts: crescendo, diminuendo,
+    crescendo, ... with no printed level after the first."""
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<score-partwise version="4.0">',
+        '<part-list><score-part id="P1"><part-name>Violin</part-name></score-part></part-list>',
+        '<part id="P1">',
+    ]
+    for bar in range(1, bars + 1):
+        out.append(f'<measure number="{bar}">')
+        if bar == 1:
+            out.append(
+                "<attributes><divisions>1</divisions><time><beats>4</beats>"
+                "<beat-type>4</beat-type></time></attributes>"
+            )
+            out.append(
+                "<direction><direction-type><dynamics><p/></dynamics>"
+                "</direction-type></direction>"
+            )
+        kind = "crescendo" if bar % 2 else "diminuendo"
+        out.append(
+            f'<direction><direction-type><wedge type="{kind}" number="{1 + bar % 2}"/>'
+            "</direction-type></direction>"
+        )
+        for index, step in enumerate("CDEF"):
+            out.append(
+                f"<note><pitch><step>{step}</step><octave>5</octave></pitch>"
+                "<duration>1</duration><type>quarter</type></note>"
+            )
+            if index == 0 and bar > 1:
+                out.append(
+                    '<direction><direction-type><wedge type="stop" '
+                    f'number="{1 + (bar - 1) % 2}"/></direction-type></direction>'
+                )
+        out.append("</measure>")
+    out.append("</part></score-partwise>")
+    return "\n".join(out)
+
+
+def test_a_hairpin_on_every_bar_of_160_parses_in_under_two_seconds(tmp_path):
+    import time
+
+    sheet = tmp_path / "chained.musicxml"
+    sheet.write_text(_chained_hairpins_sheet(160), encoding="utf-8")
+
+    began = time.perf_counter()
+    parsed = parse_score_path(str(sheet))
+    elapsed = time.perf_counter() - began
+
+    assert elapsed < 2.0, f"{elapsed:.1f} s"
+    cc11 = [c for c in parsed["tracks"][0]["controls"] if c["controller"] == 11]
+    assert len(cc11) > 160, "every hairpin shapes CC11"
+    assert all(0 < c["value"] <= 127 for c in cc11)
+
+
+def test_a_chain_of_2000_touching_hairpins_reads_without_recursion():
+    from backend.modules.notation.expression import (
+        LEVEL_VELOCITY,
+        Hairpin,
+        SheetExpression,
+    )
+
+    expression = SheetExpression(marks=[(0.0, float(LEVEL_VELOCITY["p"]))])
+    expression.wedges = [
+        Hairpin(float(i), float(i + 1), 1 if i % 2 == 0 else -1) for i in range(2000)
+    ]
+
+    # Up one level, down one level, over and over: p, mp, p, mp, ...
+    assert expression.level_at(1999.5) == pytest.approx(
+        (LEVEL_VELOCITY["p"] + LEVEL_VELOCITY["mp"]) / 2, abs=0.01
+    )
+    assert expression.level_at(2000.0) == pytest.approx(LEVEL_VELOCITY["p"], abs=0.01)
+    assert expression.level_at(2003.0) == LEVEL_VELOCITY["p"], "held at the arrival"
+    assert len(expression.cc11(float(i) for i in range(2004))) > 2000
+
+
+def test_a_hairpin_after_a_hairpin_starts_where_the_first_arrived():
+    """Two crescendos from p with no printed level between them and a gap
+    after each: the first arrives at mp, the second starts there and arrives
+    at mf, and the level after the second is mf."""
+    from backend.modules.notation.expression import (
+        LEVEL_VELOCITY,
+        Hairpin,
+        SheetExpression,
+    )
+
+    expression = SheetExpression(
+        marks=[(0.0, float(LEVEL_VELOCITY["p"]))],
+        wedges=[Hairpin(0.0, 2.0, 1), Hairpin(4.0, 6.0, 1)],
+    )
+
+    assert expression.level_at(3.0) == LEVEL_VELOCITY["mp"]
+    assert expression.level_at(4.0) == LEVEL_VELOCITY["mp"]
+    assert expression.level_at(8.0) == LEVEL_VELOCITY["mf"]

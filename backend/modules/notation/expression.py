@@ -729,6 +729,9 @@ class SheetExpression:
     accents: dict[float, float] = field(default_factory=dict)
     #: The velocity before the first printed level.
     default: float = float(LEVEL_VELOCITY[DEFAULT_LEVEL])
+    _levels: Optional["_Levels"] = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def has_dynamics(self) -> bool:
@@ -746,6 +749,7 @@ class SheetExpression:
         self.marks = sorted((float(o), float(v)) for o, v in marks)
         self.accents = {float(o): float(v) for o, v in accents.items()}
         self.default = float(default)
+        self._levels = None
         for wedge in self.wedges:
             wedge.target = next(
                 (
@@ -756,61 +760,44 @@ class SheetExpression:
                 None,
             )
 
+    def _prepared(self) -> "_Levels":
+        """The marks and hairpins in offset order, with each hairpin's start
+        and arrival velocities, built once and rebuilt only when the marks or
+        hairpins are replaced or added to."""
+        key = (
+            id(self.marks),
+            len(self.marks),
+            id(self.wedges),
+            len(self.wedges),
+            self.default,
+        )
+        if self._levels is None or self._levels.key != key:
+            self._levels = _Levels.build(self, key)
+        return self._levels
+
     def _mark_before(self, offset: float) -> tuple[float, float]:
         """(offset, velocity) of the last level at or before ``offset``."""
-        at, velocity = float("-inf"), self.default
-        for mark_at, mark_velocity in self.marks:
-            if mark_at <= offset + _EPS:
-                at, velocity = mark_at, mark_velocity
-            else:
-                break
-        return at, velocity
+        return self._prepared().mark_before(offset)
 
     def level_at(self, offset: float) -> float:
-        """The velocity the printed dynamics give ``offset``."""
-        mark_at, velocity = self._mark_before(offset)
-        for wedge in self.wedges:
-            if wedge.start - _EPS <= offset <= wedge.end + _EPS:
-                start_velocity = self.level_at(wedge.start - 2 * _EPS)
-                if abs(wedge.start - self._mark_before(wedge.start)[0]) < _EPS:
-                    start_velocity = self._mark_before(wedge.start)[1]
-                target = self._target(wedge, start_velocity)
-                span = wedge.end - wedge.start
-                t = 1.0 if span <= _EPS else (offset - wedge.start) / span
-                return start_velocity + (target - start_velocity) * t
-            if wedge.end < offset and wedge.start >= mark_at - _EPS:
-                # The hairpin ended after the last printed level: it arrived.
-                start_velocity = self._mark_before(wedge.start)[1]
-                velocity = self._target(wedge, start_velocity)
-        return velocity
-
-    def _start_velocity(self, wedge: Hairpin) -> float:
-        """The level ``wedge`` starts from: a level printed on its first note,
-        else the level just before it."""
-        mark_at, mark_velocity = self._mark_before(wedge.start)
-        if abs(wedge.start - mark_at) < _EPS:
-            return mark_velocity
-        return self.level_at(wedge.start - 2 * _EPS)
-
-    def _hairpin_at(self, offset: float) -> Optional[Hairpin]:
-        """The hairpin a note at ``offset`` is played inside: from its start
-        up to, not including, its end. A note on the end plays the level the
-        hairpin arrived at."""
-        for wedge in self.wedges:
-            if wedge.start - _EPS <= offset < wedge.end - _EPS:
-                return wedge
-        return None
+        """The velocity the printed dynamics give ``offset``: the last printed
+        level, moving along a hairpin from the level it starts from to the
+        level it arrives at, and held at the arrival after a hairpin that
+        ended after the last printed level."""
+        return self._prepared().level_at(offset)
 
     def note_level(self, offset: float) -> float:
         """The velocity a note at ``offset`` plays at before its accents: the
-        printed level, and inside a hairpin the louder of the level it starts
-        from and the level it arrives at. :meth:`cc11` brings the heard level
-        down from there along the hairpin."""
-        wedge = self._hairpin_at(offset)
-        if wedge is None:
-            return self.level_at(offset)
-        start_velocity = self._start_velocity(wedge)
-        return max(start_velocity, self._target(wedge, start_velocity))
+        printed level, and inside a hairpin (from its start up to, not
+        including, its end; a note on the end plays the level the hairpin
+        arrived at) the louder of the level it starts from and the level it
+        arrives at. :meth:`cc11` brings the heard level down from there along
+        the hairpin."""
+        levels = self._prepared()
+        index = levels.hairpin_at(offset)
+        if index is None:
+            return levels.level_at(offset)
+        return max(levels.start_velocity[index], levels.arrival[index])
 
     def _target(self, wedge: Hairpin, start_velocity: float) -> float:
         if wedge.target is not None:
@@ -857,13 +844,14 @@ class SheetExpression:
             return []
         ordered = sorted(set(float(t) for t in onsets))
         values: dict[float, int] = {}
-        wedges = sorted(self.wedges, key=lambda w: w.start)
+        levels = self._prepared()
+        wedges = levels.wedges
         for index, wedge in enumerate(wedges):
             span = wedge.end - wedge.start
             if span <= _EPS:
                 continue
-            start_velocity = self._start_velocity(wedge)
-            target = self._target(wedge, start_velocity)
+            start_velocity = levels.start_velocity[index]
+            target = levels.arrival[index]
             louder = max(start_velocity, target, 1.0)
             step = 0
             while True:
@@ -889,6 +877,90 @@ class SheetExpression:
             if not points or points[-1][1] != values[t]:
                 points.append((t, values[t]))
         return points
+
+
+@dataclass
+class _Levels:
+    """A :class:`SheetExpression`'s level curve, read at any offset in
+    O(log n).
+
+    Each hairpin's start velocity is found once, in start order: a level
+    printed on its first note, else the level just before it, which is the
+    previous hairpin's arrival when that one touches it or ended after the
+    last printed level. Walking the hairpins in order carries that arrival
+    forward without recursion, so a chain of any length costs one pass."""
+
+    key: tuple[Any, ...]
+    default: float
+    mark_offsets: list[float]
+    mark_velocities: list[float]
+    wedges: list[Hairpin]
+    starts: list[float]
+    #: The latest end of any hairpin up to each index (non-decreasing).
+    reach: list[float]
+    start_velocity: list[float]
+    arrival: list[float]
+
+    @classmethod
+    def build(cls, expression: SheetExpression, key: tuple[Any, ...]) -> "_Levels":
+        marks = sorted(expression.marks, key=lambda m: m[0])
+        wedges = sorted(expression.wedges, key=lambda w: w.start)
+        levels = cls(
+            key=key,
+            default=expression.default,
+            mark_offsets=[m[0] for m in marks],
+            mark_velocities=[m[1] for m in marks],
+            wedges=wedges,
+            starts=[],
+            reach=[],
+            start_velocity=[],
+            arrival=[],
+        )
+        for wedge in wedges:
+            mark_at, mark_velocity = levels.mark_before(wedge.start)
+            if abs(wedge.start - mark_at) < _EPS:
+                start_velocity = mark_velocity
+            else:
+                # Only the hairpins already walked start before this point.
+                start_velocity = levels.level_at(wedge.start - 2 * _EPS)
+            levels.starts.append(wedge.start)
+            levels.reach.append(
+                max(wedge.end, levels.reach[-1]) if levels.reach else wedge.end
+            )
+            levels.start_velocity.append(start_velocity)
+            levels.arrival.append(expression._target(wedge, start_velocity))
+        return levels
+
+    def mark_before(self, offset: float) -> tuple[float, float]:
+        index = bisect.bisect_right(self.mark_offsets, offset + _EPS) - 1
+        if index < 0:
+            return float("-inf"), self.default
+        return self.mark_offsets[index], self.mark_velocities[index]
+
+    def level_at(self, offset: float) -> float:
+        mark_at, velocity = self.mark_before(offset)
+        # The hairpins that start at or before ``offset``.
+        started = bisect.bisect_right(self.starts, offset + _EPS)
+        # The first of them still running at ``offset``: every hairpin before
+        # it ended earlier, so its own end is the one that reaches ``offset``.
+        index = bisect.bisect_left(self.reach, offset - _EPS, 0, started)
+        if index < started:
+            wedge = self.wedges[index]
+            start_velocity = self.start_velocity[index]
+            span = wedge.end - wedge.start
+            t = 1.0 if span <= _EPS else (offset - wedge.start) / span
+            return start_velocity + (self.arrival[index] - start_velocity) * t
+        last = started - 1
+        if last >= 0 and self.wedges[last].start >= mark_at - _EPS:
+            # The hairpin ended after the last printed level: it arrived.
+            return self.arrival[last]
+        return velocity
+
+    def hairpin_at(self, offset: float) -> Optional[int]:
+        """The index of the first hairpin with ``start <= offset < end``."""
+        started = bisect.bisect_right(self.starts, offset + _EPS)
+        index = bisect.bisect_right(self.reach, offset + _EPS, 0, started)
+        return index if index < started else None
 
 
 def _cc11_value(level: float, louder: float) -> int:
