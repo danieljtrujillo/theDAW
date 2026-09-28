@@ -230,13 +230,17 @@ def test_beatsaber_info_dat_credits_the_chart_artist_not_the_global_composer(
 
 
 def test_capabilities_formats_matches_what_export_accepts() -> None:
+    from backend.modules.notation import router as notation_router
+
     caps = engine.capabilities()
     # These are artifact *kinds* this module already produces some other way
-    # (a registered MIDI, a note chart's raw dict, a tab arrangement), never
-    # an /export target (_EXT_FOR_FORMAT in router.py has no entry for any of
-    # them) -- advertising them here promised a conversion the route then
-    # rejected with 422.
-    assert "midi" not in caps["formats"]
+    # (a note chart's raw dict, a tab arrangement), never an /export target
+    # (_EXT_FOR_FORMAT in router.py has no entry for either) -- advertising
+    # them here promised a conversion the route then rejected with 422.
+    # "midi" is advertised because /export now takes it: the score written
+    # as MIDI at sounding pitch.
+    assert "midi" in caps["formats"]
+    assert "midi" in notation_router._EXT_FOR_FORMAT
     assert "json" not in caps["formats"]
     assert "alphatex" not in caps["formats"]
     # Chord tracks are built through their own POST /{entry_id}/chords route,
@@ -2715,19 +2719,19 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "xml.etree.ElementTree.write (title/composer backfill patch)",
         (
             "engine.py",
-            1450,
+            1458,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (stage_parts scratch file)",
         (
             "engine.py",
-            1871,
+            1879,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (MuseScore re-credit scratch file)",
         (
             "engine.py",
-            1551,
+            1559,
             "shutil",
             "move",
         ): (
@@ -2736,13 +2740,13 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ),
         (
             "engine.py",
-            2232,
+            2240,
             "output_path",
             "write_text",
         ): "Path.write_text (ABC export, plain text -- not MusicXML)",
         (
             "engine.py",
-            2625,
+            2633,
             "output_path",
             "write_text",
         ): "Path.write_text (alphaTex export, plain text -- not MusicXML)",
@@ -2789,10 +2793,20 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (note-chart JSON export, not MusicXML)",
         (
             "router.py",
-            1090,
+            1282,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (chords route XML patch)",
+        (
+            "score_import.py",
+            203,
+            "tree",
+            "write",
+        ): (
+            "xml.etree.ElementTree.write (drops music21's placeholder composer "
+            "from a sheet _write_musicxml already wrote and validated; the "
+            "result is parsed again before it replaces the file)"
+        ),
     }
     violations, seen_allowlist_keys = _scan_unguarded_writer_calls(
         package_dir, allowlist
@@ -2895,15 +2909,15 @@ def test_scan_flags_unguarded_shutil_move_but_allows_listed_one(
     assert violations and "shutil" in violations[0] and "move" in violations[0]
 
     real_allowlist = {
-        ("engine.py", 1551, "shutil", "move"): "allowed stage_parts move",
+        ("engine.py", 1559, "shutil", "move"): "allowed stage_parts move",
     }
     real_violations, real_seen = _scan_unguarded_writer_calls(
         Path(engine.__file__).parent, real_allowlist
     )
-    assert not any(v.startswith("engine.py:1551") for v in real_violations), (
+    assert not any(v.startswith("engine.py:1559") for v in real_violations), (
         real_violations
     )
-    assert ("engine.py", 1551, "shutil", "move") in real_seen
+    assert ("engine.py", 1559, "shutil", "move") in real_seen
 
 
 # ---------------------------------------------------------------------------

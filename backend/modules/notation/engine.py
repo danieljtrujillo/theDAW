@@ -695,11 +695,12 @@ def capabilities() -> dict[str, Any]:
     musescore = musescore_binary()
     osmd = pdf_render.available()
     # What ``POST /{entry_id}/export`` (``_EXT_FOR_FORMAT``) actually accepts,
-    # plus pdf/svg below when an engraver is present. "midi", "json" and
-    # "alphatex" are artifact *kinds* this module already produces (a
-    # registered MIDI, a note chart's raw dict, a tab arrangement) but none of
-    # them is an /export target -- advertising them here promised a
-    # conversion the route then rejected with 422. "chordtrack" is likewise
+    # plus pdf/svg below when an engraver is present. "json" and "alphatex"
+    # are artifact *kinds* this module already produces (a note chart's raw
+    # dict, a tab arrangement) but neither is an /export target --
+    # advertising them here promised a conversion the route then rejected
+    # with 422. "midi" is both: an artifact kind, and the sounding-pitch MIDI
+    # target the route writes itself. "chordtrack" is likewise
     # not an /export target: chord tracks are built through their own
     # POST /{entry_id}/chords route (see ``caps["chords"]`` below).
     formats = [
@@ -707,6 +708,9 @@ def capabilities() -> dict[str, Any]:
         "abc",
         "notechart",
         "beatsaber",
+        # The score as MIDI at sounding pitch, one track per part: written by
+        # the router itself (router._export_sounding_midi), not convert_score.
+        "midi",
     ]
     # PDF and SVG each come from EITHER engraver: the headless OSMD renderer
     # first (the SCORE tab's own engraver, so the sheet matches the screen),
@@ -827,6 +831,10 @@ _KIND_FOR_SUFFIX = {
     ".midi": "midi",
     ".musicxml": "musicxml",
     ".xml": "musicxml",
+    # Compressed MusicXML (a zip holding the sheet) and Humdrum kern: the
+    # originals a user imports (POST /api/notation/import) are kept as-is.
+    ".mxl": "mxl",
+    ".krn": "kern",
     ".alphatex": "alphatex",
     ".abc": "abc",
     ".pdf": "pdf",
