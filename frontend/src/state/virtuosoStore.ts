@@ -21,7 +21,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { persistStorage } from './persistStorage';
-import { usePianoRollStore, type PianoNote } from './pianoRollStore';
+import { activeTrackOf, usePianoRollStore, type PianoNote } from './pianoRollStore';
+import { withExpressionControls } from '../lib/clipNotes/expression';
 import {
   renderVirtuoso,
   buildSong as buildSongNotes,
@@ -230,6 +231,7 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           meterMap: _songBase,
           pickupSteps: roll.pickupSteps,
           tempoMap: _tempoBase,
+          expression: roll.expressionOn,
         });
         _songMap = normalizeMeterMap(song.meterMap);
         _songOwned = sectionMeterBars(s.sections);
@@ -245,7 +247,12 @@ export const useVirtuosoStore = create<VirtuosoState>()(
           { meterMap: song.meterMap },
           keepBends ? roll.bends : undefined,
           song.tempoMap,
-          { document: true, markers: withFormMarkers(roll.markers, form) },
+          {
+            document: true,
+            markers: withFormMarkers(roll.markers, form),
+            // EXPRESSION: the song's CC 1 and CC 11 curves replace the part's own; its other controllers stay.
+            ...(song.controls ? { part: { controls: withExpressionControls(activeTrackOf(roll).controls, song.controls) } } : {}),
+          },
         );
         _tempoMap = usePianoRollStore.getState().tempoMap;
       };

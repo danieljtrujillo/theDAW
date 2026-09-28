@@ -62,7 +62,8 @@ import { metricalWeights, stepsPerBeat } from './syncopation';
 import { PPQ } from './noteClock';
 import { sanitizeRollTempoMap } from './rollTempo';
 import { clampTempoBpm, getTempoAtBeat, type TempoCurve, type TempoEvent } from './tempoMap';
-import { MIN_NOTE_STEPS, type PianoNote } from '../state/pianoRollStore';
+import { MIN_NOTE_STEPS, type PianoNote, type RollControl } from '../state/pianoRollStore';
+import { buildExpression } from './clipNotes/expression';
 
 const RH_FLOOR = 60; // C4 — right-hand register floor
 const MEL_CENTER = 74; // D5 — melodic register center
@@ -1406,6 +1407,12 @@ export interface BuildSongOpts extends TransformOpts {
    * in force (songTempoMap). Absent means one tempo at `bpm`.
    */
   tempoMap?: readonly TempoEvent[];
+  /**
+   * The roll's EXPRESSION toggle: the song is shaped by phrase expression
+   * (lib/clipNotes/expression), its sections splitting its phrases, and comes
+   * back with the CC 1 and CC 11 curves (`controls`) and its attacks moved.
+   */
+  expression?: boolean;
 }
 
 export interface BuiltSong {
@@ -1423,6 +1430,8 @@ export interface BuiltSong {
    * the ruler at each one. Empty for an empty source.
    */
   sections: Array<{ role: Role; step: number }>;
+  /** With `expression`: the song's CC 1 and CC 11 phrase curves, on the roll's clock. */
+  controls?: RollControl[];
 }
 
 /** How much slower a section's last bar ends than it starts: 6% with Humanize at 0, up to 24% at 1. */
@@ -1655,5 +1664,10 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
 
   // The phrasing: a ritardando into each section end, written as tempo.
   const tempo = songTempoMap(opts.tempoMap ?? [], startBpm, sectionBeats, opts.amounts.humanize);
+  // EXPRESSION: CC 1 and CC 11 over each phrase, the sections splitting them, and seeded attacks.
+  if (opts.expression) {
+    const shaped = buildExpression(notes, { seed: 7, boundaries: sectionStarts.map((s) => Math.round((s.step * PPQ) / 4)) });
+    return { notes: shaped.notes.sort(byStepThenNote), meterMap, tempoMap: tempo, sections: sectionStarts, controls: shaped.controls };
+  }
   return { notes: notes.sort(byStepThenNote), meterMap, tempoMap: tempo, sections: sectionStarts };
 }
