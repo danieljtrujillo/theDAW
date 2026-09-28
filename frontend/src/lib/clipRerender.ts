@@ -236,6 +236,20 @@ export function createStaleRerenderQueue(deps: ClipRerenderDeps, onError: (clipI
     }
   };
 
+  /**
+   * Start the pump unless it runs. When it winds down it looks once more, so a
+   * request that lands between its last look at the queue and its end (a
+   * clip handed back in a promise's continuation) is rendered, not left
+   * waiting for the next request.
+   */
+  const start = (): void => {
+    if (running || !waiting.length) return;
+    running = pump().finally(() => {
+      running = null;
+      start();
+    });
+  };
+
   return {
     request: (clipIds) => {
       for (const id of clipIds) {
@@ -243,13 +257,12 @@ export function createStaleRerenderQueue(deps: ClipRerenderDeps, onError: (clipI
         pending.add(id);
         waiting.push(id);
       }
-      if (!running && waiting.length) {
-        running = pump().finally(() => {
-          running = null;
-        });
-      }
+      start();
     },
-    idle: () => running ?? Promise.resolve(),
+    idle: async () => {
+      // A pump that starts again as the last one ends is waited for too.
+      while (running) await running;
+    },
     pending: () => [...pending],
   };
 }
