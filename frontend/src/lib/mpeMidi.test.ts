@@ -134,6 +134,20 @@ for (const withZone of [true, false]) {
   assert.deepEqual([p.track.program, p.track.channel], [88, 1], 'with its program');
 }
 
+// ── a roll export with no member channel free says it wrote the expression without its zone ──
+{
+  const { rollPartsToMidiFile, rollMidiMpeNoRoom } = await import('./rollMidi.ts');
+  const { makeRollTrack } = await import('./rollTracks.ts');
+  const { migrateNotes, DEFAULT_LANES } = await import('../state/pianoRollStore.ts');
+  const { normalizeMeterMap } = await import('./meterMap.ts');
+  const lead = makeRollTrack({ id: 'A', name: 'Lead', program: 81, notes: migrateNotes([{ id: 'a', note: 60, step: 0, length: 8, velocity: 100, expr: { pressure: 0.3 } }]) }, 0);
+  const pad = { ...makeRollTrack({ id: 'B', name: 'Pad', program: 88, notes: migrateNotes([{ id: 'b', note: 48, step: 0, length: 8, velocity: 90 }]) }, 1), channel: 16 };
+  const src = { notes: [], lanes: [...DEFAULT_LANES], totalSteps: 16, bpm: 120, meterMap: normalizeMeterMap([]), pickupSteps: 0, bends: [], tracks: [lead, pad] };
+  assert.equal(rollMidiMpeNoRoom(rollPartsToMidiFile(src as never, [lead, pad] as never), [lead, pad]), true, 'the Pad holds channel 16: no zone');
+  const free = { ...pad, channel: 2 };
+  assert.equal(rollMidiMpeNoRoom(rollPartsToMidiFile({ ...src, tracks: [lead, free] } as never, [lead, free] as never), [lead, free]), false);
+}
+
 // ── a dense file reads in linear time ─────────────────────────────────────
 {
   // 40 000 notes on one channel took 5.5 s when each note copied its channel's list.

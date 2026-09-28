@@ -40,7 +40,7 @@ import { noteIndexOf, type NoteIndex } from '../../lib/noteIndex';
 import { hitNote, lookOf, noteBox, ROLL_LOOKS } from '../../lib/rollCanvas';
 import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
 import { bpmText, laneSpanLabel } from '../../lib/meterFace';
-import { midiFileNoteCount, partLaneChannels, rollToMidiFile } from '../../lib/rollMidi';
+import { midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
 import { stepClock, type RollPlayState } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
@@ -1338,6 +1338,10 @@ export const exportRollMidi = async (): Promise<void> => {
   if (unbent.length) {
     const lanes = unbent.map((u) => `${u.name} lane ${roll.lanes.find((l) => l.id === u.lane)?.name ?? u.lane}`);
     logWarn('piano-roll', `No MIDI channel was left for the pitch bend of ${lanes.join(', ')}: those notes are in the file unbent`);
+  }
+  // Notes with expression of their own go on the MPE zone's member channels, 15 down; with none free they go without it.
+  if (rollMidiMpeNoRoom(file, parts)) {
+    logWarn('piano-roll', "No MIDI channel was left for an MPE zone: notes with their own expression play on their part's channel, without it");
   }
   // One track per part, and per lane when the roll has more than lane A: the count is every track's notes.
   const count = midiFileNoteCount(file);

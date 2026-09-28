@@ -876,6 +876,16 @@ export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack
   return { ...header, tracks: withMpeZone(tracks, mpe) };
 }
 
+/**
+ * True when `parts` hold notes with expression of their own and `file` (what
+ * rollToMidiFile wrote for them) declares no MPE zone: no member channel was
+ * free, so those notes are in the file on their part's channel, without it.
+ */
+export function rollMidiMpeNoRoom(file: MidiFileData, parts: readonly RollTrack[]): boolean {
+  const expressive = parts.some((p) => !isPercussionPart(p) && p.notes.some((n) => writesAsMpe(n.expr)));
+  return expressive && !file.tracks.some((t) => t.mpeZones?.length);
+}
+
 /** Every note the file carries, across all its tracks: what an export reports it wrote. */
 export const midiFileNoteCount = (file: MidiFileData): number => file.tracks.reduce((sum, t) => sum + t.notes.length, 0);
 
