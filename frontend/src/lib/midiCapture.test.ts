@@ -18,6 +18,7 @@ import {
   NO_MIDI_MESSAGE,
   PUNCH_EMPTY_MIDI_MESSAGE,
   STEPS_PER_BEAT,
+  capturedControlsToRoll,
   capturesMidi,
   createNoteCapture,
   cropNotesToWindow,
@@ -921,6 +922,71 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   near(h.renders[0].updates.sourceDuration ?? 0, 20 * 0.125 + 1.5, 'the source is the whole render');
   assert.equal(h.renders[0].updates.durationSec, undefined, 'the trimmed window is left alone');
   h.dispose();
+}
+
+{
+  // A hardware controller played with the notes: the mod wheel (CC 1) and the
+  // expression pedal (CC 11) land on the take as its roll part's controller
+  // changes, at the ticks they were played on (960 to the quarter at 120 BPM);
+  // a controller a part does not keep (CC 93, chorus) is read past.
+  resetMidiTakeSeq();
+  const h = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'] });
+  h.sec(4);
+  h.setStatus('recording');
+  h.send([0xb0, 1, 20]); // at the pass's start
+  h.sec(4.5);
+  h.send([0x90, 60, 100]);
+  h.send([0xb0, 11, 64]);
+  h.send([0xb0, 93, 50]);
+  h.sec(5);
+  h.send([0xb0, 11, 110]);
+  h.send([0xb3, 1, 90]); // another channel: the one input stream is the take's
+  h.sec(6);
+  h.send([0x80, 60, 0]);
+  h.setStatus('stopping');
+  assert.equal(h.clips.length, 1);
+  const part = h.clips[0].sourceRollPart;
+  assert.ok(part, 'the take carries a roll part for its controllers');
+  assert.equal(part.program, 0, 'the part plays the instrument of its track');
+  assert.deepEqual(
+    part.controls?.map((c) => [c.tick, c.controller, c.value]),
+    [
+      [0, 1, 20],
+      [960, 11, 64],
+      [1920, 11, 110],
+      [1920, 1, 90],
+    ],
+    'each change at its tick from the clip start, chorus left out',
+  );
+  h.dispose();
+
+  // A pass with notes only lands no roll part, as every take did before.
+  resetMidiTakeSeq();
+  const plain = harness({ tracks: [MIDI_TRACK], armed: ['midi-1'] });
+  plain.setStatus('recording');
+  plain.send([0x90, 62, 90]);
+  plain.sec(1);
+  plain.setStatus('stopping');
+  assert.equal(plain.clips[0].sourceRollPart, undefined);
+  plain.dispose();
+
+  // The capture core keeps controllers apart from notes, and a punch window crops them.
+  let t = 0;
+  const cap = createNoteCapture({ now: () => t });
+  cap.open();
+  cap.onMessage([0xb0, 64, 127]);
+  t = 2;
+  cap.onMessage([0xb0, 64, 0]);
+  t = 3;
+  assert.deepEqual(cap.close(), [], 'no notes');
+  const played = cap.takeControls();
+  assert.deepEqual(played.map((c) => [c.controller, c.value, c.sec]), [[64, 127, 0], [64, 0, 2]]);
+  assert.deepEqual(cap.takeControls(), [], 'taken once');
+  assert.deepEqual(
+    capturedControlsToRoll(played, { bpm: 60, originSec: 1, window: { from: 1, to: 5 } })?.map((c) => [c.tick, c.value]),
+    [[960, 0]],
+    'the pedal-down before the punch window is cropped; the pedal-up lands a beat in at 60 BPM',
+  );
 }
 
 console.log('midiCapture: ok');

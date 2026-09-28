@@ -45,7 +45,8 @@ import { ownsKey } from '../../lib/keyScope';
 import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
-import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { partController } from '../../lib/rollTracks';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
@@ -2304,6 +2305,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const k = lane.target.kind;
     if (k === 'trackVolume') return { color: '#34d399', toNorm: (v) => c01(v), fromNorm: (n) => c01(n) };
     if (k === 'trackPan') return { color: '#60a5fa', toNorm: (v) => (Math.max(-1, Math.min(1, v)) + 1) / 2, fromNorm: (n) => c01(n) * 2 - 1 };
+    // A MIDI controller: 0-127, a whole value, as the synth takes it.
+    if (k === 'trackMidiCc') return { color: '#e879f9', toNorm: (v) => c01(v / 127), fromNorm: (n) => Math.round(c01(n) * 127) };
     const entry =
       k === 'trackFx'
         ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain?.find((e) => e.id === lane.target.entryId)
@@ -2321,6 +2324,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const trackName = tracks.find((t) => t.id === lane.target.trackId)?.name ?? 'Track';
     if (k === 'trackVolume') return `${trackName} · Volume`;
     if (k === 'trackPan') return `${trackName} · Pan`;
+    if (k === 'trackMidiCc') {
+      const cc = midiCcOfTarget(lane.target);
+      return `${trackName} · MIDI CC ${lane.target.paramKey ?? ''}${cc !== null ? ` ${partController(cc)?.name ?? ''}` : ''}`.trim();
+    }
     const chain = k === 'trackFx' ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain ?? [] : masterFxChain;
     const entry = chain.find((e) => e.id === lane.target.entryId);
     const effLabel = entry ? getRackEffect(entry.effect)?.label ?? entry.effect : '?';
@@ -2331,9 +2338,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // The "Add lane" picker's options — see automationLaneOptions.ts for why this
   // is a pure module rather than inline: the picker's coverage of every
   // AUTOMATION_KINDS shape is unit-tested there, DOM-free.
+  // The tracks that play MIDI, which offer a lane per controller (trackMidiCc).
+  const midiTrackIds = useMemo(
+    () => new Set(clips.filter((c) => c.sourceKind === 'piano-roll').map((c) => c.trackId)),
+    [clips],
+  );
   const addLaneOptions = useMemo(
-    () => buildAddAutomationLaneOptions(tracks, masterFxChain, automationLanes),
-    [tracks, masterFxChain, automationLanes],
+    () => buildAddAutomationLaneOptions(tracks, masterFxChain, automationLanes, midiTrackIds),
+    [tracks, masterFxChain, automationLanes, midiTrackIds],
   );
 
   // The picker's own selection — reset whenever the option it names disappears
@@ -8112,7 +8124,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 amber), or editable when automation edit mode targets that lane. */}
             {automationLanes.map((lane) => {
               const tk = lane.target.kind;
-              if (tk !== 'trackVolume' && tk !== 'trackPan' && tk !== 'trackFx') return null;
+              if (tk !== 'trackVolume' && tk !== 'trackPan' && tk !== 'trackFx' && tk !== 'trackMidiCc') return null;
               const editable = automationEdit && lane.id === activeLaneId;
               if (lane.points.length === 0 && !editable) return null;
               const trackIdx = tracks.findIndex((t) => t.id === lane.target.trackId);

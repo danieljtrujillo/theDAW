@@ -92,6 +92,7 @@ import { AiComposePopover } from '../audio/AiComposePopover';
 import { ComposerPanel } from '../audio/ComposerPanel';
 import { PianoRollHarmonyKey } from '../audio/RollHarmonyRow';
 import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
+import { PianoRollCcKey } from '../audio/CcLane';
 import { PianoRollTransformKey } from '../audio/RollTransforms';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
 import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
@@ -248,6 +249,8 @@ export const MidiPanel: React.FC = () => {
   const [showBend, setShowBend] = useState(false);
   /** The tempo lane under the grid; the strip's TEMPO key opens it. */
   const [showTempo, setShowTempo] = useState(false);
+  /** The CC lane under the grid; the strip's CC key opens it. */
+  const [showCc, setShowCc] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const [songMenuOpen, setSongMenuOpen] = useState(false);
@@ -681,6 +684,7 @@ export const MidiPanel: React.FC = () => {
         <Sep />
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
+        <PianoRollCcKey on={showCc} onChange={setShowCc} />
         <PianoRollTempoKey on={showTempo} onChange={setShowTempo} />
         {/* The composer's rows: the harmony row over the ruler and the figured-bass lane under the grid. */}
         <PianoRollHarmonyKey />
@@ -1040,7 +1044,7 @@ export const MidiPanel: React.FC = () => {
             running when toggling back to the roll. */}
         <div className="flex-1 min-w-0 relative">
           <div className={arpOn ? 'hidden' : 'absolute inset-0'}>
-            <PianoRoll stepPx={stepPx} onStepPxChange={setStepPx} showBend={showBend} showTempo={showTempo} />
+            <PianoRoll stepPx={stepPx} onStepPxChange={setStepPx} showBend={showBend} showTempo={showTempo} showCc={showCc} />
           </div>
           <div className={arpOn ? 'absolute inset-0' : 'hidden'}>
             <ArpeggiatorPanel playing={arpPlaying} />

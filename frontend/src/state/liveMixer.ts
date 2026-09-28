@@ -63,7 +63,7 @@ import {
 import { logError, logWarn } from './logStore';
 import {
   ensureEditBanks,
-  editControl,
+  editControllerChange,
   editNoteOn,
   editNoteOff,
   editPitchWheel,
@@ -3267,13 +3267,15 @@ function liveMidiScheduler(): EditMidiScheduler {
   if (!midiScheduler) {
     midiScheduler = new EditMidiScheduler({
       now: () => getEngineCtx().currentTime,
-      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange, control: editControl },
+      sink: { noteOn: editNoteOn, noteOff: editNoteOff, wheel: editPitchWheel, wheelRange: editPitchWheelRange, control: editControllerChange },
       clips: () => useEditorStore.getState().clips,
       tracks: () => useEditorStore.getState().tracks,
       global: getGlobalVoice,
       projectBpm: () => useEditorStore.getState().bpm,
       envelope: (trackId) => midiEnvGains.get(trackId)?.gain ?? null,
       lookaheadSec: midiLookaheadSec,
+      // A MIDI track's controller lanes (trackMidiCc) play with its notes.
+      automation: () => useEditorStore.getState().automationLanes,
     });
   }
   return midiScheduler;

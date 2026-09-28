@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
 import { drumKitName } from '../lib/clipProgram';
 import { gmShortName } from '../lib/gmInstruments';
+import { partController } from '../lib/rollTracks';
 import type { PianoNote, RollPartRef } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
@@ -454,18 +455,39 @@ export interface EditorBus {
 /* ── Automation (Phase E) ─────────────────────────────────────────────────────
    A lane records a parameter's value over timeline time as breakpoints. Playback
    schedules them ahead of the playhead: native AudioParam envelope for vol/pan
-   (sample-accurate), a lookahead writer for FX params. */
-export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx';
+   (sample-accurate), a lookahead writer for FX params, and EDIT's live MIDI
+   scheduler for a MIDI track's controller (trackMidiCc: the controller's
+   changes on every channel the track's MIDI plays on, lib/editMidiScheduler,
+   written into the arrangement's MIDI export, lib/arrangementMidi). */
+export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx' | 'trackMidiCc';
 
 export interface AutomationTarget {
   kind: AutomationTargetKind;
-  /** Set for trackVolume / trackPan / trackFx. */
+  /** Set for trackVolume / trackPan / trackFx / trackMidiCc. */
   trackId?: string;
   /** ChainEntry id, set for trackFx / masterFx. */
   entryId?: string;
-  /** Effect param key, set for trackFx / masterFx. */
+  /**
+   * Effect param key, set for trackFx / masterFx. For trackMidiCc it is the
+   * controller number as a string ('74'), one a roll part keeps (lib/rollTracks
+   * PART_CONTROLLERS), so the lane saves and reloads through the same field.
+   */
   paramKey?: string;
 }
+
+/** The automation target of MIDI track `trackId`'s controller `controller` (0-127 values). */
+export const midiCcTarget = (trackId: string, controller: number): AutomationTarget => ({
+  kind: 'trackMidiCc',
+  trackId,
+  paramKey: String(Math.round(controller)),
+});
+
+/** The controller a trackMidiCc target names, or null for any other target or one that names no controller a part keeps. */
+export const midiCcOfTarget = (target: AutomationTarget): number | null => {
+  if (target.kind !== 'trackMidiCc' || target.paramKey === undefined) return null;
+  const cc = Number(target.paramKey);
+  return Number.isInteger(cc) && partController(cc) ? cc : null;
+};
 
 /** One breakpoint: timeline seconds -> value (in the param's natural units).
  *  Structurally identical to `automationModes.CurvePoint`, which is what the pure
@@ -749,6 +771,12 @@ const storedValueForTarget = (
     const track = s.tracks.find((t) => t.id === trackId);
     if (!track) return null;
     return kind === 'trackVolume' ? track.volume : track.pan;
+  }
+  if (kind === 'trackMidiCc') {
+    // A controller has no stored value of its own: the channel starts where the synth starts it.
+    const cc = midiCcOfTarget(target);
+    if (cc === null || !s.tracks.some((t) => t.id === trackId)) return null;
+    return partController(cc)?.initial ?? 0;
   }
   if (!entryId || !paramKey) return null;
   const chain = kind === 'masterFx'
@@ -1813,6 +1841,7 @@ const controlKeyForTarget = (target: AutomationTarget): string => {
     case 'trackPan': return `track:${target.trackId ?? ''}:pan`;
     case 'trackFx': return `track:${target.trackId ?? ''}:fx:${target.entryId ?? ''}`;
     case 'masterFx': return `master:fx:${target.entryId ?? ''}`;
+    case 'trackMidiCc': return `track:${target.trackId ?? ''}:cc:${target.paramKey ?? ''}`;
   }
 };
 

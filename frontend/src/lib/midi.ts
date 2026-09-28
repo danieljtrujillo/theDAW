@@ -16,7 +16,7 @@
  * `partMeta`. Program changes, with the bank select (CC 0, and CC 32 when the
  * track sends one) in force at each, are kept per track as `programs`. The
  * controllers an orchestral part is shaped with (KEPT_CONTROLLERS: modulation,
- * volume, pan, expression and the sustain pedal) are kept per track as
+ * volume, pan, expression, the sustain pedal, brightness and the reverb send) are kept per track as
  * `controls`, and the encoder writes them back. Track names are written and
  * read as UTF-8. Markers (FF 06) are written in the conductor track and read
  * from every track, their text UTF-8; a roll's markers with their kinds also
@@ -74,11 +74,12 @@ export interface MidiProgram {
 
 /**
  * The controllers a track keeps and the encoder writes: modulation (1), volume
- * (7), pan (10), expression (11) and the sustain pedal (64), the ones an
- * orchestral part is balanced, placed and phrased with. Every other controller
- * is read past, as before.
+ * (7), pan (10), expression (11), the sustain pedal (64), brightness (74) and
+ * the reverb send (91), the ones an orchestral part is balanced, placed,
+ * phrased and seated in the hall with (lib/rollTracks PART_CONTROLLERS). Every
+ * other controller is read past, as before.
  */
-export const KEPT_CONTROLLERS: readonly number[] = Object.freeze([1, 7, 10, 11, 64]);
+export const KEPT_CONTROLLERS: readonly number[] = Object.freeze([1, 7, 10, 11, 64, 74, 91]);
 
 /** A controller change (B0) of one of KEPT_CONTROLLERS. */
 /** A marker (FF 06): a named place in the file, such as a section or a movement's start. */

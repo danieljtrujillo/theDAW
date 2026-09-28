@@ -92,8 +92,10 @@ export interface PartController {
 
 /**
  * The controllers a part keeps, the ones lib/midi KEPT_CONTROLLERS reads from a
- * file: modulation, volume, pan, expression and the sustain pedal, with the
- * values a General MIDI channel starts at.
+ * file: modulation, volume, pan, expression, the sustain pedal, brightness
+ * (74, the filter a soundfont opens with it) and the reverb send (91), with
+ * the values the synth's channel starts at. The roll's CC lane
+ * (components/audio/CcLane) draws each of them.
  */
 export const PART_CONTROLLERS: readonly PartController[] = Object.freeze([
   { controller: 1, name: 'Modulation', initial: 0 },
@@ -101,6 +103,10 @@ export const PART_CONTROLLERS: readonly PartController[] = Object.freeze([
   { controller: 10, name: 'Pan', initial: 64 },
   { controller: 11, name: 'Expression', initial: 127 },
   { controller: 64, name: 'Sustain pedal', initial: 0 },
+  { controller: 74, name: 'Brightness', initial: 64 },
+  // SpessaSynth starts a channel's reverb send at 0 (spessasynth_core's controller
+  // reset), not General MIDI 2's 40, and a render starts where the synth does.
+  { controller: 91, name: 'Reverb send', initial: 0 },
 ]);
 
 const CONTROLLER_BY_NUMBER: ReadonlyMap<number, PartController> = new Map(PART_CONTROLLERS.map((c) => [c.controller, c]));

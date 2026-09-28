@@ -361,12 +361,14 @@ const timing = (notes: readonly PianoNote[]) => notes.map((n) => [n.note, n.step
     'bank, program, controllers, then the note',
   );
 
-  // A file from elsewhere: reverb (91) and chorus (93) are read past; Reset All
-  // Controllers is kept as the three changes RP-015 makes (volume and pan stay).
+  // A file from elsewhere: chorus (93) is read past, and the reverb send (91) is
+  // kept (a part keeps it since the CC lane); Reset All Controllers is kept as the
+  // three changes RP-015 makes (volume and pan stay).
   const foreign = parseMidi(
     smf(480, [0x00, 0xb0, 91, 40, 0x00, 0xb0, 93, 20, 0x00, 0xb0, 7, 110, 0x00, 0x90, 60, 100, 0x83, 0x60, 0x80, 60, 0, 0x00, 0xb0, 121, 0]),
   );
   assert.deepEqual(foreign.tracks[0].controls, [
+    { tick: 0, channel: 0, controller: 91, value: 40 },
     { tick: 0, channel: 0, controller: 7, value: 110 },
     { tick: 480, channel: 0, controller: 1, value: 0 },
     { tick: 480, channel: 0, controller: 11, value: 127 },

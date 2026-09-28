@@ -1679,12 +1679,19 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         {
             "kind": {
                 "type": "string",
-                "enum": ["trackVolume", "trackPan", "trackFx", "masterFx"],
-                "description": "What is being automated",
+                "enum": [
+                    "trackVolume",
+                    "trackPan",
+                    "trackFx",
+                    "masterFx",
+                    "trackMidiCc",
+                ],
+                "description": "What is being automated; trackMidiCc is a MIDI "
+                "track's controller (0-127) on every channel its MIDI plays on",
             },
             "track_id": {
                 **_TRACK_ID,
-                "description": "Required for trackVolume / trackPan / trackFx",
+                "description": "Required for trackVolume / trackPan / trackFx / trackMidiCc",
             },
             "entry_id": {
                 "type": "string",
@@ -1692,7 +1699,9 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             },
             "param_key": {
                 "type": "string",
-                "description": "Numeric parameter on that FX entry, required for trackFx / masterFx",
+                "description": "Numeric parameter on that FX entry, required for "
+                "trackFx / masterFx; for trackMidiCc the controller number: 1, 7, "
+                "10, 11, 64, 74 or 91",
             },
         },
         ["kind"],
@@ -1710,7 +1719,13 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             },
             "kind": {
                 "type": "string",
-                "enum": ["trackVolume", "trackPan", "trackFx", "masterFx"],
+                "enum": [
+                    "trackVolume",
+                    "trackPan",
+                    "trackFx",
+                    "masterFx",
+                    "trackMidiCc",
+                ],
             },
             "track_id": _TRACK_ID,
             "entry_id": {"type": "string"},

@@ -16,7 +16,8 @@
  * Pure and DOM-free so it is unit-testable without mounting WaveformEditor.
  */
 import type { AutomationLane, AutomationTarget, EditorTrack } from '../../state/editorStore';
-import { automationTargetKey } from '../../state/editorStore';
+import { automationTargetKey, midiCcTarget } from '../../state/editorStore';
+import { PART_CONTROLLERS } from '../../lib/rollTracks';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { getRackEffect } from '../../lib/rackEffects';
 
@@ -38,10 +39,18 @@ const fxParamLabel = (entry: ChainEntry, paramKey: string): string =>
 
 const fxEffectLabel = (entry: ChainEntry): string => getRackEffect(entry.effect)?.label ?? entry.label ?? entry.effect;
 
+/**
+ * `midiTrackIds` names the tracks that play MIDI (a piano-roll clip on them);
+ * each of those, and every track with an instrument or a drum kit of its own,
+ * also offers one controller lane per controller a roll part keeps
+ * (trackMidiCc: modulation, volume, pan, expression, pedal, brightness,
+ * reverb send), sent on every channel the track's MIDI plays on.
+ */
 export function buildAddAutomationLaneOptions(
   tracks: readonly EditorTrack[],
   masterFxChain: readonly ChainEntry[],
   automationLanes: readonly AutomationLane[],
+  midiTrackIds: ReadonlySet<string> = new Set(),
 ): AddLaneOption[] {
   const hasLane = (target: AutomationTarget) =>
     automationLanes.some((l) => automationTargetKey(l.target) === automationTargetKey(target));
@@ -54,6 +63,13 @@ export function buildAddAutomationLaneOptions(
 
     const panTarget: AutomationTarget = { kind: 'trackPan', trackId: t.id };
     if (!hasLane(panTarget)) opts.push({ key: automationTargetKey(panTarget), label: `${t.name} · Pan`, target: panTarget });
+
+    if (midiTrackIds.has(t.id) || t.instrumentProgram !== undefined || t.isPercussion === true) {
+      for (const c of PART_CONTROLLERS) {
+        const ccTarget = midiCcTarget(t.id, c.controller);
+        if (!hasLane(ccTarget)) opts.push({ key: automationTargetKey(ccTarget), label: `${t.name} · MIDI CC ${c.controller} ${c.name}`, target: ccTarget });
+      }
+    }
 
     for (const entry of t.fxChain ?? []) {
       for (const paramKey of Object.keys(entry.params ?? {})) {

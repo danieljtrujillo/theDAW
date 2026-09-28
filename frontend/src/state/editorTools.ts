@@ -46,9 +46,12 @@
 import {
   SNAP_DIVISIONS,
   clipPeakGain,
+  midiCcOfTarget,
+  midiCcTarget,
   useEditorStore,
   validTimeSignature,
 } from './editorStore';
+import { PART_CONTROLLERS, partController } from '../lib/rollTracks';
 import type {
   AudioClip,
   AutomationLane,
@@ -1924,7 +1927,7 @@ export function renameMarker(args: MarkerArgs): ToolResult {
 
 /* ── automation ──────────────────────────────────────────────────────────── */
 
-const AUTOMATION_KINDS: AutomationTargetKind[] = ['trackVolume', 'trackPan', 'trackFx', 'masterFx'];
+const AUTOMATION_KINDS: AutomationTargetKind[] = ['trackVolume', 'trackPan', 'trackFx', 'masterFx', 'trackMidiCc'];
 
 export interface AutomationTargetArgs {
   lane_id?: unknown;
@@ -1950,6 +1953,20 @@ function resolveTarget(args: AutomationTargetArgs): Found<{ target: AutomationTa
     return {
       ok: true,
       value: { target: { kind, trackId: found.value.id }, current, label: `${found.value.name} ${kind === 'trackVolume' ? 'volume' : 'pan'}` },
+    };
+  }
+
+  if (kind === 'trackMidiCc') {
+    // param_key is the controller number: one a roll part keeps, 0-127 values.
+    const found = resolveTrack(args.track_id ?? args.track);
+    if (!found.ok) return { ok: false, error: found.error };
+    const cc = midiCcOfTarget({ kind, trackId: found.value.id, paramKey: strArg(args.param_key) ?? String(numArg(args.param_key) ?? '') });
+    if (cc === null) {
+      return { ok: false, error: `automation: trackMidiCc needs param_key, one of the controllers ${PART_CONTROLLERS.map((c) => `${c.controller} (${c.name})`).join(', ')}` };
+    }
+    return {
+      ok: true,
+      value: { target: midiCcTarget(found.value.id, cc), current: partController(cc)?.initial ?? 0, label: `${found.value.name} MIDI CC ${cc} ${partController(cc)?.name ?? ''}`.trim() },
     };
   }
 

@@ -73,6 +73,16 @@
  *     sets its channels where they are at that point (range, wheel and
  *     controllers), as a pass starting there does.
  *
+ * Controller automation
+ * ---------------------
+ * A track's trackMidiCc automation lanes (lib/midiCcAutomation) send their
+ * controller on every channel the track plays on: where a pass starts, the
+ * value each lane has there, then a change wherever the lane's whole value
+ * moves inside each window. A lane owns its controller on its track, so the
+ * track's clips' own changes of it are left out while the lane is enabled
+ * and has points. A lane that goes (removed, disabled, emptied) mid-pass puts
+ * its controller back where the channel starts.
+ *
  * Late ticks
  * ----------
  * A tick that runs late (a busy main thread, a hidden tab) does not fire a
@@ -98,7 +108,7 @@
  *
  * No Vite-only imports, so node tests load it.
  */
-import type { AudioClip, EditorTrack } from '../state/editorStore';
+import type { AudioClip, AutomationLane, EditorTrack } from '../state/editorStore';
 import { clipPeakGain } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes } from '../state/pianoRollStore';
 import { clipBankSelect } from './arrangementMidi';
@@ -119,6 +129,7 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { PART_CONTROLLERS, partController } from './rollTracks';
+import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { stepClock } from './rollTempo';
 
 /** How far ahead of the clock a tick schedules while the page is visible. */
@@ -192,6 +203,8 @@ export interface EditMidiSchedulerDeps {
   lookaheadSec?: () => number;
   /** Absent: EDIT_MIDI_LATE_SEC. */
   lateSec?: number;
+  /** EDIT's automation lanes, read every tick; the trackMidiCc ones play (lib/midiCcAutomation). Absent: none. */
+  automation?: () => readonly AutomationLane[];
 }
 
 /** The program and bank select a clip's notes are played in. */
@@ -456,6 +469,8 @@ export class EditMidiScheduler {
   /** The clips the last tick played live, so a clip that starts playing part way is seen. */
   private lastLive: ReadonlySet<string> = new Set();
   private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; timing: ClipTiming }>();
+  /** The value each automated controller holds on its track's channels this pass, by `${trackId}:${controller}`. */
+  private ccHeld = new Map<string, number>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
 
   constructor(deps: EditMidiSchedulerDeps) {
@@ -502,6 +517,7 @@ export class EditMidiScheduler {
     this.envelopes = new Map();
     // The pass opens every channel at the defaults, so no clip's controllers are held yet.
     this.held = new Map();
+    this.ccHeld = new Map();
     this.lastLive = new Set();
     this.counts = { notes: 0, chased: 0, late: 0, skipped: 0 };
     // A wheel message of this pass on a channel waits until the last stale one
@@ -605,6 +621,42 @@ export class EditMidiScheduler {
       }
     }
 
+    // Controller automation: each enabled trackMidiCc lane's changes on its track's channels.
+    const ccLanes = trackCcLanes(this.deps.automation?.());
+    const automated = automatedControllers(ccLanes);
+    const liveCc = new Set<string>();
+    for (const l of ccLanes) {
+      const chans = this.pass.channelsOf.get(l.trackId);
+      if (!chans?.length) continue;
+      const key = `${l.trackId}:${l.controller}`;
+      liveCc.add(key);
+      let held = this.ccHeld.get(key) ?? null;
+      if (held === null) {
+        // Where the lane comes in (the pass's start, or now for a lane added while playing): its value there.
+        const joinT = first ? this.fromT : Math.max(from, nowT);
+        held = ccLaneValueAt(l.lane, joinT);
+        const at = Math.max(now, this.ctxOf(joinT));
+        const value = held;
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => sink.control(channel, l.controller, value, t));
+      }
+      const { events, held: after } = ccLaneEvents(l.lane, Math.max(from, first ? this.fromT + 1e-6 : from), until, held);
+      for (const e of events) {
+        const at = Math.max(now, this.ctxOf(e.sec));
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => sink.control(channel, l.controller, e.value, t));
+      }
+      if (after !== null) this.ccHeld.set(key, after);
+    }
+    // A lane that went puts its controller back where the channel starts.
+    for (const key of [...this.ccHeld.keys()]) {
+      if (liveCc.has(key)) continue;
+      this.ccHeld.delete(key);
+      const cut = key.lastIndexOf(':');
+      const trackId = key.slice(0, cut);
+      const controller = Number(key.slice(cut + 1));
+      const value = partController(controller)?.initial ?? 0;
+      for (const channel of this.pass.channelsOf.get(trackId) ?? []) pushAt(channel, now, RESET_ORDER, (t) => sink.control(channel, controller, value, t));
+    }
+
     const pushOn = (clipId: string, channel: number, voice: LiveVoice, n: TimedNote, time: number) => {
       // A note of this key still held on the channel ends where this one starts,
       // or its later note-off would cut this one.
@@ -635,6 +687,9 @@ export class EditMidiScheduler {
       const chOf = (slot: number) => chans[Math.min(slot, chans.length - 1)];
       const clipEnd = clip.startSec + clip.durationSec;
       const open = muteSoloOpen(track, anySolo);
+      // The controllers the track's automation owns: the clip's own changes of them are left out.
+      const owned = automated.get(track.id);
+      const ownCtl = (c: TimedCtl): boolean => !owned || (c.kind !== 'cc' && c.kind !== 'reset') || !owned.has(c.controller ?? -1);
 
       // Envelope: a clip entering the window takes the track's envelope at its
       // start; playback starting inside a clip takes it from there; an edit to
@@ -670,13 +725,13 @@ export class EditMidiScheduler {
         }
         const at = Math.max(now, this.ctxOf(joinAt));
         for (const c of [...lastOf.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'range' ? -1 : 1))) {
-          noteCc(c, pushCtl(chOf(c.slot), c, at));
+          if (ownCtl(c)) noteCc(c, pushCtl(chOf(c.slot), c, at));
         }
       }
       for (let i = lowerBound(timing.ctl, from, (c) => c.t); i < timing.ctl.length; i += 1) {
         const c = timing.ctl[i];
         if (c.t >= until - EPS) break;
-        noteCc(c, pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t))));
+        if (ownCtl(c)) noteCc(c, pushCtl(chOf(c.slot), c, Math.max(now, this.ctxOf(c.t))));
       }
       // What the clip's controllers left on its channels, so they go back if it stops playing live first.
       if (timing.controllers.length) {

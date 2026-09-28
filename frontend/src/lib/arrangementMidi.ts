@@ -48,6 +48,13 @@
  * change, program change included, goes to each channel the track's notes
  * play on.
  *
+ * CONTROLLER AUTOMATION: a track's trackMidiCc automation lanes (lib/
+ * midiCcAutomation) are written as that controller's changes on each of the
+ * track's channels, the value at the file's start first, then a change where
+ * the lane's whole value moves, to the end of the track's last clip (or the
+ * span). A lane owns its controller on its track, so the clips' own changes
+ * of that controller are left out, as EDIT's live playback leaves them out.
+ *
  * PITCH BEND: a clip whose roll lanes bend (`sourceBends`) is written as its
  * render plays it (lib/rollClip clipRenderInput, lib/pitchBendVoice): the
  * roll's own notes unrolled across their lanes, each bent lane's notes on a
@@ -80,7 +87,7 @@
  * run it; exportArrangementMidi (lib/arrangementMidiApp) reads the stores and
  * saves the file.
  */
-import type { AudioClip, EditorTrack, TimelineMarker } from '../state/editorStore';
+import type { AudioClip, AutomationLane, EditorTrack, TimelineMarker } from '../state/editorStore';
 import type { RollPartRef } from '../state/pianoRollStore';
 import { noteEndStep } from './clipNotes/units';
 import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type ClipVoice, type GlobalVoice } from './clipProgram';
@@ -93,6 +100,7 @@ import { tempoMapText, tempoMapToMidiTempos } from './rollMidi';
 import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from './rollTempo';
 import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
+import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 
 /** The arrangement an export reads (editorStore's fields). */
 export interface ArrangementMidiSource {
@@ -107,6 +115,8 @@ export interface ArrangementMidiSource {
   meterMap?: readonly MeterSegment[];
   /** EDIT's timeline markers, each at its second; written as FF 06 markers. */
   markers?: readonly TimelineMarker[];
+  /** EDIT's automation lanes; the trackMidiCc ones are written as controller changes. */
+  automationLanes?: readonly AutomationLane[];
 }
 
 /** Which clips an export takes. `all` follows the mix (mute and solo); the other two take what they name. */
@@ -353,6 +363,8 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   const cutEnd = (sec: number): number => (range ? Math.min(sec, range.endSec) : sec);
 
   const soloed = source.tracks.some((t) => t.solo && !t.isFolder);
+  const ccLanes = trackCcLanes(source.automationLanes);
+  const owned = automatedControllers(ccLanes);
   let mutedClips = 0;
   // Every EDIT track with notes in the export, with its clips' events and the channels its notes need:
   // `null` for the lanes that do not bend, then each bent lane, lowest id first.
@@ -369,6 +381,9 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       .filter((c) => !range || c.startSec + c.durationSec > range.startSec + 1e-9);
     const events = kept.map((c) => clipEvents(c, track, global, bpm));
     endClipControls(events);
+    // The controllers the track's automation owns leave the clips' own changes out.
+    const ownedHere = owned.get(track.id);
+    if (ownedHere) for (const e of events) e.controls = e.controls.filter((c) => !ownedHere.has(c.controller));
     for (const e of events) {
       e.notes = e.notes.filter((n) => inRange(n.onSec)).map((n) => ({ ...n, offSec: cutEnd(n.offSec) }));
       e.controls = e.controls.filter((c) => !range || c.sec < range.endSec - 1e-9);
@@ -472,6 +487,17 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
           if (list.length && list[list.length - 1].tick === tick) list.pop();
           list.push({ tick, channel, value: x.raw });
         }
+      }
+    }
+    // The track's controller automation: its value at the file's start, then each change to the end of its last clip.
+    const trackEnd = cutEnd(events.reduce((m, e) => Math.max(m, e.endSec), 0));
+    for (const l of ccLanes) {
+      if (l.trackId !== track.id) continue;
+      const from = range ? Math.max(startSec, range.startSec) : startSec;
+      const held = ccLaneValueAt(l.lane, from);
+      for (const channel of trackChannels) controls.push({ tick: tickOf(from), channel, controller: l.controller, value: held });
+      for (const e of ccLaneEvents(l.lane, from + 1e-6, trackEnd, held).events) {
+        for (const channel of trackChannels) controls.push({ tick: tickOf(e.sec), channel, controller: l.controller, value: e.value });
       }
     }
     // The fader and pan, on the General MIDI volume curve and around the centre.
