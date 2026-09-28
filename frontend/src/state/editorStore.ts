@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
+import { drumKitName } from '../lib/clipProgram';
+import { gmShortName } from '../lib/gmInstruments';
 import type { PianoNote } from './pianoRollStore';
 import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
@@ -695,6 +697,16 @@ interface EditorStoreState {
    *  program its clips hold are cleared with the flag, and the track and its
    *  clips start on their defaults. One undo step; a flag already set writes nothing. */
   setTrackPercussion: (id: string, on: boolean) => void;
+  /**
+   * Choose a track's voice: a melodic GM program (`drums` false) or a drum kit
+   * (`drums` true); `program` undefined is the default instrument or kit. A
+   * choice of the other kind flips the track's drum flag with it: a melodic
+   * instrument on a drum track turns drums off, a kit on a melodic track turns
+   * them on, and the programs its clips hold are cleared as setTrackPercussion
+   * does, with a LOG line naming the change. One undo step; a choice the track
+   * already holds writes nothing.
+   */
+  setTrackVoice: (id: string, program: number | undefined, drums: boolean) => void;
   /** Put `orderedIds` at the top in the order given; every track not named keeps
    *  its relative position after them. Unknown ids are ignored, so a partial or
    *  stale list can reorder but never drop a track. */
@@ -1854,6 +1866,24 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => ({
       tracks: s.tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)),
     }));
+  },
+
+  setTrackVoice: (id, program, drums) => {
+    const track = get().tracks.find((t) => t.id === id);
+    if (!track) return;
+    const prog = program === undefined || !Number.isFinite(program) ? undefined : Math.max(0, Math.min(127, Math.round(program)));
+    const flip = (track.isPercussion === true) !== drums;
+    if (!flip && Object.is(track.instrumentProgram, prog)) return;
+    coalesceAs(null);
+    set((s) => ({
+      tracks: s.tracks.map((t) => (t.id === id ? { ...t, isPercussion: drums ? true : undefined, instrumentProgram: prog } : t)),
+      clips: flip ? s.clips.map((c) => (c.trackId === id && c.instrumentProgram !== undefined ? { ...c, instrumentProgram: undefined } : c)) : s.clips,
+    }));
+    if (flip) {
+      logInfo('editor', drums
+        ? `Track "${track.name}": the drum kit ${drumKitName(prog ?? 0)} turned it into a drum track (Ctrl+Z undoes it)`
+        : `Track "${track.name}": the melodic instrument ${prog === undefined ? 'Default' : gmShortName(prog)} turned its drum flag off (Ctrl+Z undoes it)`);
+    }
   },
 
   setTrackPercussion: (id, on) => {

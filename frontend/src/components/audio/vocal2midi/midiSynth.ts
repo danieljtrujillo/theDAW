@@ -80,7 +80,8 @@ export class MidiSynth {
 
   setInstrument(instrument: InstrumentType): Promise<void> {
     this.instrument = instrument;
-    chooseRollVoice(INSTRUMENT_GM[instrument].program);
+    // Every assistant instrument is a melodic GM program, so on a roll linked to a drum track it turns drums off.
+    chooseRollVoice(INSTRUMENT_GM[instrument].program, false);
     return Promise.resolve();
   }
 

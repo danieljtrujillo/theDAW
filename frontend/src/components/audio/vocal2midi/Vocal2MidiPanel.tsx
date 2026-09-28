@@ -45,6 +45,7 @@ import { usePianoRollStore } from '../../../state/pianoRollStore';
 import { useEditorStore } from '../../../state/editorStore';
 import { chooseRollVoice, rollVoiceChoice } from '../../../lib/rollVoiceChoice';
 import { GM_DRUM_KITS, drumKitName } from '../../../lib/clipProgram';
+import { parseVoiceValue, voiceValue } from '../../../lib/voiceOptions';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
 import { describeMicFailure } from '../../../lib/micErrors';
@@ -662,24 +663,39 @@ export const Vocal2MidiPanel: React.FC = () => {
             <select
               id="v2m-preview-voice"
               name="v2m-preview-voice"
-              value={voiceChoice.program === null ? 'picker' : String(voiceChoice.program)}
-              onChange={(e) => chooseRollVoice(e.target.value === 'picker' ? null : Number(e.target.value))}
+              value={voiceChoice.program === null ? 'picker' : voiceChoice.track ? voiceValue(voiceChoice.program, voiceChoice.drums) : String(voiceChoice.program)}
+              onChange={(e) => {
+                if (e.target.value === 'picker') { chooseRollVoice(null); return; }
+                const pick = parseVoiceValue(e.target.value, voiceChoice.drums);
+                chooseRollVoice(pick.program ?? null, voiceChoice.track ? pick.drums : undefined);
+              }}
               title={voiceChoice.track
-                ? `The roll is linked to an EDIT clip on track ${voiceChoice.track.name}: the choice sets that track's ${voiceChoice.drums ? 'drum kit' : 'instrument'}.`
+                ? `The roll is linked to an EDIT clip on track ${voiceChoice.track.name}: the choice sets that track's ${voiceChoice.drums ? 'drum kit' : 'instrument'}. An instrument on a drum track turns its drum flag off; a kit turns it on.`
                 : 'The voice this roll auditions and bounces with while no EDIT clip is linked.'}
               className="mt-0.5 block form-select px-2 py-1 text-xs font-semibold max-w-44"
               style={{ colorScheme: 'dark' }}
             >
               <option value="picker">Same as the instrument</option>
-              {voiceChoice.drums
-                ? GM_DRUM_KITS.map((k) => <option key={k.program} value={k.program}>{`${k.name} kit`}</option>)
-                : GM_NAMES.map((n, i) => (
-                  <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
-                ))}
-              {/* A program the kit list lacks stays listed, so the select shows what the track holds. */}
-              {voiceChoice.drums && voiceChoice.program !== null && !GM_DRUM_KITS.some((k) => k.program === voiceChoice.program) && (
-                <option value={voiceChoice.program}>{`${drumKitName(voiceChoice.program)} kit`}</option>
-              )}
+              {voiceChoice.track ? (() => {
+                // Linked: the instruments and the kits, the track's own kind first.
+                const kits = (
+                  <optgroup key="kits" label="Drum kits">
+                    {GM_DRUM_KITS.map((k) => <option key={k.program} value={voiceValue(k.program, true)}>{`${k.name} kit`}</option>)}
+                    {/* A program the kit list lacks stays listed, so the select shows what the track holds. */}
+                    {voiceChoice.drums && voiceChoice.program !== null && !GM_DRUM_KITS.some((k) => k.program === voiceChoice.program) && (
+                      <option value={voiceValue(voiceChoice.program, true)}>{`${drumKitName(voiceChoice.program)} kit`}</option>
+                    )}
+                  </optgroup>
+                );
+                const instruments = (
+                  <optgroup key="instruments" label="Instruments">
+                    {GM_NAMES.map((n, i) => <option key={n} value={voiceValue(i, false)}>{`${i + 1}. ${n}`}</option>)}
+                  </optgroup>
+                );
+                return voiceChoice.drums ? [kits, instruments] : [instruments, kits];
+              })() : GM_NAMES.map((n, i) => (
+                <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
+              ))}
             </select>
           </div>
         </Section>
