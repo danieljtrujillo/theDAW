@@ -1988,6 +1988,9 @@ const writeResultOf = (done: PartsWrite): RollWriteResult => ({
   skipped: done.skipped,
 });
 
+/** A roman numeral figure the checker reads as harmony: 'I', 'V7/V', 'bVI', 'N6', 'It6', 'Ger65'. */
+const ROMAN_FIGURE = /^[#b♭♯]*(?:[ivIV]+|N|It|Fr|Ger)/;
+
 /** True when two keys are the same key (or both none). */
 const sameRollKey = (a: RollKey | null, b: RollKey | null): boolean =>
   a === b || (!!a && !!b && a.tonic === b.tonic && a.mode === b.mode);
@@ -2873,8 +2876,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const pick = checkPick(rollTracksOf(s), opts.partIds);
     if (!pick) throw new Error('A voice-leading check needs two parts with notes');
     const key = effectiveRollKey(s);
-    // The roman figures of a plan, a continuo or a form say what the harmony is; a counterpoint's suspension figures do not.
-    const harmony = s.voiceLeading && s.voiceLeading.source !== 'counterpoint' && s.voiceLeading.source !== 'check' ? s.harmonyChords : [];
+    // The roman figures of a plan, a continuo or a form say what the harmony is; a suspension's '7-6' or a bare figure does not.
+    const harmony = s.harmonyChords.filter((c) => ROMAN_FIGURE.test(c.figure));
     const result = await composerApi.check({
       parts: pick.parts,
       order: pick.order,

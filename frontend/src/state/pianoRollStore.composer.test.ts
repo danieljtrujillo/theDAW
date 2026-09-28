@@ -550,7 +550,18 @@ function transforms(): void {
   assert.deepEqual(two.map((t) => t.cantusFirmus), [true, undefined]);
 }
 
+// A suspension's figure is no harmony for the checker; a roman numeral is.
+async function suspensionsAreNoHarmony(): Promise<void> {
+  freshRoll([pn('u', 72, 0)]);
+  roll().addTrack({ name: 'Bass', notes: [pn('l', 48, 0)] });
+  usePianoRollStore.setState({ harmonyChords: [{ tick: 0, figure: '7-6' }, { tick: 960, figure: 'ii6' }, { tick: 1920, figure: '6' }] });
+  serve({ flags: [], count: 0 });
+  await roll().runVoiceLeadingCheck();
+  assert.deepEqual((sent[0].body as { chords?: unknown }).chords, [{ tick: 960, figure: 'ii6' }]);
+}
+
 await checks();
+await suspensionsAreNoHarmony();
 counterpoint();
 form();
 await figuredBass();
