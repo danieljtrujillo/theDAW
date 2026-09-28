@@ -8,15 +8,16 @@
  * registry, a General MIDI program, a drum kit, or the roll's own voice), MIDI
  * channel, bank and bank LSB, the controller changes a MIDI file gave it (how
  * many of each: modulation, volume, pan, expression, the sustain pedal) with
- * CLEAR, AUDITION (play this part alone), and keys to move it up or down and
- * to remove it. ADD makes a new part and turns to it, so the next generator,
+ * CLEAR, AUDITION (play this part alone), CANTUS (mark it as the cantus
+ * firmus that species counterpoint is written against), and keys to move it
+ * up or down and to remove it. The cantus firmus part's row says so. ADD makes a new part and turns to it, so the next generator,
  * import or drawn note goes there.
  *
  * Every change is a roll undo step (state/pianoRollStore), except which part
  * is active and the column's own settings.
  */
 import React, { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Ghost, Headphones, Plus, Trash2 } from 'lucide-react';
+import { Anchor, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Ghost, Headphones, Plus, Trash2 } from 'lucide-react';
 import { partLinkOf, usePianoRollStore, type RollTrack } from '../../state/pianoRollStore';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { GM_DRUM_KITS, drumKitName } from '../../lib/clipProgram';
@@ -195,6 +196,19 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
       <div className="flex items-center gap-1">
         <button
           type="button"
+          aria-pressed={track.cantusFirmus === true}
+          onClick={() => roll().setCantusFirmus(track.cantusFirmus ? null : track.id)}
+          aria-label={`${track.name} is the cantus firmus`}
+          title="The cantus firmus: species counterpoint is written against this part's notes, and a species answer writes its cantus back here. One part at a time."
+          className={`${MINI_WORD_KEY} gap-1 ${track.cantusFirmus ? KEY_ON : KEY_REST}`}
+        >
+          <Anchor aria-hidden="true" className="w-3 h-3" />
+          Cantus firmus
+        </button>
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
           aria-pressed={alone}
           onClick={() => roll().soloOnly(track.id)}
           aria-label={alone ? `Stop auditioning ${track.name} alone` : `Audition ${track.name} alone`}
@@ -345,11 +359,12 @@ export const RollTrackColumn: React.FC = () => {
                   type="button"
                   onClick={() => roll().setActiveTrack(t.id)}
                   aria-pressed={active}
-                  aria-label={`Edit part ${t.name}, ${partSoundText(t, linked)}, ${count} note${count === 1 ? '' : 's'}`}
+                  aria-label={`Edit part ${t.name}, ${partSoundText(t, linked)}, ${count} note${count === 1 ? '' : 's'}${t.cantusFirmus ? ', the cantus firmus' : ''}`}
                   className={`flex-1 min-w-0 text-left rounded-xs px-1 outline-none focus-visible:ring-1 focus-visible:ring-[rgb(var(--et-accent))] ${active ? '' : 'hover:bg-white/4'}`}
                 >
                   <span className={`block truncate text-[12px] font-bold leading-tight ${active ? 'et-ink' : 'et-ink-2'}`}>{t.name}</span>
                   <span className="block truncate text-[12px] font-semibold leading-tight et-ink-3">
+                    {t.cantusFirmus ? 'Cantus firmus · ' : ''}
                     {partSoundText(t, linked)} · {count}
                   </span>
                 </button>

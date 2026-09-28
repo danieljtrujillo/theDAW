@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Gauge, Info, Minus, Plus, Repeat, Save, Scissors, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   MAX_ROLL_STEPS,
@@ -104,6 +104,9 @@ import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
 import { TempoLane } from './TempoLane';
 import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers';
+import { HARMONY_ROW_HEIGHT, RollHarmonyCorner, RollHarmonyRow, runRollVoiceLeadingCheck } from './RollHarmonyRow';
+import { FiguredBassLane } from './FiguredBassLane';
+import { rollTransformMenuItems } from './RollTransforms';
 import { markerStep } from '../../lib/rollMarkers';
 import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
@@ -1523,6 +1526,7 @@ function RollSeek({
   pickupSteps,
   onSeek,
   children,
+  top = 0,
 }: {
   stepPx: number;
   totalSteps: number;
@@ -1530,6 +1534,8 @@ function RollSeek({
   pickupSteps: number;
   onSeek: (step: number) => void;
   children: React.ReactNode;
+  /** Where the ruler sticks in the grid's scroll box: under the harmony row when it is open. */
+  top?: number;
 }) {
   const width = totalSteps * stepPx;
   const step = usePianoRollStore((s) => Math.floor(Math.max(0, s.currentStep)));
@@ -1606,8 +1612,8 @@ function RollSeek({
       aria-valuemax={Math.max(1, totalSteps)}
       aria-valuenow={at + 1}
       aria-valuetext={`Step ${at + 1}, ${bar.bar < 0 ? 'the pickup' : `bar ${bar.bar + 1}`}`}
-      className="sticky top-0 z-20 cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_1px_rgb(var(--et-accent))]"
-      style={{ height: HEADER_HEIGHT, width, minWidth: '100%' }}
+      className="sticky z-20 cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_1px_rgb(var(--et-accent))]"
+      style={{ top, height: HEADER_HEIGHT, width, minWidth: '100%' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -2123,6 +2129,12 @@ export const PianoRoll: React.FC<{
   const activeTrackId = usePianoRollStore((s) => s.activeTrackId);
   const showGhosts = usePianoRollStore((s) => s.showGhosts);
   const markers = usePianoRollStore((s) => s.markers);
+  const showHarmony = usePianoRollStore((s) => s.showHarmony);
+  const showFiguredBass = usePianoRollStore((s) => s.showFiguredBass);
+  const cantusHere = usePianoRollStore((s) => activeTrackOf(s).cantusFirmus === true);
+  // The harmony row sits over the ruler when it is open, so everything that sticks under it moves down by its height.
+  const harmonyPx = showHarmony ? HARMONY_ROW_HEIGHT : 0;
+  const coverPx = GRID_COVER_PX + harmonyPx;
   // The other parts, drawn behind the active one; their notes in the list are theirs.
   const ghostParts = useMemo(
     () => (showGhosts ? rollParts.filter((t) => t.id !== activeTrackId && t.notes.length > 0) : []),
@@ -2660,7 +2672,7 @@ export const PianoRoll: React.FC<{
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       // A marker flag takes Delete for itself, and a key in a portalled card
       // (the MARKS list, a menu) is never a note edit.
-      if (t?.closest?.('[data-roll-markers]') || inPortalledOverlay(e.target, rootRef.current)) return;
+      if (t?.closest?.('[data-roll-markers], [data-roll-harmony]') || inPortalledOverlay(e.target, rootRef.current)) return;
       // Only delete a note when the piano roll is the surface the user is on;
       // otherwise Delete in the EDIT timeline removed a clip AND a note. The
       // scope is the whole MIDI tab (MidiPanel), so a hidden roll (the ARP face
@@ -2695,7 +2707,7 @@ export const PianoRoll: React.FC<{
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       const t = e.target as HTMLElement | null;
       if (t?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
-      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-tempo-lane], [data-roll-ruler], [data-roll-markers], [data-roll-minimap]')) return;
+      if (t?.closest('[data-bend-lane], [data-velocity-lane], [data-tempo-lane], [data-roll-ruler], [data-roll-markers], [data-roll-minimap], [data-roll-harmony], [data-figured-bass-lane]')) return;
       if (inPortalledOverlay(e.target, rootRef.current)) return;
       if (!ownsKey('piano-roll')) return;
       if (rootRef.current?.offsetParent === null) return; // roll hidden (ARP face showing)
@@ -2853,20 +2865,27 @@ export const PianoRoll: React.FC<{
     const midY = (highestNote - midNote) * NOTE_HEIGHT;
     // The middle of the rows in view, under the ruler. Until the grid is measured
     // (and in a DOM with no layout) its height is the window's, as the note canvas reads it.
-    el.scrollTop = Math.max(0, midY - ((el.clientHeight || window.innerHeight) - GRID_COVER_PX) / 2);
+    el.scrollTop = Math.max(0, midY - ((el.clientHeight || window.innerHeight) - coverPx) / 2);
     if (keyboardRowsRef.current) keyboardRowsRef.current.scrollTop = el.scrollTop;
+    // Centred on content changes only: opening the harmony row does not scroll the grid.
   }, [contentLo, contentHi, highestNote]);
 
   return (
     <div ref={rootRef} className="h-full flex flex-col bg-[#07050a] overflow-hidden relative">
       {/* Overview: every part over the whole roll; a click jumps the grid there. */}
-      <RollMinimap scrollRef={gridScrollRef} stepPx={stepPx} noteHeight={NOTE_HEIGHT} headerPx={GRID_COVER_PX} />
+      <RollMinimap scrollRef={gridScrollRef} stepPx={stepPx} noteHeight={NOTE_HEIGHT} headerPx={coverPx} />
       {/* Body */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Parts column: every part, its sound, mute and solo; the active part's settings. */}
         <RollTrackColumn />
         {/* Keyboard column */}
         <div className="shrink-0 overflow-hidden bg-[#0c0a12] border-r border-white/5" style={{ width: KEYBOARD_WIDTH }}>
+          {/* Level with the harmony row: CHECK, the flag count, and hide. */}
+          {showHarmony && (
+            <div className="bg-black/40 border-b border-white/5" style={{ height: HARMONY_ROW_HEIGHT }}>
+              <RollHarmonyCorner />
+            </div>
+          )}
           <div
             className="bg-black/40 border-b border-white/5 flex items-center justify-center"
             style={{ height: HEADER_HEIGHT }}
@@ -2879,7 +2898,7 @@ export const PianoRoll: React.FC<{
           <div className="bg-black/40 border-b border-white/5" style={{ height: MARKER_ROW_HEIGHT }}>
             <RollMarkerJump onJump={jumpToStep} />
           </div>
-          <div ref={keyboardRowsRef} className="overflow-hidden" style={{ height: `calc(100% - ${HEADER_HEIGHT + MARKER_ROW_HEIGHT}px)` }}>
+          <div ref={keyboardRowsRef} className="overflow-hidden" style={{ height: `calc(100% - ${coverPx}px)` }}>
             <div style={{ height: gridHeight }}>
               <KeyboardKeys lowestNote={lowestNote} highestNote={highestNote} masterRef={masterRef} />
             </div>
@@ -2897,6 +2916,8 @@ export const PianoRoll: React.FC<{
           onScroll={handleGridScroll}
           onWheel={handleGridWheel}
         >
+          {/* Harmony row over the ruler: voice-leading flags and roman figures. */}
+          {showHarmony && <RollHarmonyRow stepPx={stepPx} totalSteps={totalSteps} win={view} top={0} />}
           {/* Ruler */}
           <RollSeek
             stepPx={stepPx}
@@ -2904,12 +2925,13 @@ export const PianoRoll: React.FC<{
             meterMap={meterMap}
             pickupSteps={pickupSteps}
             onSeek={onRulerSeek}
+            top={harmonyPx}
           >
             <RollRuler spans={barSpans} lhl={barLhl} tiers={tiers} stepPx={stepPx} totalSteps={totalSteps} win={view} />
           </RollSeek>
           {/* Named markers (sections, movements), sticking under the ruler. */}
           <RollMarkerRow
-            top={HEADER_HEIGHT}
+            top={HEADER_HEIGHT + harmonyPx}
             stepPx={stepPx}
             totalSteps={totalSteps}
             meterMap={meterMap}
@@ -2992,7 +3014,7 @@ export const PianoRoll: React.FC<{
                     title={name}
                     data-loop-tag="1"
                     className={`sticky flex w-max items-center gap-0.5 ${onLeft ? '-ml-0.5 -translate-x-full' : 'ml-0.5'} px-0.5 py-0.5 rounded-xs bg-[#0a080f] text-[12px] leading-none font-bold et-ink tabular-nums whitespace-nowrap pointer-events-auto`}
-                    style={{ top: HEADER_HEIGHT + MARKER_ROW_HEIGHT + 4 + i * 18, marginTop: 4 + i * 18 }}
+                    style={{ top: coverPx + 4 + i * 18, marginTop: 4 + i * 18 }}
                   >
                     <span className={`w-2 h-2 rounded-xs border ${form.fill} ${form.edge}`} style={form.style} />
                     {l.cycleSteps}
@@ -3010,7 +3032,7 @@ export const PianoRoll: React.FC<{
               scene={scene}
               width={gridWidth}
               height={gridHeight}
-              headerPx={GRID_COVER_PX}
+              headerPx={coverPx}
             />
             <NoteFocusLayer
               notes={notes}
@@ -3040,6 +3062,7 @@ export const PianoRoll: React.FC<{
               its note, a point under the note it bends, and a tempo change over
               its bar line, at every zoom and every scroll position. */}
           <VelocityLane stepPx={stepPx} totalSteps={totalSteps} win={view} />
+          {showFiguredBass && <FiguredBassLane stepPx={stepPx} totalSteps={totalSteps} win={view} />}
           {showBend && <BendLane stepPx={stepPx} totalSteps={totalSteps} />}
           {showTempo && <TempoLane stepPx={stepPx} totalSteps={totalSteps} />}
         </div>
@@ -3109,6 +3132,34 @@ export const PianoRoll: React.FC<{
             hint: snapWord,
             disabled: right === null,
             onSelect: () => right !== null && updateNote(n.id, { tick: right }),
+          },
+          { type: 'separator' },
+          // The motif transforms, on the whole selection (the note right-clicked is in it).
+          ...rollTransformMenuItems(selectedIds.size),
+          { type: 'separator' },
+          { type: 'header', label: 'Compose' },
+          {
+            type: 'item',
+            label: 'Check voice leading',
+            icon: <ListChecks className="w-3 h-3" />,
+            title: 'Check the parts for parallel fifths and octaves, crossings, spacing, range and unresolved tendency tones; the flags show in the harmony row',
+            onSelect: () => void runRollVoiceLeadingCheck(),
+          },
+          {
+            type: 'item',
+            label: showHarmony ? 'Hide the harmony row' : 'Show the harmony row',
+            onSelect: () => usePianoRollStore.getState().setShowHarmony(!showHarmony),
+          },
+          {
+            type: 'item',
+            label: showFiguredBass ? 'Hide the figured bass lane' : 'Show the figured bass lane',
+            onSelect: () => usePianoRollStore.getState().setShowFiguredBass(!showFiguredBass),
+          },
+          {
+            type: 'item',
+            label: cantusHere ? `Unmark ${partName} as the cantus firmus` : `Mark ${partName} as the cantus firmus`,
+            title: 'Species counterpoint is written against the cantus firmus, and a species answer writes its cantus back into this part',
+            onSelect: () => usePianoRollStore.getState().setCantusFirmus(cantusHere ? null : activeTrackId),
           },
           { type: 'separator' },
           {
