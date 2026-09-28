@@ -13,7 +13,7 @@
  * A bank the download manager installed (SoundBank `downloadId`) carries
  * playback gains in its manifest: each listed one is registered with
  * lib/soundbankGain at its offset (lib/soundbankClient
- * registerInstalledSoundbankGains), and a bank that leaves the list takes its
+ * fetchInstalledSoundbankManifest), and a bank that leaves the list takes its
  * gains with it. A bank the user added from a file with its build manifest
  * beside it (SoundBank `manifest`) has its gains registered the same way, from
  * the copy the backend kept. A sound bank download that finishes refreshes the list
@@ -30,7 +30,7 @@ import {
   type SoundBank,
 } from '../lib/bankRegistry';
 import { notifyPlacesChanged } from '../lib/placesClient';
-import { registerInstalledSoundbankGains } from '../lib/soundbankClient';
+import { fetchInstalledSoundbankManifest } from '../lib/soundbankClient';
 import { registerSoundbankGains, setBundledKits, unregisterSoundbankGains, type SoundbankGainManifest } from '../lib/soundbankGain';
 import { logError, logInfo, logWarn } from './logStore';
 
@@ -118,9 +118,12 @@ export async function syncDownloadedBankGains(banks: readonly SoundBank[]): Prom
     if (gainsRegistered.get(b.id) === sig) continue;
     gainsRegistered.set(b.id, sig);
     const { downloadId, id, offset, name } = b;
-    const register = downloadId
-      ? registerInstalledSoundbankGains(downloadId, id, offset)
-      : getJson<SoundbankGainManifest>(`/api/soundfonts/${encodeURIComponent(id)}/manifest`).then((m) => registerSoundbankGains(id, m, offset));
+    const manifest = downloadId
+      ? fetchInstalledSoundbankManifest(downloadId)
+      : getJson<SoundbankGainManifest>(`/api/soundfonts/${encodeURIComponent(id)}/manifest`);
+    // Registered only while the bank is still listed at this offset: one removed, or moved, while
+    // its manifest was on its way takes no gains.
+    const register = manifest.then((m) => (m && gainsRegistered.get(id) === sig ? registerSoundbankGains(id, m, offset) : 0));
     waits.push(
       register.then(
         (n) => {

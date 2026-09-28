@@ -74,11 +74,16 @@ export async function startSoundbankDownload(id: string): Promise<void> {
  * slots carry a gain; 0 when the bank has no manifest.
  */
 export async function registerInstalledSoundbankGains(entryId: string, bankId: string, bankOffset = 0): Promise<number> {
+  const manifest = await fetchInstalledSoundbankManifest(entryId);
+  return manifest ? registerSoundbankGains(bankId, manifest, bankOffset) : 0;
+}
+
+/** The installed catalog bank's build manifest (its playback gains), or null when it has none. */
+export async function fetchInstalledSoundbankManifest(entryId: string): Promise<SoundbankGainManifest | null> {
   const res = await fetch(`/api/models/soundbanks/${encodeURIComponent(entryId)}/manifest`);
-  if (res.status === 404) return 0;
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error((await readDetail(res)) ?? `HTTP ${res.status}`);
-  const manifest = (await res.json()) as SoundbankGainManifest;
-  return registerSoundbankGains(bankId, manifest, bankOffset);
+  return (await res.json()) as SoundbankGainManifest;
 }
 
 export type SoundbankState = 'link' | 'available' | 'downloading' | 'installed' | 'failed';
