@@ -525,6 +525,10 @@ class Track(BaseModel):
     # state, in the master chains' entry shape so raw_state is kept. None:
     # the track plays on the soundfont synths, as in every older file.
     instrument: ChainEntry | None = None
+    # How that instrument is told a note's articulation: "keyswitch" (a note
+    # from C0 up just before it) or "uacc" (Spitfire's UACC on CC 32). None:
+    # keyswitch, as in every older file. Opaque here; the frontend checks it.
+    articulation_switch: str | None = None
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is

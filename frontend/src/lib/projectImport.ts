@@ -75,6 +75,7 @@ import {
   ticksMatching,
 } from './projectClient';
 import { synthReverbSendOf } from './arrangementMidi';
+import { isVst3SwitchMode } from './articulationMap';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
@@ -1187,6 +1188,8 @@ export async function loadProjectIntoEditor(
       ...(t.external_only === true ? { externalOnly: true } : {}),
       // The VST3 instrument slot, its captured state kept (a slot naming no plugin is dropped).
       ...(instrument ? { instrument } : {}),
+      // How that instrument hears articulations; a name the app does not know is left out (keyswitch).
+      ...(isVst3SwitchMode(t.articulation_switch) ? { articulationSwitch: t.articulation_switch } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1628,8 +1631,9 @@ export function captureEditorSession(): CapturedSession {
       midi_out: t.midiOut ? { port_id: t.midiOut.id, port_label: t.midiOut.label, channel: t.midiOut.channel, clock: t.midiOut.clock === true } : null,
       mpe_channels: t.mpeChannels ?? null,
       external_only: t.externalOnly === true,
-      // The VST3 instrument slot, written only where the track has one.
+      // The VST3 instrument slot, written only where the track has one, and how it hears articulations where set.
       ...(t.instrument?.vst ? { instrument: chainEntryToTasmo(t.instrument) } : {}),
+      ...(t.articulationSwitch ? { articulation_switch: t.articulationSwitch } : {}),
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

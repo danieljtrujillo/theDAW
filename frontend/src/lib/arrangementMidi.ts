@@ -157,6 +157,13 @@ export interface ArrangementMidiOptions {
   /** The picker's voice, for a clip and track with no program of their own. */
   global?: GlobalVoice;
   ppq?: number;
+  /**
+   * The notes play on a VST3 instrument (lib/vstInstrumentMidi): no
+   * articulation takes a preset channel of its own, and each note is written
+   * shaped by its articulation (a staccato at half its length), as EDIT's live
+   * feed plays it. Absent: the export, which writes each note as written.
+   */
+  vst3Articulations?: boolean;
 }
 
 export interface ArrangementMidiResult {
@@ -264,7 +271,7 @@ const clipTotalSteps = (clip: AudioClip): number =>
  * the clip's start with the value each held there, and so does each bent
  * lane's wheel.
  */
-function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fallbackBpm: number): ClipEvents {
+function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fallbackBpm: number, vst3 = false): ClipEvents {
   const clock: StepClock = stepClock(clip.sourceBpm ?? fallbackBpm, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const percussion = isPercussionTrack(track);
@@ -277,16 +284,18 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const source = bends && input ? input.notes : (clip.sourcePianoRoll ?? []);
   const arts = articulatedNotes(source, clipArticulationInstrument(clip, voice.program ?? clip.sourceRollPart?.program ?? undefined, percussion)).notes;
   source.forEach((n, i) => {
-    const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
+    // On a VST3 instrument the note sounds shaped by its articulation, and no preset channel is its own.
+    const sounded = vst3 ? (arts[i]?.played ?? n) : n;
+    const { relStart, relEnd } = clipNoteSpan(sounded, clock, offset);
     if (relEnd <= 0 || relStart >= clip.durationSec) return;
     const laneId = bends ? playingLane(n.lane, bends.lanes) : 0;
     const lane = bends?.played.has(laneId) ? laneId : null;
-    const target = arts[i]?.target ?? null;
+    const target = vst3 ? null : (arts[i]?.target ?? null);
     notes.push({
       onSec: clip.startSec + Math.max(0, relStart),
       offSec: clip.startSec + Math.min(clip.durationSec, relEnd),
       note: n.note,
-      velocity: n.velocity,
+      velocity: sounded.velocity,
       lane,
       ...(n.articulation ? { articulation: n.articulation } : {}),
       art: target ? { key: artChannelKey(target, lane), target } : null,
@@ -463,7 +472,7 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       })
       // A clip that ends before the span starts has no note in it, and its controllers end with it.
       .filter((c) => !range || c.startSec + c.durationSec > range.startSec + 1e-9);
-    const events = kept.map((c) => clipEvents(c, track, global, bpm));
+    const events = kept.map((c) => clipEvents(c, track, global, bpm, options.vst3Articulations === true));
     endClipControls(events);
     // The controllers the track's automation owns leave the clips' own changes out.
     const ownedHere = owned.get(track.id);

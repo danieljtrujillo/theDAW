@@ -35,6 +35,7 @@ import { moveByOffset, moveIds, sameOrder } from '../lib/timeline/trackOrder';
 import { deleteFolder, folderFlagPatch, moveIntoFolder, moveOutOfFolder, newFolderFromSelection } from '../lib/timeline/folderOps';
 import type { WarpMarker } from '../lib/audioWarp';
 import type { ChainEntry, VstNode, VstStateHost } from './effectChainStore';
+import type { Vst3SwitchMode } from '../lib/articulationMap';
 import { rackEffectDefaults } from '../lib/rackEffects';
 import {
   holdsAfterRelease, modeAfterStop, recordsWhileHeld, sampleCurve, upsertAutomationPoint,
@@ -459,6 +460,10 @@ export interface EditorTrack {
    * `enabled: false`, and the track's MIDI plays on EDIT's synths.
    */
   instrument?: ChainEntry;
+  /** How the VST3 instrument in `instrument` is told its notes' articulations
+   *  (lib/articulationMap): 'keyswitch', a note from C0 up before the note, or
+   *  'uacc', Spitfire's UACC values on CC 32. Absent: 'keyswitch'. */
+  articulationSwitch?: Vst3SwitchMode;
   /** Present while the track is FROZEN: its clips + insert chain are rendered to a
    *  single printed stem (so backend-hosted VST3 — which can't run live in the
    *  browser — becomes audible). The originals are stashed here for unfreeze; the

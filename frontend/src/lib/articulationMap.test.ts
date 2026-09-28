@@ -22,6 +22,8 @@ import {
   soundfontArticulationTarget,
   vst3ArticulationSwitch,
   vst3SwitchEvents,
+  isVst3SwitchMode,
+  usesArticulations,
   DEFAULT_VST3_KEYSWITCHES,
   ORDINARIO_KEYSWITCH,
 } from './articulationMap.ts';
@@ -182,6 +184,19 @@ const line: PianoNote[] = Array.from({ length: 8 }, (_, i) => ({
     [3839, { kind: 'keyswitch', note: DEFAULT_VST3_KEYSWITCHES.pizzicato }],
     [7679, { kind: 'keyswitch', note: ORDINARIO_KEYSWITCH }],
   ], 'a keyswitch a tick before the first pizzicato, and back to ordinario');
+  assert.deepEqual(
+    vst3SwitchEvents([...line, { ...line[0], id: 'back', step: 32, tick: 7680 }], 'keyswitch', {}, 1, 240, true).map((e) => [e.tick, e.switch]),
+    [
+      [0, { kind: 'keyswitch', note: ORDINARIO_KEYSWITCH }],
+      [3839, { kind: 'keyswitch', note: DEFAULT_VST3_KEYSWITCHES.pizzicato }],
+      [7679, { kind: 'keyswitch', note: ORDINARIO_KEYSWITCH }],
+    ],
+    'opening: the first note switches too, ordinario included',
+  );
+  assert.equal(usesArticulations(line), true);
+  assert.equal(usesArticulations([{ articulation: 'bogus' }, {}]), false);
+  assert.equal(isVst3SwitchMode('uacc'), true);
+  assert.equal(isVst3SwitchMode('pedal'), false);
   assert.deepEqual(vst3ArticulationSwitch('pizzicato', 'uacc'), { kind: 'cc', controller: 32, value: 56 }, 'UACC pizzicato');
   assert.deepEqual(vst3ArticulationSwitch('harmonics', 'uacc'), { kind: 'keyswitch', note: DEFAULT_VST3_KEYSWITCHES.harmonics }, 'no checked UACC value: its keyswitch');
   assert.deepEqual(vst3ArticulationSwitch('staccato', 'keyswitch', { staccato: 30 }), { kind: 'keyswitch', note: 30 }, 'a library’s own keyswitch');

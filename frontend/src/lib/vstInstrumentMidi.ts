@@ -15,6 +15,16 @@
  * the user dialled into it, and a General MIDI program number would switch it
  * to whatever preset sits at that number.
  *
+ * Articulations: a VST3 instrument has no General MIDI preset for a pizzicato
+ * channel, so every note stays on its lane's channel, shaped by its
+ * articulation as EDIT's live feed plays it, and each change of articulation
+ * is the switch the track's `articulationSwitch` names (lib/articulationMap
+ * vst3SwitchEvents): a keyswitch note one tick long, or a UACC value on CC 32,
+ * one tick before the note, on every channel the track's notes play on. Once
+ * any note uses an articulation, the first note's switch goes out too, so the
+ * print starts on the articulation its first note plays whatever the plugin's
+ * saved state was left on.
+ *
  * Pure (no stores), so node tests run it.
  */
 import type { AudioClip, EditorTrack } from '../state/editorStore';
@@ -22,6 +32,7 @@ import { clipPeakGain } from '../state/editorStore';
 import { fadeGainAt } from './clipFade';
 import { readWavSamples, writeFloatWav } from './wavSamples';
 import { EDIT_DEFAULT_VOLUME, arrangementToMidiFile, type ArrangementMidiSource } from './arrangementMidi';
+import { isVst3SwitchMode, usesArticulations, vst3SwitchEvents, type Vst3Articulations } from './articulationMap';
 import type { GlobalVoice } from './clipProgram';
 import { sanitizeRollTempoMap } from './rollTempo';
 import { beatToTime } from './tempoMap';
@@ -45,6 +56,21 @@ export const isInstrumentClip = (c: AudioClip): boolean =>
   c.sourceKind === 'piano-roll' && (c.sourcePianoRoll?.length ?? 0) > 0;
 
 /**
+ * How `track`'s VST3 instrument is told the articulations of `clips` (the
+ * clips it plays): the track's switch mode, keyswitch when it names none, and
+ * an opening switch once any of their notes uses an articulation.
+ */
+export function trackVst3Articulations(
+  track: Pick<EditorTrack, 'articulationSwitch'>,
+  clips: readonly Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollNotes'>[],
+): Vst3Articulations {
+  return {
+    mode: isVst3SwitchMode(track.articulationSwitch) ? track.articulationSwitch : 'keyswitch',
+    opening: clips.some((c) => usesArticulations(c.sourcePianoRoll ?? c.sourceRollNotes ?? [])),
+  };
+}
+
+/**
  * Every message `track`'s instrument plays for `clipIds` (all of the track's
  * piano-roll clips when left out), in time order. Muted clips play nothing,
  * as they play nothing in the arrangement's MIDI export.
@@ -60,14 +86,36 @@ export function trackInstrumentMessages(
   const neutral: EditorTrack = { ...track, volume: EDIT_DEFAULT_VOLUME, pan: 0, mute: false, solo: false };
   const result = arrangementToMidiFile(
     { ...source, tracks: [neutral] },
-    { scope: clipIds ? { kind: 'clips', clipIds } : { kind: 'tracks', trackIds: [trackId] }, global },
+    { scope: clipIds ? { kind: 'clips', clipIds } : { kind: 'tracks', trackIds: [trackId] }, global, vst3Articulations: true },
   );
+  const mode = isVst3SwitchMode(track.articulationSwitch) ? track.articulationSwitch : 'keyswitch';
   const file = result.file;
   const bpm = Number.isFinite(source.bpm) && source.bpm > 0 ? source.bpm : 120;
   const map = sanitizeRollTempoMap(source.tempoMap?.length ? source.tempoMap : [], bpm);
   const sec = (tick: number): number => beatToTime(map, tick / file.ppq);
   const out: Array<InstrumentMidiMessage & { order: number }> = [];
   for (const mt of file.tracks) {
+    // The articulation switches go in first, so a switch at a note's own instant stays ahead of it.
+    const channels = [...new Set(mt.notes.map((n) => n.channel & 0x0f))].sort((a, b) => a - b);
+    const switches = vst3SwitchEvents(
+      mt.notes.map((n) => ({ note: n.note, step: 0, length: 0, velocity: n.velocity, articulation: n.articulation, tick: n.tick })),
+      mode,
+      {},
+      1,
+      file.ppq / 4,
+      usesArticulations(mt.notes),
+    );
+    for (const e of switches) {
+      for (const ch of channels) {
+        if (e.switch.kind === 'keyswitch') {
+          const key = e.switch.note & 0x7f;
+          out.push({ t: sec(e.tick), data: [0x90 | ch, key, 1], order: ORDER.on });
+          out.push({ t: sec(e.tick + 1), data: [0x80 | ch, key, 0], order: ORDER.off });
+        } else {
+          out.push({ t: sec(e.tick), data: [0xb0 | ch, e.switch.controller & 0x7f, e.switch.value & 0x7f], order: ORDER.control });
+        }
+      }
+    }
     for (const n of mt.notes) {
       const ch = n.channel & 0x0f;
       out.push({ t: sec(n.tick), data: [0x90 | ch, n.note & 0x7f, Math.max(1, Math.min(127, n.velocity))], order: ORDER.on });

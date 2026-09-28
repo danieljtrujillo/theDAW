@@ -9,6 +9,9 @@
  * it shows the plugin's name (click it for the plugin's own window, whose
  * settings are captured into the slot), an on/off key, and a key that empties
  * the slot. A dot and one word say how the instrument is sounding live.
+ * Beneath it, Articulations picks how the plugin is told a note's
+ * articulation: a keyswitch note from C0 up, or Spitfire's UACC on CC 32
+ * (EditorTrack articulationSwitch, lib/articulationMap).
  *
  * Every bounce, freeze and export prints the slot through
  * POST /api/vst/render-midi (lib/renderCore printInstrumentTracks).
@@ -20,6 +23,7 @@ import type { ChainEntry } from '../../state/effectChainStore';
 import { useVstLiveStore, type VstLiveStatus } from '../../state/vstLiveStore';
 import { vstSessions } from '../../lib/vstLive/sessionRegistry';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
+import { isVst3SwitchMode } from '../../lib/articulationMap';
 
 /** The scanned plugins that can play MIDI: the instruments. */
 export const instrumentPlugins = (plugins: readonly Vst3PluginInfo[]): Vst3PluginInfo[] =>
@@ -54,10 +58,12 @@ export interface TrackVstInstrumentProps {
 export const TrackVstInstrument: React.FC<TrackVstInstrumentProps> = ({ track, plugins, scanning, onRescan, onOpenEditor }) => {
   const setTrackInstrument = useEditorStore((s) => s.setTrackInstrument);
   const toggleTrackInstrument = useEditorStore((s) => s.toggleTrackInstrument);
+  const updateTrack = useEditorStore((s) => s.updateTrack);
   const instrument = track.instrument?.vst ? track.instrument : undefined;
   const live = useVstLiveStore((s) => (instrument ? s.entries[instrument.id] : undefined));
   const [open, setOpen] = useState(false);
   const listId = useId();
+  const switchId = useId();
   const available = instrumentPlugins(plugins);
   const name = instrument?.vst?.plugin_name || instrument?.vst?.plugin_path.split(/[\\/]/).pop() || '';
   const status: VstLiveStatus = instrument?.enabled ? (live?.status ?? 'off') : 'off';
@@ -135,6 +141,26 @@ export const TrackVstInstrument: React.FC<TrackVstInstrumentProps> = ({ track, p
           <span className="font-sans text-xs font-bold text-zinc-500 truncate">No VST instrument</span>
         )}
       </div>
+      {instrument && (
+        <div className="flex items-center gap-1.5">
+          <label htmlFor={switchId} className="shrink-0 font-sans text-xs font-bold text-zinc-400">
+            Articulations
+          </label>
+          <select
+            id={switchId}
+            name={`track-${track.id}-articulation-switch`}
+            value={track.articulationSwitch ?? 'keyswitch'}
+            onChange={(e) => {
+              if (isVst3SwitchMode(e.target.value)) updateTrack(track.id, { articulationSwitch: e.target.value });
+            }}
+            title="How the plugin is told a note's articulation"
+            className="flex-1 min-w-0 form-select px-1 py-0.5 font-sans text-xs font-bold"
+          >
+            <option value="keyswitch">Keyswitch notes from C0</option>
+            <option value="uacc">UACC on CC 32</option>
+          </select>
+        </div>
+      )}
       {open && (
         <div className="flex flex-col gap-0.5 rounded border border-teal-500/20 bg-black/60 p-1">
           <div className="flex items-center justify-between">

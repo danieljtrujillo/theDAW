@@ -52,7 +52,12 @@
  *     part's pizzicato, GM 46) plays on a channel of its own after the clip's
  *     others, in that preset, through the scheduler's per-note program
  *     changes, so the part's other notes keep their program. A note on such a
- *     channel does not follow its lane's bend.
+ *     channel does not follow its lane's bend. A track whose instrument slot
+ *     holds a VST3 (the `articulations` dep) has no preset to put there: its
+ *     notes stay on their lanes' channels and each change of articulation is
+ *     a keyswitch note or a UACC controller change on every channel the clip
+ *     plays on, just before the note (lib/articulationMap vst3SwitchEvents),
+ *     chased like a controller where playback starts.
  *   - Its notes' own expression (PianoNote `expr`: pressure, timbre, bend),
  *     MPE-style: each expressive note plays on a member channel of its own,
  *     rotated across a block after the clip's lane channels (lib/mpeRotation;
@@ -143,7 +148,7 @@ import { roundUpToBar } from './meterMap';
 import { noteEndStep } from './clipNotes/units';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { PART_CONTROLLERS, partController } from './rollTracks';
-import { articulatedNotes, clipArticulationInstrument } from './articulationMap';
+import { articulatedNotes, clipArticulationInstrument, vst3SwitchEvents, type Vst3Articulations } from './articulationMap';
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { stepClock } from './rollTempo';
 import {
@@ -169,6 +174,8 @@ export const EDIT_MIDI_TICK_MS = 25;
 export const EDIT_MIDI_LATE_SEC = 0.03;
 /** Where a held-back wheel message lands after the last stale one on its channel. */
 const AFTER_STALE_SEC = 1e-6;
+/** How long a VST3 keyswitch note is held; a library switches on its note-on. */
+export const KEYSWITCH_HOLD_SEC = 0.001;
 const EPS = 1e-9;
 
 /** Pedal first, then by controller number: the order controllers go back to their defaults in. */
@@ -245,6 +252,12 @@ export interface EditMidiSchedulerDeps {
   lateSec?: number;
   /** EDIT's automation lanes, read every tick; the trackMidiCc ones play (lib/midiCcAutomation). Absent: none. */
   automation?: () => readonly AutomationLane[];
+  /**
+   * How a track plays its notes' articulations on a VST3 instrument (keyswitch
+   * or UACC, no preset channels), or null for EDIT's soundfont synths. Absent:
+   * every track plays them on the soundfont.
+   */
+  articulations?: (trackId: string) => Vst3Articulations | null;
 }
 
 /** The program and bank select a clip's notes are played in. */
@@ -269,12 +282,14 @@ export interface TimedNote {
 /**
  * One channel message of a clip on the transport: a bend range, a wheel
  * position, or a controller change (`cc`, with its `controller`); `reset` is
- * a controller put back to its default where the clip ends.
+ * a controller put back to its default where the clip ends; `keyswitch` is a
+ * VST3 instrument's articulation switch, a short note on key `value`.
  */
 export interface TimedCtl {
   t: number;
   slot: number;
-  kind: 'range' | 'wheel' | 'cc' | 'reset' | 'pressure';
+  kind: 'range' | 'wheel' | 'cc' | 'reset' | 'pressure' | 'keyswitch';
+  /** For `keyswitch`: the key a VST3 instrument's articulation switches on. */
   value: number;
   /** The controller number, for `cc` and `reset`. */
   controller?: number;
@@ -325,8 +340,14 @@ const clipTotalSteps = (clip: Partial<TimedClip>): number =>
  * articulation plays a soundfont preset of its own, a slot after the lanes'
  * for that preset and the bent lane it sits in, so the lane's wheel bends it
  * there too (`artSlots` names the lane slot each follows; null when none).
+ * On a VST3 instrument (`vst3`) no articulation takes a slot of its own.
  */
-function clipSlotPlan(clip: Parameters<typeof clipRenderInput>[0] & Partial<TimedClip>, percussion: boolean, program: number | undefined) {
+function clipSlotPlan(
+  clip: Parameters<typeof clipRenderInput>[0] & Partial<TimedClip>,
+  percussion: boolean,
+  program: number | undefined,
+  vst3: Vst3Articulations | null = null,
+) {
   const input = clipRenderInput(clip, clipTotalSteps(clip));
   const bends = percussion ? undefined : input.bends;
   const slotOf = new Map<number, number>();
@@ -334,7 +355,9 @@ function clipSlotPlan(clip: Parameters<typeof clipRenderInput>[0] & Partial<Time
   const laneSlot = (lane: number | undefined): number => (bends ? slotOf.get(playingLane(lane, bends.lanes)) ?? 0 : 0);
   const laneSlots = bends && slotOf.size ? Math.max(...slotOf.values()) + 1 : 1;
   const bentLaneSlots = new Set<number>(bends ? [...bends.played.keys()].map((lane) => slotOf.get(lane) ?? 0) : []);
-  const arts = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
+  const found = articulatedNotes(input.notes, clipArticulationInstrument(clip, program, percussion));
+  // A VST3 instrument switches articulations itself: every note stays on its lane's channel.
+  const arts = vst3 ? { notes: found.notes.map((a) => ({ ...a, target: null, slot: -1 })), targets: [] } : found;
   const artSlots: Array<{ follows: number | null }> = [];
   const artIndex = new Map<string, number>();
   const noteSlots = arts.notes.map((a) => {
@@ -360,13 +383,15 @@ function clipSlotPlan(clip: Parameters<typeof clipRenderInput>[0] & Partial<Time
  * notes' articulations play (lib/articulationMap: a string part's pizzicato),
  * and then the member channels its expressive notes rotate across: as many as
  * sound at once, at most `members` (lib/mpeRotation). A percussion clip plays
- * on its one drum channel.
+ * on its one drum channel. On a VST3 instrument (`vst3`) the articulations add
+ * no channel: they switch by keyswitch or UACC.
  */
 export function clipLiveSlots(
   clip: Pick<AudioClip, 'sourceRollNotes' | 'sourceLanes' | 'sourceBends'> & Partial<Pick<AudioClip, 'sourcePianoRoll' | 'sourceRollPart'>>,
   percussion = false,
   program?: number,
   members = MPE_DEFAULT_MEMBERS,
+  vst3: Vst3Articulations | null = null,
 ): number {
   if (percussion) return 1;
   const expressive = (clip.sourcePianoRoll ?? []).filter((n) => hasExpression(n.expr)).map((n) => ({ start: n.step, end: n.step + n.length }));
@@ -377,10 +402,14 @@ export function clipLiveSlots(
     const lanes = sanitizeLanes(clip.sourceLanes?.length ? clip.sourceLanes : DEFAULT_LANES);
     return Math.max(1, new Set(laneChannels(lanes, sanitizeBends(clip.sourceBends)).values()).size) + mpe;
   }
-  return clipSlotPlan(clip, false, program).slots + mpe;
+  return clipSlotPlan(clip, false, program, vst3).slots + mpe;
 }
 
 const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
+
+/** Two VST3 articulation settings that time a clip alike. */
+const sameVst3 = (a: Vst3Articulations | null, b: Vst3Articulations | null): boolean =>
+  a === b || (!!a && !!b && a.mode === b.mode && a.opening === b.opening && a.keyswitches === b.keyswitches);
 
 /**
  * Every note and channel message of `clip` on the transport, in seconds. The
@@ -389,6 +418,9 @@ const byOn = (a: TimedNote, b: TimedNote) => a.on - b.on;
  * is taken off and a note running past an edge is cut at it. A percussion clip
  * ignores bends and plays on one channel. Expressive notes rotate across up
  * to `members` member channels after the lane channels (lib/mpeRotation).
+ * On a VST3 instrument (`vst3`) each change of articulation is a switch on
+ * every channel the clip plays on (lib/articulationMap vst3SwitchEvents): a
+ * switch before the window is held to its start, as a controller is.
  */
 export function clipLiveTiming(
   clip: TimedClip,
@@ -396,13 +428,14 @@ export function clipLiveTiming(
   percussion = false,
   program?: number,
   members = MPE_DEFAULT_MEMBERS,
+  vst3: Vst3Articulations | null = null,
 ): ClipTiming {
   const clock = stepClock(clip.sourceBpm ?? fallbackBpm ?? 120, clip.sourceTempoMap);
   const offset = clip.offsetIntoSource ?? 0;
   const dur = clip.durationSec;
   const start = clip.startSec;
   // Each note shaped by its articulation; a preset articulation on a slot of its own after the lanes' (clipSlotPlan).
-  const { bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: used } = clipSlotPlan(clip, percussion, program);
+  const { bends, slotOf, laneSlots, arts, noteSlots, artSlots, slots: used } = clipSlotPlan(clip, percussion, program, vst3);
 
   // The expressive notes' member channels, after the lane and articulation channels: the rotation over every one of them, in steps.
   const expressive = percussion ? [] : arts.notes.filter((a) => hasExpression(a.played.expr));
@@ -505,6 +538,24 @@ export function clipLiveTiming(
     for (const [controller] of resets) {
       const value = partController(controller)?.initial ?? 0;
       for (let slot = 0; slot < slots; slot += 1) ctl.push({ t: start + dur, slot, kind: 'reset', controller, value });
+    }
+  }
+  // A VST3 instrument's articulation switches, on every channel the clip plays on.
+  if (vst3 && !percussion) {
+    const played = arts.notes.map((a) => ({ note: a.played.note, step: a.played.step, length: a.played.length, velocity: a.played.velocity, articulation: a.played.articulation }));
+    let before: { t: number; e: ReturnType<typeof vst3SwitchEvents>[number] } | null = null;
+    const inside: Array<{ t: number; e: ReturnType<typeof vst3SwitchEvents>[number] }> = [];
+    for (const e of vst3SwitchEvents(played, vst3.mode, vst3.keyswitches, 1, TICKS_PER_STEP, vst3.opening)) {
+      const t = start + clock.at(e.tick / TICKS_PER_STEP) - offset;
+      if (t >= start + dur - EPS) break;
+      if (t < start) before = { t: start, e };
+      else inside.push({ t, e });
+    }
+    for (const { t, e } of before ? [before, ...inside] : inside) {
+      for (let slot = 0; slot < slots; slot += 1) {
+        if (e.switch.kind === 'keyswitch') ctl.push({ t, slot, kind: 'keyswitch', value: e.switch.note });
+        else ctl.push({ t, slot, kind: 'cc', controller: e.switch.controller, value: e.switch.value });
+      }
     }
   }
   ctl.push(...exprCtl);
@@ -614,7 +665,10 @@ export class EditMidiScheduler {
   private held = new Map<string, HeldControls>();
   /** The clips the last tick played live, so a clip that starts playing part way is seen. */
   private lastLive: ReadonlySet<string> = new Set();
-  private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; program: number | undefined; members: number; timing: ClipTiming }>();
+  private timing = new WeakMap<
+    object,
+    { bpm: number | undefined; percussion: boolean; program: number | undefined; members: number; vst3: Vst3Articulations | null; timing: ClipTiming }
+  >();
   /** The value each automated controller holds on its track's channels this pass, by `${trackId}:${controller}`. */
   private ccHeld = new Map<string, number>();
   /** Channels a controller outside ALWAYS_OPENED was sent to, by `${channel}:${controller}`: the next pass puts it back there. */
@@ -645,7 +699,14 @@ export class EditMidiScheduler {
     for (const clip of this.deps.clips()) {
       if (!pass.liveClipIds.has(clip.id)) continue;
       const track = trackById.get(clip.trackId);
-      this.timingOf(clip, bpm, isPercussionTrack(track), track ? effectiveProgramFor(clip, track, this.deps.global()) : undefined, trackMembers(track?.mpeChannels));
+      this.timingOf(
+        clip,
+        bpm,
+        isPercussionTrack(track),
+        track ? effectiveProgramFor(clip, track, this.deps.global()) : undefined,
+        trackMembers(track?.mpeChannels),
+        this.deps.articulations?.(clip.trackId) ?? null,
+      );
     }
   }
 
@@ -699,11 +760,18 @@ export class EditMidiScheduler {
     return this.anchorCtx + (t - this.anchorT);
   }
 
-  private timingOf(clip: AudioClip, bpm: number | undefined, percussion: boolean, program: number | undefined, members: number): ClipTiming {
+  private timingOf(
+    clip: AudioClip,
+    bpm: number | undefined,
+    percussion: boolean,
+    program: number | undefined,
+    members: number,
+    vst3: Vst3Articulations | null,
+  ): ClipTiming {
     const hit = this.timing.get(clip);
-    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.program === program && hit.members === members) return hit.timing;
-    const timing = clipLiveTiming(clip, bpm, percussion, program, members);
-    this.timing.set(clip, { bpm, percussion, program, members, timing });
+    if (hit && hit.bpm === bpm && hit.percussion === percussion && hit.program === program && hit.members === members && sameVst3(hit.vst3, vst3)) return hit.timing;
+    const timing = clipLiveTiming(clip, bpm, percussion, program, members, vst3);
+    this.timing.set(clip, { bpm, percussion, program, members, vst3, timing });
     return timing;
   }
 
@@ -760,6 +828,13 @@ export class EditMidiScheduler {
       if (c.kind === 'range') return pushAt(channel, time, 0.25, (at) => sink.wheelRange(channel, c.value, at));
       if (c.kind === 'wheel') return pushAt(channel, time, 0.5, (at) => sink.wheel(channel, c.value, at));
       if (c.kind === 'pressure') return pushAt(channel, time, 0.3, (at) => sink.pressure?.(channel, c.value, at));
+      if (c.kind === 'keyswitch') {
+        // A VST3 articulation switch: a short note on its key, ahead of the notes it switches.
+        return pushAt(channel, time, 0.1, (at) => {
+          sink.noteOn(channel, NO_PROGRAM, c.value, 1, at, 0);
+          sink.noteOff(channel, c.value, at + KEYSWITCH_HOLD_SEC);
+        });
+      }
       return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => control(channel, controller, c.value, at));
     };
 
@@ -859,7 +934,7 @@ export class EditMidiScheduler {
       const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);
-      const timing = this.timingOf(clip, bpm, percussion, program, trackMembers(track.mpeChannels));
+      const timing = this.timingOf(clip, bpm, percussion, program, trackMembers(track.mpeChannels), this.deps.articulations?.(track.id) ?? null);
       const chOf = (slot: number) => chans[Math.min(slot, chans.length - 1)];
       const clipEnd = clip.startSec + clip.durationSec;
       const open = muteSoloOpen(track, anySolo);

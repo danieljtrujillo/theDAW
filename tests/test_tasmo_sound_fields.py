@@ -32,6 +32,7 @@ def _project(**extra) -> TasmoProject:
             "clock": True,
         },
         mpe_channels=6,
+        articulation_switch="uacc",
     )
     return TasmoProject(tracks=[track], **extra)
 
@@ -58,6 +59,7 @@ def test_the_sound_fields_survive_a_round_trip() -> None:
         "sb-0123456789ab",
     )
     assert back.tuning == tuning
+    assert track.articulation_switch == "uacc"
 
 
 def test_a_file_from_before_sound_banks_loads_on_the_bundled_bank_at_a440() -> None:
@@ -91,3 +93,4 @@ def test_a_file_from_before_sound_banks_loads_on_the_bundled_bank_at_a440() -> N
     )
     assert t.clips[0].instrument_bank_id is None
     assert old.tuning is None
+    assert t.articulation_switch is None

@@ -20,6 +20,12 @@
  * plays, with no delay compensation asked of the rest of the mix. A message
  * whose block has already gone plays at the start of the next one.
  *
+ * ARTICULATIONS. A VST3 instrument switches its own articulations: a note's
+ * pizzicato is a keyswitch (or a UACC value on CC 32, the track's
+ * `articulationSwitch`) just before it, on the track's own channels, never a
+ * channel of its own in a General MIDI preset (lib/vstInstrumentMidi
+ * trackVst3Articulations, the same the print sends).
+ *
  * STOP, SEEK, LOOP. `stop()` sends `midi_panic`: the host drops what waits and
  * releases every note it let through, so nothing hangs over the jump.
  *
@@ -31,6 +37,9 @@ import type { ChainEntry } from '../../state/effectChainStore';
 import type { VstMidiEvent } from './bridgeClient';
 import { isPercussionTrack, type GlobalVoice } from '../clipProgram';
 import { localChannel, planEditChannels } from '../editChannels';
+import type { Vst3Articulations } from '../articulationMap';
+import { trackMembers } from '../mpeRotation';
+import { trackVst3Articulations } from '../vstInstrumentMidi';
 import { EditMidiScheduler, clipLiveSlots, type EditMidiSchedulerDeps, type EditMidiSink, type EnvelopeParam } from '../editMidiScheduler';
 
 /** One MIDI channel voice message for the live host's `midi` op. `pos` is timeline sample frames; -1 = now. */
@@ -47,8 +56,10 @@ export interface InstrumentLiveTrack {
   trackId: string;
   entry: ChainEntry;
   liveClipIds: ReadonlySet<string>;
-  /** The track's channels, first first: one, plus one per bent lane. */
+  /** The track's channels, first first: one, plus one per bent lane, plus the member channels its expressive notes rotate across. */
   channels: number[];
+  /** How its notes' articulations reach the plugin: switches, not channels. */
+  articulations: Vst3Articulations;
 }
 
 const isRollClip = (c: Pick<AudioClip, 'sourceKind' | 'sourcePianoRoll'>): boolean =>
@@ -69,10 +80,12 @@ export function planInstrumentTracks(clips: readonly AudioClip[], tracks: readon
     const own = clips.filter((c) => c.trackId === track.id && isRollClip(c));
     if (own.length === 0) continue;
     const percussion = isPercussionTrack(track);
-    const slots = Math.max(1, ...own.map((c) => clipLiveSlots(c, percussion)));
+    const articulations = trackVst3Articulations(track, own);
+    // Counted as the scheduler times the clips: the track's own member channels, no articulation channel.
+    const slots = Math.max(1, ...own.map((c) => clipLiveSlots(c, percussion, undefined, trackMembers(track.mpeChannels), articulations)));
     const plan = planEditChannels([{ id: track.id, percussion, channels: slots }]);
     const channels = (plan.channelsOf.get(track.id) ?? [0]).map(localChannel);
-    out.push({ trackId: track.id, entry, liveClipIds: new Set(own.map((c) => c.id)), channels });
+    out.push({ trackId: track.id, entry, liveClipIds: new Set(own.map((c) => c.id)), channels, articulations });
   }
   return out;
 }
@@ -198,6 +211,7 @@ export class InstrumentLivePass {
         projectBpm: this.deps.projectBpm,
         envelope: this.deps.envelope,
         lookaheadSec: this.deps.lookaheadSec,
+        articulations: () => track.articulations,
       };
       const scheduler = new EditMidiScheduler(schedulerDeps);
       const pass = { liveClipIds: track.liveClipIds, channelsOf: new Map([[track.trackId, track.channels]]) };

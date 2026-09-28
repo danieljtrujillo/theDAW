@@ -126,12 +126,29 @@ assert.equal(byLabel('Track Violins I instrument on')?.getAttribute('aria-presse
 await click(byLabel('Track Violins I instrument on'));
 assert.equal(track().instrument?.enabled, true);
 
+// Articulations: a labelled select, keyswitch until the user picks UACC.
+await show();
+const switchSelect = host.querySelector('select') as HTMLSelectElement | null;
+assert.ok(switchSelect, 'the filled slot offers how articulations are sent');
+assert.ok(switchSelect.id && switchSelect.name, 'the select has an id and a name');
+const switchLabel = host.querySelector(`label[for="${switchSelect.id}"]`);
+assert.equal(switchLabel?.textContent?.trim(), 'Articulations', 'a real label names it');
+assert.equal(switchSelect.value, 'keyswitch');
+await act(async () => {
+  switchSelect.value = 'uacc';
+  switchSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+});
+assert.equal(track().articulationSwitch, 'uacc');
+await show();
+assert.equal((host.querySelector('select') as HTMLSelectElement).value, 'uacc');
+
 // Remove empties the slot.
 await show();
 await click(byLabel('Remove the instrument from track Violins I'));
 await show();
 assert.equal(track().instrument, undefined);
 assert.ok(byLabel('Choose a VST3 instrument for track Violins I'));
+assert.equal(host.querySelector('select'), null, 'an empty slot has no articulation select');
 
 // No text under 12px: every class names text-xs (12px) or larger.
 assert.ok(!/text-\[(?:[0-9]|1[01])px\]/.test(host.innerHTML), 'no text under 12px');

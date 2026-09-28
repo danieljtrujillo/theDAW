@@ -16,6 +16,7 @@ import type { LaneBend } from './pitchBend.ts';
 import { instrumentTracksInScope, printInstrumentTracks, type InstrumentRenderer } from './renderCore.ts';
 import { renderInstrumentTrack } from './vstClient.ts';
 import { readWavSamples, writeFloatWav } from './wavSamples.ts';
+import { DEFAULT_VST3_KEYSWITCHES, ORDINARIO_KEYSWITCH, UACC_VALUES } from './articulationMap.ts';
 import {
   INSTRUMENT_TAIL_SEC,
   instrumentGainAt,
@@ -271,6 +272,41 @@ const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
 
   useEditorStore.getState().setTrackInstrument(tid, null);
   assert.equal(useEditorStore.getState().tracks.find((t) => t.id === tid)?.instrument, undefined, 'the slot empties');
+}
+
+// ── articulations in the print: switches on the track's channel, notes shaped, no preset channel ──
+{
+  const art = (step: number, pitch: number, articulation?: PianoNote['articulation']): PianoNote => ({ ...note(step, pitch), ...(articulation ? { articulation } : {}) });
+  const vln = track('vln', { instrument: strings, instrumentProgram: 40 });
+  const clips = [clip('v1', 'vln', 0, [art(0, 67), art(4, 69, 'pizzicato'), art(8, 71, 'staccato')])];
+  const messages = trackInstrumentMessages({ tracks: [vln], clips, bpm: 120 }, 'vln', { useSoundfont: false, activeProgram: 0 });
+  assert.ok(messages.every((m) => (m.data[0] & 0x0f) === 0), 'every message on the one channel of the track: no pizzicato channel');
+  assert.ok(!messages.some((m) => (m.data[0] & 0xf0) === 0xc0), 'no program change');
+  const ons = messages.filter((m) => (m.data[0] & 0xf0) === 0x90).map((m) => [Number(m.t.toFixed(4)), m.data[1], m.data[2]]);
+  const tick = 0.5 / 960;
+  assert.deepEqual(ons, [
+    [0, ORDINARIO_KEYSWITCH, 1], [0, 67, 90],
+    [Number((0.5 - tick).toFixed(4)), DEFAULT_VST3_KEYSWITCHES.pizzicato, 1], [0.5, 69, 90],
+    [Number((1 - tick).toFixed(4)), DEFAULT_VST3_KEYSWITCHES.staccato, 1], [1, 71, 90],
+  ], 'each switch a tick ahead of its note, the first opening the part');
+  const staccatoOff = messages.find((m) => m.data[0] === 0x80 && m.data[1] === 71);
+  assert.ok(staccatoOff && close(staccatoOff.t, 1.25), 'the staccato sounds half its written length, as the live feed plays it');
+  const ksOff = messages.find((m) => m.data[0] === 0x80 && m.data[1] === DEFAULT_VST3_KEYSWITCHES.pizzicato);
+  assert.ok(ksOff && close(ksOff.t, 0.5), 'the keyswitch is a one-tick note');
+  // The keyswitch lands ahead of the note at the same instant.
+  const first = messages.findIndex((m) => m.data[0] === 0x90 && m.data[1] === ORDINARIO_KEYSWITCH);
+  assert.ok(first >= 0 && first < messages.findIndex((m) => m.data[0] === 0x90 && m.data[1] === 67));
+
+  const uacc = trackInstrumentMessages({ tracks: [{ ...vln, articulationSwitch: 'uacc' }], clips, bpm: 120 }, 'vln', { useSoundfont: false, activeProgram: 0 });
+  assert.deepEqual(
+    uacc.filter((m) => m.data[0] === 0xb0 && m.data[1] === 32).map((m) => m.data[2]),
+    [UACC_VALUES.ordinario, UACC_VALUES.pizzicato],
+    'UACC: CC 32 with the long and pizzicato values; staccato has no checked value and keyswitches',
+  );
+  assert.ok(uacc.some((m) => m.data[0] === 0x90 && m.data[1] === DEFAULT_VST3_KEYSWITCHES.staccato));
+
+  const plainMessages = trackInstrumentMessages({ tracks: [vln], clips: [clip('p1', 'vln', 0, [note(0, 60), note(4, 62)])], bpm: 120 }, 'vln', { useSoundfont: false, activeProgram: 0 });
+  assert.deepEqual(plainMessages.filter((m) => (m.data[0] & 0xf0) === 0x90).map((m) => m.data[1]), [60, 62], 'a part with no articulation sends no switch');
 }
 
 console.log('vstInstrumentMidi: all assertions passed');

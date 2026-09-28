@@ -310,8 +310,10 @@ export interface Vst3SwitchEvent {
  * The switches a VST3 part's notes need, in tick order: one where the
  * articulation changes from the one before (the part starts ordinario), `lead`
  * ticks ahead of the note so the library has switched when the note arrives.
- * A render or live feed through the part's instrument sends each (a keyswitch
- * as a one-tick note at velocity 1) ahead of the notes it precedes.
+ * With `opening`, the first note's switch goes out even when it plays
+ * ordinario, so an instrument an earlier clip or pass left on pizzicato comes
+ * back. A render or live feed through the part's instrument sends each (a
+ * keyswitch as a one-tick note at velocity 1) ahead of the notes it precedes.
  */
 export function vst3SwitchEvents(
   notes: readonly (ArticulatedInput & { tick?: number })[],
@@ -319,6 +321,7 @@ export function vst3SwitchEvents(
   keyswitches: Partial<Record<Articulation, number>> = {},
   lead = 1,
   ticksPerStep = 240,
+  opening = false,
 ): Vst3SwitchEvent[] {
   const sorted = [...notes].sort((a, b) => (a.tick ?? a.step * ticksPerStep) - (b.tick ?? b.step * ticksPerStep));
   const out: Vst3SwitchEvent[] = [];
@@ -327,7 +330,7 @@ export function vst3SwitchEvents(
   for (const n of sorted) {
     const art = isArticulation(n.articulation) ? n.articulation : undefined;
     if (!first && art === current) continue;
-    if (first && !art) {
+    if (first && !art && !opening) {
       first = false;
       continue;
     }
@@ -338,6 +341,24 @@ export function vst3SwitchEvents(
   }
   return out;
 }
+
+export const isVst3SwitchMode = (v: unknown): v is Vst3SwitchMode => v === 'keyswitch' || v === 'uacc';
+
+/**
+ * How a track whose instrument slot holds a VST3 plays its notes'
+ * articulations: every note on the channels its lanes give it (a VST3
+ * instrument has no General MIDI preset for a channel of its own to play), and
+ * a switch by `mode` where the articulation changes. `opening`: the track's
+ * notes use articulations, so each clip opens with its first note's switch.
+ */
+export interface Vst3Articulations {
+  mode: Vst3SwitchMode;
+  keyswitches?: Partial<Record<Articulation, number>>;
+  opening: boolean;
+}
+
+/** True when any of `notes` carries an articulation the map knows. */
+export const usesArticulations = (notes: readonly { articulation?: unknown }[]): boolean => notes.some((n) => isArticulation(n.articulation));
 
 /* ── The marker lane ────────────────────────────────────────────────────── */
 

@@ -24,6 +24,7 @@ import {
   type InstrumentMidiPort,
   type VstMidiMessage,
 } from './instrumentLive.ts';
+import { DEFAULT_VST3_KEYSWITCHES, ORDINARIO_KEYSWITCH } from '../articulationMap.ts';
 import { VstBridgeClient, type BridgeSocketLike } from './bridgeClient.ts';
 import { createBridgeWorker, type BridgeWorkerEvent } from './bridgeWorker.ts';
 import { VstBridgeWorkerClient, type BridgeWorkerLike } from './bridgeWorkerClient.ts';
@@ -219,6 +220,63 @@ const part = (controls: RollControl[]) => ({ doc: 'd', id: 'p', order: 0, name: 
   handler.handle({ cmd: 'op', name: 'sendMidi', args: [[{ pos: 1, data: [0x90, 1, 1] }, { pos: 2, data: [0x80, 1, 0] }]] });
   handler.handle({ cmd: 'op', name: 'midiPanic', args: [] });
   assert.deepEqual(calls, ['midi:2', 'panic']);
+}
+
+// ── articulations on a VST3 instrument: switches on the track's channels, not preset channels ──
+{
+  const art = (step: number, pitch: number, articulation?: PianoNote['articulation']): PianoNote => ({ ...note(step, pitch), ...(articulation ? { articulation } : {}) });
+  const run = (extra: Partial<EditorTrack>, notes: PianoNote[]) => {
+    const tracks = [track('vln', { instrument: strings, instrumentProgram: 40, ...extra })];
+    const clips = [clip('v1', 'vln', 0, notes)];
+    const plan = planInstrumentTracks(clips, tracks);
+    const sent: VstMidiMessage[] = [];
+    const pass = new InstrumentLivePass({
+      now: () => 50,
+      clips: () => clips,
+      tracks: () => tracks,
+      global: () => ({ useSoundfont: false, activeProgram: 0 }),
+      projectBpm: () => 120,
+      port: () => ({ sendMidi: (e) => sent.push(...e), midiPanic: () => {} }),
+      sampleRate: () => 1000,
+      latencySamples: () => 0,
+      lookaheadSec: () => 5,
+      schedule: (fn) => fn(),
+    });
+    pass.start(plan, 0, 50);
+    pass.stop();
+    return { plan, sent };
+  };
+  const line = [art(0, 67), art(4, 69, 'pizzicato'), art(8, 71, 'pizzicato'), art(12, 72)];
+  const { plan, sent } = run({}, line);
+  assert.deepEqual(plan[0].channels, [0], 'a violin part with pizzicato plays on one channel: the plugin switches, no preset channel');
+  const ons = sent.filter((m) => (m.data[0] & 0xf0) === 0x90).map((m) => [m.pos, m.data[0] & 0x0f, m.data[1], m.data[2]]);
+  assert.deepEqual(ons, [
+    [0, 0, ORDINARIO_KEYSWITCH, 1], [0, 0, 67, 100],
+    [499, 0, DEFAULT_VST3_KEYSWITCHES.pizzicato, 1], [500, 0, 69, 100], [1000, 0, 71, 100],
+    [1499, 0, ORDINARIO_KEYSWITCH, 1], [1500, 0, 72, 100],
+  ], 'the ordinario keyswitch opens the clip, the pizzicato one a tick before its first note, ordinario again after');
+  assert.ok(!sent.some((m) => (m.data[0] & 0xf0) === 0xc0), 'no program change reaches the plugin');
+  const ksOff = sent.find((m) => (m.data[0] & 0xf0) === 0x80 && m.data[1] === DEFAULT_VST3_KEYSWITCHES.pizzicato);
+  assert.ok(ksOff && ksOff.pos >= 499 && ksOff.pos <= 501, 'the keyswitch note is released at once');
+
+  // UACC: CC 32 with the checked value, and a keyswitch where UACC has none.
+  const uacc = run({ articulationSwitch: 'uacc' }, [art(0, 67, 'tremolo'), art(4, 69, 'harmonics')]).sent;
+  assert.deepEqual(
+    uacc.filter((m) => (m.data[0] === 0xb0 && m.data[1] === 32) || (m.data[0] === 0x90 && m.data[2] === 1)).map((m) => [m.pos, ...m.data]),
+    [[0, 0xb0, 32, 11], [499, 0x90, DEFAULT_VST3_KEYSWITCHES.harmonics, 1]],
+    'UACC tremolo is CC 32 = 11; harmonics has no checked UACC value and keyswitches',
+  );
+
+  // A part with no articulation sends no switch: a synth does not hear a stray C0.
+  const plain = run({}, [art(0, 67), art(4, 69)]).sent;
+  assert.ok(!plain.some((m) => m.data[1] === ORDINARIO_KEYSWITCH && (m.data[0] & 0xf0) === 0x90), 'no keyswitch on a part without articulations');
+
+  // The track's own member channel count plans the channels the scheduler plays on.
+  const wide: PianoNote[] = Array.from({ length: 12 }, (_, i) => ({ ...note(0, 60 + i), expr: { pressure: 0.5 } }));
+  const wideRun = run({ mpeChannels: 12 }, wide);
+  assert.equal(wideRun.plan[0].channels.length, 13, "one lane channel and the track's twelve member channels");
+  const noteChannels = new Set(wideRun.sent.filter((m) => (m.data[0] & 0xf0) === 0x90).map((m) => m.data[0] & 0x0f));
+  assert.equal(noteChannels.size, 12, 'twelve expressive notes on twelve channels, none piled on the last one');
 }
 
 console.log('instrumentLive: all assertions passed');

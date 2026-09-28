@@ -403,6 +403,8 @@ export interface TasmoTrackInput {
   external_only?: boolean;
   /** The track's VST3 instrument slot, with its captured state; absent with none, as in older files. */
   instrument?: TasmoChainEntry | null;
+  /** How that instrument is told articulations: 'keyswitch' or 'uacc'; absent is 'keyswitch'. */
+  articulation_switch?: string | null;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -590,6 +592,8 @@ export interface TasmoLoadedTrack {
   external_only?: boolean;
   /** The track's VST3 instrument slot, with its captured state; absent with none, as in older files. */
   instrument?: TasmoChainEntry | null;
+  /** How that instrument is told articulations: 'keyswitch' or 'uacc'; absent is 'keyswitch'. */
+  articulation_switch?: string | null;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in

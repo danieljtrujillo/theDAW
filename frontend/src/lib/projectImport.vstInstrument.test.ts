@@ -52,6 +52,7 @@ function roundTrip(): TasmoProjectLoaded {
           enabled: true,
           vst: { plugin_path: 'C:/VST3/Surge XT.vst3', plugin_name: 'Surge XT', raw_state: 'c3RhdGU=', state_host: 'thedaw' },
         },
+        articulationSwitch: 'uacc',
       }),
       // Switched off: kept, and still off.
       track('pad', {
@@ -71,6 +72,8 @@ function roundTrip(): TasmoProjectLoaded {
     vst: { plugin_path: 'C:/VST3/Surge XT.vst3', plugin_name: 'Surge XT', raw_state: 'c3RhdGU=', state_host: 'thedaw' },
   });
   assert.equal(byId.get('bass')?.instrument, undefined, 'a track with no slot writes none');
+  assert.equal(byId.get('lead')?.articulation_switch, 'uacc', 'how the slot hears articulations is saved');
+  assert.equal(byId.get('pad')?.articulation_switch, undefined, 'and written only where set');
 
   useEditorStore.setState({ bpm: 120, tracks: [track('other')], clips: [] });
   await loadProjectIntoEditor(project);
@@ -78,6 +81,8 @@ function roundTrip(): TasmoProjectLoaded {
   assert.equal(activeTrackInstrument(lead)?.vst?.plugin_name, 'Surge XT', 'the lead plays through its instrument again');
   assert.equal(lead?.instrument?.vst?.raw_state, 'c3RhdGU=', 'with the state its window captured');
   assert.equal(lead?.instrument?.vst?.state_host, 'thedaw', 'and the host that captured it');
+  assert.equal(lead?.articulationSwitch, 'uacc', 'and how it hears articulations');
+  assert.equal(st().tracks.find((t) => t.id === 'pad')?.articulationSwitch, undefined);
   const pad = st().tracks.find((t) => t.id === 'pad');
   assert.equal(pad?.instrument?.enabled, false, 'a slot switched off stays off');
   assert.equal(activeTrackInstrument(pad), null);
@@ -90,6 +95,7 @@ function roundTrip(): TasmoProjectLoaded {
   for (const t of project.tracks) delete t.instrument;
   const broken = project.tracks.find((t) => t.id === 'pad')!;
   broken.instrument = { id: 'inst-pad', effect: 'vst3', enabled: true, vst: null };
+  broken.articulation_switch = 'pedal-trick';
   await loadProjectIntoEditor(project);
   assert.ok(st().tracks.every((t) => t.instrument === undefined), 'no track opens with a slot');
 }
