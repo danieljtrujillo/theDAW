@@ -246,6 +246,14 @@ const clip = () => ed().clips.find((c) => c.id === clipId)!;
   assert.equal(track().mpeChannels, 4);
   void channel;
   void mpe;
+  // The port opened under a new id this session (Web MIDI ids change): the panel finds it by name, as the route does.
+  await act(async () => setMidiOutputPorts([{ id: 'p1-new', name: 'loopMIDI Port', send: () => undefined }]));
+  await act(async () => root.render(<TrackMidiOut track={track()} />));
+  const panel3 = win.document.getElementById(button.getAttribute('aria-controls')!)!;
+  const port3 = panel3.querySelector('select') as HTMLSelectElement;
+  assert.equal(port3.value, 'p1-new', 'the open port is selected');
+  assert.deepEqual([...port3.options].map((o) => o.text), ['None (inside theDAW)', 'loopMIDI Port'], 'listed once, not as a closed port too');
+  assert.match(button.className, /sky/, 'the button shows it connected');
 }
 
 // ── External only in the track's instrument select ────────────────────────

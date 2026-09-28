@@ -16,6 +16,7 @@ import { Cable } from 'lucide-react';
 import { useEditorStore, type EditorTrack } from '../../state/editorStore';
 import { useMidiOutPorts } from '../../state/midiOutBus';
 import { MPE_DEFAULT_MEMBERS, MPE_MAX_MEMBERS } from '../../lib/mpeRotation';
+import { resolveRef } from '../../lib/ioResolve';
 
 const field = 'rounded border border-white/10 bg-black/40 px-1.5 py-0.5 text-xs font-bold text-zinc-100 outline-none focus:border-purple-400/60';
 
@@ -28,7 +29,11 @@ export const TrackMidiOut: React.FC<{ track: EditorTrack }> = ({ track }) => {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const out = track.midiOut;
-  const connected = !!out && ports.some((p) => p.id === out.id || p.label === out.label);
+  // The open port the track's MIDI goes to, matched as the routes match it: by id, else by name
+  // (a port's id can change between sessions while its name stays).
+  const resolvedId = out ? resolveRef({ id: out.id, label: out.label }, ports, true).deviceId : '';
+  const connected = !!out && ports.some((p) => p.id === resolvedId);
+  const selectedPort = out ? (connected ? resolvedId : out.id) : '';
 
   useLayoutEffect(() => {
     if (!open || !buttonRef.current) return;
@@ -95,7 +100,7 @@ export const TrackMidiOut: React.FC<{ track: EditorTrack }> = ({ track }) => {
               <select
                 id={`${uid}-port`}
                 name={`track-midi-out-port-${track.id}`}
-                value={out?.id ?? ''}
+                value={selectedPort}
                 onChange={(e) => setPort(e.target.value)}
                 className={field}
                 style={{ colorScheme: 'dark' }}
@@ -104,7 +109,7 @@ export const TrackMidiOut: React.FC<{ track: EditorTrack }> = ({ track }) => {
                 {ports.map((p) => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
-                {out && !ports.some((p) => p.id === out.id) && <option value={out.id}>{`${out.label} (not open)`}</option>}
+                {out && !connected && <option value={out.id}>{`${out.label} (not open)`}</option>}
               </select>
 
               <label htmlFor={`${uid}-channel`} className="text-xs font-bold text-zinc-400">Channel</label>
