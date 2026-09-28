@@ -9,7 +9,7 @@ import {
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
   setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
-  setGroupingText, stepPickup, tempoSummary, UNITS, laneSpanSteps, loopPastSpan, withoutFermatas, withoutTempoChanges, type GenSettings,
+  setGroupingText, stepPickup, tempoSummary, UNITS, laneSpanSteps, loopPastSpan, bpmText, withoutFermatas, withoutTempoChanges, type GenSettings,
 } from './meterFace.ts';
 import type { TempoEvent } from './tempoMap.ts';
 import { stepRenderRequest } from './midiSynth.ts';
@@ -577,5 +577,11 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   assert.deepEqual(withoutTempoChanges(map), [map[0], map[2]], 'Clear keeps the start and the fermata');
   assert.deepEqual(withoutFermatas(map), [map[0], map[1]], 'Clear fermatas keeps the tempo change');
 }
+
+// A tempo read exactly from a MIDI file's FF 51 prints at the hundredth: 97 BPM is stored as
+// 618557 microseconds a beat, which reads back as 96.99995 (the PLAY LOG line prints it through bpmText).
+assert.equal(bpmText(60_000_000 / 618_557), '97');
+assert.equal(bpmText(123.456), '123.46');
+assert.equal(bpmText(24), '24');
 
 console.log('meterFace: all assertions passed');

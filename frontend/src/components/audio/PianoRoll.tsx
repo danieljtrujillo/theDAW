@@ -43,7 +43,7 @@ import {
   type PlayedBend,
 } from '../../lib/pitchBend';
 import { BEND_TAIL_SEC, type VoiceBend } from '../../lib/pitchBendVoice';
-import { laneSpanLabel } from '../../lib/meterFace';
+import { bpmText, laneSpanLabel } from '../../lib/meterFace';
 import { midiFileNoteCount, midiFileToRoll, rollToMidiFile } from '../../lib/rollMidi';
 import {
   followRollPlay,
@@ -564,7 +564,7 @@ export const PianoRollTransport: React.FC<{
   const startPlay = () => {
     play();
     const roll = usePianoRollStore.getState();
-    logInfo('piano-roll', `Playing ${roll.notes.length} notes at ${bpm} BPM from step ${Math.floor(roll.currentStep) + 1}`);
+    logInfo('piano-roll', `Playing ${roll.notes.length} notes at ${bpmText(bpm)} BPM from step ${Math.floor(roll.currentStep) + 1}`);
   };
 
   // LOOP: turns the loop range on and off. With no range set it loops the bar
