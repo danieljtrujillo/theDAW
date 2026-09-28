@@ -3,7 +3,9 @@
  * set in the roll with its undo, carried by the part's EDIT clip and its
  * .tasmo record, and written by the arrangement's MIDI export. The export's
  * bank select is the one EDIT plays: a clip re-voiced in EDIT's clip
- * instrument picker writes no bank, whatever its part record names.
+ * instrument picker writes no bank, whatever its part record names. A file's
+ * part in bank 1 imported as tracks plays in bank 1 live, in renders and in
+ * the export, and keeps it through the roll and back.
  *
  * Before: lib/midi read CC 32 with each program change, but a roll part kept
  * the bank MSB alone, so Import MIDI then Export MIDI dropped CC 32, and an XG
@@ -26,6 +28,8 @@ import { cleanPartBankLsb, makeRollTrack } from './rollTracks.ts';
 import { normalizeMeterMap, type PolyLane } from './meterMap.ts';
 import type { LaneBend } from './pitchBend.ts';
 import { useEditorStore } from '../state/editorStore.ts';
+import { liveMidiIfHeard, liveMidiNotes, planLiveMidi } from '../state/liveMixer.ts';
+import { configureMidiRenderQueue, requestMidiRender } from '../state/midiRenderQueue.ts';
 import { DEFAULT_LANES, endRollGesture, partLinkOf, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
 
 const roll = () => usePianoRollStore.getState();
@@ -202,6 +206,77 @@ assert.equal('bankLsb' in makeRollTrack({}, 0), false, 'a part made before LSB e
   assert.deepEqual(clipBankSelect({ program: undefined, percussion: false }, part), { bank: 1, bankLsb: 2 }, 'no program in EDIT: the part writes its own');
   assert.deepEqual(clipBankSelect({ program: undefined, percussion: false }, { ...part, program: null }), { bank: 0, bankLsb: undefined }, 'and no program at all writes none');
   assert.deepEqual(clipBankSelect({ program: 60, percussion: false, bank: 1 }, undefined), { bank: 1, bankLsb: undefined }, 'a clip with no part record');
+}
+
+// ── Import as tracks: a GS file's Horn in bank 1 plays in bank 1 in EDIT ────
+// The Horn track sends CC 0 = 1 and CC 32 = 2 before program 60. Before: its
+// clip held program 60 and no bank, so EDIT's live notes and every render (the
+// audio export and a freeze included) played bank 0 while the roll and the
+// MIDI export played bank 1, and opening the clip in the roll and pressing
+// EDIT changed its sound.
+{
+  class FakeAudioContext {
+    async decodeAudioData() {
+      return { duration: 1, getChannelData: () => new Float32Array(64).fill(0.5) };
+    }
+    async close() {}
+  }
+  (globalThis as { window?: unknown }).window = { AudioContext: FakeAudioContext };
+  const GLOBAL = { useSoundfont: true, activeProgram: 0 };
+  const renders: Array<{ program?: number; bank?: number }> = [];
+  configureMidiRenderQueue({
+    render: (_notes, _bpm, _total, opts) => {
+      renders.push({ program: opts.program, bank: opts.bank });
+      return Promise.resolve({ blob: new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/wav' }), duration: 4 });
+    },
+    computePeaks: () => Promise.resolve({ peaks: new Float32Array(4) }),
+    global: () => GLOBAL,
+    ensureReady: () => Promise.resolve(),
+    livePlan: liveMidiIfHeard,
+  });
+  const gs: MidiFileData = {
+    ppq: 480,
+    bpm: 120,
+    tracks: [
+      {
+        name: 'Horn',
+        programs: [{ tick: 0, channel: 0, program: 60, bank: 1, bankLsb: 2 }],
+        notes: [0, 480, 960].map((tick) => ({ tick, durationTicks: 400, note: 60, velocity: 90, channel: 0 })),
+      },
+      {
+        name: 'Strings',
+        programs: [{ tick: 0, channel: 1, program: 48 }],
+        notes: [0, 480].map((tick) => ({ tick, durationTicks: 400, note: 55, velocity: 90, channel: 1 })),
+      },
+    ],
+  };
+  ed().loadProject({ tracks: [], clips: [] });
+  const landed = importMidiAsTracks(parseMidi(encodeMidi(gs)), { label: 'gs', atSec: 0 }, { global: () => GLOBAL });
+  assert.ok(landed);
+  await landed.rendered;
+  const [hornPart, stringsPart] = landed.parts;
+  const clipOf = (id: string) => ed().clips.find((c) => c.id === id)!;
+  const voiceOf = (id: string) => clipVoice(clipOf(id), ed().tracks.find((t) => t.id === clipOf(id).trackId), GLOBAL);
+  const horn = clipOf(hornPart.clipId);
+  assert.deepEqual([horn.instrumentProgram, horn.instrumentBank, horn.sourceRollPart?.bank], [60, 1, 1], "the clip holds the file's program in the file's bank");
+  assert.deepEqual(voiceOf(horn.id), { program: 60, percussion: false, bank: 1 }, "EDIT's voice selects bank 1");
+  assert.equal(clipOf(stringsPart.clipId).instrumentBank, undefined, 'the strings, in bank 0, carry none');
+  const live = liveMidiNotes(ed().clips, ed().tracks, planLiveMidi(ed().clips, ed().tracks, GLOBAL), GLOBAL, 0, ed().bpm);
+  const banksOf = (clipId: string) => [...new Set(live.filter((n) => n.clipId === clipId).map((n) => n.bank))];
+  assert.deepEqual(banksOf(horn.id), [1], "EDIT's live notes play the Horn in bank 1");
+  assert.deepEqual(banksOf(stringsPart.clipId), [0], 'and the strings in bank 0');
+  await requestMidiRender(horn.id, 'export', 'export');
+  assert.deepEqual(renders.at(-1), { program: 60, bank: 1 }, 'the audio export renders the Horn in bank 1');
+  const file = parseMidi(encodeMidi(arrangementToMidiFile(ed(), { global: GLOBAL }).file));
+  const programsOf = new Map(file.tracks.map((t) => [t.name, (t.programs ?? []).map((p) => [p.program, p.bank, p.bankLsb])]));
+  assert.deepEqual(programsOf.get('Horn'), [[60, 1, 2]], 'the MIDI export writes the same voice');
+  assert.deepEqual(programsOf.get('Strings'), [[48, undefined, undefined]]);
+  // Opened in the roll and sent back untouched, the part sounds as it did.
+  roll().loadFromClip(...clipPartsLoad(horn, ed().clips, ed().tracks));
+  assert.equal(rollTracksOf(roll()).find((t) => t.name === 'Horn')?.bank, 1);
+  await bounceRollToEditor({ global: () => GLOBAL });
+  assert.deepEqual([clipOf(hornPart.clipId).instrumentProgram, clipOf(hornPart.clipId).instrumentBank], [60, 1], 'the round trip leaves its voice as it was');
+  assert.deepEqual(voiceOf(hornPart.clipId), { program: 60, percussion: false, bank: 1 });
 }
 
 console.log('rollPartBank: ok');

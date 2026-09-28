@@ -55,7 +55,7 @@ import { showsWholeSource } from './clipRenderWindow';
 import { MIN_CLIP_SEC } from './clipDragMath';
 import { rollClipFields, rollPartRef } from './rollClip';
 import { clipTimelineMarkers } from './rollMarkers';
-import { cleanPartBank, isDefaultPartName, isPercussionPart, partVoice } from './rollTracks';
+import { isDefaultPartName, isPercussionPart, partClipSound, partVoice } from './rollTracks';
 
 export interface RollBounceDeps {
   /** The global picker's state (soundfontEngine getGlobalVoice). */
@@ -152,16 +152,17 @@ export async function bounceRollToEditor(deps: RollBounceDeps): Promise<RollBoun
       const before = useEditorStore.getState();
       const link = partLinkOf(usePianoRollStore.getState(), part.id);
       const partSound = partVoice(part, link, before.clips, before.tracks, deps.global(), roll.voiceProgram);
-      // The bank the roll plays the part's program in (lib/rollPartVoice): none on
-      // the drum channel, where the kit is chosen by program, and none without a program.
-      const bank = partSound.percussion || partSound.program === undefined ? 0 : cleanPartBank(part.bank);
+      // The part's own sound on its clip (lib/rollTracks partClipSound): its program,
+      // and the bank the roll plays that program in (lib/rollPartVoice), none on the
+      // drum channel, where the kit is chosen by program, and none without a program.
+      // A bank belongs to a program (lib/clipProgram clipBank), so a part in a bank
+      // past 0 with no program of its own pins the program the roll played it with;
+      // bank 0 clears a bank an earlier send wrote.
+      const sound = partClipSound(part, partSound);
+      const bank = sound.bank;
       const voice: ClipVoice = { program: partSound.program, percussion: partSound.percussion, ...(bank > 0 ? { bank } : {}) };
-      // The part's own sound on its clip: its program, and the bank that program
-      // is chosen in. A bank belongs to a program (lib/clipProgram clipBank), so a
-      // part in a bank past 0 with no program of its own pins the program the roll
-      // played it with; bank 0 clears a bank an earlier send wrote.
       const ownSound: Partial<AudioClip> = {
-        ...(part.program !== null ? { instrumentProgram: part.program } : bank > 0 ? { instrumentProgram: voice.program } : {}),
+        ...(sound.program !== undefined ? { instrumentProgram: sound.program } : {}),
         instrumentBank: bank > 0 ? bank : undefined,
       };
       const label = `roll_${bpmText}bpm_${noteCount}n`;

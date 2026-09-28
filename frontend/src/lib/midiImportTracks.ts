@@ -9,7 +9,10 @@
  * drum bank, is percussion. Every part with notes lands on an EDIT track of its
  * own, named and coloured after the part and holding its voice (its program, or
  * the roll voice a part without one plays: the picker's), a percussion part on
- * a drum track, with one piano-roll clip starting at `atSec`.
+ * a drum track, with one piano-roll clip starting at `atSec`. The clip holds
+ * the part's program and the bank the file chose it in (lib/rollTracks
+ * partClipSound, as the roll's EDIT key writes them), so EDIT's live notes and
+ * every render play the file's bank, as the roll and the MIDI export do.
  *
  * Each clip holds its part's notes at their own ticks, rescaled to the roll's
  * 960 PPQ and never snapped, the file's tempo map, meter map, pickup, lanes and
@@ -48,7 +51,7 @@ import { rollClipFields, rollPartRef } from './rollClip';
 import { clipOwnTimelineMarkers } from './rollMarkers';
 import { midiFileToRollParts, type RollMidiPartsImport } from './rollMidi';
 import { stepClock } from './rollTempo';
-import { isPercussionPart, makeRollTrack, partVoice } from './rollTracks';
+import { isPercussionPart, makeRollTrack, partClipSound, partVoice } from './rollTracks';
 import type { TempoEvent } from './tempoMap';
 import type { RollTrack } from '../state/pianoRollStore';
 
@@ -151,6 +154,8 @@ export function importMidiAsTracks(
     file.parts.forEach((part, order) => {
       // The part's own program, else a kit on the drum track, else the picker's: what a new track holds (lib/rollTracks partVoice).
       const voice = partVoice(part, null, [], [], global, null);
+      // What its clip holds over the track: the part's program with the file's bank, as a send from the roll writes it.
+      const sound = partClipSound(part, voice);
       const percussion = isPercussionPart(part);
       const fields = {
         ...rollClipFields({ ...file.meter, notes: part.notes, bpm, totalSteps: file.totalSteps, bends: file.bends, tempoMap: file.tempoMap, markers: file.markers }),
@@ -177,8 +182,11 @@ export function importMidiAsTracks(
         color: part.color,
         sourceKind: 'piano-roll',
         ...fields,
-        // A part with a program of its own keeps it on its clip, over its track's, as a send from the roll does.
-        ...(part.program !== null ? { instrumentProgram: part.program } : {}),
+        // A part with a program of its own keeps it on its clip, over its track's, in the
+        // bank the file chose it in, so EDIT's live notes and every render (the audio
+        // export and a freeze included) sound what the roll and the MIDI export sound.
+        ...(sound.program !== undefined ? { instrumentProgram: sound.program } : {}),
+        ...(sound.bank > 0 ? { instrumentBank: sound.bank } : {}),
       });
       const now = useEditorStore.getState();
       const clip = now.clips.find((c) => c.id === clipId);

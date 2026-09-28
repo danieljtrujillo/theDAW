@@ -1,7 +1,7 @@
 /**
  * lib/rollTracks: the pure rules of the roll's parts: cleaning, which parts
  * sound, the live channel of every part and bent lane, the file channel of
- * every part, and the voice a part plays.
+ * every part, the voice a part plays, and what its EDIT clip holds of it.
  *
  *   cd frontend && npx tsx src/lib/rollTracks.test.ts
  */
@@ -11,6 +11,7 @@ import {
   audiblePartIds,
   makeRollTrack,
   nextPartName,
+  partClipSound,
   partComposeInstrument,
   partFileChannels,
   partVoice,
@@ -103,6 +104,18 @@ const part = (id: string, channel: number | null = null) => makeRollTrack({ id, 
   assert.deepEqual(partVoice({ program: null, channel: 10 }, null, clips, tracks, global), { program: 0, percussion: true }, 'a drum part with no kit plays the Standard kit');
   assert.deepEqual(partVoice({ program: 48, channel: 10 }, null, clips, tracks, global), { program: 48, percussion: true });
   assert.deepEqual(partVoice({ program: null, channel: null }, null, clips, tracks, { useSoundfont: false, activeProgram: 5 }), { program: undefined, percussion: false }, 'on Basic, the built-in voice');
+}
+
+// What a part's EDIT clip holds of its sound: its program, and the bank that program is chosen in.
+{
+  const melodic = (program: number | undefined) => ({ program, percussion: false });
+  assert.deepEqual(partClipSound({ program: 60, bank: 1 }, melodic(60)), { program: 60, bank: 1 }, 'a Horn in Bank 1');
+  assert.deepEqual(partClipSound({ program: 60, bank: 0 }, melodic(60)), { program: 60, bank: 0 }, 'the General MIDI set');
+  assert.deepEqual(partClipSound({ program: null, bank: 1 }, melodic(5)), { program: 5, bank: 1 }, 'a bank past 0 pins the program the part plays with');
+  assert.deepEqual(partClipSound({ program: null, bank: 0 }, melodic(5)), { program: undefined, bank: 0 }, 'bank 0 leaves the clip on its track');
+  assert.deepEqual(partClipSound({ program: 48, bank: 3 }, { program: 48, percussion: true }), { program: 48, bank: 0 }, 'a kit selects no bank');
+  assert.deepEqual(partClipSound({ program: null, bank: 1 }, melodic(undefined)), { program: undefined, bank: 0 }, 'no program anywhere, no bank');
+  assert.deepEqual(partClipSound({ program: 60, bank: 400 }, melodic(60)), { program: 60, bank: 127 }, 'the bank cleaned to 0-127');
 }
 
 // What AI COMPOSE writes a part for.

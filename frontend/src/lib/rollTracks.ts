@@ -368,6 +368,23 @@ export function partVoice(
   return { program: rollProgram ?? (global.useSoundfont ? global.activeProgram : undefined), percussion: false };
 }
 
+/**
+ * What a part's EDIT clip holds of its sound (the roll's EDIT key, lib/
+ * rollBounce, and Import as tracks, lib/midiImportTracks): the program the
+ * clip plays over its track's, and the bank that program is chosen in
+ * (AudioClip `instrumentBank`, which lib/clipProgram clipBank selects for
+ * EDIT's live notes and every render). `voice` is the voice the part plays
+ * with (partVoice). A part with a program of its own puts it on the clip. A
+ * bank belongs to a program, so a part in a bank past 0 with no program of its
+ * own pins the program it plays with. A part on the drum channel, where the
+ * kit is chosen by program, or with no program anywhere, has no bank.
+ * `program` undefined leaves the clip on its track's program.
+ */
+export function partClipSound(part: Pick<RollTrack, 'program' | 'bank'>, voice: ClipVoice): { program: number | undefined; bank: number } {
+  const bank = voice.percussion || voice.program === undefined ? 0 : cleanPartBank(part.bank);
+  return { program: part.program !== null ? part.program : bank > 0 ? voice.program : undefined, bank };
+}
+
 /** Every part's notes in one list, each part's in order: what fits the roll's length and range. */
 export const allPartNotes = (tracks: readonly Pick<RollTrack, 'notes'>[]): PianoNote[] => tracks.flatMap((t) => t.notes);
 
