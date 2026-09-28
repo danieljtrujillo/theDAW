@@ -253,11 +253,15 @@ def test_capabilities_formats_matches_what_export_accepts() -> None:
 def test_capabilities_formats_matches_router_export_targets(monkeypatch) -> None:
     """caps["formats"] must equal exactly the keys router.py's /export route
     accepts (_EXT_FOR_FORMAT), with pdf/svg present only when an engraver is
-    available -- proven both ways by monkeypatching engraver detection."""
+    available and audio only with MuseScore 4 and Muse Sounds -- proven both
+    ways by monkeypatching engraver and MuseScore detection."""
+    from backend.modules.notation import musescore_render
     from backend.modules.notation import router as notation_router
 
-    always_on = set(notation_router._EXT_FOR_FORMAT) - {"pdf", "svg"}
+    always_on = set(notation_router._EXT_FOR_FORMAT) - {"pdf", "svg", "audio"}
 
+    missing = {"found": False, "path": None, "muse_sounds": False, "reason": "x"}
+    monkeypatch.setattr(musescore_render, "musescore_status", lambda: missing)
     monkeypatch.setattr(engine, "musescore_binary", lambda: None)
     monkeypatch.setattr(
         engine.pdf_render, "available", lambda: {"ok": False, "node": None}
@@ -265,6 +269,8 @@ def test_capabilities_formats_matches_router_export_targets(monkeypatch) -> None
     caps_no_engraver = engine.capabilities()
     assert set(caps_no_engraver["formats"]) == always_on, caps_no_engraver["formats"]
 
+    ready = {"found": True, "path": "mscore", "muse_sounds": True, "reason": ""}
+    monkeypatch.setattr(musescore_render, "musescore_status", lambda: ready)
     monkeypatch.setattr(engine, "musescore_binary", lambda: "mscore")
     caps_with_engraver = engine.capabilities()
     assert set(caps_with_engraver["formats"]) == set(notation_router._EXT_FOR_FORMAT), (
@@ -2715,19 +2721,19 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "xml.etree.ElementTree.write (title/composer backfill patch)",
         (
             "engine.py",
-            1451,
+            1463,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (stage_parts scratch file)",
         (
             "engine.py",
-            1872,
+            1902,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (MuseScore re-credit scratch file)",
         (
             "engine.py",
-            1552,
+            1568,
             "shutil",
             "move",
         ): (
@@ -2736,13 +2742,13 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ),
         (
             "engine.py",
-            2233,
+            2263,
             "output_path",
             "write_text",
         ): "Path.write_text (ABC export, plain text -- not MusicXML)",
         (
             "engine.py",
-            2626,
+            2656,
             "output_path",
             "write_text",
         ): "Path.write_text (alphaTex export, plain text -- not MusicXML)",
@@ -2789,7 +2795,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (note-chart JSON export, not MusicXML)",
         (
             "router.py",
-            1090,
+            1106,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (chords route XML patch)",
@@ -2895,15 +2901,15 @@ def test_scan_flags_unguarded_shutil_move_but_allows_listed_one(
     assert violations and "shutil" in violations[0] and "move" in violations[0]
 
     real_allowlist = {
-        ("engine.py", 1552, "shutil", "move"): "allowed stage_parts move",
+        ("engine.py", 1568, "shutil", "move"): "allowed stage_parts move",
     }
     real_violations, real_seen = _scan_unguarded_writer_calls(
         Path(engine.__file__).parent, real_allowlist
     )
-    assert not any(v.startswith("engine.py:1552") for v in real_violations), (
+    assert not any(v.startswith("engine.py:1568") for v in real_violations), (
         real_violations
     )
-    assert ("engine.py", 1552, "shutil", "move") in real_seen
+    assert ("engine.py", 1568, "shutil", "move") in real_seen
 
 
 # ---------------------------------------------------------------------------

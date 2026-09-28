@@ -520,7 +520,12 @@ _ENGRAVE_ENGINES = ("osmd", "musescore")
 # Formats that can be scoped to a subset of parts through options["parts"]
 # (stage_parts filters the sheet, then the ordinary converter runs on it).
 # beatsaber has its own part filter inside the level writer.
-_PART_SCOPED_FORMATS = frozenset({"musicxml", "abc", "pdf", "svg", "notechart"})
+_PART_SCOPED_FORMATS = frozenset(
+    {"musicxml", "abc", "pdf", "svg", "notechart", "audio"}
+)
+# The score rendered to a WAV by MuseScore 4 with Muse Sounds, added to the
+# Library as a new entry (musescore_render).
+_AUDIO_FORMATS = frozenset({"audio"})
 # The Unity flying-notation chart (timecode + notes), written by exporters/notechart.
 _NOTECHART_FORMATS = frozenset({"notechart"})
 # Map an output format to the artifact ``kind`` stored in the DB.
@@ -721,8 +726,15 @@ def capabilities() -> dict[str, Any]:
     ]
     if engravers:
         formats += ["pdf", "svg"]
+    # "audio" needs MuseScore 4 with Muse Sounds (GET /musescore says why not).
+    from .musescore_render import musescore_status
+
+    musescore_render = musescore_status()
+    if not musescore_render["reason"]:
+        formats.append("audio")
     return {
         "ok": True,
+        "musescore_render": musescore_render,
         "music21": importlib.util.find_spec("music21") is not None,
         "musescore": musescore is not None,
         "musescore_path": musescore,
@@ -1520,6 +1532,10 @@ def convert_score(
     The other ``options`` (per-format export options), ``audio_path``,
     ``audio_duration_sec`` and ``analysis_bpm`` are consumed by the chart-based
     targets (``notechart``, ``beatsaber``); the other formats ignore them.
+
+    ``audio`` renders the score to a WAV with MuseScore 4 and Muse Sounds and
+    adds it to the Library as a new entry (:mod:`.musescore_render`); the
+    result carries ``library_entry_id`` and no notation artifact.
     """
     fmt = fmt.lower().strip()
     if not source_path.is_file():
@@ -1693,6 +1709,20 @@ def _convert_one(
             extra_metadata=extra_metadata,
             artist=artist,
             entry=entry,
+        )
+    if fmt in _AUDIO_FORMATS:
+        from .musescore_render import render_audio
+
+        return render_audio(
+            db,
+            entry_id=entry_id,
+            source_path=source_path,
+            output_path=output_path,
+            source_ref=source_ref,
+            title=title,
+            artist=artist,
+            register_source=register_source,
+            extra_metadata=extra_metadata,
         )
     if fmt in _BEATSABER_FORMATS:
         return _convert_to_beatsaber(
