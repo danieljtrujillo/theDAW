@@ -1603,7 +1603,8 @@ export const ClipInstrumentSelect: React.FC<{ clip: AudioClip }> = ({ clip }) =>
     : `Track default (${drums ? `${drumKitName(effective)} kit` : gmShortName(effective)})`;
 
   // A bank belongs to the program it was chosen with (a roll part's Bank, lib/clipProgram clipBank), so a new pick drops it.
-  const bank = clipBank(clip, track);
+  // The badge is the clip's own program's bank select; a clip on its track's program shows none.
+  const bank = clip.instrumentProgram !== undefined ? clipBank(clip, track) : 0;
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     if (v === 'default') {

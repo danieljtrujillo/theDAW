@@ -27,6 +27,8 @@ export const TuningControl: React.FC = () => {
   const tuning = useTuningStore((s) => s.tuning);
   const scalaError = useTuningStore((s) => s.scalaError);
   const [open, setOpen] = useState(false);
+  // What is typed in the Hz field, committed on Enter or when the field loses focus.
+  const [hzDraft, setHzDraft] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -107,11 +109,17 @@ export const TuningControl: React.FC = () => {
               min={380}
               max={480}
               step={0.1}
-              value={tuning.referenceHz}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v >= 380 && v <= 480) store().setReference(v);
+              value={hzDraft ?? String(tuning.referenceHz)}
+              onChange={(e) => setHzDraft(e.target.value)}
+              onBlur={() => {
+                const v = Number(hzDraft);
+                if (hzDraft !== null && Number.isFinite(v) && v >= 380 && v <= 480) store().setReference(v);
+                setHzDraft(null);
               }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+              title="380 to 480 Hz"
               className={`${field} w-24 tabular-nums`}
             />
 

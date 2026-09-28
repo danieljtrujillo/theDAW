@@ -85,7 +85,7 @@ import {
 } from '../lib/editMidiScheduler';
 import { startTrackOutputs, stopTrackOutputs, tickTrackOutputs, trackOutputsActive } from './midiOutBus';
 import { beatToTime, timeToBeat } from '../lib/tempoMap';
-import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
+import { clipVoice, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from '../lib/clipProgram';
 import { planEditChannels, type EditChannelPlan } from '../lib/editChannels';
 import { trackMembers } from '../lib/mpeRotation';
 import { applyFadeAutomation, type AudioParamLike, type FadeClip } from '../lib/clipFade';
@@ -3244,8 +3244,9 @@ export function liveMidiNotes(
     const chans = plan.channels.channelsOf.get(clip.trackId);
     const program = effectiveProgramFor(clip, track, global);
     if (!chans?.length || program === undefined) continue;
-    const bank = clipBank(clip, track);
-    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track)).notes) {
+    // The bank select the scheduler sends: the clip's, its track's or the picker's program's (lib/clipProgram clipVoice).
+    const bank = clipVoice(clip, track, global).bank ?? 0;
+    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), trackMembers(track.mpeChannels)).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
       out.push({
