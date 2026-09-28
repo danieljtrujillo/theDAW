@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
 import { clipVoice } from './clipProgram.ts';
-import { createStaleRerenderQueue, midiClipVoiceSig, staleMidiClipIds, type ClipRerenderDeps } from './clipRerender.ts';
+import { createStaleRerenderQueue, midiClipVoiceSig, onClipRenderHandedBack, staleMidiClipIds, type ClipRerenderDeps } from './clipRerender.ts';
 import { encodeMidi, parseMidi, type MidiTrack } from './midi.ts';
 import { importMidiAsTracks, type MidiTracksDeps } from './midiImportTracks.ts';
 
@@ -65,8 +65,22 @@ function replayEditorSync() {
     queue.request(staleMidiClipIds(s.clips, s.tracks, global));
   };
   const unsubscribe = useEditorStore.subscribe(run);
+  // WaveformEditor's second effect: a clip handed back unrendered asks the pass again.
+  const handBack = onClipRenderHandedBack(() => {
+    const s = ed();
+    queue.request(staleMidiClipIds(s.clips, s.tracks, global));
+  });
   run();
-  return { ...r, queue, errors, stop: unsubscribe, rerun: run };
+  return {
+    ...r,
+    queue,
+    errors,
+    stop: () => {
+      unsubscribe();
+      handBack();
+    },
+    rerun: run,
+  };
 }
 
 // A 24-part orchestral file: one track per part, each with its own program and eight notes.
@@ -150,6 +164,58 @@ const importDeps = (render: MidiTracksDeps['render']): MidiTracksDeps => ({
   assert.equal(sync.calls.length, PARTS, 'each part once');
   assert.equal(sync.most(), 1, 'one at a time');
   assert.deepEqual(staleMidiClipIds(ed().clips, ed().tracks, global), []);
+}
+
+// ── an import that fails part way hands the clips it made back to EDIT ──────
+{
+  ed().loadProject({ tracks: [], clips: [] });
+  const sync = replayEditorSync();
+  const real = ed().addClipToTrack;
+  let adds = 0;
+  useEditorStore.setState({
+    addClipToTrack: (clip) => {
+      adds += 1;
+      if (adds === 3) throw new Error('the third clip failed');
+      return real(clip);
+    },
+  });
+  let failure: unknown = null;
+  try {
+    importMidiAsTracks(data, { label: 'orchestra', atSec: 0 }, importDeps(countingRenderer().render));
+  } catch (e) {
+    failure = e;
+  } finally {
+    useEditorStore.setState({ addClipToTrack: real });
+  }
+  assert.match(String(failure), /the third clip failed/, 'the failure reaches the caller, which logs it');
+  assert.equal(ed().clips.length, 2, 'the two clips made before it');
+  // Handed back unrendered, they are EDIT's to render at once: nothing stays claimed.
+  await sync.queue.idle();
+  sync.stop();
+  assert.equal(sync.calls.length, 2);
+  assert.deepEqual(staleMidiClipIds(ed().clips, ed().tracks, global), []);
+}
+
+// ── a part whose render fails is tried once more through EDIT ────────────────
+{
+  ed().loadProject({ tracks: [], clips: [] });
+  const sync = replayEditorSync();
+  const own = countingRenderer();
+  let n = 0;
+  const failing: MidiTracksDeps['render'] = async (notes, bpm, total, opts) => {
+    n += 1;
+    if (n === 2) throw new Error('the soundfont refused part 2');
+    return own.render(notes, bpm, total, opts);
+  };
+  const errors: string[] = [];
+  const landed = importMidiAsTracks(data, { label: 'orchestra', atSec: 0 }, { ...importDeps(failing), onRenderError: (name) => errors.push(name) });
+  assert.ok(landed);
+  assert.equal(await landed.rendered, PARTS - 1, 'every part but the second rendered in turn');
+  await sync.queue.idle();
+  sync.stop();
+  assert.deepEqual(errors, ['Part 2']);
+  assert.equal(sync.calls.length, 1, 'EDIT rendered the second part once');
+  assert.deepEqual(staleMidiClipIds(ed().clips, ed().tracks, global), [], 'nothing left stale');
 }
 
 // ── EDIT's own pass: a picker change over 24 clips renders each once, in turn ─

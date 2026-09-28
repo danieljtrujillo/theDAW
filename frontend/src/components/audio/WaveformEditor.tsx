@@ -71,7 +71,14 @@ import {
 } from '../../lib/clipProgram';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
 import { renderedWindowFields } from '../../lib/clipRenderWindow';
-import { claimClipRender, createStaleRerenderQueue, midiClipVoiceSig, releaseClipRender, staleMidiClipIds } from '../../lib/clipRerender';
+import {
+  claimClipRender,
+  createStaleRerenderQueue,
+  midiClipVoiceSig,
+  onClipRenderHandedBack,
+  releaseClipRender,
+  staleMidiClipIds,
+} from '../../lib/clipRerender';
 import { importMidiBytesAsTracks } from '../../lib/midiImportTracksApp';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
@@ -2662,6 +2669,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     // midiClipProgramSig collapses the clip list to just the voice pairing, so
     // this runs when an instrument assignment changes — not on every clip drag.
   }, [midiClipProgramSig, rerenderQueue]);
+  // A clip handed back unrendered (its render failed, an import stopped part way)
+  // changes no voice signature, so the pass is asked again here.
+  useEffect(
+    () =>
+      onClipRenderHandedBack(() => {
+        const now = useEditorStore.getState();
+        rerenderQueue.request(staleMidiClipIds(now.clips, now.tracks, getGlobalVoice()));
+      }),
+    [rerenderQueue],
+  );
 
   // Tap tempo. Averages the intervals between recent taps and writes the result to
   // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
@@ -5675,7 +5692,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         } catch (renderErr) {
           logError('editor', `MIDI audio render failed for "${label}": ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`);
         } finally {
-          releaseClipRender(clipId);
+          // A failed render hands the clip to the instrument-sync effect, which tries it once more.
+          releaseClipRender(clipId, true);
         }
       })();
     } catch (err) {

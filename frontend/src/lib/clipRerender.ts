@@ -20,7 +20,9 @@
  * landed, so 24 stale parts started about 300 renders. A clip whose render
  * another path owns (Import as tracks renders its parts in turn; a MIDI file
  * added to a track renders its own) is claimed there (claimClipRender) and
- * left to it.
+ * left to it. An owner that gives up without a render (it failed, or the
+ * import stopped part way) hands the clip back (releaseClipRender with
+ * `unrendered`), and the pass, told through onClipRenderHandedBack, renders it.
  *
  * The render, the peak scan, the picker and the soundfont warm-up are passed
  * in (WaveformEditor gives lib/midiSynth, editorStore and soundfontEngine's),
@@ -127,9 +129,28 @@ export function claimClipRender(clipId: string): void {
   claimedRenders.add(clipId);
 }
 
-/** Hand `clipId` back to the instrument-sync pass. */
-export function releaseClipRender(clipId: string): void {
-  claimedRenders.delete(clipId);
+/** Listeners told when a claimed clip is handed back unrendered (WaveformEditor's instrument-sync pass). */
+const handBackListeners = new Set<() => void>();
+
+/**
+ * Hand `clipId` back to the instrument-sync pass. Release it this way right
+ * before writing its render: the write changes the clip's voice signature, and
+ * the pass that follows sees it. With `unrendered`, the owner gives up without
+ * writing one (its render failed, or the import stopped part way), so the
+ * listeners are told at once and the pass renders the clip; a clip already
+ * released tells no one.
+ */
+export function releaseClipRender(clipId: string, unrendered = false): void {
+  const held = claimedRenders.delete(clipId);
+  if (held && unrendered) for (const listener of [...handBackListeners]) listener();
+}
+
+/** Be told whenever a claimed clip is handed back unrendered. Returns the unsubscribe. */
+export function onClipRenderHandedBack(listener: () => void): () => void {
+  handBackListeners.add(listener);
+  return () => {
+    handBackListeners.delete(listener);
+  };
 }
 
 /** True while another path owns `clipId`'s render. */
