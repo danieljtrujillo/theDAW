@@ -30,6 +30,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Eraser, Minus, Plus } from 'lucide-react';
 import { beginRollGesture, endRollGesture, usePianoRollStore } from '../../state/pianoRollStore';
 import { barAt } from '../../lib/meterMap';
+import { clientToLocal } from '../../lib/canvasScale';
 import {
   BEND_LANE_HEIGHT,
   BEND_POINT_R,
@@ -123,9 +124,11 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   const height = BEND_LANE_HEIGHT;
   const d = useMemo(() => bendPath(points, { stepPx, totalSteps, height }), [points, stepPx, totalSteps, height]);
 
+  // The pointer in the strip's own px: the shell's CSS zoom (1.1 at 1920x1080)
+  // taken out of the client point, so a point lands where it is drawn (lib/canvasScale).
   const localPoint = (e: React.PointerEvent): { x: number; y: number } => {
-    const r = surfaceRef.current?.getBoundingClientRect();
-    return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
+    const el = surfaceRef.current;
+    return el ? clientToLocal(el, e.clientX, e.clientY) : { x: e.clientX, y: e.clientY };
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {

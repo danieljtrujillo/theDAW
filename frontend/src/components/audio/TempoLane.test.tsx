@@ -23,6 +23,8 @@ import { JSDOM } from 'jsdom';
 const { MidiPanel } = await import('../layout/MidiPanel.tsx');
 const { usePianoRollStore } = await import('../../state/pianoRollStore.ts');
 const { tempoLaneRange, tempoToY, TEMPO_LANE_HEIGHT } = await import('../../lib/tempoLane.ts');
+const { bendValueToY, BEND_LANE_HEIGHT } = await import('../../lib/bendLane.ts');
+const { velocityToY, VELOCITY_LANE_HEIGHT } = await import('../../lib/rollSelection.ts');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const win = dom.window;
@@ -266,6 +268,46 @@ await step(() => roll().setSelection(['a']));
 assert.equal(velStrip.getAttribute('aria-valuetext'), 'Velocity 90, 1 selected');
 await step(() => { key(velStrip, 'ArrowUp'); });
 assert.equal(velStrip.getAttribute('aria-valuenow'), '91', 'the arrow key moves it, and the value follows');
+
+// At 1920x1080 the shell's CSS zoom is 1.1, so a client point is the strip's
+// own point times 1.1 (jsdom's boxes sit at 0,0). Each strip takes the zoom
+// out, so a click lands on the step and the value drawn under the pointer.
+// Before, a click at step 40 landed on step 44, and every value read low.
+{
+  const Z = 1.1;
+  await step(() => { host.style.zoom = String(Z); });
+  const pointer = (el: HTMLElement, type: string, x: number, y: number) =>
+    el.dispatchEvent(new win.MouseEvent(type, { bubbles: true, button: 0, clientX: x * Z, clientY: y * Z }));
+  // TEMPO (STEP mode): step 40, at the tempo in the middle of the strip's range.
+  const range = tempoLaneRange(roll().tempoMap);
+  const mid = Math.round((range.lo + range.hi) / 2);
+  const tEl = strip()!;
+  await step(() => {
+    pointer(tEl, 'pointerdown', 40 * 16, tempoToY(mid, range, TEMPO_LANE_HEIGHT));
+    pointer(tEl, 'pointerup', 40 * 16, tempoToY(mid, range, TEMPO_LANE_HEIGHT));
+  });
+  const placed = roll().tempoMap.find((e) => !e.fermata && e.beat > 0);
+  assert.ok(placed, `the click adds a tempo point: ${shape()}`);
+  assert.equal(placed.beat, 10, 'on step 40 (beat 10), where the pointer is drawn');
+  assert.equal(placed.bpm, mid, 'at the tempo drawn under the pointer');
+  // BEND: step 26 at +0.5 of the range.
+  const bEl = bendStrip()!;
+  await step(() => {
+    pointer(bEl, 'pointerdown', 26 * 16, bendValueToY(0.5, BEND_LANE_HEIGHT));
+    pointer(bEl, 'pointerup', 26 * 16, bendValueToY(0.5, BEND_LANE_HEIGHT));
+  });
+  const bent = roll().bends.find((b) => b.lane === roll().activeLane)?.points.find((p) => p.step !== 18);
+  assert.ok(bent, 'the click adds a bend point');
+  assert.equal(bent.step, 26, 'on step 26, where the pointer is drawn');
+  assert.equal(bent.value, 0.5, 'at the bend drawn under the pointer');
+  // VELOCITY: a press over note a (steps 0-4) at velocity 40.
+  await step(() => {
+    pointer(velStrip, 'pointerdown', 2 * 16, velocityToY(40, VELOCITY_LANE_HEIGHT));
+    pointer(velStrip, 'pointerup', 2 * 16, velocityToY(40, VELOCITY_LANE_HEIGHT));
+  });
+  assert.equal(roll().notes.find((n) => n.id === 'a')?.velocity, 40, 'the velocity drawn under the pointer');
+  await step(() => { host.style.zoom = ''; });
+}
 
 await step(() => root.unmount());
 console.log('TempoLane: ok');

@@ -32,6 +32,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Eraser } from 'lucide-react';
 import { beginRollGesture, endRollGesture, usePianoRollStore, type TempoEventKind } from '../../state/pianoRollStore';
 import { barAt } from '../../lib/meterMap';
+import { clientToLocal } from '../../lib/canvasScale';
 import { PPQ } from '../../lib/noteClock';
 import { tickBeat } from '../../lib/rollTempo';
 import {
@@ -130,9 +131,11 @@ export const TempoLane: React.FC<TempoLaneProps> = ({ stepPx, totalSteps, quantu
   const tempi = tempoMap.filter((e) => !e.fermata);
   const changes = tempoMap.length - 1;
 
+  // The pointer in the strip's own px: the shell's CSS zoom (1.1 at 1920x1080)
+  // taken out of the client point, so a point lands where it is drawn (lib/canvasScale).
   const localPoint = (e: React.PointerEvent): { x: number; y: number } => {
-    const r = surfaceRef.current?.getBoundingClientRect();
-    return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
+    const el = surfaceRef.current;
+    return el ? clientToLocal(el, e.clientX, e.clientY) : { x: e.clientX, y: e.clientY };
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
