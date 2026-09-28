@@ -101,7 +101,7 @@
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { clipPeakGain } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes } from '../state/pianoRollStore';
-import { clipBankSelect } from './arrangementMidi';
+import { REVERB_SEND_CC, clipBankSelect, synthReverbSendOf } from './arrangementMidi';
 import { clipVoice, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from './clipProgram';
 import { applyFadeAutomation, type AudioParamLike } from './clipFade';
 import {
@@ -450,6 +450,8 @@ export class EditMidiScheduler {
   /** Per channel: the latest wheel or range message queued, so a new pass's wheel waits for it. */
   private ctlQueued = new Map<number, number>();
   private ctlFloor = new Map<number, number>();
+  /** The reverb send (CC 91) each channel was last opened with, where a pass set one. */
+  private reverbSent = new Map<number, number>();
   private envelopes = new Map<string, EnvelopeOwner>();
   /** The live clips whose controllers are on their channels, by clip id (HeldControls). */
   private held = new Map<string, HeldControls>();
@@ -602,6 +604,20 @@ export class EditMidiScheduler {
         CHANNEL_DEFAULTS.forEach((d, i) => {
           pushAt(channel, at, DEFAULTS_ORDER + i * 1e-3, (t) => sink.control(channel, d.controller, d.value, t));
         });
+      }
+      // The track's reverb send (EditorTrack synthReverbSend, CC 91) after the
+      // defaults. A channel a pass set a send on and whose track now names none
+      // goes back to 0, the synth's reset, so no track inherits another's send.
+      const sendOrder = DEFAULTS_ORDER + CHANNEL_DEFAULTS.length * 1e-3;
+      for (const [trackId, chans] of this.pass.channelsOf) {
+        const send = synthReverbSendOf(trackById.get(trackId));
+        for (const channel of chans) {
+          const value = send ?? (this.reverbSent.get(channel) ? 0 : undefined);
+          if (value === undefined) continue;
+          pushAt(channel, at, sendOrder, (t) => sink.control(channel, REVERB_SEND_CC, value, t));
+          if (value) this.reverbSent.set(channel, value);
+          else this.reverbSent.delete(channel);
+        }
       }
     }
 

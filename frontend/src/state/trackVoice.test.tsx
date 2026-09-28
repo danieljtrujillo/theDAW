@@ -180,6 +180,25 @@ async function main(): Promise<void> {
   });
   assert.equal(track('kit').isPercussion, true, 'choosing a kit turns drums back on');
   assert.equal(drumKey.getAttribute('aria-pressed'), 'true');
+
+  // The synth reverb send (CC 91) beside it: labelled, 0-127, blank for the synth's own.
+  const send = doc.getElementById('editor-track-reverb-send-kit') as HTMLInputElement;
+  assert.ok(send, 'the reverb send field is in the row');
+  assert.match(doc.querySelector('label[for="editor-track-reverb-send-kit"]')?.textContent ?? '', /^Rev — track Kit synth reverb send, CC 91/);
+  assert.equal(send.value, '', 'blank: the synth plays its own reverb');
+  const typeInto = async (el: HTMLInputElement, text: string) => {
+    const set = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      set.call(el, text);
+      el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+  };
+  await typeInto(send, '0');
+  assert.equal(track('kit').synthReverbSend, 0, '0 turns the synth reverb off');
+  await typeInto(send, '300');
+  assert.equal(track('kit').synthReverbSend, 127, 'held to 127');
+  await typeInto(send, '');
+  assert.equal(track('kit').synthReverbSend, undefined, 'blank gives the synth its own back');
   await act(async () => { root.unmount(); });
 
   console.log('trackVoice: ok');

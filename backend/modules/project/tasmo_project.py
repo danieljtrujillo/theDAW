@@ -492,6 +492,9 @@ class Track(BaseModel):
     # channel, and instrument_program picks the kit. Defaulted, so .tasmo files
     # written before it existed load every track as melodic.
     is_percussion: bool = False
+    # The reverb send (CC 91, 0-127) this track's MIDI channels open with;
+    # None leaves the synth's own. Defaulted, so older files load without one.
+    synth_reverb_send: int | None = None
     # Arrangement folders: the folder track this track sits in (None = the
     # root), whether this track IS a folder (a row that holds no clips), and
     # whether a folder shows its children. Hierarchy only; routing is

@@ -1534,7 +1534,50 @@ export const TrackInstrumentSelect: React.FC<{ track: EditorTrack; status?: live
           <span className="sr-only">{`: ${status.reason}`}</span>
         </span>
       )}
+      <TrackReverbSendInput track={track} />
     </div>
+  );
+};
+
+/**
+ * The track's synth reverb send (CC 91, EditorTrack synthReverbSend): what
+ * every MIDI channel of the track opens with live and in the MIDI export.
+ * Blank leaves the synth its own; the symphony template sets 0 so the hall
+ * send is the only reverb. Each change is an undo step of its own.
+ */
+export const TrackReverbSendInput: React.FC<{ track: EditorTrack }> = ({ track }) => {
+  const updateTrack = useEditorStore((s) => s.updateTrack);
+  const id = `editor-track-reverb-send-${track.id}`;
+  const value = track.synthReverbSend;
+  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.trim();
+    const n = Number(raw);
+    const next = raw === '' || !Number.isFinite(n) ? undefined : Math.max(0, Math.min(127, Math.round(n)));
+    if (next === value) return;
+    beginUndoStep();
+    updateTrack(track.id, { synthReverbSend: next });
+  };
+  return (
+    <>
+      <label htmlFor={id} className="font-sans text-xs font-bold text-zinc-400 shrink-0" title="Synth reverb send (CC 91). Blank: the synth's own. 0: off, for a hall send.">
+        Rev
+        <span className="sr-only">{` — track ${track.name} synth reverb send, CC 91, 0 to 127, blank for the synth's own`}</span>
+      </label>
+      <input
+        id={id}
+        name={id}
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={127}
+        step={1}
+        value={value ?? ''}
+        placeholder="—"
+        onChange={onChange}
+        className="w-11 shrink-0 bg-black/40 border border-(--panel-border) rounded px-1 py-0.5 font-sans text-xs font-bold text-white tabular-nums outline-none focus:border-purple-500"
+        style={{ colorScheme: 'dark' }}
+      />
+    </>
   );
 };
 
@@ -7520,7 +7563,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     {t.pan > 0 ? `R${Math.round(t.pan * 100)}` : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : 'C'}
                   </span>
                 </div>
-                {clips.some((c) => c.trackId === t.id && isMidiClip(c)) && (
+                {/* A MIDI track, or one a template gave an instrument before any clip is on it. */}
+                {(clips.some((c) => c.trackId === t.id && isMidiClip(c)) || t.instrumentProgram !== undefined || t.synthReverbSend !== undefined) && (
                   <TrackInstrumentSelect track={t} status={liveMidiStatus.get(t.id)} />
                 )}
               </div>

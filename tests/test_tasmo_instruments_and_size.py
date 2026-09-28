@@ -162,6 +162,7 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     )
     assert track.instrument_program is None
     assert track.is_percussion is False
+    assert track.synth_reverb_send is None
     assert track.parent_track_id is None
     assert track.is_folder is False
     assert track.collapsed is False
@@ -177,6 +178,15 @@ def test_a_file_written_before_these_fields_still_opens() -> None:
     assert clip.roll_notes is None
     project = TasmoProject.model_validate({"project_name": "old"})
     assert project.roll_voice is None
+
+
+def test_a_track_reverb_send_is_kept() -> None:
+    """The symphony template's CC 91 of 0 is a value, not an absence."""
+    track = Track.model_validate(
+        {"id": "t", "name": "Violin I", "type": "midi", "synth_reverb_send": 0}
+    )
+    assert track.synth_reverb_send == 0
+    assert track.model_dump()["synth_reverb_send"] == 0
 
 
 def test_the_roll_voice_round_trips_through_the_archive(tmp_path: Path) -> None:

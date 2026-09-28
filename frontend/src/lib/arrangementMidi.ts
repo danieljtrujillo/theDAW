@@ -137,6 +137,15 @@ export interface ArrangementMidiResult {
   startSec: number;
 }
 
+/** The reverb send controller (General MIDI's Effects 1 depth), which EditorTrack synthReverbSend sets. */
+export const REVERB_SEND_CC = 91;
+
+/** A track's reverb send (CC 91), a whole 0-127, or undefined when the track leaves the synth's own. */
+export function synthReverbSendOf(track: Pick<EditorTrack, 'synthReverbSend'> | undefined): number | undefined {
+  const v = track?.synthReverbSend;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(127, Math.round(v))) : undefined;
+}
+
 /** A file's channels a melodic track can take: all sixteen but channel 10, the drums'. */
 const MELODIC_FILE_CHANNELS = 15;
 
@@ -485,9 +494,13 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     // a clip with none of its own, before a clip that has some, plays at the track's.
     const setAtZero = (channel: number, controller: number): boolean =>
       controls.some((c) => c.tick === 0 && c.channel === channel && c.controller === controller);
+    // The track's reverb send (CC 91) from tick 0 on each of its channels, so a
+    // host's own reverb plays at what EDIT's synth plays (0 under a hall send).
+    const reverbSend = synthReverbSendOf(track);
     for (const channel of trackChannels) {
       if (Math.abs(scale - 1) > 1e-9 && !setAtZero(channel, 7)) controls.push({ tick: 0, channel, controller: 7, value: clamp7(GM_DEFAULT_VOLUME * scale) });
       if (panOffset !== 0 && !setAtZero(channel, 10)) controls.push({ tick: 0, channel, controller: 10, value: clamp7(64 + panOffset) });
+      if (reverbSend !== undefined) controls.push({ tick: 0, channel, controller: REVERB_SEND_CC, value: reverbSend });
     }
     notes.sort((a, b) => a.tick - b.tick);
     controls.sort((a, b) => a.tick - b.tick);

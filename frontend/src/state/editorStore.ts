@@ -413,6 +413,11 @@ export interface EditorTrack {
   /** A drum track: its MIDI clips play and render on the General MIDI drum
    *  channel, where a note is a drum and the program is the kit. */
   isPercussion?: boolean;
+  /** The reverb send (CC 91, 0-127) every MIDI channel of this track opens
+   *  with, live (lib/editMidiScheduler) and in the arrangement's MIDI export
+   *  (lib/arrangementMidi); undefined leaves the synth's own. The symphony
+   *  template sets 0, so the synth's reverb does not double the hall send. */
+  synthReverbSend?: number;
   /** Per-track insert FX chain (real-time psychoacoustic rack), spliced between
    *  the track fader and its panner during live playback and offline bounce. */
   fxChain?: ChainEntry[];

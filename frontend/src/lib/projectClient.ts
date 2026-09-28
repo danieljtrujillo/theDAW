@@ -373,6 +373,8 @@ export interface TasmoTrackInput {
   instrument_program?: number | null;
   /** A drum track: its MIDI clips play on the drum channel and the program is the kit. */
   is_percussion?: boolean;
+  /** The reverb send (CC 91, 0-127) the track's MIDI channels open with; null leaves the synth's own. */
+  synth_reverb_send?: number | null;
   /** Arrangement folders: the folder this track sits in (absent = the root),
    *  whether this track is a folder, and whether that folder shows its rows. */
   parent_track_id?: string | null;
@@ -538,6 +540,8 @@ export interface TasmoLoadedTrack {
   instrument_program?: number | null;
   /** A drum track; absent in files written before it was saved, which load melodic. */
   is_percussion?: boolean;
+  /** The reverb send (CC 91); absent in files written before it was saved. */
+  synth_reverb_send?: number | null;
   clips: TasmoLoadedClip[];
   effect_chain?: EffectChainNode[];
   /** The id of the bus this track feeds; `null`/absent = the master. Absent in

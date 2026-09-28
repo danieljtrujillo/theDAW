@@ -523,13 +523,15 @@ export function editControl(channel: number, controller: number, value: number, 
   }
 }
 
-/** The controllers a roll part sends live (lib/rollTracks PART_CONTROLLERS), as the synth names them. */
+/** The controllers a roll part sends live (lib/rollTracks PART_CONTROLLERS), as the synth names them,
+ *  and a track's reverb send (EditorTrack synthReverbSend, CC 91). */
 const LIVE_CONTROLLERS: ReadonlyMap<number, MIDIController> = new Map<number, MIDIController>([
   [1, MIDIControllers.modulationWheel],
   [7, MIDIControllers.mainVolume],
   [10, MIDIControllers.pan],
   [11, MIDIControllers.expression],
   [64, MIDIControllers.sustainPedal],
+  [91, MIDIControllers.reverbDepth],
 ]);
 
 /** Move an EDIT channel's pitch wheel (raw 0-16383, 8192 the centre) at `time` (now when absent). No-op until its bank exists. */

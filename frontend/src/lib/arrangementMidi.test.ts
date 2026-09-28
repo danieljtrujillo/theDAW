@@ -436,4 +436,29 @@ const secOf = (tick: number, map = [{ beat: 0, bpm: 120 }]) => beatToTime(map, t
   assert.equal((seen as Record<string, unknown> | null)?.global, undefined);
 }
 
+// ── a track's reverb send (CC 91) from tick 0 ────────────────────────────────
+// The symphony template sets each section's send to 0 so a GM host's own
+// reverb does not double the hall EDIT sends it to; a track with none leaves
+// the host its default.
+{
+  const source: ArrangementMidiSource = {
+    bpm: 120,
+    tracks: [
+      track('vn', 'Violin I', { instrumentProgram: 40, synthReverbSend: 0 }),
+      track('hn', 'Horn', { instrumentProgram: 60, synthReverbSend: 40.4 }),
+      track('pn', 'Piano', { instrumentProgram: 0 }),
+    ],
+    clips: [clip('v', 'vn', 0, [note(0, 67)]), clip('h', 'hn', 0, [note(0, 53)]), clip('p', 'pn', 0, [note(0, 60)])],
+  };
+  const out = arrangementToMidiFile(source);
+  const send = (i: number) => (out.file.tracks[i].controls ?? []).filter((c) => c.controller === 91);
+  const ch = (i: number) => out.file.tracks[i].notes[0].channel;
+  assert.deepEqual(send(0), [{ tick: 0, channel: ch(0), controller: 91, value: 0 }], 'the send at 0 from tick 0');
+  assert.deepEqual(send(1).map((c) => [c.tick, c.channel, c.value]), [[0, ch(1), 40]], 'a whole value');
+  assert.deepEqual(send(2), [], 'no send where the track names none');
+  const bytes = encodeMidi(out.file);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  assert.ok(hex.includes(`b${ch(0).toString(16)}5b00`), 'written as a controller change in the file');
+}
+
 console.log('arrangementMidi: ok');

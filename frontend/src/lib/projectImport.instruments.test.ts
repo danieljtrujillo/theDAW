@@ -588,6 +588,23 @@ const st = () => useEditorStore.getState();
   assert.equal(st().tracks.find((t) => t.id === 'd1')?.isPercussion, undefined, 'an older file opens the track melodic');
 }
 
+// ── A track's reverb send (CC 91) is saved and reopens ───────────────────────
+// The symphony template turns the synth's reverb off on every section (the hall
+// send plays the hall), so a reopened project must not bring it back.
+{
+  useEditorStore.setState({ bpm: 120, tracks: [track('v1', { name: 'Violin I', instrumentProgram: 40, synthReverbSend: 0 }), track('p1', { name: 'Piano' })], clips: [] });
+  const { form, files } = await saveThroughTheWire();
+  const project = await projectFrom(form);
+  assert.equal(project.tracks[0].synth_reverb_send, 0, 'the send is written, 0 included');
+  assert.equal('synth_reverb_send' in project.tracks[1], false, 'a track with none writes none');
+  useEditorStore.setState({ bpm: 100, tracks: [track('other')], clips: [] });
+  await openWithFiles(project, files);
+  assert.equal(st().tracks.find((t) => t.id === 'v1')?.synthReverbSend, 0, 'it reopens at 0');
+  assert.equal(st().tracks.find((t) => t.id === 'p1')?.synthReverbSend, undefined);
+  await openWithFiles({ ...project, tracks: [{ ...project.tracks[0], synth_reverb_send: 300 }] }, files);
+  assert.equal(st().tracks.find((t) => t.id === 'v1')?.synthReverbSend, 127, 'a hand-edited value is held to 0-127');
+}
+
 // ── The payload the backend validates is the one the app really sends ────────
 // The save runs through projectStore.save, the SAVE button's own action. The
 // parsed project part and the file names are compared with

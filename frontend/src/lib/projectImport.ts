@@ -71,6 +71,7 @@ import {
   tasmoOwnBpm,
   ticksMatching,
 } from './projectClient';
+import { synthReverbSendOf } from './arrangementMidi';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
@@ -84,6 +85,10 @@ import { tasmoLoadedToDawProject } from './tasmoToSession';
 import { STALE_RENDER_SIG, midiClipNominalSec, midiRenderSig, renderSigStale } from './midiRender';
 import { meterFromTasmo } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
+
+/** A saved reverb send as a track holds it: a whole 0-127, or undefined. */
+const reverbSendOf = (v: unknown): number | undefined =>
+  synthReverbSendOf({ synthReverbSend: typeof v === 'number' ? v : undefined });
 
 const TRACK_COLORS = ['#8b5cf6', '#a855f7', '#ec4899', '#06b6d4', '#10b981', '#facc15', '#f97316', '#ef4444'];
 
@@ -1149,6 +1154,8 @@ export async function loadProjectIntoEditor(
       ...(trackProgram !== undefined ? { instrumentProgram: trackProgram } : {}),
       // A drum track plays its clips on the drum channel, the program its kit.
       ...(t.is_percussion === true ? { isPercussion: true } : {}),
+      // The reverb send (CC 91) its channels open with, a whole 0-127.
+      ...(reverbSendOf(t.synth_reverb_send) !== undefined ? { synthReverbSend: reverbSendOf(t.synth_reverb_send) } : {}),
       fxChain: fxChain.length ? fxChain : undefined,
       // The arrangement folders. Checked against the whole track list below,
       // once every track is known.
@@ -1552,6 +1559,8 @@ export function captureEditorSession(): CapturedSession {
       // A drum track, whose program above is its kit. Without it a reopened
       // drum part played its kit's program as a melodic instrument.
       is_percussion: t.isPercussion === true,
+      // The reverb send (CC 91), written only where the track sets one.
+      ...(reverbSendOf(t.synthReverbSend) !== undefined ? { synth_reverb_send: reverbSendOf(t.synthReverbSend) } : {}),
       parent_track_id: t.parentTrackId ?? null,
       is_folder: t.isFolder === true,
       collapsed: t.collapsed === true,

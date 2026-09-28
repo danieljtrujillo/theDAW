@@ -696,4 +696,47 @@ run('a pedalled clip muted or deleted part way puts its controllers back; unmute
   }
 });
 
+// ── A track's reverb send (CC 91) ───────────────────────────────────────────
+run("a track's reverb send opens each of its channels after the defaults, and a channel left with one goes back to 0", () => {
+  ed().loadProject({ tracks: [], clips: [] });
+  const [a, b] = [ed().tracks[0].id, ed().tracks[1].id];
+  ed().updateTrack(a, { instrumentProgram: 40, synthReverbSend: 0 });
+  ed().updateTrack(b, { instrumentProgram: 56 });
+  addMidi(a, { startSec: 0, durationSec: 2, sourcePianoRoll: [note('a1', 60, 0, 4)] });
+  addMidi(b, { startSec: 0, durationSec: 2, sourcePianoRoll: [note('b1', 62, 0, 4)] });
+  const pass = passOf();
+  const chA = pass.channelsOf.get(a)![0];
+  const chB = pass.channelsOf.get(b)![0];
+  const cc91 = (msgs: Msg[], ch: number) =>
+    msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.ch === ch && m.controller === 91);
+
+  const r1 = rig();
+  r1.sched.start(pass, 0, r1.clock.t);
+  r1.runFor(0.5);
+  r1.sched.stop();
+  assert.deepEqual(cc91(r1.msgs, chA).map((m) => m.value), [0], 'the template track opens with the synth reverb off');
+  assert.deepEqual(cc91(r1.msgs, chB), [], 'a track with no send leaves the synth its own');
+  const openA = r1.msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.ch === chA).slice(0, 6);
+  assert.deepEqual(openA.map((m) => m.controller), [64, 1, 7, 10, 11, 91], 'after the General MIDI defaults');
+
+  // A send of 90, then a pass after it was cleared: the channel goes back to 0.
+  ed().updateTrack(a, { synthReverbSend: 90 });
+  const r2 = rig();
+  r2.sched.start(passOf(), 0, r2.clock.t);
+  r2.runFor(0.2);
+  r2.sched.stop();
+  assert.deepEqual(cc91(r2.msgs, chA).map((m) => m.value), [90]);
+  ed().updateTrack(a, { synthReverbSend: undefined });
+  r2.sched.start(passOf(), 0, r2.clock.t + 1);
+  r2.clock.t += 1;
+  r2.runFor(0.2);
+  r2.sched.stop();
+  assert.deepEqual(cc91(r2.msgs, chA).map((m) => m.value), [90, 0], 'the next pass takes the send back off');
+  r2.sched.start(passOf(), 0, r2.clock.t + 1);
+  r2.clock.t += 1;
+  r2.runFor(0.2);
+  r2.sched.stop();
+  assert.deepEqual(cc91(r2.msgs, chA).map((m) => m.value), [90, 0], 'and then sends nothing more');
+});
+
 console.log('editMidiScheduler: ok');
