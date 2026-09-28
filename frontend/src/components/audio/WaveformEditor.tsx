@@ -58,7 +58,8 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipNoteSpan, clipPartsLoad, clipRenderInput, midiFileClipFields } from '../../lib/rollClip';
+import { clipPartsLoad, clipRenderInput, midiFileClipFields } from '../../lib/rollClip';
+import { MidiClipNotes } from './MidiClipNotes';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
@@ -1330,59 +1331,6 @@ const pushSeparator = (items: ContextMenuItem[]): void => {
   const last = items[items.length - 1];
   if (!last || last.type === 'separator') return;
   items.push({ type: 'separator' });
-};
-
-const MidiClipNotes: React.FC<{ clip: AudioClip; zoom: number; selected: boolean }> = ({ clip, zoom, selected }) => {
-  const notes = clip.sourcePianoRoll;
-  if (!notes || notes.length === 0) return null;
-  // The clip's own clock: one tempo, or its tempo map, so a note inside a
-  // ritardando is drawn where it plays.
-  const clock = stepClock(clip.sourceBpm ?? 120, clip.sourceTempoMap);
-  const offset = clip.offsetIntoSource ?? 0;
-  const clipDur = clip.durationSec;
-
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const n of notes) {
-    if (n.note < lo) lo = n.note;
-    if (n.note > hi) hi = n.note;
-  }
-  if (!Number.isFinite(lo)) return null;
-  // One row per semitone in the used range, with a little headroom top/bottom.
-  lo -= 1;
-  hi += 1;
-  const rows = Math.max(1, hi - lo);
-  const rowPct = 100 / (rows + 1);
-
-  return (
-    <div className="absolute inset-x-0 bottom-0 top-3.5 overflow-hidden pointer-events-none">
-      {notes.map((n) => {
-        const { relStart, relEnd } = clipNoteSpan(n, clock, offset);
-        if (relEnd <= 0 || relStart >= clipDur) return null; // outside the visible window
-        const vStart = Math.max(0, relStart);
-        const vEnd = Math.min(clipDur, relEnd);
-        const x = vStart * zoom;
-        const w = Math.max(1.5, (vEnd - vStart) * zoom);
-        const topPct = (hi - n.note) * rowPct;
-        const hPct = Math.max(rowPct - 0.5, 2);
-        const vel = Math.max(1, Math.min(127, n.velocity));
-        return (
-          <div
-            key={n.id}
-            className="absolute rounded-[1px]"
-            style={{
-              left: x,
-              width: w,
-              top: `${topPct}%`,
-              height: `${hPct}%`,
-              backgroundColor: clip.color,
-              opacity: (selected ? 0.6 : 0.42) + (vel / 127) * 0.4,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
 };
 
 /**
@@ -7612,7 +7560,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                       peaks. A muted clip's body is dimmed (the red M is the flag). */}
                   {isMidi ? (
                     <div className={clip.muted ? 'opacity-30' : ''}>
-                      <MidiClipNotes clip={clip} zoom={zoom} selected={selected} />
+                      <MidiClipNotes
+                        clip={clip}
+                        zoom={zoom}
+                        selected={selected}
+                        height={Math.max(8, height - 14)}
+                        // The part of the clip in the timeline's view (clip px); all of it before the first measurement.
+                        visibleFromPx={viewport.width > 0 ? viewport.scrollLeft - left : 0}
+                        visibleToPx={viewport.width > 0 ? viewport.scrollLeft + viewport.width - left : width}
+                      />
                     </div>
                   ) : (
                     <div className={`absolute inset-x-0 bottom-0 top-3.5 ${clip.muted ? 'opacity-30' : ''}`}>
