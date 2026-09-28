@@ -95,16 +95,34 @@ const slider = (host: Element, name: string) => {
   const sz = slider(host, 'Source front-back (Z)');
   assert.deepEqual([sx.getAttribute('aria-valuenow'), sx.getAttribute('aria-valuetext')], ['0', 'centre']);
   assert.deepEqual([sz.getAttribute('aria-valuenow'), sz.getAttribute('aria-valuetext')], ['2', '2.0 in front']);
-  // End on X: the source goes to the right edge, still 2 in front.
+  // The axes span the distance param's range (0.5-10), so a source at 10 reads inside its slider.
+  assert.deepEqual([sx.getAttribute('aria-valuemin'), sx.getAttribute('aria-valuemax')], ['-10', '10']);
+  // End on X: the source goes to the right end, still 2 in front, and its distance holds at the param's 10.
   await press(sx, 'End');
-  assert.deepEqual(log, ['start', `az=${Math.round((Math.atan2(8, 2) * 180) / Math.PI)} d=8`, 'end']);
+  assert.deepEqual(log, ['start', `az=${Math.round((Math.atan2(10, 2) * 180) / Math.PI)} d=10`, 'end']);
   // Home on Z from straight ahead: the source goes behind.
   log.length = 0;
   params = { ...params, azimuth: 0, distance: 2 };
   await act(async () => { render(); });
   await press(slider(host, 'Source front-back (Z)'), 'Home');
-  assert.deepEqual(log, ['start', 'az=180 d=8', 'end']);
-  assert.equal(slider(host, 'Source front-back (Z)').getAttribute('aria-valuetext'), '8.0 behind');
+  assert.deepEqual(log, ['start', 'az=180 d=10', 'end']);
+  assert.equal(slider(host, 'Source front-back (Z)').getAttribute('aria-valuetext'), '10.0 behind');
+  // A source at 10 on the far right: its X slider's value is inside its range.
+  params = { ...params, azimuth: 90, distance: 10 };
+  await act(async () => { render(); });
+  const far = slider(host, 'Source left-right (X)');
+  assert.ok(Number(far.getAttribute('aria-valuenow')) <= Number(far.getAttribute('aria-valuemax')), 'aria-valuenow <= aria-valuemax');
+  // From the default place (1.5 in front), ArrowDown on Z walks the source through the listener to behind.
+  // It used to stop at 0.5 in front: each step inside the 0.5 floor was pushed back out to it.
+  params = { ...params, azimuth: 0, distance: 1.5 };
+  await act(async () => { render(); });
+  for (let i = 0; i < 12; i++) await press(slider(host, 'Source front-back (Z)'), 'ArrowDown');
+  assert.deepEqual([params.azimuth, params.distance], [180, 0.6], 'behind the listener, 0.6 back');
+  // At 0.5 on the right, ArrowLeft on X crosses to 0.5 on the left.
+  params = { ...params, azimuth: 90, distance: 0.5 };
+  await act(async () => { render(); });
+  await press(slider(host, 'Source left-right (X)'), 'ArrowLeft');
+  assert.deepEqual([params.azimuth, params.distance], [-90, 0.5]);
   await act(async () => { root.unmount(); });
 }
 

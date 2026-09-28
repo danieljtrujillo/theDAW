@@ -49,10 +49,40 @@ const sourceAxes = (azDeg: number, dist: number): { x: number; z: number } => {
 };
 
 /** Left/right and front/back back to the azimuth (whole degrees) and distance the effect reads. */
-const axesToSource = (x: number, z: number, minDist: number): { azimuth: number; distance: number } => ({
+const axesToSource = (x: number, z: number, minDist: number, maxDist: number): { azimuth: number; distance: number } => ({
   azimuth: Math.round((Math.atan2(x, z) * 180) / Math.PI),
-  distance: +clamp(Math.hypot(x, z), minDist, MAX_DIST).toFixed(2),
+  distance: +clamp(Math.hypot(x, z), minDist, maxDist).toFixed(2),
 });
+
+/**
+ * A key step on one axis slider: the source's new azimuth and distance.
+ *
+ * The distance has a floor (the param's minimum, 0.5), so the ring inside it
+ * around the listener is no place a source can be. A step that lands inside it
+ * is carried across the centre to the ring's far side on that axis, so the
+ * arrows move a source through the listener (front to behind, left to right)
+ * and never stick at the floor. `next` is the axis value the key gave; `x` and
+ * `z` are where the source is now.
+ */
+export const stepSourceAxes = (
+  axis: 'x' | 'z',
+  next: number,
+  x: number,
+  z: number,
+  minDist: number,
+  maxDist: number,
+): { azimuth: number; distance: number } => {
+  const now = axis === 'x' ? x : z;
+  const other = axis === 'x' ? z : x;
+  let v = next;
+  if (Math.hypot(v, other) < minDist) {
+    // This axis line meets the floor ring at +edge and -edge; the step goes on to the one in its direction.
+    const edge = Math.sqrt(Math.max(0, minDist * minDist - other * other));
+    const dir = Math.sign(next - now) || Math.sign(-now) || 1;
+    v = dir * edge;
+  }
+  return axis === 'x' ? axesToSource(v, other, minDist, maxDist) : axesToSource(other, v, minDist, maxDist);
+};
 
 /** Source azimuth/distance -> pad pixel coords (front = up, right = right). */
 const sourceXY = (azDeg: number, dist: number) => {
@@ -240,12 +270,16 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
     return null;
   };
 
-  const minDist = def?.params.find((p) => p.key === 'distance')?.min ?? 0.5;
+  const distParam = def?.params.find((p) => p.key === 'distance');
+  const minDist = distParam?.min ?? 0.5;
+  // The axis sliders span the distance param's whole range (10), past the pad's edge (MAX_DIST), so
+  // aria-valuenow never exceeds aria-valuemax and a first key press never pulls a far source in.
+  const maxDist = distParam?.max ?? 10;
   const axes = sourceAxes(azimuth, distance);
   const axisText = (v: number, neg: string, pos: string) => (Math.abs(v) < 0.005 ? 'centre' : `${Math.abs(v).toFixed(1)} ${v < 0 ? neg : pos}`);
-  const keyMove = (key: string, x: number, z: number) => {
+  const keyMove = (key: string, axis: 'x' | 'z', next: number) => {
     getKeyGesture().key('down', key);
-    onChange({ ...params, ...axesToSource(x, z, minDist) });
+    onChange({ ...params, ...stepSourceAxes(axis, next, axes.x, axes.z, minDist, maxDist) });
   };
   const keyRelease = (key?: string) => getKeyGesture().key('up', key);
 
@@ -287,28 +321,28 @@ export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onG
             axis="x"
             label="Source left-right (X)"
             value={+axes.x.toFixed(2)}
-            min={-MAX_DIST}
-            max={MAX_DIST}
+            min={-maxDist}
+            max={maxDist}
             step={0.1}
             valueText={axisText(axes.x, 'left', 'right')}
             pos={src.x}
             size={PAD}
             color="#a855f7"
-            onKey={(next, key) => keyMove(key, next, axes.z)}
+            onKey={(next, key) => keyMove(key, 'x', next)}
             onKeyRelease={keyRelease}
           />
           <PadAxisSlider
             axis="y"
             label="Source front-back (Z)"
             value={+axes.z.toFixed(2)}
-            min={-MAX_DIST}
-            max={MAX_DIST}
+            min={-maxDist}
+            max={maxDist}
             step={0.1}
             valueText={axisText(axes.z, 'behind', 'in front')}
             pos={src.y}
             size={PAD}
             color="#a855f7"
-            onKey={(next, key) => keyMove(key, axes.x, next)}
+            onKey={(next, key) => keyMove(key, 'z', next)}
             onKeyRelease={keyRelease}
           />
         </svg>
