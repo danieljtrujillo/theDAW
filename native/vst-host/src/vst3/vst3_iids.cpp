@@ -31,6 +31,7 @@ DEF_CLASS_IID(IComponent)
 DEF_CLASS_IID(IAudioProcessor)
 DEF_CLASS_IID(IEditController)
 DEF_CLASS_IID(IConnectionPoint)
+DEF_CLASS_IID(IMidiMapping)
 
 // ---- the host side we provide ----
 DEF_CLASS_IID(IHostApplication)

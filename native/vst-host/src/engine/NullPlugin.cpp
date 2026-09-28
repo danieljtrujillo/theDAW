@@ -4,6 +4,11 @@
 // tested end to end with no third-party binary in the loop. It reports two fake
 // parameters that do not touch the audio, which is what makes the bit-exact
 // round-trip assertions in tests/test_vst_host_native.py meaningful.
+//
+// MIDI makes it audible, so the `midi` op can be tested the same way: a note-on
+// adds velocity / 127 to every output channel at the note's sample, and a
+// note-off (a note-on at velocity 0 included) adds -0.25 there. A block with no
+// MIDI stays a bit-exact passthrough.
 
 #include <algorithm>
 #include <atomic>
@@ -193,6 +198,25 @@ public:
             if (in[ch] == out[ch]) continue;
             std::copy(in[ch], in[ch] + frames, out[ch]);
         }
+        for (int32_t i = 0; i < midiCount_; ++i) {
+            const MidiEvent& ev = midi_[i];
+            if (ev.sampleOffset < 0 || ev.sampleOffset >= frames || ev.size < 3) continue;
+            const uint8_t kind = ev.data[0] & 0xF0;
+            float mark = 0.0f;
+            if (kind == 0x90 && ev.data[2] > 0) {
+                mark = static_cast<float>(ev.data[2]) / 127.0f;
+            } else if (kind == 0x80 || kind == 0x90) {
+                mark = -0.25f;
+            }
+            if (mark == 0.0f) continue;
+            for (int32_t ch = 0; ch < channels; ++ch) out[ch][ev.sampleOffset] += mark;
+        }
+        midiCount_ = 0;
+    }
+
+    void setBlockMidi(const MidiEvent* events, int32_t count) override {
+        midi_ = events;
+        midiCount_ = events != nullptr ? count : 0;
     }
 
     // setParamNormalized() already stored the value where params() reads it, so there is
@@ -217,6 +241,8 @@ private:
 
     IPluginEvents* events_ = nullptr;
     PrepareConfig config_;
+    const MidiEvent* midi_ = nullptr;
+    int32_t midiCount_ = 0;
     std::atomic<double> values_[kParamCount];
 };
 

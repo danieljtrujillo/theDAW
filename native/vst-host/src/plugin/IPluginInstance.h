@@ -57,6 +57,14 @@ struct TransportInfo {
     double tempoBpm = 0;         // 0 = unknown
 };
 
+// One MIDI channel voice message inside a process() block (docs/design/vst-live-protocol.md,
+// the `midi` op). The engine places each message the client sent by its timeline position.
+struct MidiEvent {
+    int32_t sampleOffset = 0;      // 0 .. frames - 1 of the block it rides
+    uint8_t data[3] = {0, 0, 0};   // status byte, then its data bytes
+    uint8_t size = 0;              // 1..3
+};
+
 struct PrepareConfig {
     double sampleRate = 48000;
     int32_t maxBlockSize = 512;
@@ -145,6 +153,15 @@ public:
     virtual void flushParameters() = 0;
     // Clear delay lines / tails after a discontinuity. Realtime-safe.
     virtual void resetDsp() = 0;
+    // The MIDI the NEXT process() call plays, sorted by sampleOffset; `events` stays valid until
+    // that call returns. Called on the AUDIO thread right before every process(), with count 0
+    // for a block that carries none. An instrument turns these into its note events and
+    // controller parameters; an effect has nothing to play them on and ignores them, which is
+    // what this default does. Realtime-safe like process().
+    virtual void setBlockMidi(const MidiEvent* events, int32_t count) {
+        (void)events;
+        (void)count;
+    }
 };
 
 // Runs `task` on the MESSAGE thread as soon as possible (implemented by the engine's message loop;
