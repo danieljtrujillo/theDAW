@@ -2,6 +2,7 @@ import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useM
 import { createPortal } from 'react-dom';
 import { ChevronDown, ChevronLeft, ChevronRight, Download, Expand, Loader2, Minus, Plus, RefreshCw, Shrink, Waves } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import { isAudioEntry } from '../../state/libraryEntry';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
@@ -50,6 +51,7 @@ import {
 import { fitZoomToPage, type FitReport } from './score/scoreFit';
 import { NotationMaker } from './score/NotationMaker';
 import { stemOf } from './score/notationMakerModel';
+import { announceImportedScore, ScoreImport } from './score/ScoreImport';
 
 // The zoom a score fitted to per (artifact, page width): a re-open renders
 // once at that zoom instead of measuring-and-fitting again. Bounded.
@@ -156,10 +158,21 @@ const LazyFallback: React.FC = () => (
 export const ScoreView: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const entries = useLibraryStore((s) => s.entries);
-  const entry = useMemo(
-    () => entries.find((candidate) => candidate.id === selectedEntryId) ?? null,
-    [entries, selectedEntryId],
+  // An entry off every loaded page (an imported composition is never on the
+  // audio pages) is fetched by id; lookupVersion bumps when it lands.
+  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
+  const libraryEntry = useMemo<LibraryEntry | null>(
+    () => {
+      if (!selectedEntryId) return null;
+      return entries.find((candidate) => candidate.id === selectedEntryId)
+        ?? useLibraryStore.getState().getById(selectedEntryId)
+        ?? null;
+    },
+    [entries, selectedEntryId, lookupVersion],
   );
+  // The track the play-along follows: only an audio entry has a recording. A
+  // composition (kind 'score') is read unplayed, like a sheet with no track.
+  const entry = libraryEntry && isAudioEntry(libraryEntry) ? libraryEntry : null;
   const [artifacts, setArtifacts] = useState<NotationArtifact[]>([]);
   // Focus mode: pop the whole Score panel to a fullscreen overlay and hide the
   // artifact sidebar, so the follow-along (strip/highway/chords) is large and
@@ -661,8 +674,8 @@ export const ScoreView: React.FC = () => {
             <>
               <div className="h-10 shrink-0 border-b border-white/10 flex items-center gap-2 px-3">
                 <span className="font-display text-xs font-bold uppercase text-zinc-300">Notation</span>
-                <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={entry?.title}>
-                  {entry?.title ?? 'Select a library track'}
+                <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={libraryEntry?.title}>
+                  {libraryEntry?.title ?? 'Select a library track'}
                 </span>
                 <button
                   type="button"
@@ -677,6 +690,11 @@ export const ScoreView: React.FC = () => {
                 {/* At the rail's inner edge, beside the score. */}
                 <span className="-mr-1 flex">{foldKey}</span>
               </div>
+
+              {/* A score of its own, not made from a track: a file, or a
+                  piece of the music21 corpus. Selecting the new composition
+                  lists and opens its sheet here. */}
+              <ScoreImport caps={caps} onImported={announceImportedScore} />
 
               <NotationMaker
                 entryId={selectedEntryId}

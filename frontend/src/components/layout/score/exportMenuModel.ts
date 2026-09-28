@@ -5,8 +5,8 @@
  *
  * Level one is the part ("All parts", then each part of the sheet in score
  * order); level two is the format. Any part goes to any format: the export
- * route's options.parts scopes musicxml / abc / pdf / svg / notechart to one
- * part (the backend filters the sheet with stage_parts, then converts), the
+ * route's options.parts scopes musicxml / abc / pdf / svg / midi / notechart
+ * to one part (the backend filters the sheet with stage_parts, then converts), the
  * pack takes ?parts=, and Beat Saber has its own part filter. So the format
  * column is the same list for every part; only what an entry DOES differs:
  * the whole-sheet XML is a plain download of the file, the one-part XML is a
@@ -40,7 +40,7 @@ import type { PartDescriptor } from '../../../state/playAlongStore';
  * (OSMD or MuseScore) is present, so intersecting it with this list is the
  * honest answer.
  */
-export const SHEET_EXPORT_ORDER = ['pdf', 'abc', 'svg', 'notechart', 'beatsaber'] as const;
+export const SHEET_EXPORT_ORDER = ['pdf', 'abc', 'svg', 'midi', 'notechart', 'beatsaber'] as const;
 export type SheetExportFormat = (typeof SHEET_EXPORT_ORDER)[number];
 
 /** What the export route is asked for; 'musicxml' is the one-part XML. */
@@ -100,6 +100,7 @@ const LABELS: Record<ExportEntryId, string> = {
   pdf: 'PDF',
   abc: 'ABC',
   svg: 'SVG',
+  midi: 'MIDI (SOUNDING)',
   notechart: 'NOTECHART',
   beatsaber: 'BEAT SABER',
   'get-musescore': 'GET MUSESCORE',
@@ -109,11 +110,15 @@ const LABELS: Record<ExportEntryId, string> = {
 const ENGRAVER_NOTE =
   'engraved by the headless OSMD renderer, the engraver the SCORE tab draws with; MuseScore stands in when it is missing';
 
+const SOUNDING_NOTE =
+  'every part at the pitch it sounds, so a B-flat clarinet plays a whole step below the page; one named track per part with its program, and the tempo and meter maps';
+
 /** Hover text for an offered sheet export of the whole sheet. */
 const OFFERED_TITLES: Record<SheetExportFormat, string> = {
   pdf: `Export PDF from this score (${ENGRAVER_NOTE})`,
   abc: 'Export ABC from this score',
   svg: `Export SVG from this score (${ENGRAVER_NOTE})`,
+  midi: `Export MIDI from this score (${SOUNDING_NOTE})`,
   notechart: 'Export the Unity note chart (timecode + spelled notes) from this score',
   beatsaber: 'Export a Beat Saber level pack (Info.dat + one .dat per difficulty + song.ogg) from this score',
 };
@@ -124,6 +129,8 @@ function partTitle(id: SheetExportFormat, part: ExportMenuPart): string {
     case 'pdf':
     case 'svg':
       return `Export ${LABELS[id]} of ${part.label} only (${ENGRAVER_NOTE})`;
+    case 'midi':
+      return `Export MIDI of ${part.label} only, at the pitch it sounds`;
     case 'notechart':
       return `Export the Unity note chart of ${part.label} only`;
     case 'beatsaber':
