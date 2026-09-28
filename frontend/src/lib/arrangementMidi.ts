@@ -57,6 +57,15 @@
  * per lane, which carries the lane's wheel too. Those channels come from the
  * same sixteen and count toward `sharedTracks`.
  *
+ * PER-NOTE EXPRESSION: a note that carries expression of its own (PianoNote
+ * `expr`) is written MPE-style on the upper zone's member channels (lib/
+ * mpeMidi: 14 down, rotated across the arrangement's notes as EDIT rotates
+ * them live), each member set to its note's range, wheel, CC 74 and pressure
+ * just before it starts and then at every point of its curves, with the
+ * zone's configuration message on channel 15. An import reads them back onto
+ * the notes. With no member channel free, those notes stay on their track's
+ * channel and `mpeNoRoom` says so.
+ *
  * CONTROLLER AUTOMATION: a track's trackMidiCc automation lanes (lib/
  * midiCcAutomation) are written as that controller's changes on each of the
  * track's channels, the value at the file's start first, then a change where
@@ -101,7 +110,7 @@ import type { RollPartRef } from '../state/pianoRollStore';
 import { noteEndStep } from './clipNotes/units';
 import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type ClipVoice, type GlobalVoice } from './clipProgram';
 import { barAt, barStartStep, meterAtBar, meterMapToMidiEvents, normalizeMeterMap, roundUpToBar, type MeterSegment } from './meterMap';
-import type { MidiBend, MidiBendRange, MidiControl, MidiFileData, MidiNote, MidiProgram, MidiTrack } from './midi';
+import type { MidiBend, MidiBendRange, MidiControl, MidiFileData, MidiNote, MidiPressure, MidiProgram, MidiTrack } from './midi';
 import { PPQ } from './noteClock';
 import { bendWheelEvents, playingLane } from './pitchBend';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
@@ -112,6 +121,9 @@ import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempo
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
 import { articulatedNotes, clipArticulationInstrument, type Articulation, type SoundfontArticulationTarget } from './articulationMap';
 import { artChannelKey } from './rollMidi';
+import { mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
+import { EXPRESSION_DIMENSIONS, type ExpressionDimension } from './noteExpression';
+import type { NoteExpression } from '../state/pianoRollStore';
 
 /** The arrangement an export reads (editorStore's fields). */
 export interface ArrangementMidiSource {
@@ -156,6 +168,8 @@ export interface ArrangementMidiResult {
   mutedClips: number;
   /** Where the file's tick 0 sits on the timeline, in seconds (a range starts on its bar line). */
   startSec: number;
+  /** True when notes carried expression of their own and no MPE member channel was free: they play on their track's channel. */
+  mpeNoRoom?: boolean;
 }
 
 /** A file's channels a melodic track can take: all sixteen but channel 10, the drums'. */
@@ -218,6 +232,8 @@ interface ClipEvents {
     lane: number | null;
     articulation?: Articulation;
     art: { key: string; target: SoundfontArticulationTarget } | null;
+    /** The note's own expression, its curves' points at timeline seconds (null when it carries none). */
+    expr: { e: NoteExpression; curves: Partial<Record<ExpressionDimension, Array<{ sec: number; value: number }>>> } | null;
   }>;
   controls: Array<{ sec: number; controller: number; value: number }>;
   /** Each bent lane's range and wheel messages, the value where the clip's window starts first. */
@@ -261,6 +277,21 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
       lane,
       ...(n.articulation ? { articulation: n.articulation } : {}),
       art: target ? { key: artChannelKey(target, lane), target } : null,
+      // The note's own expression, its curve points at their seconds through the clip's clock.
+      expr: writesAsMpe(n.expr)
+        ? {
+            e: n.expr,
+            curves: Object.fromEntries(
+              EXPRESSION_DIMENSIONS.filter((d) => n.expr?.curves?.[d]?.length).map((d) => [
+                d,
+                (n.expr?.curves?.[d] ?? []).map((p) => ({
+                  sec: clip.startSec + clock.at(((n.tick ?? Math.round(n.step * 240)) + p.tick) / 240) - offset,
+                  value: p.value,
+                })),
+              ]),
+            ),
+          }
+        : null,
     });
   });
   // Each bent lane with notes in the window: its wheel from the window's first step to its last point or the window's end.
@@ -483,6 +514,18 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     ]),
   );
   const sharedIds = new Set(shared);
+  // Every expressive note of the export, on the upper MPE zone's members, clear of every channel the tracks took.
+  const mpeSpans: MpeExportNote[] = [];
+  for (const t of tracks) {
+    let i = 0;
+    for (const e of t.events) for (const n of e.notes) {
+      if (n.expr && !isPercussionTrack(t.track)) mpeSpans.push({ key: `${t.track.id}#${i}`, start: tickOf(n.onSec), end: Math.max(tickOf(n.onSec) + 1, tickOf(n.offSec)) });
+      i += 1;
+    }
+  }
+  const mpe = planMpeExport(mpeSpans, new Set(channels.values()));
+  const memberRange = new Map<number, number>();
+  const memberProgram = new Map<number, string>();
 
   const out: MidiTrack[] = [];
   let noteCount = 0;
@@ -500,7 +543,10 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     const wheelOn = new Map<number, MidiBend[]>();
     const bendRanges: MidiBendRange[] = [];
     const rangeOn = new Map<number, number>();
+    const pressures: MidiPressure[] = [];
+    const mpeBends: MidiBend[] = [];
     let current: string | null = null;
+    let noteIndex = 0;
     for (const e of events) {
       if (!e.notes.length && !e.controls.length) continue;
       // A program change where the clip's voice differs from the one sounding: tick 0 for the first, on each of the track's channels.
@@ -514,16 +560,37 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       }
       for (const n of e.notes) {
         const tick = tickOf(n.onSec);
+        const durationTicks = Math.max(1, tickOf(n.offSec) - tick);
         const home = channelOf(n.lane);
-        const channel = n.art ? artChannelOf(n.art.key) : home;
+        const member = n.expr ? mpe.channelOf.get(`${track.id}#${noteIndex}`) : undefined;
+        noteIndex += 1;
+        const channel = member ?? (n.art ? artChannelOf(n.art.key) : home);
+        if (member !== undefined && n.expr) {
+          // The member channel: the clip's voice, then the note's range, wheel, CC 74 and pressure, then its curves.
+          const voice = `${e.program ?? ''}:${e.bank}`;
+          if (e.program !== undefined && memberProgram.get(member) !== voice) {
+            programs.push({ tick, channel: member, program: e.program, ...(e.bank > 0 ? { bank: e.bank } : {}) });
+            memberProgram.set(member, voice);
+          }
+          const curves: NonNullable<NoteExpression['curves']> = {};
+          for (const [dim, pts] of Object.entries(n.expr.curves) as Array<[ExpressionDimension, Array<{ sec: number; value: number }>]>) {
+            curves[dim] = pts.map((p) => ({ tick: Math.max(1, tickOf(p.sec) - tick), value: p.value }));
+          }
+          const m = mpeNoteMessages({ tick, durationTicks, expr: { ...n.expr.e, curves } }, member, 1, memberRange.get(member));
+          memberRange.set(member, m.range);
+          bendRanges.push(...m.ranges);
+          mpeBends.push(...m.bends);
+          controls.push(...m.controls);
+          pressures.push(...m.pressures);
+        }
         notes.push({
           tick,
           note: n.note,
           velocity: Math.max(1, Math.min(127, Math.round(n.velocity))),
-          durationTicks: Math.max(1, tickOf(n.offSec) - tick),
+          durationTicks,
           channel,
           ...(n.articulation ? { articulation: n.articulation } : {}),
-          ...(channel !== home ? { homeChannel: home } : {}),
+          ...(member === undefined && channel !== home ? { homeChannel: home } : {}),
         });
       }
       for (const c of e.controls) {
@@ -582,15 +649,20 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     }
     notes.sort((a, b) => a.tick - b.tick);
     controls.sort((a, b) => a.tick - b.tick);
-    const bends = [...wheelOn.values()].flat().sort((a, b) => a.tick - b.tick);
+    const bends = [...[...wheelOn.values()].flat(), ...mpeBends].sort((a, b) => a.tick - b.tick);
     bendRanges.sort((a, b) => a.tick - b.tick);
+    pressures.sort((a, b) => a.tick - b.tick);
+    programs.sort((a, b) => a.tick - b.tick);
     noteCount += notes.length;
     out.push({
       name: track.name,
       notes,
       ...(programs.length ? { programs } : {}),
       ...(controls.length ? { controls } : {}),
-      ...(bends.length ? { bends, bendRanges } : {}),
+      ...(bends.length || bendRanges.length ? { bends, bendRanges } : {}),
+      ...(pressures.length ? { pressures } : {}),
+      // The MPE zone's configuration message, once, in the first track.
+      ...(out.length === 0 && mpe.members.length ? { mpeZones: [mpeZoneEvent(mpe.members.length)] } : {}),
     });
   }
 
@@ -624,5 +696,6 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       .map((t) => t.track.name),
     mutedClips,
     startSec,
+    ...(mpe.noRoom ? { mpeNoRoom: true } : {}),
   };
 }

@@ -101,3 +101,58 @@ for (const withZone of [true, false]) {
 }
 
 console.log('mpeMidi: ok');
+
+// ── Export: both writers write expressive notes as MPE, and they read back ───
+{
+  const { rollToMidiFile } = await import('./rollMidi.ts');
+  const { arrangementToMidiFile } = await import('./arrangementMidi.ts');
+  const { makeRollTrack } = await import('./rollTracks.ts');
+  const { planMpeExport } = await import('./mpeMidi.ts');
+  const { migrateNotes, DEFAULT_LANES } = await import('../state/pianoRollStore.ts');
+  const { normalizeMeterMap } = await import('./meterMap.ts');
+  const notes = migrateNotes([
+    { id: 'a', note: 60, step: 0, length: 8, velocity: 100, expr: { pressure: 0.2, timbre: 0.5, pitchBend: 0, bendRange: 48, curves: { pressure: [{ tick: 960, value: 0.9 }], pitchBend: [{ tick: 1440, value: 0.25 }] } } },
+    { id: 'b', note: 64, step: 0, length: 8, velocity: 90, expr: { pressure: 0.6 } },
+    { id: 'c', note: 67, step: 8, length: 4, velocity: 80 },
+  ]);
+  const part = makeRollTrack({ id: 'sb', name: 'Seaboard', program: 88, notes }, 0);
+  const file = rollToMidiFile({ notes: [], lanes: [...DEFAULT_LANES], totalSteps: 16, bpm: 120, meterMap: normalizeMeterMap([]), pickupSteps: 0, bends: [], tracks: [part] });
+  const written = file.tracks[0];
+  assert.deepEqual(written.mpeZones, [{ tick: 0, channel: 15, members: 2 }], 'the upper zone, two members: the chord overlaps two notes');
+  const chOf = (note: number) => written.notes.find((n) => n.note === note)!.channel;
+  assert.deepEqual([chOf(60), chOf(64)].sort(), [13, 14], 'the expressive notes on the members');
+  assert.equal(chOf(67), 0, 'the plain note on the part’s channel');
+  assert.ok((written.programs ?? []).some((p) => p.channel === chOf(60) && p.program === 88), 'each member plays the part’s program');
+  assert.ok((written.pressures ?? []).some((p) => p.channel === chOf(60) && p.value === Math.round(0.9 * 127) && p.tick === 960), 'the swell on its member at its tick');
+
+  const back = parseMidi(encodeMidi(file));
+  assert.ok(back.tracks[0].notes.every((n) => n.channel === 0), 'read back, every note on the part’s channel');
+  const a = back.tracks[0].notes.find((n) => n.note === 60)!.expr!;
+  near(a.pressure, 0.2, 1 / 127, 'the start pressure');
+  near(a.timbre, 0.5, 1 / 127, 'the timbre');
+  assert.equal(a.bendRange, 48, 'the range it was written at');
+  near(a.curves?.pressure?.[0].value, 0.9, 1 / 127, 'the swell');
+  assert.equal(a.curves?.pressure?.[0].tick, 960);
+  near(a.curves?.pitchBend?.[0].value, 0.25, 1 / 8000, 'the bend a quarter up');
+  near(back.tracks[0].notes.find((n) => n.note === 64)!.expr!.pressure, 0.6, 1 / 127, 'the E’s own pressure');
+  assert.equal(back.tracks[0].notes.find((n) => n.note === 67)!.expr, undefined);
+  const roll = midiFileToRoll(back);
+  assert.equal(roll.meter.lanes.length, 1);
+  assert.equal(midiFileToRollParts(back).parts.length, 1, 'one part');
+
+  // EDIT's arrangement export writes them the same way.
+  const track = { id: 't', name: 'Seaboard', color: '#fff', volume: 0.8, pan: 0, mute: false, solo: false, fxChain: [], instrumentProgram: 88 };
+  const clip = { id: 'c', trackId: 't', label: 'x', mimeType: 'audio/wav', sourceDuration: 2, offsetIntoSource: 0, durationSec: 2, startSec: 0, color: '#fff', sourceKind: 'piano-roll', sourcePianoRoll: notes, sourceBpm: 120, sourceTotalSteps: 16 };
+  const arr = arrangementToMidiFile({ tracks: [track as never], clips: [clip as never], bpm: 120 });
+  assert.deepEqual(arr.file.tracks[0].mpeZones, [{ tick: 0, channel: 15, members: 2 }]);
+  const arrBack = parseMidi(encodeMidi(arr.file)).tracks[0].notes;
+  near(arrBack.find((n) => n.note === 60)!.expr!.curves?.pressure?.[0].value, 0.9, 1 / 127, 'the arrangement’s swell reads back');
+  assert.ok(arrBack.every((n) => n.channel === arrBack.find((x) => x.note === 67)!.channel), 'on the track’s channel');
+  assert.equal(arr.mpeNoRoom, undefined);
+
+  // No member free (a part on channel 15): the notes stay home, and the plan says so.
+  assert.equal(planMpeExport([{ key: 'x', start: 0, end: 10 }], new Set([15])).noRoom, true);
+  assert.deepEqual(planMpeExport([{ key: 'x', start: 0, end: 10 }], new Set([12])).members, [14], 'one member for one note');
+}
+
+console.log('mpeMidi export: ok');
