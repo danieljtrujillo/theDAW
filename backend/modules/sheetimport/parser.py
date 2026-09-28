@@ -180,9 +180,16 @@ def _part_instrument(part: Any) -> dict[str, Any]:
     """
     from backend.modules.notation.instruments import match_music21
 
+    # Instrument detection is best-effort, as the rest of a part's metadata is:
+    # a part music21 cannot read an instrument from still imports its notes.
     try:
         inst = part.getInstrument(returnDefault=False)
-    except Exception:  # noqa: BLE001 - a bare stream has no instrument to read
+    except Exception as exc:
+        log.debug(
+            "sheetimport: no instrument read for part %r: %s",
+            getattr(part, "partName", ""),
+            exc,
+        )
         inst = None
     if inst is None:
         return {"instrument": None, "program": None, "percussion": False}
@@ -207,9 +214,16 @@ def _part_kit_key(part: Any) -> Optional[int]:
     38): its registry record's, else music21's General MIDI percussion key."""
     from backend.modules.notation.instruments import match_music21
 
+    # Best-effort, as _part_instrument is: a part with no readable instrument
+    # plays its unpitched notes on the keys the file or the notehead gives.
     try:
         inst = part.getInstrument(returnDefault=False)
-    except Exception:  # noqa: BLE001 - a bare stream has no instrument to read
+    except Exception as exc:
+        log.debug(
+            "sheetimport: no kit key read for part %r: %s",
+            getattr(part, "partName", ""),
+            exc,
+        )
         return None
     if inst is None:
         return None
@@ -628,7 +642,9 @@ def _tempo_word(text: str) -> Optional[float]:
             if mark.number is not None and mark.numberImplicit
             else None
         )
-    except Exception:  # noqa: BLE001 - a word music21 cannot read is not a tempo
+    except Exception as exc:
+        # A word music21 cannot read is not a tempo.
+        log.debug("sheetimport: %r read as no tempo: %s", words, exc)
         return None
 
 
@@ -689,7 +705,15 @@ def _tempo_marks(
             if mm.number is not None and not mm.numberImplicit:
                 try:
                     bpm = float(mm.getQuarterBPM() or mm.number)
-                except Exception:  # noqa: BLE001 - fall back to the raw number
+                except Exception as exc:
+                    # A beat unit music21 cannot convert: the mark's own number.
+                    log.debug(
+                        "sheetimport: metronome mark %r at tick %d read as %s: %s",
+                        text,
+                        tick,
+                        mm.number,
+                        exc,
+                    )
                     bpm = float(mm.number)
                 offer(tick, bpm, text, False)
                 continue
@@ -834,7 +858,8 @@ def _realize_ornament(ev: _Event) -> Optional[list[_Event]]:
         ks = ev.element.getContextByClass(key.KeySignature)
         pre, main, post = orn.realize(n, keySig=ks)
         seq = list(pre) + ([main] if main is not None else []) + list(post)
-    except Exception as exc:  # noqa: BLE001 - an ornament music21 cannot realize plays as its note
+    except Exception as exc:
+        # An ornament music21 cannot realize plays as its note.
         log.debug("sheetimport: ornament %s not realized: %s", type(orn).__name__, exc)
         return None
     total = sum(float(x.quarterLength) for x in seq)
@@ -911,7 +936,8 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         expanded = score.expandRepeats()
         if expanded is not None:
             score = expanded
-    except Exception as exc:  # noqa: BLE001 - not every score defines repeats
+    except Exception as exc:
+        # Not every score defines repeats.
         log.debug("sheetimport: expandRepeats skipped for %s: %s", src.name, exc)
 
     flat = score.flatten()
@@ -945,8 +971,11 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         anchors += [
             _tick(m.offset) for m in parts[0].getElementsByClass(m21stream.Measure)
         ]
-    except Exception:  # noqa: BLE001 - a bare stream has no measures; onsets anchor alone
-        pass
+    except Exception as exc:
+        # A bare stream has no measures: the tempo marks anchor on note onsets alone.
+        log.debug(
+            "sheetimport: no bar lines to anchor tempo marks in %s: %s", src.name, exc
+        )
     tempos = _tempo_marks(part_flats, anchors)
     bpm = next((t["bpm"] for t in tempos if t["tick"] == 0), DEFAULT_BPM)
     time_sig = [time_signatures[0]["num"], time_signatures[0]["den"]]
@@ -959,7 +988,9 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             first = ksigs[0]
             as_key = first.asKey() if hasattr(first, "asKey") else None
             detected_key = str(as_key) if as_key is not None else str(first)
-    except Exception:  # noqa: BLE001 - key detection is best-effort
+    except Exception as exc:
+        # Key detection is informational and best-effort.
+        log.debug("sheetimport: no key read from %s: %s", src.name, exc)
         detected_key = ""
 
     # The MusicXML itself (None for any other format), for what music21 does
@@ -1003,12 +1034,14 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
         # roll would re-attack every tied note and change the sound.
         try:
             pflat = part.flatten().stripTies()
-        except Exception as exc:  # noqa: BLE001 - stripTies is best-effort
+        except Exception as exc:
+            # Tie stripping is best-effort: the part imports with its ties re-struck.
             log.debug("sheetimport: stripTies skipped for part %d: %s", idx, exc)
             pflat = part.flatten()
         try:
             name = str(getattr(part, "partName", "") or "")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
+            log.debug("sheetimport: no name read for part %d: %s", idx, exc)
             name = ""
 
         levels, accents = _velocity_timeline(pflat)
@@ -1047,7 +1080,14 @@ def parse_score_path(path: str, display_name: str | None = None) -> dict[str, An
             try:
                 if el.volume is not None and el.volume.velocity is not None:
                     vel = int(el.volume.velocity)
-            except Exception:  # noqa: BLE001 - many scores carry no velocity
+            except Exception as exc:
+                # Many scores carry no velocity: the dynamics give it below.
+                log.debug(
+                    "sheetimport: no velocity read at offset %s of part %d: %s",
+                    off,
+                    idx,
+                    exc,
+                )
                 vel = None
             if vel is None:
                 vel = next(
