@@ -76,13 +76,29 @@ export const sanitizeEditTempoMap = (events: readonly (Partial<TempoEvent> | nul
 /** The start tempo of a map: its beat-0 tempo event's, or the default. */
 export const editStartBpm = (map: readonly TempoEvent[]): number => startTempoOf(map) ?? DEFAULT_BPM;
 
-/** True when two tempo events hold the same beat, tempo, curve and fermata. */
-const sameEvent = (a: TempoEvent, b: TempoEvent | undefined): boolean =>
-  !!b && a.beat === b.beat && a.bpm === b.bpm && (a.curve ?? 'step') === (b.curve ?? 'step')
+/** True when two tempo events hold the same beat, tempo (by `sameBpm`), curve and fermata. */
+const sameEvent = (a: TempoEvent, b: TempoEvent | undefined, sameBpm: (x: number, y: number) => boolean = Object.is): boolean =>
+  !!b && a.beat === b.beat && sameBpm(a.bpm, b.bpm) && (a.curve ?? 'step') === (b.curve ?? 'step')
   && !!a.fermata === !!b.fermata && a.fermata?.beats === b.fermata?.beats && a.fermata?.stretch === b.fermata?.stretch;
 
 export const sameTempoMap = (a: readonly TempoEvent[], b: readonly TempoEvent[]): boolean =>
   a === b || (a.length === b.length && a.every((e, i) => sameEvent(e, b[i])));
+
+/**
+ * A tempo as a MIDI file's FF 51 holds it: whole microseconds a quarter (the
+ * rounding lib/midi tempoMicros writes). A fermata's own bpm is not read.
+ */
+const ff51Micros = (bpm: number): number => Math.round(60_000_000 / bpm);
+
+/**
+ * True when two tempo maps are the same to a MIDI file's resolution: the same
+ * events, each tempo the same whole microseconds a quarter. A MIDI file holds
+ * 90 BPM as 666667 us, which reads back exactly as 89.999955 (lib/midi
+ * tempoOfMicros), and such a part dropped on an arrangement at 90 plays the
+ * same, so it is no change to offer (adoptClipTimeMaps' `changes`).
+ */
+export const sameTempoMapAtMidiResolution = (a: readonly TempoEvent[], b: readonly TempoEvent[]): boolean =>
+  a === b || (a.length === b.length && a.every((e, i) => sameEvent(e, b[i], (x, y) => x === y || ff51Micros(x) === ff51Micros(y))));
 
 export const sameMeterMap = (a: readonly MeterSegment[], b: readonly MeterSegment[]): boolean => {
   if (a === b) return true;
@@ -655,7 +671,8 @@ export function adoptClipTimeMaps(edit: EditTimeMaps, clip: ClipTimeSource): Ado
   const keepBelow = added.length ? added[0].bar : base;
   const meterMap = sanitizeEditMeterMap([...segs.filter((s) => s.bar < keepBelow), ...added, ...clipSegs]);
 
-  const changes = !sameTempoMap(tempoMap, edit.tempoMap) || !sameMeterMap(meterMap, edit.meterMap);
+  // A tempo that differs only below a MIDI file's resolution is no change.
+  const changes = !sameTempoMapAtMidiResolution(tempoMap, edit.tempoMap) || !sameMeterMap(meterMap, edit.meterMap);
   return { ok: true, tempoMap, meterMap, anchorSec: Math.max(0, anchorSec), firstBar: base, changes };
 }
 

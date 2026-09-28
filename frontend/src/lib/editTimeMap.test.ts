@@ -31,6 +31,7 @@ import {
   parseEditMeter,
   sameMeterMap,
   sameTempoMap,
+  sameTempoMapAtMidiResolution,
   withStartBpm,
   withTempoEvent,
   withTempoEventMoved,
@@ -154,6 +155,26 @@ const maps: EditTimeMaps = { tempoMap: tempo, meterMap: meter };
   assert.ok(sameTempoMap(tempo, sanitizeRollTempoMap([{ beat: 8, bpm: 60 }, { beat: 0, bpm: 120 }], 120)));
   assert.ok(!sameTempoMap(tempo, a));
   assert.ok(sameMeterMap(meter, [...meter, { bar: 5, meter: { num: 7, den: 8, groups: [3, 2, 2] } }]), 'a repeated meter is no change');
+}
+
+/* ── a MIDI file's 90 BPM is the arrangement's 90 ─────────────────────── */
+{
+  // FF 51 holds 90 BPM as 666667 us a quarter, which reads back as 89.999955:
+  // a part from such a file on an arrangement at 90 in 4/4 is no change, so
+  // EDIT offers nothing. 91 BPM, or 90 against a 7/8, is still offered.
+  const at90: EditTimeMaps = { tempoMap: sanitizeRollTempoMap([], 90), meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }] };
+  const fileBpm = 60_000_000 / 666667;
+  assert.ok(Math.abs(fileBpm - 89.999955) < 1e-6 && fileBpm !== 90);
+  const part = { startSec: 0, offsetIntoSource: 0, sourceBpm: fileBpm, sourceTempoMap: sanitizeRollTempoMap([], fileBpm), sourceMeterMap: at90.meterMap };
+  const same = adoptClipTimeMaps(at90, part);
+  assert.ok(same.ok && !same.changes, 'a 90 BPM MIDI file on an arrangement at 90 is no change');
+  assert.ok(!sameTempoMap(same.ok ? same.tempoMap : [], at90.tempoMap), 'though the two tempos are not equal numbers');
+  assert.ok(sameTempoMapAtMidiResolution(sanitizeRollTempoMap([], fileBpm), at90.tempoMap));
+  const faster = adoptClipTimeMaps(at90, { ...part, sourceBpm: 91, sourceTempoMap: sanitizeRollTempoMap([], 91) });
+  assert.ok(faster.ok && faster.changes, '91 BPM is a change');
+  const sevenEight = adoptClipTimeMaps(at90, { ...part, sourceMeterMap: [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }] });
+  assert.ok(sevenEight.ok && sevenEight.changes, 'another meter is a change');
+  assert.ok(!sameTempoMapAtMidiResolution(sanitizeRollTempoMap([], 90.01), at90.tempoMap), '90.01 is 666593 us, a different FF 51');
 }
 
 /* ── adopting a clip's maps ──────────────────────────────────────────── */
