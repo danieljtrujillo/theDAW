@@ -70,6 +70,8 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
   const chordInstrument = usePlayAlongStore((s) => s.chordInstrument);
   const chordTuning = usePlayAlongStore((s) => s.chordTuning);
   const capo = usePlayAlongStore((s) => s.capo);
+  const chordRoman = usePlayAlongStore((s) => s.chordRoman);
+  const setChordRoman = usePlayAlongStore((s) => s.setChordRoman);
   const setChordInstrument = usePlayAlongStore((s) => s.setChordInstrument);
   const setChordTuning = usePlayAlongStore((s) => s.setChordTuning);
   const setCapo = usePlayAlongStore((s) => s.setCapo);
@@ -259,6 +261,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
     : null;
 
   const keyText = track && track.key.tonic ? `${track.key.tonic} ${track.key.mode}`.trim() : '';
+  const hasRomans = useMemo(() => (track?.chords ?? []).some((c) => !!c.roman), [track]);
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#0a080f] text-zinc-300">
@@ -309,6 +312,20 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
           onChange={(e) => setCapo(Math.min(CAPO_MAX, Math.max(0, Number(e.target.value) || 0)))}
           className="w-14 form-select text-xs px-1 py-0.5 tabular-nums"
         />
+        <button
+          type="button"
+          className={`btn-ghost text-xs py-1 px-1.5 disabled:opacity-40 ${chordRoman ? 'text-emerald-200' : 'text-zinc-500'}`}
+          onClick={() => setChordRoman(!chordRoman)}
+          aria-pressed={chordRoman}
+          disabled={!hasRomans}
+          title={
+            hasRomans
+              ? 'Show each chord\'s roman numeral in the local key under its name'
+              : 'This chord track has no roman numerals yet; rebuild it to add them'
+          }
+        >
+          ROMAN
+        </button>
         <span className="flex-1" />
         {entry && chordArtifact && (
           <button
@@ -391,6 +408,15 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
                 <div className="text-base font-black tracking-wide text-emerald-100 leading-none" aria-live="off">
                   {currentSpan.symbol}
                 </div>
+                {chordRoman && currentSpan.roman ? (
+                  <div
+                    className="text-sm font-bold text-zinc-300 leading-none"
+                    title={currentSpan.romanKey ? `In ${currentSpan.romanKey}` : undefined}
+                  >
+                    {currentSpan.roman}
+                    {currentSpan.romanKey ? <span className="text-zinc-500"> in {currentSpan.romanKey}</span> : null}
+                  </div>
+                ) : null}
                 {currentShape ? (
                   <ChordDiagram shape={currentShape} strings={tuningMidi.length} label={currentSpan.symbol} size="lg" />
                 ) : (
@@ -459,6 +485,7 @@ export const ChordPlayAlong: React.FC<ChordPlayAlongProps> = ({ entry, artifacts
               getTime={getTime}
               onSeek={onSeek}
               onChordChange={setCurrentIndex}
+              showRoman={chordRoman}
               ariaLabel={`Chord strip for ${entry.title}: ${track.stats.chordCount} chords${keyText ? `, key ${keyText}` : ''}`}
             />
             <ZoomControls

@@ -15,7 +15,10 @@ Two sources, one schema:
 The output carries BOTH the MusicXML chord ``kind`` vocabulary (``major``,
 ``dominant-seventh``, …) and the sounding ``pitchClasses``, so a consumer can
 colour by kind without an interval table and voice a diagram without a chord
-parser. Documents never contain ``null``: every optional value has a typed
+parser. Each chord also carries its ``roman`` numeral (``V7``, ``ii6``,
+``V7/V``) and the local key it is read in (``romanKey``, ``G major``): music21's
+``romanNumeralFromChord`` against a key found by windowed key analysis over the
+chords around it and, for a lead sheet, its melody (composer/romans.py). Documents never contain ``null``: every optional value has a typed
 sentinel (``-1`` for no bass, ``""`` for an unknown tonic, ``[]`` for N.C.).
 
 ``startBeat`` / ``endBeat`` are beats from the start of the piece in the same
@@ -172,6 +175,7 @@ def build_chordtrack(
         raise ValueError("no chords could be derived")
 
     chords = chosen["chords"]
+    _add_romans(chords, chosen["key"], chosen["timing"], chosen.pop("notes", []))
     for index, chord in enumerate(chords):
         chord["id"] = index
     symbols = {c["symbol"] for c in chords}
@@ -539,8 +543,15 @@ def _from_harmony(
         beats = [to_sec(float(b)) for b in range(beat_count)]
         downbeats = [to_sec(float(b)) for b in range(0, beat_count, beats_per_bar)]
 
+    notes = [
+        (_f(n.offset), _f(n.offset) + _f(n.quarterLength), int(p.pitchClass))
+        for n in score.flatten().notes
+        for p in n.pitches
+        if not isinstance(n, harmony.ChordSymbol)
+    ]
     return {
         "method": "harmony",
+        "notes": notes,
         "chords": chords,
         "timing": {
             "bpm": float(bpm),
@@ -867,6 +878,121 @@ def _absorb_short_spans(
     if pending_head is not None:
         out.append(pending_head)
     return out
+
+
+# --------------------------------------------------------------------------
+# roman numerals
+# --------------------------------------------------------------------------
+
+_FLAT_FIGURE = re.compile(r"(^|/)([A-G])b")
+
+
+def _music21_figure(symbol: str) -> str:
+    """``Bbm7`` -> ``B-m7``, ``G/Bb`` -> ``G/B-`` (music21 spells flats ``-``)."""
+    return _FLAT_FIGURE.sub(lambda m: f"{m.group(1)}{m.group(2)}-", symbol)
+
+
+def _chord_pitches(chord: dict[str, Any], spelling: dict[int, str]) -> list[Any]:
+    """The chord's pitches, bass lowest: from its symbol when music21 reads
+    it, else from its pitch classes spelled in the key."""
+    from music21 import harmony, pitch
+
+    try:
+        cs = harmony.ChordSymbol(_music21_figure(chord["symbol"]))
+        if cs.pitches and {p.pitchClass for p in cs.pitches} == set(
+            chord["pitchClasses"]
+        ):
+            return list(cs.pitches)
+    except Exception:
+        # music21 cannot read the symbol: spell the pitch classes instead.
+        pass
+    bass_pc = chord["bassPc"] if chord["bassPc"] >= 0 else chord["rootPc"]
+    names = [bass_pc] + [pc for pc in chord["pitchClasses"] if pc != bass_pc]
+    out = []
+    for i, pc in enumerate(names):
+        p = pitch.Pitch(spelling.get(pc, _SHARP_NAMES[pc]).replace("b", "-"))
+        p.octave = 3 if i == 0 else 4
+        out.append(p)
+    return out
+
+
+def _add_romans(
+    chords: list[dict[str, Any]],
+    key_doc: dict[str, Any],
+    timing: dict[str, Any],
+    notes: list[tuple[float, float, int]],
+) -> None:
+    """Set ``roman`` and ``romanKey`` on every chord ("" for N.C., or when
+    music21 cannot read one). The local key of a chord is found in the
+    chords (and notes) of about a bar either side of it, leaning to the
+    track's own key."""
+    for chord in chords:
+        chord["roman"] = ""
+        chord["romanKey"] = ""
+    try:
+        from backend.modules.composer.romans import (
+            chord_roman,
+            display_figure,
+            key_from_index,
+            key_name,
+            local_keys,
+            window_vectors,
+        )
+        from backend.modules.composer.voiceleading import key_spelling
+    except Exception as exc:
+        # Roman numerals are an extra; a chord track never fails for them.
+        log.debug("chordtrack: no roman numerals (%s)", exc)
+        return
+    sounding = [c for c in chords if c["rootPc"] >= 0 and c["pitchClasses"]]
+    if not sounding:
+        return
+    starts: list[float] = []
+    ends: list[float] = []
+    pcs: list[int] = []
+    weights: list[float] = []
+    for c in sounding:
+        for pc in c["pitchClasses"]:
+            starts.append(_f(c["startBeat"]))
+            ends.append(_f(c["endBeat"]))
+            pcs.append(int(pc))
+            # The root and bass carry the harmony; weigh them up.
+            weights.append(2.0 if pc in (c["rootPc"], c["bassPc"]) else 1.0)
+    for start, end, pc in notes:
+        starts.append(start)
+        ends.append(end)
+        pcs.append(pc)
+        weights.append(0.5)
+    reach = float(max(4, int(timing.get("beatsPerBar") or 4)))
+    centers = [(_f(c["startBeat"]) + _f(c["endBeat"])) / 2 for c in sounding]
+    vectors = window_vectors(
+        starts,
+        ends,
+        pcs,
+        [x - reach for x in centers],
+        [x + reach for x in centers],
+        weights,
+    )
+    tonic_name = _s(key_doc.get("tonic"))
+    mode = _s(key_doc.get("mode")).lower()
+    prior = None
+    tonic_pc = _parse_key_name(tonic_name)
+    if tonic_pc >= 0 and mode in ("major", "minor"):
+        prior = tonic_pc + (0 if mode == "major" else 12)
+    # The track's own key (a lead sheet's signature, the analysis row's key)
+    # is the first evidence of the key: it adds 0.1 to that key's correlation.
+    keys = local_keys(vectors, prior=prior, prior_weight=0.1)
+    for chord, k in zip(sounding, keys):
+        spelled = {}
+        if prior is not None and k % 12 == prior % 12:
+            spelled = {k % 12: tonic_name.replace("b", "-")}
+        try:
+            key = key_from_index(k, spelled)
+            rn = chord_roman(_chord_pitches(chord, key_spelling(key)), key)
+            chord["roman"] = display_figure(rn)
+            chord["romanKey"] = key_name(key)
+        except Exception as exc:
+            # One chord music21 cannot read keeps an empty roman.
+            log.debug("chordtrack: no roman for %s: %s", chord["symbol"], exc)
 
 
 __all__ = [

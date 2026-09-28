@@ -214,6 +214,69 @@ def test_harmony_spells_flats_in_flat_keys_and_reads_slash_bass(tmp_path: Path):
     assert doc["key"]["tonic"] == "F"
 
 
+def test_harmony_reads_roman_numerals_in_the_local_key(tmp_path: Path):
+    sheet = _write_lead_sheet(
+        tmp_path / "lead.musicxml",
+        [(0.0, "G"), (4.0, "C"), (8.0, "D7"), (12.0, "G")],
+        key_name="G",
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=sheet,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["I", "IV", "V7", "I"]
+    assert {c["romanKey"] for c in doc["chords"]} == {"G major"}
+    assert _find_null(doc) == ""
+
+
+def test_roman_numerals_follow_inversions_applied_chords_and_minor(tmp_path: Path):
+    sheet = _write_lead_sheet(
+        tmp_path / "lead.musicxml",
+        [(0.0, "C"), (4.0, "A7/C#"), (8.0, "Dm"), (12.0, "G7/B"), (16.0, "C")],
+        quarters=20,
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=sheet,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["I", "V65/ii", "ii", "V65", "I"]
+    minor = _write_lead_sheet(
+        tmp_path / "minor.musicxml",
+        [(0.0, "Am"), (4.0, "Dm"), (8.0, "E7"), (12.0, "Am")],
+        key_name="a",
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=minor,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["i", "iv", "V7", "i"]
+    assert doc["chords"][0]["romanKey"] == "A minor"
+
+
+def test_chroma_chords_carry_romans_in_the_analysed_key(
+    c_then_g_wav: Path, analysis_row: dict[str, Any]
+):
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=c_then_g_wav,
+        analysis_row=analysis_row,
+        lead_sheet_path=None,
+        method="chroma",
+    )
+    by_root = {c["rootPc"]: c for c in doc["chords"]}
+    assert by_root[0]["roman"] == "I" and by_root[0]["romanKey"] == "C major"
+    assert by_root[7]["roman"] == "V"
+
+
 def test_harmony_merges_repeated_symbols(tmp_path: Path):
     sheet = _write_lead_sheet(
         tmp_path / "lead.musicxml",
