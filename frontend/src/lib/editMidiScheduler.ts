@@ -101,7 +101,8 @@
 import type { AudioClip, EditorTrack } from '../state/editorStore';
 import { clipPeakGain } from '../state/editorStore';
 import { DEFAULT_LANES, sanitizeLanes } from '../state/pianoRollStore';
-import { clipBank, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from './clipProgram';
+import { clipBankSelect } from './arrangementMidi';
+import { clipVoice, effectiveProgramFor, isPercussionTrack, type GlobalVoice } from './clipProgram';
 import { applyFadeAutomation, type AudioParamLike } from './clipFade';
 import {
   BEND_CENTER,
@@ -149,11 +150,14 @@ export const CHANNEL_DEFAULTS: ReadonlyArray<{ controller: number; value: number
 
 /**
  * What EDIT's synths are told. Every time is audio-context seconds. `bank` is
- * the bank select sent before `program` (lib/clipProgram clipBank: a clip's
- * own program in a roll part's Bank); 0 is the General MIDI set.
+ * the bank select (CC 0) sent before `program` (lib/clipProgram clipBank: a
+ * clip's own program in a roll part's Bank); 0 is the General MIDI set.
+ * `bankLsb` is the CC 32 after it: the roll part's bank LSB while the clip
+ * plays the part's program in the part's bank (lib/arrangementMidi
+ * clipBankSelect, the same the MIDI export writes), else undefined.
  */
 export interface EditMidiSink {
-  noteOn(channel: number, program: number, midi: number, velocity: number, time: number, bank: number): void;
+  noteOn(channel: number, program: number, midi: number, velocity: number, time: number, bank: number, bankLsb?: number): void;
   noteOff(channel: number, midi: number, time: number): void;
   wheel(channel: number, raw: number, time: number): void;
   wheelRange(channel: number, semitones: number, time: number): void;
@@ -188,6 +192,13 @@ export interface EditMidiSchedulerDeps {
   lookaheadSec?: () => number;
   /** Absent: EDIT_MIDI_LATE_SEC. */
   lateSec?: number;
+}
+
+/** The program and bank select a clip's notes are played in. */
+interface LiveVoice {
+  program: number;
+  bank: number;
+  bankLsb: number | undefined;
 }
 
 /** One note of a clip on the transport, in seconds, on the clip's `slot`-th channel. */
@@ -594,7 +605,7 @@ export class EditMidiScheduler {
       }
     }
 
-    const pushOn = (clipId: string, channel: number, program: number, bank: number, n: TimedNote, time: number) => {
+    const pushOn = (clipId: string, channel: number, voice: LiveVoice, n: TimedNote, time: number) => {
       // A note of this key still held on the channel ends where this one starts,
       // or its later note-off would cut this one.
       for (let i = this.sounding.length - 1; i >= 0; i -= 1) {
@@ -603,7 +614,7 @@ export class EditMidiScheduler {
         out.push({ time, order: 0, send: () => sink.noteOff(channel, n.midi, time) });
         this.sounding.splice(i, 1);
       }
-      out.push({ time, order: 1, send: () => sink.noteOn(channel, program, n.midi, n.velocity, time, bank) });
+      out.push({ time, order: 1, send: () => sink.noteOn(channel, voice.program, n.midi, n.velocity, time, voice.bank, voice.bankLsb) });
       if (time > now) this.queued.push({ channel, midi: n.midi, time });
       this.sounding.push({ clipId, channel, midi: n.midi, off: n.off });
       this.counts.notes += 1;
@@ -616,7 +627,8 @@ export class EditMidiScheduler {
       if (!track || !chans?.length) continue;
       const program = effectiveProgramFor(clip, track, global);
       if (program === undefined) continue;
-      const bank = clipBank(clip, track);
+      const { bank, bankLsb } = clipBankSelect(clipVoice(clip, track, global), clip.sourceRollPart);
+      const voice: LiveVoice = { program, bank, bankLsb };
       live.add(clip.id);
       const percussion = isPercussionTrack(track);
       const timing = this.timingOf(clip, bpm, percussion);
@@ -687,7 +699,7 @@ export class EditMidiScheduler {
         for (const n of timing.notes) {
           if (n.on >= this.fromT - EPS) break;
           if (n.off <= this.fromT + EPS) continue;
-          pushOn(clip.id, chOf(n.slot), program, bank, n, Math.max(now, this.ctxOf(this.fromT)));
+          pushOn(clip.id, chOf(n.slot), voice, n, Math.max(now, this.ctxOf(this.fromT)));
           this.counts.chased += 1;
         }
       }
@@ -698,14 +710,14 @@ export class EditMidiScheduler {
         if (at < now - lateSec) {
           // Late: chase a note still sounding, skip one that is over.
           if (!percussion && n.off > nowT + EPS) {
-            pushOn(clip.id, chOf(n.slot), program, bank, n, now);
+            pushOn(clip.id, chOf(n.slot), voice, n, now);
             this.counts.late += 1;
           } else {
             this.counts.skipped += 1;
           }
           continue;
         }
-        pushOn(clip.id, chOf(n.slot), program, bank, n, Math.max(now, at));
+        pushOn(clip.id, chOf(n.slot), voice, n, Math.max(now, at));
       }
     }
 

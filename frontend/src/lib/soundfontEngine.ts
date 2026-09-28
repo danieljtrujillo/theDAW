@@ -150,7 +150,7 @@ async function createLiveSynth(): Promise<WorkletSynthesizer> {
 
 let liveSynth: WorkletSynthesizer | null = null;
 let liveSynthPromise: Promise<WorkletSynthesizer> | null = null;
-/** The bank and program each preview channel was last switched to, as bank * 128 + program. */
+/** The bank and program each preview channel was last switched to, as programSwitch keys them. */
 const channelProgram = new Map<number, number>();
 /** How many channels the preview synth has now: PREVIEW_CHANNEL_COUNT, and more as the roll's parts ask for them. */
 let previewChannels = 0;
@@ -207,13 +207,54 @@ export async function ensureSoundfontReady(): Promise<boolean> {
   }
 }
 
+/** A 0-127 data byte, or 0 for anything that is not a number. */
+const dataByte = (v: number): number => Math.max(0, Math.min(127, Number.isFinite(v) ? Math.round(v) : 0));
+
+/**
+ * The messages that switch a channel whose last switch was `previous` (a key
+ * this returns; undefined for a channel never switched) to `program` in bank
+ * `bank` (CC 0, the MSB) and `bankLsb` (CC 32; undefined for a part that has
+ * none): the bank select, MSB then LSB, when either differs from the
+ * channel's, then the program change, as MIDI orders them. A channel that last
+ * had an LSB and now has none is sent LSB 0, so the old one does not pick
+ * the preset. `key` is what the channel plays after them; the same key as
+ * `previous` sends nothing.
+ */
+export function programSwitch(
+  previous: number | undefined,
+  program: number,
+  bank = 0,
+  bankLsb?: number,
+): { key: number; controllers: Array<[controller: 0 | 32, value: number]>; program: number | null } {
+  const p = dataByte(program);
+  const b = dataByte(bank);
+  const lsb = bankLsb === undefined || !Number.isFinite(bankLsb) ? undefined : dataByte(bankLsb);
+  // (LSB + 1) * 16384 + MSB * 128 + program: LSB -1 is "none sent".
+  const key = ((lsb ?? -1) + 1) * 16384 + b * 128 + p;
+  if (previous === key) return { key, controllers: [], program: null };
+  const had = previous ?? 0;
+  const hadBank = Math.floor((had % 16384) / 128);
+  // The LSB the channel holds: the last one sent, else 0 (a channel's reset).
+  const hadLsb = Math.max(0, Math.floor(had / 16384) - 1);
+  // What CC 32 has to say: the part's LSB, or 0 to clear one the channel holds.
+  const wantLsb = lsb ?? (hadLsb > 0 ? 0 : undefined);
+  const controllers: Array<[0 | 32, number]> = [];
+  if (b !== hadBank || (wantLsb !== undefined && wantLsb !== hadLsb)) {
+    controllers.push([0, b]);
+    if (wantLsb !== undefined) controllers.push([32, wantLsb]);
+  }
+  return { key, controllers, program: p };
+}
+
 /**
  * Switch a channel to `program` when it plays another one, and remember it in
  * `programs` (that synth's map), so every caller on that channel (a preview, a
  * roll lane, the keyboard) knows what the channel plays and switches it back
  * when it needs its own. With a `time` (audio-context seconds) the change is
  * queued on the synth for then, so a note scheduled ahead switches the channel
- * at its own moment and not while the note before it is still sounding.
+ * at its own moment and not while the note before it is still sounding. The
+ * bank select before it is `programSwitch`'s: CC 0, and CC 32 for a part
+ * that has a bank LSB.
  */
 function setChannelProgram(
   synth: WorkletSynthesizer,
@@ -222,17 +263,16 @@ function setChannelProgram(
   programs = channelProgram,
   bank = 0,
   time?: number,
+  bankLsb?: number,
 ): void {
-  const p = Math.max(0, Math.min(127, Math.round(program)));
-  const b = Math.max(0, Math.min(127, Number.isFinite(bank) ? Math.round(bank) : 0));
-  const key = b * 128 + p;
-  if (programs.get(ch) === key) return;
+  const change = programSwitch(programs.get(ch), program, bank, bankLsb);
+  if (change.program === null) return;
   const at = time !== undefined ? { time } : undefined;
-  // A bank other than the one the channel last had is selected first (CC 0),
-  // and the program change after it takes that bank, as MIDI orders the two.
-  if (b !== Math.floor((programs.get(ch) ?? 0) / 128)) synth.controllerChange(ch, 0, b, at);
-  synth.programChange(ch, p, at);
-  programs.set(ch, key);
+  for (const [controller, value] of change.controllers) {
+    synth.controllerChange(ch, controller === 0 ? MIDIControllers.bankSelect : MIDIControllers.bankSelectLSB, value, at);
+  }
+  synth.programChange(ch, change.program, at);
+  programs.set(ch, change.key);
 }
 
 /**
@@ -434,15 +474,25 @@ const atTime = (time?: number) => (time !== undefined && Number.isFinite(time) ?
 /**
  * Note-on on an EDIT channel at audio-context time `time` (now when absent),
  * switching its program first, at the same time, if it changed, in bank
- * select `bankSelect` (a clip's instrumentBank; 0 is the General MIDI set).
+ * select `bankSelect` (a clip's instrumentBank; 0 is the General MIDI set)
+ * and `bankLsb` (CC 32, the roll part's bank LSB when the clip plays the
+ * part's program in the part's bank; absent when there is none).
  * The synth queues a timed event and plays it on the render quantum it falls
  * in, so a note scheduled ahead (lib/editMidiScheduler) sounds on the audio
  * clock the clips play on. No-op until its synth bank exists.
  */
-export function editNoteOn(channel: number, program: number, midi: number, velocity: number, time?: number, bankSelect = 0): void {
+export function editNoteOn(
+  channel: number,
+  program: number,
+  midi: number,
+  velocity: number,
+  time?: number,
+  bankSelect = 0,
+  bankLsb?: number,
+): void {
   const at = editChannel(channel);
   if (!at) return;
-  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time);
+  setChannelProgram(at.bank.synth, at.ch, program, at.bank.programs, bankSelect, atTime(time)?.time, bankLsb);
   at.bank.synth.noteOn(at.ch, Math.round(midi), Math.max(1, Math.min(127, Math.round(velocity))), atTime(time));
 }
 
