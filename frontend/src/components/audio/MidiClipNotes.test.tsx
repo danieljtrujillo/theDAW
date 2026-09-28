@@ -12,6 +12,9 @@
  * is out of view paints nothing; scrolled back, it paints the span in view. The
  * window is 1920x1080, where the shell's CSS zoom is 1.1: the backing store
  * covers the span at the zoom (drawn sharp), and the notes stay where they were.
+ * Inside EDIT's timeline scroller, the body is watched against the scroller
+ * with a 160 px margin above and below, so a track is drawn before it scrolls
+ * into view; a new scroller gets a new observer.
  *
  * jsdom has no 2D canvas and no IntersectionObserver: a recording context per
  * canvas element and an observer the test drives stand in.
@@ -28,8 +31,11 @@ class TestObserver {
   static live: TestObserver[] = [];
   private readonly cb: (entries: { isIntersecting: boolean; target: Element | null }[]) => void;
   private target: Element | null = null;
-  constructor(cb: (entries: { isIntersecting: boolean; target: Element | null }[]) => void) {
+  /** The options the component gave: its root and margin. */
+  readonly options: { root?: Element | null; rootMargin?: string };
+  constructor(cb: (entries: { isIntersecting: boolean; target: Element | null }[]) => void, options: { root?: Element | null; rootMargin?: string } = {}) {
     this.cb = cb;
+    this.options = options;
     TestObserver.live.push(this);
   }
   observe(el: Element) { this.target = el; }
@@ -198,6 +204,24 @@ await act(async () => {
   root.render(<MidiClipNotes clip={{ ...clip, sourcePianoRoll: [] } as AudioClip} zoom={ZOOM} selected={false} height={60} visibleFromPx={0} visibleToPx={1000} />);
 });
 assert.equal(canvas(), null);
+
+// In EDIT's timeline the scroller clips the clip bodies, so it is the
+// observer's root and the 160 px margin reaches past its top and bottom edges
+// (on the window's viewport the margin never reaches inside the scroller).
+const scroller = win.document.createElement('div');
+await act(async () => {
+  root.render(<MidiClipNotes clip={clip} zoom={ZOOM} selected={false} height={60} visibleFromPx={0} visibleToPx={1000} scrollRoot={scroller} />);
+});
+assert.equal(TestObserver.live.length, 1, 'one observer watches the body');
+assert.equal(TestObserver.live[0].options.root, scroller, 'rooted at the timeline scroller');
+assert.equal(TestObserver.live[0].options.rootMargin, '160px 0px', 'with the margin above and below it');
+// The scroller remounts (a layout change): the body is watched against the new one.
+const next = win.document.createElement('div');
+await act(async () => {
+  root.render(<MidiClipNotes clip={clip} zoom={ZOOM} selected={false} height={60} visibleFromPx={0} visibleToPx={1000} scrollRoot={next} />);
+});
+assert.equal(TestObserver.live.length, 1, 'the old observer is gone');
+assert.equal(TestObserver.live[0].options.root, next, 'and the new one is rooted at the new scroller');
 
 await act(async () => root.unmount());
 console.log('MidiClipNotes: ok');

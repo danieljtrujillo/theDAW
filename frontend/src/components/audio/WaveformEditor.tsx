@@ -7568,6 +7568,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                         // The part of the clip in the timeline's view (clip px); all of it before the first measurement.
                         visibleFromPx={viewport.width > 0 ? viewport.scrollLeft - left : 0}
                         visibleToPx={viewport.width > 0 ? viewport.scrollLeft + viewport.width - left : width}
+                        // The scroller clips the bodies, so its view (and margin) decides which tracks draw their notes.
+                        scrollRoot={scrollerEl}
                       />
                     </div>
                   ) : (

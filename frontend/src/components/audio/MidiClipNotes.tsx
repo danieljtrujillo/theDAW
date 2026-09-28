@@ -5,18 +5,26 @@ import { NULL_PAINT, canvas2d } from '../../lib/rollCanvas';
 import { applyCanvasBox, computeCanvasBox, effectiveZoom } from '../../lib/canvasScale';
 import { stepClock } from '../../lib/rollTempo';
 
-/** How far (px) outside the timeline's view a clip's body starts painting, so a track scrolled into view is drawn as it arrives. */
+/**
+ * How far (px) above and below the timeline scroller's view a clip's body
+ * counts as in view, so a track scrolled toward the view is drawn before it
+ * arrives. An observer's margin grows its root only, and the scroller clips
+ * the clip bodies, so the scroller is the observer's root (`scrollRoot`); a
+ * margin on the implicit root, the window, never reaches inside it.
+ */
 const ON_SCREEN_MARGIN_PX = 160;
 
 /**
  * An EDIT MIDI clip's notes (FL-style) on a canvas that covers only the part
  * of the clip in the timeline's view: across, `visibleFromPx` to
- * `visibleToPx` (clip px); down, only while the clip's track is in view (an
- * IntersectionObserver on the body, so a vertical scroll re-renders nothing
- * else). The notes sit in an interval index by their seconds on the clip's own
- * clock (lib/clipNotesCanvas), and a paint draws only those inside the visible
- * span, so a forty-minute part scrolled across draws what is on screen, and a
- * clip out of view in either direction mounts no canvas and paints nothing.
+ * `visibleToPx` (clip px); down, only while the clip's track is in view of
+ * the timeline's scroller or within ON_SCREEN_MARGIN_PX of it (an
+ * IntersectionObserver on the body, rooted at the scroller, so a vertical
+ * scroll re-renders nothing else). The notes sit in an interval index by
+ * their seconds on the clip's own clock (lib/clipNotesCanvas), and a paint
+ * draws only those inside the visible span, so a forty-minute part scrolled
+ * across draws what is on screen, and a clip out of view in either direction
+ * mounts no canvas and paints nothing.
  *
  * The backing store holds the visible span at the device pixel ratio times the
  * shell's CSS zoom (lib/canvasScale). What a paint drew is on the canvas as
@@ -31,7 +39,9 @@ export const MidiClipNotes: React.FC<{
   height: number;
   visibleFromPx: number;
   visibleToPx: number;
-}> = ({ clip, zoom, selected, height, visibleFromPx, visibleToPx }) => {
+  /** The timeline's scroller, which clips the clip bodies: the observer's root, so its margin reaches past the scroller's edges. Left out or null, the window's viewport. */
+  scrollRoot?: Element | null;
+}> = ({ clip, zoom, selected, height, visibleFromPx, visibleToPx, scrollRoot = null }) => {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // In view down the timeline. Where the page has no IntersectionObserver the body counts as in view.
@@ -55,11 +65,11 @@ export const MidiClipNotes: React.FC<{
         const last = entries[entries.length - 1];
         if (last) setOnScreen(last.isIntersecting);
       },
-      { rootMargin: `${ON_SCREEN_MARGIN_PX}px 0px` },
+      { root: scrollRoot, rootMargin: `${ON_SCREEN_MARGIN_PX}px 0px` },
     );
     io.observe(body);
     return () => io.disconnect();
-  }, [hasNotes]);
+  }, [hasNotes, scrollRoot]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
