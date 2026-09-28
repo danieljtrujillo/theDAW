@@ -11,6 +11,10 @@
  * playhead's bar, the list's name field renames it, its kind picker turns a
  * section into a movement, a bar key jumps, and the remove key takes one away.
  * Delete on a flag removes that marker and leaves the selected note alone.
+ * No edit removes a neighbour: a drag through other sections passes over them
+ * to the next free bar line, an arrow skips their bar lines, and a double-click
+ * or +SECTION in a bar that already starts with a section opens that section's
+ * name (with a LOG line) and adds nothing.
  *
  * At afd27bea the roll had no marker row, no MARKS key and no markers, so the
  * first query below fails there.
@@ -25,6 +29,7 @@ import { JSDOM } from 'jsdom';
 const { MidiPanel } = await import('../layout/MidiPanel.tsx');
 const { usePianoRollStore } = await import('../../state/pianoRollStore.ts');
 const { markerStep } = await import('../../lib/rollMarkers.ts');
+const { useLogStore } = await import('../../state/logStore.ts');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const win = dom.window;
@@ -195,6 +200,68 @@ const allegro = flagNamed('I. Allegro')!;
 await step(() => { allegro.focus(); key(allegro, 'Delete'); });
 assert.equal(shape(), 'M:Exposition@64');
 assert.equal(roll().notes.length, 1, 'the selected note stays');
+
+// No edit removes a neighbour. Three sections a bar apart: Intro, Theme, Bridge.
+await pause();
+await step(() => roll().setMarkers([
+  { id: 'intro', step: 0, name: 'Intro', kind: 'section' },
+  { id: 'theme', step: 16, name: 'Theme', kind: 'section' },
+  { id: 'bridge', step: 32, name: 'Bridge', kind: 'section' },
+]));
+await frame();
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge@32');
+// Intro dragged through Theme's bar line and on: it passes over Theme and Bridge and lands on the next free bar line.
+await pause();
+const intro = flagNamed('Intro')!;
+await step(() => {
+  pointer(intro, 'pointerdown', 0);
+  pointer(intro, 'pointermove', 16 * STEP_PX);
+  pointer(intro, 'pointermove', 20 * STEP_PX);
+  pointer(intro, 'pointermove', 34 * STEP_PX);
+  pointer(intro, 'pointermove', 44 * STEP_PX);
+  pointer(intro, 'pointerup', 44 * STEP_PX);
+});
+assert.equal(shape(), 'S:Theme@16 S:Bridge@32 S:Intro@48', 'Theme and Bridge are still there');
+await step(() => roll().undo());
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge@32', 'the drag was one undo step');
+// The right arrow on Theme skips Bridge's bar line and lands on the next free one.
+await pause();
+await frame();
+await step(() => { const t = flagNamed('Theme')!; t.focus(); key(t, 'ArrowRight'); });
+assert.equal(shape(), 'S:Intro@0 S:Bridge@32 S:Theme@48');
+await pause();
+await step(() => { key(flagNamed('Theme')!, 'ArrowLeft'); });
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge@32', 'back left, past Bridge again');
+// A double-click inside Bridge's bar opens Bridge's name and adds nothing.
+await pause();
+await step(() => { row()!.dispatchEvent(new win.MouseEvent('dblclick', { bubbles: true, clientX: 36 * STEP_PX })); });
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge@32', 'Bridge keeps its name');
+const bridgeName = win.document.querySelector<HTMLInputElement>('[data-roll-markers] input');
+assert.ok(bridgeName, 'the name field opens');
+assert.equal(bridgeName!.value, 'Bridge', 'on the section already there');
+await step(() => { key(bridgeName!, 'Escape'); });
+// +SECTION in Bridge's bar adds nothing, points the list at Bridge and says so in the LOG.
+await step(() => roll().seek(36));
+await step(() => marks!.click());
+const logged = useLogStore.getState().entries.length;
+await step(() => byLabel("Add a section marker at the playhead's bar")!.click());
+await frame();
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge@32');
+assert.equal(win.document.activeElement?.id, 'roll-marker-name-bridge', "Bridge's name field has the focus");
+const said = useLogStore.getState().entries.slice(logged).map((e) => e.msg).join(' ');
+assert.match(said, /Bridge already starts at bar 3/);
+await step(() => marks!.click());
+// A caller that names the marker it adds at an occupied place renames the one there (the assistant, a script).
+await pause();
+let named = '';
+await step(() => { named = roll().addMarker({ step: 32, kind: 'section', name: 'Bridge B' }); });
+assert.equal(named, 'bridge', 'the id of the section already there');
+assert.equal(shape(), 'S:Intro@0 S:Theme@16 S:Bridge B@32');
+// A retype onto a place that holds one of the new kind is refused too.
+await step(() => { roll().addMarker({ id: 'mv', step: 16, kind: 'movement', name: 'I' }); });
+await pause();
+await step(() => { roll().updateMarker('theme', { kind: 'movement' }); });
+assert.equal(shape(), 'S:Intro@0 M:I@16 S:Theme@16 S:Bridge B@32', 'Theme stays a section beside movement I');
 
 await step(() => root.unmount());
 console.log('RollMarkers: ok');

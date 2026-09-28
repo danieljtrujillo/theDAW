@@ -6,11 +6,11 @@
  * movement solid in the accent, a section tinted. A flag is a button:
  *   - click (or Enter) jumps: the playhead moves to it and the grid scrolls it in
  *   - double-click (or F2) renames it in place
- *   - a drag moves it to the nearest bar line (Shift: the nearest step), one
- *     undo step per drag
- *   - the arrow keys move it a bar (Shift: a step), Delete removes it
+ *   - a drag moves it to the nearest free bar line (Shift: the nearest free
+ *     step), one undo step per drag; it passes over other markers' places
+ *   - the arrow keys move it to the next free bar (Shift: step), Delete removes it
  * A double-click on the row's empty ground adds a section at the bar line
- * before the pointer. The flag whose span holds the playhead reads bolder.
+ * before the pointer, or renames the section already there. The flag whose span holds the playhead reads bolder.
  *
  * The jump list lists every marker in order with its bar, a name field and a
  * kind picker, adds a section or a movement at the playhead's bar, and steps to
@@ -24,12 +24,15 @@ import { barAt, barLines, type MeterSegment } from '../../lib/meterMap';
 import {
   MARKER_NAME_MAX,
   markerAround,
+  markerAtPlace,
   markerBarLabel,
   markerSpoken,
   markerStep,
+  markerTickOfStep,
   type RollMarker,
   type RollMarkerKind,
 } from '../../lib/rollMarkers';
+import { logInfo } from '../../state/logStore';
 import { DockFlyout, FLYOUT_CARD, FLYOUT_LEGEND, MINI_ICON_KEY, StripKey, keyTone } from './midiDockKit';
 
 /** The marker row's height, under the ruler. */
@@ -53,20 +56,44 @@ export const currentMarkerId = (markers: readonly RollMarker[], step: number): s
   return hit;
 };
 
-/** The bar line nearest `step` (the roll's bar lines, 0 included). */
-const nearestBarLine = (lines: readonly number[], step: number): number => {
-  let best = lines[0] ?? 0;
-  for (const l of lines) if (Math.abs(l - step) < Math.abs(best - step)) best = l;
-  return best;
+/** True when `step` holds a marker other than the one moving, of its kind: a place a move must not land on. */
+export type MarkerPlaceTaken = (step: number) => boolean;
+
+/** The steps a Shift drag or Shift arrow can land on: every whole step from 0 to the roll's last. */
+const allSteps = (totalSteps: number): number[] => Array.from({ length: Math.max(1, totalSteps) }, (_, i) => i);
+
+/**
+ * The free place nearest `step` among `places` (bar lines, or whole steps with
+ * Shift), or `fallback` when every place is taken. A drag passes over the other
+ * markers' places and never lands on them, so no drag removes a neighbour.
+ */
+export const nearestFreePlace = (places: readonly number[], step: number, taken: MarkerPlaceTaken, fallback: number): number => {
+  let best: number | null = null;
+  for (const l of places) {
+    if (taken(l)) continue;
+    if (best === null || Math.abs(l - step) < Math.abs(best - step)) best = l;
+  }
+  return best ?? fallback;
 };
 
-/** The step a keyboard move lands on: a bar line before or after `step`, or one step with `fine`. */
-const keyMoveStep = (lines: readonly number[], step: number, dir: -1 | 1, fine: boolean, totalSteps: number): number => {
-  if (fine) return Math.max(0, Math.min(Math.max(0, totalSteps - 1), Math.round(step) + dir));
-  if (dir > 0) return lines.find((l) => l > step + 1e-9) ?? step;
-  let prev = step;
-  for (const l of lines) if (l < step - 1e-9) prev = l;
-  return prev;
+/**
+ * The step a keyboard move lands on: the next free bar line before or after
+ * `step`, or the next free step with `fine`. A neighbour's place is skipped, so
+ * the arrows carry a marker past it and never onto it. With no free place that
+ * way the marker stays.
+ */
+export const keyMoveStep = (
+  lines: readonly number[],
+  step: number,
+  dir: -1 | 1,
+  fine: boolean,
+  totalSteps: number,
+  taken: MarkerPlaceTaken = () => false,
+): number => {
+  const places = fine ? allSteps(totalSteps) : lines;
+  const ahead = places.filter((l) => (dir > 0 ? l > step + 1e-9 : l < step - 1e-9) && !taken(l));
+  if (ahead.length === 0) return step;
+  return dir > 0 ? ahead[0] : ahead[ahead.length - 1];
 };
 
 /** The bar line a new marker takes: the start of the bar under `step`. */
@@ -91,7 +118,7 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
   const [renaming, setRenaming] = useState<string | null>(null);
   const helpId = useId();
   const lines = useMemo(() => barLines(meterMap, totalSteps, pickupSteps), [meterMap, totalSteps, pickupSteps]);
-  const pressRef = useRef<{ id: string; startX: number; startStep: number; dragging: boolean } | null>(null);
+  const pressRef = useRef<{ id: string; kind: RollMarkerKind; startX: number; startStep: number; dragging: boolean } | null>(null);
   const suppressClickRef = useRef(false);
   const width = totalSteps * stepPx;
   const shown = markers.filter((m) => markerStep(m) < totalSteps);
@@ -103,6 +130,13 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
       flags.find((el) => el.getAttribute('data-roll-marker') === id)?.focus();
     });
 
+  /** The place-taken test for a move of marker `m`: another marker of its kind already there. */
+  const takenFor = (m: Pick<RollMarker, 'id' | 'kind'>): MarkerPlaceTaken => {
+    const all = usePianoRollStore.getState().markers;
+    return (step) => !!markerAtPlace(all, m.kind, markerTickOfStep(step), m.id);
+  };
+
+  // In a bar that already starts with a section, the double-click renames that section (addMarker returns its id).
   const onRowDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if ((e.target as Element).closest('[data-roll-marker], input')) return;
     const step = (e.clientX - e.currentTarget.getBoundingClientRect().left) / stepPx;
@@ -114,7 +148,7 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
   const onFlagPointerDown = (e: React.PointerEvent<HTMLButtonElement>, m: RollMarker) => {
     if (e.button !== 0) return;
     e.stopPropagation();
-    pressRef.current = { id: m.id, startX: e.clientX, startStep: markerStep(m), dragging: false };
+    pressRef.current = { id: m.id, kind: m.kind, startX: e.clientX, startStep: markerStep(m), dragging: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onFlagPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
@@ -129,7 +163,8 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
       beginRollGesture();
     }
     const raw = Math.max(0, Math.min(Math.max(0, totalSteps - 1), press.startStep + dx / stepPx));
-    const step = e.shiftKey ? Math.round(raw) : nearestBarLine(lines, raw);
+    const here = usePianoRollStore.getState().markers.find((x) => x.id === press.id);
+    const step = nearestFreePlace(e.shiftKey ? allSteps(totalSteps) : lines, raw, takenFor(press), here ? markerStep(here) : press.startStep);
     usePianoRollStore.getState().updateMarker(press.id, { step });
   };
   const endPress = (e: React.PointerEvent<HTMLButtonElement>) => {
@@ -162,7 +197,7 @@ export function RollMarkerRow({ top, stepPx, totalSteps, meterMap, pickupSteps, 
     } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
       e.stopPropagation();
-      const to = keyMoveStep(lines, markerStep(m), e.key === 'ArrowLeft' ? -1 : 1, e.shiftKey, totalSteps);
+      const to = keyMoveStep(lines, markerStep(m), e.key === 'ArrowLeft' ? -1 : 1, e.shiftKey, totalSteps, takenFor(m));
       roll.updateMarker(m.id, { step: to });
       focusFlag(m.id);
     }
@@ -305,9 +340,22 @@ export function RollMarkerJump({ onJump }: MarkerJumpProps) {
   const count = markers.length;
   const around = markerAround(markers, currentStep);
 
+  // The name field of the marker added (or of the one already at that bar) takes focus, so the user sees which it is.
   const add = (kind: RollMarkerKind) => {
     const s = usePianoRollStore.getState();
-    s.addMarker({ step: markerBarStart(s.meterMap, s.currentStep, s.pickupSteps), kind });
+    const had = new Set(s.markers.map((m) => m.id));
+    const id = s.addMarker({ step: markerBarStart(s.meterMap, s.currentStep, s.pickupSteps), kind });
+    if (had.has(id)) {
+      const there = usePianoRollStore.getState().markers.find((m) => m.id === id);
+      if (there) {
+        logInfo('piano-roll', `The ${kindWord(kind).toLowerCase()} ${there.name} already starts at ${markerBarLabel(there, s.meterMap, s.pickupSteps).toLowerCase()}, so no marker was added; rename it in the list.`);
+      }
+    }
+    window.requestAnimationFrame(() => {
+      const field = document.getElementById(`roll-marker-name-${id}`) as HTMLInputElement | null;
+      field?.focus();
+      field?.select();
+    });
   };
 
   return (

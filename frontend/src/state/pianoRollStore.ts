@@ -19,6 +19,7 @@ import { clampVelocity } from '../lib/rollSelection';
 import {
   cleanMarkerName,
   isRollMarkerKind,
+  markerAtPlace,
   markerTickOfStep,
   nextMarkerName,
   sameRollMarkers,
@@ -378,11 +379,17 @@ interface PianoRollState {
   /**
    * Add a marker at `tick` (or `step`; neither = the playhead), a section
    * unless `kind` says otherwise, named the next free rehearsal letter or roman
-   * numeral unless `name` is given. One of its kind already at that tick is
-   * replaced. Returns its id.
+   * numeral unless `name` is given. When one of its kind is already at that
+   * tick, nothing is added: that marker stays, renamed to `name` when a name is
+   * given, and its id is returned, so the caller selects it. Returns the id.
    */
   addMarker: (marker: RollMarkerInput) => string;
-  /** Rename, move (`tick` or `step`) or retype a marker. Any edit makes a FORM marker the user's own. */
+  /**
+   * Rename, move (`tick` or `step`) or retype a marker. Any edit makes a FORM
+   * marker the user's own. A move or retype onto the place of another marker of
+   * that kind is refused (the marker keeps its place and kind; a rename in the
+   * same patch still applies), so no edit removes a neighbour.
+   */
   updateMarker: (id: string, patch: Omit<RollMarkerInput, 'id' | 'origin'>) => void;
   removeMarker: (id: string) => void;
   /** Replace every marker (sanitized). */
@@ -1454,8 +1461,13 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     const kind = isRollMarkerKind(marker.kind) ? marker.kind : 'section';
     const id = typeof marker.id === 'string' && marker.id.trim() ? marker.id.trim() : uidMarker();
     const tick = isNum(marker.tick) && marker.tick >= 0 ? Math.round(marker.tick) : markerTickOfStep(isNum(marker.step) ? marker.step : s.currentStep);
+    // A place already holding one of this kind keeps it: the new marker would otherwise replace it.
+    const there = markerAtPlace(s.markers, kind, tick, id);
+    if (there) {
+      if (typeof marker.name === 'string' && marker.name.trim()) get().updateMarker(there.id, { name: marker.name });
+      return there.id;
+    }
     const name = cleanMarkerName(marker.name, nextMarkerName(s.markers, kind));
-    // Appended last, so it replaces one of its kind at its tick (sanitizeRollMarkers keeps the later).
     set((st) => ({ markers: sanitizeRollMarkers([...st.markers.filter((m) => m.id !== id), { id, tick, name, kind }]) }));
     return id;
   },
@@ -1463,10 +1475,16 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => {
       const found = s.markers.find((m) => m.id === id);
       if (!found) return {};
-      const kind = isRollMarkerKind(patch.kind) ? patch.kind : found.kind;
-      const tick = isNum(patch.tick) && patch.tick >= 0
+      let kind = isRollMarkerKind(patch.kind) ? patch.kind : found.kind;
+      let tick = isNum(patch.tick) && patch.tick >= 0
         ? Math.round(patch.tick)
         : isNum(patch.step) ? markerTickOfStep(patch.step) : found.tick;
+      // Landing on another marker of this kind would remove it (one of a kind per place): refuse the move,
+      // and the retype too when the marker's own place already holds one of the new kind.
+      if (markerAtPlace(s.markers, kind, tick, id)) {
+        tick = found.tick;
+        if (markerAtPlace(s.markers, kind, tick, id)) kind = found.kind;
+      }
       const name = 'name' in patch ? cleanMarkerName(patch.name, found.name) : found.name;
       // An edit that changes nothing writes nothing, so a held drag records no step of its own.
       if (tick === found.tick && name === found.name && kind === found.kind) return {};

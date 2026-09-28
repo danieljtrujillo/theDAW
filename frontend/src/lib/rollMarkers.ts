@@ -161,6 +161,14 @@ export const sanitizeRollMarkers = (list: readonly (RollMarkerInput | null | und
   return [...byPlace.values()].sort(byMarkerPlace);
 };
 
+/** The marker of `kind` at `tick`, other than `exceptId`: the one an edit landing there would collide with. */
+export const markerAtPlace = (
+  markers: readonly RollMarker[],
+  kind: RollMarkerKind,
+  tick: number,
+  exceptId?: string,
+): RollMarker | null => markers.find((m) => m.kind === kind && m.tick === tick && m.id !== exceptId) ?? null;
+
 /** A deep copy of a marker list, for a clip field or a save. */
 export const copyRollMarkers = (markers: readonly RollMarker[]): RollMarker[] => markers.map((m) => ({ ...m }));
 
