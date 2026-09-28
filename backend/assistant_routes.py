@@ -239,6 +239,10 @@ Tracks:
 - `editor_reorder_tracks` — Top first; a partial list moves those to the top. Payload: `{"track_ids": ["..."]}`
 - `editor_duplicate_track` — Payload: `{"track_id": "..."}`
 - `editor_add_symphony_template` — Sixteen seated section tracks on five section buses sharing a Konzerthaus hall send, synth reverb off. Payload: `{"seating?": "american"|"european"}`
+- `editor_set_track_instrument` — A scanned VST3 instrument in a track's instrument slot, or the slot on, off or empty. Payload: `{"track_id": "...", "plugin?": "name or path", "enabled?": true, "remove?": false}`
+- `editor_list_sound_banks` — The user's sound banks, each with its bank select offset and presets. Payload: `{}`
+- `editor_load_sound_bank` — Add an .sf2, .sf3 or .dls sound bank from a file on this machine. Payload: `{"path": "C:/Sounds/Strings.sf2"}`
+- `editor_set_tuning` — The project tuning. Payload: `{"reference_hz?": 415, "temperament?": "equal"|"meantone"|"werckmeister3"|"kirnberger3"|"vallotti", "root?": "C"}`
 - `editor_freeze_track` — NOT available from here (it needs the EDIT timeline's offline renderer); it answers with the path to the freeze button. Unfreeze with `editor_set_track` and `frozen: false`.
 
 Analysis (backend DSP):

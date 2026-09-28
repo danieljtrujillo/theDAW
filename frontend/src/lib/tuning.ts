@@ -69,8 +69,9 @@ export const TEMPERAMENTS: ReadonlyArray<{ id: TemperamentId; label: string }> =
 
 export const PITCH_CLASS_NAMES = Object.freeze(['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'B♭', 'B']);
 
-const REF_MIN_HZ = 380;
-const REF_MAX_HZ = 480;
+/** The reference pitches a project takes, in Hz. */
+export const REF_MIN_HZ = 380;
+export const REF_MAX_HZ = 480;
 
 const PURE_FIFTH = 1200 * Math.log2(3 / 2);
 const PYTHAGOREAN_COMMA = 1200 * Math.log2(531441 / 524288);

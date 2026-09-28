@@ -49,6 +49,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_detect_tempo:'T0_silent',
   editor_compare_timing:'T0_silent',
   editor_get_waveform_peaks:'T0_silent',
+  // Lists the user's sound banks and their presets; changes nothing.
+  editor_list_sound_banks:'T0_silent',
   dj_get_state:      'T0_silent',
   // The composer's reads: a check, the style list, a profile's numbers and a
   // corpus search compute or look things up and change nothing in the app.
@@ -113,6 +115,11 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   editor_duplicate_track:'T1_inform',
   // Adds tracks and buses and deletes nothing, as one undo step.
   editor_add_symphony_template:'T1_inform',
+  // One undo step each; the slot and the tuning are set back the same way.
+  editor_set_track_instrument:'T1_inform',
+  editor_set_tuning: 'T1_inform',
+  // Adds a bank to the list; removing it is one click in the Banks dialog.
+  editor_load_sound_bank:'T1_inform',
   editor_rename_marker:'T1_inform',
   editor_add_automation_lane:'T1_inform',
   editor_set_automation_points:'T1_inform',
@@ -261,6 +268,18 @@ export function describeToolCall(toolName: string, args: Record<string, unknown>
       return 'Set the loop region'
     case 'editor_add_marker':
       return `Add marker at ${args.seconds}s`
+    case 'editor_set_track_instrument':
+      return args.remove
+        ? `Empty the VST3 instrument slot of track ${args.track_id ?? ''}`
+        : args.plugin
+          ? `Play track ${args.track_id ?? ''} through ${truncateString(String(args.plugin), 40)}`
+          : `Switch the instrument of track ${args.track_id ?? ''} ${args.enabled === false ? 'off' : 'on'}`
+    case 'editor_list_sound_banks':
+      return 'List your sound banks and their presets'
+    case 'editor_load_sound_bank':
+      return `Add the sound bank ${truncateString(String(args.path ?? ''), 60)}`
+    case 'editor_set_tuning':
+      return `Set the project tuning${args.reference_hz != null ? ` to A = ${args.reference_hz} Hz` : ''}${args.temperament ? `, ${args.temperament}` : ''}${args.root != null ? ` on ${args.root}` : ''}`
     case 'editor_add_symphony_template':
       return `Add the symphony orchestra template (${args.seating === 'european' ? 'European' : 'American'} seating): sixteen section tracks, five section buses and a hall`
 

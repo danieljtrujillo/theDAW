@@ -137,6 +137,11 @@ import {
   sectionBus,
   symphonyTracks,
 } from '../lib/symphonyTemplate';
+import { listedUserBanks, useSoundBankStore } from './soundBankStore';
+import { useTuningStore } from './tuningStore';
+import { PITCH_CLASS_NAMES, REF_MAX_HZ, REF_MIN_HZ, TEMPERAMENTS, type TemperamentId } from '../lib/tuning';
+import { useVstStore } from './vstStore';
+import type { Vst3PluginInfo } from '../lib/vstClient';
 
 /* ── result envelope ─────────────────────────────────────────────────────── */
 
@@ -2620,6 +2625,207 @@ export function createSymphonyTemplate(args: SymphonyTemplateArgs = {}): ToolRes
   return done(
     `Added the symphony orchestra (${seating} seating): ${plan.length} section tracks on ${SECTION_BUSES.length} section buses, each sending to the ${HALL_BUS_NAME} bus (${hallIrLabel(HALL_REVERB_PARAMS.hall, HALL_REVERB_PARAMS.position)}); synth reverb off on every track`,
     { seating, ...made },
+  );
+}
+
+/* ── Sound banks ─────────────────────────────────────────────────────────── */
+
+/** A bank's presets as a line: the first few by bank select and program. */
+const presetLine = (presets: ReadonlyArray<{ bank: number; program: number; name: string; drum: boolean }>, max = 12): string =>
+  presets
+    .slice(0, max)
+    .map((p) => (p.drum ? `kit ${p.program} ${p.name}` : `${p.bank}:${p.program} ${p.name}`))
+    .join(', ') + (presets.length > max ? `, … (${presets.length} in all)` : '');
+
+/**
+ * The user's sound banks (state/soundBankStore): each bank's id, name, the
+ * bank select offset it plays at, and its presets. Refreshes the list from
+ * the backend first; changes nothing.
+ */
+export async function listSoundBanks(): Promise<ToolResult> {
+  await useSoundBankStore.getState().refresh();
+  const banks = listedUserBanks();
+  const error = useSoundBankStore.getState().error;
+  if (!banks.length) {
+    return done(error ? `No sound banks are listed: ${error}` : 'No sound banks of your own yet; editor_load_sound_bank adds one', { banks: [] });
+  }
+  return done(
+    `${banks.length} sound bank(s): ${banks.map((b) => `${b.name} (${b.id}, bank select ${b.offset}, ${b.presets.length} presets)`).join('; ')}`,
+    {
+      banks: banks.map((b) => ({
+        id: b.id,
+        name: b.name,
+        format: b.format,
+        offset: b.offset,
+        span: b.span,
+        download_id: b.downloadId ?? null,
+        presets: b.presets.map((p) => ({ bank: p.bank, program: p.program, name: p.name, drum: p.drum, bank_select: b.offset + p.bank })),
+      })),
+    },
+  );
+}
+
+export interface LoadSoundBankArgs {
+  /** An .sf2, .sf3 or .dls file on this machine. */
+  path?: unknown;
+}
+
+/**
+ * Add a sound bank from a file on this machine (backend/modules/soundfonts):
+ * the backend stores a copy, gives it a bank select offset, and every picker
+ * and synth lists it at once.
+ */
+export async function loadSoundBank(args: LoadSoundBankArgs = {}): Promise<ToolResult> {
+  const path = strArg(args.path);
+  if (!path) return fail('load_sound_bank: pass path, an .sf2, .sf3 or .dls file on this machine');
+  if (!/\.(sf2|sf3|dls)$/i.test(path)) return fail(`load_sound_bank: ${path} is not an .sf2, .sf3 or .dls file`);
+  const bank = await useSoundBankStore.getState().addPath(path);
+  if (!bank) return fail(useSoundBankStore.getState().error ?? `load_sound_bank: ${path} was not added`);
+  return done(
+    `Added the sound bank ${bank.name} (${bank.id}) at bank select ${bank.offset}: ${bank.presets.length} presets, ${presetLine(bank.presets)}`,
+    { id: bank.id, name: bank.name, offset: bank.offset, span: bank.span, presets: bank.presets.length },
+  );
+}
+
+/* ── Tuning ──────────────────────────────────────────────────────────────── */
+
+export interface SetTuningArgs {
+  /** A4 in Hz, REF_MIN_HZ-REF_MAX_HZ. */
+  reference_hz?: unknown;
+  /** One of lib/tuning TEMPERAMENTS but 'scala' (a Scala scale comes from a file). */
+  temperament?: unknown;
+  /** The pitch class the temperament is laid from: 0-11 or a name ('C', 'F#', 'Bb'). */
+  root?: unknown;
+}
+
+const LETTER_PC: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+
+/** A pitch class from 0-11 or a note name, or undefined. */
+function pitchClassArg(v: unknown): number | undefined {
+  const n = numArg(v);
+  if (n !== undefined) return Number.isInteger(n) && n >= 0 && n <= 11 ? n : undefined;
+  const s = strArg(v)?.toLowerCase().replace('♯', '#').replace('♭', 'b');
+  const m = s ? /^([a-g])(#|b)?$/.exec(s) : null;
+  if (!m) return undefined;
+  return (LETTER_PC[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? 11 : 0)) % 12;
+}
+
+/**
+ * Set the project tuning (state/tuningStore): A4's pitch, the temperament and
+ * its root. Every live synth, render and MIDI export follows it. A Scala
+ * scale is imported from its file in EDIT's tuning panel.
+ */
+export function setTuning(args: SetTuningArgs = {}): ToolResult {
+  const given = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
+  if (!given(args.reference_hz) && !given(args.temperament) && !given(args.root)) {
+    return fail('set_tuning: pass reference_hz, temperament or root');
+  }
+  const hz = numArg(args.reference_hz);
+  if (given(args.reference_hz) && (hz === undefined || hz < REF_MIN_HZ || hz > REF_MAX_HZ)) {
+    return fail(`set_tuning: reference_hz must be ${REF_MIN_HZ}-${REF_MAX_HZ}, not ${JSON.stringify(args.reference_hz)}`);
+  }
+  const temperament = strArg(args.temperament)?.toLowerCase();
+  const offered = TEMPERAMENTS.filter((t) => t.id !== 'scala');
+  if (temperament !== undefined && !offered.some((t) => t.id === temperament)) {
+    return fail(
+      `set_tuning: temperament must be one of ${offered.map((t) => t.id).join(', ')} (a Scala scale is imported from its file in EDIT's tuning panel)`,
+    );
+  }
+  const root = given(args.root) ? pitchClassArg(args.root) : undefined;
+  if (given(args.root) && root === undefined) return fail(`set_tuning: root must be 0-11 or a note name, not ${JSON.stringify(args.root)}`);
+  const t = useTuningStore.getState();
+  if (hz !== undefined) t.setReference(hz);
+  if (temperament !== undefined) t.setTemperament(temperament as TemperamentId);
+  if (root !== undefined) t.setRoot(root);
+  const now = useTuningStore.getState().tuning;
+  const label = TEMPERAMENTS.find((x) => x.id === now.temperament)?.label ?? now.temperament;
+  return done(`The project tuning is A = ${n2(now.referenceHz)} Hz, ${label} on ${PITCH_CLASS_NAMES[now.root]}`, {
+    reference_hz: now.referenceHz,
+    temperament: now.temperament,
+    root: now.root,
+  });
+}
+
+/* ── VST3 instrument slot ────────────────────────────────────────────────── */
+
+export interface SetTrackInstrumentArgs {
+  track_id?: unknown;
+  track?: unknown;
+  /** A scanned VST3 instrument, by its name or its path. */
+  plugin?: unknown;
+  /** Switch the slot on or off, keeping the plugin. */
+  enabled?: unknown;
+  /** Empty the slot: the track plays on EDIT's synths again. */
+  remove?: unknown;
+}
+
+/** The scanned VST3 instruments (the plugins whose category is instrument), scanning once when nothing was scanned; a string says why there are none. */
+async function scannedInstruments(): Promise<Vst3PluginInfo[] | string> {
+  const vst = useVstStore.getState();
+  if (!vst.scanned && !vst.scanning) await vst.scan();
+  const after = useVstStore.getState();
+  if (after.unavailableReason) return after.unavailableReason;
+  if (after.error) return after.error;
+  return after.plugins.filter((p) => p.category === 'instrument');
+}
+
+/**
+ * Put a scanned VST3 instrument in a track's instrument slot, switch the slot
+ * on or off, or empty it (editorStore setTrackInstrument). The track's MIDI
+ * then plays live through the plugin, and every bounce, freeze and export
+ * prints through it. One undo step.
+ */
+export async function setTrackInstrument(args: SetTrackInstrumentArgs = {}): Promise<ToolResult> {
+  const found = resolveTrack(args.track_id ?? args.track);
+  if (!found.ok) return fail(`set_track_instrument: ${found.error}`);
+  const track = found.value;
+  const plugin = strArg(args.plugin);
+  const enabled = boolArg(args.enabled);
+  const remove = boolArg(args.remove) === true;
+  if (!plugin && enabled === undefined && !remove) return fail('set_track_instrument: pass plugin, enabled or remove');
+  if (remove) {
+    if (plugin) return fail('set_track_instrument: pass plugin or remove, not both');
+    if (!track.instrument?.vst) return fail(`set_track_instrument: track ${track.name} has no VST3 instrument`);
+    oneStep(() => store().setTrackInstrument(track.id, null));
+    return done(`Track ${track.name} plays its MIDI on EDIT's synths again`, { track_id: track.id, instrument: null });
+  }
+  if (plugin) {
+    const list = await scannedInstruments();
+    if (typeof list === 'string') return fail(`set_track_instrument: no VST3 instruments here: ${list}`);
+    const lower = plugin.toLowerCase();
+    const matches = list.filter(
+      (p) => p.path === plugin || p.path.toLowerCase() === lower || (p.display_name || p.name).toLowerCase() === lower || p.name.toLowerCase() === lower,
+    );
+    if (matches.length !== 1) {
+      const known = list.slice(0, 20).map((p) => p.display_name || p.name).join(', ') || 'none';
+      return fail(
+        matches.length > 1
+          ? `set_track_instrument: ${matches.length} instruments are called "${plugin}": ${matches.map((p) => p.path).join(', ')}. Pass the path.`
+          : `set_track_instrument: no scanned VST3 instrument "${plugin}". Scanned instruments: ${known}`,
+      );
+    }
+    const pl = matches[0];
+    // The scan is an await: the track is looked up again.
+    if (!store().tracks.some((t) => t.id === track.id)) return fail(`set_track_instrument: track ${track.name} is gone`);
+    const name = pl.display_name || pl.name;
+    oneStep(() => {
+      store().setTrackInstrument(track.id, { plugin_path: pl.path, plugin_name: name });
+      if (enabled === false) store().toggleTrackInstrument(track.id);
+    });
+    return done(
+      enabled === false
+        ? `Track ${track.name} holds ${name} in its instrument slot, switched off`
+        : `Track ${track.name} plays its MIDI through ${name}; bounces, freezes and exports print through it`,
+      { track_id: track.id, plugin_path: pl.path, plugin_name: name, enabled: enabled !== false },
+    );
+  }
+  const slot = track.instrument;
+  if (!slot?.vst) return fail(`set_track_instrument: track ${track.name} has no VST3 instrument to switch; pass plugin`);
+  if (slot.enabled !== enabled) oneStep(() => store().toggleTrackInstrument(track.id));
+  const name = slot.vst.plugin_name || slot.vst.plugin_path;
+  return done(
+    enabled ? `Track ${track.name}'s instrument ${name} is on` : `Track ${track.name}'s instrument ${name} is off: the track plays on EDIT's synths`,
+    { track_id: track.id, enabled },
   );
 }
 

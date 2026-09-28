@@ -1607,6 +1607,83 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             }
         },
     ),
+    _fn(
+        "editor_set_track_instrument",
+        "Put one of the user's scanned VST3 instruments in a track's instrument "
+        "slot, switch the slot on or off, or empty it. The track's MIDI then "
+        "plays live through the plugin ahead of its inserts, and every bounce, "
+        "freeze and export prints through it; switched off or empty, it plays "
+        "on EDIT's soundfont synths. One undo step.",
+        {
+            "track_id": _TRACK_ID,
+            "plugin": {
+                "type": "string",
+                "description": (
+                    "A scanned VST3 instrument by its name or its path. The "
+                    "answer lists the scanned instruments when none matches."
+                ),
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Switch the slot on or off, keeping its plugin",
+            },
+            "remove": {
+                "type": "boolean",
+                "description": "true empties the slot. Not with plugin.",
+            },
+        },
+        ["track_id"],
+    ),
+    # ── sound banks and tuning ──────────────────────────────────────────────
+    _fn(
+        "editor_list_sound_banks",
+        "The user's sound banks: each bank's id, name, the bank select offset "
+        "it plays at, and its presets (bank, program, name, drum, and the bank "
+        "select a synth and a MIDI file send for it). Changes nothing.",
+        {},
+    ),
+    _fn(
+        "editor_load_sound_bank",
+        "Add a sound bank from an .sf2, .sf3 or .dls file on this machine. The "
+        "app stores a copy, gives it a bank select range of its own, and every "
+        "instrument picker and synth lists its presets at once.",
+        {
+            "path": {
+                "type": "string",
+                "description": "The bank file's full path on this machine",
+            }
+        },
+        ["path"],
+    ),
+    _fn(
+        "editor_set_tuning",
+        "Set the project tuning: A4's pitch, the temperament and the pitch "
+        "class it is laid from. Every live synth, render and MIDI export "
+        "follows it, and the project file keeps it. A Scala scale is imported "
+        "from its file in EDIT's tuning panel.",
+        {
+            "reference_hz": {
+                "type": "number",
+                "minimum": 380,
+                "maximum": 480,
+                "description": "A4 in Hz: 415 Baroque, 430 Classical, 440 modern, 442 orchestral",
+            },
+            "temperament": {
+                "type": "string",
+                "enum": [
+                    "equal",
+                    "meantone",
+                    "werckmeister3",
+                    "kirnberger3",
+                    "vallotti",
+                ],
+            },
+            "root": {
+                "type": "string",
+                "description": "The temperament's root: a note name ('C', 'F#', 'Bb') or 0-11",
+            },
+        },
+    ),
     # ── analysis ────────────────────────────────────────────────────────────
     _fn(
         "editor_analyze_clip",

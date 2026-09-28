@@ -110,6 +110,11 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_freeze_track',
     // Templates.
     'editor_add_symphony_template',
+    // A track's VST3 instrument slot, the user's sound banks and the project tuning.
+    'editor_set_track_instrument',
+    'editor_list_sound_banks',
+    'editor_load_sound_bank',
+    'editor_set_tuning',
     // Analysis (backend DSP).
     'editor_analyze_clip',
     'editor_compare_timing',

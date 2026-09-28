@@ -16,6 +16,13 @@ PROMPT = REPO_ROOT / "backend" / "assistant_routes.py"
 #: name -> (tier, the payload keys the browser handler passes on)
 STAGE4_TOOLS = {
     "editor_add_symphony_template": ("T1_inform", {"seating"}),
+    "editor_set_track_instrument": (
+        "T1_inform",
+        {"track_id", "plugin", "enabled", "remove"},
+    ),
+    "editor_list_sound_banks": ("T0_silent", set()),
+    "editor_load_sound_bank": ("T1_inform", {"path"}),
+    "editor_set_tuning": ("T1_inform", {"reference_hz", "temperament", "root"}),
 }
 
 
@@ -25,6 +32,8 @@ def _schema(name: str) -> dict:
 
 def _handler_keys(name: str) -> set[str]:
     source = (ORB_KIT / "actionHandlers.ts").read_text(encoding="utf-8")
+    if re.search(rf"^\s*{name}: \(\) =>\s*facade\.\w+\(\)", source, re.M):
+        return set()
     m = re.search(
         rf"^\s*{name}: \(p\) =>\s*facade\.\w+\(pick\(p, \[(.*?)\]\)\)",
         source,

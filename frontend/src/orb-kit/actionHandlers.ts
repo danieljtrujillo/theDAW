@@ -371,6 +371,13 @@ const EDITOR_TOOLS: Record<string, EditorToolRun> = {
     editor_freeze_track: (p) => facade.freezeTrack(pick(p, TRACK)),
     // The Symphony orchestra template: sixteen section tracks, their buses and the hall send.
     editor_add_symphony_template: (p) => facade.createSymphonyTemplate(pick(p, ['seating'])),
+    // A track's VST3 instrument slot: a scanned instrument in, on or off, or out.
+    editor_set_track_instrument: (p) => facade.setTrackInstrument(pick(p, [...TRACK, 'plugin', 'enabled', 'remove'])),
+
+    // -- sound banks and tuning ----------------------------------------------
+    editor_list_sound_banks: () => facade.listSoundBanks(),
+    editor_load_sound_bank: (p) => facade.loadSoundBank(pick(p, ['path'])),
+    editor_set_tuning: (p) => facade.setTuning(pick(p, ['reference_hz', 'temperament', 'root'])),
 
     // -- analysis (backend DSP) ----------------------------------------------
     editor_analyze_clip: (p) => editorToolBridge.analyzeClip(pick(p, CLIP)),
