@@ -341,9 +341,11 @@ const extractWindow = async (asked: AudioClip, args: RenderArgs): Promise<Blob> 
   if (!clip.audioBlob) {
     if (!hasMidiNotes(clip)) throw new Error(`"${clip.label}" has no audio (an empty MIDI clip)`);
     const voice = voiceFor(clip);
-    // In the MIDI render queue's turn, so it never overlaps another render.
+    // In the MIDI render queue's turn, so it never overlaps another render, and in
+    // the bank EDIT plays the clip's program in (its roll part's Bank), which the
+    // render's stamp (midiRenderFields) records.
     const rendered = await withRenderTurn(clip.id, clip.label, () =>
-      bounceMidiClip(clip, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion }));
+      bounceMidiClip(clip, { render: args.render, bpm: store().bpm, program: voice.program, bank: voice.bank, percussion: voice.percussion }));
     clip = { ...clip, ...midiRenderFields(clip, rendered, voice) };
   }
   const offset = Math.max(0, clip.offsetIntoSource ?? 0);
