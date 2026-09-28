@@ -54,6 +54,10 @@ const valueAt = (list: readonly RollControl[], tick: number): number => {
   const piano = buildExpression(whole, { instrument: { instrumentId: 'piano' }, attacks: false });
   const pe = cc(piano.controls, 11);
   assert.ok(valueAt(pe, 0.4 * 3840) - valueAt(pe, 0) < 10, 'a piano does not swell inside a note');
+  // CC 1 is a dynamic layer on a sustaining instrument; on a piano a General MIDI bank plays it as vibrato.
+  assert.ok(horn.controls.some((c) => c.controller === 1), 'the horn gets its dynamic on CC 1');
+  assert.ok(!piano.controls.some((c) => c.controller === 1), 'the piano gets no CC 1');
+  assert.ok(!buildExpression(whole, { instrument: { program: 24 }, attacks: false }).controls.some((c) => c.controller === 1), 'nor does a guitar');
 }
 
 // ── A phrase's arc, and a rest ending it ────────────────────────────────────

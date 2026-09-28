@@ -14,6 +14,10 @@
  *   - CC 1 carries the dynamic: an orchestral soundfont (the stage-4 bank's
  *     per-zone CC 1 modulators) crossfades its dynamic layers with it. It
  *     follows each phrase's hairpins, lifted by the note density around it.
+ *     A piano, plucked or struck instrument does not get it: it has no
+ *     dynamic layers on CC 1, and a General MIDI bank's default modulator
+ *     turns CC 1 into vibrato (50 cents at 127) on it. A part whose
+ *     instrument is not known (it follows the picker) keeps it.
  *   - CC 11 carries the phrase inside that dynamic: it rides the same arc
  *     more gently, stays level across a slur, and swells inside every held
  *     note of a sustaining instrument.
@@ -34,6 +38,7 @@
 import type { PianoNote, RollControl } from '../../state/pianoRollStore';
 import { articulationFamily, isArticulation, type Articulation, type ArticulationInstrument } from '../articulationMap';
 import { PPQ, ROLL_STEPS_PER_BEAT as STEPS_PER_BEAT } from '../noteClock';
+import { orchestraInstrument } from '../orchestra';
 
 /** A dynamic wedge over ticks on the roll's clock. */
 export interface Hairpin {
@@ -239,6 +244,10 @@ export function buildExpression(notes: readonly PianoNote[], opts: ExpressionOpt
   const slurs = opts.slurs ? [...opts.slurs] : readSlurs(notes);
   const onsets = notes.map(tickOf).sort((a, b) => a - b);
   const swells = sustains(opts.instrument);
+  // A known instrument that does not sustain (a piano, a guitar) has no dynamic layers on CC 1.
+  const inst = opts.instrument;
+  const known = !!inst && (typeof inst.program === 'number' || !!orchestraInstrument(inst.instrumentId ?? undefined));
+  const layered = swells || !known;
 
   const cc1: Array<{ tick: number; value: number }> = [];
   const cc11: Array<{ tick: number; value: number }> = [];
@@ -255,8 +264,8 @@ export function buildExpression(notes: readonly PianoNote[], opts: ExpressionOpt
     for (let t = p.fromTick; t <= p.toTick; t += every) {
       const level = hairpinLevel(hairpins, t);
       const dense = densityAt(onsets, t);
-      // CC 1: the dynamic layer, 48 at a phrase's floor to 100 at its peak, a busy passage lifted.
-      push(cc1, t, 48 + depth * (52 * level + 14 * dense));
+      // CC 1: the dynamic layer, 48 at a phrase's floor to 100 at its peak, a busy passage lifted; sustaining instruments only.
+      if (layered) push(cc1, t, 48 + depth * (52 * level + 14 * dense));
       // CC 11: the phrase inside the dynamic, gentler, with a held note's swell laid over it.
       let e = 92 + depth * 24 * level;
       const h = held.find((n) => t >= tickOf(n) && t < tickOf(n) + ticksOf(n));
