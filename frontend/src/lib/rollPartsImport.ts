@@ -22,6 +22,10 @@ import { MAX_ROLL_PARTS, PERCUSSION_PART_CHANNEL, cleanPartProgram, partColorAt 
 import type { SheetScore } from './sheetImportClient';
 import type { TempoEvent } from './tempoMap';
 
+/** The log line of a one-part import into a roll whose other parts hold notes (PartsImportResult keptDocument). */
+export const KEPT_DOCUMENT_LOG =
+  "The roll kept its own tempo map, time signatures, lanes and pitch bends, which its other parts play by; the file's were not applied";
+
 /** What an import did: how many parts and notes arrived, and whether they replaced the parts or went into the active one. */
 export interface PartsImportResult {
   parts: number;

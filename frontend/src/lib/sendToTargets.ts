@@ -22,7 +22,7 @@ import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
 import { midiFileToRoll } from './rollMidi';
-import { importMidiParts } from './rollPartsImport';
+import { KEPT_DOCUMENT_LOG, importMidiParts } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
 import { logError, logInfo } from '../state/logStore';
@@ -193,7 +193,7 @@ export function loadMidiIntoPianoRoll(
       `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps${partText})`,
     );
     // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
-    if (kept) logInfo('send-to', "The roll kept its own tempo map, time signatures, lanes and pitch bends, which its other parts play by; the file's were not applied");
+    if (kept) logInfo('send-to', KEPT_DOCUMENT_LOG);
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);

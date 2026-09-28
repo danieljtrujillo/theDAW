@@ -32,7 +32,7 @@ import {
 import { createRollScheduler, ROLL_LOOKAHEAD_SEC, ROLL_TICK_MS, type ScheduledWheel } from '../../lib/rollPartPlay';
 import { rollPartVoice, rollPartVoices, type PartVoice } from '../../lib/rollPartVoice';
 import { MAX_ROLL_PARTS, audiblePartIds, partFileChannels } from '../../lib/rollTracks';
-import { importMidiParts, importSheetParts } from '../../lib/rollPartsImport';
+import { KEPT_DOCUMENT_LOG, importMidiParts, importSheetParts } from '../../lib/rollPartsImport';
 import { RollTrackColumn } from './RollTrackColumn';
 import { RollNotesCanvas, type RollNotesCanvasHandle } from './RollNotesCanvas';
 import { RollMinimap } from './RollMinimap';
@@ -1315,10 +1315,6 @@ export const exportRollMidi = async (): Promise<void> => {
   else if (result.downloaded) logInfo('piano-roll', `Exported ${count} notes${partText} as MIDI`);
 };
 
-/** The log line of a one-part import into a roll whose other parts hold notes (lib/rollPartsImport keptDocument). */
-export const KEPT_DOCUMENT_TEXT =
-  "The roll kept its own tempo map, time signatures, lanes and pitch bends, which its other parts play by; the file's were not applied";
-
 export const importMidiFileToRoll = (file: File): void => {
   file.arrayBuffer().then((buf) => {
     try {
@@ -1341,7 +1337,7 @@ export const importMidiFileToRoll = (file: File): void => {
         `Imported ${done.notes} notes from "${file.name}"${where} at ${Math.round(done.bpm * 100) / 100} BPM${changes > 0 ? ` with ${changes} tempo change${changes === 1 ? '' : 's'}` : ''} in ${meterLabel(done.meterMap[0].meter)}${done.bentLanes ? `, pitch bend in ${done.bentLanes} lane${done.bentLanes === 1 ? '' : 's'}` : ''}`,
       );
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} tracks are in its last part`);
-      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_TEXT);
+      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1369,7 +1365,7 @@ export const importSheetFileToRoll = (file: File): void => {
         `Imported ${done.notes} notes from score "${file.name}" (${score.format})${where} at ${Math.round(score.bpm * 100) / 100} BPM in ${meterLabel(meter)}`,
       );
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} parts are in its last part`);
-      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_TEXT);
+      if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
     } catch (e) {
       logError('piano-roll', `Sheet import failed: ${e instanceof Error ? e.message : String(e)}`);
     }
