@@ -288,7 +288,8 @@ assertRoll('clip-1');
     ],
   });
   const fields = midiFileClipFields(parseMidi(bytes), 'imp');
-  assert.equal(fields.sourceBpm, 97.3, 'the clip plays at the file tempo');
+  // The file's FF 51 holds 616650 us a quarter; the clip plays exactly that.
+  assert.equal(fields.sourceBpm, 60_000_000 / 616650, 'the clip plays at the file tempo, to the microsecond');
   // 960 PPQ in the model: every file tick doubles, nothing snaps.
   const byTick = [...fields.sourcePianoRoll].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note);
   assert.deepEqual(byTick.map((n) => [n.note, n.tick, n.ticks]), [[60, 0, 960], [64, 38, 922], [67, 1080, 120], [55, 1920, 960]]);
@@ -305,7 +306,7 @@ assertRoll('clip-1');
   // Open the clip in the roll: the same ticks, tempo, meter and slide.
   usePianoRollStore.getState().loadFromClip(...clipRollLoad({ id: 'mid-clip', ...fields }));
   const roll = st();
-  assert.equal(roll.bpm, 97.3);
+  assert.equal(roll.bpm, 60_000_000 / 616650, 'the roll opens at the file tempo, to the microsecond');
   assert.deepEqual(
     [...roll.notes].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note).map((n) => [n.note, n.tick, n.ticks, n.lane ?? 0]),
     [[60, 0, 960, 0], [64, 38, 922, 0], [67, 1080, 120, 0], [55, 1920, 960, 1]],

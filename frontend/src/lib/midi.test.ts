@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { encodeMidi, parseMidi, type MidiFileData } from './midi.ts';
+import { encodeMidi, parseMidi, tempoMicros, type MidiFileData } from './midi.ts';
 import { meterMapToMidiEvents, midiEventsToMeterMap, normalizeMeterMap, type MeterSegment } from './meterMap.ts';
 import { notesToRollSmf, notesToSmf } from './midiWrite.ts';
 import { midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
@@ -76,7 +76,10 @@ const KIT = [
     { tick: 3600, num: 5, den: 16 },
     { tick: 4200, num: 11, den: 8, groups: [3, 3, 3, 2] },
   ]);
-  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm: 120 }, { tick: 1920, bpm: 97 }, { tick: 3600, bpm: 140.5 }]);
+  // Each tempo at the exact microseconds FF 51 holds: 97 is 618557 us, 140.5 is 427046 us.
+  const exact = (bpm: number) => 60_000_000 / tempoMicros(bpm);
+  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm: 120 }, { tick: 1920, bpm: exact(97) }, { tick: 3600, bpm: exact(140.5) }]);
+  assert.equal(parsed.tempos?.[1].bpm, 60_000_000 / 618557);
   assert.equal(parsed.bpm, 120);
   assert.deepEqual(parsed.tracks[0].notes, NOTES);
 }
@@ -85,13 +88,14 @@ const KIT = [
 // kept the last one seen), over `bpm` in the writer, and across tracks.
 {
   const parsed = parseMidi(encodeMidi({ ppq: 480, bpm: 60, tracks: [], tempos: [{ tick: 960, bpm: 90 }, { tick: 0, bpm: 132 }] }));
-  assert.equal(parsed.bpm, 132);
-  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm: 132 }, { tick: 960, bpm: 90 }]);
+  const us = (bpm: number) => 60_000_000 / tempoMicros(bpm);
+  assert.equal(parsed.bpm, us(132));
+  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm: us(132) }, { tick: 960, bpm: us(90) }]);
 
   // Track 0: 90 BPM at tick 960. Track 1: 132 BPM at tick 0.
   const split = parseMidi(smf(480, [0x87, 0x40, 0xff, 0x51, 0x03, 0x0a, 0x2c, 0x2b], [0x00, 0xff, 0x51, 0x03, 0x06, 0xef, 0x91]));
-  assert.equal(split.bpm, 132);
-  assert.deepEqual(split.tempos, [{ tick: 0, bpm: 132 }, { tick: 960, bpm: 90 }]);
+  assert.equal(split.bpm, us(132));
+  assert.deepEqual(split.tempos, [{ tick: 0, bpm: us(132) }, { tick: 960, bpm: us(90) }]);
 }
 
 // No FF 58: no timeSignatures. No tempo at tick 0: the first tempo is the bpm.
@@ -196,8 +200,9 @@ const KIT = [
   ];
   const parsed = parseMidi(notesToRollSmf(render, { meterMap: map, pickupSteps, bpm }));
 
-  assert.equal(parsed.bpm, bpm);
-  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm }]);
+  // FF 51 holds 666667 us for 90 BPM, and the file reads at exactly that.
+  assert.equal(parsed.bpm, 60_000_000 / tempoMicros(bpm));
+  assert.deepEqual(parsed.tempos, [{ tick: 0, bpm: 60_000_000 / tempoMicros(bpm) }]);
   assert.deepEqual(parsed.timeSignatures, [
     { tick: 0, num: 1, den: 4, pickupSteps },
     { tick: 4 * 120, num: 7, den: 8, groups: [3, 2, 2] },

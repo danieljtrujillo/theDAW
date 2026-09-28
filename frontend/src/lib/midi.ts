@@ -561,17 +561,17 @@ const decodeTrack = (chunk: Uint8Array): DecodedTrack => {
 };
 
 /**
- * The tempo FF 51's microseconds a quarter give. The microsecond rounding
- * reads a written 97 back as 96.99995, so the tempo is read to three decimals
- * when those give the same microseconds back; when they do not (below about
- * 40 bpm, one thousandth of a bpm spans several microseconds), it is read
- * exactly, so a slow tempo is not moved and two tempos never read as one.
+ * The tempo FF 51's microseconds a quarter give, exactly: 60,000,000 over the
+ * microseconds, with no rounding. A quarter then lasts exactly the
+ * microseconds the file wrote, so a note of an orchestral file sounds at the
+ * second any other MIDI player puts it, and each of a file's tempos reads as
+ * its own. A tempo the roll wrote as 97 reads back as 96.99995 (618557 us);
+ * written again it gives the same 618557 us, so a round trip never moves it.
+ * The roll's own ramps and fermatas come back exactly from the
+ * `theDAW:tempomap=` text (lib/rollMidi); what a display shows is rounded
+ * where it is printed.
  */
-export const tempoOfMicros = (microsPerQuarter: number): number => {
-  const exact = 60_000_000 / microsPerQuarter;
-  const short = Math.round(exact * 1000) / 1000;
-  return Math.round(60_000_000 / short) === microsPerQuarter ? short : exact;
-};
+export const tempoOfMicros = (microsPerQuarter: number): number => 60_000_000 / microsPerQuarter;
 
 export const parseMidi = (buf: ArrayBuffer | Uint8Array): MidiFileData => {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);

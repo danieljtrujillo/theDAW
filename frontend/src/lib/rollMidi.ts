@@ -38,7 +38,8 @@
  * rides beside them in a `theDAW:tempomap=` text (tempoMapText), and import
  * takes it back, ramps and fermatas included, when the file's tempos are still
  * the ones it writes; a file edited elsewhere, or written by anything else,
- * comes in as its tempos, each a step at its tick.
+ * comes in as its tempos, each a step at its tick and each tempo at the exact
+ * microseconds its FF 51 holds (lib/midi tempoOfMicros).
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -62,7 +63,7 @@ import {
   type LaneBend,
 } from './pitchBend';
 import { meterMapToMidiEvents, midiEventsToMeterMap, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
-import { tempoMicros, type MidiBend, type MidiBendRange, type MidiFileData, type MidiNote, type MidiTempo } from './midi';
+import { tempoMicros, tempoOfMicros, type MidiBend, type MidiBendRange, type MidiFileData, type MidiNote, type MidiTempo } from './midi';
 import { hasTempoChanges, sanitizeRollTempoMap, startTempoOf } from './rollTempo';
 import { beatToTime, normalizeTempoMap, type TempoEvent } from './tempoMap';
 import {
@@ -265,8 +266,14 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
     ppq,
     bpm: s.bpm,
     // Every tempo change, ramp and fermata, as tempos any reader plays; the map itself beside them.
+    // The map is written for one tempo too when FF 51 cannot hold it: FF 51
+    // reads back at its exact microseconds (97.3 is 616650 us, which reads as
+    // 97.2999...), and the text brings the roll's typed tempo back as it was.
+    // A tempo FF 51 holds exactly (100 is 600000 us) writes the file as before.
     tempos: tempoMapToMidiTempos(tempoMap, ppq),
-    ...(hasTempoChanges(tempoMap) ? { dawTempoMap: tempoMapText(tempoMap) } : {}),
+    ...(hasTempoChanges(tempoMap) || !tempoMap.every((e) => e.fermata || tempoOfMicros(tempoMicros(e.bpm)) === e.bpm)
+      ? { dawTempoMap: tempoMapText(tempoMap) }
+      : {}),
     // One FF 58 per meter change, a partial bar at tick 0 for a pickup.
     timeSignatures: meterMapToMidiEvents(s.meterMap, ppq, s.pickupSteps),
   };
