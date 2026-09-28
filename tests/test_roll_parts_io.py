@@ -5,6 +5,10 @@
   part's id, place and settings), so opening one clip in the roll opens every
   part. The ``Clip`` model had no such field, so pydantic dropped it and a
   reopened project opened each clip as a roll of one part.
+- The records the app's own SAVE posts (tests/fixtures/
+  roll_part_session_from_frontend.json, written and checked by
+  frontend/src/lib/rollPartSave.test.ts) keep a part's controller changes and
+  its bank select LSB through /save-session and /load.
 - The sheet importer returned each part's name and notes only, so a quartet
   opened on one instrument. Each track now carries the registry instrument
   (``instrument``), its GM ``program`` and ``percussion``.
@@ -12,7 +16,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from backend.modules.project.tasmo_file import TasmoFile
 from backend.modules.project.tasmo_project import Clip, TasmoProject
@@ -69,41 +76,65 @@ def test_a_roll_part_round_trips_through_the_archive(tmp_path: Path) -> None:
     assert loaded.tracks[0].clips[0].roll_part == PART
 
 
-def test_a_parts_controller_changes_round_trip_through_the_archive(
-    tmp_path: Path,
+# Written by frontend/src/lib/rollPartSave.test.ts from the SAVE button's own
+# action (projectStore.save): the project it posted and the names of the audio
+# files beside it. That test fails when the part records it posts stop matching
+# this file, and reads the saved records back through the app's own reopen.
+FRONTEND_PARTS = (
+    Path(__file__).parent / "fixtures" / "roll_part_session_from_frontend.json"
+)
+
+
+def test_the_apps_part_records_keep_their_controllers_and_bank_lsb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A part imported from an orchestral MIDI file keeps its sustain pedal,
-    volume, pan and expression changes (``controls``, on the roll's 960 PPQ
-    clock) through a save and a reopen, so the bounced clip still renders and
-    exports them."""
-    part = {
-        **PART,
-        "controls": [
-            {"tick": 0, "controller": 7, "value": 96},
-            {"tick": 0, "controller": 10, "value": 40},
-            {"tick": 1920, "controller": 64, "value": 127},
-            {"tick": 3840, "controller": 64, "value": 0},
-            {"tick": 3840, "controller": 11, "value": 88},
-        ],
-    }
-    project = TasmoProject.model_validate(
-        {
-            "project_name": "Pedal",
-            "tempo": 90,
-            "tracks": [
-                {
-                    "id": "t1",
-                    "name": "Piano",
-                    "type": "audio",
-                    "clips": [_clip("c1", part)],
-                }
-            ],
-        }
+    """The part records the app really sends (a violin part with its sustain
+    pedal, volume, pan and expression changes on the roll's 960 PPQ clock and
+    an XG bank LSB, and a cello part with neither) go through /save-session
+    and /load and come back exactly as sent, so a reopened clip still renders
+    and exports them."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.modules.project import media_access
+    from backend.modules.project import router as project_router
+    from backend.modules.project.router import router as project_api
+
+    # A save through the router writes the recent list and the /clip-audio allowlist: both stay in tmp_path.
+    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(media_access, "_session_roots", [])
+    monkeypatch.setattr(project_router, "_RECENT_PATH", tmp_path / "recent.json")
+    monkeypatch.setattr(project_router, "_recent_files", [])
+    monkeypatch.setattr(project_router, "_recent_seen", None)
+
+    fixture = json.loads(FRONTEND_PARTS.read_text(encoding="utf-8"))
+    sent = fixture["project"]
+    records = [c.get("roll_part") for t in sent["tracks"] for c in t["clips"]]
+    # The fixture holds what the check is for; a fixture rewritten from a build
+    # that stopped writing either field fails here.
+    violin, cello = records
+    assert violin["bank_lsb"] == 3
+    assert [c["controller"] for c in violin["controls"]] == [7, 10, 64, 64, 11]
+    assert "bank_lsb" not in cello and "controls" not in cello
+
+    client = TestClient(FastAPI(), client=("127.0.0.1", 51000))
+    client.app.include_router(project_api, prefix="/api/project")
+    out = tmp_path / "parts.tasmo"
+    resp = client.post(
+        "/api/project/save-session",
+        data={"path": str(out)},
+        files=[
+            ("project", ("project.json", json.dumps(sent).encode(), "application/json"))
+        ]
+        + [("files", (name, b"RIFF", "audio/wav")) for name in fixture["files"]],
     )
-    out = tmp_path / "pedal.tasmo"
-    TasmoFile.save(project, str(out))
-    loaded, _ = TasmoFile.load(str(out))
-    assert loaded.tracks[0].clips[0].roll_part == part
+    assert resp.status_code == 200, resp.text
+    back = client.post("/api/project/load", json={"path": str(out)})
+    assert back.status_code == 200, back.text
+    reopened = [
+        c.get("roll_part") for t in back.json()["project"]["tracks"] for c in t["clips"]
+    ]
+    assert reopened == records
 
 
 def test_a_clip_written_before_parts_has_no_part() -> None:

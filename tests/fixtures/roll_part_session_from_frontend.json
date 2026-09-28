@@ -1,0 +1,226 @@
+{
+  "project": {
+    "project_name": "Parts",
+    "tempo": 120,
+    "time_signature": [
+      4,
+      4
+    ],
+    "tracks": [
+      {
+        "id": "v1",
+        "name": "Violin I",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#a855f7",
+        "clips": [
+          {
+            "id": "violin",
+            "name": "violin",
+            "clip_type": "midi",
+            "track_id": "v1",
+            "start_time": 0,
+            "end_time": 2,
+            "audio_file": "audio/violin.wav",
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              }
+            ],
+            "midi_notes": [
+              {
+                "note": 76,
+                "step": 0,
+                "length": 4,
+                "velocity": 90,
+                "tick": 0,
+                "ticks": 960
+              },
+              {
+                "note": 79,
+                "step": 4,
+                "length": 4,
+                "velocity": 90,
+                "tick": 960,
+                "ticks": 960
+              }
+            ],
+            "roll_part": {
+              "doc": "roll-quartet",
+              "id": "p-violin",
+              "order": 0,
+              "name": "Violin I",
+              "program": 40,
+              "bank": 0,
+              "bank_lsb": 3,
+              "channel": 1,
+              "color": "#a855f7",
+              "mute": false,
+              "solo": false,
+              "instrument_id": "violin",
+              "controls": [
+                {
+                  "tick": 0,
+                  "controller": 7,
+                  "value": 96
+                },
+                {
+                  "tick": 0,
+                  "controller": 10,
+                  "value": 40
+                },
+                {
+                  "tick": 480,
+                  "controller": 64,
+                  "value": 127
+                },
+                {
+                  "tick": 1920,
+                  "controller": 64,
+                  "value": 0
+                },
+                {
+                  "tick": 1920,
+                  "controller": 11,
+                  "value": 80
+                }
+              ]
+            },
+            "instrument_program": 40,
+            "rendered_program": 40,
+            "rendered_percussion": false,
+            "source_bpm": 120,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": null,
+        "is_percussion": false,
+        "parent_track_id": null,
+        "is_folder": false,
+        "collapsed": false
+      },
+      {
+        "id": "vc",
+        "name": "Violoncello",
+        "type": "audio",
+        "volume_db": -1.938200260161128,
+        "pan": 0,
+        "mute": false,
+        "solo": false,
+        "color": "#a855f7",
+        "clips": [
+          {
+            "id": "cello",
+            "name": "cello",
+            "clip_type": "midi",
+            "track_id": "vc",
+            "start_time": 0,
+            "end_time": 2,
+            "audio_file": "audio/cello.wav",
+            "total_steps": 16,
+            "meter_map": [
+              {
+                "bar": 0,
+                "meter": {
+                  "num": 4,
+                  "den": 4,
+                  "groups": []
+                }
+              }
+            ],
+            "pickup_steps": 0,
+            "lanes": [
+              {
+                "id": 0,
+                "name": "A",
+                "cycle_steps": null
+              }
+            ],
+            "midi_notes": [
+              {
+                "note": 36,
+                "step": 0,
+                "length": 4,
+                "velocity": 90,
+                "tick": 0,
+                "ticks": 960
+              }
+            ],
+            "roll_part": {
+              "doc": "roll-quartet",
+              "id": "p-cello",
+              "order": 1,
+              "name": "Violoncello",
+              "program": 42,
+              "bank": 0,
+              "channel": 2,
+              "color": "#a855f7",
+              "mute": false,
+              "solo": false,
+              "instrument_id": "cello"
+            },
+            "instrument_program": 42,
+            "rendered_program": 42,
+            "rendered_percussion": false,
+            "source_bpm": 120,
+            "bpm": null,
+            "library_entry_id": null,
+            "muted": false,
+            "gain": 1,
+            "fade_in": 0,
+            "fade_out": 0,
+            "offset_into_source": 0
+          }
+        ],
+        "effect_chain": [],
+        "output_routing": null,
+        "send_amounts": {},
+        "instrument_program": null,
+        "is_percussion": false,
+        "parent_track_id": null,
+        "is_folder": false,
+        "collapsed": false
+      }
+    ],
+    "buses": [],
+    "locators": [],
+    "loop": null,
+    "master_fx_chain": [],
+    "master_vst_chain": [],
+    "automation_lanes": [],
+    "controller_mappings": null,
+    "roll_voice": {
+      "program": null
+    }
+  },
+  "files": [
+    "violin.wav",
+    "cello.wav"
+  ]
+}
