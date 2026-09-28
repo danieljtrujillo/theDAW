@@ -3,6 +3,8 @@ at startup without loading music21 (about 0.7 s) until a request needs it."""
 
 from __future__ import annotations
 
+from typing import Any
+
 PPQ = 960
 
 SATB = ("soprano", "alto", "tenor", "bass")
@@ -50,6 +52,29 @@ MODES = (
     "aeolian",
 )
 INVERTIBLE_AT = (8, 10, 12)
+# Cantus firmi from Fux's Gradus ad Parnassum (MIDI notes, one a bar).
+CANTUS_FIRMI: dict[str, dict[str, Any]] = {
+    "fux_dorian": {
+        "key": "D dorian",
+        "notes": [62, 65, 64, 62, 67, 65, 69, 67, 65, 64, 62],
+    },
+    "fux_phrygian": {
+        "key": "E phrygian",
+        "notes": [64, 60, 62, 60, 57, 69, 67, 64, 65, 64],
+    },
+    "fux_mixolydian": {
+        "key": "G mixolydian",
+        "notes": [67, 72, 71, 67, 72, 76, 74, 79, 76, 72, 74, 71, 69, 67],
+    },
+    "fux_aeolian": {
+        "key": "A aeolian",
+        "notes": [57, 60, 59, 62, 60, 64, 65, 64, 62, 60, 59, 57],
+    },
+    "fux_ionian": {
+        "key": "C ionian",
+        "notes": [60, 64, 65, 67, 64, 69, 67, 64, 65, 64, 62, 60],
+    },
+}
 FUGUE_VOICES: dict[int, tuple[str, ...]] = {
     2: ("soprano", "bass"),
     3: ("soprano", "alto", "bass"),

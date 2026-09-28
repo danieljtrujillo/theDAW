@@ -87,7 +87,7 @@ from itertools import combinations
 from typing import Any, Callable, Mapping, Sequence
 
 from .meter import MeterGrid
-from .spec import INVERTIBLE_AT, MODES, PPQ, SPECIES
+from .spec import CANTUS_FIRMI, INVERTIBLE_AT, MODES, PPQ, SPECIES
 from .voiceleading import Flag, check_slices, slices_from_parts
 
 BAR = 4 * PPQ
@@ -992,31 +992,6 @@ def checker_flags(
 # ---------------------------------------------------------------------------
 # cantus firmi
 # ---------------------------------------------------------------------------
-
-# Fux's cantus firmi from Gradus ad Parnassum, and a C major one.
-CANTUS_FIRMI: dict[str, dict[str, Any]] = {
-    "fux_dorian": {
-        "key": "D dorian",
-        "notes": [62, 65, 64, 62, 67, 65, 69, 67, 65, 64, 62],
-    },
-    "fux_aeolian": {
-        "key": "A aeolian",
-        "notes": [57, 60, 59, 62, 60, 64, 65, 64, 62, 60, 59, 57],
-    },
-    "fux_ionian": {
-        "key": "C ionian",
-        "notes": [60, 64, 65, 67, 64, 69, 67, 64, 65, 64, 62, 60],
-    },
-    "fux_phrygian": {
-        "key": "E phrygian",
-        "notes": [64, 60, 62, 60, 57, 69, 67, 64, 65, 64],
-    },
-    "fux_mixolydian": {
-        "key": "G mixolydian",
-        "notes": [67, 72, 71, 67, 72, 76, 74, 79, 76, 72, 74, 71, 69, 67],
-    },
-}
-
 
 # ---------------------------------------------------------------------------
 # species
