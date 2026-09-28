@@ -104,6 +104,7 @@ import { buildGrooveFromMidiBytes } from '../../lib/grooveExtract';
 import { BendLane } from './BendLane';
 import { TempoLane } from './TempoLane';
 import { MARKER_ROW_HEIGHT, RollMarkerJump, RollMarkerRow } from './RollMarkers';
+import { markerStep } from '../../lib/rollMarkers';
 import { RollPlayhead } from './RollPlayhead';
 import { MidiMapper } from './MidiMapper';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
@@ -2118,6 +2119,7 @@ export const PianoRoll: React.FC<{
   const rollParts = usePianoRollStore((s) => s.tracks);
   const activeTrackId = usePianoRollStore((s) => s.activeTrackId);
   const showGhosts = usePianoRollStore((s) => s.showGhosts);
+  const markers = usePianoRollStore((s) => s.markers);
   // The other parts, drawn behind the active one; their notes in the list are theirs.
   const ghostParts = useMemo(
     () => (showGhosts ? rollParts.filter((t) => t.id !== activeTrackId && t.notes.length > 0) : []),
@@ -2213,14 +2215,21 @@ export const PianoRoll: React.FC<{
     // The snap's own subdivision: 16ths, triplets, quintuplets, each restarting on its group.
     const steps = snapLineSteps({ ...snapLines, lines: within(snapLines.lines, from * TICKS_PER_STEP, to * TICKS_PER_STEP) }, stepPx, drawn, STEP_LINES_MIN_PX);
     const dx = gridBox.x;
+    // Each marker's line down the grid, where its flag stands on the marker row:
+    // a movement strong, a section fainter, so a long score's form reads across every part.
+    const marked = markers.filter((m) => markerStep(m) >= from - 1e-9 && markerStep(m) <= to + 1e-9);
+    const sectionSteps = marked.filter((m) => m.kind === 'section').map(markerStep);
+    const movementSteps = marked.filter((m) => m.kind === 'movement').map(markerStep);
     return {
       step: linesPath(steps, stepPx, 0, gridHeight, dx),
       beat: linesPath(beat, stepPx, 0, gridHeight, dx),
       group: linesPath(group, stepPx, 0, gridHeight, dx),
       laneBar: laneBar.length ? linesPath(laneBar, stepPx, 0, gridHeight, dx) : '',
       bar: linesPath(bars, stepPx, 0, gridHeight, dx),
+      section: sectionSteps.length ? linesPath(sectionSteps, stepPx, 0, gridHeight, dx) : '',
+      movement: movementSteps.length ? linesPath(movementSteps, stepPx, 0, gridHeight, dx) : '',
     };
-  }, [tiers, laneTiers, snapLines, stepPx, gridHeight, view, gridBox.x]);
+  }, [tiers, laneTiers, snapLines, stepPx, gridHeight, view, gridBox.x, markers]);
 
   // The notes in looping lanes, kept as the same array while none of them
   // changes, so an edit in a lane that does not loop leaves the repeats alone.
@@ -2939,6 +2948,8 @@ export const PianoRoll: React.FC<{
               {gridPaths.group && <path d={gridPaths.group} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.12)]" />}
               {gridPaths.laneBar && <path d={gridPaths.laneBar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-accent)/0.45)]" />}
               <path d={gridPaths.bar} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-line)/0.2)]" />
+              {gridPaths.section && <path data-roll-marker-lines="section" d={gridPaths.section} fill="none" strokeWidth={1} className="stroke-[rgb(var(--et-accent)/0.55)]" />}
+              {gridPaths.movement && <path data-roll-marker-lines="movement" d={gridPaths.movement} fill="none" strokeWidth={2} className="stroke-[rgb(var(--et-accent)/0.9)]" />}
             </svg>
             {/* Recorded-region highlight: marks the last live take without
                 shrinking the grid (the rest of the 256 stays empty). */}

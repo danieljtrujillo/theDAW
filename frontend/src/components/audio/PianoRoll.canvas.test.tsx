@@ -19,8 +19,8 @@
  * an edge drag and a marquee land in grid px, the ruler seeks the step under
  * the pointer, and the canvas is drawn at the zoom. A click on the overview's
  * right half scrolls the grid there, and its arrow keys move a bar. The roll
- * grows to 65,536 steps: the ruler and the grid draw the bars in view. Zoom
- * out to the floor.
+ * grows to 65,536 steps: the ruler and the grid draw the bars in view. The
+ * roll's markers draw their lines down the grid. Zoom out to the floor.
  *
  * jsdom has no layout: every box is at 0,0, so a client point is a grid point
  * times the zoom, and the grid's view is the window's size (1024x768). A
@@ -416,6 +416,15 @@ await step(() => kb(map, 'ArrowRight'));
 assert.ok(scroller.scrollLeft > before && scroller.scrollLeft - before <= 16 * stepPx, 'the arrow moves the view to the next bar line');
 await step(() => kb(map, 'Home'));
 assert.equal(scroller.scrollLeft, 0);
+
+// The markers draw down the grid where their flags stand on the marker row: a movement strong, a section fainter.
+await step(() => roll().setMarkers([{ tick: 0, name: 'I', kind: 'movement' }, { step: 32, name: 'A', kind: 'section' }]));
+await scrolled(scroller);
+const sectionLines = q<SVGPathElement>('svg path[data-roll-marker-lines="section"]')?.getAttribute('d') ?? '';
+assert.ok(sectionLines.startsWith(`M${Math.round(32 * stepPx) + 0.5} `), `the section's line stands at step 32 (${sectionLines})`);
+assert.ok((q<SVGPathElement>('svg path[data-roll-marker-lines="movement"]')?.getAttribute('d') ?? '').startsWith('M0.5 '), "the movement's line at step 0");
+await step(() => roll().setMarkers([]));
+assert.equal(q('svg path[data-roll-marker-lines]'), null, 'no marker, no line');
 
 // A 4,096-bar roll: the ruler draws the bars in view, and the grid's bar path holds only the lines in view.
 await step(() => roll().setTotalSteps(65536));
