@@ -1,5 +1,6 @@
 import React from 'react';
 import { Target, Layers } from 'lucide-react';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../../lib/tempoMap';
 import {
   useGenerateParamsStore,
   type ChimeraAlignMode,
@@ -71,7 +72,7 @@ export const ChimeraControls: React.FC = () => {
   const onBpmChange = (raw: string) => {
     const n = parseFloat(raw);
     if (Number.isFinite(n) && n > 0) {
-      setChimeraField('targetBpm', n);
+      setChimeraField('targetBpm', clampTempoBpm(n));
       clips.forEach((c) => {
         if (c.isBase) updateChimeraClip(c.id, { isBase: false });
       });
@@ -87,7 +88,7 @@ export const ChimeraControls: React.FC = () => {
     : [...PHRASE_OPTIONS, weaveBars].sort((a, b) => a - b);
 
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[9px] font-mono">
+    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs font-sans font-bold">
       <div className="flex items-center gap-1">
         <Target className="w-2.5 h-2.5 text-purple-400" />
         <label htmlFor="chimera-target-bpm" className={LABEL}>BPM</label>
@@ -95,8 +96,8 @@ export const ChimeraControls: React.FC = () => {
           id="chimera-target-bpm"
           type="number"
           name="chimera-target-bpm"
-          min={40}
-          max={240}
+          min={TEMPO_BPM_MIN}
+          max={TEMPO_BPM_MAX}
           step={0.1}
           disabled={isAuto}
           value={isAuto ? '' : (typeof targetBpm === 'number' ? targetBpm : '')}
@@ -108,7 +109,7 @@ export const ChimeraControls: React.FC = () => {
           type="button"
           onClick={onAutoToggle}
           aria-pressed={isAuto}
-          className={`px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest transition-colors ${
+          className={`px-1.5 py-0.5 rounded border text-xs font-display font-bold uppercase tracking-wider transition-colors ${
             isAuto
               ? 'border-purple-400 bg-purple-500/20 text-purple-200'
               : 'border-white/10 bg-black/30 text-zinc-400 hover:bg-white/5'
@@ -288,7 +289,7 @@ export const ChimeraControls: React.FC = () => {
             type="button"
             aria-pressed={engine === 'v1'}
             onClick={() => setChimeraField('engine', engine === 'v1' ? 'v2' : 'v1')}
-            className={`px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest transition-colors ${
+            className={`px-1.5 py-0.5 rounded border text-xs font-display font-bold uppercase tracking-wider transition-colors ${
               engine === 'v1'
                 ? 'border-amber-400 bg-amber-500/20 text-amber-200'
                 : 'border-white/10 bg-black/30 text-zinc-400 hover:bg-white/5'

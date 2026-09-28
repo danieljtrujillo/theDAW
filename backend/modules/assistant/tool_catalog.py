@@ -930,7 +930,7 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         "editor_detect_tempo.",
         {
             "clip_id": _CLIP_ID,
-            "bpm": {"type": "number", "minimum": 40, "maximum": 240},
+            "bpm": {"type": "number", "minimum": 20, "maximum": 300},
         },
         ["clip_id", "bpm"],
     ),
@@ -944,8 +944,8 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
             "clip_id": _CLIP_ID,
             "target_bpm": {
                 "type": "number",
-                "minimum": 40,
-                "maximum": 240,
+                "minimum": 20,
+                "maximum": 300,
                 "description": "Play the clip as if it were authored at this tempo",
             },
             "target_duration_sec": {

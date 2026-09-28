@@ -407,7 +407,7 @@ const settle = () => new Promise((r) => setTimeout(r, 340));
   seed();
   okOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 95 }), 'source bpm');
   assert.equal(clipOf('aud1').sourceBpm, 95);
-  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 5 }), 'bad bpm'), /between 40 and 240/);
+  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 5 }), 'bad bpm'), /between 20 and 300/);
 
   seed();
   const stretched = okOf(await tools.stretchClip({ clip_id: 'bass', target_bpm: 60, ...seams }), 'stretch midi');

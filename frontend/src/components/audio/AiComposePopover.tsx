@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../../lib/tempoMap';
 import { generatePianoFromParams, type AiComposeResult } from '../../lib/aiComposeClient';
 import { COMPOSE_MAX_BARS, composeMeterSummary } from '../../lib/aiComposeGrid';
 import type { MeterSegment } from '../../lib/meterMap';
@@ -196,11 +197,11 @@ export const AiComposePopover: React.FC<{
               id="ai-compose-bpm"
               name="ai-compose-bpm"
               type="number"
-              min={40}
-              max={240}
+              min={TEMPO_BPM_MIN}
+              max={TEMPO_BPM_MAX}
               step="any"
               value={bpm}
-              onChange={(e) => setBpm(Math.max(40, Math.min(240, parseFloat(e.target.value) || 120)))}
+              onChange={(e) => setBpm(clampTempoBpm(parseFloat(e.target.value) || 120))}
               className={fieldCls}
             />
           </div>

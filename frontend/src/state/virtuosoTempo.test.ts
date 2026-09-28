@@ -135,7 +135,7 @@ assert.deepEqual(useVirtuosoStore.getState().sections, [
   // of the roll's map past a section with a tempo is the next change.
   const later = buildSong(phrase, {
     key: 'C', mode: 'major', style: 'romantic', amounts: ZERO_AMOUNTS, bpm: 100,
-    sections: [{ role: 'intro', bars: 2 }, { role: 'theme', bars: 2, bpm: 132 }, { role: 'bridge', bars: 2 }, { role: 'outro', bars: 2 }],
+    sections: [{ role: 'intro', bars: 2 }, { role: 'theme', bars: 2, bpm: 132 }, { role: 'interlude', bars: 2 }, { role: 'outro', bars: 2 }],
     tempoMap: [{ beat: 0, bpm: 100 }, { beat: 28, bpm: 90 }],
   });
   const la = (b: number) => tempoAt(later.tempoMap, b);
