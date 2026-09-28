@@ -424,6 +424,32 @@ configureMidiRenderQueue({
   assert.equal(clip('b')!.audioBlob, undefined);
 }
 {
+  // An export re-renders a stale automatic render; while it runs the part
+  // comes to play live without its voice changing (a drum track is deleted,
+  // which frees a drum channel for the ninth), and EDIT drops that render. The
+  // export gets its audio and the part is left without a render, not handed a
+  // kept one it never asked for.
+  reset();
+  const kits = Array.from({ length: 9 }, (_, i) => track(`d${i}`, { isPercussion: true }));
+  ed().loadProject({ tracks: kits, clips: kits.map((t, i) => part(`k${i}`, t.id, 36 + i)) });
+  assert.equal(midiLiveIfHeard().has('k8'), false, 'the ninth drum track is past the last drum channel');
+  await requestMidiRender('k8', 'cache');
+  assert.equal(clip('k8')!.renderAuto, true, 'so it holds a render made to be heard');
+  ed().updateClip('k8', { sourcePianoRoll: clip('k8')!.sourcePianoRoll!.map((n) => ({ ...n, velocity: 70 })) });
+  gated = true;
+  const exporting = clipsWithMidiAudio((c) => c.id === 'k8');
+  for (let i = 0; i < 50 && waiting.length === 0; i += 1) await new Promise((r) => setTimeout(r, 1));
+  ed().removeTrack('d0');
+  assert.ok(midiLiveIfHeard().has('k8'), 'a drum channel is free: the ninth plays live');
+  assert.equal(dropAutoRender('k8'), true, 'EDIT drops its automatic render');
+  await gate();
+  const out = await exporting;
+  assert.ok(out.clips.find((c) => c.id === 'k8')!.audioBlob instanceof Blob, 'the export reads the part with its audio');
+  assert.equal(clip('k8')!.audioBlob, undefined, 'and the part itself holds no render');
+  assert.equal(clip('k8')!.renderAuto, undefined);
+  out.release();
+}
+{
   // A render in another tool's turn (an assistant note tool, a stretch, a MIDI
   // take) waits for the clip render ahead of it and holds up the one after.
   reset();

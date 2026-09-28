@@ -315,8 +315,9 @@ async function runJob(job: ClipJob): Promise<MidiRenderOutcome> {
     if (!now) return { kind: 'skipped', reason: 'the clip was removed while it rendered' };
     if (!stillMatches(now, sig, voice, d)) continue; // made from what the clip was; render what it is
     // A clip that holds a render keeps it current; 'cache' and 'keep' write one.
-    // An export of a clip with none renders a copy and leaves the clip without one.
-    if (job.mode !== 'export' || state === 'stale') {
+    // An export of a clip with none (or whose automatic render EDIT dropped
+    // while this one ran) renders a copy and leaves the clip without one.
+    if (job.mode !== 'export' || now.audioBlob instanceof Blob) {
       const { peaks } = await d.computePeaks(rendered.blob, 240);
       const after = liveClip(job.clipId);
       if (!after) return { kind: 'skipped', reason: 'the clip was removed while it rendered' };
