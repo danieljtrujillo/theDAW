@@ -2726,6 +2726,7 @@ export async function exportMidi(args: ExportMidiArgs = {}): Promise<ToolResult>
     notes: r.noteCount,
     tracks: r.file.tracks.map((t) => t.name),
     shared_channels: r.sharedTracks,
+    articulation_fallback: r.articulationFallback,
     starts_at_sec: r.startSec,
   });
 }

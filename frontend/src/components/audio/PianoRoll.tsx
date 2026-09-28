@@ -1328,7 +1328,12 @@ export const exportRollMidi = async (): Promise<void> => {
     logWarn('piano-roll', `A MIDI file has 16 channels: ${names.join(', ')} share channels, and a player sounds them on one program each`);
   }
   // A bent lane plays on a channel of its own; with every channel taken its notes go on the part's channel, unbent.
-  const unbent = parts.length > 1 ? partLaneChannels(roll, parts).unbent : [];
+  const plan = parts.length > 1 ? partLaneChannels({ ...roll, voices }, parts) : null;
+  const unbent = plan?.unbent ?? [];
+  // A preset articulation (a pizzicato's GM 46) with no channel left plays in its part's own program.
+  if (plan?.articulationFallback.length) {
+    logWarn('piano-roll', `No MIDI channel was left for the articulations of ${plan.articulationFallback.map((f) => f.name).join(', ')}: their pizzicato, tremolo and muted notes play in the part's own program`);
+  }
   if (unbent.length) {
     const lanes = unbent.map((u) => `${u.name} lane ${roll.lanes.find((l) => l.id === u.lane)?.name ?? u.lane}`);
     logWarn('piano-roll', `No MIDI channel was left for the pitch bend of ${lanes.join(', ')}: those notes are in the file unbent`);

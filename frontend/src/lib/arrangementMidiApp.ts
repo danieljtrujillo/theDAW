@@ -71,10 +71,18 @@ export async function exportArrangementMidi(req: ArrangementMidiRequest = {}, se
   const what = `${result.noteCount} notes on ${result.trackCount} track${result.trackCount === 1 ? '' : 's'}`;
   if (saved.cancelled) return { ok: false, error: `The MIDI save was cancelled, so nothing was written (${what} were ready)`, result };
   if (!saved.path && !saved.downloaded) return { ok: false, error: `The MIDI file could not be saved (${what})`, result };
+  if (result.articulationFallback.length) {
+    logWarn('editor', `No MIDI channel was left for the articulations of ${result.articulationFallback.join(', ')}: their pizzicato, tremolo and muted notes play in the track's own program`);
+  }
+  if (result.mpeNoRoom) {
+    logWarn('editor', 'No MIDI channel was left for an MPE zone: notes with their own expression play on their track\'s channel, without it');
+  }
   if (result.sharedTracks.length) {
     logWarn('editor', `A MIDI file has 16 channels: ${result.sharedTracks.join(', ')} share channels, and a player sounds them on one program each`);
   }
-  const message = saved.path ? `Exported ${what} as MIDI to ${saved.path}` : `Exported ${what} as MIDI (${fileName}, downloaded)`;
+  // The articulations that found no channel of their own ride in the result's message too.
+  const fell = result.articulationFallback.length ? `; the articulations of ${result.articulationFallback.join(', ')} play in their track's program` : '';
+  const message = saved.path ? `Exported ${what} as MIDI to ${saved.path}${fell}` : `Exported ${what} as MIDI (${fileName}, downloaded)${fell}`;
   logInfo('editor', message);
   return { ok: true, message, path: saved.path, fileName, result };
 }

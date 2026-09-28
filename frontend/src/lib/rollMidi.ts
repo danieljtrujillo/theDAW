@@ -774,7 +774,12 @@ interface PartLaneChannels {
 export function partLaneChannels(
   s: Pick<RollMidiSource, 'lanes' | 'bends'> & Partial<Pick<RollMidiSource, 'voices'>>,
   parts: readonly RollTrack[],
-): { parts: Map<string, PartLaneChannels>; unbent: Array<{ partId: string; name: string; lane: number }> } {
+): {
+  parts: Map<string, PartLaneChannels>;
+  unbent: Array<{ partId: string; name: string; lane: number }>;
+  /** Parts a preset articulation of which found no channel left: those notes play on the part's channel, in its program. */
+  articulationFallback: Array<{ partId: string; name: string }>;
+} {
   const { channels: base } = partFileChannels(parts);
   const taken = new Set(base.values());
   const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
@@ -799,16 +804,20 @@ export function partLaneChannels(
     out.set(part.id, { channels, wheelLanes, art: { inst: { instrumentId: part.instrumentId, program: part.program ?? s.voices?.get(part.id)?.program ?? null }, channelOf: new Map() } });
   }
   // Then each melodic part's preset articulations, while a channel is free (lib/articulationMap).
+  const articulationFallback: Array<{ partId: string; name: string }> = [];
   for (const part of parts) {
     if (isPercussionPart(part)) continue;
     const p = out.get(part.id) as PartLaneChannels;
     for (const need of articulationChannelNeeds(s.lanes, part.notes, p.art.inst, p.wheelLanes)) {
       const ch = free.shift();
-      if (ch === undefined) break;
+      if (ch === undefined) {
+        if (!articulationFallback.some((f) => f.partId === part.id)) articulationFallback.push({ partId: part.id, name: part.name });
+        continue;
+      }
       p.art.channelOf.set(need.key, { channel: ch, target: need.target, lane: need.lane });
     }
   }
-  return { parts: out, unbent };
+  return { parts: out, unbent, articulationFallback };
 }
 
 /**

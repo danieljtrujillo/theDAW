@@ -55,7 +55,9 @@
  * that preset's, the one EDIT's live MIDI gives it, with the preset's program
  * change and bank select at tick 0; a bent lane's articulation notes take one
  * per lane, which carries the lane's wheel too. Those channels come from the
- * same sixteen and count toward `sharedTracks`.
+ * same sixteen; past fifteen melodic channels an articulation that finds none
+ * free plays on its track's own channel in the track's program, and
+ * `articulationFallback` names the track.
  *
  * PER-NOTE EXPRESSION: a note that carries expression of its own (PianoNote
  * `expr`) is written MPE-style on the upper zone's member channels (lib/
@@ -170,6 +172,8 @@ export interface ArrangementMidiResult {
   startSec: number;
   /** True when notes carried expression of their own and no MPE member channel was free: they play on their track's channel. */
   mpeNoRoom?: boolean;
+  /** Tracks whose preset articulations (a pizzicato's GM 46) found no channel of their own past fifteen melodic channels: they play in the track's program. */
+  articulationFallback: string[];
 }
 
 /** A file's channels a melodic track can take: all sixteen but channel 10, the drums'. */
@@ -525,6 +529,8 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   }
   const mpe = planMpeExport(mpeSpans, new Set(channels.values()));
   const memberRange = new Map<number, number>();
+  // The tracks whose preset articulations found no channel of their own.
+  const articulationFallback = new Set<string>();
   const memberProgram = new Map<number, string>();
 
   const out: MidiTrack[] = [];
@@ -532,10 +538,14 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
   for (const { track, events, keys, arts } of tracks) {
     const channelOf = (key: number | null): number =>
       channels.get(key === keys[0] ? track.id : laneChannelId(track.id, key as number)) as number;
-    const artChannelOf = (key: string): number => channels.get(artChannelId(track.id, key)) as number;
+    // An articulation channel that would be shared with another track (no channel left) is not taken: its notes stay home.
+    const artChannelOf = (key: string): number | undefined => {
+      const id = artChannelId(track.id, key);
+      return sharedIds.has(id) ? undefined : channels.get(id);
+    };
     // The channels the clips' voice plays on, and every channel the track's notes play on (its articulation channels too).
     const voiceChannels = [...new Set(keys.map(channelOf))];
-    const trackChannels = [...new Set([...voiceChannels, ...arts.map((a) => artChannelOf(a.key))])];
+    const trackChannels = [...new Set([...voiceChannels, ...arts.map((a) => artChannelOf(a.key)).filter((ch): ch is number => ch !== undefined)])];
     const notes: MidiNote[] = [];
     const programs: MidiProgram[] = [];
     const controls: MidiControl[] = [];
@@ -564,7 +574,9 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
         const home = channelOf(n.lane);
         const member = n.expr ? mpe.channelOf.get(`${track.id}#${noteIndex}`) : undefined;
         noteIndex += 1;
-        const channel = member ?? (n.art ? artChannelOf(n.art.key) : home);
+        const artChannel = n.art ? artChannelOf(n.art.key) : undefined;
+        if (n.art && artChannel === undefined && member === undefined) articulationFallback.add(track.name);
+        const channel = member ?? artChannel ?? home;
         if (member !== undefined && n.expr) {
           // The member channel: the clip's voice, then the note's range, wheel, CC 74 and pressure, then its curves.
           const voice = `${e.program ?? ''}:${e.bank}`;
@@ -599,7 +611,7 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
       }
       for (const w of e.wheels) {
         // The lane's own channel, and each articulation channel of the lane, which bends with it.
-        for (const channel of [channelOf(w.lane), ...arts.filter((a) => a.lane === w.lane).map((a) => artChannelOf(a.key))]) {
+        for (const channel of [channelOf(w.lane), ...arts.filter((a) => a.lane === w.lane).map((a) => artChannelOf(a.key)).filter((ch): ch is number => ch !== undefined)]) {
           const list = wheelOn.get(channel) ?? [];
           wheelOn.set(channel, list);
           for (const [i, x] of w.events.entries()) {
@@ -629,7 +641,8 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     }
     // Each articulation channel's preset at tick 0, with its bank select.
     for (const a of arts) {
-      programs.push({ tick: 0, channel: artChannelOf(a.key), program: a.target.program, ...(a.target.bank > 0 ? { bank: a.target.bank } : {}) });
+      const channel = artChannelOf(a.key);
+      if (channel !== undefined) programs.push({ tick: 0, channel, program: a.target.program, ...(a.target.bank > 0 ? { bank: a.target.bank } : {}) });
     }
     programs.sort((a, b) => a.tick - b.tick);
     // The fader and pan, on the General MIDI volume curve and around the centre.
@@ -688,14 +701,11 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
     trackCount: out.length,
     // A track whose own channel or any of its bent lanes' channels is shared.
     sharedTracks: tracks
-      .filter(
-        (t) =>
-          t.keys.some((key, i) => sharedIds.has(i === 0 ? t.track.id : laneChannelId(t.track.id, key as number)))
-          || t.arts.some((a) => sharedIds.has(artChannelId(t.track.id, a.key))),
-      )
+      .filter((t) => t.keys.some((key, i) => sharedIds.has(i === 0 ? t.track.id : laneChannelId(t.track.id, key as number))))
       .map((t) => t.track.name),
     mutedClips,
     startSec,
     ...(mpe.noRoom ? { mpeNoRoom: true } : {}),
+    articulationFallback: [...articulationFallback],
   };
 }
