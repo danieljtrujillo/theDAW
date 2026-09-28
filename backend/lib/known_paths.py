@@ -224,6 +224,7 @@ _EXT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("midi", (".mid", ".midi", ".smf")),
+    ("soundfont", (".sf2", ".sf3", ".dls")),
     (
         "score",
         (".musicxml", ".mxl", ".xml", ".abc", ".krn", ".pdf", ".svg", ".alphatex"),

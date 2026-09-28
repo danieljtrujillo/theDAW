@@ -1,0 +1,10 @@
+{
+  "name": "soundfonts",
+  "label": "Sound banks",
+  "enabled": true,
+  "icon": "Piano",
+  "sidebar": false,
+  "api_prefix": "/api/soundfonts",
+  "backend": true,
+  "description": "Stores the SF2, SF3 and DLS sound banks the user adds, lists each bank's presets by bank and program, and gives each bank the bank-select offset every synth loads it at, so a preset plays the same live, in a render and in an export."
+}
