@@ -209,6 +209,20 @@ export function laneSpanSteps(lane: Pick<PolyLane, 'span'>, totalSteps: number):
 }
 
 /**
+ * A spanned lane whose loop is longer than its span: the loop and the span's
+ * length, or null. Such a lane plays its loop's first span-length once, inside
+ * the span, and the rest of the loop is never heard (laneLoop keeps the loop so
+ * that taking the span off gives it back whole). SPAN on a lane that already
+ * loops longer, a MATCH or an older file can leave a lane this way; the METER
+ * face flags the LOOP readout and SPAN says so in the LOG.
+ */
+export function loopPastSpan(lane: Pick<PolyLane, 'id' | 'span' | 'cycleSteps'>, totalSteps: number): { cycle: number; span: number } | null {
+  if (lane.id === 0 || !lane.cycleSteps || lane.cycleSteps <= 0) return null;
+  const span = laneSpanSteps(lane, totalSteps);
+  return span !== null && lane.cycleSteps > span ? { cycle: lane.cycleSteps, span } : null;
+}
+
+/**
  * LOOP: one step, or one bar of `barSteps` with Shift. A lane with no loop
  * counts as the whole roll; reaching the roll's length stops the loop (null).
  * A shorter loop always loops: from a loop at or past the roll's length it

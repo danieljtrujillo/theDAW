@@ -49,7 +49,7 @@ import {
   BEATS_MAX, BEATS_MIN, LANE_TUPLET_PRESETS, UNITS, addChange, addChangeBar, addChangePastEnd, clampSelection, formatOption, genOptionSpecs,
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
   laneMeterValue, lanePitches, laneSpanLabel, laneSpanSteps, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
-  removeChange, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
+  removeChange, loopPastSpan, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
   stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
@@ -112,12 +112,15 @@ interface StepperProps {
   valueClass?: string;
   /** Inside the GEN card: the 12px legend and readout. */
   flyout?: boolean;
+  /** A problem with the value: the readout reads in the accent with a dotted underline, and a screen
+   *  reader hears this text after the value (the keys are described by the readout). */
+  alert?: string;
 }
 
 /** The −/+ keys are one control with the readout between them, named by their
  *  own DockTips; the field carries no title, so no key shows two tooltips. A key
  *  its press takes to the limit passes keyboard focus to its pair. */
-export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout }) => (
+export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, downLabel, upLabel, downIcon, upIcon, onStep, downDisabled, upDisabled, valueClass = 'min-w-4', flyout, alert }) => (
   <div className={FIELD}>
     {legend && <span className={flyout ? FLYOUT_LEGEND : FIELD_LEGEND} title={title}>{legend}</span>}
     <StripKey
@@ -132,7 +135,16 @@ export const Stepper: React.FC<StepperProps> = ({ id, legend, title, value, down
       icon={downIcon ?? <Minus className={MINI_GLYPH} />}
       legend={downLabel}
     />
-    <span id={`${id}-value`} aria-live="polite" title={title} className={`${flyout ? FLYOUT_VALUE : FIELD_VALUE} ${valueClass}`}>{value}</span>
+    <span
+      id={`${id}-value`}
+      aria-live="polite"
+      title={title}
+      data-alert={alert ? '' : undefined}
+      className={`${alert ? (flyout ? FLYOUT_VALUE : FIELD_VALUE).replace('et-ink', 'et-accent-legend underline decoration-dotted underline-offset-2') : flyout ? FLYOUT_VALUE : FIELD_VALUE} ${valueClass}`}
+    >
+      {value}
+      {alert && <span className="sr-only">, {alert}</span>}
+    </span>
     <StripKey
       mini
       iconOnly
@@ -312,6 +324,15 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
     r.applyMeter({ lanes: next.lanes });
     if (next.notes) r.replaceAll(next.notes);
     if (next.bends) r.setBends(next.bends);
+    // A loop longer than the new span plays its first span-length once; say so, and how to fit it.
+    const after = next.lanes.find((x) => x.id === r.activeLane);
+    const past = after ? loopPastSpan(after, r.totalSteps) : null;
+    if (after && past) {
+      post(
+        `LANE ${after.name} LOOPS EVERY ${past.cycle} STEPS, LONGER THAN ITS ${past.span}-STEP SPAN: IT PLAYS ITS FIRST ${past.span} STEPS ONCE AND THE LAST ${past.cycle - past.span} ARE NOT HEARD. SHORTER LOOP FITS IT INSIDE THE SPAN; SPAN AGAIN GIVES THE WHOLE LOOP BACK.`,
+        'warn',
+      );
+    }
   };
 
   /* GEN */
@@ -401,6 +422,8 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
   const loopValue = lane.id === 0 || lane.cycleSteps == null ? 'All' : String(lane.cycleSteps);
   // A spanned lane's loop counts inside its span (stepLoop), so its longer-loop key wraps and is never off.
   const spanLen = lane.id === 0 ? null : laneSpanSteps(lane, totalSteps);
+  // A loop longer than its span (SPAN on a longer loop, MATCH, an older file) reads flagged, with the reason.
+  const pastSpan = loopPastSpan(lane, totalSteps);
   const barLen = Math.round(laneBar ?? stepsPerBar(meter));
   const spanOn = spanIsSegment(segs, selected, lane.span, pickupSteps);
   const spanNow = lane.span ? laneSpanLabel(segs, lane.span, pickupSteps) : null;
@@ -640,12 +663,15 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
         title={
           lane.id === 0
             ? 'Lane A runs the whole roll'
+            : pastSpan
+              ? `Lane ${lane.name} loops every ${pastSpan.cycle} steps, longer than its ${pastSpan.span}-step span: it plays its first ${pastSpan.span} steps once and the last ${pastSpan.cycle - pastSpan.span} are not heard. Shorter loop fits it inside the span.`
             : spanLen !== null
               ? `Lane ${lane.name} loops every ${loopValue === 'All' ? `${spanLen} steps, its whole span` : `${loopValue} steps`} inside its ${spanLen}-step span. Shift-click steps a bar of ${barLen}; past the span's length the loop wraps back to the shortest.`
               : `Lane ${lane.name} loops every ${loopValue === 'All' ? 'roll' : `${loopValue} steps`}. Shift-click steps a bar of ${barLen}.`
         }
         value={loopValue}
         valueClass="min-w-5"
+        alert={pastSpan ? `longer than its ${pastSpan.span}-step span; the last ${pastSpan.cycle - pastSpan.span} steps are not heard` : undefined}
         downLabel={`Shorter loop for lane ${lane.name}`}
         upLabel={`Longer loop for lane ${lane.name}`}
         downIcon={<ArrowLeftToLine className={MINI_GLYPH} />}

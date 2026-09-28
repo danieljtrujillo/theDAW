@@ -9,7 +9,9 @@
  * Mounted on jsdom against the real roll store (TempoLane.test.tsx pattern).
  * The sequence: lane B over bars 5-8 with a 48-step loop, METER, Shift+LOOP
  * longer (64, the span), Shift+LOOP longer again (wraps to 16), then the
- * played notes repeat every 16 steps through the span.
+ * played notes repeat every 16 steps through the span. A loop an older file
+ * (or SPAN on a longer loop) leaves past its span reads flagged on the LOOP
+ * readout, and SPAN says so in the LOG.
  *
  *   cd frontend && npx tsx src/components/audio/MeterFaceLoop.test.tsx
  */
@@ -19,6 +21,7 @@ import { JSDOM } from 'jsdom';
 const { MidiPanel } = await import('../layout/MidiPanel.tsx');
 const { usePianoRollStore } = await import('../../state/pianoRollStore.ts');
 const { playedRollNotes } = await import('../../lib/rollClip.ts');
+const { useLogStore } = await import('../../state/logStore.ts');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const win = dom.window;
@@ -101,6 +104,35 @@ await wait(350);
 await step(() => roll().setLaneCycle(1, 80));
 await step(() => button('Shorter loop for lane B').click());
 assert.equal(cycleB(), 63, 'a loop an older file left past its span steps down from the span');
+
+// A loop left longer than its span reads flagged: the readout is in the accent and a screen reader hears why.
+const loopValue = () => win.document.getElementById('mf-loop-value') as HTMLElement;
+await wait(350);
+await step(() => roll().setLaneCycle(1, 80));
+assert.ok(loopValue().hasAttribute('data-alert'), 'the 80-step loop in a 64-step span is flagged');
+assert.match(loopValue().textContent ?? '', /80, longer than its 64-step span; the last 16 steps are not heard/);
+await wait(350);
+await step(() => button('Shorter loop for lane B').click());
+assert.equal(cycleB(), 63);
+assert.ok(!loopValue().hasAttribute('data-alert'), 'a loop inside its span is not flagged');
+
+// SPAN on a lane that already loops longer than the segment says so in the LOG and on the readout.
+// The loop is kept: taking the span off gives the whole loop back (laneLoop plays the first span-length once).
+await step(() => {
+  roll().applyMeter({
+    meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }, { bar: 4, meter: { num: 3, den: 4, groups: [] } }],
+    lanes: [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: 80 }],
+  });
+  roll().seek(0);
+});
+const logged = useLogStore.getState().entries.length;
+await wait(350);
+await step(() => button('Span: lane B only in bars 1-4').click());
+assert.deepEqual(roll().lanes.find((l) => l.id === 1)?.span, { start: 0, end: 64 });
+assert.equal(cycleB(), 80, 'the loop keeps its length');
+const said = useLogStore.getState().entries.slice(logged);
+assert.ok(said.some((e) => e.level === 'warn' && /LANE B LOOPS EVERY 80 STEPS, LONGER THAN ITS 64-STEP SPAN/.test(e.msg)), 'SPAN warns in the LOG');
+assert.ok(loopValue().hasAttribute('data-alert'));
 
 await step(() => root.unmount());
 console.log('MeterFaceLoop: ok');

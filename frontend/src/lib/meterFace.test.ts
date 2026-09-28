@@ -9,7 +9,7 @@ import {
   groupChoices, laneForms, lanePitches, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, parseMeterLabel,
   removeChange, replaceLaneNotes, sectionMeterChoices, SECTION_METERS, segmentAtStep, segmentLabel, setBeats, setGroups,
   setUnit, stepLoop, stepOption, laneSpanLabel, respanLane, spanIsSegment, toggleLaneSpan, writeMatch, parseGroupingText, pickupLabel, pickupMax,
-  setGroupingText, stepPickup, tempoSummary, UNITS, laneSpanSteps, withoutFermatas, withoutTempoChanges, type GenSettings,
+  setGroupingText, stepPickup, tempoSummary, UNITS, laneSpanSteps, loopPastSpan, withoutFermatas, withoutTempoChanges, type GenSettings,
 } from './meterFace.ts';
 import type { TempoEvent } from './tempoMap.ts';
 import { stepRenderRequest } from './midiSynth.ts';
@@ -454,6 +454,11 @@ const SONG: MeterSegment[] = [{ bar: 0, meter: M78 }, { bar: 4, meter: M54 }, { 
   st().replaceAll([{ ...note('x', 56, 1), note: 60 }, { ...note('y', 100, 1), note: 62 }]);
   assert.deepEqual(playedRollNotes(st().notes, st().lanes, st().totalSteps).map((n) => n.step), [56], 'a note that folds past the span end is not played');
   assert.deepEqual(genTarget(st(), sel).end, 96, 'GEN writes up to the span end');
+  // That lane is flagged: its 48-step loop is longer than its 40-step span.
+  assert.deepEqual(loopPastSpan(st().lanes[1], st().totalSteps), { cycle: 48, span: 40 });
+  assert.equal(loopPastSpan({ id: 1, cycleSteps: 40, span: { start: 56, end: 96 } }, 160), null, 'a loop that fills its span is not');
+  assert.equal(loopPastSpan({ id: 1, cycleSteps: 48, span: null }, 160), null, 'nor a lane without a span');
+  assert.equal(loopPastSpan({ id: 0, cycleSteps: 48, span: { start: 0, end: 16 } }, 160), null, 'nor lane A');
 }
 
 // FORM section meters: the list, round trips, and a section's own meter the list lacks.
