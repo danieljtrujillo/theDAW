@@ -627,6 +627,8 @@ def test_levelling_brings_the_strings_within_tolerance(tmp_path):
     assert rows["Violas"]["peak_limited_db"] == 0
     assert rows["Violins"]["gain_db"] > 0
     assert rows["Violins"]["peak_limited_db"] > 0
+    for row in rows.values():
+        assert row["peak_limited_max_db"] >= row["peak_limited_db"]
     assert {"before_db", "after_db", "reference", "clip_check"} <= set(rows["Celli"])
 
 
@@ -635,6 +637,9 @@ def test_levelling_caps_the_boost_at_the_limit_depth(tmp_path):
         tmp_path, {40: 10.0, 41: -20.0, 42: -10.0, 43: -11.0}, max_limit_db=6.0
     )
     assert run.limited_db["Violins"] <= 6.0 + 1e-6
+    # The cap is on the measured note's sample, the violins' f layer.
+    targets = {x.name: x for x in run.targets}
+    assert B.level_sample(targets["Violins"], _strings_bank()[1]) is not None
     assert not rows["Violins"]["within_tolerance"]
 
 

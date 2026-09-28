@@ -74,7 +74,8 @@ CC1 127 is rendered through SpessaSynth (``frontend/src/lib/soundbankLevels.ts``
 run with ``npx tsx``) in both banks, and the level is the loudest 100 ms RMS.
 The difference is written into the preset's samples. SpessaSynth clamps a
 decoded sample to +-1.0, so a boost that would pass full scale peak limits
-the samples first (a smooth 30 ms gain, at most ``--max-limit-db``). A few
+the samples first (a smooth 30 ms gain; the measured note's sample by at
+most ``--max-limit-db``, a hotter note's sample as far as the ceiling needs). A few
 measure/adjust passes run on a PCM probe bank before the SF3 is encoded,
 then the written bank is measured again, with a clipping check at velocity
 127 on each preset's loudest zone. The manifest's ``levelling`` block holds
@@ -1737,19 +1738,39 @@ def level_gains(
     samples: Sequence[SampleData],
     max_limit_db: float,
 ) -> dict[str, float]:
-    """The gain (dB) that brings each preset to its reference level. Where a
-    boost would push a sample past SAMPLE_CEILING the samples are peak
-    limited, by at most ``max_limit_db``; past that the gain is capped."""
+    """The gain (dB) that brings each preset to its reference level.
+
+    Where a boost would push a sample past SAMPLE_CEILING, that sample is
+    peak limited. The measured note's own sample may be limited by at most
+    ``max_limit_db``; past that the gain is capped. A sample louder than the
+    measured one (a note whose register or layer was recorded hotter) is
+    limited as far as the ceiling needs, and the table reports how far.
+    """
     gains = {}
     for t in targets:
         want = reference[t.name] - measured[t.name]
-        peaks = [
-            float(np.max(np.abs(samples[i].data)))
-            for i in instrument_samples(instruments[t.instrument])
-        ]
-        headroom = 20 * math.log10(SAMPLE_CEILING / max(max(peaks), 1e-9))
+        si = level_sample(t, instruments)
+        peak = float(np.max(np.abs(samples[si].data))) if samples[si].data.size else 0.0
+        headroom = 20 * math.log10(SAMPLE_CEILING / max(peak, 1e-9))
         gains[t.name] = min(want, headroom + max_limit_db)
     return gains
+
+
+def level_sample(t: LevelTarget, instruments: Sequence[Instrument]) -> int:
+    """The sample the measured note plays (velocity LEVEL_VELOCITY, CC1 127)."""
+    zones = [
+        z
+        for z in instruments[t.instrument].zones
+        if _zone_keys(z)[0] <= t.note <= _zone_keys(z)[1]
+        and _zone_vels(z)[0] <= LEVEL_VELOCITY <= _zone_vels(z)[1]
+    ]
+    playing = [
+        z
+        for z in zones
+        if layer_attenuation_cb(z.modulators, LEVEL_CC1) < _SILENT_LAYER_CB
+    ]
+    zone = (playing or zones or instruments[t.instrument].zones)[-1]
+    return _zone_gens(zone)[GEN_SAMPLE_ID]
 
 
 def apply_level_gains(
@@ -1848,8 +1869,11 @@ class LevelRun:
     targets: list[LevelTarget]
     before: dict[str, dict]
     gains: dict[str, float]
+    #: How far the measured note's sample was peak limited, in dB.
     limited_db: dict[str, float]
     passes: int
+    #: How far the preset's most limited sample was peak limited, in dB.
+    limited_max_db: dict[str, float]
 
 
 def _preset_limited_db(
@@ -1917,7 +1941,9 @@ def level_bank(
         measured = {t.name: got[f"ours:{t.name}"]["rmsDb"] for t in targets}
         step = {}
         for t in targets:
-            left = max_limit_db - _preset_limited_db(t, instruments, limited_by_sample)
+            left = max_limit_db - limited_by_sample.get(
+                level_sample(t, instruments), 0.0
+            )
             step[t.name] = level_gains(
                 [t], measured, ref, instruments, samples, max(0.0, left)
             )[t.name]
@@ -1927,10 +1953,14 @@ def level_bank(
         for name, v in step.items():
             total[name] += v
     limited = {
+        t.name: round(limited_by_sample.get(level_sample(t, instruments), 0.0), 2)
+        for t in targets
+    }
+    limited_max = {
         t.name: round(_preset_limited_db(t, instruments, limited_by_sample), 2)
         for t in targets
     }
-    return LevelRun(targets, before, total, limited, passes)
+    return LevelRun(targets, before, total, limited, passes, limited_max)
 
 
 def verify_levels(
@@ -1978,6 +2008,7 @@ def verify_levels(
                 "before_db": round(was["rmsDb"], 2),
                 "gain_db": round(gains[t.name], 2),
                 "peak_limited_db": run.limited_db[t.name],
+                "peak_limited_max_db": run.limited_max_db[t.name],
                 "after_db": round(now["rmsDb"], 2),
                 "after_minus_reference_db": round(delta, 2),
                 "within_tolerance": abs(delta) <= LEVEL_TOLERANCE_DB,
