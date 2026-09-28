@@ -1053,6 +1053,12 @@ const PLAIN_MIDI_CLIPS: CaptureClip[] = [
   split.setStatus('stopping');
   assert.ok((split.clips[0].sourceRollNotes ?? []).every((n) => n.expr === undefined), 'no note of a split keyboard carries an MPE bend');
   split.dispose();
+  // Punched in part way through a note: it starts at the pressure it had at the cut.
+  const held: CapturedNote = { note: 60, velocity: 100, startSec: 0, endSec: 2, channel: 1, expr: { pressure: 10 / 127, changes: [{ sec: 0.5, dim: 'pressure', value: 120 / 127 }, { sec: 1.5, dim: 'pressure', value: 60 / 127 }] } };
+  const [punched] = cropNotesToWindow([held], { from: 1, to: 2 });
+  assert.equal(punched.expr?.pressure, 120 / 127, 'the swell before the cut is where it starts');
+  assert.deepEqual(punched.expr?.changes, [{ sec: 0.5, dim: 'pressure', value: 60 / 127 }], 'and the change after it keeps its place');
+
   // Two hands on one channel each, a chord in the left: not one note at a time, not MPE.
   assert.equal(
     isMpePass([

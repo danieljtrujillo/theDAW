@@ -331,9 +331,19 @@ export function cropNotesToWindow(
     const to = Math.min(n.endSec, win.to);
     if (to < from) continue;
     if (to === from && n.endSec > n.startSec) continue;
-    // A note cut at its start keeps its expression from there on.
+    // A note cut at its start keeps its expression from there on: the value each dimension had
+    // at the cut is where it starts, then the changes after it.
     const cut = from - n.startSec;
-    const expr = n.expr && cut > 0 ? { ...n.expr, changes: n.expr.changes.filter((c) => c.sec >= cut).map((c) => ({ ...c, sec: c.sec - cut })) } : n.expr;
+    let expr = n.expr;
+    if (n.expr && cut > 0) {
+      const start: CapturedExpression = { changes: [] };
+      if (n.expr.pressure !== undefined) start.pressure = n.expr.pressure;
+      if (n.expr.timbre !== undefined) start.timbre = n.expr.timbre;
+      if (n.expr.pitchBend !== undefined) start.pitchBend = n.expr.pitchBend;
+      for (const c of n.expr.changes) if (c.sec <= cut) start[c.dim] = c.value;
+      start.changes = n.expr.changes.filter((c) => c.sec > cut).map((c) => ({ ...c, sec: c.sec - cut }));
+      expr = start;
+    }
     out.push({
       note: n.note,
       velocity: n.velocity,
