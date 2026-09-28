@@ -1237,14 +1237,19 @@ const onLiveLanes = (list: PianoNote[], live: ReadonlySet<number>): PianoNote[] 
 /**
  * Every part's notes with a lane `lanes` does not have moved to lane 0. The
  * lanes belong to the document, so a lane that goes takes no part's notes
- * with it, and a lane added later with its id finds none of them. The same
- * arrays when no note moves, so a lane edit that leaves the notes records
- * nothing for them.
+ * with it, and a lane added later with its id finds none of them. The active
+ * part's notes are `notes` (its entry in `tracks` is stale until it is left,
+ * when `notes` replaces it). The same arrays when no note moves, so a lane
+ * edit that leaves the notes records nothing for them.
  */
-const partsOnLanes = (s: Pick<PianoRollState, 'notes' | 'tracks'>, lanes: readonly PolyLane[]): Pick<PianoRollState, 'notes' | 'tracks'> => {
+const partsOnLanes = (
+  s: Pick<PianoRollState, 'notes' | 'tracks' | 'activeTrackId'>,
+  lanes: readonly PolyLane[],
+): Pick<PianoRollState, 'notes' | 'tracks'> => {
   const live = new Set(lanes.map((l) => l.id));
   let moved = false;
   const tracks = s.tracks.map((t) => {
+    if (t.id === s.activeTrackId) return t;
     const notes = onLiveLanes(t.notes, live);
     if (notes === t.notes) return t;
     moved = true;
@@ -1254,10 +1259,10 @@ const partsOnLanes = (s: Pick<PianoRollState, 'notes' | 'tracks'>, lanes: readon
 };
 
 /** The id a new lane takes: past every lane, and past every lane a note of any part still names (a clip saved before lanes moved their notes). */
-const nextLaneId = (s: Pick<PianoRollState, 'lanes' | 'notes' | 'tracks'>): number => {
+const nextLaneId = (s: Pick<PianoRollState, 'lanes' | 'notes' | 'tracks' | 'activeTrackId'>): number => {
   let top = s.lanes.reduce((m, l) => Math.max(m, l.id), 0);
-  for (const list of [s.notes, ...s.tracks.map((t) => t.notes)]) {
-    for (const n of list) if (n.lane !== undefined && n.lane > top) top = n.lane;
+  for (const part of rollTracksOf(s)) {
+    for (const n of part.notes) if (n.lane !== undefined && n.lane > top) top = n.lane;
   }
   return top + 1;
 };
@@ -1924,7 +1929,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
           ? tempoSlice(oneTempo(importedRollBpm(bpm)))
           : {};
       // Lanes that go take no other part's notes with them.
-      const others = shared && meter?.lanes ? { tracks: partsOnLanes({ notes, tracks: s.tracks }, m.lanes).tracks } : {};
+      const others = shared && meter?.lanes ? { tracks: partsOnLanes({ notes, tracks: s.tracks, activeTrackId: s.activeTrackId }, m.lanes).tracks } : {};
       if (notes.length === 0) {
         return { notes, ...others, ...m, bends, ...tempo, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
