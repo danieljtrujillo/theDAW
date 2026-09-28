@@ -139,7 +139,113 @@ assert.equal((await composerApi.capabilities()).ppq, 960);
 assert.equal(sent[0].url, '/api/composer/');
 assert.equal(sent[0].method, 'GET');
 
+// ── species: a cantus from the roll, in ticks, or a preset ──────────────────
+serve(200, { parts: { counterpoint: [], cantus: [] }, violations: [], flags: [], suspensions: [] });
+await composerApi.species({
+  cantus: [rollNote, { note: 65, step: 24, length: 16 }],
+  key: 'D dorian',
+  species: 4,
+  position: 'below',
+  seed: 2,
+  invertible: 12,
+});
+assert.equal(sent[0].url, '/api/composer/species');
+assert.equal(sent[0].method, 'POST');
+assert.equal(sent[0].headers['X-TheDAW-Pair'], 'pair-token');
+assert.deepEqual(sent[0].body, {
+  cantus: [
+    { note: 67, tick: 1920, ticks: 960 },
+    { note: 65, tick: 5760, ticks: 3840 },
+  ],
+  key: 'D dorian',
+  species: 4,
+  position: 'below',
+  seed: 2,
+  invertible: 12,
+});
+
+serve(200, { parts: { counterpoint: [], cantus: [] }, violations: [], flags: [], suspensions: [] });
+await composerApi.species({ preset: 'fux_dorian', mode: 'dorian', startTick: 7680 });
+assert.deepEqual(sent[0].body, { preset: 'fux_dorian', mode: 'dorian', start_tick: 7680 });
+
+// ── invertible check ────────────────────────────────────────────────────────
+serve(200, { ok: true, interval: 12, key: 'C major', original: {}, inverted: {} });
+const inv = await composerApi.invertibleCheck({
+  upper: [{ note: 69, tick: 0, ticks: 3840 }],
+  lower: [{ note: 60, step: 0, length: 16 }],
+  interval: 12,
+  key: 'C',
+});
+assert.equal(inv.ok, true);
+assert.equal(sent[0].url, '/api/composer/invertible-check');
+assert.deepEqual(sent[0].body, {
+  upper: [{ note: 69, tick: 0, ticks: 3840 }],
+  lower: [{ note: 60, tick: 0, ticks: 3840 }],
+  interval: 12,
+  key: 'C',
+});
+
+// ── canon ───────────────────────────────────────────────────────────────────
+serve(200, { parts: { leader: [], follower: [] }, violations: [], flags: [] });
+await composerApi.canon({
+  key: 'a',
+  interval: -4,
+  lag: 1920,
+  bars: 10,
+  transposition: 'real',
+  rhythm: 'halves',
+  startTick: 3840,
+});
+assert.equal(sent[0].url, '/api/composer/canon');
+assert.deepEqual(sent[0].body, {
+  key: 'a',
+  interval: -4,
+  lag: 1920,
+  bars: 10,
+  transposition: 'real',
+  rhythm: 'halves',
+  start_tick: 3840,
+});
+
+// ── fugue ───────────────────────────────────────────────────────────────────
+serve(200, { parts: {}, entries: [], episodes: [], strettos: [], violations: [], flags: [] });
+await composerApi.fugue({
+  key: 'c',
+  voices: 4,
+  subject: [
+    { note: 67, tick: 0, ticks: 960 },
+    { note: 68, step: 4, length: 4 },
+  ],
+  episodes: 2,
+  countersubject: false,
+  seed: 5,
+});
+assert.equal(sent[0].url, '/api/composer/fugue');
+assert.deepEqual(sent[0].body, {
+  key: 'c',
+  voices: 4,
+  subject: [
+    { note: 67, tick: 0, ticks: 960 },
+    { note: 68, tick: 960, ticks: 960 },
+  ],
+  seed: 5,
+  episodes: 2,
+  countersubject: false,
+});
+
+serve(200, { parts: {}, entries: [], episodes: [], strettos: [], violations: [], flags: [] });
+await composerApi.fugue({ key: 'G', subjectStart: 'dominant' });
+assert.deepEqual(sent[0].body, { key: 'G', subject_start: 'dominant' }, 'no subject: the backend writes one');
+
 // ── a 422 throws the route's own message ────────────────────────────────────
+serve(422, { detail: 'the cantus reaches its final by step, or no cadence can be written' });
+await assert.rejects(composerApi.species({ cantus: [{ note: 62, tick: 0, ticks: 3840 }] }), (e: unknown) => {
+  assert.ok(e instanceof ApiError);
+  assert.equal(e.status, 422);
+  assert.match(e.message, /by step/);
+  return true;
+});
+
 serve(422, { detail: 'this plan needs 9 chords and the bars hold 2; ask for more bars or a faster harmonic rhythm' });
 await assert.rejects(composerApi.plan({ key: 'C', bars: 2, include: ['german'] }), (e: unknown) => {
   assert.ok(e instanceof ApiError);
