@@ -591,6 +591,49 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
 /** Zero-based file channels a bent lane of a part may take once every part has its own: every channel but 9. */
 const FILE_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
 
+/** A part's channel for each lane in a file, and the lanes whose wheel it writes (their own channel). */
+interface PartLaneChannels {
+  channels: Map<number, number>;
+  wheelLanes: Set<number>;
+}
+
+/**
+ * The channels a roll of several parts is written on: each part's own
+ * (lib/rollTracks partFileChannels), and, while one is free, a channel of its
+ * own for each bent lane of a melodic part with notes in it, where the lane's
+ * wheel is written. `unbent` names each part and lane that needed one and got
+ * none: its notes stay on the part's channel, unbent, and the export says so.
+ */
+export function partLaneChannels(
+  s: Pick<RollMidiSource, 'lanes' | 'bends'>,
+  parts: readonly RollTrack[],
+): { parts: Map<string, PartLaneChannels>; unbent: Array<{ partId: string; name: string; lane: number }> } {
+  const { channels: base } = partFileChannels(parts);
+  const taken = new Set(base.values());
+  const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
+  const bent = [...bentLanes(s.lanes, s.bends)].sort((a, b) => a - b);
+  const out = new Map<string, PartLaneChannels>();
+  const unbent: Array<{ partId: string; name: string; lane: number }> = [];
+  for (const part of parts) {
+    const ch = base.get(part.id) as number;
+    const channels = new Map<number, number>(s.lanes.map((l) => [l.id, ch]));
+    const wheelLanes = new Set<number>();
+    if (!isPercussionPart(part)) {
+      for (const lane of bent) {
+        if (!part.notes.some((n) => playingLane(n.lane, s.lanes) === lane)) continue;
+        if (!free.length) {
+          unbent.push({ partId: part.id, name: part.name, lane });
+          continue;
+        }
+        channels.set(lane, free.shift() as number);
+        wheelLanes.add(lane);
+      }
+    }
+    out.set(part.id, { channels, wheelLanes });
+  }
+  return { parts: out, unbent };
+}
+
 /**
  * A roll of several parts as MIDI: each part's tracks named after it on its
  * own channel (lib/rollTracks partFileChannels), with its program and bank at
@@ -600,22 +643,10 @@ const FILE_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 
  */
 export function rollPartsToMidiFile(s: RollMidiSource, parts: readonly RollTrack[], ppq = ROLL_PPQ): MidiFileData {
   const header = rollFileHeader(s, ppq);
-  const { channels: base } = partFileChannels(parts);
-  const taken = new Set(base.values());
-  const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
-  const bent = [...bentLanes(s.lanes, s.bends)].sort((a, b) => a - b);
+  const plan = partLaneChannels(s, parts);
   const tracks: MidiTrack[] = [];
   for (const part of parts) {
-    const ch = base.get(part.id) as number;
-    const channels = new Map<number, number>(s.lanes.map((l) => [l.id, ch]));
-    const wheelLanes = new Set<number>();
-    if (!isPercussionPart(part)) {
-      for (const lane of bent) {
-        if (!free.length || !part.notes.some((n) => playingLane(n.lane, s.lanes) === lane)) continue;
-        channels.set(lane, free.shift() as number);
-        wheelLanes.add(lane);
-      }
-    }
+    const { channels, wheelLanes } = plan.parts.get(part.id) as PartLaneChannels;
     const w = writeNotes(s, part.notes, ppq, channels, wheelLanes);
     const program = part.program ?? s.voices?.get(part.id)?.program;
     const percussion = isPercussionPart(part);

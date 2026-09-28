@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { encodeMidi, parseMidi, type MidiFileData } from './midi.ts';
-import { midiFileToRollParts, rollToMidiFile } from './rollMidi.ts';
+import { midiFileToRollParts, partLaneChannels, rollToMidiFile } from './rollMidi.ts';
 import { makeRollTrack } from './rollTracks.ts';
 import { DEFAULT_LANES, migrateNotes, type PianoNote } from '../state/pianoRollStore.ts';
 import { normalizeMeterMap, type PolyLane } from './meterMap.ts';
@@ -139,6 +139,24 @@ const sig = (notes: readonly PianoNote[]) => notes.map((x) => `${x.note}@${x.ste
   assert.ok(at > 0);
   bytes[at + 2] = 0xfb;
   assert.equal(parseMidi(bytes).tracks[0].name, 'Flûte');
+}
+
+// A bent lane takes a channel of its own while one is free; past that its notes stay on the part's
+// channel, unbent, and partLaneChannels names them so the export can say so.
+{
+  const lanes: PolyLane[] = [...DEFAULT_LANES, { id: 1, name: 'B', cycleSteps: null }];
+  const bends: LaneBend[] = [{ lane: 1, range: 2, points: [{ id: 'b0', step: 0, value: 0, shape: 'linear' }, { id: 'b1', step: 8, value: 1, shape: 'hold' }] }];
+  // Twelve melodic parts, each with a note in bent lane B: 12 own channels, 3 free for their bends.
+  const tracks = Array.from({ length: 12 }, (_, i) => makeRollTrack({ id: `p${i}`, name: `Part ${i + 1}`, program: 40 + i, notes: migrateNotes([n(0, 60 + i), n(4, 62 + i, 1)]) }, i));
+  const plan = partLaneChannels({ lanes, bends }, tracks);
+  const bentOwn = [...plan.parts.values()].filter((p) => p.wheelLanes.has(1)).length;
+  assert.equal(bentOwn, 3, "the three channels left over each carry a part's bend");
+  assert.deepEqual(plan.unbent.map((u) => u.name), tracks.slice(3).map((t) => t.name), 'the other nine are named, unbent');
+  const file = rollToMidiFile({ ...base, lanes, bends, notes: [], tracks });
+  const wheels = file.tracks.filter((t) => t.bends?.length).length;
+  assert.equal(wheels, 3, 'the file writes the three bends it has channels for');
+  // With channels to spare, nothing is unbent.
+  assert.deepEqual(partLaneChannels({ lanes, bends }, tracks.slice(0, 4)).unbent, []);
 }
 
 console.log('rollMidiParts: ok');

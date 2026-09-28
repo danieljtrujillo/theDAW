@@ -40,7 +40,7 @@ import { noteIndexOf, type NoteIndex } from '../../lib/noteIndex';
 import { hitNote, lookOf, noteBox, ROLL_LOOKS } from '../../lib/rollCanvas';
 import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
 import { bpmText, laneSpanLabel } from '../../lib/meterFace';
-import { midiFileNoteCount, rollToMidiFile } from '../../lib/rollMidi';
+import { midiFileNoteCount, partLaneChannels, rollToMidiFile } from '../../lib/rollMidi';
 import { stepClock, type RollPlayState } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
@@ -1320,6 +1320,12 @@ export const exportRollMidi = async (): Promise<void> => {
   if (shared.length) {
     const names = parts.filter((t) => shared.includes(t.id)).map((t) => t.name);
     logWarn('piano-roll', `A MIDI file has 16 channels: ${names.join(', ')} share channels, and a player sounds them on one program each`);
+  }
+  // A bent lane plays on a channel of its own; with every channel taken its notes go on the part's channel, unbent.
+  const unbent = parts.length > 1 ? partLaneChannels(roll, parts).unbent : [];
+  if (unbent.length) {
+    const lanes = unbent.map((u) => `${u.name} lane ${roll.lanes.find((l) => l.id === u.lane)?.name ?? u.lane}`);
+    logWarn('piano-roll', `No MIDI channel was left for the pitch bend of ${lanes.join(', ')}: those notes are in the file unbent`);
   }
   // One track per part, and per lane when the roll has more than lane A: the count is every track's notes.
   const count = midiFileNoteCount(file);
