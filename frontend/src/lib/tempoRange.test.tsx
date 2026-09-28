@@ -3,8 +3,8 @@
  * 24 BPM Grave or a 280 BPM Presto set in one surface is not moved in
  * another. Up to afd27bea AI COMPOSE, the Gater, the Step Sequencer, Chimera's
  * target BPM, the clip-op tempo bounds (MIN_BPM/MAX_BPM) and the assistant's
- * source-BPM tool stopped at 40-240, and a .tasmo clip at 30 BPM had its notes
- * placed at 40.
+ * source-BPM tool stopped at 40-240, Nodefi's Live Out master BPM at 40-220,
+ * and a .tasmo clip at 30 BPM had its notes placed at 40.
  * Run from `frontend/`:
  *   npx tsx src/lib/tempoRange.test.tsx
  */
@@ -14,6 +14,7 @@ import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from './tempoMap.ts';
 import { MAX_BPM, MIN_BPM, setClipSourceBpm } from './clipOps/timeline.ts';
 import { composeGrid, parseComposeResponse } from './aiComposeGrid.ts';
 import { getRackEffect } from './rackEffects.ts';
+import { loutBpm, nodeDef } from './nodefiTypes.ts';
 import { tasmoMidiNotesToPiano } from './projectImport.ts';
 import { PPQ } from './noteClock.ts';
 import type { AudioClip } from '../state/editorStore.ts';
@@ -47,6 +48,18 @@ assert.equal(setClipSourceBpm(clip, 300.1).ok, false, 'above 300 is refused');
   const bpm = getRackEffect('gater')?.params.find((p) => p.key === 'bpm');
   assert.ok(bpm, 'the Gater has a BPM param');
   assert.deepEqual([bpm.min, bpm.max], [20, 300]);
+}
+
+// Nodefi's Live Out master tempo, which every synced LFO reads.
+{
+  const bpm = nodeDef('lout').fields.find((f) => f.key === 'bpm');
+  assert.ok(bpm, 'Live Out has a BPM field');
+  assert.deepEqual([bpm.min, bpm.max], [20, 300], 'a 24 BPM Grave or a 280 BPM Presto can be matched');
+  assert.equal(loutBpm({ bpm: 24 }), 24);
+  assert.equal(loutBpm({ bpm: 280 }), 280);
+  assert.equal(loutBpm({ bpm: 500 }), 300, 'a hand-edited graph is held inside the range');
+  assert.equal(loutBpm({ bpm: 'x' }), 120);
+  assert.equal(loutBpm({}), 120);
 }
 
 // A .tasmo clip's notes in seconds at 30 BPM land on their ticks at 30, not 40.

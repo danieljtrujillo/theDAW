@@ -17,7 +17,7 @@
  * BPM comes from the Live Out node and feeds every synced LFO
  * (rate = bpm/60 ÷ beats-per-cycle; a bar is four beats).
  */
-import { nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from './nodefiTypes';
+import { loutBpm, nodeDef, type GraphEdge, type GraphNode, type NodeKind, type NodeRunStatus } from './nodefiTypes';
 import { useLibraryStore } from '../state/libraryStore';
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import {
@@ -147,7 +147,7 @@ export async function startLiveGraph(
   }
   const lout = live.find((n) => n.kind === 'lout');
   if (!lout) throw new Error('add a Live Out node');
-  const bpm = num(lout.params.bpm, 120);
+  const bpm = loutBpm(lout.params);
 
   // Rack effects that ride on AudioWorklets (chop / granular / kargyraa, and
   // Ares' grain engine) are silent without their modules — preload them so a
@@ -347,7 +347,7 @@ export async function startLiveGraph(
             modOut: depth,
             apply: (p) => {
               osc.type = String(p.shape || 'sine') as OscillatorType;
-              smooth(osc.frequency, lfoRateHz(p, num(loutNodeParams().bpm, 120)));
+              smooth(osc.frequency, lfoRateHz(p, loutBpm(loutNodeParams())));
               smooth(depth.gain, num(p.depth, 0.5));
             },
             startables: [osc],
@@ -373,7 +373,7 @@ export async function startLiveGraph(
             apply: (p) => {
               smooth(g.gain, num(p.gain, 0.9));
               // BPM edits re-rate every synced LFO live.
-              const nextBpm = num(p.bpm, 120);
+              const nextBpm = loutBpm(p);
               for (const lfoNode of latestNodes.filter((x) => x.kind === 'lfo')) {
                 const osc = lfoOscs.get(lfoNode.id);
                 if (osc) smooth(osc.frequency, lfoRateHz(lfoNode.params, nextBpm));
@@ -496,7 +496,7 @@ export async function startLiveGraph(
    *  numbers — including an empty `modParam`, which still modulates nothing. */
   const syncControlMods = (): void => {
     if (!modEngine) return;
-    const bpmNow = num(loutNodeParams().bpm, 120);
+    const bpmNow = loutBpm(loutNodeParams());
     const known = new Set(modEngine.routes().map((r) => r.id));
     controlMods.forEach((m, i) => {
       const id = `cm${i}`;
