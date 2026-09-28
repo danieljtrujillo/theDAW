@@ -228,6 +228,29 @@ export function banksForSelects(selects: Iterable<number>, banks: readonly Sound
   return banks.filter((b) => b.kind === 'user' && used.some((m) => m >= b.offset && m < b.offset + Math.max(1, b.span)));
 }
 
+/** The kit programs a parsed MIDI selects on its drum channel (channel 10), which sends no bank select. */
+export function midiDrumPrograms(midi: Pick<BasicMIDI, 'tracks'>): Set<number> {
+  const out = new Set<number>();
+  for (const t of midi.tracks) {
+    for (const e of t.events) {
+      if ((e.statusByte & 0xff) === 0xc9) out.add(e.data[0]);
+    }
+  }
+  return out;
+}
+
+/**
+ * The user banks a drum channel's kits need: each bank holding a kit at a
+ * program the drum channel selects that the bundled bank has no kit at (the
+ * bundled bank's kit plays where it has one), the rule EDIT's live synths
+ * load a drum track's bank by (lib/editBankBanks).
+ */
+export function banksForKits(programs: Iterable<number>, banks: readonly SoundBank[] = useSoundBankStore.getState().banks): SoundBank[] {
+  const bundledKits = new Set(banks.filter((b) => b.kind === 'bundled').flatMap((b) => b.presets.filter((p) => p.drum).map((p) => p.program)));
+  const wanted = [...new Set(programs)].filter((p) => !bundledKits.has(p));
+  return banks.filter((b) => b.kind === 'user' && b.presets.some((p) => p.drum && wanted.includes(p.program)));
+}
+
 /** Every bank select value (CC 0) a parsed MIDI sends. */
 export function midiBankSelects(midi: Pick<BasicMIDI, 'tracks'>): Set<number> {
   const out = new Set<number>();
@@ -645,9 +668,11 @@ async function renderMidiToBlob(
   // The project tuning's messages go first, as an exported file carries them (tuningStore tuningForExport).
   const tuned = tuningForExport(new Uint8Array(midiBytes));
   const midi = BasicMIDI.fromArrayBuffer(tuned.buffer.slice(tuned.byteOffset, tuned.byteOffset + tuned.byteLength) as ArrayBuffer, 'render');
-  // The user banks the file selects, each at its offset, after the bundled bank so it keeps its own presets.
+  // The user banks the file selects, each at its offset, after the bundled bank so it keeps its own
+  // presets, and the ones holding a kit its drum channel selects that the bundled bank has none at.
+  const wanted = [...banksForSelects(midiBankSelects(midi)), ...banksForKits(midiDrumPrograms(midi))];
   const users = await Promise.all(
-    banksForSelects(midiBankSelects(midi)).map(async (b) => {
+    wanted.filter((b, i) => wanted.findIndex((w) => w.id === b.id) === i).map(async (b) => {
       try {
         return { bankOffset: b.offset, soundBankBuffer: (await bankBytes(b)).slice(0) };
       } catch {
