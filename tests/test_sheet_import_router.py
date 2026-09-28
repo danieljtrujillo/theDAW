@@ -74,3 +74,31 @@ def test_an_upload_over_the_limit_is_refused(monkeypatch) -> None:
             return r.status_code
 
     assert asyncio.run(upload()) == 413
+
+
+def test_parse_answers_only_this_machine_or_a_paired_device(
+    tmp_path, monkeypatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from backend.lib import pairing
+
+    monkeypatch.setattr(pairing, "_TOKEN_FILE", tmp_path / "pairing_token.txt")
+    monkeypatch.setattr(pairing, "_cached", None)
+    app = FastAPI()
+    app.include_router(sheetimport_router.router, prefix="/api/sheetimport")
+    score = {"file": ("tune.abc", b"X:1\nL:1/4\nK:C\nCDEF|", "text/plain")}
+    foreign = TestClient(app, client=("127.0.0.1", 51000)).post(
+        "/api/sheetimport/parse",
+        files=score,
+        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+    )
+    assert foreign.status_code == 403
+    lan = TestClient(app, client=("10.20.30.40", 51000))
+    assert lan.post("/api/sheetimport/parse", files=score).status_code == 403
+    paired = lan.post(
+        "/api/sheetimport/parse",
+        files=score,
+        headers={pairing.HEADER: pairing.get_token()},
+    )
+    assert paired.status_code == 200, paired.text

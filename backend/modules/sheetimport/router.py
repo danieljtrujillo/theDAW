@@ -54,7 +54,13 @@ def capabilities():
     }
 
 
-@router.post("/parse")
+@router.post(
+    "/parse",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_launch_or_pairing_token),
+    ],
+)
 async def parse_upload(file: UploadFile = File(...)):
     """Parse an uploaded score into a piano-roll note batch. music21 runs in
     the threadpool: a long score takes seconds to parse, and the event loop
@@ -74,7 +80,8 @@ async def parse_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail=str(e))
     except MxlRefused as e:
         raise HTTPException(status_code=e.status, detail=str(e))
-    except Exception as e:  # noqa: BLE001 - surface parse errors to the client
+    except Exception as e:
+        # Any parser failure is the file's: the client shows music21's words.
         raise HTTPException(status_code=422, detail=f"Could not parse score: {e}")
 
 

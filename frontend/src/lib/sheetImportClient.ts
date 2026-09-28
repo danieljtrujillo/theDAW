@@ -4,6 +4,8 @@
 // every time signature and tempo mark of the score, and each part's instrument
 // (backend/modules/sheetimport/parser.py).
 
+import { pairingHeaderFor } from './apiJson';
+
 export interface SheetNote {
   pitch: number;
   /** 16th steps from the score's start (tick / 240); fractional off the 16th grid. */
@@ -95,7 +97,8 @@ export const SHEET_ACCEPT = '.musicxml,.mxl,.xml,.abc,.krn';
 export async function parseSheetFile(file: File): Promise<SheetScore> {
   const form = new FormData();
   form.append('file', file, file.name);
-  const res = await fetch('/api/sheetimport/parse', { method: 'POST', body: form });
+  const url = '/api/sheetimport/parse';
+  const res = await fetch(url, { method: 'POST', body: form, headers: pairingHeaderFor(url) });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {

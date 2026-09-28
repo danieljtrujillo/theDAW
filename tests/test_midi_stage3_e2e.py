@@ -41,7 +41,7 @@ def _client() -> Any:
 
     app = FastAPI()
     app.include_router(router, prefix="/api/sheetimport")
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 def _corpus_path(rel: str) -> Path:
