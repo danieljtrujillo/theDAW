@@ -17,6 +17,7 @@ import { TICKS_PER_STEP } from './rollSnap';
 import type { RollRenderBends } from './pitchBend';
 import { stepNotesToRender, voiceContext, type VoiceBend } from './pitchBendVoice';
 import { encodeWav } from './wavEncode';
+import { keyHz } from './tuning';
 import { isSoundfontActive, getActiveSynthVoice, renderNotesToBlobSF, renderMidiBufferToBlobSF } from './soundfontEngine';
 import { getSynthVoice } from './synthVoices';
 import { GM_STANDARD_KIT } from './clipProgram';
@@ -103,7 +104,8 @@ export const triggerSynthVoice = (
   duration: number,
   master: number,
 ): void => {
-  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  // The project tuning's pitch for the key (lib/tuning keyHz), as the soundfont plays it.
+  const freq = keyHz(midi);
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
   osc.frequency.setValueAtTime(freq, when);

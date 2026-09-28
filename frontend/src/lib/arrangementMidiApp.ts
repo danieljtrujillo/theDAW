@@ -18,6 +18,7 @@ import { logInfo, logWarn } from '../state/logStore';
 import { arrangementToMidiFile, type ArrangementMidiResult, type ArrangementMidiScope } from './arrangementMidi';
 import type { GlobalVoice } from './clipProgram';
 import { encodeMidi } from './midi';
+import { tuningForExport } from '../state/tuningStore';
 
 export interface ArrangementMidiRequest {
   scope?: ArrangementMidiScope;
@@ -66,7 +67,8 @@ export async function exportArrangementMidi(req: ArrangementMidiRequest = {}, se
     return { ok: false, error: `There are no MIDI notes to export in that part of the arrangement${why}`, result };
   }
   const fileName = midiFileName(req.name);
-  const blob = new Blob([encodeMidi(result.file)], { type: 'audio/midi' });
+  // The project tuning's MIDI Tuning Standard messages lead the file, as every render plays them.
+  const blob = new Blob([tuningForExport(encodeMidi(result.file))], { type: 'audio/midi' });
   const saved = await (seams.save ?? saveMidi)(blob, fileName);
   const what = `${result.noteCount} notes on ${result.trackCount} track${result.trackCount === 1 ? '' : 's'}`;
   if (saved.cancelled) return { ok: false, error: `The MIDI save was cancelled, so nothing was written (${what} were ready)`, result };

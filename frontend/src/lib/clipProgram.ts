@@ -20,18 +20,31 @@
  * applies to a program it was not chosen with (the track's or the picker's),
  * nor on the drum channel, where the kit is chosen by program.
  *
- * Type imports only, so node tests load it.
+ * A voice picked from a sound bank (lib/bankRegistry) carries the bank's id
+ * beside its program and bank select: the clip's `instrumentBankId`, the
+ * track's `instrumentBank` and `instrumentBankId`, the picker's active bank.
+ * The bank select the voice sends is that bank's offset plus its own bank
+ * select, so a user bank's preset plays from the bank it was picked in, live
+ * and in every render. Each program carries the bank it was picked with and
+ * no other: the clip's, then the track's, then the picker's.
+ *
+ * No store and no DOM, so node tests load it.
  */
 import type { AudioClip, EditorTrack } from '../state/editorStore';
+import { bankSelectFor } from './bankRegistry';
 
 /** The global picker's state, as `useSoundfontStore` holds it. */
 export interface GlobalVoice {
   useSoundfont: boolean;
   activeProgram: number;
+  /** The bank the picker's program is picked from; absent is the bundled bank. */
+  activeBankId?: string;
+  /** Its bank select inside that bank; absent is 0. */
+  activeBank?: number;
 }
 
-export type ProgramClip = Pick<AudioClip, 'instrumentProgram' | 'instrumentBank'>;
-export type ProgramTrack = Pick<EditorTrack, 'instrumentProgram' | 'isPercussion'>;
+export type ProgramClip = Pick<AudioClip, 'instrumentProgram' | 'instrumentBank'> & Partial<Pick<AudioClip, 'instrumentBankId'>>;
+export type ProgramTrack = Pick<EditorTrack, 'instrumentProgram' | 'isPercussion'> & Partial<Pick<EditorTrack, 'instrumentBank' | 'instrumentBankId'>>;
 
 /** The General MIDI Standard drum kit. */
 export const GM_STANDARD_KIT = 0;
@@ -74,15 +87,25 @@ export interface ClipVoice {
   bank?: number;
 }
 
-/** The bank a clip's voice selects: its instrumentBank with a program of its own on a melodic track, else 0. */
+/**
+ * The bank select a clip's voice sends on a melodic track: its own program's
+ * bank (instrumentBank in instrumentBankId, at that bank's offset), else the
+ * track's program's, else 0. A drum track selects none: a kit is chosen by
+ * its program.
+ */
 export const clipBank = (clip: ProgramClip, track: ProgramTrack | null | undefined): number => {
-  if (isPercussionTrack(track) || clip.instrumentProgram === undefined) return 0;
-  const bank = clip.instrumentBank;
-  return typeof bank === 'number' && Number.isFinite(bank) ? Math.max(0, Math.min(127, Math.round(bank))) : 0;
+  if (isPercussionTrack(track)) return 0;
+  if (clip.instrumentProgram !== undefined) return bankSelectFor(clip.instrumentBankId, clip.instrumentBank);
+  if (track?.instrumentProgram !== undefined) return bankSelectFor(track.instrumentBankId, track.instrumentBank);
+  return 0;
 };
 
+/** The bank select the global picker's program sends. */
+export const globalBank = (global: GlobalVoice): number => bankSelectFor(global.activeBankId, global.activeBank);
+
 export function clipVoice(clip: ProgramClip, track: ProgramTrack | null | undefined, global: GlobalVoice): ClipVoice {
-  const bank = clipBank(clip, track);
+  const fromPicker = !isPercussionTrack(track) && clip.instrumentProgram === undefined && track?.instrumentProgram === undefined;
+  const bank = fromPicker ? (global.useSoundfont ? globalBank(global) : 0) : clipBank(clip, track);
   return { program: effectiveProgramFor(clip, track, global), percussion: isPercussionTrack(track), ...(bank > 0 ? { bank } : {}) };
 }
 
@@ -101,7 +124,11 @@ export function rollVoice(
   rollProgram: number | null = null,
 ): ClipVoice {
   const clip = editingClipId ? clips.find((c) => c.id === editingClipId) : undefined;
-  if (!clip) return { program: rollProgram ?? (global.useSoundfont ? global.activeProgram : undefined), percussion: false };
+  if (!clip) {
+    if (rollProgram !== null) return { program: rollProgram, percussion: false };
+    const bank = global.useSoundfont ? globalBank(global) : 0;
+    return { program: global.useSoundfont ? global.activeProgram : undefined, percussion: false, ...(bank > 0 ? { bank } : {}) };
+  }
   return clipVoice(clip, tracks.find((t) => t.id === clip.trackId), global);
 }
 

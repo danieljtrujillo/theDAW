@@ -91,7 +91,7 @@ export const startHeldNote = (note: number, velocity: number, voice: ClipVoice):
   if (ctx.state === 'suspended') void ctx.resume();
   if (voice.program !== undefined && isLiveSynthReady()) {
     const channel = voice.percussion ? DRUM_CHANNEL : KEYBOARD_LIVE_CHANNEL;
-    liveNoteOn(channel, voice.program, note, velocity);
+    liveNoteOn(channel, voice.program, note, velocity, voice.percussion ? 0 : voice.bank ?? 0);
     return { kind: 'soundfont', channel, note };
   }
   if (voice.program !== undefined) void ensureSoundfontReady(); // the next key plays the soundfont
