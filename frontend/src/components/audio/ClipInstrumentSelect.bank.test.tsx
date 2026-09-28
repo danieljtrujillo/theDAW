@@ -4,8 +4,9 @@
  * The sequence: the piano roll's Horn part (program 60, Bank 1) was saved to
  * EDIT, so its clip holds program 60 and bank 1. The clip's instrument picker
  * shows the program and a "Bank 1" label beside it. The user picks Violin: the
- * bank goes with the old program, so the clip plays Violin in bank 0 and the
- * label goes. Back on a clip with no bank, no label shows.
+ * bank goes with the old program, so the clip plays Violin in bank 0, the
+ * label goes, and the arrangement's MIDI export writes Violin with no bank
+ * select. Back on a clip with no bank, no label shows.
  *
  *   cd frontend && npx tsx src/components/audio/ClipInstrumentSelect.bank.test.tsx
  */
@@ -15,6 +16,8 @@ import { JSDOM } from 'jsdom';
 const { ClipInstrumentSelect } = await import('./WaveformEditor.tsx');
 const { useEditorStore } = await import('../../state/editorStore.ts');
 const { clipVoice } = await import('../../lib/clipProgram.ts');
+const { arrangementToMidiFile } = await import('../../lib/arrangementMidi.ts');
+const { encodeMidi, parseMidi } = await import('../../lib/midi.ts');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const win = dom.window;
@@ -55,6 +58,8 @@ const clipId = ed().addClipToTrack({
   instrumentBank: 1,
   renderedProgram: 60,
   renderedBank: 1,
+  // The part record the roll's EDIT key writes beside the clip's own program and bank.
+  sourceRollPart: { doc: 'd', id: 'horn', order: 0, name: 'Horn', program: 60, bank: 1, bankLsb: 2, channel: null, color: '#f59e0b', mute: false, solo: false },
 });
 const clip = () => ed().clips.find((c) => c.id === clipId)!;
 const track = () => ed().tracks.find((t) => t.id === trackId);
@@ -83,6 +88,10 @@ assert.deepEqual([clip().instrumentProgram, clip().instrumentBank], [40, undefin
 await show();
 assert.equal(host.querySelector('[data-clip-bank]'), null, 'and the bank label is gone');
 assert.deepEqual(clipVoice(clip(), track(), { useSoundfont: true, activeProgram: 0 }), { program: 40, percussion: false });
+// The arrangement's MIDI export writes the Violin EDIT plays: no bank select, though the part record names Bank 1.
+const exportedPrograms = parseMidi(encodeMidi(arrangementToMidiFile(ed(), { global: { useSoundfont: true, activeProgram: 0 } }).file))
+  .tracks.flatMap((t) => (t.programs ?? []).map((p) => [p.program, p.bank, p.bankLsb]));
+assert.deepEqual(exportedPrograms, [[40, undefined, undefined]], 'program 40 in the file, with no bank select');
 
 // The track default also drops a bank.
 await act(async () => ed().updateClip(clipId, { instrumentProgram: 60, instrumentBank: 1 }));

@@ -19,8 +19,13 @@
  * tracks that share. Each clip's voice
  * (lib/clipProgram clipVoice: its program, else its track's, else the
  * picker's) is written as a program change at tick 0, and again at the start
- * of any later clip on the track that sounds another program; the bank select
- * is the clip's roll part's, its MSB and, when the part has one, its LSB.
+ * of any later clip on the track that sounds another program or bank. The
+ * bank select is the one EDIT plays that program in (clipVoice's bank: a
+ * clip's own program in the bank its roll part chose, none on a drum track),
+ * so the file sounds what EDIT's live notes and renders sound; the roll
+ * part's bank select LSB goes with it while the clip still plays the part's
+ * program in the part's bank (clipBankSelect). A clip EDIT plays with no
+ * program writes its roll part's program with the part's whole bank select.
  *
  * CONTROLLERS: each clip's roll part carries its controller changes
  * (RollPartRef `controls`: modulation, volume, pan, expression, the sustain
@@ -73,8 +78,9 @@
  * saves the file.
  */
 import type { AudioClip, EditorTrack, TimelineMarker } from '../state/editorStore';
+import type { RollPartRef } from '../state/pianoRollStore';
 import { noteEndStep } from './clipNotes/units';
-import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type GlobalVoice } from './clipProgram';
+import { GM_STANDARD_KIT, clipVoice, isPercussionTrack, type ClipVoice, type GlobalVoice } from './clipProgram';
 import { barAt, barStartStep, meterAtBar, meterMapToMidiEvents, normalizeMeterMap, roundUpToBar, type MeterSegment } from './meterMap';
 import type { MidiBend, MidiBendRange, MidiControl, MidiFileData, MidiNote, MidiProgram, MidiTrack } from './midi';
 import { PPQ } from './noteClock';
@@ -82,7 +88,7 @@ import { bendWheelEvents, playingLane } from './pitchBend';
 import { clipControlTimes, clipNoteSpan, clipRenderInput } from './rollClip';
 import { tempoMapText, tempoMapToMidiTempos } from './rollMidi';
 import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from './rollTempo';
-import { PERCUSSION_PART_CHANNEL, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
+import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
 
 /** The arrangement an export reads (editorStore's fields). */
@@ -232,16 +238,40 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const voice = clipVoice(clip, track, global);
   // The voice EDIT plays the clip with; with none (no program anywhere, the picker off the soundfont), its roll part's.
   const program = voice.program ?? clip.sourceRollPart?.program ?? undefined;
+  const { bank, bankLsb } = clipBankSelect(voice, clip.sourceRollPart);
   return {
     startSec: clip.startSec,
     endSec: clip.startSec + clip.durationSec,
     program: percussion ? (program ?? GM_STANDARD_KIT) : program,
-    bank: percussion ? 0 : Math.max(0, Math.min(127, Math.round(clip.sourceRollPart?.bank ?? 0))),
-    bankLsb: percussion ? undefined : cleanPartBankLsb(clip.sourceRollPart?.bankLsb),
+    bank,
+    bankLsb,
     notes,
     controls,
     wheels,
   };
+}
+
+/**
+ * The bank select a clip's program change carries. The MSB is the bank EDIT
+ * plays the clip's program in (lib/clipProgram clipVoice: a clip's own program
+ * in its `instrumentBank`, 0 on a drum track, where the kit is chosen by
+ * program), the one its live notes and every render select, so a clip whose
+ * instrument was picked again in EDIT (which drops the bank) writes bank 0.
+ * The LSB is the roll part's (`bankLsb`, which only a file carries) while the
+ * clip still plays the part's program in the part's bank: a part that follows
+ * the roll voice (no program of its own) plays whatever its clip plays, so its
+ * bank alone decides. A clip EDIT plays with no program (none anywhere and the
+ * picker off the soundfont) writes its part's own program, so the part's whole
+ * bank select goes with it.
+ */
+export function clipBankSelect(voice: ClipVoice, part: RollPartRef | undefined): { bank: number; bankLsb: number | undefined } {
+  if (voice.percussion) return { bank: 0, bankLsb: undefined };
+  if (voice.program === undefined) {
+    return part && part.program !== null ? { bank: cleanPartBank(part.bank), bankLsb: cleanPartBankLsb(part.bankLsb) } : { bank: 0, bankLsb: undefined };
+  }
+  const bank = voice.bank ?? 0;
+  const partsVoice = !!part && bank === cleanPartBank(part.bank) && (part.program === null || part.program === voice.program);
+  return { bank, bankLsb: partsVoice ? cleanPartBankLsb(part.bankLsb) : undefined };
 }
 
 /** The value a channel starts at for `controller` (General MIDI's reset, lib/rollTracks PART_CONTROLLERS). */

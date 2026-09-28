@@ -1,7 +1,9 @@
 /**
  * A part's bank select LSB (CC 32): kept from a MIDI file, written back out,
  * set in the roll with its undo, carried by the part's EDIT clip and its
- * .tasmo record, and written by the arrangement's MIDI export.
+ * .tasmo record, and written by the arrangement's MIDI export. The export's
+ * bank select is the one EDIT plays: a clip re-voiced in EDIT's clip
+ * instrument picker writes no bank, whatever its part record names.
  *
  * Before: lib/midi read CC 32 with each program change, but a roll part kept
  * the bank MSB alone, so Import MIDI then Export MIDI dropped CC 32, and an XG
@@ -16,13 +18,15 @@ import { midiFileToRollParts, parsePartMeta, partMetaText, rollToMidiFile } from
 import { applyRollParts } from './rollPartsImport.ts';
 import { cleanRollPartRef, clipPartsLoad, rollPartRef } from './rollClip.ts';
 import { rollPartToTasmo, tasmoRollPart } from './projectClient.ts';
-import { arrangementToMidiFile } from './arrangementMidi.ts';
+import { arrangementToMidiFile, clipBankSelect } from './arrangementMidi.ts';
 import { importMidiAsTracks } from './midiImportTracks.ts';
+import { bounceRollToEditor } from './rollBounce.ts';
+import { clipVoice } from './clipProgram.ts';
 import { cleanPartBankLsb, makeRollTrack } from './rollTracks.ts';
 import { normalizeMeterMap, type PolyLane } from './meterMap.ts';
 import type { LaneBend } from './pitchBend.ts';
 import { useEditorStore } from '../state/editorStore.ts';
-import { DEFAULT_LANES, endRollGesture, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
+import { DEFAULT_LANES, endRollGesture, partLinkOf, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
 
 const roll = () => usePianoRollStore.getState();
 const ed = () => useEditorStore.getState();
@@ -145,6 +149,59 @@ assert.equal('bankLsb' in makeRollTrack({}, 0), false, 'a part made before LSB e
   const byName = new Map(exported.tracks.map((t) => [t.name, t.programs ?? []]));
   assert.deepEqual(byName.get('Strings')?.map((p) => [p.program, p.bankLsb]), [[48, 3]], 'CC 32 before the program in the arrangement file');
   assert.deepEqual(byName.get('Choir')?.map((p) => p.bankLsb), [undefined]);
+}
+
+// ── the arrangement's export writes the bank EDIT plays ─────────────────────
+// A Horn part in Bank 1 (LSB 2) is sent with the roll's EDIT key, then its clip
+// is given Trumpet in EDIT's clip instrument picker, which drops the bank (the
+// picker's onChange writes instrumentProgram with instrumentBank undefined).
+// Before: the export took the bank select from the clip's part record, so it
+// wrote CC 0 = 1 and CC 32 = 2 before program 56 while EDIT's live notes and
+// every render played Trumpet in bank 0.
+{
+  const GLOBAL = { useSoundfont: true, activeProgram: 0 };
+  ed().loadProject({ tracks: [], clips: [] });
+  roll().importParts([{ name: 'Horn', program: 60, bank: 1, bankLsb: 2, notes: [{ id: 'h', note: 60, step: 0, length: 4, velocity: 90 }] }], 120);
+  const hornPart = rollTracksOf(roll())[0].id;
+  await bounceRollToEditor({ global: () => GLOBAL });
+  const clipId = partLinkOf(roll(), hornPart) as string;
+  const hornClip = () => ed().clips.find((c) => c.id === clipId)!;
+  const hornVoice = () => clipVoice(hornClip(), ed().tracks.find((t) => t.id === hornClip().trackId), GLOBAL);
+  const exported = (global = GLOBAL) =>
+    parseMidi(encodeMidi(arrangementToMidiFile({ bpm: 120, tracks: ed().tracks, clips: ed().clips }, { global }).file))
+      .tracks.flatMap((t) => (t.programs ?? []).map((p) => [p.program, p.bank, p.bankLsb]));
+  assert.deepEqual(hornVoice(), { program: 60, percussion: false, bank: 1 }, 'EDIT plays the Horn in bank 1');
+  assert.deepEqual(exported(), [[60, 1, 2]], 'CC 0 = 1 and CC 32 = 2 before program 60, the voice EDIT plays');
+  ed().updateClip(clipId, { instrumentProgram: 56, instrumentBank: undefined });
+  assert.deepEqual(hornVoice(), { program: 56, percussion: false }, 'EDIT plays Trumpet in bank 0');
+  assert.equal(hornClip().sourceRollPart?.bank, 1, "the clip's part record still names Bank 1");
+  assert.deepEqual(exported(), [[56, undefined, undefined]], 'program 56 with no bank select, as EDIT plays it');
+  // The Horn picked again in EDIT is the General MIDI horn: bank 0, and the LSB chosen with Bank 1 stays out.
+  ed().updateClip(clipId, { instrumentProgram: 60, instrumentBank: undefined });
+  assert.deepEqual(exported(), [[60, undefined, undefined]], 'the GM horn EDIT plays, with no bank select');
+  // A clip EDIT plays with no program (Track default, no track program, the picker off the soundfont)
+  // writes its part's program, and the part's whole bank select goes with it.
+  const trackId = hornClip().trackId;
+  ed().updateTrack(trackId, { instrumentProgram: undefined });
+  ed().updateClip(clipId, { instrumentProgram: undefined, instrumentBank: undefined });
+  const off = { useSoundfont: false, activeProgram: 0 };
+  assert.equal(clipVoice(hornClip(), ed().tracks.find((t) => t.id === trackId), off).program, undefined, 'EDIT has no program for it');
+  assert.deepEqual(exported(off), [[60, 1, 2]], "the part's own voice, bank select and all");
+}
+
+// clipBankSelect's rule, case by case.
+{
+  const part = { doc: 'd', id: 'p', order: 0, name: 'Horn', program: 60, bank: 1, bankLsb: 2, channel: null, color: '#f59e0b', mute: false, solo: false };
+  assert.deepEqual(clipBankSelect({ program: 60, percussion: false, bank: 1 }, part), { bank: 1, bankLsb: 2 }, "the part's program in the part's bank");
+  assert.deepEqual(clipBankSelect({ program: 56, percussion: false }, part), { bank: 0, bankLsb: undefined }, 're-voiced in EDIT');
+  assert.deepEqual(clipBankSelect({ program: 60, percussion: false }, part), { bank: 0, bankLsb: undefined }, "the part's program in bank 0");
+  assert.deepEqual(clipBankSelect({ program: 60, percussion: false, bank: 1 }, { ...part, program: null }), { bank: 1, bankLsb: 2 }, 'a part that follows the roll voice, in its bank');
+  assert.deepEqual(clipBankSelect({ program: 48, percussion: false }, { ...part, bank: 0, bankLsb: 3 }), { bank: 0, bankLsb: undefined }, "another program than the part's");
+  assert.deepEqual(clipBankSelect({ program: 60, percussion: false }, { ...part, bank: 0, bankLsb: 3 }), { bank: 0, bankLsb: 3 }, 'an XG variation on bank 0');
+  assert.deepEqual(clipBankSelect({ program: 16, percussion: true }, part), { bank: 0, bankLsb: undefined }, 'a drum track selects no bank');
+  assert.deepEqual(clipBankSelect({ program: undefined, percussion: false }, part), { bank: 1, bankLsb: 2 }, 'no program in EDIT: the part writes its own');
+  assert.deepEqual(clipBankSelect({ program: undefined, percussion: false }, { ...part, program: null }), { bank: 0, bankLsb: undefined }, 'and no program at all writes none');
+  assert.deepEqual(clipBankSelect({ program: 60, percussion: false, bank: 1 }, undefined), { bank: 1, bankLsb: undefined }, 'a clip with no part record');
 }
 
 console.log('rollPartBank: ok');
