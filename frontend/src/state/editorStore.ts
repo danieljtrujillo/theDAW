@@ -15,6 +15,7 @@ import {
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
 import { hasMidiNotes, midiRenderSig } from '../lib/midiRender';
+import { showsWholeSource } from '../lib/clipRenderWindow';
 import { clipVoice, type GlobalVoice } from '../lib/clipProgram';
 import {
   compDigest,
@@ -571,18 +572,27 @@ const NO_GLOBAL_VOICE: GlobalVoice = { useSoundfont: false, activeProgram: 0 };
  *  then, so a track's instrument change stales a frozen master even when no
  *  cached render changes. */
 const clipSignaturePart = (c: AudioClip, track?: EditorTrack, global: GlobalVoice = NO_GLOBAL_VOICE): string => {
+  // A MIDI part is signed by what it plays: its notes, tempo, lanes and bends
+  // (midiRenderSig) and its voice. Its audio is only a cache of that (a bounce
+  // renders a part whose render is missing or out of date, and no audio edit
+  // runs on a part with notes), so holding, keeping, dropping or re-rendering
+  // that cache changes nothing a bounce prints: its size stays out, and so does
+  // the length of a part that shows its whole source, which a render stretches
+  // to its ring-out (lib/clipRenderWindow) as a bounce's own render does. A
+  // part the user trimmed is signed by its window.
   let midiPart = '';
-  if (hasMidiNotes(c)) {
+  const midi = hasMidiNotes(c);
+  if (midi) {
     const voice = clipVoice(c, track, global);
     midiPart = `${midiRenderSig(c)}/${voice.program ?? '-'}${voice.percussion ? 'd' : ''}`;
   }
   return [
-    c.id, c.trackId, c.startSec, c.durationSec, c.offsetIntoSource,
+    c.id, c.trackId, c.startSec, midi && showsWholeSource(c) ? 'whole' : c.durationSec, c.offsetIntoSource,
     c.fadeInSec ?? 0, c.fadeOutSec ?? 0, c.fadeInCurve ?? 'linear', c.fadeOutCurve ?? 'linear',
     clipPeakGain(c), c.muted ? 1 : 0,
     c.timeStretchRate ?? 1, c.stretchMode ?? 'repitch',
     JSON.stringify(c.warpMarkers ?? []),
-    c.audioBlob?.size ?? 0,
+    midi ? '' : c.audioBlob?.size ?? 0,
     midiPart,
     // Comping reaches the render exactly twice: through WHICH take plays where
     // (the digest) and through WHAT those takes hold (the take list).
