@@ -6,12 +6,13 @@
  * and lanes for the document. A file of one part writes into the ACTIVE part
  * (importNotes), as every generator does, and keeps the other parts; its
  * controller changes replace the part's, and when the active part follows the
- * roll's voice and the file names an instrument, the part takes it, all in the
- * one undo step. While other parts hold notes, the roll keeps its tempo map,
- * meter, lanes and bends, which they play by, and its markers, and the result
- * says so (`keptDocument`), so the import's log line can tell the user. A
- * file is a new document otherwise: its markers replace the roll's (none when
- * it carries none).
+ * roll's voice and the file names an instrument, the part takes it with the
+ * bank select the file chose it in (as the same track in a file of several
+ * parts keeps), all in the one undo step. While other parts hold notes, the
+ * roll keeps its tempo map, meter, lanes and bends, which they play by, and
+ * its markers, and the result says so (`keptDocument`), so the import's log
+ * line can tell the user. A file is a new document otherwise: its markers
+ * replace the roll's (none when it carries none).
  *
  * A score (the sheet importer's answer, lib/sheetImportClient) comes in on the
  * roll's own clock: each note at its tick (960 to the quarter, nothing snapped
@@ -89,8 +90,8 @@ export function applyRollParts(
   }
   const part = parts[0];
   // The file's part replaces the part's controller changes and, for a part
-  // with no sound of its own, gives it the file's instrument: all in the one
-  // write, so the import is one undo step.
+  // with no sound of its own, gives it the file's instrument in the bank the
+  // file chose it in: all in the one write, so the import is one undo step.
   const { keptDocument } = roll.importNotes(part.notes, bpm, meter, bends, tempoMap, {
     markers,
     part: {
@@ -98,6 +99,8 @@ export function applyRollParts(
       ...(part.track.instrumentId ? { instrumentId: part.track.instrumentId } : {}),
       program: part.track.program ?? null,
       percussion: part.track.channel === PERCUSSION_PART_CHANNEL,
+      ...(part.track.bank !== undefined ? { bank: part.track.bank } : {}),
+      ...(part.track.bankLsb !== undefined ? { bankLsb: part.track.bankLsb } : {}),
     },
   });
   return { parts: 1, notes, into: 'active', folded: 0, keptDocument, pastEnd };

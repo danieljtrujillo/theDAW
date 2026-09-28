@@ -207,13 +207,20 @@ export interface RollPartsLoad {
  * the part's own (an empty list clears them), and its instrument, which the
  * part takes only when it follows the roll's voice (no program of its own):
  * the registry instrument when the file names one, else the file's program, on
- * the percussion channel when the file's part is percussion.
+ * the percussion channel when the file's part is percussion, in the bank the
+ * file chose that program in (`bank`, with `bankLsb` when the file sends one;
+ * a score carries no bank, so a program from a score is in bank 0 and a
+ * registry instrument in its own).
  */
 export interface RollPartImport {
   controls?: readonly RollControl[];
   instrumentId?: string;
   program?: number | null;
   percussion?: boolean;
+  /** The bank select (MSB) the file sends with its program; absent when it says nothing about banks (a score). */
+  bank?: number;
+  /** The bank select LSB (CC 32) the file sends with its program; absent when it sends none. */
+  bankLsb?: number;
 }
 
 /** How importNotes treats the document's maps (see importNotes). */
@@ -1486,8 +1493,12 @@ const percussionChannelOf = (t: RollTrack, percussion: boolean | undefined): num
  * The parts after an import into the part being edited that carries `part`
  * (RollPartImport): its controller changes replace the part's own, and a part
  * that follows the roll's voice takes the file's registry instrument (when the
- * file sets no program, or that instrument's), else the file's program. An
- * empty patch when nothing changes.
+ * file sets no program, or that instrument's), else the file's program. A
+ * program the file sets comes with the bank select the file chose it in, as
+ * the same track in a file of several parts does (importParts keeps the whole
+ * part); an instrument the file names without a program brings the
+ * instrument's own bank and no LSB, as choosing it in the parts column does.
+ * An empty patch when nothing changes.
  */
 const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<PianoRollState> => {
   const i = s.tracks.findIndex((t) => t.id === s.activeTrackId);
@@ -1500,10 +1511,23 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
   }
   if (before.program === null) {
     const inst = orchestraInstrument(part.instrumentId);
+    // The bank select that goes with the file's program: none on the drum channel, where the kit is chosen by program.
+    const fileBank = (percussion: boolean): Pick<RollTrack, 'bank'> & { bankLsb: number | undefined } =>
+      percussion
+        ? { bank: 0, bankLsb: undefined }
+        : { bank: part.bank !== undefined ? cleanPartBank(part.bank) : 0, bankLsb: part.bank !== undefined ? cleanPartBankLsb(part.bankLsb) : undefined };
     if (inst && (part.program == null || inst.program === part.program)) {
       t = { ...t, ...instrumentPatchOf(s.tracks, t, inst) };
+      if (part.program != null && part.bank !== undefined) {
+        const own = fileBank(inst.percussion);
+        t = withBankLsb({ ...t, bank: own.bank }, own.bankLsb);
+      } else {
+        t = withBankLsb(t, undefined);
+      }
     } else if (part.program != null) {
       t = withoutInstrument({ ...t, program: cleanPartProgram(part.program), channel: percussionChannelOf(t, part.percussion) });
+      const own = fileBank(t.channel === PERCUSSION_PART_CHANNEL);
+      t = withBankLsb({ ...t, bank: own.bank }, own.bankLsb);
     }
   }
   if (t === before) return {};

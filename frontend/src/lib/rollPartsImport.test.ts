@@ -5,7 +5,8 @@
  * each, on the instrument the importer read (a registry id), else the one the
  * name names, else the GM program, with an unpitched part on channel 10. A
  * one-track file goes into the part being edited and keeps the other parts;
- * the part takes the file's instrument only when it has none of its own. The
+ * the part takes the file's instrument only when it has none of its own, in
+ * the bank the file chose it in, as the same track in a larger file does. The
  * roll's own export of a part that follows the picker comes back as that
  * part, never as the piano its track name "Piano Roll" seems to name.
  *
@@ -15,7 +16,7 @@ import assert from 'node:assert/strict';
 import { applyRollParts, importMidiParts, importSheetParts, sheetScoreParts } from './rollPartsImport.ts';
 import { encodeMidi, parseMidi } from './midi.ts';
 import { rollToMidiFile } from './rollMidi.ts';
-import { activeTrackOf, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
+import { activeTrackOf, endRollGesture, rollTracksOf, usePianoRollStore } from '../state/pianoRollStore.ts';
 import type { SheetScore } from './sheetImportClient.ts';
 
 const roll = () => usePianoRollStore.getState();
@@ -95,6 +96,45 @@ const score: SheetScore = {
   roll().setActiveTrack(keep.id);
   importMidiParts(file, 't2');
   assert.equal(rollTracksOf(roll())[1].program, 19, 'a part with its own program keeps it');
+}
+
+// A one-track file whose track selects bank 1 (LSB 2) before program 60, into a
+// part that follows the roll voice: the part takes the program in the file's
+// bank, as the same track beside a second one does (importParts keeps the whole
+// part). Before: the one-part path carried the controls, instrument and
+// program alone, so the part played the program in bank 0.
+{
+  const horn = {
+    name: 'Horn',
+    programs: [{ tick: 0, channel: 0, program: 60, bank: 1, bankLsb: 2 }],
+    notes: [0, 480].map((tick) => ({ tick, durationTicks: 400, note: 60, velocity: 90, channel: 0 })),
+  };
+  const strings = {
+    name: 'Strings',
+    programs: [{ tick: 0, channel: 1, program: 48 }],
+    notes: [0, 480].map((tick) => ({ tick, durationTicks: 400, note: 55, velocity: 90, channel: 1 })),
+  };
+  const voiceOf = (t: { program: number | null; bank: number; bankLsb?: number }) => [t.program, t.bank, t.bankLsb];
+  roll().importParts([{ name: 'Part 1', notes: [] }], 120);
+  endRollGesture();
+  const one = importMidiParts(parseMidi(encodeMidi({ ppq: 480, bpm: 120, tracks: [horn] })), 'one');
+  assert.equal(one.into, 'active');
+  assert.deepEqual(voiceOf(rollTracksOf(roll())[0]), [60, 1, 2], 'the one-track file: program 60 in bank 1, LSB 2');
+  roll().undo();
+  assert.deepEqual(voiceOf(rollTracksOf(roll())[0]), [null, 0, undefined], 'one undo puts the part back on the roll voice in bank 0');
+  const two = importMidiParts(parseMidi(encodeMidi({ ppq: 480, bpm: 120, tracks: [horn, strings] })), 'two');
+  assert.equal(two.into, 'parts');
+  assert.deepEqual(voiceOf(rollTracksOf(roll())[0]), [60, 1, 2], 'the same track in a two-track file: the same voice');
+  // A file whose program comes with no bank select is General MIDI: a part that followed the roll voice in Bank 1 takes bank 0.
+  roll().importParts([{ name: 'Part 1', bank: 1, bankLsb: 5, notes: [] }], 120);
+  endRollGesture();
+  importMidiParts(parseMidi(encodeMidi({ ppq: 480, bpm: 120, tracks: [{ ...horn, name: 'Track 1', programs: [{ tick: 0, channel: 0, program: 71 }] }] })), 'gm');
+  assert.deepEqual(voiceOf(rollTracksOf(roll())[0]), [71, 0, undefined], "the file's program in bank 0, and the old LSB gone with the old voice");
+  // A part with a sound of its own keeps its program and its bank.
+  roll().importParts([{ name: 'Violin', program: 40, bank: 2, notes: [] }], 120);
+  endRollGesture();
+  importMidiParts(parseMidi(encodeMidi({ ppq: 480, bpm: 120, tracks: [horn] })), 'own');
+  assert.deepEqual(voiceOf(rollTracksOf(roll())[0]), [40, 2, undefined], 'its own voice stays');
 }
 
 // The roll's own export of a fresh roll (Part 1, following the picker) and
