@@ -102,6 +102,9 @@ export interface NotationCapabilities {
   /** True when an ffmpeg binary is reachable, so a Beat Saber export can
    *  encode song.ogg itself. */
   ffmpeg?: boolean;
+  /** True when POST /{entry}/perform can play a sheet as a MIDI performance
+   *  (partitura is installed). Never in `formats`: it has its own route. */
+  perform?: boolean;
 }
 
 /** Options for POST /{entry}/chords (the gantasmo.chordtrack builder). */
@@ -166,6 +169,35 @@ export async function exportArtifact(
     const message = typeof detail === 'object' && detail && 'error' in detail
       ? String((detail as { error?: unknown }).error)
       : `notation export HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
+}
+
+/**
+ * POST /{entry}/perform: play a MusicXML sheet as an expressive MIDI
+ * (ritardandos into cadences, fermatas, printed dynamics and articulation,
+ * a tempo map on the sheet's beat grid). Returns the registered `midi`
+ * artifact; throws with the backend's error when the sheet cannot be played.
+ */
+export async function performScore(
+  entryId: string,
+  sourceArtifactId: string,
+  bpm?: number,
+): Promise<NotationArtifact | null> {
+  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/perform`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bpm ? { source_artifact_id: sourceArtifactId, bpm } : { source_artifact_id: sourceArtifactId }),
+  });
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : typeof detail === 'string'
+        ? detail
+        : `notation perform HTTP ${res.status}`;
     throw new Error(message);
   }
   return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;

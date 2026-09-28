@@ -8,7 +8,7 @@
  * What the menu offers comes from buildExportMenu (exportMenuModel.ts); this
  * file is the DOM, the keyboard and the focus handling. Any part goes to any
  * format: an 'export' entry POSTs through onExport with the highlighted part's
- * index (null for All parts), the pack link carries ?parts=, and the Beat
+ * index (null for All parts; PERFORM asks for 'perform', a route of its own), the pack link carries ?parts=, and the Beat
  * Saber popover (rendered through `children` inside the same anchor so the
  * dialog sits under the EXPORT button) pre-selects the part; while it is open
  * the menu stays closed. A 'link' entry (GET MUSESCORE) is an external page —
@@ -24,7 +24,7 @@
  * button when the Beat Saber popover closes.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Download, ExternalLink, FolderOpen, Gamepad2, Loader2 } from 'lucide-react';
+import { ChevronDown, Download, ExternalLink, FolderOpen, Gamepad2, Loader2, Music2 } from 'lucide-react';
 import {
   notationArtifactUrl,
   notationPackUrl,
@@ -454,6 +454,8 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
                     <FolderOpen className="w-3 h-3 shrink-0 text-sky-300" aria-hidden="true" />
                   ) : exporting === routeFormatFor(entry) ? (
                     <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-hidden="true" />
+                  ) : entry.id === 'perform' ? (
+                    <Music2 className="w-3 h-3 shrink-0 text-purple-300" aria-hidden="true" />
                   ) : null}
                   {entry.label}
                 </button>
