@@ -383,8 +383,10 @@ assert.equal(canvas.dataset.scale, '1', 'back at zoom 1');
 // none of them.
 await step(() => roll().setTotalSteps(16 * 16));
 await scrolled(scroller);
+// The cells as HTMLElements by a cast, not a type argument: the lookup type-checks whether or not jsdom's types load.
 const numbersInView = () =>
-  [...win.document.querySelectorAll<HTMLElement>('[data-ruler-bar]')]
+  [...win.document.querySelectorAll('[data-ruler-bar]')]
+    .map((el) => el as HTMLElement)
     .filter((el) => Number.parseFloat(el.style.left) < 4 * 16 * stepPx)
     .map((el) => el.querySelector('span:not(.et-ink)')?.textContent ?? '');
 assert.deepEqual(numbersInView(), ['1', '2', '3', '4'], 'every 4/4 bar prints its number');
