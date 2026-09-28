@@ -529,8 +529,6 @@ run("a roll part's controllers play live at their times, and each goes back to i
       [0, 7, 100],
       [0, 10, 64],
       [0, 11, 127],
-      [0, 74, 64],
-      [0, 91, 0],
       // At the clip's start, every controller the part uses at the value it holds there: the pedal
       // up and expression at its default (their changes come later), then volume and pan's own changes.
       [1, 64, 0],
@@ -557,13 +555,9 @@ run("a roll part's controllers play live at their times, and each goes back to i
   r.runFor(1);
   r.sched.stop();
   const opened = r.msgs.filter((m): m is Extract<Msg, { k: 'cc' }> => m.k === 'cc' && m.t <= a2 + 1e-9);
+  assert.deepEqual(opened.slice(0, 5).map((m) => [m.controller, m.value]), [[64, 0], [1, 0], [7, 100], [10, 64], [11, 127]], 'the pass opens the channel at the defaults first');
   assert.deepEqual(
-    opened.slice(0, 7).map((m) => [m.controller, m.value]),
-    [[64, 0], [1, 0], [7, 100], [10, 64], [11, 127], [74, 64], [91, 0]],
-    'the pass opens the channel at the defaults first',
-  );
-  assert.deepEqual(
-    opened.slice(7).map((m) => [m.controller, m.value]).sort((x, y) => x[0] - y[0]),
+    opened.slice(5).map((m) => [m.controller, m.value]).sort((x, y) => x[0] - y[0]),
     [[7, 96], [10, 40], [11, 127], [64, 127]],
     'then the pedal is down and the volume, pan and expression are set where playback starts',
   );

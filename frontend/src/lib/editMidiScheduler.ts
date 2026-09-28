@@ -168,6 +168,15 @@ export const CHANNEL_DEFAULTS: ReadonlyArray<{ controller: number; value: number
 );
 
 /**
+ * The controllers every pass opens every channel with. Brightness (74) and the
+ * reverb send (91) go back to their defaults only on a channel a pass moved
+ * them on: SpessaSynth recomputes a channel's filter on every brightness
+ * change, even one to where it already is, which moves the onsets of the
+ * notes that follow, so a pass sends none it does not need.
+ */
+const ALWAYS_OPENED: ReadonlySet<number> = new Set([1, 7, 10, 11, 64]);
+
+/**
  * What EDIT's synths are told. Every time is audio-context seconds. `bank` is
  * the bank select (CC 0) sent before `program` (lib/clipProgram clipBank: a
  * clip's own program in a roll part's Bank); 0 is the General MIDI set.
@@ -495,6 +504,8 @@ export class EditMidiScheduler {
   private timing = new WeakMap<object, { bpm: number | undefined; percussion: boolean; program: number | undefined; timing: ClipTiming }>();
   /** The value each automated controller holds on its track's channels this pass, by `${trackId}:${controller}`. */
   private ccHeld = new Map<string, number>();
+  /** Channels a controller outside ALWAYS_OPENED was sent to, by `${channel}:${controller}`: the next pass puts it back there. */
+  private moved = new Set<string>();
   private counts: EditMidiStats = { notes: 0, chased: 0, late: 0, skipped: 0 };
 
   constructor(deps: EditMidiSchedulerDeps) {
@@ -616,6 +627,11 @@ export class EditMidiScheduler {
     const bpm = this.deps.projectBpm();
     const out: Out[] = [];
     const live = new Set<string>();
+    // Every controller change goes through here, so a pass knows which channels moved brightness or the reverb send.
+    const control = (channel: number, controller: number, value: number, t: number): void => {
+      if (!ALWAYS_OPENED.has(controller)) this.moved.add(`${channel}:${controller}`);
+      sink.control(channel, controller, value, t);
+    };
 
     // A channel message at `time`, held until after the last stale one a stopped
     // pass left queued on its channel. Returns the time it goes at.
@@ -630,7 +646,7 @@ export class EditMidiScheduler {
       const controller = c.controller ?? 0;
       if (c.kind === 'range') return pushAt(channel, time, 0.25, (at) => sink.wheelRange(channel, c.value, at));
       if (c.kind === 'wheel') return pushAt(channel, time, 0.5, (at) => sink.wheel(channel, c.value, at));
-      return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => sink.control(channel, controller, c.value, at));
+      return pushAt(channel, time, c.kind === 'reset' ? RESET_ORDER : 0.2, (at) => control(channel, controller, c.value, at));
     };
 
     // The pass opens every channel it plays on at the General MIDI defaults, the
@@ -641,6 +657,9 @@ export class EditMidiScheduler {
       for (const chans of this.pass.channelsOf.values()) for (const ch of chans) channels.add(ch);
       for (const channel of [...channels].sort((a, b) => a - b)) {
         CHANNEL_DEFAULTS.forEach((d, i) => {
+          const key = `${channel}:${d.controller}`;
+          if (!ALWAYS_OPENED.has(d.controller) && !this.moved.has(key)) return;
+          this.moved.delete(key);
           pushAt(channel, at, DEFAULTS_ORDER + i * 1e-3, (t) => sink.control(channel, d.controller, d.value, t));
         });
       }
@@ -662,12 +681,12 @@ export class EditMidiScheduler {
         held = ccLaneValueAt(l.lane, joinT);
         const at = Math.max(now, this.ctxOf(joinT));
         const value = held;
-        for (const channel of chans) pushAt(channel, at, 0.2, (t) => sink.control(channel, l.controller, value, t));
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => control(channel, l.controller, value, t));
       }
       const { events, held: after } = ccLaneEvents(l.lane, Math.max(from, first ? this.fromT + 1e-6 : from), until, held);
       for (const e of events) {
         const at = Math.max(now, this.ctxOf(e.sec));
-        for (const channel of chans) pushAt(channel, at, 0.2, (t) => sink.control(channel, l.controller, e.value, t));
+        for (const channel of chans) pushAt(channel, at, 0.2, (t) => control(channel, l.controller, e.value, t));
       }
       if (after !== null) this.ccHeld.set(key, after);
     }

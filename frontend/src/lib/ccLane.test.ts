@@ -187,6 +187,31 @@ function play(clips: AudioClip[], tracks: EditorTrack[], automation: AutomationL
   } as unknown as AudioClip;
 
   const live = play([clip], [track], [], 1);
+  assert.ok(!live.some((m) => m.controller === 91), 'a pass sends no reverb default to a channel nothing moved it on');
+  assert.equal(live.filter((m) => m.t === 0 && m.controller === 74).length, 1, 'brightness once at the start: the part’s own state, no pass default before it');
+
+  // A pass after one that moved brightness puts it back where the channel starts.
+  {
+    const clock = { t: 10 };
+    const sent: Cc[] = [];
+    let clips = [clip];
+    const sched = new EditMidiScheduler({
+      now: () => clock.t,
+      sink: { noteOn: () => {}, noteOff: () => {}, wheel: () => {}, wheelRange: () => {}, control: (ch, controller, value, t) => sent.push({ ch, controller, value, t }) },
+      clips: () => clips,
+      tracks: () => [track],
+      global: () => ({ useSoundfont: true, activeProgram: 0 }),
+      projectBpm: () => 120,
+    });
+    const pass = (): EditMidiPass => ({ liveClipIds: new Set(clips.map((c) => c.id)), channelsOf: new Map([['strings', [0]]]) });
+    sched.start(pass(), 0, 10);
+    for (let i = 0; i < 40; i += 1) { clock.t += 0.025; sched.tick(); }
+    sched.stop();
+    sent.length = 0;
+    clips = [{ ...clip, id: 'c2', sourceRollPart: undefined } as AudioClip];
+    sched.start(pass(), 0, clock.t);
+    assert.ok(sent.some((m) => m.controller === 74 && m.value === 64), 'the next pass opens brightness at 64 again');
+  }
   assert.ok(live.some((m) => m.controller === 74 && m.value === 30 && Math.abs(m.t - 0.5) < 1e-6), 'brightness 30 on beat 2, half a second in');
   assert.ok(live.some((m) => m.controller === 11 && m.value === 5), 'the part’s expression plays with no lane');
 
