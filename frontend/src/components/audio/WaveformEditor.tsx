@@ -103,6 +103,7 @@ import { classifyModelGate } from '../../lib/modelDownloadClient';
 import { setLocalOnly } from '../../lib/storageClient';
 import { requireFeature } from '../../notices/featureGateStore';
 import { logError, logInfo, logWarn } from '../../state/logStore';
+import { humanizeTracks, type SectionHumanizeStrength } from '../../state/editorTools';
 import { saveFile } from '../../lib/saveFile';
 import { dirnameOf, basenameOf } from '../../lib/placesClient';
 import {
@@ -8792,6 +8793,32 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               void ensureSoundfontReady();
             },
           },
+          // Humanize by section: this track, or every selected track with it, moved together
+          // (a section pushes or lays back as one, a phrase drifts as one, velocities lean to its peak).
+          ...(() => {
+            const sel = useEditorStore.getState().selectedTrackIds;
+            const group = sel.includes(t.id) ? sel : [t.id];
+            const hasMidi = clips.some((c) => group.includes(c.trackId) && c.sourceKind === 'piano-roll' && (c.sourcePianoRoll?.length ?? 0) > 0);
+            const what = group.length > 1 ? `${group.length} selected tracks together` : 'this track';
+            const run = (strength: SectionHumanizeStrength) => {
+              void humanizeTracks({ track_ids: group, strength }).then((r) => {
+                if (r.ok) logInfo('editor', r.message);
+                else logWarn('editor', r.error);
+              });
+            };
+            return [
+              { type: 'header', label: 'Humanize by section' },
+              ...(['light', 'medium', 'strong'] as const).map((strength): ContextMenuItem => ({
+                type: 'item',
+                icon: <Wand2 className="w-3 h-3" />,
+                label: `${strength[0].toUpperCase()}${strength.slice(1)}`,
+                hint: hasMidi ? (group.length > 1 ? `${group.length} tracks` : undefined) : 'No MIDI',
+                disabled: !hasMidi,
+                title: `Humanize the MIDI of ${what} by section, ${strength}: each section pushes or lays back, each phrase drifts, velocities lean toward each phrase's peak`,
+                onSelect: () => run(strength),
+              })),
+            ] satisfies ContextMenuItem[];
+          })(),
           { type: 'separator' },
           {
             type: 'item',

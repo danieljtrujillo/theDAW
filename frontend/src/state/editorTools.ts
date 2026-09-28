@@ -70,6 +70,7 @@ import {
   filterNotes as filterNotesPure,
   fixOverlaps as fixOverlapsPure,
   humanizeNotes,
+  humanizeSections,
   noteEndStep,
   nudgeNotes as nudgeNotesPure,
   scaleVelocity as scaleVelocityPure,
@@ -790,6 +791,104 @@ export async function humanizeClip(args: HumanizeArgs): Promise<ToolResult> {
   if (!written.ok) return fail(written.error);
   return done(
     `Humanized ${notes.length} notes on "${clip.label}" (timing ±${timingSteps} steps, velocity ±${velocity}${seed === undefined ? '' : `, seed ${seed}`})${written.value.lengthNote}`,
+  );
+}
+
+export interface HumanizeTracksArgs extends RenderArgs {
+  /** The tracks to humanize together (ids or names); left out, EDIT's selected tracks. */
+  track_ids?: unknown;
+  /** 'light', 'medium' (the default) or 'strong': how far sections, phrases and velocities move. */
+  strength?: unknown;
+  seed?: unknown;
+}
+
+/** How far each strength moves a section, a phrase and a velocity. */
+export const SECTION_HUMANIZE_STRENGTHS = {
+  light: { onsetBias: 0.006, drift: 0.004, velocity: 6 },
+  medium: { onsetBias: 0.012, drift: 0.008, velocity: 10 },
+  strong: { onsetBias: 0.02, drift: 0.014, velocity: 16 },
+} as const;
+export type SectionHumanizeStrength = keyof typeof SECTION_HUMANIZE_STRENGTHS;
+
+/**
+ * Humanize the MIDI clips of several tracks together, by section
+ * (lib/clipNotes/humanize humanizeSections): the tracks read one set of
+ * sections (EDIT's timeline markers and the FORM sections their clips carry)
+ * and one set of phrases on the timeline, so each section pushes or lays back
+ * as an ensemble, each phrase drifts as one, and velocities lean toward each
+ * phrase's peak. Every clip's notes go back through their own clock. One
+ * undo step for the lot.
+ */
+export async function humanizeTracks(args: HumanizeTracksArgs): Promise<ToolResult> {
+  const s = store();
+  const wanted = Array.isArray(args.track_ids) ? args.track_ids : args.track_ids === undefined ? s.selectedTrackIds : [args.track_ids];
+  const tracks: EditorTrack[] = [];
+  for (const ref of wanted) {
+    const found = resolveTrack(ref);
+    if (!found.ok) return fail(found.error);
+    if (!tracks.some((t) => t.id === found.value.id)) tracks.push(found.value);
+  }
+  if (!tracks.length) return fail('humanize by section: select the tracks to humanize together, or pass track_ids');
+  const strength = (strArg(args.strength) ?? 'medium') as SectionHumanizeStrength;
+  const feel = SECTION_HUMANIZE_STRENGTHS[strength];
+  if (!feel) return fail(`humanize by section: strength must be one of ${Object.keys(SECTION_HUMANIZE_STRENGTHS).join(', ')}`);
+  const ids = new Set(tracks.map((t) => t.id));
+  const clips = s.clips.filter((c) => ids.has(c.trackId) && isMidiClip(c) && (c.sourcePianoRoll?.length ?? 0) > 0);
+  if (!clips.length) return fail('humanize by section: those tracks hold no MIDI notes');
+
+  // Every note on the timeline, through its clip's own clock.
+  const clockOf = new Map(clips.map((c) => [c.id, stepClock(c.sourceBpm ?? s.bpm, c.sourceTempoMap)]));
+  const sep = '';
+  const sections = new Set<number>(s.markers.map((m) => m.t));
+  for (const c of clips) {
+    const clock = clockOf.get(c.id)!;
+    for (const m of c.sourceMarkers ?? []) {
+      if (m.kind !== 'section' && m.kind !== 'movement') continue;
+      const t = c.startSec + clock.at(m.tick / 240) - (c.offsetIntoSource ?? 0);
+      if (t >= c.startSec - 1e-9 && t <= c.startSec + c.durationSec) sections.add(t);
+    }
+  }
+  const parts = tracks.map((t) => ({
+    id: t.id,
+    notes: clips
+      .filter((c) => c.trackId === t.id)
+      .flatMap((c) => {
+        const clock = clockOf.get(c.id)!;
+        const off = c.offsetIntoSource ?? 0;
+        return (c.sourcePianoRoll ?? []).map((n) => ({
+          id: `${c.id}${sep}${n.id}`,
+          t: c.startSec + clock.at(n.step) - off,
+          dur: clock.at(n.step + n.length) - clock.at(n.step),
+          velocity: n.velocity,
+          note: n.note,
+        }));
+      }),
+  }));
+  const seed = numArg(args.seed);
+  const moved = humanizeSections(parts, { ...feel, sections: [...sections], ...(seed !== undefined ? { seed } : { seed: Math.floor(Math.random() * 1e9) }) });
+  const byId = new Map<string, { t: number; velocity: number }>();
+  for (const list of moved.values()) for (const n of list) byId.set(n.id, n);
+
+  let count = 0;
+  const failed: string[] = [];
+  await oneStep(async () => {
+    for (const c of clips) {
+      const clock = clockOf.get(c.id)!;
+      const off = c.offsetIntoSource ?? 0;
+      const notes = (c.sourcePianoRoll ?? []).map((n) => {
+        const m = byId.get(`${c.id}${sep}${n.id}`);
+        if (!m) return { ...n };
+        const tick = Math.max(0, Math.round(clock.stepAt(m.t - c.startSec + off) * 240));
+        count += 1;
+        return { ...n, tick, step: tick / 240, velocity: m.velocity };
+      });
+      const written = await commitNotes(c, notes, args);
+      if (!written.ok) failed.push(`${c.label}: ${written.error}`);
+    }
+  });
+  if (failed.length) return fail(`humanize by section: ${failed.join('; ')}`);
+  return done(
+    `Humanized ${count} notes across ${tracks.length} track${tracks.length === 1 ? '' : 's'} together by section (${strength}; ${sections.size} section mark${sections.size === 1 ? '' : 's'})`,
   );
 }
 

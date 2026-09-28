@@ -38,8 +38,8 @@ export type { VelocityOptions } from './velocity';
 export { buildExpression, inferHairpins, readPhrases, readSlurs, withExpressionControls } from './expression';
 export type { ExpressionOptions, ExpressionResult, Hairpin, Phrase, Slur } from './expression';
 
-export { humanizeNotes } from './humanize';
-export type { HumanizeOptions } from './humanize';
+export { humanizeNotes, humanizeSections } from './humanize';
+export type { HumanizeOptions, HumanizePart, HumanizedNote, SectionHumanizeOptions, TimedPartNote } from './humanize';
 
 export { fixOverlaps } from './overlaps';
 export type { OverlapMode, OverlapOptions } from './overlaps';
