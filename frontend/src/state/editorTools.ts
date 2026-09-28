@@ -94,6 +94,8 @@ import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/c
 import { encodeWav } from '../lib/wavEncode';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
 import { stepClock } from '../lib/rollTempo';
+import type { ArrangementMidiScope } from '../lib/arrangementMidi';
+import { exportArrangementMidi, type ArrangementMidiSeams } from '../lib/arrangementMidiApp';
 
 /* ── result envelope ─────────────────────────────────────────────────────── */
 
@@ -1700,6 +1702,75 @@ export function restore(args: SnapshotArgs): ToolResult {
 export function listSnapshots(): ToolResult {
   const names = store().listSnapshots();
   return done(names.length ? `Snapshots: ${names.join(', ')}` : 'No snapshots have been taken yet', { snapshots: names });
+}
+
+/* ── MIDI export ─────────────────────────────────────────────────────────── */
+
+export interface ExportMidiArgs extends ArrangementMidiSeams {
+  /** Tracks to take (ids or names); left out with no clip_ids, every track as the mix plays them. */
+  track_ids?: unknown;
+  /** Clips to take (ids or labels). */
+  clip_ids?: unknown;
+  /** A span of the timeline in seconds; both or neither. */
+  start_sec?: unknown;
+  end_sec?: unknown;
+  /** The file's name. */
+  name?: unknown;
+}
+
+/** A list argument as an array: an array as it is, one string or number as a list of one. */
+const listArg = (v: unknown): unknown[] => (Array.isArray(v) ? v : v === undefined || v === null || v === '' ? [] : [v]);
+
+/**
+ * Write the arrangement's MIDI notes as one type-1 file (lib/arrangementMidi)
+ * and save it where the user chooses: every track as the mix plays it, or the
+ * tracks or clips named, over the whole arrangement or a span of it. Changes
+ * nothing in the arrangement, so it records no undo step.
+ */
+export async function exportMidi(args: ExportMidiArgs = {}): Promise<ToolResult> {
+  const trackRefs = listArg(args.track_ids);
+  const clipRefs = listArg(args.clip_ids);
+  if (trackRefs.length && clipRefs.length) return fail('export_midi: pass track_ids or clip_ids, not both');
+  let scope: ArrangementMidiScope = { kind: 'all' };
+  if (trackRefs.length) {
+    const ids: string[] = [];
+    for (const ref of trackRefs) {
+      const t = resolveTrack(ref);
+      if (!t.ok) return fail(`export_midi: ${t.error}`);
+      ids.push(t.value.id);
+    }
+    scope = { kind: 'tracks', trackIds: ids };
+  } else if (clipRefs.length) {
+    const ids: string[] = [];
+    for (const ref of clipRefs) {
+      const c = resolveClip(ref);
+      if (!c.ok) return fail(`export_midi: ${c.error}`);
+      if (c.value.sourceKind !== 'piano-roll') return fail(`export_midi: "${c.value.label}" is an audio clip; only MIDI clips hold notes`);
+      ids.push(c.value.id);
+    }
+    scope = { kind: 'clips', clipIds: ids };
+  }
+  const start = numArg(args.start_sec);
+  const end = numArg(args.end_sec);
+  if ((start === undefined) !== (end === undefined)) return fail('export_midi: pass both start_sec and end_sec, or neither');
+  if (start !== undefined && end !== undefined && !(end > start && start >= 0)) {
+    return fail(`export_midi: the span ${n2(start)}s to ${n2(end)}s is empty; end_sec must come after start_sec`);
+  }
+  const range = start !== undefined && end !== undefined ? { startSec: start, endSec: end } : null;
+  const outcome = await exportArrangementMidi(
+    { scope, range, name: strArg(args.name) },
+    { ...(args.save ? { save: args.save } : {}), ...(args.global ? { global: args.global } : {}) },
+  );
+  if (!outcome.ok) return fail(`export_midi: ${outcome.error}`);
+  const r = outcome.result;
+  return done(outcome.message, {
+    file: outcome.fileName,
+    path: outcome.path,
+    notes: r.noteCount,
+    tracks: r.file.tracks.map((t) => t.name),
+    shared_channels: r.sharedTracks,
+    starts_at_sec: r.startSec,
+  });
 }
 
 /* ── operations this layer deliberately does not have ────────────────────── */

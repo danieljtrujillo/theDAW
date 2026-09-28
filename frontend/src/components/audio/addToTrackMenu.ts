@@ -30,6 +30,7 @@ export type AddToTrackEntryId =
   | 'audio-system'
   | 'midi-library'
   | 'midi-system'
+  | 'midi-tracks'
   | 'paste'
   | 'new-track';
 
@@ -165,6 +166,18 @@ export function buildAddToTrackMenu(
       title: `Pick a .mid file from this computer and place it as an editable clip ${where}`,
       shortReason: null,
       createsTrack,
+    },
+    {
+      // A whole orchestral file: every part on a new track of its own, so this
+      // entry always creates tracks, whichever lane was clicked.
+      id: 'midi-tracks',
+      label: 'MIDI file as tracks…',
+      kind: 'midi',
+      source: 'system',
+      enabled: true,
+      title: `Pick a .mid file from this computer: each of its parts lands on a new track of its own ${atSuffix(target)}, on its own instrument, drums on a drum track`,
+      shortReason: null,
+      createsTrack: true,
     },
     {
       id: 'paste',

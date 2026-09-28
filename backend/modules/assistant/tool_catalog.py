@@ -1154,6 +1154,43 @@ _OVERDRIVE_TOOLS: list[dict[str, Any]] = [
         },
         ["clip_id"],
     ),
+    _fn(
+        "editor_export_midi",
+        "Write the arrangement's MIDI notes as one type-1 .mid file at 960 PPQ "
+        "and open a Save As for it: one named MIDI track per EDIT track, each "
+        "note where EDIT plays it, each track on its own channel (drum tracks "
+        "on channel 10) with its program, bank and controller changes, and the "
+        "arrangement's tempo changes and time signatures. With no track_ids or "
+        "clip_ids it takes every track as the mix plays them (mute and solo). "
+        "Audio clips hold no notes and are never in it. Changes nothing in the "
+        "arrangement.",
+        {
+            "track_ids": {
+                "type": "array",
+                "items": _TRACK_ID,
+                "description": "Only these tracks (ids or names), mute and solo ignored",
+            },
+            "clip_ids": {
+                "type": "array",
+                "items": _CLIP_ID,
+                "description": "Only these MIDI clips (ids or labels). Not with track_ids.",
+            },
+            "start_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Start of a span of the timeline; the file starts on the bar line at or before it. With end_sec.",
+            },
+            "end_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "End of the span; notes that start before it are kept, cut here. With start_sec.",
+            },
+            "name": {
+                "type": "string",
+                "description": "The file's name. Default arrangement.mid.",
+            },
+        },
+    ),
     # ── selection and grid ──────────────────────────────────────────────────
     _fn(
         "editor_select_clips",

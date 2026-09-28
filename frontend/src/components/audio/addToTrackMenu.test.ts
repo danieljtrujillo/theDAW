@@ -16,6 +16,7 @@ const ALL_IDS: AddToTrackEntryId[] = [
   'audio-system',
   'midi-library',
   'midi-system',
+  'midi-tracks',
   'paste',
   'new-track',
 ];
@@ -58,8 +59,16 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
     assert.ok(byId(menu, id).title.includes('onto Bassline'), `${id} names the track`);
     assert.ok(byId(menu, id).title.includes('12.50s'), `${id} names the time`);
   }
-  // 'New empty track' is the one add entry that always makes a track.
+  // 'New empty track' always makes a track, and so does 'MIDI file as tracks',
+  // which puts every part of the file on a track of its own at the clicked time.
   assert.equal(byId(menu, 'new-track').createsTrack, true);
+  assert.equal(byId(menu, 'midi-tracks').createsTrack, true);
+  assert.equal(byId(menu, 'midi-tracks').enabled, true);
+  assert.equal(byId(menu, 'midi-tracks').kind, 'midi');
+  assert.equal(byId(menu, 'midi-tracks').source, 'system');
+  assert.ok(byId(menu, 'midi-tracks').title.includes('12.50s'), 'midi-tracks names the time');
+  assert.ok(byId(menu, 'midi-tracks').title.includes('a new track of its own'), 'midi-tracks says every part gets a track');
+  assert.equal(isAddSourceEntry(byId(menu, 'midi-tracks')), false, 'the track header menu, which adds to its own track, leaves it out');
   assert.equal(byId(menu, 'paste').createsTrack, false);
 }
 

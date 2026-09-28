@@ -89,6 +89,8 @@ export const theDAW_ACTION_TYPES = new Set([
     'editor_reverse_clip',
     'editor_normalize_clip',
     'editor_bounce_clip',
+    // The arrangement's notes as one MIDI file (Save As).
+    'editor_export_midi',
     // Selection and grid.
     'editor_select_clips',
     'editor_select_range',
