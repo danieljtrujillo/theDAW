@@ -859,7 +859,7 @@ class Search:
             im.line.open = im.continues
             im.line.seg_end = im.line.ends[-1] if im.line.ends else 0
         if not ok:
-            raise SearchFailed("no line satisfies every rule; try another seed")
+            raise SearchFailed("no line satisfies every rule")
         return True
 
     def _push(self, k: int, p: int) -> None:
@@ -924,8 +924,7 @@ class Search:
             self.nodes += 1
             if self.nodes > self.budget:
                 raise SearchFailed(
-                    "the search ran out of its budget before every rule was met; "
-                    "try another seed"
+                    "the search ran out of its budget before every rule was met"
                 )
             self._push(k, p)
             if (

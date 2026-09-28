@@ -13,6 +13,9 @@ leave the canon for the closing cadence: whole notes making the clausula (a
 major sixth to the octave or a minor third to the unison, by contrary step,
 with the raised leading tone in minor) and the final on the tonic.
 
+A search that finds no canon at the seed asked for goes on to
+:data:`RETRY_SEEDS` seeds derived from it before the request is refused.
+
 The search places one leader note at a time; each note also writes its
 follower note ``lag`` ticks later, so a slice is checked as soon as both
 voices are known there, and the cadence is chosen when the canonic part is
@@ -63,6 +66,10 @@ CANON_RHYTHMS = {
     "quarters": {"quarters": 1},
 }
 MAX_BARS = 32
+#: Seeds a canon searches after the one asked for before it answers that none
+#: was found; each is derived from the asked seed (:func:`_search_seeds`).
+RETRY_SEEDS = 4
+_SEED_STRIDE = 1_000_003
 
 
 def _rhythm(bars: int, rhythm: str, rng: random.Random) -> list[str]:
@@ -122,72 +129,84 @@ def write_canon(
     base = 60 + (scale.tonic - 60) % 12  # the tonic from C4 up
     lo, hi = base - 5, base + 11
     rules = Rules(allow_crossing=steps == 0) if steps == 0 else FREE
-    rng = random.Random(seed)
     tries = 8
     per_try = max(1000, budget // tries)
     last: Exception | None = None
-    for _attempt in range(tries):
-        pattern = _rhythm(bars - 2, rhythm, rng)
-        events = [
-            Ev(start + b * BAR + off, ticks)
-            for b, name in enumerate(pattern)
-            for off, ticks in CANON_BARS[name]
-        ]
-        leader = Line("leader")
-        follower = Line("follower")
-        lines = [follower, leader] if steps > 0 else [leader, follower]
-        piece = Piece(lines, scale, rules)
-        images = [
-            Image(piece, leader),
-            Image(piece, follower, offset=lag, shift=shift, cutoff=start + cad),
-        ]
-        pool = scale.pitches(lo, hi, ficta=scale.mode == "minor")
-        firsts = [p for p in pool if (p - scale.tonic) % 12 in (0, 7)]
+    for search_seed in _search_seeds(seed):
+        rng = random.Random(search_seed)
+        for _attempt in range(tries):
+            pattern = _rhythm(bars - 2, rhythm, rng)
+            events = [
+                Ev(start + b * BAR + off, ticks)
+                for b, name in enumerate(pattern)
+                for off, ticks in CANON_BARS[name]
+            ]
+            leader = Line("leader")
+            follower = Line("follower")
+            lines = [follower, leader] if steps > 0 else [leader, follower]
+            piece = Piece(lines, scale, rules)
+            images = [
+                Image(piece, leader),
+                Image(piece, follower, offset=lag, shift=shift, cutoff=start + cad),
+            ]
+            pool = scale.pitches(lo, hi, ficta=scale.mode == "minor")
+            firsts = [p for p in pool if (p - scale.tonic) % 12 in (0, 7)]
 
-        def cands(k: int, s: Search) -> list[int]:
-            if k == 0:
-                return rank(firsts, None, s.rng)
-            prev = s.pitches[-1]
-            opts = [p for p in pool if melodic_kind(scale, prev, p) in ("step", "leap")]
-            return rank(opts, prev, s.rng)
+            def cands(k: int, s: Search) -> list[int]:
+                if k == 0:
+                    return rank(firsts, None, s.rng)
+                prev = s.pitches[-1]
+                opts = [
+                    p for p in pool if melodic_kind(scale, prev, p) in ("step", "leap")
+                ]
+                return rank(opts, prev, s.rng)
 
-        def leaf(
-            s: Search,
-            piece: Piece = piece,
-            leader: Line = leader,
-            follower: Line = follower,
-        ) -> bool:
-            return _close(piece, leader, follower, scale, start + cad, steps)
+            def leaf(
+                s: Search,
+                piece: Piece = piece,
+                leader: Line = leader,
+                follower: Line = follower,
+            ) -> bool:
+                return _close(piece, leader, follower, scale, start + cad, steps)
 
-        search = Search(events, cands, images, leaf=leaf, budget=per_try, rng=rng)
-        try:
-            search.run()
-        except SearchFailed as e:
-            last = e
-            continue
-        violations = piece.flags() + [
-            f for i in range(len(lines)) for f in melody_flags(piece, i)
-        ]
-        ignore = ("voice_crossing", "voice_overlap") if steps == 0 else ()
-        return {
-            "key": scale.label,
-            "ppq": PPQ,
-            "bar_ticks": BAR,
-            "interval": interval,
-            "transposition": transposition,
-            "lag": lag,
-            "bars": bars,
-            "seed": seed,
-            "canonic_until": start + cad,
-            "rhythm": pattern,
-            "order": piece.names,
-            "parts": {"leader": leader.notes(), "follower": follower.notes()},
-            "violations": [f.as_dict() for f in violations],
-            "flags": [f.as_dict() for f in checker_flags(lines, ignore=ignore)],
-        }
+            search = Search(events, cands, images, leaf=leaf, budget=per_try, rng=rng)
+            try:
+                search.run()
+            except SearchFailed as e:
+                last = e
+                continue
+            violations = piece.flags() + [
+                f for i in range(len(lines)) for f in melody_flags(piece, i)
+            ]
+            ignore = ("voice_crossing", "voice_overlap") if steps == 0 else ()
+            return {
+                "key": scale.label,
+                "ppq": PPQ,
+                "bar_ticks": BAR,
+                "interval": interval,
+                "transposition": transposition,
+                "lag": lag,
+                "bars": bars,
+                "seed": seed,
+                "search_seed": search_seed,
+                "canonic_until": start + cad,
+                "rhythm": pattern,
+                "order": piece.names,
+                "parts": {"leader": leader.notes(), "follower": follower.notes()},
+                "violations": [f.as_dict() for f in violations],
+                "flags": [f.as_dict() for f in checker_flags(lines, ignore=ignore)],
+            }
     raise CounterpointError(
-        f"no canon was found ({last}); try another seed, lag or interval"
+        f"no canon was found at seed {seed} or the {RETRY_SEEDS} seeds derived "
+        f"from it ({last}); try another seed, lag or interval"
     )
+
+
+def _search_seeds(seed: int) -> list[int]:
+    """The seed asked for, then :data:`RETRY_SEEDS` seeds derived from it.
+    The same request searches the same seeds in the same order, so it always
+    answers with the same canon."""
+    return [seed] + [seed + k * _SEED_STRIDE for k in range(1, RETRY_SEEDS + 1)]
 
 
 def _close(
