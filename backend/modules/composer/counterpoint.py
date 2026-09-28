@@ -409,6 +409,9 @@ class Rules:
     nct_max: int = HALF
     allow_crossing: bool = False
     max_distance: int = 19  # two voices at most a twelfth apart
+    # Two voices alone reach a perfect interval only by contrary or oblique
+    # motion (strict counterpoint); off, only the outer-voice rule applies.
+    strict_direct: bool = True
 
 
 FREE = Rules()
@@ -513,7 +516,7 @@ class Piece:
         for i, j in zip(sounding, sounding[1:]):
             pi, pj = P[i], P[j]
             assert pi is not None and pj is not None
-            if j < n - 1 and pi - pj > 12 and count > 2:
+            if j < n - 1 and pi - pj > 12:
                 out.add(
                     [i, j],
                     "spacing",
@@ -587,7 +590,7 @@ class Piece:
                             f"outer voices {moves}: the {L[i].name} leaps into it."
                         ),
                     )
-                elif count == 2:
+                elif count == 2 and r.strict_direct:
                     out.add(
                         [i, j],
                         "direct_perfect",
