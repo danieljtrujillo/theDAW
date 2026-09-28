@@ -1,8 +1,10 @@
 // Composer client -- typed calls to /api/composer (backend/modules/composer).
 //
-// Three actions: plan a roman-numeral phrase voiced in soprano, alto, tenor
+// Five actions: plan a roman-numeral phrase voiced in soprano, alto, tenor
 // and bass; check parts for voice-leading faults; realize a figured bass in
-// four parts. Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
+// four parts; plan a whole form (sonata, rondo, theme and variations, minuet
+// and trio, scherzo, a four-movement symphony) as sections with keys, tempi,
+// meters and harmonic plans; and realize that form in four parts per section. Notes travel as `{note, tick, ticks}` at the roll's own 960 PPQ
 // (lib/noteClock), and meter maps in the roll's shape (lib/meterMap), so a
 // roll clip's notes and meter go in as they are and the answer's notes can go
 // straight back.
@@ -184,6 +186,144 @@ export interface ContinuoResult {
   flags: VoiceLeadingFlag[];
 }
 
+export type FormName = 'sonata' | 'rondo' | 'theme_and_variations' | 'minuet_and_trio' | 'scherzo' | 'symphony';
+export const FORM_NAMES: readonly FormName[] = ['sonata', 'rondo', 'theme_and_variations', 'minuet_and_trio', 'scherzo', 'symphony'];
+
+export type RondoPattern = 'ABACA' | 'ABACABA';
+
+/** A time signature as the roll holds it (lib/meterMap's Meter). */
+export interface FormMeter {
+  num: number;
+  den: number;
+  groups: number[];
+}
+
+export interface FormRequest {
+  form: FormName;
+  /** Tonic: 'C', 'F#', 'Bb'. A lowercase letter with no mode is minor. */
+  key: string;
+  mode?: KeyMode;
+  seed?: number;
+  /** Bars in all; a symphony's four movements share them. A section is as long as it needs, with no cap. */
+  bars?: number;
+  /** A single form's meter; a symphony's movements keep their own. */
+  meter?: FormMeter;
+  /** A single form's tempo in quarter notes a minute. */
+  tempo?: number;
+  rondo?: RondoPattern;
+  /** Theme and variations: how many variations. */
+  variations?: number;
+  /** 'bar' (default) puts a chord on each bar, and one on each pulse in a phrase that needs more; 'pulse' one on each pulse. */
+  harmonicRhythm?: 'bar' | 'pulse';
+  ranges?: PartRanges;
+}
+
+export interface FormPhrase {
+  bars: number;
+  start_bar: number;
+  key: string;
+  /** The key the phrase modulates to through a pivot chord, or null. */
+  modulate_to: string | null;
+  cadence: Cadence;
+  harmonic_rhythm: 'bar' | 'pulse';
+  seed: number;
+}
+
+export interface FormChord {
+  section: number;
+  phrase: number;
+  bar: number;
+  beat: number;
+  tick: number;
+  ticks: number;
+  accent: number;
+  figure: string;
+  key: string;
+  kind: string;
+  pivot: { figure: string; key: string } | null;
+  /** Realized forms only. */
+  pitches?: Record<ComposerPart, number>;
+  names?: Record<ComposerPart, string>;
+}
+
+export type FormRole =
+  | 'first_group'
+  | 'transition'
+  | 'second_group'
+  | 'closing'
+  | 'development'
+  | 'coda'
+  | 'refrain'
+  | 'episode'
+  | 'retransition'
+  | 'theme'
+  | 'variation'
+  | 'minuet'
+  | 'trio'
+  | 'minuet_da_capo';
+
+export interface FormSection {
+  index: number;
+  role: FormRole;
+  label: string;
+  /** Sonata only: 'exposition', 'development', 'recapitulation' or 'coda'. */
+  part: string | null;
+  /** Sections that share a theme share their harmony. */
+  theme: string | null;
+  bars: number;
+  start_bar: number;
+  start_tick: number;
+  ticks: number;
+  key: string;
+  enter_key: string;
+  end_key: string;
+  /** 'start' (a movement's first), 'pivot' (its first phrase modulates to its key), 'continue', or 'direct' (a parallel-mode switch). */
+  join: 'start' | 'pivot' | 'continue' | 'direct';
+  tempo: { bpm: number; marking: string };
+  meter: FormMeter;
+  phrases: FormPhrase[];
+  chords: FormChord[];
+  /** Realized forms only: SATB in the movement's ticks. */
+  parts?: Record<ComposerPart, ComposerNote[]>;
+  flags?: VoiceLeadingFlag[];
+}
+
+export interface FormTempoEvent {
+  /** Quarter-note beats from the movement's start, as lib/tempoMap reads them. */
+  beat: number;
+  bpm: number;
+  curve: 'step';
+  bar: number;
+  tick: number;
+  marking: string;
+}
+
+export interface FormMovement {
+  index: number;
+  title: string;
+  form: FormName;
+  key: string;
+  tempo: { bpm: number; marking: string };
+  meter: FormMeter;
+  bars: number;
+  ticks: number;
+  meter_map: MeterSegment[];
+  tempo_map: FormTempoEvent[];
+  sections: FormSection[];
+}
+
+export interface FormResult {
+  form: FormName;
+  key: string;
+  seed: number;
+  ppq: number;
+  harmonic_rhythm: 'bar' | 'pulse';
+  bars: number;
+  movements: FormMovement[];
+  /** Realized forms only: flags over every section. */
+  flag_count?: number;
+}
+
 export interface ComposerCapabilities {
   module: string;
   ppq: number;
@@ -192,6 +332,8 @@ export interface ComposerCapabilities {
   harmonic_rhythms: string[];
   rules: VoiceLeadingRule[];
   ranges: Record<ComposerPart, [number, number]>;
+  forms: FormName[];
+  rondo_patterns: RondoPattern[];
 }
 
 const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
@@ -256,6 +398,22 @@ export function continuoBody(req: ContinuoRequest): Record<string, unknown> {
   });
 }
 
+export function formBody(req: FormRequest): Record<string, unknown> {
+  return compact({
+    form: req.form,
+    key: req.key,
+    mode: req.mode,
+    seed: req.seed,
+    bars: req.bars,
+    meter: req.meter ? { num: req.meter.num, den: req.meter.den, groups: [...(req.meter.groups ?? [])] } : undefined,
+    tempo: req.tempo,
+    rondo: req.rondo,
+    variations: req.variations,
+    harmonic_rhythm: req.harmonicRhythm,
+    ranges: req.ranges,
+  });
+}
+
 export const composerApi = {
   /** Cadences, chord kinds, rules and default SATB ranges the backend knows. */
   capabilities(): Promise<ComposerCapabilities> {
@@ -275,5 +433,15 @@ export const composerApi = {
   /** A figured bass realized in four parts. */
   continuo(req: ContinuoRequest): Promise<ContinuoResult> {
     return postJson<ContinuoResult>('/api/composer/continuo', continuoBody(req));
+  },
+
+  /** A form's movements and sections: keys, tempi, meters and harmonic plans. */
+  form(req: FormRequest): Promise<FormResult> {
+    return postJson<FormResult>('/api/composer/form', formBody(req));
+  },
+
+  /** The same form with every section voiced in SATB and checked. */
+  realizeForm(req: FormRequest): Promise<FormResult> {
+    return postJson<FormResult>('/api/composer/form/realize', formBody(req));
   },
 };
