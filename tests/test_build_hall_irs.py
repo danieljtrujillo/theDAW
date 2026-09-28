@@ -75,3 +75,37 @@ def test_the_stage_is_the_mean_of_the_eight():
     scale = build.PEAK / np.abs(mean).max()
     body = slice(0, len(mean) - round(build.FADE_SEC * RATE))
     assert np.allclose(out["stage"][body], (mean * scale)[body], atol=1e-6)
+
+
+BUNDLED = (
+    Path(__file__).resolve().parents[1]
+    / "frontend"
+    / "public"
+    / "irs"
+    / "detmold-konzerthaus"
+)
+
+
+def _bundled(seat: int, name: str) -> tuple[np.ndarray, int]:
+    import soundfile as sf
+
+    data, rate = sf.read(BUNDLED / f"seat-{seat}" / f"{name}.flac", always_2d=True)
+    return data, rate
+
+
+def test_the_bundled_positions_carry_their_seats():
+    """The shipped files, read back: a stage-left source is louder in the left
+    ear than a stage-right one, and the back row arrives after the front row."""
+    for seat in build.SEATS:
+        left, rate = _bundled(seat, "s1")
+        right, _ = _bundled(seat, "s4")
+        assert rate == 48000
+
+        def balance(ir: np.ndarray) -> float:
+            e = (ir**2).sum(axis=0)
+            return float(10 * np.log10(e[0] / e[1]))
+
+        assert balance(left) > balance(right) + 1.0
+        front = min(build.onset_index(_bundled(seat, f"s{k}")[0]) for k in range(1, 5))
+        back = min(build.onset_index(_bundled(seat, f"s{k}")[0]) for k in range(5, 9))
+        assert back > front
