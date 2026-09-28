@@ -30,8 +30,9 @@
  * CONTROLLERS: each clip's roll part carries its controller changes
  * (RollPartRef `controls`: modulation, volume, pan, expression, the sustain
  * pedal). They are written at their seconds, and where a clip's window starts
- * past some of them, the value each held there is written at the clip's start,
- * so a trimmed clip starts with its pedal and volume. A clip's controllers end
+ * past some of them, the value each held there is written at the clip's start
+ * when it is off the General MIDI default, so a trimmed clip starts with its
+ * pedal and volume. A clip's controllers end
  * with it, as EDIT renders every clip on its own from a channel at the General
  * MIDI defaults: where the clip ends, each controller it left off its default
  * goes back, the pedal first, so nothing it held rings past the clip and the
@@ -234,7 +235,12 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
     }
   }
   // The part's controller changes where EDIT plays them, the state at the window's start first (lib/rollClip).
-  const controls: ClipEvents['controls'] = clipControlTimes(clip, fallbackBpm);
+  // A state at the General MIDI default is left out: the channel is there already at the clip's start (the
+  // file's start, or the reset where the clip before it ends, endClipControls), so a file read back and
+  // written again gains no change the part never made.
+  const controls: ClipEvents['controls'] = clipControlTimes(clip, fallbackBpm)
+    .filter((c) => !(c.held && c.value === controllerDefault(c.controller)))
+    .map((c) => ({ sec: c.sec, controller: c.controller, value: c.value }));
   const voice = clipVoice(clip, track, global);
   // The voice EDIT plays the clip with; with none (no program anywhere, the picker off the soundfont), its roll part's.
   const program = voice.program ?? clip.sourceRollPart?.program ?? undefined;

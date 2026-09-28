@@ -223,6 +223,8 @@ export interface ClipControlTime {
   sec: number;
   controller: number;
   value: number;
+  /** True for the value a controller holds where the clip's window starts, sent at the clip's start; absent for a change of the part's own. */
+  held?: true;
 }
 
 /**
@@ -231,7 +233,7 @@ export interface ClipControlTime {
  * clip's own clock (its tempo map, else `sourceBpm`, else `fallbackBpm`),
  * shifted by the clip's start and trim, inside the clip's window. The value
  * each controller holds where the window starts comes first, at the clip's
- * start, so a trimmed clip starts with the pedal and volume it has there. A
+ * start (`held`), so a trimmed clip starts with the pedal and volume it has there. A
  * controller that changes right where the window starts is left out of that
  * state, since its change plays there (the rule PLAY's chase follows in
  * lib/rollPartPlay), and a change within a nanosecond of the start counts as
@@ -266,7 +268,7 @@ export function clipControlTimes(
     inside.push({ sec: clip.startSec + Math.max(0, rel), controller: c.controller, value: c.value });
   }
   const out: ClipControlTime[] = [];
-  for (const [controller, value] of state) if (!changingAtStart.has(controller)) out.push({ sec: clip.startSec, controller, value });
+  for (const [controller, value] of state) if (!changingAtStart.has(controller)) out.push({ sec: clip.startSec, controller, value, held: true });
   return out.concat(inside);
 }
 

@@ -294,6 +294,42 @@ const secOf = (tick: number, map = [{ beat: 0, bpm: 120 }]) => beatToTime(map, t
   assert.deepEqual(out.sharedTracks, []);
 }
 
+// ── a controller's default where a clip starts is not written ────────────────
+// The value each controller holds where a clip's window starts is written at
+// the clip's start, so a trimmed clip starts with its pedal and volume. A part
+// whose expression first changes at bar 2 used to get an expression of 127 at
+// tick 0 as well, so a file read back and exported again gained a change the
+// part never made.
+{
+  const part = (controls: RollControl[]) => ({ doc: 'd', id: 'x', order: 0, name: 'Horn', program: 60, bank: 0, channel: 6, color: '#fff', mute: false, solo: false, controls });
+  const own: RollControl[] = [
+    { tick: 0, controller: 7, value: 96 },
+    { tick: 3840, controller: 11, value: 70 },
+    { tick: 5760, controller: 1, value: 40 },
+    { tick: 7680, controller: 64, value: 127 },
+    { tick: 9600, controller: 64, value: 0 },
+  ];
+  const c = clip('h', 'hn', 0, [note(0, 60, 64)], { sourceRollPart: part(own), durationSec: 8 });
+  const out = arrangementToMidiFile({ bpm: 120, tracks: [track('hn', 'Horn')], clips: [c] });
+  const ctl = out.file.tracks[0].controls ?? [];
+  assert.deepEqual(
+    ctl.filter((x) => x.tick < 16 * 960).map((x) => [x.tick, x.controller, x.value]),
+    own.map((x) => [x.tick, x.controller, x.value]),
+    "the part's own changes, and no default at tick 0",
+  );
+  // Read back and written again: the same changes.
+  const again = parseMidi(encodeMidi(out.file)).tracks[0].controls ?? [];
+  assert.deepEqual(again.map((x) => [x.tick, x.controller, x.value]), ctl.map((x) => [x.tick, x.controller, x.value]));
+  // Trimmed past the pedal's release (source 5 s = tick 9600): the pedal is up there already and is not written;
+  // the expression and modulation it holds, off their defaults, are.
+  const trimmed = arrangementToMidiFile({ bpm: 120, tracks: [track('hn', 'Horn')], clips: [{ ...c, offsetIntoSource: 5.5, durationSec: 2 }] });
+  assert.deepEqual(
+    (trimmed.file.tracks[0].controls ?? []).filter((x) => x.tick === 0).map((x) => [x.controller, x.value]).sort((a, b) => a[0] - b[0]),
+    [[1, 40], [7, 96], [11, 70]],
+    'a trimmed clip starts with the values off their defaults',
+  );
+}
+
 // ── the arrangement's own tempo and meter maps, and a span ───────────────────
 {
   const tempoMap = [{ beat: 0, bpm: 120 }, { beat: 8, bpm: 90, curve: 'linear' as const }, { beat: 16, bpm: 60 }];
