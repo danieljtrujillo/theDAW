@@ -119,6 +119,8 @@ import { isMidiClip } from '../lib/clipEditTarget';
 import { clipNoteSpan } from '../lib/rollClip';
 import { stepClock } from '../lib/rollTempo';
 import { editTempoAtSec } from '../lib/editTimeMap';
+import { hasMidiNotes } from '../lib/midiRender';
+import { requestMidiRender } from './midiRenderQueue';
 import type { ChainEntry } from './effectChainStore';
 import {
   CONN_SIDECHAIN,
@@ -491,7 +493,8 @@ export function releaseOnce(pins: readonly DecodePin[]): () => void {
 
 /** The clip fields the decode side reads: its own blob, and its takes' blobs. */
 export interface DecodableClip {
-  audioBlob: Blob;
+  /** Absent on a piano-roll clip that holds no render: it has nothing to decode. */
+  audioBlob?: Blob;
   takes?: ClipTake[];
   comp?: CompRegion[];
   activeTakeIndex?: number;
@@ -507,6 +510,7 @@ export interface DecodableClip {
  * play. So a clip that is not comped decodes exactly what it always did.
  */
 function clipBlobs(clip: DecodableClip): Blob[] {
+  if (!clip.audioBlob) return [];
   if (!isComped(clip)) return [clip.audioBlob];
   const out: Blob[] = [clip.audioBlob];
   for (const take of clip.takes ?? []) {
@@ -1018,6 +1022,7 @@ function liveMasterVstChain(): ChainEntry[] {
       masterFxChain: s.masterFxChain,
       masterVstChain: s.masterVstChain,
       bpm: s.bpm,
+      global: getGlobalVoice(),
     });
     if (sig === s.frozenMaster.sig) return [];
   }
@@ -2500,6 +2505,8 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
     // A clip the live synth plays skips its bounced audio so we don't double
     // up; scheduleMidiClips plays its notes instead.
     if (liveMidiPlan.liveClipIds.has(clip.id)) continue;
+    // A MIDI clip with no render has no audio to play (start() queued its render).
+    if (!clip.audioBlob) continue;
     const nodes = trackNodes.get(clip.trackId);
     if (!nodes) continue;
     // One resolver per clip. For everything that is not comped it hands over the
@@ -2530,6 +2537,7 @@ function scheduleClips(clips: AudioClip[], fromSec: number): void {
  *  positions depend on a comp edit. (The teleport loop below reads the active
  *  take's buffer for the same reason.) */
 function chunksFor(clip: AudioClip): AudioChunk[] {
+  if (!clip.audioBlob) return [];
   const buf = peekDecoded(getEngineCtx(), clip.audioBlob);
   if (!buf) return [];
   let chunks = analysisCache.get(clip.audioBlob);
@@ -2575,6 +2583,7 @@ function scheduleTeleports(clips: AudioClip[], fromSec: number): void {
       const events: { when: number; x: number; y: number; z: number }[] = [];
       let idx = 0;
       for (const clip of trackClips) {
+        if (!clip.audioBlob) continue;
         const buf = peekDecoded(ctx, clip.audioBlob);
         if (!buf) continue;
         const offset = Math.min(clip.offsetIntoSource, Math.max(0, buf.duration - 0.01));
@@ -3115,13 +3124,13 @@ export function liveMidiTrackStatus(
         mode: 'live',
         channels: chans.length,
         reason: chans.length > 1
-          ? `Plays live on the audio clock, on ${chans.length} channels: its bending lanes each bend on their own`
-          : 'Plays live on the audio clock',
+          ? `Plays live on the audio clock, on ${chans.length} channels: its bending lanes each bend on their own. A clip with no rendered audio renders when exported`
+          : 'Plays live on the audio clock. A clip with no rendered audio renders when exported',
       });
     } else if (dropped.has(t.id)) {
-      out.set(t.id, { mode: 'bounce', channels: 0, reason: 'Past the last live channel: plays its rendered audio' });
+      out.set(t.id, { mode: 'bounce', channels: 0, reason: 'Past the last live channel: plays its rendered audio, rendered for it when it has none' });
     } else {
-      out.set(t.id, { mode: 'bounce', channels: 0, reason: 'No instrument: plays its rendered audio. Pick one to play it live' });
+      out.set(t.id, { mode: 'bounce', channels: 0, reason: 'No instrument: plays its rendered audio, rendered for it when it has none. Pick one to play it live' });
     }
   }
   return out;
@@ -3397,18 +3406,6 @@ async function start(fromSec: number): Promise<void> {
     try { await ctx.resume(); } catch { /* will retry on next gesture */ }
   }
 
-  try {
-    await ensureDecoded(clips);
-  } catch (e) {
-    // The clips that DID decode before the failure are pinned; nothing is going
-    // to schedule them now, so they are released here rather than held until the
-    // next stop or play.
-    releasePrefetchPins();
-    logError('editor', `Live decode failed: ${e instanceof Error ? e.message : String(e)}`);
-    return;
-  }
-  if (token !== playToken) return; // superseded by a newer start()
-
   // Decide which MIDI clips play live. A clip with a program (its own, its
   // track's, or the global picker's while soundfonts are on) is synthesised on
   // EDIT's synths; a clip with none keeps playing its bounced audio, so users
@@ -3425,6 +3422,32 @@ async function start(fromSec: number): Promise<void> {
   } else {
     liveMidiPlan = plan;
   }
+  // A MIDI clip that holds no render and will not play live this pass (the
+  // synths did not load, or its track is past the last live channel) has
+  // nothing to sound: it is rendered, one clip at a time, and plays from the
+  // next pass on.
+  const silent = clips.filter((c) => !c.muted && hasMidiNotes(c) && !c.audioBlob && !liveMidiPlan.liveClipIds.has(c.id));
+  if (silent.length > 0) {
+    logWarn('editor', `${silent.length} MIDI clip(s) cannot play live this pass and hold no render; rendering them now: ${silent.slice(0, 4).map((c) => c.label).join(', ')}${silent.length > 4 ? ', …' : ''}`);
+    for (const c of silent) {
+      requestMidiRender(c.id, 'cache').catch((e) => logError('editor', `MIDI render failed for "${c.label}": ${e instanceof Error ? e.message : String(e)}`));
+    }
+  }
+
+  // Only what this pass plays from audio is decoded: a clip the synths play
+  // live skips its cached render, so a 24-part score does not decode 24 renders
+  // nobody hears.
+  try {
+    await ensureDecoded(clips.filter((c) => !liveMidiPlan.liveClipIds.has(c.id)));
+  } catch (e) {
+    // The clips that DID decode before the failure are pinned; nothing is going
+    // to schedule them now, so they are released here rather than held until the
+    // next stop or play.
+    releasePrefetchPins();
+    logError('editor', `Live decode failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (token !== playToken) return; // superseded by a newer start()
 
   // (Re)assert ourselves as the live transport — a library track played in the
   // meantime may have cleared it via playerStore.load().

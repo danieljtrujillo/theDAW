@@ -34,10 +34,12 @@
  * -------------
  * theDAW's own `state/recordingStore.ts` (`placeTakes`, and its private
  * `punchWindow`) is the precedent this follows for landing a pass: ONE
- * `beginUndoStep()` for the whole pass, the clip added synchronously, and the
- * rendered audio applied afterwards through the history-exempt
- * `applyClipRender`. No reference DAW under `oss-refs/` was opened while
- * writing this file and no code is copied from one.
+ * `beginUndoStep()` for the whole pass and the clip added synchronously. A take
+ * whose track or picker gives it a program plays live on EDIT's synths and has
+ * no audio of its own until an export renders it (lib/midiRender); a take with
+ * no program cannot play live, so its rendered audio is applied afterwards
+ * through the history-exempt `applyClipRender`. No reference DAW under
+ * `oss-refs/` was opened while writing this file and no code is copied from one.
  */
 
 import type { AudioClip, EditorTrack } from '../state/editorStore';
@@ -512,12 +514,11 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         totalSteps,
         startSec,
         durationSec: totalSteps * stepSeconds(bpm),
-        // Resolved BEFORE the add, so `renderedProgram` below is already what
-        // `effectiveProgramFor` will compute for this clip and WaveformEditor's
-        // instrument-sync effect has nothing to re-render. Without the global
-        // fallback a track with no instrument of its own lands a clip whose
-        // effective program is the soundfont's, is stamped with nothing, and is
-        // therefore re-bounced the instant it appears.
+        // Resolved BEFORE the add, the way `effectiveProgramFor` will resolve
+        // it for this clip: the track's own program, else the global picker's.
+        // A take with a program plays live and is not rendered; without the
+        // global fallback a take on a track with no instrument of its own would
+        // be rendered although the picker plays it live.
         voice: clipVoice(
           { instrumentProgram: pass.program },
           { isPercussion: pass.percussion },
@@ -535,18 +536,21 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
     const rendered: Array<{ clipId: string; land: (typeof landing)[number] }> = [];
     for (const land of landing) {
       takeSeq += 1;
+      // A take with a program plays live on EDIT's synths and renders when an
+      // export needs it (lib/midiRender): it lands with no audio of its own and
+      // nothing is rendered. A take with none cannot play live, so its audio is
+      // rendered below.
+      const playsLive = land.voice.program !== undefined;
       const clipId = deps.addClipToTrack({
         trackId: land.pass.trackId,
         label: `MIDI take ${takeSeq}`,
-        // The audio is rendered below and applied through the history-exempt
-        // `applyClipRender`, so the pass stays one undo step however long the
-        // render takes. Until it lands the clip plays from `sourcePianoRoll`,
-        // which the live scheduler synthesises directly. The placeholder is a
-        // real decodable WAV and ships flat peaks, so WaveformEditor's
-        // decode-peaks effect has nothing to fail on in the meantime.
-        audioBlob: silentWavBlob(),
+        // The audio of a take with no program is rendered below and applied
+        // through the history-exempt `applyClipRender`, so the pass stays one
+        // undo step however long the render takes. The placeholder it carries
+        // meanwhile is a real decodable WAV and ships flat peaks, so
+        // WaveformEditor's decode-peaks effect has nothing to fail on.
+        ...(playsLive ? {} : { audioBlob: silentWavBlob(), peaks: new Float32Array(CAPTURE_PEAK_BINS) }),
         mimeType: 'audio/wav',
-        peaks: new Float32Array(CAPTURE_PEAK_BINS),
         sourceDuration: land.durationSec,
         offsetIntoSource: 0,
         durationSec: land.durationSec,
@@ -565,7 +569,7 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
         // `renderedProgram` below records what the bounce actually used.
         ...(land.pass.program !== undefined ? { instrumentProgram: land.pass.program } : {}),
       });
-      rendered.push({ clipId, land });
+      if (!playsLive) rendered.push({ clipId, land });
     }
 
     for (const { clipId, land } of rendered) {
@@ -608,8 +612,11 @@ export function startMidiCapture(deps: MidiCaptureDeps): () => void {
           peaks,
         );
       })().catch(() => {
-        /* the clip and its notes are already on the timeline; only the
-           pre-rendered audio is missing, and live playback synthesises it */
+        /* The clip and its notes are already on the timeline; only its audio
+           is missing. The silent placeholder goes, so EDIT's MIDI render queue
+           (state/midiRenderQueue) sees a clip that cannot play live and holds
+           no render, renders it again, and says why if that fails too. */
+        deps.applyClipRender(clipId, { audioBlob: undefined, peaks: undefined });
       });
     }
   };

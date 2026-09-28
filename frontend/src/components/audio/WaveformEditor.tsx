@@ -24,9 +24,10 @@ import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule } from 
 import { decodeClipBlob } from '../../lib/decodeCache';
 import { type FadeCurve } from '../../lib/clipFade';
 import {
-  BOUNCE_SAMPLE_RATE, encodeBounce, renderBounce, renderExtentSec,
-  type BounceRequest, type RenderDeps,
+  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, renderBounce, renderExtentSec,
+  type BounceRequest, type BounceScope, type RenderDeps,
 } from '../../lib/renderCore';
+import { clipWithAudio, clipsWithMidiAudio, configureMidiRenderQueue, requestMidiRender, useMidiRenderQueue } from '../../state/midiRenderQueue';
 import { crossfadeRegions } from '../../lib/crossfade';
 import {
   MIN_CLIP_SEC,
@@ -58,22 +59,18 @@ import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipNoteSpan, clipRenderInput, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
+import { clipNoteSpan, clipRollLoad, midiFileClipFields } from '../../lib/rollClip';
 import { stepClock, tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
-  clipRenderIsStale,
   clipVoice,
   drumKitName,
   isPercussionTrack,
-  renderedVoiceFields,
-  type ClipVoice,
 } from '../../lib/clipProgram';
 import { renderStepNotesToBlob } from '../../lib/midiSynth';
-import { renderedWindowFields } from '../../lib/clipRenderWindow';
-import { rerenderStaleMidiClip } from '../../lib/clipRerender';
+import { hasMidiNotes, midiRenderSig, midiRenderState, midiRenderStateText, type MidiRenderState } from '../../lib/midiRender';
 import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
 import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
@@ -306,38 +303,6 @@ const preventSelectStart = (e: Event): void => e.preventDefault();
 // --- WAV encoder for the offline mixdown output. ---
 
 /**
- * Tiny silent WAV placeholder used when creating large MIDI clips. The real
- * bounced audio is rendered asynchronously after the editable MIDI clip appears,
- * so users are not stuck waiting on an OfflineAudioContext + peak extraction.
- */
-const silentWavBlob = (): Blob => {
-  const sampleRate = 44100;
-  const channels = 1;
-  const samples = Math.ceil(sampleRate * 0.1);
-  const bytesPerSample = 2;
-  const dataBytes = samples * channels * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataBytes);
-  const view = new DataView(buffer);
-  const writeStr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + dataBytes, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * channels * bytesPerSample, true);
-  view.setUint16(32, channels * bytesPerSample, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, dataBytes, true);
-  return new Blob([buffer], { type: 'audio/wav' });
-};
-
-/**
  * Decode an audio Blob, extract the portion [offsetSec, offsetSec+durationSec],
  * and return it as a fresh WAV Blob. Used so inpaint submissions always receive
  * exactly the visible clip region, with mask coords relative to its start.
@@ -412,6 +377,16 @@ const cropAudioBlob = async (
        against.
 ──────────────────────────────────────────────────────────────────────────── */
 
+// The MIDI render queue's real renderer, peak scan, picker and warm-up. Set
+// when this module loads, which is before any bounce job can run (the render
+// runner reaches its job functions through this module).
+configureMidiRenderQueue({
+  render: renderStepNotesToBlob,
+  computePeaks,
+  global: getGlobalVoice,
+  ensureReady: ensureSoundfontReady,
+});
+
 /**
  * The nine fields `lib/renderCore` reads for a bounce: the document — clips,
  * tracks, the master rack, the automation lanes, and (since T14) the routing
@@ -423,11 +398,30 @@ const cropAudioBlob = async (
  *
  * Read from the store when the JOB RUNS, not when it was enqueued: a job that
  * waited behind another renders the document it actually starts against.
+ *
+ * A piano-roll clip may hold no render (lib/midiRender): it plays live and is
+ * rendered here, before the graph is built. Every MIDI clip in `scope` without
+ * a current render goes through the MIDI render queue one clip at a time
+ * (state/midiRenderQueue clipsWithMidiAudio); a stale cache is re-rendered and
+ * kept, and a clip with none is rendered for this bounce only. A job called off
+ * while those renders run stops before the next one (`isCancelled`), and the
+ * job drops its result as it always has. `release` frees the decoded audio of
+ * the renders made for this bounce only; every job calls it once its bounce is
+ * done, since the decode cache holds a buffer until someone says it is gone.
  */
-const currentRenderDeps = (): RenderDeps => {
+interface BounceDeps extends RenderDeps {
+  release: () => void;
+}
+
+const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean = () => false): Promise<BounceDeps> => {
+  const midi = await clipsWithMidiAudio(
+    (c) => clipsInScope([c], scope).length > 0,
+    (n, total, label) => logInfo('editor', `Rendering MIDI for the bounce: ${n} of ${total} (${label})`),
+    isCancelled,
+  );
   const st = useEditorStore.getState();
   return {
-    clips: st.clips,
+    clips: midi.clips,
     tracks: st.tracks,
     masterFxChain: st.masterFxChain,
     automationLanes: st.automationLanes,
@@ -436,7 +430,17 @@ const currentRenderDeps = (): RenderDeps => {
     decode: decodeClipBlob,
     buildChain: buildEffectChain,
     scheduleSources: liveMixer.scheduleClipSources,
+    release: midi.release,
   };
+};
+
+/** Bounce `request` over `deps`, then free the renders made for it alone. */
+const bounceAndRelease = async (request: BounceRequest, deps: BounceDeps): Promise<AudioBuffer> => {
+  try {
+    return await renderBounce(request, deps);
+  } finally {
+    deps.release();
+  }
 };
 
 /** COMMIT EDIT's bounce, and the master half of a VST freeze. Everything: the
@@ -628,7 +632,10 @@ const runMixdownJob = async (
   const st = useEditorStore.getState();
   const start = performance.now();
   logInfo('editor', `Mixing ${st.clips.length} clips on ${st.tracks.length} tracks…`);
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const mixDeps = await currentRenderDeps(job.request.scope, isCancelled);
+  // Called off while its MIDI clips rendered: nothing is bounced.
+  if (isCancelled()) { mixDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, mixDeps);
   const blob = encodeBounce(rendered, job.request);
   // Called off while the context was rendering. Nothing has been written yet,
   // so stopping here really does stop it — the buffer is simply dropped.
@@ -684,7 +691,9 @@ const runSelectionJob = async (
 ): Promise<RenderJobResult> => {
   const { scope } = job.request;
   const ids = scope.kind === 'selection' ? scope.clipIds : [];
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const selectionDeps = await currentRenderDeps(scope, isCancelled);
+  if (isCancelled()) { selectionDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, selectionDeps);
   const blob = encodeBounce(rendered, job.request);
   if (isCancelled()) return {};
   // Resolved AFTER the render, from the same document `renderBounce` just read,
@@ -785,7 +794,9 @@ const runExportJob = async (
   if (job.destination === undefined) {
     throw new Error(`${job.label}: export job carries no destination`);
   }
-  const rendered = await renderBounce(job.request, currentRenderDeps());
+  const exportDeps = await currentRenderDeps(job.request.scope, isCancelled);
+  if (isCancelled()) { exportDeps.release(); return {}; }
+  const rendered = await bounceAndRelease(job.request, exportDeps);
   const blob = encodeBounce(rendered, job.request);
   if (isCancelled()) return {};
   await deliverExport(blob, rendered.duration, {
@@ -898,27 +909,34 @@ const runStemJob = async (
   let stage = 0;
   const step = (): void => { stage += 1; onProgress(stage, total); };
 
-  // The freeze signature is taken HERE rather than at enqueue: the queue may
-  // have held this job, and what the frozen master is a render OF is the
-  // document the bounce below is about to read.
-  const sig = isTrack ? '' : freezeSignature({
-    clips: st.clips,
-    tracks: st.tracks,
-    masterFxChain: st.masterFxChain,
-    masterVstChain: st.masterVstChain,
-    bpm: st.bpm,
-  });
-  // Measured from the SAME snapshot the bounce below reads, as the stem
-  // renderer always did. The master branch reports the rendered buffer's own
-  // duration instead and never looks at this.
-  const durationSec = isTrack ? renderExtentSec(st.clips, request.scope) : 0;
-
   // A track freeze replaces what the transport is playing, so it stops first.
   // The master freeze does not: re-rendering a stale frozen master while the
   // live mix plays is a normal thing to do, and it never did stop it.
   if (isTrack && apply) usePlayerStore.getState().stop();
 
-  const rendered = await renderBounce(request, currentRenderDeps());
+  const deps = await currentRenderDeps(request.scope, isCancelled);
+  if (isCancelled()) { deps.release(); return {}; }
+  // The freeze signature is taken HERE rather than at enqueue: the queue may
+  // have held this job, and what the frozen master is a render OF is the
+  // document the bounce below is about to read. That is the document as it
+  // stands after its MIDI clips rendered: a stale cached render the renders
+  // just replaced is not an edit, and a signature taken before them would call
+  // the new frozen master stale the moment it landed.
+  const now = useEditorStore.getState();
+  const sig = isTrack ? '' : freezeSignature({
+    clips: now.clips,
+    tracks: now.tracks,
+    masterFxChain: now.masterFxChain,
+    masterVstChain: now.masterVstChain,
+    bpm: now.bpm,
+    global: getGlobalVoice(),
+  });
+  // Measured from the SAME clips the bounce below reads (its MIDI clips with
+  // their renders, ring-out included), as the stem renderer always did. The
+  // master branch reports the rendered buffer's own duration instead and never
+  // looks at this.
+  const durationSec = isTrack ? renderExtentSec(deps.clips, request.scope) : 0;
+  const rendered = await bounceAndRelease(request, deps);
   const fileName = isTrack ? 'track-stem.wav' : 'edit-master.wav';
   let file = new File([encodeBounce(rendered, request)], fileName, { type: 'audio/wav' });
   step();
@@ -1300,6 +1318,8 @@ const ClipWave: React.FC<{ clip: AudioClip; height: number; selected: boolean }>
   // left the bin list empty. A fresh URL per mount survives the double-invoke.
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
+    // A MIDI clip with no render has no waveform; its notes are drawn instead.
+    if (!clip.audioBlob) { setUrl(null); return undefined; }
     const objectUrl = URL.createObjectURL(clip.audioBlob);
     setUrl(objectUrl);
     return () => {
@@ -1969,7 +1989,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const stretchClipToFit = useEditorStore((s) => s.stretchClipToFit);
   const resetClipStretch = useEditorStore((s) => s.resetClipStretch);
   const cachePeaks = useEditorStore((s) => s.cachePeaks);
-  const applyClipRender = useEditorStore((s) => s.applyClipRender);
+
   const addClipToTrack = useEditorStore((s) => s.addClipToTrack);
   const snapSec = useEditorStore((s) => s.snapSec);
   const getTotalDurationSec = useEditorStore((s) => s.getTotalDurationSec);
@@ -2547,10 +2567,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const explodeClipToStems = useCallback(async (clipId: string, opts: StemsRunOptions) => {
     const st = useEditorStore.getState();
-    const src = st.clips.find((c) => c.id === clipId);
-    if (!src) return;
+    if (!st.clips.some((c) => c.id === clipId)) return;
     setStemsJob({ clipId, entryId: null, phase: 'preparing', pct: 0 });
     try {
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const src = await clipWithAudio(clipId);
       // 1. A library entry to key the stems backend on.
       let entryId = src.libraryEntryId ?? null;
       if (!entryId) {
@@ -2665,42 +2686,24 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     void explodeClipToStems(modal.clipId, opts);
   }, [stemsModal, explodeClipToStems]);
 
-  /** The voice a MIDI clip actually sounds with (lib/clipProgram): clip
-   *  override, else track default, else the global instrument, on the drum
-   *  channel when its track is percussion — the rule liveMixer plays by. */
-  const clipVoiceOf = useCallback((clip: AudioClip): ClipVoice => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipVoice(clip, track, getGlobalVoice());
-  }, []);
-  /** True when a MIDI clip's bounce was rendered with another voice than it now has. */
-  const renderIsStale = useCallback((clip: AudioClip): boolean => {
-    const track = useEditorStore.getState().tracks.find((t) => t.id === clip.trackId);
-    return clipRenderIsStale(clip, track, getGlobalVoice());
-  }, []);
-
-  /** Re-bounce a stale MIDI clip's audio through its current instrument
-   *  (lib/clipRerender), so every export plays what live playback does. */
+  /** Queue a MIDI clip's render (state/midiRenderQueue: one clip at a time),
+   *  writing it as the clip's cached audio. */
   const rerenderMidiClipAudio = useCallback(async (clipId: string) => {
     try {
-      await rerenderStaleMidiClip(clipId, {
-        render: renderStepNotesToBlob,
-        computePeaks,
-        global: getGlobalVoice,
-        ensureReady: ensureSoundfontReady,
-      });
+      await requestMidiRender(clipId, 'cache');
     } catch (e) {
       const label = useEditorStore.getState().clips.find((c) => c.id === clipId)?.label ?? clipId;
-      logError('editor', `Instrument re-render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
+      logError('editor', `MIDI render failed for "${label}": ${e instanceof Error ? e.message : String(e)}`);
     }
   }, []);
 
-  // Keep every MIDI clip's bounced audio in step with its instrument. Covers clip
-  // overrides, track defaults and the global picker in one place, so no individual
-  // instrument control has to remember to trigger a re-render.
-  // `tracks` and the soundfont store are in the dep list because a clip's
-  // effective program can change without `clips` changing at all — via a track
-  // default or the global instrument picker. Without them, reassigning the
-  // instrument at either of those levels would leave the bounced audio stale.
+  // Keep every MIDI clip's cached render in step with its notes and instrument
+  // (lib/midiRender). Covers clip overrides, track defaults and the global picker
+  // in one place, so no individual instrument control has to remember to ask for
+  // a render. `tracks` and the soundfont store are in the dep list because a
+  // clip's effective program can change without `clips` changing at all — via a
+  // track default or the global instrument picker. Without them, reassigning the
+  // instrument at either of those levels would leave a cached render stale.
   const sfActiveProgram = useSoundfontStore((s) => s.activeProgram);
   const sfEnabled = useSoundfontStore((s) => s.useSoundfont);
   // Which MIDI tracks the next pass plays live on EDIT's synths and which play
@@ -2710,23 +2713,36 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     () => liveMixer.liveMidiTrackStatus(clips, tracks, { useSoundfont: sfEnabled, activeProgram: sfActiveProgram }),
     [clips, tracks, sfActiveProgram, sfEnabled],
   );
-  const midiClipProgramSig = useMemo(
-    () => clips.filter((c) => c.sourceKind === 'piano-roll')
-      .map((c) => {
-        const v = clipVoiceOf(c);
-        return `${c.id}:${v.program ?? 'x'}${v.percussion ? 'd' : ''}:${c.renderedProgram ?? 'x'}${c.renderedPercussion ? 'd' : ''}`;
-      })
-      .join('|'),
-    [clips, tracks, sfActiveProgram, sfEnabled, clipVoiceOf],
-  );
+  // Each MIDI clip's render state (lib/midiRender): no render, a current one or
+  // a stale one, and whether the next pass plays it live. A clip whose cached
+  // render went stale (a note edit, an instrument change) is re-rendered, and a
+  // clip with no render that cannot play live (no program, or past the last
+  // live channel) is rendered so it can be heard; a clip that plays live with
+  // no render stays without one until an export needs it. Every render goes
+  // through the queue one clip at a time.
+  const midiRenderInfo = useMemo(() => {
+    const global = { useSoundfont: sfEnabled, activeProgram: sfActiveProgram };
+    const live = liveMixer.planLiveMidi(clips, tracks, global).liveClipIds;
+    const byId = new Map<string, { state: MidiRenderState; live: boolean }>();
+    const wanted: string[] = [];
+    for (const c of clips) {
+      if (!hasMidiNotes(c)) continue;
+      const track = tracks.find((t) => t.id === c.trackId);
+      const state = midiRenderState(c, track, global);
+      const isLive = live.has(c.id);
+      byId.set(c.id, { state, live: isLive });
+      // The signature rides along, so an edit to a clip already waiting asks again (the queue shares the job).
+      if (state === 'stale' || (state === 'none' && !isLive && !c.muted)) wanted.push(`${c.id}:${midiRenderSig(c)}`);
+    }
+    return { byId, wantedSig: wanted.join('|') };
+  }, [clips, tracks, sfActiveProgram, sfEnabled]);
   useEffect(() => {
-    const stale = useEditorStore.getState().clips.filter(
-      (c) => c.sourceKind === 'piano-roll' && c.sourcePianoRoll?.length && renderIsStale(c),
-    );
-    for (const c of stale) void rerenderMidiClipAudio(c.id);
-    // midiClipProgramSig collapses the clip list to just the voice pairing, so
-    // this runs when an instrument assignment changes — not on every clip drag.
-  }, [midiClipProgramSig, renderIsStale, rerenderMidiClipAudio]);
+    if (!midiRenderInfo.wantedSig) return;
+    for (const key of midiRenderInfo.wantedSig.split('|')) void rerenderMidiClipAudio(key.slice(0, key.lastIndexOf(':')));
+    // wantedSig collapses the clip list to the clips that need a render, so this
+    // runs when one starts or stops needing one, not on every clip drag.
+  }, [midiRenderInfo.wantedSig, rerenderMidiClipAudio]);
+  const midiQueue = useMidiRenderQueue();
 
   // Tap tempo. Averages the intervals between recent taps and writes the result to
   // the project BPM. Taps more than 2s apart start a fresh measurement, so an idle
@@ -2795,13 +2811,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   // Render the clip's current region (offset..offset+duration) to a WAV File so the
   // backend stretches only what the clip actually plays, not the whole source.
-  const extractRegionWav = useCallback(async (clip: AudioClip): Promise<File> => {
+  const extractRegionWav = useCallback(async (asked: AudioClip): Promise<File> => {
+    // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+    const clip = await clipWithAudio(asked.id);
     // 44100 puts this in the same shared-cache lane as the offline renderers, so
     // a stretch after a bounce (or a bounce after a stretch) reuses the buffer.
     // `ac` stays open past the decode — createBuffer below still needs it.
     const ac = new AudioContext({ sampleRate: 44100 });
     try {
-      const buf = await decodeClipBlob(ac, clip.audioBlob);
+      const buf = await decodeClipBlob(ac, clip.audioBlob as Blob);
       const sr = buf.sampleRate;
       const start = Math.max(0, Math.floor((clip.offsetIntoSource ?? 0) * sr));
       const len = Math.max(1, Math.min(buf.length - start, Math.ceil(clip.durationSec * sr)));
@@ -3147,15 +3165,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const submitInpaint = async () => {
     const sel = useEditorStore.getState().inpaintSelection;
     if (!sel) return;
-    const clip = useEditorStore.getState().clips.find((c) => c.id === sel.clipId);
-    if (!clip) return;
+    if (!useEditorStore.getState().clips.some((c) => c.id === sel.clipId)) return;
 
     // Always crop the audio to exactly the visible clip region before sending.
     // This guarantees mask coordinates are relative to the start of the audio
     // the model receives, regardless of offsetIntoSource (split/trim clips).
     let croppedAudio: Blob;
+    let clip: AudioClip;
     try {
-      croppedAudio = await cropAudioBlob(clip.audioBlob, clip.offsetIntoSource, clip.durationSec);
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      clip = await clipWithAudio(sel.clipId);
+      croppedAudio = await cropAudioBlob(clip.audioBlob as Blob, clip.offsetIntoSource, clip.durationSec);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logError('editor', `Inpaint: failed to crop audio: ${msg}`);
@@ -3405,8 +3425,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const title = (c: AudioClip) => c.label || tracks.find((t) => t.id === c.trackId)?.name || 'clip';
     const morph = useMorphStore.getState();
     try {
-      await morph.loadA({ id: `clip:${donor.id}`, title: title(donor), blob: donor.audioBlob });
-      await morph.loadB({ id: `clip:${host.id}`, title: title(host), blob: host.audioBlob });
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const donorAudio = await clipWithAudio(donor.id);
+      const hostAudio = await clipWithAudio(host.id);
+      await morph.loadA({ id: `clip:${donor.id}`, title: title(donor), blob: donorAudio.audioBlob as Blob });
+      await morph.loadB({ id: `clip:${host.id}`, title: title(host), blob: hostAudio.audioBlob as Blob });
     } catch (e) {
       logError('edit', `Bleed: could not load the pair — ${e instanceof Error ? e.message : String(e)}`);
       return;
@@ -3623,7 +3646,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     try {
       const ctx = getEngineCtx();
       if (ctx.state === 'suspended') void ctx.resume();
-      const audioBuf = await decodeClipBlob(ctx, clip.audioBlob);
+      // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+      const withAudio = await clipWithAudio(clip.id);
+      const audioBuf = await decodeClipBlob(ctx, withAudio.audioBlob as Blob);
       const src = ctx.createBufferSource();
       src.buffer = audioBuf;
       // Route through the shared master → analyser → destination chain. No gain
@@ -4308,8 +4333,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // The rule lives in editorStore.freezeSignature, with the test that holds it
   // to every field a renderer reads.
   const freezeSig = useMemo(
-    () => freezeSignature({ clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm }),
-    [clips, tracks, masterFxChain, masterVstChain, editorBpm],
+    () => freezeSignature({
+      clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm,
+      // A MIDI clip with no program of its own or on its track renders through the picker.
+      global: { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
+    }),
+    [clips, tracks, masterFxChain, masterVstChain, editorBpm, sfEnabled, sfActiveProgram],
   );
 
   const frozenStale = !frozenMaster || frozenMaster.sig !== freezeSig;
@@ -4511,9 +4540,18 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
     if (edge === 'move' && (e.ctrlKey || e.metaKey)) {
       const ids = selectedClipIds.includes(clipId) ? selectedClipIds : [clipId];
-      const dragItems: AudioDragItem[] = ids
+      const picked = ids
         .map((id) => clips.find((c) => c.id === id))
-        .filter((c): c is AudioClip => !!c)
+        .filter((c): c is AudioClip => !!c);
+      // A drag hands over bytes it has now. A MIDI clip with no render is
+      // rendered for the next drag and left out of this one, and the LOG says so.
+      const unrendered = picked.filter((c) => !c.audioBlob);
+      for (const c of unrendered) {
+        requestMidiRender(c.id, 'cache').catch((err) => logError('editor', `MIDI render failed for "${c.label}": ${err instanceof Error ? err.message : String(err)}`));
+      }
+      if (unrendered.length) logInfo('editor', `Rendering ${unrendered.map((c) => `"${c.label}"`).join(', ')} so it can be dragged out; drag again once it is rendered`);
+      const dragItems: AudioDragItem[] = picked
+        .filter((c) => !!c.audioBlob)
         .map((c) => ({
           blob: c.audioBlob,
           mimeType: c.mimeType,
@@ -5674,7 +5712,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
       // The clip's length under the file's own tempo changes.
       const nominalDuration = stepClock(bpm, fields.sourceTempoMap).at(totalSteps);
-      const blob = silentWavBlob();
       // Land on the track the user pointed at; make one only when there is
       // none. Until this parameter existed every MIDI insert called addTrack,
       // so "add to track" never added to the track that was right-clicked.
@@ -5690,10 +5727,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
       const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
       const color = track?.color ?? '#a855f7';
+      // No audio of its own: with a program the clip plays live on EDIT's
+      // synths and renders when an export needs it; without one the render
+      // queue renders it now so it can be heard (lib/midiRender).
       const clipId = addClipToTrack({
         trackId,
         label,
-        audioBlob: blob,
         mimeType: 'audio/wav',
         sourceDuration: nominalDuration,
         offsetIntoSource: 0,
@@ -5709,42 +5748,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       // tempo and meter changes can become the arrangement's with one press.
       useEditorStore.getState().offerClipTimeMaps(clipId);
       const voice = clipVoice({ instrumentProgram: program }, track, getGlobalVoice());
-      logInfo('editor', `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; rendering audio in background…`);
-      void (async () => {
-        const started = performance.now();
-        try {
-          // A bending lane renders its notes along its curve (clipRenderInput).
-          const input = clipRenderInput(fields, totalSteps);
-          const rendered = await renderStepNotesToBlob(input.notes, bpm, totalSteps, {
-            program: voice.program,
-            percussion: voice.percussion,
-            ...(input.bends ? { bends: input.bends } : {}),
-            ...(fields.sourceTempoMap ? { tempoMap: fields.sourceTempoMap } : {}),
-          });
-          const { peaks } = await computePeaks(rendered.blob, 240);
-          // Re-read: the clip may have been trimmed or deleted mid-render.
-          const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
-          if (!live) return;
-          // The bounce is derived from the clip's notes, so it adds no undo step
-          // of its own (see applyClipRender). An untrimmed clip takes the
-          // render's length, ring-out included (lib/clipRenderWindow).
-          applyClipRender(clipId, {
-            audioBlob: rendered.blob,
-            mimeType: 'audio/wav',
-            ...renderedWindowFields(live, rendered.duration),
-            // Record what this bounce actually contains so the instrument-sync
-            // effect doesn't immediately re-render a clip that is already correct.
-            ...renderedVoiceFields(voice),
-          }, peaks);
-          logInfo('editor', `MIDI audio ready for "${label}" in ${(performance.now() - started).toFixed(0)}ms`);
-        } catch (renderErr) {
-          logError('editor', `MIDI audio render failed for "${label}": ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`);
-        }
-      })();
+      logInfo(
+        'editor',
+        `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; `
+          + (voice.program !== undefined ? 'it plays live and renders when exported' : 'rendering its audio (it has no instrument to play live)'),
+      );
     } catch (err) {
       logError('editor', `Add MIDI failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [addTrack, addClipToTrack, applyClipRender]);
+  }, [addTrack, addClipToTrack]);
 
   /* -- "Add to track" ------------------------------------------------------
      One dispatcher behind the timeline menu, the track-header menu and the two
@@ -7227,6 +7239,37 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       )}
 
+      {/* The MIDI render queue (state/midiRenderQueue): which clip is rendering
+          and how many wait. Mounted always, so the status is announced. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-label="MIDI render queue"
+        className={midiQueue.running ? 'shrink-0 flex flex-wrap items-center gap-2 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1' : 'sr-only'}
+      >
+        {midiQueue.running && (
+          <>
+            <span aria-hidden="true" className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+            <span className="text-xs font-bold text-sky-100">
+              {`Rendering MIDI audio${midiQueue.running.mode === 'export' ? ' for the export' : ''}: ${midiQueue.running.label}${midiQueue.waiting.length ? ` · ${midiQueue.waiting.length} waiting` : ''}`}
+            </span>
+          </>
+        )}
+      </div>
+      {midiQueue.lastError && !midiQueue.running && (
+        <div role="alert" className="shrink-0 flex flex-wrap items-center gap-2 border-b border-red-500/30 bg-red-500/10 px-3 py-1">
+          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-red-400" />
+          <span className="text-xs font-bold text-red-100">{`MIDI render failed: ${midiQueue.lastError}`}</span>
+          <button
+            type="button"
+            onClick={() => useMidiRenderQueue.setState({ lastError: null })}
+            className="rounded border border-white/15 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/10"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Body: track headers + scrollable timeline */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Track headers (sticky, not scrolled) */}
@@ -7756,6 +7799,23 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                             aria-pressed={!!clip.muted}
                             className={`px-1 h-3.5 rounded-sm font-display text-xs font-bold leading-none flex items-center ${clip.muted ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-black/40 text-zinc-300 border border-white/10 hover:text-white'}`}
                           >M</button>
+                          {isMidi && (() => {
+                            // The clip's audio as a cache (lib/midiRender): a dot and one word.
+                            const info = midiRenderInfo.byId.get(clip.id);
+                            if (!info) return null;
+                            const queued = midiQueue.running?.clipId === clip.id || midiQueue.waiting.some((w) => w.clipId === clip.id);
+                            const word = queued ? 'Rendering' : info.state === 'none' ? (info.live ? 'Live' : 'Silent') : info.state === 'stale' ? 'Stale' : info.live ? 'Kept' : 'Audio';
+                            const dot = queued ? 'bg-sky-400' : info.state === 'none' ? (info.live ? 'bg-emerald-400' : 'bg-red-400') : info.state === 'stale' ? 'bg-amber-400' : 'bg-zinc-300';
+                            return (
+                              <span
+                                className="flex items-center gap-1 text-xs font-bold text-zinc-300"
+                                title={queued ? 'Rendering its audio now' : midiRenderStateText(info.state, info.live)}
+                              >
+                                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                                {word}
+                              </span>
+                            );
+                          })()}
                           {clipStretchRate(clip) !== 1 && (
                             <span
                               className="text-amber-300 tabular-nums"
@@ -8260,14 +8320,19 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           onSelect: () => {
             const selection = getSelectionForInit();
             if (selection.length === 0) return;
-            addBlobsToChimera(
-              selection.map((c) => ({
-                blob: c.audioBlob,
-                mimeType: c.mimeType,
-                label: c.label,
-              })),
-            );
-            onSwitchTab?.('create');
+            // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+            void Promise.all(selection.map((c) => clipWithAudio(c.id)))
+              .then((withAudio) => {
+                addBlobsToChimera(
+                  withAudio.map((c) => ({
+                    blob: c.audioBlob as Blob,
+                    mimeType: c.mimeType,
+                    label: c.label,
+                  })),
+                );
+                onSwitchTab?.('create');
+              })
+              .catch((err) => logError('editor', `Chimera: ${err instanceof Error ? err.message : String(err)}`));
           },
         });
         // Granular bleed: needs a second selected clip to act as the donor.
@@ -8387,6 +8452,43 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               setInstrPanel({ clipId: payload.clipId, x: pos?.x ?? 240, y: pos?.y ?? 200 });
             },
           });
+          // The clip's audio is a cache (lib/midiRender): keep a render with the
+          // clip, or free it and let the clip play live and render on export.
+          const info = midiRenderInfo.byId.get(clip.id);
+          if (info) {
+            const queued = midiQueue.running?.clipId === clip.id || midiQueue.waiting.some((w) => w.clipId === clip.id);
+            if (!clip.audioBlob) {
+              items.push({
+                type: 'item',
+                label: 'Keep rendered audio',
+                icon: <AudioWaveform className="w-3 h-3" />,
+                hint: queued ? 'rendering' : info.live ? 'plays live now' : 'needs it to sound',
+                title: 'Render this clip now and keep the audio with it. Exports and audio edits then use it, and it is re-rendered when the notes or instrument change.',
+                disabled: queued,
+                onSelect: () => { void rerenderMidiClipAudio(clip.id); },
+              });
+            } else {
+              items.push({
+                type: 'item',
+                label: 'Drop rendered audio',
+                icon: <AudioWaveform className="w-3 h-3" />,
+                // A disabled row takes no pointer, so the reason is in the hint.
+                hint: !info.live ? 'no live instrument' : info.state === 'stale' ? 'out of date' : 'kept',
+                title: 'Free the cached render. The clip plays live on its instrument and renders when an export needs it. Undo brings the audio back.',
+                disabled: !info.live,
+                onSelect: () => {
+                  useEditorStore.getState().updateClip(clip.id, {
+                    audioBlob: undefined,
+                    peaks: undefined,
+                    renderSig: undefined,
+                    renderedProgram: undefined,
+                    renderedPercussion: undefined,
+                  });
+                  logInfo('editor', `"${clip.label}" plays live and renders when exported`);
+                },
+              });
+            }
+          }
         }
         // ── Insert ONE stem beside this clip ────────────────────────────────
         // Every stem the entry already has is listed, aggregates included: the

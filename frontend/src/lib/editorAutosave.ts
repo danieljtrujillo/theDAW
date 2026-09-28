@@ -90,7 +90,8 @@ type SerializedTake = Omit<ClipTake, 'audioBlob' | 'peaks'> & {
  *  `JSON.stringify` each take to `{}` and restore a clip that still claims to
  *  be comped while its takes hold no audio at all. */
 type SerializedClip = Omit<AudioClip, 'audioBlob' | 'peaks' | 'takes'> & {
-  assetHash: string;
+  /** Null for a piano-roll clip holding no render (lib/midiRender): it has no audio to store. */
+  assetHash: string | null;
   takes?: SerializedTake[];
 };
 
@@ -463,8 +464,11 @@ async function serializeClip(
   clip: AudioClip,
   assets: FileSystemDirectoryHandle,
 ): Promise<SerializedClip> {
-  const hash = await hashBlob(clip.audioBlob);
-  await writeAsset(assets, hash, clip.audioBlob);
+  let hash: string | null = null;
+  if (clip.audioBlob) {
+    hash = await hashBlob(clip.audioBlob);
+    await writeAsset(assets, hash, clip.audioBlob);
+  }
   const { audioBlob: _blob, peaks: _peaks, takes, ...rest } = clip;
   const out: SerializedClip = { ...rest, assetHash: hash };
   if (takes && takes.length > 0) {
@@ -601,7 +605,7 @@ async function gcAssets(
   // A clip's alternate takes are assets too — counting only the clip's own
   // would have this delete the take audio moments after writing it.
   const keep = (c: SerializedClip): void => {
-    referenced.add(`${c.assetHash}.bin`);
+    if (c.assetHash) referenced.add(`${c.assetHash}.bin`);
     for (const t of c.takes ?? []) referenced.add(`${t.assetHash}.bin`);
   };
   for (const c of manifest.clips) keep(c);
@@ -668,8 +672,9 @@ async function restoreFromAutosave(): Promise<void> {
 
   const reviveClip = async (sc: SerializedClip): Promise<AudioClip> => {
     const { assetHash, takes, ...rest } = sc;
-    const audioBlob = await loadAsset(assetHash, sc.mimeType);
-    const clip: AudioClip = { ...(rest as Omit<AudioClip, 'audioBlob' | 'takes'>), audioBlob };
+    // A piano-roll clip saved with no render comes back without one.
+    const audioBlob = assetHash ? await loadAsset(assetHash, sc.mimeType) : undefined;
+    const clip: AudioClip = { ...(rest as Omit<AudioClip, 'audioBlob' | 'takes'>), ...(audioBlob ? { audioBlob } : {}) };
     if (takes && takes.length > 0) {
       try {
         clip.takes = await Promise.all(
@@ -701,7 +706,7 @@ async function restoreFromAutosave(): Promise<void> {
         );
       }
     }
-    try {
+    if (audioBlob) try {
       const { peaks } = await computePeaks(audioBlob, 240);
       clip.peaks = peaks;
       // Re-mirror onto the active take, which the clip's peaks ARE. The other

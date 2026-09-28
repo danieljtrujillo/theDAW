@@ -78,6 +78,7 @@ import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportSt
 import { usePerformRoutingStore } from '../state/performRouting';
 import { tasmoLoadedToDawProject } from './tasmoToSession';
 import { GM_STANDARD_KIT } from './clipProgram';
+import { midiClipNominalSec, midiRenderSig } from './midiRender';
 import { DRUM_CHANNEL } from './editChannels';
 import { meterFromTasmo } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
@@ -443,10 +444,16 @@ const buildClip = async (
       return null;
     }
     blob = await res.blob();
+  } else if ((c.midi_notes?.length || sourcePianoRoll?.length) && sourcePianoRoll?.length
+    && (trackPercussion || (instrumentProgram ?? trackProgram) !== undefined)) {
+    // No audio of its own and an instrument to play it: the clip plays live on
+    // EDIT's synths and renders when an export needs it (lib/midiRender), so a
+    // 24-part score opens without rendering 24 parts first.
+    blob = null;
   } else if (c.midi_notes?.length || sourcePianoRoll?.length) {
-    // No audio of its own: render the notes, through the clip's program, else
-    // its track's, else the global instrument (no program given). The program
-    // used is recorded, so EDIT does not render the clip a second time.
+    // No audio of its own and no instrument of its own: render the notes,
+    // through the global instrument (no program given). The program used is
+    // recorded, so EDIT does not render the clip a second time.
     const notes = toRenderNotes(
       c.midi_notes?.length
         ? c.midi_notes
@@ -474,7 +481,16 @@ const buildClip = async (
   const rollMeter = sourcePianoRoll ? meter : {};
   const sourceTotalSteps = sourcePianoRoll ? clipTotalSteps(rollMeter, sourcePianoRoll) : undefined;
 
-  const { peaks, duration } = await computePeaks(blob, 240);
+  // A clip with no render has the length the file gives its window, else its grid's.
+  const { peaks, duration } = blob
+    ? await computePeaks(blob, 240)
+    : {
+        peaks: undefined,
+        duration: Math.max(
+          tasmoMidiRenderOptions(c).minDurationSec ?? 0,
+          sourcePianoRoll ? midiClipNominalSec({ ...rollMeter, sourcePianoRoll, sourceTotalSteps, sourceBpm: bpm }, bpm) : 0,
+        ),
+      };
   // Respect the clip's real timeline length when the importer provides it
   // (end_time - start_time); fall back to the full source for placeholder
   // timing. Never exceed the decoded source length.
@@ -490,8 +506,8 @@ const buildClip = async (
     id: c.id || uid('clip'),
     trackId,
     label: c.name || 'clip',
-    audioBlob: blob,
-    mimeType: blob.type || 'audio/wav',
+    ...(blob ? { audioBlob: blob } : {}),
+    mimeType: blob?.type || 'audio/wav',
     sourceDuration: duration,
     offsetIntoSource,
     durationSec,
@@ -514,6 +530,11 @@ const buildClip = async (
     ...(sourceKind && instrumentProgram !== undefined ? { instrumentProgram } : {}),
     ...(sourceKind && renderedProgram !== undefined ? { renderedProgram } : {}),
     ...(sourceKind && renderedPercussion ? { renderedPercussion: true } : {}),
+    // A saved render is trusted for the notes saved beside it; from here on an
+    // edit that does not render shows the render as stale (lib/midiRender).
+    ...(sourceKind && blob && sourcePianoRoll?.length
+      ? { renderSig: midiRenderSig({ ...rollMeter, sourcePianoRoll, sourceTotalSteps, sourceBpm: bpm }) }
+      : {}),
     sourceTotalSteps,
     sourceRollNotes: rollMeter.sourceRollNotes,
     sourceMeterMap: rollMeter.sourceMeterMap,
@@ -1464,8 +1485,10 @@ export function captureEditorSession(): CapturedSession {
     const clips: TasmoClipInput[] = editor.clips
       .filter((c) => c.trackId === t.id)
       .map((c) => {
-        const fname = `${c.id}.${extForMime(c.mimeType || c.audioBlob.type || 'audio/wav')}`;
-        files.push({ name: fname, blob: c.audioBlob });
+        // A MIDI clip holding no render saves its notes and no audio file; it
+        // reopens playing live and renders when an export needs it.
+        const fname = c.audioBlob ? `${c.id}.${extForMime(c.mimeType || c.audioBlob.type || 'audio/wav')}` : null;
+        if (fname && c.audioBlob) files.push({ name: fname, blob: c.audioBlob });
         clipCount += 1;
         const isMidi = c.sourceKind === 'piano-roll';
         return {
@@ -1475,7 +1498,7 @@ export function captureEditorSession(): CapturedSession {
           track_id: t.id,
           start_time: c.startSec,
           end_time: c.startSec + c.durationSec,
-          audio_file: `audio/${fname}`,
+          audio_file: fname ? `audio/${fname}` : null,
           // The notes (each stored once: the played notes, the roll's own notes
           // with their lanes, or both when neither rebuilds the other), the grid
           // length, meter map, pickup and lanes, so the clip plays what it

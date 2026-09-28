@@ -10,7 +10,12 @@
  * the picker re-voiced the part; the clip got no renderedProgram, so EDIT
  * re-rendered it at once; a linked save rendered through the picker and left
  * renderedProgram stale; and the roll auditioned every note on the picker's
- * program. Run from `frontend/`:
+ * program.
+ *
+ * A render is a cache (lib/midiRender): each render records what it was made
+ * from, so EDIT reads it as current, and a part whose render the user dropped
+ * ("Drop rendered audio") plays live and is written by a linked save without
+ * being rendered. Run from `frontend/`:
  *   npx tsx src/lib/rollBounce.test.ts
  */
 import assert from 'node:assert/strict';
@@ -18,6 +23,7 @@ import { useEditorStore } from '../state/editorStore.ts';
 import { usePianoRollStore } from '../state/pianoRollStore.ts';
 import { bounceRollToEditor, type RollBounceDeps } from './rollBounce.ts';
 import { clipRenderIsStale, effectiveProgramFor, rollVoice, type GlobalVoice } from './clipProgram.ts';
+import { midiClipNominalSec, midiRenderState } from './midiRender.ts';
 
 const ed = () => useEditorStore.getState();
 const roll = () => usePianoRollStore.getState();
@@ -41,6 +47,7 @@ async function step(name: string, fn: () => Promise<void> | void): Promise<void>
 const clipOf = (id: string) => ed().clips.find((c) => c.id === id)!;
 const trackOf = (id: string) => ed().tracks.find((t) => t.id === clipOf(id).trackId)!;
 const voiceNow = () => rollVoice(roll().editingClipId, ed().clips, ed().tracks, global);
+const stateOf = (id: string) => midiRenderState(clipOf(id), trackOf(id), global);
 
 async function main(): Promise<void> {
   ed().loadProject({ tracks: [], clips: [] });
@@ -60,6 +67,8 @@ async function main(): Promise<void> {
     assert.equal(clipOf(clipId).renderedProgram, 1);
     assert.equal(roll().editingClipId, clipId, 'the roll is linked to the new clip');
     assert.equal(clipRenderIsStale(clipOf(clipId), trackOf(clipId), global), false, 'EDIT has nothing to re-render');
+    assert.ok(typeof clipOf(clipId).renderSig === 'string', 'the render records what it was made from');
+    assert.equal(stateOf(clipId), 'current', 'so EDIT reads the cached render as current');
   });
 
   await step('changing the picker afterwards does not re-voice the part', () => {
@@ -72,6 +81,7 @@ async function main(): Promise<void> {
     ed().updateTrack(trackOf(clipId).id, { instrumentProgram: 40 });
     assert.deepEqual(voiceNow(), { program: 40, percussion: false });
     assert.equal(clipRenderIsStale(clipOf(clipId), trackOf(clipId), global), true, 'the old audio is now stale');
+    assert.equal(stateOf(clipId), 'stale');
   });
 
   await step("a linked save renders through the clip's instrument and records it", async () => {
@@ -81,6 +91,25 @@ async function main(): Promise<void> {
     assert.equal(renders.at(-1)?.program, 40);
     assert.equal(clipOf(clipId).renderedProgram, 40);
     assert.equal(clipRenderIsStale(clipOf(clipId), trackOf(clipId), global), false);
+    assert.equal(stateOf(clipId), 'current', 'the new render matches the new notes');
+  });
+
+  await step('a part whose render was dropped plays live, and a linked save writes its notes without rendering', async () => {
+    // "Drop rendered audio" in the clip's menu.
+    ed().updateClip(clipId, { audioBlob: undefined, peaks: undefined, renderSig: undefined, renderedProgram: undefined, renderedPercussion: undefined });
+    assert.equal(stateOf(clipId), 'none');
+    const before = renders.length;
+    roll().addNote({ note: 72, step: 12, length: 4, velocity: 100 });
+    const done = await bounceRollToEditor(deps);
+    assert.ok(done && done.kind === 'updated' && done.clipId === clipId);
+    assert.equal(renders.length, before, 'nothing is rendered');
+    assert.equal(clipOf(clipId).audioBlob, undefined, 'the part still holds no render');
+    assert.equal(clipOf(clipId).sourcePianoRoll?.length, 4, 'and carries the new note');
+    const nominal = midiClipNominalSec(clipOf(clipId), ed().bpm);
+    assert.ok(Math.abs(clipOf(clipId).durationSec - nominal) < 1e-9, 'its window is its whole grid');
+    assert.ok(Math.abs(done.duration - nominal) < 1e-9);
+    // Give it a render again for the steps below, as "Keep rendered audio" does.
+    ed().applyClipRender(clipId, { audioBlob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), renderedProgram: 40 });
   });
 
   await step('a drum track: the roll auditions and saves on the drum channel with the track kit', async () => {

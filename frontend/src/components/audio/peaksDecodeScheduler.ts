@@ -54,7 +54,8 @@ export interface PeaksDecodeItem<B> {
 export interface PeaksClip<B> {
   readonly id: string;
   readonly peaks?: unknown;
-  readonly audioBlob: B;
+  /** Absent on a piano-roll clip with no render: it has nothing to scan. */
+  readonly audioBlob?: B;
 }
 
 /**
@@ -73,6 +74,7 @@ export function clipsNeedingPeaksDecode<B>(
   const out: Array<PeaksDecodeItem<B>> = [];
   for (const c of clips) {
     if (c.peaks) continue;
+    if (c.audioBlob === undefined || c.audioBlob === null) continue;
     if (failedBlobs.get(c.id) === c.audioBlob) continue;
     out.push({ id: c.id, blob: c.audioBlob });
   }

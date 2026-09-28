@@ -5,6 +5,8 @@ import type { MeterSegment, PolyLane } from '../lib/meterMap';
 import type { LaneBend } from '../lib/pitchBend';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
 import { clampClipFades, type FadeCurve } from '../lib/clipFade';
+import { hasMidiNotes, midiRenderSig } from '../lib/midiRender';
+import { clipVoice, type GlobalVoice } from '../lib/clipProgram';
 import {
   compDigest,
   moveBoundary as compMoveBoundary,
@@ -218,8 +220,18 @@ export interface AudioClip {
   id: string;
   trackId: string;
   label: string;
-  /** Source audio Blob (the bytes we play / decode peaks from). */
-  audioBlob: Blob;
+  /** Source audio Blob (the bytes we play / decode peaks from). Every audio
+   *  clip has one. On a piano-roll clip it is an optional cached render of the
+   *  notes (lib/midiRender): absent, the clip plays live on EDIT's synths and
+   *  is rendered when an export, a freeze or an audio edit needs its audio
+   *  (state/midiRenderQueue). Read it through `hasClipAudio` where a clip may
+   *  be a MIDI clip. */
+  audioBlob?: Blob;
+  /** Piano-roll clips: what the cached render in `audioBlob` was made from
+   *  (lib/midiRender midiRenderSig), so a note or tempo edit that did not
+   *  render marks the cache stale. Absent on renders made before it existed,
+   *  which are trusted for their notes. */
+  renderSig?: string;
   mimeType: string;
   /** Total length of the source audio in seconds. */
   sourceDuration: number;
@@ -511,20 +523,39 @@ const takesDigest = (takes: readonly ClipTake[] | undefined): string =>
     .map((t) => `${encodeURIComponent(t.id)}@${t.sourceDuration}+${t.offsetIntoSource}#${t.audioBlob?.size ?? 0}`)
     .join(',');
 
+/** The picker state a signature assumes when its caller names none: soundfonts off. */
+const NO_GLOBAL_VOICE: GlobalVoice = { useSoundfont: false, activeProgram: 0 };
+
 /** One clip's contribution to a freeze signature. Shared by the master
- *  signature and the per-track one, so the two can never drift apart. */
-const clipSignaturePart = (c: AudioClip): string => [
-  c.id, c.trackId, c.startSec, c.durationSec, c.offsetIntoSource,
-  c.fadeInSec ?? 0, c.fadeOutSec ?? 0, c.fadeInCurve ?? 'linear', c.fadeOutCurve ?? 'linear',
-  clipPeakGain(c), c.muted ? 1 : 0,
-  c.timeStretchRate ?? 1, c.stretchMode ?? 'repitch',
-  JSON.stringify(c.warpMarkers ?? []),
-  c.audioBlob.size,
-  // Comping reaches the render exactly twice: through WHICH take plays where
-  // (the digest) and through WHAT those takes hold (the take list).
-  compDigest(c.comp, c.activeTakeIndex),
-  takesDigest(c.takes),
-].join(':');
+ *  signature and the per-track one, so the two can never drift apart.
+ *
+ *  A MIDI clip prints what its notes render to through the voice it has now
+ *  (lib/clipProgram clipVoice: the clip's program, else its track's, else the
+ *  picker's), so its notes, tempo, lanes and bends (lib/midiRender
+ *  midiRenderSig) and that voice are in the signature whether or not it holds a
+ *  render: a clip that plays live renders at export time with the voice it has
+ *  then, so a track's instrument change stales a frozen master even when no
+ *  cached render changes. */
+const clipSignaturePart = (c: AudioClip, track?: EditorTrack, global: GlobalVoice = NO_GLOBAL_VOICE): string => {
+  let midiPart = '';
+  if (hasMidiNotes(c)) {
+    const voice = clipVoice(c, track, global);
+    midiPart = `${midiRenderSig(c)}/${voice.program ?? '-'}${voice.percussion ? 'd' : ''}`;
+  }
+  return [
+    c.id, c.trackId, c.startSec, c.durationSec, c.offsetIntoSource,
+    c.fadeInSec ?? 0, c.fadeOutSec ?? 0, c.fadeInCurve ?? 'linear', c.fadeOutCurve ?? 'linear',
+    clipPeakGain(c), c.muted ? 1 : 0,
+    c.timeStretchRate ?? 1, c.stretchMode ?? 'repitch',
+    JSON.stringify(c.warpMarkers ?? []),
+    c.audioBlob?.size ?? 0,
+    midiPart,
+    // Comping reaches the render exactly twice: through WHICH take plays where
+    // (the digest) and through WHAT those takes hold (the take list).
+    compDigest(c.comp, c.activeTakeIndex),
+    takesDigest(c.takes),
+  ].join(':');
+};
 
 /** One track strip's contribution. */
 const trackSignaturePart = (t: EditorTrack): string =>
@@ -540,6 +571,10 @@ const trackSignaturePart = (t: EditorTrack): string =>
  * learned to play them, which meant editing a fade shape left a frozen master
  * claiming to be current. `peaks` is the counter-example — derived drawing data
  * no renderer ever reads.
+ *
+ * `global` is the instrument picker (soundfontEngine getGlobalVoice): a MIDI
+ * clip with no program of its own or on its track renders through it. Left
+ * out, the signature assumes soundfonts are off.
  */
 export const freezeSignature = (doc: {
   clips: readonly AudioClip[];
@@ -547,10 +582,12 @@ export const freezeSignature = (doc: {
   masterFxChain: readonly ChainEntry[];
   masterVstChain: readonly ChainEntry[];
   bpm: number;
+  global?: GlobalVoice;
 }): string => {
   // A clip's muted flag is part of the shape because the bounce drops muted
   // clips, so toggling mute changes the rendered master.
-  const clipPart = doc.clips.map(clipSignaturePart).join('|');
+  const trackById = new Map(doc.tracks.map((t): [string, EditorTrack] => [t.id, t]));
+  const clipPart = doc.clips.map((c) => clipSignaturePart(c, trackById.get(c.trackId), doc.global)).join('|');
   // Track parts are sorted by id: the master bounce SUMS the tracks, so the
   // arrangement's row order never reaches the render, and a pure reorder must
   // not flag a frozen master stale. Each part still carries its id, so a change
@@ -576,10 +613,11 @@ export const freezeSignature = (doc: {
  * which is exactly the over-invalidation a per-track signature exists to avoid.
  *
  * `clips` may be the whole document: the filter is here, so a caller cannot
- * sign a track against someone else's clips.
+ * sign a track against someone else's clips. `global` is the instrument picker,
+ * as for freezeSignature.
  */
-export const trackFreezeSignature = (track: EditorTrack, clips: readonly AudioClip[]): string => [
-  clips.filter((c) => c.trackId === track.id).map(clipSignaturePart).join('|'),
+export const trackFreezeSignature = (track: EditorTrack, clips: readonly AudioClip[], global?: GlobalVoice): string => [
+  clips.filter((c) => c.trackId === track.id).map((c) => clipSignaturePart(c, track, global)).join('|'),
   trackSignaturePart(track),
 ].join('::');
 
@@ -1411,8 +1449,8 @@ const takesOf = (clip: AudioClip): ClipTake[] =>
 const liveClipBlobs = (clips: readonly AudioClip[]): Set<Blob> => {
   const blobs = new Set<Blob>();
   for (const c of clips) {
-    blobs.add(c.audioBlob);
-    for (const take of c.takes ?? []) blobs.add(take.audioBlob);
+    if (c.audioBlob) blobs.add(c.audioBlob);
+    for (const take of c.takes ?? []) if (take?.audioBlob) blobs.add(take.audioBlob);
   }
   return blobs;
 };
@@ -1447,11 +1485,24 @@ const allDocumentClips = (state: { clips: readonly AudioClip[]; tracks: readonly
 const releaseClipAudio = (removed: readonly AudioClip[], live: readonly AudioClip[]): void => {
   const keep = liveClipBlobs(live);
   for (const clip of removed) {
-    if (!keep.has(clip.audioBlob)) releaseDecoded(clip.audioBlob);
+    if (clip.audioBlob && !keep.has(clip.audioBlob)) releaseDecoded(clip.audioBlob);
     for (const take of clip.takes ?? []) {
-      if (!keep.has(take.audioBlob)) releaseDecoded(take.audioBlob);
+      if (take?.audioBlob && !keep.has(take.audioBlob)) releaseDecoded(take.audioBlob);
     }
   }
+};
+
+/** A write gave `before`'s clip new audio, or took its audio away (a MIDI
+ *  clip's render replaced by a new one, or dropped so the clip plays live):
+ *  free the decode cache's hold on the old Blob unless a clip in the document
+ *  still reads it — a split's sibling, a copy, another take. Undo keeps the old
+ *  Blob and decodes it again on its next play, as for a removal
+ *  (releaseClipAudio). Without this every re-render of a cached MIDI clip left
+ *  the previous render's decoded PCM resident for the life of the tab. */
+const releaseReplacedAudio = (before: AudioClip, state: { clips: readonly AudioClip[]; tracks: readonly EditorTrack[] }): void => {
+  if (!before.audioBlob) return;
+  if (state.clips.find((c) => c.id === before.id)?.audioBlob === before.audioBlob) return;
+  releaseClipAudio([{ ...before, takes: undefined }], allDocumentClips(state));
 };
 
 /** Which take the clip is mirroring. Undefined — and anything that does not
@@ -1540,7 +1591,15 @@ const mirrorOntoTakes = (clip: AudioClip, updates: Partial<AudioClip>): ClipTake
 /** `{ ...clip, ...updates }` with the take list kept in step (`mirrorOntoTakes`). */
 const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioClip => {
   const takes = mirrorOntoTakes(clip, updates);
-  const next = takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  let next = takes ? { ...clip, ...updates, takes } : { ...clip, ...updates };
+  // New audio that does not say what it was rendered from is not the render
+  // `renderSig` describes, so the old signature goes with the old audio
+  // (lib/midiRender then trusts the new audio for its notes, as it trusts a
+  // render saved before signatures existed).
+  if ('audioBlob' in updates && !('renderSig' in updates) && next.renderSig !== undefined) {
+    const { renderSig: _sig, ...rest } = next;
+    next = rest;
+  }
   // A render stamps `renderedProgram`. One that does not say it rendered drums
   // rendered melodic, so a drum stamp from an earlier render does not survive it.
   if ('renderedProgram' in updates && !('renderedPercussion' in updates) && next.renderedPercussion !== undefined) {
@@ -2240,6 +2299,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       // next take switch reverts the trim (`mirrorOntoTakes`).
       clips: s.clips.map((c) => (c.id === id ? clipWithUpdates(c, updates) : c)),
     }));
+    if ('audioBlob' in updates) releaseReplacedAudio(target, get());
   },
 
   removeClip: (id) => {
@@ -2432,7 +2492,8 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   cachePeaks: (id, peaks) => get().applyClipRender(id, {}, peaks),
 
   applyClipRender: (id, updates, peaks) => {
-    if (!get().clips.some((c) => c.id === id)) return;
+    const before = get().clips.find((c) => c.id === id);
+    if (!before) return;
     historyApplying = true;
     // The render (and the peaks decoded from it) belongs to the take it was made
     // from, not just to the clip: written to the clip alone, a bounce left the
@@ -2447,6 +2508,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       dirty: true,
     }));
     historyApplying = false;
+    if ('audioBlob' in updates) releaseReplacedAudio(before, get());
   },
 
   // ── Takes + comping (#46) ──────────────────────────────────────────────────

@@ -16,13 +16,15 @@
  *    makes every one of these operations undoable without a second history
  *    mechanism. Nothing here calls `useEditorStore.setState` directly.
  *
- * 2. **Notes are edited as notes, then re-rendered.** A piano-roll clip carries
- *    the note list that produced its audio, so "quantize this" is
- *    `clipNotes.quantizeNotes` plus a re-bounce — not a guess at what quantized
- *    audio would sound like. Every note mutation therefore AWAITS the re-render
- *    before reporting success, and writes the same fields the timeline writes
- *    when an instrument changes (`WaveformEditor.rerenderMidiClipAudio`), so the
- *    blob every offline bounce reads never falls behind the notes.
+ * 2. **Notes are edited as notes.** A piano-roll clip IS its note list, so
+ *    "quantize this" is `clipNotes.quantizeNotes` on the notes — not a guess at
+ *    what quantized audio would sound like. The clip's audio is a cache
+ *    (lib/midiRender): a clip with an instrument plays live on EDIT's synths
+ *    and renders when an export needs it, so an edit to one that holds no
+ *    render renders nothing. A clip that holds a render, or has no instrument
+ *    to play live, is re-rendered, and that note mutation AWAITS the render
+ *    before reporting success, so the audio an offline bounce reads never
+ *    falls behind the notes.
  *
  * 3. **An operation this layer cannot really perform is an error, not a stub.**
  *    Audio time-stretch needs the backend. Freezing a track needs the offline
@@ -92,6 +94,8 @@ import {
 import type { ClipOpResult, OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
 import { encodeWav } from '../lib/wavEncode';
 import { clipVoice, renderedVoiceFields, type ClipVoice } from '../lib/clipProgram';
+import { hasMidiNotes, midiClipNominalSec, midiRenderFields, midiRenderSig } from '../lib/midiRender';
+import { midiGlobalVoice } from './midiRenderQueue';
 import { stepClock } from '../lib/rollTempo';
 import {
   editBarAtSec,
@@ -249,7 +253,10 @@ const liveClip = (id: string): AudioClip | undefined => store().clips.find((c) =
  *  a window of its own, so any of these moving invalidates it. */
 const WINDOW_FIELDS: readonly (keyof AudioClip)[] = ['trackId', 'startSec', 'offsetIntoSource', 'durationSec'];
 /** What a MIDI re-bounce is rendered FROM: its notes, its tempo and tempo map, and its voice. */
-const MIDI_INPUTS: readonly (keyof AudioClip)[] = [...WINDOW_FIELDS, 'sourcePianoRoll', 'sourceBpm', 'sourceTempoMap', 'instrumentProgram'];
+const MIDI_INPUTS: readonly (keyof AudioClip)[] = [
+  ...WINDOW_FIELDS, 'sourcePianoRoll', 'sourceRollNotes', 'sourceBpm', 'sourceTempoMap', 'instrumentProgram',
+  'sourceLanes', 'sourceBends', 'sourceMeterMap', 'sourcePickupSteps', 'sourceTotalSteps',
+];
 /** What a sample-domain op (reverse / normalize) is computed from. */
 const AUDIO_INPUTS: readonly (keyof AudioClip)[] = [...WINDOW_FIELDS, 'audioBlob'];
 /** An audio bounce also prints the envelope and gain it read. */
@@ -313,7 +320,16 @@ const rateOf = (args: RenderArgs): number => numArg(args.sample_rate) ?? DEFAULT
  * Node. A clip that already uses all of its source is passed through untouched
  * rather than paying a second 16-bit round trip.
  */
-const extractWindow = async (clip: AudioClip, args: RenderArgs): Promise<Blob> => {
+const extractWindow = async (asked: AudioClip, args: RenderArgs): Promise<Blob> => {
+  // A MIDI clip holding no render is rendered for this edit (through the same
+  // seam as the note tools), its window following the render as an export's does.
+  let clip = asked;
+  if (!clip.audioBlob) {
+    if (!hasMidiNotes(clip)) throw new Error(`"${clip.label}" has no audio (an empty MIDI clip)`);
+    const voice = voiceFor(clip);
+    const rendered = await bounceMidiClip(clip, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
+    clip = { ...clip, ...midiRenderFields(clip, rendered, voice) };
+  }
   const offset = Math.max(0, clip.offsetIntoSource ?? 0);
   const total = clip.sourceDuration;
   if (offset <= 1e-9 && (!Number.isFinite(total) || clip.durationSec >= total - 1e-6)) {
@@ -338,24 +354,29 @@ const extractWindow = async (clip: AudioClip, args: RenderArgs): Promise<Blob> =
   return encodeWav(out);
 };
 
-/** The voice a MIDI clip renders through: its own program, else its track's,
- *  on the drum channel with the Standard kit as the default on a percussion
- *  track (lib/clipProgram). The global soundfont pick is deliberately not
- *  consulted here — the timeline's instrument-sync effect owns that fallback
- *  and will re-render if it applies. */
+/** The voice a MIDI clip plays and renders through: its own program, else its
+ *  track's, else the instrument picker's while soundfonts are on, on the drum
+ *  channel with the Standard kit as the default on a percussion track
+ *  (lib/clipProgram). The picker is the one the MIDI render queue was handed
+ *  (state/midiRenderQueue midiGlobalVoice), the same one live playback and
+ *  EDIT's render sync read, so a render stamps the voice they expect and is not
+ *  rendered a second time; with no renderer configured (node tests) soundfonts
+ *  read as off. */
 const voiceFor = (clip: AudioClip): ClipVoice => {
   const track = store().tracks.find((t) => t.id === clip.trackId);
-  return clipVoice(clip, track, { useSoundfont: false, activeProgram: 0 });
+  return clipVoice(clip, track, midiGlobalVoice());
 };
 
 /**
- * Write a new note list onto a MIDI clip and re-bounce its audio.
+ * Write a new note list onto a MIDI clip, and re-render its audio when it
+ * holds a render or has no instrument to play live.
  *
- * Nothing is committed until the render succeeds, so a failed synth leaves the
- * clip exactly as it was instead of stranding notes that do not match the blob.
- * The written fields mirror `WaveformEditor.rerenderMidiClipAudio` plus the grid
- * length and source window, which a note edit can change and an instrument
- * change cannot.
+ * A clip's audio is a cache (lib/midiRender). A clip that holds one gets a new
+ * render (nothing is committed until it succeeds, so a failed synth leaves the
+ * clip exactly as it was), and so does a clip with no program of its own or on
+ * its track, which cannot play live; `render: 'always'` renders regardless (the
+ * bounce tool). A clip that plays live and holds no render takes the notes at
+ * once and renders when an export needs it.
  */
 const commitNotes = async (
   clip: AudioClip,
@@ -365,18 +386,54 @@ const commitNotes = async (
   /** Folded into the SAME updateClip, so a caller that needs more than the
    *  re-bounce (bounce + flatten) still costs exactly one write. */
   extra: Partial<AudioClip> = {},
-): Promise<Found<{ duration: number; totalSteps: number; lengthNote: string }>> => {
+  opts: { render?: 'always' | 'when-cached' } = {},
+): Promise<Found<{ duration: number; totalSteps: number; lengthNote: string; rendered: boolean }>> => {
   if (notes.length === 0) {
     return { ok: false, error: `refusing: that would leave "${clip.label}" with no notes at all` };
   }
   const totalSteps = noteEndStep(notes, 16);
-  const next: AudioClip = {
-    ...clip,
+  return commitMidiFields(clip, {
     sourcePianoRoll: notes,
     sourceTotalSteps: totalSteps,
     ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
-  };
+  }, args, extra, opts);
+};
+
+/**
+ * Write a MIDI clip's note fields (`noteFields` names at least
+ * `sourcePianoRoll` and `sourceTotalSteps`) in one undo step, rendering when
+ * the clip holds a render or cannot play live, or when `render: 'always'`
+ * (see commitNotes).
+ */
+const commitMidiFields = async (
+  clip: AudioClip,
+  noteFields: Partial<AudioClip>,
+  args: RenderArgs,
+  extra: Partial<AudioClip> = {},
+  opts: { render?: 'always' | 'when-cached' } = {},
+): Promise<Found<{ duration: number; totalSteps: number; lengthNote: string; rendered: boolean }>> => {
+  const next: AudioClip = { ...clip, ...noteFields };
+  const totalSteps = next.sourceTotalSteps ?? 0;
   const voice = voiceFor(next);
+  const empty = !next.sourcePianoRoll?.length;
+  const renders = !empty && (opts.render === 'always' || !!clip.audioBlob || voice.program === undefined);
+  if (!renders) {
+    // Plays live with no render, or has no notes left to render: the notes and
+    // the grid's window, nothing rendered. An emptied clip's old render goes.
+    const nominal = midiClipNominalSec(next, store().bpm);
+    const current = recheck(clip, MIDI_INPUTS);
+    if (!current.ok) return { ok: false, error: current.error };
+    oneStep(() => store().updateClip(current.value.id, {
+      ...noteFields,
+      ...(empty && clip.audioBlob ? { audioBlob: undefined, peaks: undefined, renderSig: undefined, renderedProgram: undefined, renderedPercussion: undefined } : {}),
+      offsetIntoSource: 0,
+      sourceDuration: nominal,
+      durationSec: nominal,
+      ...extra,
+    }));
+    const lengthNote = Math.abs(nominal - clip.durationSec) > 1e-6 ? ` (clip length ${n2(clip.durationSec)}s → ${n2(nominal)}s)` : '';
+    return { ok: true, value: { duration: nominal, totalSteps, lengthNote, rendered: false } };
+  }
   let rendered: { blob: Blob; duration: number };
   try {
     rendered = await bounceMidiClip(next, { render: args.render, bpm: store().bpm, program: voice.program, percussion: voice.percussion });
@@ -386,15 +443,14 @@ const commitNotes = async (
   const current = recheck(clip, MIDI_INPUTS);
   if (!current.ok) return { ok: false, error: current.error };
   oneStep(() => store().updateClip(current.value.id, {
-    sourcePianoRoll: notes,
-    sourceTotalSteps: totalSteps,
-    ...(programOverride !== undefined ? { instrumentProgram: programOverride } : {}),
+    ...noteFields,
     audioBlob: rendered.blob,
     mimeType: 'audio/wav',
     sourceDuration: rendered.duration,
     durationSec: rendered.duration,
     offsetIntoSource: 0,
     ...renderedVoiceFields(voice),
+    renderSig: midiRenderSig(next),
     // The cached waveform describes the old audio; leaving it would draw the
     // pre-edit shape until something else happened to recompute it.
     peaks: undefined,
@@ -408,7 +464,7 @@ const commitNotes = async (
     Math.abs(rendered.duration - clip.durationSec) > 1e-6
       ? ` (clip length ${n2(clip.durationSec)}s → ${n2(rendered.duration)}s)`
       : '';
-  return { ok: true, value: { duration: rendered.duration, totalSteps, lengthNote } };
+  return { ok: true, value: { duration: rendered.duration, totalSteps, lengthNote, rendered: true } };
 };
 
 /** Commit a fresh blob onto a clip, flattening its source window (the blob IS
@@ -717,7 +773,7 @@ export async function setClipInstrument(args: InstrumentArgs): Promise<ToolResul
   const clip = found.value;
   const written = await commitNotes(clip, clip.sourcePianoRoll.map((n) => ({ ...n })), args, program);
   if (!written.ok) return fail(written.error);
-  return done(`"${clip.label}" now plays GM program ${program}; its audio was re-rendered (${n2(written.value.duration)}s)${written.value.lengthNote}`);
+  return done(`"${clip.label}" now plays GM program ${program}; ${written.value.rendered ? `its audio was re-rendered (${n2(written.value.duration)}s)` : 'it plays live and renders when exported'}${written.value.lengthNote}`);
 }
 
 /* ── clip tempo + stretch ────────────────────────────────────────────────── */
@@ -761,6 +817,16 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
   if (!plan.ok) return fail(`stretch: ${plan.error}`);
   if (plan.value.kind === 'audio') return fail('audio stretch is a backend operation (T13)');
 
+  // A MIDI clip that plays live with no render takes the new tempo at once and
+  // renders when an export needs it (lib/midiRender).
+  if (!clip.audioBlob && voiceFor(clip).program !== undefined) {
+    const newBpm = (clip.sourceBpm ?? store().bpm) / plan.value.ratio;
+    const stretched = { ...clip, sourceBpm: newBpm };
+    const nominal = midiClipNominalSec(stretched, store().bpm);
+    oneStep(() => store().updateClip(clip.id, { sourceBpm: newBpm, offsetIntoSource: 0, sourceDuration: nominal, durationSec: nominal }));
+    return done(`Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)}: it plays live at ${newBpm.toFixed(1)} bpm, now ${n2(nominal)}s, and renders when exported`);
+  }
+
   let rendered: { blob: Blob; duration: number };
   try {
     const voice = voiceFor(clip);
@@ -776,7 +842,11 @@ export async function stretchClip(args: StretchArgs): Promise<ToolResult> {
   // a number the blob no longer matches. (`sourceBpm` is one of the rechecked
   // inputs, so the stale and current values are the same here.)
   const newBpm = (current.value.sourceBpm ?? store().bpm) / plan.value.ratio;
-  commitAudio(current.value, rendered.blob, rendered.duration, { sourceBpm: newBpm, ...renderedVoiceFields(voiceFor(current.value)) });
+  commitAudio(current.value, rendered.blob, rendered.duration, {
+    sourceBpm: newBpm,
+    ...renderedVoiceFields(voiceFor(current.value)),
+    renderSig: midiRenderSig({ ...current.value, sourceBpm: newBpm }),
+  });
   return done(
     `Stretched "${clip.label}" x${plan.value.ratio.toFixed(3)} — re-rendered at ${newBpm.toFixed(1)} bpm, now ${n2(rendered.duration)}s`,
   );
@@ -1323,6 +1393,7 @@ export async function bounceClip(args: BounceArgs): Promise<ToolResult> {
       args,
       undefined,
       flatten ? { sourceKind: 'audio', sourcePianoRoll: undefined, sourceTotalSteps: undefined } : {},
+      { render: 'always' },
     );
     if (!written.ok) return fail(written.error);
     return done(

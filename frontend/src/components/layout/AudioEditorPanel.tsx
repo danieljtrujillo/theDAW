@@ -50,6 +50,7 @@ import { REVEAL_CLIP_EVENT, type RevealClipDetail } from '../audio/clipDoubleCli
 import { useAppUiStore } from '../../state/appUiStore';
 import { useLibraryStore } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
+import { clipWithAudio } from '../../state/midiRenderQueue';
 import { logError } from '../../state/logStore';
 import {
   AUDIO_EDITOR_NUDGE_COARSE_SEC,
@@ -417,8 +418,9 @@ export const AudioEditorPanel: React.FC = () => {
     const player = usePlayerStore.getState();
     // Loading here is what guarantees ONE copy: playerStore drops the live
     // editor session and replaces whatever was in the transport.
-    void player
-      .load(clip.audioBlob, { label: `${clip.label} — clip` })
+    // A MIDI clip with no render is rendered first (state/midiRenderQueue).
+    void clipWithAudio(clip.id)
+      .then((withAudio) => player.load(withAudio.audioBlob as Blob, { label: `${clip.label} — clip` }))
       .then(() => {
         player.seek(readStart);
         player.play();
