@@ -58,7 +58,7 @@ assert.equal(setClipSourceBpm(clip, 300.1).ok, false, 'above 300 is refused');
 // The controls: each tempo field offers 20-300 and keeps what is typed in it.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 const g = globalThis as unknown as Record<string, unknown>;
-for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Node', 'Event', 'KeyboardEvent', 'MouseEvent', 'getComputedStyle', 'navigator']) {
+for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Node', 'Event', 'KeyboardEvent', 'MouseEvent', 'FocusEvent', 'getComputedStyle', 'navigator']) {
   Object.defineProperty(g, key, { value: (dom.window as unknown as Record<string, unknown>)[key], configurable: true, writable: true });
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
@@ -105,6 +105,103 @@ const valueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.
   const slider = host.querySelector('[aria-labelledby="g-gater-bpm"]') as HTMLElement;
   assert.ok(slider, 'the Gater BPM slider is labelled');
   assert.deepEqual([slider.getAttribute('aria-valuemin'), slider.getAttribute('aria-valuemax'), slider.getAttribute('aria-valuenow')], ['20', '300', '280']);
+  await act(async () => { root.unmount(); });
+}
+
+// Typing a tempo digit by digit, as a person does. Each field used to clamp every keystroke, so the
+// first digit of 95 or 140 was raised to 20 and the next digits landed after it (20 -> 205, 20 -> 204 -> 300).
+const typeDigits = async (field: HTMLInputElement, text: string) => {
+  for (const ch of text) {
+    await act(async () => {
+      valueSetter.call(field, field.value + ch);
+      field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+  }
+};
+const selectAll = async (field: HTMLInputElement) => {
+  await act(async () => {
+    valueSetter.call(field, '');
+    field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+};
+const blur = async (field: HTMLInputElement) => {
+  await act(async () => { field.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true })); });
+};
+const keyOn = async (field: HTMLInputElement, key: string) => {
+  await act(async () => { field.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true })); });
+};
+
+// AI COMPOSE: 140 typed reads 140; 5 then Enter clamps to 20.
+{
+  const host = doc.createElement('div');
+  doc.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(React.createElement(AiComposePopover, { currentBpm: 120, meterMap: [], pickupSteps: 0, onGenerated: () => undefined }));
+  });
+  await act(async () => { (doc.querySelector('[aria-label="AI compose"]') as HTMLElement).click(); });
+  const field = doc.getElementById('ai-compose-bpm') as HTMLInputElement;
+  await selectAll(field);
+  await typeDigits(field, '140');
+  assert.equal(field.value, '140', 'AI COMPOSE: 140 typed digit by digit');
+  await blur(field);
+  assert.equal(field.value, '140');
+  await selectAll(field);
+  await typeDigits(field, '5');
+  assert.equal(field.value, '5', 'an out-of-range draft stays while typing');
+  await keyOn(field, 'Enter');
+  assert.equal(field.value, '20', 'Enter clamps it to 20');
+  await act(async () => { root.unmount(); });
+}
+
+// Chimera's target BPM: 95 typed reads 95 and lands in the store; an emptied field is auto, as before.
+{
+  const { useGenerateParamsStore } = await import('../state/generateParamsStore.ts');
+  const { ChimeraControls } = await import('../components/chimera/ChimeraControls.tsx');
+  useGenerateParamsStore.getState().addChimeraClip({ name: 'a', path: 'a.wav', duration: 8 } as never);
+  useGenerateParamsStore.getState().setChimeraField('targetBpm', 120);
+  const host = doc.createElement('div');
+  doc.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => { root.render(React.createElement(ChimeraControls)); });
+  const field = doc.getElementById('chimera-target-bpm') as HTMLInputElement;
+  assert.ok(field, 'the Chimera row has its BPM field');
+  await selectAll(field);
+  await typeDigits(field, '95');
+  assert.equal(field.value, '95', 'Chimera: 95 typed digit by digit');
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 95);
+  await blur(field);
+  await selectAll(field);
+  await typeDigits(field, '400');
+  await blur(field);
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 300, 'blur clamps 400 to 300');
+  await selectAll(field);
+  await typeDigits(field, '9');
+  await keyOn(field, 'Escape');
+  assert.equal(field.value, '300', 'Escape drops the draft and shows the tempo in force');
+  await selectAll(field);
+  await blur(field);
+  assert.equal(useGenerateParamsStore.getState().chimera.targetBpm, 'auto', 'an emptied field is auto');
+  await act(async () => { root.unmount(); });
+}
+
+// The Step Sequencer's tempo: 140 typed reads 140.
+{
+  const { StepSequencer } = await import('../components/audio/StepSequencer.tsx');
+  const host = doc.createElement('div');
+  doc.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => { root.render(React.createElement(StepSequencer)); });
+  const field = doc.getElementById('step-seq-bpm') as HTMLInputElement;
+  assert.ok(field, 'the Step Sequencer has its tempo field');
+  assert.equal(doc.querySelector('label[for="step-seq-bpm"]')?.textContent?.trim(), 'Tempo (BPM)');
+  await selectAll(field);
+  await typeDigits(field, '140');
+  assert.equal(field.value, '140', 'Step Sequencer: 140 typed digit by digit');
+  await selectAll(field);
+  await typeDigits(field, '12');
+  await blur(field);
+  assert.equal(field.value, '20', 'blur clamps 12 to 20');
   await act(async () => { root.unmount(); });
 }
 

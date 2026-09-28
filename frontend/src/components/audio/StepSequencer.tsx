@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../../lib/tempoMap';
+import { useTempoField } from '../../lib/useTempoField';
 import {
   Target,
   Trash2, Sparkles, Plus, Activity,
@@ -328,6 +329,8 @@ export const StepSequencer: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [bpm, setBpm] = useState(128);
+  // Typing keeps a draft (lib/useTempoField); the pattern takes whole BPM.
+  const bpmField = useTempoField(bpm, (n) => setBpm(Math.round(n)));
   const [exportMode, setExportMode] = useState<'single' | 'multi'>('single');
   const [exportBars, setExportBars] = useState(2);
   const [isBouncing, setIsBouncing] = useState(false);
@@ -580,10 +583,9 @@ export const StepSequencer: React.FC = () => {
               id="step-seq-bpm"
               type="number"
               name="step-seq-bpm"
-              value={bpm}
+              {...bpmField}
               min={TEMPO_BPM_MIN}
               max={TEMPO_BPM_MAX}
-              onChange={(e) => setBpm(Math.round(clampTempoBpm(parseInt(e.target.value) || 120)))}
               className="bg-transparent border-none outline-none text-xs font-sans tabular-nums text-cyan-500 w-14 font-black"
             />
           </div>

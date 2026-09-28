@@ -1,6 +1,7 @@
 import React from 'react';
 import { Target, Layers } from 'lucide-react';
-import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../../lib/tempoMap';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
+import { useTempoField } from '../../lib/useTempoField';
 import {
   useGenerateParamsStore,
   type ChimeraAlignMode,
@@ -54,6 +55,20 @@ export const ChimeraControls: React.FC = () => {
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const clips = useGenerateParamsStore((s) => s.chimera.clips);
 
+  // Above the early return, so the hook runs on every render. Typing keeps a draft (lib/useTempoField):
+  // a tempo in range lands as it is typed, anything else on Enter or blur, clamped to 20-300. An
+  // emptied field means auto, as it always has.
+  const bpmField = useTempoField(
+    typeof targetBpm === 'number' ? targetBpm : '',
+    (bpm) => {
+      setChimeraField('targetBpm', bpm);
+      clips.forEach((c) => {
+        if (c.isBase) updateChimeraClip(c.id, { isBase: false });
+      });
+    },
+    { onEmpty: () => setChimeraField('targetBpm', 'auto') },
+  );
+
   if (clipsCount === 0) return null;
 
   const isAuto = targetBpm === 'auto';
@@ -66,18 +81,6 @@ export const ChimeraControls: React.FC = () => {
       clips.forEach((c) => {
         if (c.isBase) updateChimeraClip(c.id, { isBase: false });
       });
-    }
-  };
-
-  const onBpmChange = (raw: string) => {
-    const n = parseFloat(raw);
-    if (Number.isFinite(n) && n > 0) {
-      setChimeraField('targetBpm', clampTempoBpm(n));
-      clips.forEach((c) => {
-        if (c.isBase) updateChimeraClip(c.id, { isBase: false });
-      });
-    } else {
-      setChimeraField('targetBpm', 'auto');
     }
   };
 
@@ -100,9 +103,9 @@ export const ChimeraControls: React.FC = () => {
           max={TEMPO_BPM_MAX}
           step={0.1}
           disabled={isAuto}
-          value={isAuto ? '' : (typeof targetBpm === 'number' ? targetBpm : '')}
+          {...bpmField}
+          value={isAuto ? '' : bpmField.value}
           placeholder={isAuto ? 'auto' : ''}
-          onChange={(e) => onBpmChange(e.target.value)}
           className="compact-input w-16 disabled:opacity-40"
         />
         <button
