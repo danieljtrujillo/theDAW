@@ -59,6 +59,7 @@ from typing import Any, Mapping, NamedTuple, Optional, Sequence
 from backend.modules.library.db import LibraryDB, normalize_artifact_path
 
 from . import pdf_render
+from .grid import quantize_score
 from .midi_read import is_midi, read_score
 from .sheet_pitch import legacy_sounding_pitch, stamp_written_pitch
 from .tempo_marks import engrave_tempo_marks, restore_sounding_tempi
@@ -2217,7 +2218,7 @@ def _convert_to_abc(
         # move it, and its key, to the pitch it sounds.
         score.toSoundingPitch(inPlace=True)
         try:
-            score = score.quantize((4, 3), inPlace=False, recurse=True)
+            score = quantize_score(score)
         except Exception as exc:  # noqa: BLE001 - quantize is best-effort
             log.debug("notation: abc quantize skipped for %s: %s", source_path, exc)
         if is_midi(source_path):
@@ -2290,7 +2291,7 @@ def _convert_with_music21(
             restore_sounding_tempi(score, source_path)
             # Quantize raw transcriptions to clean, notatable rhythms. Best-effort.
             try:
-                score = score.quantize((4, 3), inPlace=False, recurse=True)
+                score = quantize_score(score)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug(
                     "notation: music21 quantize skipped for %s: %s", source_path, exc
