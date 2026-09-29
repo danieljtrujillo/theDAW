@@ -40,7 +40,7 @@ import { noteIndexOf, type NoteIndex } from '../../lib/noteIndex';
 import { hitNote, lookOf, noteBox, ROLL_LOOKS } from '../../lib/rollCanvas';
 import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
 import { bpmText, laneSpanLabel, rollHasAudioParts } from '../../lib/meterFace';
-import { midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
+import { chordBendLog, midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
 import { stepClock, type RollPlayState } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
@@ -1405,6 +1405,10 @@ export const importMidiFileToRoll = (file: File): void => {
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} tracks are in its last part`);
       if (done.pastEnd) logWarn('piano-roll', pastEndLog(done.pastEnd));
       if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
+      // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+      const chordBends = chordBendLog(file.name, done);
+      for (const line of chordBends.info) logInfo('piano-roll', line);
+      for (const line of chordBends.warn) logWarn('piano-roll', line);
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
     }

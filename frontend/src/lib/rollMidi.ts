@@ -14,6 +14,16 @@
  * file this module wrote comes back with its lanes in the same order. With no
  * bend every note is in lane A, as before.
  *
+ * A bent channel whose notes overlap (a transcriber's one channel, which puts
+ * each note's own bend on the wheel) is read note by note instead
+ * (noteBendsOfChannel): while one note sounds, the wheel is that note's own
+ * bend (its expression's start value and curve, at the channel's range);
+ * while several sound, the wheel would bend the whole chord, so it is left out
+ * and the chords play unbent. The import counts both (`noteBends`,
+ * `chordBends`) for its LOG line (chordBendLog). A file this module wrote
+ * keeps its lanes' curves as written: a lane's bend under a chord is the
+ * roll's own.
+ *
  * TIMING: notes travel on TICKS, not on the 16th grid. An export writes each
  * note's own `tick`/`ticks` at the file's PPQ, which is the roll's own 960
  * (ROLL_PPQ), so every tick goes out as the roll holds it and a septuplet or a
@@ -151,6 +161,8 @@ import {
   noteTicks,
   sanitizeLanes,
   ticksPerStep,
+  type NoteExpression,
+  type NoteExpressionPoint,
   type PianoNote,
   type RollControl,
   type RollMeter,
@@ -205,6 +217,21 @@ export interface RollMidiImport {
   tempoMap: TempoEvent[];
   /** The file's markers on the roll's clock (midiFileMarkers); none when it has none. */
   markers: RollMarker[];
+  /** Notes that took their channel's pitch wheel as their own bend (a channel whose notes overlap). */
+  noteBends: number;
+  /** Chords on such a channel that play unbent: the wheel was off centre while they sounded, and was left out. */
+  chordBends: number;
+}
+
+/** The LOG lines an import writes about a channel's wheel read note by note (RollMidiImport noteBends / chordBends). */
+export function chordBendLog(label: string, read: Pick<RollMidiImport, 'noteBends' | 'chordBends'>): { info: string[]; warn: string[] } {
+  const info = read.noteBends > 0
+    ? [`${read.noteBends} note${read.noteBends === 1 ? '' : 's'} of "${label}" took their channel's pitch bend as their own`]
+    : [];
+  const warn = read.chordBends > 0
+    ? [`"${label}": the pitch wheel moved under ${read.chordBends} chord${read.chordBends === 1 ? '' : 's'}; a wheel bends every note on its channel, so ${read.chordBends === 1 ? 'that bend was left out and the chord plays' : 'those bends were left out and the chords play'} unbent`]
+    : [];
+  return { info, warn };
 }
 
 /** The `theDAW:markers=` text of a roll's markers: each one's place (at the file's `ppq`), name, kind and origin. */
@@ -981,6 +1008,102 @@ function laneTracksToRoll(
   return { notes, lanes, bends: sanitizeBends(bends) };
 }
 
+/** How many of `notes` sound from each tick on, as [tick, count] steps; a note that ends where another starts ends first. */
+function soundingSteps(notes: readonly MidiNote[]): Array<[number, number]> {
+  const edges: Array<[number, number]> = [];
+  for (const n of notes) {
+    edges.push([n.tick, 1]);
+    edges.push([n.tick + Math.max(1, n.durationTicks), -1]);
+  }
+  edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const steps: Array<[number, number]> = [];
+  let on = 0;
+  for (const [tick, d] of edges) {
+    on += d;
+    if (steps.length && steps[steps.length - 1][0] === tick) steps[steps.length - 1][1] = on;
+    else steps.push([tick, on]);
+  }
+  return steps;
+}
+
+/** The index of the last item at or before `tick` in a list sorted by tick, or -1. */
+function lastAtOrBefore<T>(list: readonly T[], tickOf: (x: T) => number, tick: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (tickOf(list[mid]) <= tick) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+/**
+ * One channel's wheel read note by note (see the header): each note sounding
+ * alone takes the wheel as its own bend, a start value and a curve at ticks
+ * from its start on the file's clock, at the range in force on the channel at
+ * its start; while notes overlap, each of them holds 0 and the wheel is left
+ * out. Returns each note's expression (only for a note whose bend is not flat
+ * at 0), and how many chords (spans where notes overlap) the wheel was off
+ * centre under.
+ */
+function noteBendsOfChannel(
+  notes: readonly MidiNote[],
+  messages: readonly MidiBend[],
+  ranges: readonly MidiBendRange[],
+): { expr: Map<MidiNote, NoteExpression>; chords: number } {
+  const expr = new Map<MidiNote, NoteExpression>();
+  const steps = soundingSteps(notes);
+  const soundingAt = (tick: number): number => {
+    const i = lastAtOrBefore(steps, (c) => c[0], tick);
+    return i >= 0 ? steps[i][1] : 0;
+  };
+  const wheelAt = (tick: number): number => {
+    const i = lastAtOrBefore(messages, (m) => m.tick, tick);
+    return i >= 0 ? messages[i].value : BEND_CENTER;
+  };
+  // Each span where several notes sound, counted once when the wheel is off centre anywhere in it.
+  let chords = 0;
+  for (let i = 0; i < steps.length; i += 1) {
+    if (steps[i][1] < 2) continue;
+    let j = i;
+    while (j + 1 < steps.length && steps[j + 1][1] >= 2) j += 1;
+    const start = steps[i][0];
+    const end = j + 1 < steps.length ? steps[j + 1][0] : Infinity;
+    let bent = wheelAt(start) !== BEND_CENTER;
+    for (let k = lastAtOrBefore(messages, (m) => m.tick, start) + 1; !bent && k < messages.length && messages[k].tick < end; k += 1) {
+      bent = messages[k].value !== BEND_CENTER;
+    }
+    if (bent) chords += 1;
+    i = j;
+  }
+  for (const n of notes) {
+    const start = n.tick;
+    const end = n.tick + Math.max(1, n.durationTicks);
+    // Every tick inside the note where its bend can change: a wheel message, or another note starting or ending.
+    const ticks = new Set<number>();
+    for (let k = lastAtOrBefore(messages, (m) => m.tick, start) + 1; k < messages.length && messages[k].tick < end; k += 1) ticks.add(messages[k].tick);
+    for (let k = lastAtOrBefore(steps, (c) => c[0], start) + 1; k < steps.length && steps[k][0] < end; k += 1) ticks.add(steps[k][0]);
+    const valueAt = (tick: number): number => (soundingAt(tick) === 1 ? bendRawToValue(wheelAt(tick)) : 0);
+    const first = valueAt(start);
+    const curve: NoteExpressionPoint[] = [];
+    let last = first;
+    for (const tick of [...ticks].sort((a, b) => a - b)) {
+      const v = valueAt(tick);
+      if (v === last) continue;
+      curve.push({ tick: tick - start, value: v });
+      last = v;
+    }
+    if (first === 0 && curve.length === 0) continue;
+    expr.set(n, {
+      pitchBend: first,
+      bendRange: Math.min(MAX_BEND_RANGE, rangeAt(ranges, start)),
+      ...(curve.length ? { curves: { pitchBend: curve } } : {}),
+    });
+  }
+  return { expr, chords };
+}
+
 /** Where an imported note came from: its track in the file and its channel (0-15). */
 interface NoteOrigin {
   track: number;
@@ -1016,15 +1139,32 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
   // A file the roll wrote with its lanes gives every lane back.
   if (data.tracks.some((t) => parseLaneMeta(t.laneMeta))) {
     const own = laneTracksToRoll(data, ppq, idPrefix, wheel, ranges, origins);
-    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap, markers };
+    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap, markers, noteBends: 0, chordBends: 0 };
   }
 
   const raw = data.tracks.flatMap((t) => t.notes);
   const rawTrack = data.tracks.flatMap((t, k) => t.notes.map(() => k));
   const noteChannels = [...new Set(raw.map((n) => n.channel))];
+  const wheelMoves = (ch: number): boolean => (wheel.get(ch) ?? []).some((b) => b.value !== BEND_CENTER);
+  // A bent channel whose notes overlap, in a file the roll did not write, is read note by note (noteBendsOfChannel).
+  const rollWrote = data.tracks.some((t) => parsePartMeta(t.partMeta) !== null);
+  const byNote = new Map<MidiNote, NoteExpression>();
+  const perNote = new Set<number>();
+  let chordBends = 0;
+  if (!rollWrote) {
+    for (const ch of noteChannels) {
+      if (!wheelMoves(ch)) continue;
+      const own = raw.filter((n) => n.channel === ch && !n.expr).sort((a, b) => a.tick - b.tick);
+      if (!soundingSteps(own).some(([, on]) => on > 1)) continue;
+      perNote.add(ch);
+      const read = noteBendsOfChannel(own, wheel.get(ch) ?? [], ranges.get(ch) ?? []);
+      for (const [n, e] of read.expr) byNote.set(n, e);
+      chordBends += read.chords;
+    }
+  }
   // A channel whose wheel leaves the centre bends, the lowest MAX_BENT_LANES of them; the rest play unbent in the shared lane.
   const bent = noteChannels
-    .filter((ch) => (wheel.get(ch) ?? []).some((b) => b.value !== BEND_CENTER))
+    .filter((ch) => wheelMoves(ch) && !perNote.has(ch))
     .sort((a, b) => a - b)
     .slice(0, MAX_BENT_LANES);
   const plain = noteChannels.filter((ch) => !bent.includes(ch));
@@ -1049,6 +1189,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
       const ticks = Math.max(MIN_NOTE_TICKS, Math.round(n.durationTicks * toModel));
       const id = `${idPrefix}-${stamp}-${i}`;
       origins?.set(id, { track: rawTrack[i], channel: n.channel });
+      const own = n.expr ?? byNote.get(n);
       return {
         id,
         note: n.note,
@@ -1059,7 +1200,8 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
         ticks,
         ...(lane > 0 ? { lane } : {}),
         ...(n.articulation ? { articulation: n.articulation } : {}),
-        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
+        // An MPE note's own expression, or the bend its channel's wheel gave it while it sounded alone.
+        ...(own ? { expr: scaleExpressionTicks(own, toModel) } : {}),
       };
     })
     .sort((a, b) => a.step - b.step);
@@ -1070,7 +1212,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
       g.bent ? [{ lane: id, ...channelBend(wheel.get(g.first) ?? [], ranges.get(g.first) ?? [], stepTicks, `bp${id}`) }] : [],
     ),
   );
-  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap, markers };
+  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap, markers, noteBends: byNote.size, chordBends };
 }
 
 /** One part of an imported file: the part's fields and its notes. */
@@ -1237,5 +1379,14 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: 
       notes,
     };
   });
-  return { bpm: read.bpm, meter: read.meter, bends: read.bends, tempoMap: read.tempoMap, markers: read.markers, parts };
+  return {
+    bpm: read.bpm,
+    meter: read.meter,
+    bends: read.bends,
+    tempoMap: read.tempoMap,
+    markers: read.markers,
+    noteBends: read.noteBends,
+    chordBends: read.chordBends,
+    parts,
+  };
 }

@@ -36,7 +36,7 @@ import { clipVoice, isPercussionTrack, type ClipVoice, type GlobalVoice } from '
 import type { MidiFileData } from './midi';
 import { midiFileClipFields, rollPartRef } from './rollClip';
 import { clipOwnTimelineMarkers } from './rollMarkers';
-import { midiFileToRollParts, type RollMidiPart } from './rollMidi';
+import { chordBendLog, midiFileToRollParts, type RollMidiPart } from './rollMidi';
 import { stepClock } from './rollTempo';
 import { PERCUSSION_PART_CHANNEL, makeRollTrack } from './rollTracks';
 
@@ -110,6 +110,9 @@ export interface MidiClipPlaced {
   movedFrom: string | null;
   /** The blank track pointed at was turned to the file's kind (a drum track, or a melodic one). */
   turned: boolean;
+  /** Notes that took their channel's pitch wheel as their own bend, and chords whose wheel was left out (lib/rollMidi). */
+  noteBends: number;
+  chordBends: number;
 }
 
 /** A track with nothing of its own to lose: no clips, no program, no instrument plugin, not a MIDI-out-only track or a folder. */
@@ -127,7 +130,8 @@ const docUid = (): string =>
 export function placeMidiFileClip(data: MidiFileData, opts: MidiClipPlaceOptions, deps: { global: () => GlobalVoice }): MidiClipPlaced | null {
   const fields = midiFileClipFields(data, 'imp');
   if (fields.sourcePianoRoll.length === 0) return null;
-  const file = midiFileVoice(midiFileToRollParts(data, 'imp', { stem: opts.stem ?? opts.label }).parts);
+  const read = midiFileToRollParts(data, 'imp', { stem: opts.stem ?? opts.label });
+  const file = midiFileVoice(read.parts);
   const bpm = fields.sourceBpm;
   // The clip's length under the file's own tempo changes.
   const durationSec = stepClock(bpm, fields.sourceTempoMap).at(fields.sourceTotalSteps);
@@ -204,6 +208,8 @@ export function placeMidiFileClip(data: MidiFileData, opts: MidiClipPlaceOptions
     newTrack: !(pointed && (fits || turnable)),
     movedFrom: pointed && !fits && !turnable ? pointed.name : null,
     turned: turnable,
+    noteBends: read.noteBends,
+    chordBends: read.chordBends,
   };
 }
 
@@ -215,7 +221,10 @@ export function midiClipPlacedReport(done: MidiClipPlaced, label: string, startS
       + (done.voice.program !== undefined ? 'it plays live and renders when exported' : 'rendering its audio (it has no instrument to play live)'),
   ];
   if (done.turned) info.push(`"${done.trackName}" is a ${done.file.percussion ? 'drum' : 'melodic'} track now, for the ${kind} notes of "${label}"`);
-  const warn: string[] = [];
+  // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+  const bends = chordBendLog(label, done);
+  info.push(...bends.info);
+  const warn: string[] = [...bends.warn];
   if (done.movedFrom) {
     warn.push(`"${label}" is a ${kind} part and "${done.movedFrom}" plays ${done.file.percussion ? 'pitched notes' : 'drums'}, so it went on a new track`);
   }

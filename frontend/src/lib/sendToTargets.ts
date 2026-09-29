@@ -21,7 +21,7 @@ import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
-import { midiFileToRoll } from './rollMidi';
+import { chordBendLog, midiFileToRoll } from './rollMidi';
 import { KEPT_DOCUMENT_LOG, importMidiParts, pastEndLog } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
@@ -175,7 +175,8 @@ export function loadMidiIntoPianoRoll(
     // Every track's notes, and the file's time signatures set the roll's meter (a file with no FF 58 is
     // 4/4 by the MIDI spec). A channel whose pitch wheel moves gets its own lane and curve; every other
     // note is in lane A (lib/rollMidi).
-    const { notes, bpm, meter, bends, tempoMap, markers } = midiFileToRoll(midi, 'pn');
+    const read = midiFileToRoll(midi, 'pn');
+    const { notes, bpm, meter, bends, tempoMap, markers } = read;
     if (notes.length === 0) {
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
@@ -202,6 +203,10 @@ export function loadMidiIntoPianoRoll(
     // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
     if (kept) logInfo('send-to', KEPT_DOCUMENT_LOG);
     if (parts?.pastEnd) logWarn('send-to', pastEndLog(parts.pastEnd));
+    // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+    const chordBends = chordBendLog(labelForLog, read);
+    for (const line of chordBends.info) logInfo('send-to', line);
+    for (const line of chordBends.warn) logWarn('send-to', line);
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);

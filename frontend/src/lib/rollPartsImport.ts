@@ -127,7 +127,7 @@ export function importMidiParts(
   data: MidiFileData,
   idPrefix = 'imp',
   opts: PartsImportOptions = {},
-): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number } {
+): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number; noteBends: number; chordBends: number } {
   const file = midiFileToRollParts(data, idPrefix, { stem: opts.stem });
   // The file's markers (FF 06) are the new document's; a roll that keeps its document keeps its own.
   const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap, file.markers, opts);
@@ -137,6 +137,9 @@ export function importMidiParts(
     tempoChanges: file.tempoMap.length - 1,
     meterMap: file.meter.meterMap,
     bentLanes: file.bends.filter((b) => b.points.length).length,
+    // A channel's wheel under chords, read note by note (lib/rollMidi chordBendLog says it in the LOG).
+    noteBends: file.noteBends,
+    chordBends: file.chordBends,
   };
 }
 
