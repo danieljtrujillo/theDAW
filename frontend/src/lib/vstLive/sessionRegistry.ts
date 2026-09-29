@@ -188,8 +188,12 @@ export interface VstSessionRegistry {
   forget(entryId: string): void;
   /** The entry is gone: shut the host down now. */
   close(entryId: string): void;
-  /** Project close / page unload. */
-  closeAll(): void;
+  /**
+   * Project close / page unload. `keepHeldBy` spares every session that holder
+   * holds: EDIT going away closes EDIT's plugins, while a piano-roll part's
+   * instrument (held by ROLL_HOLDER) keeps playing in the MIDI tab.
+   */
+  closeAll(opts?: { keepHeldBy?: string }): void;
   /** Reconnect an errored session NOW rather than waiting out its backoff —
    *  what the FX row's retry control does. Also re-opens a slot whose session
    *  never started (no host binary yet, or a refused spawn), re-probing the
@@ -692,8 +696,12 @@ export function createVstSessionRegistry(deps: VstSessionRegistryDeps = {}): Vst
       shutdown(entryId, slot);
     },
 
-    closeAll() {
-      for (const [id, slot] of [...slots]) shutdown(id, slot);
+    closeAll(opts) {
+      const keep = opts?.keepHeldBy;
+      for (const [id, slot] of [...slots]) {
+        if (keep !== undefined && slot.holders.has(keep)) continue;
+        shutdown(id, slot);
+      }
     },
 
     retry(entryId) {

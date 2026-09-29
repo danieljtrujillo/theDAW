@@ -38,9 +38,18 @@
  *                    {type:'stats', underruns, overflows}
  *   node -> worklet  {type:'processed', seq, frames, channels:[Float32Array]}
  *                    {type:'transport', playing, positionSamples, tempoBpm,
- *                     discontinuity}
+ *                     discontinuity, atTime?, freeRun?}
  *                    {type:'live', live:boolean}
  *                    {type:'audio-port', port:MessagePort}
+ *
+ * `atTime` (context seconds) is the time `positionSamples` holds at: the
+ * position the next quantum starts on is `positionSamples` plus the frames
+ * between `atTime` and that quantum, however late the message lands, so a
+ * position the main thread computed for a moment ahead is exact.
+ * `freeRun` advances the position every quantum even while `playing` is false,
+ * so MIDI stamped on the position (a piano-roll part auditioned with its
+ * transport stopped) still plays on time. Both are absent from EDIT's
+ * transport, which holds the position while stopped, as it always did.
  *
  * `audio-port` is how the audio leaves the main thread. The node hands over one
  * end of a channel whose other end belongs to the bridge WORKER, and from then
@@ -104,6 +113,10 @@ class VstBridgeProcessor extends AudioWorkletProcessor {
     this.position = 0;
     this.tempo = 0;
     this.pendingDiscontinuity = false;
+    /** Advance the position while stopped too (the transport message's `freeRun`). */
+    this.freeRun = false;
+    /** A position to take at the next quantum: {pos, atTime} (see the port protocol's `atTime`). */
+    this.anchor = null;
 
     // ── scratch buffers (never allocated inside process()) ───────────────
     this.wetBuf = [];
@@ -145,8 +158,17 @@ class VstBridgeProcessor extends AudioWorkletProcessor {
     }
     if (msg.type === 'transport') {
       this.playing = !!msg.playing;
+      this.freeRun = !!msg.freeRun;
       this.tempo = Number.isFinite(msg.tempoBpm) ? msg.tempoBpm : 0;
-      if (Number.isFinite(msg.positionSamples)) this.position = msg.positionSamples;
+      if (Number.isFinite(msg.positionSamples)) {
+        // With `atTime` the position is taken at the next quantum, run on by the
+        // time since `atTime` (process() below), so it lands exactly.
+        if (Number.isFinite(msg.atTime)) this.anchor = { pos: msg.positionSamples, atTime: msg.atTime };
+        else {
+          this.anchor = null;
+          this.position = msg.positionSamples;
+        }
+      }
       if (msg.discontinuity) {
         // Start / seek / loop wrap: the host calls the plugin's reset(), and
         // anything already queued belongs to the old timeline.
@@ -288,6 +310,14 @@ class VstBridgeProcessor extends AudioWorkletProcessor {
     const inL = input && input[0] ? input[0] : null;
     const inR = input && input[1] ? input[1] : inL;
 
+    // 0. A position anchored at a context time: where the clock is at this
+    //    quantum's first frame (`currentTime` is that frame's time).
+    if (this.anchor) {
+      const running = this.playing || this.freeRun;
+      this.position = this.anchor.pos + (running ? Math.round((currentTime - this.anchor.atTime) * sampleRate) : 0);
+      this.anchor = null;
+    }
+
     // 1. Write the dry signal into the delay line and the block accumulator.
     const len = this.ringLen;
     let w = this.ringWrite;
@@ -342,7 +372,7 @@ class VstBridgeProcessor extends AudioWorkletProcessor {
     this.blend = blend;
 
     // 4. Advance the timeline and report.
-    if (this.playing) this.position += n;
+    if (this.playing || this.freeRun) this.position += n;
     this.statsTick += 1;
     if (this.statsTick >= STATS_EVERY) {
       this.statsTick = 0;
