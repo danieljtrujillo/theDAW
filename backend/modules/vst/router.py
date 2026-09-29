@@ -1072,6 +1072,9 @@ async def process_file(
 
     try:
         # Off the event loop: the worker runs as long as the plugin takes.
+        # The automation keyword goes only where there is automation, so the
+        # plain call keeps its six-argument shape.
+        automation_kw = {"automation": param_automation} if param_automation else {}
         processed = await asyncio.to_thread(
             process_with_plugin,
             plugin_path,
@@ -1080,7 +1083,7 @@ async def process_file(
             param_map,
             raw_state or None,
             warnings,
-            automation=param_automation or None,
+            **automation_kw,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
