@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +26,14 @@ from backend.modules.library.db import LibraryDB
 from .engine import MidiHint, convert_to_midi, hint_for_stem, role_for_stem
 
 log = logging.getLogger(__name__)
+
+#: The tempo range (BPM) a song's MIDI is stamped with. The analysis reads
+#: aubio's closing tempo estimate, which a fade or a long tail can drag
+#: anywhere (one entry read 40.69 on a beat list half a second apart); a
+#: tempo outside this range is a failed estimate, and the stamp is taken from
+#: the beat list instead.
+SANE_BPM_MIN = 50.0
+SANE_BPM_MAX = 220.0
 
 
 def _mirror_as_notation_artifact(db: LibraryDB, entry_id: str) -> None:
@@ -170,11 +180,29 @@ def convert_entry(
     }
 
 
+def _sane_bpm(bpm: Optional[float]) -> bool:
+    return bpm is not None and SANE_BPM_MIN <= bpm <= SANE_BPM_MAX
+
+
+def _bpm_from_beats(beats: list[float]) -> Optional[float]:
+    """The tempo the beat list itself keeps: 60 over the median gap between
+    beats. ``None`` for fewer than three beats or no forward gap."""
+    gaps = [b - a for a, b in zip(beats, beats[1:]) if b > a]
+    if len(gaps) < 2:
+        return None
+    return 60.0 / statistics.median(gaps)
+
+
 def _analysis_tempo_map(
     db: LibraryDB, entry_id: str
 ) -> tuple[Optional[float], list[float]]:
     """``(bpm, beats)`` from the entry's analysis row; ``(None, [])`` when
-    the entry has not been analysed or the row is malformed."""
+    the entry has not been analysed or the row is malformed.
+
+    The row's BPM is used when it lies in ``SANE_BPM_MIN``-``SANE_BPM_MAX``.
+    Otherwise (or when the row has none) the tempo comes from the beat list,
+    when that lies in the range; when neither does, no tempo is stamped and
+    the beats are not used for the drum grid either."""
     try:
         row = db.get_analysis(entry_id)
     except Exception as e:
@@ -195,7 +223,34 @@ def _analysis_tempo_map(
         beats = [float(b) for b in parsed if b is not None]
     except (TypeError, ValueError):
         beats = []
-    return bpm, beats
+    beats = [b for b in beats if math.isfinite(b)]
+
+    if _sane_bpm(bpm):
+        return bpm, beats
+    from_beats = _bpm_from_beats(sorted(beats))
+    if _sane_bpm(from_beats):
+        if bpm is not None:
+            log.info(
+                "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f; "
+                "stamping %.2f BPM from its beat list",
+                entry_id,
+                bpm,
+                SANE_BPM_MIN,
+                SANE_BPM_MAX,
+                from_beats,
+            )
+        return from_beats, beats
+    if bpm is not None:
+        log.warning(
+            "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f and "
+            "its beat list gives no tempo inside it; its MIDI keeps no tempo "
+            "from the analysis",
+            entry_id,
+            bpm,
+            SANE_BPM_MIN,
+            SANE_BPM_MAX,
+        )
+    return None, []
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:
