@@ -203,6 +203,21 @@ const bufferOf = (s: WavSamples): AudioBuffer => {
 };
 
 /**
+ * How long a printed stem lasts on the timeline, in seconds: the extent of the
+ * clips it was rendered from (`extentSec`), or the whole print when a plugin
+ * host rang out past them. A whole-timeline bounce grows to hold that tail (see
+ * the header), and a freeze that cut the stem back to its clips' extent would
+ * drop the ring-out that live playback lets ring. A render is rounded up to a
+ * whole frame, which is not a tail.
+ */
+export function printedStemSec(
+  extentSec: number,
+  buffer: Pick<AudioBuffer, 'length' | 'sampleRate' | 'duration'>,
+): number {
+  return buffer.length > Math.ceil(extentSec * buffer.sampleRate) ? buffer.duration : extentSec;
+}
+
+/**
  * Render `req` over `deps` with every enabled VST3 insert on every track, every
  * bus and the master VST chain printed in its place (see the header). Resolves
  * null when `isCancelled` said yes; rejects with the host's own words when a

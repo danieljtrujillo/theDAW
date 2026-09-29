@@ -23,10 +23,10 @@ import type { AudioClip, EditorBus, EditorTrack } from '../../state/editorStore.
 import type { ChainEntry } from '../../state/effectChainStore.ts';
 import { addBus, emptyGraph, ensureTrackNode, setOutput, type RoutingGraph } from '../../state/routingGraph.ts';
 import type { ChainHandle } from '../rackEffects.ts';
-import { renderBounce, type BounceRequest, type RenderDeps } from '../renderCore.ts';
+import { renderBounce, renderExtentSec, type BounceRequest, type RenderDeps } from '../renderCore.ts';
 import { readWavSamples, writeFloatWav } from '../wavSamples.ts';
 import {
-  printSites, renderWithInserts, splitAtInserts,
+  printedStemSec, printSites, renderWithInserts, splitAtInserts,
   type InsertPrintOptions, type InsertPrintResult, type VstHop,
 } from './insertPrint.ts';
 import type { RenderRange } from './renderRange.ts';
@@ -646,6 +646,36 @@ async function aStemPrintsItsChainInOrder(): Promise<void> {
   assert.deepEqual(h.hops.map((x) => x.entry.id), ['V1']);
 }
 
+/* ── 12. A frozen track holds the tail its plugin rang out ─────────────────── */
+
+async function aFrozenTrackHoldsItsPluginTail(): Promise<void> {
+  // A track freeze prints its stem and lays it on the timeline for as long as
+  // `printedStemSec` says. Cut at the clips' extent, a reverb that rang past
+  // the last clip in theDAW's own host was dropped from the frozen track while
+  // live playback let it ring.
+  const stem = request({ scope: { kind: 'track', trackId: 't1' }, includeAutomation: false, includeTrackMix: false });
+  const ringing = harness({
+    tracks: [track({ id: 't1', fxChain: [fx('A', 1, 0), vst('Verb', 1, 0, 500)] })],
+    clips: [{ id: 'c1', trackId: 't1', value: 1 }],
+  });
+  const extent = renderExtentSec(ringing.deps.clips, stem.scope);
+  assert.equal(extent, 2, 'the clip ends at 2 s');
+  const rang = await print(ringing, stem);
+  assert.equal(rang.buffer.length, 2 * SR + 500, 'the print holds the half second the host rang out');
+  near(printedStemSec(extent, rang.buffer), 2.5, 'the frozen stem lasts as long as its print');
+
+  // A clip that ends part way through a frame: the render rounds its length
+  // up to a whole frame, and that is not a tail.
+  const dry = harness({
+    tracks: [track({ id: 't1', fxChain: [vst('Dry', 1, 0)] })],
+    clips: [{ id: 'c1', trackId: 't1', value: 1, durationSec: 2.0004 }],
+  });
+  const dryExtent = renderExtentSec(dry.deps.clips, stem.scope);
+  const plain = await print(dry, stem);
+  assert.equal(plain.buffer.length, 2 * SR + 1);
+  assert.equal(printedStemSec(dryExtent, plain.buffer), dryExtent, 'no tail: the stem lasts exactly as long as its clips, as before');
+}
+
 async function main(): Promise<void> {
   await aTrackChainPrintsEveryPluginOnceInChainOrder();
   await aBusPrintsWhatItsTracksPrinted();
@@ -658,6 +688,7 @@ async function main(): Promise<void> {
   await aCancelStopsBetweenHops();
   await sitesAreUpstreamFirstAndOnlyWhereAudible();
   await aStemPrintsItsChainInOrder();
+  await aFrozenTrackHoldsItsPluginTail();
   console.log('insertPrint: ok');
 }
 

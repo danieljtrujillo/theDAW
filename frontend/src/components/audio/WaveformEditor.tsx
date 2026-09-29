@@ -63,7 +63,7 @@ import { useAppUiStore } from '../../state/appUiStore';
 import { captureLiveVstStates, useVstEditorStore } from '../../state/vstEditorStore';
 import type { ChainEntry, VstNode } from '../../state/effectChainStore';
 import { processFileThroughVst, renderInstrumentTrack, type Vst3PluginInfo } from '../../lib/vstClient';
-import { printsThroughHost, renderWithInserts, type InsertPrintResult, type VstHop } from '../../lib/render/insertPrint';
+import { printedStemSec, printsThroughHost, renderWithInserts, type InsertPrintResult, type VstHop } from '../../lib/render/insertPrint';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
@@ -1053,6 +1053,8 @@ const runStemJob = async (
     return { blob: file, durationSec: rendered.duration };
   }
 
+  // The clips' extent, or the whole print when a plugin rang out past them.
+  const heldSec = printedStemSec(durationSec, rendered);
   let peaks: Float32Array | undefined;
   if (apply) {
     ({ peaks } = await computePeaks(file, 240));
@@ -1060,11 +1062,11 @@ const runStemJob = async (
   onProgress(total, total);
   if (isCancelled()) return {};
   if (apply) {
-    useEditorStore.getState().freezeTrack(trackId, { audioBlob: file, durationSec, peaks });
+    useEditorStore.getState().freezeTrack(trackId, { audioBlob: file, durationSec: heldSec, peaks });
     liveMixer.reactivate();
     logInfo('editor', 'Track frozen — VST FX printed into the stem.');
   }
-  return { blob: file, durationSec: apply ? durationSec : rendered.duration, peaks };
+  return { blob: file, durationSec: apply ? heldSec : rendered.duration, peaks };
 };
 
 /**
