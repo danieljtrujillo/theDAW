@@ -42,6 +42,7 @@ import numpy as np
 from backend.lib import paths
 from backend.lib.launch_token import child_env
 from backend.modules.vst import plugin_worker as worker
+from backend.modules.vst.param_automation import ParamAutomation
 
 log = logging.getLogger(__name__)
 
@@ -282,13 +283,22 @@ def process_with_plugin(
     params: dict[str, float] | None = None,
     raw_state: str | bytes | None = None,
     warnings: list[str] | None = None,
+    automation: list[ParamAutomation] | None = None,
 ) -> np.ndarray:
     """``host.process_with_plugin`` in a worker: audio through one effect,
-    loaded fresh with its captured state and parameters, then discarded."""
+    loaded fresh with its captured state and parameters, then discarded.
+    ``automation`` moves its parameters while the audio plays."""
     frames = int(np.shape(audio)[0]) if np.ndim(audio) else 0
+    job: dict[str, Any] = {
+        "kind": "process",
+        "sample_rate": int(sample_rate),
+        "params": params,
+    }
+    if automation:
+        job["automation"] = [a.to_host_json() for a in automation]
     return _run_job(
         plugin_path,
-        {"kind": "process", "sample_rate": int(sample_rate), "params": params},
+        job,
         {worker.INPUT_AUDIO_FILE: np.asarray(audio)},
         raw_state,
         warnings,

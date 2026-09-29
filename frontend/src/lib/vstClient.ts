@@ -6,6 +6,7 @@
 import { delJson, describeApiError, getJson, pairingHeaderFor, postJson } from './apiJson';
 import { parseInstrumentRender, type InstrumentRenderResult, type InstrumentRenderTrack } from './vstInstrumentMidi';
 import { editorWindowsSuppressed, OFFLINE_EDITOR_SUPPRESSED_LOG } from './vstLive/editorWindowSwitch';
+import type { HostParamAutomation } from './render/vstParamAutomation';
 
 export interface Vst3PluginInfo {
   /** The bundle/file stem. Always present, because it costs nothing to read —
@@ -186,6 +187,12 @@ export interface VstHopPlugin {
  * names, and theDAW's render host loads the first one when it is given no
  * name, so a print without it could run a different plugin from the one heard.
  *
+ * `automation` is the plugin's automated parameters over this file
+ * (lib/render/vstParamAutomation); the backend moves them block by block as it
+ * renders. Their indices are the live host's own list, so an automated plugin
+ * with no captured state at all prints through that host: no state stands in
+ * the way, and the host is the one whose parameter numbers the lanes name.
+ *
  * A failure rejects in the backend's own words and is not retried through the
  * other host: a silent fall back would print a state that host cannot read and
  * report a clean render of the wrong sound. What the plugin did not take (a
@@ -196,7 +203,11 @@ export async function processFileThroughVst(
   file: Blob,
   vst: VstHopPlugin,
   name: string,
-  opts: { onWarning?: (warning: string) => void; fetchImpl?: typeof fetch } = {},
+  opts: {
+    onWarning?: (warning: string) => void;
+    fetchImpl?: typeof fetch;
+    automation?: readonly HostParamAutomation[];
+  } = {},
 ): Promise<File> {
   const url = '/api/vst/process-file';
   const form = new FormData();
@@ -205,7 +216,9 @@ export async function processFileThroughVst(
   if (vst.plugin_name) form.append('plugin_name', vst.plugin_name);
   form.append('params', '{}');
   if (vst.raw_state) form.append('raw_state', vst.raw_state);
-  if (vst.state_host === 'thedaw') form.append('state_host', 'thedaw');
+  const automated = (opts.automation?.length ?? 0) > 0;
+  if (vst.state_host === 'thedaw' || (automated && !vst.raw_state)) form.append('state_host', 'thedaw');
+  if (automated) form.append('automation', JSON.stringify(opts.automation));
   // pairingHeaderFor: a device opened from the Mobile Access share link renders
   // through the same route, paired; {} on this machine's own UI.
   const res = await (opts.fetchImpl ?? fetch)(url, { method: 'POST', body: form, headers: pairingHeaderFor(url) });

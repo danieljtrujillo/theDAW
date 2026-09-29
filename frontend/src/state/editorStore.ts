@@ -507,21 +507,60 @@ export interface EditorBus {
    scheduler for a MIDI track's controller (trackMidiCc: the controller's
    changes on every channel the track's MIDI plays on, lib/editMidiScheduler,
    written into the arrangement's MIDI export, lib/arrangementMidi). */
-export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx' | 'trackMidiCc';
+export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx' | 'trackMidiCc' | 'busFx';
+
+/** The kinds whose target is one parameter of one insert: a track's, a bus's or the master's. */
+export const FX_AUTOMATION_KINDS: readonly AutomationTargetKind[] = ['trackFx', 'busFx', 'masterFx'];
+
+/** True for a target that names an insert's parameter (trackFx, busFx, masterFx). */
+export const isFxAutomationKind = (kind: AutomationTargetKind): boolean => FX_AUTOMATION_KINDS.includes(kind);
 
 export interface AutomationTarget {
   kind: AutomationTargetKind;
-  /** Set for trackVolume / trackPan / trackFx / trackMidiCc. */
+  /**
+   * The routing node the lane writes to: the track for trackVolume / trackPan /
+   * trackFx / trackMidiCc, and the BUS for busFx. Track ids and bus ids share
+   * one namespace (both are the routing graph's node ids), which is why
+   * `removeBus` and `removeTrack` prune lanes by this one field.
+   */
   trackId?: string;
-  /** ChainEntry id, set for trackFx / masterFx. */
+  /** ChainEntry id, set for trackFx / busFx / masterFx. A masterFx entry sits in
+   *  the master rack or in the master VST chain; the id says which. */
   entryId?: string;
   /**
-   * Effect param key, set for trackFx / masterFx. For trackMidiCc it is the
-   * controller number as a string ('74'), one a roll part keeps (lib/rollTracks
+   * Effect param key, set for trackFx / busFx / masterFx: a rack effect's own
+   * key, or `p<index>` for a hosted VST3's parameter (its index in the
+   * plugin's own list, lib/vstLive). For trackMidiCc it is the controller
+   * number as a string ('74'), one a roll part keeps (lib/rollTracks
    * PART_CONTROLLERS), so the lane saves and reloads through the same field.
    */
   paramKey?: string;
 }
+
+/** The index of the hosted-plugin parameter a `p<index>` key names, or null for any other key. */
+export const vstParamIndexOfKey = (paramKey: string | undefined): number | null => {
+  const m = /^p(\d+)$/.exec(paramKey ?? '');
+  return m ? Number(m[1]) : null;
+};
+
+/**
+ * The insert an FX lane writes to, wherever it sits: a track's rack, a bus's
+ * rack, the master rack or the master VST chain. Undefined for a target that is
+ * not an FX kind, or whose owner or entry is gone.
+ */
+export const automationEntryFor = (
+  s: Pick<EditorStoreState, 'tracks' | 'buses' | 'masterFxChain' | 'masterVstChain'>,
+  target: AutomationTarget,
+): ChainEntry | undefined => {
+  const { kind, trackId, entryId } = target;
+  if (!entryId) return undefined;
+  if (kind === 'trackFx') return s.tracks.find((t) => t.id === trackId)?.fxChain?.find((e) => e.id === entryId);
+  if (kind === 'busFx') return s.buses.find((b) => b.id === trackId)?.fxChain.find((e) => e.id === entryId);
+  if (kind === 'masterFx') {
+    return s.masterFxChain.find((e) => e.id === entryId) ?? s.masterVstChain.find((e) => e.id === entryId);
+  }
+  return undefined;
+};
 
 /** The automation target of MIDI track `trackId`'s controller `controller` (0-127 values). */
 export const midiCcTarget = (trackId: string, controller: number): AutomationTarget => ({
@@ -866,7 +905,7 @@ const writeHoldSpan = (
 /** The value a parameter is actually sitting at, for a lane that has no points to
  *  sample. Null when the target no longer resolves (a deleted track or FX entry). */
 const storedValueForTarget = (
-  s: Pick<EditorStoreState, 'tracks' | 'masterFxChain'>,
+  s: Pick<EditorStoreState, 'tracks' | 'buses' | 'masterFxChain' | 'masterVstChain'>,
   target: AutomationTarget,
 ): number | null => {
   const { kind, trackId, entryId, paramKey } = target;
@@ -882,10 +921,7 @@ const storedValueForTarget = (
     return partController(cc)?.initial ?? 0;
   }
   if (!entryId || !paramKey) return null;
-  const chain = kind === 'masterFx'
-    ? s.masterFxChain
-    : s.tracks.find((t) => t.id === trackId)?.fxChain;
-  const v = chain?.find((e) => e.id === entryId)?.params?.[paramKey];
+  const v = automationEntryFor(s, target)?.params?.[paramKey];
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 };
 
@@ -1303,9 +1339,16 @@ interface EditorStoreState {
 
   // Bus FX racks (mirror the per-track ones)
   addBusEffect: (busId: string, effectId: string) => void;
+  /** Append a VST3 plugin to a bus's insert chain. Live, it is hosted on the
+   *  bus strip like a track insert; offline, the print runs it at its place in
+   *  the bus chain (lib/render/insertPrint). */
+  addBusVst: (busId: string, plugin: VstNode) => void;
   removeBusEffect: (busId: string, entryId: string) => void;
+  reorderBusEffect: (busId: string, from: number, to: number) => void;
   toggleBusEffect: (busId: string, entryId: string) => void;
   updateBusEffectParams: (busId: string, entryId: string, params: Record<string, number>) => void;
+  /** Store a captured plugin state on a bus's VST entry; see `setTrackVstRawState`. */
+  setBusVstRawState: (busId: string, entryId: string, rawState: string, stateHost?: VstStateHost) => void;
 
   // Master FX rack
   addMasterEffect: (effectId: string) => void;
@@ -1485,6 +1528,9 @@ interface EditorStoreState {
    *  keyed on the entry, so a 30 Hz burst from one editor gesture — and the
    *  state capture that ends it — coalesce into a single step. */
   setMasterVstParams: (entryId: string, params: Record<string, number>) => void;
+  /** Bypass (or bring back) one master VST entry: live, the chain passes it
+   *  dry, and the freeze and every export skip it. */
+  toggleMasterVst: (entryId: string) => void;
   removeMasterVst: (entryId: string) => void;
   reorderMasterVst: (from: number, to: number) => void;
   clearMasterVst: () => void;
@@ -1953,6 +1999,8 @@ const controlKeyForTarget = (target: AutomationTarget): string => {
     case 'trackFx': return `track:${target.trackId ?? ''}:fx:${target.entryId ?? ''}`;
     case 'masterFx': return `master:fx:${target.entryId ?? ''}`;
     case 'trackMidiCc': return `track:${target.trackId ?? ''}:cc:${target.paramKey ?? ''}`;
+    // `updateBusEffectParams`' own key, so an armed knob drag on a bus insert is one gesture.
+    case 'busFx': return `bus:${target.trackId ?? ''}:fx:${target.entryId ?? ''}`;
   }
 };
 
@@ -3240,11 +3288,48 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       ),
     })),
 
+  addBusVst: (busId, plugin) =>
+    set((s) => ({
+      buses: s.buses.map((b) =>
+        b.id === busId
+          ? { ...b, fxChain: [...b.fxChain, { id: uid(), effect: 'vst3', params: {}, enabled: true, vst: plugin }] }
+          : b,
+      ),
+    })),
+
   removeBusEffect: (busId, entryId) =>
     set((s) => ({
       buses: s.buses.map((b) => (b.id === busId ? { ...b, fxChain: b.fxChain.filter((e) => e.id !== entryId) } : b)),
       automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
     })),
+
+  reorderBusEffect: (busId, from, to) =>
+    set((s) => ({
+      buses: s.buses.map((b) => {
+        if (b.id !== busId) return b;
+        if (from === to || from < 0 || to < 0 || from >= b.fxChain.length || to >= b.fxChain.length) return b;
+        const next = [...b.fxChain];
+        const [item] = next.splice(from, 1);
+        next.splice(to, 0, item);
+        return { ...b, fxChain: next };
+      }),
+    })),
+
+  setBusVstRawState: (busId, entryId, rawState, stateHost = 'pedalboard') => {
+    coalesceAs(`bus:${busId}:vst:${entryId}`); // see setMasterVstRawState
+    set((s) => ({
+      buses: s.buses.map((b) =>
+        b.id === busId
+          ? {
+              ...b,
+              fxChain: b.fxChain.map((e) =>
+                e.id === entryId && e.vst ? { ...e, vst: { ...e.vst, raw_state: rawState, state_host: stateHost } } : e,
+              ),
+            }
+          : b,
+      ),
+    }));
+  },
 
   toggleBusEffect: (busId, entryId) =>
     set((s) => ({
@@ -3336,10 +3421,18 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     }));
   },
 
+  toggleMasterVst: (entryId) =>
+    set((s) => ({
+      masterVstChain: s.masterVstChain.map((e) => (e.id === entryId ? { ...e, enabled: !e.enabled } : e)),
+    })),
+
   removeMasterVst: (entryId) =>
     set((s) => ({
       masterVstChain: s.masterVstChain.filter((e) => e.id !== entryId),
       frozenMaster: null,
+      // A lane on the plugin's parameters writes to nothing once it is gone,
+      // as `removeMasterEffect` already rules for the rack.
+      automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
     })),
 
   reorderMasterVst: (from, to) =>

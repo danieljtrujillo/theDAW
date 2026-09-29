@@ -37,6 +37,8 @@ from typing import Any, TextIO
 
 import numpy as np
 
+from backend.modules.vst.param_automation import parse_param_automation
+
 #: Starts every protocol line a ``--serve`` worker writes. Anything else on
 #: stdout is ignored by the backend, so a plugin that prints cannot be read as
 #: an answer.
@@ -126,6 +128,7 @@ def run_job(job_dir: Path) -> int:
         raw_state = _read_state(job_dir)
         if kind == "process":
             audio = np.load(job_dir / INPUT_AUDIO_FILE)
+            automation = job.get("automation")
             out = host.process_with_plugin(
                 job["plugin_path"],
                 audio,
@@ -133,6 +136,11 @@ def run_job(job_dir: Path) -> int:
                 job.get("params"),
                 raw_state,
                 warnings,
+                automation=(
+                    parse_param_automation(json.dumps(automation)) or None
+                    if automation
+                    else None
+                ),
             )
         elif kind == "render":
             events = json.loads((job_dir / MIDI_FILE).read_text(encoding="utf-8"))

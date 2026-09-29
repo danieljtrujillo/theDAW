@@ -178,7 +178,8 @@ export interface TasmoChainEntry {
 }
 
 /** What an automation lane writes to; mirrors the store's `AutomationTarget`.
- *  `kind` is "trackVolume" | "trackPan" | "trackFx" | "masterFx" — typed as a
+ *  `kind` is "trackVolume" | "trackPan" | "trackFx" | "masterFx" |
+ *  "trackMidiCc" | "busFx" (whose `track_id` names the bus) — typed as a
  *  plain string because the file is only as trustworthy as whoever edited it,
  *  and the reader is the strict half. */
 export interface TasmoAutomationTarget {
