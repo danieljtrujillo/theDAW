@@ -509,8 +509,9 @@ def enrich_plugin_metadata(
         if status == "timeout":
             # A slow loader (large sample or model payload) deserves another
             # attempt rather than a permanent verdict, but not an unbounded one:
-            # after a few tries it stays listed with unknown metadata. A probe cut
-            # short by the budget never had its chance, so it does not count.
+            # after a few tries it stays listed with unknown metadata until a
+            # rescan. A probe cut short by the budget never had its chance, so
+            # it does not count.
             if effective >= timeout_s:
                 info.probe_timeouts += 1
                 if info.probe_timeouts >= _MAX_PROBE_TIMEOUTS:
@@ -627,8 +628,13 @@ def carry_over_metadata(
 
     A rescan must not throw away minutes of probing, so anything whose path and
     mtime are unchanged keeps the metadata already established for it.
-    ``retry_failed`` drops the remembered verdict for plugins that failed to
-    load, which is what makes an explicit refresh a way out of a bad probe.
+
+    ``retry_failed`` is the user's rescan (``refresh=true``), the way out of a
+    bad verdict. It drops the remembered verdict for plugins that failed to
+    load and for plugins that only ran out of load-probe timeouts, and it
+    carries no timeout count, so each of those is listed and probed again
+    from scratch. A scan that is not a rescan keeps the count, which is what
+    bounds the load probes a slow plugin costs.
     """
     if not previous:
         return
@@ -637,9 +643,12 @@ def carry_over_metadata(
         old = by_path.get(info.path)
         if old is None or old.last_modified != info.last_modified:
             continue
-        if retry_failed and not old.loadable:
-            continue
-        info.probe_timeouts = old.probe_timeouts
+        if retry_failed:
+            timed_out = old.probed and old.probe_timeouts >= _MAX_PROBE_TIMEOUTS
+            if not old.loadable or timed_out:
+                continue
+        else:
+            info.probe_timeouts = old.probe_timeouts
         if not old.probed:
             continue
         info.probed = True

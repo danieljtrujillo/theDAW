@@ -336,10 +336,11 @@ def scan_vst3(
     """Scan standard VST3 directories.
 
     Serves the cache when it is still valid for the current contents of the scan
-    roots; ``refresh=true`` forces a fresh walk and gives previously failed
-    plugins another chance. A fresh walk lists each new module's classes
-    through the native host before it answers, so the answer already says
-    which plugins are instruments; ``enrich=false`` opens no plugin at all. Plugins this host cannot load are withheld unless
+    roots; ``refresh=true`` forces a fresh walk and gives plugins that failed to
+    load, or ran out of load-probe timeouts, another chance. A fresh walk lists
+    each new module's classes through the native host before it answers, so
+    the answer already says which plugins are instruments; ``enrich=false``
+    opens no plugin at all. Plugins this host cannot load are withheld unless
     ``include_unloadable`` asks for them, so the UI never offers a dead tile.
 
     Gated: this hands a caller the absolute plugin paths of this machine, and

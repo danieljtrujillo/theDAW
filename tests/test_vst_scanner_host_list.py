@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from backend.modules.vst import live_host
 from backend.modules.vst import path_policy, scanner
 from backend.modules.vst import router as vst_router
-from backend.modules.vst.scanner import Vst3PluginInfo
+from backend.modules.vst.scanner import Vst3PluginInfo, carry_over_metadata
 
 # What thedaw-vst-host --list printed for these modules on 2026-09-29. Six Sines
 # logs a line from its own module entry before the host's listing, and holds
@@ -251,6 +251,69 @@ def test_the_first_scan_offers_the_synths_whose_load_outlasts_the_probe(
     # worker the scan starts has nothing left to do.
     assert not any("--probe" in c for c in run.calls)
     assert all(p.probed for p in background[-1])
+
+
+def test_a_rescan_offers_the_synths_the_load_probe_gave_up_on(
+    vst3_root, run, host, background, client
+):
+    # The machine before its host was built: the load probe is all there is,
+    # and it times out on each synth three times.
+    host(False)
+    _scan(client, refresh=False)
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+    stuck = _scan(client, refresh=False)
+    assert stuck["Surge XT"]["category"] == "unknown"
+    assert _instrument_slot(stuck) == set()
+
+    # The host is built, and the user presses rescan in the instrument slot.
+    host(True)
+    plugins = _scan(client, refresh=True)
+
+    assert _instrument_slot(plugins) == SYNTHS
+    assert plugins["Surge XT"]["manufacturer"] == "Surge Synth Team"
+
+
+def test_a_rescan_gives_a_timed_out_plugin_three_fresh_load_probes(
+    vst3_root, run, host, background, client
+):
+    host(False)
+    _scan(client, refresh=False)
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+
+    _scan(client, refresh=True)
+
+    # The rescan dropped the verdict and the count: the worker got the synth as
+    # never probed, and gave it the full three tries again.
+    handed = {p.name: p for p in background[-1]}
+    assert handed["Surge XT"].probed is False
+    assert handed["Surge XT"].probe_timeouts == 0
+    assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    # A plugin the probe did classify keeps its verdict across the rescan.
+    assert run.probes("OTT.vst3") == 1
+
+
+def test_a_scan_without_refresh_keeps_the_timeout_count():
+    """A cache gone stale (a plugin installed) is not a rescan: the bound on
+    load probes for a slow plugin still holds."""
+    old = Vst3PluginInfo(
+        name="Surge XT",
+        path="/vst3/Surge XT.vst3",
+        category="unknown",
+        probed=True,
+        probe_timeouts=scanner._MAX_PROBE_TIMEOUTS,
+        last_modified=1.0,
+    )
+    fresh = Vst3PluginInfo(
+        name="Surge XT",
+        path="/vst3/Surge XT.vst3",
+        category="unknown",
+        last_modified=1.0,
+    )
+
+    carry_over_metadata([fresh], [old])
+
+    assert fresh.probed is True
+    assert fresh.probe_timeouts == scanner._MAX_PROBE_TIMEOUTS
 
 
 def test_the_first_scan_after_updating_reclassifies_what_the_old_probe_left_unknown(
