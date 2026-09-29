@@ -99,6 +99,60 @@ const writeLocal = (key: string, value: string) => {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** The parts of a save payload beside its tracks and its time: the mix buses,
+ *  the markers, the loop, the master chains, the automation, the controller
+ *  mappings, the roll voice and the tuning. */
+type ProjectDocument = Pick<
+  TasmoProjectInput,
+  | 'buses'
+  | 'locators'
+  | 'loop'
+  | 'master_fx_chain'
+  | 'master_vst_chain'
+  | 'automation_lanes'
+  | 'controller_mappings'
+  | 'roll_voice'
+  | 'tuning'
+>;
+const DOCUMENT_KEYS = [
+  'buses',
+  'locators',
+  'loop',
+  'master_fx_chain',
+  'master_vst_chain',
+  'automation_lanes',
+  'controller_mappings',
+  'roll_voice',
+  'tuning',
+] as const satisfies readonly (keyof ProjectDocument)[];
+
+/**
+ * The document a seeded save (PERFORM's Save as .tasmo) writes.
+ *
+ * EDIT's, when EDIT holds the project being saved: a .tasmo opened in EDIT
+ * seeds PERFORM from the same load, so its tracks carry the ids EDIT's tracks
+ * have, and an edit made in EDIT since (a bus renamed, a master insert added)
+ * belongs in the file. Otherwise EDIT holds some other project, and the seed's
+ * own fields are the project's: a .tasmo PERFORM opened by itself carries its
+ * buses, markers, loop, master chains, automation, controller mappings, roll
+ * voice and tuning. EDIT's fill only what the seed does not carry, which is all
+ * of it for a seed with none (a DAW import carries only its markers).
+ */
+function seededDocument(
+  seed: TasmoProjectInput | null,
+  seedTracks: readonly TasmoTrackInput[],
+  edit: ProjectDocument,
+): ProjectDocument {
+  if (!seed) return edit;
+  const inEdit = new Set(useEditorStore.getState().tracks.map((t) => t.id));
+  if (seedTracks.some((t) => inEdit.has(t.id))) return edit;
+  const own: ProjectDocument = { ...edit };
+  for (const key of DOCUMENT_KEYS) {
+    if (seed[key] !== undefined) Object.assign(own, { [key]: seed[key] });
+  }
+  return own;
+}
+
 const applyDefaultDir = (dir: string) => {
   writeLocal(PROJECTS_DIR_KEY, dir);
   useProjectStore.setState({ defaultDir: dir });
@@ -332,18 +386,29 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       //    bytes (editor clips are in-memory blobs with no path to link).
       let res: { path: string; manifest: ProjectManifest };
       if (pendingTracks.length > 0) {
-        // The TRACKS are the imported structure; everything else about the
-        // project comes from the same capture helper the live-session branch
-        // uses. This branch used to build its own payload from four fields, so
-        // saving an imported project wrote no markers, no loop, no buses, no
-        // master chains and no automation — state the format carries and the
-        // user can see in the editor while the save dialog is open.
+        // The TRACKS are the seed's structure. The rest of the document comes
+        // from the same capture helper the live-session branch uses, unless
+        // the seed carries its own and EDIT holds another project
+        // (seededDocument). This branch used to build its own payload from
+        // four fields, so saving an imported project wrote no markers, no
+        // loop, no buses, no master chains and no automation.
         //
         // The lane filter is the reason the helper takes the track ids: an
         // automation lane keys off a TRACK id, and these tracks are the
         // importer's, so a lane naming an editor track is left out rather than
         // written as a dangler.
         const doc = captureProjectDocument(pendingTracks.map((t) => t.id));
+        const document = seededDocument(pendingProject, pendingTracks, {
+          buses: doc.buses,
+          locators: doc.locators,
+          loop: doc.loop,
+          master_fx_chain: doc.masterFxChain,
+          master_vst_chain: doc.masterVstChain,
+          automation_lanes: doc.automationLanes,
+          controller_mappings: doc.controllerMappings ?? null,
+          roll_voice: doc.rollVoice,
+          tuning: doc.tuning,
+        });
         const project: TasmoProjectInput = {
           // Every field the seed carries (the scene names, the tempo and meter
           // maps, the sample rate); the fields below replace their own keys.
@@ -359,16 +424,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           tracks: pendingTracks,
           source_daw: sourceDaw,
           import_warnings: importWarnings,
-          buses: doc.buses,
-          locators: doc.locators,
-          loop: doc.loop,
-          master_fx_chain: doc.masterFxChain,
-          master_vst_chain: doc.masterVstChain,
-          automation_lanes: doc.automationLanes,
-          controller_mappings: doc.controllerMappings ?? null,
+          ...document,
           perform_routing: pendingPerformRouting,
-          roll_voice: doc.rollVoice,
-          tuning: doc.tuning,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
         res = await projectApi.save(project, path, embedAudio);
