@@ -4595,7 +4595,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // for the printed blob. All of it runs in `runStemJob`.
   const renderFrozenMaster = useCallback(async (): Promise<Blob | null> => {
     const st = useEditorStore.getState();
-    const vsts = st.masterVstChain.filter((e) => e.enabled && e.vst);
+    // The entries the print runs through a host, by the rule the print itself uses.
+    const vsts = st.masterVstChain.filter((e) => e.enabled && !!e.vst?.plugin_path);
     if (vsts.length === 0) {
       logError('editor', 'Add a master VST before rendering.');
       return null;

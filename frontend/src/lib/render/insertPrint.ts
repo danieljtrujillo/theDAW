@@ -57,11 +57,13 @@ import { encodeWav } from '../wavEncode';
 import { readWavSamples, readWavShape, type WavSamples } from '../wavSamples';
 import { planRangeRender, sliceRangeBuffer } from './renderRangePlan';
 
-/** A chain entry the print runs through a plugin host: an enabled VST3 that names its plugin. */
-export const printsThroughHost = (e: ChainEntry): boolean => e.enabled && e.effect === 'vst3' && !!e.vst;
+/** A chain entry the print runs through a plugin host: an enabled VST3 that
+ *  names its plugin's file. The live chain hosts an entry by the same rule
+ *  (rackEffects `buildEffectChain`), so one it never hosts is never printed. */
+export const printsThroughHost = (e: ChainEntry): boolean => e.enabled && e.effect === 'vst3' && !!e.vst?.plugin_path;
 
-/** A master VST chain entry that prints: enabled, with its plugin. */
-const masterPrints = (e: ChainEntry): boolean => e.enabled && !!e.vst;
+/** A master VST chain entry that prints: enabled, naming its plugin's file. */
+const masterPrints = (e: ChainEntry): boolean => e.enabled && !!e.vst?.plugin_path;
 
 /** Bytes read off the front of a printed file for its header. */
 const HEADER_BYTES = 64 * 1024;

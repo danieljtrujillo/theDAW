@@ -460,6 +460,21 @@ async function withNoPrintedInsertTheBounceIsTheOneItWasBefore(): Promise<void> 
       req: request(),
     },
     {
+      // The live chain hosts a plugin only when its entry names a file
+      // (rackEffects buildEffectChain), so this one never sounds live, and a
+      // hop for it would fail the whole bounce on a path the backend refuses.
+      name: 'a plugin entry that names no file, on a track and on the master',
+      h: harness({
+        tracks: [track({
+          id: 't1',
+          fxChain: [{ id: 'V', effect: 'vst3', enabled: true, params: {}, vst: { plugin_path: '', plugin_name: 'Lost' } }],
+        })],
+        clips: [{ id: 'c1', trackId: 't1', value: 1 }],
+      }),
+      req: request(),
+      master: [{ id: 'MV', effect: 'vst3', enabled: true, params: {}, vst: { plugin_path: '', plugin_name: 'Lost' } }],
+    },
+    {
       name: 'a plugin on a muted track',
       h: harness({
         tracks: [track({ id: 't1', mute: true, fxChain: [vst('V', 5, 5)] }), track({ id: 't2' })],
