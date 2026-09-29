@@ -49,13 +49,17 @@ const KEY_MIC_OFFSET = 'sing.micOffsetMs';
 const KEY_LANGUAGE = 'sing.language';
 const KEY_AUTO_ALIGN = 'sing.autoAlign';
 
-/** Whisper language codes offered in the picker; 'auto' lets whisper detect. */
+/** Language codes offered in the picker; 'auto' lets whisper detect. A picked
+ *  code is saved on the lyrics document, where ALIGN and STUDY read it: a Latin
+ *  document is aligned with its macrons folded and analysed by the Latin
+ *  reading rules. */
 export const SING_LANGUAGES: Array<[string, string]> = [
-  ['auto', 'Auto-detect'], ['en', 'English'], ['es', 'Spanish'], ['pt', 'Portuguese'], ['fr', 'French'],
-  ['de', 'German'], ['it', 'Italian'], ['nl', 'Dutch'], ['sv', 'Swedish'], ['pl', 'Polish'],
-  ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'],
-  ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['vi', 'Vietnamese'],
-  ['th', 'Thai'], ['id', 'Indonesian'], ['tl', 'Tagalog'], ['el', 'Greek'], ['fi', 'Finnish'],
+  ['auto', 'Auto-detect'], ['en', 'English'], ['la', 'Latin'], ['es', 'Spanish'], ['pt', 'Portuguese'],
+  ['fr', 'French'], ['de', 'German'], ['it', 'Italian'], ['nl', 'Dutch'], ['sv', 'Swedish'],
+  ['pl', 'Polish'], ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ar', 'Arabic'],
+  ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'],
+  ['vi', 'Vietnamese'], ['th', 'Thai'], ['id', 'Indonesian'], ['tl', 'Tagalog'], ['el', 'Greek'],
+  ['fi', 'Finnish'],
 ];
 const readString = (key: string, fallback: string): string => {
   try {
@@ -384,6 +388,14 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
       const v = (code || 'auto').trim().toLowerCase();
       set({ language: v });
       writeStorage(KEY_LANGUAGE, v);
+      // A named language is the language of the words on the page, so the
+      // document carries it: STUDY reads a Latin lyric by the Latin rules
+      // and ALIGN folds its macrons only when the document says "la". 'auto'
+      // is an instruction to whisper, and leaves the document as it is.
+      const { doc } = get();
+      if (v !== 'auto' && doc && doc.language !== v) {
+        get().setDoc({ ...doc, language: v });
+      }
     },
 
     setAutoAlign: (on) => {

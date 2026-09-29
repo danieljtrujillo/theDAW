@@ -265,7 +265,7 @@ export const SingView: React.FC = () => {
         <button type="button" className="btn-ghost text-[8px] py-1 px-1.5 flex items-center gap-1 disabled:opacity-40" onClick={() => runOrInstall('transcribe')} disabled={busy || !doc} title="Let whisper write the lyrics from the vocal (the first run installs the sidecar)">
           {job?.kind === 'transcribe' || job?.kind === 'install' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />} {transcribeLabel}
         </button>
-        <label htmlFor="sing-language" className="sr-only">Lyrics language for whisper</label>
+        <label htmlFor="sing-language" className="sr-only">Lyrics language</label>
         <select
           id="sing-language"
           name="sing-language"
@@ -273,7 +273,7 @@ export const SingView: React.FC = () => {
           value={language}
           onChange={(e) => store().setLanguage(e.target.value)}
           disabled={busy}
-          title={doc?.language && doc.language !== 'en' ? `Language for TRANSCRIBE / ALIGN (this document: ${doc.language})` : 'Language for TRANSCRIBE / ALIGN; Auto lets whisper detect it'}
+          title={doc?.language && doc.language !== 'en' ? `Language of the lyrics, saved on this document (now: ${doc.language}). TRANSCRIBE, ALIGN and STUDY read it; Latin is read by its own rules, macrons and all` : 'Language of the lyrics: saved on the document and read by TRANSCRIBE, ALIGN and STUDY. Auto lets whisper detect it'}
         >
           {SING_LANGUAGES.map(([code, label]) => (
             <option key={code} value={code}>{label}</option>

@@ -2287,6 +2287,9 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
   }
 
   const stats = doc?.stats ?? null;
+  // A Latin lyric is read by rule from its spelling, so a "guess" there is
+  // only a stress placed without a macron, and the sounds are never in doubt.
+  const latinRead = doc?.pronunciation_source === 'latin';
   const tiles: Array<[string, string, string]> = stats
     ? [
         ['LINES', String(stats.lines), 'Lyric lines, markers excluded'],
@@ -2297,7 +2300,13 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
         ['RHYME DENSITY', pct(stats.rhyme_density), 'Share of lines whose ending rhymes with another line'],
         ['MULTISYLLABIC', String(stats.multisyllabic_rhymes), 'Rhymes spanning two or more syllables'],
         ['SYL / LINE', stats.avg_syllables_per_line.toFixed(1), 'Average syllables per line'],
-        ['GUESSED', String(stats.guessed_pronunciations), 'Words with no dictionary pronunciation'],
+        [
+          'GUESSED',
+          String(stats.guessed_pronunciations),
+          latinRead
+            ? 'Words whose stress rests on a vowel length the text does not mark; macrons settle them'
+            : 'Words with no dictionary pronunciation',
+        ],
       ]
     : [];
 
@@ -3002,9 +3011,19 @@ export const LyricAnalysisPane: React.FC<LyricAnalysisPaneProps> = ({
             </div>
             {stats && stats.guessed_pronunciations > 0 && (
               <div className="pt-1.5 text-[9px] font-mono text-amber-300/80">
-                {stats.guessed_pronunciations} {stats.guessed_pronunciations === 1 ? 'word had' : 'words had'} no
-                dictionary pronunciation and was sounded out by rule — the more of these, the softer every rhyme
-                finding above.
+                {latinRead ? (
+                  <>
+                    {stats.guessed_pronunciations} {stats.guessed_pronunciations === 1 ? 'word has' : 'words have'} a
+                    stress placed without a macron: the sounds are the spelling's own, and pasting the macrons settles the
+                    stress.
+                  </>
+                ) : (
+                  <>
+                    {stats.guessed_pronunciations} {stats.guessed_pronunciations === 1 ? 'word had' : 'words had'} no
+                    dictionary pronunciation and was sounded out by rule — the more of these, the softer every rhyme
+                    finding above.
+                  </>
+                )}
               </div>
             )}
           </div>
