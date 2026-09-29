@@ -121,6 +121,30 @@ const served = new Map<string, Uint8Array>();
   assert.equal(activeTrackOf(roll()).name, 'Low line');
 }
 
+// A stem transcribed on its role's own program (bass 33, guitar 25, as the MIDI engine writes them now), sent into
+// a part that already plays an instrument: the part takes the file's program, not the instrument it had.
+{
+  roll().importParts([{ name: 'Part 1', notes: [] }], 120);
+  served.set('e3__vocals_midi', bytesOf(transcription([67, 69], 53)));
+  served.set('e3__bass_midi', bytesOf(transcription([40, 43], 33)));
+  served.set('e3__guitar_midi', bytesOf(transcription([52, 55], 25)));
+  await sendMidiIdToTarget('e3__vocals_midi', 'piano-roll');
+  assert.equal(activeTrackOf(roll()).instrumentId, 'voice', 'the vocal stem on Voice Oohs plays the voice');
+  await sendMidiIdToTarget('e3__bass_midi', 'piano-roll');
+  const bass = activeTrackOf(roll());
+  assert.equal(bass.program, 33, "the bass stem's own program replaces the voice the vocal stem gave the part");
+  assert.equal(bass.instrumentId, 'electric-bass');
+  assert.equal(bass.name, 'Electric Bass', 'the name the vocal stem gave the part follows the new instrument');
+  await sendMidiIdToTarget('e3__guitar_midi', 'piano-roll');
+  const guitar = activeTrackOf(roll());
+  assert.equal(guitar.program, 25, "Acoustic Guitar (steel), the guitar stem's own program, replaces the electric bass");
+  assert.equal(guitar.instrumentId, undefined, 'the registry has no instrument on program 25');
+  assert.equal(guitar.name, 'Acoustic Guitar (steel)', 'the name the bass stem gave the part follows the new program');
+  // A file on basic-pitch's stock program still takes the role's program.
+  loadMidiIntoPianoRoll(bytesOf(transcription([40])), 'piano-roll', 'bass.mid');
+  assert.equal(activeTrackOf(roll()).program, 33, 'program 4 on a bass stem plays the role program');
+}
+
 // LIBRARY's MIDI IN, a stem file saved from the library ("bass.mid") picked off the disk.
 {
   roll().importParts([{ name: 'Part 1', notes: [] }], 120);

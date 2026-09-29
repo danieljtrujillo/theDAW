@@ -57,6 +57,7 @@ import {
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
+import { GM_NAMES } from '../lib/gmInstruments';
 import { isArticulation, type Articulation } from '../lib/articulationMap';
 import { buildExpression, withExpressionControls } from '../lib/clipNotes/expression';
 import { sanitizeNoteExpression } from '../lib/noteExpression';
@@ -323,9 +324,9 @@ export interface RollPartImport {
   /** The notes were timed against audio (RollTrack `fromAudio`); left out, the part is not marked. */
   fromAudio?: boolean;
   /**
-   * `instrumentId` is the instrument the file's stem names (lib/stemRole,
-   * RollMidiPart `stemRole`): the notes are that stem's, so the part takes it
-   * even when it has an instrument of its own.
+   * `instrumentId`, else `program`, is the voice of the file's stem
+   * (lib/stemRole, RollMidiPart `stemRole`): the notes are that stem's, so the
+   * part takes it even when it has an instrument of its own.
    */
   stemInstrument?: boolean;
 }
@@ -1887,9 +1888,9 @@ const percussionChannelOf = (t: RollTrack, percussion: boolean | undefined): num
  * (RollPartImport): its controller changes replace the part's own, and a part
  * that follows the roll's voice takes the file's registry instrument (when the
  * file sets no program, or that instrument's), else the file's program. A
- * stem's instrument (`stemInstrument`) goes to the part whatever it played,
- * and a part named for the instrument it had is renamed for the new one. An
- * empty patch when nothing changes.
+ * stem's instrument, else its program (`stemInstrument`), goes to the part
+ * whatever it played, and a part named for the instrument it had is renamed
+ * for a new instrument. An empty patch when nothing changes.
  */
 const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<PianoRollState> => {
   const i = s.tracks.findIndex((t) => t.id === s.activeTrackId);
@@ -1901,11 +1902,18 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
     if (!sameControls(t.controls, next)) t = withControls(t, next);
   }
   const stem = part.stemInstrument === true ? orchestraInstrument(part.instrumentId) : undefined;
+  // The instrument the last stem gave the part named it ("Voice"): the name follows the new voice. A name the user gave stays.
+  const was = orchestraInstrument(before.instrumentId);
+  const namedForWas = !!was && before.name === uniquePartName(s.tracks, was.name, before.id);
   if (stem) {
-    // The instrument the last stem gave the part named it ("Voice"): the name follows the new one. A name the user gave stays.
-    const was = orchestraInstrument(before.instrumentId);
-    const namedForIt = !!was && was.id !== stem.id && before.name === uniquePartName(s.tracks, was.name, before.id);
+    const namedForIt = namedForWas && was?.id !== stem.id;
     t = { ...t, ...instrumentPatchOf(s.tracks, t, stem), ...(namedForIt ? { name: uniquePartName(s.tracks, stem.name, t.id) } : {}) };
+  } else if (part.stemInstrument === true && part.program != null) {
+    // A stem's program the registry has no instrument for (Acoustic Guitar (steel), 25): the part plays that program.
+    const program = cleanPartProgram(part.program);
+    const gmName = program !== null ? GM_NAMES[program] : undefined;
+    t = withoutInstrument({ ...t, program, channel: percussionChannelOf(t, part.percussion) });
+    if (namedForWas && gmName) t = { ...t, name: uniquePartName(s.tracks, gmName, t.id) };
   } else if (before.program === null) {
     const inst = orchestraInstrument(part.instrumentId);
     if (inst && (part.program == null || inst.program === part.program)) {

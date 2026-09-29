@@ -1225,10 +1225,11 @@ export interface RollMidiPart {
   track: Partial<RollTrack>;
   notes: PianoNote[];
   /**
-   * The stem role whose instrument the part took over basic-pitch's stock
-   * program (lib/stemRole). Absent when the file's own program stands. An
-   * import into the part being edited gives the part this instrument even
-   * when it has one of its own: the notes are that stem's.
+   * The stem role the part's notes transcribe (lib/stemRole): the part took
+   * the role's instrument over basic-pitch's stock program, or keeps the role
+   * program the file carries. Absent when the file names no stem role. An
+   * import into the part being edited gives the part this voice even when it
+   * has one of its own: the notes are that stem's.
    */
   stemRole?: StemRole;
 }
@@ -1288,7 +1289,11 @@ const controlsOnRollClock = (controls: readonly MidiControl[], ppq: number): Rol
  * "bass.mid", a library row id or label). A melodic part on basic-pitch's
  * stock program 4 then takes the instrument of the stem's role
  * (lib/stemRole): its program, its registry instrument, the drum channel for
- * a kit, and, when its track has no name, the role's name. `opts.bendsOnNotes`
+ * a kit, and, when its track has no name, the role's name. A melodic part on
+ * any other program (the role program the transcription wrote: bass 33)
+ * keeps that program and is marked as the stem's all the same, so it takes
+ * the role's name when unnamed and replaces the voice of the part it goes
+ * into. `opts.bendsOnNotes`
  * turns every bent channel's wheel into its notes' own bends (readMidiFile).
  */
 export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: { stem?: string; bendsOnNotes?: boolean } = {}): RollMidiPartsImport {
@@ -1355,8 +1360,11 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: 
     const channel = o.channel ?? 0;
     const change = firstProgram(t.programs, channel) ?? data.tracks.map((x) => firstProgram(x.programs, channel)).find((p) => p !== undefined);
     const filePercussion = channel === 9 || isDrumBank(change?.bank);
-    // basic-pitch's stock Electric Piano on a stem that names its instrument: the stem's instrument instead.
+    // A melodic stem that names its instrument: the part is the stem's. On basic-pitch's stock Electric Piano it takes
+    // the stem's instrument; on a program of the stem's role (bass 33, voice 53) the file's own program stands.
+    const stemPart = !filePercussion && change !== undefined && !isDrumBank(change.bank) && stemVoice !== null && !stemVoice.percussion;
     const role = !filePercussion && change?.program === BASIC_PITCH_PROGRAM && !isDrumBank(change?.bank) ? stemVoice : null;
+    const stemRole = role?.role ?? (stemPart ? stemVoice.role : undefined);
     const percussion = filePercussion || role?.percussion === true;
     const split = trackChannels[o.track].length > 1;
     const fileProgram = role ? role.program : change?.program;
@@ -1366,7 +1374,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: 
     const controls = controlsOnRollClock(channelControls.get(channel) ?? [], ppq);
     // A track the file left unnamed (the parser calls it "Track n") takes the stem's name.
     const name = !split
-      ? (role && UNNAMED_TRACK.test(t.name) ? role.name : t.name)
+      ? (stemRole && stemVoice && UNNAMED_TRACK.test(t.name) ? stemVoice.name : t.name)
       : percussion
         ? `${t.name} drums`
         : fileProgram !== undefined
@@ -1390,7 +1398,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: 
         ...(controls ? { controls } : {}),
       },
       notes,
-      ...(role ? { stemRole: role.role } : {}),
+      ...(stemRole ? { stemRole } : {}),
     };
   });
   return {

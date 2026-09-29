@@ -108,8 +108,8 @@ export function applyRollParts(
   const part = parts[0];
   // The file's part replaces the part's controller changes and, for a part
   // with no sound of its own, gives it the file's instrument; a stem's
-  // instrument it gives whatever the part played, since the notes are that
-  // stem's (lib/stemRole). All in the one write, so the import is one undo step.
+  // instrument or program it gives whatever the part played, since the notes
+  // are that stem's (lib/stemRole). All in the one write, so the import is one undo step.
   const { keptDocument } = roll.importNotes(part.notes, bpm, meter, bends, tempoMap, {
     markers,
     part: {
@@ -118,7 +118,7 @@ export function applyRollParts(
       program: part.track.program ?? null,
       percussion: part.track.channel === PERCUSSION_PART_CHANNEL,
       ...(opts.fromAudio === true || part.track.fromAudio === true ? { fromAudio: true } : {}),
-      ...(part.stemRole && part.track.instrumentId ? { stemInstrument: true } : {}),
+      ...(part.stemRole && (part.track.instrumentId || part.track.program != null) ? { stemInstrument: true } : {}),
     },
   });
   return { parts: 1, notes, into: 'active', folded: 0, keptDocument, pastEnd };
