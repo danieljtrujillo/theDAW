@@ -33,9 +33,12 @@ class Vst3PluginInfo:
     category: str = ""  # "effect" | "instrument" | "unknown"
     file_size_mb: float = 0.0
     last_modified: float = 0.0
-    # Set once the plugin has been opened out-of-process for metadata; False
-    # means the host could not load it (wrong architecture, broken install) and
-    # it must not be offered as a usable effect.
+    # ``probed`` is set once the plugin has been loaded out-of-process through
+    # pedalboard, the host every plugin the server itself loads goes through
+    # (an effect chain, a MIDI print), or has run out of tries at that.
+    # ``loadable`` False means that load failed or killed the process (wrong
+    # architecture, broken install, an access violation) and it must not be
+    # offered as a usable plugin.
     loadable: bool = True
     probed: bool = False
     probe_timeouts: int = 0
@@ -49,6 +52,11 @@ class Vst3PluginInfo:
     # every consumer falls back to ``name``.
     display_name: str = ""
     identifier: str = ""
+    # Set once theDAW's native host has listed the module's classes: the
+    # category, vendor, version, name and class id above then come from the
+    # module's factory, read without instantiating anything. It says what the
+    # plugin is; only the load above says whether the server can host it.
+    listed: bool = False
 
 
 # A VST3 bundle stores its binaries under Contents/<architecture>/. Only
@@ -251,9 +259,17 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
 # (``thedaw-vst-host --list``): it loads the library and asks the factory for
 # its class info without creating an instance of any class, which takes well
 # under a second even for a synth whose full load runs past half a minute.
-# Where the host is not built or cannot list the module, the plugin is loaded
-# through pedalboard instead. Either one runs in a short-lived subprocess with
-# a timeout: the server survives a bad plugin, and the answer is cached.
+# Where the host is not built or cannot list the module, the plugin's full
+# load through pedalboard classifies it instead.
+#
+# That full load runs for every plugin all the same, listed or not, because
+# it answers a second question the listing cannot: whether pedalboard, which
+# hosts every plugin the server loads in its own process, survives it.
+# MT-PowerDrumKit lists cleanly and kills pedalboard with an access violation
+# on load; offered, it would take the server down on its first bounce. A load
+# that outlasts its timeout changes nothing the listing said. Both run in a
+# short-lived subprocess with a timeout: the server survives a bad plugin, and
+# the answer is cached.
 
 _PROBE_TIMEOUT_S = 25.0
 _MAX_PROBE_TIMEOUTS = 3
@@ -374,12 +390,13 @@ def _metadata_from_classes(classes: list[dict]) -> dict:
     }
 
 
-def _record_metadata(info: Vst3PluginInfo, meta: dict) -> None:
-    """Write a listing's or a probe's answer onto the entry, as its verdict.
+def _fill_metadata(info: Vst3PluginInfo, meta: dict) -> None:
+    """Write a listing's or a probe's metadata onto the entry.
 
-    What the entry already knows (moduleinfo.json) stays; only gaps fill.
+    What the entry already knows (moduleinfo.json, an earlier listing) stays;
+    only gaps fill. Whether the entry is ``listed`` or ``probed`` is the
+    caller's to record.
     """
-    info.probed = True
     info.display_name = info.display_name or meta.get("display_name", "")
     info.identifier = info.identifier or meta.get("identifier", "")
     info.manufacturer = info.manufacturer or meta.get("manufacturer", "")
@@ -456,12 +473,14 @@ def enrich_plugin_metadata(
     list_only: bool = False,
     list_failed: set[str] | None = None,
 ) -> int:
-    """Fill in vendor/version/category for unprobed entries, within a time budget.
+    """Classify and load-check the entries not yet probed, within a time budget.
 
-    Each entry is listed through the native host first and loaded through the
-    pedalboard probe only when the host is not built or could not list it.
-    ``list_only`` stops there, for a caller that must answer quickly (a scan
-    request): an entry the host could not list is left for the worker.
+    Each entry is listed through the native host first, which says what it is
+    (instrument or effect, vendor, version, name), and then loaded through the
+    pedalboard probe, which says whether the server can host it and classifies
+    whatever the host could not list. ``list_only`` stops after the listing,
+    for a caller that must answer quickly (a scan request): the loads, and
+    every entry the host could not list, are left for the worker.
     ``list_failed`` holds the paths the host already failed to list; pass the
     same set across calls so a module that hangs in its entry point costs the
     listing timeout once, not once per round of load probes.
@@ -480,7 +499,7 @@ def enrich_plugin_metadata(
     for info in plugins:
         if info.probed or not info.loadable:
             continue
-        listable = host is not None and info.path not in failed
+        listable = host is not None and not info.listed and info.path not in failed
         if list_only and not listable:
             continue
         remaining = deadline - time.monotonic()
@@ -491,11 +510,11 @@ def enrich_plugin_metadata(
             effective = min(_LIST_TIMEOUT_S, remaining)
             status, classes = _list_subprocess(host, info.path, effective)
             if status == "ok" and classes:
-                _record_metadata(info, _metadata_from_classes(classes))
-                continue
+                _fill_metadata(info, _metadata_from_classes(classes))
+                info.listed = True
             # A listing cut short by the budget never had its chance, so it is
             # tried again on the next pass rather than written off.
-            if status == "failed" or effective >= _LIST_TIMEOUT_S:
+            elif status == "failed" or effective >= _LIST_TIMEOUT_S:
                 failed.add(info.path)
             if list_only:
                 continue
@@ -509,45 +528,47 @@ def enrich_plugin_metadata(
         if status == "timeout":
             # A slow loader (large sample or model payload) deserves another
             # attempt rather than a permanent verdict, but not an unbounded one:
-            # after a few tries it stays listed with unknown metadata until a
-            # rescan. A probe cut short by the budget never had its chance, so
-            # it does not count.
+            # after a few tries it stays offered, with what its listing said or
+            # unknown metadata, until a rescan. A probe cut short by the budget
+            # never had its chance, so it does not count.
             if effective >= timeout_s:
                 info.probe_timeouts += 1
                 if info.probe_timeouts >= _MAX_PROBE_TIMEOUTS:
                     info.probed = True
             continue
+        info.probed = True
         if meta is None:
-            info.probed = True
+            # It failed to load, or killed the probe: listed or not, the server
+            # must not load it in its own process.
             info.loadable = False
             continue
-        _record_metadata(info, meta)
+        _fill_metadata(info, meta)
     return worked
 
 
 def list_plugin_classes(
     plugins: list[Vst3PluginInfo], budget_s: float = _SCAN_LIST_BUDGET_S
 ) -> int:
-    """Classify the unprobed entries through the native host, within a budget.
+    """Classify the unlisted entries through the native host, within a budget.
 
     Short enough to sit inside a scan request, so the list the user opens
     already says which plugins are instruments. Loads nothing through
-    pedalboard; whatever the host cannot list is left for the background
-    worker. Returns how many modules were classified.
+    pedalboard; the loads, and whatever the host cannot list, are left for
+    the background worker. Returns how many modules were classified.
     """
-    before = sum(1 for p in plugins if p.probed)
+    before = sum(1 for p in plugins if p.listed)
     started = time.monotonic()
     enrich_plugin_metadata(plugins, budget_s=budget_s, list_only=True)
-    listed = sum(1 for p in plugins if p.probed) - before
+    listed = sum(1 for p in plugins if p.listed) - before
     if listed:
         log.info(
             "Listed %d VST3 module(s) through thedaw-vst-host in %.1fs",
             listed,
             time.monotonic() - started,
         )
-    left = sum(1 for p in plugins if not p.probed and p.loadable)
+    left = sum(1 for p in plugins if not p.listed and not p.probed and p.loadable)
     if left:
-        log.info("%d VST3 module(s) left for the load probe", left)
+        log.info("%d VST3 module(s) left for the load probe to classify", left)
     return listed
 
 
@@ -560,15 +581,16 @@ def enrichment_running() -> bool:
 
 
 def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
-    """Probe the still-unknown plugins on a worker thread, updating the cache.
+    """Load-probe the plugins not yet probed on a worker thread, updating the cache.
 
-    What is left after a scan's class listing (``list_plugin_classes``) is a
-    module the host could not list, or every module when the host is not
-    built, and loading those through pedalboard costs seconds each, up to the
-    probe's timeout for one that never finishes, so it cannot sit inside a
-    scan request. The worker takes its own copy, saves after each chunk
-    (progress survives a shutdown), and the next scan serves the enriched
-    cache. Returns False when one is already running.
+    What is left after a scan's class listing (``list_plugin_classes``) is the
+    load of every new plugin, which says whether the server can host it, and
+    the classification of any module the host could not list, or of every
+    module when the host is not built. Loading through pedalboard costs
+    seconds each, up to the probe's timeout for one that never finishes, so it
+    cannot sit inside a scan request. The worker takes its own copy, saves
+    after each chunk (progress survives a shutdown), and the next scan serves
+    the enriched cache. Returns False when one is already running.
     """
     global _enrich_running
     if not any(not p.probed and p.loadable for p in plugins):
@@ -624,10 +646,12 @@ def carry_over_metadata(
     previous: list[Vst3PluginInfo] | None,
     retry_failed: bool = False,
 ) -> None:
-    """Copy probe results from an earlier scan onto matching fresh entries.
+    """Copy listing and probe results from an earlier scan onto matching fresh
+    entries.
 
     A rescan must not throw away minutes of probing, so anything whose path and
-    mtime are unchanged keeps the metadata already established for it.
+    mtime are unchanged keeps the metadata already established for it: a
+    listing's, even while its load probe is still to come, and a load probe's.
 
     ``retry_failed`` is the user's rescan (``refresh=true``), the way out of a
     bad verdict. It drops the remembered verdict for plugins that failed to
@@ -649,9 +673,10 @@ def carry_over_metadata(
                 continue
         else:
             info.probe_timeouts = old.probe_timeouts
-        if not old.probed:
+        if not (old.probed or old.listed):
             continue
-        info.probed = True
+        info.probed = info.probed or old.probed
+        info.listed = info.listed or old.listed
         info.loadable = info.loadable and old.loadable
         info.display_name = info.display_name or old.display_name
         info.identifier = info.identifier or old.identifier
@@ -672,8 +697,11 @@ _CACHE_FILENAME = "vst3_scan_cache.json"
 # classified by the native host's class listing — a v3 entry that ran out of
 # load-probe timeouts is probed=True with category "unknown", so a synth whose
 # load outlasts the probe (Surge XT, Zebralette 3, Six Sines) would never reach
-# the instrument slot.
-_CACHE_VERSION = 4
+# the instrument slot; v5: a listed entry records ``listed`` and is still load-
+# probed for ``loadable`` — a v4 entry was marked probed by its listing alone,
+# so a plugin that kills pedalboard on load (MT-PowerDrumKit) was offered as
+# loadable for good.
+_CACHE_VERSION = 5
 
 
 def _cache_path() -> Path:

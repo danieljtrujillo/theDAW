@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -63,7 +64,19 @@ HOST_LISTINGS = {
         '"category":"Fx|Dynamics","identifier":"5854535654666F547474000000000000",'
         '"format":"VST3"}]\n'
     ),
+    "MT-PowerDrumKit.vst3": (
+        '[{"name":"MT-PowerDrumKit","vendor":"MANDA AUDIO","version":"2.1.5.1",'
+        '"category":"Instrument|Drum","identifier":"24029AE7776DB2676A4FFB0690BFCFC8",'
+        '"format":"VST3"}]\n'
+    ),
 }
+
+# The modules pedalboard dies loading. On 2026-09-29 the load probe of
+# MT-PowerDrumKit exited 0xC0000005 (an access violation), and so did
+# ``host.render_instrument`` on it, which is what POST /api/vst/render-midi
+# runs inside the server for every bounce, freeze and export.
+CRASHES_ON_LOAD = {"MT-PowerDrumKit.vst3"}
+ACCESS_VIOLATION = 0xC0000005
 
 # The synths whose full load outlasted the probe's timeout on the user's machine.
 SLOW_TO_LOAD = {"Surge XT.vst3", "Zebralette3.vst3", "Six Sines.vst3"}
@@ -94,13 +107,16 @@ class FakeRun:
     ``--list`` is the native host: it answers from ``HOST_LISTINGS``, fails
     the way the real host does (exit 4, an error line on stdout) for a module
     it has no listing for, and hangs for any name in ``list_hangs``. ``--probe``
-    is the pedalboard load: it times out for ``SLOW_TO_LOAD`` and answers from
-    ``PROBE_RESULTS`` otherwise.
+    is the pedalboard load: it dies with an access violation for
+    ``CRASHES_ON_LOAD``, times out for ``SLOW_TO_LOAD``, and answers from
+    ``PROBE_RESULTS`` otherwise; ``probe_answers`` overrides that per module
+    with a function of how many times it has been loaded (1 on the first).
     """
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.list_hangs: set[str] = set()
+        self.probe_answers: dict[str, Callable[[list[str], int], object]] = {}
 
     def __call__(self, cmd, **kwargs):
         cmd = [str(part) for part in cmd]
@@ -120,6 +136,12 @@ class FakeRun:
             return subprocess.CompletedProcess(cmd, 0, stdout=listing, stderr="")
         if "--probe" in cmd:
             name = Path(cmd[-1]).name
+            if name in self.probe_answers:
+                return self.probe_answers[name](cmd, self.probes(name))
+            if name in CRASHES_ON_LOAD:
+                return subprocess.CompletedProcess(
+                    cmd, ACCESS_VIOLATION, stdout="", stderr=""
+                )
             if name in SLOW_TO_LOAD or name not in PROBE_RESULTS:
                 raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
             return subprocess.CompletedProcess(
@@ -192,21 +214,34 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return built
 
 
+class Background:
+    """What the scans handed the metadata worker (``handed``), and how many
+    children the scan requests had started when each handed it over
+    (``calls_at_start``): a child before that index ran inside the request."""
+
+    def __init__(self) -> None:
+        self.handed: list[list[Vst3PluginInfo]] = []
+        self.calls_at_start: list[int] = []
+
+
 @pytest.fixture
-def background(monkeypatch: pytest.MonkeyPatch) -> list[list[Vst3PluginInfo]]:
+def background(monkeypatch: pytest.MonkeyPatch, run: FakeRun) -> Background:
     """Runs the metadata worker a scan starts, to completion, before the test
-    reads on. It is the real worker on the real cache, only not on a thread."""
-    handed: list[list[Vst3PluginInfo]] = []
+    reads on. It is the real worker on the real cache, only not on a thread.
+    The scan's answer is already built when it starts the worker, so the
+    answer is what the request knew on its own."""
+    seen = Background()
 
     def start(plugins: list[Vst3PluginInfo]) -> bool:
-        handed.append(copy.deepcopy(plugins))
+        seen.handed.append(copy.deepcopy(plugins))
+        seen.calls_at_start.append(len(run.calls))
         if not any(not p.probed and p.loadable for p in plugins):
             return False
         scanner._enrich_worker(copy.deepcopy(plugins))
         return True
 
     monkeypatch.setattr(vst_router, "start_background_enrichment", start)
-    return handed
+    return seen
 
 
 @pytest.fixture
@@ -247,10 +282,16 @@ def test_the_first_scan_offers_the_synths_whose_load_outlasts_the_probe(
     six = plugins["Six Sines"]
     assert six["category"] == "instrument"
     assert six["identifier"] == "30D2C648CCAABA57976D20DEFF9B93C1"
-    # Nothing was loaded: no plugin went through the pedalboard probe, and the
-    # worker the scan starts has nothing left to do.
-    assert not any("--probe" in c for c in run.calls)
-    assert all(p.probed for p in background[-1])
+    # The answer came from the listing alone: the request loaded nothing.
+    in_request = run.calls[: background.calls_at_start[-1]]
+    assert not any("--probe" in c for c in in_request)
+    # The worker then loads each plugin out of process, only to learn whether
+    # the server's own host survives it. The synths' loads outlast the probe
+    # three times, and they stay the instruments their factories say they are.
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+    again = _scan(client, refresh=False)
+    assert _instrument_slot(again) == SYNTHS
+    assert again["Surge XT"]["manufacturer"] == "Surge Synth Team"
 
 
 def test_a_rescan_offers_the_synths_the_load_probe_gave_up_on(
@@ -284,7 +325,7 @@ def test_a_rescan_gives_a_timed_out_plugin_three_fresh_load_probes(
 
     # The rescan dropped the verdict and the count: the worker got the synth as
     # never probed, and gave it the full three tries again.
-    handed = {p.name: p for p in background[-1]}
+    handed = {p.name: p for p in background.handed[-1]}
     assert handed["Surge XT"].probed is False
     assert handed["Surge XT"].probe_timeouts == 0
     assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
@@ -363,6 +404,38 @@ def test_a_module_the_host_cannot_list_is_classified_by_the_load_probe(
     assert legacy["manufacturer"] == "Old Vendor"
     assert run.probes("Legacy.vst3") == 1
     assert _instrument_slot(plugins) == SYNTHS
+
+
+def test_a_plugin_the_servers_own_host_dies_loading_is_withheld_once_loaded(
+    vst3_root, run, host, background, client
+):
+    """MT-PowerDrumKit on the user's machine: its factory lists one instrument
+    class, and pedalboard dies loading it (0xC0000005). EDIT prints every VST
+    instrument through POST /api/vst/render-midi, which loads the plugin with
+    pedalboard inside the server, so offering it for good would take the
+    server down on the first bounce. The listing says what it is; the worker's
+    out-of-process load says whether the server may load it."""
+    _file(vst3_root / "MT-PowerDrumKit.vst3")
+    host(True)
+
+    first = _scan(client, refresh=False)
+
+    assert first["MT-PowerDrumKit"]["category"] == "instrument"
+    assert first["MT-PowerDrumKit"]["manufacturer"] == "MANDA AUDIO"
+    assert run.probes("MT-PowerDrumKit.vst3") == 1
+
+    later = _scan(client, refresh=False)
+
+    assert "MT-PowerDrumKit" not in later
+    assert _instrument_slot(later) == SYNTHS
+    every = client.get("/api/vst/scan?include_unloadable=true").json()["plugins"]
+    drums = next(p for p in every if p["name"] == "MT-PowerDrumKit")
+    assert drums["loadable"] is False
+    assert drums["category"] == "instrument"
+    # A rescan gives it another load, and it is withheld again.
+    _scan(client, refresh=True)
+    assert run.probes("MT-PowerDrumKit.vst3") == 2
+    assert "MT-PowerDrumKit" not in _scan(client, refresh=False)
 
 
 def test_the_worker_lists_a_module_once_however_many_probe_rounds_it_takes(

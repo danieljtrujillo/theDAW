@@ -340,8 +340,9 @@ def scan_vst3(
     load, or ran out of load-probe timeouts, another chance. A fresh walk lists
     each new module's classes through the native host before it answers, so
     the answer already says which plugins are instruments; ``enrich=false``
-    opens no plugin at all. Plugins this host cannot load are withheld unless
-    ``include_unloadable`` asks for them, so the UI never offers a dead tile.
+    opens no plugin at all. Plugins this host cannot load (the background load
+    probe failed on them, or died) are withheld unless ``include_unloadable``
+    asks for them, so the UI never offers a dead tile.
 
     Gated: this hands a caller the absolute plugin paths of this machine, and
     enumerating installed plugins is itself information this machine's
@@ -379,8 +380,10 @@ def scan_vst3(
         save_scan_cache(plugins)
     body = _plugin_dicts(plugins, include_unloadable)
     if enrich:
-        # What the host could not list is loaded through pedalboard, which is
-        # far too slow to hold a request; the worker fills the cache in and the
+        # Every new plugin is still loaded once through pedalboard, out of
+        # process, to learn whether the server's own host survives it, and
+        # that load classifies what the native host could not list. It is far
+        # too slow to hold a request; the worker fills the cache in and the
         # next scan serves it.
         start_background_enrichment(plugins)
     return ScanResponse(plugins=body)
