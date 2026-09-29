@@ -15,7 +15,8 @@ centroid, mean chroma (→ ``pc_root``), 13 MFCCs, and a 16-slot onset mask
 LOOM's complement ranking uses). ``energy`` is the shard's rms percentile
 within its source so "energy > 0.7" means the same thing on a quiet folk stem
 and a club master. Chord symbols and lyric words are joined in when the entry
-has a chord track / timed lyrics.
+has a chord track / timed lyrics, and ``section`` (the role: intro, verse,
+chorus, ...) when the section finder has read the entry.
 
 Beats come from the ``analysis`` row (aubio/librosa beat times); the downbeat
 phase is estimated with the chimera structure code and gated on its
@@ -242,6 +243,16 @@ def _words_for(words: list[tuple[float, str]], t0: float, t1: float) -> str:
     return " ".join(t for s, t in words if t0 <= s < t1)
 
 
+def _section_spans(entry_id: str) -> list[tuple[float, float, str]]:
+    try:
+        from backend.modules.sections.store import read_sections, spans_of
+
+        return spans_of(read_sections(entry_id))
+    except Exception as e:  # noqa: BLE001 - shards stand without sections
+        log.info("shards: sections unreadable for %s (%s)", entry_id, e)
+        return []
+
+
 # ---- main ---------------------------------------------------------------------
 
 
@@ -372,6 +383,15 @@ def extract_shards(
             for r in rows:
                 if r["stem_name"] == stem_name and r["beats"] != 4:
                     r["energy"] = by_bar.get(r["bar_index"], 0.0)
+
+    # Each shard's section: the role of the found section holding its middle,
+    # so a re-cut keeps what the section finder wrote.
+    spans = _section_spans(entry_id)
+    if spans:
+        from backend.modules.sections.store import role_at
+
+        for r in rows:
+            r["section"] = role_at(spans, (r["start_sec"] + r["end_sec"]) / 2.0)
 
     db.replace_shards(entry_id, rows)
     log.info(

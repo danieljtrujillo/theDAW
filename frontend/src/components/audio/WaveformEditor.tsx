@@ -7,8 +7,9 @@ import {
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
   Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
   Maximize2, Rows3, Keyboard, AudioLines, Spline, FolderOpen, Check,
-  Settings2, ScanSearch, BoxSelect, Ellipsis, AudioWaveform, Bot, Drum,
+  Settings2, ScanSearch, BoxSelect, Ellipsis, AudioWaveform, Bot, Drum, ListTree,
 } from 'lucide-react';
+import { addSectionMarkersToClip } from '../../lib/songSectionActions';
 import { deriveStyle, deriveLyrics } from '../../catalog/catalogSearch';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { stripSourceId } from '../../lib/displayName';
@@ -8807,6 +8808,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               });
             }
           }
+        }
+        // ── The song's form as timeline markers ─────────────────────────────
+        // A clip of a library song gets a marker at each of the song's section
+        // starts that it plays (lib/songSections), found first when the song
+        // has none. The markers move and split with the clip; a second add
+        // replaces them.
+        if (clip?.libraryEntryId) {
+          pushSeparator(items);
+          items.push({
+            type: 'item',
+            label: 'Add section markers',
+            icon: <ListTree className="w-3 h-3" />,
+            hint: 'song form',
+            title: 'A timeline marker at each section start of this song (intro, verse, chorus, ...) where this clip plays it. The sections are found first when the song has none; a second add replaces the markers.',
+            onSelect: () => { void addSectionMarkersToClip(payload.clipId); },
+          });
         }
         // ── Insert ONE stem beside this clip ────────────────────────────────
         // Every stem the entry already has is listed, aggregates included: the

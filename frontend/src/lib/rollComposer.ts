@@ -223,6 +223,8 @@ export interface RollChordLabel {
   figure: string;
   /** The local key, when the answer names it: 'C major'. */
   key?: string;
+  /** A song chord's roman figure in `key` ('iv'), when the figure is a chord symbol (lib/songSections). */
+  roman?: string;
 }
 
 /** An answer's voices as part writes, its figures and flags, and the key it was written in. */

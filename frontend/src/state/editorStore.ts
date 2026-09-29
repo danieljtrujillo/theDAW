@@ -11,6 +11,7 @@ import {
   clipContentOrigin,
   shiftClipTimelineMarkers,
   splitClipTimelineMarkers,
+  withClipSectionMarkers,
   withClipTimelineMarkers,
   type RollMarker,
 } from '../lib/rollMarkers';
@@ -1492,6 +1493,13 @@ interface EditorStoreState {
    * second bounce moves and renames them and never doubles them.
    */
   setClipRollMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
+  /**
+   * Replace the section markers "Add section markers" wrote on clip `clipId`
+   * (ids `sect:<clipId>:…`, lib/songSections) with `markers`; every other
+   * marker stays. One undo step; a second add moves and renames them and
+   * never doubles them.
+   */
+  setClipSectionMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
 
   // Undo / redo (Phase D). Snapshots capture the document slices below; because
   // every mutation replaces arrays immutably, a snapshot just references the prior
@@ -3948,6 +3956,13 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => {
       const markers = withClipTimelineMarkers(s.markers, clipId, incoming);
       // Nothing written when the clip's markers are already these, so a re-bounce with no marker edit is no marker change.
+      const same = markers.length === s.markers.length
+        && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
+      return same ? {} : { markers };
+    }),
+  setClipSectionMarkers: (clipId, incoming) =>
+    set((s) => {
+      const markers = withClipSectionMarkers(s.markers, clipId, incoming);
       const same = markers.length === s.markers.length
         && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
       return same ? {} : { markers };
