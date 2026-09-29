@@ -897,7 +897,12 @@ def _midi_provider_status() -> dict:
         caps = engine_capabilities()
         reasons = engine_unavailable_reasons()
         engines = [name for name, ok in caps.items() if ok]
-        ready = bool(engines)
+        # The drum engine needs nothing and is always there; the card is ready
+        # when a pitched engine is, the one a full track or a pitched stem
+        # converts with (the /api/midi capability report's ``ok``).
+        ready = bool(
+            caps.get("basic_pitch") or caps.get("piano_transcription_inference")
+        )
         return {
             "id": "midi",
             "label": "MIDI Engines",
@@ -906,7 +911,8 @@ def _midi_provider_status() -> dict:
             # that calls /api/midi/install for the user.
             "summary": ", ".join(engines)
             if ready
-            else "No MIDI engine installed yet. Install one to convert audio to MIDI.",
+            else "No pitched MIDI engine installed yet; only drum stems convert. "
+            "Install one to convert audio to MIDI.",
             "active": ready,
             "models": [
                 {

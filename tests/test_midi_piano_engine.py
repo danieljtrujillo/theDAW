@@ -169,3 +169,46 @@ def test_the_settings_card_says_why_the_piano_engine_is_missing(monkeypatch):
     )
     assert chip["source"] == "missing"
     assert chip["reason"] == "missing module: audioread"
+
+
+def test_the_midi_card_offers_its_install_while_no_pitched_engine_imports(
+    monkeypatch,
+):
+    """The drum engine needs nothing and is always listed. Counted as a
+    ready engine, it kept the card "Ready" with basic-pitch missing, so the
+    card's Install Basic Pitch button (shown on needs_setup) never came up."""
+    from backend.modules.storage import router as storage_router
+
+    monkeypatch.setattr(
+        engine,
+        "engine_capabilities",
+        lambda: {
+            "basic_pitch": False,
+            "piano_transcription_inference": False,
+            "drum_onsets": True,
+        },
+    )
+    monkeypatch.setattr(
+        engine,
+        "engine_unavailable_reasons",
+        lambda: {
+            "basic_pitch": "missing module: basic_pitch",
+            "piano_transcription_inference": "missing module: audioread",
+        },
+    )
+    status = storage_router._midi_provider_status()
+    assert status["state"] == "needs_setup"
+    assert status["active"] is False
+    drums = next(m for m in status["models"] if m["id"] == "drum_onsets")
+    assert drums["source"] == "local"
+
+    monkeypatch.setattr(
+        engine,
+        "engine_capabilities",
+        lambda: {
+            "basic_pitch": True,
+            "piano_transcription_inference": False,
+            "drum_onsets": True,
+        },
+    )
+    assert storage_router._midi_provider_status()["state"] == "ready"
