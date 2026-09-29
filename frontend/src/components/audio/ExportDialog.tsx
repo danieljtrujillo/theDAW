@@ -177,7 +177,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
 
-  const plan = useMemo(() => buildRenderRequest(state), [state]);
+  // Each stem's file is named after its track.
+  const trackNames = useMemo(() => new Map(tracks.map((t) => [t.id, t.name])), [tracks]);
+  const plan = useMemo(() => buildRenderRequest(state, trackNames), [state, trackNames]);
   // MIDI writes the notes: no tail, no library, one file whatever WHAT picks.
   const midi = formatOf(state.format).kind === 'midi';
   const whatLabels = midi ? WHAT_LABEL_MIDI : WHAT_LABEL;

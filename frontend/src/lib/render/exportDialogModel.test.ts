@@ -90,6 +90,18 @@ async function main(): Promise<void> {
     assert.equal(plan.items.length, 2, 'one item per track id');
     assert.deepEqual(plan.items.map((i) => i.trackId), ['t1', 't2']);
     assert.deepEqual(plan.items.map((i) => i.label), ['my session — t1.wav', 'my session — t2.wav']);
+    const names = new Map([['t1', 'Drums'], ['t2', 'Bass']]);
+    assert.deepEqual(
+      buildRenderRequest(baseState({ what: { kind: 'stems', trackIds: ['t1', 't2'] } }), names).items.map((i) => i.label),
+      ['my session — Drums.wav', 'my session — Bass.wav'],
+      'with the track names known, each stem is named after its track',
+    );
+    const twins = new Map([['t1', 'Vox'], ['t2', 'Vox'], ['t3', 'Keys: L/R']]);
+    assert.deepEqual(
+      buildRenderRequest(baseState({ what: { kind: 'stems', trackIds: ['t1', 't2', 't3'] } }), twins).items.map((i) => i.label),
+      ['my session — Vox (1).wav', 'my session — Vox (2).wav', 'my session — Keys_ L_R.wav'],
+      'two tracks with one name get two files, and a name keeps no character a file name cannot hold',
+    );
     for (const item of plan.items) {
       assert.equal(item.kind, 'stem');
       assert.deepEqual(

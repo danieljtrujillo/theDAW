@@ -198,11 +198,31 @@ const midiScopeOf = (what: ExportWhat): ArrangementMidiScope =>
       : { kind: 'clips', clipIds: [...what.clipIds] };
 
 /**
+ * The part of a stem's file name that says which track it is: the track's
+ * name, with the characters a file name cannot hold made '_', or its id when
+ * the dialog knows no name for it. Two picked tracks with one name are told
+ * apart by their place among the tracks of that name, "(1)", "(2)".
+ */
+function stemNames(trackIds: readonly string[], trackNames?: ReadonlyMap<string, string>): string[] {
+  const names = trackIds.map((id) => trackNames?.get(id)?.replace(/[<>:"/\\|?*]/g, '_').trim() || id);
+  const total = new Map<string, number>();
+  for (const n of names) total.set(n, (total.get(n) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return names.map((n) => {
+    if ((total.get(n) ?? 0) < 2) return n;
+    const k = (seen.get(n) ?? 0) + 1;
+    seen.set(n, k);
+    return `${n} (${k})`;
+  });
+}
+
+/**
  * Turns the dialog's five answers into the exact requests the engine runs.
  * Never throws: an unresolvable range is reported through `rangeError`
- * rather than by leaving `items` empty or raising.
+ * rather than by leaving `items` empty or raising. `trackNames` (track id to
+ * name) names each stem's file after its track.
  */
-export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
+export function buildRenderRequest(state: ExportDialogState, trackNames?: ReadonlyMap<string, string>): ExportRenderPlan {
   const { float32, kind } = formatOf(state.format);
   const tailSec = clampTailSec(state.tailSec);
   const trimmedName = state.name.trim();
@@ -250,7 +270,8 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
     // Mirrors `stemRequest`: the track's own rack, no automation, no track
     // mix. `float32` comes from the chosen format, not from VST detection —
     // there is no live chain to inspect from a dialog.
-    for (const trackId of what.trackIds) {
+    const names = stemNames(what.trackIds, trackNames);
+    for (const [i, trackId] of what.trackIds.entries()) {
       const request: BounceRequest = {
         ...base,
         scope: { kind: 'track', trackId },
@@ -260,7 +281,7 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
       };
       items.push({
         kind: 'stem',
-        label: withWavExt(`${trimmedName} — ${trackId}`),
+        label: withWavExt(`${trimmedName} — ${names[i]}`),
         trackId,
         request,
         range,

@@ -262,7 +262,7 @@ async function main(): Promise<void> {
     assert.equal(plan.items.length, 1, 'one item for the one track picked');
     assert.equal(plan.items[0].kind, 'stem');
     assert.equal(plan.items[0].trackId, 't1');
-    assert.equal(plan.items[0].label, 'my session — t1.wav');
+    assert.equal(plan.items[0].label, 'my session — Drums.wav', "the stem's file is named after its track");
     await act(async () => m.root.unmount());
   }
 
