@@ -12,6 +12,7 @@
 import {
   useEditorStore,
   midiCcOfTarget,
+  clipStretchRate,
   computePeaks,
   type AudioClip,
   type AutomationLane,
@@ -48,6 +49,7 @@ import {
   type TasmoRollVoice,
   type TasmoLoadedClip,
   type TasmoSidechainKey,
+  type TasmoWarpMarker,
   type TasmoLoadedTrack,
   type TasmoTrackInput,
   type TasmoClipInput,
@@ -86,6 +88,8 @@ import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
 import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
 import { savedVstState } from './dawEffectMap';
+import { warpSegments, type WarpMarker } from './audioWarp';
+import type { FadeCurve } from './clipFade';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
@@ -401,6 +405,87 @@ const rollPartField = (c: TasmoLoadedClip, color: string): Pick<AudioClip, 'sour
   return ref ? { sourceRollPart: ref } : {};
 };
 
+// ── A clip's time stretch, warp and fade shapes at the file boundary ─────────
+//
+// Mirrors `time_stretch_rate` / `stretch_mode` / `warp_markers` /
+// `fade_in_curve` / `fade_out_curve` on the backend `Clip`. Each is written only
+// where the clip has it, so a clip with none writes the payload it always did,
+// and each is read only when the file holds a value the app can play: anything
+// else is left out, which is the clip at original speed with linear fades.
+
+type ClipTiming = Pick<AudioClip, 'timeStretchRate' | 'stretchMode' | 'warpMarkers' | 'fadeInCurve' | 'fadeOutCurve'>;
+type TasmoClipTiming = Pick<TasmoClipInput, 'time_stretch_rate' | 'stretch_mode' | 'warp_markers' | 'fade_in_curve' | 'fade_out_curve'>;
+
+const FADE_CURVES: readonly FadeCurve[] = ['linear', 'exponential', 'equal-power'];
+const fadeCurveOf = (v: unknown): FadeCurve | undefined => FADE_CURVES.find((c) => c === v);
+const stretchModeOf = (v: unknown): AudioClip['stretchMode'] => (v === 'repitch' || v === 'offline' ? v : undefined);
+const positiveOf = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+
+/** A clip's stretch, warp anchors and fade shapes in the file shape. */
+export function clipTimingToTasmo(c: ClipTiming): TasmoClipTiming {
+  const rate = positiveOf(c.timeStretchRate);
+  const mode = stretchModeOf(c.stretchMode);
+  const markers: TasmoWarpMarker[] = (c.warpMarkers ?? [])
+    .filter((m) => !!m && Number.isFinite(m.sourceSec) && Number.isFinite(m.targetSec))
+    .map((m) => ({ source_sec: m.sourceSec, target_sec: m.targetSec }));
+  const fadeIn = fadeCurveOf(c.fadeInCurve);
+  const fadeOut = fadeCurveOf(c.fadeOutCurve);
+  return {
+    ...(rate !== undefined ? { time_stretch_rate: rate } : {}),
+    ...(mode ? { stretch_mode: mode } : {}),
+    ...(markers.length ? { warp_markers: markers } : {}),
+    ...(fadeIn ? { fade_in_curve: fadeIn } : {}),
+    ...(fadeOut ? { fade_out_curve: fadeOut } : {}),
+  };
+}
+
+/** The inverse, for a loaded clip. A warp marker without a finite
+ *  `source_sec` and `target_sec` is left out: an importer stores its own shape
+ *  under the same key (Bitwig's `time` / `content_time`). */
+export function tasmoClipTiming(c: Pick<TasmoLoadedClip, keyof TasmoClipTiming>): ClipTiming {
+  const rate = positiveOf(c.time_stretch_rate);
+  const mode = stretchModeOf(c.stretch_mode);
+  const markers: WarpMarker[] = [];
+  for (const m of Array.isArray(c.warp_markers) ? c.warp_markers : []) {
+    if (!m || typeof m !== 'object') continue;
+    const { source_sec: sourceSec, target_sec: targetSec } = m as Partial<TasmoWarpMarker>;
+    if (typeof sourceSec !== 'number' || !Number.isFinite(sourceSec)) continue;
+    if (typeof targetSec !== 'number' || !Number.isFinite(targetSec)) continue;
+    markers.push({ sourceSec, targetSec });
+  }
+  const fadeIn = fadeCurveOf(c.fade_in_curve);
+  const fadeOut = fadeCurveOf(c.fade_out_curve);
+  return {
+    ...(rate !== undefined ? { timeStretchRate: rate } : {}),
+    ...(mode ? { stretchMode: mode } : {}),
+    ...(markers.length ? { warpMarkers: markers } : {}),
+    ...(fadeIn ? { fadeInCurve: fadeIn } : {}),
+    ...(fadeOut ? { fadeOutCurve: fadeOut } : {}),
+  };
+}
+
+/**
+ * How much timeline a clip's source fills from its trim point, the length a
+ * reopened clip is held to. A warp map ends where its last segment lands; a
+ * stretch at rate r makes one timeline second eat r source seconds. The same
+ * arithmetic `computeClipSchedule` (state/liveMixer) plays the clip by, so a
+ * clip slowed past the length of its source reopens at the length it was
+ * saved with.
+ */
+const timelineRoomSec = (availableSourceSec: number, timing: ClipTiming): number => {
+  if (timing.warpMarkers?.length) {
+    const segments = warpSegments(timing.warpMarkers, availableSourceSec);
+    const only = segments.length === 1 ? segments[0] : null;
+    // A map that restates the source (every marker unusable, or one marker at
+    // its end) is no warp, and the stretch plays instead, as it does live.
+    const identity = !!only && only.sourceStart === 0 && only.targetStart === 0
+      && only.sourceEnd === availableSourceSec && only.targetEnd === availableSourceSec;
+    if (segments.length && !identity) return Math.max(...segments.map((seg) => seg.targetEnd));
+  }
+  return availableSourceSec / clipStretchRate(timing);
+};
+
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
  *  playable (missing audio file on disk, or a MIDI clip with no notes).
  *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
@@ -489,7 +574,12 @@ const buildClip = async (
   // available duration is measured from the offset rather than from zero.
   const offsetIntoSource = Math.max(0, Math.min(c.offset_into_source ?? 0, Math.max(0, duration - 0.01)));
   const available = Math.max(0, duration - offsetIntoSource);
-  const durationSec = span > 0.02 ? Math.min(span, available) : available;
+  // The stretch, warp and fade shapes the file gives the clip. A stretched or
+  // warped clip can be longer than the source left after its trim point, so it
+  // is held to the timeline its source fills at that stretch, not to the source.
+  const timing = tasmoClipTiming(c);
+  const room = timelineRoomSec(available, timing);
+  const durationSec = span > 0.02 ? Math.min(span, room) : room;
   const clip: AudioClip = {
     id: c.id || uid('clip'),
     trackId,
@@ -552,6 +642,8 @@ const buildClip = async (
     gain: typeof c.gain === 'number' && c.gain !== 1 ? c.gain : undefined,
     fadeInSec: c.fade_in || undefined,
     fadeOutSec: c.fade_out || undefined,
+    // The stretch, the warp anchors and the fade shapes, where the file has them.
+    ...timing,
   };
   // The alternate takes and the comp across them, when the file has any. The
   // clip built above is the ACTIVE take by the invariant, so this only adds to
@@ -1644,6 +1736,11 @@ export function captureEditorSession(): CapturedSession {
           fade_in: c.fadeInSec ?? 0,
           fade_out: c.fadeOutSec ?? 0,
           offset_into_source: c.offsetIntoSource ?? 0,
+          // The time stretch and how it plays, the warp anchors and the fade
+          // shapes, each only where the clip has it. Without them a stretched
+          // clip reopened at its source's speed and length, a warped one
+          // unwarped, and every fade linear.
+          ...clipTimingToTasmo(c),
           // The alternate takes (one embedded file each) and the comp across
           // them. Absent from the payload entirely for a clip with no takes.
           ...takesToTasmo(c, files),

@@ -431,7 +431,19 @@ class Clip(BaseModel):
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None
+    # Warp anchors, [{source_sec, target_sec}] in clip-relative seconds, as
+    # theDAW writes them (frontend lib/audioWarp). An importer may store its own
+    # shape here; the reader keeps only theDAW's.
     warp_markers: list[dict] | None = None
+    # The clip's time stretch: the rate its source plays at (1 = original
+    # speed, above 1 shorter) and how the rate is realised ("repitch" rides the
+    # playback rate, "offline" is baked into the audio). And the shape of each
+    # fade ("linear", "exponential", "equal-power"). All None in files written
+    # before they were saved, which load unstretched with linear fades.
+    time_stretch_rate: float | None = None
+    stretch_mode: str | None = None
+    fade_in_curve: str | None = None
+    fade_out_curve: str | None = None
     # Alternate recordings of this clip, the comp across them, and which take
     # the clip's OWN fields currently mirror. Defaulted exactly like
     # `warp_markers` above, so a .tasmo written before takes existed still

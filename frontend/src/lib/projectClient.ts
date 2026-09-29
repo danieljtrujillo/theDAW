@@ -125,6 +125,13 @@ export interface TasmoSidechainKey {
   entry_id: string;
 }
 
+/** A warp anchor as the file carries it: lib/audioWarp's WarpMarker, in the
+ *  file's snake_case, both in clip-relative seconds. */
+export interface TasmoWarpMarker {
+  source_sec: number;
+  target_sec: number;
+}
+
 export interface EffectChainNode {
   node_type: string; // "vst3" | "audiounit" | "builtin"
   effect_name: string;
@@ -377,6 +384,14 @@ export interface TasmoClipInput {
    *  library entry the clip came from. Optional for the same reason. */
   bpm?: number | null;
   library_entry_id?: string | null;
+  /** The clip's time stretch (the rate its source plays at, and 'repitch' or
+   *  'offline'), its warp anchors and each fade's shape. Written only where
+   *  the clip has them. */
+  time_stretch_rate?: number | null;
+  stretch_mode?: string | null;
+  warp_markers?: TasmoWarpMarker[] | null;
+  fade_in_curve?: string | null;
+  fade_out_curve?: string | null;
 }
 
 export interface TasmoTrackInput {
@@ -581,6 +596,14 @@ export interface TasmoLoadedClip {
   takes?: TasmoTake[] | null;
   comp?: TasmoCompRegion[] | null;
   active_take_index?: number | null;
+  /** The clip's time stretch, warp anchors and fade shapes; absent in files
+   *  written before they were saved, and only as trustworthy as the file (an
+   *  importer's warp markers have another shape). */
+  time_stretch_rate?: number | null;
+  stretch_mode?: string | null;
+  warp_markers?: TasmoWarpMarker[] | null;
+  fade_in_curve?: string | null;
+  fade_out_curve?: string | null;
 }
 
 export interface TasmoLoadedTrack {
