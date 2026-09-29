@@ -66,6 +66,24 @@ async function aPedalboardStateSendsNoHost(): Promise<void> {
   assert.equal(r.sent[1].form.get('state_host'), null);
 }
 
+// A .vst3 file can hold several plugins. The live host loads the one the entry
+// names (sessionRegistry passes `plugin_name`), and theDAW's render host loads
+// the FIRST one in the file when it is given no name. So a print that sent no
+// name ran a different plugin from the one the user heard, with that plugin's
+// state. The hop names the plugin the entry names.
+async function theHopNamesThePluginTheLiveHostLoaded(): Promise<void> {
+  const r = recorder(() => new Response(new Blob(['x']), { status: 200 }));
+  await processFileThroughVst(
+    wav,
+    { plugin_path: 'C:/Plugins/Suite.vst3', plugin_name: 'Suite Compressor', raw_state: 'c3RhdGU=', state_host: 'thedaw' },
+    'a.wav',
+    { fetchImpl: r.fetchImpl },
+  );
+  assert.equal(r.sent[0].form.get('plugin_name'), 'Suite Compressor', 'the plugin inside the file that the entry names');
+  await processFileThroughVst(wav, { plugin_path: 'C:/P.vst3', plugin_name: '' }, 'b.wav', { fetchImpl: r.fetchImpl });
+  assert.equal(r.sent[1].form.get('plugin_name'), null, 'no name, none sent: the host picks as it always did');
+}
+
 async function aFailureIsTheBackendsOwnWords(): Promise<void> {
   const detailed = recorder(() => new Response(JSON.stringify({ detail: 'the plugin failed to load' }), { status: 502 }));
   await assert.rejects(
@@ -101,6 +119,7 @@ async function whatThePluginDidNotTakeIsHeard(): Promise<void> {
 async function main(): Promise<void> {
   await aThedawStateGoesBackToTheHostThatWroteIt();
   await aPedalboardStateSendsNoHost();
+  await theHopNamesThePluginTheLiveHostLoaded();
   await aFailureIsTheBackendsOwnWords();
   await whatThePluginDidNotTakeIsHeard();
   console.log('vstClient.processFile: ok');

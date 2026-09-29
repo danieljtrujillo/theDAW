@@ -163,6 +163,8 @@ export async function renderInstrumentTrack(
 /** The plugin a `processFileThroughVst` hop runs: `VstNode`'s fields. */
 export interface VstHopPlugin {
   plugin_path: string;
+  /** Which plugin inside the file (a .vst3 can hold several). */
+  plugin_name?: string;
   raw_state?: string;
   state_host?: string;
 }
@@ -177,7 +179,10 @@ export interface VstHopPlugin {
  * its factory defaults, silently discarding whatever the user dialled in. So
  * does WHICH host captured it: a state theDAW's live host wrote is rendered
  * back through that host (`state_host: 'thedaw'`), and absent means the
- * pedalboard path the backend has always taken.
+ * pedalboard path the backend has always taken. And so does WHICH plugin in
+ * the file: a .vst3 can hold several, the live host loads the one the entry
+ * names, and theDAW's render host loads the first one when it is given no
+ * name, so a print without it could run a different plugin from the one heard.
  *
  * A failure rejects in the backend's own words and is not retried through the
  * other host: a silent fall back would print a state that host cannot read and
@@ -195,6 +200,7 @@ export async function processFileThroughVst(
   const form = new FormData();
   form.append('audio', file, name);
   form.append('plugin_path', vst.plugin_path);
+  if (vst.plugin_name) form.append('plugin_name', vst.plugin_name);
   form.append('params', '{}');
   if (vst.raw_state) form.append('raw_state', vst.raw_state);
   if (vst.state_host === 'thedaw') form.append('state_host', 'thedaw');
