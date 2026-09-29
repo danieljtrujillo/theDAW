@@ -41,6 +41,7 @@ import { sidechainsInto, wouldCycle, type RoutingRefusal } from '../../state/rou
 import { requireFeature } from '../../notices/featureGateStore';
 import { useVstEditorStore, vstEntryName } from '../../state/vstEditorStore';
 import { useGanStore } from '../../state/ganStore';
+import { VST3_INSTALL_HINT } from '../../state/vstStore';
 import { EFFECT_LABELS, type ChainEntry } from '../../state/effectChainStore';
 import { getRackEffect, RACK_EFFECTS } from '../../lib/rackEffects';
 import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../../lib/aresBridge';
@@ -837,7 +838,7 @@ export const FxChainList: React.FC<FxChainListProps> = ({
               </div>
               {vstPlugins.length === 0 ? (
                 <p className="font-sans text-xs font-bold text-zinc-500 leading-relaxed">
-                  {vstScanning ? 'Scanning…' : 'No VST3 plugins found. Set your plugin folders in Settings, then rescan.'}
+                  {vstScanning ? 'Scanning…' : `No VST3 plugins found. ${VST3_INSTALL_HINT}`}
                 </p>
               ) : (
                 <div className="max-h-32 overflow-y-auto flex flex-col gap-0.5">

@@ -14,7 +14,7 @@ const DESKTOP_ONLY = "This request must come from theDAW's desktop shell.";
 let nextResponse: Response = new Response('{"plugins":[]}', { status: 200 });
 globalThis.fetch = (async () => nextResponse.clone()) as typeof fetch;
 
-const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText, PAIR_THIS_DEVICE_TEXT } =
+const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText, PAIR_THIS_DEVICE_TEXT, VST3_INSTALL_HINT } =
   await import('./vstStore.ts');
 const { useStatusBarStore } = await import('./statusBarStore.ts');
 const { useLogStore } = await import('./logStore.ts');
@@ -104,9 +104,9 @@ const reset = (body: string, status: number): void => {
     vstBrowserEmptyText(false, DESKTOP_ONLY),
     `VST hosting is desktop-only. ${DESKTOP_ONLY}`,
   );
-  // Nothing refused: the message that was always there.
-  assert.equal(vstBrowserEmptyText(false, null), 'No VST3 plugins found. Click Rescan.');
-  assert.equal(vstBrowserEmptyText(false, '   '), 'No VST3 plugins found. Click Rescan.');
+  // Nothing refused: where plugins are read from, and the rescan key.
+  assert.equal(vstBrowserEmptyText(false, null), `No VST3 plugins found. ${VST3_INSTALL_HINT}`);
+  assert.equal(vstBrowserEmptyText(false, '   '), `No VST3 plugins found. ${VST3_INSTALL_HINT}`);
 }
 
 // --- an unpaired device on the LAN is told how to pair ----------------------

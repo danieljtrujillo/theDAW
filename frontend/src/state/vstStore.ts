@@ -27,6 +27,13 @@ export const refusalNeedsPairing = (reason: string | null | undefined): boolean 
 export const PAIR_THIS_DEVICE_TEXT =
   'VST effects work on this device once it is paired. On the computer running theDAW, open Mobile Access and open its share link or QR code on this device.';
 
+/** How a plugin comes to be listed, for every empty VST3 list (MIX's browser,
+ *  EDIT's effect rack, EDIT's instrument slot). The scan reads the standard
+ *  VST3 folder (backend scanner `_default_vst3_dirs`), a folder linked into it
+ *  included, and a rescan finds what was installed since. */
+export const VST3_INSTALL_HINT =
+  'Install them into C:\\Program Files\\Common Files\\VST3, or link their folder into it, then press Rescan.';
+
 /** What the MIX effects browser shows where the plugin tiles would be.
  *
  *  An empty list with no explanation is the browser build's worst answer: the
@@ -39,7 +46,7 @@ export const vstBrowserEmptyText = (scanning: boolean, unavailableReason: string
   const reason = unavailableReason?.trim();
   if (reason && refusalNeedsPairing(reason)) return PAIR_THIS_DEVICE_TEXT;
   if (reason) return `VST hosting is desktop-only. ${reason}`;
-  return 'No VST3 plugins found. Click Rescan.';
+  return `No VST3 plugins found. ${VST3_INSTALL_HINT}`;
 };
 
 /** The quiet notice is shown once per session, not once per scan: MIX and the

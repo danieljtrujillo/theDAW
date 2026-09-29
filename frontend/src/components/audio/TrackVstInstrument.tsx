@@ -24,6 +24,7 @@ import { useVstLiveStore, type VstLiveStatus } from '../../state/vstLiveStore';
 import { vstSessions } from '../../lib/vstLive/sessionRegistry';
 import type { Vst3PluginInfo } from '../../lib/vstClient';
 import { isVst3SwitchMode } from '../../lib/articulationMap';
+import { VST3_INSTALL_HINT } from '../../state/vstStore';
 
 /** The scanned plugins that can play MIDI: the instruments. */
 export const instrumentPlugins = (plugins: readonly Vst3PluginInfo[]): Vst3PluginInfo[] =>
@@ -178,7 +179,7 @@ export const TrackVstInstrument: React.FC<TrackVstInstrumentProps> = ({ track, p
           </div>
           {available.length === 0 ? (
             <p id={listId} className="font-sans text-xs font-bold text-zinc-500 leading-relaxed">
-              {scanning ? 'Scanning…' : 'No VST3 instruments found. Set your plugin folders in Settings, then rescan.'}
+              {scanning ? 'Scanning…' : `No VST3 instruments found. ${VST3_INSTALL_HINT}`}
             </p>
           ) : (
             <div id={listId} role="listbox" aria-label={`VST3 instruments for track ${track.name}`} className="max-h-32 overflow-y-auto flex flex-col gap-0.5">
