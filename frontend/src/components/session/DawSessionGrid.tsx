@@ -20,7 +20,9 @@ import { dueAt, nextFollow, type FollowAction, type FollowKind } from '../../lib
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { getEngineCtx, getMasterGain } from '../../state/playerStore';
 import { renderNotesToBlob, type RenderNote } from '../../lib/midiSynth';
-import { sessionCellSpan, sessionMidiRenderOptions } from '../../lib/sessionCellSpan';
+import { sessionCellSpan, sessionCellVoice, sessionMidiRender } from '../../lib/sessionCellSpan';
+import { getActiveSynthVoice, getGlobalVoice, useSoundfontStore } from '../../lib/soundfontEngine';
+import type { ClipVoice } from '../../lib/clipProgram';
 import { subscribeToMidi } from '../../state/midiBus';
 import { subscribeSwayValue } from '../../state/swayBus';
 import { enableMidi } from '../../state/midiTriggerStore';
@@ -249,11 +251,19 @@ const dbToVolume = (db: number): number => {
 const isPlayableClip = (clip: DawClip): boolean =>
   !!clip.file_path || !!(clip.midi_notes && clip.midi_notes.length);
 
-/** Cache key: the audio URL for audio clips, or a stable MIDI key otherwise. */
-const clipCacheKey = (clip: DawClip): string =>
+/** A MIDI cell's voice as a cache-key part. With no program the cell renders
+ *  through the picker's built-in voice, so that voice is the part. */
+const voiceKey = (voice: ClipVoice): string =>
+  voice.program === undefined
+    ? `builtin:${getActiveSynthVoice() ?? 'basic'}`
+    : `${voice.percussion ? 'kit' : 'program'}:${voice.program}:${voice.bank ?? 0}`;
+
+/** Cache key: the audio URL for audio clips; for a MIDI clip its cell and the
+ *  voice it renders with, so a cell rendered on one voice is never played on another. */
+const clipCacheKey = (clip: DawClip, track: DawTrack | undefined): string =>
   clip.file_path
     ? dawImportAudioUrl(clip.file_path)
-    : `midi:${clip.track_index ?? '?'}:${clip.scene_index ?? clip.slot_index ?? '?'}:${clip.name}`;
+    : `midi:${clip.track_index ?? '?'}:${clip.scene_index ?? clip.slot_index ?? '?'}:${clip.name}:${voiceKey(sessionCellVoice(clip, track, getGlobalVoice()))}`;
 
 /** DAW MIDI-note dicts -> synth RenderNote[] (start/duration in seconds). */
 const notesFromDawClip = (clip: DawClip): RenderNote[] => {
@@ -525,6 +535,17 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   }, []);
 
   const tracks = React.useMemo(() => performTracks(project), [project]);
+  /** Each clip's column, whose program, bank and drum channel a MIDI cell renders with. */
+  const trackOfClip = React.useMemo(() => {
+    const map = new Map<DawClip, DawTrack>();
+    for (const track of tracks) for (const clip of track.clips) map.set(clip, track);
+    return map;
+  }, [tracks]);
+  /** The instrument picker, which a MIDI cell with no program of its own renders
+   *  with: a change re-renders those cells before they are launched again. */
+  const pickerKey = useSoundfontStore(
+    (s) => `${s.useSoundfont}:${s.activeProgram}:${s.activeBankId}:${s.activeBank}:${s.activeSynthVoice ?? ''}`,
+  );
 
   React.useEffect(() => {
     setTrackLevels(Array.from({ length: tracks.length }, () => 0));
@@ -795,7 +816,8 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   );
 
   const getClipBuffer = React.useCallback((clip: DawClip): Promise<AudioBuffer> => {
-    const key = clipCacheKey(clip);
+    const track = trackOfClip.get(clip);
+    const key = clipCacheKey(clip, track);
     const cached = bufferCacheRef.current.get(key);
     if (cached) return cached;
     const task = (async () => {
@@ -806,10 +828,12 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         return context.decodeAudioData(await response.arrayBuffer());
       }
       // MIDI clip: render its notes to audio so session cells still play, to
-      // the end of the cell's window and ringing out (lib/sessionCellSpan).
+      // the end of the cell's window and ringing out, on its own column's
+      // program, bank and drum channel (lib/sessionCellSpan).
       const notes = notesFromDawClip(clip);
       if (notes.length === 0) throw new Error('clip has no audio or notes');
-      const rendered = await renderNotesToBlob(notes, sessionMidiRenderOptions(clip));
+      const request = sessionMidiRender(clip, track, notes, getGlobalVoice());
+      const rendered = await renderNotesToBlob(request.notes, request.options);
       return context.decodeAudioData(await rendered.blob.arrayBuffer());
     })();
     bufferCacheRef.current.set(key, task);
@@ -820,9 +844,12 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       () => { bufferCacheRef.current.delete(key); },
     );
     return task;
-  }, []);
+  }, [trackOfClip]);
 
   React.useEffect(() => {
+    // Re-run on a picker change: a new picker voice is a new key for every MIDI
+    // cell that follows the picker, rendered here ahead of its next launch.
+    void pickerKey;
     let cancelled = false;
     const seen = new Set<string>();
     // Warm only clips the grid can actually LAUNCH. This iterated every clip on
@@ -833,7 +860,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     // getClipBuffer memoises, so a cell outside this set costs one decode on use.
     const clips = Array.from(clipLookup.values()).filter((clip) => {
       if (!isPlayableClip(clip)) return false;
-      const key = clipCacheKey(clip);
+      const key = clipCacheKey(clip, trackOfClip.get(clip));
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -845,7 +872,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     };
     if (clips.length > 0) void warm();
     return () => { cancelled = true; };
-  }, [getClipBuffer, clipLookup]);
+  }, [getClipBuffer, clipLookup, trackOfClip, pickerKey]);
 
   const tickMeters = React.useCallback(() => {
     const players = playersRef.current;
@@ -1120,7 +1147,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         ensurePump();
       };
 
-      const ready = bufferReadyRef.current.get(clipCacheKey(entry.clip));
+      const ready = bufferReadyRef.current.get(clipCacheKey(entry.clip, entry.track));
       if (ready) {
         start(ready, Math.max(ticket.at, context.currentTime));
         return;

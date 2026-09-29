@@ -17,6 +17,19 @@ import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 import { spanSec, stepClock } from './rollTempo';
 
+/** A saved clip's or track's program, bank and sound bank, each only when the file has one. */
+function voiceFields(v: {
+  instrument_program?: number | null;
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+}): Pick<DawTrack, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id'> {
+  return {
+    ...(typeof v.instrument_program === 'number' ? { instrument_program: v.instrument_program } : {}),
+    ...(typeof v.instrument_bank === 'number' && v.instrument_bank > 0 ? { instrument_bank: v.instrument_bank } : {}),
+    ...(v.instrument_bank_id ? { instrument_bank_id: v.instrument_bank_id } : {}),
+  };
+}
+
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
 
@@ -77,11 +90,17 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         // file validates); interpretation is not, so an unknown kind loads as
         // no rule rather than as some other rule.
         followAction: parseFollowAction(c.follow_action),
+        // The clip's own voice, which the grid renders it with ahead of its track's.
+        ...voiceFields(c),
       };
     });
     return {
       name: t.name || `Track ${ti + 1}`,
       type: t.type === 'midi' ? 'midi' : 'audio',
+      // The column's voice: every MIDI cell on it renders with this program,
+      // bank and drum channel unless the cell has a program of its own.
+      ...voiceFields(t),
+      ...(t.is_percussion ? { is_percussion: true } : {}),
       volume_db: t.volume_db ?? 0,
       pan: t.pan ?? 0,
       mute: !!t.mute,
