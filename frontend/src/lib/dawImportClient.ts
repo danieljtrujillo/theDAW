@@ -1,6 +1,7 @@
 // Typed client for the DAW project import backend (/api/dawimport/*).
 import { getJson, postJson } from './apiJson';
 import type { FollowAction } from './followAction';
+import type { TasmoLoadedClip, TasmoLoadedTrack, TasmoProjectLoaded } from './projectClient';
 
 export interface DawClip {
   name: string;
@@ -31,6 +32,11 @@ export interface DawClip {
    *  yet); set in the Session grid and carried through the .tasmo round-trip as
    *  `follow_action`. See lib/followAction.ts. */
   followAction?: FollowAction;
+  /** The .tasmo clip this one was opened from (lib/tasmoToSession), absent on
+   *  a DAW import. A PERFORM save writes it back under the grid's own fields,
+   *  so what the grid does not show (the clip's id, gain, fades, tempo,
+   *  library entry, notes, render, takes) is kept. */
+  tasmo?: TasmoLoadedClip;
 }
 
 export interface DawDevice {
@@ -47,6 +53,13 @@ export interface DawDevice {
   is_instrument?: boolean;
   /** True for a rack container itself (its nested devices follow it). */
   is_rack?: boolean;
+  /** A device opened from a .tasmo (lib/tasmoToSession): the insert's chain
+   *  entry id, and the plugin state theDAW captured with the host that
+   *  captured it. `state` above is a DAW import's own chunk, which neither
+   *  host reads; these are theDAW's. Absent on a DAW import. */
+  id?: string | null;
+  raw_state?: string | null;
+  state_host?: string | null;
 }
 
 export interface DawTrack {
@@ -59,6 +72,11 @@ export interface DawTrack {
   color?: string | null;
   clips: DawClip[];
   devices: DawDevice[];
+  /** The .tasmo track this one was opened from, its clips left out (each
+   *  DawClip carries its own), absent on a DAW import. A PERFORM save writes
+   *  it back under the grid's own fields, so the track's id, instrument,
+   *  routing and folder place are kept. */
+  tasmo?: Omit<TasmoLoadedTrack, 'clips'>;
 }
 
 export interface DawLocator {
@@ -105,6 +123,11 @@ export interface DawProject {
   plugins_used: string[];
   warnings: string[];
   missing_files: string[];
+  /** The .tasmo project this one was opened from, its tracks left out (each
+   *  DawTrack carries its own), absent on a DAW import. A PERFORM save writes
+   *  its project-level fields back (the tempo and meter maps among them), so
+   *  a set saved from PERFORM keeps what only EDIT shows. */
+  tasmo?: Omit<TasmoProjectLoaded, 'tracks'>;
 }
 
 export interface DawDetect {

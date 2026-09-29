@@ -85,6 +85,8 @@ function writeThenParse(g: RoutingGraph, buses: EditorBus[]) {
   assert.equal(file.buses[0].volume, 0.7);
   assert.equal(file.buses[0].mute, true);
   assert.equal(file.buses[0].output_routing, null);
+  assert.deepEqual(file.buses[0].send_amounts, {}, 'a bus that sends nowhere writes no sends');
+  assert.equal(file.buses[0].sidechain_keys, undefined, 'and no sidechain list');
   assert.equal(file.buses[0].effect_chain?.length, 1);
 
   // What the reader rebuilds. Compared through the accessors, not by identity:
@@ -184,9 +186,10 @@ function writeThenParse(g: RoutingGraph, buses: EditorBus[]) {
   let g = emptyGraph();
   g = addBus(g, 'phantom', 'Phantom');
   assert.deepEqual(busesToTasmo(g, []), []);
-  // And a strip whose node is missing still writes, feeding the master.
+  // And a strip whose node is missing still writes, feeding the master and
+  // sending nowhere.
   assert.deepEqual(busesToTasmo(g, [{ id: 'nostrip', name: 'N', fxChain: [], volume: 0.5, mute: false }]), [
-    { id: 'nostrip', name: 'N', volume: 0.5, mute: false, output_routing: null, effect_chain: [] },
+    { id: 'nostrip', name: 'N', volume: 0.5, mute: false, output_routing: null, send_amounts: {}, effect_chain: [] },
   ]);
 }
 
