@@ -1261,10 +1261,20 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
           // it does when it finishes. Placement without the rule reopened a saved
           // set with every column playing one clip forever.
           follow_action: c.followAction ?? null,
+          // A cell's own voice, so a save from PERFORM reopens it on its program.
+          ...(typeof c.instrument_program === 'number' ? { instrument_program: c.instrument_program } : {}),
+          ...(c.instrument_bank ? { instrument_bank: c.instrument_bank } : {}),
+          ...(c.instrument_bank_id ? { instrument_bank_id: c.instrument_bank_id } : {}),
         };
       }),
       effect_chain: trackInsertsToTasmo(t),
       color: t.color ?? null,
+      // The column's voice, so a save from PERFORM reopens every MIDI cell on it
+      // with the program, bank and drum channel it had.
+      ...(typeof t.instrument_program === 'number' ? { instrument_program: t.instrument_program } : {}),
+      ...(t.instrument_bank ? { instrument_bank: t.instrument_bank } : {}),
+      ...(t.instrument_bank_id ? { instrument_bank_id: t.instrument_bank_id } : {}),
+      ...(t.is_percussion ? { is_percussion: true } : {}),
     };
   });
   return {

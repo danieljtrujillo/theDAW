@@ -8,7 +8,8 @@
 // their absolute on-disk path (the load step relinks embedded audio to disk, and
 // /api/project/clip-audio serves any absolute path — see dawImportClient's
 // dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
-// seconds-based shape the grid renders.
+// seconds-based shape the grid renders. A note the file already holds in
+// seconds (an imported set's, and every MIDI cell PERFORM saves) is kept as it is.
 //
 // Each project, track and clip also keeps the .tasmo record it came from
 // (`tasmo`), and each device its entry id and captured plugin state, so a save
@@ -16,11 +17,38 @@
 // grid does not show.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
+import { bankSelectOf, gmProgramOf, playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 import { spanSec, stepClock } from './rollTempo';
+
+/** A saved note's start and length in seconds, or null for a note in roll steps.
+ *  The start fields are the ones lib/projectImport reads a seconds note by. */
+function secondsNote(n: Record<string, number>): { start: number; duration: number } | null {
+  const start = [n.start, n.startSec, n.start_time, n.time].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (start === undefined) return null;
+  const duration = [n.duration, n.durationSec, n.dur, n.length_sec].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  return { start: Math.max(0, start), duration: duration ?? 0.25 };
+}
+
+/** A saved clip's or track's program, bank and sound bank, each only when the
+ *  file has one, read as EDIT's loader reads them: a whole program 0-127 (the
+ *  file is hand-editable) and a bank only beside a program. */
+function voiceFields(v: {
+  instrument_program?: number | null;
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+}): Pick<DawTrack, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id'> {
+  const program = gmProgramOf(v.instrument_program);
+  if (program === undefined) return {};
+  const bank = bankSelectOf(v.instrument_bank);
+  return {
+    instrument_program: program,
+    ...(bank > 0 ? { instrument_bank: bank } : {}),
+    ...(v.instrument_bank_id ? { instrument_bank_id: v.instrument_bank_id } : {}),
+  };
+}
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
@@ -52,6 +80,10 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
           ? stepNotes.map((n) => {
+              const sec = secondsNote(n);
+              if (sec) {
+                return { pitch: Number(n.pitch ?? n.note ?? n.midi ?? 60), ...sec, velocity: Number(n.velocity ?? 100) };
+              }
               const length = Number(n.length ?? 1);
               // The note's own ticks when the file carries them, else its own
               // length in steps down to the roll's one tick (a missing or
@@ -86,12 +118,18 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         // tempo, library entry, step notes, render and takes, none of which
         // the grid shows.
         tasmo: c,
+        // The clip's own voice, which the grid renders it with ahead of its track's.
+        ...voiceFields(c),
       };
     });
     const { clips: _clips, ...trackRecord } = t;
     return {
       name: t.name || `Track ${ti + 1}`,
       type: t.type === 'midi' ? 'midi' : 'audio',
+      // The column's voice: every MIDI cell on it renders with this program,
+      // bank and drum channel unless the cell has a program of its own.
+      ...voiceFields(t),
+      ...(t.is_percussion ? { is_percussion: true } : {}),
       volume_db: t.volume_db ?? 0,
       pan: t.pan ?? 0,
       mute: !!t.mute,

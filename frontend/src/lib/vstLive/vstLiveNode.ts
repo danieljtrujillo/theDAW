@@ -24,7 +24,8 @@
  * The worklet does the audio; this module does the plumbing: quanta -> blocks
  * over the port, blocks -> WebSocket, processed blocks back. Transport state
  * (playing / position / tempo / discontinuity) is broadcast to every live node
- * by liveMixer through `broadcastVstTransport`.
+ * through `broadcastVstTransport`, by liveMixer for EDIT and by
+ * lib/performTransport for PERFORM's grid.
  *
  * Units: `positionSamples` is sample frames on the project timeline;
  * `tempoBpm` is beats per minute; `SWAP_RAMP_SEC` is seconds.
@@ -63,6 +64,13 @@ export interface VstTransportInfo {
   tempoBpm: number;
   /** Start / seek / loop wrap: the host resets the plugin. */
   discontinuity: boolean;
+  /**
+   * The AudioContext time `positionSamples` was read at. A node that goes live
+   * while the transport plays is told the position advanced by the time since,
+   * so a plugin whose host opened seconds into playback lands where the
+   * transport is and not where it was. Left out, the position is replayed as sent.
+   */
+  atSec?: number;
 }
 
 /* ── worklet module loading (one promise per context, as makeChop does) ─────── */
@@ -95,9 +103,25 @@ let lastTransport: VstTransportInfo = {
 };
 
 /**
+ * The transport a node that goes live on `ctx` is told: the last broadcast,
+ * with its position carried forward to `ctx.currentTime` while it plays, and
+ * always a discontinuity, since the plugin has never seen this stream before.
+ */
+function transportNow(ctx: BaseAudioContext): Record<string, unknown> {
+  const t = lastTransport;
+  let positionSamples = t.positionSamples;
+  if (t.playing && t.atSec !== undefined && Number.isFinite(t.atSec)) {
+    const elapsed = ctx.currentTime - t.atSec;
+    if (elapsed > 0) positionSamples += Math.round(elapsed * ctx.sampleRate);
+  }
+  return { type: 'transport', playing: t.playing, positionSamples, tempoBpm: t.tempoBpm, discontinuity: true };
+}
+
+/**
  * Tell every live plugin where the transport is. Called by liveMixer on start,
- * seek, loop wrap and stop; `discontinuity` is what makes the host call the
- * plugin's `reset()`, so a delay tail does not smear across a seek.
+ * seek, loop wrap and stop, and by PERFORM's grid (lib/performTransport) on its
+ * first launch, a tempo change and Stop; `discontinuity` is what makes the host
+ * call the plugin's `reset()`, so a delay tail does not smear across a seek.
  */
 export function broadcastVstTransport(info: VstTransportInfo): void {
   lastTransport = info;
@@ -437,13 +461,7 @@ export function createVstLiveNode(
 
     liveNodes.add(portEntry);
     portEntry.post({ type: 'live', live: true });
-    portEntry.post({
-      type: 'transport',
-      playing: lastTransport.playing,
-      positionSamples: lastTransport.positionSamples,
-      tempoBpm: lastTransport.tempoBpm,
-      discontinuity: true, // the plugin has never seen this stream before
-    });
+    portEntry.post(transportNow(ctx)); // the plugin has never seen this stream before
     if (!audioOnPort) s.audioSink = onProcessed;
     // Whatever the entry already holds has to reach a plugin that just started
     // from its state file; the diff map is empty, so this pushes everything.
@@ -467,13 +485,7 @@ export function createVstLiveNode(
     if (!audioOnPort || s.client !== audioPortClient) audioOnPort = attachAudioPort(s, worklet);
     if (!audioOnPort) s.audioSink = onProcessed;
     portEntry.post({ type: 'live', live: true });
-    portEntry.post({
-      type: 'transport',
-      playing: lastTransport.playing,
-      positionSamples: lastTransport.positionSamples,
-      tempoBpm: lastTransport.tempoBpm,
-      discontinuity: true, // the respawned plugin has never seen this stream before
-    });
+    portEntry.post(transportNow(ctx)); // the respawned plugin has never seen this stream before
     // A respawned plugin starts from its state file, not from whatever the
     // diff map remembers sending last time, so the map must not suppress
     // this re-push the way it does a same-session param rebuild.

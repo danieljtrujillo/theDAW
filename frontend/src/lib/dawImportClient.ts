@@ -37,6 +37,12 @@ export interface DawClip {
    *  so what the grid does not show (the clip's id, gain, fades, tempo,
    *  library entry, notes, render, takes) is kept. */
   tasmo?: TasmoLoadedClip;
+  /** A MIDI clip's own General MIDI program, the bank select it was picked in
+   *  and its sound bank (lib/bankRegistry). Absent on an imported set; carried
+   *  from and back to a .tasmo clip. It wins over its track's program. */
+  instrument_program?: number | null;
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
 }
 
 export interface DawDevice {
@@ -77,6 +83,15 @@ export interface DawTrack {
    *  it back under the grid's own fields, so the track's id, instrument,
    *  routing and folder place are kept. */
   tasmo?: Omit<TasmoLoadedTrack, 'clips'>;
+  /** The General MIDI program the track's MIDI clips play with when a clip has
+   *  none, the bank select it was picked in and its sound bank. Absent on an
+   *  imported set, whose MIDI then follows the global instrument picker; carried
+   *  from and back to a .tasmo track. */
+  instrument_program?: number | null;
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+  /** A drum track: its MIDI clips play on the drum channel, where the program is the kit. */
+  is_percussion?: boolean;
 }
 
 export interface DawLocator {
