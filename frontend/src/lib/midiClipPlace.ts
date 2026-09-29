@@ -17,12 +17,12 @@
  *
  * Percussion belongs to the TRACK (lib/clipProgram): a drum file plays its
  * kit only on a drum track, and a pitched file plays pitched only on a
- * melodic one. A drop on a track of the other kind turns the track to the
- * file's kind when the track is blank (no clips, no instrument of its own),
- * and otherwise lands on a new track of the file's kind, so the track the
- * user pointed at keeps its voice and its clips keep theirs. A drop below
- * every lane, or with no track named, makes a track of the file's kind that
- * holds the file's program.
+ * melodic one. A drop on a blank track (no clips, no instrument of its own)
+ * turns it to the file's kind and gives it the file's program, as a new
+ * track gets. A drop on a track of the other kind that is not blank lands on
+ * a new track of the file's kind, so the track the user pointed at keeps its
+ * voice and its clips keep theirs. A drop below every lane, or with no track
+ * named, makes a track of the file's kind that holds the file's program.
  *
  * The clip carries a part record (AudioClip `sourceRollPart`) naming its
  * program, channel and, for a library song's MIDI (`fromAudio`), the mark
@@ -142,14 +142,20 @@ export function placeMidiFileClip(data: MidiFileData, opts: MidiClipPlaceOptions
   const editor = useEditorStore.getState();
   const pointed = opts.targetTrackId ? editor.tracks.find((t) => t.id === opts.targetTrackId) : undefined;
   const fits = !!pointed && isPercussionTrack(pointed) === file.percussion;
-  const turnable = !!pointed && !fits && blankTrack(pointed, editor.clips.filter((c) => c.trackId === pointed.id).length);
+  const blank = !!pointed && blankTrack(pointed, editor.clips.filter((c) => c.trackId === pointed.id).length);
+  const turnable = !fits && blank;
   const { trackId, clipId } = editor.undoGroup(() => {
     const store = useEditorStore.getState();
     let trackId: string;
     if (pointed && (fits || turnable)) {
       trackId = pointed.id;
-      // A blank track takes the file's kind: a drum file makes it a drum track, a pitched file a melodic one.
-      if (turnable) store.updateTrack(trackId, { isPercussion: file.percussion ? true : undefined });
+      // A blank track takes the file's kind (a drum file makes it a drum track, a pitched file a melodic
+      // one) and the file's program, as a new track does, so its header names what its clip plays.
+      const patch = {
+        ...(turnable ? { isPercussion: file.percussion ? true : undefined } : {}),
+        ...(blank && file.program !== undefined ? { instrumentProgram: file.program } : {}),
+      };
+      if (Object.keys(patch).length) store.updateTrack(trackId, patch);
     } else {
       // A new track of the file's kind, on the file's program (a kit on a drum track), else the picker's.
       trackId = store.addTrack({

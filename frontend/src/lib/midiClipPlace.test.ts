@@ -86,6 +86,23 @@ const bassFile = parseMidi(encodeMidi({
   assert.equal(done.turned, true);
   assert.equal(voiceOf(done.clipId).percussion, true);
   assert.equal(ed().tracks.length, tracksBefore, 'no other track was made');
+  assert.equal(ed().tracks.find((t) => t.id === lane)?.instrumentProgram, 0, "and plays the file's kit");
+}
+
+// A bass stem dropped on a blank melodic lane: the lane takes the stem's instrument, as a new track would,
+// so its header names what its clip plays.
+{
+  fresh();
+  const lane = ed().addTrack({ name: 'Track 1' });
+  const done = placeMidiFileClip(bassFile, { label: 'Song · bass', startSec: 0, targetTrackId: lane, fromAudio: true }, deps);
+  assert.ok(done);
+  assert.equal(done.trackId, lane);
+  assert.equal(ed().tracks.find((t) => t.id === lane)?.instrumentProgram, 33, 'the blank lane plays the electric bass');
+  assert.deepEqual(voiceOf(done.clipId), { program: 33, percussion: false });
+  // A lane that holds a clip keeps its own voice: the next file's program goes on its clip only.
+  const other = placeMidiFileClip(drumFile, { label: 'Song · drums', startSec: 0, targetTrackId: done.trackId }, deps);
+  assert.ok(other);
+  assert.equal(ed().tracks.find((t) => t.id === lane)?.instrumentProgram, 33);
 }
 
 // A drum MIDI dropped on a piano lane that holds clips: the piano keeps its voice, the drums get a drum track.
