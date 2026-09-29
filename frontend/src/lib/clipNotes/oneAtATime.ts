@@ -14,6 +14,9 @@
  * - 'latest': the note that starts last, as a monophonic synth plays: each
  *   note cuts the one before it at its start.
  *
+ * A pitch struck again while it still sounds (a re-attack) is the same line
+ * in every mode: the new attack cuts the old one at its start and plays on.
+ *
  * Notes that start together are one choice: the highest for 'top' and
  * 'latest', the lowest for 'bottom'. A note that is cut keeps at least one
  * tick. Works on ticks (the store's `tick`/`ticks`, else `step`/`length` on the
@@ -69,7 +72,7 @@ export function oneAtATime(notes: readonly PianoNote[], keep: OneAtATimeKeep): O
       const prevStart = startOf(prev);
       const prevEnd = prevStart + lengthOf(prev);
       if (prevEnd > start) {
-        const wins = keep === 'latest' || (keep === 'top' ? n.note > prev.note : n.note < prev.note);
+        const wins = keep === 'latest' || n.note === prev.note || (keep === 'top' ? n.note > prev.note : n.note < prev.note);
         if (!wins) {
           dropped += 1;
           continue;

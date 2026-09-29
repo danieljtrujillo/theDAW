@@ -70,6 +70,15 @@ const smallText = (el: Element | null): string[] =>
   const latest = oneAtATime(notes, 'latest');
   assert.deepEqual(latest.notes.map((n) => [n.id, n.tick, n.ticks]), [['b', 0, 480], ['c', 480, 240], ['d', 720, 480]], 'each note cuts the one before it');
   assert.equal(latest.notes.every((n) => n.step === n.tick! / 240 && n.length === n.ticks! / 240), true, 'steps follow the ticks');
+  // A pitch struck again while it still sounds (a transcriber's re-attack) is the same line in every mode:
+  // the new attack cuts the old one and plays on, so the line keeps both attacks and sounds to the second one's end.
+  const again = [note('x', 60, 0, 960), note('y', 60, 480, 960)];
+  for (const keep of ['top', 'bottom', 'latest'] as const) {
+    const res = oneAtATime(again, keep);
+    assert.deepEqual(res.notes.map((n) => [n.id, n.tick, n.ticks]), [['x', 0, 480], ['y', 480, 960]], `${keep}: the second attack stays`);
+    assert.equal(res.dropped, 0);
+    assert.equal(res.shortened, 1);
+  }
 }
 
 // A bass transcription: each bass note with a harmonic an octave and a fifth up over it, a rumble under the first, a blip up high.
