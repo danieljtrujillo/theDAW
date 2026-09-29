@@ -50,6 +50,7 @@ import { create } from 'zustand';
 
 import type { RackEffectDef } from '../lib/rackEffects';
 import { getRackEffect } from '../lib/rackEffects';
+import { bounceWalksMix } from '../lib/render/bounceWalksMix';
 import type { RenderRange } from '../lib/render/renderRange';
 import { frameToSec, keptFrameCount } from '../lib/render/renderRange';
 import type { BounceRequest } from '../lib/renderCore';
@@ -541,20 +542,20 @@ export interface ChunkSafetyBus {
  * mirroring `renderCore.renderBounce`:
  *
  *  - `includeFx: false` builds no rack anywhere, so such a bounce is always
- *    chunk-safe. Today's selection bounce is exactly that.
+ *    chunk-safe.
  *  - A `track` scope is a stem: only that track's chain, and no master rack (a
  *    stem has no master bus). `renderBounce` also strips hosted `vst3` entries
  *    from a stem — they are printed on the backend as a LATER stage of the job —
  *    so they are not in the offline graph this predicate gates, and do not make
  *    it unsafe. The master and selection scopes leave them in, where they do.
  *  - `master` and `selection` cover the master rack plus every track's chain.
- *  - `buses` cover the BUS racks, which since T14 the MASTER scope builds too
- *    (`renderBounce` walks the routing graph). A bus rack is as capable of
- *    carrying state across a chunk boundary as a track's. Neither of the other
- *    two scopes is routed — a stem is pre-routing and a selection is a per-clip
- *    mix straight to the master — so neither reads them. The argument is
- *    OPTIONAL and defaults to none, which is the pre-bus behaviour and the
- *    right answer for a document with no buses.
+ *  - `buses` cover the BUS racks, which every bounce that walks the routing
+ *    graph builds (lib/render/bounceWalksMix: the master scope since T14, and a
+ *    clip selection printed with its inserts). A bus rack is as capable of
+ *    carrying state across a chunk boundary as a track's. A stem is
+ *    pre-routing, so it does not read them. The argument is OPTIONAL and
+ *    defaults to none, which is the pre-bus behaviour and the right answer for
+ *    a document with no buses.
  *
  * Mute and solo are deliberately NOT modelled. `renderBounce` skips a silenced
  * track's rack, so ignoring them can only ever call a bounce unsafe that was in
@@ -579,7 +580,7 @@ export function bounceIsChunkSafe(
     const chain = t.fxChain ?? [];
     chains.push(isStem ? chain.filter((e) => e.effect !== 'vst3') : chain);
   }
-  if (scope.kind === 'master') {
+  if (bounceWalksMix(req)) {
     for (const b of buses) chains.push(b.fxChain ?? []);
   }
 

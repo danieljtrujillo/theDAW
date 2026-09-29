@@ -39,8 +39,11 @@
  *
  * WHAT IT DOES NOT PRINT, deliberately: a muted or soloed-out track, a track
  * with no audible clip in the bounce or, for a range, in the window the range
- * renders (its plugins would process silence), and a muted bus. A bus is printed only where the bounce walks the routing graph
- * (the master scope, a graph that orders), because nowhere else is a bus in any
+ * renders (its plugins would process silence), a muted bus, and a bus no
+ * sounding track reaches through the graph (it plays silence too). A bus is
+ * printed only where the bounce walks the routing graph (lib/render/
+ * bounceWalksMix: the master scope and a clip selection printed with its
+ * inserts, over a graph that orders), because nowhere else is a bus in any
  * path. A bounce that asks for no inserts (`includeFx: false`) prints none.
  *
  * A bounce with no printed insert anywhere is the one plain `renderBounce`,
@@ -48,13 +51,14 @@
  */
 import type { ChainEntry } from '../../state/effectChainStore';
 import type { AudioClip, EditorTrack } from '../../state/editorStore';
-import { topoOrder, type RoutingGraph } from '../../state/routingGraph';
+import { CONN_SIDECHAIN, topoOrder, type RoutingGraph } from '../../state/routingGraph';
 import {
   clipsInScope, isExternalMidiClip, renderBounce, renderExtentSec,
   type BounceRequest, type InsertPrintStage, type RenderDeps,
 } from '../renderCore';
 import { encodeWav } from '../wavEncode';
 import { readWavSamples, readWavShape, type WavSamples } from '../wavSamples';
+import { bounceWalksMix } from './bounceWalksMix';
 import { planRangeRender, sliceRangeBuffer } from './renderRangePlan';
 
 /** A chain entry the print runs through a plugin host: an enabled VST3 that
@@ -132,6 +136,26 @@ function orderOf(graph: RoutingGraph | undefined): string[] | null {
   }
 }
 
+/**
+ * Every node the audio of `from` reaches through `graph`: along each node's
+ * output and its sends, bus to bus, stopping at a muted bus (its sends are
+ * tapped after its mute, as its output is). A sidechain edge carries a key into
+ * an effect, not audio into the node, so it reaches nothing.
+ */
+function reachedFrom(graph: RoutingGraph, from: readonly string[], muted: ReadonlySet<string>): Set<string> {
+  const reached = new Set<string>();
+  const queue = [...from];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    for (const e of graph.edges) {
+      if (e.from !== id || e.connType === CONN_SIDECHAIN || reached.has(e.to)) continue;
+      reached.add(e.to);
+      if (!muted.has(e.to)) queue.push(e.to);
+    }
+  }
+  return reached;
+}
+
 /** The nodes a bounce of `req` prints through a host, upstream first. */
 export function printSites(
   req: BounceRequest,
@@ -155,19 +179,29 @@ export function printSites(
     (c) => c.trackId === t.id && !c.muted && !!c.audioBlob && !isExternalMidiClip(c, deps.tracks) && inWindow(c),
   );
   const sites: PrintSite[] = [];
+  /** The tracks this bounce hears, with an insert to print or not. */
+  const sounding: string[] = [];
   for (const t of universe) {
     if (honoursMute && t.mute) continue;
     if (honoursSolo && anySolo && !t.solo) continue;
+    if (!sounds(t)) continue;
+    sounding.push(t.id);
     const split = splitAtInserts(t.fxChain ?? []);
-    if (split.inserts.length === 0 || !sounds(t)) continue;
+    if (split.inserts.length === 0) continue;
     sites.push({ id: t.id, kind: 'track', name: t.name, ...split });
   }
-  const order = scope.kind === 'master' ? orderOf(deps.routing) : null;
+  const order = bounceWalksMix(req) ? orderOf(deps.routing) : null;
   if (!order) return sites;
   const placed = new Set(order);
+  const muted = new Set(req.includeTrackMix ? (deps.buses ?? []).filter((b) => b.mute).map((b) => b.id) : []);
+  const reached = reachedFrom(deps.routing as RoutingGraph, sounding, muted);
   for (const b of deps.buses ?? []) {
-    if (req.includeTrackMix && b.mute) continue;
+    if (muted.has(b.id)) continue;
     if (!placed.has(b.id)) continue; // a bus the graph does not name reaches nothing
+    // A bus no sounding track reaches plays silence, live and in the file. A
+    // hop over it would cost a plugin load, and could fail the bounce on a
+    // plugin that plays no part in it (a clip selection away from that bus).
+    if (!reached.has(b.id)) continue;
     const split = splitAtInserts(b.fxChain ?? []);
     if (split.inserts.length > 0) sites.push({ id: b.id, kind: 'bus', name: b.name, ...split });
   }

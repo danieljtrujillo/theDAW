@@ -81,6 +81,7 @@ async function main(): Promise<void> {
     tracks: { id: string; name: string }[];
     selectedClipIds: string[];
     defaultName?: string;
+    openOn?: 'mix' | 'clips';
   }) => {
     const exported: Captured[] = [];
     let closedCount = 0;
@@ -149,6 +150,29 @@ async function main(): Promise<void> {
       assert.ok(label, `#${id} has a <label for>`);
     }
 
+    await act(async () => m.root.unmount());
+  }
+
+  /* ── a clip's menu opens the dialog on the selected clips ───────────────── */
+  {
+    const m = mount({
+      projectEndSec: 120,
+      selectionSec: null,
+      tracks: [{ id: 't1', name: 'Drums' }],
+      selectedClipIds: ['c1', 'c2'],
+      defaultName: 'my session',
+      openOn: 'clips',
+    });
+    await m.rerender();
+    const dialog = doc.body.querySelector('[role="dialog"]')!;
+    assert.equal((byIdSuffix(dialog, '-what-clips') as HTMLInputElement).checked, true, 'WHAT opens on the selection');
+    assert.equal((byIdSuffix(dialog, '-what-mix') as HTMLInputElement).checked, false);
+    await act(async () => { clickSubmit(dialog).click(); });
+    assert.equal(m.exported.length, 1);
+    const [item] = m.exported[0].plan.items;
+    assert.equal(item.kind, 'selection', 'confirming as opened exports the selected clips');
+    assert.deepEqual(item.request.scope, { kind: 'selection', clipIds: ['c1', 'c2'] });
+    assert.equal(item.request.includeFx, true, 'through every insert they play through live');
     await act(async () => m.root.unmount());
   }
 
@@ -262,7 +286,7 @@ async function main(): Promise<void> {
     assert.equal(plan.items.length, 1, 'one item for the one track picked');
     assert.equal(plan.items[0].kind, 'stem');
     assert.equal(plan.items[0].trackId, 't1');
-    assert.equal(plan.items[0].label, 'my session — t1.wav');
+    assert.equal(plan.items[0].label, 'my session — Drums.wav', "the stem's file is named after its track");
     await act(async () => m.root.unmount());
   }
 

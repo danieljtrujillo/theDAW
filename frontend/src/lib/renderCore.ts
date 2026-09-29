@@ -9,7 +9,10 @@
  * actually differed between them was *fidelity*:
  *
  *   - `sendSelectionToInit`  — no insert FX, no automation, but track volume /
- *                              pan / mute DO apply. Ignores solo.
+ *                              pan / mute DO apply. Ignores solo. (Since the
+ *                              staged insert print it prints its inserts and
+ *                              its automation, as the clips play: see
+ *                              `routingActive`.)
  *   - `commitEdit`           — everything: master + per-track racks, the
  *                              automation lanes, mute AND solo.
  *   - `renderTrackStem`      — the track's own rack (hosted VST3 entries
@@ -182,6 +185,7 @@ import {
   type ChainHandle,
 } from './rackEffects';
 import { ensureHallIrsForChains } from './hallIrs';
+import { bounceWalksMix } from './render/bounceWalksMix';
 import type { RenderRange } from './render/renderRange';
 import { planRangeRender, sliceRangeBuffer } from './render/renderRangePlan';
 import type { ArrangementMidiSource } from './arrangementMidi';
@@ -673,6 +677,11 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
    *  automation and suspend time below is shifted by. */
   const renderOriginSec = plan?.renderStartSec ?? 0;
 
+  /** Whether this bounce plays through the mix: the routing graph, its buses
+   *  and the per-track compensation (lib/render/bounceWalksMix). The master
+   *  scope, and a clip selection printed with its inserts. */
+  const walksMix = bounceWalksMix(req);
+
   // ── Which tracks, and which of their entries ─────────────────────────────
   // Ahead of the context because the context's LENGTH depends on their chains.
   const trackUniverse = scope.kind === 'track'
@@ -734,8 +743,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
    * runs `maxSec` longer and the trim cuts back to `outLength` afterwards: the
    * extra is rendered, read and dropped, and the file's length is unchanged.
    *
-   * THE MASTER SCOPE ONLY, which is where the comps are. A stem and a selection
-   * are printed `own` late by their own racks and trimmed by the same figure, so
+   * A ROUTED BOUNCE ONLY (`walksMix`), which is where the comps are. A stem and
+   * a selection without inserts are printed `own` late by their own racks and
+   * trimmed by the same figure, so
    * their last `own` falls off the end too — but that is T14's behaviour, not
    * this change's, and the legacy bodies the A/B harness compares against
    * truncate identically (padding a stem puts case C over the gate, which is the
@@ -752,7 +762,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
    * nothing else, since the output is cut to `outLength` either way.
    */
   const graphOrdered = graphOrders(deps.routing);
-  const padSec = req.includeFx && scope.kind === 'master'
+  const padSec = req.includeFx && walksMix
     ? renderLatencySec(trackCompDelays(
       [...trackUniverse.map((t) => ({ id: t.id, fxChain: chainFor(t) })), ...(graphOrdered ? printRows : [])],
       undefined,
@@ -902,7 +912,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     ];
     // The bus racks a master bounce builds: a Chop on a bus needs the module
     // as much as one on a track, and a shared hall send is a bus.
-    const busCandidates = scope.kind === 'master' ? (deps.buses ?? []).map(busChainFor) : [];
+    const busCandidates = walksMix ? (deps.buses ?? []).map(busChainFor) : [];
     if ([...candidates, ...busCandidates].some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled))) {
       const ensureChop = deps.ensureChop ?? ensureChopModule;
       try { await ensureChop(ctx); } catch { /* falls back to passthrough */ }
@@ -937,7 +947,8 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   /**
    * Whether this bounce walks the routing graph.
    *
-   * ONLY the master scope does, and the other two are not oversights:
+   * The master scope does, and so does a clip selection printed with its
+   * inserts (`walksMix`, lib/render/bounceWalksMix):
    *
    *  - A `track` scope is a freeze STEM, and a stem is pre-routing by
    *    definition — it is the track's own audio, to be re-summed by whatever
@@ -945,15 +956,17 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
    *    and its fader) would print the bus twice the moment the stem is played
    *    back through the same mix. It also renders with no master bus rack and
    *    ignores mute and solo for the same reason.
-   *  - A `selection` scope is Send Selection to Init: the picked clips, mixed
-   *    as the user balanced them, handed to MAKE as a source. It has always
-   *    been a per-clip mix straight to the master (see `perClipMix` below), and
-   *    the selection is not a mix position — it is a set of clips that may not
-   *    even share a destination.
+   *  - A `selection` scope with `includeFx` (Send Selection to Init, and the
+   *    export dialog's clip selection) prints the picked clips as they play:
+   *    through their tracks' chains, the buses and sends the graph routes those
+   *    tracks through, and the master chain, compensated as the mix is. Solo
+   *    is still ignored: it bounces exactly what was picked.
+   *  - A `selection` scope without `includeFx` is the per-clip mix straight to
+   *    the master (see `perClipMix` below).
    *
-   * Absent `deps.routing`, the master scope renders the pre-batch-6 flat graph.
+   * Absent `deps.routing`, a routed bounce renders the pre-batch-6 flat graph.
    */
-  const routingActive = scope.kind === 'master' && !!deps.routing;
+  const routingActive = walksMix && !!deps.routing;
 
   // ── Bus strips ───────────────────────────────────────────────────────────
   // Built before the tracks so every destination exists by the time the wiring
@@ -1053,7 +1066,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     // transparent (`gain` defaults to 1 and multiplying by 1 is exact). The two
     // pre-routing scopes keep feeding the master bus directly, exactly as
     // before: a stem and a selection have no graph and nothing to align.
-    const tail: AudioNode = panner ?? (scope.kind === 'master' ? ctx.createGain() : masterBus);
+    const tail: AudioNode = panner ?? (walksMix ? ctx.createGain() : masterBus);
     // A tapped track's chain ends at the tap; its tail is then fed nothing.
     const chainOut: AudioNode = tapId === trk.id && tapOut ? tapOut : tail;
     let fx: ChainHandle | null = null;
@@ -1083,7 +1096,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   const routedPaths = routingActive && graphOrders(deps.routing);
 
   // Measured off the chains this render built AND the paths it actually wired.
-  // A selection, a stem, and a graph that could not be ordered are all unrouted
+  // A selection without inserts, a stem, and a graph that could not be ordered are all unrouted
   // (see `routingActive` / `routedPaths`), so none of them carries a bus's
   // latency: a stem is its own chain alone, and a damaged graph is exactly what
   // the degraded mix put in the path. ONE row set feeds both the comp delays
@@ -1107,8 +1120,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   // ── Per-track compensation delays ────────────────────────────────────────
   // `liveMixer.insertCompNode`'s splice, offline: `tail -> comp -> (wherever
   // the strip goes)`, holding `maxSec - own` so every track meets the slowest
-  // one and the single trim below lands all of them. Only the MASTER scope: a
-  // stem is one path and a selection is pre-routing (see `routingActive`), and
+  // one and the single trim below lands all of them. Only a routed bounce
+  // (`walksMix`): a stem is one path and a selection without inserts is
+  // pre-routing (see `routingActive`), and
   // a BUS needs none either — a bus's rack is counted on every track path
   // through it, so equalising at the tracks equalises at the bus as well.
   //
@@ -1131,7 +1145,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   // before it fed the master bus directly. Unity gain is exact, so the audio is
   // identical; the graph is one node per strip heavier.
   const compDelays = new Map<string, DelayNode>();
-  if (scope.kind === 'master' && compRows.some((r) => r.compSec > 0)) {
+  if (walksMix && compRows.some((r) => r.compSec > 0)) {
     const makeCompDelay = deps.makeCompDelay
       ?? ((c: BaseAudioContext) => c.createDelay(COMP_MAX_DELAY_SEC));
     for (const row of compRows) {

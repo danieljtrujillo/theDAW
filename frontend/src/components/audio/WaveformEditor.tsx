@@ -26,7 +26,7 @@ import { RACK_EFFECTS, getRackEffect, buildEffectChain, ensureChopModule } from 
 import { decodeClipBlob, releaseDecoded } from '../../lib/decodeCache';
 import { type FadeCurve } from '../../lib/clipFade';
 import {
-  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, instrumentTracksInScope, isExternalMidiClip, printInstrumentTracks, renderBounce, renderExtentSec,
+  BOUNCE_SAMPLE_RATE, clipsInScope, encodeBounce, instrumentTracksInScope, isExternalMidiClip, printInstrumentTracks, renderExtentSec,
   type BounceRequest, type BounceScope, type InstrumentPrint, type RenderDeps,
 } from '../../lib/renderCore';
 import { isInstrumentClip } from '../../lib/vstInstrumentMidi';
@@ -498,15 +498,6 @@ const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean 
   };
 };
 
-/** Bounce `request` over `deps`, then free the renders made for it alone. */
-const bounceAndRelease = async (request: BounceRequest, deps: BounceDeps): Promise<AudioBuffer> => {
-  try {
-    return await renderBounce(request, deps);
-  } finally {
-    deps.release();
-  }
-};
-
 /** One plugin hop of an insert print: `/api/vst/process-file` with the
  *  entry's captured state and the host that captured it. What the plugin did
  *  not take goes to the LOG, and a failure names the plugin and where it sits. */
@@ -561,14 +552,17 @@ export const mixdownRequest = (): BounceRequest => ({
   float32: false,
 });
 
-/** Send Selection to Init. No inserts and no automation, but the track mix DOES
- *  apply — a mashup sent to Init should sound like what the user balanced on the
- *  timeline. Solo is ignored: this bounces exactly what was selected. */
+/** Send Selection to Init: the picked clips as they play. Each track's rack
+ *  and VST3 inserts, the buses the graph routes them through, the master rack
+ *  and the master VST chain, the automation and the track mix
+ *  (lib/render/bounceWalksMix). Solo is ignored: this bounces exactly what was
+ *  selected. The export dialog's clip selection asks for the same
+ *  (exportDialogModel). */
 export const selectionRequest = (clipIds: string[]): BounceRequest => ({
   scope: { kind: 'selection', clipIds },
   sampleRate: BOUNCE_SAMPLE_RATE,
-  includeFx: false,
-  includeAutomation: false,
+  includeFx: true,
+  includeAutomation: true,
   includeTrackMix: true,
   float32: false,
 });
@@ -645,9 +639,10 @@ const JOB_NOUN: Record<RenderJobKind, string> = {
  * `OfflineAudioContext.startRendering()` exposes no checkpoint and no abort, so
  * a running mixdown or selection bounce cannot be stopped — only a queued one.
  * The freeze/stem flows hop through the backend one plugin at a time and check
- * between hops, so cancelling one of those really does stop it. A mixdown or an
- * export that prints a VST3 insert has the same stages, and says so by
- * reporting progress (`RenderJobsPill` reads that as cancellable too).
+ * between hops, so cancelling one of those really does stop it. A mixdown, an
+ * export or a selection bounce that prints a VST3 insert has the same stages,
+ * and says so by reporting progress (`RenderJobsPill` reads that as
+ * cancellable too).
  */
 const STAGED_KINDS: readonly RenderJobKind[] = ['stem', 'freeze'];
 
@@ -765,19 +760,24 @@ const runMixdownJob = async (
   return { blob, durationSec: rendered.duration };
 };
 
-/** Send Selection to Init: bounce the picked clips, hand the file to MAKE's
- *  params store, and show MAKE. */
+/** Send Selection to Init: bounce the picked clips with every VST3 insert in
+ *  their path printed (`bounceWithInserts`), hand the file to MAKE's params
+ *  store, and show MAKE. */
 const runSelectionJob = async (
   job: RenderJob,
+  onProgress: (stage: number, total: number) => void,
   isCancelled: () => boolean,
 ): Promise<RenderJobResult> => {
   const { scope } = job.request;
   const ids = scope.kind === 'selection' ? scope.clipIds : [];
+  // A plugin dialled in live prints at the state it is at now.
+  await captureLiveVstStates();
   const selectionDeps = await currentRenderDeps(scope, isCancelled);
   if (isCancelled()) { selectionDeps.release(); return {}; }
-  const rendered = await bounceAndRelease(job.request, selectionDeps);
+  const printed = await bounceWithInserts(job.request, selectionDeps, isCancelled, onProgress);
+  if (!printed || isCancelled()) return {};
+  const rendered = printed.buffer;
   const blob = encodeBounce(rendered, job.request);
-  if (isCancelled()) return {};
   // Resolved AFTER the render, from the same document `renderBounce` just read,
   // so the labels describe what was actually bounced rather than what was
   // selected when the button was pressed.
@@ -856,7 +856,7 @@ export const deliverExport = async (
 
 /**
  * The export dialog's own render (T25c finding 5): bounce, encode, deliver —
- * the same `renderBounce` + `encodeBounce` every job kind uses, run under the
+ * the same `bounceWithInserts` + `encodeBounce` every job kind uses, run under the
  * QUEUE rather than called directly, so an export gets the FIFO serialisation
  * every other render gets (two `OfflineAudioContext`s never compete), a job
  * pill, a real cancel, and `runRenderJob`'s shared catch (toast + `logError`)
@@ -1086,7 +1086,7 @@ export async function runRenderJob(
 ): Promise<RenderJobResult> {
   try {
     if (job.kind === 'mixdown') return await runMixdownJob(job, onProgress, isCancelled);
-    if (job.kind === 'selection') return await runSelectionJob(job, isCancelled);
+    if (job.kind === 'selection') return await runSelectionJob(job, onProgress, isCancelled);
     if (job.kind === 'export') return await runExportJob(job, onProgress, isCancelled);
     if (job.kind === 'stem' || job.kind === 'freeze') {
       return await runStemJob(job, onProgress, isCancelled, job.kind === 'freeze');
@@ -2595,7 +2595,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // T25c: the export dialog opens beside MIXDOWN rather than replacing it —
   // MIXDOWN stays the one-click "everything, as WAV" path, this is where
   // format/bit-depth/range/destination/stems/selection live.
-  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  // Open on the mix from the toolbar, or on the selected clips from a clip's
+  // menu; null while closed.
+  const [exportDialogOpen, setExportDialogOpen] = useState<'mix' | 'clips' | null>(null);
   // ONE master FX panel — built-in rack effects, VST3s and .gan surfaces are
   // the same concept (chain entries) and share a single list + add menu.
   const [showMasterFx, setShowMasterFx] = useState(false);
@@ -6809,9 +6811,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <RenderJobsPill />
           <button
             type="button"
-            onClick={() => setExportDialogOpen(true)}
+            onClick={() => setExportDialogOpen('mix')}
             aria-haspopup="dialog"
-            aria-expanded={exportDialogOpen}
+            aria-expanded={exportDialogOpen !== null}
             className="p-1 px-1.5 rounded text-zinc-500 hover:text-white hover:bg-white/5"
             aria-label="Export options"
             title="Export options — format, bit depth, range, stems or a clip selection"
@@ -6841,10 +6843,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       </div>
 
-      {exportDialogOpen && (
+      {exportDialogOpen !== null && (
         <ExportDialog
-          onClose={() => setExportDialogOpen(false)}
+          onClose={() => setExportDialogOpen(null)}
           onExport={runExportPlan}
+          openOn={exportDialogOpen}
           projectEndSec={totalDuration}
           selectionSec={timeSelection}
           tracks={tracks.map((t) => ({ id: t.id, name: t.name }))}
@@ -8610,9 +8613,17 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         pushSeparator(items);
         items.push({
           type: 'item',
+          label: 'Export Selection…',
+          icon: <Save className="w-3 h-3" />,
+          title: 'Render the selected clips as they play, with their tracks’ plugins, buses and master chain, to the library or a file',
+          onSelect: () => setExportDialogOpen('clips'),
+        });
+        items.push({
+          type: 'item',
           label: 'Send Selection to Init',
           icon: <Wand2 className="w-3 h-3" />,
           hint: 'mix',
+          title: 'Render the selected clips as they play, with their tracks’ plugins, buses and master chain, and use the file as MAKE’s init audio',
           disabled: isSelectionRendering,
           onSelect: () => { sendSelectionToInit(); },
         });

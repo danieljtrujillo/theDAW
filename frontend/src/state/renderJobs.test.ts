@@ -776,7 +776,7 @@ async function main(): Promise<void> {
     assert.deepEqual(
       bounceIsChunkSafe(req({ kind: 'selection', clipIds: ['c1'] }, false), tracks, master, stubResolve),
       { safe: true, reasons: [] },
-      "and today's selection bounce sets includeFx:false, so it is chunk-safe",
+      'a selection bounce with no inserts builds no rack, so it is chunk-safe',
     );
 
     assert.deepEqual(
@@ -876,12 +876,12 @@ async function main(): Promise<void> {
       {
         scope: { kind: 'selection', clipIds: ['c1', 'c2'] },
         sampleRate: BOUNCE_SAMPLE_RATE,
-        includeFx: false,
-        includeAutomation: false,
+        includeFx: true,
+        includeAutomation: true,
         includeTrackMix: true,
         float32: false,
       },
-      'sendSelectionToInit: no inserts, no automation, but the track mix applies',
+      'sendSelectionToInit: the clips as they play, inserts, automation and the track mix',
     );
 
     assert.deepEqual(

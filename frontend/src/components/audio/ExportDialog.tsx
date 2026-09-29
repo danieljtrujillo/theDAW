@@ -68,6 +68,9 @@ export interface ExportDialogProps {
   /** Seeds the opening name — e.g. the toolbar's mixdown-name field, so a name
    *  already typed there is not lost when this dialog opens. */
   defaultName?: string;
+  /** WHAT the dialog opens on. 'clips' opens it on the selected clips, as a
+   *  clip's menu does; the toolbar opens it on the mix. */
+  openOn?: 'mix' | 'clips';
 }
 
 // Every word in the dialog is 12px or larger, in the bold sans the rest of the app reads in.
@@ -112,6 +115,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   tracks,
   selectedClipIds,
   defaultName,
+  openOn = 'mix',
 }) => {
   const uid = useId();
   const ids = {
@@ -130,7 +134,12 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   const firstRef = useRef<HTMLInputElement | null>(null);
 
   const [state, setState] = useState<ExportDialogState>(() =>
-    defaultExportState({ projectEndSec, selectionSec, name: defaultName }),
+    defaultExportState({
+      projectEndSec,
+      selectionSec,
+      name: defaultName,
+      what: openOn === 'clips' ? { kind: 'clips', clipIds: selectedClipIds } : undefined,
+    }),
   );
 
   useEffect(() => {
@@ -177,7 +186,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
 
-  const plan = useMemo(() => buildRenderRequest(state), [state]);
+  // Each stem's file is named after its track.
+  const trackNames = useMemo(() => new Map(tracks.map((t) => [t.id, t.name])), [tracks]);
+  const plan = useMemo(() => buildRenderRequest(state, trackNames), [state, trackNames]);
   // MIDI writes the notes: no tail, no library, one file whatever WHAT picks.
   const midi = formatOf(state.format).kind === 'midi';
   const whatLabels = midi ? WHAT_LABEL_MIDI : WHAT_LABEL;
