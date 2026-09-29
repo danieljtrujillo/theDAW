@@ -1,6 +1,10 @@
-"""VST3 plugin host — manages loaded plugin instances via pedalboard.
+"""VST3 plugin host — loads and runs plugins through pedalboard.
 
-In-process hosting: pedalboard runs inside the same Python process.
+The functions here that load a plugin run third-party native code, and some
+plugins crash the process that loads them. They run only inside a process
+started for that purpose: ``plugin_worker.py`` (renders, inserts and the
+``/api/vst/load`` instances, reached through ``isolation.py``), the scanner's
+load probe, and the editor sidecar. The backend itself never calls them.
 Each loaded plugin gets a unique instance_id (UUID).
 
 Every call that touches a plugin is funnelled onto one dedicated thread. VST3

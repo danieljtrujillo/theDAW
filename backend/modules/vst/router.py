@@ -33,15 +33,20 @@ from backend.modules.vst.scanner import (
     start_background_enrichment,
     vst3_install_folder,
 )
-from backend.modules.vst.host import (
-    param_key,
+from backend.modules.vst.host import param_key, list_builtin_effects
+
+# Every call below that loads a third-party plugin runs it in a worker process
+# (isolation.py), so a plugin that crashes takes down its worker, not this
+# server.
+from backend.modules.vst.isolation import (
+    PluginProcessError,
     load_plugin,
     unload_plugin,
     get_instance,
     list_instances,
     process_chain,
     process_with_plugin,
-    list_builtin_effects,
+    render_instrument,
 )
 from backend.modules.vst.live_host import HostLocator, _os_reason
 from backend.modules.vst import path_policy
@@ -439,25 +444,32 @@ def scan_vst3_custom(path: str, request: Request, include_unloadable: bool = Fal
 def load_vst(req: LoadRequest, request: Request):
     """Load a VST3 plugin and return its parameter descriptors.
 
-    Gated: this initializes a third-party native DLL inside the server
-    process and leaks an instance into ``_instances`` with no cap -- an
-    unknown LAN caller looping this with a fresh ``instance_id`` each time
-    must not be able to. A paired device is a known caller, the same as for
-    the project routes.
+    The plugin is loaded in a worker process of its own
+    (``isolation.load_plugin``), which holds it until ``/unload``; a plugin
+    that crashes while loading is a 502 naming it, and this server keeps
+    running.
+
+    Gated: this initializes a third-party native DLL and registers an
+    instance (and its worker) with no cap -- an unknown LAN caller looping
+    this with a fresh ``instance_id`` each time must not be able to. A paired
+    device is a known caller, the same as for the project routes.
     """
     require_loopback_launch_or_pairing_token(request)
     resolved = _validated_plugin_path(req.plugin_path)
     try:
         inst = load_plugin(str(resolved), req.instance_id)
+        parameters = inst.parameters
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PluginProcessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load VST3: {e}")
     return {
         "instance_id": inst.instance_id,
         "plugin_name": inst.plugin_name,
         "plugin_path": inst.plugin_path,
-        "parameters": inst.parameters,
+        "parameters": parameters,
     }
 
 
@@ -558,6 +570,8 @@ def process_audio(req: ProcessRequest, request: Request):
         processed = process_chain(req.instance_ids, audio, sr)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=e.args[0])
+    except PluginProcessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"VST processing failed: {e}")
 
@@ -890,7 +904,9 @@ async def process_file(
     Stateless mirror of /api/studio/process so a VST3 can be one stage of the
     MIX effect chain: the frontend uploads the running audio plus the plugin
     path and receives processed WAV back. The plugin is loaded fresh and
-    discarded (never added to the instance registry).
+    discarded (never added to the instance registry), in a worker process of
+    its own (``isolation.process_with_plugin``): a plugin that crashes is a
+    502 naming it, and this server keeps running.
 
     Gated: this loads and runs a plugin, same as ``/load`` and ``/process``,
     and a paired device passes the same way (MIX on a device opened from the
@@ -1029,11 +1045,20 @@ async def process_file(
         param_map = {}
 
     try:
-        processed = process_with_plugin(
-            plugin_path, signal, sr, param_map, raw_state or None, warnings
+        # Off the event loop: the worker runs as long as the plugin takes.
+        processed = await asyncio.to_thread(
+            process_with_plugin,
+            plugin_path,
+            signal,
+            sr,
+            param_map,
+            raw_state or None,
+            warnings,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PluginProcessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"VST processing failed: {e}")
 
@@ -1216,8 +1241,10 @@ def render_midi(req: RenderMidiRequest, request: Request):
     captured from its editor and any ``params``), the seconds to render and its
     messages: notes, controller changes (modulation, volume, pan, expression,
     the pedal and any other CC the part writes), pressure and pitch bend, each
-    at its second. Every track is rendered on its own through a fresh plugin
-    (``host.render_instrument``), in request order.
+    at its second. Every track is rendered on its own through a fresh plugin,
+    in request order, in a worker process (``isolation.render_instrument``):
+    an instrument that crashes is a 502 naming the track and the plugin, and
+    this server keeps running.
 
     The answer is ``multipart/form-data``: a ``report`` part (JSON:
     ``{"tracks": [{"track_id", "part", "frames", "sample_rate", "warnings"}]}``)
@@ -1231,7 +1258,6 @@ def render_midi(req: RenderMidiRequest, request: Request):
     import numpy as np
 
     from backend.lib.audio_io import save_audio
-    from backend.modules.vst.host import render_instrument
 
     if not req.tracks:
         raise HTTPException(status_code=400, detail="No tracks to render.")
@@ -1363,6 +1389,10 @@ def render_midi(req: RenderMidiRequest, request: Request):
             raise HTTPException(status_code=404, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Track {track.track_id}: {e}")
+        except PluginProcessError as e:
+            raise HTTPException(
+                status_code=e.status_code, detail=f"Track {track.track_id}: {e}"
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=500,
@@ -1679,7 +1709,11 @@ def get_params(instance_id: str, request: Request):
         inst = get_instance(instance_id)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=e.args[0])
-    return {"instance_id": instance_id, "parameters": inst.parameters}
+    try:
+        parameters = inst.parameters
+    except PluginProcessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    return {"instance_id": instance_id, "parameters": parameters}
 
 
 @router.put("/param/{instance_id}")
@@ -1697,14 +1731,15 @@ def set_param(instance_id: str, req: SetParamRequest, request: Request):
         raise HTTPException(status_code=404, detail=e.args[0])
     try:
         inst.set_parameter(req.name, req.value)
+        # Echo what the plugin actually holds now: it may quantize or clamp.
+        held = inst.parameters
     except KeyError as e:
         raise HTTPException(status_code=404, detail=e.args[0])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # Echo what the plugin actually holds now: it may quantize or clamp.
-    applied = inst.parameters.get(req.name) or inst.parameters.get(
-        param_key(req.name), {}
-    )
+    except PluginProcessError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    applied = held.get(req.name) or held.get(param_key(req.name), {})
     return {
         "instance_id": instance_id,
         "name": req.name,
