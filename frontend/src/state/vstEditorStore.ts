@@ -34,7 +34,39 @@ import {
   retryVstStateLoad,
   vstStatesLoaded,
 } from './effectChainStore';
-import type { ChainEntry, VstStateStorageOp } from './effectChainStore';
+import type { ChainEntry, VstStateHost, VstStateStorageOp } from './effectChainStore';
+
+/**
+ * A place outside the project's racks that holds hosted plugins: the piano
+ * roll's parts, each of which can play through a VST3 instrument
+ * (state/rollInstruments). This store finds a plugin's entry by its id to write
+ * what its live editor captures, and to know the entry still exists; an owner
+ * registers here so this module never imports the roll.
+ */
+export interface VstEntryOwner {
+  /** The entry with id `entryId`, when this owner holds it. */
+  find(entryId: string): ChainEntry | undefined;
+  /** Store a state the live host captured onto the entry. */
+  setRawState(entryId: string, rawState: string, stateHost: VstStateHost): void;
+}
+const entryOwners = new Set<VstEntryOwner>();
+
+/** Register `owner`; returns the unregister. */
+export function registerVstEntryOwner(owner: VstEntryOwner): () => void {
+  entryOwners.add(owner);
+  return () => {
+    entryOwners.delete(owner);
+  };
+}
+
+/** The entry `entryId` in a registered owner, and that owner. */
+const ownedEntry = (entryId: string): { owner: VstEntryOwner; entry: ChainEntry } | null => {
+  for (const owner of entryOwners) {
+    const entry = owner.find(entryId);
+    if (entry) return { owner, entry };
+  }
+  return null;
+};
 
 /** A VST entry's human name. `plugin_name` is what the chain stored when the
  *  entry was added; a chain saved before the scanner learned real names (or by
@@ -280,7 +312,8 @@ function sinkLiveParams(entryId: string, values: Map<number, number>): void {
   }
   // A track's instrument slot: its knobs live in the plugin's own state, which
   // the next capture stores; there is no rack param list to merge them into.
-  if (ed.tracks.some((t) => t.instrument?.id === entryId)) return;
+  // A roll part's instrument likewise.
+  if (ed.tracks.some((t) => t.instrument?.id === entryId) || ownedEntry(entryId)) return;
   for (const b of ed.buses) {
     const e = b.fxChain.find((x) => x.id === entryId);
     if (e) {
@@ -400,6 +433,13 @@ function sinkLiveRawState(entryId: string, rawState: string): boolean {
   const master = ed.masterVstChain.find((e) => e.id === entryId);
   if (master?.vst) {
     ed.setMasterVstRawState(entryId, rawState, 'thedaw');
+    flip();
+    return true;
+  }
+  // A piano-roll part's instrument, or any other registered owner's plugin.
+  const owned = ownedEntry(entryId);
+  if (owned?.entry.vst) {
+    owned.owner.setRawState(entryId, rawState, 'thedaw');
     flip();
     return true;
   }
@@ -1192,7 +1232,8 @@ function chainEntryExists(entryId: string): boolean {
   if (useEffectChainStore.getState().chain.some((e) => e.id === entryId)) return true;
   const ed = useEditorStore.getState();
   if (ed.masterVstChain.some((e) => e.id === entryId)) return true;
-  return ed.tracks.some((t) => t.instrument?.id === entryId || (t.fxChain ?? []).some((e) => e.id === entryId));
+  if (ed.tracks.some((t) => t.instrument?.id === entryId || (t.fxChain ?? []).some((e) => e.id === entryId))) return true;
+  return ownedEntry(entryId) !== null;
 }
 
 // A plugin leaves the project by many roads: its row's remove button (Edit or Mix), its track being
@@ -1210,3 +1251,8 @@ useEditorStore.subscribe((state, prevState) => {
   if (state.tracks === prevState.tracks && state.masterVstChain === prevState.masterVstChain) return;
   closeEditorOfRemovedEntry();
 });
+
+/** A registered owner's entries changed (a roll part lost its instrument, or the part went): close the window of one that is gone. */
+export function vstEntryOwnersChanged(): void {
+  closeEditorOfRemovedEntry();
+}

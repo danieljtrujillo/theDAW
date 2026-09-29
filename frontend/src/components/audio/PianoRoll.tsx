@@ -42,7 +42,17 @@ import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
 import { bpmText, laneSpanLabel, rollHasAudioParts } from '../../lib/meterFace';
 import { keepTimeOn, setRollBpmByHand, useRollKeepTime } from '../../lib/rollKeepTime';
 import { chordBendLog, midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
-import { stepClock, type RollPlayState } from '../../lib/rollTempo';
+import { stepClock, tempoAtStep, type RollPlayState, type StepClock } from '../../lib/rollTempo';
+import { splitRollTick, vstPartChannels, type RollVstRoute } from '../../lib/rollVstPlay';
+import {
+  attachRollInstruments,
+  auditionRollVoice,
+  rollVstStamp,
+  sendRollVstMidi,
+  startRollVstClock,
+  stopRollVstClock,
+  tickRollVstClock,
+} from '../../state/rollInstruments';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
 import { COUNT_IN_HANDOFF_SEC, rollClickPlan, rollClickSteps, rollPlayOrigin, type RollClick } from '../../lib/rollClick';
@@ -370,6 +380,10 @@ export const PianoRollTransport: React.FC<{
   const masterRef = useMasterGainRef();
   const playTimerRef = useRef<number | null>(null);
 
+  // The parts' VST3 instruments are hosted while the MIDI tab is open, which is
+  // while this key is mounted (state/rollInstruments).
+  useEffect(() => attachRollInstruments(), []);
+
   const stopPlayback = useCallback(() => {
     if (playTimerRef.current != null) {
       window.clearInterval(playTimerRef.current);
@@ -477,6 +491,22 @@ export const PianoRollTransport: React.FC<{
     const start = usePianoRollStore.getState();
     const scheduler = createRollScheduler({ ...start, tracks: rollTracksOf(start) }, origin, ROLL_LOOKAHEAD_SEC);
     rollPlayRef.current = { state: scheduler.state(), origin };
+    // The parts' VST3 instruments play on the roll's clock: from the first
+    // downbeat, on the roll second of the step PLAY starts from, at its tempo.
+    let tempoClock: { bpm: number; map: unknown; clock: StepClock } | null = null;
+    const clockOf = (r: { bpm: number; tempoMap: Parameters<typeof stepClock>[1] }): StepClock => {
+      if (!tempoClock || tempoClock.bpm !== r.bpm || tempoClock.map !== r.tempoMap) tempoClock = { bpm: r.bpm, map: r.tempoMap, clock: stepClock(r.bpm, r.tempoMap) };
+      return tempoClock.clock;
+    };
+    const startStep = rollStepAt(scheduler.state().lapState.lap, 0);
+    startRollVstClock(origin, clockOf(start).at(startStep), tempoAtStep(clockOf(start), startStep));
+    // Each tick's VST3 parts: the plugin channel of each of their live channels, and the stamp on the roll's clock.
+    let voices = rollPartVoices();
+    const routeOf = (partId: string): RollVstRoute | undefined => {
+      const vst = voices.get(partId)?.vst;
+      if (!vst) return undefined;
+      return { entryId: vst.entryId, channels: vstPartChannels(scheduler.partChannels(partId) ?? [], vst.channel), stamp: rollVstStamp };
+    };
     // The click plans the same window as the notes, from the same lap clock, so
     // after a seek it never sounds a click the notes have left behind.
     const clicker = click();
@@ -492,11 +522,16 @@ export const PianoRollTransport: React.FC<{
 
     const tick = () => {
       const roll = usePianoRollStore.getState();
-      // Each part plays through its own voice (lib/rollPartVoice): its program,
-      // else its linked clip's, else the roll's own or the picker's.
-      const voices = rollPartVoices();
-      const out = scheduler.tick(ctx.currentTime, { ...roll, tracks: rollTracksOf(roll) }, (id) => voices.get(id));
+      // Each part plays through its own voice (lib/rollPartVoice): its VST3
+      // instrument while that plugin plays, else its program, else its linked
+      // clip's, else the roll's own or the picker's.
+      voices = rollPartVoices();
+      const scheduled = scheduler.tick(ctx.currentTime, { ...roll, tracks: rollTracksOf(roll) }, (id) => voices.get(id));
       rollPlayRef.current = { state: scheduler.state(), origin };
+      // A VST3 part's notes and messages go to its plugin; the rest to the synth.
+      const out = { ...scheduled, ...splitRollTick(scheduled, routeOf, scheduler.channelOwner, ctx.currentTime) };
+      sendRollVstMidi(out.midi);
+      tickRollVstClock(tempoAtStep(clockOf(roll), out.shownStep));
       send(out.wheels);
       for (const n of out.notes) {
         triggerPianoNote(n.note, n.velocity, n.when, n.duration, masterRef.current, {
@@ -518,7 +553,10 @@ export const PianoRollTransport: React.FC<{
         window.clearInterval(playTimerRef.current);
         playTimerRef.current = null;
       }
-      send(scheduler.release(ctx.currentTime));
+      // Every channel back where it starts: the synth's, and each plugin's after it releases its notes.
+      const released = splitRollTick({ notes: [], wheels: scheduler.release(ctx.currentTime) }, routeOf, scheduler.channelOwner, ctx.currentTime);
+      send(released.wheels);
+      stopRollVstClock(ctx.currentTime, released.midi);
       clicker.stop();
       rollPlayRef.current = null;
     };
@@ -1752,7 +1790,7 @@ const KeyboardKeys = React.memo(function KeyboardKeys({
         return (
           <div
             key={midi}
-            onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current, currentRollVoice())}
+            onClick={() => auditionRollVoice(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current, currentRollVoice())}
             // Fixed key colours: the theme remaps bg-zinc-900 and text-zinc-700 (light
             // black keys on paper, pale C labels on dark), while a keyboard needs
             // dark black keys and dark ink on the white ones in every theme.
@@ -2488,7 +2526,7 @@ export const PianoRoll: React.FC<{
       ticks: placed.ticks,
       velocity: 96,
     });
-    triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
+    auditionRollVoice(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
   };
 
   // A press on a note selects it. The click that ends the press deletes the

@@ -126,6 +126,16 @@ export function createKeyboardMonitor(deps: KeyboardMonitorDeps): KeyboardMonito
   };
 }
 
+/** The armed track a hardware keyboard plays: the first in track order that records MIDI, or undefined when none is armed. */
+export function monitoredTrack<T extends Pick<EditorTrack, 'id' | 'color' | 'instrumentProgram' | 'isPercussion'>>(
+  armedTrackIds: readonly string[],
+  tracks: readonly T[],
+  clips: readonly CaptureClip[],
+): T | undefined {
+  const armed = new Set(armedTrackIds);
+  return tracks.find((t) => armed.has(t.id) && capturesMidi(t, clips));
+}
+
 /**
  * The voice a hardware keyboard plays with: the first armed track in track
  * order that records MIDI (lib/midiCapture capturesMidi), through its program
@@ -138,8 +148,7 @@ export function monitorVoice(
   clips: readonly CaptureClip[],
   global: GlobalVoice,
 ): ClipVoice {
-  const armed = new Set(armedTrackIds);
-  const track = tracks.find((t) => armed.has(t.id) && capturesMidi(t, clips));
+  const track = monitoredTrack(armedTrackIds, tracks, clips);
   if (track) return clipVoice({}, track, global);
   return { program: global.useSoundfont ? global.activeProgram : undefined, percussion: false };
 }

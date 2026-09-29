@@ -5,7 +5,10 @@
  * SOLO keys; pressing the name makes it the part the grid edits (the other
  * parts draw behind it as ghost notes while GHOSTS is on). The active part's
  * row opens its settings: name, sound (an orchestral instrument from the
- * registry, a General MIDI program, a drum kit, or the roll's own voice), MIDI
+ * registry, a General MIDI program, a drum kit, the roll's own voice, or one of
+ * the scanned VST3 instruments, the list EDIT's instrument slot offers, whose
+ * plugin, status, fallback program and articulations show beneath it:
+ * RollPartInstrument), MIDI
  * channel, bank and bank LSB, the controller changes a MIDI file gave it (how
  * many of each: modulation, volume, pan, expression, the sustain pedal) with
  * CLEAR, AUDITION (play this part alone), CANTUS (mark it as the cantus
@@ -17,20 +20,27 @@
  * is active and the column's own settings.
  */
 import React, { useEffect, useState } from 'react';
-import { Anchor, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Ghost, Headphones, Plus, Trash2 } from 'lucide-react';
+import { Anchor, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Ghost, Headphones, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { partLinkOf, usePianoRollStore, type RollTrack } from '../../state/pianoRollStore';
+import { useVstStore } from '../../state/vstStore';
+import { logInfo } from '../../state/logStore';
+import { rollFallbackText, rollVstName } from '../../state/rollInstruments';
+import { instrumentPlugins } from './TrackVstInstrument';
+import { RollPartInstrument } from './RollPartInstrument';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
 import { GM_DRUM_KITS, drumKitName } from '../../lib/clipProgram';
 import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../lib/orchestra';
-import { MAX_ROLL_PARTS, isPercussionPart, partControlCounts } from '../../lib/rollTracks';
+import { MAX_ROLL_PARTS, activePartVst, isPercussionPart, partControlCounts } from '../../lib/rollTracks';
 import { bankForSelect, bankSelectFor, instrumentRefValue, parseInstrumentRefValue, presetName, type SoundBank } from '../../lib/bankRegistry';
 import { BankPresetOptions, useSoundBanks } from './bankPresetOptions';
 import { FIELD_LEGEND, FLYOUT_SELECT, KEY_ON, KEY_REST, MINI_ICON_KEY, MINI_WORD_KEY, STRIP_GLYPH } from './midiDockKit';
 
 const ORCHESTRA_GROUPS = orchestraByFamily();
 
-/** What a part sounds, in a few words: its instrument, program or kit, else whose voice it follows. */
-export const partSoundText = (t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'>, linked: boolean): string => {
+/** What a part sounds, in a few words: its VST3 instrument, its instrument, program or kit, else whose voice it follows. */
+export const partSoundText = (t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'> & Partial<Pick<RollTrack, 'vstInstrument'>>, linked: boolean): string => {
+  const vst = activePartVst(t);
+  if (vst) return rollVstName(vst);
   const inst = orchestraInstrument(t.instrumentId);
   if (inst) return inst.name;
   if (t.program === null) return isPercussionPart(t) ? 'Standard kit' : linked ? 'Clip voice' : 'Roll voice';
@@ -38,14 +48,19 @@ export const partSoundText = (t: Pick<RollTrack, 'program' | 'channel' | 'instru
 };
 
 /**
- * The sound select's value for a part: `o:<id>`, `kit:<n>`, `gm:<n>`, '' for
- * the roll's voice, or a bank preset's `b:` value (lib/bankRegistry) when the
+ * The sound select's value for a part: `vst:<plugin path>` while it plays
+ * through a VST3 instrument, else `o:<id>`, `kit:<n>`, `gm:<n>`, '' for the
+ * roll's voice, or a bank preset's `b:` value (lib/bankRegistry) when the
  * part's bank select and program name a preset a listed bank holds.
+ * `program` leaves the plugin out: the Fallback select's value.
  */
 export const partSoundValue = (
-  t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'> & Partial<Pick<RollTrack, 'bank'>>,
+  t: Pick<RollTrack, 'program' | 'channel' | 'instrumentId'> & Partial<Pick<RollTrack, 'bank' | 'vstInstrument'>>,
   banks: readonly SoundBank[] = [],
+  program = false,
 ): string => {
+  const vst = program ? null : activePartVst(t);
+  if (vst?.vst) return `vst:${vst.vst.plugin_path}`;
   if (t.instrumentId && orchestraInstrument(t.instrumentId)) return `o:${t.instrumentId}`;
   if (t.program === null) return '';
   if (!isPercussionPart(t) && (t.bank ?? 0) > 0) {
@@ -55,9 +70,27 @@ export const partSoundValue = (
   return isPercussionPart(t) ? `kit:${t.program}` : `gm:${t.program}`;
 };
 
-/** Apply a sound select's value to part `id`. A bank preset sets the part's program and its bank select (the bank's offset plus its bank). */
-export const choosePartSound = (id: string, value: string): void => {
+/**
+ * Apply a sound select's value to part `id`. A bank preset sets the part's
+ * program and its bank select (the bank's offset plus its bank). `vst:<path>`
+ * puts the part on that scanned VST3 instrument, keeping its program as the
+ * fallback; any other sound switches a plugin the part holds off (its settings
+ * kept), unless `keepVst` (the Fallback select, which picks the program alone).
+ */
+export const choosePartSound = (id: string, value: string, keepVst = false): void => {
   const roll = usePianoRollStore.getState();
+  if (value.startsWith('vst:')) {
+    const path = value.slice(4);
+    const part = roll.tracks.find((t) => t.id === id);
+    if (!path || !part) return;
+    const pl = useVstStore.getState().plugins.find((p) => p.path === path);
+    const held = part.vstInstrument?.vst?.plugin_path === path ? part.vstInstrument : undefined;
+    const name = pl ? pl.display_name || pl.name : rollVstName(held ?? { id: '', effect: 'vst3', params: {}, enabled: true, vst: { plugin_path: path, plugin_name: '' } });
+    roll.setTrackVstInstrument(id, { plugin_path: path, plugin_name: name });
+    logInfo('piano-roll', `${part.name} plays through ${name}. While the plugin cannot play, and in a MIDI export, the part is ${rollFallbackText(part)}.`);
+    return;
+  }
+  if (!keepVst) roll.setTrackVstEnabled(id, false);
   const ref = parseInstrumentRefValue(value);
   if (ref) {
     roll.setTrackProgram(id, ref.program, false);
@@ -86,6 +119,40 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
   const { banks, warm } = useSoundBanks();
   const soundValue = partSoundValue(track, banks);
   const inst = orchestraInstrument(track.instrumentId);
+  // The scanned VST3 instruments, the list EDIT's instrument slot offers; the scan (cached) runs once.
+  const vstPlugins = useVstStore((s) => s.plugins);
+  const vstScanning = useVstStore((s) => s.scanning);
+  useEffect(() => {
+    const vst = useVstStore.getState();
+    if (!vst.scanned && !vst.scanning) void vst.scan(false);
+  }, []);
+  const instruments = instrumentPlugins(vstPlugins);
+  const heldPath = track.vstInstrument?.vst?.plugin_path;
+  // A plugin the part holds that the scan does not list (moved, or not scanned yet) still shows as chosen.
+  const heldMissing = heldPath && !instruments.some((p) => p.path === heldPath) ? track.vstInstrument : undefined;
+  const programOptions = (
+    <>
+      <option value="">Roll voice (linked clip or picker)</option>
+      {ORCHESTRA_GROUPS.map((g) => (
+        <optgroup key={g.family.id} label={`Orchestra · ${g.family.label}`}>
+          {g.instruments.map((i) => (
+            <option key={i.id} value={`o:${i.id}`} title={describeInstrument(i)}>{i.name}</option>
+          ))}
+        </optgroup>
+      ))}
+      <optgroup label="General MIDI">
+        {GM_NAMES.map((n, p) => (
+          <option key={p} value={`gm:${p}`}>{`${p + 1} ${n}`}</option>
+        ))}
+      </optgroup>
+      <optgroup label="Drum kits (channel 10)">
+        {GM_DRUM_KITS.map((k) => (
+          <option key={k.program} value={`kit:${k.program}`}>{`${k.name} kit`}</option>
+        ))}
+      </optgroup>
+      <BankPresetOptions drums={false} />
+    </>
+  );
   const controlCounts = partControlCounts(track.controls);
   const controlsHeading = `roll-part-controls-${track.id}`;
   return (
@@ -108,7 +175,20 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
         />
       </div>
       <div className="flex flex-col gap-0.5">
-        <label htmlFor="roll-part-sound" className={FIELD_LEGEND}>Sound</label>
+        <div className="flex items-center gap-1">
+          <label htmlFor="roll-part-sound" className={FIELD_LEGEND}>Sound</label>
+          <span className="flex-1" />
+          <button
+            type="button"
+            onClick={() => void useVstStore.getState().scan(true)}
+            disabled={vstScanning}
+            aria-label="Rescan VST3 folders"
+            title="Rescan the VST3 folders for instruments"
+            className={`${MINI_ICON_KEY} ${KEY_REST}`}
+          >
+            {vstScanning ? <Loader2 aria-hidden="true" className="w-3 h-3 animate-spin" /> : <RefreshCw aria-hidden="true" className="w-3 h-3" />}
+          </button>
+        </div>
         <select
           id="roll-part-sound"
           name="roll-part-sound"
@@ -118,27 +198,25 @@ const PartEditor: React.FC<{ track: RollTrack; index: number; count: number; alo
           title={inst ? describeInstrument(inst) : undefined}
           className={FLYOUT_SELECT}
         >
-          <option value="">Roll voice (linked clip or picker)</option>
-          {ORCHESTRA_GROUPS.map((g) => (
-            <optgroup key={g.family.id} label={`Orchestra · ${g.family.label}`}>
-              {g.instruments.map((i) => (
-                <option key={i.id} value={`o:${i.id}`} title={describeInstrument(i)}>{i.name}</option>
-              ))}
-            </optgroup>
-          ))}
-          <optgroup label="General MIDI">
-            {GM_NAMES.map((n, p) => (
-              <option key={p} value={`gm:${p}`}>{`${p + 1} ${n}`}</option>
+          {programOptions}
+          <optgroup label={instruments.length || heldMissing ? 'VST3 instruments' : 'VST3 instruments (none scanned)'}>
+            {instruments.map((pl) => (
+              <option key={pl.path} value={`vst:${pl.path}`} title={pl.manufacturer ? `${pl.display_name || pl.name} · ${pl.manufacturer}` : undefined}>
+                {pl.display_name || pl.name}
+              </option>
             ))}
+            {heldMissing?.vst && (
+              <option value={`vst:${heldMissing.vst.plugin_path}`}>{`${rollVstName(heldMissing)} (not in the scan)`}</option>
+            )}
           </optgroup>
-          <optgroup label="Drum kits (channel 10)">
-            {GM_DRUM_KITS.map((k) => (
-              <option key={k.program} value={`kit:${k.program}`}>{`${k.name} kit`}</option>
-            ))}
-          </optgroup>
-          <BankPresetOptions drums={false} />
         </select>
       </div>
+      <RollPartInstrument
+        track={track}
+        fallbackOptions={programOptions}
+        fallbackValue={partSoundValue(track, banks, true)}
+        onFallback={(value) => choosePartSound(track.id, value, true)}
+      />
       <div className="flex items-end gap-1.5">
         <div className="flex flex-col gap-0.5 flex-1 min-w-0">
           <label htmlFor="roll-part-channel" className={FIELD_LEGEND}>Channel</label>

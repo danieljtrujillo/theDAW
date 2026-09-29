@@ -32,8 +32,8 @@ import { useModuleStore } from './state/moduleStore';
 import { useDownloadStore } from './state/downloadStore';
 import { useSoundBankStore } from './state/soundBankStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
-import { startHeldNote, stopHeldNote, type HeldNote } from './lib/pianoTrigger';
-import { createKeyboardMonitor, monitorVoice } from './lib/keyboardMonitor';
+import { startHeldNote, startRoutedNote, stopHeldNote, type HeldNote } from './lib/pianoTrigger';
+import { createKeyboardMonitor, monitorVoice, monitoredTrack } from './lib/keyboardMonitor';
 import { publishMidi, subscribeToMidi } from './state/midiBus';
 import { isMidiMessageIgnored } from './state/midiIgnoreStore';
 // Live MIDI capture (see the mount below). Every module here is already in this
@@ -296,7 +296,15 @@ export default function App() {
         const ed = useEditorStore.getState();
         return monitorVoice(useRecordingStore.getState().armedTrackIds, ed.tracks, ed.clips, getGlobalVoice());
       },
-      start: (key) => startHeldNote(key.note, key.velocity, key.voice),
+      start: (key) => {
+        // With no EDIT track armed, a key claimed by the MIDI tab (its active part plays
+        // through a VST3 instrument, state/rollInstruments) plays that plugin.
+        const ed = useEditorStore.getState();
+        const routed = monitoredTrack(useRecordingStore.getState().armedTrackIds, ed.tracks, ed.clips)
+          ? null
+          : startRoutedNote(key.note, key.velocity);
+        return routed ?? startHeldNote(key.note, key.velocity, key.voice);
+      },
       stop: (handle) => stopHeldNote(handle as HeldNote),
     });
 

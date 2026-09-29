@@ -716,8 +716,11 @@ export interface RecentItem {
  * its bank select LSB (CC 32), absent when it sends none. `controls` is the
  * part's controller changes on the roll's clock (960 ticks to the quarter),
  * absent when it has none. `figured_bass` holds the figures under its bass
- * notes and `cantus_firmus` marks the roll's cantus firmus. A file written
- * before any of them opens without it.
+ * notes and `cantus_firmus` marks the roll's cantus firmus.
+ * `vst_instrument` is the VST3 instrument the part plays through, a chain
+ * entry in the file's shape with the state its editor captured, and
+ * `articulation_switch` how it hears articulations ('uacc'; absent is
+ * keyswitch). A file written before any of them opens without it.
  */
 export interface TasmoRollPart {
   doc: string;
@@ -739,6 +742,10 @@ export interface TasmoRollPart {
   cantus_firmus?: boolean;
   /** The part's notes were timed against audio (RollPartRef `fromAudio`). Absent when they were not. */
   from_audio?: boolean;
+  /** The VST3 instrument the part plays through, with its captured state; absent when it has none. */
+  vst_instrument?: TasmoChainEntry;
+  /** How that instrument hears articulations; absent is keyswitch. */
+  articulation_switch?: string;
 }
 
 /** A clip's part record in the file shape. */
@@ -759,6 +766,24 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   ...(ref.figuredBass?.length ? { figured_bass: ref.figuredBass.map((m) => ({ tick: m.tick, figure: m.figure })) } : {}),
   ...(ref.cantusFirmus ? { cantus_firmus: true } : {}),
   ...(ref.fromAudio ? { from_audio: true } : {}),
+  ...(ref.vstInstrument?.vst
+    ? {
+        vst_instrument: {
+          id: ref.vstInstrument.id,
+          effect: ref.vstInstrument.effect,
+          params: { ...ref.vstInstrument.params },
+          enabled: ref.vstInstrument.enabled,
+          vst: {
+            plugin_path: ref.vstInstrument.vst.plugin_path,
+            plugin_name: ref.vstInstrument.vst.plugin_name,
+            // The state its editor captured, and the host that captured it; absent while it plays its defaults.
+            ...(ref.vstInstrument.vst.raw_state ? { raw_state: ref.vstInstrument.vst.raw_state } : {}),
+            ...(ref.vstInstrument.vst.state_host ? { state_host: ref.vstInstrument.vst.state_host } : {}),
+          },
+        },
+      }
+    : {}),
+  ...(ref.articulationSwitch ? { articulation_switch: ref.articulationSwitch } : {}),
 });
 
 /** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
@@ -773,6 +798,8 @@ export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: str
       figuredBass: r.figured_bass ?? r.figuredBass,
       cantusFirmus: r.cantus_firmus ?? r.cantusFirmus,
       fromAudio: r.from_audio ?? r.fromAudio,
+      vstInstrument: r.vst_instrument ?? r.vstInstrument,
+      articulationSwitch: r.articulation_switch ?? r.articulationSwitch,
     },
     fallback,
   );
