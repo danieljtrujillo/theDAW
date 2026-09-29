@@ -21,7 +21,7 @@ from typing import Optional
 
 from backend.modules.library.db import LibraryDB
 
-from .engine import MidiHint, convert_to_midi, hint_for_stem
+from .engine import MidiHint, convert_to_midi, hint_for_stem, role_for_stem
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def convert_entry(
                 continue
             hint: MidiHint = hint_for_stem(stem_name)
             stem_out = midi_dir / f"{stem_name}.mid"
-            extra: dict = {"bpm": tempo_bpm}
+            extra: dict = {"bpm": tempo_bpm, "role": role_for_stem(stem_name)}
             if hint == "drums":
                 # Only the drum engine consumes the beat list — it snaps
                 # on-grid hits to it. The pitched engines just need the tempo.

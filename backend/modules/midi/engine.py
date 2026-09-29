@@ -4,14 +4,20 @@ Three engines, all lazy-imported so the main app doesn't take their
 weight at startup:
 
   - **basic-pitch** (Spotify, Apache-2.0, ~25 MB model): multi-instrument
-    polyphonic transcription. Default for full tracks and most stems.
+    polyphonic transcription. Default for full tracks and most stems. A stem
+    runs with the settings of its role (:data:`BASIC_PITCH_ROLE_SETTINGS`:
+    pitch range, thresholds, shortest note) and is written as that
+    instrument (a General MIDI program); a bass or lead vocal comes out one
+    note at a time (:func:`monophonic_line`).
   - **piano-transcription-inference** (Bytedance, MIT, ~100 MB): top-
     quality piano transcription. Used when ``hint='piano'`` (e.g., the
     'piano' stem from htdemucs_6s) and the package is available.
   - **drum-onsets** (:mod:`.drums`, model-free, always available): onset
     detection + spectral rules → General MIDI drum notes on one
-    ``is_drum`` instrument. Used when ``hint='drums'`` (the 'drums' stem);
-    basic-pitch on a drum stem emits hundreds of spurious pitched notes.
+    ``is_drum`` instrument (channel 10). Used when ``hint='drums'``: the
+    'drums' stem and each LARSNET kit part of a 12-stem run, a part on its
+    own voice; basic-pitch on a drum stem emits hundreds of spurious pitched
+    notes.
 
 The pitched engines can be missing; ``convert_to_midi()`` returns
 ``{"ok": False, "error": ...}`` rather than raising, so the caller can
@@ -26,13 +32,16 @@ import importlib
 import importlib.metadata
 import io
 import logging
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -43,6 +52,177 @@ MidiHint = Literal["auto", "piano", "generic", "drums"]
 #: Engine id used for routing (``_route``) — the result dict / ``midis`` row
 #: carries the engine's own name, ``drums.ENGINE_NAME`` (``"drum-onsets"``).
 DRUM_ENGINE = "drum_onsets"
+
+#: The LARSNET kit parts a 12-stem run writes in place of ``drums``. Each is
+#: one piece of the kit, transcribed on that piece's General MIDI voice.
+DRUM_PARTS: tuple[str, ...] = ("kick", "snare", "toms", "hihat", "cymbals")
+
+#: Every role the drum engine takes: the whole kit and each of its parts.
+PERCUSSIVE_ROLES = frozenset({"drums", *DRUM_PARTS})
+
+MonophonicPick = Literal["lowest", "loudest"]
+
+
+@dataclass(frozen=True)
+class BasicPitchSettings:
+    """How basic-pitch transcribes one kind of stem, and what it is written as.
+
+    ``onset_threshold`` to ``maximum_frequency`` are
+    ``basic_pitch.inference.predict`` parameters: note detection thresholds
+    (0-1), the shortest note kept, and the pitch range in Hz outside which no
+    note is written. ``program`` is the General
+    MIDI program (0-based) the file carries. ``monophonic`` reduces the notes
+    to one at a time, keeping the lowest (a bass line) or the loudest (a sung
+    melody) where notes are struck together; a monophonic file keeps each
+    note's own pitch bend, and a polyphonic one has none, because the pitch
+    wheel bends every note sounding on its channel.
+    """
+
+    role: str
+    name: str
+    program: int
+    onset_threshold: float = 0.5
+    frame_threshold: float = 0.3
+    minimum_note_length_ms: float = 127.70
+    minimum_frequency: Optional[float] = None
+    maximum_frequency: Optional[float] = None
+    monophonic: Optional[MonophonicPick] = None
+
+
+#: The full mix, a ``no_vocals`` bed and any stem whose name says nothing:
+#: basic-pitch's own defaults and the program it has always written
+#: (4, Electric Piano 1). A mix is chords, so it carries no pitch wheel.
+MIX_SETTINGS = BasicPitchSettings(role="mix", name="Mix", program=4)
+
+#: Per-role settings. Ranges are the instrument's written range with a little
+#: headroom (Hz): bass B0 to G4, voice C2 to C#6, guitar drop-D D2 to the 24th
+#: fret of the high E, piano A0 to C8. A bass line or a sung line starts
+#: notes softly, so its onset threshold is a little lower; the overtones and
+#: breaths that lets through are removed by the one-note reduction. "other" is
+#: what the separator could not name (synths, strings, pads, horns plus
+#: bleed), so it asks for a firmer onset and a longer note.
+BASIC_PITCH_ROLE_SETTINGS: dict[str, BasicPitchSettings] = {
+    "bass": BasicPitchSettings(
+        role="bass",
+        name="Bass",
+        program=33,  # Electric Bass (finger)
+        onset_threshold=0.45,
+        frame_threshold=0.3,
+        minimum_note_length_ms=70.0,
+        minimum_frequency=30.0,
+        maximum_frequency=400.0,
+        monophonic="lowest",
+    ),
+    "vocals": BasicPitchSettings(
+        role="vocals",
+        name="Lead Vocal",
+        program=53,  # Voice Oohs
+        onset_threshold=0.45,
+        frame_threshold=0.3,
+        minimum_note_length_ms=100.0,
+        minimum_frequency=65.0,
+        maximum_frequency=1110.0,
+        monophonic="loudest",
+    ),
+    "backing_vocals": BasicPitchSettings(
+        role="backing_vocals",
+        name="Backing Vocals",
+        program=52,  # Choir Aahs
+        onset_threshold=0.45,
+        frame_threshold=0.3,
+        minimum_note_length_ms=100.0,
+        minimum_frequency=65.0,
+        maximum_frequency=1110.0,
+    ),
+    "guitar": BasicPitchSettings(
+        role="guitar",
+        name="Guitar",
+        program=25,  # Acoustic Guitar (steel)
+        onset_threshold=0.5,
+        frame_threshold=0.3,
+        minimum_note_length_ms=80.0,
+        minimum_frequency=70.0,
+        maximum_frequency=1400.0,
+    ),
+    "piano": BasicPitchSettings(
+        role="piano",
+        name="Piano",
+        program=0,  # Acoustic Grand Piano
+        onset_threshold=0.5,
+        frame_threshold=0.3,
+        minimum_note_length_ms=60.0,
+        minimum_frequency=27.5,
+        maximum_frequency=4200.0,
+    ),
+    "other": BasicPitchSettings(
+        role="other",
+        name="Other",
+        program=48,  # String Ensemble 1
+        onset_threshold=0.6,
+        frame_threshold=0.3,
+        minimum_note_length_ms=100.0,
+        minimum_frequency=40.0,
+        maximum_frequency=4200.0,
+    ),
+    "mix": MIX_SETTINGS,
+}
+
+
+def basic_pitch_settings(role: Optional[str]) -> BasicPitchSettings:
+    """The basic-pitch settings for a stem role; the mix settings for the
+    full track (``None``) and for any role basic-pitch has none for."""
+    return BASIC_PITCH_ROLE_SETTINGS.get(role or "mix", MIX_SETTINGS)
+
+
+def _name_tokens(stem_name: str) -> list[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", stem_name.lower()) if t]
+
+
+def role_for_stem(stem_name: Optional[str]) -> Optional[str]:
+    """The instrument a stem carries, read from its name.
+
+    Covers the names the separator writes (Demucs ``vocals`` / ``drums`` /
+    ``bass`` / ``other`` / ``guitar`` / ``piano`` / ``no_vocals``, the LARSNET
+    kit parts, the lead/backing vocal split) and the common ways a person
+    names the same stems. Returns one of the keys of
+    :data:`BASIC_PITCH_ROLE_SETTINGS`, ``"drums"`` or a :data:`DRUM_PARTS`
+    name, or ``None`` for a name that says nothing about the instrument.
+    """
+    if not stem_name:
+        return None
+    name = stem_name.lower()
+    tokens = _name_tokens(stem_name)
+    joined = "".join(tokens)
+    words = set(tokens)
+    if "kick" in joined or "bassdrum" in joined:
+        return "kick"
+    if "snare" in joined:
+        return "snare"
+    if any(re.fullmatch(r"(floor|rack)?toms?\d*", t) for t in tokens):
+        return "toms"
+    if "hihat" in joined or words & {"hat", "hats", "hh"}:
+        return "hihat"
+    if "cymbal" in joined or words & {"crash", "ride", "overhead", "overheads"}:
+        return "cymbals"
+    if "drum" in name or words & {"kit", "percussion", "perc"}:
+        return "drums"
+    if words & {"mix", "full", "instrumental", "accompaniment", "karaoke"} or (
+        "no" in words and ("vocals" in words or "vocal" in words)
+    ):
+        return "mix"
+    if "vocal" in name or words & {"vox", "voice", "bgv", "choir"}:
+        if words & {"back", "backing", "bgv", "harmony", "harmonies", "choir"}:
+            return "backing_vocals"
+        return "vocals"
+    if re.search(r"bass(?!oon)", name):
+        return "bass"
+    if "guitar" in name or words & {"gtr", "gtrs"}:
+        return "guitar"
+    if "piano" in name or words & {"keys", "keyboard", "keyboards"}:
+        return "piano"
+    if "other" in words:
+        return "other"
+    return None
 
 
 @contextlib.contextmanager
@@ -261,12 +441,18 @@ def convert_to_midi(
     auto_install: bool = True,
     bpm: Optional[float] = None,
     beats: Optional[list[float]] = None,
+    role: Optional[str] = None,
 ) -> dict:
     """Convert ``audio_path`` to a MIDI file at ``output_path``.
 
     If neither pitched engine is installed and ``auto_install`` is True,
     this transparently runs ``pip install basic-pitch`` and retries. Set
     ``auto_install=False`` to keep the historical fail-fast behavior.
+
+    ``role`` is the stem's instrument (:func:`role_for_stem`; ``None`` for
+    the full track). A percussive role always goes to the drum engine, a kit
+    part on its own voice; basic-pitch runs with the role's settings and
+    writes the role's program.
 
     ``bpm`` / ``beats`` (seconds) are the entry's analysis-row tempo map.
     The drum engine uses both (tempo track + 1/16 quantisation of on-grid
@@ -283,10 +469,13 @@ def convert_to_midi(
     if not p.is_file():
         return {"ok": False, "error": f"audio not found: {p}"}
 
+    if role in PERCUSSIVE_ROLES:
+        hint = "drums"
     engine = _route(hint)
     if engine == DRUM_ENGINE:
+        part = role if role in DRUM_PARTS else None
         try:
-            return _run_drum_onsets(p, output_path, bpm=bpm, beats=beats)
+            return _run_drum_onsets(p, output_path, bpm=bpm, beats=beats, part=part)
         except Exception as e:
             log.warning("midi.engine: drum-onsets failed for %s: %s", p.name, e)
             return {"ok": False, "engine": DRUM_ENGINE, "error": repr(e)}
@@ -326,7 +515,7 @@ def convert_to_midi(
 
     try:
         if engine == "basic_pitch":
-            result = _run_basic_pitch(p, output_path)
+            result = _run_basic_pitch(p, output_path, role=role)
         else:
             result = _run_piano_transcription(p, output_path)
         # Neither pitched engine knows the song's tempo, so both stamp a stock
@@ -346,13 +535,15 @@ def _run_drum_onsets(
     *,
     bpm: Optional[float] = None,
     beats: Optional[list[float]] = None,
+    part: Optional[str] = None,
 ) -> dict:
     """Model-free drum transcription (see :mod:`.drums`). The result dict
     carries ``engine == "drum-onsets"`` — that string lands in the ``midis``
-    row so the notation layer can recognise a drum MIDI."""
+    row so the notation layer can recognise a drum MIDI. ``part`` names the
+    kit piece a LARSNET part stem holds; ``None`` is the whole kit."""
     from .drums import transcribe_drums
 
-    return transcribe_drums(audio_path, output_path, bpm=bpm, beats=beats)
+    return transcribe_drums(audio_path, output_path, bpm=bpm, beats=beats, part=part)
 
 
 def _preload_cuda_dlls() -> None:
@@ -453,59 +644,271 @@ def _load_basic_pitch_model():
     return model
 
 
-def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
-    """Use basic-pitch's predict_and_save in a temp dir, then move
-    its output to the caller's path. basic-pitch writes files named
-    ``<input_stem>_basic_pitch.mid`` so we rename to honour our path."""
+#: Onsets this close (seconds) were struck together; a one-note line keeps
+#: one of them.
+MONO_ONSET_WINDOW_SEC = 0.05
+
+#: Of two bass notes struck together, the lower one is the note while it is
+#: at least this loud against the higher: basic-pitch reports a bass note's
+#: octave and twelfth as notes of their own, quieter than the fundamental.
+MONO_LOWER_WINS_RATIO = 0.6
+
+#: A note that starts under a sounding one and is quieter than this fraction
+#: of it is an overtone or a breath, not the next note of the line.
+MONO_GHOST_RATIO = 0.8
+
+#: Semitones above a sung note where its overtones sit: octave, twelfth,
+#: double octave, major seventeenth, nineteenth, triple octave.
+_OVERTONE_INTERVALS = frozenset({12, 19, 24, 28, 31, 36})
+
+#: basic-pitch reads a note's bend in contour bins (a third of a semitone)
+#: and its contour wobbles by one bin on a steady tone. A note's bend is
+#: written when, centred on the note, it moves at least this many bins.
+MIN_BEND_BINS = 2
+
+#: Two wheel events closer than this (seconds) can land on one MIDI tick at
+#: the resolution the file is written at; they merge into one event at the
+#: earlier time carrying the later value.
+_SAME_TICK_SEC = 0.003
+
+#: ``(start_s, end_s, midi_pitch, amplitude 0-1, bends in contour bins)``,
+#: the note events ``basic_pitch.inference.predict`` returns.
+NoteEvent = tuple[float, float, int, float, Optional[list[int]]]
+
+
+def _as_event(note: Sequence) -> NoteEvent:
+    """One predict() note event with plain Python numbers (it hands back
+    numpy scalars) and an empty bend list read as none."""
+    start, end, pitch, amp, bends = note
+    bent = [int(b) for b in bends] if bends is not None else []
+    return (float(start), float(end), int(pitch), float(amp), bent or None)
+
+
+def _trim(note: NoteEvent, end: float) -> NoteEvent:
+    """``note`` ending at ``end``, its bend curve cut to the part it keeps
+    (the curve is spread evenly over the note's frames)."""
+    start, old_end, pitch, amp, bends = note
+    if bends and old_end > start:
+        keep = int(round(len(bends) * (end - start) / (old_end - start)))
+        bends = bends[: max(0, keep)] or None
+    return (start, end, pitch, amp, bends)
+
+
+def _later_wins(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
+    """Of two notes struck together, whether ``new`` (the later onset) is
+    the one the line keeps."""
+    if pick == "lowest":
+        new_is_lower = new[2] < cur[2]
+        lower, higher = (new, cur) if new_is_lower else (cur, new)
+        if lower[3] >= MONO_LOWER_WINS_RATIO * higher[3]:
+            return new_is_lower
+        return new[3] > cur[3]
+    if new[3] != cur[3]:
+        return new[3] > cur[3]
+    return new[2] < cur[2]
+
+
+def _is_overtone(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
+    """Whether ``new``, starting while ``cur`` sounds, belongs to ``cur``
+    (an overtone, a breath) and is not the next note of the line."""
+    if new[3] >= MONO_GHOST_RATIO * cur[3]:
+        return False
+    if pick == "lowest":
+        return new[2] > cur[2]
+    return new[1] <= cur[1] or (new[2] - cur[2]) in _OVERTONE_INTERVALS
+
+
+def monophonic_line(
+    notes: Sequence[Sequence], *, pick: MonophonicPick, min_len: float
+) -> list[NoteEvent]:
+    """Reduce note events to a line of one note at a time.
+
+    Notes struck together (onsets within :data:`MONO_ONSET_WINDOW_SEC`) keep
+    one: the lowest, unless it is much quieter (``pick="lowest"``, a bass),
+    or the loudest (``pick="loudest"``, a sung melody). A note that starts
+    under a sounding one is dropped when it is an overtone or breath of it
+    (:func:`_is_overtone`); otherwise it is the next note, and the sounding
+    note ends where it starts. A note left shorter than half ``min_len``
+    (seconds) by that cut is dropped. The result is sorted and no two notes
+    overlap.
+    """
+    ordered = sorted((_as_event(n) for n in notes), key=lambda n: (n[0], n[2]))
+    line: list[NoteEvent] = []
+
+    def emit(note: NoteEvent) -> None:
+        if note[1] - note[0] >= min_len / 2.0:
+            line.append(note)
+
+    cur: Optional[NoteEvent] = None
+    for new in ordered:
+        if new[1] <= new[0]:
+            continue
+        if cur is None:
+            cur = new
+        elif new[0] >= cur[1]:
+            emit(cur)
+            cur = new
+        elif new[2] == cur[2]:
+            # The same pitch detected twice over itself: one note.
+            cur = (cur[0], max(cur[1], new[1]), cur[2], max(cur[3], new[3]), cur[4])
+        elif new[0] - cur[0] <= MONO_ONSET_WINDOW_SEC:
+            if _later_wins(cur, new, pick):
+                cur = new
+        elif not _is_overtone(cur, new, pick):
+            emit(_trim(cur, new[0]))
+            cur = new
+    if cur is not None:
+        emit(cur)
+    return line
+
+
+def _mono_pitch_bends(
+    line: Sequence[NoteEvent], bins_per_semitone: int
+) -> list[tuple[float, int]]:
+    """``(time_s, wheel value)`` events for a one-note-at-a-time line.
+
+    Each note's curve is centred on its own median, so the wheel carries the
+    note's movement (a scoop, a slide, vibrato) and not basic-pitch's
+    estimate of its tuning, which on a steady tone sits a bin sharp. A note
+    whose curve moves less than :data:`MIN_BEND_BINS` gets no bend. The wheel
+    returns to centre when a bent note ends, so the next note starts
+    unbent. Values assume the General MIDI bend range of 2 semitones.
+    """
+    import numpy as np
+
+    events: list[tuple[float, int]] = []
+    per_semitone = 4096.0 / float(bins_per_semitone)
+    for start, end, _pitch, _amp, bends in line:
+        if not bends:
+            continue
+        values = np.asarray(bends, dtype=np.float64)
+        moved = values - float(np.median(values))
+        if float(np.max(np.abs(moved))) < MIN_BEND_BINS:
+            continue
+        step = (end - start) / moved.size
+        last = 0
+        for i, v in enumerate(moved):
+            wheel = max(-8192, min(8191, int(round(float(v) * per_semitone))))
+            if wheel != last:
+                events.append((start + i * step, wheel))
+                last = wheel
+        if last != 0:
+            events.append((end, 0))
+    out: list[tuple[float, int]] = []
+    for when, value in events:
+        if out and when - out[-1][0] < _SAME_TICK_SEC:
+            out[-1] = (out[-1][0], value)
+        else:
+            out.append((when, value))
+    return out
+
+
+def _write_note_events(
+    note_events: Sequence[Sequence],
+    output_path: Path,
+    settings: BasicPitchSettings,
+    *,
+    bins_per_semitone: int,
+) -> int:
+    """Write basic-pitch note events as a MIDI file for ``settings``' role.
+
+    One instrument on the role's General MIDI program and name, on a melodic
+    channel. A monophonic role is reduced to one note at a time and keeps
+    each note's bend (:func:`_mono_pitch_bends`); a polyphonic role gets no
+    pitch wheel, which would bend every note of a chord together. The file
+    is written beside ``output_path`` and moved over it. Returns the number
+    of notes written.
+    """
+    import pretty_midi
+
+    events = [_as_event(n) for n in note_events]
+    if settings.monophonic:
+        events = monophonic_line(
+            events,
+            pick=settings.monophonic,
+            min_len=settings.minimum_note_length_ms / 1000.0,
+        )
+    midi = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    inst = pretty_midi.Instrument(program=settings.program, name=settings.name)
+    for start, end, pitch, amp, _bends in events:
+        inst.notes.append(
+            pretty_midi.Note(
+                velocity=max(1, min(127, int(round(127 * amp)))),
+                pitch=pitch,
+                start=start,
+                end=end,
+            )
+        )
+    if settings.monophonic:
+        for when, value in _mono_pitch_bends(events, bins_per_semitone):
+            inst.pitch_bends.append(pretty_midi.PitchBend(value, when))
+    midi.instruments.append(inst)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(suffix=".mid", dir=str(output_path.parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        midi.write(str(tmp))
+        os.replace(tmp, output_path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+    return len(inst.notes)
+
+
+def _run_basic_pitch(
+    audio_path: Path, output_path: Path, *, role: Optional[str] = None
+) -> dict:
+    """Transcribe with basic-pitch using the settings of the stem's ``role``
+    (:func:`basic_pitch_settings`; the full-mix settings for ``None``) and
+    write the notes as that role's instrument (:func:`_write_note_events`)."""
     # The model load logs before it imports basic_pitch.inference (the slow
     # import), so it runs first.
     model = _load_basic_pitch_model()
-    from basic_pitch.inference import predict_and_save
+    with _quiet_basic_pitch_import():
+        from basic_pitch.constants import CONTOURS_BINS_PER_SEMITONE
+        from basic_pitch.inference import predict
 
-    # Use a tempdir adjacent to the output path so the final move is
-    # always on the same volume (Path.replace() fails cross-drive on
-    # Windows, e.g. tmp on C: → output on D:). shutil.move is the
-    # cross-volume-safe fallback regardless.
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=str(output_path.parent)) as td:
-        td_path = Path(td)
-        # basic-pitch prints status with emoji. On Windows the
-        # console/log stream is often a legacy code page (cp1252), so the
-        # library's own print() raises UnicodeEncodeError ('charmap' codec
-        # can't encode '\U0001f6a8') and kills a conversion that would
-        # otherwise succeed. Capture its stdout/stderr into a str buffer —
-        # StringIO holds text, never encodes, so it cannot crash — then log
-        # the (now harmless) chatter at debug level.
-        chatter = io.StringIO()
-        with contextlib.redirect_stdout(chatter), contextlib.redirect_stderr(chatter):
-            predict_and_save(
-                audio_path_list=[str(audio_path)],
-                output_directory=str(td_path),
-                save_midi=True,
-                sonify_midi=False,
-                save_model_outputs=False,
-                save_notes=False,
-                model_or_model_path=model,
-            )
-        captured = chatter.getvalue().strip()
-        if captured:
-            log.debug("basic_pitch output: %s", captured)
-        # basic-pitch names: <stem>_basic_pitch.mid
-        produced = next(td_path.glob("*_basic_pitch.mid"), None)
-        if produced is None:
-            return {"ok": False, "engine": "basic_pitch", "error": "no MIDI emitted"}
-        # shutil.move handles cross-volume moves (Path.replace() does not).
-        if output_path.exists():
-            output_path.unlink()
-        shutil.move(str(produced), str(output_path))
+    settings = basic_pitch_settings(role)
+    # basic-pitch prints status with emoji. On Windows the
+    # console/log stream is often a legacy code page (cp1252), so the
+    # library's own print() raises UnicodeEncodeError ('charmap' codec
+    # can't encode '\U0001f6a8') and kills a conversion that would
+    # otherwise succeed. Capture its stdout/stderr into a str buffer —
+    # StringIO holds text, never encodes, so it cannot crash — then log
+    # the (now harmless) chatter at debug level.
+    chatter = io.StringIO()
+    with contextlib.redirect_stdout(chatter), contextlib.redirect_stderr(chatter):
+        _output, _midi, note_events = predict(
+            audio_path,
+            model,
+            onset_threshold=settings.onset_threshold,
+            frame_threshold=settings.frame_threshold,
+            minimum_note_length=settings.minimum_note_length_ms,
+            minimum_frequency=settings.minimum_frequency,
+            maximum_frequency=settings.maximum_frequency,
+            multiple_pitch_bends=False,
+            melodia_trick=True,
+        )
+    captured = chatter.getvalue().strip()
+    if captured:
+        log.debug("basic_pitch output: %s", captured)
 
-    notes_count = _count_midi_notes(output_path)
-    version = _module_version("basic_pitch")
+    notes_count = _write_note_events(
+        note_events,
+        output_path,
+        settings,
+        bins_per_semitone=int(CONTOURS_BINS_PER_SEMITONE),
+    )
     return {
         "ok": True,
         "engine": "basic_pitch",
-        "engine_version": version,
+        "engine_version": _module_version("basic_pitch"),
         "notes_count": notes_count,
+        "role": settings.role,
+        "program": settings.program,
+        "monophonic": bool(settings.monophonic),
         "device": "cuda"
         if _basic_pitch_providers[:1] == ["CUDAExecutionProvider"]
         else "cpu",
@@ -721,14 +1124,13 @@ def _module_version(name: str) -> str:
 
 
 def hint_for_stem(stem_name: Optional[str]) -> MidiHint:
-    """Stem-aware routing: a drum stem (any name containing 'drum') goes to
-    the model-free drum engine, piano-transcription-inference excels on
-    pure piano, everything else routes to basic-pitch."""
-    if not stem_name:
-        return "generic"
-    name = stem_name.lower()
-    if "drum" in name:
+    """Stem-aware routing by the stem's role (:func:`role_for_stem`): the
+    whole kit and every LARSNET kit part go to the model-free drum engine,
+    piano-transcription-inference takes a piano stem, everything else
+    routes to basic-pitch."""
+    role = role_for_stem(stem_name)
+    if role in PERCUSSIVE_ROLES:
         return "drums"
-    if name in {"piano", "keys", "keyboards"}:
+    if role == "piano":
         return "piano"
     return "generic"
