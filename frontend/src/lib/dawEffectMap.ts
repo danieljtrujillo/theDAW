@@ -199,18 +199,20 @@ export function translateDawParams(effectId: string, params: Record<string, numb
  *    mapped theDAW id, or the raw device name when nothing maps (preserved).
  *
  * A device PERFORM opened from a .tasmo (lib/tasmoToSession) also carries the
- * plugin state theDAW captured (`raw_state`, `state_host`), and the node
- * written back keeps it. A DAW import's own preset chunk (`state`) is never
- * taken for that state: neither host reads it.
+ * node's `id` and the plugin state theDAW captured (`raw_state`, `state_host`),
+ * and the node written back keeps them. A DAW import's own preset chunk
+ * (`state`) is never taken for that state: neither host reads it.
  */
 export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
   const params = numericParams(device.parameters);
   const bypass = device.bypass ?? false;
   const isPlugin =
     !!device.plugin_path && (device.plugin_type === 'vst3' || device.plugin_type === 'audiounit');
+  const id = typeof device.id === 'string' && device.id ? { id: device.id } : {};
 
   if (isPlugin) {
     return {
+      ...id,
       node_type: device.plugin_type,
       effect_name: device.name,
       parameters: params,
@@ -226,6 +228,7 @@ export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
 
   const mapped = resolveLiveEffectId(device.name);
   return {
+    ...id,
     node_type: 'builtin',
     // A mapped theDAW id when we recognized it, else the original name so the
     // user still sees what the source project had (loader shows it inactive).

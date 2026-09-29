@@ -9,6 +9,11 @@
 // /api/project/clip-audio serves any absolute path — see dawImportClient's
 // dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
 // seconds-based shape the grid renders.
+//
+// Each project, track and clip also keeps the .tasmo record it came from
+// (`tasmo`), and each device its entry id and captured plugin state, so a save
+// from PERFORM (projectClient dawProjectToTasmo) writes back everything the
+// grid does not show.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
 import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
@@ -77,8 +82,13 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         // file validates); interpretation is not, so an unknown kind loads as
         // no rule rather than as some other rule.
         followAction: parseFollowAction(c.follow_action),
+        // The file's own clip, for the PERFORM save: its id, gain, fades,
+        // tempo, library entry, step notes, render and takes, none of which
+        // the grid shows.
+        tasmo: c,
       };
     });
+    const { clips: _clips, ...trackRecord } = t;
     return {
       name: t.name || `Track ${ti + 1}`,
       type: t.type === 'midi' ? 'midi' : 'audio',
@@ -108,13 +118,20 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         bypass: !!n.bypass,
         is_instrument: false,
         is_rack: false,
-        // The plugin state theDAW captured, which PERFORM hosts the plugin at.
+        // The insert's id (automation lanes and controller mappings key off
+        // it in EDIT) and the plugin state theDAW captured, which PERFORM
+        // hosts the plugin at and a PERFORM save writes back.
+        id: n.id ?? null,
         raw_state: n.vst_state?.raw_state ?? null,
         state_host: n.vst_state?.state_host ?? null,
       })),
+      // The file's own track, for the PERFORM save: its id, instrument,
+      // routing and folder place.
+      tasmo: trackRecord,
     };
   });
 
+  const { tracks: _tracks, ...projectRecord } = loaded;
   return {
     source_daw: 'tasmo',
     source_version: '',
@@ -129,5 +146,7 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
     plugins_used: [],
     warnings: [],
     missing_files: [],
+    // The file's own project-level fields, for the PERFORM save.
+    tasmo: projectRecord,
   };
 }

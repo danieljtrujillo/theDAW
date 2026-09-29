@@ -36,6 +36,10 @@ interface ProjectState {
   tempo: number;
   embedAudio: boolean;
   savePath: string;
+  /** The payload a seeded open (PERFORM's Save as .tasmo) handed over, kept
+   *  whole so a save writes every field it carries (the scene names, the tempo
+   *  and meter maps). Null when the dialog was opened without a seed. */
+  pendingProject: TasmoProjectInput | null;
   pendingTracks: TasmoTrackInput[];
   /** Meter of a seeded (imported) project, carried through so saving it does
    *  not drop the source's time signature. Null when nothing seeded one. */
@@ -187,6 +191,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   tempo: 120,
   embedAudio: false,
   savePath: '',
+  pendingProject: null,
   pendingTracks: [],
   pendingTimeSignature: null,
   sourceDaw: null,
@@ -204,12 +209,26 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       set({
         projectName: seed.project_name || 'Untitled',
         tempo: seed.tempo ?? 120,
+        pendingProject: seed,
         pendingTracks: seed.tracks ?? [],
         pendingTimeSignature: seed.time_signature ?? null,
         sourceDaw: seed.source_daw ?? null,
         importWarnings: seed.import_warnings ?? [],
         pendingPerformRouting: seed.perform_routing ?? null,
         lastSaved: null,
+      });
+    } else {
+      // No seed: Ctrl+S, the App menu's Save, or Open. The dialog saves the
+      // EDIT timeline, so a seed an earlier PERFORM save left behind is let
+      // go. Kept, it made every later Save write that PERFORM structure over
+      // the work done in EDIT since.
+      set({
+        pendingProject: null,
+        pendingTracks: [],
+        pendingTimeSignature: null,
+        sourceDaw: null,
+        importWarnings: [],
+        pendingPerformRouting: null,
       });
     }
     set({ isOpen: true, tab, error: null });
@@ -284,6 +303,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       tempo,
       embedAudio,
       savePath,
+      pendingProject,
       pendingTracks,
       pendingTimeSignature,
       sourceDaw,
@@ -325,6 +345,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         // written as a dangler.
         const doc = captureProjectDocument(pendingTracks.map((t) => t.id));
         const project: TasmoProjectInput = {
+          // Every field the seed carries (the scene names, the tempo and meter
+          // maps, the sample rate); the fields below replace their own keys.
+          ...pendingProject,
+          // The dialog's Tempo is the start tempo, which a tempo map states
+          // again in its first event; the map wins on load, so it follows.
+          ...(pendingProject?.tempo_map?.length
+            ? { tempo_map: pendingProject.tempo_map.map((e) => (e.beat === 0 && !e.fermata ? { ...e, bpm: tempo } : e)) }
+            : {}),
           project_name: name,
           tempo,
           time_signature: pendingTimeSignature ?? [4, 4],
