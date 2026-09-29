@@ -617,6 +617,15 @@ async function sitesAreUpstreamFirstAndOnlyWhereAudible(): Promise<void> {
     'a stem prints its own track and no bus',
   );
   assert.deepEqual(printSites(request({ includeFx: false }), deps), [], 'no inserts asked for, none printed');
+  // c1 plays 0-2 s. A range from 10 s (preroll from 8 s) never hears it.
+  const late: RenderRange = { startFrame: 10 * SR, endFrame: 12 * SR, prerollFrames: 2 * SR, tailFrames: 0 };
+  assert.deepEqual(
+    printSites(request({ range: late }), deps).map((s) => s.id),
+    ['b1', 'b2'],
+    'a track with no clip in the window a range renders prints nothing; its buses still print',
+  );
+  const early: RenderRange = { startFrame: 3 * SR, endFrame: 5 * SR, prerollFrames: 2 * SR, tailFrames: 0 };
+  assert.deepEqual(printSites(request({ range: early }), deps).map((s) => s.id), ['t1', 'b1', 'b2'], 'a clip in the preroll counts');
 
   const split = splitAtInserts([fx('A', 1, 0), vst('V1', 1, 0), vst('V2', 1, 0), fx('B', 1, 0)]);
   assert.deepEqual(split.segments.map((s) => s.map((e) => e.id)), [['A'], [], ['B']]);

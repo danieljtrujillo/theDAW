@@ -38,8 +38,8 @@
  *     plugin rings into that window as the rack's effects do.
  *
  * WHAT IT DOES NOT PRINT, deliberately: a muted or soloed-out track, a track
- * with no audible clip in the bounce (its plugins would process silence), and
- * a muted bus. A bus is printed only where the bounce walks the routing graph
+ * with no audible clip in the bounce or, for a range, in the window the range
+ * renders (its plugins would process silence), and a muted bus. A bus is printed only where the bounce walks the routing graph
  * (the master scope, a graph that orders), because nowhere else is a bus in any
  * path. A bounce that asks for no inserts (`includeFx: false`) prints none.
  *
@@ -142,8 +142,15 @@ export function printSites(
   const honoursMute = req.includeTrackMix;
   const honoursSolo = req.includeTrackMix && scope.kind === 'master';
   const scoped = clipsInScope(deps.clips, scope);
+  // A range renders from its preroll to the end of its tail, and nothing
+  // outside that window reaches the file.
+  const plan = req.range ? planRangeRender(req.range, req.sampleRate) : null;
+  const inWindow = (c: AudioClip): boolean => !plan || (
+    c.startSec < plan.renderStartSec + plan.contextFrames / req.sampleRate
+    && c.startSec + c.durationSec > plan.renderStartSec
+  );
   const sounds = (t: EditorTrack): boolean => scoped.some(
-    (c) => c.trackId === t.id && !c.muted && !!c.audioBlob && !isExternalMidiClip(c, deps.tracks),
+    (c) => c.trackId === t.id && !c.muted && !!c.audioBlob && !isExternalMidiClip(c, deps.tracks) && inWindow(c),
   );
   const sites: PrintSite[] = [];
   for (const t of universe) {
