@@ -11,7 +11,9 @@
  * part holding notes is percussion (MIDI channel 10, or a drum bank). A song's
  * stem transcribed by basic-pitch takes its stem's instrument (lib/stemRole)
  * from `stem` (the label when left out). With no program in the file the
- * clip plays its track's, else the picker's, as before.
+ * clip plays its track's, else the picker's, as before. A drum file's program
+ * 0 is the Standard kit a writer puts on channel 10 when it names no kit, so
+ * a drum track's own kit plays over it.
  *
  * Percussion belongs to the TRACK (lib/clipProgram): a drum file plays its
  * kit only on a drum track, and a pitched file plays pitched only on a
@@ -141,17 +143,6 @@ export function placeMidiFileClip(data: MidiFileData, opts: MidiClipPlaceOptions
   const pointed = opts.targetTrackId ? editor.tracks.find((t) => t.id === opts.targetTrackId) : undefined;
   const fits = !!pointed && isPercussionTrack(pointed) === file.percussion;
   const turnable = !!pointed && !fits && blankTrack(pointed, editor.clips.filter((c) => c.trackId === pointed.id).length);
-  const record = makeRollTrack(
-    {
-      name: file.source?.track.name ?? opts.label,
-      program: file.program ?? null,
-      bank: file.bank,
-      channel: file.percussion ? PERCUSSION_PART_CHANNEL : null,
-      ...(file.source?.track.instrumentId ? { instrumentId: file.source.track.instrumentId } : {}),
-      ...(opts.fromAudio ? { fromAudio: true } : {}),
-    },
-    0,
-  );
   const { trackId, clipId } = editor.undoGroup(() => {
     const store = useEditorStore.getState();
     let trackId: string;
@@ -170,8 +161,23 @@ export function placeMidiFileClip(data: MidiFileData, opts: MidiClipPlaceOptions
     const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
     const color = track?.color ?? '#a855f7';
     // The file's own program on the clip, over its track's, in the bank it was chosen in. A file
-    // with none plays its track's program, else the picker's (a drum track its kit).
-    const program = file.program ?? (isPercussionTrack(track) ? track?.instrumentProgram : track?.instrumentProgram ?? globalProgram);
+    // with none plays its track's program, else the picker's (a drum track its kit). A drum file's
+    // program 0 is the Standard kit a writer puts on channel 10 when it chooses none (pretty_midi's
+    // drum part, the drum engine's file): a drum track's own kit plays over it.
+    const trackKit = isPercussionTrack(track) ? track?.instrumentProgram : undefined;
+    const fileProgram = file.percussion && file.program === 0 && trackKit !== undefined ? undefined : file.program;
+    const program = fileProgram ?? (isPercussionTrack(track) ? trackKit : track?.instrumentProgram ?? globalProgram);
+    const record = makeRollTrack(
+      {
+        name: file.source?.track.name ?? opts.label,
+        program: fileProgram ?? null,
+        bank: file.bank,
+        channel: file.percussion ? PERCUSSION_PART_CHANNEL : null,
+        ...(file.source?.track.instrumentId ? { instrumentId: file.source.track.instrumentId } : {}),
+        ...(opts.fromAudio ? { fromAudio: true } : {}),
+      },
+      0,
+    );
     const clipId = useEditorStore.getState().addClipToTrack({
       trackId,
       label: opts.label,
