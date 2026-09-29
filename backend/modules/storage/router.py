@@ -857,9 +857,13 @@ def _demucs_provider_status() -> dict:
 
 def _midi_provider_status() -> dict:
     try:
-        from backend.modules.midi.engine import engine_capabilities
+        from backend.modules.midi.engine import (
+            engine_capabilities,
+            engine_unavailable_reasons,
+        )
 
         caps = engine_capabilities()
+        reasons = engine_unavailable_reasons()
         engines = [name for name, ok in caps.items() if ok]
         ready = bool(engines)
         return {
@@ -878,6 +882,7 @@ def _midi_provider_status() -> dict:
                     "label": name.replace("_", " ").title(),
                     "source": "local" if ok else "missing",
                     "recommended": name == "basic_pitch" and ok,
+                    "reason": None if ok else reasons.get(name),
                 }
                 for name, ok in caps.items()
             ],

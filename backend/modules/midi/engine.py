@@ -64,21 +64,67 @@ def _quiet_basic_pitch_import():
         root.setLevel(previous)
 
 
-def _basic_pitch_available() -> bool:
+#: Why each pitched engine failed its last import check (``None`` = it
+#: imported). Filled by the availability checks below and read by
+#: :func:`engine_unavailable_reasons` for the Settings card.
+_UNAVAILABLE_REASON: dict[str, Optional[str]] = {}
+
+#: ``(engine, reason)`` pairs already written to the LOG. The capability check
+#: runs on every Settings poll and every conversion; the LOG gets each reason
+#: once per process.
+_WARNED_UNAVAILABLE: set[tuple[str, str]] = set()
+
+
+def _import_problem(module: str) -> Optional[str]:
+    """``None`` when ``module`` imports, else what stopped it: the module
+    that is missing, or the import error itself."""
     try:
-        with _quiet_basic_pitch_import():
-            importlib.import_module("basic_pitch")
+        importlib.import_module(module)
+        return None
+    except ModuleNotFoundError as e:
+        return f"missing module: {e.name or e}"
+    except ImportError as e:
+        return f"import failed: {e}"
+
+
+def _note_availability(engine: str, problem: Optional[str], effect: str) -> bool:
+    """Record ``engine``'s import check; on a failure, say once in the LOG
+    which module is missing and what that does to a conversion."""
+    _UNAVAILABLE_REASON[engine] = problem
+    if problem is None:
         return True
-    except ImportError:
-        return False
+    if (engine, problem) not in _WARNED_UNAVAILABLE:
+        _WARNED_UNAVAILABLE.add((engine, problem))
+        log.warning(
+            "midi.engine: %s is unavailable (%s); %s",
+            PACKAGE_FOR_ENGINE[engine],
+            problem,
+            effect,
+        )
+    return False
+
+
+def _basic_pitch_available() -> bool:
+    with _quiet_basic_pitch_import():
+        problem = _import_problem("basic_pitch")
+    # Recorded outside the quiet block, which holds the root level at ERROR.
+    return _note_availability(
+        "basic_pitch", problem, "full tracks and pitched stems cannot use it"
+    )
 
 
 def _piano_transcription_available() -> bool:
-    try:
-        importlib.import_module("piano_transcription_inference")
-        return True
-    except ImportError:
-        return False
+    return _note_availability(
+        "piano_transcription_inference",
+        _import_problem("piano_transcription_inference"),
+        "piano stems are converted with basic-pitch",
+    )
+
+
+def engine_unavailable_reasons() -> dict[str, str]:
+    """Engine -> why its last import check failed, for the engines that did
+    not import. Call after :func:`engine_capabilities`, which runs the checks."""
+    return {name: why for name, why in _UNAVAILABLE_REASON.items() if why}
 
 
 def engine_devices() -> dict:
@@ -466,48 +512,6 @@ def _run_basic_pitch(audio_path: Path, output_path: Path) -> dict:
     }
 
 
-def _ensure_librosa_core_audio_shim() -> None:
-    """piano_transcription_inference's ``load_audio`` calls, at runtime,
-    ``librosa.core.audio.resample(y, sr_native, sr, res_type=...)`` (utilities.py).
-    librosa >= 0.10 kept that submodule but made ``resample``'s ``orig_sr`` /
-    ``target_sr`` keyword-only, so the positional call raises "resample() takes 1
-    positional argument but 3 positional arguments ... were given". Override the
-    submodule's ``resample`` with a wrapper that accepts the legacy positional
-    signature (and provide a minimal ``librosa.core.audio`` if it is ever missing).
-
-    Not guarded by an early return: the submodule is usually already imported by
-    startup, and we must patch ``resample`` regardless of whether it exists yet.
-    """
-    import sys
-    import types
-
-    import librosa
-    import librosa.core
-    import librosa.util
-
-    orig_resample = librosa.resample
-
-    def _resample_compat(y, *args, **kwargs):
-        if len(args) >= 1:
-            kwargs.setdefault("orig_sr", args[0])
-        if len(args) >= 2:
-            kwargs.setdefault("target_sr", args[1])
-        return orig_resample(y, **kwargs)
-
-    try:
-        import librosa.core.audio as core_audio  # the real submodule (librosa >= 0.10)
-    except Exception:
-        core_audio = types.ModuleType("librosa.core.audio")
-        librosa.core.audio = core_audio  # type: ignore[attr-defined]
-        sys.modules["librosa.core.audio"] = core_audio
-
-    core_audio.resample = _resample_compat  # type: ignore[attr-defined]
-    if not hasattr(core_audio, "to_mono"):
-        core_audio.to_mono = librosa.to_mono  # type: ignore[attr-defined]
-    if not hasattr(core_audio, "util"):
-        core_audio.util = librosa.util  # type: ignore[attr-defined]
-
-
 # Bytedance piano-transcription checkpoint (~165 MB), the same artifact the
 # library auto-fetches — but it shells out to ``wget``, which is absent on
 # Windows, so the download silently no-ops and torch.load then raises
@@ -579,16 +583,29 @@ def _ensure_piano_checkpoint() -> Path:
     return dest
 
 
+def _load_mono(audio_path: Path, sample_rate: int):
+    """``audio_path`` as a mono float32 signal at ``sample_rate``, decoded by
+    the app's loader (libsndfile; the ffmpeg CLI for what it cannot open).
+
+    The piano package's own ``load_audio`` decodes every file, WAV included,
+    by running ffmpeg through audioread."""
+    import librosa
+    import numpy as np
+
+    from backend.lib.audio_io import load_audio_array
+
+    data, sr = load_audio_array(audio_path)
+    mono = data.mean(axis=0) if data.shape[0] > 1 else data[0]
+    if sr != sample_rate:
+        mono = librosa.resample(mono, orig_sr=sr, target_sr=sample_rate)
+    return np.ascontiguousarray(mono, dtype=np.float32)
+
+
 def _run_piano_transcription(audio_path: Path, output_path: Path) -> dict:
-    _ensure_librosa_core_audio_shim()
-    from piano_transcription_inference import (
-        PianoTranscription,
-        sample_rate,
-        load_audio,
-    )
+    from piano_transcription_inference import PianoTranscription, sample_rate
 
     checkpoint_path = _ensure_piano_checkpoint()
-    audio, _ = load_audio(str(audio_path), sr=sample_rate, mono=True)
+    audio = _load_mono(audio_path, int(sample_rate))
     device = torch_device()
     transcriptor = PianoTranscription(
         device=device, checkpoint_path=str(checkpoint_path)
