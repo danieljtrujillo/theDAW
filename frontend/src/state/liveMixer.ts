@@ -3877,6 +3877,9 @@ async function start(fromSec: number): Promise<void> {
     // The tempo the arrangement's tempo map plays where the pass starts.
     tempoBpm: currentBpm(begin),
     discontinuity: true,
+    // `begin` is where the timeline is at this context time, so a plugin whose
+    // host goes live later in the pass is told where the pass has got to.
+    atSec: startCtxTime,
   });
 
   rafId = requestAnimationFrame(tick);

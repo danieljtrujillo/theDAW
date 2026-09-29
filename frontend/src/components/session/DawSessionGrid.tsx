@@ -12,7 +12,8 @@ import { dawImportAudioUrl } from '../../lib/dawImportClient';
 import { pairingHeader } from '../../lib/pairing';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
 import type { DawClip, DawProject, DawTrack } from '../../lib/dawImportClient';
-import { performScenes, performSceneCount, performTracks } from '../../lib/performModel';
+import { performChainEntries, performScenes, performSceneCount, performTracks } from '../../lib/performModel';
+import { createPerformTransport, type PerformTransport } from '../../lib/performTransport';
 import { beatClock, type ClockGrid } from '../../lib/beatClock';
 import { createLaunchQueue, launchSlotId, type LaunchAction, type LaunchTicket } from '../../lib/launchQueue';
 import { dueAt, nextFollow, type FollowAction, type FollowKind } from '../../lib/followAction';
@@ -26,7 +27,6 @@ import { enableMidi } from '../../state/midiTriggerStore';
 import { usePerformRoutingStore, ctrlMatches } from '../../state/performRouting';
 import { registerPerformChainPush } from '../../state/performRailStore';
 import { logError } from '../../state/logStore';
-import { dawDeviceToChainEntry } from '../../lib/dawEffectMap';
 import { ccModFxRoute } from './ccModFxRouteModel';
 import { pushLiveParam } from '../../lib/vstLive/liveParamSink';
 import {
@@ -498,6 +498,13 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
   const meterNum = project.time_signature?.[0] ?? 4;
   const meterDen = project.time_signature?.[1] ?? 4;
   const clockClaimRef = React.useRef<string | null>(null);
+  /** The transport the column plugins follow (lib/performTransport): it starts
+   *  with the first clip that starts and stops with Stop. Made on first use. */
+  const transportRef = React.useRef<PerformTransport | null>(null);
+  const performTransport = React.useCallback(
+    (): PerformTransport => (transportRef.current ??= createPerformTransport()),
+    [],
+  );
   const claimClock = React.useCallback(() => {
     const key = `${project.tempo || 120}:${meterNum}/${meterDen}`;
     if (clockClaimRef.current === key) return;
@@ -613,9 +620,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
       // registry's key, and `perform-<track>-<device>` is stable across chain
       // rebuilds (and is already what the controller mappings address), so one
       // host process survives launches instead of respawning per rebuild.
-      const entries: ChainEntry[] = (track.devices ?? [])
-        .filter((d) => !d.is_instrument && !d.is_rack)
-        .map((d, i) => dawDeviceToChainEntry(d, `perform-${mixIndex}-${i}`));
+      const entries: ChainEntry[] = performChainEntries(track, mixIndex);
       try {
         handle = buildEffectChain(context, input, output, entries);
       } catch (e) {
@@ -672,6 +677,9 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
     setActiveScene(null);
     setTrackScenes({});
     stopMeters();
+    // The column plugins hear the stop too, so a gate or a synced delay stops
+    // following a grid that is no longer playing.
+    transportRef.current?.stop();
   }, [launchQueue, stopMeters, stopPump]);
 
   /** Queue one column's next intent, replacing whatever it was waiting on. */
@@ -1080,6 +1088,9 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
           ),
         });
         playersRef.current = [...playersRef.current, player];
+        // The first clip after a stop starts the transport every column plugin
+        // follows: playing, the clock's position and its tempo.
+        performTransport().play();
         setTrackScenes((prev) => ({ ...prev, [mixIndex]: sceneIndex }));
         if (origin === 'scene') setActiveScene(sceneIndex);
         startedAtRef.current ??= performance.now();
@@ -1125,7 +1136,7 @@ export const DawSessionGrid: React.FC<DawSessionGridProps> = ({ project, fill = 
         })
         .catch(() => { /* logged by the press that queued it */ });
     },
-    [displayTrack, ensurePump, ensureTrackChain, getClipBuffer, project.tempo, tickMeters],
+    [displayTrack, ensurePump, ensureTrackChain, getClipBuffer, performTransport, project.tempo, tickMeters],
   );
 
   /* --- Follow actions on the pump -------------------------------------------
