@@ -7,6 +7,9 @@
  * starts on for that roll, so every note keeps its second. Pressed off, the
  * next BPM keeps every note in its bar. A roll written on the grid starts with
  * it off. The key is a real toggle button with a name and a pressed state.
+ * The choice stays through the MIDI tab closing and opening again (another
+ * bottom tab shown between), and a controller knob mapped to BPM (MAP, CC 14
+ * by default) follows it as the field does.
  *
  *   cd frontend && npx tsx src/components/audio/RollKeepTime.test.tsx
  */
@@ -34,7 +37,8 @@ for (const [key, value] of Object.entries({
 const React = await import('react');
 const { act } = React;
 const { createRoot } = await import('react-dom/client');
-const { PianoRollTransport } = await import('./PianoRoll.tsx');
+const { PianoRollMapKey, PianoRollTransport } = await import('./PianoRoll.tsx');
+const { publishMidi } = await import('../../state/midiBus.ts');
 const { usePianoRollStore } = await import('../../state/pianoRollStore.ts');
 const { stepClock } = await import('../../lib/rollTempo.ts');
 
@@ -58,13 +62,14 @@ roll().importParts([{ name: 'Bass', fromAudio: true, notes: [
 
 const host = document.createElement('div');
 document.body.appendChild(host);
-const root = createRoot(host);
+let root = createRoot(host);
 await act(async () => root.render(<PianoRollTransport />));
 
-const bpmField = host.querySelector<HTMLInputElement>('#piano-roll-bpm')!;
+let bpmField = host.querySelector<HTMLInputElement>('#piano-roll-bpm')!;
 assert.ok(bpmField, 'the BPM field renders');
 assert.equal(host.querySelector(`label[for="piano-roll-bpm"]`)?.textContent, 'BPM', 'the field has its label');
-const keep = [...host.querySelectorAll('button')].find((b) => b.getAttribute('aria-label')?.startsWith('Keep time'))!;
+const keepKey = () => [...host.querySelectorAll('button')].find((b) => b.getAttribute('aria-label')?.startsWith('Keep time'))!;
+let keep = keepKey();
 assert.ok(keep, 'KEEP TIME renders beside the BPM field');
 assert.equal(keep.getAttribute('aria-pressed'), 'true', 'KEEP TIME starts on for a roll whose parts came from audio');
 assert.ok(keep.getAttribute('aria-describedby'), 'its tip describes it');
@@ -88,6 +93,20 @@ await act(async () => {
 assert.equal(roll().bpm, 110);
 assert.deepEqual(roll().notes.map((n) => n.step), steps, 'with KEEP TIME off the notes keep their steps');
 
+// The MIDI tab closes while another bottom tab is shown, and opens again: the choice made in this roll stays.
+await act(async () => root.unmount());
+root = createRoot(host);
+await act(async () => root.render(<PianoRollTransport />));
+bpmField = host.querySelector<HTMLInputElement>('#piano-roll-bpm')!;
+keep = keepKey();
+assert.equal(keep.getAttribute('aria-pressed'), 'false', 'KEEP TIME is still off after the MIDI tab closed and opened');
+await act(async () => {
+  type(bpmField, '100');
+  enter(bpmField);
+});
+assert.equal(roll().bpm, 100);
+assert.deepEqual(roll().notes.map((n) => n.step), steps, 'so the next BPM still keeps the notes in their bars');
+
 // A roll written on the grid starts with KEEP TIME off.
 await act(async () => {
   roll().importParts([{ name: 'Keys', notes: [{ id: 'k', note: 60, step: 4, length: 2, velocity: 80 }] }], 120);
@@ -98,6 +117,22 @@ await act(async () => {
   roll().importParts([{ name: 'Vocals', fromAudio: true, notes: [{ id: 'v', note: 67, step: 4, length: 2, velocity: 80 }] }], 120);
 });
 assert.equal(keep.getAttribute('aria-pressed'), 'true', "a new song's stems start with KEEP TIME on");
+
+// A knob mapped to BPM (MAP's default, CC 14) turned on a transcription: every note keeps its second, as the field keeps it.
+const mapHost = document.createElement('div');
+document.body.appendChild(mapHost);
+const mapRoot = createRoot(mapHost);
+await act(async () => mapRoot.render(<PianoRollMapKey />));
+const knobBefore = onsets();
+await act(async () => publishMidi([0xb0, 14, 40]));
+assert.ok(Math.abs(roll().bpm - 120) > 1, `the knob moved the BPM (${roll().bpm})`);
+onsets().forEach((t, i) => assert.ok(Math.abs(t - knobBefore[i]) < 0.002, `the knob kept note ${i} at its second (${t} vs ${knobBefore[i]})`));
+// With KEEP TIME off the knob keeps each note in its bar.
+await act(async () => keepKey().click());
+const knobSteps = roll().notes.map((n) => n.step);
+await act(async () => publishMidi([0xb0, 14, 70]));
+assert.deepEqual(roll().notes.map((n) => n.step), knobSteps, 'with KEEP TIME off the knob keeps the notes in their bars');
+await act(async () => mapRoot.unmount());
 
 await act(async () => root.unmount());
 console.log('RollKeepTime: ok');
