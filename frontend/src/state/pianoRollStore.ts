@@ -592,6 +592,12 @@ interface PianoRollState {
   /** Drop the flags and the figures the harmony row shows. */
   clearVoiceLeading: () => void;
   /**
+   * Show a song's chords in the harmony row (lib/songSections
+   * chordTrackHarmony: its chord symbols at their ticks) in place of the
+   * figures it had, and open the row. The flags stay. Analysis, not undo history.
+   */
+  showSongChords: (chords: readonly RollChordLabel[]) => void;
+  /**
    * Send the roll's parts to the voice-leading checker (composerApi.check):
    * `opts.partIds` when two or more are given, else the parts named Soprano,
    * Alto, Tenor and Bass when two or more are, else the four highest parts
@@ -3001,6 +3007,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return sameRollKey(next, s.rollKey) ? {} : { rollKey: next };
     }),
   clearVoiceLeading: () => set((s) => (s.voiceLeading === null && s.harmonyChords.length === 0 ? {} : { voiceLeading: null, harmonyChords: [] })),
+  showSongChords: (chords) => {
+    set({ harmonyChords: chords.map((c) => ({ ...c })), showHarmony: true });
+    saveComposeViewOf(get());
+  },
   runVoiceLeadingCheck: async (opts = {}) => {
     const s = get();
     const pick = checkPick(rollTracksOf(s), opts.partIds);
