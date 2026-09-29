@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 
 import type { AudioClip, EditorBus, EditorTrack } from '../../state/editorStore.ts';
 import type { ChainEntry } from '../../state/effectChainStore.ts';
-import { addBus, emptyGraph, ensureTrackNode, setOutput, type RoutingGraph } from '../../state/routingGraph.ts';
+import { addBus, addSend, emptyGraph, ensureTrackNode, setOutput, type RoutingGraph } from '../../state/routingGraph.ts';
 import type { ChainHandle } from '../rackEffects.ts';
 import { renderBounce, renderExtentSec, type BounceRequest, type RenderDeps } from '../renderCore.ts';
 import { readWavSamples, writeFloatWav } from '../wavSamples.ts';
@@ -636,8 +636,8 @@ async function sitesAreUpstreamFirstAndOnlyWhereAudible(): Promise<void> {
   const late: RenderRange = { startFrame: 10 * SR, endFrame: 12 * SR, prerollFrames: 2 * SR, tailFrames: 0 };
   assert.deepEqual(
     printSites(request({ range: late }), deps).map((s) => s.id),
-    ['b1', 'b2'],
-    'a track with no clip in the window a range renders prints nothing; its buses still print',
+    [],
+    'a track with no clip in the window a range renders prints nothing, and neither do the buses only it feeds',
   );
   const early: RenderRange = { startFrame: 3 * SR, endFrame: 5 * SR, prerollFrames: 2 * SR, tailFrames: 0 };
   assert.deepEqual(printSites(request({ range: early }), deps).map((s) => s.id), ['t1', 'b1', 'b2'], 'a clip in the preroll counts');
@@ -645,6 +645,39 @@ async function sitesAreUpstreamFirstAndOnlyWhereAudible(): Promise<void> {
   const split = splitAtInserts([fx('A', 1, 0), vst('V1', 1, 0), vst('V2', 1, 0), fx('B', 1, 0)]);
   assert.deepEqual(split.segments.map((s) => s.map((e) => e.id)), [['A'], [], ['B']]);
   assert.deepEqual(split.inserts.map((e) => e.id), ['V1', 'V2']);
+}
+
+/* ── 10b. A bus prints only where a sounding track's audio reaches it ──────── */
+
+async function aBusPrintsOnlyWhereASoundingTrackReachesIt(): Promise<void> {
+  // t1 -> b1 -> master, a send from t1 into b3, and t2 -> b2 -> master. b4
+  // hangs off a muted b5 that t2 sends into.
+  let g = graphWithOneBus();
+  for (const id of ['b2', 'b3', 'b4', 'b5']) g = addBus(g, id, id.toUpperCase());
+  for (const [from, to] of [['t2', 'b2'], ['b5', 'b4']]) {
+    const res = setOutput(g, from, to);
+    assert.ok(res.ok);
+    g = res.graph as RoutingGraph;
+  }
+  for (const [from, to] of [['t1', 'b3'], ['t2', 'b5']]) {
+    const res = addSend(g, from, to, 0.5);
+    assert.ok(res.ok);
+    g = res.graph as RoutingGraph;
+  }
+  const h = harness({
+    tracks: [track({ id: 't1' }), track({ id: 't2' })],
+    clips: [{ id: 'c1', trackId: 't1', value: 1 }, { id: 'c2', trackId: 't2', value: 1 }],
+  });
+  const buses = ['b1', 'b2', 'b3', 'b4', 'b5'].map((id) => bus({ id, mute: id === 'b5', fxChain: [vst(`V${id}`, 1, 0)] }));
+  const deps = { clips: h.deps.clips, tracks: h.deps.tracks, buses, routing: g };
+  const ids = (req: BounceRequest): string[] => printSites(req, deps).map((s) => s.id).sort();
+
+  assert.deepEqual(ids(request()), ['b1', 'b2', 'b3'], 'the mix prints every bus a track reaches, by its output or a send, and none behind a muted bus');
+  assert.deepEqual(
+    ids(request({ includeTrackMix: false })),
+    ['b1', 'b2', 'b3', 'b4', 'b5'],
+    'a bounce that ignores the mix controls hears through a muted bus',
+  );
 }
 
 /* ── 11. A stem: its plugins among its rack, in chain order ────────────────── */
@@ -702,6 +735,7 @@ async function main(): Promise<void> {
   await eachTapLandsOnTheTimeline();
   await aCancelStopsBetweenHops();
   await sitesAreUpstreamFirstAndOnlyWhereAudible();
+  await aBusPrintsOnlyWhereASoundingTrackReachesIt();
   await aStemPrintsItsChainInOrder();
   await aFrozenTrackHoldsItsPluginTail();
   console.log('insertPrint: ok');
