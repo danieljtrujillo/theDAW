@@ -12,7 +12,7 @@
 // seconds (an imported set's, and every MIDI cell PERFORM saves) is kept as it is.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
+import { bankSelectOf, gmProgramOf, playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
 import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
@@ -27,15 +27,20 @@ function secondsNote(n: Record<string, number>): { start: number; duration: numb
   return { start: Math.max(0, start), duration: duration ?? 0.25 };
 }
 
-/** A saved clip's or track's program, bank and sound bank, each only when the file has one. */
+/** A saved clip's or track's program, bank and sound bank, each only when the
+ *  file has one, read as EDIT's loader reads them: a whole program 0-127 (the
+ *  file is hand-editable) and a bank only beside a program. */
 function voiceFields(v: {
   instrument_program?: number | null;
   instrument_bank?: number | null;
   instrument_bank_id?: string | null;
 }): Pick<DawTrack, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id'> {
+  const program = gmProgramOf(v.instrument_program);
+  if (program === undefined) return {};
+  const bank = bankSelectOf(v.instrument_bank);
   return {
-    ...(typeof v.instrument_program === 'number' ? { instrument_program: v.instrument_program } : {}),
-    ...(typeof v.instrument_bank === 'number' && v.instrument_bank > 0 ? { instrument_bank: v.instrument_bank } : {}),
+    instrument_program: program,
+    ...(bank > 0 ? { instrument_bank: bank } : {}),
     ...(v.instrument_bank_id ? { instrument_bank_id: v.instrument_bank_id } : {}),
   };
 }
