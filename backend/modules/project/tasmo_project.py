@@ -12,6 +12,13 @@ class VstPluginState(BaseModel):
     parameters: dict[str, float] = {}
     preset_path: str | None = None
     instance_id: str = ""
+    # The opaque base64 state the plugin's window or its live host captured:
+    # the dialled-in sound of a track or bus insert. None: the plugin opens at
+    # its defaults, which is how every file written before this field loads.
+    raw_state: str | None = None
+    # Which host captured raw_state ("thedaw", the live host, or "pedalboard"),
+    # as ChainVst.state_host. None: the default.
+    state_host: str | None = None
 
 
 class EffectChainNode(BaseModel):
@@ -23,6 +30,22 @@ class EffectChainNode(BaseModel):
     # Stable chain-entry id so controller mappings (and other references) keyed to
     # a specific FX slot survive a save/load round-trip.
     id: str | None = None
+
+
+class SidechainKey(BaseModel):
+    """A sidechain key leaving a track or a bus.
+
+    The track's or bus's post-pan signal drives the detector of the effect
+    ``entry_id`` on the rack of ``target``, a track or bus id. Stored on the
+    SOURCE, beside ``output_routing`` and ``send_amounts``, so every edge a
+    node sends is written in one place (frontend ``CONN_SIDECHAIN``). Both
+    fields default to "" and are not validated here, exactly as
+    ``FollowAction`` is not: the app's reader drops a key that names no strip
+    or no entry on it, or that would close a loop.
+    """
+
+    target: str = ""
+    entry_id: str = ""
 
 
 class Locator(BaseModel):
@@ -408,7 +431,19 @@ class Clip(BaseModel):
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None
+    # Warp anchors, [{source_sec, target_sec}] in clip-relative seconds, as
+    # theDAW writes them (frontend lib/audioWarp). An importer may store its own
+    # shape here; the reader keeps only theDAW's.
     warp_markers: list[dict] | None = None
+    # The clip's time stretch: the rate its source plays at (1 = original
+    # speed, above 1 shorter) and how the rate is realised ("repitch" rides the
+    # playback rate, "offline" is baked into the audio). And the shape of each
+    # fade ("linear", "exponential", "equal-power"). All None in files written
+    # before they were saved, which load unstretched with linear fades.
+    time_stretch_rate: float | None = None
+    stretch_mode: str | None = None
+    fade_in_curve: str | None = None
+    fade_out_curve: str | None = None
     # Alternate recordings of this clip, the comp across them, and which take
     # the clip's OWN fields currently mirror. Defaulted exactly like
     # `warp_markers` above, so a .tasmo written before takes existed still
@@ -495,6 +530,9 @@ class Track(BaseModel):
     input_routing: str | None = None
     output_routing: str | None = None
     send_amounts: dict[str, float] = {}
+    # The sidechain keys this track's signal feeds (see SidechainKey). Empty in
+    # files written before they were saved.
+    sidechain_keys: list[SidechainKey] = []
     # The GM program (0-127) this track's MIDI clips play through when a clip
     # has none of its own; None = the global instrument.
     instrument_program: int | None = None
@@ -557,6 +595,11 @@ class Bus(BaseModel):
     ``effect_chain`` is named to match ``Track`` and ``Clip`` rather than the
     frontend's ``fxChain``: one .tasmo file should not spell the same list two
     ways.
+
+    ``send_amounts`` (bus id -> linear send gain) and ``sidechain_keys`` are
+    the other edges a bus sends, exactly as a track's are. Both default to
+    empty, so a file written before they were saved loads a bus with its
+    output and nothing else.
     """
 
     id: str
@@ -564,6 +607,8 @@ class Bus(BaseModel):
     volume: float = 1.0
     mute: bool = False
     output_routing: str | None = None
+    send_amounts: dict[str, float] = {}
+    sidechain_keys: list[SidechainKey] = []
     effect_chain: list[EffectChainNode] = []
 
 

@@ -14,8 +14,24 @@
  */
 import type { DawDevice } from './dawImportClient';
 import type { EffectChainNode } from './projectClient';
-import type { ChainEntry } from '../state/effectChainStore';
+import type { ChainEntry, VstNode } from '../state/effectChainStore';
 import { getRackEffect, type RackParamDescriptor } from './rackEffects';
+
+/**
+ * A plugin's saved state and the host that captured it, in the store's
+ * `VstNode` shape: a non-empty `raw_state`, and a `state_host` the app knows.
+ * Anything else is left out, so the plugin opens at its defaults and reads the
+ * default host (effectChainStore `vstStateHost`). One reader for every place a
+ * saved state comes back: a .tasmo insert, a master-chain entry, an instrument
+ * slot, and a PERFORM device opened from a .tasmo.
+ */
+export function savedVstState(raw: { raw_state?: unknown; state_host?: unknown } | null | undefined): Pick<VstNode, 'raw_state' | 'state_host'> {
+  if (!raw) return {};
+  return {
+    ...(typeof raw.raw_state === 'string' && raw.raw_state ? { raw_state: raw.raw_state } : {}),
+    ...(raw.state_host === 'thedaw' || raw.state_host === 'pedalboard' ? { state_host: raw.state_host } : {}),
+  };
+}
 
 /** Ordered name patterns -> theDAW effect id. Specific before generic. */
 const NATIVE_FX_PATTERNS: Array<[RegExp, string]> = [
@@ -181,15 +197,24 @@ export function translateDawParams(effectId: string, params: Record<string, numb
  *  - VST3/AU with a resolvable path  -> a VST node (re-hostable).
  *  - everything else                 -> a builtin node whose effect_name is the
  *    mapped theDAW id, or the raw device name when nothing maps (preserved).
+ *
+ * A device PERFORM opened from a .tasmo (lib/tasmoToSession) also carries the
+ * node's `id` and the plugin state theDAW captured (`raw_state`, `state_host`),
+ * and the node keeps them, so `dawDeviceToChainEntry` hosts the plugin at that
+ * state. (A PERFORM save writes such a track's inserts from the file's own
+ * chain: projectClient `trackInsertsToTasmo`.) A DAW import's own preset chunk
+ * (`state`) is never taken for that state: neither host reads it.
  */
 export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
   const params = numericParams(device.parameters);
   const bypass = device.bypass ?? false;
   const isPlugin =
     !!device.plugin_path && (device.plugin_type === 'vst3' || device.plugin_type === 'audiounit');
+  const id = typeof device.id === 'string' && device.id ? { id: device.id } : {};
 
   if (isPlugin) {
     return {
+      ...id,
       node_type: device.plugin_type,
       effect_name: device.name,
       parameters: params,
@@ -198,12 +223,14 @@ export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
         plugin_path: device.plugin_path as string,
         plugin_name: device.name,
         parameters: params,
+        ...savedVstState(device),
       },
     };
   }
 
   const mapped = resolveLiveEffectId(device.name);
   return {
+    ...id,
     node_type: 'builtin',
     // A mapped theDAW id when we recognized it, else the original name so the
     // user still sees what the source project had (loader shows it inactive).
@@ -238,9 +265,11 @@ export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
  * has to be stable across chain rebuilds, and Perform's controller mappings
  * already address slots by `perform-<track>-<device>`.
  *
- * No `raw_state`: an imported DAW project carries the plugin's own preset data
- * in a format neither host reads, so the plugin starts at its defaults and the
- * user dials it in from its own GUI.
+ * The plugin is spawned with the state theDAW captured for it when the device
+ * carries one (a .tasmo opened in PERFORM), so the set plays the sound it was
+ * saved with. An imported DAW project carries only the plugin's own preset
+ * data, in a format neither host reads, so that plugin starts at its defaults
+ * and the user dials it in from its own GUI.
  */
 export function dawDeviceToChainEntry(device: DawDevice, id: string): ChainEntry {
   const node = dawDeviceToEffectNode(device);
@@ -253,7 +282,7 @@ export function dawDeviceToChainEntry(device: DawDevice, id: string): ChainEntry
       effect: 'vst3',
       params,
       enabled,
-      vst: { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name },
+      vst: { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name, ...savedVstState(vs) },
       label: vs.plugin_name || node.effect_name,
     };
   }

@@ -12,6 +12,7 @@
 import {
   useEditorStore,
   midiCcOfTarget,
+  clipStretchRate,
   computePeaks,
   type AudioClip,
   type AutomationLane,
@@ -26,11 +27,13 @@ import {
 import {
   addBus as graphAddBus,
   addSend,
+  CONN_SIDECHAIN,
   emptyGraph,
   ensureTrackNode,
   outputOf,
   sendsFrom,
   setOutput,
+  setSidechain,
   MASTER_ID,
   type RoutingGraph,
 } from '../state/routingGraph';
@@ -45,6 +48,8 @@ import {
   type TasmoProjectLoaded,
   type TasmoRollVoice,
   type TasmoLoadedClip,
+  type TasmoSidechainKey,
+  type TasmoWarpMarker,
   type TasmoLoadedTrack,
   type TasmoTrackInput,
   type TasmoClipInput,
@@ -81,7 +86,10 @@ import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
 import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
-import { EFFECT_LABELS, type ChainEntry, type VstStateHost } from '../state/effectChainStore';
+import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
+import { savedVstState } from './dawEffectMap';
+import { warpSegments, type WarpMarker } from './audioWarp';
+import type { FadeCurve } from './clipFade';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
@@ -170,8 +178,9 @@ export const tasmoMidiNotesToPiano = (raw: Array<Record<string, number>>, bpm: n
 
 /**
  * Convert a persisted effect node into a live editor chain entry.
- *  - VST3/AU  -> a VST entry (carried so the user sees it; per-track VST is not
- *    rendered live in the editor yet, so it stays disabled = preserved).
+ *  - VST3/AU  -> a VST entry with the state its window or live host captured
+ *    and the host that captured it, so the insert reopens sounding as it was
+ *    dialled in.
  *  - builtin mapped to a LIVE rack effect -> enabled, real-time.
  *  - builtin mapped to a catalog id or a raw foreign name -> preserved/inactive,
  *    shown with a friendly label so nothing is hidden.
@@ -184,11 +193,10 @@ const effectNodeToChainEntry = (node: EffectChainNode): ChainEntry => {
       id: node.id || uid('fx'),
       effect: 'vst3',
       params,
-      // VST3 can't run live in-browser, but an enabled entry is the freeze target
-      // (Freeze prints it into the track stem). buildEffectChain skips it live, so
-      // enabling it is harmless to playback. A source-bypassed plugin stays off.
+      // An enabled entry is hosted live and is the freeze target (Freeze prints
+      // it into the track stem). A source-bypassed plugin stays off.
       enabled: !node.bypass,
-      vst: vs ? { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name } : undefined,
+      vst: vs ? { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name, ...savedVstState(vs) } : undefined,
       label: vs?.plugin_name || node.effect_name,
     };
   }
@@ -220,7 +228,10 @@ const liveFxCount = (chain: EffectChainNode[] | undefined): number =>
     (n) => n.node_type === 'builtin' && !!getRackEffect(n.effect_name) && !n.bypass,
   ).length;
 
-/** Serialize a live editor chain entry back into a persisted effect node. */
+/** Serialize a live editor chain entry back into a persisted effect node. A
+ *  VST insert writes the state its window or live host captured, and the host
+ *  that captured it, only where it has them: absent is a plugin never opened,
+ *  which is not the same as an empty state. */
 const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
   if (e.effect === 'vst3' && e.vst) {
     return {
@@ -229,7 +240,12 @@ const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
       effect_name: e.vst.plugin_name,
       parameters: e.params ?? {},
       bypass: !e.enabled,
-      vst_state: { plugin_path: e.vst.plugin_path, plugin_name: e.vst.plugin_name, parameters: e.params ?? {} },
+      vst_state: {
+        plugin_path: e.vst.plugin_path,
+        plugin_name: e.vst.plugin_name,
+        parameters: e.params ?? {},
+        ...savedVstState(e.vst),
+      },
     };
   }
   return {
@@ -389,6 +405,92 @@ const rollPartField = (c: TasmoLoadedClip, color: string): Pick<AudioClip, 'sour
   return ref ? { sourceRollPart: ref } : {};
 };
 
+// ── A clip's time stretch, warp and fade shapes at the file boundary ─────────
+//
+// Mirrors `time_stretch_rate` / `stretch_mode` / `warp_markers` /
+// `fade_in_curve` / `fade_out_curve` on the backend `Clip`. Each is written only
+// where the clip has it, so a clip with none writes the payload it always did,
+// and each is read only when the file holds a value the app can play: anything
+// else is left out, which is the clip at original speed with linear fades.
+
+type ClipTiming = Pick<AudioClip, 'timeStretchRate' | 'stretchMode' | 'warpMarkers' | 'fadeInCurve' | 'fadeOutCurve'>;
+type TasmoClipTiming = Pick<TasmoClipInput, 'time_stretch_rate' | 'stretch_mode' | 'warp_markers' | 'fade_in_curve' | 'fade_out_curve'>;
+
+const FADE_CURVES: readonly FadeCurve[] = ['linear', 'exponential', 'equal-power'];
+const fadeCurveOf = (v: unknown): FadeCurve | undefined => FADE_CURVES.find((c) => c === v);
+const stretchModeOf = (v: unknown): AudioClip['stretchMode'] => (v === 'repitch' || v === 'offline' ? v : undefined);
+const positiveOf = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+
+/** A clip's stretch, warp anchors and fade shapes in the file shape. */
+export function clipTimingToTasmo(c: ClipTiming): TasmoClipTiming {
+  const rate = positiveOf(c.timeStretchRate);
+  const mode = stretchModeOf(c.stretchMode);
+  const markers: TasmoWarpMarker[] = (c.warpMarkers ?? [])
+    .filter((m) => !!m && Number.isFinite(m.sourceSec) && Number.isFinite(m.targetSec))
+    .map((m) => ({ source_sec: m.sourceSec, target_sec: m.targetSec }));
+  const fadeIn = fadeCurveOf(c.fadeInCurve);
+  const fadeOut = fadeCurveOf(c.fadeOutCurve);
+  return {
+    ...(rate !== undefined ? { time_stretch_rate: rate } : {}),
+    ...(mode ? { stretch_mode: mode } : {}),
+    ...(markers.length ? { warp_markers: markers } : {}),
+    ...(fadeIn ? { fade_in_curve: fadeIn } : {}),
+    ...(fadeOut ? { fade_out_curve: fadeOut } : {}),
+  };
+}
+
+/** The inverse, for a loaded clip. A warp marker without a finite
+ *  `source_sec` and `target_sec` is left out: an importer stores its own shape
+ *  under the same key (Bitwig's `time` / `content_time`). */
+export function tasmoClipTiming(c: Pick<TasmoLoadedClip, keyof TasmoClipTiming>): ClipTiming {
+  const rate = positiveOf(c.time_stretch_rate);
+  const mode = stretchModeOf(c.stretch_mode);
+  const markers: WarpMarker[] = [];
+  for (const m of Array.isArray(c.warp_markers) ? c.warp_markers : []) {
+    if (!m || typeof m !== 'object') continue;
+    const { source_sec: sourceSec, target_sec: targetSec } = m as Partial<TasmoWarpMarker>;
+    if (typeof sourceSec !== 'number' || !Number.isFinite(sourceSec)) continue;
+    if (typeof targetSec !== 'number' || !Number.isFinite(targetSec)) continue;
+    markers.push({ sourceSec, targetSec });
+  }
+  const fadeIn = fadeCurveOf(c.fade_in_curve);
+  const fadeOut = fadeCurveOf(c.fade_out_curve);
+  return {
+    ...(rate !== undefined ? { timeStretchRate: rate } : {}),
+    ...(mode ? { stretchMode: mode } : {}),
+    ...(markers.length ? { warpMarkers: markers } : {}),
+    ...(fadeIn ? { fadeInCurve: fadeIn } : {}),
+    ...(fadeOut ? { fadeOutCurve: fadeOut } : {}),
+  };
+}
+
+/**
+ * How much timeline a clip's source fills from its trim point, the length a
+ * reopened clip is held to. A stretch at rate r makes one timeline second eat
+ * r source seconds. A warp map ends where its last segment lands, and never
+ * holds the clip to less than the source itself: `computeClipSchedule`
+ * (state/liveMixer) closes the map over the source the clip's box owns, so a
+ * box as long as the source was played by the map it was saved with, even one
+ * that squeezes the source into less timeline. Held to that shorter reach, the
+ * reopened box owned too little source for its markers, dropped the warp and
+ * played the source unwarped. The same arithmetic the live scheduler plays the
+ * clip by, so a clip slowed or spread past the length of its source reopens at
+ * the length it was saved with.
+ */
+const timelineRoomSec = (availableSourceSec: number, timing: ClipTiming): number => {
+  if (timing.warpMarkers?.length) {
+    const segments = warpSegments(timing.warpMarkers, availableSourceSec);
+    const only = segments.length === 1 ? segments[0] : null;
+    // A map that restates the source (every marker unusable, or one marker at
+    // its end) is no warp, and the stretch plays instead, as it does live.
+    const identity = !!only && only.sourceStart === 0 && only.targetStart === 0
+      && only.sourceEnd === availableSourceSec && only.targetEnd === availableSourceSec;
+    if (segments.length && !identity) return Math.max(availableSourceSec, ...segments.map((seg) => seg.targetEnd));
+  }
+  return availableSourceSec / clipStretchRate(timing);
+};
+
 /** Build one editor clip from a loaded .tasmo clip, or null if it has nothing
  *  playable (missing audio file on disk, or a MIDI clip with no notes).
  *  `projectBpm` is the tempo a clip without its own `source_bpm` was written
@@ -477,7 +579,12 @@ const buildClip = async (
   // available duration is measured from the offset rather than from zero.
   const offsetIntoSource = Math.max(0, Math.min(c.offset_into_source ?? 0, Math.max(0, duration - 0.01)));
   const available = Math.max(0, duration - offsetIntoSource);
-  const durationSec = span > 0.02 ? Math.min(span, available) : available;
+  // The stretch, warp and fade shapes the file gives the clip. A stretched or
+  // warped clip can be longer than the source left after its trim point, so it
+  // is held to the timeline its source fills at that stretch, not to the source.
+  const timing = tasmoClipTiming(c);
+  const room = timelineRoomSec(available, timing);
+  const durationSec = span > 0.02 ? Math.min(span, room) : room;
   const clip: AudioClip = {
     id: c.id || uid('clip'),
     trackId,
@@ -540,6 +647,8 @@ const buildClip = async (
     gain: typeof c.gain === 'number' && c.gain !== 1 ? c.gain : undefined,
     fadeInSec: c.fade_in || undefined,
     fadeOutSec: c.fade_out || undefined,
+    // The stretch, the warp anchors and the fade shapes, where the file has them.
+    ...timing,
   };
   // The alternate takes and the comp across them, when the file has any. The
   // clip built above is the ACTIVE take by the invariant, so this only adds to
@@ -740,8 +849,7 @@ export function tasmoToChainEntries(raw: unknown, requireVst = false, what = 'Ma
         ? {
             plugin_path: v.plugin_path,
             plugin_name: typeof v.plugin_name === 'string' ? v.plugin_name : v.plugin_path,
-            ...(typeof v.raw_state === 'string' && v.raw_state ? { raw_state: v.raw_state } : {}),
-            ...(v.state_host === 'thedaw' || v.state_host === 'pedalboard' ? { state_host: v.state_host as VstStateHost } : {}),
+            ...savedVstState(v),
           }
         : undefined;
     if (requireVst && !vst) {
@@ -935,10 +1043,13 @@ export function applyTasmoMasterAndAutomation(
 // ── Routing + buses at the file boundary ─────────────────────────────────────
 //
 // `routing` is a graph (state/routingGraph.ts); the .tasmo format is flat, so
-// the two mappers below are the whole translation. A track/bus names ONE output
-// (`output_routing`, absent or null = the master) and any number of sends
-// (`send_amounts`, bus id -> linear gain), which is exactly `outputOf` +
-// `sendsFrom`. Mirrors `Track` / `Bus` in backend/modules/project/tasmo_project.py.
+// the two mappers below are the whole translation. A track or a bus names ONE
+// output (`output_routing`, absent or null = the master), any number of sends
+// (`send_amounts`, bus id -> linear gain) and any number of sidechain keys
+// (`sidechain_keys`, each the strip and the effect entry its signal keys),
+// which is exactly `outputOf` + `sendsFrom` + the CONN_SIDECHAIN edges leaving
+// it. Mirrors `Track` / `Bus` / `SidechainKey` in
+// backend/modules/project/tasmo_project.py.
 //
 // The reader NEVER throws. A file is not a mutator-vetted graph: it can be
 // hand-edited into a loop, or name a bus that isn't there. Both are LOGGED and
@@ -957,33 +1068,41 @@ export interface TasmoRoutedTrack {
   output_routing?: string | null;
   /** Bus id -> linear send gain. */
   send_amounts?: Record<string, number> | null;
+  /** The sidechain keys this track feeds. */
+  sidechain_keys?: TasmoSidechainKey[] | null;
+  /** The track's inserts, whose ids a sidechain key must name. */
+  effect_chain?: EffectChainNode[] | null;
 }
 
 /** One node's routing in the file shape. The master is written as `null`, never
- *  as a node id — `MASTER_ID` is this app's name for it, not part of the format. */
+ *  as a node id — `MASTER_ID` is this app's name for it, not part of the format.
+ *  `sidechain_keys` is written only when the node feeds one, so a project with
+ *  no sidechains writes the payload it always did. */
 export function trackRoutingToTasmo(
   graph: RoutingGraph,
   nodeId: string,
-): { output_routing: string | null; send_amounts: Record<string, number> } {
+): { output_routing: string | null; send_amounts: Record<string, number>; sidechain_keys?: TasmoSidechainKey[] } {
   const out = outputOf(graph, nodeId);
   const sendAmounts: Record<string, number> = {};
   for (const e of sendsFrom(graph, nodeId)) sendAmounts[e.to] = e.gain;
-  return { output_routing: out === null || out === MASTER_ID ? null : out, send_amounts: sendAmounts };
+  // A key into the master's rack has no place in the format (no UI makes one),
+  // and a key with no entry keys nothing.
+  const keys: TasmoSidechainKey[] = graph.edges
+    .filter((e) => e.from === nodeId && e.connType === CONN_SIDECHAIN && e.to !== MASTER_ID && !!e.targetEntryId)
+    .map((e) => ({ target: e.to, entry_id: e.targetEntryId as string }));
+  return {
+    output_routing: out === null || out === MASTER_ID ? null : out,
+    send_amounts: sendAmounts,
+    ...(keys.length ? { sidechain_keys: keys } : {}),
+  };
 }
 
 /**
  * The bus strips in the file shape. Driven by the STRIP list, not the graph's
  * nodes: the master is a node but never a bus, and a node with no strip behind
- * it is document damage that must not be persisted as a phantom bus.
- *
- * LIMITATION, deliberate: a bus persists its `output_routing` and nothing else
- * about its place in the graph. Sends LEAVING a bus, and sidechain edges of any
- * kind, are NOT written — the format has no field for either, and no UI creates
- * either today. The autosave manifest carries the whole `RoutingGraph` verbatim,
- * so nothing a user can currently build is lost across a crash; it is only the
- * `.tasmo` that is lossy, and only for edges that cannot yet exist. Adding
- * `send_amounts` to the backend `Bus` is the change to make when bus sends get
- * a UI — not before, so the format does not grow a field nothing writes.
+ * it is document damage that must not be persisted as a phantom bus. A bus
+ * writes every edge it sends, exactly as a track does: its output, its sends
+ * and its sidechain keys.
  */
 export function busesToTasmo(graph: RoutingGraph, buses: readonly EditorBus[]): TasmoBus[] {
   return buses.map((b) => ({
@@ -991,16 +1110,21 @@ export function busesToTasmo(graph: RoutingGraph, buses: readonly EditorBus[]): 
     name: b.name,
     volume: b.volume,
     mute: b.mute,
-    output_routing: trackRoutingToTasmo(graph, b.id).output_routing,
+    ...trackRoutingToTasmo(graph, b.id),
     effect_chain: (b.fxChain ?? []).map(chainEntryToEffectNode),
   }));
 }
+
+/** The ids of a strip's saved inserts: what a sidechain key into it may name. */
+const insertIdsOf = (chain: readonly EffectChainNode[] | null | undefined): Set<string> =>
+  new Set((chain ?? []).map((n) => nonEmpty(n?.id)).filter((id): id is string => id !== undefined));
 
 /**
  * Rebuild `routing` + the bus strips from a loaded file, in the one order that
  * makes the mutators' guards meaningful: every track node, then every bus node
  * (so an output can name either), then the outputs, then the sends (a send into
- * a bus that an output already reaches is the case `wouldCycle` must see).
+ * a bus that an output already reaches is the case `wouldCycle` must see), then
+ * the sidechain keys (a key closes a loop exactly as an output does).
  */
 export function tasmoToRouting(
   tracks: readonly TasmoRoutedTrack[],
@@ -1011,8 +1135,9 @@ export function tasmoToRouting(
   let g = emptyGraph();
   for (const t of trackList) g = ensureTrackNode(g, t.id, t.name || t.id);
   for (const b of busList) g = graphAddBus(g, b.id, b.name || b.id);
+  const nodes = [...trackList, ...busList];
 
-  for (const n of [...trackList, ...busList]) {
+  for (const n of nodes) {
     const to = n.output_routing;
     if (!to || to === MASTER_ID) continue;
     const r = setOutput(g, n.id, to);
@@ -1020,10 +1145,10 @@ export function tasmoToRouting(
     else logWarn('project', `Routing: output "${n.id}" -> "${to}" refused (${r.reason}); left feeding the master`);
   }
 
-  for (const t of trackList) {
-    for (const [to, gain] of Object.entries(t.send_amounts ?? {})) {
+  for (const n of nodes) {
+    for (const [to, gain] of Object.entries(n.send_amounts ?? {})) {
       if (typeof gain !== 'number' || !Number.isFinite(gain)) {
-        logWarn('project', `Routing: send "${t.id}" -> "${to}" has a non-numeric gain; dropped`);
+        logWarn('project', `Routing: send "${n.id}" -> "${to}" has a non-numeric gain; dropped`);
         continue;
       }
       // Clamped, not merely finite: a hand-edited 1e9 is a valid float and would
@@ -1031,11 +1156,32 @@ export function tasmoToRouting(
       // is +6 dB, the same ceiling the send UI offers.
       const clamped = Math.max(0, Math.min(SEND_GAIN_MAX, gain));
       if (clamped !== gain) {
-        logWarn('project', `Routing: send "${t.id}" -> "${to}" gain ${gain} clamped to ${clamped}`);
+        logWarn('project', `Routing: send "${n.id}" -> "${to}" gain ${gain} clamped to ${clamped}`);
       }
-      const r = addSend(g, t.id, to, clamped);
+      const r = addSend(g, n.id, to, clamped);
       if (r.ok) g = r.graph;
-      else logWarn('project', `Routing: send "${t.id}" -> "${to}" refused (${r.reason}); dropped`);
+      else logWarn('project', `Routing: send "${n.id}" -> "${to}" refused (${r.reason}); dropped`);
+    }
+  }
+
+  // A key must land on a track or a bus of this file, on an insert that strip
+  // holds: a key naming anything else would drive a detector that is not there.
+  const insertsByStrip = new Map<string, Set<string>>(nodes.map((n) => [n.id, insertIdsOf(n.effect_chain)]));
+  for (const n of nodes) {
+    for (const key of n.sidechain_keys ?? []) {
+      const target = nonEmpty(key?.target);
+      const entryId = nonEmpty(key?.entry_id);
+      if (!target || !entryId) {
+        logWarn('project', `Routing: a sidechain key from "${n.id}" names no strip or no insert; dropped`);
+        continue;
+      }
+      if (!insertsByStrip.get(target)?.has(entryId)) {
+        logWarn('project', `Routing: sidechain "${n.id}" -> "${target}" keys an insert "${entryId}" the file does not have; dropped`);
+        continue;
+      }
+      const r = setSidechain(g, n.id, target, entryId);
+      if (r.ok) g = r.graph;
+      else logWarn('project', `Routing: sidechain "${n.id}" -> "${target}" refused (${r.reason}); dropped`);
     }
   }
 
@@ -1153,6 +1299,8 @@ export async function loadProjectIntoEditor(
         name: t.name || `Track ${i + 1}`,
         output_routing: t.output_routing,
         send_amounts: t.send_amounts,
+        sidechain_keys: t.sidechain_keys,
+        effect_chain: t.effect_chain,
       });
     }
     effects += t.effect_chain?.length ?? 0;
@@ -1593,6 +1741,11 @@ export function captureEditorSession(): CapturedSession {
           fade_in: c.fadeInSec ?? 0,
           fade_out: c.fadeOutSec ?? 0,
           offset_into_source: c.offsetIntoSource ?? 0,
+          // The time stretch and how it plays, the warp anchors and the fade
+          // shapes, each only where the clip has it. Without them a stretched
+          // clip reopened at its source's speed and length, a warped one
+          // unwarped, and every fade linear.
+          ...clipTimingToTasmo(c),
           // The alternate takes (one embedded file each) and the comp across
           // them. Absent from the payload entirely for a clip with no takes.
           ...takesToTasmo(c, files),

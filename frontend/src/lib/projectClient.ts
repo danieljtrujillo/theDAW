@@ -109,6 +109,27 @@ export interface VstPluginState {
   parameters?: Record<string, number>;
   preset_path?: string | null;
   instance_id?: string;
+  /** The opaque base64 state the plugin's window or live host captured: the
+   *  insert's dialled-in sound. Absent when the plugin was never opened, and
+   *  in every file written before it was saved. */
+  raw_state?: string | null;
+  /** The host that captured `raw_state` ('thedaw' or 'pedalboard'); absent is the default. */
+  state_host?: string | null;
+}
+
+/** A sidechain key leaving a track or a bus: its signal keys the effect
+ *  `entry_id` on the rack of `target` (a track or bus id). Mirrors the backend
+ *  `SidechainKey`; the reader drops one that names nothing. */
+export interface TasmoSidechainKey {
+  target: string;
+  entry_id: string;
+}
+
+/** A warp anchor as the file carries it: lib/audioWarp's WarpMarker, in the
+ *  file's snake_case, both in clip-relative seconds. */
+export interface TasmoWarpMarker {
+  source_sec: number;
+  target_sec: number;
 }
 
 export interface EffectChainNode {
@@ -363,6 +384,14 @@ export interface TasmoClipInput {
    *  library entry the clip came from. Optional for the same reason. */
   bpm?: number | null;
   library_entry_id?: string | null;
+  /** The clip's time stretch (the rate its source plays at, and 'repitch' or
+   *  'offline'), its warp anchors and each fade's shape. Written only where
+   *  the clip has them. */
+  time_stretch_rate?: number | null;
+  stretch_mode?: string | null;
+  warp_markers?: TasmoWarpMarker[] | null;
+  fade_in_curve?: string | null;
+  fade_out_curve?: string | null;
 }
 
 export interface TasmoTrackInput {
@@ -382,6 +411,8 @@ export interface TasmoTrackInput {
   output_routing?: string | null;
   /** Bus id -> linear send gain. */
   send_amounts?: Record<string, number>;
+  /** The sidechain keys the track feeds; written only when it feeds one. */
+  sidechain_keys?: TasmoSidechainKey[];
   /** The GM program (0-127) this track's MIDI clips play through when a clip
    *  has none of its own. */
   instrument_program?: number | null;
@@ -424,6 +455,8 @@ export interface TasmoTrackInput {
  * without one must not typecheck into a save that would 400, and `effect_chain`
  * defaults to `[]` and rejects `null`, so the field is omittable but never
  * nullable. Only `output_routing` is nullable, matching `str | None`.
+ * `send_amounts` and `sidechain_keys` are the bus's other edges, the same
+ * fields a track carries; absent in files written before they were saved.
  */
 export interface TasmoBus {
   id: string;
@@ -431,6 +464,8 @@ export interface TasmoBus {
   volume?: number;
   mute?: boolean;
   output_routing?: string | null;
+  send_amounts?: Record<string, number>;
+  sidechain_keys?: TasmoSidechainKey[];
   effect_chain?: EffectChainNode[];
 }
 
@@ -561,6 +596,14 @@ export interface TasmoLoadedClip {
   takes?: TasmoTake[] | null;
   comp?: TasmoCompRegion[] | null;
   active_take_index?: number | null;
+  /** The clip's time stretch, warp anchors and fade shapes; absent in files
+   *  written before they were saved, and only as trustworthy as the file (an
+   *  importer's warp markers have another shape). */
+  time_stretch_rate?: number | null;
+  stretch_mode?: string | null;
+  warp_markers?: TasmoWarpMarker[] | null;
+  fade_in_curve?: string | null;
+  fade_out_curve?: string | null;
 }
 
 export interface TasmoLoadedTrack {
@@ -601,6 +644,8 @@ export interface TasmoLoadedTrack {
   output_routing?: string | null;
   /** Bus id -> linear send gain; absent in those same older files. */
   send_amounts?: Record<string, number>;
+  /** The sidechain keys the track feeds; absent in files written before they were saved. */
+  sidechain_keys?: TasmoSidechainKey[];
   /** Arrangement folders; absent in files written before folders were saved,
    *  which load flat. The reader resets a parent that names no folder. */
   parent_track_id?: string | null;
@@ -1127,67 +1172,119 @@ export const projectApi = {
 let _seq = 0;
 const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${_seq++}`;
 
+/** Whether a file's clip sits in a grid cell rather than on the arrangement. */
+const isGridClip = (c: Pick<TasmoLoadedClip, 'scene_index' | 'slot_index'>): boolean =>
+  c.scene_index != null || c.slot_index != null;
+
+/**
+ * A PERFORM track's inserts in the file shape.
+ *
+ * A track opened from a .tasmo writes the file's own chain: PERFORM builds one
+ * device per insert (lib/tasmoToSession) and changes none of them, and mapping
+ * them back through dawDeviceToEffectNode would match an insert's name against
+ * the rack, turning an effect an older import stored under a studio catalog id
+ * ("compression", "reverb_delay") into the rack effect it resembles, enabled.
+ * A DAW import's devices, and a chain whose length no longer matches the
+ * file's, are mapped (VST3 -> real, creative FX -> rack, EQ/comp/reverb ->
+ * preserved), in order.
+ */
+function trackInsertsToTasmo(t: DawProject['tracks'][number]): EffectChainNode[] {
+  const devices = t.devices ?? [];
+  const own = t.tasmo?.effect_chain;
+  if (own && own.length === devices.length) return own;
+  return devices.map(dawDeviceToEffectNode);
+}
+
+/**
+ * The save payload for the project PERFORM holds.
+ *
+ * A DAW import is written from its parsed fields, with fresh ids. A project
+ * PERFORM opened from a .tasmo (lib/tasmoToSession) keeps the file's own
+ * project, track and clip records (`tasmo`), and each is written back with the
+ * grid's own fields over it: the grid shows a track's name, fader, pan, mute,
+ * solo, colour and inserts, and a clip's place, window, loop and follow action,
+ * and nothing else. So the track ids, instruments and routing, each clip's id,
+ * gain, fades, tempo, library entry, notes, render and takes, the insert ids
+ * and plugin states, and the tempo and meter maps come back as they were
+ * opened.
+ */
 export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
   const tracks: TasmoTrackInput[] = d.tracks.map((t) => {
-    const trackId = uid('t');
+    const trackId = t.tasmo?.id || uid('t');
     return {
+      ...t.tasmo,
       id: trackId,
       name: t.name,
-      type: t.type === 'midi' ? 'midi' : 'audio',
+      type: t.tasmo?.type || (t.type === 'midi' ? 'midi' : 'audio'),
       volume_db: t.volume_db,
       pan: t.pan,
       mute: t.mute,
       solo: t.solo,
       // Session (Perform grid) clips are saved ALONGSIDE arrangement clips and
       // told apart by their scene indices — they used to be filtered out here,
-      // which silently discarded the entire clip-launch grid on save. Worse, the
-      // Perform tab's own .tasmo path stamps scene_index on EVERY clip
-      // (tasmoToSession.ts), so opening a .tasmo in Perform and saving wrote a
-      // project with ZERO clips over the user's file. The EDIT timeline filters
-      // session clips out on LOAD instead, which is where that belongs.
-      clips: (t.clips ?? []).map((c) => ({
-        id: uid('c'),
-        name: c.name,
-        // Per-clip type: a clip with notes is MIDI even on an "audio" track.
-        clip_type: c.midi_notes && c.midi_notes.length ? 'midi' : 'audio',
-        track_id: trackId,
-        start_time: c.start_time,
-        end_time: c.end_time,
-        audio_file: c.file_path ?? null,
-        midi_notes: c.midi_notes ?? null,
-        loop_start: c.loop_start ?? null,
-        loop_end: c.loop_end ?? null,
-        // Carry the grid placement so the Perform tab can be restored exactly
-        // rather than rebuilt from arrangement clips.
-        track_index: c.track_index ?? null,
-        scene_index: c.scene_index ?? null,
-        slot_index: c.slot_index ?? null,
-        // The other half of what a session grid is: where a clip sits, and what
-        // it does when it finishes. Placement without the rule reopened a saved
-        // set with every column playing one clip forever.
-        follow_action: c.followAction ?? null,
-      })),
-      // Map the track's device chain into theDAW effect nodes (VST3 -> real,
-      // creative FX -> rack, EQ/comp/reverb -> preserved). Order is kept.
-      effect_chain: (t.devices ?? []).map(dawDeviceToEffectNode),
+      // which silently discarded the entire clip-launch grid on save. The EDIT
+      // timeline filters session clips out on LOAD instead, which is where that
+      // belongs.
+      clips: (t.clips ?? []).map((c): TasmoClipInput => {
+        const src = c.tasmo;
+        // The Perform tab lays an arrangement-only track's clips out in scene
+        // rows (tasmoToSession.ts). That layout is the grid's reading of the
+        // file, not a placement anyone made: written back, it moved every clip
+        // off the arrangement and the file reopened with an empty EDIT.
+        const place = src && !isGridClip(src) ? src : c;
+        return {
+          ...src,
+          id: src?.id || uid('c'),
+          name: c.name,
+          // Per-clip type: a clip with notes is MIDI even on an "audio" track.
+          clip_type: src?.clip_type || (c.midi_notes && c.midi_notes.length ? 'midi' : 'audio'),
+          track_id: trackId,
+          start_time: c.start_time,
+          end_time: c.end_time,
+          // The grid holds no file for a MIDI clip (it plays the notes), so the
+          // clip's saved render comes from the file's own clip.
+          audio_file: c.file_path ?? src?.audio_file ?? null,
+          // The file's own notes, in steps and ticks with their lanes and
+          // expression. The grid holds them converted to seconds for playback.
+          midi_notes: src ? src.midi_notes ?? null : c.midi_notes ?? null,
+          loop_start: c.loop_start ?? null,
+          loop_end: c.loop_end ?? null,
+          // The trim point: without it a trimmed clip reopens playing its
+          // source from the top.
+          offset_into_source: c.offset_into_source ?? 0,
+          // Carry the grid placement so the Perform tab can be restored exactly
+          // rather than rebuilt from arrangement clips.
+          track_index: place.track_index ?? null,
+          scene_index: place.scene_index ?? null,
+          slot_index: place.slot_index ?? null,
+          // The other half of what a session grid is: where a clip sits, and what
+          // it does when it finishes. Placement without the rule reopened a saved
+          // set with every column playing one clip forever.
+          follow_action: c.followAction ?? null,
+        };
+      }),
+      effect_chain: trackInsertsToTasmo(t),
       color: t.color ?? null,
     };
   });
   return {
+    ...d.tasmo,
     project_name: d.name,
     tempo: d.tempo,
     time_signature: Array.isArray(d.time_signature) ? d.time_signature.slice(0, 2) : [4, 4],
     sample_rate: d.sample_rate,
-    source_daw: d.source_daw,
-    import_warnings: d.warnings,
+    source_daw: d.tasmo ? d.tasmo.source_daw ?? null : d.source_daw,
+    import_warnings: d.tasmo ? d.tasmo.import_warnings ?? [] : d.warnings,
     // Scene names in row order, so a saved Perform grid reloads with the
     // user's own scene names instead of a generic "Scene 1..N" ladder.
     scenes: d.scenes ?? [],
     // TasmoProject has had locators and source_daw_version all along; nothing
     // wrote them, so markers vanished on first save and schema-drift bugs were
-    // undiagnosable after the fact.
-    locators: (d.locators ?? []).map((l) => ({ id: uid("loc"), name: l.name, position: l.position, color: l.color ?? null })),
-    source_daw_version: d.source_version || null,
+    // undiagnosable after the fact. A .tasmo keeps its own markers, ids and all.
+    locators: d.tasmo
+      ? d.tasmo.locators ?? []
+      : (d.locators ?? []).map((l) => ({ id: uid('loc'), name: l.name, position: l.position, color: l.color ?? null })),
+    source_daw_version: d.tasmo ? d.tasmo.source_daw_version ?? null : d.source_version || null,
     tracks,
   };
 }
