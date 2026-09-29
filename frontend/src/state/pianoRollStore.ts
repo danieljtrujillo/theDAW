@@ -265,6 +265,7 @@ export interface RollTrack {
    * notes from anywhere else (a generator, a file) clears it. Absent when false.
    */
   fromAudio?: boolean;
+  /**
    * The VST3 instrument the part plays through: a `vst3` chain entry, as an
    * EDIT track's instrument slot holds one (its `vst` names the plugin and
    * carries the state captured from the plugin's own editor). PLAY, a note
