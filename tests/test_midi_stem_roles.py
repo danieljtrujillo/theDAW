@@ -339,6 +339,115 @@ def test_a_lead_vocal_keeps_the_loudest_line_one_note_at_a_time():
     assert line[0][1] == pytest.approx(0.45)
 
 
+# basic-pitch's own note events (bass settings, CPU) for the legato bass line
+# of _legato_bass_wav, A1 B1 C2 D2 E2 D2 C2 B1, each note ringing a moment
+# into the next, the B1 played softly. The D2 after the C2 is read at 0.50
+# (basic-pitch gave 0.55) to stand for a softer stroke. At each change
+# basic-pitch re-strikes the ringing note a few milliseconds before the new
+# one (A1 at 0.453 under B1 at 0.488), and it reads C2's twelfth as F#3 (54),
+# a semitone flat.
+LEGATO_BASS_EVENTS = [
+    (0.058, 0.290, 33, 0.59, None),
+    (0.151, 0.395, 52, 0.38, None),
+    (0.186, 0.267, 45, 0.32, None),
+    (0.290, 0.453, 33, 0.69, None),
+    (0.453, 0.557, 33, 0.40, None),
+    (0.488, 0.801, 35, 0.48, None),
+    (0.894, 1.022, 36, 0.57, None),
+    (0.917, 1.196, 55, 0.33, None),
+    (1.022, 1.335, 36, 0.64, None),
+    (1.289, 1.625, 38, 0.50, None),
+    (1.358, 1.556, 57, 0.29, None),
+    (1.695, 1.823, 40, 0.61, None),
+    (1.707, 1.846, 59, 0.40, None),
+    (1.753, 1.834, 52, 0.38, None),
+    (1.823, 2.079, 40, 0.70, None),
+    (2.079, 2.277, 40, 0.41, None),
+    (2.091, 2.428, 38, 0.54, None),
+    (2.138, 2.254, 57, 0.37, None),
+    (2.405, 2.486, 36, 0.25, None),
+    (2.486, 2.637, 36, 0.59, None),
+    (2.521, 2.788, 55, 0.34, None),
+    (2.637, 2.846, 36, 0.73, None),
+    (2.846, 3.078, 36, 0.40, None),
+    (2.939, 3.043, 54, 0.35, None),
+    (3.078, 3.287, 35, 0.71, None),
+    (3.299, 3.612, 35, 0.62, None),
+]
+LEGATO_BASS_LINE = [33, 35, 36, 38, 40, 38, 36, 35]
+
+
+def _runs(pitches) -> list[int]:
+    """Pitches with repeats of the same note collapsed: basic-pitch splits a
+    long note where its onset activation rises again."""
+    out: list[int] = []
+    for p in pitches:
+        if not out or out[-1] != p:
+            out.append(p)
+    return out
+
+
+def test_a_legato_bass_line_keeps_every_note_it_plays():
+    """The soft B1 starts 35 ms after basic-pitch re-strikes the ringing A1;
+    a lowest-note rule applied to that pair dropped the B1. The soft D2
+    starts under the C2 it follows and rings past it; a quieter-and-higher
+    rule dropped it too. The F#3 inside the C2 is its twelfth."""
+    line = monophonic_line(LEGATO_BASS_EVENTS, pick="lowest", min_len=0.07)
+    assert _runs(n[2] for n in line) == LEGATO_BASS_LINE
+    for a, b in zip(line, line[1:]):
+        assert b[0] >= a[1]
+
+
+def _legato_bass_wav(path: Path) -> Path:
+    """The line of :data:`LEGATO_BASS_EVENTS` rendered with its harmonics."""
+    parts = [
+        (55.0, 0.8),
+        (61.74, 0.35),
+        (65.41, 0.8),
+        (73.42, 0.3),
+        (82.41, 0.8),
+        (73.42, 0.35),
+        (65.41, 0.8),
+        (61.74, 0.3),
+    ]
+    step = 0.4
+    t = np.arange(int(SR * (0.8 + step * len(parts)))) / SR
+    y = np.zeros_like(t)
+    for i, (f, amp) in enumerate(parts):
+        start = 0.1 + i * step
+        seg = (t >= start) & (t < start + step + 0.25)
+        tt = t[seg] - start
+        env = np.minimum(1.0, tt / 0.005) * np.exp(-tt / 0.5)
+        env = np.where(tt > step, env * np.exp(-(tt - step) / 0.05), env)
+        y[seg] += (
+            amp
+            * env
+            * (
+                0.6 * np.sin(2 * np.pi * f * tt)
+                + 0.3 * np.sin(2 * np.pi * 2 * f * tt)
+                + 0.15 * np.sin(2 * np.pi * 3 * f * tt)
+            )
+        )
+    sf.write(str(path), y.astype(np.float32), SR)
+    return path
+
+
+def test_a_real_legato_bass_stem_keeps_every_note_it_plays(monkeypatch, tmp_path: Path):
+    """basic-pitch itself on the legato line, through the stem conversion."""
+    pytest.importorskip("basic_pitch.inference")
+    monkeypatch.setattr(engine, "onnx_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(engine, "_basic_pitch_model", None)
+    wav = _legato_bass_wav(tmp_path / "bass.wav")
+    out = tmp_path / "bass.mid"
+    res = convert_to_midi(wav, out, hint="generic", role="bass", auto_install=False)
+    assert res["ok"] is True, res
+    notes = sorted(
+        pretty_midi.PrettyMIDI(str(out)).instruments[0].notes, key=lambda n: n.start
+    )
+    assert _overlaps(notes) == []
+    assert _runs(n.pitch for n in notes) == LEGATO_BASS_LINE
+
+
 def _wheel_at_each_note_on(path: Path) -> list[tuple[int, int]]:
     """``(note, wheel value)`` at every note-on, walking the file in order."""
     mid = mido.MidiFile(str(path))

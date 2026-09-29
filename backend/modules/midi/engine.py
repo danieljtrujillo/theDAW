@@ -694,12 +694,30 @@ def _trim(note: NoteEvent, end: float) -> NoteEvent:
     return (start, end, pitch, amp, bends)
 
 
+def _at_overtone(low: NoteEvent, high: NoteEvent, pick: MonophonicPick) -> bool:
+    """Whether ``high`` sits at one of ``low``'s overtones
+    (:data:`_OVERTONE_INTERVALS`). basic-pitch places a bass note's
+    overtones up to a semitone off their true interval (a C2's twelfth comes
+    out as F#3), so on a bass line (``pick="lowest"``) a semitone either side
+    counts."""
+    interval = high[2] - low[2]
+    slack = 1 if pick == "lowest" else 0
+    return any(abs(interval - o) <= slack for o in _OVERTONE_INTERVALS)
+
+
 def _later_wins(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
     """Of two notes struck together, whether ``new`` (the later onset) is
-    the one the line keeps."""
+    the one the line keeps.
+
+    On a bass line the lower note wins over its own overtone. Two notes that
+    are not a note and its overtone are two notes of the line: basic-pitch
+    re-strikes the ringing note a few milliseconds before the next note's
+    onset, and the note that sounds on past the other is the one played."""
     if pick == "lowest":
         new_is_lower = new[2] < cur[2]
         lower, higher = (new, cur) if new_is_lower else (cur, new)
+        if not _at_overtone(lower, higher, pick):
+            return new[1] > cur[1]
         if lower[3] >= MONO_LOWER_WINS_RATIO * higher[3]:
             return new_is_lower
         return new[3] > cur[3]
@@ -710,12 +728,20 @@ def _later_wins(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
 
 def _is_overtone(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
     """Whether ``new``, starting while ``cur`` sounds, belongs to ``cur``
-    (an overtone, a breath) and is not the next note of the line."""
+    (an overtone, a breath) and is not the next note of the line: it is
+    quieter, and it either ends inside ``cur`` or sits at one of its
+    overtones. A quieter note that rings on past ``cur`` at any other
+    interval is the next note played softly (on a bass line, any lower note
+    is). On a bass line a note that starts and ends inside ``cur`` at one of
+    its overtones is that overtone however loud basic-pitch reads it."""
+    if pick == "lowest":
+        if new[2] < cur[2]:
+            return False
+        if new[1] <= cur[1] and _at_overtone(cur, new, pick):
+            return True
     if new[3] >= MONO_GHOST_RATIO * cur[3]:
         return False
-    if pick == "lowest":
-        return new[2] > cur[2]
-    return new[1] <= cur[1] or (new[2] - cur[2]) in _OVERTONE_INTERVALS
+    return new[1] <= cur[1] or _at_overtone(cur, new, pick)
 
 
 def monophonic_line(
