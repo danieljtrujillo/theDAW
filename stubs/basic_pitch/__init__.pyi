@@ -1,9 +1,10 @@
 """Type stubs for basic-pitch 0.4, which ships no type information.
 
-theDAW imports the bundled model's path from here and the model and
-``predict_and_save`` from ``basic_pitch.inference``
-(``backend/modules/midi/engine.py``). ``tests/test_ml_import_stubs.py``
-checks every name and parameter against the installed package's source.
+theDAW imports the bundled model's path from here, the model and
+``predict`` from ``basic_pitch.inference`` and the contour resolution from
+``basic_pitch.constants`` (``backend/modules/midi/engine.py``).
+``tests/test_ml_import_stubs.py`` checks every name and parameter against the
+installed package's source.
 """
 
 import enum

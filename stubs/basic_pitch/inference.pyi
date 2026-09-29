@@ -1,5 +1,6 @@
-"""Type stubs for ``basic_pitch.inference``: the model wrapper and the
-file-to-file prediction theDAW runs."""
+"""Type stubs for ``basic_pitch.inference``: the model wrapper, the
+prediction theDAW runs (``predict``, whose note events it writes itself) and
+the file-to-file ``predict_and_save``."""
 
 import enum
 import pathlib
@@ -8,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+import pretty_midi
 
 class Model:
     class MODEL_TYPES(enum.Enum):
@@ -25,6 +27,23 @@ class Model:
         self, x: npt.NDArray[np.float32]
     ) -> dict[str, npt.NDArray[np.float32]]: ...
 
+def predict(
+    audio_path: pathlib.Path | str,
+    model_or_model_path: Model | pathlib.Path | str = ...,
+    onset_threshold: float = 0.5,
+    frame_threshold: float = 0.3,
+    minimum_note_length: float = 127.70,
+    minimum_frequency: float | None = None,
+    maximum_frequency: float | None = None,
+    multiple_pitch_bends: bool = False,
+    melodia_trick: bool = True,
+    debug_file: pathlib.Path | None = None,
+    midi_tempo: float = 120,
+) -> tuple[
+    dict[str, Any],
+    pretty_midi.PrettyMIDI,
+    list[tuple[float, float, int, float, list[int] | None]],
+]: ...
 def predict_and_save(
     audio_path_list: Sequence[pathlib.Path | str],
     output_directory: pathlib.Path | str,
