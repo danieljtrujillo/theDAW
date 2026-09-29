@@ -51,12 +51,14 @@ import {
   isDefaultPartName,
   isPercussionPart,
   makeRollTrack,
+  partVstUid,
   nextPartColor,
   nextPartName,
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
-import { isArticulation, type Articulation } from '../lib/articulationMap';
+import { isArticulation, type Articulation, type Vst3SwitchMode } from '../lib/articulationMap';
+import type { ChainEntry, VstNode, VstStateHost } from './effectChainStore';
 import { buildExpression, withExpressionControls } from '../lib/clipNotes/expression';
 import { sanitizeNoteExpression } from '../lib/noteExpression';
 import {
@@ -252,6 +254,24 @@ export interface RollTrack {
    * back into it. At most one part of a roll carries it. Absent when false.
    */
   cantusFirmus?: boolean;
+  /**
+   * The VST3 instrument the part plays through: a `vst3` chain entry, as an
+   * EDIT track's instrument slot holds one (its `vst` names the plugin and
+   * carries the state captured from the plugin's own editor). PLAY, a note
+   * drawn or clicked on the keyboard and a hardware key sound through the
+   * plugin's live host session (state/rollInstruments), keyed by the entry's
+   * id; the EDIT key sends it with the part onto its EDIT track, where every
+   * bounce, freeze and export prints it. `program` stays the part's General
+   * MIDI program: a MIDI export writes it, and the part plays it while the
+   * plugin cannot (it is still opening, it failed to load, or no live host is
+   * installed). `enabled: false` keeps the plugin and its state while the part
+   * plays its program. Absent: the part plays its program.
+   */
+  vstInstrument?: ChainEntry;
+  /** How the part's VST3 instrument is told its notes' articulations
+   *  (lib/articulationMap): a keyswitch note from C0 up, or 'uacc' on CC 32.
+   *  Absent: keyswitch. */
+  articulationSwitch?: Vst3SwitchMode;
 }
 
 /**
@@ -281,6 +301,10 @@ export interface RollPartRef {
   figuredBass?: FiguredBassMark[];
   /** The part is the roll's cantus firmus (RollTrack `cantusFirmus`). Absent when it is not. */
   cantusFirmus?: boolean;
+  /** The part's VST3 instrument and the state its editor captured (RollTrack `vstInstrument`). Absent when it has none. */
+  vstInstrument?: ChainEntry;
+  /** How that instrument hears articulations (RollTrack `articulationSwitch`). Absent: keyswitch. */
+  articulationSwitch?: Vst3SwitchMode;
 }
 
 /** What loadFromClip takes to open a clip together with the clips of its other parts. */
@@ -630,6 +654,26 @@ interface PianoRollState {
   realizeFiguredBass: (partId?: string) => Promise<RollWriteResult>;
   /** Mark part `partId` as the cantus firmus (the mark leaves any other part), or clear the mark with null. One undo step. */
   setCantusFirmus: (partId: string | null) => void;
+  /**
+   * Play part `id` through the VST3 instrument `plugin` (RollTrack
+   * `vstInstrument`), or with null take the instrument away. The part keeps
+   * its program: a MIDI export writes it, and the part plays it whenever the
+   * plugin cannot. Choosing the plugin the part holds switched off switches it
+   * back on, state and all; another plugin starts at its defaults, under a new
+   * entry id (a session of its own). One undo step; none when nothing changes.
+   */
+  setTrackVstInstrument: (id: string, plugin: Pick<VstNode, 'plugin_path' | 'plugin_name'> | null) => void;
+  /** Switch part `id`'s VST3 instrument on or off, keeping the plugin and its state. One undo step; none when nothing changes. */
+  setTrackVstEnabled: (id: string, enabled: boolean) => void;
+  /**
+   * Store the state the live host captured from the plugin of part instrument
+   * `entryId` (the instrument's entry id, in whichever part holds it). Not an
+   * undo step: the plugin holds its state, and an undo cannot move it back, so
+   * undo and redo keep the state a part's instrument has now (restoredParts).
+   */
+  setPartVstState: (entryId: string, rawState: string, stateHost: VstStateHost) => void;
+  /** How part `id`'s VST3 instrument hears articulations: keyswitch notes from C0, or UACC on CC 32. One undo step. */
+  setTrackArticulationSwitch: (id: string, mode: Vst3SwitchMode) => void;
   /**
    * Write a plan's (composerApi.plan) four voices into the parts named
    * Soprano, Alto, Tenor and Bass, each at its ticks, replacing their notes; a
@@ -1865,6 +1909,34 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
  * edit in another part leaves the view where it is. A step written before
  * parts existed puts its notes into the active part.
  */
+/**
+ * `stepTracks` with each part's VST3 instrument holding the state its plugin
+ * has now: an undo or a redo puts a part's notes and settings back, but the
+ * running plugin keeps the sound the user dialled into it, so the state
+ * recorded with an older step is never put back over it. An instrument the
+ * step holds under another entry id (a different plugin, or one since
+ * removed) keeps the step's own.
+ */
+const withLiveVstStates = (stepTracks: RollTrack[], current: readonly RollTrack[]): RollTrack[] => {
+  const live = new Map<string, VstNode>();
+  for (const t of current) if (t.vstInstrument?.vst) live.set(t.vstInstrument.id, t.vstInstrument.vst);
+  if (live.size === 0) return stepTracks;
+  let changed = false;
+  const out = stepTracks.map((t) => {
+    const now = t.vstInstrument ? live.get(t.vstInstrument.id) : undefined;
+    const was = t.vstInstrument?.vst;
+    if (!now || !was || (now.raw_state === was.raw_state && now.state_host === was.state_host)) return t;
+    changed = true;
+    const vst: VstNode = { ...was };
+    if (now.raw_state) vst.raw_state = now.raw_state;
+    else delete vst.raw_state;
+    if (now.state_host) vst.state_host = now.state_host;
+    else delete vst.state_host;
+    return { ...t, vstInstrument: { ...(t.vstInstrument as ChainEntry), vst } };
+  });
+  return changed ? out : stepTracks;
+};
+
 const restoredParts = (s: PianoRollState, step: RollHistorySnapshot): Partial<PianoRollState> => {
   if (!step.tracks?.length) return { notes: step.notes };
   const carriesLink = 'editingClipId' in step;
@@ -1874,7 +1946,7 @@ const restoredParts = (s: PianoRollState, step: RollHistorySnapshot): Partial<Pi
   const partLinks = activeTrackId === s.activeTrackId ? s.partLinks : withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
   const active = step.tracks.find((t) => t.id === activeTrackId) as RollTrack;
   return {
-    tracks: step.tracks,
+    tracks: withLiveVstStates(step.tracks, s.tracks),
     ...(step.rollDocId ? { rollDocId: step.rollDocId } : {}),
     activeTrackId,
     notes: active.notes,
@@ -3090,6 +3162,63 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         return rest;
       });
       return changed ? { tracks } : {};
+    }),
+  setTrackVstInstrument: (id, plugin) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t) return {};
+      let next: RollTrack;
+      if (!plugin?.plugin_path) {
+        if (!t.vstInstrument) return {};
+        const { vstInstrument: _drop, ...rest } = t;
+        next = rest;
+      } else if (t.vstInstrument?.vst?.plugin_path === plugin.plugin_path) {
+        // The plugin the part already holds: on again, with its state and its session.
+        if (t.vstInstrument.enabled) return {};
+        next = { ...t, vstInstrument: { ...t.vstInstrument, enabled: true } };
+      } else {
+        const entry: ChainEntry = {
+          id: partVstUid(),
+          effect: 'vst3',
+          params: {},
+          enabled: true,
+          vst: { plugin_path: plugin.plugin_path, plugin_name: plugin.plugin_name || plugin.plugin_path },
+        };
+        next = { ...t, vstInstrument: entry };
+      }
+      return { tracks: s.tracks.map((x) => (x.id === id ? next : x)) };
+    }),
+  setTrackVstEnabled: (id, enabled) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t?.vstInstrument || t.vstInstrument.enabled === enabled) return {};
+      const vstInstrument = { ...t.vstInstrument, enabled };
+      return { tracks: s.tracks.map((x) => (x.id === id ? { ...x, vstInstrument } : x)) };
+    }),
+  setPartVstState: (entryId, rawState, stateHost) => {
+    const s = get();
+    if (!rawState || !s.tracks.some((t) => t.vstInstrument?.id === entryId)) return;
+    // The plugin's state is no edit of the document: no undo step records it.
+    historyApplying = true;
+    try {
+      set((st) => ({
+        tracks: st.tracks.map((t) =>
+          t.vstInstrument?.id === entryId && t.vstInstrument.vst
+            ? { ...t, vstInstrument: { ...t.vstInstrument, vst: { ...t.vstInstrument.vst, raw_state: rawState, state_host: stateHost } } }
+            : t,
+        ),
+      }));
+    } finally {
+      historyApplying = false;
+    }
+  },
+  setTrackArticulationSwitch: (id, mode) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t || (t.articulationSwitch ?? 'keyswitch') === mode) return {};
+      const { articulationSwitch: _drop, ...rest } = t;
+      const next: RollTrack = mode === 'keyswitch' ? rest : { ...rest, articulationSwitch: mode };
+      return { tracks: s.tracks.map((x) => (x.id === id ? next : x)) };
     }),
   writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true, {}, undefined, true),
   writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false, {}, undefined, true),

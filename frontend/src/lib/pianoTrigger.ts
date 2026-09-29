@@ -76,7 +76,30 @@ export const MAX_BUILTIN_HOLD_SEC = 16;
 /** What startHeldNote started, for stopHeldNote. */
 export type HeldNote =
   | { kind: 'soundfont'; channel: number; note: number }
-  | { kind: 'builtin'; gate: GainNode };
+  | { kind: 'builtin'; gate: GainNode }
+  | { kind: 'routed'; release: () => void };
+
+/**
+ * Where a hardware key goes instead of the synth, when something claims it:
+ * state/rollInstruments sets this while the MIDI tab is open, and it plays a
+ * key through the roll's active part's VST3 instrument, returning what
+ * releases it, or null when that part plays no plugin now. Kept as a
+ * registration so this module, which the first paint loads, imports none of
+ * the roll.
+ */
+export type HeldKeyRoute = (note: number, velocity: number) => (() => void) | null;
+let heldKeyRoute: HeldKeyRoute | null = null;
+
+/** Claim hardware keys (`route`), or give them back (null). */
+export const setHeldKeyRoute = (route: HeldKeyRoute | null): void => {
+  heldKeyRoute = route;
+};
+
+/** A key through the claimed route, when there is one and it takes the key; null otherwise. */
+export const startRoutedNote = (note: number, velocity: number): HeldNote | null => {
+  const release = heldKeyRoute?.(note, velocity) ?? null;
+  return release ? { kind: 'routed', release } : null;
+};
 
 /**
  * Start a hardware keyboard's key and keep it sounding until stopHeldNote. A
@@ -103,6 +126,10 @@ export const startHeldNote = (note: number, velocity: number, voice: ClipVoice):
 
 /** Release a key startHeldNote started: a note-off, or the gate closing over the built-in voice's release. */
 export const stopHeldNote = (held: HeldNote): void => {
+  if (held.kind === 'routed') {
+    held.release();
+    return;
+  }
   if (held.kind === 'soundfont') {
     liveNoteOff(held.channel, held.note);
     return;

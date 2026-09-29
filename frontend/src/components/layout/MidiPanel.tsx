@@ -62,6 +62,7 @@ import { isAudioEntry } from '../../state/libraryEntry';
 import { logInfo, logWarn } from '../../state/logStore';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
 import { activeTrackOf, rollTracksOf, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { RollVstEditorHost } from '../audio/RollVstEditorHost';
 import { partComposeInstrument } from '../../lib/rollTracks';
 import { artifactTake } from '../../lib/takeNotes';
 import { importTake, placeTake } from '../../lib/rollTakes';
@@ -1053,6 +1054,8 @@ export const MidiPanel: React.FC = () => {
           <div className={arpOn ? 'absolute inset-0' : 'hidden'}>
             <ArpeggiatorPanel playing={arpPlaying} />
           </div>
+          {/* A roll part's VST3 instrument opens its own window here. */}
+          <RollVstEditorHost />
         </div>
 
         {!arpOn && artifact && (

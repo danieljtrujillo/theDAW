@@ -13,6 +13,8 @@
  */
 import type { FiguredBassMark, PianoNote, RollControl, RollTrack } from '../state/pianoRollStore';
 import type { AudioClip, EditorTrack } from '../state/editorStore';
+import type { ChainEntry } from '../state/effectChainStore';
+import { isVst3SwitchMode, type Vst3SwitchMode } from './articulationMap';
 import { GM_STANDARD_KIT, clipVoice, type ClipVoice, type GlobalVoice, type ProgramClip, type ProgramTrack } from './clipProgram';
 import { DRUM_CHANNEL } from './editChannels';
 import { LIVE_ROLL_CHANNELS, MAX_PREVIEW_CHANNELS, ROLL_PART_FIRST_CHANNEL, bentLanes, liveLaneChannels, type LaneBend } from './pitchBend';
@@ -65,6 +67,49 @@ export const cleanPartBankLsb = (v: unknown): number | undefined => (isNum(v) ? 
 
 /** A MIDI channel 1-16, or null (the part takes the next free one on export). */
 export const cleanPartChannel = (v: unknown): number | null => (isNum(v) ? Math.max(1, Math.min(16, Math.round(v))) : null);
+
+/** A new id for a part's VST3 instrument entry: the live host keys the plugin's session by it. */
+export const partVstUid = (): string =>
+  typeof crypto !== 'undefined' && crypto.randomUUID ? `rollvst-${crypto.randomUUID()}` : `rollvst-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
+/**
+ * A part's VST3 instrument (RollTrack `vstInstrument`) from a file, an
+ * autosave or a clip's record: a `vst3` chain entry naming a plugin file, its
+ * captured state and the host that captured it kept, every parameter a finite
+ * number. Undefined when it names no plugin. An entry with no id gets one.
+ */
+export function cleanPartVstInstrument(raw: unknown): ChainEntry | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const e = raw as Record<string, unknown>;
+  const v = e.vst as Record<string, unknown> | null | undefined;
+  if (!v || typeof v !== 'object' || typeof v.plugin_path !== 'string' || !v.plugin_path.trim()) return undefined;
+  const path = v.plugin_path.trim();
+  const params: Record<string, number> = {};
+  if (e.params && typeof e.params === 'object') {
+    for (const [k, value] of Object.entries(e.params as Record<string, unknown>)) if (isNum(value)) params[k] = value;
+  }
+  const name = typeof v.plugin_name === 'string' && v.plugin_name.trim() ? v.plugin_name.trim() : (path.split(/[\\/]/).pop() ?? path).replace(/\.vst3$/i, '');
+  return {
+    id: typeof e.id === 'string' && e.id ? e.id : partVstUid(),
+    effect: 'vst3',
+    params,
+    // Absent is on, as the backend reads a chain entry.
+    enabled: e.enabled !== false,
+    vst: {
+      plugin_path: path,
+      plugin_name: name,
+      ...(typeof v.raw_state === 'string' && v.raw_state ? { raw_state: v.raw_state } : {}),
+      ...(v.state_host === 'thedaw' || v.state_host === 'pedalboard' ? { state_host: v.state_host } : {}),
+    },
+  };
+}
+
+/** How a part's VST3 instrument hears articulations: 'uacc' or 'keyswitch' as given, else undefined (keyswitch). */
+export const cleanPartSwitchMode = (v: unknown): Vst3SwitchMode | undefined => (isVst3SwitchMode(v) ? v : undefined);
+
+/** The part's VST3 instrument when it is switched on and names a plugin, else null: what the part plays through. */
+export const activePartVst = (t: Pick<RollTrack, 'vstInstrument'> | undefined): ChainEntry | null =>
+  t?.vstInstrument?.enabled && t.vstInstrument.vst?.plugin_path ? t.vstInstrument : null;
 
 /** A #rrggbb colour, lower case, else `fallback`. */
 export const cleanPartColor = (v: unknown, fallback: string): string =>
@@ -240,6 +285,10 @@ export function makeRollTrack(init: RollTrackInit, index: number): RollTrack {
   const figuredBass = cleanFiguredBass(init.figuredBass);
   if (figuredBass) track.figuredBass = figuredBass;
   if (init.cantusFirmus === true) track.cantusFirmus = true;
+  const vst = cleanPartVstInstrument(init.vstInstrument);
+  if (vst) track.vstInstrument = vst;
+  const switchMode = cleanPartSwitchMode(init.articulationSwitch);
+  if (switchMode) track.articulationSwitch = switchMode;
   return track;
 }
 
@@ -255,6 +304,10 @@ export function sanitizeRollTracks(list: readonly RollTrackInit[] | null | undef
     if (track.cantusFirmus && out.some((t) => t.cantusFirmus)) delete track.cantusFirmus;
     if (seen.has(track.id)) track.id = partUid();
     seen.add(track.id);
+    // One live session per instrument entry: a second part naming the same entry gets one of its own.
+    if (track.vstInstrument && out.some((t) => t.vstInstrument?.id === track.vstInstrument?.id)) {
+      track.vstInstrument = { ...track.vstInstrument, id: partVstUid() };
+    }
     out.push(track);
   }
   if (!out.length) out.push(makeRollTrack({}, 0));
