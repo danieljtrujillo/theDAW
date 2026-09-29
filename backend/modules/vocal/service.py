@@ -412,7 +412,7 @@ async def run_prepare(job: Job, req: dict[str, Any]) -> None:
             art.f0 = f0_curve.compute_f0_curve(cur)
             job.update(progress=0.5, message="pitch")
 
-            art.notes = notes_step.extract_notes(cur)
+            art.notes = notes_step.extract_notes(cur, role="vocals")
             job.update(progress=0.7, message="notes")
 
             art.segments = segments_step.detect_segments(cur)

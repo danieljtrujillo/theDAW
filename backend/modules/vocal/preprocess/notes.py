@@ -4,6 +4,12 @@ Reuses backend/modules/midi convert_to_midi to write a MIDI file, then parses it
 into project-relative-millisecond notes via the shared midi_to_notes converter (so
 there is one SMF->Note implementation). Returns [] when basic-pitch is not
 installed; it never triggers a surprise pip install (auto_install=False).
+
+``role`` is the stem role basic-pitch runs with (``midi.engine.role_for_stem``):
+the vocal prepare passes ``"vocals"``, so an isolated vocal is read with the
+voice's range and thresholds and comes out one note at a time, the way the MIDI
+runner converts a vocal stem. Audio of unknown content (a mic take, any track
+sent to note detection) passes ``None`` and keeps basic-pitch's defaults.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import importlib.util
 import logging
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from ..convert import midi_to_notes
 from ..schema import Note
@@ -19,7 +26,7 @@ from ..schema import Note
 log = logging.getLogger(__name__)
 
 
-def extract_notes(audio_path: Path) -> list[Note]:
+def extract_notes(audio_path: Path, *, role: Optional[str] = None) -> list[Note]:
     if importlib.util.find_spec("mido") is None:
         return []
     from backend.modules.midi.engine import convert_to_midi
@@ -29,7 +36,7 @@ def extract_notes(audio_path: Path) -> list[Note]:
         return []
     with tempfile.TemporaryDirectory() as td:
         mid_path = Path(td) / "notes.mid"
-        res = convert_to_midi(p, mid_path, hint="auto", auto_install=False)
+        res = convert_to_midi(p, mid_path, hint="auto", auto_install=False, role=role)
         if not res.get("ok") or not mid_path.is_file():
             log.info(
                 "vocal.notes: basic-pitch unavailable/failed: %s", res.get("error")
