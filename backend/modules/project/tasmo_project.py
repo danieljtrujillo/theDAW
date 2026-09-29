@@ -286,6 +286,44 @@ class CompRegion(BaseModel):
     crossfade_sec: float = 0.0
 
 
+class SongTime(BaseModel):
+    """Where an audio clip's audio sits in a library song's own time.
+
+    ``entry_id`` is the library entry whose analysis (tempo, beats, downbeats,
+    meter) describes the audio: the entry itself for library audio, the song a
+    stem was separated from for a stem. A second of the clip's audio is
+    ``offset_sec + second * rate`` seconds of that song, so a beat match that
+    stretched the audio still reads the song's beats at the right places.
+    ``bpm`` is the song's analysed tempo when it was known.
+    """
+
+    entry_id: str
+    bpm: float | None = None
+    offset_sec: float = 0.0
+    rate: float = 1.0
+
+    @field_validator("offset_sec")
+    @classmethod
+    def _finite_offset(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("song_time.offset_sec must be finite")
+        return v
+
+    @field_validator("rate")
+    @classmethod
+    def _positive_rate(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("song_time.rate must be a finite number above 0")
+        return v
+
+    @field_validator("bpm")
+    @classmethod
+    def _positive_bpm(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        return v if math.isfinite(v) and v > 0 else None
+
+
 class Clip(BaseModel):
     id: str
     name: str
@@ -403,6 +441,12 @@ class Clip(BaseModel):
     # Defaulted, so older .tasmo files still validate.
     bpm: float | None = None
     library_entry_id: str | None = None
+    # Audio clips from a library song or one of its stems: the song whose
+    # rhythm analysis times the audio, and where the audio sits in that song's
+    # time (see SongTime). EDIT's SYNC reads the song's tempo and beats through
+    # it and "Use song tempo" lines the arrangement's bars up with the song's
+    # downbeats. Defaulted, so older .tasmo files still validate.
+    song_time: SongTime | None = None
     # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
     # .tasmo files written before this field existed still validate.
     muted: bool = False

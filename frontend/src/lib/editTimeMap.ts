@@ -562,7 +562,7 @@ export function parseEditMeter(text: string): Meter | null {
  * the held tempo before it. A ramp's target and a ramp's own start are kept.
  * The map is already sanitized, so the start stays and the result is frozen.
  */
-function dropRepeatedTempos(map: TempoEvent[]): TempoEvent[] {
+export function dropRepeatedTempos(map: TempoEvent[]): TempoEvent[] {
   let prev: TempoEvent | undefined;
   const keep = map.filter((e) => {
     if (e.fermata) return true;
@@ -571,6 +571,35 @@ function dropRepeatedTempos(map: TempoEvent[]): TempoEvent[] {
     return !same;
   });
   return keep.length === map.length ? map : (Object.freeze(keep) as TempoEvent[]);
+}
+
+/**
+ * The tempo events of `map` that sound before `beat`, so a new tempo from
+ * `beat` on leaves every second before it where it was: a fermata reaching
+ * past `beat` is cut to end there, and a ramp running into `beat` is held
+ * from one tick before it (the ramp keeps its line up to there).
+ */
+export function tempoEventsBefore(map: readonly TempoEvent[], beat: number): TempoEvent[] {
+  const clock = editClock(map);
+  const before: TempoEvent[] = [];
+  let inForce: TempoEvent | undefined;
+  for (const e of map) {
+    if (e.beat >= beat - EPS) continue;
+    if (e.fermata) {
+      const room = beat - e.beat;
+      const fermata = sanitizeFermata({ beats: Math.min(e.fermata.beats, room), stretch: e.fermata.stretch });
+      if (fermata) before.push({ beat: e.beat, bpm: e.bpm, fermata });
+      continue;
+    }
+    before.push({ ...e });
+    inForce = e;
+  }
+  if (inForce && inForce.curve === 'linear') {
+    const holdBeat = tickBeat(beat - 1 / PPQ);
+    if (holdBeat > inForce.beat + EPS) before.push({ beat: holdBeat, bpm: getTempoAtBeat(clock.map, holdBeat), curve: 'step' });
+    else before[before.indexOf(inForce)] = { ...inForce, curve: 'step' };
+  }
+  return before;
 }
 
 /** The clip fields adoption reads: where the clip sits and the maps its notes were written in. */
@@ -621,24 +650,7 @@ export function adoptClipTimeMaps(edit: EditTimeMaps, clip: ClipTimeSource): Ado
   const anchorStep = anchorBeat * STEPS_PER_BEAT;
 
   // Tempo: EDIT's events before the anchor, then the clip's, shifted.
-  const before: TempoEvent[] = [];
-  let inForce: TempoEvent | undefined;
-  for (const e of edit.tempoMap) {
-    if (e.beat >= anchorBeat - EPS) continue;
-    if (e.fermata) {
-      const room = anchorBeat - e.beat;
-      const fermata = sanitizeFermata({ beats: Math.min(e.fermata.beats, room), stretch: e.fermata.stretch });
-      if (fermata) before.push({ beat: e.beat, bpm: e.bpm, fermata });
-      continue;
-    }
-    before.push({ ...e });
-    inForce = e;
-  }
-  if (inForce && inForce.curve === 'linear') {
-    const holdBeat = tickBeat(anchorBeat - 1 / PPQ);
-    if (holdBeat > inForce.beat + EPS) before.push({ beat: holdBeat, bpm: getTempoAtBeat(clock.map, holdBeat), curve: 'step' });
-    else before[before.indexOf(inForce)] = { ...inForce, curve: 'step' };
-  }
+  const before = tempoEventsBefore(edit.tempoMap, anchorBeat);
   const own = playedTempoMap(clip.sourceBpm ?? editStartBpm(edit.tempoMap), clip.sourceTempoMap ?? null);
   const shifted = own.map((e) => ({ ...e, beat: e.beat + anchorBeat, ...(e.fermata ? { fermata: { ...e.fermata } } : {}) }));
   const startBpm = anchorBeat > EPS ? editStartBpm(edit.tempoMap) : (startTempoOf(own) ?? editStartBpm(edit.tempoMap));

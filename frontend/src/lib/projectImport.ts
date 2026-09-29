@@ -97,6 +97,7 @@ import { tasmoLoadedToDawProject } from './tasmoToSession';
 import { STALE_RENDER_SIG, midiClipNominalSec, midiRenderSig, renderSigStale } from './midiRender';
 import { meterFromTasmo } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
+import { sanitizeSongTime, songTimeToTasmo } from './clipSongTime';
 
 /** A saved reverb send as a track holds it: a whole 0-127, or undefined. */
 const reverbSendOf = (v: unknown): number | undefined =>
@@ -607,6 +608,9 @@ const buildClip = async (
     // out when the file has none, as for a clip that never had them.
     ...(typeof c.bpm === 'number' && Number.isFinite(c.bpm) && c.bpm > 0 ? { bpm: c.bpm } : {}),
     ...(typeof c.library_entry_id === 'string' && c.library_entry_id ? { libraryEntryId: c.library_entry_id } : {}),
+    // Where the audio sits in its library song's time, so a reopened stem still
+    // beat matches and still takes the song's tempo; absent on older files.
+    ...(!sourceKind && sanitizeSongTime(c.song_time) ? { songTime: sanitizeSongTime(c.song_time) } : {}),
     // The clip's own instrument and the one its audio holds. With the second
     // missing, EDIT's instrument sync saw every reopened roll clip as stale and
     // rendered them all again through whatever program was active.
@@ -1744,6 +1748,8 @@ export function captureEditorSession(): CapturedSession {
           // first, and the second finds the clip's analysis, beats and stems.
           bpm: c.bpm ?? null,
           library_entry_id: c.libraryEntryId ?? null,
+          // Where the audio sits in its library song's time (lib/clipSongTime).
+          song_time: !isMidi && c.songTime ? songTimeToTasmo(c.songTime) : null,
           // Per-clip mute, gain, fades and the trim point all survive the .tasmo
           // round-trip. offset_into_source is the load-bearing one: the embedded
           // audio is the FULL untrimmed source, so without it a split clip reloads

@@ -7,6 +7,7 @@ import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
+import { linkSongTime } from '../../lib/songTimeLink';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { deriveLyrics } from '../../catalog/catalogSearch';
 import { entryAudioFileName } from '../../convert/convertClient';
@@ -181,6 +182,7 @@ export const DetailsView: React.FC = () => {
         startSec: 0,
         color: trackColor,
         libraryEntryId: entry.id,
+        songTime: linkSongTime(entry.id),
       });
       editor.cachePeaks(clipId, peaks);
     } catch (e) {

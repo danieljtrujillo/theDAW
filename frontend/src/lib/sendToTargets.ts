@@ -26,6 +26,7 @@ import { KEPT_DOCUMENT_LOG, importMidiParts, pastEndLog } from './rollPartsImpor
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
 import { logError, logInfo, logWarn } from '../state/logStore';
+import { linkSongTime } from './songTimeLink';
 
 /** Default mime for stems / mic recordings when none provided. */
 const DEFAULT_AUDIO_MIME = 'audio/wav';
@@ -40,6 +41,10 @@ export interface SendableAudio {
   /** Library entry id when the audio is a library take — lets Chimera reuse
    *  the cached analysis row (BPM / key / beats) and cached stems. */
   entryId?: string;
+  /** The library song this audio is the time of, when that is not `entryId`
+   *  itself: the song a stem was separated from. EDIT ties the clip to that
+   *  song's analysis (lib/songTimeLink), so SYNC and "Use song tempo" work on it. */
+  songEntryId?: string;
 }
 
 export type AudioSendTarget =
@@ -97,6 +102,9 @@ export async function sendAudioToEditor(
       // Keeps the clip tied to its library entry, so EDIT's Separate Stems
       // reuses that entry's cached stems instead of importing the clip again.
       libraryEntryId: audio.entryId,
+      // And to the song whose analysis times it: its own entry, or the song a
+      // stem was separated from.
+      songTime: linkSongTime(audio.songEntryId ?? audio.entryId),
     });
     editor.cachePeaks(clipId, peaks);
     return clipId;
@@ -251,9 +259,11 @@ export function stemRowToSendable(row: Record<string, unknown>): SendableAudio {
   const stemName = String(row.stem_name ?? 'stem');
   const parentTitle = String(row.parent_title ?? '');
   const label = parentTitle ? `${parentTitle} · ${stemName}` : stemName;
+  const songEntryId = String(row.entry_id ?? row.parent_id ?? '');
   return {
     label,
     mimeType: 'audio/wav',
+    ...(songEntryId ? { songEntryId } : {}),
     fetcher: () => fetchBlobWithRetry(`/api/library/stems/${stemId}/audio`, { label }),
   };
 }
