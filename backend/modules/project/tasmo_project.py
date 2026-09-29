@@ -32,6 +32,22 @@ class EffectChainNode(BaseModel):
     id: str | None = None
 
 
+class SidechainKey(BaseModel):
+    """A sidechain key leaving a track or a bus.
+
+    The track's or bus's post-pan signal drives the detector of the effect
+    ``entry_id`` on the rack of ``target``, a track or bus id. Stored on the
+    SOURCE, beside ``output_routing`` and ``send_amounts``, so every edge a
+    node sends is written in one place (frontend ``CONN_SIDECHAIN``). Both
+    fields default to "" and are not validated here, exactly as
+    ``FollowAction`` is not: the app's reader drops a key that names no strip
+    or no entry on it, or that would close a loop.
+    """
+
+    target: str = ""
+    entry_id: str = ""
+
+
 class Locator(BaseModel):
     id: str
     name: str
@@ -502,6 +518,9 @@ class Track(BaseModel):
     input_routing: str | None = None
     output_routing: str | None = None
     send_amounts: dict[str, float] = {}
+    # The sidechain keys this track's signal feeds (see SidechainKey). Empty in
+    # files written before they were saved.
+    sidechain_keys: list[SidechainKey] = []
     # The GM program (0-127) this track's MIDI clips play through when a clip
     # has none of its own; None = the global instrument.
     instrument_program: int | None = None
@@ -564,6 +583,11 @@ class Bus(BaseModel):
     ``effect_chain`` is named to match ``Track`` and ``Clip`` rather than the
     frontend's ``fxChain``: one .tasmo file should not spell the same list two
     ways.
+
+    ``send_amounts`` (bus id -> linear send gain) and ``sidechain_keys`` are
+    the other edges a bus sends, exactly as a track's are. Both default to
+    empty, so a file written before they were saved loads a bus with its
+    output and nothing else.
     """
 
     id: str
@@ -571,6 +595,8 @@ class Bus(BaseModel):
     volume: float = 1.0
     mute: bool = False
     output_routing: str | None = None
+    send_amounts: dict[str, float] = {}
+    sidechain_keys: list[SidechainKey] = []
     effect_chain: list[EffectChainNode] = []
 
 

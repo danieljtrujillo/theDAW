@@ -26,11 +26,13 @@ import {
 import {
   addBus as graphAddBus,
   addSend,
+  CONN_SIDECHAIN,
   emptyGraph,
   ensureTrackNode,
   outputOf,
   sendsFrom,
   setOutput,
+  setSidechain,
   MASTER_ID,
   type RoutingGraph,
 } from '../state/routingGraph';
@@ -45,6 +47,7 @@ import {
   type TasmoProjectLoaded,
   type TasmoRollVoice,
   type TasmoLoadedClip,
+  type TasmoSidechainKey,
   type TasmoLoadedTrack,
   type TasmoTrackInput,
   type TasmoClipInput,
@@ -943,10 +946,13 @@ export function applyTasmoMasterAndAutomation(
 // ── Routing + buses at the file boundary ─────────────────────────────────────
 //
 // `routing` is a graph (state/routingGraph.ts); the .tasmo format is flat, so
-// the two mappers below are the whole translation. A track/bus names ONE output
-// (`output_routing`, absent or null = the master) and any number of sends
-// (`send_amounts`, bus id -> linear gain), which is exactly `outputOf` +
-// `sendsFrom`. Mirrors `Track` / `Bus` in backend/modules/project/tasmo_project.py.
+// the two mappers below are the whole translation. A track or a bus names ONE
+// output (`output_routing`, absent or null = the master), any number of sends
+// (`send_amounts`, bus id -> linear gain) and any number of sidechain keys
+// (`sidechain_keys`, each the strip and the effect entry its signal keys),
+// which is exactly `outputOf` + `sendsFrom` + the CONN_SIDECHAIN edges leaving
+// it. Mirrors `Track` / `Bus` / `SidechainKey` in
+// backend/modules/project/tasmo_project.py.
 //
 // The reader NEVER throws. A file is not a mutator-vetted graph: it can be
 // hand-edited into a loop, or name a bus that isn't there. Both are LOGGED and
@@ -965,33 +971,41 @@ export interface TasmoRoutedTrack {
   output_routing?: string | null;
   /** Bus id -> linear send gain. */
   send_amounts?: Record<string, number> | null;
+  /** The sidechain keys this track feeds. */
+  sidechain_keys?: TasmoSidechainKey[] | null;
+  /** The track's inserts, whose ids a sidechain key must name. */
+  effect_chain?: EffectChainNode[] | null;
 }
 
 /** One node's routing in the file shape. The master is written as `null`, never
- *  as a node id — `MASTER_ID` is this app's name for it, not part of the format. */
+ *  as a node id — `MASTER_ID` is this app's name for it, not part of the format.
+ *  `sidechain_keys` is written only when the node feeds one, so a project with
+ *  no sidechains writes the payload it always did. */
 export function trackRoutingToTasmo(
   graph: RoutingGraph,
   nodeId: string,
-): { output_routing: string | null; send_amounts: Record<string, number> } {
+): { output_routing: string | null; send_amounts: Record<string, number>; sidechain_keys?: TasmoSidechainKey[] } {
   const out = outputOf(graph, nodeId);
   const sendAmounts: Record<string, number> = {};
   for (const e of sendsFrom(graph, nodeId)) sendAmounts[e.to] = e.gain;
-  return { output_routing: out === null || out === MASTER_ID ? null : out, send_amounts: sendAmounts };
+  // A key into the master's rack has no place in the format (no UI makes one),
+  // and a key with no entry keys nothing.
+  const keys: TasmoSidechainKey[] = graph.edges
+    .filter((e) => e.from === nodeId && e.connType === CONN_SIDECHAIN && e.to !== MASTER_ID && !!e.targetEntryId)
+    .map((e) => ({ target: e.to, entry_id: e.targetEntryId as string }));
+  return {
+    output_routing: out === null || out === MASTER_ID ? null : out,
+    send_amounts: sendAmounts,
+    ...(keys.length ? { sidechain_keys: keys } : {}),
+  };
 }
 
 /**
  * The bus strips in the file shape. Driven by the STRIP list, not the graph's
  * nodes: the master is a node but never a bus, and a node with no strip behind
- * it is document damage that must not be persisted as a phantom bus.
- *
- * LIMITATION, deliberate: a bus persists its `output_routing` and nothing else
- * about its place in the graph. Sends LEAVING a bus, and sidechain edges of any
- * kind, are NOT written — the format has no field for either, and no UI creates
- * either today. The autosave manifest carries the whole `RoutingGraph` verbatim,
- * so nothing a user can currently build is lost across a crash; it is only the
- * `.tasmo` that is lossy, and only for edges that cannot yet exist. Adding
- * `send_amounts` to the backend `Bus` is the change to make when bus sends get
- * a UI — not before, so the format does not grow a field nothing writes.
+ * it is document damage that must not be persisted as a phantom bus. A bus
+ * writes every edge it sends, exactly as a track does: its output, its sends
+ * and its sidechain keys.
  */
 export function busesToTasmo(graph: RoutingGraph, buses: readonly EditorBus[]): TasmoBus[] {
   return buses.map((b) => ({
@@ -999,16 +1013,21 @@ export function busesToTasmo(graph: RoutingGraph, buses: readonly EditorBus[]): 
     name: b.name,
     volume: b.volume,
     mute: b.mute,
-    output_routing: trackRoutingToTasmo(graph, b.id).output_routing,
+    ...trackRoutingToTasmo(graph, b.id),
     effect_chain: (b.fxChain ?? []).map(chainEntryToEffectNode),
   }));
 }
+
+/** The ids of a strip's saved inserts: what a sidechain key into it may name. */
+const insertIdsOf = (chain: readonly EffectChainNode[] | null | undefined): Set<string> =>
+  new Set((chain ?? []).map((n) => nonEmpty(n?.id)).filter((id): id is string => id !== undefined));
 
 /**
  * Rebuild `routing` + the bus strips from a loaded file, in the one order that
  * makes the mutators' guards meaningful: every track node, then every bus node
  * (so an output can name either), then the outputs, then the sends (a send into
- * a bus that an output already reaches is the case `wouldCycle` must see).
+ * a bus that an output already reaches is the case `wouldCycle` must see), then
+ * the sidechain keys (a key closes a loop exactly as an output does).
  */
 export function tasmoToRouting(
   tracks: readonly TasmoRoutedTrack[],
@@ -1019,8 +1038,9 @@ export function tasmoToRouting(
   let g = emptyGraph();
   for (const t of trackList) g = ensureTrackNode(g, t.id, t.name || t.id);
   for (const b of busList) g = graphAddBus(g, b.id, b.name || b.id);
+  const nodes = [...trackList, ...busList];
 
-  for (const n of [...trackList, ...busList]) {
+  for (const n of nodes) {
     const to = n.output_routing;
     if (!to || to === MASTER_ID) continue;
     const r = setOutput(g, n.id, to);
@@ -1028,10 +1048,10 @@ export function tasmoToRouting(
     else logWarn('project', `Routing: output "${n.id}" -> "${to}" refused (${r.reason}); left feeding the master`);
   }
 
-  for (const t of trackList) {
-    for (const [to, gain] of Object.entries(t.send_amounts ?? {})) {
+  for (const n of nodes) {
+    for (const [to, gain] of Object.entries(n.send_amounts ?? {})) {
       if (typeof gain !== 'number' || !Number.isFinite(gain)) {
-        logWarn('project', `Routing: send "${t.id}" -> "${to}" has a non-numeric gain; dropped`);
+        logWarn('project', `Routing: send "${n.id}" -> "${to}" has a non-numeric gain; dropped`);
         continue;
       }
       // Clamped, not merely finite: a hand-edited 1e9 is a valid float and would
@@ -1039,11 +1059,32 @@ export function tasmoToRouting(
       // is +6 dB, the same ceiling the send UI offers.
       const clamped = Math.max(0, Math.min(SEND_GAIN_MAX, gain));
       if (clamped !== gain) {
-        logWarn('project', `Routing: send "${t.id}" -> "${to}" gain ${gain} clamped to ${clamped}`);
+        logWarn('project', `Routing: send "${n.id}" -> "${to}" gain ${gain} clamped to ${clamped}`);
       }
-      const r = addSend(g, t.id, to, clamped);
+      const r = addSend(g, n.id, to, clamped);
       if (r.ok) g = r.graph;
-      else logWarn('project', `Routing: send "${t.id}" -> "${to}" refused (${r.reason}); dropped`);
+      else logWarn('project', `Routing: send "${n.id}" -> "${to}" refused (${r.reason}); dropped`);
+    }
+  }
+
+  // A key must land on a track or a bus of this file, on an insert that strip
+  // holds: a key naming anything else would drive a detector that is not there.
+  const insertsByStrip = new Map<string, Set<string>>(nodes.map((n) => [n.id, insertIdsOf(n.effect_chain)]));
+  for (const n of nodes) {
+    for (const key of n.sidechain_keys ?? []) {
+      const target = nonEmpty(key?.target);
+      const entryId = nonEmpty(key?.entry_id);
+      if (!target || !entryId) {
+        logWarn('project', `Routing: a sidechain key from "${n.id}" names no strip or no insert; dropped`);
+        continue;
+      }
+      if (!insertsByStrip.get(target)?.has(entryId)) {
+        logWarn('project', `Routing: sidechain "${n.id}" -> "${target}" keys an insert "${entryId}" the file does not have; dropped`);
+        continue;
+      }
+      const r = setSidechain(g, n.id, target, entryId);
+      if (r.ok) g = r.graph;
+      else logWarn('project', `Routing: sidechain "${n.id}" -> "${target}" refused (${r.reason}); dropped`);
     }
   }
 
@@ -1161,6 +1202,8 @@ export async function loadProjectIntoEditor(
         name: t.name || `Track ${i + 1}`,
         output_routing: t.output_routing,
         send_amounts: t.send_amounts,
+        sidechain_keys: t.sidechain_keys,
+        effect_chain: t.effect_chain,
       });
     }
     effects += t.effect_chain?.length ?? 0;

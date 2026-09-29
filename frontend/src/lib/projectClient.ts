@@ -117,6 +117,14 @@ export interface VstPluginState {
   state_host?: string | null;
 }
 
+/** A sidechain key leaving a track or a bus: its signal keys the effect
+ *  `entry_id` on the rack of `target` (a track or bus id). Mirrors the backend
+ *  `SidechainKey`; the reader drops one that names nothing. */
+export interface TasmoSidechainKey {
+  target: string;
+  entry_id: string;
+}
+
 export interface EffectChainNode {
   node_type: string; // "vst3" | "audiounit" | "builtin"
   effect_name: string;
@@ -388,6 +396,8 @@ export interface TasmoTrackInput {
   output_routing?: string | null;
   /** Bus id -> linear send gain. */
   send_amounts?: Record<string, number>;
+  /** The sidechain keys the track feeds; written only when it feeds one. */
+  sidechain_keys?: TasmoSidechainKey[];
   /** The GM program (0-127) this track's MIDI clips play through when a clip
    *  has none of its own. */
   instrument_program?: number | null;
@@ -430,6 +440,8 @@ export interface TasmoTrackInput {
  * without one must not typecheck into a save that would 400, and `effect_chain`
  * defaults to `[]` and rejects `null`, so the field is omittable but never
  * nullable. Only `output_routing` is nullable, matching `str | None`.
+ * `send_amounts` and `sidechain_keys` are the bus's other edges, the same
+ * fields a track carries; absent in files written before they were saved.
  */
 export interface TasmoBus {
   id: string;
@@ -437,6 +449,8 @@ export interface TasmoBus {
   volume?: number;
   mute?: boolean;
   output_routing?: string | null;
+  send_amounts?: Record<string, number>;
+  sidechain_keys?: TasmoSidechainKey[];
   effect_chain?: EffectChainNode[];
 }
 
@@ -607,6 +621,8 @@ export interface TasmoLoadedTrack {
   output_routing?: string | null;
   /** Bus id -> linear send gain; absent in those same older files. */
   send_amounts?: Record<string, number>;
+  /** The sidechain keys the track feeds; absent in files written before they were saved. */
+  sidechain_keys?: TasmoSidechainKey[];
   /** Arrangement folders; absent in files written before folders were saved,
    *  which load flat. The reader resets a parent that names no folder. */
   parent_track_id?: string | null;
