@@ -125,9 +125,12 @@ class AutomationLaneTarget(BaseModel):
     """What an editor automation lane writes to (frontend ``AutomationTarget``).
 
     ``kind`` is "trackVolume" | "trackPan" | "trackFx" | "masterFx" |
-    "trackMidiCc"; the other three name the track, the chain entry and the
-    effect parameter the kind needs (for "trackMidiCc", ``param_key`` is the
-    MIDI controller number). Not validated here on purpose, exactly as
+    "trackMidiCc" | "busFx"; the other three name the track, the chain entry
+    and the effect parameter the kind needs (for "trackMidiCc", ``param_key`` is
+    the MIDI controller number; for "busFx", ``track_id`` names the BUS, the
+    routing node id track ids and bus ids share; a hosted VST3's parameter is
+    ``param_key`` "p<index>", its place in the plugin's own list). Not validated
+    here on purpose, exactly as
     ``FollowAction`` is not: storage stays tolerant so a hand-edited or older file still loads, and the
     app is the strict half — the reader drops a lane whose target names a track
     or a chain entry the loaded project does not have, rather than restoring a

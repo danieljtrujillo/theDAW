@@ -35,6 +35,10 @@ struct Options {
     // A text file of MIDI messages the plugin plays during the render, one per line:
     // "<sample frame> <status> <data1> [<data2>]", decimal. For an instrument.
     std::wstring midiEvents;
+    // A JSON file of parameter automation the render applies block by block: an array of
+    // {"index": N, "name": "...", "points": [[frame, value], ...]}, each a piecewise-linear curve
+    // of a normalized value over the input's sample frames. For an automated insert.
+    std::wstring automationJson;
     // < 0 = "auto": the plugin's reported tail, capped at kRenderTailCapSeconds, with an
     // infinite tail becoming kRenderInfiniteTailSeconds.
     double tailSeconds = -1.0;

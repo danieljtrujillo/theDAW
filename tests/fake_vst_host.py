@@ -103,6 +103,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out", dest="out_path")
     parser.add_argument("--params-json")
     parser.add_argument("--midi-events")
+    parser.add_argument("--automation-json")
     parser.add_argument("--tail-seconds")
     parser.add_argument("--host-name")
     parser.add_argument("--iid-log", action="store_true")
@@ -277,6 +278,13 @@ def _render(args: argparse.Namespace) -> int:
             lines = Path(args.midi_events).read_text(encoding="ascii").splitlines()
             warnings.append(f"echo: midi-events={len(lines)}")
             warnings.extend(f"echo: midi {line}" for line in lines[:8])
+        if args.automation_json:
+            curves = json.loads(Path(args.automation_json).read_text(encoding="utf-8"))
+            warnings.append(f"echo: automated-params={len(curves)}")
+            warnings.extend(
+                f"echo: automation {json.dumps(curve, separators=(',', ':'))}"
+                for curve in curves[:4]
+            )
 
     try:
         Path(args.out_path).write_bytes(payload)

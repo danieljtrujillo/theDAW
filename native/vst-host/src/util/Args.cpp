@@ -32,6 +32,7 @@ const char* usageText() {
         "  thedaw-vst-host --render --plugin <path.vst3> --in <in.wav> --out <out.wav>\n"
         "                  [--plugin-name <name> | --class-id <32 hex>] [--state-file <path>]\n"
         "                  [--params-json <json|path>] [--midi-events <path>] [--block-size 1024]\n"
+        "                  [--automation-json <path>]\n"
         "                  [--tail-seconds auto|N] [--host-name <name>] [--iid-log]\n"
         "                                           render a file faster than real time\n"
         "  thedaw-vst-host --list --plugin <path>   print the file's plugin classes as JSON\n"
@@ -49,6 +50,9 @@ const char* usageText() {
         "32-bit float WAV at the input's rate and channel count. A JSON report goes to stdout.\n"
         "--midi-events plays MIDI into the plugin during the render (an instrument): one message\n"
         "per line, \"<sample frame> <status> <data1> [<data2>]\" in decimal.\n"
+        "--automation-json moves parameters during the render: a JSON array of\n"
+        "{\"index\":N,\"name\":\"...\",\"points\":[[frame,value],...]}, each a piecewise-linear\n"
+        "curve of a normalized value, applied at the start of every block.\n"
         "\n"
         "Exit codes: 0 clean, 1 the render could not be written, 2 bad args,\n"
         "            3 plugin file not found, 4 plugin failed to load/initialize,\n"
@@ -98,6 +102,9 @@ bool parseArgs(const std::vector<std::wstring>& argv, Options& out, std::string&
         } else if (flag == "--midi-events") {
             if (!needValue(i, flag, wideValue)) return false;
             options.midiEvents = wideValue;
+        } else if (flag == "--automation-json") {
+            if (!needValue(i, flag, wideValue)) return false;
+            options.automationJson = wideValue;
         } else if (flag == "--host-name") {
             if (!needValue(i, flag, wideValue)) return false;
             options.hostName = util::wideToUtf8(wideValue);

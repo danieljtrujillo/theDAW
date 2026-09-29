@@ -42,6 +42,11 @@ from backend.modules.vst.host import (
     list_builtin_effects,
 )
 from backend.modules.vst.live_host import HostLocator, _os_reason
+from backend.modules.vst.param_automation import (
+    AUTOMATION_BLOCK_SIZE,
+    ParamAutomation,
+    parse_param_automation,
+)
 from backend.modules.vst import path_policy
 from backend.modules.vst.path_policy import (
     PluginPathError,
@@ -706,6 +711,7 @@ def _render_with_thedaw_host(
     warnings: list[str],
     midi_events: list[tuple[int, bytes]] | None = None,
     tail_seconds: str = "auto",
+    automation: list[ParamAutomation] | None = None,
 ) -> bytes:
     """Render the audio already staged at ``in_path`` through
     ``thedaw-vst-host --render``.
@@ -749,10 +755,19 @@ def _render_with_thedaw_host(
             "--out",
             str(out_path),
             "--block-size",
-            "1024",
+            # A parameter moves at the start of a block, so an automated print
+            # runs shorter blocks: that is the time resolution of its automation.
+            str(AUTOMATION_BLOCK_SIZE) if automation else "1024",
             "--tail-seconds",
             tail_seconds,
         ]
+        if automation:
+            automation_path = work / "automation.json"
+            automation_path.write_text(
+                json.dumps([a.to_host_json() for a in automation]), encoding="utf-8"
+            )
+            temp_paths.append(automation_path)
+            cmd += ["--automation-json", str(automation_path)]
         if midi_events:
             # An instrument: the MIDI it plays, one "<frame> <status> <data...>" line each.
             midi_path = work / "midi.txt"
@@ -862,6 +877,7 @@ async def process_file(
     raw_state: str = Form(""),
     state_host: str = Form(""),
     plugin_name: str = Form(""),
+    automation: str = Form(""),
 ):
     """Process an UPLOADED audio file through one VST3 plugin; return WAV bytes.
 
@@ -873,8 +889,17 @@ async def process_file(
     Gated: this loads and runs a plugin, same as ``/load`` and ``/process``,
     and a paired device passes the same way (MIX on a device opened from the
     share link renders its VST stages here).
+
+    ``automation`` moves the plugin's parameters as the file plays: EDIT's
+    automation lanes on this insert, as curves over the file's frames (see
+    ``param_automation``). Both renderers apply it block by block; a body that
+    is not that shape is refused, never rendered without it.
     """
     require_loopback_launch_or_pairing_token(request)
+    try:
+        param_automation = parse_param_automation(automation)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid automation: {e}")
     import numpy as np
 
     from backend.lib.audio_io import load_audio_array, save_audio
@@ -971,6 +996,7 @@ async def process_file(
                 state_blob,
                 host_params,
                 host_warnings,
+                automation=param_automation or None,
             )
         finally:
             # Covers the upload read above as well as the render below — a
@@ -1007,9 +1033,20 @@ async def process_file(
         param_map = {}
 
     try:
-        processed = process_with_plugin(
-            plugin_path, signal, sr, param_map, raw_state or None, warnings
-        )
+        if param_automation:
+            processed = process_with_plugin(
+                plugin_path,
+                signal,
+                sr,
+                param_map,
+                raw_state or None,
+                warnings,
+                automation=param_automation,
+            )
+        else:
+            processed = process_with_plugin(
+                plugin_path, signal, sr, param_map, raw_state or None, warnings
+            )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
