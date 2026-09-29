@@ -165,4 +165,39 @@ assert.deepEqual(st().tracks.map((t) => t.id), ['trk-other'], 'EDIT still holds 
   assert.deepEqual(saved.master_fx_chain?.map((e) => e.id), ['mfx-set']);
 }
 
+// ── A save from PERFORM leaves EDIT's unsaved work marked unsaved ───────────
+// The file holds PERFORM's tracks, not EDIT's timeline, so New Project and
+// closing the app must still ask before EDIT's changes are thrown away. Only a
+// save of the EDIT timeline clears that.
+{
+  let sessions = 0;
+  projectApi.saveSession = async () => {
+    sessions += 1;
+    return { status: 'ok', path: 'Other.tasmo', manifest: { ...MANIFEST, audio_mode: 'embedded' } };
+  };
+  await loadProjectIntoEditor(copy(OTHER));
+  assert.equal(st().dirty, false, 'a project just opened has nothing to save');
+  useEditorStore.setState({ tracks: st().tracks.map((t) => ({ ...t, name: 'Pad (unsaved)' })) });
+  assert.equal(st().dirty, true, 'the rename is unsaved');
+
+  projectApi.load = async () => ({ project: copy(SET), manifest: MANIFEST });
+  await useDawImportStore.getState().loadTasmoAsSession('C:/set/Set.tasmo');
+  await saveFromPerform();
+  assert.equal(st().dirty, true, 'saving the PERFORM set does not save the EDIT timeline');
+
+  // Loaded in EDIT and edited there: the PERFORM save writes PERFORM's tracks,
+  // so the EDIT rename is still unsaved after it.
+  await loadProjectIntoEditor(copy(SET));
+  useEditorStore.setState({ tracks: st().tracks.map((t) => ({ ...t, name: 'Loop (unsaved)' })) });
+  await saveFromPerform();
+  assert.equal(st().dirty, true, 'nor does it save an EDIT edit to the same project');
+
+  // Ctrl+S from EDIT saves the timeline, and with it the unsaved work.
+  useProjectStore.getState().open('save');
+  await useProjectStore.getState().save();
+  assert.equal(useProjectStore.getState().error, null);
+  assert.equal(sessions, 1, 'EDIT saved its timeline');
+  assert.equal(st().dirty, false, 'which leaves nothing unsaved');
+}
+
 console.log('projectSave.performAlone: ok');

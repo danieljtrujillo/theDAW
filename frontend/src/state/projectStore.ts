@@ -482,8 +482,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         res = await projectApi.saveSession(project, path, session.files);
       }
       set({ busy: false, lastSaved: { path: res.path, manifest: res.manifest } });
-      // The document now matches what is on disk — clear the unsaved-changes guard.
-      useEditorStore.getState().markSaved();
+      // The EDIT document now matches what is on disk — clear the unsaved-changes
+      // guard. Only after a save of the EDIT timeline: a seeded save writes
+      // PERFORM's tracks, so EDIT's own changes (to another project, or to this
+      // one since it was opened) are still unsaved, and New Project and closing
+      // the app must still ask before they are lost.
+      if (pendingTracks.length === 0) useEditorStore.getState().markSaved();
       status(`PROJECT SAVED (${res.manifest.audio_mode}): ${res.path}`);
       void get().refreshRecent();
     } catch (e) {
