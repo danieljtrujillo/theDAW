@@ -900,13 +900,16 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       ...(useMasterFx ? [deps.masterFxChain] : []),
       ...trackUniverse.map(chainFor),
     ];
-    if (candidates.some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled))) {
+    // The bus racks a master bounce builds: a Chop on a bus needs the module
+    // as much as one on a track, and a shared hall send is a bus.
+    const busCandidates = scope.kind === 'master' ? (deps.buses ?? []).map(busChainFor) : [];
+    if ([...candidates, ...busCandidates].some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled))) {
       const ensureChop = deps.ensureChop ?? ensureChopModule;
       try { await ensureChop(ctx); } catch { /* falls back to passthrough */ }
     }
-    // The measured hall responses, bus racks included (a shared hall send is a bus).
+    // The measured hall responses, bus racks included.
     const ensureHallIrs = deps.ensureHallIrs ?? ensureHallIrsForChains;
-    await ensureHallIrs(ctx, [...candidates, ...(scope.kind === 'master' ? (deps.buses ?? []).map(busChainFor) : [])]);
+    await ensureHallIrs(ctx, [...candidates, ...busCandidates]);
   }
 
   // ── Master bus ───────────────────────────────────────────────────────────

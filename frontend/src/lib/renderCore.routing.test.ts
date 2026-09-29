@@ -1039,7 +1039,44 @@ async function theHallResponsesLoadBeforeTheRacksAreBuilt(): Promise<void> {
   assert.equal(called, 0, 'a bounce without FX loads no response');
 }
 
+// A Chop builds its AudioWorkletNode only on a context its module was added to,
+// and passes the audio through untouched otherwise (rackEffects makeChop). The
+// live context always has the module, so a Chop on a bus chops live; the
+// bounce loaded it only when a TRACK or master rack held one, and a Chop on a
+// bus was left out of the file.
+async function theChopWorkletLoadsForABusChop(): Promise<void> {
+  const chop: ChainEntry = { id: 'bus-chop', effect: 'chop', enabled: true, params: {} };
+  const h = harness({
+    tracks: [track({ id: 't1' }), track({ id: 't2' })],
+    clips: [clip({ id: 'c1', trackId: 't1' })],
+    routing: graphWithOneBus(),
+    buses: [bus({ id: 'b1', fxChain: [chop] })],
+  });
+  const order: string[] = [];
+  h.deps.ensureChop = async () => { order.push('chop'); };
+  const build = h.deps.buildChain;
+  h.deps.buildChain = ((...args: Parameters<typeof build>) => {
+    order.push('build');
+    return build(...args);
+  }) as typeof build;
+  await renderBounce(request({ kind: 'master' }), h.deps);
+  assert.equal(order[0], 'chop', 'the Chop module loads before the first rack is built');
+
+  // A stem walks no graph and builds no bus, so a bus Chop loads nothing.
+  const stem = harness({
+    tracks: [track({ id: 't1' })],
+    clips: [clip({ id: 'c1', trackId: 't1' })],
+    routing: graphWithOneBus(),
+    buses: [bus({ id: 'b1', fxChain: [chop] })],
+  });
+  let loaded = 0;
+  stem.deps.ensureChop = async () => { loaded += 1; };
+  await renderBounce(request({ kind: 'track', trackId: 't1' }, { includeTrackMix: false }), stem.deps);
+  assert.equal(loaded, 0, 'a stem builds no bus rack');
+}
+
 async function main(): Promise<void> {
+  await theChopWorkletLoadsForABusChop();
   await aBusStripIsBuiltAndPlacedByTheGraph();
   await busFxOnlyUnderIncludeFx();
   await busMixOnlyUnderIncludeTrackMix();
