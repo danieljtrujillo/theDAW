@@ -147,25 +147,105 @@ def _resolve_bundle_binary(bundle: Path) -> Path | None:
     return None
 
 
-def _read_moduleinfo(bundle: Path) -> tuple[str, str, str]:
-    """(manufacturer, version, category) from a bundle's moduleinfo.json, if any."""
-    moduleinfo = bundle / "Contents" / "moduleinfo.json"
-    if not moduleinfo.is_file():
-        return "", "", ""
+# Where the VST3 SDK puts a bundle's moduleinfo.json, and where its first draft
+# (SDK 3.7.5) put it.
+_MODULEINFO_PATHS = (
+    ("Contents", "Resources", "moduleinfo.json"),
+    ("Contents", "moduleinfo.json"),
+)
+
+
+def _json5_loads(text: str) -> object:
+    """Parse the JSON5 the VST3 SDK writes a moduleinfo.json in.
+
+    Its writer puts a comma after the last member of every object and array,
+    which ``json`` rejects, and JSON5 allows comments. Both are dropped outside
+    strings (a URL's "//" stays), and what is left is JSON.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            in_string = ch != '"'
+            i += 1
+            continue
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end == -1 else end
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch in "}]":
+            k = len(out) - 1
+            while k >= 0 and out[k].isspace():
+                k -= 1
+            if k >= 0 and out[k] == ",":
+                del out[k]
+        in_string = ch == '"'
+        out.append(ch)
+        i += 1
+    return json.loads("".join(out))
+
+
+def _moduleinfo_metadata(text: str) -> dict[str, str]:
+    """What a moduleinfo.json says of the module's first audio class, in the
+    probe's shape, or {} when it says nothing usable.
+
+    The first "Audio Module Class" is the class the native host's listing and
+    pedalboard open first (``_metadata_from_classes``). Its class id is left
+    out: the file writes it in the SDK's string order and the native host
+    prints the id's bytes as they lie in memory, which differ on Windows, and
+    the entry carries the host's.
+    """
     try:
-        mi = json.loads(moduleinfo.read_text(encoding="utf-8"))
-        plgs = mi.get("plugins", [])
-        if not plgs:
-            return "", "", ""
-        cat = plgs[0].get("category", "")
-        return (
-            plgs[0].get("vendor", ""),
-            plgs[0].get("version", ""),
-            _normalize_category(cat),
-        )
-    except Exception as e:
+        info = _json5_loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(info, dict) or not isinstance(info.get("Classes"), list):
+        return {}
+    audio = [
+        c
+        for c in info["Classes"]
+        if isinstance(c, dict) and c.get("Category") == "Audio Module Class"
+    ]
+    if not audio:
+        return {}
+    first = audio[0]
+    factory = info.get("Factory Info")
+    factory = factory if isinstance(factory, dict) else {}
+    subs = first.get("Sub Categories")
+    raw = "|".join(str(s) for s in subs) if isinstance(subs, list) else str(subs or "")
+    return {
+        "display_name": str(first.get("Name") or ""),
+        "manufacturer": str(first.get("Vendor") or factory.get("Vendor") or ""),
+        "version": str(first.get("Version") or info.get("Version") or ""),
+        "category": _normalize_category(raw),
+    }
+
+
+def _read_moduleinfo(bundle: Path) -> dict[str, str]:
+    """``_moduleinfo_metadata`` of a bundle's moduleinfo.json, or {} without one."""
+    for parts in _MODULEINFO_PATHS:
+        path = bundle.joinpath(*parts)
+        if path.is_file():
+            break
+    else:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as e:
         log.debug("moduleinfo.json unreadable for %s: %s", bundle, e)
-        return "", "", ""
+        return {}
+    return _moduleinfo_metadata(text)
 
 
 def _normalize_category(raw: str) -> str:
@@ -217,10 +297,10 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
                 artifact = item
                 if item.is_dir():
                     binary = _resolve_bundle_binary(item)
-                    manufacturer, version, category = _read_moduleinfo(item)
+                    moduleinfo = _read_moduleinfo(item)
                 else:
                     binary = item
-                    manufacturer, version, category = "", "", ""
+                    moduleinfo = {}
                 load_path = binary if binary is not None else item
                 abs_path = str(load_path.resolve())
                 if abs_path in seen:
@@ -234,14 +314,15 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
                     Vst3PluginInfo(
                         name=item.stem,
                         path=abs_path,
-                        manufacturer=manufacturer,
-                        version=version,
-                        category=category or "unknown",
+                        manufacturer=moduleinfo.get("manufacturer", ""),
+                        version=moduleinfo.get("version", ""),
+                        category=moduleinfo.get("category") or "unknown",
                         file_size_mb=_artifact_size_mb(artifact),
                         last_modified=last_mod,
                         # No supported architecture inside the bundle: the host
                         # would fail on load, so say so up front.
                         loadable=binary is not None,
+                        display_name=moduleinfo.get("display_name", ""),
                     )
                 )
         except PermissionError:
@@ -254,8 +335,10 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
 
 # --- Metadata enrichment ---
 #
-# Most plugins ship no moduleinfo.json, so vendor/version/category come from
-# the plugin's module. theDAW's own host reads them from the module's factory
+# A bundle's moduleinfo.json, where it ships one, is read during the walk
+# (``_read_moduleinfo``), and what it says is kept. Everything it leaves open,
+# and all of a plugin without one, comes from the plugin's module. theDAW's own
+# host reads the module's factory
 # (``thedaw-vst-host --list``): it loads the library and asks the factory for
 # its class info without creating an instance of any class, which takes well
 # under a second even for a synth whose full load runs past half a minute.
