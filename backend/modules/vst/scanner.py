@@ -90,6 +90,22 @@ def _arch_dirs() -> tuple[str, ...]:
 
 def _default_vst3_dirs() -> list[Path]:
     """Return the standard VST3 search paths for the current platform."""
+    return [d for d in _vst3_dir_candidates() if d.is_dir()]
+
+
+def vst3_install_folder() -> str:
+    """The first standard VST3 folder the scan reads on this platform, whether
+    or not it exists yet: where the UI tells the user to install plugins.
+
+    ``%COMMONPROGRAMFILES%\\VST3`` on Windows (``C:\\Program Files\\Common
+    Files\\VST3`` unless Windows lives on another drive), ``/Library/Audio/
+    Plug-Ins/VST3`` on macOS, ``/usr/lib/vst3`` on Linux.
+    """
+    return str(_vst3_dir_candidates()[0])
+
+
+def _vst3_dir_candidates() -> list[Path]:
+    """The standard VST3 folders for this platform, in scan order."""
     system = platform.system()
     dirs: list[Path] = []
     if system == "Windows":
@@ -109,7 +125,7 @@ def _default_vst3_dirs() -> list[Path]:
         dirs.append(Path("/usr/lib/vst3"))
         dirs.append(Path("/usr/local/lib/vst3"))
         dirs.append(Path.home() / ".vst3")
-    return [d for d in dirs if d.is_dir()]
+    return dirs
 
 
 def _bundle_root(item: Path) -> Path | None:

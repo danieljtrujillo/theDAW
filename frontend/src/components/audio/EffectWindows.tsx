@@ -41,7 +41,7 @@ import { sidechainsInto, wouldCycle, type RoutingRefusal } from '../../state/rou
 import { requireFeature } from '../../notices/featureGateStore';
 import { useVstEditorStore, vstEntryName } from '../../state/vstEditorStore';
 import { useGanStore } from '../../state/ganStore';
-import { VST3_INSTALL_HINT } from '../../state/vstStore';
+import { useVstStore, vst3InstallHint } from '../../state/vstStore';
 import { EFFECT_LABELS, type ChainEntry } from '../../state/effectChainStore';
 import { getRackEffect, RACK_EFFECTS } from '../../lib/rackEffects';
 import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../../lib/aresBridge';
@@ -682,6 +682,7 @@ export const FxChainList: React.FC<FxChainListProps> = ({
   // reference for a lane with no chain yet; see its comment.
   const chain = useEditorStore((s) => chainInState(s, scope));
   const openWindows = useEffectWindowStore((s) => s.windows);
+  const vstInstallFolder = useVstStore((s) => s.installFolder);
   const [showVstBrowser, setShowVstBrowser] = useState(false);
   const addEffectId = `fx-add-effect-${useId()}`;
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -838,7 +839,7 @@ export const FxChainList: React.FC<FxChainListProps> = ({
               </div>
               {vstPlugins.length === 0 ? (
                 <p className="font-sans text-xs font-bold text-zinc-500 leading-relaxed">
-                  {vstScanning ? 'Scanning…' : `No VST3 plugins found. ${VST3_INSTALL_HINT}`}
+                  {vstScanning ? 'Scanning…' : `No VST3 plugins found. ${vst3InstallHint(vstInstallFolder)}`}
                 </p>
               ) : (
                 <div className="max-h-32 overflow-y-auto flex flex-col gap-0.5">

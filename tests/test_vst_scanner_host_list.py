@@ -523,3 +523,31 @@ def test_the_listing_is_read_past_what_a_plugin_prints_itself():
     # The host's error line is not a listing, and neither is an empty one.
     assert scanner._parse_class_listing('{"ev":"error","text":"x"}\n') == []
     assert scanner._parse_class_listing("[]\n") == []
+
+
+def test_the_scan_answer_names_the_folder_it_reads_for_installs(
+    vst3_root, run, host, background, client, monkeypatch
+):
+    """Every empty VST3 list tells the user where to install plugins, and it
+    names the folder this answer gives: the first one the scan reads."""
+    host(True)
+
+    answer = client.get("/api/vst/scan").json()
+
+    assert answer["install_folder"] == scanner.vst3_install_folder()
+    assert Path(answer["install_folder"]) == scanner._vst3_dir_candidates()[0]
+
+
+def test_the_install_folder_follows_common_files_to_another_drive(monkeypatch):
+    monkeypatch.setattr(scanner.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("COMMONPROGRAMFILES", r"D:\Program Files\Common Files")
+
+    assert scanner.vst3_install_folder() == str(
+        Path(r"D:\Program Files\Common Files") / "VST3"
+    )
+
+
+def test_the_install_folder_on_linux_is_one_the_scan_reads(monkeypatch):
+    monkeypatch.setattr(scanner.platform, "system", lambda: "Linux")
+
+    assert scanner.vst3_install_folder() == str(Path("/usr/lib/vst3"))

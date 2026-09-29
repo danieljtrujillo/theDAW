@@ -28,11 +28,14 @@ export const PAIR_THIS_DEVICE_TEXT =
   'VST effects work on this device once it is paired. On the computer running theDAW, open Mobile Access and open its share link or QR code on this device.';
 
 /** How a plugin comes to be listed, for every empty VST3 list (MIX's browser,
- *  EDIT's effect rack, EDIT's instrument slot). The scan reads the standard
- *  VST3 folder (backend scanner `_default_vst3_dirs`), a folder linked into it
- *  included, and a rescan finds what was installed since. */
-export const VST3_INSTALL_HINT =
-  'Install them into C:\\Program Files\\Common Files\\VST3, or link their folder into it, then press Rescan.';
+ *  EDIT's effect rack, EDIT's instrument slot). `installFolder` is the folder
+ *  the backend's scan reads, from the scan answer's `install_folder` (backend
+ *  scanner `vst3_install_folder`: `C:\Program Files\Common Files\VST3` on a
+ *  standard Windows install, `/usr/lib/vst3` on Linux). A folder linked into
+ *  it counts too, and a rescan finds what was installed since. Until a scan
+ *  has answered, the folder goes unnamed. */
+export const vst3InstallHint = (installFolder: string | null | undefined): string =>
+  `Install them into ${installFolder?.trim() || 'the VST3 folder'}, or link their folder into it, then press Rescan.`;
 
 /** What the MIX effects browser shows where the plugin tiles would be.
  *
@@ -41,12 +44,16 @@ export const VST3_INSTALL_HINT =
  *  `unavailableReason` carries the backend's own words when the scan was
  *  refused rather than failed. A pairing refusal says how to pair; any other
  *  refusal is the desktop-only one. */
-export const vstBrowserEmptyText = (scanning: boolean, unavailableReason: string | null): string => {
+export const vstBrowserEmptyText = (
+  scanning: boolean,
+  unavailableReason: string | null,
+  installFolder: string | null = null,
+): string => {
   if (scanning) return 'Scanning…';
   const reason = unavailableReason?.trim();
   if (reason && refusalNeedsPairing(reason)) return PAIR_THIS_DEVICE_TEXT;
   if (reason) return `VST hosting is desktop-only. ${reason}`;
-  return `No VST3 plugins found. ${VST3_INSTALL_HINT}`;
+  return `No VST3 plugins found. ${vst3InstallHint(installFolder)}`;
 };
 
 /** The quiet notice is shown once per session, not once per scan: MIX and the
@@ -70,6 +77,10 @@ interface VstState {
    *  scan was refused rather than failed. Null whenever `error` is the answer
    *  (a real failure) or the scan worked. */
   unavailableReason: string | null;
+  /** The folder the backend's scan reads for installed plugins (its answer's
+   *  `install_folder`), named by every empty VST3 list; null until a scan
+   *  answers. */
+  installFolder: string | null;
   scan: (refresh?: boolean) => Promise<void>;
 }
 
@@ -79,13 +90,20 @@ export const useVstStore = create<VstState>()((set) => ({
   scanned: false,
   error: null,
   unavailableReason: null,
+  installFolder: null,
 
   scan: async (refresh = false) => {
     set({ scanning: true, error: null });
     try {
       logInfo('vst', `GET /api/vst/scan refresh=${refresh}`);
       const res = await vstApi.scan(refresh);
-      set({ plugins: res.plugins, scanning: false, scanned: true, unavailableReason: null });
+      set({
+        plugins: res.plugins,
+        scanning: false,
+        scanned: true,
+        unavailableReason: null,
+        installFolder: res.install_folder?.trim() || null,
+      });
       if (refresh) {
         useStatusBarStore.getState().setText(`VST SCAN: ${res.plugins.length} plugin(s)`);
       }

@@ -5,7 +5,7 @@
  * listed none of the synths, saying "Set your plugin folders in Settings, then
  * rescan." Settings has no plugin folder setting. The scan reads the standard
  * VST3 folder (a folder linked into it included), so every empty list names
- * that folder and the rescan key.
+ * that folder, as the scan's own answer gives it, and the rescan key.
  *
  * Replays the user's slot as it was (plugins found, none of them classified an
  * instrument yet), EDIT's effect rack VST browser with nothing scanned, and
@@ -41,11 +41,14 @@ const { act } = React;
 const { createRoot } = await import('react-dom/client');
 const { TrackVstInstrument } = await import('./TrackVstInstrument.tsx');
 const { FxChainList } = await import('./EffectWindows.tsx');
-const { vstBrowserEmptyText } = await import('../../state/vstStore.ts');
+const { useVstStore, vstBrowserEmptyText } = await import('../../state/vstStore.ts');
 const { useEditorStore } = await import('../../state/editorStore.ts');
 type Vst3PluginInfo = import('../../lib/vstClient.ts').Vst3PluginInfo;
 
+// The folder the backend's scan answered with on the user's machine
+// (`install_folder`, backend scanner `vst3_install_folder`).
 const FOLDER = 'C:\\Program Files\\Common Files\\VST3';
+useVstStore.setState({ installFolder: FOLDER });
 
 /** The text is true: it names the folder the scan reads and the rescan key,
  *  and no setting that does not exist. */
@@ -124,7 +127,29 @@ const track = () => ed().tracks.find((t) => t.id === trackId)!;
 }
 
 // ── MIX's VST browser ───────────────────────────────────────────────────────
-assertTrueHint(vstBrowserEmptyText(false, null), "MIX's empty VST browser");
+assertTrueHint(vstBrowserEmptyText(false, null, useVstStore.getState().installFolder), "MIX's empty VST browser");
 assert.equal(vstBrowserEmptyText(true, null), 'Scanning…');
+
+// ── A machine whose scan reads another folder ───────────────────────────────
+// On Linux the scan reads /usr/lib/vst3 first, and a Windows installed on D:
+// has its Common Files there: the slot names the folder the scan answered with,
+// never a Windows path it does not read.
+{
+  useVstStore.setState({ installFolder: '/usr/lib/vst3' });
+  const host = win.document.createElement('div');
+  win.document.body.appendChild(host);
+  const root = createRoot(host);
+  const show = () =>
+    act(async () =>
+      root.render(<TrackVstInstrument track={track()} plugins={[]} scanning={false} onRescan={() => undefined} onOpenEditor={() => undefined} />),
+    );
+  await show();
+  await click(host.querySelector('[aria-label="Choose a VST3 instrument for track Lead"]'));
+  await show();
+  const text = host.querySelector('p')?.textContent ?? '';
+  assert.match(text, /Install them into \/usr\/lib\/vst3, or link their folder into it, then press Rescan\./);
+  assert.doesNotMatch(text, /Program Files/);
+  await act(async () => root.unmount());
+}
 
 console.log('vstEmptyLists: all assertions passed');
