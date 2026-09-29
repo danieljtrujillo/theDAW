@@ -50,7 +50,7 @@ import {
   genPreview, genStatus, genTarget, genWrite, groupChoices, groupsValue, laneBarSteps, laneForms, laneMeterChoices, laneMeterFromText, laneMeterFromValue,
   laneMeterValue, lanePitches, laneSpanLabel, laneSpanSteps, laneTimeLabel, matchApply, matchError, meterLabel, newLaneCycle, parseGroupsValue, pickupLabel, pickupMax,
   removeChange, loopPastSpan, respanLane, segmentAtStep, segmentLabel, segmentSpan, setBeats, setGroupingText, setGroups, setUnit, canStepLaneTuplet, spanIsSegment,
-  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
+  stepLaneTuplet, stepLoop, stepOption, stepPickup, tempoSummary, tupletLabel, withoutFermatas, withoutTempoChanges, writeMatch, keptTimeText, type GateChoice, type GenSettings, type LaneForm, type MeterEdit,
 } from '../../lib/meterFace';
 import { TUPLET_RATIO_MAX, sanitizeTuplet } from '../../lib/meterMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
@@ -382,12 +382,14 @@ export const MeterFace: React.FC<MeterFaceProps> = ({ songEntryId, onStatus }) =
       const analysis = await fetchRhythm(songEntryId, { run: true });
       const r = usePianoRollStore.getState();
       const res = matchApply(r, analysis);
+      let kept = '';
       if (res.apply) {
-        writeMatch(r, res.apply);
+        // Parts transcribed from a song keep their seconds under its tempo (writeMatch, lib/tempoConform).
+        kept = keptTimeText(writeMatch(r, res.apply).keptTime);
         const after = usePianoRollStore.getState();
         setSel(segmentAtStep(after.meterMap, after.currentStep, after.pickupSteps));
       }
-      post(res.status, res.level);
+      post(`${res.status}${kept}`, res.level);
     } catch (err) {
       post(matchError(err), 'error');
     } finally {

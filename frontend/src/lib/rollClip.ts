@@ -458,6 +458,7 @@ export function rollPartRef(part: RollTrack, order: number, doc: string): RollPa
     ...(part.controls?.length ? { controls: part.controls.map((c) => ({ ...c })) } : {}),
     ...(part.figuredBass?.length ? { figuredBass: part.figuredBass.map((m) => ({ ...m })) } : {}),
     ...(part.cantusFirmus ? { cantusFirmus: true } : {}),
+    ...(part.fromAudio ? { fromAudio: true } : {}),
   };
 }
 
@@ -490,6 +491,7 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
     ...(controls ? { controls } : {}),
     ...(figuredBass ? { figuredBass } : {}),
     ...(r.cantusFirmus === true ? { cantusFirmus: true } : {}),
+    ...(r.fromAudio === true ? { fromAudio: true } : {}),
   };
 }
 
@@ -515,6 +517,7 @@ function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color
       ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ ...c })) } : {}),
       ...(ref.figuredBass?.length ? { figuredBass: ref.figuredBass.map((m) => ({ ...m })) } : {}),
       ...(ref.cantusFirmus ? { cantusFirmus: true } : {}),
+      ...(ref.fromAudio ? { fromAudio: true } : {}),
     };
   }
   // A clip bounced before parts: its EDIT track names it, and a drum track makes it a percussion part.

@@ -46,3 +46,6 @@ export type { OverlapMode, OverlapOptions } from './overlaps';
 
 export { filterNotes } from './filter';
 export type { FilterOptions, FilterResult } from './filter';
+
+export { oneAtATime } from './oneAtATime';
+export type { OneAtATimeKeep, OneAtATimeResult } from './oneAtATime';

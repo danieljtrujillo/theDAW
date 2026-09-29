@@ -23,7 +23,7 @@ import { sanitizeBendPoints, type LaneBend } from './pitchBend';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
 import { seedFromRhythm, type RhythmAnalysis, type RhythmSwing } from './rhythmSeed';
 import { clampTempoBpm, type TempoEvent } from './tempoMap';
-import type { PianoNote } from '../state/pianoRollStore';
+import type { PianoNote, RollTrack } from '../state/pianoRollStore';
 
 const EPS = 1e-9;
 
@@ -717,26 +717,57 @@ export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, an
   return { apply, status, level };
 }
 
-/** The roll actions MATCH writes through (the piano roll store's). */
+/** The roll actions MATCH writes through (the piano roll store's), and the parts it reads to know which came from audio. */
 export interface MatchWriter {
   setBpm: (bpm: number) => void;
   setTempoMap: (map: readonly TempoEvent[]) => void;
+  setTempoKeepingTime: (next: { bpm?: number; tempoMap?: readonly TempoEvent[] }, opts?: { parts?: 'all' | 'audio' }) => number;
   applyMeter: (meter: { meterMap?: MeterSegment[]; pickupSteps?: number; lanes?: PolyLane[] }) => void;
   setGrooveId: (id: string) => void;
+  tracks: readonly RollTrack[];
+  activeTrackId: string;
+  notes: readonly PianoNote[];
 }
+
+/** What writeMatch did besides the maps: how many notes of the parts from a song's audio kept their seconds. */
+export interface MatchWritten {
+  keptTime: number;
+}
+
+/** True when a part holding notes was timed against audio (RollTrack `fromAudio`): MATCH keeps its seconds. */
+export const rollHasAudioParts = (r: Pick<MatchWriter, 'tracks' | 'activeTrackId' | 'notes'>): boolean =>
+  r.tracks.some((t) => t.fromAudio === true && (t.id === r.activeTrackId ? r.notes.length : t.notes.length) > 0);
 
 /**
  * MATCH's writes, in one go so they fold into one undo step: the BPM, the
  * tempo map (whose first tempo then starts the roll; an empty map clears any
  * changes the roll had and keeps the BPM), the meter map with the pickup and
  * the song's lanes, then the swing as the feel's groove.
+ *
+ * When parts of the roll came from a song's audio (rollHasAudioParts), the
+ * BPM and the map go in through setTempoKeepingTime for those parts: their
+ * notes keep the seconds they were transcribed at, so they stay on the song
+ * under its real tempo, while every other part keeps its place in the bar.
  */
-export function writeMatch(r: MatchWriter, apply: MatchApply): void {
-  if (apply.bpm != null) r.setBpm(apply.bpm);
-  if (apply.tempoMap) r.setTempoMap(apply.tempoMap);
+export function writeMatch(r: MatchWriter, apply: MatchApply): MatchWritten {
+  let keptTime = 0;
+  if (rollHasAudioParts(r) && (apply.bpm != null || apply.tempoMap)) {
+    keptTime = r.setTempoKeepingTime(
+      { ...(apply.bpm != null ? { bpm: apply.bpm } : {}), ...(apply.tempoMap ? { tempoMap: apply.tempoMap } : {}) },
+      { parts: 'audio' },
+    );
+  } else {
+    if (apply.bpm != null) r.setBpm(apply.bpm);
+    if (apply.tempoMap) r.setTempoMap(apply.tempoMap);
+  }
   r.applyMeter({ meterMap: apply.meterMap, pickupSteps: apply.pickupSteps, ...(apply.lanes ? { lanes: apply.lanes } : {}) });
   if (apply.swing) r.setGrooveId(apply.swing.grooveId);
+  return { keptTime };
 }
+
+/** The sentence MATCH's status adds when notes from the song's audio kept their seconds. */
+export const keptTimeText = (notes: number): string =>
+  notes > 0 ? ` THE ${notes} NOTE${notes === 1 ? '' : 'S'} FROM THE SONG'S AUDIO KEPT THEIR TIME.` : '';
 
 /** A lane's span as bars, 1-based ("9-16", "9+" when it runs to the roll's end), for the SPAN key. */
 export function laneSpanLabel(map: readonly MeterSegment[], span: LaneSpan, pickupSteps = 0): string {

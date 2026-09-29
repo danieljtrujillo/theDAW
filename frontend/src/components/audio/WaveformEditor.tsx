@@ -66,12 +66,12 @@ import { processFileThroughVst, renderInstrumentTrack, type Vst3PluginInfo } fro
 import { printedStemSec, printsThroughHost, renderWithInserts, type InsertPrintResult, type VstHop } from '../../lib/render/insertPrint';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
-import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
-import { clipOwnTimelineMarkers } from '../../lib/rollMarkers';
+import { clipPartsLoad } from '../../lib/rollClip';
+import { midiClipPlacedReport, placeMidiFileClip } from '../../lib/midiClipPlace';
 import { MidiClipNotes } from './MidiClipNotes';
-import { stepClock, tempoSpan } from '../../lib/rollTempo';
+import { tempoSpan } from '../../lib/rollTempo';
 import { GM_NAMES, gmShortName } from '../../lib/gmInstruments';
-import { useSoundfontStore, ensureSoundfontReady, isSoundfontActive, getActiveProgram, getGlobalVoice } from '../../lib/soundfontEngine';
+import { useSoundfontStore, ensureSoundfontReady, getGlobalVoice } from '../../lib/soundfontEngine';
 import {
   GM_DRUM_KITS,
   clipBank,
@@ -5228,6 +5228,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           midiLabel,
           startSec,
           droppedBelowAllTracks ? null : (tracks[laneIdx]?.id ?? null),
+          // A library MIDI row transcribes a song (or one of its stems): its id names the stem.
+          { stem: midiId, fromAudio: true },
         );
       } catch (err) {
         logError('editor', `MIDI drop failed for ${midiLabel}: ${err instanceof Error ? err.message : String(err)}`);
@@ -5937,80 +5939,38 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   /** Turn picked MIDI bytes into a piano-roll clip at `startSec` — on
    *  `targetTrackId` when one is given, otherwise on a new track. Live-playable
-   *  and editable in the Piano Roll either way. */
+   *  and editable in the Piano Roll either way. The clip plays the file's own
+   *  program, a drum file on a drum track (lib/midiClipPlace); `source` names a
+   *  LIBRARY row's stem and marks its notes as timed against the song's audio. */
   const addMidiClipFromBytes = useCallback(async (
     bytes: ArrayBuffer,
     label: string,
     startSec: number,
     targetTrackId?: string | null,
+    source?: { stem?: string; fromAudio?: boolean },
   ) => {
     try {
       // The file as the roll reads it: each note at its own ticks, each bending
       // channel in its own lane with its curve, the file's time signatures and
       // pickup (4/4 when it has none) and its tempo; the clip ends on the bar
-      // line after its last note.
-      const fields = midiFileClipFields(parseMidi(new Uint8Array(bytes)), 'imp');
-      const notes = fields.sourcePianoRoll;
-      if (notes.length === 0) {
+      // line after its last note. The track, the clip and the file's markers
+      // on the timeline are one undo step.
+      const done = placeMidiFileClip(
+        parseMidi(new Uint8Array(bytes)),
+        { label, startSec, targetTrackId, ...(source?.stem ? { stem: source.stem } : {}), ...(source?.fromAudio ? { fromAudio: true } : {}) },
+        { global: getGlobalVoice },
+      );
+      if (!done) {
         logError('editor', `No notes in "${label}"`);
         return;
       }
-      const bpm = fields.sourceBpm;
-      const totalSteps = fields.sourceTotalSteps;
-      const globalProgram = isSoundfontActive() ? getActiveProgram() : undefined;
-      // The clip's length under the file's own tempo changes.
-      const nominalDuration = stepClock(bpm, fields.sourceTempoMap).at(totalSteps);
-      // Land on the track the user pointed at; make one only when there is
-      // none. Until this parameter existed every MIDI insert called addTrack,
-      // so "add to track" never added to the track that was right-clicked.
-      const existing = targetTrackId
-        ? useEditorStore.getState().tracks.find((t) => t.id === targetTrackId)
-        : undefined;
-      // An existing track's own instrument wins, the same order
-      // `effectiveProgramFor` resolves at playback, so the clip plays live on
-      // the voice its track shows. A percussion track's clip keeps no program
-      // of its own: the picker's is an instrument, not a drum kit.
-      const program = isPercussionTrack(existing) ? existing?.instrumentProgram : existing?.instrumentProgram ?? globalProgram;
-      // The track, the clip and the file's markers on the timeline: one undo step.
-      const { trackId, clipId } = useEditorStore.getState().undoGroup(() => {
-        const trackId = existing?.id ?? addTrack({ name: label, instrumentProgram: program });
-        const color = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#a855f7';
-        // No audio of its own: with a program the clip plays live on EDIT's
-        // synths and renders when an export needs it; without one the render
-        // queue renders it now so it can be heard (lib/midiRender).
-        const clipId = addClipToTrack({
-          trackId,
-          label,
-          mimeType: 'audio/wav',
-          sourceDuration: nominalDuration,
-          offsetIntoSource: 0,
-          durationSec: nominalDuration,
-          startSec: Math.max(0, startSec),
-          color,
-          sourceKind: 'piano-roll',
-          ...fields,
-          instrumentProgram: program,
-        });
-        // The file's markers (FF 06) on EDIT's timeline, where the clip plays them.
-        const placed = useEditorStore.getState().clips.find((c) => c.id === clipId);
-        if (placed?.sourceMarkers?.length) useEditorStore.getState().setClipRollMarkers(clipId, clipOwnTimelineMarkers(placed, bpm));
-        return { trackId, clipId };
-      });
-      const track = useEditorStore.getState().tracks.find((t) => t.id === trackId);
-      // A file whose tempo or meter differs from the arrangement's is offered
-      // for adoption (the banner above the timeline), so an orchestral file's
-      // tempo and meter changes can become the arrangement's with one press.
-      useEditorStore.getState().offerClipTimeMaps(clipId);
-      const voice = clipVoice({ instrumentProgram: program }, track, getGlobalVoice());
-      logInfo(
-        'editor',
-        `Added MIDI "${label}" (${notes.length} notes) to ${track?.name ?? 'a new track'} at ${startSec.toFixed(2)}s; `
-          + (voice.program !== undefined ? 'it plays live and renders when exported' : 'rendering its audio (it has no instrument to play live)'),
-      );
+      const report = midiClipPlacedReport(done, label, startSec);
+      for (const line of report.info) logInfo('editor', line);
+      for (const line of report.warn) logWarn('editor', line);
     } catch (err) {
       logError('editor', `Add MIDI failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [addTrack, addClipToTrack]);
+  }, []);
 
   /* -- "Add to track" ------------------------------------------------------
      One dispatcher behind the timeline menu, the track-header menu and the two
@@ -6052,7 +6012,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   /** Whatever the picker handed back, on the target track. */
   const placePick = async (pick: LibraryPick, target: AddToTrackTarget) => {
     if (pick.kind === 'midi') {
-      await addMidiClipFromBytes(pick.bytes, pick.label, target.atSec, target.trackId);
+      // A library row is a song's transcription; a file from disk is whatever it is.
+      await addMidiClipFromBytes(pick.bytes, pick.label, target.atSec, target.trackId, pick.row ? { stem: pick.row.midi_path ?? pick.row.id, fromAudio: true } : undefined);
       return;
     }
     const track = resolveAddTarget(target.trackId, pick.label);

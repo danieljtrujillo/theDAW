@@ -95,6 +95,7 @@ import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
 import { PianoRollCcKey } from '../audio/CcLane';
 import { PianoRollArticulationKey } from '../audio/ArticulationLane';
 import { PianoRollTransformKey } from '../audio/RollTransforms';
+import { PianoRollCleanKey } from '../audio/RollCleanup';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
 import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
@@ -1011,6 +1012,8 @@ export const MidiPanel: React.FC = () => {
               />
               {/* TRANSFORM: the motif transforms of the selected notes, beside the composer's column. */}
               <PianoRollTransformKey />
+              {/* CLEAN: one note at a time and a pitch range, for a transcription's notes. */}
+              <PianoRollCleanKey />
               <RailKey
                 onClick={() => void makeBeat()}
                 aria-label="Beat from the notes"

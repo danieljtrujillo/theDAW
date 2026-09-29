@@ -49,7 +49,7 @@ import { roundUpToBar, type MeterSegment } from './meterMap';
 import type { MidiFileData } from './midi';
 import { rollClipFields, rollPartRef } from './rollClip';
 import { clipOwnTimelineMarkers } from './rollMarkers';
-import { midiFileToRollParts, type RollMidiPartsImport } from './rollMidi';
+import { chordBendLog, midiFileToRollParts, type RollMidiPartsImport } from './rollMidi';
 import { stepClock } from './rollTempo';
 import { isPercussionPart, makeRollTrack, partClipSound, partVoice } from './rollTracks';
 import type { TempoEvent } from './tempoMap';
@@ -99,26 +99,43 @@ export interface MidiTracksResult {
   offered: boolean;
   /** Resolves with how many queued renders landed once each has landed or failed; 0 when every part plays live. */
   rendered: Promise<number>;
+  /** Notes that took their channel's pitch wheel as their own bend, and chords whose wheel was left out (lib/rollMidi). */
+  noteBends: number;
+  chordBends: number;
 }
 
 /** A new roll document id for the file's clips. */
 const docUid = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID ? `roll-${crypto.randomUUID()}` : `roll-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 
+/** A file's parts as whole roll parts, with the document every clip shares and the length that holds the longest part. */
+export type MidiTrackParts = Omit<RollMidiPartsImport, 'parts'> & { parts: RollTrack[]; totalSteps: number };
+
 /**
- * The parts of `data` that have notes, each a whole roll part (ids made,
- * fields cleaned), with the document every clip shares: tempo, tempo map,
- * meter, lanes and bends, and the length in steps that holds the longest part.
+ * `file`'s parts that have notes, each a whole roll part (ids made, fields
+ * cleaned), with its document: tempo, tempo map, meter, lanes and bends, and
+ * the length in steps that holds the longest part.
  */
-export function midiFileTrackParts(
-  data: MidiFileData,
-  idPrefix = 'imp',
-): Omit<RollMidiPartsImport, 'parts'> & { parts: RollTrack[]; totalSteps: number } {
-  const file = midiFileToRollParts(data, idPrefix);
+export function trackPartsOf(file: RollMidiPartsImport): MidiTrackParts {
   const parts = file.parts.filter((p) => p.notes.length > 0).map((p, i) => makeRollTrack({ ...p.track, notes: p.notes }, i));
   const noteEnd = parts.reduce((m, t) => t.notes.reduce((e, n) => Math.max(e, n.step + n.length), m), 0);
   const totalSteps = roundUpToBar(file.meter.meterMap, Math.max(1, noteEnd), file.meter.pickupSteps);
-  return { bpm: file.bpm, meter: file.meter, bends: file.bends, tempoMap: file.tempoMap, markers: file.markers, parts, totalSteps };
+  return {
+    bpm: file.bpm,
+    meter: file.meter,
+    bends: file.bends,
+    tempoMap: file.tempoMap,
+    markers: file.markers,
+    noteBends: file.noteBends,
+    chordBends: file.chordBends,
+    parts,
+    totalSteps,
+  };
+}
+
+/** The parts of `data` that have notes (trackPartsOf), a stem's on its stem's instrument (lib/stemRole). */
+export function midiFileTrackParts(data: MidiFileData, idPrefix = 'imp', stem?: string): MidiTrackParts {
+  return trackPartsOf(midiFileToRollParts(data, idPrefix, { stem }));
 }
 
 /**
@@ -128,10 +145,19 @@ export function midiFileTrackParts(
  */
 export function importMidiAsTracks(
   data: MidiFileData,
-  opts: { label: string; atSec: number; idPrefix?: string },
+  opts: { label: string; atSec: number; idPrefix?: string; stem?: string },
   deps: MidiTracksDeps,
 ): MidiTracksResult | null {
-  const file = midiFileTrackParts(data, opts.idPrefix ?? 'imp');
+  // The label names the file ("bass", "Song · bass"): a stem's transcription plays its stem's instrument (lib/stemRole).
+  return importPartsAsTracks(midiFileTrackParts(data, opts.idPrefix ?? 'imp', opts.stem ?? opts.label), opts, deps);
+}
+
+/**
+ * Put every part of `file` (trackPartsOf) on an EDIT track of its own, as
+ * importMidiAsTracks does for one file: a song's stems read together
+ * (lib/stemMidiSet) come in this way. Returns null when no part has notes.
+ */
+export function importPartsAsTracks(file: MidiTrackParts, opts: { label: string; atSec: number }, deps: MidiTracksDeps): MidiTracksResult | null {
   if (!file.parts.length) return null;
   const bpm = Number.isFinite(file.bpm) && file.bpm > 0 ? file.bpm : 120;
   const doc = docUid();
@@ -230,6 +256,8 @@ export function importMidiAsTracks(
       : null,
     offered,
     rendered,
+    noteBends: file.noteBends,
+    chordBends: file.chordBends,
   };
 }
 
@@ -287,7 +315,10 @@ export function importTracksReport(done: MidiTracksResult, label: string, atSec:
       `${bpmText(startBpm)} BPM${tempoChanges ? ` with ${plural(tempoChanges, 'tempo change')}` : ''}` +
       `${meters > 1 ? `, ${meters} time signatures` : ''}); ${how}`,
   ];
-  const warn: string[] = [];
+  // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+  const bends = chordBendLog(label, done);
+  info.push(...bends.info.map((line) => `Import as tracks: ${line}`));
+  const warn: string[] = bends.warn.map((line) => `Import as tracks: ${line}`);
   if (done.arrangement) {
     const first = done.arrangement.meterMap[0]?.meter;
     const tempoWord = tempoChanges ? `${bpmText(startBpm)} BPM and its ${plural(tempoChanges, 'tempo change')}` : `${bpmText(startBpm)} BPM`;

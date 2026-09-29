@@ -69,6 +69,8 @@ import {
   sendMidiIdToTarget,
   stemRowToSendable,
 } from '../lib/sendToTargets';
+import { stemMidiRows, stemMidisToEdit, stemMidisToRoll } from '../lib/stemMidiSet';
+import { getGlobalVoice } from '../lib/soundfontEngine';
 
 
 const formatDate = (iso: string): string => {
@@ -3344,7 +3346,8 @@ const SubTabRow = React.memo<{
 SubTabRow.displayName = 'SubTabRow';
 
 
-const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
+/** The Stems and MIDI sub-tabs' list: each song's rows, with the row menu (exported for its mount test). */
+export const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
   const parentIds = Object.keys(byParent);
   // Shared ContextMenu primitive — fixes drift under .dense-layout
   // zoom and gives consistent close-on-outside behavior across the
@@ -3444,6 +3447,11 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   if (payload?.kind === 'midi') {
     const sendable = midiIdToSendable(payload.midiId, payload.label);
     menuTitle = `MIDI · ${payload.label}`;
+    // The song this row belongs to, and its stem MIDI rows: every row of its group but the full mix (lib/stemMidiSet).
+    const parentId = parentIds.find((pid) => byParent[pid].some((r) => String(r.id ?? '') === payload.midiId));
+    const stemRows = parentId ? stemMidiRows(byParent[parentId].map((r) => ({ ...r, id: String(r.id ?? '') }))) : [];
+    const songTitle = (parentId ? parentTitles[parentId] : undefined) || payload.label;
+    const stemHint = stemRows.length ? `${stemRows.length} stem${stemRows.length === 1 ? '' : 's'}` : 'no stems';
     menuItems = [
       {
         type: 'item',
@@ -3456,6 +3464,25 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         label: 'Send to step sequencer',
         icon: <ListOrdered className="w-3 h-3" />,
         onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'step-seq'); },
+      },
+      { type: 'separator' },
+      {
+        type: 'item',
+        label: 'All stems to piano roll',
+        icon: <Piano className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song into the piano roll, one part a stem, each on its stem's instrument and at the seconds it was transcribed at",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToRoll(stemRows, songTitle); },
+      },
+      {
+        type: 'item',
+        label: 'All stems to EDIT as tracks',
+        icon: <Layers className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song on an EDIT track of its own from the start of the timeline, each on its stem's instrument, the drums on a drum track",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToEdit(stemRows, songTitle, { global: getGlobalVoice }); },
       },
       { type: 'separator' },
       {
