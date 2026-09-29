@@ -254,3 +254,37 @@ def test_vocal_lyrics_converters_round_trip():
         w.start_ms for w in _lyric_words(aligned)
     ]
     assert back.source == "transcribed"
+
+
+def test_latin_words_match_whisper_across_marks_ligatures_and_spellings():
+    """A Latin lyric sheet carries macrons, ligatures, j/v spellings and sung
+    hyphens; whisper writes plain "iulius", "caesar", "kyrie". Every one of
+    those is the same word, and gets whisper's time instead of a flag."""
+    text = "Kyrie eleison\nIūlius Cæsar vēnit\nKy-ri-e e-lei-son"
+    lines = split_text(text)
+    assert [t.norm for t in tokenize(lines, latin=True)] == [
+        "kyrie",
+        "eleison",
+        "iulius",
+        "caesar",
+        "uenit",
+        "kyrie",
+        "eleison",
+    ]
+    words = asr("kyrie eleison julius caesar venit kyrie eleison".split())
+    out, stats = align_words(lines, words, 30_000, language="la")
+    w = _lyric_words(out)
+    assert [x.text for x in w][2:5] == ["Iūlius", "Cæsar", "vēnit"]
+    assert [x.start_ms for x in w] == [s for s, _ in _asr_ms(words)]
+    assert all(x.heard is None for x in w)
+    assert stats.matched == stats.total == 7
+    # The same sheet read as English splits the sung hyphens and loses the
+    # ligature, and whisper's words stop matching.
+    _out, en = align_words(lines, words, 30_000)
+    assert en.matched < 7
+
+
+def test_ligatures_fold_in_every_language():
+    assert normalize_token("Cæsar") == "caesar"
+    assert normalize_token("Œdipus") == "oedipus"
+    assert normalize_token("Straße") == "strasse"
