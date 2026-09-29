@@ -4636,6 +4636,33 @@ class LibraryDB:
             cur.close()
             return [dict(r) for r in rows]
 
+    def set_shard_sections(
+        self, entry_id: str, spans: list[tuple[float, float, str]]
+    ) -> int:
+        """Write every shard of ``entry_id`` its section: the label of the
+        span holding the shard's middle (before the first span, the first's;
+        after the last, the last's; '' with no spans). One transaction;
+        returns the number of rows whose section changed."""
+        with self._txn() as cur:
+            rows = cur.execute(
+                "SELECT id, start_sec, end_sec, section FROM shards WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchall()
+            changes: list[tuple[str, str]] = []
+            for r in rows:
+                mid = (float(r["start_sec"]) + float(r["end_sec"])) / 2.0
+                label = ""
+                if spans:
+                    label = spans[0][2] if mid < spans[0][0] else spans[-1][2]
+                    for s0, s1, name in spans:
+                        if s0 <= mid < s1:
+                            label = name
+                            break
+                if label != (r["section"] or ""):
+                    changes.append((label, r["id"]))
+            cur.executemany("UPDATE shards SET section = ? WHERE id = ?", changes)
+            return len(changes)
+
     def count_shards(self) -> int:
         with self._writelock:
             cur = self._conn.cursor()
