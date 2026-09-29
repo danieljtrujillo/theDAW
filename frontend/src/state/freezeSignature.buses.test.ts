@@ -82,6 +82,21 @@ const lane = ed().addAutomationLane({ kind: 'trackVolume', trackId: 't1' });
 ed().addAutomationPoint(lane, 1, 0.5);
 stales('a volume breakpoint');
 
+// The bounce reads a lane that is switched on and holds a breakpoint, and no
+// other. A lane opened from the lane picker with nothing drawn in it, or an
+// edit to a lane that is switched off, is the same mix: calling the frozen
+// master stale there sends the user to re-render a file that would not change.
+const pan = ed().addAutomationLane({ kind: 'trackPan', trackId: 't2' });
+assert.equal(sign(), frozen, 'an empty lane plays nothing');
+ed().toggleAutomationLane(lane);
+stales('switching a lane with breakpoints off');
+ed().addAutomationPoint(lane, 2, 0.25);
+assert.equal(sign(), frozen, 'a breakpoint on a lane that is switched off plays nothing');
+ed().toggleAutomationLane(lane);
+stales('switching it back on');
+ed().addAutomationPoint(pan, 1, -0.5);
+stales('the first breakpoint on the pan lane');
+
 // Names reach no audio.
 ed().updateBus('b1', { name: 'Glue bus' });
 assert.equal(sign(), frozen, 'a renamed bus is the same mix');

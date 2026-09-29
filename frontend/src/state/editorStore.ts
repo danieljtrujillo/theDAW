@@ -720,7 +720,8 @@ const trackSignaturePart = (t: EditorTrack): string =>
  *
  * `buses`, `routing` and `automationLanes` are what the master bounce reads
  * past the tracks: the bus racks (their VST3 inserts print into the frozen
- * master), where each strip goes, and every lane it bakes. Every call that
+ * master), where each strip goes, and every lane it bakes (a lane that is
+ * switched on and holds a breakpoint; no other reaches it). Every call that
  * signs the document passes them (`documentFreezeSignature`), so a frozen
  * master goes stale when one of them changes.
  */
@@ -757,7 +758,12 @@ export const freezeSignature = (doc: {
       // a renamed bus or track is the same mix.
       JSON.stringify((doc.buses ?? []).map((b) => [b.id, b.volume, b.mute, b.fxChain])),
       JSON.stringify({ nodes: (doc.routing?.nodes ?? []).map((n) => n.id), edges: doc.routing?.edges ?? [] }),
-      JSON.stringify(doc.automationLanes ?? []),
+      // The lanes a bounce reads: switched on, with a breakpoint (renderCore's
+      // lane filter, and lib/midiCcAutomation's). An empty lane opened from
+      // the picker, or an edit to a lane that is switched off, is the same mix.
+      JSON.stringify(
+        (doc.automationLanes ?? []).filter((l) => l.enabled && l.points.length > 0).map((l) => [l.target, l.points]),
+      ),
     );
   }
   return parts.join('::');
