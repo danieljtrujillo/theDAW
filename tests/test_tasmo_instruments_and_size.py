@@ -277,6 +277,7 @@ _KEPT_CLIP = (
     "source_bpm",
     "bpm",
     "library_entry_id",
+    "song_time",
     "midi_notes",
     "roll_notes",
     "lanes",

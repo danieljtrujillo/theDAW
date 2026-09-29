@@ -34,6 +34,7 @@ import { MIN_CLIP_SEC } from '../lib/clipDragMath';
 import { moveByOffset, moveIds, sameOrder } from '../lib/timeline/trackOrder';
 import { deleteFolder, folderFlagPatch, moveIntoFolder, moveOutOfFolder, newFolderFromSelection } from '../lib/timeline/folderOps';
 import type { WarpMarker } from '../lib/audioWarp';
+import type { ClipSongTime } from '../lib/clipSongTime';
 import type { ChainEntry, VstNode, VstStateHost } from './effectChainStore';
 import type { Vst3SwitchMode } from '../lib/articulationMap';
 import { rackEffectDefaults } from '../lib/rackEffects';
@@ -279,6 +280,12 @@ export interface AudioClip {
   peaks?: Float32Array;
   /** Optional reference back to a Library entry id, if dropped from the library. */
   libraryEntryId?: string;
+  /** Audio from a library song or one of its stems: the song whose analysis
+   *  times this audio and where the audio sits in the song's time
+   *  (lib/clipSongTime). SYNC reads the song's tempo and beats through it and
+   *  "Use song tempo" lines the arrangement's bars up with the song's
+   *  downbeats. New audio that does not name it drops it (`clipWithUpdates`). */
+  songTime?: ClipSongTime;
   /** How this clip was produced — informs "Edit in Piano Roll" availability. */
   sourceKind?: ClipSourceKind;
   /** When sourceKind === 'piano-roll', the note list that produced the audio, as it
@@ -588,6 +595,12 @@ export interface TimeMapOffer {
   anchorSec: number;
 }
 
+/** "Use song tempo" for a library song: its entry, and the clip lined up with it when one was named. */
+export interface SongTempoRequest {
+  entryId: string;
+  clipId?: string;
+}
+
 /** A meter the editor can actually bar out, or null. Defined in the
  *  dependency-free `lib/timeSignatureIO` (the persistence paths share it) and
  *  re-exported here for the store's existing importers. */
@@ -884,6 +897,13 @@ interface EditorStoreState {
    * undo, not saved.
    */
   timeMapOffer: TimeMapOffer | null;
+  /**
+   * "Use song tempo" asked for a song, from a clip's menu or a library entry's:
+   * EDIT shows what the song's tempo and meter would change and applies them
+   * on a press (components/audio/SongTempoDialog). Workspace state: not undo,
+   * not saved.
+   */
+  songTempoRequest: SongTempoRequest | null;
   inpaintSelection: InpaintSelection | null;
   /* ── Workspace selection (batch 11) ───────────────────────────────────────
      Held here rather than in WaveformEditor's local state because EDIT is
@@ -1158,6 +1178,13 @@ interface EditorStoreState {
    *  clip's first step on (lib/editTimeMap adoptClipTimeMaps). One undo step.
    *  Returns the reason when it cannot. Clears the offer either way. */
   adoptClipTimeMaps: (clipId: string) => { ok: true; error?: undefined } | { ok: false; error: string };
+  /** Replace the tempo map and the meter map together, each sanitized, as one
+   *  edit: one undo step takes both back. False when neither changes. */
+  setTimeMaps: (tempoMap: readonly TempoEvent[], meterMap: readonly MeterSegment[]) => boolean;
+  /** Ask EDIT to show "Use song tempo" for a library song, lined up with `clipId` when given. */
+  requestSongTempo: (req: SongTempoRequest) => void;
+  /** Close the song-tempo preview without changing anything. */
+  dismissSongTempoRequest: () => void;
   setInpaintSelection: (sel: InpaintSelection | null) => void;
   clearInpaintSelection: () => void;
   /** Store a time selection. Stores null when either bound is non-finite,
@@ -1790,6 +1817,14 @@ const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioCli
     const { renderAuto: _auto, ...rest } = next;
     next = rest;
   }
+  // New audio is the song's time only when the write says where it sits in it
+  // (a beat match's stretch does, lib/beatMatchRun). Reversed, re-generated or
+  // bounced audio does not, and a stale tie would put the song's bar lines in
+  // the wrong places.
+  if ('audioBlob' in updates && !('songTime' in updates) && next.songTime !== undefined) {
+    const { songTime: _song, ...rest } = next;
+    next = rest;
+  }
   // A render stamps `renderedProgram`. One that does not say it rendered drums
   // rendered melodic, and one that names no bank rendered bank 0, so a stamp
   // from an earlier render does not survive it.
@@ -2059,6 +2094,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   tempoMap: editDefaultTempoMap(120),
   meterMap: editDefaultMeterMap(),
   timeMapOffer: null,
+  songTempoRequest: null,
   inpaintSelection: null,
   timeSelection: null,
   editCursorSec: 0,
@@ -2124,6 +2160,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       // than silently forcing 120 or 4/4, and none of its later changes.
       ...loadedTimeMaps(get(), { bpm, timeSignature, meterMap, tempoMap }),
       timeMapOffer: null,
+      songTempoRequest: null,
       markers: [],
       automationLanes: [],
       // A record pass cannot survive the document it was writing into.
@@ -3027,6 +3064,24 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set({ ...tempoSlice(res.tempoMap), meterMap: res.meterMap });
     logInfo('editor', `The arrangement now follows "${clip.label}": ${describeClipTime(clip)} from ${res.anchorSec.toFixed(2)}s`);
     return { ok: true };
+  },
+  setTimeMaps: (tempoMap, meterMap) => {
+    const s = get();
+    const nextTempo = sanitizeEditTempoMap(tempoMap ?? [], s.bpm);
+    const nextMeter = sanitizeEditMeterMap(meterMap);
+    const tempoSame = sameTempoMap(nextTempo, s.tempoMap);
+    const meterSame = sameMeterMap(nextMeter, s.meterMap);
+    if (tempoSame && meterSame) return false;
+    beginUndoStep();
+    set({ ...(tempoSame ? {} : tempoSlice(nextTempo)), ...(meterSame ? {} : { meterMap: nextMeter }) });
+    return true;
+  },
+  requestSongTempo: (req) => {
+    if (!req?.entryId) return;
+    set({ songTempoRequest: { entryId: req.entryId, ...(req.clipId ? { clipId: req.clipId } : {}) } });
+  },
+  dismissSongTempoRequest: () => {
+    if (get().songTempoRequest) set({ songTempoRequest: null });
   },
   setInpaintSelection: (sel) => set({ inpaintSelection: sel }),
   clearInpaintSelection: () => set({ inpaintSelection: null }),

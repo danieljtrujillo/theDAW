@@ -13,7 +13,8 @@ import { importUrlToLibrary } from '../lib/onlineImport';
 import { importFolderToLibrary } from '../lib/folderImport';
 import { formatDuration, formatSize } from '../lib/libraryFormat';
 import { startQueue } from '../state/playlistQueue';
-import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, STEM_SONG_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { linkSongTime } from '../lib/songTimeLink';
 import { midiRowPart, type LibraryMidiRow } from '../lib/libraryIndex';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
@@ -1355,6 +1356,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         startSec: tail,
         color: trackColor,
         libraryEntryId: entry.id,
+        songTime: linkSongTime(entry.id),
       });
       editor.cachePeaks(clipId, peaks);
     } catch (e) {
@@ -3287,6 +3289,10 @@ const SubTabRow = React.memo<{
   // lookup can never miss the id and die silently.
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(isMidi ? MIDI_ID_MIME : STEM_ID_MIME, rowId);
+    // A stem is its song's time: the song's entry id goes along, so the clip
+    // it lands as in EDIT reads the song's tempo, beats and downbeats.
+    const songId = isMidi ? '' : String(row.entry_id ?? row.parent_id ?? '');
+    if (songId) e.dataTransfer.setData(STEM_SONG_MIME, songId);
     e.dataTransfer.setData('text/plain', label);
     e.dataTransfer.effectAllowed = 'copy';
   };

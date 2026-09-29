@@ -52,6 +52,14 @@ export const LIBRARY_IDS_MIME = 'application/x-thedaw-library-ids';
  */
 export const STEM_ID_MIME = 'application/x-thedaw-stem-id';
 
+/**
+ * Written beside `STEM_ID_MIME`: the library entry id of the song the stem was
+ * separated from. The stem is that song's own time, so the clip it lands as is
+ * tied to the song's analysis (lib/clipSongTime) and SYNC and "Use song tempo"
+ * read the song's tempo, beats and downbeats for it.
+ */
+export const STEM_SONG_MIME = 'application/x-thedaw-stem-song';
+
 /** The provenance every desktop drop records, whichever surface took it. */
 export const DESKTOP_DROP_ORIGIN: AudioImportOrigin = {
   prompt: 'Imported from Finder drop',

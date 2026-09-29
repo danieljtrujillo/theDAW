@@ -80,6 +80,8 @@ export interface RhythmAnalysis {
   tempo?: { bpm: number; stable: boolean };
   /** Seconds of each analysis bar's first beat, bar 0 first. */
   downbeats?: number[];
+  /** Seconds of every tracked beat. */
+  beats?: number[];
   /** One entry per downbeat: the meter_map segment it belongs to and the tracked beats it holds. */
   bars?: RhythmBar[];
   meter_map?: RhythmMeterSegment[];
@@ -180,7 +182,7 @@ const UNIT_QUARTERS: Record<string, number> = { quarter: 1, eighth: 0.5, sixteen
  * the quarter notes in the tracked beat (190 in eighths is 95). An analysis
  * that names no beat unit keeps the tracked tempo as it is.
  */
-function trackedQuarterBpm(a: RhythmAnalysis, first: RhythmMeterSegment | undefined): number | null {
+export function trackedQuarterBpm(a: RhythmAnalysis, first: RhythmMeterSegment | undefined): number | null {
   const tracked = a.tempo && a.tempo.bpm > 0 ? a.tempo.bpm : null;
   if (tracked == null) return null;
   if (first?.level && first.level !== 'tracked' && typeof first.bpm === 'number' && first.bpm > 0) return first.bpm;
@@ -244,12 +246,25 @@ export function oddBars(a: RhythmAnalysis): Map<number, Meter> {
   return out;
 }
 
+/** A ready analysis's meters, by analysis bar. */
+export interface SongMeters {
+  /** The analysis's meter segments, first bar first. */
+  segs: RhythmMeterSegment[];
+  /** Bar 0's meter. */
+  firstMeter: Meter;
+  /** Every analysis bar that starts a meter, a cut or lengthened bar included, with its meter. */
+  barList: MeterSegment[];
+  /** `barList` as a meter map (repeats merged). */
+  songMap: MeterSegment[];
+}
+
 /**
- * The roll's meter and tempo for a ready analysis, or null when it is pending
- * or has no meter map. `rollBpm` places the pickup when the analysis carries
- * neither a tempo nor two downbeats.
+ * The analysis's meter by analysis bar: each segment's from its first bar, a
+ * bar cut short (or lengthened) at a change as a meter of its own, and the bar
+ * after it back on its segment's meter. Null when it is pending or has no
+ * meter map it can read.
  */
-export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3): RhythmSeed | null {
+export function songMeters(a: RhythmAnalysis): SongMeters | null {
   if (a.status !== 'ready' || !a.meter_map?.length) return null;
   const segs = [...a.meter_map].sort((x, y) => x.start_bar - y.start_bar);
   const raw: MeterSegment[] = [];
@@ -258,10 +273,6 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
     if (meter) raw.push({ bar: Math.max(0, Math.round(s.start_bar)), meter });
   }
   if (!raw.length) return null;
-  const firstMeter = raw[0].meter;
-  // Meters by analysis bar: each segment's from its first bar, a bar cut
-  // short (or lengthened) at a change as a meter of its own, and the bar
-  // after it back on its segment's meter.
   const segMap = normalizeMeterMap(raw, false);
   const byBar = new Map<number, Meter>(raw.map((r) => [r.bar, r.meter]));
   const odd = oddBars(a);
@@ -270,18 +281,44 @@ export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3)
   }
   for (const [bar, meter] of odd) byBar.set(bar, meter);
   const barList = [...byBar].map(([bar, meter]) => ({ bar, meter }));
-  const songMap = normalizeMeterMap(barList);
+  return { segs, firstMeter: raw[0].meter, barList, songMap: normalizeMeterMap(barList) };
+}
 
-  // Each downbeat's quarter-note position counted from the analysis's bar 0,
-  // kept only while both keep rising.
-  const qs: number[] = [];
-  const ds: number[] = [];
+/** A downbeat of the analysis: its analysis bar, its song seconds, and its quarter notes from bar 0. */
+export interface SongDownbeat {
+  bar: number;
+  sec: number;
+  quarters: number;
+}
+
+/**
+ * Each downbeat's quarter-note position counted from the analysis's bar 0
+ * under `songMap`, kept only while both its seconds and its position keep rising.
+ */
+export function songDownbeats(a: RhythmAnalysis, songMap: readonly MeterSegment[]): SongDownbeat[] {
+  const out: SongDownbeat[] = [];
   (a.downbeats ?? []).forEach((d, j) => {
     const q = barStartStep(songMap, j, 0) / 4;
-    if (!Number.isFinite(d) || (ds.length && (d <= ds[ds.length - 1] + EPS || q <= qs[qs.length - 1] + EPS))) return;
-    qs.push(q);
-    ds.push(d);
+    const last = out[out.length - 1];
+    if (!Number.isFinite(d) || (last && (d <= last.sec + EPS || q <= last.quarters + EPS))) return;
+    out.push({ bar: j, sec: d, quarters: q });
   });
+  return out;
+}
+
+/**
+ * The roll's meter and tempo for a ready analysis, or null when it is pending
+ * or has no meter map. `rollBpm` places the pickup when the analysis carries
+ * neither a tempo nor two downbeats.
+ */
+export function seedFromRhythm(a: RhythmAnalysis, rollBpm: number, maxLanes = 3): RhythmSeed | null {
+  const meters = songMeters(a);
+  if (!meters) return null;
+  const { segs, firstMeter, barList, songMap } = meters;
+
+  const downs = songDownbeats(a, songMap);
+  const qs = downs.map((d) => d.quarters);
+  const ds = downs.map((d) => d.sec);
   const runs = tempoRuns(qs, ds);
   const average = runs.length ? (60 * (qs[qs.length - 1] - qs[0])) / (ds[ds.length - 1] - ds[0]) : null;
   const bpm = average ?? trackedQuarterBpm(a, segs[0]);

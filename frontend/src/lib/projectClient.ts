@@ -363,6 +363,9 @@ export interface TasmoClipInput {
    *  library entry the clip came from. Optional for the same reason. */
   bpm?: number | null;
   library_entry_id?: string | null;
+  /** An audio clip's tie to its library song's analysis (lib/clipSongTime);
+   *  null or absent in files written before it and on audio with none. */
+  song_time?: { entry_id: string; bpm?: number | null; offset_sec?: number; rate?: number } | null;
 }
 
 export interface TasmoTrackInput {
@@ -518,6 +521,9 @@ export interface TasmoLoadedClip {
    *  saved. */
   bpm?: number | null;
   library_entry_id?: string | null;
+  /** An audio clip's tie to its library song's analysis (lib/clipSongTime);
+   *  null or absent in files written before it and on audio with none. */
+  song_time?: { entry_id: string; bpm?: number | null; offset_sec?: number; rate?: number } | null;
   /** Per-clip mute; absent in .tasmo files written before the field existed. */
   muted?: boolean;
   /** Linear clip gain (1 = unity) and fade lengths in seconds; absent in .tasmo

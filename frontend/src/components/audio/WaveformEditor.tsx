@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal, flushSync } from 'react-dom';
+import { useShallow } from 'zustand/react/shallow';
 import {
   Scissors, Play, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
@@ -53,7 +54,7 @@ import { partController } from '../../lib/rollTracks';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
-import { LIBRARY_ID_MIME, MIDI_ID_MIME, STEM_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../../lib/libraryDrop';
+import { LIBRARY_ID_MIME, MIDI_ID_MIME, STEM_ID_MIME, STEM_SONG_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../../lib/libraryDrop';
 import { magnetStart, magnetTargetsFor } from '../../lib/timelineMagnet';
 import { useVstStore } from '../../state/vstStore';
 import {
@@ -92,7 +93,7 @@ import { parseMidi } from '../../utils/midi';
 import { EditorBpmField } from './EditorBpmField';
 import { EditTimeMapPanel, type TimeMapFocus } from './EditTimeMapPanel';
 import { NewMidiPartDialog } from './NewMidiPartDialog';
-import { editMeterFlags, editMoveByBeats, editRulerBars, editSnapSec, editTempoAtSec, editTempoFlags } from '../../lib/editTimeMap';
+import { editMeterFlags, editRulerBars, editTempoAtSec, editTempoFlags } from '../../lib/editTimeMap';
 import { hasTempoChanges } from '../../lib/rollTempo';
 import { LibraryPicker, type LibraryPick, type LibraryPickerTab } from './LibraryPicker';
 import {
@@ -155,7 +156,9 @@ import {
   highlightClearDecision, hitTestClipRects,
   inpaintFromRange, rangeSplitPlan, rulerDragRange, type RangeMenuAction,
 } from './timelineInteraction';
-import { alignedStart, alignedStartOn, beatMatchPlan, firstBeatInClip } from '../../lib/beatMatch';
+import { clipKnownBpm, runBeatMatch, runTimePitch, type TimePitchRenderer } from '../../lib/beatMatchRun';
+import { linkSongTime, stemsSongTime } from '../../lib/songTimeLink';
+import { SongTempoDialog } from './SongTempoDialog';
 import { ContextMenu, useContextMenu, type ContextMenuItem, type ContextMenuPosition } from '../ui/ContextMenu';
 import { RenderRangeDialog } from '../render/RenderRangeDialog';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -270,6 +273,9 @@ export function applyAllStemsInsert(
   const live = useEditorStore.getState().clips.find((c) => c.id === clipId);
   if (!live) return null;
   const specs = stemTrackSpecs(live.label, live.color, STEM_TRACK_COLORS, decoded.map((d) => d.ref));
+  // The stems are the time of the entry they were separated from (the parent's
+  // library entry), so each is tied to that song's analysis.
+  const songTime = stemsSongTime(live, live.libraryEntryId);
   beginUndoStep();
   const store = useEditorStore.getState();
   const folderId = store.addTrack({ name: stemsFolderName(live.label), isFolder: true, collapsed: false });
@@ -288,6 +294,7 @@ export function applyAllStemsInsert(
       gain: live.gain,
       fadeInSec: live.fadeInSec,
       fadeOutSec: live.fadeOutSec,
+      ...(songTime ? { songTime: { ...songTime } } : {}),
     });
     store.cachePeaks(newClipId, peaks);
   }
@@ -2158,8 +2165,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const inpaintSelection = useEditorStore((s) => s.inpaintSelection);
   // BPM/key per clip: audio clips resolve through the DJ analysis cache via
   // their originating library entry (same source the DJ decks read); MIDI
-  // clips report their own render BPM. Read-only — nothing is queued here.
+  // clips report their own render BPM. Nothing is queued or run here: an entry
+  // a clip names and the cache has never heard of (a reopened project, a stem's
+  // song) is read once with a GET, so its tempo and beats are there for SYNC.
   const djAnalysisById = useDjAnalysisStore((s) => s.byId);
+  const clipSongEntries = useEditorStore(useShallow((s) => {
+    const ids = new Set<string>();
+    for (const c of s.clips) {
+      if (c.songTime?.entryId) ids.add(c.songTime.entryId);
+      else if (c.libraryEntryId) ids.add(c.libraryEntryId);
+    }
+    return [...ids].sort();
+  }));
+  useEffect(() => {
+    const dj = useDjAnalysisStore.getState();
+    for (const id of clipSongEntries) if (!dj.byId[id]) void dj.fetch(id);
+  }, [clipSongEntries]);
   const setInpaintSelection = useEditorStore((s) => s.setInpaintSelection);
   const clearInpaintSelection = useEditorStore((s) => s.clearInpaintSelection);
   const masterFxChain = useEditorStore((s) => s.masterFxChain);
@@ -2207,6 +2228,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const arrangementTempoMap = useEditorStore((s) => s.tempoMap);
   const arrangementMeterMap = useEditorStore((s) => s.meterMap);
   const timeMapOffer = useEditorStore((s) => s.timeMapOffer);
+  // "Use song tempo" asked from a clip's menu or a library entry's (SongTempoDialog).
+  const songTempoRequest = useEditorStore((s) => s.songTempoRequest);
   /** The Meter and tempo panel: where it opens and the row a ruler flag asked for. */
   const [timeMapPanel, setTimeMapPanel] = useState<{ x: number; y: number; focus: TimeMapFocus } | null>(null);
   const timeMapOpenerRef = useRef<HTMLElement | null>(null);
@@ -2748,6 +2771,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const src = await clipWithAudio(clipId);
       // 1. A library entry to key the stems backend on.
       let entryId = src.libraryEntryId ?? null;
+      // Stems of an entry imported from the clip's own audio are that audio's
+      // time, so they keep the clip's song tie; stems of a library entry are
+      // tied to that entry (lib/songTimeLink stemsSongTime).
+      const importedFromClipAudio = !entryId;
       if (!entryId) {
         const entry = await useLibraryStore.getState().importEntry({
           blob: src.audioBlob,
@@ -2793,6 +2820,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       //    Read the source AFTER the downloads — it may have been moved or
       //    trimmed while they ran, and the stems line up with where it is now.
       const srcNow = useEditorStore.getState().clips.find((c) => c.id === clipId) ?? src;
+      const songTime = stemsSongTime(srcNow, entryId, importedFromClipAudio);
       beginUndoStep();
       const store = useEditorStore.getState();
       for (const { ref, blob, peaks, duration } of decoded) {
@@ -2810,6 +2838,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           gain: srcNow.gain,
           fadeInSec: srcNow.fadeInSec,
           fadeOutSec: srcNow.fadeOutSec,
+          ...(songTime ? { songTime: { ...songTime } } : {}),
         });
         store.cachePeaks(newClipId, peaks);
       }
@@ -3026,105 +3055,42 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Time-stretch (tempo, pitch preserved) + transpose (semitones, tempo preserved)
   // through the FFmpeg backend (rubberband when available), then replace the clip's
   // audio with the result. tempo > 1 shortens the clip; pitch leaves length alone.
-  /** The tempo a clip plays at: what a beat match or stretch set, else the
-   *  library analysis of its source. Null for MIDI clips and unanalysed audio. */
-  const clipKnownBpm = useCallback((clip: AudioClip): number | null => {
-    if (clip.sourceKind === 'piano-roll') return null;
-    if (clip.bpm && clip.bpm > 0) return clip.bpm;
-    const d = clip.libraryEntryId ? useDjAnalysisStore.getState().byId[clip.libraryEntryId]?.data : undefined;
-    return d?.bpm && d.bpm > 0 ? d.bpm : null;
-  }, []);
+  // What the result writes onto the clip (its tempo, its song tie) and the beat
+  // match built on it live in lib/beatMatchRun, which a node test replays.
+  const renderTimePitch = useCallback<TimePitchRenderer>(async (clip, tempo, semitones) => {
+    const file = await extractRegionWav(clip);
+    const fd = new FormData();
+    fd.append('audio', file);
+    fd.append('effect', 'time_pitch');
+    fd.append('params', JSON.stringify({ tempo, semitones }));
+    fd.append('output_format', 'wav');
+    const res = await fetch('/api/studio/process', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(`process ${res.status}`);
+    // arrayBuffer (not res.blob) keeps the body in RAM — disk-backed blobs fail on a full drive.
+    const blob = new Blob([await res.arrayBuffer()], { type: 'audio/wav' });
+    const { peaks, duration } = await computePeaks(blob, 240);
+    return { blob, duration, peaks };
+  }, [extractRegionWav]);
 
   const applyTimePitch = useCallback(async (clipId: string, tempo: number, semitones: number) => {
-    const clip = useEditorStore.getState().clips.find((c) => c.id === clipId);
-    if (!clip) return;
-    const known = clipKnownBpm(clip);
     setTimePitchBusy(true);
     try {
-      const file = await extractRegionWav(clip);
-      const fd = new FormData();
-      fd.append('audio', file);
-      fd.append('effect', 'time_pitch');
-      fd.append('params', JSON.stringify({ tempo, semitones }));
-      fd.append('output_format', 'wav');
-      const res = await fetch('/api/studio/process', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error(`process ${res.status}`);
-      // arrayBuffer (not res.blob) keeps the body in RAM — disk-backed blobs fail on a full drive.
-      const blob = new Blob([await res.arrayBuffer()], { type: 'audio/wav' });
-      const { peaks, duration } = await computePeaks(blob, 240);
-      updateClip(clipId, {
-        audioBlob: blob, mimeType: 'audio/wav', offsetIntoSource: 0, durationSec: duration, peaks,
-        // The readout follows the stretch: a 120 clip at 1.05x plays at 126.
-        bpm: known ? known * tempo : clip.bpm,
-      });
-      logInfo('editor', `Time/Pitch: ${tempo.toFixed(2)}x, ${semitones >= 0 ? '+' : ''}${semitones} st -> ${duration.toFixed(2)}s`);
-    } catch (e) {
-      logError('editor', `Time/Pitch failed: ${e instanceof Error ? e.message : e}`);
+      await runTimePitch(clipId, tempo, semitones, renderTimePitch);
     } finally {
       setTimePitchBusy(false);
     }
-  }, [clipKnownBpm, extractRegionWav, updateClip]);
+  }, [renderTimePitch]);
 
-  /** Beat match, the way a deck's SYNC works: every clip in `ids` is stretched
-   *  to `targetBpm` (pitch kept), its first analysed beat is put on the grid,
-   *  and the project tempo becomes the target so the grid agrees. One backend
-   *  render per clip, in turn. MIDI clips and clips with no known tempo are
-   *  skipped and counted in the log line. */
-  /** `toProject`: the target is the arrangement's own tempo. When the
-   *  arrangement's tempo map changes tempo, each clip then stretches to the
-   *  tempo sounding where it starts, and the map is left as it is. */
+  /** Beat match, the way a deck's SYNC works (lib/beatMatchRun runBeatMatch):
+   *  `toProject` targets the arrangement's own tempo. */
   const beatMatchClips = useCallback(async (ids: string[], targetBpm: number, toProject = false) => {
-    if (!(targetBpm > 0)) return;
-    const live = useEditorStore.getState();
-    const subjects = ids
-      .map((id) => live.clips.find((c) => c.id === id))
-      .filter((c): c is AudioClip => !!c && c.sourceKind !== 'piano-roll');
-    if (subjects.length === 0) return;
-    // With tempo changes, the grid a first beat lands on is the arrangement's
-    // quarter grid through its tempo map (restarting at each bar line), not a
-    // constant beat from 0, and the map is not rewritten to one tempo.
-    const maps = { tempoMap: live.tempoMap, meterMap: live.meterMap };
-    const mapped = hasTempoChanges(live.tempoMap);
-    const targetOf = (c: AudioClip): number => (mapped && toProject ? editTempoAtSec(live.tempoMap, c.startSec) : targetBpm);
-    const plan = subjects.flatMap((c) => beatMatchPlan([{ id: c.id, bpm: clipKnownBpm(c) }], targetOf(c)));
-    const tempoById = new Map(plan.map((step) => [step.id, step.tempo]));
-    if (!mapped && Math.abs(targetBpm - live.bpm) > 0.01) setBpm(targetBpm);
-    const beatLen = 60 / targetBpm;
-    let stretched = 0;
-    let aligned = 0;
-    let unknown = 0;
-    for (const clip of subjects) {
-      const known = clipKnownBpm(clip);
-      if (known === null) {
-        unknown += 1;
-        continue;
-      }
-      const tempo = tempoById.get(clip.id) ?? 1;
-      // The beat list describes the library source. A clip whose audio a
-      // stretch already rendered has lost that mapping, so it gets the tempo only.
-      const beats = !clip.bpm && clip.libraryEntryId ? useDjAnalysisStore.getState().byId[clip.libraryEntryId]?.data?.beats : null;
-      const first = firstBeatInClip(beats, clip.offsetIntoSource, clip.durationSec, tempo);
-      if (tempo !== 1) {
-        await applyTimePitch(clip.id, tempo, 0);
-        stretched += 1;
-      }
-      const now = useEditorStore.getState().clips.find((c) => c.id === clip.id);
-      if (!now) continue;
-      const patch: Partial<AudioClip> = {};
-      const start = mapped
-        ? alignedStartOn(now.startSec, first, (sec) => editSnapSec(maps, sec, 4), (line) => editMoveByBeats({ ...maps, meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }] }, line, 1))
-        : alignedStart(now.startSec, first, beatLen);
-      if (Math.abs(start - now.startSec) > 1e-6) {
-        patch.startSec = start;
-        aligned += 1;
-      }
-      if (!now.bpm) patch.bpm = known * tempo;
-      if (Object.keys(patch).length > 0) updateClip(clip.id, patch);
+    setTimePitchBusy(true);
+    try {
+      await runBeatMatch(ids, targetBpm, toProject, renderTimePitch);
+    } finally {
+      setTimePitchBusy(false);
     }
-    const skipped = unknown > 0 ? `, ${unknown} skipped (no tempo known; analyse them in the library first)` : '';
-    const toWhat = mapped && toProject ? 'the arrangement\'s tempo map' : `${Math.round(targetBpm)} bpm`;
-    logInfo('editor', `Beat match to ${toWhat}: ${stretched} stretched, ${aligned} moved onto the grid${skipped}`);
-  }, [applyTimePitch, clipKnownBpm, setBpm, updateClip]);
+  }, [renderTimePitch]);
 
   // The clip / track multi-selection lives in editorStore (batch 11), not local
   // state: EDIT unmounts on a tab switch and a local selection died with it.
@@ -5102,9 +5068,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
    *
    *  `libraryEntryId` is passed through because it is what later unlocks the
    *  clip's bpm/key readout and the stems explode path — a library-sourced clip
-   *  that loses it looks like a bare recording. */
+   *  that loses it looks like a bare recording. `songEntryId` names the song a
+   *  stem was separated from; the clip is tied to that song's analysis (or to
+   *  its own entry's, for library audio) so SYNC and "Use song tempo" read its
+   *  tempo, beats and downbeats (lib/songTimeLink). */
   const placeAudioOnTrack = async (
-    audio: { label: string; mimeType?: string; entryId?: string; fallbackDuration?: number; fetch: () => Promise<Blob> },
+    audio: { label: string; mimeType?: string; entryId?: string; songEntryId?: string; fallbackDuration?: number; fetch: () => Promise<Blob> },
     targetTrack: EditorTrack,
     startSec: number,
     verb = 'Dropped',
@@ -5123,6 +5092,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       startSec,
       color: targetTrack.color,
       libraryEntryId: audio.entryId,
+      songTime: linkSongTime(audio.songEntryId ?? audio.entryId),
     });
     cachePeaks(clipId, peaks);
     logInfo('editor', `${verb} ${audio.label} on ${targetTrack.name} at ${startSec.toFixed(2)}s`);
@@ -5169,6 +5139,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     const entryId = dt.getData(LIBRARY_ID_MIME);
     const midiId = dt.getData(MIDI_ID_MIME);
     const stemId = dt.getData(STEM_ID_MIME);
+    const stemSongId = dt.getData(STEM_SONG_MIME);
     const midiLabel = dt.getData('text/plain') || 'midi';
     const stemLabel = dt.getData('text/plain') || 'stem';
     const fromDesktop = !entryId && !midiId && !stemId;
@@ -5217,6 +5188,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {
             label: stemLabel,
             mimeType: 'audio/wav',
+            // The song the stem was separated from: the clip reads its analysis.
+            songEntryId: stemSongId || undefined,
             // The shared retrying fetcher, like every other stem-audio read:
             // it status-checks (a 404/500 body would otherwise become a Blob
             // that only fails later in computePeaks) and rides out the
@@ -5792,6 +5765,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const store = useEditorStore.getState();
       const label = `${live.label} · ${ref.name}`;
       const color = STEM_TRACK_COLORS[ref.name] ?? live.color;
+      // The stem is the time of the clip's library entry it was separated from.
+      const songTime = stemsSongTime(live, live.libraryEntryId);
       // The track and its clip are ONE undo step.
       beginUndoStep();
       const trackId = store.addTrack({ name: label, color });
@@ -5806,6 +5781,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         gain: live.gain,
         fadeInSec: live.fadeInSec,
         fadeOutSec: live.fadeOutSec,
+        ...(songTime ? { songTime } : {}),
       });
       store.cachePeaks(newClipId, peaks);
       logInfo('editor', `Inserted stem "${ref.name}" beside "${live.label}"`);
@@ -6035,6 +6011,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           {
             label: pick.label,
             mimeType: 'audio/wav',
+            // The song the stem was separated from: the clip reads its analysis.
+            songEntryId: pick.row.parent_id || undefined,
             fetch: () => fetchBlobWithRetry(pick.url, { label: pick.label }),
           },
           track,
@@ -7483,6 +7461,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         );
       })()}
 
+      {/* "Use song tempo": what a song's rhythm analysis would make the
+          arrangement's tempo and meter, applied on a press as one undo step. */}
+      {songTempoRequest && (
+        <SongTempoDialog
+          key={`${songTempoRequest.entryId}:${songTempoRequest.clipId ?? ''}`}
+          request={songTempoRequest}
+          onClose={() => useEditorStore.getState().dismissSongTempoRequest()}
+        />
+      )}
+
       {/* A clip from the roll or a MIDI file whose tempo or meter differs from
           the arrangement's: offered once, adopted or kept with one press. */}
       {timeMapOffer && (
@@ -8017,13 +8005,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                 // A clip whose tempo changes reads as its slowest to fastest tempo.
                 const span = clip.sourceBpm ? tempoSpan(clip.sourceBpm, clip.sourceTempoMap) : null;
                 if (span) bpmText = span[0] === span[1] ? String(span[0]) : `${span[0]}-${span[1]}`;
-              } else if (clip.bpm) {
-                bpmText = String(Math.round(clip.bpm));
-                const d = clip.libraryEntryId ? djAnalysisById[clip.libraryEntryId]?.data : undefined;
-                if (d?.key) keyText = `${d.key}${(d.scale ?? '').toLowerCase().startsWith('min') ? 'm' : ''}`;
-              } else if (clip.libraryEntryId) {
-                const d = djAnalysisById[clip.libraryEntryId]?.data;
-                if (d?.bpm) bpmText = String(Math.round(d.bpm));
+              } else {
+                // What SYNC reads (lib/beatMatchRun clipKnownBpm): a beat match's
+                // tempo, else the song's through the stretch its audio holds. The
+                // key is the song's: a stem's is the song it was separated from.
+                const known = clipKnownBpm(clip);
+                if (known) bpmText = String(Math.round(known));
+                const keyEntry = clip.songTime?.entryId ?? clip.libraryEntryId;
+                const d = keyEntry ? djAnalysisById[keyEntry]?.data : undefined;
                 if (d?.key) keyText = `${d.key}${(d.scale ?? '').toLowerCase().startsWith('min') ? 'm' : ''}`;
               }
               /* F09 — the header rides the VISIBLE part of the clip, so a long
@@ -8703,6 +8692,22 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               },
             });
           }
+          // The song's rhythm analysis as the arrangement's tempo and meter,
+          // bar 1 on this clip's first downbeat (SongTempoDialog previews it).
+          const songEntry = clip.songTime?.entryId ?? clip.libraryEntryId;
+          items.push({
+            type: 'item',
+            label: 'Use song tempo…',
+            icon: <Gauge className="w-3 h-3" />,
+            hint: 'bars',
+            disabled: !songEntry,
+            title: songEntry
+              ? "Set the arrangement's tempo and meter from the song's rhythm analysis, with bar 1 on this clip's first downbeat. Shows what changes first"
+              : 'This clip is not from a library song, so there is no rhythm analysis behind it',
+            onSelect: () => {
+              if (songEntry) useEditorStore.getState().requestSongTempo({ entryId: songEntry, clipId: payload.clipId });
+            },
+          });
           items.push({
             type: 'item',
             label: 'Time / Pitch…',
