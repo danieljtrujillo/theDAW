@@ -47,6 +47,12 @@ export interface DawDevice {
   is_instrument?: boolean;
   /** True for a rack container itself (its nested devices follow it). */
   is_rack?: boolean;
+  /** A device opened from a .tasmo (lib/tasmoToSession): the plugin state
+   *  theDAW captured, with the host that captured it. `state` above is a DAW
+   *  import's own chunk, which neither host reads; these are theDAW's. Absent
+   *  on a DAW import. */
+  raw_state?: string | null;
+  state_host?: string | null;
 }
 
 export interface DawTrack {

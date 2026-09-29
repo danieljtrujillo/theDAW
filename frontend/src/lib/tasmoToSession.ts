@@ -90,23 +90,27 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       clips,
       // A .tasmo track's saved FX chain becomes the grid's live device chain,
       // exactly like an imported .als set's devices: built-in entries build the
-      // live rack; vst3 entries stay listed-but-inert (the same behavior as
-      // EDIT). Without this a saved set reached PERFORM with a bare
-      // passthrough, so nothing existed for fx routes (the Sway XY / deck
-      // assignments) to hit.
+      // live rack; a plugin is hosted live, at the state it was saved with.
+      // Without this a saved set reached PERFORM with a bare passthrough, so
+      // nothing existed for fx routes (the Sway XY / deck assignments) to hit.
       devices: (t.effect_chain ?? []).map<DawDevice>((n) => ({
         name: n.effect_name,
-        plugin_type: n.node_type === 'vst3' ? 'vst3' : 'builtin',
+        // An Audio Unit stays one: read as builtin, its name could
+        // pattern-match a rack effect.
+        plugin_type: n.node_type === 'vst3' || n.node_type === 'audiounit' ? n.node_type : 'builtin',
         // Carry the real plugin path: with it null, dawDeviceToEffectNode's
         // plugin test failed and a VST node fell into the BUILTIN branch,
         // where its display name could pattern-match a rack effect ("…Verb"
         // -> reverb at defaults). With the path present it classifies as
-        // vst3 and stays cleanly inert in the live grid, exactly like EDIT.
+        // vst3 and is hosted, exactly like EDIT.
         plugin_path: n.vst_state?.plugin_path ?? null,
         parameters: n.parameters ?? {},
         bypass: !!n.bypass,
         is_instrument: false,
         is_rack: false,
+        // The plugin state theDAW captured, which PERFORM hosts the plugin at.
+        raw_state: n.vst_state?.raw_state ?? null,
+        state_host: n.vst_state?.state_host ?? null,
       })),
     };
   });

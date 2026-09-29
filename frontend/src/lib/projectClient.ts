@@ -109,6 +109,12 @@ export interface VstPluginState {
   parameters?: Record<string, number>;
   preset_path?: string | null;
   instance_id?: string;
+  /** The opaque base64 state the plugin's window or live host captured: the
+   *  insert's dialled-in sound. Absent when the plugin was never opened, and
+   *  in every file written before it was saved. */
+  raw_state?: string | null;
+  /** The host that captured `raw_state` ('thedaw' or 'pedalboard'); absent is the default. */
+  state_host?: string | null;
 }
 
 export interface EffectChainNode {

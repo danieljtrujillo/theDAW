@@ -12,6 +12,13 @@ class VstPluginState(BaseModel):
     parameters: dict[str, float] = {}
     preset_path: str | None = None
     instance_id: str = ""
+    # The opaque base64 state the plugin's window or its live host captured:
+    # the dialled-in sound of a track or bus insert. None: the plugin opens at
+    # its defaults, which is how every file written before this field loads.
+    raw_state: str | None = None
+    # Which host captured raw_state ("thedaw", the live host, or "pedalboard"),
+    # as ChainVst.state_host. None: the default.
+    state_host: str | None = None
 
 
 class EffectChainNode(BaseModel):

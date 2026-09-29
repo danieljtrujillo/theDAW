@@ -81,7 +81,8 @@ import { TEMPO_BPM_MIN } from './tempoMap';
 import { assertTree } from './timeline/trackOrder';
 import { toTreeTracks } from './timeline/folderOps';
 import { getRackEffect, rackEffectDefaults } from './rackEffects';
-import { EFFECT_LABELS, type ChainEntry, type VstStateHost } from '../state/effectChainStore';
+import { EFFECT_LABELS, type ChainEntry } from '../state/effectChainStore';
+import { savedVstState } from './dawEffectMap';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { useSwayImportStore, startSwayImportDriver } from '../state/swayImportStore';
 import { usePerformRoutingStore } from '../state/performRouting';
@@ -170,8 +171,9 @@ export const tasmoMidiNotesToPiano = (raw: Array<Record<string, number>>, bpm: n
 
 /**
  * Convert a persisted effect node into a live editor chain entry.
- *  - VST3/AU  -> a VST entry (carried so the user sees it; per-track VST is not
- *    rendered live in the editor yet, so it stays disabled = preserved).
+ *  - VST3/AU  -> a VST entry with the state its window or live host captured
+ *    and the host that captured it, so the insert reopens sounding as it was
+ *    dialled in.
  *  - builtin mapped to a LIVE rack effect -> enabled, real-time.
  *  - builtin mapped to a catalog id or a raw foreign name -> preserved/inactive,
  *    shown with a friendly label so nothing is hidden.
@@ -184,11 +186,10 @@ const effectNodeToChainEntry = (node: EffectChainNode): ChainEntry => {
       id: node.id || uid('fx'),
       effect: 'vst3',
       params,
-      // VST3 can't run live in-browser, but an enabled entry is the freeze target
-      // (Freeze prints it into the track stem). buildEffectChain skips it live, so
-      // enabling it is harmless to playback. A source-bypassed plugin stays off.
+      // An enabled entry is hosted live and is the freeze target (Freeze prints
+      // it into the track stem). A source-bypassed plugin stays off.
       enabled: !node.bypass,
-      vst: vs ? { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name } : undefined,
+      vst: vs ? { plugin_path: vs.plugin_path, plugin_name: vs.plugin_name, ...savedVstState(vs) } : undefined,
       label: vs?.plugin_name || node.effect_name,
     };
   }
@@ -220,7 +221,10 @@ const liveFxCount = (chain: EffectChainNode[] | undefined): number =>
     (n) => n.node_type === 'builtin' && !!getRackEffect(n.effect_name) && !n.bypass,
   ).length;
 
-/** Serialize a live editor chain entry back into a persisted effect node. */
+/** Serialize a live editor chain entry back into a persisted effect node. A
+ *  VST insert writes the state its window or live host captured, and the host
+ *  that captured it, only where it has them: absent is a plugin never opened,
+ *  which is not the same as an empty state. */
 const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
   if (e.effect === 'vst3' && e.vst) {
     return {
@@ -229,7 +233,12 @@ const chainEntryToEffectNode = (e: ChainEntry): EffectChainNode => {
       effect_name: e.vst.plugin_name,
       parameters: e.params ?? {},
       bypass: !e.enabled,
-      vst_state: { plugin_path: e.vst.plugin_path, plugin_name: e.vst.plugin_name, parameters: e.params ?? {} },
+      vst_state: {
+        plugin_path: e.vst.plugin_path,
+        plugin_name: e.vst.plugin_name,
+        parameters: e.params ?? {},
+        ...savedVstState(e.vst),
+      },
     };
   }
   return {
@@ -740,8 +749,7 @@ export function tasmoToChainEntries(raw: unknown, requireVst = false, what = 'Ma
         ? {
             plugin_path: v.plugin_path,
             plugin_name: typeof v.plugin_name === 'string' ? v.plugin_name : v.plugin_path,
-            ...(typeof v.raw_state === 'string' && v.raw_state ? { raw_state: v.raw_state } : {}),
-            ...(v.state_host === 'thedaw' || v.state_host === 'pedalboard' ? { state_host: v.state_host as VstStateHost } : {}),
+            ...savedVstState(v),
           }
         : undefined;
     if (requireVst && !vst) {
