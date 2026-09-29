@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.modules.vst import host as vst_host
-from backend.modules.vst import path_policy, scanner
+from backend.modules.vst import isolation, path_policy, plugin_worker, scanner
 from backend.modules.vst import router as vst_router
 
 
@@ -78,6 +78,15 @@ class FakePedalboard:
 def pedalboard(monkeypatch: pytest.MonkeyPatch) -> FakePedalboard:
     fake = FakePedalboard()
     monkeypatch.setattr(vst_host, "_get_pedalboard", lambda: fake)
+    # The route renders in a worker process (isolation.py). Here the worker's
+    # own job runs in this process instead, so the stand-in above is the
+    # pedalboard it loads from; the job still travels through its files both
+    # ways. tests/test_vst_plugin_crash.py covers the real process.
+    monkeypatch.setattr(
+        isolation,
+        "_run_job_process",
+        lambda job_dir, timeout: (plugin_worker.run_job(job_dir), ""),
+    )
     return fake
 
 
