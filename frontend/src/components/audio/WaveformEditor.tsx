@@ -47,7 +47,7 @@ import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
 import { TrackTemplatePicker } from './TrackTemplatePicker';
-import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, documentFreezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { partController } from '../../lib/rollTracks';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
@@ -1023,14 +1023,7 @@ const runStemJob = async (
   // just replaced is not an edit, and a signature taken before them would call
   // the new frozen master stale the moment it landed.
   const now = useEditorStore.getState();
-  const sig = isTrack ? '' : freezeSignature({
-    clips: now.clips,
-    tracks: now.tracks,
-    masterFxChain: now.masterFxChain,
-    masterVstChain: now.masterVstChain,
-    bpm: now.bpm,
-    global: getGlobalVoice(),
-  });
+  const sig = isTrack ? '' : documentFreezeSignature(now, getGlobalVoice());
   // Measured from the SAME clips the bounce below reads (its MIDI clips with
   // their renders, ring-out included), as the stem renderer always did. The
   // master branch reports the rendered buffer's own duration instead and never
@@ -2207,6 +2200,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const previewMode = useEditorStore((s) => s.previewMode);
   const setPreviewMode = useEditorStore((s) => s.setPreviewMode);
   const frozenMaster = useEditorStore((s) => s.frozenMaster);
+  // The buses and the routing reach the rendered master too, so they sign it.
+  const buses = useEditorStore((s) => s.buses);
+  const routing = useEditorStore((s) => s.routing);
   const vstPlugins = useVstStore((s) => s.plugins);
   const vstScanning = useVstStore((s) => s.scanning);
   const scanVst = useVstStore((s) => s.scan);
@@ -4578,14 +4574,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Signature of everything that affects the rendered master, so a frozen render
   // can be flagged stale after edits (and re-renders are skipped when unchanged).
   // The rule lives in editorStore.freezeSignature, with the test that holds it
-  // to every field a renderer reads.
+  // to every field a renderer reads; `documentFreezeSignature` is the same call
+  // the freeze stamps its render with.
   const freezeSig = useMemo(
-    () => freezeSignature({
-      clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm,
+    () => documentFreezeSignature(
+      { clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm, buses, routing, automationLanes },
       // A MIDI clip with no program of its own or on its track renders through the picker.
-      global: { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
-    }),
-    [clips, tracks, masterFxChain, masterVstChain, editorBpm, sfEnabled, sfActiveProgram],
+      { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
+    ),
+    [clips, tracks, masterFxChain, masterVstChain, editorBpm, buses, routing, automationLanes, sfEnabled, sfActiveProgram],
   );
 
   const frozenStale = !frozenMaster || frozenMaster.sig !== freezeSig;

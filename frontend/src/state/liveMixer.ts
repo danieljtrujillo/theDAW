@@ -43,7 +43,7 @@
 import {
   useEditorStore,
   activeTrackInstrument,
-  freezeSignature,
+  documentFreezeSignature,
   sampleLane,
   automationTargetKey,
   clipPeakGain,
@@ -1041,14 +1041,7 @@ function liveMasterVstChain(): ChainEntry[] {
   const s = useEditorStore.getState();
   if (s.masterVstChain.length === 0) return [];
   if (s.previewMode === 'frozen' && s.frozenMaster) {
-    const sig = freezeSignature({
-      clips: s.clips,
-      tracks: s.tracks,
-      masterFxChain: s.masterFxChain,
-      masterVstChain: s.masterVstChain,
-      bpm: s.bpm,
-      global: getGlobalVoice(),
-    });
+    const sig = documentFreezeSignature(s, getGlobalVoice());
     if (sig === s.frozenMaster.sig) return [];
   }
   return [...s.masterVstChain];
