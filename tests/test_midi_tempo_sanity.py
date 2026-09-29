@@ -1,8 +1,8 @@
 """A nonsense analysis tempo is not stamped on an entry's MIDI files.
 
 The analysis stores aubio's closing tempo estimate, which a fade or a tail can
-drag anywhere; one entry read 40.69 BPM on a beat list half a second apart,
-and every file converted from it carried that tempo. The runner keeps a tempo
+drag anywhere; entries in a real library read 40.69 BPM while their beat lists
+keep 95 to 152 BPM, and every file converted from them carried 40.69. The runner keeps a tempo
 inside its sane range, falls back to the beat list's own tempo, and stamps
 nothing when neither is usable. The conversions are recorded, not run.
 """
@@ -60,8 +60,8 @@ def _record_conversions(monkeypatch) -> list[dict]:
 def test_an_out_of_range_analysis_tempo_falls_back_to_the_beat_list(
     monkeypatch, tmp_path: Path
 ):
-    """aubio's closing estimate read 40.69 BPM on an entry whose beats sit
-    half a second apart."""
+    """aubio's closing estimate of 40.69 BPM over a beat list that keeps
+    another tempo (here 120 BPM, beats half a second apart)."""
     beats = [0.25 + 0.5 * i for i in range(40)]
     db, entry_dir, full = _entry_with_analysis(tmp_path, 40.69, beats)
     calls = _record_conversions(monkeypatch)
