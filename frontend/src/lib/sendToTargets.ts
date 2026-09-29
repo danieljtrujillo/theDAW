@@ -168,7 +168,7 @@ export function loadMidiIntoPianoRoll(
   buf: ArrayBuffer | Uint8Array,
   target: MidiSendTarget = 'piano-roll',
   labelForLog = 'midi',
-  opts: { fromAudio?: boolean } = {},
+  opts: { fromAudio?: boolean; stem?: string } = {},
 ): boolean {
   try {
     const midi = parseMidi(buf);
@@ -187,7 +187,8 @@ export function loadMidiIntoPianoRoll(
     // markers (FF 06) replace the previous one's, unless other parts keep the document.
     // A library song's MIDI was timed against its audio: the parts are marked so MATCH keeps their seconds.
     const audio = opts.fromAudio === true ? { fromAudio: true } : {};
-    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', audio) : null;
+    // A stem's transcription plays its stem's instrument, not basic-pitch's stock Electric Piano (lib/stemRole).
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', { ...audio, stem: opts.stem }) : null;
     const kept = parts
       ? parts.keptDocument
       : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers, part: audio }).keptDocument;
@@ -213,7 +214,8 @@ export async function sendMidiIdToTarget(midiId: string, target: MidiSendTarget)
   try {
     const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${midiId}`, { label: midiId });
     // Every library MIDI row is a transcription of the song's audio (backend/modules/midi/runner).
-    loadMidiIntoPianoRoll(buf, target, midiId, { fromAudio: true });
+    // Its id names its stem (`<entry>__<stem>_midi`), which gives the part its instrument.
+    loadMidiIntoPianoRoll(buf, target, midiId, { fromAudio: true, stem: midiId });
   } catch (e) {
     logError('send-to', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
   }

@@ -113,8 +113,9 @@ const docUid = (): string =>
 export function midiFileTrackParts(
   data: MidiFileData,
   idPrefix = 'imp',
+  stem?: string,
 ): Omit<RollMidiPartsImport, 'parts'> & { parts: RollTrack[]; totalSteps: number } {
-  const file = midiFileToRollParts(data, idPrefix);
+  const file = midiFileToRollParts(data, idPrefix, { stem });
   const parts = file.parts.filter((p) => p.notes.length > 0).map((p, i) => makeRollTrack({ ...p.track, notes: p.notes }, i));
   const noteEnd = parts.reduce((m, t) => t.notes.reduce((e, n) => Math.max(e, n.step + n.length), m), 0);
   const totalSteps = roundUpToBar(file.meter.meterMap, Math.max(1, noteEnd), file.meter.pickupSteps);
@@ -128,10 +129,11 @@ export function midiFileTrackParts(
  */
 export function importMidiAsTracks(
   data: MidiFileData,
-  opts: { label: string; atSec: number; idPrefix?: string },
+  opts: { label: string; atSec: number; idPrefix?: string; stem?: string },
   deps: MidiTracksDeps,
 ): MidiTracksResult | null {
-  const file = midiFileTrackParts(data, opts.idPrefix ?? 'imp');
+  // The label names the file ("bass", "Song · bass"): a stem's transcription plays its stem's instrument (lib/stemRole).
+  const file = midiFileTrackParts(data, opts.idPrefix ?? 'imp', opts.stem ?? opts.label);
   if (!file.parts.length) return null;
   const bpm = Number.isFinite(file.bpm) && file.bpm > 0 ? file.bpm : 120;
   const doc = docUid();

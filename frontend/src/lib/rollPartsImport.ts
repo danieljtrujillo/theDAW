@@ -73,6 +73,12 @@ export interface PartsImportOptions {
    * MATCH keeps their seconds when it gives the roll the song's tempo.
    */
   fromAudio?: boolean;
+  /**
+   * The song stem the file transcribes (a file name, a library row id or
+   * label): a part on basic-pitch's stock Electric Piano takes the stem's
+   * instrument (lib/rollMidi midiFileToRollParts, lib/stemRole).
+   */
+  stem?: string;
 }
 
 /**
@@ -122,7 +128,7 @@ export function importMidiParts(
   idPrefix = 'imp',
   opts: PartsImportOptions = {},
 ): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number } {
-  const file = midiFileToRollParts(data, idPrefix);
+  const file = midiFileToRollParts(data, idPrefix, { stem: opts.stem });
   // The file's markers (FF 06) are the new document's; a roll that keeps its document keeps its own.
   const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap, file.markers, opts);
   return {

@@ -77,7 +77,10 @@
  * registry instrument its name or program names (lib/orchestra). A part on
  * MIDI channel 10, or one whose bank select is General MIDI 2's rhythm bank
  * (120), is percussion. The names the roll gives its own tracks ("Piano
- * Roll", "Lane B") name no instrument.
+ * Roll", "Lane B") name no instrument. A song's stem transcribed by
+ * basic-pitch comes on its stock program 4 whatever the stem held: given the
+ * stem's name (the file's, the library row's), such a part takes the stem's
+ * instrument instead (lib/stemRole).
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -118,7 +121,8 @@ import {
 } from './midi';
 import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
-import { guessInstrument, instrumentForProgram } from './orchestra';
+import { guessInstrument, instrumentForProgram, orchestraInstrument } from './orchestra';
+import { BASIC_PITCH_PROGRAM, stemRoleOf, stemRoleVoice } from './stemRole';
 import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
 import { scaleExpressionTicks } from './noteExpression';
 import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
@@ -1078,6 +1082,9 @@ export interface RollMidiPart {
 /** What an import of a file into parts hands to the roll's importParts (or, for one part, importNotes). */
 export type RollMidiPartsImport = Omit<RollMidiImport, 'notes'> & { parts: RollMidiPart[] };
 
+/** A track with no name of its own: blank, or the "Track n" lib/midi's parser gives one. */
+const UNNAMED_TRACK = /^\s*(?:Track \d+)?\s*$/;
+
 /** The names the roll gives its own tracks when it writes no part names ("Piano Roll", "Lane B"): they name no instrument. */
 const ROLL_TRACK_NAME = /^(?:Piano Roll|Lane [A-Z]+)$/;
 
@@ -1122,8 +1129,15 @@ const controlsOnRollClock = (controls: readonly MidiControl[], ppq: number): Rol
  * instrument (lib/orchestra guessInstrument) takes it when the file sets no
  * program or sets that instrument's program; otherwise the program names the
  * instrument (instrumentForProgram) when the registry has one for it.
+ *
+ * `opts.stem` names the song stem the file transcribes (a file name
+ * "bass.mid", a library row id or label). A melodic part on basic-pitch's
+ * stock program 4 then takes the instrument of the stem's role
+ * (lib/stemRole): its program, its registry instrument, the drum channel for
+ * a kit, and, when its track has no name, the role's name.
  */
-export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollMidiPartsImport {
+export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: { stem?: string } = {}): RollMidiPartsImport {
+  const stemVoice = stemRoleVoice(stemRoleOf(opts.stem));
   const origins = new Map<string, NoteOrigin>();
   const read = readMidiFile(data, idPrefix, origins);
   const ppq = data.ppq || ROLL_PPQ;
@@ -1185,15 +1199,19 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
     const t = data.tracks[o.track];
     const channel = o.channel ?? 0;
     const change = firstProgram(t.programs, channel) ?? data.tracks.map((x) => firstProgram(x.programs, channel)).find((p) => p !== undefined);
-    const percussion = channel === 9 || isDrumBank(change?.bank);
+    const filePercussion = channel === 9 || isDrumBank(change?.bank);
+    // basic-pitch's stock Electric Piano on a stem that names its instrument: the stem's instrument instead.
+    const role = !filePercussion && change?.program === BASIC_PITCH_PROGRAM && !isDrumBank(change?.bank) ? stemVoice : null;
+    const percussion = filePercussion || role?.percussion === true;
     const split = trackChannels[o.track].length > 1;
-    const fileProgram = change?.program;
-    const bank = percussion ? 0 : change?.bank ?? 0;
+    const fileProgram = role ? role.program : change?.program;
+    const bank = percussion ? 0 : role ? role.bank : change?.bank ?? 0;
     // The bank select LSB (CC 32) the file sends with the program: XG and GS pick a voice's variations with it.
-    const bankLsb = percussion ? undefined : cleanPartBankLsb(change?.bankLsb);
+    const bankLsb = percussion || role ? undefined : cleanPartBankLsb(change?.bankLsb);
     const controls = controlsOnRollClock(channelControls.get(channel) ?? [], ppq);
+    // A track the file left unnamed (the parser calls it "Track n") takes the stem's name.
     const name = !split
-      ? t.name
+      ? (role && UNNAMED_TRACK.test(t.name) ? role.name : t.name)
       : percussion
         ? `${t.name} drums`
         : fileProgram !== undefined
@@ -1203,7 +1221,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
     const named = fileProgram === undefined && ROLL_TRACK_NAME.test(name.trim()) ? undefined : guessInstrument(name);
     const byName = named && named.percussion === percussion && (fileProgram === undefined || named.program === fileProgram) ? named : undefined;
     const byProgram = fileProgram !== undefined ? instrumentForProgram(fileProgram, bank, percussion) : undefined;
-    const inst = byName ?? byProgram;
+    const inst = (role ? orchestraInstrument(role.instrumentId) : undefined) ?? byName ?? byProgram;
     const program = fileProgram ?? byName?.program ?? null;
     return {
       track: {

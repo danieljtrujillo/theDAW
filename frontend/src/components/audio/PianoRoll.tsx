@@ -1394,7 +1394,8 @@ export const importMidiFileToRoll = (file: File): void => {
       // the part being edited. A channel whose pitch wheel moves gets its own
       // lane and curve (lib/rollMidi, lib/rollPartsImport). The grid fits the
       // length (to a bar line of that map) and the pitch range of every part.
-      const done = importMidiParts(data, 'imp');
+      // A stem saved from the library ("bass.mid") plays its stem's instrument, not basic-pitch's Electric Piano.
+      const done = importMidiParts(data, 'imp', { stem: file.name });
       const changes = done.tempoChanges;
       const where = done.into === 'parts' ? ` as ${done.parts} parts` : ` into ${activeTrackOf(usePianoRollStore.getState()).name}`;
       logInfo(
