@@ -8,7 +8,8 @@
 // their absolute on-disk path (the load step relinks embedded audio to disk, and
 // /api/project/clip-audio serves any absolute path — see dawImportClient's
 // dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
-// seconds-based shape the grid renders.
+// seconds-based shape the grid renders. A note the file already holds in
+// seconds (an imported set's, and every MIDI cell PERFORM saves) is kept as it is.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
 import { playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
@@ -16,6 +17,15 @@ import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { parseFollowAction } from './followAction';
 import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
 import { spanSec, stepClock } from './rollTempo';
+
+/** A saved note's start and length in seconds, or null for a note in roll steps.
+ *  The start fields are the ones lib/projectImport reads a seconds note by. */
+function secondsNote(n: Record<string, number>): { start: number; duration: number } | null {
+  const start = [n.start, n.startSec, n.start_time, n.time].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (start === undefined) return null;
+  const duration = [n.duration, n.durationSec, n.dur, n.length_sec].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  return { start: Math.max(0, start), duration: duration ?? 0.25 };
+}
 
 /** A saved clip's or track's program, bank and sound bank, each only when the file has one. */
 function voiceFields(v: {
@@ -60,6 +70,10 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
           ? stepNotes.map((n) => {
+              const sec = secondsNote(n);
+              if (sec) {
+                return { pitch: Number(n.pitch ?? n.note ?? n.midi ?? 60), ...sec, velocity: Number(n.velocity ?? 100) };
+              }
               const length = Number(n.length ?? 1);
               // The note's own ticks when the file carries them, else its own
               // length in steps down to the roll's one tick (a missing or
