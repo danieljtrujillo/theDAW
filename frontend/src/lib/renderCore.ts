@@ -167,7 +167,7 @@ import {
   activeTrackInstrument, sampleLane, type AudioClip, type AutomationLane, type EditorBus, type EditorTrack,
 } from '../state/editorStore';
 import {
-  applyEnvelopeEvents, entryPrefixLatencies, fxLaneSampleTime, laneEnvelopeEvents,
+  applyEnvelopeEvents, busInputLeadSec, entryPrefixLatencies, fxLaneSampleTime, laneEnvelopeEvents,
   scheduleClipSources, trackCompDelays, wireRoutingGraph,
   type LatencyTrack, type RoutingEndpoints, type TakeBufferResolver, type TrackCompRow,
 } from '../state/liveMixer';
@@ -1333,7 +1333,8 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   }[] = [];
   if (req.includeAutomation && req.includeFx) {
     const groupFx = (
-      kind: 'trackFx' | 'masterFx', handle: ChainHandle, chain: ChainEntry[], trackId?: string,
+      kind: 'trackFx' | 'busFx' | 'masterFx', handle: ChainHandle, chain: ChainEntry[], ownerId?: string,
+      leadSec = 0,
     ) => {
       // ONCE PER CHAIN, not once per step: a prefix sum is a walk of the whole
       // chain through the rack registry, and the stepping loop below asks for
@@ -1341,14 +1342,17 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       const prefix = entryPrefixLatencies(chain, { sampleRate: ctx.sampleRate });
       for (const e of chain) {
         if (!e.enabled) continue;
+        // A hosted plugin is a passthrough here: its lanes ride its print
+        // (lib/render/insertPrint), not this graph.
+        if (e.effect === 'vst3') continue;
         const entryLanes = lanes.filter(
           (l) => l.target.kind === kind && l.target.entryId === e.id
-            && (kind === 'masterFx' || l.target.trackId === trackId),
+            && (kind === 'masterFx' || l.target.trackId === ownerId),
         );
         if (entryLanes.length > 0) {
           fxTargets.push({
             handle, entryId: e.id, baseParams: e.params, lanes: entryLanes,
-            prefixSec: prefix[e.id] ?? 0,
+            prefixSec: leadSec + (prefix[e.id] ?? 0),
           });
         }
       }
@@ -1358,6 +1362,18 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       const nodes = trackNodeById.get(trk.id);
       if (!nodes?.fx) continue;
       groupFx('trackFx', nodes.fx, chainFor(trk), trk.id);
+    }
+    // A bus rack's lanes, on the strip this render built for it. What reaches
+    // a bus is late by the comps above it (`busInputLeadSec`, the figure the
+    // live writer reads too), and each entry then by its own rack ahead of it.
+    const maxSec = renderLatencySec(compRows);
+    const busChainById = new Map(renderedBusChains.map((c) => [c.id, c.fxChain]));
+    const busChainSec = (id: string): number => chainLatencySec(busChainById.get(id) ?? [], { sampleRate: ctx.sampleRate });
+    for (const b of deps.buses ?? []) {
+      const strip = busStrips.get(b.id);
+      if (!strip?.fx) continue;
+      const lead = routedPaths ? busInputLeadSec(deps.routing as RoutingGraph, b.id, maxSec, busChainSec) : 0;
+      groupFx('busFx', strip.fx, busChainFor(b), b.id, lead);
     }
   }
 

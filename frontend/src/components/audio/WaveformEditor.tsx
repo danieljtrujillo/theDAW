@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal, flushSync } from 'react-dom';
+import { createPortal } from 'react-dom';
 import {
   Scissors, Play, Square, ZoomIn, ZoomOut,
   Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
@@ -47,7 +47,7 @@ import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
 import { TrackTemplatePicker } from './TrackTemplatePicker';
-import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, documentFreezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, activeTrackInstrument, automationEntryFor, automationLaneFeed, beginUndoStep, computePeaks, documentFreezeSignature, isFxAutomationKind, sampleLane, automationTargetKey, midiCcOfTarget, vstParamIndexOfKey, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { partController } from '../../lib/rollTracks';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
@@ -55,6 +55,7 @@ import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { LIBRARY_ID_MIME, MIDI_ID_MIME, STEM_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../../lib/libraryDrop';
 import { magnetStart, magnetTargetsFor } from '../../lib/timelineMagnet';
 import { useVstStore } from '../../state/vstStore';
+import { useVstParamStore } from '../../state/vstParamStore';
 import {
   bounceIsChunkSafe, useRenderJobs,
   type RenderJob, type RenderJobKind, type RenderJobResult, type RenderJobSeed,
@@ -163,8 +164,9 @@ import { StemsRunModal, type StemsRunOptions } from '../library/StemsRunModal';
 import { ExportDialog } from './ExportDialog';
 import type { ExportRenderItem, ExportRenderPlan, MidiExportItem } from '../../lib/render/exportDialogModel';
 import { exportArrangementMidi } from '../../lib/arrangementMidiApp';
-import { EffectWindowsHost, FxChainList, openEffectWindow, type EffectWindowOrigin, type FxScope } from './EffectWindows';
-import { browserPopoverEnv, popoverMaxHeight, sameLayout, watchPopover, type PopoverLayout } from '../../lib/popoverPlacement';
+import { EffectWindowsHost, FxChainList, chainInState, effectEntryLabel, openEffectWindow, openVstEditorForScope, type EffectWindowOrigin, type FxScope } from './EffectWindows';
+import { VstAutomationPicker } from './VstAutomationPicker';
+import { PopoverPortal } from './PopoverPortal';
 import { useTrackFxRackStore, type TrackFxRackAnchor } from '../../state/trackFxRackStore';
 import { ensureStems, listStems, type StemRef } from '../../lib/djStems';
 import { clipEditKind, isMidiClip } from '../../lib/clipEditTarget';
@@ -508,15 +510,22 @@ const bounceAndRelease = async (request: BounceRequest, deps: BounceDeps): Promi
 };
 
 /** One plugin hop of an insert print: `/api/vst/process-file` with the
- *  entry's captured state and the host that captured it. What the plugin did
- *  not take goes to the LOG, and a failure names the plugin and where it sits. */
-const printHop: VstHop = async (wav, entry, where) => {
+ *  entry's captured state, the host that captured it and the automation on its
+ *  parameters. What the plugin did not take goes to the LOG, and a failure
+ *  names the plugin and where it sits. */
+const printHop: VstHop = async (wav, entry, where, automation) => {
   const vst = entry.vst as VstNode;
   const plugin = vst.plugin_name || entry.label || 'VST3';
-  logInfo('editor', `Printing ${plugin} on ${where}…`);
+  logInfo(
+    'editor',
+    automation.length > 0
+      ? `Printing ${plugin} on ${where} with ${automation.length} automated parameter${automation.length === 1 ? '' : 's'}…`
+      : `Printing ${plugin} on ${where}…`,
+  );
   try {
     return await processFileThroughVst(wav, vst, 'insert-print.wav', {
       onWarning: (w) => logWarn('editor', `${plugin} on ${where}: ${w}`),
+      automation,
     });
   } catch (e) {
     throw new Error(`${plugin} on ${where} could not be printed: ${e instanceof Error ? e.message : String(e)}`);
@@ -543,6 +552,8 @@ const bounceWithInserts = async (
       isCancelled,
       onProgress,
       onPrinted: (wav) => prints.push(wav),
+      // The plugin's own name for an automated parameter, as its live host listed it.
+      paramName: (entryId, index) => useVstParamStore.getState().lists[entryId]?.find((p) => p.index === index)?.name,
     });
   } finally {
     deps.release();
@@ -574,10 +585,14 @@ export const selectionRequest = (clipIds: string[]): BounceRequest => ({
 });
 
 /**
- * A track stem: the track's RAW audio through its own rack — no automation, and
- * no track volume / pan / mute / solo, because the timeline plays the printed
- * stem back through the fader it was already going through. Hosted VST3 entries
- * print on the backend at their place in the chain (lib/render/insertPrint).
+ * A track stem: the track's RAW audio through its own rack, with the automation
+ * of that rack's parameters baked in, and no track volume / pan / mute / solo,
+ * because the timeline plays the printed stem back through the fader it was
+ * already going through (a volume or pan lane is a lane on that fader, and the
+ * render applies those only with the track mix). The rack's lanes have to be
+ * in the stem: a freeze empties the live rack, so nothing else plays them.
+ * Hosted VST3 entries print on the backend at their place in the chain, their
+ * parameters moving as their lanes say (lib/render/insertPrint).
  *
  * `/api/vst/process-file` answers in float, and every hop is sent in float, so
  * a chain does not requantize between stages. `float32` is how the finished
@@ -589,7 +604,7 @@ export const stemRequest = (trackId: string, hasHostedVsts: boolean): BounceRequ
   scope: { kind: 'track', trackId },
   sampleRate: BOUNCE_SAMPLE_RATE,
   includeFx: true,
-  includeAutomation: false,
+  includeAutomation: true,
   includeTrackMix: false,
   float32: hasHostedVsts,
 });
@@ -1459,67 +1474,6 @@ const pushSeparator = (items: ContextMenuItem[]): void => {
   items.push({ type: 'separator' });
 };
 
-/**
- * Floating popover portaled to document.body, mirroring ContextMenu's pattern:
- * the Shell scales the DAW with CSS `zoom` (`.dense-layout`), so a fixed panel
- * rendered INSIDE the zoomed tree drifts away from raw clientX/Y anchors. The
- * body portal escapes the zoom, so the coords land at the click. The panel is
- * laid out inside the window and above the transport footer (watchPopover)
- * when it opens, again whenever its own size changes (a rack gaining rows),
- * and again when the window resizes, so no edge runs off screen or over the
- * transport as the content grows. Its max-height is that room less the edge
- * gaps, and it scrolls inside itself past that. When no coords are given the
- * panel renders at `anchorClassName` (the legacy fixed position) instead.
- */
-const PopoverPortal: React.FC<{
-  x?: number;
-  y?: number;
-  anchorClassName?: string;
-  className: string;
-  /** The panel's design max-height as a CSS length (`70vh`). The window's
-   *  height less the edge gaps caps it either way. */
-  maxHeight?: string;
-  /** Optional external ref (outside-click dismissal needs the panel node). */
-  innerRef?: React.RefObject<HTMLDivElement | null>;
-  children: React.ReactNode;
-}> = ({ x, y, anchorClassName = '', className, maxHeight, innerRef, children }) => {
-  const localRef = useRef<HTMLDivElement | null>(null);
-  const ref = innerRef ?? localRef;
-  const hasCoords = x != null && y != null;
-  const [layout, setLayout] = useState<PopoverLayout | null>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (x == null || y == null || !el) {
-      setLayout(null);
-      return;
-    }
-    const keep = (next: PopoverLayout) => setLayout((prev) => (prev && sameLayout(prev, next) ? prev : next));
-    // Size changes are reported after layout; flushSync renders the new spot
-    // before that frame paints, so a grown panel never shows past the edge.
-    return watchPopover({ x, y }, browserPopoverEnv(el), (next, initial) => {
-      if (initial) keep(next);
-      else flushSync(() => keep(next));
-    });
-  }, [x, y, ref]);
-  // While measuring (first paint) the panel renders off-screen, exactly like
-  // ContextMenu, so the un-clamped position never flashes.
-  const shown = hasCoords ? layout ?? { x: -9999, y: -9999 } : null;
-  return createPortal(
-    <div
-      ref={ref}
-      className={`${className}${shown ? '' : ` ${anchorClassName}`}`}
-      style={{
-        maxHeight: popoverMaxHeight(hasCoords ? layout?.maxHeight ?? null : null, maxHeight),
-        overflowY: 'auto',
-        ...(shown ? { left: shown.x, top: shown.y } : {}),
-      }}
-    >
-      {children}
-    </div>,
-    document.body,
-  );
-};
-
 /** The track instrument select's value for an external-only track (EditorTrack externalOnly). */
 const EXTERNAL_ONLY_VALUE = 'external';
 
@@ -2005,9 +1959,9 @@ const MarkerFlag: React.FC<{
   );
 };
 
-/** The two scopes a rack param can live in (the shape `EffectWindowsHost` and
- *  `FxRack` hand back). `FxScope`'s third kind, masterVst, has no live params. */
-type FxParamScope = { kind: 'master' } | { kind: 'track'; trackId: string };
+/** Where a rack or plugin param lives: every scope `EffectWindowsHost` and
+ *  `FxRack` hand back, the master VST chain and the bus racks included. */
+type FxParamScope = FxScope;
 
 /* Which SURFACE a lane's gesture boundary comes from.
  *
@@ -2016,7 +1970,7 @@ type FxParamScope = { kind: 'master' } | { kind: 'track'; trackId: string };
  * y, a preset writes the lot — and it reports one boundary for all of them, so
  * every param of an entry shares the entry's group. */
 const gestureGroup = (t: AutomationTarget): string =>
-  t.kind === 'trackFx' || t.kind === 'masterFx'
+  isFxAutomationKind(t.kind)
     ? `${t.kind}|${t.trackId ?? ''}|${t.entryId ?? ''}`
     : automationTargetKey(t);
 
@@ -2192,8 +2146,6 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Master VST3 chain (rendered/frozen, hosted via pedalboard) + scan list.
   const masterVstChain = useEditorStore((s) => s.masterVstChain);
   const addMasterVst = useEditorStore((s) => s.addMasterVst);
-  const setMasterVstRawState = useEditorStore((s) => s.setMasterVstRawState);
-  const setTrackVstRawState = useEditorStore((s) => s.setTrackVstRawState);
   const setTrackInstrumentRawState = useEditorStore((s) => s.setTrackInstrumentRawState);
   const addTrackVst = useEditorStore((s) => s.addTrackVst);
   const removeMasterVst = useEditorStore((s) => s.removeMasterVst);
@@ -2223,6 +2175,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // AUTOMATION_LANE_REPAINT_MS while holds exist and immediately otherwise, so an
   // ordinary edit still lands on the very next paint. See editorStore.ts.
   const automationLanes = useSyncExternalStore(automationLaneFeed.subscribe, automationLaneFeed.getSnapshot);
+  // Every hosted plugin's own parameter list, as its live host sent it: a lane on
+  // a plugin parameter is named from it.
+  const vstParamLists = useVstParamStore((s) => s.lists);
   const addAutomationPoint = useEditorStore((s) => s.addAutomationPoint);
   const updateAutomationPoint = useEditorStore((s) => s.updateAutomationPoint);
   const removeAutomationPoint = useEditorStore((s) => s.removeAutomationPoint);
@@ -2368,11 +2323,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   /** The lane a native fader records onto. */
   const faderTarget = (kind: 'trackVolume' | 'trackPan', trackId: string): AutomationTarget => ({ kind, trackId });
-  /** The lane one rack param records onto. */
-  const fxTarget = (scope: FxParamScope, entryId: string, paramKey: string): AutomationTarget =>
-    scope.kind === 'master'
-      ? { kind: 'masterFx', entryId, paramKey }
-      : { kind: 'trackFx', trackId: scope.trackId, entryId, paramKey };
+  /** The lane one rack or plugin param records onto. A bus insert's lane names
+   *  the bus in `trackId` (the routing node id); both master chains are masterFx. */
+  const fxTarget = (scope: FxParamScope, entryId: string, paramKey: string): AutomationTarget => {
+    if (scope.kind === 'track') return { kind: 'trackFx', trackId: scope.trackId, entryId, paramKey };
+    if (scope.kind === 'bus') return { kind: 'busFx', trackId: scope.busId, entryId, paramKey };
+    return { kind: 'masterFx', entryId, paramKey };
+  };
   /** The surface a rack panel's gesture belongs to — built from a target so it
    *  cannot drift from `gestureGroup`. */
   const fxGroup = (scope: FxParamScope, entryId: string): string => gestureGroup(fxTarget(scope, entryId, ''));
@@ -2399,11 +2356,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     entryId: string,
     p: Record<string, number>,
   ) => {
-    const prev =
-      scope.kind === 'master'
-        ? masterFxChain.find((e) => e.id === entryId)?.params
-        : tracks.find((t) => t.id === scope.trackId)?.fxChain?.find((e) => e.id === entryId)?.params;
+    const st = useEditorStore.getState();
+    const prev = chainInState(st, scope).find((e) => e.id === entryId)?.params;
     if (scope.kind === 'master') updateMasterEffectParams(entryId, p);
+    else if (scope.kind === 'masterVst') st.setMasterVstParams(entryId, p);
+    else if (scope.kind === 'bus') st.updateBusEffectParams(scope.busId, entryId, p);
     else updateTrackEffectParams(scope.trackId, entryId, p);
     if (!automationArmed || !liveMixer.isPlaying() || !prev) return;
     for (const key of Object.keys(p)) {
@@ -2450,18 +2407,16 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // controls visually follow automation during playback (display only; edits still
   // write the stored params).
   const fxDisplayParams = useCallback(
-    (scope: { kind: 'master' } | { kind: 'track'; trackId: string }, entryId: string): Record<string, number> | undefined => {
+    (scope: FxParamScope, entryId: string): Record<string, number> | undefined => {
       if (!isEditorPlaying || automationArmed) return undefined; // read follows the lane; an armed mode shows your hands
       const out: Record<string, number> = {};
+      // The lanes of THIS entry at THIS place: the kind and owner its scope records onto.
+      const want = fxTarget(scope, entryId, '');
       for (const lane of automationLanes) {
         if (!lane.enabled || lane.points.length === 0) continue;
         const tgt = lane.target;
-        if (!tgt.paramKey || tgt.entryId !== entryId) continue;
-        if (scope.kind === 'master') {
-          if (tgt.kind !== 'masterFx') continue;
-        } else if (tgt.kind !== 'trackFx' || tgt.trackId !== scope.trackId) {
-          continue;
-        }
+        if (!tgt.paramKey || tgt.entryId !== entryId || tgt.kind !== want.kind) continue;
+        if (want.kind !== 'masterFx' && tgt.trackId !== want.trackId) continue;
         const v = sampleLane(lane, followPlayhead);
         if (v != null) out[tgt.paramKey] = v;
       }
@@ -2501,11 +2456,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (k === 'trackPan') return { color: '#60a5fa', toNorm: (v) => (Math.max(-1, Math.min(1, v)) + 1) / 2, fromNorm: (n) => c01(n) * 2 - 1 };
     // A MIDI controller: 0-127, a whole value, as the synth takes it.
     if (k === 'trackMidiCc') return { color: '#e879f9', toNorm: (v) => c01(v / 127), fromNorm: (n) => Math.round(c01(n) * 127) };
-    const entry =
-      k === 'trackFx'
-        ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain?.find((e) => e.id === lane.target.entryId)
-        : masterFxChain.find((e) => e.id === lane.target.entryId);
+    const entry = automationEntryFor({ tracks, buses, masterFxChain, masterVstChain }, lane.target);
     if (!entry) return null;
+    // A hosted plugin's parameter: the plugin's own normalized 0..1, drawn in the
+    // teal every VST row wears.
+    if (entry.vst && vstParamIndexOfKey(lane.target.paramKey) !== null) {
+      return { color: '#2dd4bf', toNorm: (v) => c01(v), fromNorm: (n) => c01(n) };
+    }
     const desc = getRackEffect(entry.effect)?.params.find((p) => p.key === lane.target.paramKey);
     if (!desc) return null;
     const span = Math.max(1e-6, desc.max - desc.min);
@@ -2522,11 +2479,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
       const cc = midiCcOfTarget(lane.target);
       return `${trackName} · MIDI CC ${lane.target.paramKey ?? ''}${cc !== null ? ` ${partController(cc)?.name ?? ''}` : ''}`.trim();
     }
-    const chain = k === 'trackFx' ? tracks.find((t) => t.id === lane.target.trackId)?.fxChain ?? [] : masterFxChain;
-    const entry = chain.find((e) => e.id === lane.target.entryId);
-    const effLabel = entry ? getRackEffect(entry.effect)?.label ?? entry.effect : '?';
-    const paramLabel = entry ? getRackEffect(entry.effect)?.params.find((p) => p.key === lane.target.paramKey)?.label ?? lane.target.paramKey : lane.target.paramKey;
-    return `${k === 'masterFx' ? 'Master' : trackName} · ${effLabel} ${paramLabel ?? ''}`.trim();
+    const entry = automationEntryFor({ tracks, buses, masterFxChain, masterVstChain }, lane.target);
+    const owner = k === 'masterFx' ? 'Master' : k === 'busFx' ? buses.find((b) => b.id === lane.target.trackId)?.name ?? 'Bus' : trackName;
+    const effLabel = entry ? effectEntryLabel(entry) : '?';
+    const vstIndex = vstParamIndexOfKey(lane.target.paramKey);
+    const paramLabel = entry?.vst && vstIndex !== null
+      // The plugin's own name for it once its host has listed it; its place in the list until then.
+      ? vstParamLists[entry.id]?.find((p) => p.index === vstIndex)?.name ?? `Parameter ${vstIndex + 1}`
+      : entry ? getRackEffect(entry.effect)?.params.find((p) => p.key === lane.target.paramKey)?.label ?? lane.target.paramKey : lane.target.paramKey;
+    return `${owner} · ${effLabel} ${paramLabel ?? ''}`.trim();
   };
 
   // The "Add lane" picker's options — see automationLaneOptions.ts for why this
@@ -2538,8 +2499,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     [clips],
   );
   const addLaneOptions = useMemo(
-    () => buildAddAutomationLaneOptions(tracks, masterFxChain, automationLanes, midiTrackIds),
-    [tracks, masterFxChain, automationLanes, midiTrackIds],
+    () => buildAddAutomationLaneOptions(tracks, masterFxChain, automationLanes, midiTrackIds, buses),
+    [tracks, masterFxChain, automationLanes, midiTrackIds, buses],
   );
 
   // The picker's own selection — reset whenever the option it names disappears
@@ -2552,6 +2513,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
 
   const MASTER_STRIP_H = 80;
   const masterLanes = automationLanes.filter((l) => l.target.kind === 'masterFx');
+  /** The buses with a lane, in the mixer's order: each gets a strip of its own
+   *  under the master's while automation is being edited (a bus has no lane row). */
+  const busLaneStrips = buses.filter((b) => automationLanes.some((l) => l.target.kind === 'busFx' && l.target.trackId === b.id));
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -2660,17 +2624,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // on the right chain (a track's fxChain or the master VST chain).
   const openVstEditor = (entry: ChainEntry, sink: (entryId: string, rawState: string) => void) =>
     useVstEditorStore.getState().open(entry, sink);
-  // Scope-aware VST GUI opener for the unified effect windows: resolves the
-  // raw_state sink from where the entry lives.
-  const openVstFor = useCallback((scope: FxScope, entry: ChainEntry) => {
-    if (scope.kind === 'track') {
-      const trackId = scope.trackId;
-      openVstEditor(entry, (entryId, raw) => setTrackVstRawState(trackId, entryId, raw));
-    } else {
-      openVstEditor(entry, setMasterVstRawState);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setMasterVstRawState, setTrackVstRawState]);
+  // Scope-aware VST GUI opener for the unified effect windows: the raw_state
+  // sink follows where the entry lives (a track, a bus or the master).
+  const openVstFor = useCallback((scope: FxScope, entry: ChainEntry) => openVstEditorForScope(scope, entry), []);
   // The single row-click entry point: open (or focus) the entry's control
   // window; VST entries also (re)open their native GUI, 'ares' takes the
   // one app-wide surface. One window per effect — reopening focuses.
@@ -6214,7 +6170,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
 
   /** Lanes content height (local px): every lane, the drop slot, the master strip. */
-  const lanesHeightPx = tracks.length * trackH + 34 + (automationEdit ? MASTER_STRIP_H : 0);
+  const lanesHeightPx = tracks.length * trackH + 34 + (automationEdit ? MASTER_STRIP_H * (1 + busLaneStrips.length) : 0);
   /** Seconds the grid, the ruler's time ticks and its bar numbers cover
    *  (null until measured). Windowed to the viewport (+ padding), never the
    *  whole session — see rulerTimeTicks' own note on why that matters. */
@@ -7246,6 +7202,12 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               <Plus className="w-3.5 h-3.5" />
             </button>
           </div>
+          {/* A VST3 insert's own parameters, on a track, a bus or the master:
+              the insert first, then one of the parameters its host lists. */}
+          <VstAutomationPicker
+            lanes={automationLanes}
+            onAdd={(target) => setActiveLaneId(addAutomationLane(target))}
+          />
           {automationLanes.length === 0 ? (
             <span className="text-xs font-bold tabular-nums text-zinc-600 leading-relaxed">
               No lanes yet. Pick a parameter above, or turn on WRITE and ride a fader or FX control while playing to record one.
@@ -8390,6 +8352,44 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
                     editable={editable}
                   />
                 </div>
+              );
+            })}
+
+            {/* One strip per bus with a lane, under the master's: a bus has no
+                row on the timeline, so its insert lanes are drawn here. */}
+            {automationEdit && busLaneStrips.map((b, i) => {
+              const top = tracks.length * trackH + 34 + MASTER_STRIP_H * (i + 1);
+              return (
+                <React.Fragment key={b.id}>
+                  <div
+                    className="absolute left-0 border-t border-purple-500/30 bg-purple-500/4 pointer-events-none"
+                    style={{ top, width: timelineWidthPx, height: MASTER_STRIP_H }}
+                  >
+                    <span className="absolute top-1 left-2 font-display text-xs font-bold uppercase tracking-widest text-purple-300/80">{b.name} FX</span>
+                  </div>
+                  {automationLanes.map((lane) => {
+                    if (lane.target.kind !== 'busFx' || lane.target.trackId !== b.id) return null;
+                    const editable = lane.id === activeLaneId;
+                    if (lane.points.length === 0 && !editable) return null;
+                    const vis = laneVisual(lane);
+                    if (!vis) return null;
+                    return (
+                      <div key={lane.id} className="contents" data-wheel-passthrough={editable ? '' : undefined}>
+                        <AutomationLane
+                          lane={lane}
+                          zoom={zoom}
+                          width={timelineWidthPx}
+                          height={MASTER_STRIP_H}
+                          top={top}
+                          color={vis.color}
+                          toNorm={vis.toNorm}
+                          fromNorm={vis.fromNorm}
+                          editable={editable}
+                        />
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
 

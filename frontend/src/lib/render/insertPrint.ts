@@ -18,6 +18,14 @@
  *   3. The master VST chain runs over the finished mix, one hop per plugin, in
  *      the order the user set: it sits after the master rack.
  *
+ * AUTOMATION. A bounce that bakes the automation lanes (`includeAutomation`)
+ * hands each hop the lanes on that plugin's parameters, as curves over the
+ * file it sends (lib/render/vstParamAutomation), and the backend moves the
+ * parameters block by block as it renders: a track insert takes its track's
+ * trackFx lanes, a bus insert its bus's busFx lanes, a master plugin the
+ * masterFx lanes. Every file a hop is sent starts at the render's origin and is
+ * aligned to the timeline, so the curves are laid on it as they are.
+ *
  * Nodes are printed upstream first (the routing graph's order), so a bus prints
  * what its tracks' plugins made, and a sidechain key hears its source's print.
  *
@@ -47,7 +55,7 @@
  * called exactly as before.
  */
 import type { ChainEntry } from '../../state/effectChainStore';
-import type { AudioClip, EditorTrack } from '../../state/editorStore';
+import type { AudioClip, AutomationLane, EditorTrack } from '../../state/editorStore';
 import { topoOrder, type RoutingGraph } from '../../state/routingGraph';
 import {
   clipsInScope, isExternalMidiClip, renderBounce, renderExtentSec,
@@ -56,6 +64,7 @@ import {
 import { encodeWav } from '../wavEncode';
 import { readWavSamples, readWavShape, type WavSamples } from '../wavSamples';
 import { planRangeRender, sliceRangeBuffer } from './renderRangePlan';
+import { hopAutomation, type HopAutomationSite, type HostParamAutomation } from './vstParamAutomation';
 
 /** A chain entry the print runs through a plugin host: an enabled VST3 that
  *  names its plugin's file. The live chain hosts an entry by the same rule
@@ -71,8 +80,12 @@ const HEADER_BYTES = 64 * 1024;
 /**
  * One plugin hop: a 32-bit float WAV in, the plugin's WAV out. `where` names
  * the track, the bus or the master, for the log and for an error.
+ * `automation` is the plugin's automated parameters over that WAV's frames,
+ * empty when none is (lib/render/vstParamAutomation).
  */
-export type VstHop = (wav: Blob, entry: ChainEntry, where: string) => Promise<Blob>;
+export type VstHop = (
+  wav: Blob, entry: ChainEntry, where: string, automation: HostParamAutomation[],
+) => Promise<Blob>;
 
 export interface InsertPrintOptions {
   /** Runs one plugin over one file. */
@@ -87,6 +100,9 @@ export interface InsertPrintOptions {
   onProgress?: (done: number, total: number) => void;
   /** Hears each printed file a later stage plays, so its caller can free the decoded audio. */
   onPrinted?: (wav: Blob) => void;
+  /** The plugin's own name for parameter `index` of insert `entryId`, when
+   *  the app has read its list: the pedalboard renderer finds a parameter by it. */
+  paramName?: (entryId: string, index: number) => string | undefined;
 }
 
 export interface InsertPrintResult {
@@ -256,6 +272,17 @@ export async function renderWithInserts(
     stage: { chains: new Map(chains), sources: new Map(sources), ...extra },
   });
 
+  /** The lanes a hop carries: every one the bounce bakes (the render's own filter). */
+  const lanes: readonly AutomationLane[] = req.includeAutomation
+    ? deps.automationLanes.filter((l) => l.enabled && l.points.length > 0)
+    : [];
+  /** One insert's automation over the file it is about to be sent. */
+  const automationOf = (
+    entry: ChainEntry, site: HopAutomationSite, frames: number, sampleRate: number,
+  ): HostParamAutomation[] => (lanes.length === 0
+    ? []
+    : hopAutomation(lanes, entry, site, { originSec, sampleRate, frames }, opts.paramName));
+
   const total = sites.reduce((n, s) => n + 2 * s.inserts.length, 0) + 1 + masterInserts.length;
   let done = 0;
   const step = (): void => {
@@ -271,7 +298,11 @@ export async function renderWithInserts(
     step();
     for (let i = 0; i < site.inserts.length; i += 1) {
       if (cancelled()) return null;
-      const wav = await opts.hop(encodeWav(audio, { float32: true }), site.inserts[i], site.name);
+      const lanesAt: HopAutomationSite = { kind: site.kind === 'bus' ? 'busFx' : 'trackFx', ownerId: site.id };
+      const wav = await opts.hop(
+        encodeWav(audio, { float32: true }), site.inserts[i], site.name,
+        automationOf(site.inserts[i], lanesAt, audio.length, audio.sampleRate),
+      );
       hops += 1;
       step();
       opts.onPrinted?.(wav);
@@ -305,7 +336,12 @@ export async function renderWithInserts(
   let wav = encodeWav(mix, { float32: true });
   for (const entry of masterInserts) {
     if (cancelled()) return null;
-    wav = await opts.hop(wav, entry, 'Master');
+    // Read off the file itself: an earlier plugin's tail may have grown it.
+    const shape = lanes.length === 0 ? null : readWavShape(await wav.slice(0, HEADER_BYTES).arrayBuffer(), wav.size);
+    wav = await opts.hop(
+      wav, entry, 'Master',
+      shape ? automationOf(entry, { kind: 'masterFx' }, shape.frames, shape.sampleRate) : [],
+    );
     hops += 1;
     step();
   }

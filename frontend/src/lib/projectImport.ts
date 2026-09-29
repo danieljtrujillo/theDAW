@@ -779,15 +779,17 @@ export function applyTasmoMarkersAndLoop(project: Pick<TasmoProjectLoaded, 'loca
 // Mirrors `ChainEntry` / `EditorAutomationLane` in
 // backend/modules/project/tasmo_project.py.
 
-/** The five target kinds the editor can automate. A lane naming anything else
+/** The six target kinds the editor can automate. A lane naming anything else
  *  is a hand-edited file, and is dropped rather than restored as a lane that
- *  writes nowhere. */
+ *  writes nowhere. A busFx lane names its bus in `track_id`: the routing node
+ *  id, the one namespace track ids and bus ids share. */
 const AUTOMATION_KINDS: readonly AutomationTargetKind[] = [
   'trackVolume',
   'trackPan',
   'trackFx',
   'masterFx',
   'trackMidiCc',
+  'busFx',
 ];
 
 /** A non-empty string, or undefined for anything else a file might hold. */
@@ -901,7 +903,8 @@ export function automationLanesToTasmo(
   const out: TasmoAutomationLane[] = [];
   for (const l of lanes) {
     if (!l || !l.target || !AUTOMATION_KINDS.includes(l.target.kind)) continue;
-    if (only && l.target.trackId !== undefined && !only.has(l.target.trackId)) continue;
+    // A bus lane's owner is a bus, and every save writes the editor's buses.
+    if (only && l.target.kind !== 'busFx' && l.target.trackId !== undefined && !only.has(l.target.trackId)) continue;
     out.push({
       id: l.id,
       target: {
@@ -931,14 +934,23 @@ export function automationLanesToTasmo(
 export function automationTargetResolver(
   tracks: readonly EditorTrack[],
   masterFxChain: readonly ChainEntry[],
+  masterVstChain: readonly ChainEntry[] = [],
+  buses: readonly Pick<EditorBus, 'id' | 'fxChain'>[] = [],
 ): (target: AutomationTarget) => boolean {
   const trackIds = new Set(tracks.map((t) => t.id));
   const trackEntries = new Map<string, Set<string>>();
   for (const t of tracks) trackEntries.set(t.id, new Set((t.fxChain ?? []).map((e) => e.id)));
-  const masterEntries = new Set(masterFxChain.map((e) => e.id));
+  // Both master chains: a masterFx lane rides the rack or a master VST3's parameter.
+  const masterEntries = new Set([...masterFxChain, ...masterVstChain].map((e) => e.id));
+  const busEntries = new Map<string, Set<string>>();
+  for (const b of buses) busEntries.set(b.id, new Set((b.fxChain ?? []).map((e) => e.id)));
   return (target) => {
     if (target.kind === 'masterFx') {
       return !!target.entryId && !!target.paramKey && masterEntries.has(target.entryId);
+    }
+    if (target.kind === 'busFx') {
+      return !!target.trackId && !!target.entryId && !!target.paramKey
+        && !!busEntries.get(target.trackId)?.has(target.entryId);
     }
     if (!target.trackId || !trackIds.has(target.trackId)) return false;
     // A MIDI track's controller lane names a controller a roll part keeps.
@@ -1026,7 +1038,7 @@ export function applyTasmoMasterAndAutomation(
       ? store.automationLanes
       : tasmoToAutomationLanes(
           project.automation_lanes,
-          automationTargetResolver(store.tracks, masterFxChain),
+          automationTargetResolver(store.tracks, masterFxChain, masterVstChain, store.buses),
         );
   useEditorStore.setState({
     masterFxChain,

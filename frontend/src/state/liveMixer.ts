@@ -47,6 +47,7 @@ import {
   sampleLane,
   automationTargetKey,
   clipPeakGain,
+  isFxAutomationKind,
   type AudioClip,
   type EditorTrack,
   type AutomationLane,
@@ -1065,6 +1066,9 @@ function applyMasterVstChainLive(): void {
   const chain = liveMasterVstChain();
   const full = JSON.stringify(chain);
   if (full === lastMasterVstFullSig) return;
+  // A master VST lane reads back by the latency ahead of its plugin, and a
+  // plugin added, moved or bypassed here moves that figure.
+  refreshMasterAutomationDelays();
   const had = masterVstChainHandle !== null;
   if (had !== chain.length > 0) { buildMasterBus(); return; }
   lastMasterVstFullSig = full;
@@ -1545,7 +1549,16 @@ const NO_CHAIN_DELAYS: ChainAutomationDelays = { panSec: 0, prefix: {} };
  *  — the master rack is downstream of the sum, so it has no comp row and the
  *  alignment pass never hears about it. */
 let trackChainDelays = new Map<string, { sig: string; value: ChainAutomationDelays }>();
+/** The same per BUS: a bus insert's lane reads back by what its own rack puts ahead of it. */
+let busChainDelays = new Map<string, { sig: string; value: ChainAutomationDelays }>();
 let masterChainDelays: { sig: string; value: ChainAutomationDelays } = { sig: '\0', value: NO_CHAIN_DELAYS };
+
+/** The master's two racks in the order the audio meets them: the rack, then the
+ *  VST chain. A master VST entry's prefix counts the whole rack ahead of it. */
+const masterAutomationChain = (): ChainEntry[] => {
+  const s = useEditorStore.getState();
+  return s.masterVstChain.length === 0 ? s.masterFxChain : [...s.masterFxChain, ...s.masterVstChain];
+};
 
 /** Topology AND params: `RackLatencySpec` may be a function of an entry's params,
  *  so a knob turn can move these numbers. The same `JSON.stringify` gate the live
@@ -1564,7 +1577,7 @@ const computeChainDelays = (
  *  track pass so `applyMasterChainLive` — which fires on a master knob drag —
  *  does not re-stringify every track's chain to answer a question about one. */
 function refreshMasterAutomationDelays(): void {
-  const chain = useEditorStore.getState().masterFxChain;
+  const chain = masterAutomationChain();
   const sampleRate = getEngineOutputInfo()?.sampleRate;
   const sig = chainDelaySig(chain, sampleRate);
   if (sig === masterChainDelays.sig) return;
@@ -1585,6 +1598,13 @@ function refreshAutomationDelays(): void {
     next.set(t.id, prev && prev.sig === sig ? prev : { sig, value: computeChainDelays(entries, sampleRate) });
   }
   trackChainDelays = next;
+  const nextBus = new Map<string, { sig: string; value: ChainAutomationDelays }>();
+  for (const b of s.buses) {
+    const sig = chainDelaySig(b.fxChain, sampleRate);
+    const prev = busChainDelays.get(b.id);
+    nextBus.set(b.id, prev && prev.sig === sig ? prev : { sig, value: computeChainDelays(b.fxChain, sampleRate) });
+  }
+  busChainDelays = nextBus;
   refreshMasterAutomationDelays();
 }
 
@@ -1603,11 +1623,40 @@ function panDelaySecFor(trackId: string | undefined): number {
   return trackChainDelays.get(trackId)?.value.panSec ?? 0;
 }
 
-/** How far BACK an FX lane on this entry has to read its value, in seconds. */
-function fxPrefixSecFor(master: boolean, trackId: string | undefined, entryId: string): number {
-  if (master) return masterChainDelays.value.prefix[entryId] ?? 0;
-  if (!trackId) return 0;
-  return trackChainDelays.get(trackId)?.value.prefix[entryId] ?? 0;
+/** Per bus: how late the audio entering it runs behind the timeline in the
+ *  live mix (`busInputLeadSec`). Refreshed by `syncTrackLatency`. */
+let busInputLeads = new Map<string, number>();
+
+/**
+ * How late, in seconds, the audio ENTERING bus `busId` runs behind the timeline
+ * in a compensated mix. Every track's comp holds `maxSec` less its whole path
+ * to the master, so what arrives at a bus still has the bus's own rack and
+ * every bus below it to pass: it is `maxSec` less those. 0 with no latency
+ * anywhere. The offline render reads the same figure (lib/renderCore), so a
+ * bus lane lands on the audio it was drawn for in both.
+ */
+export function busInputLeadSec(
+  graph: RoutingGraph,
+  busId: string,
+  maxSec: number,
+  chainSec: (busId: string) => number,
+): number {
+  let below = chainSec(busId);
+  let cur = outputOf(graph, busId);
+  for (let hops = 0; cur !== null && cur !== MASTER_ID && hops <= graph.nodes.length; hops += 1) {
+    below += chainSec(cur);
+    cur = outputOf(graph, cur);
+  }
+  return Math.max(0, maxSec - below);
+}
+
+/** How far BACK an FX lane on this entry has to read its value, in seconds.
+ *  `owner` is the lane's `trackId`: the track's, or for a busFx lane the bus's. */
+function fxPrefixSecFor(kind: AutomationTarget['kind'], owner: string | undefined, entryId: string): number {
+  if (kind === 'masterFx') return masterChainDelays.value.prefix[entryId] ?? 0;
+  if (!owner) return 0;
+  if (kind === 'busFx') return (busInputLeads.get(owner) ?? 0) + (busChainDelays.get(owner)?.value.prefix[entryId] ?? 0);
+  return trackChainDelays.get(owner)?.value.prefix[entryId] ?? 0;
 }
 
 /** Timeline position the FX writer reads a lane at: the frame's transport
@@ -1654,6 +1703,12 @@ function syncTrackLatency(): void {
   // all. Gating this call on the write-skip below reports a clamp once and
   // then never again, and never un-reports one that clears (R1 finding 6).
   noteCompClamp(rows, s.tracks, { graph: s.routing, buses: s.buses });
+  // What reaches each bus is late by the comps above it, so a bus insert's
+  // lane reads back by that much more than its own rack (`fxPrefixSecFor`).
+  const maxSec = rows.reduce((m, r) => Math.max(m, r.latencySec), 0);
+  const busChains = new Map(s.buses.map((b) => [b.id, b.fxChain]));
+  const chainSec = (id: string): number => chainLatencyReport(busChains.get(id) ?? [], { sampleRate: ctx.sampleRate }).totalSec;
+  busInputLeads = new Map(s.buses.map((b) => [b.id, busInputLeadSec(s.routing, b.id, maxSec, chainSec)]));
   // Skip the writes when the alignment has not moved, so a knob turn (which
   // reaches here because a declaration MAY depend on params) does not put a
   // `setTargetAtTime` on every track for numbers that are already there.
@@ -2908,41 +2963,59 @@ function applyFxAutomationFrame(): void {
   useEditorStore.getState().advanceAutomationHolds(t);
   const ed = useEditorStore.getState();
 
-  const byEntry = new Map<string, { master: boolean; trackId?: string; entryId: string; values: Record<string, number> }>();
+  const byEntry = new Map<string, { kind: AutomationTarget['kind']; owner?: string; entryId: string; values: Record<string, number> }>();
   for (const lane of ed.automationLanes) {
     if (!lane.enabled || lane.points.length === 0) continue;
     const { kind, trackId, entryId, paramKey } = lane.target;
-    if ((kind !== 'trackFx' && kind !== 'masterFx') || !entryId || !paramKey) continue;
-    const v = sampleLane(lane, fxLaneSampleTime(t, fxPrefixSecFor(kind === 'masterFx', trackId, entryId), totalDur));
+    if (!isFxAutomationKind(kind) || !entryId || !paramKey) continue;
+    const v = sampleLane(lane, fxLaneSampleTime(t, fxPrefixSecFor(kind, trackId, entryId), totalDur));
     if (v == null) continue;
     const mapKey = `${kind}|${trackId ?? ''}|${entryId}`;
     let acc = byEntry.get(mapKey);
-    if (!acc) { acc = { master: kind === 'masterFx', trackId, entryId, values: {} }; byEntry.set(mapKey, acc); }
+    if (!acc) { acc = { kind, owner: trackId, entryId, values: {} }; byEntry.set(mapKey, acc); }
     acc.values[paramKey] = v;
   }
 
   for (const acc of byEntry.values()) {
-    if (acc.master) {
-      if (!masterChain) continue;
-      const entry = ed.masterFxChain.find((e) => e.id === acc.entryId);
-      if (!entry || !entry.enabled) continue;
-      masterChain.updateParams(acc.entryId, { ...entry.params, ...acc.values });
-    } else {
-      if (!acc.trackId) continue;
-      const n = trackNodes.get(acc.trackId);
-      const entry = ed.tracks.find((tr) => tr.id === acc.trackId)?.fxChain?.find((e) => e.id === acc.entryId);
-      if (!n || !entry || !entry.enabled) continue;
-      n.fx.updateParams(acc.entryId, { ...entry.params, ...acc.values });
-    }
+    const target = fxAutomationTargetOf(acc.kind, acc.owner, acc.entryId, ed);
+    if (!target) continue;
+    // A `p<index>` key reaches a hosted plugin's parameter through the same
+    // `updateParams` a rack knob does (lib/vstLive/vstLiveNode pushParams).
+    target.handle.updateParams(acc.entryId, { ...target.entry.params, ...acc.values });
   }
+}
+
+/**
+ * The live chain an FX lane's values are pushed into, and the entry they merge
+ * over: the master rack or the master VST chain for a masterFx lane (the entry
+ * id says which), the bus strip's rack for a busFx lane, the track strip's for
+ * a trackFx lane. Null when the chain is not built or the entry is gone or
+ * bypassed: a bypassed entry is not in the live graph.
+ */
+function fxAutomationTargetOf(
+  kind: AutomationTarget['kind'],
+  owner: string | undefined,
+  entryId: string,
+  ed: ReturnType<typeof useEditorStore.getState>,
+): { handle: ChainHandle; entry: ChainEntry } | null {
+  const on = (entry: ChainEntry | undefined, handle: ChainHandle | null | undefined) =>
+    entry && entry.enabled && handle ? { handle, entry } : null;
+  if (kind === 'masterFx') {
+    const rack = ed.masterFxChain.find((e) => e.id === entryId);
+    if (rack) return on(rack, masterChain);
+    return on(ed.masterVstChain.find((e) => e.id === entryId), masterVstChainHandle);
+  }
+  if (!owner) return null;
+  if (kind === 'busFx') {
+    return on(ed.buses.find((b) => b.id === owner)?.fxChain.find((e) => e.id === entryId), busNodes.get(owner)?.fx);
+  }
+  return on(ed.tracks.find((tr) => tr.id === owner)?.fxChain?.find((e) => e.id === entryId), trackNodes.get(owner)?.fx);
 }
 
 function startFxAutomation(): void {
   stopFxAutomation();
   const ed = useEditorStore.getState();
-  const hasFxLane = ed.automationLanes.some(
-    (l) => l.enabled && (l.target.kind === 'trackFx' || l.target.kind === 'masterFx'),
-  );
+  const hasFxLane = ed.automationLanes.some((l) => l.enabled && isFxAutomationKind(l.target.kind));
   // The same timer is the HOLD clock. An armed mode (touch/latch/write) has to run
   // it even in a project with no FX lane at all, because a latch or write hold
   // writes its value forward frame by frame — without the timer a held fader would
@@ -4003,17 +4076,28 @@ export function reactivate(): void {
  * was spawned BY the first Play (the song opened dry until it had loaded) and a plugin removed
  * with the transport stopped kept its host process until the next Play.
  */
+/**
+ * Every chain entry of the EDIT project a plugin host may be held for: the
+ * master VST chain, each track's instrument and inserts, and each bus's
+ * inserts. A bus's plugins are held the same way as a track's: loaded with the
+ * project, not first spawned by Play. `createProjectSessions` keeps the hosted
+ * ones among them.
+ */
+export function projectVstEntries(
+  ed: Pick<ReturnType<typeof useEditorStore.getState>, 'masterVstChain' | 'tracks' | 'buses'>,
+): ChainEntry[] {
+  const out: ChainEntry[] = [...ed.masterVstChain];
+  for (const t of ed.tracks) {
+    if (t.instrument) out.push(t.instrument);
+    if (t.fxChain) out.push(...t.fxChain);
+  }
+  for (const b of ed.buses) out.push(...b.fxChain);
+  return out;
+}
+
 const projectSessions = createProjectSessions({
   registry: vstSessions,
-  entries: () => {
-    const ed = useEditorStore.getState();
-    const out: ChainEntry[] = [...ed.masterVstChain];
-    for (const t of ed.tracks) {
-      if (t.instrument) out.push(t.instrument);
-      if (t.fxChain) out.push(...t.fxChain);
-    }
-    return out;
-  },
+  entries: () => projectVstEntries(useEditorStore.getState()),
   sampleRate: () => getEngineCtx().sampleRate,
 });
 let unsubProjectSessions: (() => void) | null = null;
@@ -4031,7 +4115,11 @@ export function attach(): () => void {
     // Gated on the rack-bearing slices BY REFERENCE, like the live-edit subscription in start():
     // the 60 Hz playhead tick leaves both untouched.
     unsubProjectSessions = useEditorStore.subscribe((state, prev) => {
-      if (state.tracks !== prev.tracks || state.masterVstChain !== prev.masterVstChain) projectSessions.reconcile();
+      if (
+        state.tracks !== prev.tracks
+        || state.masterVstChain !== prev.masterVstChain
+        || state.buses !== prev.buses
+      ) projectSessions.reconcile();
     });
   }
   projectSessions.reconcile();

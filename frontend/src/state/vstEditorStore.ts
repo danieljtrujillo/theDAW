@@ -281,6 +281,13 @@ function sinkLiveParams(entryId: string, values: Map<number, number>): void {
   // A track's instrument slot: its knobs live in the plugin's own state, which
   // the next capture stores; there is no rack param list to merge them into.
   if (ed.tracks.some((t) => t.instrument?.id === entryId)) return;
+  for (const b of ed.buses) {
+    const e = b.fxChain.find((x) => x.id === entryId);
+    if (e) {
+      ed.updateBusEffectParams(b.id, entryId, merge(e.params));
+      return;
+    }
+  }
   const master = ed.masterFxChain.find((e) => e.id === entryId);
   if (master) {
     ed.updateMasterEffectParams(entryId, merge(master.params));
@@ -378,6 +385,14 @@ function sinkLiveRawState(entryId: string, rawState: string): boolean {
     }
     if (t.instrument?.id === entryId && t.instrument.vst) {
       ed.setTrackInstrumentRawState(t.id, rawState, 'thedaw');
+      flip();
+      return true;
+    }
+  }
+  for (const b of ed.buses) {
+    const e = b.fxChain.find((x) => x.id === entryId);
+    if (e?.vst) {
+      ed.setBusVstRawState(b.id, entryId, rawState, 'thedaw');
       flip();
       return true;
     }
