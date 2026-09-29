@@ -2896,6 +2896,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         : s.highestNote;
       return {
         notes,
+        // A take recorded to the roll's own click keeps its place in the bar: the part is no transcription of a song now.
+        ...importedPartSlice(s, {}),
         totalSteps: Math.min(MAX_STEPS, roundUpToBar(s.meterMap, Math.max(DEFAULT_STEPS, s.totalSteps), s.pickupSteps)),
         lowestNote: lo,
         highestNote: hi,

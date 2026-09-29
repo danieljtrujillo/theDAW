@@ -169,6 +169,15 @@ const BASS: Array<[number, number, number]> = [[0.5, 1.1, 40], [1.37, 1.9, 43], 
   assert.equal(midiFileToRollParts(file).parts[0].track.fromAudio, true, "the roll's own MIDI file keeps the mark");
   roll().importNotes([{ id: 'gen', note: 60, step: 0, length: 4, velocity: 80 }], 120);
   assert.equal(activeTrackOf(roll()).fromAudio, undefined, "a generator's notes are not a transcription");
+  // A take recorded to the roll's click is placed by the bar, and so is not one either.
+  await sendMidiIdToTarget('song3__guitar_midi', 'piano-roll');
+  assert.equal(activeTrackOf(roll()).fromAudio, true);
+  roll().placeRecording([{ id: 'rec', note: 62, step: 4, length: 2, velocity: 90 }], { startStep: 0, endStep: 16 });
+  assert.equal(activeTrackOf(roll()).fromAudio, undefined, 'a recording over the part clears the mark');
+  // CLEAR does too.
+  await sendMidiIdToTarget('song3__guitar_midi', 'piano-roll');
+  roll().clear();
+  assert.equal(activeTrackOf(roll()).fromAudio, undefined, 'CLEAR clears the mark');
 }
 
 console.log('rollKeepTime: ok');
