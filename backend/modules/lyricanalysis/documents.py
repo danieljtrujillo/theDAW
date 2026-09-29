@@ -455,7 +455,9 @@ def attach(doc_id: str, entry_id: str, write_lyrics: bool = False) -> LyricDocum
         lyrics_service.save_doc(
             lyrics_service.normalize_doc(
                 entry_id,
-                PutLyricsRequest(text=doc.text, source="manual"),
+                PutLyricsRequest(
+                    text=doc.text, source="manual", language=doc.language or None
+                ),
                 lyrics_service.load_doc(entry_id),
             )
         )
@@ -473,11 +475,15 @@ def import_from_entry(req: ImportLyricDocumentRequest) -> LyricDocument:
     if title is None:
         raise KeyError(entry_id)
     bundle = lyrics_service.get_bundle(entry_id)
-    text = str((bundle.get("doc") or {}).get("text") or "")
+    song = bundle.get("doc") or {}
+    text = str(song.get("text") or "")
     return create(
         CreateLyricDocumentRequest(
             title=_clean_title(req.title) or title or DEFAULT_TITLE,
             text=text,
+            # The song's words are in the song's language; a Latin lyric
+            # imported as English would be analysed as English.
+            language=str(song.get("language") or "en"),
             entry_id=entry_id,
         )
     )
