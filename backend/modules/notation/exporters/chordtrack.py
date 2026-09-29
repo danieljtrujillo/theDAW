@@ -8,7 +8,9 @@ Two sources, one schema:
   uses, so a chord block lands where the engraved chord does.
 - **chroma** — the recording itself. ``librosa`` chroma (CQT) is pooled per
   beat, scored against weighted chord templates, and decoded with a sticky
-  Viterbi so a chord has to earn a change. The analysis row (bpm, beats, key,
+  Viterbi so a chord has to earn a change. A beat reads N.C. when no chord
+  stands out of its chroma by 3 dB or when it is silent; a dense mix that lifts
+  every pitch class still reads its chords. The analysis row (bpm, beats, key,
   scale) seeds the beat grid and a key prior; when it is absent the beat
   tracker runs here and the prior is skipped. No new dependencies.
 
@@ -75,6 +77,32 @@ _STAY_PROB = 0.9
 _EMISSION_WEIGHT = 12.0
 # Extra log-score for triads diatonic to the analysed key.
 _KEY_PRIOR = 0.08 * _EMISSION_WEIGHT
+
+# No chord (N.C.) is decided by contrast: how far the pitch classes of the chord
+# that stands out most sit above the other pitch classes of a beat's chroma
+# (mean over mean). A dense mix (drums, distortion, reverb, a held wash) lifts
+# every pitch class at once; that floor pulls every chord's cosine down and
+# pushes a flat profile's cosine up, but it leaves the chord's lead over the
+# rest where it was.
+# N.C. and the best chord tie at a ratio of sqrt(2), 3 dB of chroma magnitude.
+# Measured per beat on the separated stems of 16 library songs: drum stems
+# have a median of 1.24 and 81% of beats under the tie; bass, guitar, piano and
+# other together have a median of 2.73 and 3% under it.
+_NC_CONTRAST = math.log(math.sqrt(2.0))
+# Log-score per unit of log contrast. A beat with no contrast at all (a flat
+# chroma, silence) outscores its best chord by 18 * ln(sqrt 2) = 6.2, about one
+# chord change, so two such beats open an N.C. span inside a chord, and a drum
+# kit alone (contrast ~1.25, ~2.4 a beat) opens one in about five beats.
+_NC_WEIGHT = 1.5 * _EMISSION_WEIGHT
+# Floor for the mean of the other pitch classes (the chroma is L1-normalised,
+# so this is a share of the whole): keeps the contrast of a clean chord finite.
+_NC_FLOOR = 1e-4
+# True silence: a beat this far under the track's loud level (its 95th
+# percentile beat), or under this absolute level, carries no chord evidence;
+# the evidence fades in over _SILENCE_RAMP_DB above either line.
+_SILENCE_BELOW_REF_DB = 50.0
+_SILENCE_DBFS = -80.0
+_SILENCE_RAMP_DB = 10.0
 
 _SHARP_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _FLAT_NAMES = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
@@ -574,9 +602,10 @@ def _from_harmony(
 
 
 def _templates(include_sevenths: bool) -> tuple[list[tuple[int, str]], Any]:
-    """(state labels, unit-norm template matrix [states x 12]).
+    """(chord labels, unit-norm template matrix [chords x 12]).
 
-    State labels are ``(root_pc, kind)``; the trailing state is ``(-1, 'N')``.
+    Labels are ``(root_pc, kind)``. No chord has no template: its score comes
+    from the beat's chord contrast (:func:`_emissions`).
     """
     import numpy as np
 
@@ -591,9 +620,6 @@ def _templates(include_sevenths: bool) -> tuple[list[tuple[int, str]], Any]:
                 vec[(root + interval) % 12] = weight
             rows.append(vec / np.linalg.norm(vec))
             labels.append((root, kind))
-    flat = np.full(12, 1.0 / 12.0)
-    rows.append(flat / np.linalg.norm(flat))
-    labels.append((-1, _NO_CHORD))
     return labels, np.vstack(rows)
 
 
@@ -613,6 +639,74 @@ def _key_prior_vector(labels: list[tuple[int, str]], tonic: int, mode: str) -> A
         if (kind == "major" and root in majors) or (kind == "minor" and root in minors):
             prior[index] = _KEY_PRIOR
     return prior
+
+
+def _chord_contrast(pooled: Any, templates: Any) -> Any:
+    """Per segment: ln(mean chroma over the pitch classes of the chord that
+    stands out most / mean over the other pitch classes), never below 0. A flat
+    chroma reads 0.
+
+    Every chord of the vocabulary is asked, not only the best one by cosine: a
+    lifted floor fills the fourth tone of a seventh template and wins it the
+    cosine over the triad that is sounding, while a real seventh chord stands
+    out most as the seventh."""
+    import numpy as np
+
+    tones = templates > 0  # [chords x 12]
+    inside = pooled @ tones.T / tones.sum(axis=1)
+    outside = pooled @ (~tones).T / (~tones).sum(axis=1)
+    ratio = np.maximum(inside, _NC_FLOOR) / np.maximum(outside, _NC_FLOOR)
+    return np.maximum(np.log(ratio).max(axis=1), 0.0)
+
+
+def _presence(levels_db: Any) -> Any:
+    """Per segment, 0..1: how much of its chord evidence a segment's level
+    keeps. 0 is true silence (far under the track's loud level, or under an
+    absolute floor); 1 is any level music plays at."""
+    import numpy as np
+
+    levels = np.asarray(levels_db, dtype=np.float64)
+    if levels.size == 0:
+        return levels
+    reference = float(np.percentile(levels, 95))
+    relative = (levels - (reference - _SILENCE_BELOW_REF_DB)) / _SILENCE_RAMP_DB
+    absolute = (levels - _SILENCE_DBFS) / _SILENCE_RAMP_DB
+    return np.clip(np.minimum(relative, absolute), 0.0, 1.0)
+
+
+def _emissions(
+    pooled: Any, presence: Any, include_sevenths: bool, tonic: int, mode: str
+) -> tuple[list[tuple[int, str]], Any, Any]:
+    """(state labels, log-emission [T x states], confidence [T x states]).
+
+    Chords score by cosine against their templates plus the key prior. The
+    trailing state ``(-1, 'N')`` scores as the best chord of the beat, moved by
+    how far the beat's chord contrast falls short of (or rises over)
+    ``_NC_CONTRAST``: a beat reads N.C. when no chord of the vocabulary stands
+    out of its chroma, or when the beat is silent, and never because the whole
+    chroma is lifted.
+    """
+    import numpy as np
+
+    labels, templates = _templates(include_sevenths)
+    similarity = pooled @ templates.T  # cosine: rows L1 -> rescale by L2 norm
+    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+    norms[norms < 1e-12] = 1.0
+    similarity = np.clip(similarity / norms, 0.0, 1.0)
+
+    prior = _key_prior_vector(labels, tonic, mode)
+    chord_scores = similarity * _EMISSION_WEIGHT + prior[None, :]
+    contrast = _chord_contrast(pooled, templates) * np.asarray(
+        presence, dtype=np.float64
+    )
+    no_chord = chord_scores.max(axis=1) - _NC_WEIGHT * (contrast - _NC_CONTRAST)
+    # 1 for a flat or silent beat, 0.5 at the tie, 0 at twice the tie contrast.
+    no_chord_conf = np.clip(1.0 - contrast / (2.0 * _NC_CONTRAST), 0.0, 1.0)
+
+    labels = labels + [(-1, _NO_CHORD)]
+    log_emission = np.column_stack([chord_scores, no_chord])
+    confidence = np.column_stack([similarity, no_chord_conf])
+    return labels, log_emission, confidence
 
 
 def _viterbi(log_emission: Any, stay: float, switch: float) -> list[int]:
@@ -659,6 +753,23 @@ def _pool_chroma(chroma: Any, boundaries_sec: list[float], sr: int, hop: int) ->
         total = float(column.sum())
         columns.append(column / total if total > 1e-12 else np.full(12, 1.0 / 12.0))
     return np.vstack(columns) if columns else np.zeros((0, 12))
+
+
+def _pool_level_db(rms: Any, boundaries_sec: list[float], sr: int, hop: int) -> Any:
+    """Mean power per segment in dBFS from frame RMS, over the same segments
+    (and the same frame rounding) as :func:`_pool_chroma`."""
+    import numpy as np
+
+    frames = len(rms)
+    levels: list[float] = []
+    for index in range(len(boundaries_sec) - 1):
+        start = int(round(boundaries_sec[index] * sr / hop))
+        end = int(round(boundaries_sec[index + 1] * sr / hop))
+        start = min(max(0, start), frames - 1)
+        end = min(max(start + 1, end), frames)
+        power = float(np.mean(np.square(rms[start:end])))
+        levels.append(10.0 * math.log10(power) if power > 1e-20 else -200.0)
+    return np.asarray(levels, dtype=np.float64)
 
 
 def _from_chroma(
@@ -724,15 +835,13 @@ def _from_chroma(
     boundaries.append(duration_sec)
 
     pooled = _pool_chroma(chroma, boundaries, sr, _HOP)
-    labels, templates = _templates(include_sevenths)
-    similarity = pooled @ templates.T  # cosine: rows L1 -> rescale by L2 norm
-    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
-    norms[norms < 1e-12] = 1.0
-    similarity = np.clip(similarity / norms, 0.0, 1.0)
+    rms = librosa.feature.rms(y=y, frame_length=_HOP, hop_length=_HOP)[0]
+    presence = _presence(_pool_level_db(rms, boundaries, sr, _HOP))
 
     tonic, mode, key_conf = _analysis_key(analysis)
-    prior = _key_prior_vector(labels, tonic, mode)
-    log_emission = similarity * _EMISSION_WEIGHT + prior[None, :]
+    labels, log_emission, confidence = _emissions(
+        pooled, presence, include_sevenths, tonic, mode
+    )
     states = len(labels)
     path = _viterbi(log_emission, _STAY_PROB, (1.0 - _STAY_PROB) / max(1, states - 1))
 
@@ -750,7 +859,7 @@ def _from_chroma(
         root, kind = labels[state]
         start_sec = boundaries[seg_start]
         end_sec = boundaries[seg_end]
-        conf = float(np.mean(similarity[seg_start:seg_end, state]))
+        conf = float(np.mean(confidence[seg_start:seg_end, state]))
         if kind == _NO_CHORD:
             symbol, root_name, pcs = "N.C.", "", []
             kind_out, root_pc = "none", -1
