@@ -153,6 +153,20 @@ def indexed_lyric(doc: LyricsDoc) -> str:
     return "\n".join(out)
 
 
+def language_note(doc: LyricsDoc) -> str:
+    """A first line telling the model which language the lyric is in, when
+    it is not English: a Latin lyric read as English is a page of nonsense
+    words, and the model reports "devices" in them."""
+    from .latin import is_latin
+
+    if is_latin(doc.language):
+        return (
+            "The lyric is in Latin. Read it as Latin; write labels and details "
+            "in English.\n"
+        )
+    return ""
+
+
 def parse_json_block(text: str) -> Optional[dict[str, Any]]:
     """Pull one JSON object out of a reply that may be fenced or padded with
     prose (the tolerant parser ``controllervision`` uses)."""
@@ -321,6 +335,7 @@ async def interpret(
     prompt = indexed_lyric(doc)
     if not prompt.strip():
         raise LlmError("no lyric words to interpret")
+    prompt = language_note(doc) + prompt
     async with _llm_lock:
         text = await _chat(chosen, chosen_model, key, prompt)
     parsed = parse_json_block(text)

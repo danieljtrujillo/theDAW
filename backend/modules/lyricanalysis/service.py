@@ -178,13 +178,27 @@ def source_text_hash(lyrics: LyricsDoc) -> str:
     return hashlib.blake2s(joined.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def _reading_language(code: Optional[str]) -> str:
+    """The language an analysis reads its words in: Latin, or English for
+    every other code (the only other language the phonetics speak)."""
+    from .latin import LANGUAGE, is_latin
+
+    return LANGUAGE if is_latin(code) else "en"
+
+
 def is_stale(doc: LyricAnalysisDoc, lyrics: Optional[LyricsDoc]) -> bool:
-    """An analysis is stale when the words moved under it, or when the
-    detectors have changed what they emit since it was written."""
+    """An analysis is stale when the words moved under it, when the lyrics
+    are now in a language it did not read them in, or when the detectors
+    have changed what they emit since it was written."""
     if doc.analyzer_version < ANALYZER_VERSION:
         return True
     if lyrics is None:
         return False
+    if _reading_language(doc.language) != _reading_language(lyrics.language):
+        # "Latin" was picked for words an English reading already analysed
+        # (or back): every syllable, stress and rhyme in it is the other
+        # language's.
+        return True
     # The hash decides whenever both sides carry one; the timestamp is only the
     # fallback for analyses written before the hash field existed.
     if doc.source_text_hash:
@@ -220,9 +234,11 @@ def get_bundle(entry_id: str) -> dict[str, Any]:
 # ---- the analysis itself -----------------------------------------------------
 
 
-def _pronunciation_source(guessed: int, unique_words: int) -> str:
+def _pronunciation_source(guessed: int, unique_words: int, language: str = "en") -> str:
     """What actually backed the phones: the dictionary, the letter-to-sound
-    rules, or both.
+    rules, or both — or, for a Latin lyric, the Latin reading rules
+    (``"latin"``), which need no dictionary because the spelling is the
+    pronunciation.
 
     Both inputs are counts of DISTINCT normalised words — ``guessed_
     pronunciations`` and ``unique_words`` are de-duplicated the same way — so
@@ -233,6 +249,8 @@ def _pronunciation_source(guessed: int, unique_words: int) -> str:
     """
     from .phonetics import PRONUNCIATION_SOURCE
 
+    if _reading_language(language) != "en":
+        return "latin"
     if PRONUNCIATION_SOURCE != "cmudict":
         return "rules"
     if unique_words <= 0:
@@ -269,7 +287,7 @@ def analyse_lyrics(entry_id: str, lyrics: LyricsDoc) -> LyricAnalysisDoc:
         source_updated_at=lyrics.updated_at,
         source_text_hash=source_text_hash(lyrics),
         pronunciation_source=_pronunciation_source(
-            stats.guessed_pronunciations, stats.unique_words
+            stats.guessed_pronunciations, stats.unique_words, lyrics.language
         ),
         devices=list(devices),
         lines=list(lines),
