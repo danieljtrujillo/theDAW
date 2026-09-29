@@ -55,6 +55,11 @@ async function main(): Promise<void> {
       defaultExportState({ projectEndSec: 90, selectionSec: { startSec: 2, endSec: 8 } }).selectionSec,
       { startSec: 2, endSec: 8 },
     );
+    // A clip's menu opens the dialog on the selected clips.
+    assert.deepEqual(
+      defaultExportState({ projectEndSec: 90, what: { kind: 'clips', clipIds: ['c1', 'c2'] } }).what,
+      { kind: 'clips', clipIds: ['c1', 'c2'] },
+    );
   }
 
   /* ── mix builds one master request with the full fidelity flags ─────────── */

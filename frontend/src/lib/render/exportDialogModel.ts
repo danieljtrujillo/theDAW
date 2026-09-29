@@ -128,9 +128,12 @@ export function defaultExportState(opts: {
   selectionSec?: { startSec: number; endSec: number } | null;
   projectEndSec: number;
   name?: string;
+  /** WHAT the dialog opens on: the mix, unless it was opened for something
+   *  else (a clip's menu opens it on the selected clips). */
+  what?: ExportWhat;
 }): ExportDialogState {
   return {
-    what: { kind: 'mix' },
+    what: opts.what ?? { kind: 'mix' },
     rangeMode: 'project',
     selectionSec: opts.selectionSec ?? null,
     customSec: { startSec: 0, endSec: opts.projectEndSec },

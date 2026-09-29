@@ -2595,7 +2595,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // T25c: the export dialog opens beside MIXDOWN rather than replacing it —
   // MIXDOWN stays the one-click "everything, as WAV" path, this is where
   // format/bit-depth/range/destination/stems/selection live.
-  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  // Open on the mix from the toolbar, or on the selected clips from a clip's
+  // menu; null while closed.
+  const [exportDialogOpen, setExportDialogOpen] = useState<'mix' | 'clips' | null>(null);
   // ONE master FX panel — built-in rack effects, VST3s and .gan surfaces are
   // the same concept (chain entries) and share a single list + add menu.
   const [showMasterFx, setShowMasterFx] = useState(false);
@@ -6848,9 +6850,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <RenderJobsPill />
           <button
             type="button"
-            onClick={() => setExportDialogOpen(true)}
+            onClick={() => setExportDialogOpen('mix')}
             aria-haspopup="dialog"
-            aria-expanded={exportDialogOpen}
+            aria-expanded={exportDialogOpen !== null}
             className="p-1 px-1.5 rounded text-zinc-500 hover:text-white hover:bg-white/5"
             aria-label="Export options"
             title="Export options — format, bit depth, range, stems or a clip selection"
@@ -6880,10 +6882,11 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         </div>
       </div>
 
-      {exportDialogOpen && (
+      {exportDialogOpen !== null && (
         <ExportDialog
-          onClose={() => setExportDialogOpen(false)}
+          onClose={() => setExportDialogOpen(null)}
           onExport={runExportPlan}
+          openOn={exportDialogOpen}
           projectEndSec={totalDuration}
           selectionSec={timeSelection}
           tracks={tracks.map((t) => ({ id: t.id, name: t.name }))}
@@ -8647,6 +8650,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           });
         }
         pushSeparator(items);
+        items.push({
+          type: 'item',
+          label: 'Export Selection…',
+          icon: <Save className="w-3 h-3" />,
+          title: 'Render the selected clips as they play, with their tracks’ plugins, buses and master chain, to the library or a file',
+          onSelect: () => setExportDialogOpen('clips'),
+        });
         items.push({
           type: 'item',
           label: 'Send Selection to Init',
