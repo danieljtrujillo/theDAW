@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { captureEditorSession, loadProjectIntoEditor } from './projectImport.ts';
 import type { TasmoProjectLoaded } from './projectClient.ts';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
+import { computeClipSchedule } from '../state/liveMixer.ts';
 
 // A decoded buffer lasts one second per byte of the blob, so each source has a
 // known length.
@@ -153,6 +154,54 @@ assert.equal(plainBack?.durationSec, 1.5, 'an unstretched clip is still held to 
   assert.equal(s?.fadeInCurve, undefined, 'a shape the app does not know is left out');
   assert.equal(s?.warpMarkers, undefined, 'markers in another shape are left out');
   assert.equal(s?.durationSec, 2, 'and the clip is held to its source at unity');
+}
+
+// ── A reopened clip plays exactly what the saved one played ─────────────────
+// The live scheduler (computeClipSchedule) is what the ear hears, so each
+// clip's schedule over its own source is compared before the save and after
+// the reopen. A warp that squeezes the source into less timeline than the
+// source is long is the case the reopen's length limit must not cut: its box
+// runs past where the warp's audio ends, and cut to that, the reopened clip
+// owned too little source for its marker, dropped the warp and played the
+// source unwarped.
+{
+  const shapes: AudioClip[] = [
+    // Squeezed: the source's first 3 s play in the clip's first second.
+    clip('squeezed', { durationSec: 3, audioBlob: wav(4), sourceDuration: 4, warpMarkers: [{ sourceSec: 3, targetSec: 1 }] }),
+    // Stretched out past the source by a warp.
+    clip('spread', { startSec: 5, durationSec: 2.5, warpMarkers: [{ sourceSec: 1, targetSec: 1.5 }] }),
+    // Slowed, sped up, and sped up from a trim point.
+    clip('slowed', { startSec: 9, durationSec: 4, timeStretchRate: 0.5 }),
+    clip('sped', { startSec: 14, durationSec: 1, timeStretchRate: 2 }),
+    clip('trimmed', { startSec: 16, durationSec: 1.5, audioBlob: wav(4), sourceDuration: 4, offsetIntoSource: 1, timeStretchRate: 2 }),
+  ];
+  useEditorStore.setState({ tracks: [track('t1')], buses: [], clips: shapes });
+  const saved = captureEditorSession();
+  const reopened = JSON.parse(
+    JSON.stringify({ project_name: 'Schedules', tempo: saved.bpm, sample_rate: 48000, tracks: saved.tracks }),
+  ) as TasmoProjectLoaded;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    const path = decodeURIComponent(String(url).split('path=')[1] ?? '');
+    const f = saved.files.find((x) => path.endsWith(x.name));
+    return f ? new Response(f.blob, { status: 200 }) : new Response('', { status: 404 });
+  }) as typeof fetch;
+  try {
+    useEditorStore.setState({ tracks: [track('other')], clips: [] });
+    await loadProjectIntoEditor(reopened);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const after = new Map(useEditorStore.getState().clips.map((c) => [c.id, c]));
+  for (const before of shapes) {
+    const back = after.get(before.id);
+    assert.ok(back, `${before.id} reopens`);
+    assert.equal(back.durationSec, before.durationSec, `${before.id} keeps its length`);
+    assert.deepEqual(
+      computeClipSchedule(back, back.sourceDuration),
+      computeClipSchedule(before, before.sourceDuration),
+      `${before.id} plays what it played before the save`,
+    );
+  }
 }
 
 console.log('projectSave.clipTiming: ok');

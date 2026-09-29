@@ -467,11 +467,16 @@ export function tasmoClipTiming(c: Pick<TasmoLoadedClip, keyof TasmoClipTiming>)
 
 /**
  * How much timeline a clip's source fills from its trim point, the length a
- * reopened clip is held to. A warp map ends where its last segment lands; a
- * stretch at rate r makes one timeline second eat r source seconds. The same
- * arithmetic `computeClipSchedule` (state/liveMixer) plays the clip by, so a
- * clip slowed past the length of its source reopens at the length it was
- * saved with.
+ * reopened clip is held to. A stretch at rate r makes one timeline second eat
+ * r source seconds. A warp map ends where its last segment lands, and never
+ * holds the clip to less than the source itself: `computeClipSchedule`
+ * (state/liveMixer) closes the map over the source the clip's box owns, so a
+ * box as long as the source was played by the map it was saved with, even one
+ * that squeezes the source into less timeline. Held to that shorter reach, the
+ * reopened box owned too little source for its markers, dropped the warp and
+ * played the source unwarped. The same arithmetic the live scheduler plays the
+ * clip by, so a clip slowed or spread past the length of its source reopens at
+ * the length it was saved with.
  */
 const timelineRoomSec = (availableSourceSec: number, timing: ClipTiming): number => {
   if (timing.warpMarkers?.length) {
@@ -481,7 +486,7 @@ const timelineRoomSec = (availableSourceSec: number, timing: ClipTiming): number
     // its end) is no warp, and the stretch plays instead, as it does live.
     const identity = !!only && only.sourceStart === 0 && only.targetStart === 0
       && only.sourceEnd === availableSourceSec && only.targetEnd === availableSourceSec;
-    if (segments.length && !identity) return Math.max(...segments.map((seg) => seg.targetEnd));
+    if (segments.length && !identity) return Math.max(availableSourceSec, ...segments.map((seg) => seg.targetEnd));
   }
   return availableSourceSec / clipStretchRate(timing);
 };
