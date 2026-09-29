@@ -240,6 +240,7 @@ export function makeRollTrack(init: RollTrackInit, index: number): RollTrack {
   const figuredBass = cleanFiguredBass(init.figuredBass);
   if (figuredBass) track.figuredBass = figuredBass;
   if (init.cantusFirmus === true) track.cantusFirmus = true;
+  if (init.fromAudio === true) track.fromAudio = true;
   return track;
 }
 

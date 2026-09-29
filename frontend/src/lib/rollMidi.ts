@@ -692,6 +692,7 @@ export const partMetaText = (t: RollTrack): string =>
     mute: t.mute,
     solo: t.solo,
     ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
+    ...(t.fromAudio ? { fromAudio: true } : {}),
   });
 
 /** The part a `theDAW:part=` text names, or null for text that is not one. */
@@ -712,6 +713,7 @@ export function parsePartMeta(text: string | undefined): (Partial<RollTrack> & {
       mute: raw.mute === true,
       solo: raw.solo === true,
       ...(typeof raw.instrumentId === 'string' && raw.instrumentId ? { instrumentId: raw.instrumentId } : {}),
+      ...(raw.fromAudio === true ? { fromAudio: true } : {}),
     };
   } catch {
     return null;

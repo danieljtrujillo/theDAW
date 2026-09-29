@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Timer, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   MAX_ROLL_STEPS,
@@ -39,7 +39,7 @@ import { RollMinimap } from './RollMinimap';
 import { noteIndexOf, type NoteIndex } from '../../lib/noteIndex';
 import { hitNote, lookOf, noteBox, ROLL_LOOKS } from '../../lib/rollCanvas';
 import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
-import { bpmText, laneSpanLabel } from '../../lib/meterFace';
+import { bpmText, laneSpanLabel, rollHasAudioParts } from '../../lib/meterFace';
 import { midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
 import { stepClock, type RollPlayState } from '../../lib/rollTempo';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
@@ -610,9 +610,24 @@ export const PianoRollTransport: React.FC<{
   // BPM edits the starting tempo (the tempo map's beat-0 point), 20-300 with its fraction.
   const tempoChanges = usePianoRollStore((s) => s.tempoMap.length - 1);
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
+  // KEEP TIME: a new BPM keeps every note at its second (setTempoKeepingTime,
+  // lib/tempoConform), so a transcription stays on the audio it came from;
+  // off, the notes keep their place in the bar. It starts on for a roll whose
+  // parts came from a song's audio and off for one written on the grid, and a
+  // press sets it for the roll document it is pressed in.
+  const hasAudioParts = usePianoRollStore((s) => rollHasAudioParts(s));
+  const rollDocId = usePianoRollStore((s) => s.rollDocId);
+  const [keepChoice, setKeepChoice] = useState<{ doc: string; on: boolean } | null>(null);
+  const keepTime = keepChoice?.doc === rollDocId ? keepChoice.on : hasAudioParts;
   const changeBpm = (text: string) => {
     const v = Number.parseFloat(text);
-    if (Number.isFinite(v) && v > 0) setBpm(v);
+    if (!Number.isFinite(v) || v <= 0) return;
+    if (!keepTime) {
+      setBpm(v);
+      return;
+    }
+    const moved = usePianoRollStore.getState().setTempoKeepingTime({ bpm: v }, { parts: 'all' });
+    if (moved > 0) logInfo('piano-roll', `BPM ${bpmText(usePianoRollStore.getState().bpm)} with KEEP TIME: ${moved} note${moved === 1 ? '' : 's'} kept ${moved === 1 ? 'its' : 'their'} time in seconds`);
   };
   const commitBpmDraft = () => {
     if (bpmDraft === null) return;
@@ -701,6 +716,19 @@ export const PianoRollTransport: React.FC<{
           className={`${FIELD_VALUE} w-13 bg-transparent border-none outline-none`}
         />
       </div>
+      <StripKey
+        on={keepTime}
+        aria-pressed={keepTime}
+        onClick={() => setKeepChoice({ doc: rollDocId, on: !keepTime })}
+        aria-label="Keep time: a new BPM keeps every note at its time in seconds"
+        legend="Keep time"
+        icon={<Timer className={STRIP_GLYPH} />}
+        description={
+          keepTime
+            ? 'On: a new BPM keeps every note at its second, so a transcription stays on its audio. Press to keep each note in its bar instead.'
+            : 'Off: a new BPM keeps every note in its bar, so the notes play faster or slower. Press to keep them at their seconds.'
+        }
+      />
       <div className={FIELD}>
         <label htmlFor="piano-roll-total-steps" className={FIELD_LEGEND}>Steps</label>
         <input

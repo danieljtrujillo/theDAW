@@ -65,6 +65,16 @@ export const pastEndLog = (pastEnd: number): string =>
 const notesPastEnd = (parts: readonly RollMidiPart[]): number =>
   parts.reduce((n, p) => n + p.notes.reduce((k, x) => k + (x.step >= MAX_ROLL_STEPS - 1e-9 ? 1 : 0), 0), 0);
 
+/** Where an import's notes came from. */
+export interface PartsImportOptions {
+  /**
+   * The notes were timed in seconds against audio (a library song's MIDI, a
+   * stem's transcription): every part is marked (RollTrack `fromAudio`), so
+   * MATCH keeps their seconds when it gives the roll the song's tempo.
+   */
+  fromAudio?: boolean;
+}
+
 /**
  * Put `parts` in the roll: several replace every part, one goes into the
  * active part. `markers` are the file's own (none when left out): a new
@@ -77,6 +87,7 @@ export function applyRollParts(
   bends: readonly LaneBend[] | undefined,
   tempoMap: readonly TempoEvent[] | undefined,
   markers: readonly RollMarkerInput[] = [],
+  opts: PartsImportOptions = {},
 ): PartsImportResult {
   const roll = usePianoRollStore.getState();
   const notes = parts.reduce((n, p) => n + p.notes.length, 0);
@@ -84,7 +95,8 @@ export function applyRollParts(
   if (parts.length === 0) return { parts: 0, notes: 0, into: 'active', folded: 0, keptDocument: false, pastEnd: 0 };
   const pastEnd = notesPastEnd(parts);
   if (parts.length > 1) {
-    roll.importParts(parts.map((p) => ({ ...p.track, notes: p.notes })), bpm, meter, bends, tempoMap, 0, markers);
+    const audio = opts.fromAudio === true ? { fromAudio: true } : {};
+    roll.importParts(parts.map((p) => ({ ...p.track, ...audio, notes: p.notes })), bpm, meter, bends, tempoMap, 0, markers);
     return { parts: Math.min(parts.length, MAX_ROLL_PARTS), notes, into: 'parts', folded: Math.max(0, parts.length - MAX_ROLL_PARTS), keptDocument: false, pastEnd };
   }
   const part = parts[0];
@@ -98,16 +110,21 @@ export function applyRollParts(
       ...(part.track.instrumentId ? { instrumentId: part.track.instrumentId } : {}),
       program: part.track.program ?? null,
       percussion: part.track.channel === PERCUSSION_PART_CHANNEL,
+      ...(opts.fromAudio === true || part.track.fromAudio === true ? { fromAudio: true } : {}),
     },
   });
   return { parts: 1, notes, into: 'active', folded: 0, keptDocument, pastEnd };
 }
 
 /** A parsed MIDI file into the roll's parts (lib/rollMidi midiFileToRollParts). */
-export function importMidiParts(data: MidiFileData, idPrefix = 'imp'): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number } {
+export function importMidiParts(
+  data: MidiFileData,
+  idPrefix = 'imp',
+  opts: PartsImportOptions = {},
+): PartsImportResult & { bpm: number; tempoChanges: number; meterMap: MeterSegment[]; bentLanes: number } {
   const file = midiFileToRollParts(data, idPrefix);
   // The file's markers (FF 06) are the new document's; a roll that keeps its document keeps its own.
-  const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap, file.markers);
+  const result = applyRollParts(file.parts, file.bpm, file.meter, file.bends, file.tempoMap, file.markers, opts);
   return {
     ...result,
     bpm: file.bpm,

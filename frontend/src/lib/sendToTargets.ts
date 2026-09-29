@@ -168,6 +168,7 @@ export function loadMidiIntoPianoRoll(
   buf: ArrayBuffer | Uint8Array,
   target: MidiSendTarget = 'piano-roll',
   labelForLog = 'midi',
+  opts: { fromAudio?: boolean } = {},
 ): boolean {
   try {
     const midi = parseMidi(buf);
@@ -184,10 +185,12 @@ export function loadMidiIntoPianoRoll(
     // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
     // notes in one layer, as it always has. A new file is a new document: its
     // markers (FF 06) replace the previous one's, unless other parts keep the document.
-    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn') : null;
+    // A library song's MIDI was timed against its audio: the parts are marked so MATCH keeps their seconds.
+    const audio = opts.fromAudio === true ? { fromAudio: true } : {};
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', audio) : null;
     const kept = parts
       ? parts.keptDocument
-      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers }).keptDocument;
+      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers, part: audio }).keptDocument;
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
     const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';
@@ -209,7 +212,8 @@ export function loadMidiIntoPianoRoll(
 export async function sendMidiIdToTarget(midiId: string, target: MidiSendTarget): Promise<void> {
   try {
     const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${midiId}`, { label: midiId });
-    loadMidiIntoPianoRoll(buf, target, midiId);
+    // Every library MIDI row is a transcription of the song's audio (backend/modules/midi/runner).
+    loadMidiIntoPianoRoll(buf, target, midiId, { fromAudio: true });
   } catch (e) {
     logError('send-to', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
   }

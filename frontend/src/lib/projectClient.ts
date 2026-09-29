@@ -691,6 +691,8 @@ export interface TasmoRollPart {
   figured_bass?: Array<{ tick: number; figure: string }>;
   /** True for the roll's cantus firmus part; absent otherwise. */
   cantus_firmus?: boolean;
+  /** The part's notes were timed against audio (RollPartRef `fromAudio`). Absent when they were not. */
+  from_audio?: boolean;
 }
 
 /** A clip's part record in the file shape. */
@@ -710,6 +712,7 @@ export const rollPartToTasmo = (ref: RollPartRef): TasmoRollPart => ({
   ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ tick: c.tick, controller: c.controller, value: c.value })) } : {}),
   ...(ref.figuredBass?.length ? { figured_bass: ref.figuredBass.map((m) => ({ tick: m.tick, figure: m.figure })) } : {}),
   ...(ref.cantusFirmus ? { cantus_firmus: true } : {}),
+  ...(ref.fromAudio ? { from_audio: true } : {}),
 });
 
 /** A file's part record as the clip keeps it, or undefined when it has none or it names no document or part. */
@@ -723,6 +726,7 @@ export const tasmoRollPart = (raw: unknown, fallback: { name: string; color: str
       bankLsb: r.bank_lsb ?? r.bankLsb,
       figuredBass: r.figured_bass ?? r.figuredBass,
       cantusFirmus: r.cantus_firmus ?? r.cantusFirmus,
+      fromAudio: r.from_audio ?? r.fromAudio,
     },
     fallback,
   );
