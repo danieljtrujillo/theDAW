@@ -1,7 +1,7 @@
 // Run with: npx tsx src/state/studioStore.vstStateHost.test.ts
 //
 // F1b1: `processChain` must forward `stateHost` to `processVst` for every VST
-// stage, the same way WaveformEditor's `processThroughVst` already does.
+// stage, the same way lib/vstClient's `processFileThroughVst` already does.
 // Plugin state IS interchangeable between theDAW's live host and pedalboard —
 // measured: parameters restore exactly, containers are byte-identical.
 // `state_host` only selects which one renders the entry; it was never about

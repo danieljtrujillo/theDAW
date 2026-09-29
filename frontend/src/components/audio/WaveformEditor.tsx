@@ -33,7 +33,6 @@ import { isInstrumentClip } from '../../lib/vstInstrumentMidi';
 import { clipWithAudio, clipsWithMidiAudio, dropAutoRender, midiRenderStatusText, requestMidiRender, useMidiRenderQueue, type MidiRenderMode } from '../../state/midiRenderQueue';
 import { configureAppMidiRenderQueue } from '../../state/appMidiRenderer';
 import { crossfadeRegions } from '../../lib/crossfade';
-import { pairingHeader } from '../../lib/pairing';
 import {
   MIN_CLIP_SEC,
   resizeLeft as resizeClipLeft,
@@ -48,7 +47,7 @@ import { encodeWav } from '../../lib/wavEncode';
 import type { AudioDragItem } from '../../lib/audioDnD';
 import { beginClipDragOut, dragOutHasContent, planClipDragOut } from '../../state/clipDragOut';
 import { TrackTemplatePicker } from './TrackTemplatePicker';
-import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, freezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
+import { useEditorStore, activeTrackInstrument, automationLaneFeed, beginUndoStep, computePeaks, documentFreezeSignature, sampleLane, automationTargetKey, midiCcOfTarget, clipPeakGain, clipSourceSpanSec, clipStretchRate, snapStepSecAt, snapDivisionLabel, SNAP_DIVISIONS, TRACK_HEIGHT_MIN, TRACK_HEIGHT_MAX, ZOOM_MIN, ZOOM_MAX, type AudioClip, type EditorTrack, type SnapDivision, type AutomationTarget, type AutomationLane as AutomationLaneT, type TimelineMarker } from '../../state/editorStore';
 import { partController } from '../../lib/rollTracks';
 import { AUTOMATION_MODES, holdsAfterRelease, type AutomationMode } from '../../lib/automationModes';
 import { createAutomationGesture, type AutomationGesture } from '../../lib/automationGesture';
@@ -61,9 +60,10 @@ import {
   type RenderJob, type RenderJobKind, type RenderJobResult, type RenderJobSeed,
 } from '../../state/renderJobs';
 import { useAppUiStore } from '../../state/appUiStore';
-import { useVstEditorStore } from '../../state/vstEditorStore';
+import { captureLiveVstStates, useVstEditorStore } from '../../state/vstEditorStore';
 import type { ChainEntry, VstNode } from '../../state/effectChainStore';
-import { renderInstrumentTrack, type Vst3PluginInfo } from '../../lib/vstClient';
+import { processFileThroughVst, renderInstrumentTrack, type Vst3PluginInfo } from '../../lib/vstClient';
+import { printedStemSec, printsThroughHost, renderWithInserts, type InsertPrintResult, type VstHop } from '../../lib/render/insertPrint';
 import { getEngineCtx, getMasterGain, usePlayerStore } from '../../state/playerStore';
 import { usePianoRollStore } from '../../state/pianoRollStore';
 import { clipPartsLoad, midiFileClipFields } from '../../lib/rollClip';
@@ -431,6 +431,9 @@ configureAppMidiRenderQueue();
  * done, since the decode cache holds a buffer until someone says it is gone.
  */
 interface BounceDeps extends RenderDeps {
+  /** The master VST chain, read with the rest of the document: it prints
+   *  after the master rack (lib/render/insertPrint). */
+  masterVstChain: ChainEntry[];
   release: () => void;
 }
 
@@ -479,6 +482,7 @@ const currentRenderDeps = async (scope: BounceScope, isCancelled: () => boolean 
     clips: print.clips,
     tracks: st.tracks,
     masterFxChain: st.masterFxChain,
+    masterVstChain: st.masterVstChain,
     automationLanes: st.automationLanes,
     routing: st.routing,
     buses: st.buses,
@@ -500,6 +504,49 @@ const bounceAndRelease = async (request: BounceRequest, deps: BounceDeps): Promi
     return await renderBounce(request, deps);
   } finally {
     deps.release();
+  }
+};
+
+/** One plugin hop of an insert print: `/api/vst/process-file` with the
+ *  entry's captured state and the host that captured it. What the plugin did
+ *  not take goes to the LOG, and a failure names the plugin and where it sits. */
+const printHop: VstHop = async (wav, entry, where) => {
+  const vst = entry.vst as VstNode;
+  const plugin = vst.plugin_name || entry.label || 'VST3';
+  logInfo('editor', `Printing ${plugin} on ${where}…`);
+  try {
+    return await processFileThroughVst(wav, vst, 'insert-print.wav', {
+      onWarning: (w) => logWarn('editor', `${plugin} on ${where}: ${w}`),
+    });
+  } catch (e) {
+    throw new Error(`${plugin} on ${where} could not be printed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+/**
+ * Bounce `request` over `deps` with every VST3 insert on every track, every
+ * bus and the master VST chain printed in its place (lib/render/insertPrint),
+ * then free the renders and prints made for it alone. Null when it was called
+ * off part way.
+ */
+const bounceWithInserts = async (
+  request: BounceRequest,
+  deps: BounceDeps,
+  isCancelled: () => boolean,
+  onProgress?: (done: number, total: number) => void,
+): Promise<InsertPrintResult | null> => {
+  const prints: Blob[] = [];
+  try {
+    return await renderWithInserts(request, deps, {
+      hop: printHop,
+      masterVstChain: deps.masterVstChain,
+      isCancelled,
+      onProgress,
+      onPrinted: (wav) => prints.push(wav),
+    });
+  } finally {
+    deps.release();
+    for (const wav of prints) releaseDecoded(wav);
   }
 };
 
@@ -530,12 +577,13 @@ export const selectionRequest = (clipIds: string[]): BounceRequest => ({
  * A track stem: the track's RAW audio through its own rack — no automation, and
  * no track volume / pan / mute / solo, because the timeline plays the printed
  * stem back through the fader it was already going through. Hosted VST3 entries
- * are stripped by the core and applied on the backend after.
+ * print on the backend at their place in the chain (lib/render/insertPrint).
  *
- * `/api/vst/process-file` answers in float precisely so a chain does not
- * requantize between stages; encoding the input at 16 bits would put the loss
- * back at every hop. With no plugins the stem goes straight to the timeline,
- * where 16-bit at half the size is the right answer.
+ * `/api/vst/process-file` answers in float, and every hop is sent in float, so
+ * a chain does not requantize between stages. `float32` is how the finished
+ * stem is encoded: float when a plugin printed into it, since 16 bits would put
+ * the loss back once at the end. With no plugins the stem goes straight to the
+ * timeline, where 16-bit at half the size is the right answer.
  */
 export const stemRequest = (trackId: string, hasHostedVsts: boolean): BounceRequest => ({
   scope: { kind: 'track', trackId },
@@ -597,43 +645,11 @@ const JOB_NOUN: Record<RenderJobKind, string> = {
  * `OfflineAudioContext.startRendering()` exposes no checkpoint and no abort, so
  * a running mixdown or selection bounce cannot be stopped — only a queued one.
  * The freeze/stem flows hop through the backend one plugin at a time and check
- * between hops, so cancelling one of those really does stop it.
+ * between hops, so cancelling one of those really does stop it. A mixdown or an
+ * export that prints a VST3 insert has the same stages, and says so by
+ * reporting progress (`RenderJobsPill` reads that as cancellable too).
  */
 const STAGED_KINDS: readonly RenderJobKind[] = ['stem', 'freeze'];
-
-/** One `/api/vst/process-file` hop. The stem and the frozen master both print
- *  their plugin chain this way, in signal-chain order, one call per node. */
-const processThroughVst = async (file: File, vst: VstNode, name: string): Promise<File> => {
-  const form = new FormData();
-  form.append('audio', file);
-  form.append('plugin_path', vst.plugin_path);
-  form.append('params', '{}');
-  // The captured plugin state. Without it every plugin rendered at its factory
-  // defaults, silently discarding whatever the user dialled in through the
-  // plugin's native GUI.
-  if (vst.raw_state) form.append('raw_state', vst.raw_state);
-  // ...and WHICH host captured it. A VST3 state blob does not survive the trip
-  // between theDAW's live host and the pedalboard renderer (measured), so a
-  // state our host wrote has to be rendered back through our host. Only that
-  // case is sent: absent means the pedalboard path the backend has always
-  // taken, so every old project and every older backend behaves identically.
-  if (vst.state_host === 'thedaw') form.append('state_host', 'thedaw');
-  // pairingHeader(): a device opened from the Mobile Access share link renders
-  // through the same route, paired; {} on this machine's own UI.
-  const res = await fetch('/api/vst/process-file', { method: 'POST', body: form, headers: pairingHeader() });
-  if (!res.ok) {
-    // Surfaced as the backend words it, and NOT retried through pedalboard: a
-    // silent fall back would print a state that host cannot read and report a
-    // clean render of the wrong sound.
-    let detail = `HTTP ${res.status}`;
-    try {
-      const j = (await res.json()) as { detail?: string };
-      if (j.detail) detail = j.detail;
-    } catch { /* non-JSON */ }
-    throw new Error(detail);
-  }
-  return new File([await res.blob()], name, { type: 'audio/wav' });
-};
 
 /** The disk destination the last SAVED mixdown landed on (D18), or `null`
  *  before the first one this session, or after one that was cancelled or
@@ -683,6 +699,7 @@ const setMixdownJobExplicitName = (jobId: string, explicitName: boolean): void =
  *  entry and the Save As that used to follow the `await` in `commitEdit`. */
 const runMixdownJob = async (
   job: RenderJob,
+  onProgress: (stage: number, total: number) => void,
   isCancelled: () => boolean,
 ): Promise<RenderJobResult> => {
   // Captured at the top, before the (possibly long) render/save below, so it
@@ -694,14 +711,17 @@ const runMixdownJob = async (
   const st = useEditorStore.getState();
   const start = performance.now();
   logInfo('editor', `Mixing ${st.clips.length} clips on ${st.tracks.length} tracks…`);
+  // A plugin dialled in live prints at the state it is at now.
+  await captureLiveVstStates();
   const mixDeps = await currentRenderDeps(job.request.scope, isCancelled);
   // Called off while its MIDI clips rendered: nothing is bounced.
   if (isCancelled()) { mixDeps.release(); return {}; }
-  const rendered = await bounceAndRelease(job.request, mixDeps);
+  const printed = await bounceWithInserts(job.request, mixDeps, isCancelled, onProgress);
+  // Called off while the context was rendering or between plugin hops. Nothing
+  // has been written yet, so stopping here really does stop it.
+  if (!printed || isCancelled()) return {};
+  const rendered = printed.buffer;
   const blob = encodeBounce(rendered, job.request);
-  // Called off while the context was rendering. Nothing has been written yet,
-  // so stopping here really does stop it — the buffer is simply dropped.
-  if (isCancelled()) return {};
   const title = job.label;
   await useLibraryStore.getState().importEntry({
     blob,
@@ -848,19 +868,28 @@ export const deliverExport = async (
  * and switch tabs — reusing either kind here would silently misroute or
  * ignore what the dialog actually asked for. `export` runs the bounce and
  * nothing else, then delivers exactly where `item.destination` says.
+ *
+ * The bounce prints every VST3 insert the request's fidelity puts in the path
+ * (`bounceWithInserts`): each track's and each bus's, in chain order, and the
+ * master VST chain after the master rack. The buffer stays float through every
+ * plugin hop and is encoded once, in the format the dialog chose.
  */
 const runExportJob = async (
   job: RenderJob,
+  onProgress: (stage: number, total: number) => void,
   isCancelled: () => boolean,
 ): Promise<RenderJobResult> => {
   if (job.destination === undefined) {
     throw new Error(`${job.label}: export job carries no destination`);
   }
+  // A plugin dialled in live prints at the state it is at now.
+  await captureLiveVstStates();
   const exportDeps = await currentRenderDeps(job.request.scope, isCancelled);
   if (isCancelled()) { exportDeps.release(); return {}; }
-  const rendered = await bounceAndRelease(job.request, exportDeps);
+  const printed = await bounceWithInserts(job.request, exportDeps, isCancelled, onProgress);
+  if (!printed || isCancelled()) return {};
+  const rendered = printed.buffer;
   const blob = encodeBounce(rendered, job.request);
-  if (isCancelled()) return {};
   await deliverExport(blob, rendered.duration, {
     label: job.label,
     kind: job.exportItemKind ?? 'mixdown',
@@ -943,20 +972,23 @@ export const runExportPlan = (plan: ExportRenderPlan): void => {
 };
 
 /**
- * A freeze, master or per-track — structurally one thing: bounce offline, print
- * the hosted VST3 chain on the backend one plugin at a time, then apply.
+ * A freeze, master or per-track — structurally one thing: bounce offline with
+ * every hosted VST3 insert printed in its place (`bounceWithInserts`), then
+ * apply.
  *
  * `job.trackId` is what tells them apart. With one, this is a track freeze: the
- * stem's own rack, a peaks pass, and `freezeTrack`. Without one, it is the
- * master VST freeze: the full-fidelity master bounce through the master VST
- * chain into `frozenMaster`.
+ * stem's own rack, its plugins among its rack effects in the order the chain
+ * has them, a peaks pass, and `freezeTrack`. Without one, it is the master VST
+ * freeze: the full-fidelity master bounce, every track's and bus's plugins
+ * printed, then the master VST chain, into `frozenMaster`.
  *
  * `apply` is false for a bare `stem` job — the render and the print happen, the
  * timeline is not touched — which is the only difference between the two kinds.
  *
- * STAGES: 1 (the offline bounce) + one per plugin + 1 for the peaks pass a
- * printed stem needs. Those are the checkpoints a cancel is noticed at, and the
- * only real progress any render in this app can report (see `renderJobs`).
+ * STAGES: every render and every plugin hop of the print, + 1 for the peaks
+ * pass a printed stem needs. Those are the checkpoints a cancel is noticed at,
+ * and the only real progress any render in this app can report (see
+ * `renderJobs`).
  */
 const runStemJob = async (
   job: RenderJob,
@@ -964,32 +996,26 @@ const runStemJob = async (
   isCancelled: () => boolean,
   apply: boolean,
 ): Promise<RenderJobResult> => {
-  const st = useEditorStore.getState();
   const { trackId } = job;
   const isTrack = trackId !== undefined;
-  const chain = isTrack
-    ? (st.tracks.find((t) => t.id === trackId)?.fxChain ?? [])
-      .filter((e) => e.enabled && e.effect === 'vst3' && e.vst)
-    : st.masterVstChain.filter((e) => e.enabled && e.vst);
-  // The request is REBUILT from the chain resolved just now, not taken as it
-  // was enqueued. `float32` is the one field that depends on the plugin chain,
-  // and a queued job can sit through the user adding a VST3 to the track —
-  // encoding that stem at 16 bits ahead of a backend hop would quantize it once
-  // for nothing. Rebuilt through the same tested builder the caller used, so
-  // the rule lives in exactly one place. The master branch is untouched: its
-  // bounce was always 16-bit and changing that would change fidelity.
-  const request = isTrack ? { ...job.request, float32: job.request.float32 || chain.length > 0 } : job.request;
-  const total = 1 + chain.length + (isTrack ? 1 : 0);
-  let stage = 0;
-  const step = (): void => { stage += 1; onProgress(stage, total); };
 
   // A track freeze replaces what the transport is playing, so it stops first.
   // The master freeze does not: re-rendering a stale frozen master while the
   // live mix plays is a normal thing to do, and it never did stop it.
   if (isTrack && apply) usePlayerStore.getState().stop();
 
-  const deps = await currentRenderDeps(request.scope, isCancelled);
+  // A plugin dialled in live prints at the state it is at now.
+  await captureLiveVstStates();
+  const deps = await currentRenderDeps(job.request.scope, isCancelled);
   if (isCancelled()) { deps.release(); return {}; }
+  // The request is REBUILT from the chain resolved just now, not taken as it
+  // was enqueued. `float32` is the one field that depends on the plugin chain,
+  // and a queued job can sit through the user adding a VST3 to the track —
+  // encoding that stem at 16 bits after a backend hop would quantize it once
+  // for nothing. Rebuilt through the same tested builder the caller used, so
+  // the rule lives in exactly one place.
+  const hosted = isTrack && (deps.tracks.find((t) => t.id === trackId)?.fxChain ?? []).some(printsThroughHost);
+  const request = isTrack ? { ...job.request, float32: job.request.float32 || hosted } : job.request;
   // The freeze signature is taken HERE rather than at enqueue: the queue may
   // have held this job, and what the frozen master is a render OF is the
   // document the bounce below is about to read. That is the document as it
@@ -997,51 +1023,50 @@ const runStemJob = async (
   // just replaced is not an edit, and a signature taken before them would call
   // the new frozen master stale the moment it landed.
   const now = useEditorStore.getState();
-  const sig = isTrack ? '' : freezeSignature({
-    clips: now.clips,
-    tracks: now.tracks,
-    masterFxChain: now.masterFxChain,
-    masterVstChain: now.masterVstChain,
-    bpm: now.bpm,
-    global: getGlobalVoice(),
-  });
+  const sig = isTrack ? '' : documentFreezeSignature(now, getGlobalVoice());
   // Measured from the SAME clips the bounce below reads (its MIDI clips with
   // their renders, ring-out included), as the stem renderer always did. The
   // master branch reports the rendered buffer's own duration instead and never
   // looks at this.
   const durationSec = isTrack ? renderExtentSec(deps.clips, request.scope) : 0;
-  const rendered = await bounceAndRelease(request, deps);
+  // The peaks pass is one stage more than the print reports.
+  const extra = isTrack ? 1 : 0;
+  let total = 1 + extra;
+  const printed = await bounceWithInserts(request, deps, isCancelled, (done, of) => {
+    total = of + extra;
+    onProgress(done, total);
+  });
+  if (!printed || isCancelled()) return {};
+  const rendered = printed.buffer;
   const fileName = isTrack ? 'track-stem.wav' : 'edit-master.wav';
-  let file = new File([encodeBounce(rendered, request)], fileName, { type: 'audio/wav' });
-  step();
-
-  for (const node of chain) {
-    if (isCancelled()) return {};
-    file = await processThroughVst(file, node.vst as VstNode, fileName);
-    step();
-  }
+  // How the finished file is encoded, once. A freeze lands on the timeline and
+  // keeps float wherever a plugin printed into it. A stem the export dialog
+  // asked for (`apply` false) is written in the format the dialog chose.
+  const float32 = apply ? request.float32 || printed.hops > 0 : job.request.float32;
+  const file = new File([encodeBounce(rendered, { float32 })], fileName, { type: 'audio/wav' });
 
   if (!isTrack) {
-    if (isCancelled()) return {};
     if (apply) {
       useEditorStore.getState().setFrozenMaster({ blob: file, sig });
-      logInfo('editor', `VST freeze rendered through ${chain.length} plugin(s).`);
+      logInfo('editor', `VST freeze rendered through ${printed.hops} plugin hop(s).`);
     }
     return { blob: file, durationSec: rendered.duration };
   }
 
+  // The clips' extent, or the whole print when a plugin rang out past them.
+  const heldSec = printedStemSec(durationSec, rendered);
   let peaks: Float32Array | undefined;
   if (apply) {
     ({ peaks } = await computePeaks(file, 240));
   }
-  step();
+  onProgress(total, total);
   if (isCancelled()) return {};
   if (apply) {
-    useEditorStore.getState().freezeTrack(trackId, { audioBlob: file, durationSec, peaks });
+    useEditorStore.getState().freezeTrack(trackId, { audioBlob: file, durationSec: heldSec, peaks });
     liveMixer.reactivate();
     logInfo('editor', 'Track frozen — VST FX printed into the stem.');
   }
-  return { blob: file, durationSec: apply ? durationSec : rendered.duration, peaks };
+  return { blob: file, durationSec: apply ? heldSec : rendered.duration, peaks };
 };
 
 /**
@@ -1060,9 +1085,9 @@ export async function runRenderJob(
   isCancelled: () => boolean,
 ): Promise<RenderJobResult> {
   try {
-    if (job.kind === 'mixdown') return await runMixdownJob(job, isCancelled);
+    if (job.kind === 'mixdown') return await runMixdownJob(job, onProgress, isCancelled);
     if (job.kind === 'selection') return await runSelectionJob(job, isCancelled);
-    if (job.kind === 'export') return await runExportJob(job, isCancelled);
+    if (job.kind === 'export') return await runExportJob(job, onProgress, isCancelled);
     if (job.kind === 'stem' || job.kind === 'freeze') {
       return await runStemJob(job, onProgress, isCancelled, job.kind === 'freeze');
     }
@@ -1127,7 +1152,8 @@ const RenderJobsPill: React.FC = () => {
   const determinate = live.progress > 0;
   const unknowable = !determinate && live.chunkable === false;
   const pending = active ? queued.length : queued.length - 1;
-  const cancellable = live.status === 'queued' || STAGED_KINDS.includes(live.kind);
+  // A job that has reported a stage has checkpoints between its stages.
+  const cancellable = live.status === 'queued' || STAGED_KINDS.includes(live.kind) || determinate;
 
   return (
     <div
@@ -2176,6 +2202,9 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const previewMode = useEditorStore((s) => s.previewMode);
   const setPreviewMode = useEditorStore((s) => s.setPreviewMode);
   const frozenMaster = useEditorStore((s) => s.frozenMaster);
+  // The buses and the routing reach the rendered master too, so they sign it.
+  const buses = useEditorStore((s) => s.buses);
+  const routing = useEditorStore((s) => s.routing);
   const vstPlugins = useVstStore((s) => s.plugins);
   const vstScanning = useVstStore((s) => s.scanning);
   const scanVst = useVstStore((s) => s.scan);
@@ -4547,24 +4576,27 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // Signature of everything that affects the rendered master, so a frozen render
   // can be flagged stale after edits (and re-renders are skipped when unchanged).
   // The rule lives in editorStore.freezeSignature, with the test that holds it
-  // to every field a renderer reads.
+  // to every field a renderer reads; `documentFreezeSignature` is the same call
+  // the freeze stamps its render with.
   const freezeSig = useMemo(
-    () => freezeSignature({
-      clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm,
+    () => documentFreezeSignature(
+      { clips, tracks, masterFxChain, masterVstChain, bpm: editorBpm, buses, routing, automationLanes },
       // A MIDI clip with no program of its own or on its track renders through the picker.
-      global: { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
-    }),
-    [clips, tracks, masterFxChain, masterVstChain, editorBpm, sfEnabled, sfActiveProgram],
+      { useSoundfont: sfEnabled, activeProgram: sfActiveProgram },
+    ),
+    [clips, tracks, masterFxChain, masterVstChain, editorBpm, buses, routing, automationLanes, sfEnabled, sfActiveProgram],
   );
 
   const frozenStale = !frozenMaster || frozenMaster.sig !== freezeSig;
 
-  // Queue the master VST freeze — the full-fidelity master bounce, then one
-  // /api/vst/process-file hop per enabled master VST, in series — and wait for
-  // the printed blob. Both halves run in `runStemJob`.
+  // Queue the master VST freeze — the full-fidelity master bounce with every
+  // track's and bus's VST3 inserts printed in place, then one
+  // /api/vst/process-file hop per enabled master VST, in chain order — and wait
+  // for the printed blob. All of it runs in `runStemJob`.
   const renderFrozenMaster = useCallback(async (): Promise<Blob | null> => {
     const st = useEditorStore.getState();
-    const vsts = st.masterVstChain.filter((e) => e.enabled && e.vst);
+    // The entries the print runs through a host, by the rule the print itself uses.
+    const vsts = st.masterVstChain.filter((e) => e.enabled && !!e.vst?.plugin_path);
     if (vsts.length === 0) {
       logError('editor', 'Add a master VST before rendering.');
       return null;
@@ -4615,10 +4647,10 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   }, [renderFrozenMaster]);
 
   // --- Per-track VST freeze ---------------------------------------------------
-  // Browser audio can't host VST3 live (the plugins run in pedalboard on the
-  // backend), so "freezing" a track renders it offline — its clips + live rack
-  // FX baked locally, then its VST3 chain applied in series on the backend — into
-  // one printed stem the normal clip path plays back. Mirrors the master freeze,
+  // An offline render cannot host a VST3, so "freezing" a track renders it
+  // offline — its clips and rack FX baked locally, each VST3 printed on the
+  // backend at its place in the chain — into one printed stem the normal clip
+  // path plays back. Mirrors the master freeze,
   // and shares its runner: both are `freeze` jobs, told apart by `job.trackId`
   // (see `runStemJob` at the top of this file).
 

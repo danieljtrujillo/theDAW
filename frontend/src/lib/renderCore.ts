@@ -136,6 +136,14 @@
  *     scheduling rule: the resolver still answers per take, so the moment every
  *     take IS in the map the two paths are the same again.
  *
+ * SINCE THE STAGED INSERT PRINT a hosted VST3 insert prints at its place in
+ * the chain, on a track, on a bus and on the master. The offline graph still
+ * cannot host one, so lib/render/insertPrint runs this function once per stage
+ * with an `InsertPrintStage` (`RenderDeps.stage`): which part of a node's
+ * chain to build, the printed audio that feeds it, and a `tap` that hands back
+ * that part's output aligned to the timeline. The backend runs each plugin
+ * between stages. A render with no stage builds exactly what it built before.
+ *
  * DESIGN SOURCES (read for their design only — NO code was copied from either):
  *   - Tracktion Engine `modules/tracktion_engine/model/export/
  *     tracktion_Renderer.h`, `Renderer::Parameters` (GPL-3.0 or commercial) —
@@ -161,10 +169,12 @@ import {
 import {
   applyEnvelopeEvents, entryPrefixLatencies, fxLaneSampleTime, laneEnvelopeEvents,
   scheduleClipSources, trackCompDelays, wireRoutingGraph,
-  type RoutingEndpoints, type TakeBufferResolver, type TrackCompRow,
+  type LatencyTrack, type RoutingEndpoints, type TakeBufferResolver, type TrackCompRow,
 } from '../state/liveMixer';
 import { logWarn } from '../state/logStore';
-import { MASTER_ID, topoOrder, type RoutingGraph } from '../state/routingGraph';
+import {
+  CONN_OUTPUT, MASTER_ID, outputOf, topoOrder, type RoutingEdge, type RoutingGraph, type RoutingNode,
+} from '../state/routingGraph';
 import { sliceChunks as defaultSliceChunks, type AudioChunk } from './audioAnalysis';
 import { isComped } from './clipComp';
 import {
@@ -316,7 +326,45 @@ export interface RenderDeps {
    * master unlimited.
    */
   safetyLimiter?: (ctx: BaseAudioContext) => Promise<AudioNode | null>;
+  /**
+   * One stage of a staged insert print (lib/render/insertPrint). Absent in
+   * every render that prints no VST3 insert, and then nothing below changes.
+   */
+  stage?: InsertPrintStage;
 }
+
+/**
+ * One stage of a staged insert print.
+ *
+ * A hosted VST3 insert cannot run in an `OfflineAudioContext`: the offline graph
+ * builds it as a passthrough. So a chain holding one is printed in stages. The
+ * render runs up to the plugin, the backend runs the plugin over that audio,
+ * and the next render carries on from the printed file. `chains` says which
+ * part of a node's chain a stage builds, `sources` feeds a node's printed audio
+ * into the head of that part, and `tap` hands back the audio at the end of it.
+ */
+export interface InsertPrintStage {
+  /** Per node id, a track's or a bus's: the entries built in place of the node's own chain. */
+  chains?: ReadonlyMap<string, ChainEntry[]>;
+  /**
+   * Per node id: printed audio that enters the head of the node's chain in
+   * place of the node's own input. For a track that input is its clips through
+   * its fader, which the print already holds, so the fader stays at unity and
+   * the clips are not played. For a bus it is the routed sum, so what the graph
+   * routes into the bus goes nowhere and the print plays in its place.
+   */
+  sources?: ReadonlyMap<string, AudioClip>;
+  /** A node id. The render hands back that node's chain output, aligned to
+   *  the timeline, in place of the mix: no master rack, no safety limiter. */
+  tap?: string;
+  /** A range render hands back the whole context, preroll included, in place
+   *  of the kept range, so a later stage can start where this one did. */
+  keepPreroll?: boolean;
+}
+
+/** The latency row a printed bus source takes in the compensation math. It is
+ *  not a node of the document, so the prefix keeps it apart from every id. */
+const PRINT_ROW = 'insert-print-source:';
 
 /* ── Scope ────────────────────────────────────────────────────────────────── */
 
@@ -447,6 +495,10 @@ interface TrackNodes {
  *  `includeTrackMix` whether the fader and the mute are honoured. */
 interface BusStrip {
   input: GainNode;
+  /** Where the bus's chain starts: `input`, or, for a bus a staged print
+   *  feeds, a node of its own that the print plays into (`input` then goes
+   *  nowhere). */
+  head: GainNode;
   output: GainNode;
   /** The bus's rack, kept so a `CONN_SIDECHAIN` edge aimed at one of its entries
    *  can be handed that entry's key input. `null` under `includeFx: false`,
@@ -627,13 +679,47 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     ? deps.tracks.filter((t) => t.id === scope.trackId)
     : deps.tracks;
 
-  /** A track stem strips hosted VST3 entries: they cannot run in the browser
-   *  and the consumer posts the stem through them on the backend afterwards.
-   *  The master bounce leaves them in — `buildEffectChain` reports them as
-   *  inert passthroughs, which is what the UI reads. */
-  const chainFor = (t: EditorTrack): ChainEntry[] => (scope.kind === 'track'
+  /** The staged insert print this render is one stage of, or undefined. */
+  const stage = deps.stage;
+  /** Printed audio by node id (see `InsertPrintStage.sources`). */
+  const printed = stage?.sources;
+  const tapId = stage?.tap;
+  const tapping = tapId !== undefined;
+
+  /** A track stem strips hosted VST3 entries: they cannot run offline. The
+   *  master bounce leaves them in — `buildEffectChain` reports them as inert
+   *  passthroughs, which is what the UI reads. A staged print
+   *  (lib/render/insertPrint) prints them on the backend at their place in the
+   *  chain: it names the part of the chain each stage builds, and that part is
+   *  built as named. */
+  const chainFor = (t: EditorTrack): ChainEntry[] => stage?.chains?.get(t.id) ?? (scope.kind === 'track'
     ? (t.fxChain ?? []).filter((e) => e.effect !== 'vst3')
     : (t.fxChain ?? []));
+  /** A bus's chain, or the part of it a staged print names. */
+  const busChainFor = (b: EditorBus): ChainEntry[] => stage?.chains?.get(b.id) ?? b.fxChain ?? [];
+
+  /**
+   * THE BUSES A PRINT FEEDS, and the latency row each one takes. A printed bus
+   * source is not a track, so no track row carries its path to the master. It
+   * takes a row of its own, reached through one extra edge into the bus in the
+   * graph the compensation math reads (never the one the render wires): its
+   * figure is the bus's chain plus every bus below it, so the slowest path
+   * counts it, and its `compSec` is how late the print starts, so that it
+   * lands at the master with every other path.
+   */
+  const busIds = new Set((deps.buses ?? []).map((b) => b.id));
+  const printedBusIds = printed ? [...printed.keys()].filter((id) => busIds.has(id)) : [];
+  const printRows: LatencyTrack[] = printedBusIds.map((id) => ({ id: `${PRINT_ROW}${id}`, fxChain: [] }));
+  const latencyGraph = (g: RoutingGraph): RoutingGraph => (printedBusIds.length === 0 ? g : {
+    nodes: [
+      ...g.nodes,
+      ...printedBusIds.map((id): RoutingNode => ({ id: `${PRINT_ROW}${id}`, kind: 'track', name: id })),
+    ],
+    edges: [
+      ...g.edges,
+      ...printedBusIds.map((id): RoutingEdge => ({ from: `${PRINT_ROW}${id}`, to: id, connType: CONN_OUTPUT, gain: 1 })),
+    ],
+  });
 
   /**
    * HOW MUCH PAST THE WINDOW THE RENDER HAS TO RUN, in seconds.
@@ -665,16 +751,20 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
    * the built chains, so never short. Over-padding costs render time and
    * nothing else, since the output is cut to `outLength` either way.
    */
+  const graphOrdered = graphOrders(deps.routing);
   const padSec = req.includeFx && scope.kind === 'master'
     ? renderLatencySec(trackCompDelays(
-      trackUniverse.map((t) => ({ id: t.id, fxChain: chainFor(t) })),
+      [...trackUniverse.map((t) => ({ id: t.id, fxChain: chainFor(t) })), ...(graphOrdered ? printRows : [])],
       undefined,
       sr,
       // A bus rack is in a track's path only where the graph is walked AND
       // orderable — the same two conditions `routingActive` / `routedPaths`
       // put on the real rows below.
-      graphOrders(deps.routing)
-        ? { graph: deps.routing as RoutingGraph, buses: deps.buses ?? [] }
+      graphOrdered
+        ? {
+          graph: latencyGraph(deps.routing as RoutingGraph),
+          buses: (deps.buses ?? []).map((b) => ({ id: b.id, fxChain: busChainFor(b) })),
+        }
         : undefined,
     ))
     : 0;
@@ -719,6 +809,11 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
         if (!take?.audioBlob || buffers.has(take.audioBlob)) continue;
         buffers.set(take.audioBlob, await deps.decode(decodeCtx, take.audioBlob));
       }
+    }
+    // A staged print's audio, through the same decode as every clip.
+    for (const source of printed?.values() ?? []) {
+      if (!source.audioBlob || buffers.has(source.audioBlob)) continue;
+      buffers.set(source.audioBlob, await deps.decode(decodeCtx, source.audioBlob));
     }
   } finally {
     decodeCtx.close().catch(() => {});
@@ -766,8 +861,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       ?? (takeIndex === activeIndex ? active : undefined);
   };
 
-  /** A track stem has no master bus to run a master rack on. */
-  const useMasterFx = req.includeFx && scope.kind !== 'track';
+  /** A track stem has no master bus to run a master rack on, and a tap hands
+   *  back one node's chain output, which the master rack is not part of. */
+  const useMasterFx = req.includeFx && scope.kind !== 'track' && !tapping;
 
   /**
    * How late this track's PAN envelope is written, in seconds: the track's OWN
@@ -804,27 +900,37 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       ...(useMasterFx ? [deps.masterFxChain] : []),
       ...trackUniverse.map(chainFor),
     ];
-    if (candidates.some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled))) {
+    // The bus racks a master bounce builds: a Chop on a bus needs the module
+    // as much as one on a track, and a shared hall send is a bus.
+    const busCandidates = scope.kind === 'master' ? (deps.buses ?? []).map(busChainFor) : [];
+    if ([...candidates, ...busCandidates].some((ch) => ch.some((e) => e.effect === 'chop' && e.enabled))) {
       const ensureChop = deps.ensureChop ?? ensureChopModule;
       try { await ensureChop(ctx); } catch { /* falls back to passthrough */ }
     }
-    // The measured hall responses, bus racks included (a shared hall send is a bus).
+    // The measured hall responses, bus racks included.
     const ensureHallIrs = deps.ensureHallIrs ?? ensureHallIrsForChains;
-    await ensureHallIrs(ctx, [...candidates, ...(scope.kind === 'master' ? (deps.buses ?? []).map((b) => b.fxChain) : [])]);
+    await ensureHallIrs(ctx, [...candidates, ...busCandidates]);
   }
 
   // ── Master bus ───────────────────────────────────────────────────────────
   const chains: ChainHandle[] = [];
   const masterBus = ctx.createGain();
+  // A tap: the one chain output that reaches the destination. The master bus
+  // is still where the graph sends every strip, and it goes nowhere.
+  let tapOut: GainNode | null = null;
+  if (tapping) {
+    tapOut = ctx.createGain();
+    tapOut.connect(ctx.destination);
+  }
   // A lifted sound bank preset in the mix: the master goes out through the safety limiter.
-  const safety = deps.safetyLimiter ? await deps.safetyLimiter(ctx) : null;
+  const safety = !tapping && deps.safetyLimiter ? await deps.safetyLimiter(ctx) : null;
   if (safety) safety.connect(ctx.destination);
   const masterOut = safety ?? ctx.destination;
   let masterFx: ChainHandle | null = null;
   if (useMasterFx) {
     masterFx = deps.buildChain(ctx, masterBus, masterOut, deps.masterFxChain);
     chains.push(masterFx);
-  } else {
+  } else if (!tapping) {
     masterBus.connect(masterOut);
   }
 
@@ -864,17 +970,22 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
       // with a muted bus is muted from its first sample.
       muteGain.gain.value = req.includeTrackMix && b.mute ? 0 : 1;
       const output = ctx.createGain();
-      const chain = b.fxChain ?? [];
+      const chain = busChainFor(b);
+      // A bus a print feeds: what the graph routes in is already in the print,
+      // so `input` is left going nowhere and the chain starts at a node the
+      // print plays into. A tapped bus's chain ends at the tap.
+      const head = printed?.has(b.id) ? ctx.createGain() : input;
+      const chainOut: AudioNode = tapId === b.id && tapOut ? tapOut : gain;
       let fx: ChainHandle | null = null;
       if (req.includeFx) {
-        fx = deps.buildChain(ctx, input, gain, chain); // input -> [fx] -> gain
+        fx = deps.buildChain(ctx, head, chainOut, chain); // head -> [fx] -> gain
         chains.push(fx);
         renderedBusChains.push({ id: b.id, fxChain: chain });
       } else {
-        input.connect(gain);
+        head.connect(chainOut);
       }
       gain.connect(muteGain).connect(output);
-      busStrips.set(b.id, { input, output, fx });
+      busStrips.set(b.id, { input, head, output, fx });
     }
   }
 
@@ -917,7 +1028,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     let panner: StereoPannerNode | null = null;
     if (req.includeTrackMix) {
       const volLane = lanes.find((l) => l.target.kind === 'trackVolume' && l.target.trackId === trk.id);
-      if (volLane) scheduleParamLane(gain.gain, volLane, (v) => Math.max(0, v), 0, renderOriginSec);
+      // A printed track's fader, volume lane included, is already in its print.
+      if (printed?.has(trk.id)) gain.gain.value = 1;
+      else if (volLane) scheduleParamLane(gain.gain, volLane, (v) => Math.max(0, v), 0, renderOriginSec);
       else gain.gain.value = trk.volume;
 
       panner = ctx.createStereoPanner();
@@ -941,14 +1054,16 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     // pre-routing scopes keep feeding the master bus directly, exactly as
     // before: a stem and a selection have no graph and nothing to align.
     const tail: AudioNode = panner ?? (scope.kind === 'master' ? ctx.createGain() : masterBus);
+    // A tapped track's chain ends at the tap; its tail is then fed nothing.
+    const chainOut: AudioNode = tapId === trk.id && tapOut ? tapOut : tail;
     let fx: ChainHandle | null = null;
     if (req.includeFx) {
       const chain = chainFor(trk);
-      fx = deps.buildChain(ctx, gain, tail, chain);
+      fx = deps.buildChain(ctx, gain, chainOut, chain);
       chains.push(fx);
       renderedTrackChains.push({ id: trk.id, fxChain: chain });
     } else {
-      gain.connect(tail);
+      gain.connect(chainOut);
     }
     trackNodeById.set(trk.id, { gain, panner, fx, tail });
   }
@@ -973,12 +1088,21 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   // latency: a stem is its own chain alone, and a damaged graph is exactly what
   // the degraded mix put in the path. ONE row set feeds both the comp delays
   // and the trim, so the file's offset and the strips' delays cannot disagree.
+  //
+  // A bus a staged print feeds takes a row of its own (`printRows`): the row is
+  // not a strip, so the comp loop below finds no node for it, and its `compSec`
+  // is instead how late the print starts (`printLeadSec`).
   const compRows = trackCompDelays(
-    renderedTrackChains,
+    [...renderedTrackChains, ...(routedPaths ? printRows : [])],
     undefined, // the real rack registry
     ctx.sampleRate, // the rate the file is actually at, not the one requested
-    routedPaths ? { graph: deps.routing as RoutingGraph, buses: renderedBusChains } : undefined,
+    routedPaths ? { graph: latencyGraph(deps.routing as RoutingGraph), buses: renderedBusChains } : undefined,
   );
+  /** How late a printed bus source starts, in whole samples: its row's comp. */
+  const printLeadSec = (busId: string): number => {
+    const comp = compRows.find((r) => r.trackId === `${PRINT_ROW}${busId}`)?.compSec ?? 0;
+    return Math.round(comp * ctx.sampleRate) / ctx.sampleRate;
+  };
 
   // ── Per-track compensation delays ────────────────────────────────────────
   // `liveMixer.insertCompNode`'s splice, offline: `tail -> comp -> (wherever
@@ -1093,6 +1217,7 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
   // ── The clips ────────────────────────────────────────────────────────────
   for (const clip of scoped) {
     if (clip.muted) continue; // muted clips are excluded, matching live playback
+    if (printed?.has(clip.trackId)) continue; // its audio is in the track's print
     const trk = audibleTracks.get(clip.trackId);
     if (!trk) continue; // no such track, or it is muted / hidden by a solo
     const buf = buffers.get(clip.audioBlob);
@@ -1111,6 +1236,28 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     // node of its own, so per-track inserts process the post-fade signal.
     // `sourceFor` is `buf` itself for every clip that is not comped.
     deps.scheduleSources(ctx, clip, sourceFor(clip, buf), destination, 0, renderOriginSec);
+  }
+
+  // ── A staged print's audio ───────────────────────────────────────────────
+  // Played as a clip, through the same scheduler, into the head of what is
+  // left of its node's chain: a track's fader (held at unity above), or a bus's
+  // chain head. A bus print starts `printLeadSec` late so that it reaches the
+  // master with every compensated path. A track print needs no lead: it takes
+  // the strip's own comp delay like the clips it replaces.
+  for (const [id, source] of printed ?? []) {
+    const buf = source.audioBlob ? buffers.get(source.audioBlob) : undefined;
+    if (!buf) continue;
+    const trackNodes = trackNodeById.get(id);
+    if (trackNodes) {
+      deps.scheduleSources(ctx, source, buf, trackNodes.gain, 0, renderOriginSec);
+      continue;
+    }
+    const strip = busStrips.get(id);
+    if (!strip) continue; // a bus this render does not build, or a muted or silenced track
+    const lead = printLeadSec(id);
+    deps.scheduleSources(
+      ctx, lead > 0 ? { ...source, startSec: source.startSec + lead } : source, buf, strip.head, 0, renderOriginSec,
+    );
   }
 
   // ── Spatializer teleport ─────────────────────────────────────────────────
@@ -1279,7 +1426,29 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
 
   // How late the file is: the slowest path in the rows the comps were written
   // from, which — because they were — is now where EVERY track sits.
-  const trimSec = req.includeFx ? renderLatencySec(compRows) : 0;
+  let trimSec = req.includeFx ? renderLatencySec(compRows) : 0;
+  if (tapId !== undefined && req.includeFx) {
+    // A tap is as late as the audio at the tapped chain's output. A track's
+    // fader has no lag, so that is its own chain. A bus's input arrives
+    // `maxSec` less the bus's chain and everything below it (each track's
+    // comp holds `maxSec` less its whole path, and a printed bus source starts
+    // `printLeadSec` late for the same reason), so its chain output sits
+    // `maxSec` less everything below the bus.
+    const tappedTrack = trackNodeById.has(tapId) ? audibleTracks.get(tapId) : undefined;
+    if (tappedTrack) {
+      trimSec = chainLatencySec(chainFor(tappedTrack), { sampleRate: ctx.sampleRate });
+    } else if (busStrips.has(tapId) && routedPaths) {
+      const graph = deps.routing as RoutingGraph;
+      const busChain = new Map(renderedBusChains.map((c) => [c.id, c.fxChain]));
+      let below = 0;
+      let cur = outputOf(graph, tapId);
+      for (let hops = 0; cur !== null && cur !== MASTER_ID && hops <= graph.nodes.length; hops += 1) {
+        below += chainLatencySec(busChain.get(cur) ?? [], { sampleRate: ctx.sampleRate });
+        cur = outputOf(graph, cur);
+      }
+      trimSec = Math.max(0, trimSec - below);
+    }
+  }
 
   try {
     // `outLength` (or `plan.contextFrames` for a range), not the context's:
@@ -1290,8 +1459,9 @@ export async function renderBounce(req: BounceRequest, deps: RenderDeps): Promis
     // F24: cut the preroll off the front and the tail down to exactly
     // `plan.keepFrames`, so a range render's contract is the buffer LENGTH,
     // the same way `outLength` is the whole-timeline render's. Absent a
-    // range this is a no-op pass-through — `plan` is null.
-    return plan ? sliceRangeBuffer(rendered, plan) : rendered;
+    // range this is a no-op pass-through — `plan` is null. A staged print's
+    // stage keeps the preroll, so the next stage starts where this one did.
+    return plan && !stage?.keepPreroll ? sliceRangeBuffer(rendered, plan) : rendered;
   } finally {
     // `renderTrackStem` disposed its chain and the other two leaked theirs.
     // Disposal happens after the render has finished, so it cannot change a

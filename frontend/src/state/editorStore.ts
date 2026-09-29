@@ -717,6 +717,13 @@ const trackSignaturePart = (t: EditorTrack): string =>
  * `global` is the instrument picker (soundfontEngine getGlobalVoice): a MIDI
  * clip with no program of its own or on its track renders through it. Left
  * out, the signature assumes soundfonts are off.
+ *
+ * `buses`, `routing` and `automationLanes` are what the master bounce reads
+ * past the tracks: the bus racks (their VST3 inserts print into the frozen
+ * master), where each strip goes, and every lane it bakes (a lane that is
+ * switched on and holds a breakpoint; no other reaches it). Every call that
+ * signs the document passes them (`documentFreezeSignature`), so a frozen
+ * master goes stale when one of them changes.
  */
 export const freezeSignature = (doc: {
   clips: readonly AudioClip[];
@@ -725,6 +732,9 @@ export const freezeSignature = (doc: {
   masterVstChain: readonly ChainEntry[];
   bpm: number;
   global?: GlobalVoice;
+  buses?: readonly EditorBus[];
+  routing?: RoutingGraph;
+  automationLanes?: readonly AutomationLane[];
 }): string => {
   // A clip's muted flag is part of the shape because the bounce drops muted
   // clips, so toggling mute changes the rendered master.
@@ -738,11 +748,44 @@ export const freezeSignature = (doc: {
     .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
     .map(trackSignaturePart)
     .join('|');
-  return [
+  const parts: (string | number)[] = [
     clipPart, trackPart,
     JSON.stringify(doc.masterFxChain), JSON.stringify(doc.masterVstChain), doc.bpm,
-  ].join('::');
+  ];
+  if (doc.buses || doc.routing || doc.automationLanes) {
+    parts.push(
+      // What a bounce reads of a bus and of the graph, not their display names:
+      // a renamed bus or track is the same mix.
+      JSON.stringify((doc.buses ?? []).map((b) => [b.id, b.volume, b.mute, b.fxChain])),
+      JSON.stringify({ nodes: (doc.routing?.nodes ?? []).map((n) => n.id), edges: doc.routing?.edges ?? [] }),
+      // The lanes a bounce reads: switched on, with a breakpoint (renderCore's
+      // lane filter, and lib/midiCcAutomation's). An empty lane opened from
+      // the picker, or an edit to a lane that is switched off, is the same mix.
+      JSON.stringify(
+        (doc.automationLanes ?? []).filter((l) => l.enabled && l.points.length > 0).map((l) => [l.target, l.points]),
+      ),
+    );
+  }
+  return parts.join('::');
 };
+
+/** `freezeSignature` of the document as the store holds it, every field the
+ *  master bounce reads included. The one way the app signs a frozen master, so
+ *  the signature a freeze stamps and the one it is compared with cannot differ. */
+export const documentFreezeSignature = (
+  s: Pick<EditorStoreState, 'clips' | 'tracks' | 'masterFxChain' | 'masterVstChain' | 'bpm' | 'buses' | 'routing' | 'automationLanes'>,
+  global?: GlobalVoice,
+): string => freezeSignature({
+  clips: s.clips,
+  tracks: s.tracks,
+  masterFxChain: s.masterFxChain,
+  masterVstChain: s.masterVstChain,
+  bpm: s.bpm,
+  global,
+  buses: s.buses,
+  routing: s.routing,
+  automationLanes: s.automationLanes,
+});
 
 /**
  * The same signature scoped to ONE track's printed stem: that track's clips and
