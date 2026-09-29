@@ -41,9 +41,10 @@
  * with no audible clip in the bounce or, for a range, in the window the range
  * renders (its plugins would process silence), a muted bus, and a bus no
  * sounding track reaches through the graph (it plays silence too). A bus is
- * printed only where the bounce walks the routing graph (the master scope, a
- * graph that orders), because nowhere else is a bus in any path. A bounce that
- * asks for no inserts (`includeFx: false`) prints none.
+ * printed only where the bounce walks the routing graph (lib/render/
+ * bounceWalksMix: the master scope and a clip selection printed with its
+ * inserts, over a graph that orders), because nowhere else is a bus in any
+ * path. A bounce that asks for no inserts (`includeFx: false`) prints none.
  *
  * A bounce with no printed insert anywhere is the one plain `renderBounce`,
  * called exactly as before.
@@ -57,6 +58,7 @@ import {
 } from '../renderCore';
 import { encodeWav } from '../wavEncode';
 import { readWavSamples, readWavShape, type WavSamples } from '../wavSamples';
+import { bounceWalksMix } from './bounceWalksMix';
 import { planRangeRender, sliceRangeBuffer } from './renderRangePlan';
 
 /** A chain entry the print runs through a plugin host: an enabled VST3 that
@@ -188,7 +190,7 @@ export function printSites(
     if (split.inserts.length === 0) continue;
     sites.push({ id: t.id, kind: 'track', name: t.name, ...split });
   }
-  const order = scope.kind === 'master' ? orderOf(deps.routing) : null;
+  const order = bounceWalksMix(req) ? orderOf(deps.routing) : null;
   if (!order) return sites;
   const placed = new Set(order);
   const muted = new Set(req.includeTrackMix ? (deps.buses ?? []).filter((b) => b.mute).map((b) => b.id) : []);
@@ -198,7 +200,7 @@ export function printSites(
     if (!placed.has(b.id)) continue; // a bus the graph does not name reaches nothing
     // A bus no sounding track reaches plays silence, live and in the file. A
     // hop over it would cost a plugin load, and could fail the bounce on a
-    // plugin that plays no part in it.
+    // plugin that plays no part in it (a clip selection away from that bus).
     if (!reached.has(b.id)) continue;
     const split = splitAtInserts(b.fxChain ?? []);
     if (split.inserts.length > 0) sites.push({ id: b.id, kind: 'bus', name: b.name, ...split });

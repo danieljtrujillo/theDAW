@@ -269,13 +269,16 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
       });
     }
   } else {
-    // Mirrors `selectionRequest`: no inserts, no automation, but the track
-    // mix applies — a selection bounce should sound like what is balanced.
+    // Mirrors `selectionRequest`: the picked clips as they play, through
+    // their tracks' racks and VST3 inserts, the buses the graph routes them
+    // through and the master chain, with the automation and the track mix
+    // (lib/render/bounceWalksMix). Solo is ignored: the file holds exactly
+    // the clips that were picked.
     const request: BounceRequest = {
       ...base,
       scope: { kind: 'selection', clipIds: what.clipIds },
-      includeFx: false,
-      includeAutomation: false,
+      includeFx: true,
+      includeAutomation: true,
       includeTrackMix: true,
     };
     items.push({

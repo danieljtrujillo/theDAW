@@ -483,7 +483,7 @@ async function withNoPrintedInsertTheBounceIsTheOneItWasBefore(): Promise<void> 
       req: request(),
     },
     {
-      name: 'a clip selection, which bounces no inserts at all',
+      name: 'a clip selection asked for no inserts',
       h: harness({
         tracks: [track({ id: 't1', fxChain: [vst('V', 5, 5)] })],
         clips: [{ id: 'c1', trackId: 't1', value: 1 }],
@@ -642,6 +642,19 @@ async function sitesAreUpstreamFirstAndOnlyWhereAudible(): Promise<void> {
   const early: RenderRange = { startFrame: 3 * SR, endFrame: 5 * SR, prerollFrames: 2 * SR, tailFrames: 0 };
   assert.deepEqual(printSites(request({ range: early }), deps).map((s) => s.id), ['t1', 'b1', 'b2'], 'a clip in the preroll counts');
 
+  // A clip selection printed with its inserts walks the graph as the mix does,
+  // and prints only the buses its clips reach.
+  assert.deepEqual(
+    printSites(request({ scope: { kind: 'selection', clipIds: ['c1'] } }), deps).map((s) => s.id),
+    ['t1', 'b1', 'b2'],
+    'a selection prints its track and every bus downstream of it',
+  );
+  assert.deepEqual(
+    printSites(request({ scope: { kind: 'selection', clipIds: ['c1'] }, includeFx: false }), deps),
+    [],
+    'a selection asked for no inserts prints none',
+  );
+
   const split = splitAtInserts([fx('A', 1, 0), vst('V1', 1, 0), vst('V2', 1, 0), fx('B', 1, 0)]);
   assert.deepEqual(split.segments.map((s) => s.map((e) => e.id)), [['A'], [], ['B']]);
   assert.deepEqual(split.inserts.map((e) => e.id), ['V1', 'V2']);
@@ -673,6 +686,16 @@ async function aBusPrintsOnlyWhereASoundingTrackReachesIt(): Promise<void> {
   const ids = (req: BounceRequest): string[] => printSites(req, deps).map((s) => s.id).sort();
 
   assert.deepEqual(ids(request()), ['b1', 'b2', 'b3'], 'the mix prints every bus a track reaches, by its output or a send, and none behind a muted bus');
+  assert.deepEqual(
+    ids(request({ scope: { kind: 'selection', clipIds: ['c1'] } })),
+    ['b1', 'b3'],
+    "a selection of t1's clip prints t1's bus and the bus it sends to, and nothing of t2's",
+  );
+  assert.deepEqual(
+    ids(request({ scope: { kind: 'selection', clipIds: ['c2'] } })),
+    ['b2'],
+    "a selection of t2's clip prints t2's bus alone",
+  );
   assert.deepEqual(
     ids(request({ includeTrackMix: false })),
     ['b1', 'b2', 'b3', 'b4', 'b5'],

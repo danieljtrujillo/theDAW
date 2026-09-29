@@ -494,7 +494,7 @@ async function aStemIgnoresTheGraph(): Promise<void> {
   assert.deepEqual(masterBus.outputs, [ctx.destination]);
 }
 
-async function aSelectionIgnoresTheGraph(): Promise<void> {
+async function aSelectionWithoutInsertsIgnoresTheGraph(): Promise<void> {
   const h = harness({
     tracks: [track({ id: 't1' })],
     clips: [clip({ id: 'c1', trackId: 't1' })],
@@ -508,7 +508,7 @@ async function aSelectionIgnoresTheGraph(): Promise<void> {
   const ctx = h.ctxes[0];
   assert.equal(
     gains(ctx).length, 2,
-    'the selection scope builds the master bus and the per-clip mix gain, and no bus strip',
+    'a selection without inserts builds the master bus and the per-clip mix gain, and no bus strip',
   );
 }
 
@@ -964,16 +964,30 @@ async function aStemBuildsNoCompDelay(): Promise<void> {
   assert.equal(firstSample(out), 6, 'and it is still trimmed by its own chain');
 }
 
-/** A selection is pre-routing by definition and takes no comps either — which
- *  costs it nothing today, because the one call site renders it without FX and
- *  so declares no latency to compensate for in the first place. */
-async function aSelectionBuildsNoCompDelay(): Promise<void> {
-  const h = harness({
+/** A selection without inserts is pre-routing and takes no comps. A selection
+ *  printed with its inserts plays through the mix as its clips do live (Send
+ *  Selection to Init, the export dialog's clip selection), so it is routed and
+ *  compensated as the mix is: the bus's rack lags t1, so t2 waits for it. */
+async function aSelectionIsRoutedAndCompensatedWhenItPrintsItsInserts(): Promise<void> {
+  const dry = harness({
     tracks: [track({ id: 't1', fxChain: [compressor('e1')] }), track({ id: 't2' })],
     clips: [clip({ id: 'c1', trackId: 't1' }), clip({ id: 'c2', trackId: 't2' })],
   });
-  await renderBounce(request({ kind: 'selection', clipIds: ['c1', 'c2'] }), h.deps);
-  assert.equal(comps(h.ctxes[0]).length, 0, 'no comp delay is built for a selection');
+  await renderBounce(request({ kind: 'selection', clipIds: ['c1', 'c2'] }, { includeFx: false }), dry.deps);
+  assert.equal(comps(dry.ctxes[0]).length, 0, 'no comp delay is built for a selection without inserts');
+
+  const h = harness({
+    tracks: [track({ id: 't1' }), track({ id: 't2' })],
+    clips: [clip({ id: 'c1', trackId: 't1' }), clip({ id: 'c2', trackId: 't2' })],
+    routing: graphWithOneBus(),
+    buses: [bus({ id: 'b1', fxChain: [compressor('b-fx')] })],
+  });
+  const out = await renderBounce(request({ kind: 'selection', clipIds: ['c1', 'c2'] }), h.deps);
+  const [t1Comp, t2Comp] = comps(h.ctxes[0]);
+  assert.ok(t1Comp && t2Comp, 'each strip of the selection takes a comp, as the mix does');
+  assert.equal(t1Comp.delayTime.value, 0, 't1 goes through the compressed bus and is the slowest path');
+  assert.equal(t2Comp.delayTime.value, 0.006, 'so t2, which bypasses the bus, waits for it');
+  assert.equal(firstSample(out), 6, 'and the file is trimmed by the bus rack both sit behind');
 }
 
 /* ── 7. Chunk safety sees a bus rack ──────────────────────────────────────── */
@@ -996,6 +1010,22 @@ function chunkSafetyCountsBusChains(): void {
     [{ id: 'b1', fxChain: [compressor('b-fx')] }],
   );
   assert.equal(stem.safe, true, 'a stem renders no bus rack, so a bus cannot make it unsafe');
+
+  // A clip selection printed with its inserts walks the graph (Send Selection
+  // to Init, the export dialog's clip selection), so it builds the bus racks.
+  const selection = bounceIsChunkSafe(
+    request({ kind: 'selection', clipIds: ['c1'] }), [{ id: 't1' }], [], undefined,
+    [{ id: 'b1', fxChain: [compressor('b-fx')] }],
+  );
+  assert.equal(selection.safe, false, 'a compressor on a bus makes a selection with inserts unchunkable');
+  assert.equal(
+    bounceIsChunkSafe(
+      request({ kind: 'selection', clipIds: ['c1'] }, { includeFx: false }), [{ id: 't1' }], [], undefined,
+      [{ id: 'b1', fxChain: [compressor('b-fx')] }],
+    ).safe,
+    true,
+    'a selection without inserts builds no rack at all',
+  );
 }
 
 /* ── run ──────────────────────────────────────────────────────────────────── */
@@ -1083,7 +1113,7 @@ async function main(): Promise<void> {
   await eachSendGetsItsOwnGainNode();
   await aCyclicGraphFallsBackToTheMasterNeverToSilence();
   await aStemIgnoresTheGraph();
-  await aSelectionIgnoresTheGraph();
+  await aSelectionWithoutInsertsIgnoresTheGraph();
   await noRoutingIsTheFlatPreBatch6Render();
   theTrimIsAPureShiftThatKeepsTheLength();
   await aCompressorChainTrimsItsDeclaredSixMilliseconds();
@@ -1100,7 +1130,7 @@ async function main(): Promise<void> {
   await aBusChainIsCompensatedOnTheTracksThatBypassIt();
   await theCompsDegradeWithTheGraphTheyCouldNotOrder();
   await aStemBuildsNoCompDelay();
-  await aSelectionBuildsNoCompDelay();
+  await aSelectionIsRoutedAndCompensatedWhenItPrintsItsInserts();
   chunkSafetyCountsBusChains();
   await theHallResponsesLoadBeforeTheRacksAreBuilt();
   console.log('renderCore.routing: ok');

@@ -120,13 +120,13 @@ async function main(): Promise<void> {
       {
         scope: { kind: 'selection', clipIds: ['c1', 'c2'] },
         sampleRate: BOUNCE_SAMPLE_RATE,
-        includeFx: false,
-        includeAutomation: false,
+        includeFx: true,
+        includeAutomation: true,
         includeTrackMix: true,
         float32: false,
         tailSec: 0,
       },
-      'mirrors selectionRequest: no inserts, no automation, but the track mix applies',
+      'mirrors selectionRequest: the clips as they play, inserts, automation and the track mix',
     );
     assert.equal(item.label, 'my session.wav');
   }
