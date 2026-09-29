@@ -1177,6 +1177,25 @@ const isGridClip = (c: Pick<TasmoLoadedClip, 'scene_index' | 'slot_index'>): boo
   c.scene_index != null || c.slot_index != null;
 
 /**
+ * A PERFORM track's inserts in the file shape.
+ *
+ * A track opened from a .tasmo writes the file's own chain: PERFORM builds one
+ * device per insert (lib/tasmoToSession) and changes none of them, and mapping
+ * them back through dawDeviceToEffectNode would match an insert's name against
+ * the rack, turning an effect an older import stored under a studio catalog id
+ * ("compression", "reverb_delay") into the rack effect it resembles, enabled.
+ * A DAW import's devices, and a chain whose length no longer matches the
+ * file's, are mapped (VST3 -> real, creative FX -> rack, EQ/comp/reverb ->
+ * preserved), in order.
+ */
+function trackInsertsToTasmo(t: DawProject['tracks'][number]): EffectChainNode[] {
+  const devices = t.devices ?? [];
+  const own = t.tasmo?.effect_chain;
+  if (own && own.length === devices.length) return own;
+  return devices.map(dawDeviceToEffectNode);
+}
+
+/**
  * The save payload for the project PERFORM holds.
  *
  * A DAW import is written from its parsed fields, with fresh ids. A project
@@ -1244,10 +1263,7 @@ export function dawProjectToTasmo(d: DawProject): TasmoProjectInput {
           follow_action: c.followAction ?? null,
         };
       }),
-      // Map the track's device chain into theDAW effect nodes (VST3 -> real,
-      // creative FX -> rack, EQ/comp/reverb -> preserved). Order is kept, and a
-      // device opened from a .tasmo keeps its id and plugin state.
-      effect_chain: (t.devices ?? []).map(dawDeviceToEffectNode),
+      effect_chain: trackInsertsToTasmo(t),
       color: t.color ?? null,
     };
   });

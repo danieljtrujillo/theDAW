@@ -98,6 +98,10 @@ const opened = (): TasmoProjectLoaded => ({
           vst_state: { plugin_path: 'C:/VST3/Pro-Q 3.vst3', plugin_name: 'Pro-Q 3', parameters: { 3: 0.5 }, raw_state: 'U1RBVEU=', state_host: 'thedaw' },
         },
         { id: 'fx-lead-verb', node_type: 'builtin', effect_name: 'reverb', parameters: {}, bypass: true },
+        // An effect an older import wrote under a studio catalog id, which
+        // EDIT keeps inert and PERFORM plays as the rack effect its name
+        // matches. The file keeps it as it is.
+        { id: 'fx-lead-comp', node_type: 'builtin', effect_name: 'compression', parameters: { threshold: -18 }, bypass: false },
       ],
       clips: [
         {
@@ -196,6 +200,7 @@ const performSave = posted[0].project;
   assert.equal(lead.effect_chain?.[0].vst_state?.raw_state, 'U1RBVEU=', 'and its plugin state');
   assert.equal(lead.effect_chain?.[0].vst_state?.state_host, 'thedaw');
   assert.equal(lead.effect_chain?.[1].bypass, true);
+  assert.deepEqual(lead.effect_chain, opened().tracks[0].effect_chain, 'every insert is written as the file has it');
 
   const verse = lead.clips?.find((c) => c.id === 'clip-verse');
   assert.ok(verse, 'the clip keeps its id');
@@ -242,6 +247,11 @@ await loadProjectIntoEditor(JSON.parse(JSON.stringify(performSave)) as TasmoProj
   const lead = st().tracks.find((t) => t.id === 'trk-lead');
   assert.equal(lead?.instrument?.vst?.raw_state, 'SU5TVA==', 'the instrument reopens with its state');
   assert.equal(lead?.fxChain?.[0].vst?.raw_state, 'U1RBVEU=', 'the insert reopens with its state');
+  assert.deepEqual(
+    [lead?.fxChain?.[2].effect, lead?.fxChain?.[2].enabled],
+    ['compression', false],
+    'the catalog effect reopens as it was, inert',
+  );
   assert.equal(outputOf(st().routing, 'trk-lead'), 'bus-a', 'the track still feeds its bus');
   assert.deepEqual(sendsFrom(st().routing, 'trk-lead').map((e) => [e.to, e.gain]), [['bus-b', 0.25]]);
   const clips = new Map(st().clips.map((c) => [c.id, c]));

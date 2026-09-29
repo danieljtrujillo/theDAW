@@ -200,7 +200,9 @@ export function translateDawParams(effectId: string, params: Record<string, numb
  *
  * A device PERFORM opened from a .tasmo (lib/tasmoToSession) also carries the
  * node's `id` and the plugin state theDAW captured (`raw_state`, `state_host`),
- * and the node written back keeps them. A DAW import's own preset chunk
+ * and the node keeps them, so `dawDeviceToChainEntry` hosts the plugin at that
+ * state. (A PERFORM save writes such a track's inserts from the file's own
+ * chain: projectClient `trackInsertsToTasmo`.) A DAW import's own preset chunk
  * (`state`) is never taken for that state: neither host reads it.
  */
 export function dawDeviceToEffectNode(device: DawDevice): EffectChainNode {
