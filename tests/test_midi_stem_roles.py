@@ -398,6 +398,20 @@ def test_a_legato_bass_line_keeps_every_note_it_plays():
         assert b[0] >= a[1]
 
 
+def test_a_bass_double_stop_keeps_its_root_and_a_late_tail_does_not_win():
+    notes = [
+        # A root and its fifth struck together, the fifth ringing longer:
+        # both sound on, so the root is the line's note.
+        (0.00, 0.50, 33, 0.60, None),
+        (0.01, 0.60, 40, 0.55, None),
+        # B1 played, and a short tail of the A1 re-read just after its onset.
+        (1.00, 1.40, 35, 0.50, None),
+        (1.02, 1.08, 33, 0.40, None),
+    ]
+    line = monophonic_line(notes, pick="lowest", min_len=0.07)
+    assert [n[2] for n in line] == [33, 35]
+
+
 def _legato_bass_wav(path: Path) -> Path:
     """The line of :data:`LEGATO_BASS_EVENTS` rendered with its harmonics."""
     parts = [

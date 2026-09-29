@@ -709,15 +709,20 @@ def _later_wins(cur: NoteEvent, new: NoteEvent, pick: MonophonicPick) -> bool:
     """Of two notes struck together, whether ``new`` (the later onset) is
     the one the line keeps.
 
-    On a bass line the lower note wins over its own overtone. Two notes that
-    are not a note and its overtone are two notes of the line: basic-pitch
-    re-strikes the ringing note a few milliseconds before the next note's
-    onset, and the note that sounds on past the other is the one played."""
+    On a bass line the lower note wins over its own overtone. Of two notes
+    that are not a note and its overtone, one that ends before the other is
+    half over is the tail of the note before: basic-pitch re-strikes the
+    ringing note a few milliseconds before the next note's onset, and the
+    other note is the one played. Two notes that both sound on (a double
+    stop) keep the lower."""
     if pick == "lowest":
         new_is_lower = new[2] < cur[2]
         lower, higher = (new, cur) if new_is_lower else (cur, new)
         if not _at_overtone(lower, higher, pick):
-            return new[1] > cur[1]
+            if cur[1] <= (new[0] + new[1]) / 2.0:
+                return True
+            if new[1] <= (cur[0] + cur[1]) / 2.0:
+                return False
         if lower[3] >= MONO_LOWER_WINS_RATIO * higher[3]:
             return new_is_lower
         return new[3] > cur[3]
