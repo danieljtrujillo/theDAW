@@ -115,7 +115,7 @@ export const RollHarmonyRow: React.FC<{ stepPx: number; totalSteps: number; win:
             key={`c${c.tick}`}
             className="absolute top-1 text-[12px] font-bold leading-none et-ink whitespace-nowrap pointer-events-none"
             style={{ left: x }}
-            title={c.key ? `${c.figure} in ${c.key}` : c.figure}
+            title={c.roman ? `${c.figure}: ${c.roman}${c.key ? ` in ${c.key}` : ''}` : c.key ? `${c.figure} in ${c.key}` : c.figure}
           >
             {c.figure}
           </span>
