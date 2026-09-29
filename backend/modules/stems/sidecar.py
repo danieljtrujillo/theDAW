@@ -13,7 +13,8 @@ This module:
     (defaults to the main venv; overridable via theDAW_STEMS_PYTHON
     so users can point at an isolated venv where the heavy deps live).
   * ``probe()`` — non-spawning health check: does the package exist?
-    Does the configured Python import demucs?
+    Does the configured Python import demucs? Are the LARSNET weights the
+    12-stem drum split loads on disk (``larsnet_weights()``)?
   * ``ensure_running()`` — lazy spawn. Starts the sidecar as a
     subprocess via ``run_backend.py``, watches for ``backend_port.txt``
     to appear, polls ``/health`` until ready, then caches the port.
@@ -43,6 +44,8 @@ from typing import Optional
 
 import httpx
 from backend.lib.launch_token import child_env
+
+from .manifest import LARSNET_PARTS, LARSNET_WEIGHTS_LICENSE
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +257,81 @@ def _is_port_in_use(host: str, port: int) -> bool:
             return False
 
 
+LARSNET_DIRNAME = "larsnet"
+LARSNET_MODELS_DIRNAME = "pretrained_larsnet_models"
+LARSNET_MODELS_ZIP = "pretrained_larsnet_models.zip"
+
+
+def _larsnet_model_paths(config_path: Path) -> dict[str, str]:
+    """The ``inference_models`` block of LARSNET's ``config.yaml``: kit part
+    -> checkpoint path relative to the config's folder, which is where
+    ``LarsNet`` resolves them. The block is flat ``part: 'path'`` lines, so it
+    is read line by line and the probe needs no YAML parser."""
+    out: dict[str, str] = {}
+    in_block = False
+    for raw in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            in_block = line.strip() == "inference_models:"
+            continue
+        if in_block:
+            key, sep, value = line.strip().partition(":")
+            if sep and value.strip():
+                out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def larsnet_weights(package_path: Path) -> dict:
+    """Whether the LARSNET checkpoints the 12-stem drum split loads are on
+    disk, one per kit part, at the paths its ``config.yaml`` names.
+
+    ``state`` is ``present`` (every part's weights are there), ``packed``
+    (none are, but ``pretrained_larsnet_models.zip`` is, which the sidecar
+    unpacks on the first 12-stem run) or ``missing``. Without every part's
+    weights a 12-stem run keeps the undivided ``drums`` stem.
+    """
+    base = package_path / LARSNET_DIRNAME
+    config = base / "config.yaml"
+    zip_path = base / LARSNET_MODELS_ZIP
+    report: dict = {
+        "ok": False,
+        "state": "missing",
+        "config_path": str(config),
+        "config_found": config.is_file(),
+        "models_dir": str(base / LARSNET_MODELS_DIRNAME),
+        "zip_path": str(zip_path),
+        "zip_present": zip_path.is_file(),
+        "license": LARSNET_WEIGHTS_LICENSE,
+        "weights": {},
+        "missing": [],
+    }
+    paths: dict[str, str] = {}
+    if report["config_found"]:
+        try:
+            paths = _larsnet_model_paths(config)
+        except (OSError, UnicodeDecodeError) as e:
+            report["error"] = f"config.yaml unreadable: {e}"
+    parts = list(paths) or list(LARSNET_PARTS)
+    for part in parts:
+        rel = paths.get(part)
+        path = base / rel if rel else None
+        present = bool(path and path.is_file() and path.stat().st_size > 0)
+        report["weights"][part] = {
+            "path": str(path) if path else None,
+            "present": present,
+        }
+        if not present:
+            report["missing"].append(part)
+    report["ok"] = bool(paths) and not report["missing"]
+    if report["ok"]:
+        report["state"] = "present"
+    elif report["zip_present"] and len(report["missing"]) == len(parts):
+        report["state"] = "packed"
+    return report
+
+
 def probe(cfg: Optional[SidecarConfig] = None) -> dict:
     """Non-spawning health snapshot used by /api/stems/probe."""
     cfg = cfg or resolve_config()
@@ -272,6 +350,8 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
         "port_hint": cfg.port,
         "running": False,
     }
+    out["larsnet"] = larsnet_weights(cfg.package_path)
+    out["larsnet_weights_ok"] = out["larsnet"]["ok"]
     if not out["package_exists"]:
         out["error"] = (
             f"integration-package not found at {cfg.package_path}. "

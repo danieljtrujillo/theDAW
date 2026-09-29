@@ -847,12 +847,44 @@ def _demucs_provider_status() -> dict:
                     "recommended": ok,
                     "reason": status.get("demucs_version")
                     or status.get("demucs_error"),
-                }
+                },
+                _larsnet_chip(status.get("larsnet") or {}),
             ],
             "details": status,
         }
     except Exception as e:
         return _unavailable_provider("demucs", "Demucs / Stems", str(e))
+
+
+def _larsnet_chip(larsnet: dict) -> dict:
+    """The Stems card's chip for the LARSNET drum-split weights (the probe's
+    ``larsnet`` report): green when every kit part's checkpoint is on disk,
+    blue while they are still in their zip, red naming the missing parts."""
+    state = larsnet.get("state") or "missing"
+    missing = list(larsnet.get("missing") or [])
+    if state == "present":
+        source = "local"
+        reason = "Every kit part's weights are on disk; 12-stem runs split the drums."
+    elif state == "packed":
+        source = "cached"
+        reason = (
+            "The weights are in pretrained_larsnet_models.zip; the first 12-stem "
+            "run unpacks them."
+        )
+    else:
+        source = "missing"
+        reason = (
+            f"Missing weights: {', '.join(missing) or 'all'}. 12-stem runs keep "
+            "the undivided drums stem."
+        )
+    return {
+        "id": "larsnet-weights",
+        "label": "LARSNET drum weights",
+        "source": source,
+        "path": larsnet.get("models_dir"),
+        "recommended": False,
+        "reason": reason,
+    }
 
 
 def _midi_provider_status() -> dict:
