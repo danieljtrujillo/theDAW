@@ -25,11 +25,13 @@ from pydantic import BaseModel
 from backend.modules.vst.scanner import (
     Vst3PluginInfo,
     carry_over_metadata,
+    list_plugin_classes,
     scan_vst3_directories,
     load_cached_scan,
     read_cache_entries,
-    save_scan_cache,
+    save_scan,
     start_background_enrichment,
+    vst3_install_folder,
 )
 from backend.modules.vst.host import (
     param_key,
@@ -295,6 +297,9 @@ class ProcessRequest(BaseModel):
 
 class ScanResponse(BaseModel):
     plugins: list[dict]
+    # The folder an empty plugin list tells the user to install into: the
+    # first standard VST3 folder the scan reads on this machine.
+    install_folder: str = ""
 
 
 class EditorRequest(BaseModel):
@@ -335,9 +340,13 @@ def scan_vst3(
     """Scan standard VST3 directories.
 
     Serves the cache when it is still valid for the current contents of the scan
-    roots; ``refresh=true`` forces a fresh walk and gives previously failed
-    plugins another chance. Plugins this host cannot load are withheld unless
-    ``include_unloadable`` asks for them, so the UI never offers a dead tile.
+    roots; ``refresh=true`` forces a fresh walk and gives plugins that failed to
+    load, or ran out of load-probe timeouts, another chance. A fresh walk lists
+    each new module's classes through the native host before it answers, so
+    the answer already says which plugins are instruments; ``enrich=false``
+    opens no plugin at all. Plugins this host cannot load (the background load
+    probe failed on them, or died) are withheld unless ``include_unloadable``
+    asks for them, so the UI never offers a dead tile.
 
     Gated: this hands a caller the absolute plugin paths of this machine, and
     enumerating installed plugins is itself information this machine's
@@ -367,14 +376,24 @@ def scan_vst3(
     if plugins is None:
         plugins = scan_vst3_directories()
         carry_over_metadata(plugins, read_cache_entries(), retry_failed=refresh)
-        save_scan_cache(plugins)
+        if enrich:
+            # A module's factory names its classes' vendor, version and
+            # instrument/effect category in well under a second, so the list
+            # the user opened says which plugins are instruments.
+            list_plugin_classes(plugins)
+        # A rescan is counted as it is saved, so a metadata worker still
+        # running from an earlier scan does not write back the verdicts the
+        # rescan just dropped, and takes up the rescan's list when it is done.
+        save_scan(plugins, rescan=refresh)
     body = _plugin_dicts(plugins, include_unloadable)
     if enrich:
-        # Vendor/version/category only come from opening the plugin, which is far
-        # too slow to hold a request; the worker fills the cache in and the next
-        # scan serves it.
+        # Every new plugin is still loaded once through pedalboard, out of
+        # process, to learn whether the server's own host survives it, and
+        # that load classifies what the native host could not list. It is far
+        # too slow to hold a request; the worker fills the cache in and the
+        # next scan serves it.
         start_background_enrichment(plugins)
-    return ScanResponse(plugins=body)
+    return ScanResponse(plugins=body, install_folder=vst3_install_folder())
 
 
 @router.get("/scan/{path:path}", response_model=ScanResponse)
@@ -410,7 +429,10 @@ def scan_vst3_custom(path: str, request: Request, include_unloadable: bool = Fal
     require_loopback_launch_or_pairing_token(request)
     resolved = _validated_scan_directory(path)
     plugins = scan_vst3_directories(extra_paths=[str(resolved)])
-    return ScanResponse(plugins=_plugin_dicts(plugins, include_unloadable))
+    return ScanResponse(
+        plugins=_plugin_dicts(plugins, include_unloadable),
+        install_folder=vst3_install_folder(),
+    )
 
 
 @router.post("/load")

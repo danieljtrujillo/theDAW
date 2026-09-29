@@ -91,8 +91,10 @@ export function setLiveEditorRectRouter(router: LiveEditorRectRouter | null): vo
 }
 
 export const vstApi = {
+  // `install_folder`: the folder the scan reads for installed plugins, which an
+  // empty plugin list names (vstStore vst3InstallHint).
   scan: (refresh = false) =>
-    getJson<{ plugins: Vst3PluginInfo[] }>(`/api/vst/scan?refresh=${refresh ? 'true' : 'false'}`),
+    getJson<{ plugins: Vst3PluginInfo[]; install_folder?: string }>(`/api/vst/scan?refresh=${refresh ? 'true' : 'false'}`),
   // Open the plugin's real native editor window (sidecar process). Pass the
   // node's current raw_state so the editor opens where the user left off. When
   // `embed` is given (Electron), the editor is reparented into the MIX area over
