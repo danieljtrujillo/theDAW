@@ -703,14 +703,34 @@ def _module_version(name: str) -> str:
         return "unknown"
 
 
+#: Stem names of a split kit (a 12-stem run's LARSNET parts and their usual
+#: spellings): each is drums, read by the drum engine like a whole kit.
+_KIT_PIECE_STEMS = frozenset(
+    {
+        "kick",
+        "snare",
+        "toms",
+        "tom",
+        "hihat",
+        "hihats",
+        "hi-hat",
+        "hi_hat",
+        "cymbals",
+        "overheads",
+        "percussion",
+    }
+)
+
+
 def hint_for_stem(stem_name: Optional[str]) -> MidiHint:
-    """Stem-aware routing: a drum stem (any name containing 'drum') goes to
-    the model-free drum engine, piano-transcription-inference excels on
-    pure piano, everything else routes to basic-pitch."""
+    """Stem-aware routing: a drum stem (any name containing 'drum', or a
+    piece of a split kit: kick, snare, toms, hi-hat, cymbals) goes to the
+    model-free drum engine, piano-transcription-inference excels on pure
+    piano, everything else routes to basic-pitch."""
     if not stem_name:
         return "generic"
     name = stem_name.lower()
-    if "drum" in name:
+    if "drum" in name or name in _KIT_PIECE_STEMS:
         return "drums"
     if name in {"piano", "keys", "keyboards"}:
         return "piano"
