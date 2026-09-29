@@ -33,7 +33,7 @@ import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
 import { sanitizeFermata, sanitizeRollTempoMap, startTempoOf, tickBeat } from '../lib/rollTempo';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
-import { conformBends, conformControls, conformFiguredBass, conformNotes, conformTicked } from '../lib/tempoConform';
+import { conformBends, conformControls, conformFiguredBass, conformNotes, conformTicked, sameTiming } from '../lib/tempoConform';
 // lib/rollTracks imports only the RollTrack and PianoNote TYPES back from here,
 // erased at compile, so this too is a one-way runtime dependency.
 import {
@@ -935,7 +935,11 @@ interface PianoRollState {
    *  meter, lanes and bends, so the write changes the part's notes (and
    *  `opts.part`) and the grid's fit only, whatever it is handed; a note on a
    *  lane the roll does not have (or has with other time than the notes' own
-   *  `meter.lanes`) goes to lane A, and the document's markers stay too. With
+   *  `meter.lanes`) goes to lane A, and the document's markers stay too. A
+   *  part timed against audio (`opts.part.fromAudio`) placed at another map
+   *  than the roll's (its `tempoMap`, else one tempo at `bpm`) keeps its
+   *  seconds under the roll's map (lib/tempoConform), notes and controller
+   *  changes, so a song's next stem stays on the song after MATCH. With
    *  `opts.document` the tempo map, meter, bends and markers it hands in
    *  replace the roll's as in a roll of one part, and bends it leaves out
    *  stay. Returns whether the document was kept (ImportNotesResult). */
@@ -1315,6 +1319,18 @@ export const importedRollBpm = (bpm: number): number => clampTempoBpm(bpm);
 
 /** One tempo at `bpm`: the map a roll gets when its notes arrive at a single tempo. */
 const oneTempo = (bpm: number): TempoEvent[] => sanitizeRollTempoMap([], bpm);
+
+/**
+ * The map an import's notes were placed at: its file's `tempoMap` (starting
+ * at `bpm`, else at the roll's `rollBpm`, as importNotes writes it), else one
+ * tempo at a finite `bpm`; null when it hands in neither, and its notes are
+ * on the roll's own clock.
+ */
+const importedTempoMap = (bpm: number | undefined, tempoMap: readonly TempoEvent[] | undefined, rollBpm: number): TempoEvent[] | null => {
+  const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
+  if (tempoMap) return sanitizeRollTempoMap(tempoMap, finiteBpm ? importedRollBpm(bpm) : rollBpm);
+  return finiteBpm ? oneTempo(importedRollBpm(bpm)) : null;
+};
 
 /** The map and the `bpm` it starts at, written together so the two can never disagree. */
 const tempoSlice = (tempoMap: TempoEvent[]): Pick<PianoRollState, 'bpm' | 'tempoMap'> =>
@@ -2844,11 +2860,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         // The other parts play by the document's tempo map, meter, lanes and
         // bends, so a write into this part changes its notes and the fit only,
         // and the file part's controllers and instrument, which are its own.
-        const notes = migrateNotes(notesOnLanes(incoming, s.lanes, meter?.lanes));
+        // A transcription placed at its file's map keeps its seconds under the roll's.
+        const placedBy = opts?.part?.fromAudio === true ? importedTempoMap(bpm, incomingTempo, s.bpm) : null;
+        const conform = placedBy ? { from: placedBy, to: s.tempoMap } : null;
+        const retime = !!conform && !sameTiming(conform);
+        const timed = retime ? conformNotes(incoming, conform, meter?.lanes) : incoming;
+        const part = retime && opts?.part?.controls ? { ...opts.part, controls: conformControls(opts.part.controls, conform) } : opts?.part;
+        const notes = migrateNotes(notesOnLanes(timed, s.lanes, meter?.lanes));
         return {
           notes,
           // Every import sets the part's audio mark, so a generator's notes are never taken for a transcription.
-          ...importedPartSlice(s, opts?.part ?? {}),
+          ...importedPartSlice(s, part ?? {}),
           // The grid still holds every other part's notes.
           ...(notes.length ? fitToNotes([...notes, ...otherPartNotes(s)], s.meterMap, s.pickupSteps) : {}),
           ...noSelection(),

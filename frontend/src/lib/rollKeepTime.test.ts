@@ -121,6 +121,29 @@ const BASS: Array<[number, number, number]> = [[0.5, 1.1, 40], [1.37, 1.9, 43], 
   assert.deepEqual(rollTracksOf(roll()).find((t) => t.id === handId)!.notes.map((n) => n.step), handSteps, 'the grid part keeps its steps');
 }
 
+// The next stem into a part of its own after MATCH gave the roll the song's tempo: the roll keeps its map,
+// which the part before plays by, and the new stem's notes sound at the seconds they were transcribed at under it.
+{
+  fresh();
+  served.set('song4__vocals_midi', encodeMidi(stemFile(120, [[0.5, 1.0, 64], [4.0, 4.5, 67]])));
+  served.set('song4__bass_midi', encodeMidi(stemFile(120, BASS)));
+  await sendMidiIdToTarget('song4__vocals_midi', 'piano-roll');
+  const vocalId = roll().activeTrackId;
+  writeMatch(roll(), matchApply(roll(), steadySong(92, 12)).apply!);
+  near(roll().bpm, 92, 0.01, "MATCH gave the roll the song's tempo");
+  const vocalSec = secondsOf(roll().notes);
+  assert.ok(roll().addTrack({ name: 'Part 2' }));
+  await sendMidiIdToTarget('song4__bass_midi', 'piano-roll');
+  near(roll().bpm, 92, 0.01, 'the roll keeps its tempo, which the vocal part plays by');
+  assert.equal(activeTrackOf(roll()).fromAudio, true);
+  secondsOf(roll().notes).forEach(([start, end], i) => {
+    near(start, BASS[i][0], 0.003, `bass note ${i} starts at its transcribed second`);
+    near(end, BASS[i][1], 0.003, `bass note ${i} ends at its transcribed second`);
+  });
+  const clock = stepClock(roll().bpm, roll().tempoMap);
+  rollTracksOf(roll()).find((t) => t.id === vocalId)!.notes.forEach((n, i) => near(clock.at(n.step), vocalSec[i][0], 0.002, `vocal note ${i} stays`));
+}
+
 // The BPM field's KEEP TIME on a roll written on the grid: every part keeps its seconds, one undo step.
 {
   fresh();
