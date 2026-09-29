@@ -86,6 +86,7 @@ export function stemMidiDocument(files: readonly StemMidiFile[]): RollMidiPartsI
           ...(controls ? { controls } : {}),
         },
         notes: same ? p.notes : conformNotes(p.notes, c),
+        ...(p.stemRole ? { stemRole: p.stemRole } : {}),
       });
     });
   }

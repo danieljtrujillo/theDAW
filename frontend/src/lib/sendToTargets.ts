@@ -188,8 +188,9 @@ export function loadMidiIntoPianoRoll(
     // markers (FF 06) replace the previous one's, unless other parts keep the document.
     // A library song's MIDI was timed against its audio: the parts are marked so MATCH keeps their seconds.
     const audio = opts.fromAudio === true ? { fromAudio: true } : {};
-    // A stem's transcription plays its stem's instrument, not basic-pitch's stock Electric Piano (lib/stemRole).
-    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', { ...audio, stem: opts.stem }) : null;
+    // A stem's transcription plays its stem's instrument, not basic-pitch's stock Electric Piano (lib/stemRole):
+    // the row id or the file's name ("bass.mid" off the disk) names the stem.
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', { ...audio, stem: opts.stem ?? labelForLog }) : null;
     const kept = parts
       ? parts.keptDocument
       : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers, part: audio }).keptDocument;

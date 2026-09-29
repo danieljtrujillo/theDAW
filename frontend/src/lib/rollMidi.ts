@@ -132,7 +132,7 @@ import {
 import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram, orchestraInstrument } from './orchestra';
-import { BASIC_PITCH_PROGRAM, stemRoleOf, stemRoleVoice } from './stemRole';
+import { BASIC_PITCH_PROGRAM, stemRoleOf, stemRoleVoice, type StemRole } from './stemRole';
 import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
 import { scaleExpressionTicks } from './noteExpression';
 import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
@@ -1224,6 +1224,13 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
 export interface RollMidiPart {
   track: Partial<RollTrack>;
   notes: PianoNote[];
+  /**
+   * The stem role whose instrument the part took over basic-pitch's stock
+   * program (lib/stemRole). Absent when the file's own program stands. An
+   * import into the part being edited gives the part this instrument even
+   * when it has one of its own: the notes are that stem's.
+   */
+  stemRole?: StemRole;
 }
 
 /** What an import of a file into parts hands to the roll's importParts (or, for one part, importNotes). */
@@ -1383,6 +1390,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: 
         ...(controls ? { controls } : {}),
       },
       notes,
+      ...(role ? { stemRole: role.role } : {}),
     };
   });
   return {

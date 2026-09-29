@@ -322,6 +322,12 @@ export interface RollPartImport {
   percussion?: boolean;
   /** The notes were timed against audio (RollTrack `fromAudio`); left out, the part is not marked. */
   fromAudio?: boolean;
+  /**
+   * `instrumentId` is the instrument the file's stem names (lib/stemRole,
+   * RollMidiPart `stemRole`): the notes are that stem's, so the part takes it
+   * even when it has an instrument of its own.
+   */
+  stemInstrument?: boolean;
 }
 
 /** How importNotes treats the document's maps (see importNotes). */
@@ -1864,7 +1870,9 @@ const percussionChannelOf = (t: RollTrack, percussion: boolean | undefined): num
  * The parts after an import into the part being edited that carries `part`
  * (RollPartImport): its controller changes replace the part's own, and a part
  * that follows the roll's voice takes the file's registry instrument (when the
- * file sets no program, or that instrument's), else the file's program. An
+ * file sets no program, or that instrument's), else the file's program. A
+ * stem's instrument (`stemInstrument`) goes to the part whatever it played,
+ * and a part named for the instrument it had is renamed for the new one. An
  * empty patch when nothing changes.
  */
 const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<PianoRollState> => {
@@ -1876,7 +1884,13 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
     const next = cleanPartControls(part.controls);
     if (!sameControls(t.controls, next)) t = withControls(t, next);
   }
-  if (before.program === null) {
+  const stem = part.stemInstrument === true ? orchestraInstrument(part.instrumentId) : undefined;
+  if (stem) {
+    // The instrument the last stem gave the part named it ("Voice"): the name follows the new one. A name the user gave stays.
+    const was = orchestraInstrument(before.instrumentId);
+    const namedForIt = !!was && was.id !== stem.id && before.name === uniquePartName(s.tracks, was.name, before.id);
+    t = { ...t, ...instrumentPatchOf(s.tracks, t, stem), ...(namedForIt ? { name: uniquePartName(s.tracks, stem.name, t.id) } : {}) };
+  } else if (before.program === null) {
     const inst = orchestraInstrument(part.instrumentId);
     if (inst && (part.program == null || inst.program === part.program)) {
       t = { ...t, ...instrumentPatchOf(s.tracks, t, inst) };

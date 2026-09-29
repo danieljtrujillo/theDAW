@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { BASIC_PITCH_PROGRAM, stemPartName, stemRoleOf, stemRoleVoice } from './stemRole.ts';
 import { encodeMidi, parseMidi, type MidiFileData } from './midi.ts';
-import { sendMidiIdToTarget } from './sendToTargets.ts';
+import { loadMidiIntoPianoRoll, sendMidiIdToTarget } from './sendToTargets.ts';
 import { importMidiParts } from './rollPartsImport.ts';
 import { midiFileToRollParts } from './rollMidi.ts';
 import { importMidiAsTracks } from './midiImportTracks.ts';
@@ -94,6 +94,38 @@ const served = new Map<string, Uint8Array>();
   served.set('e1__guitar_midi', bytesOf(transcription([52, 55])));
   await sendMidiIdToTarget('e1__guitar_midi', 'piano-roll');
   assert.equal(activeTrackOf(roll()).program, 26);
+}
+
+// Stems sent one after another into the part being edited, as LIBRARY's "Send to piano roll" is used:
+// each replaces the part's notes and brings its own stem's instrument, not the one the stem before it gave the part.
+{
+  roll().importParts([{ name: 'Part 1', notes: [] }], 120);
+  served.set('e2__vocals_midi', bytesOf(transcription([67, 69])));
+  served.set('e2__bass_midi', bytesOf(transcription([40, 43])));
+  served.set('e2__other_midi', bytesOf(transcription([72])));
+  await sendMidiIdToTarget('e2__vocals_midi', 'piano-roll');
+  assert.equal(activeTrackOf(roll()).name, 'Voice');
+  await sendMidiIdToTarget('e2__bass_midi', 'piano-roll');
+  const bass = activeTrackOf(roll());
+  assert.deepEqual(roll().notes.map((n) => n.note), [40, 43], 'the bass notes replaced the vocal notes');
+  assert.equal(bass.program, 33, 'the bass plays the electric bass, not the voice the vocal stem gave the part');
+  assert.equal(bass.instrumentId, 'electric-bass');
+  assert.equal(bass.name, 'Electric Bass', 'the name the vocal stem gave the part follows the new instrument');
+  // A stem that names no instrument leaves the part's instrument as it is.
+  await sendMidiIdToTarget('e2__other_midi', 'piano-roll');
+  assert.equal(activeTrackOf(roll()).program, 33);
+  // A part the user named keeps its name under a stem's instrument.
+  roll().importParts([{ name: 'Low line', program: 0, notes: [] }], 120);
+  await sendMidiIdToTarget('e2__bass_midi', 'piano-roll');
+  assert.equal(activeTrackOf(roll()).program, 33, "the stem's notes are a bass line, so the part plays the electric bass");
+  assert.equal(activeTrackOf(roll()).name, 'Low line');
+}
+
+// LIBRARY's MIDI IN, a stem file saved from the library ("bass.mid") picked off the disk.
+{
+  roll().importParts([{ name: 'Part 1', notes: [] }], 120);
+  assert.equal(loadMidiIntoPianoRoll(bytesOf(transcription([40, 43])), 'piano-roll', 'bass.mid'), true);
+  assert.equal(activeTrackOf(roll()).program, 33, 'the file named for its stem plays the electric bass');
 }
 
 // The MIDI tab's IMPORT of a stem file saved from the library.
