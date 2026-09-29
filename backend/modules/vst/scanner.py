@@ -39,12 +39,14 @@ class Vst3PluginInfo:
     loadable: bool = True
     probed: bool = False
     probe_timeouts: int = 0
-    # The plugin's OWN name and VST3 identifier, read from the plugin by
-    # ``probe_plugin``. ``name`` above is only the bundle/file stem — the host
-    # library's filename, which is often not what the vendor calls the plugin
-    # ("FabFilter Pro-Q 4.vst3" vs "Pro-Q 4"), and for a multi-plugin shell is
-    # not a plugin name at all. Empty until the probe lands (and for a plugin
-    # that never loads), so every consumer falls back to ``name``.
+    # The plugin's OWN name and VST3 identifier, read from the module's factory
+    # by ``thedaw-vst-host --list`` (the 32-hex class id), or from the loaded
+    # plugin by ``probe_plugin`` where the host cannot list it. ``name`` above
+    # is only the bundle/file stem — the host library's filename, which is
+    # often not what the vendor calls the plugin ("FabFilter Pro-Q 4.vst3" vs
+    # "Pro-Q 4"), and for a multi-plugin shell is not a plugin name at all.
+    # Empty until one of those lands (and for a plugin that never loads), so
+    # every consumer falls back to ``name``.
     display_name: str = ""
     identifier: str = ""
 
@@ -244,15 +246,146 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
 
 # --- Metadata enrichment ---
 #
-# Most plugins ship no moduleinfo.json, so vendor/version/category are only
-# available from the plugin itself. Opening one can take seconds, hang, or crash
-# the process outright, so each probe runs in a short-lived subprocess with a
-# timeout: the server survives a bad plugin, and the answer is cached forever.
+# Most plugins ship no moduleinfo.json, so vendor/version/category come from
+# the plugin's module. theDAW's own host reads them from the module's factory
+# (``thedaw-vst-host --list``): it loads the library and asks the factory for
+# its class info without creating an instance of any class, which takes well
+# under a second even for a synth whose full load runs past half a minute.
+# Where the host is not built or cannot list the module, the plugin is loaded
+# through pedalboard instead. Either one runs in a short-lived subprocess with
+# a timeout: the server survives a bad plugin, and the answer is cached.
 
 _PROBE_TIMEOUT_S = 25.0
 _MAX_PROBE_TIMEOUTS = 3
 # How much probing the background worker does between cache writes.
 _ENRICH_CHUNK_S = 60.0
+# One module's class listing. Reading a factory is a library load and a few
+# calls; a module that has not answered in this long is blocked in its own
+# entry point (a licence dialog, a network check) and goes to the load probe.
+_LIST_TIMEOUT_S = 10.0
+# How long a scan request may spend listing modules before it answers. 46
+# modules listed in 5.0 s on the machine this was measured on (2026-09-29);
+# what is left over when it runs out goes to the background worker, which
+# lists before it loads too.
+_SCAN_LIST_BUDGET_S = 20.0
+
+
+def _host_command() -> list[str] | None:
+    """The argv prefix that runs theDAW's native VST host, or None when it is
+    not built.
+
+    Found the way the live host finds it (``live_host.HostLocator``):
+    ``THEDAW_VST_HOST`` first, then ``native/vst-host/bin``. Imported here,
+    not at the top: ``live_host`` imports ``path_policy``, which imports this
+    module.
+    """
+    from backend.modules.vst.live_host import HostLocator
+
+    locator = HostLocator()
+    host = locator.resolve()
+    return None if host is None else locator.launch_prefix(host)
+
+
+def _parse_class_listing(stdout: str) -> list[dict]:
+    """The class array ``--list`` printed, or [] when there is none.
+
+    The host prints one JSON array line, but the module it loads can print too
+    (Six Sines logs "Initializing Six Sines ..." from its entry point, before
+    the listing), and a line printed without a newline runs into the array.
+    So the last line holding a JSON array that runs to the end of the line is
+    the listing. An empty array means the module has no audio class, which
+    classifies nothing.
+    """
+    decoder = json.JSONDecoder()
+    for line in reversed((stdout or "").splitlines()):
+        text = line.strip()
+        start = text.find("[")
+        while start != -1:
+            try:
+                value, end = decoder.raw_decode(text, start)
+            except ValueError:
+                value, end = None, start
+            if isinstance(value, list) and not text[end:].strip():
+                return [c for c in value if isinstance(c, dict)]
+            start = text.find("[", start + 1)
+    return []
+
+
+def _list_subprocess(
+    host: list[str], path: str, timeout_s: float
+) -> tuple[str, list[dict] | None]:
+    """List one module's classes through the native host.
+
+    Returns ``("ok", classes)``, ``("failed", None)`` when the host ran and
+    could not list it (exit 3 missing, 4 load failed, a stub host built
+    without its VST3 layer, no audio class), or ``("timeout", None)``.
+    """
+    cmd = [*host, "--list", "--plugin", path]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout_s,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=flags,
+            env=child_env(),
+        )
+    except subprocess.TimeoutExpired:
+        log.info("VST3 class listing timed out after %.0fs: %s", timeout_s, path)
+        return "timeout", None
+    except OSError as e:
+        log.info("VST3 class listing could not run for %s: %s", path, e)
+        return "failed", None
+    classes = _parse_class_listing(proc.stdout) if proc.returncode == 0 else []
+    if not classes:
+        log.info(
+            "VST3 class listing failed for %s (exit %s): %s",
+            path,
+            proc.returncode,
+            (proc.stderr or "").strip()[-200:],
+        )
+        return "failed", None
+    return "ok", classes
+
+
+def _metadata_from_classes(classes: list[dict]) -> dict:
+    """An entry's metadata from its module's audio classes, in the probe's shape.
+
+    A module can hold several classes: Six Sines ships "Six Sines" and "Six
+    Sines, Seven Outs", sfizz ships "sfizz" and "sfizz-multi". The entry
+    describes the first one. It is the class every loader here opens when no
+    class is named (pedalboard's first sub-plugin, the native host's first
+    audio class), and its name is what the instrument slot and the effect
+    chain hand back as ``plugin_name``, so its category is the one the entry
+    has to carry. A class whose sub-categories name neither "Instrument" nor
+    "Fx" is an effect, as it is to the load probe.
+    """
+    first = classes[0]
+    return {
+        "display_name": str(first.get("name") or ""),
+        "identifier": str(first.get("identifier") or ""),
+        "manufacturer": str(first.get("vendor") or ""),
+        "version": str(first.get("version") or ""),
+        "category": _normalize_category(str(first.get("category") or "")) or "effect",
+    }
+
+
+def _record_metadata(info: Vst3PluginInfo, meta: dict) -> None:
+    """Write a listing's or a probe's answer onto the entry, as its verdict.
+
+    What the entry already knows (moduleinfo.json) stays; only gaps fill.
+    """
+    info.probed = True
+    info.display_name = info.display_name or meta.get("display_name", "")
+    info.identifier = info.identifier or meta.get("identifier", "")
+    info.manufacturer = info.manufacturer or meta.get("manufacturer", "")
+    info.version = info.version or meta.get("version", "")
+    if info.category in ("", "unknown"):
+        info.category = meta.get("category", "unknown") or "unknown"
 
 
 def probe_plugin(path: str) -> dict:
@@ -319,28 +452,60 @@ def enrich_plugin_metadata(
     plugins: list[Vst3PluginInfo],
     budget_s: float = 10.0,
     timeout_s: float = _PROBE_TIMEOUT_S,
+    *,
+    list_only: bool = False,
+    list_failed: set[str] | None = None,
 ) -> int:
     """Fill in vendor/version/category for unprobed entries, within a time budget.
 
-    Mutates ``plugins`` in place and returns how many probes were attempted, so a
-    caller can keep going until it returns 0. The budget bounds one pass; every
-    result is recorded on the entry, so the work resumes where it left off.
+    Each entry is listed through the native host first and loaded through the
+    pedalboard probe only when the host is not built or could not list it.
+    ``list_only`` stops there, for a caller that must answer quickly (a scan
+    request): an entry the host could not list is left for the worker.
+    ``list_failed`` holds the paths the host already failed to list; pass the
+    same set across calls so a module that hangs in its entry point costs the
+    listing timeout once, not once per round of load probes.
+
+    Mutates ``plugins`` in place and returns how many entries it worked on, so
+    a caller can keep going until it returns 0. The budget bounds one pass;
+    every result is recorded on the entry, so the work resumes where it left
+    off.
     """
     if budget_s <= 0:
         return 0
     deadline = time.monotonic() + budget_s
-    probed = 0
+    host = _host_command()
+    failed = list_failed if list_failed is not None else set()
+    worked = 0
     for info in plugins:
         if info.probed or not info.loadable:
+            continue
+        listable = host is not None and info.path not in failed
+        if list_only and not listable:
             continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        worked += 1
+        if listable:
+            effective = min(_LIST_TIMEOUT_S, remaining)
+            status, classes = _list_subprocess(host, info.path, effective)
+            if status == "ok" and classes:
+                _record_metadata(info, _metadata_from_classes(classes))
+                continue
+            # A listing cut short by the budget never had its chance, so it is
+            # tried again on the next pass rather than written off.
+            if status == "failed" or effective >= _LIST_TIMEOUT_S:
+                failed.add(info.path)
+            if list_only:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
         # One hung plugin must not overrun the caller's budget, so its probe is
         # cut short at whatever is left of it.
         effective = min(timeout_s, remaining)
         status, meta = _probe_subprocess(info.path, effective)
-        probed += 1
         if status == "timeout":
             # A slow loader (large sample or model payload) deserves another
             # attempt rather than a permanent verdict, but not an unbounded one:
@@ -351,17 +516,38 @@ def enrich_plugin_metadata(
                 if info.probe_timeouts >= _MAX_PROBE_TIMEOUTS:
                     info.probed = True
             continue
-        info.probed = True
         if meta is None:
+            info.probed = True
             info.loadable = False
             continue
-        info.display_name = info.display_name or meta.get("display_name", "")
-        info.identifier = info.identifier or meta.get("identifier", "")
-        info.manufacturer = info.manufacturer or meta.get("manufacturer", "")
-        info.version = info.version or meta.get("version", "")
-        if info.category in ("", "unknown"):
-            info.category = meta.get("category", "unknown") or "unknown"
-    return probed
+        _record_metadata(info, meta)
+    return worked
+
+
+def list_plugin_classes(
+    plugins: list[Vst3PluginInfo], budget_s: float = _SCAN_LIST_BUDGET_S
+) -> int:
+    """Classify the unprobed entries through the native host, within a budget.
+
+    Short enough to sit inside a scan request, so the list the user opens
+    already says which plugins are instruments. Loads nothing through
+    pedalboard; whatever the host cannot list is left for the background
+    worker. Returns how many modules were classified.
+    """
+    before = sum(1 for p in plugins if p.probed)
+    started = time.monotonic()
+    enrich_plugin_metadata(plugins, budget_s=budget_s, list_only=True)
+    listed = sum(1 for p in plugins if p.probed) - before
+    if listed:
+        log.info(
+            "Listed %d VST3 module(s) through thedaw-vst-host in %.1fs",
+            listed,
+            time.monotonic() - started,
+        )
+    left = sum(1 for p in plugins if not p.probed and p.loadable)
+    if left:
+        log.info("%d VST3 module(s) left for the load probe", left)
+    return listed
 
 
 _enrich_lock = threading.Lock()
@@ -375,11 +561,13 @@ def enrichment_running() -> bool:
 def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
     """Probe the still-unknown plugins on a worker thread, updating the cache.
 
-    A full pass costs minutes because some plugins take seconds to open and at
-    least one never finishes, so it cannot sit inside a scan request. The worker
-    takes its own copy, saves after each chunk (progress survives a shutdown),
-    and the next scan serves the enriched cache. Returns False when one is
-    already running.
+    What is left after a scan's class listing (``list_plugin_classes``) is a
+    module the host could not list, or every module when the host is not
+    built, and loading those through pedalboard costs seconds each, up to the
+    probe's timeout for one that never finishes, so it cannot sit inside a
+    scan request. The worker takes its own copy, saves after each chunk
+    (progress survives a shutdown), and the next scan serves the enriched
+    cache. Returns False when one is already running.
     """
     global _enrich_running
     if not any(not p.probed and p.loadable for p in plugins):
@@ -415,8 +603,11 @@ def _publish_enrichment(plugins: list[Vst3PluginInfo]) -> None:
 
 def _enrich_worker(plugins: list[Vst3PluginInfo]) -> None:
     global _enrich_running
+    list_failed: set[str] = set()
     try:
-        while enrich_plugin_metadata(plugins, budget_s=_ENRICH_CHUNK_S):
+        while enrich_plugin_metadata(
+            plugins, budget_s=_ENRICH_CHUNK_S, list_failed=list_failed
+        ):
             _publish_enrichment(plugins)
         _publish_enrichment(plugins)
         log.info("VST3 metadata enrichment finished for %d plugins", len(plugins))
@@ -464,11 +655,16 @@ def carry_over_metadata(
 # --- Scan result cache ---
 _CACHE_FILENAME = "vst3_scan_cache.json"
 # Bumped whenever the scan changes shape, so an older cache is discarded rather
-# than served (v2: one entry per plugin instead of bundle + inner-binary twins;
-# v3: the probe also records display_name/identifier — a v2 entry carries
-# probed=True, so without the bump it would never be probed again and every
-# name would stay stuck at the filename stem).
-_CACHE_VERSION = 3
+# than served, and its entries are not carried into the new scan either
+# (``read_cache_entries``): v2: one entry per plugin instead of bundle +
+# inner-binary twins; v3: the probe also records display_name/identifier — a v2
+# entry carries probed=True, so without the bump it would never be probed again
+# and every name would stay stuck at the filename stem; v4: entries are
+# classified by the native host's class listing — a v3 entry that ran out of
+# load-probe timeouts is probed=True with category "unknown", so a synth whose
+# load outlasts the probe (Surge XT, Zebralette 3, Six Sines) would never reach
+# the instrument slot.
+_CACHE_VERSION = 4
 
 
 def _cache_path() -> Path:
@@ -639,12 +835,19 @@ def load_cached_scan() -> list[Vst3PluginInfo] | None:
 
 
 def read_cache_entries() -> list[Vst3PluginInfo]:
-    """Cached entries regardless of staleness, for carrying metadata forward."""
+    """Cached entries regardless of staleness, for carrying metadata forward.
+
+    Only from a cache this version of the scanner wrote: an older one's
+    verdicts came from a scan that has since changed (see ``_CACHE_VERSION``),
+    and carrying them forward would serve them again under the new version.
+    """
     cp = _cache_path()
     if not cp.is_file():
         return []
     try:
         data = json.loads(cp.read_text(encoding="utf-8"))
+        if data.get("cache_version") != _CACHE_VERSION:
+            return []
         known = {f.name for f in fields(Vst3PluginInfo)}
         return [
             Vst3PluginInfo(**{k: v for k, v in p.items() if k in known})
