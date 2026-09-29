@@ -108,17 +108,15 @@ export interface MidiTracksResult {
 const docUid = (): string =>
   typeof crypto !== 'undefined' && crypto.randomUUID ? `roll-${crypto.randomUUID()}` : `roll-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 
+/** A file's parts as whole roll parts, with the document every clip shares and the length that holds the longest part. */
+export type MidiTrackParts = Omit<RollMidiPartsImport, 'parts'> & { parts: RollTrack[]; totalSteps: number };
+
 /**
- * The parts of `data` that have notes, each a whole roll part (ids made,
- * fields cleaned), with the document every clip shares: tempo, tempo map,
- * meter, lanes and bends, and the length in steps that holds the longest part.
+ * `file`'s parts that have notes, each a whole roll part (ids made, fields
+ * cleaned), with its document: tempo, tempo map, meter, lanes and bends, and
+ * the length in steps that holds the longest part.
  */
-export function midiFileTrackParts(
-  data: MidiFileData,
-  idPrefix = 'imp',
-  stem?: string,
-): Omit<RollMidiPartsImport, 'parts'> & { parts: RollTrack[]; totalSteps: number } {
-  const file = midiFileToRollParts(data, idPrefix, { stem });
+export function trackPartsOf(file: RollMidiPartsImport): MidiTrackParts {
   const parts = file.parts.filter((p) => p.notes.length > 0).map((p, i) => makeRollTrack({ ...p.track, notes: p.notes }, i));
   const noteEnd = parts.reduce((m, t) => t.notes.reduce((e, n) => Math.max(e, n.step + n.length), m), 0);
   const totalSteps = roundUpToBar(file.meter.meterMap, Math.max(1, noteEnd), file.meter.pickupSteps);
@@ -135,6 +133,11 @@ export function midiFileTrackParts(
   };
 }
 
+/** The parts of `data` that have notes (trackPartsOf), a stem's on its stem's instrument (lib/stemRole). */
+export function midiFileTrackParts(data: MidiFileData, idPrefix = 'imp', stem?: string): MidiTrackParts {
+  return trackPartsOf(midiFileToRollParts(data, idPrefix, { stem }));
+}
+
 /**
  * Put every part of `data` on an EDIT track of its own, each with one clip at
  * `atSec`, in one undo step, and queue a render for each part that cannot
@@ -146,7 +149,15 @@ export function importMidiAsTracks(
   deps: MidiTracksDeps,
 ): MidiTracksResult | null {
   // The label names the file ("bass", "Song · bass"): a stem's transcription plays its stem's instrument (lib/stemRole).
-  const file = midiFileTrackParts(data, opts.idPrefix ?? 'imp', opts.stem ?? opts.label);
+  return importPartsAsTracks(midiFileTrackParts(data, opts.idPrefix ?? 'imp', opts.stem ?? opts.label), opts, deps);
+}
+
+/**
+ * Put every part of `file` (trackPartsOf) on an EDIT track of its own, as
+ * importMidiAsTracks does for one file: a song's stems read together
+ * (lib/stemMidiSet) come in this way. Returns null when no part has notes.
+ */
+export function importPartsAsTracks(file: MidiTrackParts, opts: { label: string; atSec: number }, deps: MidiTracksDeps): MidiTracksResult | null {
   if (!file.parts.length) return null;
   const bpm = Number.isFinite(file.bpm) && file.bpm > 0 ? file.bpm : 120;
   const doc = docUid();

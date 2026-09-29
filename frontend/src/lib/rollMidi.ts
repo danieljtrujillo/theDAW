@@ -1115,8 +1115,13 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
   return readMidiFile(data, idPrefix);
 }
 
-/** midiFileToRoll, recording each note's track and channel in `origins` when given. */
-function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string, NoteOrigin>): RollMidiImport {
+/**
+ * midiFileToRoll, recording each note's track and channel in `origins` when
+ * given. `bendsOnNotes` reads every bent channel note by note, one that plays
+ * one note at a time too: a file whose parts join other files' parts in one
+ * roll (lib/stemMidiSet), where a lane's curve would bend their notes as well.
+ */
+function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string, NoteOrigin>, bendsOnNotes = false): RollMidiImport {
   const ppq = data.ppq || ROLL_PPQ;
   const stepTicks = ppq / 4;
   const { map, pickupSteps } = midiEventsToMeterMap(data.timeSignatures ?? [], ppq);
@@ -1155,7 +1160,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
     for (const ch of noteChannels) {
       if (!wheelMoves(ch)) continue;
       const own = raw.filter((n) => n.channel === ch && !n.expr).sort((a, b) => a.tick - b.tick);
-      if (!soundingSteps(own).some(([, on]) => on > 1)) continue;
+      if (!bendsOnNotes && !soundingSteps(own).some(([, on]) => on > 1)) continue;
       perNote.add(ch);
       const read = noteBendsOfChannel(own, wheel.get(ch) ?? [], ranges.get(ch) ?? []);
       for (const [n, e] of read.expr) byNote.set(n, e);
@@ -1276,12 +1281,13 @@ const controlsOnRollClock = (controls: readonly MidiControl[], ppq: number): Rol
  * "bass.mid", a library row id or label). A melodic part on basic-pitch's
  * stock program 4 then takes the instrument of the stem's role
  * (lib/stemRole): its program, its registry instrument, the drum channel for
- * a kit, and, when its track has no name, the role's name.
+ * a kit, and, when its track has no name, the role's name. `opts.bendsOnNotes`
+ * turns every bent channel's wheel into its notes' own bends (readMidiFile).
  */
-export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: { stem?: string } = {}): RollMidiPartsImport {
+export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: { stem?: string; bendsOnNotes?: boolean } = {}): RollMidiPartsImport {
   const stemVoice = stemRoleVoice(stemRoleOf(opts.stem));
   const origins = new Map<string, NoteOrigin>();
-  const read = readMidiFile(data, idPrefix, origins);
+  const read = readMidiFile(data, idPrefix, origins, opts.bendsOnNotes === true);
   const ppq = data.ppq || ROLL_PPQ;
   const metas = data.tracks.map((t) => parsePartMeta(t.partMeta));
   const own = metas.some((m) => m !== null);
