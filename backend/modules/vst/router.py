@@ -29,7 +29,7 @@ from backend.modules.vst.scanner import (
     scan_vst3_directories,
     load_cached_scan,
     read_cache_entries,
-    save_scan_cache,
+    save_scan,
     start_background_enrichment,
 )
 from backend.modules.vst.host import (
@@ -377,7 +377,10 @@ def scan_vst3(
             # instrument/effect category in well under a second, so the list
             # the user opened says which plugins are instruments.
             list_plugin_classes(plugins)
-        save_scan_cache(plugins)
+        # A rescan is counted as it is saved, so a metadata worker still
+        # running from an earlier scan does not write back the verdicts the
+        # rescan just dropped, and takes up the rescan's list when it is done.
+        save_scan(plugins, rescan=refresh)
     body = _plugin_dicts(plugins, include_unloadable)
     if enrich:
         # Every new plugin is still loaded once through pedalboard, out of

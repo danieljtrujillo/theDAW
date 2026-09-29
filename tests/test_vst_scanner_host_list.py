@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -237,7 +238,7 @@ def background(monkeypatch: pytest.MonkeyPatch, run: FakeRun) -> Background:
         seen.calls_at_start.append(len(run.calls))
         if not any(not p.probed and p.loadable for p in plugins):
             return False
-        scanner._enrich_worker(copy.deepcopy(plugins))
+        scanner._enrich_worker(copy.deepcopy(plugins), scanner._rescan_serial)
         return True
 
     monkeypatch.setattr(vst_router, "start_background_enrichment", start)
@@ -331,6 +332,58 @@ def test_a_rescan_gives_a_timed_out_plugin_three_fresh_load_probes(
     assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
     # A plugin the probe did classify keeps its verdict across the rescan.
     assert run.probes("OTT.vst3") == 1
+
+
+def _join_worker() -> None:
+    for thread in threading.enumerate():
+        if thread.name == "vst3-metadata-enrichment":
+            thread.join(30)
+            assert not thread.is_alive(), "the metadata worker finished"
+
+
+def test_a_rescan_while_the_worker_is_still_loading_keeps_its_fresh_chance(
+    vst3_root, run, host, client
+):
+    """The machine without the host, on the real worker thread. The first
+    scan's worker gives each synth its three load probes, publishing the cache
+    after each round, and is still loading a slow plugin when the user presses
+    rescan. The rescan drops the synths' timeouts and finds the worker running,
+    so it starts none. The worker's next publish must not write back what the
+    rescan dropped: the synths get three fresh load probes."""
+    host(False)
+    _file(vst3_root / "Zz Slow.vst3")
+    loading = threading.Event()
+    release = threading.Event()
+
+    def slow_to_load(cmd: list[str], nth: int) -> subprocess.CompletedProcess:
+        if nth < scanner._MAX_PROBE_TIMEOUTS:
+            raise subprocess.TimeoutExpired(cmd, scanner._PROBE_TIMEOUT_S)
+        if nth == scanner._MAX_PROBE_TIMEOUTS:
+            loading.set()
+            release.wait(30)
+        meta = dict(PROBE_RESULTS["OTT.vst3"], display_name="Zz Slow")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(meta) + "\n", stderr=""
+        )
+
+    run.probe_answers["Zz Slow.vst3"] = slow_to_load
+    try:
+        _scan(client, refresh=False)
+        # Round three: each synth has had its third probe, and the worker is
+        # loading the slow plugin, which sorts after them.
+        assert loading.wait(30), "the worker reached the slow plugin"
+        assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+        assert scanner.enrichment_running()
+        _scan(client, refresh=True)
+    finally:
+        release.set()
+    _join_worker()
+
+    assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    assert run.probes("Six Sines.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    cached = {p.name: p for p in scanner.read_cache_entries()}
+    assert cached["Zz Slow"].probed and cached["Zz Slow"].loadable
+    assert cached["Surge XT"].probe_timeouts == scanner._MAX_PROBE_TIMEOUTS
 
 
 def test_a_scan_without_refresh_keeps_the_timeout_count():

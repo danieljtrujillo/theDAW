@@ -574,10 +574,31 @@ def list_plugin_classes(
 
 _enrich_lock = threading.Lock()
 _enrich_running = False
+# Held for every write of the cache by a scan request and for each of the
+# worker's read-merge-write publishes, so neither lands inside the other.
+_cache_lock = threading.Lock()
+# Counts the user's rescans. A worker notes it when it takes its list; a rescan
+# after that dropped verdicts on purpose (a failed load, a plugin out of load
+# probes) that the worker's list still holds.
+_rescan_serial = 0
 
 
 def enrichment_running() -> bool:
     return _enrich_running
+
+
+def save_scan(plugins: list[Vst3PluginInfo], *, rescan: bool = False) -> None:
+    """Write a scan request's list as the cache; ``rescan`` for ``refresh=true``.
+
+    A rescan is counted in the same step as its write, so a worker that took
+    its list before it publishes afterwards without writing back what the
+    rescan dropped (``_publish_enrichment``).
+    """
+    global _rescan_serial
+    with _cache_lock:
+        save_scan_cache(plugins)
+        if rescan:
+            _rescan_serial += 1
 
 
 def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
@@ -590,7 +611,8 @@ def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
     seconds each, up to the probe's timeout for one that never finishes, so it
     cannot sit inside a scan request. The worker takes its own copy, saves
     after each chunk (progress survives a shutdown), and the next scan serves
-    the enriched cache. Returns False when one is already running.
+    the enriched cache. Returns False when one is already running; a rescan
+    that finds one running is taken up by it (``_enrich_worker``).
     """
     global _enrich_running
     if not any(not p.probed and p.loadable for p in plugins):
@@ -599,9 +621,10 @@ def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
         if _enrich_running:
             return False
         _enrich_running = True
+        serial = _rescan_serial
     worker = threading.Thread(
         target=_enrich_worker,
-        args=(copy.deepcopy(plugins),),
+        args=(copy.deepcopy(plugins), serial),
         name="vst3-metadata-enrichment",
         daemon=True,
     )
@@ -609,30 +632,48 @@ def start_background_enrichment(plugins: list[Vst3PluginInfo]) -> bool:
     return True
 
 
-def _publish_enrichment(plugins: list[Vst3PluginInfo]) -> None:
+def _publish_enrichment(plugins: list[Vst3PluginInfo], serial: int) -> None:
     """Merge probe results into the cache as it stands now.
 
     The worker holds a snapshot taken minutes ago; a rescan may have replaced
     the cache since (a plugin was installed), and writing the snapshot straight
-    back would erase it.
+    back would erase it. When a rescan came after the snapshot (``serial`` is
+    the rescan count the worker's list was taken at), only what loaded is
+    carried: the rescan dropped the failures and the timeouts on purpose, to
+    give those plugins a fresh chance, and the snapshot still holds them.
     """
-    current = read_cache_entries()
-    if not current:
-        save_scan_cache(plugins)
-        return
-    carry_over_metadata(current, plugins)
-    save_scan_cache(current)
+    with _cache_lock:
+        superseded = serial != _rescan_serial
+        current = read_cache_entries()
+        if not current:
+            if not superseded:
+                save_scan_cache(plugins)
+            return
+        carry_over_metadata(current, plugins, retry_failed=superseded)
+        save_scan_cache(current)
 
 
-def _enrich_worker(plugins: list[Vst3PluginInfo]) -> None:
+def _enrich_worker(plugins: list[Vst3PluginInfo], serial: int) -> None:
+    """Enrich ``plugins``, taken at rescan count ``serial``, then any list a
+    rescan saved while this ran: that rescan found this worker running and
+    started none, so the plugins it gave a fresh chance get it here."""
     global _enrich_running
     list_failed: set[str] = set()
     try:
-        while enrich_plugin_metadata(
-            plugins, budget_s=_ENRICH_CHUNK_S, list_failed=list_failed
-        ):
-            _publish_enrichment(plugins)
-        _publish_enrichment(plugins)
+        while True:
+            while enrich_plugin_metadata(
+                plugins, budget_s=_ENRICH_CHUNK_S, list_failed=list_failed
+            ):
+                _publish_enrichment(plugins, serial)
+            _publish_enrichment(plugins, serial)
+            with _enrich_lock:
+                if serial == _rescan_serial:
+                    _enrich_running = False
+                    break
+                serial = _rescan_serial
+            with _cache_lock:
+                plugins = read_cache_entries()
+            list_failed = set()
         log.info("VST3 metadata enrichment finished for %d plugins", len(plugins))
     except Exception as e:
         log.warning("VST3 metadata enrichment stopped: %s", e)
@@ -658,7 +699,8 @@ def carry_over_metadata(
     load and for plugins that only ran out of load-probe timeouts, and it
     carries no timeout count, so each of those is listed and probed again
     from scratch. A scan that is not a rescan keeps the count, which is what
-    bounds the load probes a slow plugin costs.
+    bounds the load probes a slow plugin costs. A worker's publish that a
+    rescan came after passes it too, so it carries only what loaded.
     """
     if not previous:
         return
