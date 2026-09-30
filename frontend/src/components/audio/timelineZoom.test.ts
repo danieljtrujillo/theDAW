@@ -166,38 +166,49 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
 
 // --- Wheel dispatch per profile ---------------------------------------------
 {
-  const base = { deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false };
+  const base = {
+    deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, platform: 'win32',
+  };
   const lanes = { trackHeight: 100, min: 56, max: 260 };
   const td = WHEEL_PROFILES.thedaw;
   const rp = WHEEL_PROFILES.reaper;
 
-  // theDAW: plain wheel zooms in (wheel up).
-  const plain = wheelDispatch(base, td, 800, {}, lanes);
+  // theDAW: plain wheel scrolls the lanes (wheel up = towards the top).
+  assert.deepEqual(wheelDispatch(base, td, 800, {}, lanes), { kind: 'scroll-y', px: -100 });
+  assert.deepEqual(wheelDispatch({ ...base, deltaY: 120 }, td, 800, {}, lanes), { kind: 'scroll-y', px: 120 });
+  // Ctrl = time zoom, in on wheel up.
+  const plain = wheelDispatch({ ...base, ctrlKey: true }, td, 800, {}, lanes);
   assert.equal(plain.kind, 'zoom');
   assert.ok(plain.kind === 'zoom' && plain.factor > 1);
-  // Ctrl = fine zoom: smaller step than plain.
-  const fine = wheelDispatch({ ...base, ctrlKey: true }, td, 800, {}, lanes);
+  // Ctrl+Shift = fine zoom: smaller step than Ctrl.
+  const fine = wheelDispatch({ ...base, ctrlKey: true, shiftKey: true }, td, 800, {}, lanes);
   assert.ok(fine.kind === 'zoom' && plain.kind === 'zoom' && fine.factor < plain.factor && fine.factor > 1);
-  // Cmd counts as Ctrl.
-  assert.deepEqual(wheelDispatch({ ...base, metaKey: true }, td, 800, {}, lanes), fine);
+  // Cmd counts as Ctrl on macOS; on Windows the OS key leaves the wheel plain.
+  assert.deepEqual(wheelDispatch({ ...base, metaKey: true, platform: 'darwin' }, td, 800, {}, lanes), plain);
+  assert.deepEqual(wheelDispatch({ ...base, metaKey: true, shiftKey: true, platform: 'darwin' }, td, 800, {}, lanes), fine);
+  assert.deepEqual(wheelDispatch({ ...base, metaKey: true }, td, 800, {}, lanes), { kind: 'scroll-y', px: -100 });
   // Speeds from prefs change the step.
-  const fast = wheelDispatch(base, td, 800, { coarseSpeed: 0.004 }, lanes);
+  const fast = wheelDispatch({ ...base, ctrlKey: true }, td, 800, { coarseSpeed: 0.004 }, lanes);
   assert.ok(fast.kind === 'zoom' && plain.kind === 'zoom' && fast.factor > plain.factor);
   // Shift = horizontal pan by the delta.
   assert.deepEqual(wheelDispatch({ ...base, shiftKey: true, deltaY: 120 }, td, 800, {}, lanes), { kind: 'scroll-x', px: 120 });
-  // Alt = vertical pan.
-  assert.deepEqual(wheelDispatch({ ...base, altKey: true, deltaY: 120 }, td, 800, {}, lanes), { kind: 'scroll-y', px: 120 });
-  // Ctrl+Shift = lane height: wheel up by 100 px grows lanes by 25 px.
-  assert.deepEqual(wheelDispatch({ ...base, ctrlKey: true, shiftKey: true }, td, 800, {}, lanes), { kind: 'lane-height', height: 125 });
+  // Ctrl+Alt = vertical pan.
+  assert.deepEqual(wheelDispatch({ ...base, ctrlKey: true, altKey: true, deltaY: 120 }, td, 800, {}, lanes), { kind: 'scroll-y', px: 120 });
+  // Alt = lane height: wheel up by 100 px grows lanes by 25 px.
+  assert.deepEqual(wheelDispatch({ ...base, altKey: true }, td, 800, {}, lanes), { kind: 'lane-height', height: 125 });
   // Lane height clamps to the store bounds.
   assert.deepEqual(
-    wheelDispatch({ ...base, ctrlKey: true, shiftKey: true, deltaY: 2000 }, td, 800, {}, lanes),
+    wheelDispatch({ ...base, altKey: true, deltaY: 2000 }, td, 800, {}, lanes),
     { kind: 'lane-height', height: 56 },
   );
   // Lines mode (deltaMode 1) is scaled x16 before dispatch.
   assert.deepEqual(wheelDispatch({ ...base, shiftKey: true, deltaY: 3, deltaMode: 1 }, td, 800, {}, lanes), { kind: 'scroll-x', px: 48 });
+  assert.deepEqual(wheelDispatch({ ...base, deltaY: 3, deltaMode: 1 }, td, 800, {}, lanes), { kind: 'scroll-y', px: 48 });
   // A horizontal trackpad swipe pans time under any profile.
+  assert.deepEqual(wheelDispatch({ ...base, deltaX: 40, deltaY: 5 }, td, 800, {}, lanes), { kind: 'scroll-x', px: 40 });
   assert.deepEqual(wheelDispatch({ ...base, deltaX: 40, deltaY: 5 }, rp, 800, {}, lanes), { kind: 'scroll-x', px: 40 });
+  // A pinch (Ctrl + wheel in Chromium) zooms time.
+  assert.equal(wheelDispatch({ ...base, ctrlKey: true, deltaY: -6, platform: 'darwin' }, td, 800, {}, lanes).kind, 'zoom');
 
   // REAPER: plain zooms, Ctrl = lane height, Alt = horizontal pan, Ctrl+Shift = fine zoom.
   assert.equal(wheelDispatch(base, rp, 800, {}, lanes).kind, 'zoom');
@@ -209,9 +220,10 @@ const near = (a: number, b: number, eps = 1e-9) => assert.ok(Math.abs(a - b) <= 
   // No movement: nothing handled, so the caller does not preventDefault.
   assert.deepEqual(wheelDispatch({ ...base, deltaY: 0, shiftKey: true }, td, 800, {}, lanes), { kind: 'none' });
   assert.deepEqual(wheelDispatch({ ...base, deltaY: 0 }, td, 800, {}, lanes), { kind: 'none' });
+  assert.deepEqual(wheelDispatch({ ...base, deltaY: 0, ctrlKey: true }, td, 800, {}, lanes), { kind: 'none' });
   // Lane height already at the limit: nothing to do.
   assert.deepEqual(
-    wheelDispatch({ ...base, ctrlKey: true, shiftKey: true }, td, 800, {}, { trackHeight: 260, min: 56, max: 260 }),
+    wheelDispatch({ ...base, altKey: true }, td, 800, {}, { trackHeight: 260, min: 56, max: 260 }),
     { kind: 'none' },
   );
 }
