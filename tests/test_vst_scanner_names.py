@@ -168,3 +168,29 @@ def test_a_pre_names_cache_entry_still_loads():
     info = Vst3PluginInfo(**known)
     assert info.display_name == ""
     assert info.identifier == ""
+
+
+def test_scan_lists_a_bundle_under_a_symlinked_vendor_folder(tmp_path, monkeypatch):
+    """A vendor folder kept on another drive and symlinked into the VST3 root
+    (the Linux/macOS form of a Windows junction). Python 3.12's ``rglob`` does
+    not descend into a directory symlink, so the scan listed nothing there."""
+    root = tmp_path / "VST3"
+    root.mkdir()
+    vendor = tmp_path / "D-drive" / "Vendor"
+    arch = vst_scanner._arch_dirs()[0]
+    module_dir = vendor / "Bar.vst3" / "Contents" / arch
+    module_dir.mkdir(parents=True)
+    (module_dir / "Bar.vst3").write_bytes(b"module")
+    try:
+        os.symlink(vendor, root / "Vendor", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this OS refuses a directory symlink here: {exc}")
+    monkeypatch.setattr(vst_scanner, "_default_vst3_dirs", lambda: [root])
+
+    walked = vst_scanner._walk_vst3_paths(root)
+    assert walked == [root / "Vendor" / "Bar.vst3"]
+
+    [entry] = vst_scanner.scan_vst3_directories()
+    assert entry.name == "Bar"
+    assert entry.path == str((module_dir / "Bar.vst3").resolve())
+    assert entry.loadable is True
