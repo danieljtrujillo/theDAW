@@ -35,6 +35,7 @@ from backend.modules.library.db import (
     LibraryProgress,
 )
 from backend.modules.library.store import LibraryStore
+from tests.library_scale_probe import timed_get_with_stacks
 from tests.test_library_search_parity import _main_build
 from tests.test_library_store import _seed_generate_entry
 from tests.test_security_b12 import real_app_context
@@ -174,10 +175,13 @@ def test_health_and_search_answer_while_a_200k_library_is_upgraded_and_indexed(
             narrow: list[float] = []
             broad: list[float] = []
             partial_seen = False
+            slow_stacks: list[str] = []
             while _status(client)["phase"] == "index":
-                took, response = _timed_get(client, "/api/health")
+                took, response, stacks = timed_get_with_stacks(client, "/api/health")
                 assert response.status_code == 200
                 health.append(took)
+                if stacks and took >= PROMPT_SEC:
+                    slow_stacks.append(f"health took {took:.3f} s:\n{stacks}")
                 took, found = _timed_get(
                     client, "/api/library/entries", params={"limit": 5, "q": "zircon"}
                 )
@@ -195,7 +199,7 @@ def test_health_and_search_answer_while_a_200k_library_is_upgraded_and_indexed(
                 broad.append(took)
                 time.sleep(0.5)
             assert partial_seen, "no search landed while the index was building"
-            assert max(health) < PROMPT_SEC, health
+            assert max(health) < PROMPT_SEC, (health, "\n\n".join(slow_stacks))
             assert max(narrow) < PROMPT_SEC, narrow
             # "harbor" matches every indexed row: counting 100,000+ matches is
             # the query's own cost, measured at 0.2-0.5 s.
