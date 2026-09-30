@@ -1008,9 +1008,16 @@ class BulkDeleteRequest(BaseModel):
     all: bool = False
 
 
-@router.post("/entries/bulk-delete")
+@router.post(
+    "/entries/bulk-delete",
+    dependencies=[Depends(require_loopback_or_launch_token)],
+)
 def bulk_delete_entries(req: BulkDeleteRequest) -> Any:
     """Delete many entries in one request. Two forms, exactly one per call.
+
+    Answers this machine only (``require_loopback_or_launch_token``, the gate
+    ``/media-roots`` uses): the filter form can clear the whole library, and a
+    LAN caller that sends no browser headers passes every header-based check.
 
     ``{"ids": [...]}`` deletes those entries, at most
     :data:`MAX_BULK_DELETE_IDS` of them.

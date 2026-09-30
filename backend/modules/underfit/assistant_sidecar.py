@@ -35,7 +35,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Optional
 
 from backend.lib import paths
@@ -429,6 +429,58 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 if not joined:
                     _phase = None
         raise
+
+
+class BackgroundStart:
+    """One ``ensure_running`` run on its own thread, and how it ended.
+
+    ``url`` is set once the server answers, ``error`` once the start failed;
+    both stay None while the thread runs. ``probe()`` reports the same start
+    as ``starting``/``installing`` for anyone polling ``/assistant/status``."""
+
+    __slots__ = ("thread", "url", "error")
+
+    def __init__(self) -> None:
+        self.thread = Thread(
+            target=self._run, name="underfit-assistant-start", daemon=True
+        )
+        self.url: Optional[str] = None
+        self.error: Optional[str] = None
+
+    def _run(self) -> None:
+        try:
+            self.url = ensure_running()
+        except RuntimeError as e:
+            self.error = str(e)
+        except Exception as e:  # a start must never die silently
+            log.exception("underfit assistant: start failed")
+            self.error = f"{type(e).__name__}: {e}"
+
+    @property
+    def done(self) -> bool:
+        return not self.thread.is_alive()
+
+
+_background_start: Optional[BackgroundStart] = None
+
+
+def start_in_background() -> BackgroundStart:
+    """Start the assistant on a thread unless a start is already under way,
+    and return that start so a caller can wait on it for as long as it likes.
+
+    The route that calls this used to run ``ensure_running`` inline, so with
+    the packages not yet installed the first caller sat in ``npm install``
+    for the whole request. A finished start (either way) is replaced by a
+    fresh one on the next call, so a failed install can be retried."""
+    global _background_start
+    with _state_lock:
+        current = _background_start
+        if current is not None and not current.done:
+            return current
+        current = BackgroundStart()
+        _background_start = current
+    current.thread.start()
+    return current
 
 
 def _request_shutdown(port: int) -> bool:

@@ -2614,6 +2614,21 @@ def _probe_adoption_guarded(cfg: LyriaConfig) -> tuple[bool, bool]:
             raise RuntimeError("stopped")
 
 
+def running_url() -> Optional[str]:
+    """The URL a Lyria already listening on the sidecar's port serves on, or
+    None when nothing listens there. Never spawns, installs or waits: this is
+    the read ``GET /url`` answers with, for any caller, while starting the
+    child stays behind ``ensure_running`` and the gated routes that call it.
+    Raises the same port-collision error ``ensure_running`` would when the
+    port is held by something that does not answer as Lyria."""
+    cfg = resolve_config()
+    confirmed, collision = _probe_adoption(cfg)
+    if collision:
+        raise _port_collision_error(cfg)
+    # 127.0.0.1, not localhost -- see _port_is_listening for why.
+    return f"http://127.0.0.1:{cfg.port}" if confirmed else None
+
+
 def owns_process() -> bool:
     """True when the module holds a live handle to the process currently
     listening on the sidecar's port -- i.e. WE spawned it, as opposed to an

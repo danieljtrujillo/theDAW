@@ -2337,6 +2337,17 @@ class LibraryDB:
         """Whether the search index answers for every entry."""
         return self._search_built.is_set() and self._search_build_error is None
 
+    def wait_for_search_build(self, timeout: Optional[float] = None) -> bool:
+        """Block until the search index build has ended (finished, stopped
+        or never needed), at most ``timeout`` seconds. True when it ended.
+
+        For a background pass over the whole library: run beside the build,
+        such a pass and the build starve every request thread of the
+        interpreter (on a CI machine the two together held ``/api/health``
+        for over a second while 200,000 rows were indexed), so a pass that
+        nobody is waiting for runs after the build instead."""
+        return self._search_built.wait(timeout)
+
     def search_status(self) -> dict[str, Any]:
         """``{"complete": True}`` once the index answers for every entry;
         while a background build runs, ``{"complete": False, "indexed",

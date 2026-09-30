@@ -19,7 +19,7 @@ import {
     DECLINED_RESULT,
     TURN_ENDED_DENIAL,
 } from './pendingActions.ts';
-import { buildConversationHistory, parseSseLine } from './useChatStream.ts';
+import { buildConversationHistory, chatRefusalMessage, parseSseLine } from './useChatStream.ts';
 import type { ChatMessage } from './types.ts';
 
 const NOW = 1_700_000_000_000;
@@ -641,3 +641,23 @@ assert.equal(parseSseLine('data: [DONE]'), null);
 assert.equal(parseSseLine('data: {not json'), null, 'a malformed frame is skipped, never thrown');
 
 console.log('useChatStream frame reducer regression passed');
+
+// ---------------------------------------------------------------------------
+// chatRefusalMessage: a refused chat POST shows the backend's own words
+// ---------------------------------------------------------------------------
+
+{
+    const detail = 'Claude Code runs on the computer running theDAW. Use it there, or pick a hosted provider.';
+    const refused = new Response(JSON.stringify({ detail }), {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { 'Content-Type': 'application/json' },
+    });
+    assert.equal(await chatRefusalMessage(refused), detail);
+
+    const bare = new Response('nope', { status: 502, statusText: 'Bad Gateway' });
+    assert.equal(await chatRefusalMessage(bare), 'Backend error: 502 Bad Gateway');
+
+    const noDetail = new Response('{}', { status: 500, statusText: 'Internal Server Error' });
+    assert.equal(await chatRefusalMessage(noDetail), 'Backend error: 500 Internal Server Error');
+}

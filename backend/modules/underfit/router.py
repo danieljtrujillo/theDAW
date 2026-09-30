@@ -13,7 +13,10 @@ Endpoints:
                                 alone, and training runs always survive).
   * GET  /api/underfit/assistant/status — is the UNDERFIT assistant backend
                                 (underfit/assistant-backend, :5473) running?
-  * POST /api/underfit/assistant/start — start it; returns once it answers.
+  * POST /api/underfit/assistant/start: start it on a background thread;
+                                answers once it is up or after a short wait
+                                with ``starting: true``, and the orb polls
+                                /assistant/status until ``running``.
   * GET  /api/underfit/update-status — is dada-bots/underfit ahead of us?
   * POST /api/underfit/update — pull upstream into the vendored subrepo.
   * GET  /api/underfit/runs — the dashboard's training runs (id, name, status).
@@ -35,6 +38,7 @@ user launching anything by hand.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -105,16 +109,39 @@ def get_assistant_status() -> dict:
     return assistant_sidecar.probe()
 
 
+#: How long POST /assistant/start waits for the start before answering with
+#: ``starting: true``. Long enough for an installed assistant to come up in
+#: one round trip; short enough that a first-run ``npm install`` never holds
+#: the request (or the worker) for the install's whole duration.
+ASSISTANT_START_WAIT_SEC = 3.0
+
+
 @router.post("/assistant/start", dependencies=[Depends(refuse_cross_site)])
-def post_assistant_start() -> dict:
+async def post_assistant_start() -> dict:
     """Start the assistant backend (installing its packages the first time).
-    Blocks until it answers. The orb calls this from the dashboard's own origin,
-    a loopback page, which refuse_cross_site lets through."""
-    try:
-        url = assistant_sidecar.ensure_running()
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    return {"ok": True, "url": url}
+
+    The start runs on its own thread (``assistant_sidecar.start_in_background``);
+    this route waits up to :data:`ASSISTANT_START_WAIT_SEC` for it. A start
+    that finished in time answers ``{"ok": true, "url", "running": true}``,
+    one that failed in time answers 503 with the reason, and one still going
+    answers ``{"ok": true, "url", "running": false, "starting": true}``: the
+    orb then polls /assistant/status, whose ``starting``/``installing``/
+    ``error`` fields describe the same start, until ``running`` is true. The
+    orb calls this from the dashboard's own origin, a loopback page, which
+    refuse_cross_site lets through."""
+    start = assistant_sidecar.start_in_background()
+    await asyncio.to_thread(start.thread.join, ASSISTANT_START_WAIT_SEC)
+    if start.error is not None:
+        raise HTTPException(status_code=503, detail=start.error)
+    if start.url is not None:
+        return {"ok": True, "url": start.url, "running": True, "starting": False}
+    port = assistant_sidecar.resolve_config().port
+    return {
+        "ok": True,
+        "url": f"http://localhost:{port}",
+        "running": False,
+        "starting": True,
+    }
 
 
 @router.get("/runs")
