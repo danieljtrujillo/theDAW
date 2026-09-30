@@ -24,7 +24,9 @@ import {
   parseInstrumentRefValue,
   presetGroups,
   presetName,
-  setBankOffsets,
+  setKnownBanks,
+  bankPresetsOf,
+  bankOfSelect,
   type SoundBank,
 } from './bankRegistry.ts';
 import { clipBank, clipRenderIsStale, clipVoice, rollVoice, type GlobalVoice } from './clipProgram.ts';
@@ -65,7 +67,7 @@ const strings = user('sb-strings0001', 32, 2, [
 
 // ── offsets and bank selects ───────────────────────────────────────────────
 {
-  setBankOffsets([bundled, strings]);
+  setKnownBanks([bundled, strings]);
   assert.equal(bankOffsetOf(undefined), 0, 'no bank id is the bundled bank');
   assert.equal(bankOffsetOf('sb-strings0001'), 32);
   assert.equal(bankSelectFor('sb-strings0001', 1), 33, "the bank's offset plus its own bank select");
@@ -73,6 +75,10 @@ const strings = user('sb-strings0001', 32, 2, [
   assert.equal(bankSelectFor('sb-gone', 1), 1, 'a bank the registry does not know resolves at offset 0');
   assert.equal(isKnownBank('sb-gone'), false);
   assert.equal(bankSelectFor('sb-strings0001', 120), 127, 'never past 127');
+  assert.equal(bankPresetsOf('sb-strings0001').length, 4, "the registry keeps a listed bank's presets");
+  assert.deepEqual(bankPresetsOf(BUNDLED_BANK_ID), [], 'the bundled bank lists none here');
+  assert.deepEqual(bankOfSelect(33), { bankId: 'sb-strings0001', bank: 1 }, 'a bank select back to the bank it falls in');
+  assert.deepEqual(bankOfSelect(5), { bankId: BUNDLED_BANK_ID, bank: 5 });
   assert.deepEqual(bankForSelect(33, [bundled, strings]), { bankId: 'sb-strings0001', bank: 1 });
   assert.deepEqual(bankForSelect(34, [bundled, strings]), { bankId: BUNDLED_BANK_ID, bank: 34 }, 'past its span');
   assert.deepEqual(bankForSelect(8, [bundled, strings]), { bankId: BUNDLED_BANK_ID, bank: 8 });
@@ -133,7 +139,7 @@ const strings = user('sb-strings0001', 32, 2, [
 
 // ── a voice's bank select, as EDIT plays and renders it ────────────────────
 {
-  setBankOffsets([bundled, strings]);
+  setKnownBanks([bundled, strings]);
   const SF: GlobalVoice = { useSoundfont: true, activeProgram: 0 };
   const melodic = { instrumentProgram: undefined, isPercussion: undefined };
   // A clip's own user-bank preset: offset 32 plus its bank 1.
@@ -154,9 +160,9 @@ const strings = user('sb-strings0001', 32, 2, [
   // A render made at the bank's old offset is stale once the offset moves.
   const rendered = { ...clip, renderedProgram: 40, renderedBank: 33 };
   assert.equal(clipRenderIsStale(rendered, melodic, SF), false);
-  setBankOffsets([bundled, { ...strings, offset: 50 }]);
+  setKnownBanks([bundled, { ...strings, offset: 50 }]);
   assert.equal(clipRenderIsStale(rendered, melodic, SF), true);
-  setBankOffsets([bundled, strings]);
+  setKnownBanks([bundled, strings]);
   // The renders load only the user banks a file selects.
   assert.deepEqual(banksForSelects([0, 33], [strings]).map((b) => b.id), ['sb-strings0001']);
   assert.deepEqual(banksForSelects([0, 8], [strings]), []);

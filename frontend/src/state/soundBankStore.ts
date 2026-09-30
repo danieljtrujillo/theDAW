@@ -24,7 +24,7 @@ import { delJson, getJson, postForm, postJson } from '../lib/apiJson';
 import {
   BUNDLED_BANK_ID,
   bankFromBackend,
-  setBankOffsets,
+  setKnownBanks,
   type BackendBank,
   type BankPreset,
   type SoundBank,
@@ -92,11 +92,11 @@ function writeCache(banks: readonly SoundBank[]): void {
   }
 }
 
-/** Put the user's banks after the bundled one, and hand the offsets to the resolver. */
+/** Put the user’s banks after the bundled one, and hand them (offset, span and presets) to the registry. */
 function withUsers(state: readonly SoundBank[], users: readonly SoundBank[]): SoundBank[] {
   const bundled = state.filter((b) => b.kind === 'bundled');
   const next = [...bundled, ...users];
-  setBankOffsets(next);
+  setKnownBanks(next);
   return next;
 }
 
@@ -146,7 +146,7 @@ export async function syncDownloadedBankGains(banks: readonly SoundBank[]): Prom
 }
 
 const cached = readCache();
-setBankOffsets(cached);
+setKnownBanks(cached);
 
 const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -250,7 +250,7 @@ export const useSoundBankStore = create<SoundBankState>((set, get) => ({
     };
     set((s) => {
       const banks = [bundled, ...userBanks(s.banks)];
-      setBankOffsets(banks);
+      setKnownBanks(banks);
       return { banks };
     });
   },

@@ -111,8 +111,8 @@ export async function rerenderStaleMidiClip(clipId: string, deps: ClipRerenderDe
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
     // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
     ...(input.controls ? { controls: input.controls } : {}),
-    // Its notes' articulations, as they resolve for the new voice.
-    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true),
+    // Its notes' articulations, as they resolve for the new voice, in its bank.
+    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true, voice.bank),
   });
   const { peaks } = await deps.computePeaks(rendered.blob, 240);
   // Re-read: the user may have deleted, trimmed or re-assigned the clip mid-render.

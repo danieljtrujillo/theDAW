@@ -119,7 +119,7 @@ import {
 import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
 import { guessInstrument, instrumentForProgram } from './orchestra';
-import { articulatedNotes, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
+import { articulatedNotes, articulationBankOf, articulationBankSelect, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
 import { scaleExpressionTicks } from './noteExpression';
 import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
 import {
@@ -622,6 +622,12 @@ function laneTracks(s: RollMidiSource, w: WrittenNotes, name: string, extra: (la
  * `program` in `bank` (no bank select for bank 0), with its bank select LSB
  * (CC 32) when it has one.
  */
+/** An articulation channel's preset at tick 0: its program with its bank select (a user bank's offset plus the preset's own bank) when past 0, and its LSB when the preset sends one. */
+const artProgram = (channel: number, target: SoundfontArticulationTarget): MidiProgram => {
+  const bank = articulationBankSelect(target);
+  return { tick: 0, channel, program: target.program, ...(bank > 0 ? { bank } : {}), ...(target.bankLsb !== undefined ? { bankLsb: target.bankLsb } : {}) };
+};
+
 const partPrograms = (channels: Iterable<number>, program: number | undefined, bank: number, bankLsb: number | undefined): MidiProgram[] =>
   program === undefined
     ? []
@@ -668,7 +674,7 @@ function partTrackExtra(
     const used = lane === null ? [...channels.values()] : [channels.get(lane.id) as number];
     const programs = [
       ...partPrograms(used, program, bank, bankLsb),
-      ...artPending.map((c) => ({ tick: 0, channel: c.channel, program: c.target.program, ...(c.target.bank > 0 ? { bank: c.target.bank } : {}) })),
+      ...artPending.map((c) => artProgram(c.channel, c.target)),
     ];
     const artUsed = artPending.map((c) => c.channel);
     artPending = [];
@@ -746,8 +752,12 @@ export function rollToMidiFile(s: RollMidiSource, ppq = ROLL_PPQ): MidiFileData 
   const wheelLanes = bentLanes(s.lanes, s.bends);
   // A part with a program of its own writes it; a roll that follows the picker writes none, as before parts.
   const program = part && part.program !== null ? part.program : undefined;
-  // Each preset articulation on a channel of its own, from the channels the lanes leave free.
-  const inst: ArticulationInstrument = { instrumentId: part?.instrumentId, program: program ?? (part ? s.voices?.get(part.id)?.program : undefined) ?? null };
+  // Each preset articulation on a channel of its own, from the channels the lanes leave free: the part's bank's own presets where it has them.
+  const inst: ArticulationInstrument = {
+    instrumentId: part?.instrumentId,
+    program: program ?? (part ? s.voices?.get(part.id)?.program : undefined) ?? null,
+    ...articulationBankOf(part?.bank),
+  };
   const taken = new Set(channels.values());
   const free = FILE_CHANNELS.filter((ch) => !taken.has(ch));
   const art: ArticulationFileChannels = { inst, channelOf: new Map() };
@@ -818,7 +828,14 @@ export function partLaneChannels(
         wheelLanes.add(lane);
       }
     }
-    out.set(part.id, { channels, wheelLanes, art: { inst: { instrumentId: part.instrumentId, program: part.program ?? s.voices?.get(part.id)?.program ?? null }, channelOf: new Map() } });
+    out.set(part.id, {
+      channels,
+      wheelLanes,
+      art: {
+        inst: { instrumentId: part.instrumentId, program: part.program ?? s.voices?.get(part.id)?.program ?? null, ...articulationBankOf(part.bank) },
+        channelOf: new Map(),
+      },
+    });
   }
   // Then each melodic part's preset articulations, while a channel is free (lib/articulationMap).
   const articulationFallback: Array<{ partId: string; name: string }> = [];

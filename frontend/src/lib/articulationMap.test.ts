@@ -10,16 +10,24 @@
  * pizzicato plays GM 46 Pizzicato Strings (program 45) on a channel of its
  * own, in each player, and the part's controllers go to both channels.
  *
+ * The last block plays the same line on a user bank shaped like theDAW
+ * Orchestra (its articulations as presets of their own at the part's
+ * program): the pizzicato is then the bank's own "Violins Pizzicato", at the
+ * bank's offset, in each player.
+ *
  *   cd frontend && npx tsx src/lib/articulationMap.test.ts
  */
 import assert from 'node:assert/strict';
 import {
   articulatedNotes,
+  articulationBankOf,
+  articulationBankSelect,
   articulationFamily,
   articulationRuns,
   clipArticulationInstrument,
   shapeNote,
   soundfontArticulationTarget,
+  targetKey,
   vst3ArticulationSwitch,
   vst3SwitchEvents,
   isVst3SwitchMode,
@@ -28,6 +36,7 @@ import {
   ORDINARIO_KEYSWITCH,
 } from './articulationMap.ts';
 import { articulatedRenderPlan } from './articulationRender.ts';
+import { setKnownBanks, type BankPreset } from './bankRegistry.ts';
 import { notesToSmf } from './midiWrite.ts';
 import { parseMidi } from './midi.ts';
 import { EditMidiScheduler, clipLiveSlots, clipLiveTiming, type EditMidiPass } from './editMidiScheduler.ts';
@@ -225,6 +234,112 @@ const line: PianoNote[] = Array.from({ length: 8 }, (_, i) => ({
   assert.equal(tasmoNoteExtras(file as unknown as Record<string, unknown>).articulation, 'pizzicato', 'it reads back');
   assert.equal(tasmoNoteExtras({ articulation: 'nonsense' }).articulation, undefined);
   assert.equal(pianoNoteToTasmo(line[0]).articulation, undefined, 'an ordinario note writes no key');
+}
+
+// ── A user bank's own articulation presets ──────────────────────────────────
+// A bank shaped like theDAW Orchestra: each articulation a preset of its own at
+// the part's program, in a bank of the file's (1 spiccato/staccato, 2 pizzicato,
+// 3 tremolo/roll, 5 straight mute/muted, 7 harmon mute; the solo violin in 8-11
+// at the section's program), plus the General MIDI aliases the build writes.
+{
+  const ORCH = 'sb-orchestra';
+  const P = (bank: number, program: number, name: string, drum = false): BankPreset => ({ bank, bankLsb: 0, program, name, drum });
+  const presets: BankPreset[] = [
+    P(0, 40, 'Violins'), P(1, 40, 'Violins Spiccato'), P(2, 40, 'Violins Pizzicato'), P(3, 40, 'Violins Tremolo'),
+    P(0, 45, 'Violins Pizzicato'), P(0, 44, 'Violins Tremolo'),
+    P(0, 41, 'Violas'), P(1, 41, 'Violas Spiccato'), P(2, 41, 'Violas Pizzicato'), P(3, 41, 'Violas Tremolo'),
+    P(8, 40, 'Solo Violin'), P(9, 40, 'Solo Violin Spiccato'), P(10, 40, 'Solo Violin Pizzicato'), P(11, 40, 'Solo Violin Tremolo'),
+    P(0, 56, 'Trumpet'), P(1, 56, 'Trumpet Staccato'), P(5, 56, 'Trumpet Straight Mute'), P(7, 56, 'Trumpet Harmon Mute'), P(0, 59, 'Trumpet Straight Mute'),
+    P(0, 60, 'French Horn'), P(1, 60, 'French Horn Staccato'), P(5, 60, 'French Horn Muted'),
+    P(0, 73, 'Flute'), P(1, 73, 'Flute Staccato'),
+    P(0, 47, 'Timpani'), P(3, 47, 'Timpani Roll'),
+    P(0, 48, 'Orchestra Kit', true),
+  ];
+  const on = (program: number, bank = 0, instrumentId?: string) => ({ ...(instrumentId ? { instrumentId } : {}), program, bankId: ORCH, bank, presets });
+  const violins = on(40, 0, 'violin');
+  assert.deepEqual(soundfontArticulationTarget('pizzicato', violins), { bank: 2, program: 40, bankId: ORCH, name: 'Violins Pizzicato' }, "the bank's own pizzicato");
+  assert.deepEqual(soundfontArticulationTarget('tremolo', violins), { bank: 3, program: 40, bankId: ORCH, name: 'Violins Tremolo' });
+  assert.deepEqual(soundfontArticulationTarget('spiccato', violins), { bank: 1, program: 40, bankId: ORCH, name: 'Violins Spiccato' });
+  assert.deepEqual(soundfontArticulationTarget('staccato', violins), { bank: 1, program: 40, bankId: ORCH, name: 'Violins Spiccato' }, 'a staccato takes the spiccato preset where the bank has no staccato');
+  assert.deepEqual(soundfontArticulationTarget('col-legno', violins), { bank: 2, program: 40, bankId: ORCH, name: 'Violins Pizzicato' }, 'col legno plays the pizzicato');
+  assert.equal(soundfontArticulationTarget('marcato', violins), null, 'no marcato preset: the part’s own sound');
+  assert.equal(soundfontArticulationTarget('legato', violins), null);
+  assert.equal(soundfontArticulationTarget('harmonics', violins), null);
+  assert.deepEqual(soundfontArticulationTarget('con-sordino', on(56, 0, 'trumpet-bb')), { bank: 5, program: 56, bankId: ORCH, name: 'Trumpet Straight Mute' }, 'the straight mute before the harmon');
+  assert.deepEqual(soundfontArticulationTarget('con-sordino', on(60, 0, 'horn')), { bank: 5, program: 60, bankId: ORCH, name: 'French Horn Muted' }, 'a horn the bank mutes');
+  assert.deepEqual(soundfontArticulationTarget('tremolo', on(47)), { bank: 3, program: 47, bankId: ORCH, name: 'Timpani Roll' }, 'a timpani roll');
+  assert.deepEqual(soundfontArticulationTarget('staccato', on(73)), { bank: 1, program: 73, bankId: ORCH, name: 'Flute Staccato' });
+  const solo = on(40, 8, 'violin');
+  assert.deepEqual(soundfontArticulationTarget('pizzicato', solo), { bank: 10, program: 40, bankId: ORCH, name: 'Solo Violin Pizzicato' }, 'the solo violin’s own pizzicato, over the section’s');
+  assert.deepEqual(soundfontArticulationTarget('spiccato', solo)?.bank, 9);
+  assert.deepEqual(soundfontArticulationTarget('tremolo', solo)?.bank, 11);
+  assert.equal(soundfontArticulationTarget('pizzicato', on(40, 2, 'violin')), null, 'a part that already plays the pizzicato preset stays on it');
+  assert.deepEqual(soundfontArticulationTarget('pizzicato', { instrumentId: 'violin', program: 40, bankId: 'gm' }), { bank: 0, program: 45 }, 'the bundled bank keeps the General MIDI target');
+  const plain = { program: 40, bankId: 'sb-plain', bank: 0, presets: [P(0, 40, 'Violin')] };
+  assert.deepEqual(soundfontArticulationTarget('pizzicato', plain), { bank: 0, program: 45 }, 'a user bank without variants falls back to General MIDI');
+  assert.equal(soundfontArticulationTarget('staccato', plain), null);
+  const gmLayout = { program: 40, bankId: 'sb-gm', bank: 0, presets: [P(0, 40, 'Violin'), P(0, 45, 'Pizzicato Strings')] };
+  assert.deepEqual(soundfontArticulationTarget('pizzicato', gmLayout), { bank: 0, program: 45, bankId: 'sb-gm', name: 'Pizzicato Strings' }, 'a General MIDI bank’s own pizzicato strings');
+  assert.notEqual(targetKey({ bank: 0, program: 45, bankId: 'sb-gm' }), targetKey({ bank: 0, program: 45 }), 'a bank’s preset and the bundled one are two channels');
+
+  // Through the registry: the bank at offset 32, so its bank 2 answers to bank select 34.
+  setKnownBanks([{ id: ORCH, offset: 32, span: 12, presets }]);
+  assert.deepEqual(articulationBankOf(32), { bankId: ORCH, bank: 0 });
+  assert.deepEqual(articulationBankOf(34), { bankId: ORCH, bank: 2 });
+  assert.deepEqual(articulationBankOf(0), {}, 'bank select 0 is the bundled bank');
+  assert.deepEqual(articulationBankOf(8), {}, 'a bundled variation bank too');
+  const fromRegistry = clipArticulationInstrument({ sourceRollPart: { instrumentId: 'violin', program: 40 } }, 40, false, 32);
+  assert.deepEqual(fromRegistry, { instrumentId: 'violin', program: 40, percussion: false, bankId: ORCH, bank: 0 });
+  const pizz = soundfontArticulationTarget('pizzicato', fromRegistry);
+  assert.equal(pizz?.name, 'Violins Pizzicato', 'the presets come from the registry when none are passed');
+  assert.equal(articulationBankSelect(pizz as NonNullable<typeof pizz>), 34, 'played at the bank’s offset plus its own bank');
+  assert.equal(articulationBankSelect({ bank: 0, program: 45 }), 0, 'a General MIDI target at offset 0');
+
+  // EDIT's live MIDI: the pizzicato notes carry the bank's own preset at bank select 34.
+  const clip = {
+    id: 'c2',
+    trackId: 'vn',
+    label: 'Violins',
+    mimeType: 'audio/wav',
+    sourceDuration: 4,
+    offsetIntoSource: 0,
+    durationSec: 4,
+    startSec: 0,
+    color: '#fff',
+    sourceKind: 'piano-roll',
+    sourcePianoRoll: line,
+    sourceBpm: 120,
+    sourceTotalSteps: 32,
+    sourceRollPart: { doc: 'd', id: 'p', order: 0, name: 'Violins', program: 40, bank: 32, channel: null, color: '#fff', mute: false, solo: false, instrumentId: 'violin' },
+  } as unknown as AudioClip;
+  const timing = clipLiveTiming(clip, 120, false, 40, undefined, null, 32);
+  assert.equal(timing.slots, 2);
+  assert.deepEqual(timing.notes.map((n) => [n.slot, n.program ?? null, n.bank ?? null]), [[0, null, null], [0, null, null], [0, null, null], [0, null, null], [1, 40, 34], [1, 40, 34], [1, 40, 34], [1, 40, 34]]);
+  assert.equal(clipLiveSlots(clip, false, 40, undefined, null, 32), 2);
+  assert.equal(clipLiveSlots({ ...clip, sourcePianoRoll: line.map((n) => ({ ...n, articulation: n.articulation ? ('staccato' as const) : undefined })) }, false, 40), 1, 'on the bundled bank a staccato takes no channel');
+  assert.equal(clipLiveSlots({ ...clip, sourcePianoRoll: line.map((n) => ({ ...n, articulation: n.articulation ? ('staccato' as const) : undefined })) }, false, 40, undefined, null, 32), 2, 'on the bank it plays the spiccato preset');
+
+  // A render: the pizzicato channel selects bank 34, program 40.
+  const arts = articulatedNotes(line, fromRegistry);
+  const renderNotes = arts.notes.map((a, i) => ({ midi: a.played.note, velocity: a.played.velocity, startSec: i * 0.5, durationSec: 0.5 }));
+  const plan = articulatedRenderPlan(renderNotes, arts.notes, arts.targets, []);
+  assert.deepEqual(plan.channelPrograms, [{ channel: 1, program: 40, bank: 34 }]);
+
+  // The roll's PLAY: a part whose voice is the bank's violins.
+  usePianoRollStore.getState().importParts([{ name: 'Violins', program: 40, instrumentId: 'violin', notes: line.map((n) => ({ ...n })) }], 120);
+  usePianoRollStore.setState({ currentStep: 0, loop: null, loopOn: false });
+  const state = usePianoRollStore.getState();
+  const sched = createRollScheduler({ ...state, tracks: rollTracksOf(state) }, 1, ROLL_LOOKAHEAD_SEC);
+  const heard: ScheduledRollNote[] = [];
+  for (let now = 1; now < 6; now += 0.025) {
+    const s = usePianoRollStore.getState();
+    heard.push(...sched.tick(now, { ...s, tracks: rollTracksOf(s) }, () => ({ program: 40, bank: 32, percussion: false })).notes.filter((n) => n.abs < 32));
+  }
+  const pizzHeard = heard.filter((n) => n.step >= 16);
+  assert.equal(pizzHeard.length, 4);
+  assert.ok(pizzHeard.every((n) => n.program === 40 && n.bank === 34), 'pizzicato on the bank’s own preset at its offset');
+  assert.ok(heard.filter((n) => n.step < 16).every((n) => n.bank === 32), 'arco on the part’s own bank select');
+  setKnownBanks([]);
 }
 
 console.log('articulationMap: ok');

@@ -79,7 +79,7 @@ import {
 import { REANCHOR_STEPS, rollStepAt, shownStep, windowOnsets } from './rollTransport';
 import { TICKS_PER_STEP } from './rollSnap';
 import { audiblePartIds, controlStateBefore, partController, rollLiveChannels, type PartLiveChannels } from './rollTracks';
-import { articulatedNotes, type ArticulatedNote, type SoundfontArticulationTarget } from './articulationMap';
+import { articulatedNotes, articulationBankOf, articulationBankSelect, type ArticulatedNote, type SoundfontArticulationTarget } from './articulationMap';
 import type { PianoNote } from '../state/pianoRollStore';
 import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionCurveSteps, expressionMessages, hasExpression, membersNeeded, noteBendRange } from './mpeRotation';
 
@@ -289,9 +289,10 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     playState = followed;
     const { lapState, steps, clock: lc } = playState;
     const { lap } = lapState;
-    // The program each part sounds decides what its articulations resolve to.
+    // The program each part sounds, and the bank it is selected in, decide what its articulations resolve to.
     const partPrograms = tracks.map((t) => voiceOf(t.id)?.program);
-    const voiceSig = partPrograms.map((p) => p ?? '').join(',');
+    const partBanks = tracks.map((t) => voiceOf(t.id)?.bank ?? t.bank);
+    const voiceSig = partPrograms.map((p, i) => `${p ?? ''}/${partBanks[i]}`).join(',');
     if (!source || source.tracks !== tracks || source.lanes !== lanes || source.total !== total || source.bends !== bends || source.voices !== voiceSig) {
       if (source && (source.lanes !== lanes || source.total !== total || source.bends !== bends)) wheelFresh = true;
       // A part moved to another channel starts its curve fresh there.
@@ -299,7 +300,12 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       source = { tracks, lanes, total, bends, voices: voiceSig };
       const unrolled = tracks.map((t) => unrollLanes(t.notes, lanes, total));
       const artsOf = tracks.map((t, i) =>
-        articulatedNotes(unrolled[i], { instrumentId: t.instrumentId, program: t.program ?? partPrograms[i] ?? null, percussion: voiceOf(t.id)?.percussion === true }),
+        articulatedNotes(unrolled[i], {
+          instrumentId: t.instrumentId,
+          program: t.program ?? partPrograms[i] ?? null,
+          percussion: voiceOf(t.id)?.percussion === true,
+          ...articulationBankOf(partBanks[i]),
+        }),
       );
       // An articulation channel per preset and bent lane, so a pizzicato in a bent lane bends with it.
       const bentSet = bentLanes(lanes, bends);
@@ -512,8 +518,9 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
           // A note lasts as long as its own steps do under the map.
           duration: spanSec(steps, n.step, n.length),
           channel,
+          // A preset articulation plays its preset at that preset's bank select: a user bank's offset plus its own bank.
           ...(artChannel !== undefined && art?.target
-            ? { program: art.target.program, ...(art.target.bank ? { bank: art.target.bank } : {}) }
+            ? { program: art.target.program, ...(articulationBankSelect(art.target) > 0 ? { bank: articulationBankSelect(art.target) } : {}) }
             : {
                 ...(voice.program !== undefined ? { program: voice.program } : {}),
                 ...(voice.bank ? { bank: voice.bank } : {}),

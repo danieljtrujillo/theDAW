@@ -3133,8 +3133,15 @@ export function planLiveMidi(
       track.id,
       Math.max(
         slots.get(track.id) ?? 1,
-        // Counted as the scheduler times the clip: an external-only track plays with no program of theDAW's.
-        clipLiveSlots(clip, isPercussionTrack(track), isExternalOnly(track) ? NO_PROGRAM : effectiveProgramFor(clip, track, global), trackMembers(track.mpeChannels)),
+        // Counted as the scheduler times the clip: an external-only track plays with no program of theDAW's; a voice in a user bank may take more articulation channels.
+        clipLiveSlots(
+          clip,
+          isPercussionTrack(track),
+          isExternalOnly(track) ? NO_PROGRAM : effectiveProgramFor(clip, track, global),
+          trackMembers(track.mpeChannels),
+          null,
+          isExternalOnly(track) ? 0 : (clipVoice(clip, track, global).bank ?? 0),
+        ),
       ),
     );
   }
@@ -3295,7 +3302,7 @@ export function liveMidiNotes(
     if (!chans?.length || program === undefined) continue;
     // The bank select the scheduler sends: the clip's, its track's or the picker's program's (lib/clipProgram clipVoice).
     const bank = clipVoice(clip, track, global).bank ?? 0;
-    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), program, trackMembers(track.mpeChannels)).notes) {
+    for (const n of clipLiveTiming(clip, projectBpm, isPercussionTrack(track), program, trackMembers(track.mpeChannels), null, bank).notes) {
       if (n.on < fromSec || n.off <= fromSec) continue;
       const onDelaySec = n.on - fromSec;
       out.push({

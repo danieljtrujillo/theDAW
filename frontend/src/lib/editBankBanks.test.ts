@@ -20,7 +20,7 @@ import { SoundBankLoader } from 'spessasynth_core';
 import { useEditorStore } from '../state/editorStore.ts';
 import { planLiveMidi } from '../state/liveMixer.ts';
 import { userBanksByEditBank } from './editBankBanks.ts';
-import { setBankOffsets, type SoundBank } from './bankRegistry.ts';
+import { setKnownBanks, type SoundBank } from './bankRegistry.ts';
 import type { GlobalVoice } from './clipProgram.ts';
 
 const MB = 1 << 20;
@@ -142,7 +142,7 @@ const user = (id: string, offset: number): SoundBank => ({
   url: '',
 });
 const banks = [user('sb-strings0000', 32), user('sb-brass000000', 33)];
-setBankOffsets(banks);
+setKnownBanks(banks);
 
 /** 24 parts; `bankOf(i)` names the user bank part i plays from, or null for the bundled bank. */
 function project(bankOf: (i: number) => string | null) {
