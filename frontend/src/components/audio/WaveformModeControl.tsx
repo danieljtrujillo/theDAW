@@ -38,7 +38,7 @@ export function waveformLegendText(mode: WaveformDrawMode): string {
 
 export interface WaveformModeToggleProps {
   /** `corner`: a small round button pinned to the bottom-right of the
-   *  positioned parent. `toolbar`: an inline button that names the mode. */
+   *  positioned parent. `toolbar`: an inline glyph button for a toolbar. */
   variant: 'corner' | 'toolbar';
   className?: string;
 }
@@ -47,8 +47,8 @@ export const WaveformModeToggle: React.FC<WaveformModeToggleProps> = ({ variant,
   const mode = useWaveformStyleStore((s) => s.mode);
   const cycleMode = useWaveformStyleStore((s) => s.cycleMode);
   const next = WAVEFORM_MODE_NAME[nextMode(mode)];
-  // Starts with the toolbar variant's visible words, so a voice-control user
-  // who says what they see ("click Wave Color") reaches the button.
+  // Starts with the mode's name, so a voice-control user who says "click
+  // Wave Color" reaches the button.
   const label = `Wave: ${WAVEFORM_MODE_NAME[mode]}. Waveform colors: ${waveformLegendText(mode)}. Press for ${next}.`;
   const base =
     'font-sans text-xs font-bold leading-none transition-colors focus-visible:outline focus-visible:outline-purple-400';
