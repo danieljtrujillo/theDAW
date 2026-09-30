@@ -95,11 +95,12 @@ MAX_GRANTS_PER_PATH = 8
 
 # Sources whose files /api/places/file may serve. Each is a path the user chose
 # in a native dialog ('pick', 'save'), a file the app wrote or installed
-# ('install', 'gan', 'sway-save'), or a finished download the desktop shell
-# vouched for with its launch token ('download'). Every other source, 'client'
-# above all, is remembered for pickers and menus and never served.
+# ('install', 'gan', 'sway-save', 'sway-render'), or a finished download the
+# desktop shell vouched for with its launch token ('download'). Every other
+# source, 'client' above all, is remembered for pickers and menus and never
+# served.
 SERVABLE_SOURCES = frozenset(
-    {"install", "save", "pick", "gan", "sway-save", "download"}
+    {"install", "save", "pick", "gan", "sway-save", "sway-render", "download"}
 )
 
 # File types /api/places/save never writes: each one runs as a program or

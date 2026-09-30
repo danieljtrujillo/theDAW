@@ -36,13 +36,16 @@ import { logError, logInfo, logWarn } from '../state/logStore';
 import { describeHttpError } from '../lib/httpError';
 import { basenameOf, dirnameOf, isLocalClient, type PlaceItem } from '../lib/placesClient';
 import { pickFile } from '../lib/storageClient';
+import { GAN_FILTER } from '../lib/fileFilters';
 import { openSwayScene, openSwaySceneFromPath } from '../lib/swayOpen';
 import {
   CAP_HOST_HEADER,
+  HOST_CAPS,
   cockpitAction,
   hardwareStatus,
   hostScenesFrame,
   loadSceneLists,
+  pluginFileFrame,
   scenesUnreadable,
   type HardwareTone,
   type HostAudioSource,
@@ -137,6 +140,27 @@ async function chooseSceneFile(): Promise<string | null> {
     logError('sway', `Could not choose a scene file: ${msg}`);
     useStatusBarStore.getState().setText(`${OPEN_FAILED}${msg}`);
     return msg;
+  }
+}
+
+/** Answers the cockpit's sway/choose-plugin-file: the .gan picked in the
+ *  native dialog (the same pick MIX's Open a .gan uses), a cancel, or why no
+ *  file could be picked. Logged either way; the cockpit shows the failure. */
+async function choosePluginFile(): Promise<ReturnType<typeof pluginFileFrame>> {
+  if (!isLocalClient()) {
+    const msg = 'A .gan file can be chosen only on the computer theDAW runs on.';
+    logWarn('sway', msg);
+    return pluginFileFrame(null, msg);
+  }
+  try {
+    const frame = pluginFileFrame(await pickFile({ kind: 'gan', filter: GAN_FILTER, title: 'Open a .gan plugin' }));
+    if (frame.failure) logWarn('sway', frame.failure);
+    else if (frame.path) logInfo('sway', `${frame.name} sent to the SWAY cockpit's plugin panel`);
+    return frame;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logError('sway', `Could not choose a .gan file: ${msg}`);
+    return pluginFileFrame(null, msg);
   }
 }
 
@@ -596,7 +620,7 @@ export const SwayView: React.FC = () => {
           );
           const queued = pendingRef.current;
           pendingRef.current = [];
-          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW' });
+          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW', caps: [...HOST_CAPS] });
           for (const frame of queued) post(frame);
           break;
         }
@@ -637,6 +661,15 @@ export const SwayView: React.FC = () => {
           }
           void chooseSceneFile().then((failure) => {
             if (failure) void sendScenes(failure);
+          });
+          break;
+        }
+        case 'choose-plugin-file': {
+          // Every outcome answers, so the cockpit's LOAD chooser never waits
+          // on a dialog that already closed.
+          const gen = frameGenRef.current;
+          void choosePluginFile().then((frame) => {
+            if (gen === frameGenRef.current) post({ ...frame, v: PROTOCOL });
           });
           break;
         }

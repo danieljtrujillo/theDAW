@@ -490,3 +490,5 @@ _backup/
 /docs/guides/screenshots.7z
 /docs/guides/screenshots/
 /docs/guides/t37a-roll-initial.png
+# A cockpit build set aside while a newer one is staged.
+electron-ui/resources/sway-dist.*-backup/

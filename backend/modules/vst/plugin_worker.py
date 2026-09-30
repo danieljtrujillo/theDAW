@@ -136,6 +136,7 @@ def run_job(job_dir: Path) -> int:
                 job.get("params"),
                 raw_state,
                 warnings,
+                raw_params=job.get("raw_params"),
                 automation=(
                     parse_param_automation(json.dumps(automation)) or None
                     if automation
