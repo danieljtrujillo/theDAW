@@ -206,7 +206,7 @@ def engine_process_alive() -> bool:
 
 
 def _no_window_flags() -> int:
-    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 def _engine_python() -> str:

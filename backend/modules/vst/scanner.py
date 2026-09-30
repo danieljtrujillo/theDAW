@@ -198,7 +198,10 @@ def scan_vst3_directories(extra_paths: list[str] | None = None) -> list[Vst3Plug
     seen: set[str] = set()
     for search_dir in search_dirs:
         try:
-            for item in search_dir.rglob("*.vst3"):
+            # The scan walker follows a symlinked or junctioned vendor folder
+            # and stops at each bundle (``_walk_vst3_paths``); ``rglob`` does
+            # neither.
+            for item in sorted(_walk_vst3_paths(search_dir)):
                 bundle = _bundle_root(item)
                 if bundle is not None and bundle.is_relative_to(search_dir):
                     # Reached from inside a bundle this same scan already emits
@@ -551,6 +554,14 @@ def _walk_vst3_paths(root: Path) -> list[Path]:
     an ancestor directory would otherwise recurse without bound, since
     ``Path.walk(follow_symlinks=False)`` does not treat a junction as a
     symlink and so never prunes it on its own (see ``_dir_identity``).
+
+    Walks with ``follow_symlinks=True``: a vendor folder that is a directory
+    symlink (the Linux/macOS way to keep plugins on another drive; a junction
+    on Windows, which every walk enters) is descended, and its bundles are
+    reported by the LINKED path, which ``path_policy`` maps to their resolved
+    targets. Python 3.12's ``rglob`` and a default ``Path.walk`` both stop at
+    a symlinked directory, which left such plugins unlisted on Linux. The
+    visited-identity set above is what keeps a symlink cycle finite too.
     """
     found: list[Path] = []
     visited: set[tuple[int, int]] = set()
@@ -558,7 +569,7 @@ def _walk_vst3_paths(root: Path) -> list[Path]:
     if root_id is not None:
         visited.add(root_id)
     for dirpath, dirnames, filenames in root.walk(
-        top_down=True, on_error=_log_walk_error
+        top_down=True, on_error=_log_walk_error, follow_symlinks=True
     ):
         kept: list[str] = []
         for name in dirnames:

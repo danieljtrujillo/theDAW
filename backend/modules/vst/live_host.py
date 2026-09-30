@@ -163,7 +163,9 @@ EXIT_CODE_MEANINGS: dict[int, str] = {
 }
 
 _HOST_BINARY = "thedaw-vst-host.exe" if sys.platform == "win32" else "thedaw-vst-host"
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+_NO_WINDOW = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+)
 
 
 def default_host_path() -> Path:

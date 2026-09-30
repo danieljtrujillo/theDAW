@@ -501,7 +501,7 @@ class StemsSidecar:
             # Own process group/session: lets _terminate_tree reap the
             # uvicorn child along with the launcher on both platforms.
             group_kwargs = (
-                {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
                 if sys.platform == "win32"
                 else {"start_new_session": True}
             )

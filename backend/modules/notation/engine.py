@@ -2369,7 +2369,9 @@ def _convert_with_musescore(
     if command is None:
         return {"ok": False, "engine": "musescore", "error": _MUSESCORE_NOT_FOUND}
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    creationflags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    )
     try:
         proc = subprocess.run(
             [*command, "-o", str(output_path), str(source_path)],

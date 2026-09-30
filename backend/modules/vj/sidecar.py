@@ -808,7 +808,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 # of vanishing into DEVNULL.
                 creationflags = 0
                 if sys.platform == "win32":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 with _sidecar_log_handle() as spawn_out:
                     _proc = subprocess.Popen(
                         cmd,
