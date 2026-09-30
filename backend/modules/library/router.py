@@ -154,11 +154,14 @@ _store: Optional[LibraryStore] = None
 #: The name of the thread that opens the library.
 LIBRARY_OPEN_THREAD = "library-open"
 
-#: How long a list, search or stats route waits for the library to finish
-#: opening before it answers 503 with the progress instead. A small library
-#: opens well inside it, so its first request just answers; a large one being
-#: upgraded frees the request thread and the LIBRARY tab shows the progress
-#: bar.
+#: How long a route in this file waits for the library to finish opening
+#: before it answers 503 with the progress instead. A small library opens well
+#: inside it, so its first request just answers; a large one being upgraded
+#: frees the request thread and the LIBRARY tab shows the progress bar. Every
+#: sync route here answers this way, reads and writes alike: a single-entry
+#: lookup used to hold its thread for the whole upgrade, and a write that
+#: arrives during the upgrade is better refused with a Retry-After than held
+#: for minutes.
 OPEN_WAIT_SEC = 1.5
 
 #: How long a failed open stays failed before a caller that needs the store
@@ -283,11 +286,12 @@ def get_store() -> LibraryStore:
 
     The backend's startup only starts the open (:func:`start_opening`); the
     first caller that needs the store waits for the schema upgrade on the
-    thread it already runs on. The list-shaped routes wait at most
-    :data:`OPEN_WAIT_SEC` instead (:func:`store_or_opening`). Async callers
-    reach this through ``asyncio.to_thread``; one that calls it on the event
-    loop while the library opens is logged, and waits, because failing it
-    could drop a generated take's library record."""
+    thread it already runs on. The sync routes in this file wait at most
+    :data:`OPEN_WAIT_SEC` instead (:func:`store_or_opening`); this is for the
+    other modules and the async routes. Async callers reach this through
+    ``asyncio.to_thread``; one that calls it on the event loop while the
+    library opens is logged, and waits, because failing it could drop a
+    generated take's library record."""
     store = _store
     if store is not None:
         return store
@@ -313,8 +317,9 @@ def get_store() -> LibraryStore:
 def store_or_opening(wait: Optional[float] = None) -> LibraryStore:
     """The store, or :class:`LibraryOpening` after at most ``wait`` seconds
     (default :data:`OPEN_WAIT_SEC`, read at call time) of the schema upgrade:
-    what a route answers the LIBRARY tab with instead of holding a request
-    thread for the whole upgrade."""
+    what every sync route in this file answers with (:func:`_opening_response`,
+    a 503 carrying ``library_status`` and a Retry-After) so no request thread
+    is held for the whole upgrade."""
     store = _store
     if store is not None:
         return store
@@ -1115,7 +1120,10 @@ def bulk_delete_entries(req: BulkDeleteRequest) -> Any:
 
 @router.get("/entries/{entry_id}")
 def get_entry(entry_id: str) -> dict[str, Any]:
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     record = store.get_entry(entry_id)
     if record is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
@@ -1131,7 +1139,10 @@ def get_entry_audio_path(entry_id: str) -> dict[str, Any]:
 
     The footer's track menu reads it for Show in folder and Copy file path. A
     reference-in-place import resolves to the file where the user keeps it."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.get_entry(entry_id) is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
     audio_path = store.get_audio_path(entry_id)
@@ -1447,7 +1458,10 @@ def stream_audio_cover(entry_id: str) -> FileResponse:
     a 200,000-file import from reading every file's tags). ``extract_missing``
     makes the first request for one look, once per entry per process; a track
     that carries no picture still answers 404."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     cover_path = store.get_cover_path(entry_id, extract_missing=True)
     if cover_path is None or not cover_path.is_file():
         raise HTTPException(404, f"Cover for entry {entry_id!r} not found")
@@ -1521,7 +1535,11 @@ def backfill_covers(
     limit = req.limit
     if limit is not None and limit < 1:
         raise HTTPException(400, "limit must be >= 1")
-    return get_store().backfill_covers(overwrite=req.overwrite, limit=limit)
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
+    return store.backfill_covers(overwrite=req.overwrite, limit=limit)
 
 
 @router.get("/stems/{stem_id}/audio")
@@ -1530,7 +1548,10 @@ def stream_stem_audio(stem_id: str) -> FileResponse:
     can fetch it as a Blob and feed it into the editor / init / inpaint
     targets (the library audio endpoint only knows about parent tracks,
     not their stem children)."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     stem = store.db.get_stem(stem_id)
@@ -1551,7 +1572,10 @@ def stream_stem_audio(stem_id: str) -> FileResponse:
 def update_stem(stem_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Mutate a stem row. Currently only ``favorite`` is user-mutable so
     stems behave like first-class library items."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     if "favorite" in patch:
@@ -1568,7 +1592,10 @@ def update_stem(stem_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, An
 def delete_stem(stem_id: str) -> dict[str, Any]:
     """Delete one separated stem (its WAV on disk + its DB row), leaving the
     parent track and sibling stems untouched."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     row = store.db.get_stem(stem_id)
@@ -1613,7 +1640,10 @@ def rescan_media_roots() -> dict[str, Any]:
 def stream_media(entry_id: str) -> FileResponse:
     """Stream a video/image library entry. FileResponse honors Range
     requests, which video scrubbing needs."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     media_path = store.get_media_path(entry_id)
     if media_path is None or not media_path.is_file():
         raise HTTPException(404, f"Media for entry {entry_id!r} not found")
@@ -1628,7 +1658,10 @@ def stream_media(entry_id: str) -> FileResponse:
 @router.get("/media/{entry_id}/thumb")
 def stream_media_thumb(entry_id: str) -> FileResponse:
     """Serve the poster thumbnail for a media entry (JPEG)."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     thumb_path = store.get_thumb_path(entry_id)
     if thumb_path is None or not thumb_path.is_file():
         raise HTTPException(404, f"Thumbnail for entry {entry_id!r} not found")
@@ -1753,7 +1786,10 @@ def import_folder(
         raise HTTPException(400, f"not a folder: {folder!r}")
     # Picked or typed, the folder is where the next picker opens.
     known_paths.record(root, "library-folder", source="library-folder")
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
 
     if run_async:
         job = get_import_jobs().create(folder=str(root), recursive=req.recursive)
@@ -2003,7 +2039,10 @@ def list_bundled_setlists() -> dict[str, Any]:
     root = _perf_sets_root()
     if not root.is_dir():
         return {"setlists": []}
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     setlists: list[dict[str, Any]] = []
     for set_dir in _perf_set_dirs(root):
         loaded = _load_perf_set(store, set_dir)
@@ -2039,7 +2078,10 @@ def register_bundled_setlist(set_id: str) -> dict[str, Any]:
     the copy it merged at startup."""
     root = _perf_sets_root()
     if root.is_dir():
-        store = get_store()
+        try:
+            store = store_or_opening()
+        except LibraryOpening as e:
+            return _opening_response(e)
         for set_dir in _perf_set_dirs(root):
             listed = _load_perf_set(store, set_dir)
             if listed is None or listed["id"] != set_id:
@@ -2070,7 +2112,10 @@ def reindex_library(analyze: bool = False) -> dict[str, Any]:
     :data:`MAX_REINDEX_ANALYSIS_ENQUEUE` new/changed entries in one call
     enqueues none and reports ``analysis_skipped`` instead, rather than
     flooding the analysis worker."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     report: dict[str, Any] = {}
@@ -2090,7 +2135,11 @@ def reindex_library(analyze: bool = False) -> dict[str, Any]:
 
 @router.patch("/entries/{entry_id}")
 def update_entry(entry_id: str, patch: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    record = get_store().update_entry(entry_id, patch)
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
+    record = store.update_entry(entry_id, patch)
     if record is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
     return record.to_dict()
@@ -2101,7 +2150,10 @@ def register_play(entry_id: str) -> dict[str, Any]:
     """Increment the persistent play counter. The player calls this when a
     track starts. Survives restarts (SQLite), and metadata edits / re-analysis
     leave it intact (upsert_entry never writes play_count)."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     new_count = store.db.increment_play_count(entry_id)
@@ -2133,7 +2185,10 @@ class SuggestRequest(BaseModel):
 def suggest_playlist_endpoint(req: SuggestRequest = Body(...)) -> dict[str, Any]:
     """Build an analysis-driven playlist (harmonic + bpm-flow sequencing) that
     fits the requested time budget. Needs the DB, where analysis lives."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     from .suggester import suggest_playlist
@@ -2154,7 +2209,11 @@ def suggest_playlist_endpoint(req: SuggestRequest = Body(...)) -> dict[str, Any]
 
 @router.delete("/entries/{entry_id}")
 def delete_entry(entry_id: str) -> dict[str, Any]:
-    ok = get_store().delete_entry(entry_id)
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
+    ok = store.delete_entry(entry_id)
     if not ok:
         raise HTTPException(
             404, f"Entry {entry_id!r} not found or could not be deleted"
@@ -2220,7 +2279,10 @@ def library_summary() -> Any:
 
 @router.get("/{entry_id}/bundle")
 def download_bundle(entry_id: str) -> Response:
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     record = store.get_entry(entry_id)
     if record is None:
         raise HTTPException(404, f"Entry {entry_id!r} not found")
@@ -2505,7 +2567,10 @@ def get_lineage(entry_id: str, depth: int = 3) -> dict[str, Any]:
     the per-hop read), which is the case ``/lineage/full`` answers in full; a
     family that is only deeper than ``depth`` is ``truncated`` and not
     ``capped``."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     record = store.get_entry(entry_id)
@@ -2783,7 +2848,10 @@ def get_lineage_full(entry_id: str, depth: int = 8) -> StreamingResponse:
     whole family with it, and INFO loads it when the user asks for the whole
     family. The JSON is written while the walk runs, so the server never holds
     the family's whole answer in memory."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     if store.get_entry(entry_id) is None:
@@ -2799,7 +2867,10 @@ def get_lineage_full(entry_id: str, depth: int = 8) -> StreamingResponse:
 def list_all_stems() -> dict[str, Any]:
     """Return every stem across every entry, joined to the parent
     entry's title for grouping in the UI."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     out = store.db.list_all_stems()
@@ -2810,7 +2881,10 @@ def list_all_stems() -> dict[str, Any]:
 def list_all_midi() -> dict[str, Any]:
     """Return every MIDI file across every entry, joined to the parent
     entry's title."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     out = store.db.list_all_midis()
@@ -2822,7 +2896,10 @@ def list_all_scores() -> dict[str, Any]:
     """Return every notation/score artifact across every entry, joined to the
     parent entry's title. Excludes raw ``midi`` artifacts (those live in the
     MIDI tab); keeps sheets, tabs, arrangements, and exports."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     out = [
@@ -2842,7 +2919,10 @@ def get_full_graph() -> dict[str, Any]:
     file-name string, not an entry id) and the layered layout collapses
     to one row. Cheap up to a few thousand entries; if it grows large
     we'll paginate later."""
-    store = get_store()
+    try:
+        store = store_or_opening()
+    except LibraryOpening as e:
+        return _opening_response(e)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     raw_entries = store.db.list_entries()

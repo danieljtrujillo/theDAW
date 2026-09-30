@@ -161,6 +161,11 @@ async def separate_entry(
                 f"stem separation already running for {entry_id}: {phase} — {message}"
             )
         _IN_FLIGHT.add(entry_id)
+        # An abort that landed after the previous run's last poll tick (in its
+        # write-out) was never consumed: left in the set, it would end this
+        # run at its first tick. The DJ pad re-sends its abort while this run
+        # is alive, so nothing the user asked for is lost by starting clean.
+        _ABORT_REQUESTS.discard(entry_id)
 
     _set_status(db, entry_id, "running")
     device_label = _effective_device_label(device)

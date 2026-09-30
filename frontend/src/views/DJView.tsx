@@ -90,7 +90,7 @@ import { importAudioFile } from '../lib/importAudioFiles';
 import { DESKTOP_DROP_ORIGIN, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
 import { logInfo, logWarn } from '../state/logStore';
 import { useWaveformStyleStore } from '../state/waveformStyleStore';
-import { listStems, prepareStems } from '../lib/djStems';
+import { isStemsAborted, listStems, prepareStems, type SeparateOpts, type StemRef } from '../lib/djStems';
 import * as djEngine from '../state/djEngine';
 
 const DJ_TRACK_MIME = 'application/x-thedaw-djtrack';
@@ -2684,47 +2684,146 @@ const STEM_PAD_COLORS: RGB[] = [
   [45, 212, 191],
 ];
 
-const StemLoadPad: React.FC<{ deck: djEngine.DeckId; entryId: string | null; color: RGB; shape?: React.ComponentProps<typeof SlidePad>['shape'] }> = ({ deck, entryId, color, shape }) => {
+/* One deck's stem split.
+   The split runs through `prepareStems` (analysis, then the stems backend's
+   foreground run, or the cached stems) and lands on the deck through
+   `djEngine.loadDeckStems`. While it runs, the stem-load pad IS the Abort
+   control: its press aborts the run through `POST /api/stems/{entry}/abort`
+   (the route the old deck rack's Abort button used) via the split's
+   AbortSignal, and the deck keeps whatever stems it had before the split. */
+
+export type StemSplitOutcome = 'loaded' | 'aborted' | 'failed';
+
+export interface StemSplitDeps {
+  prepare: typeof prepareStems;
+  load: (deck: djEngine.DeckId, refs: StemRef[]) => Promise<unknown>;
+}
+
+const liveStemSplitDeps: StemSplitDeps = {
+  prepare: prepareStems,
+  load: (deck, refs) => djEngine.loadDeckStems(deck, refs),
+};
+
+/** Run one deck's stem split to the end: separate (or fetch the cached
+ *  stems), then load them on the deck. An abort through `opts.signal` leaves
+ *  the deck as it was: nothing is loaded and nothing is reported as failed. */
+export async function runDeckStemSplit(
+  deck: djEngine.DeckId,
+  entryId: string,
+  opts: SeparateOpts,
+  onMsg: (msg: string) => void,
+  deps: StemSplitDeps = liveStemSplitDeps,
+): Promise<{ outcome: StemSplitOutcome; error?: string }> {
+  try {
+    const refs = await deps.prepare(
+      entryId,
+      opts,
+      (pct, phase) => onMsg(pct > 0 ? `${pct}%` : phase.replace(/_/g, ' ')),
+    );
+    if (opts.signal?.aborted) return { outcome: 'aborted' };
+    onMsg('loading');
+    await deps.load(deck, refs);
+    return { outcome: 'loaded' };
+  } catch (e) {
+    if (isStemsAborted(e) || opts.signal?.aborted) return { outcome: 'aborted' };
+    return { outcome: 'failed', error: e instanceof Error ? e.message : 'failed' };
+  }
+}
+
+/** The stem-load pad's face. While a split runs the pad is the Abort control:
+ *  one word, enabled, named for the deck it stops. */
+export const stemLoadPadFace = (
+  busy: boolean,
+  entryId: string | null,
+  deck: djEngine.DeckId,
+  stemCount: number,
+  msg: string | null,
+): { label: string; disabled: boolean; ariaLabel: string; title: string } => {
+  if (busy) {
+    const abort = `Abort stem separation for Deck ${deck}`;
+    return { label: 'Abort', disabled: false, ariaLabel: abort, title: msg ? `${abort} (${msg})` : abort };
+  }
+  const load = `Load or separate ${stemCount} stems for Deck ${deck}`;
+  return {
+    label: msg ?? 'Stems',
+    disabled: !entryId,
+    ariaLabel: load,
+    title: entryId ? load : 'Load a track first',
+  };
+};
+
+export interface DeckStemSplit {
+  busy: boolean;
+  /** What the split is doing (a phase or a percentage) while it runs; the
+   *  failure, briefly, after one fails. */
+  msg: string | null;
+  stemCount: StemCount;
+  start: () => Promise<void>;
+  abort: () => void;
+}
+
+const useDeckStemSplit = (deck: djEngine.DeckId, entryId: string | null): DeckStemSplit => {
   const stemSettings = useFeatureToggleStore((s) => s.settings.stems);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
   const stemCount = toStemCount(stemSettings.default_count);
-  const load = async () => {
+  const start = async () => {
     if (!entryId || busy) return;
+    const controller = new AbortController();
+    controllerRef.current = controller;
     setBusy(true);
     setMsg('checking');
-    try {
-      const refs = await prepareStems(
-        entryId,
-        {
-          stems: stemCount,
-          device: stemSettings.device || 'auto',
-          quality: stemSettings.quality || 'balanced',
-        },
-        (pct, phase) => setMsg(pct > 0 ? `${pct}%` : phase.replace(/_/g, ' ')),
-      );
-      setMsg('loading');
-      await djEngine.loadDeckStems(deck, refs);
-      setMsg(null);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message.slice(0, 18) : 'failed');
+    const { outcome, error } = await runDeckStemSplit(deck, entryId, {
+      stems: stemCount,
+      device: stemSettings.device || 'auto',
+      quality: stemSettings.quality || 'balanced',
+      signal: controller.signal,
+    }, setMsg);
+    controllerRef.current = null;
+    setBusy(false);
+    if (outcome === 'failed') {
+      setMsg((error ?? 'failed').slice(0, 18));
       window.setTimeout(() => setMsg(null), 2600);
-    } finally {
-      setBusy(false);
+    } else {
+      setMsg(null);
     }
   };
+  const abort = () => {
+    const controller = controllerRef.current;
+    if (!controller || controller.signal.aborted) return;
+    setMsg('aborting');
+    controller.abort();
+  };
+  return { busy, msg, stemCount, start, abort };
+};
+
+const StemLoadPad: React.FC<{
+  deck: djEngine.DeckId;
+  entryId: string | null;
+  color: RGB;
+  shape?: React.ComponentProps<typeof SlidePad>['shape'];
+  /** The bank's split, when the pad sits in a StemPadBank: one Abort then
+   *  covers a split started from the load pad or from an empty stem pad. */
+  split?: DeckStemSplit;
+}> = ({ deck, entryId, color, shape, split: shared }) => {
+  const own = useDeckStemSplit(deck, entryId);
+  const split = shared ?? own;
+  const face = stemLoadPadFace(split.busy, entryId, deck, split.stemCount, split.msg);
   return (
     <SlidePad
       color={color}
-      on={busy}
-      disabled={!entryId || busy}
-      onClick={() => void load()}
+      danger={split.busy}
+      on={split.busy}
+      disabled={face.disabled}
+      onClick={() => { if (split.busy) split.abort(); else void split.start(); }}
       className="w-full h-full px-1 py-1 min-w-0 min-h-0 overflow-hidden"
       shape={shape}
-      title={entryId ? `Load or separate ${stemCount} stems for Deck ${deck}` : 'Load a track first'}
+      ariaLabel={face.ariaLabel}
+      title={face.title}
     >
-      {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
-      <span className="truncate">{busy ? (msg ?? 'Run') : 'Stems'}</span>
+      {split.busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
+      <span className="truncate">{face.label}</span>
     </SlidePad>
   );
 };
@@ -2764,29 +2863,11 @@ const StemTogglePad: React.FC<{
 };
 
 const StemPadBank: React.FC<{ deck: djEngine.DeckId; entryId: string | null; color: RGB; ctl: DeckCtl; mirror?: boolean }> = ({ deck, entryId, color, ctl, mirror }) => {
-  const stemSettings = useFeatureToggleStore((s) => s.settings.stems);
-  const [busy, setBusy] = useState(false);
-  const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const stemCount = toStemCount(stemSettings.default_count);
-  const prepare = async () => {
-    if (!entryId || busy) return;
-    setBusy(true);
-    setBusyLabel('Check');
-    try {
-      const refs = await prepareStems(entryId, {
-        stems: stemCount,
-        device: stemSettings.device || 'auto',
-        quality: stemSettings.quality || 'balanced',
-      }, (pct, phase) => setBusyLabel(pct > 0 ? `${pct}%` : phase.replace(/_/g, ' ')));
-      setBusyLabel('Load');
-      await djEngine.loadDeckStems(deck, refs);
-    } finally {
-      setBusy(false);
-      setBusyLabel(null);
-    }
-  };
+  // One split for the whole bank: an empty stem pad starts it, the load pad
+  // shows it and aborts it.
+  const split = useDeckStemSplit(deck, entryId);
   const cells: React.ReactNode[] = [
-    <StemLoadPad key="load" deck={deck} entryId={entryId} color={color} />,
+    <StemLoadPad key="load" deck={deck} entryId={entryId} color={color} split={split} />,
     ...Array.from({ length: STEM_PAD_SLOTS }, (_, i) => {
       const name = ctl.stemNames[i] ?? null;
       const label = stemLabel(name ?? STEM_PAD_FALLBACKS[i] ?? `Stem ${i + 1}`);
@@ -2799,9 +2880,9 @@ const StemPadBank: React.FC<{ deck: djEngine.DeckId; entryId: string | null; col
           label={label}
           level={level}
           color={STEM_PAD_COLORS[i] ?? color}
-          preparing={busy}
-          prepareLabel={busyLabel}
-          onPrepare={entryId ? () => void prepare() : undefined}
+          preparing={split.busy}
+          prepareLabel={split.busy ? split.msg : null}
+          onPrepare={entryId ? () => void split.start() : undefined}
         />
       );
     }),

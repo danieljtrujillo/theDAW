@@ -82,3 +82,48 @@ def test_normalize_returns_empty_for_unexpected_shapes() -> None:
     assert _normalize_stem_filenames({"files": 42}) == []
     assert _normalize_stem_filenames({}) == []
     assert _normalize_stem_filenames({"files": None, "stems": None}) == []
+
+
+def test_a_stale_abort_request_does_not_end_the_next_run(tmp_path, monkeypatch) -> None:
+    """An abort that lands after a run's last poll tick is never consumed by
+    that run. The next run of the same entry starts with the request cleared,
+    so it is not ended at its first tick by a press meant for the last one."""
+    import asyncio
+    from pathlib import Path
+
+    import pytest
+
+    from backend.modules.stems import engine
+
+    entry_id = "stale-abort-entry"
+    seen: list[bool] = []
+
+    class FakeSidecar:
+        async def submit_separation(self, audio_path, *, stems, device, quality):
+            seen.append(engine._should_abort(entry_id))
+            raise RuntimeError("stop here: the submit is as far as this run goes")
+
+    class FakeDb:
+        pass
+
+    monkeypatch.setattr(engine, "_effective_device_label", lambda requested: "cpu")
+    # The previous run finished; its late abort request is still on file.
+    engine._set_progress(entry_id, phase="completed", progress=100)
+    assert engine.request_abort(entry_id) is True
+    assert engine._should_abort(entry_id) is True
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            asyncio.run(
+                engine.separate_entry(
+                    FakeDb(),
+                    entry_id,
+                    Path(tmp_path) / "audio.wav",
+                    Path(tmp_path),
+                    sidecar=FakeSidecar(),
+                )
+            )
+        assert seen == [False], "the run started with the stale request cleared"
+        assert engine._should_abort(entry_id) is False
+    finally:
+        engine.clear_progress(entry_id)
+        engine._clear_abort(entry_id)
