@@ -1,366 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
-import { applyCanvasBox, measureCanvasBox, scaleContextToBox, type CanvasBox } from '../../lib/canvasScale';
+import { computeCanvasBox, measureCanvasBox } from '../../lib/canvasScale';
+import { retainDecodedAudio } from '../../lib/djAudioCache';
+import {
+  EMPTY_BINS,
+  MAX_CANVAS_DEVICE_WIDTH,
+  analyzeBufferAsync,
+  binCountFor,
+  canvasWindowFor,
+  decodeAudio,
+  drawWaveformCached,
+  type WaveBin,
+  type WaveformDrawMode,
+} from './djSemanticWaveformAnalysis';
 
-type WaveBin = {
-  peak: number;
-  rms: number;
-  min: number;
-  max: number;
-  low: number;
-  mid: number;
-  bright: number;
-  transient: number;
-  color: string;
-};
-
-const EMPTY_BINS: WaveBin[] = [];
-const SILENCE = 'rgba(72, 83, 100, 0.45)';
-const BEAT = '#ff3f4f';
-const VOCAL = '#72ee78';
-const BASS = '#2ea9ff';
-const BRIGHT = '#f5b84b';
-const BODY = '#bca8ff';
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function getMonoSample(buffer: AudioBuffer, index: number): number {
-  let total = 0;
-  for (let ch = 0; ch < buffer.numberOfChannels; ch += 1) {
-    total += buffer.getChannelData(ch)[index] ?? 0;
+/** The on-screen part of `el`, in viewport px, after the window and every
+ *  ancestor that clips horizontally. */
+function visibleRangeOf(el: Element): { left: number; right: number } {
+  const rect = el.getBoundingClientRect();
+  let left = Math.max(rect.left, 0);
+  let right = Math.min(rect.right, typeof window === 'undefined' ? rect.right : window.innerWidth);
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (window.getComputedStyle(node).overflowX === 'visible') continue;
+    const clip = node.getBoundingClientRect();
+    left = Math.max(left, clip.left);
+    right = Math.min(right, clip.right);
   }
-  return total / Math.max(1, buffer.numberOfChannels);
-}
-
-function bandPower(samples: Float32Array, sampleRate: number, freqs: number[]): number {
-  let power = 0;
-  for (const freq of freqs) {
-    if (freq >= sampleRate * 0.45) continue;
-    const coeff = 2 * Math.cos((2 * Math.PI * freq) / sampleRate);
-    let q1 = 0;
-    let q2 = 0;
-    for (let i = 0; i < samples.length; i += 1) {
-      const q0 = coeff * q1 - q2 + samples[i];
-      q2 = q1;
-      q1 = q0;
-    }
-    power += Math.max(0, q1 * q1 + q2 * q2 - coeff * q1 * q2);
-  }
-  return power / Math.max(1, samples.length * samples.length * freqs.length);
-}
-
-function pickColor(peak: number, rms: number, low: number, mid: number, bright: number, zcr: number, transient: number): string {
-  if (peak < 0.012 || rms < 0.004) return SILENCE;
-
-  const total = low + mid + bright + 1e-9;
-  const lowShare = low / total;
-  const midShare = mid / total;
-  const brightShare = bright / total;
-  const noisyTop = clamp(zcr / 0.28, 0, 1);
-
-  if (transient > 0.48 && (lowShare > 0.22 || peak > 0.72)) return BEAT;
-  if (midShare > lowShare * 1.08 && midShare > brightShare * 0.86) return VOCAL;
-  if (lowShare > 0.46) return BASS;
-  if (brightShare > 0.34 || noisyTop > 0.58) return BRIGHT;
-  return BODY;
-}
-
-function semanticRgb(color: string): [number, number, number] {
-  switch (color) {
-    case BEAT:
-      return [255, 89, 64];
-    case VOCAL:
-      return [76, 241, 112];
-    case BASS:
-      return [46, 169, 255];
-    case BRIGHT:
-      return [255, 182, 65];
-    case BODY:
-      return [188, 168, 255];
-    default:
-      return [72, 83, 100];
-  }
-}
-
-function semanticRgba(color: string, alpha: number): string {
-  const [r, g, b] = semanticRgb(color);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-async function decodeAudio(audioUrl: string, signal: AbortSignal): Promise<AudioBuffer> {
-  const res = await fetch(audioUrl, { signal });
-  if (!res.ok) throw new Error(`Unable to load audio waveform: ${res.status}`);
-  const arrayBuffer = await res.arrayBuffer();
-  const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-  const ctx = new Ctor();
-  try {
-    return await ctx.decodeAudioData(arrayBuffer.slice(0));
-  } finally {
-    try { await ctx.close(); } catch { /* ignore */ }
-  }
-}
-
-function analyzeBuffer(buffer: AudioBuffer): WaveBin[] {
-  const bins = clamp(Math.round(buffer.duration * 32), 900, 6400);
-  const samplesPerBin = Math.max(1, Math.floor(buffer.length / bins));
-  const maxAnalysisSamples = 512;
-  const out: WaveBin[] = [];
-  let globalPeak = 0;
-  let globalLow = 0;
-  let globalMid = 0;
-  let globalBright = 0;
-
-  for (let i = 0; i < bins; i += 1) {
-    const start = i * samplesPerBin;
-    const end = i === bins - 1 ? buffer.length : Math.min(buffer.length, start + samplesPerBin);
-    const stride = Math.max(1, Math.floor((end - start) / maxAnalysisSamples));
-    const analysisCount = Math.max(1, Math.floor((end - start) / stride));
-    const samples = new Float32Array(analysisCount);
-
-    let peak = 0;
-    let min = 0;
-    let max = 0;
-    let sumSq = 0;
-    let crossings = 0;
-    let prev = 0;
-
-    for (let n = 0; n < analysisCount; n += 1) {
-      const sample = getMonoSample(buffer, Math.min(buffer.length - 1, start + n * stride));
-      samples[n] = sample;
-      const abs = Math.abs(sample);
-      if (abs > peak) peak = abs;
-      if (sample < min) min = sample;
-      if (sample > max) max = sample;
-      sumSq += sample * sample;
-      if (n > 0 && ((sample >= 0 && prev < 0) || (sample < 0 && prev >= 0))) crossings += 1;
-      prev = sample;
-    }
-
-    const rms = Math.sqrt(sumSq / analysisCount);
-    const zcr = crossings / Math.max(1, analysisCount - 1);
-    const analysisRate = buffer.sampleRate / stride;
-    const low = bandPower(samples, analysisRate, [58, 88, 128, 180]);
-    const mid = bandPower(samples, analysisRate, [420, 760, 1180, 1700]);
-    const bright = bandPower(samples, analysisRate, [2600, 3600, 5200]);
-    const crest = peak / Math.max(0.0001, rms);
-    const transient = clamp((crest - 1.45) / 3.2, 0, 1);
-
-    out.push({
-      peak,
-      rms,
-      min,
-      max,
-      low,
-      mid,
-      bright,
-      transient,
-      color: pickColor(peak, rms, low, mid, bright, zcr, transient),
-    });
-    if (peak > globalPeak) globalPeak = peak;
-    if (low > globalLow) globalLow = low;
-    if (mid > globalMid) globalMid = mid;
-    if (bright > globalBright) globalBright = bright;
-  }
-
-  if (globalPeak > 0) {
-    for (const bin of out) {
-      bin.peak = clamp(bin.peak / globalPeak, 0, 1);
-      bin.min = clamp(bin.min / globalPeak, -1, 1);
-      bin.max = clamp(bin.max / globalPeak, -1, 1);
-      bin.rms = clamp(bin.rms / globalPeak, 0, 1);
-    }
-  }
-  for (const bin of out) {
-    bin.low = clamp(Math.sqrt(bin.low / Math.max(globalLow, 1e-9)), 0, 1);
-    bin.mid = clamp(Math.sqrt(bin.mid / Math.max(globalMid, 1e-9)), 0, 1);
-    bin.bright = clamp(Math.sqrt(bin.bright / Math.max(globalBright, 1e-9)), 0, 1);
-  }
-
-  return out;
-}
-
-type SliceStats = {
-  peak: number;
-  rms: number;
-  min: number;
-  max: number;
-  low: number;
-  mid: number;
-  bright: number;
-  transient: number;
-  color: string;
-};
-
-function sliceStats(bins: WaveBin[], start: number, end: number): SliceStats {
-  const first = bins[start] ?? bins[0];
-  let strongest = first;
-  let peak = 0;
-  let rms = 0;
-  let min = 0;
-  let max = 0;
-  let low = 0;
-  let mid = 0;
-  let bright = 0;
-  let transient = 0;
-  let count = 0;
-
-  for (let i = start; i < end; i += 1) {
-    const bin = bins[i] ?? first;
-    count += 1;
-    if (bin.peak > peak) {
-      peak = bin.peak;
-      strongest = bin;
-    }
-    rms += bin.rms;
-    if (bin.min < min) min = bin.min;
-    if (bin.max > max) max = bin.max;
-    if (bin.low > low) low = bin.low;
-    mid += bin.mid;
-    bright += bin.bright;
-    if (bin.transient > transient) transient = bin.transient;
-  }
-
-  return {
-    peak,
-    rms: rms / Math.max(1, count),
-    min,
-    max,
-    low,
-    mid: mid / Math.max(1, count),
-    bright: bright / Math.max(1, count),
-    transient,
-    color: strongest.color,
-  };
-}
-
-function fillSymmetricBar(ctx: CanvasRenderingContext2D, x: number, center: number, topHalf: number, bottomHalf: number, width: number): void {
-  ctx.fillRect(x, center - topHalf, width, Math.max(1, topHalf + bottomHalf));
-}
-
-function drawWaveform(
-  canvas: HTMLCanvasElement,
-  box: CanvasBox,
-  bins: WaveBin[],
-  viewportStart: number,
-  viewportEnd: number,
-): void {
-  // The canvas stretches with `absolute inset-0 h-full w-full`, so only the
-  // backing store is set here; an inline width in viewport px would apply the
-  // shell zoom a second time and shrink the wave away from the playhead.
-  applyCanvasBox(canvas, box);
-  // Kept unrounded so the painted extent matches the backing store exactly; the
-  // per-column loop below still steps in whole units.
-  const width = box.cssWidth;
-  const pixelHeight = box.cssHeight;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  scaleContextToBox(ctx, box);
-  ctx.clearRect(0, 0, width, pixelHeight);
-
-  const bg = ctx.createLinearGradient(0, 0, 0, pixelHeight);
-  bg.addColorStop(0, '#06070d');
-  bg.addColorStop(0.5, '#0e1018');
-  bg.addColorStop(1, '#05060a');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, width, pixelHeight);
-
-  if (bins.length === 0) {
-    ctx.fillStyle = 'rgba(255,255,255,0.1)';
-    ctx.fillRect(0, pixelHeight / 2 - 0.5, width, 1);
-    return;
-  }
-
-  const center = pixelHeight / 2;
-  const maxBar = Math.max(3, pixelHeight * 0.47);
-
-  const spanNorm = Math.max(0.001, viewportEnd - viewportStart);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.035)';
-  ctx.fillRect(0, Math.floor(center * 0.5), width, 1);
-  ctx.fillRect(0, Math.floor(center * 1.5), width, 1);
-  ctx.fillStyle = 'rgba(255,255,255,0.055)';
-  ctx.fillRect(0, center - 0.5, width, 1);
-
-  ctx.globalCompositeOperation = 'lighter';
-  for (let x = 0; x < width; x += 1) {
-    const startNorm = viewportStart + (x / width) * spanNorm;
-    const endNorm = viewportStart + ((x + 1) / width) * spanNorm;
-    if (endNorm <= 0 || startNorm >= 1) {
-      ctx.fillStyle = 'rgba(72, 83, 100, 0.13)';
-      fillSymmetricBar(ctx, x, center, 1, 1, 1);
-      continue;
-    }
-    const start = Math.floor(clamp(startNorm, 0, 0.999) * bins.length);
-    const end = Math.max(start + 1, Math.ceil(clamp(endNorm, 0.001, 1) * bins.length));
-    const bin = sliceStats(bins, start, end);
-    const amp = Math.pow(clamp(bin.peak, 0, 1), 0.58);
-    const minHalf = Math.max(1, Math.abs(bin.min) * maxBar);
-    const maxHalf = Math.max(1, Math.abs(bin.max) * maxBar);
-    const fallbackHalf = Math.max(1.25, amp * maxBar);
-    const upper = Math.max(maxHalf, fallbackHalf * 0.72);
-    const lower = Math.max(minHalf, fallbackHalf * 0.72);
-
-    if (amp < 0.012) {
-      ctx.fillStyle = 'rgba(72, 83, 100, 0.24)';
-      fillSymmetricBar(ctx, x, center, 1, 1, 1);
-      continue;
-    }
-
-    const semanticAlpha = clamp(0.26 + amp * 0.34 + bin.rms * 0.22, 0.28, 0.86);
-    const lowAlpha = clamp(0.04 + bin.low * 0.34 + amp * 0.08, 0.05, 0.48);
-    const midAlpha = clamp(0.04 + bin.mid * 0.44 + bin.rms * 0.28, 0.06, 0.6);
-    const brightAlpha = clamp(0.03 + bin.bright * 0.5 + bin.transient * 0.16, 0.04, 0.62);
-    const transientAlpha = clamp((bin.transient - 0.24) * 0.82 + amp * 0.08, 0, 0.66);
-
-    ctx.fillStyle = semanticRgba(bin.color, semanticAlpha);
-    fillSymmetricBar(ctx, x, center, upper, lower, 1);
-
-    const lowHalf = Math.max(1, fallbackHalf * clamp(0.52 + bin.low * 0.34, 0.42, 0.86));
-    ctx.fillStyle = `rgba(30, 144, 255, ${lowAlpha})`;
-    fillSymmetricBar(ctx, x, center, lowHalf, lowHalf, 1);
-
-    const midHalf = Math.max(1, fallbackHalf * clamp(0.34 + bin.mid * 0.42, 0.28, 0.72));
-    ctx.fillStyle = `rgba(76, 241, 112, ${midAlpha})`;
-    fillSymmetricBar(ctx, x, center, midHalf, midHalf, 1);
-
-    const brightHalf = Math.max(1, fallbackHalf * clamp(0.16 + bin.bright * 0.36, 0.14, 0.5));
-    ctx.fillStyle = `rgba(255, 182, 65, ${brightAlpha})`;
-    fillSymmetricBar(ctx, x, center, brightHalf, brightHalf, 1);
-
-    if (transientAlpha > 0.03) {
-      ctx.fillStyle = `rgba(255, 246, 210, ${transientAlpha})`;
-      fillSymmetricBar(ctx, x, center, Math.max(1, upper * 0.96), Math.max(1, lower * 0.96), 1);
-    }
-
-    if (bin.color === BEAT) {
-      const rail = Math.max(1, Math.round(1 + bin.low * 3 + bin.transient * 2));
-      ctx.fillStyle = `rgba(255, 89, 64, ${clamp(0.18 + bin.low * 0.4 + bin.transient * 0.34, 0.2, 0.86)})`;
-      ctx.fillRect(x, pixelHeight - rail - 1, 1, rail);
-    } else if (bin.low > 0.56) {
-      const rail = Math.max(1, Math.round(1 + bin.low * 2));
-      ctx.fillStyle = `rgba(46, 169, 255, ${clamp(0.12 + bin.low * 0.35, 0.18, 0.58)})`;
-      ctx.fillRect(x, pixelHeight - rail - 1, 1, rail);
-    }
-  }
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
-
-  const spine = ctx.createLinearGradient(0, 0, width, 0);
-  spine.addColorStop(0, 'rgba(255,255,255,0.04)');
-  spine.addColorStop(0.5, 'rgba(255,255,255,0.32)');
-  spine.addColorStop(1, 'rgba(255,255,255,0.04)');
-  ctx.fillStyle = spine;
-  ctx.fillRect(0, center - 0.5, width, 1);
-
-  const vignette = ctx.createLinearGradient(0, 0, 0, pixelHeight);
-  vignette.addColorStop(0, 'rgba(0,0,0,0.34)');
-  vignette.addColorStop(0.12, 'rgba(0,0,0,0)');
-  vignette.addColorStop(0.88, 'rgba(0,0,0,0)');
-  vignette.addColorStop(1, 'rgba(0,0,0,0.36)');
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, width, pixelHeight);
+  return { left, right: Math.max(left, right) };
 }
 
 export function DJSemanticWaveform({
@@ -369,6 +34,10 @@ export function DJSemanticWaveform({
   viewportStart = 0,
   viewportEnd = 1,
   onDuration,
+  transparentBg = false,
+  normalize = true,
+  mode = 'semantic',
+  width,
 }: {
   audioUrl: string;
   height?: number;
@@ -376,47 +45,222 @@ export function DJSemanticWaveform({
   viewportEnd?: number;
   /** Fires once the audio decodes, reporting its length in seconds. */
   onDuration?: (seconds: number) => void;
+  /** Skip the opaque canvas background so a caller's own background shows through. */
+  transparentBg?: boolean;
+  /** `true` (default, unchanged): rescale peaks to this track's own loudest
+   *  sample — the DJ decks' behaviour, so two tracks of different mastering
+   *  loudness still fill the same visual height. `false`: absolute amplitude,
+   *  clamped but never rescaled — REAPER's default, and what the EDIT
+   *  timeline wants (see `analyzeBuffer`'s `AnalyzeOptions`). */
+  normalize?: boolean;
+  /** How the body is coloured; see `WaveformDrawMode`. This component stays
+   *  a plain-props leaf (no store read) — `SemanticWave` owns picking it
+   *  from the global preference. */
+  mode?: WaveformDrawMode;
+  /** Lane width in CSS px, if the caller already knows it. With the viewport
+   *  span it decides how many analysis bins this instance asks for (see
+   *  `binCountFor`). Omitted, the wrapper is measured instead, so no call
+   *  site has to change. */
+  width?: number;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [bins, setBins] = useState<WaveBin[]>(EMPTY_BINS);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
+  // What the decode learned: which URL, and how long it is. The AudioBuffer
+  // itself is NOT kept here. Holding it in state kept a full decoded copy of
+  // every mounted waveform's audio alive for as long as it was mounted (an
+  // EDIT arrangement of twenty clips is twenty buffers of ~74 MB), and made
+  // the decode cache's eviction free nothing. A re-analysis asks the cache
+  // again; while this lane holds the URL (`retainDecodedAudio`) that is a hit.
+  const [decoded, setDecoded] = useState<{ url: string; duration: number } | null>(null);
 
+  // The latest `onDuration`, read when a decode lands: a fresh closure each
+  // render must not re-run the decode.
+  const onDurationRef = useRef(onDuration);
   useEffect(() => {
-    const ctrl = new AbortController();
-    setBins(EMPTY_BINS);
-    decodeAudio(audioUrl, ctrl.signal)
+    onDurationRef.current = onDuration;
+  }, [onDuration]);
+
+  // The measured lane width in CSS px, as STATE — refreshed by the draw
+  // effect's ResizeObserver below. A lane that is hidden, or not laid out yet
+  // when the audio finishes decoding, measures 0 (the historical bin count)
+  // and must re-analyse once it is shown or resized. 0 means "not measured".
+  const [laneWidth, setLaneWidth] = useState(0);
+
+  // Fetch + decode — keyed ONLY on `audioUrl`. Through the page-wide decode
+  // cache (`lib/djAudioCache`): the deck's two lanes and the engine share one
+  // fetch and one decode per URL. The lane holds the URL while mounted, and
+  // its signal withdraws it from a download still in flight when it unmounts
+  // or changes track, so an unmounted lane no longer fills the cache with
+  // audio nobody shows.
+  useEffect(() => {
+    const release = retainDecodedAudio(audioUrl);
+    const controller = new AbortController();
+    setDecoded(null);
+    setDecodeError(null);
+    decodeAudio(audioUrl, null, controller.signal)
       .then((buffer) => {
-        if (ctrl.signal.aborted) return;
-        setBins(analyzeBuffer(buffer));
-        onDuration?.(buffer.duration);
+        if (controller.signal.aborted) return;
+        setDecoded({ url: audioUrl, duration: buffer.duration });
+        onDurationRef.current?.(buffer.duration);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setDecodeError(err instanceof Error ? err.message : 'Unable to decode audio waveform');
+      });
+    return () => {
+      controller.abort();
+      release();
+    };
+  }, [audioUrl]);
+
+  // The bin count follows ZOOM: the whole track spans lane width / viewport
+  // span CSS px, and `binCountFor` quantises that, so most resizes and zooms
+  // leave the count — and therefore the analysis below — untouched.
+  const span = viewportEnd - viewportStart;
+  const lane = width ?? laneWidth;
+  const binCount =
+    decoded && decoded.url === audioUrl
+      ? binCountFor(decoded.duration, lane > 0 && span > 0 ? lane / span : undefined)
+      : 0;
+
+  // Analyze — keyed on the decode, `normalize` and the bin count, the inputs
+  // that decide the result. Runs again only when one of them changes; a
+  // `normalize` flip alone never touches the effect above. `analyzeBufferAsync`
+  // memoises per (url, normalize, binCount, rate) and runs the loop in a
+  // Worker where one exists, so the deck's SECOND lane costs nothing.
+  useEffect(() => {
+    if (!decoded || decoded.url !== audioUrl || binCount <= 0) {
+      setBins(EMPTY_BINS);
+      return;
+    }
+    const controller = new AbortController();
+    decodeAudio(audioUrl, null, controller.signal)
+      .then((buffer) => analyzeBufferAsync(audioUrl, buffer, { normalize, bins: binCount, signal: controller.signal }))
+      .then((result) => {
+        if (!controller.signal.aborted) setBins(result);
       })
       .catch(() => {
-        if (!ctrl.signal.aborted) setBins(EMPTY_BINS);
+        if (!controller.signal.aborted) setBins(EMPTY_BINS);
       });
-    return () => ctrl.abort();
-    // onDuration intentionally omitted — a fresh closure each render must not re-decode.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioUrl]);
+    return () => controller.abort();
+  }, [decoded, audioUrl, normalize, binCount]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
+    const cacheKey = `${audioUrl}|${normalize ? 'n' : 'a'}`;
+    /** The part of the wrapper the canvas covers while windowed (CSS px), so
+     *  a scroll that stays inside it needs no redraw. */
+    let drawn: { left: number; width: number } | null = null;
+    let frame = 0;
+
     const render = () => {
-      // `height` is the wrapper's inline height, already in local css px, so it
-      // is passed straight through; only the width needs the zoom correction.
-      const box = measureCanvasBox(wrap, { cssHeight: height });
-      drawWaveform(canvas, box, bins, viewportStart, viewportEnd);
+      frame = 0;
+      // Publish the measured lane width for the bin count. Compared before
+      // setting, so this never loops.
+      const measured = Math.round(wrap.clientWidth);
+      setLaneWidth((prev) => (prev === measured ? prev : measured));
+      // `height` is the wrapper's inline height, already in local css px, so
+      // it is passed straight through; only the width needs the zoom correction.
+      const full = measureCanvasBox(wrap, { cssHeight: height });
+      // Only a wrapper too wide for one canvas pays for finding what is on
+      // screen; this runs on every viewport move of a playing deck.
+      let win: { left: number; width: number } | null = null;
+      if (full.deviceWidth > MAX_CANVAS_DEVICE_WIDTH) {
+        const rect = wrap.getBoundingClientRect();
+        const visible = visibleRangeOf(wrap);
+        win = canvasWindowFor({
+          wrapLeft: rect.left,
+          wrapWidth: rect.width,
+          visibleLeft: visible.left,
+          visibleRight: visible.right,
+          zoom: full.zoom,
+          dpr: full.dpr,
+        });
+      }
+      if (!win) {
+        // Back to filling the wrapper (the window may be left over from an
+        // earlier run of this effect, so the canvas itself is what says so).
+        if (canvas.style.width) {
+          canvas.style.left = '';
+          canvas.style.right = '';
+          canvas.style.width = '';
+        }
+        drawn = null;
+        drawWaveformCached(canvas, full, bins, viewportStart, viewportEnd, transparentBg, decodeError, cacheKey, mode);
+        return;
+      }
+      // Too wide for one canvas: cover the on-screen part (plus margin) and
+      // draw exactly that part of the viewport, at full resolution.
+      drawn = win;
+      canvas.style.left = `${win.left}px`;
+      canvas.style.right = 'auto';
+      canvas.style.width = `${win.width}px`;
+      const box = computeCanvasBox(win.width * full.zoom, full.cssHeight * full.zoom, full.zoom, full.dpr, {
+        cssWidth: win.width,
+        cssHeight: height,
+      });
+      const perPx = span / full.cssWidth;
+      drawWaveformCached(
+        canvas,
+        box,
+        bins,
+        viewportStart + win.left * perPx,
+        viewportStart + (win.left + win.width) * perPx,
+        transparentBg,
+        decodeError,
+        cacheKey,
+        mode,
+      );
     };
+
+    // A windowed canvas follows the wrapper as the page scrolls; it redraws
+    // only when the on-screen part leaves what it drew.
+    const onScroll = () => {
+      if (!drawn || frame) return;
+      const rect = wrap.getBoundingClientRect();
+      const zoom = rect.width > 0 && wrap.clientWidth > 0 ? rect.width / wrap.clientWidth : 1;
+      const visible = visibleRangeOf(wrap);
+      const left = (visible.left - rect.left) / zoom;
+      const right = (visible.right - rect.left) / zoom;
+      if (left >= drawn.left && right <= drawn.left + drawn.width) return;
+      frame = requestAnimationFrame(render);
+    };
+
     render();
     const ro = new ResizeObserver(render);
     ro.observe(wrap);
-    return () => ro.disconnect();
-  }, [bins, height, viewportEnd, viewportStart]);
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('scroll', onScroll, { capture: true });
+      window.removeEventListener('resize', onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [bins, height, viewportEnd, viewportStart, span, transparentBg, decodeError, audioUrl, normalize, mode]);
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full min-w-0 overflow-hidden rounded" style={{ height, background: '#06070d' }}>
+    <div
+      ref={wrapRef}
+      className="relative h-full w-full min-w-0 overflow-hidden rounded"
+      style={{ height, background: transparentBg ? 'transparent' : '#06070d' }}
+      role={decodeError ? 'img' : undefined}
+      aria-label={decodeError ? `Waveform unavailable: ${decodeError}` : undefined}
+    >
       <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
+      {decodeError && (
+        // A decode failure that happens after mount (the canvas was already
+        // painted, or the wrapper is off-screen) must still be announced to
+        // screen readers, not just exposed via the static aria-label above —
+        // a visually-hidden live region fires even without focus moving.
+        <span role="status" className="sr-only">
+          Waveform unavailable: {decodeError}
+        </span>
+      )}
     </div>
   );
 }

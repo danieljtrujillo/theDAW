@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* DJ MIDI-learn (D6) — an ACTION-based control map (distinct from the SLIDE
  * surface's position-based controllerMapStore). Each DJ action (crossfader,
@@ -48,6 +49,6 @@ export const useDjControlMap = create<DjControlMapState>()(
       }),
       clearAll: () => set({ bindings: {}, learnAction: null }),
     }),
-    { name: 'thedaw.dj.midimap.v1', partialize: (s) => ({ bindings: s.bindings }) },
+    { name: 'thedaw.dj.midimap.v1', storage: persistStorage(), partialize: (s) => ({ bindings: s.bindings }) },
   ),
 );

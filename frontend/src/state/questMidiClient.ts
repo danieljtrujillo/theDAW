@@ -9,12 +9,18 @@
  * (e.g. an audio-reactive feed for the headset MIDI Reactor) goes back via
  * `sendQuestMidi`.
  *
- * Same-origin URL so it rides the Vite dev proxy (ws:true) in development and is
- * direct in production. Auto-reconnects while running.
+ * The socket opens with one status frame, which goes to questMidiStatus.ts:
+ * when another program serves the headset's port, the LOG and the orb say
+ * which one, and Settings → Inputs & outputs offers Take over.
+ *
+ * Same-origin URL on an http(s) page, so it rides the Vite dev proxy (ws:true) in
+ * development; the desktop app:// renderer dials the local backend directly
+ * (see wsUrl). Auto-reconnects while running.
  */
 
 import { publishMidi } from './midiBus';
 import { logInfo, logWarn } from './logStore';
+import { useQuestMidiStatusStore } from './questMidiStatus';
 
 let ws: WebSocket | null = null;
 let reconnectTimer = 0;
@@ -24,13 +30,23 @@ let everConnected = false;
 function wsUrl(): string {
   const { protocol, host } = window.location;
   if (protocol === 'https:') {
+    // Hosted over TLS: same-origin so the deployment's proxy carries it.
     return `wss://${host}/api/questmidi/ws`;
   }
-  // Desktop (app://) and local dev: connect straight to the backend — the
-  // app:// handler can't upgrade WebSockets and dev proxies may lack ws:true.
+  if (protocol === 'http:' && host) {
+    // Served over http from the LAN origin (desktop web dev on
+    // localhost:5173, or a phone/companion on <lan-ip>:5173 in dev /
+    // <lan-ip>:8600 packaged). Derive from the origin so a device connects to
+    // its own host, not to whichever machine happens to run the browser; the
+    // Vite proxy carries the upgrade in dev (server.proxy['/api'].ws = true)
+    // and it is direct in packaged/Docker. Same fix as xrControlClient.ts.
+    return `ws://${host}/api/questmidi/ws`;
+  }
+  // Desktop app:// renderer — its protocol handler proxies HTTP /api/* but
+  // cannot upgrade WebSockets, and the backend is always local on :8600.
   // 127.0.0.1, never 'localhost': the backend binds 0.0.0.0 (IPv4 only) and
   // Chromium resolves 'localhost' to ::1 on Windows, so the socket never
-  // connects (issue #144).
+  // connects (issue #144). The LAN case is handled above, by origin.
   return 'ws://127.0.0.1:8600/api/questmidi/ws';
 }
 
@@ -54,12 +70,13 @@ function connect(): void {
   ws = sock;
   sock.onopen = () => {
     everConnected = true;
-    logInfo('questmidi', 'Bridge connected — Quest MIDI flowing into theDAW (no loopMIDI).');
+    logInfo('questmidi', 'Bridge connected (no loopMIDI).');
   };
   sock.onmessage = (e) => {
     try {
       const m = JSON.parse(typeof e.data === 'string' ? e.data : '');
       if (m && m.type === 'midi' && Array.isArray(m.data)) publishMidi(m.data);
+      else if (m && m.type === 'status') useQuestMidiStatusStore.getState().apply(m);
     } catch {
       /* ignore malformed frame */
     }

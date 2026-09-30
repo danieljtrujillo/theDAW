@@ -13,28 +13,81 @@ byte-for-byte as-is: no CORS, no base URL, no client rewrite.
 Setup lives here too, so Settings can fix a missing Lyria without naming a
 git command:
 
-    POST /install          clone StarskreamEXE/lyria-3-pro into the expected
-                           folder (needs git) and run its npm install, in the
-                           background; output goes to the sidecar log
+    POST /install          clone the latest StarskreamEXE/lyria-3-pro into
+                           the expected folder (needs git) and run its npm
+                           install, in the background; output goes to the
+                           sidecar log
     GET  /install/status   poll the install
+    POST /update           fast-forward a clean checkout to the latest commit
+                           of the repo's default branch, in the background,
+                           stopping Lyria for the move and starting it again
+    GET  /update           poll the update; ``?check=true`` also asks GitHub
+                           for the latest commit (at most once per ten
+                           minutes) so the panel can say one is waiting
     GET  /key              is a GEMINI_API_KEY known, and from where
-    POST /key {key}        store the key theDAW hands the sidecar
-    DELETE /key            forget the stored key
+    POST /key {key}        append a Gemini key theDAW hands the sidecar
+    DELETE /key            forget the stored Gemini keys
+    GET  /keys             per-provider COUNTS and sources (never values)
+    POST /keys {provider,key}     append a key for that provider
+    DELETE /keys {provider,index} forget the stored key at that position
+    POST /keys/provider {provider}  gemini | openrouter | "" for auto
+    POST /keys/pool {share}       hand the assistant's pooled keys to Lyria too
+    POST /restart          end the Lyria on the port (ours, or one adopted
+                           from the configured checkout) and start a fresh
+                           child with the current keys
+
+The /key trio is the original single-Gemini surface, kept working: POST now
+appends rather than replaces, because a checkout with server/keys.ts tries the
+keys in order and skips a rejected one, so a second key is a fallback and not
+a correction.
+
+Every route that changes keys stops a running sidecar, so the next open hands
+the child the new environment -- the child reads its keys from the environment
+at spawn, not per request. A Lyria this process did not spawn (``external``)
+keeps its old keys; those routes say so, and POST /restart replaces it.
+
+Every route that changes state -- keys, the provider, the pool switch,
+install, start, stop, restart, import -- is gated by ``refuse_cross_site``
+(no foreign page) AND ``require_loopback_launch_or_pairing_token`` (this
+machine, the desktop shell or a paired phone): the server binds 0.0.0.0, so
+without the second gate any device on the LAN could delete the user's keys,
+stop the sidecar, or run the install. The GET routes only report.
+
+No response body here ever carries key material.
+
+INT-002 adds two routes at the bottom of this file that DO reach into the
+sidecar -- over its loopback origin only, and for its own generation listing:
+
+    POST /import-new       register new sidecar generations as library entries
+    GET  /imports          seen-map counts (which generations are already in)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
-from . import sidecar
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+)
+from backend.modules.genaiproxy.access import caller_is_loopback
+
+from . import importer, sidecar
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["lyria"])
+
+#: The gate on every route that changes something. See the module docstring.
+_CHANGES = [
+    Depends(refuse_cross_site),
+    Depends(require_loopback_launch_or_pairing_token),
+]
 
 _auto_spawn_lock = threading.Lock()
 _auto_spawn_started = False
@@ -62,7 +115,7 @@ def _maybe_auto_spawn() -> None:
     def _warm() -> None:
         try:
             sidecar.ensure_running()
-        except Exception as e:  # noqa: BLE001 - warm-up is best-effort
+        except Exception as e:  # warm-up is best-effort
             log.warning("lyria.router: warm-up failed: %s", e)
 
     threading.Thread(target=_warm, daemon=True, name="lyria-warm").start()
@@ -78,18 +131,33 @@ async def url() -> dict:
     """
     _maybe_auto_spawn()
     try:
-        live = sidecar.ensure_running()
+        # ensure_running() can block for up to the sidecar's readiness
+        # deadline (installs included) -- run it off the event loop so it
+        # doesn't stall every other request this worker is handling.
+        live = await asyncio.to_thread(sidecar.ensure_running)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     cfg = sidecar.resolve_config()
     lan_ip = sidecar.detect_lan_ip()
+    # Only claim a cost mode (mock/live) for a process WE spawned -- theDAW
+    # controls that process's environment (LYRIA_MOCK). An adopted listener
+    # someone launched manually may be running with a different, unknown
+    # cost mode, so claiming "mock" for it would be a straight-up lie (item 5).
+    # owns_process() takes _state_lock, which can be held by a concurrent
+    # ensure_running()/stop() for a while -- off the loop like the rest.
+    owns = await asyncio.to_thread(sidecar.owns_process)
+    mode = ("mock" if cfg.mock else "live") if owns else "external"
     return {
         "url": live,
-        "mode": "mock" if cfg.mock else "live",
-        "mock": cfg.mock,
+        "mode": mode,
+        "mock": cfg.mock if owns else None,
+        "external": not owns,
         "port": cfg.port,
         "mobile_url": f"http://{lan_ip}:{cfg.port}" if lan_ip else None,
         "lan_ip": lan_ip,
+        # What the last Update or latest-commit check found; ``reason`` says
+        # why a checkout was left where it is, for the panel to show.
+        "checkout": sidecar.checkout_state(),
     }
 
 
@@ -98,30 +166,61 @@ async def status() -> dict:
     """Non-spawning diagnostics, plus a warm kick so opening Settings starts
     the child in the background."""
     _maybe_auto_spawn()
-    info = sidecar.probe()
+    # probe() now includes an HTTP identity call (_is_lyria_server) on top of
+    # the TCP check, so it can block for up to that request's timeout --
+    # keep it off the event loop like the other sidecar calls in this file.
+    info = await asyncio.to_thread(sidecar.probe)
     info["ok"] = not info["issues"] and info["listening"]
     return info
 
 
-@router.post("/start")
+@router.post("/start", dependencies=_CHANGES)
 async def start() -> dict:
     """Foreground spawn. Used by the view's Retry button."""
     try:
-        live = sidecar.ensure_running()
+        live = await asyncio.to_thread(sidecar.ensure_running)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     return {"ok": True, "url": live}
 
 
-@router.post("/stop")
+@router.post("/stop", dependencies=_CHANGES)
 async def stop() -> dict:
-    return {"ok": True, "stopped": sidecar.stop()}
+    # stop() can taskkill+wait(5)+kill+wait(5) -- up to ~10s -- off the loop.
+    stopped = await asyncio.to_thread(sidecar.stop)
+    return {"ok": True, "stopped": stopped}
+
+
+@router.post("/restart", dependencies=_CHANGES)
+async def restart() -> dict:
+    """End the Lyria on the port and start a fresh child, which reads the
+    current keys, provider and cost mode. This is how a Lyria adopted from an
+    earlier session (``external`` in /url) gets theDAW's keys: stop() holds no
+    handle to it. 409 when the port is held by something theDAW will not end
+    (not Lyria, a Lyria from another folder, a process it cannot see), 503
+    when the fresh child does not come up -- each with the reason."""
+    try:
+        live = await asyncio.to_thread(sidecar.restart)
+    except sidecar.RestartRefused as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    owns = await asyncio.to_thread(sidecar.owns_process)
+    cfg = sidecar.resolve_config()
+    return {
+        "ok": True,
+        "url": live,
+        "mode": ("mock" if cfg.mock else "live") if owns else "external",
+        "mock": cfg.mock if owns else None,
+        "external": not owns,
+        "checkout": sidecar.checkout_state(),
+    }
 
 
 # ── setup: clone + npm install, from a button ────────────────────────────────
 
 
-@router.post("/install")
+@router.post("/install", dependencies=_CHANGES)
 async def install() -> dict:
     """Clone the Lyria project into the folder the sidecar expects and run its
     npm install, in the background. Returns the install state right away;
@@ -138,6 +237,38 @@ async def install_status() -> dict:
     return sidecar.install_status()
 
 
+# ── update: fast-forward to the latest commit, from the Lyria panel ──────────
+
+
+@router.post("/update", dependencies=_CHANGES)
+async def update() -> dict:
+    """Fast-forward the checkout to the latest commit of the Lyria repo's
+    default branch, in the background. Returns the update state right away;
+    poll GET /update. A checkout with local changes, on its own branch, or
+    managed through theDAW_LYRIA_PROJECT is left alone, and the finished
+    state's ``message`` says why. 409 when there is no checkout yet or an
+    Install is running."""
+    try:
+        return await asyncio.to_thread(sidecar.start_update)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.get("/update")
+async def update_status(check: bool = False) -> dict:
+    """The update job, the checkout state, and the latest commit theDAW knows
+    of. ``check=true`` asks GitHub (``git ls-remote``, rate-limited in the
+    sidecar) before answering."""
+    latest = await asyncio.to_thread(sidecar.check_latest) if check else None
+    cfg = sidecar.resolve_config()
+    return {
+        "job": sidecar.update_status(),
+        "checkout": sidecar.checkout_state(),
+        "latest": latest,
+        "compat": await asyncio.to_thread(sidecar.checkout_compat, cfg.project_path),
+    }
+
+
 # ── GEMINI_API_KEY the sidecar is handed ─────────────────────────────────────
 
 
@@ -152,17 +283,18 @@ async def key_status() -> dict:
     }
 
 
-@router.post("/key")
+@router.post("/key", dependencies=_CHANGES)
 async def set_key(key: str = Body(..., embed=True)) -> dict:
-    """Store the key. A running sidecar is stopped so the next open hands it
-    the new key (the child reads GEMINI_API_KEY from its environment)."""
+    """Append a Gemini key. A running sidecar is stopped so the next open hands
+    it the new environment (the child reads GEMINI_API_KEY at spawn)."""
     value = (key or "").strip()
     if len(value) < 8:
         raise HTTPException(
             status_code=400, detail="That does not look like an API key."
         )
     sidecar.set_gemini_key(value)
-    restarted = sidecar.stop()
+    # stop() can taskkill+wait(5)+kill+wait(5) -- up to ~10s -- off the loop.
+    restarted = await asyncio.to_thread(sidecar.stop)
     key_value, source = sidecar.gemini_key()
     return {
         "ok": True,
@@ -173,8 +305,144 @@ async def set_key(key: str = Body(..., embed=True)) -> dict:
     }
 
 
-@router.delete("/key")
+@router.delete("/key", dependencies=_CHANGES)
 async def clear_key() -> dict:
-    removed = sidecar.clear_gemini_key()
+    """Forget the stored Gemini keys. A running sidecar is stopped, as every
+    other key change does, so it cannot keep using a key the user removed."""
+    removed = await asyncio.to_thread(sidecar.clear_gemini_key)
+    restarted = await asyncio.to_thread(sidecar.stop)
     key, source = sidecar.gemini_key()
-    return {"ok": True, "removed": removed, "configured": bool(key), "source": source}
+    return {
+        "ok": True,
+        "removed": removed,
+        "configured": bool(key),
+        "source": source,
+        "restarted": restarted,
+    }
+
+
+# ── per-provider ordered key lists ───────────────────────────────────────────
+#
+# The embedded app takes an ordered list per provider and skips a rejected key
+# (its server/keys.ts), so theDAW stores lists, not single keys. These routes
+# report COUNTS and SOURCES only: a list UI has no use for the values, and a
+# response body is the easiest place to leak one.
+
+
+def _bad_provider(e: ValueError) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(e))
+
+
+async def _stopped_summary() -> dict:
+    """Stop a running sidecar (so the next open gets the new environment) and
+    return the fresh key summary. Same contract as POST /key.
+
+    ``external_running`` is True when a Lyria this process did not spawn still
+    serves the port: stop() cannot end it, so it keeps the old keys until the
+    user presses Restart in the Lyria panel (POST /restart)."""
+    # stop() can taskkill+wait(5)+kill+wait(5) -- up to ~10s -- off the loop.
+    restarted = await asyncio.to_thread(sidecar.stop)
+    summary = await asyncio.to_thread(sidecar.key_summary)
+    external = await asyncio.to_thread(sidecar.adopted_running)
+    return {
+        "ok": True,
+        "restarted": restarted,
+        "external_running": external,
+        **summary,
+    }
+
+
+@router.get("/keys")
+async def keys_status() -> dict:
+    """Per-provider counts and sources. Never key values."""
+    return await asyncio.to_thread(sidecar.key_summary)
+
+
+@router.post("/keys", dependencies=_CHANGES)
+async def add_provider_key(
+    provider: str = Body(..., embed=True), key: str = Body(..., embed=True)
+) -> dict:
+    """Append a key to one provider's ordered list."""
+    value = (key or "").strip()
+    if len(value) < 8:
+        raise HTTPException(
+            status_code=400, detail="That does not look like an API key."
+        )
+    try:
+        await asyncio.to_thread(sidecar.add_key, provider, value)
+    except ValueError as e:
+        raise _bad_provider(e) from e
+    return await _stopped_summary()
+
+
+@router.delete("/keys", dependencies=_CHANGES)
+async def remove_provider_key(
+    provider: str = Body(..., embed=True), index: int = Body(..., embed=True)
+) -> dict:
+    """Forget the stored key at ``index``. Positions index the STORED list
+    only -- keys that come from the environment or the assistant's pool are
+    not theDAW's to remove, and are removed where they were set."""
+    try:
+        removed = await asyncio.to_thread(sidecar.remove_key, provider, index)
+    except ValueError as e:
+        raise _bad_provider(e) from e
+    if not removed:
+        raise HTTPException(
+            status_code=404, detail=f"No stored key at position {index}."
+        )
+    return await _stopped_summary()
+
+
+@router.post("/keys/provider", dependencies=_CHANGES)
+async def set_key_provider(provider: str | None = Body(None, embed=True)) -> dict:
+    """Set the provider the child should default to. An empty value clears the
+    preference, which hands the choice back to the keys (and then to the
+    child's own default when both providers are available)."""
+    try:
+        await asyncio.to_thread(sidecar.set_provider_preference, provider)
+    except ValueError as e:
+        raise _bad_provider(e) from e
+    return await _stopped_summary()
+
+
+@router.post("/keys/pool", dependencies=_CHANGES)
+async def set_key_pool(share: bool = Body(..., embed=True)) -> dict:
+    """Turn "share the assistant's key pool with Lyria" on or off. Off (the
+    default) the child gets the keys the user entered in the Lyria card, the
+    environment's, and the first pooled Gemini key only when neither of those
+    has one; on, every pooled Gemini, OpenRouter and openrouter-free key
+    follows them."""
+    await asyncio.to_thread(sidecar.set_pool_shared, share is True)
+    return await _stopped_summary()
+
+
+# ── INT-002: the sidecar's generations, as first-class library entries ───────
+#
+# The embedded app keeps its own library; these two routes are what makes a
+# track generated in the panel a theDAW entry (catalog, lineage, EDIT, stems,
+# export). The work itself lives in importer.py -- see its module docstring for
+# the loopback-only download rule and the seen map.
+
+
+@router.post("/import-new", dependencies=_CHANGES)
+async def import_new(
+    request: Request, include_mock: bool = Body(False, embed=True)
+) -> dict:
+    """Import every sidecar generation the library does not have yet.
+
+    Body is optional; ``{"include_mock": true}`` opts in to the locally
+    synthesized mock audio the sidecar produces in its default cost-safe mode,
+    and is honoured only for a caller on this machine (loopback): the panel
+    never sends it, and a paired device must not be able to fill the library
+    with sine waves. Never raises for a stopped sidecar -- that answers with a
+    ``reason``.
+    """
+    include = include_mock is True and caller_is_loopback(request)
+    return await importer.sync_generations(include_mock=include)
+
+
+@router.get("/imports")
+async def imports() -> dict:
+    """Counts and ids from the seen map. Never audio, never a prompt."""
+    # Reads a file off disk -- off the loop, consistent with the rest here.
+    return await asyncio.to_thread(importer.imports_summary)

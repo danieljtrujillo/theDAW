@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ModuleSections } from "../../features/extractor/ModuleSections";
 import { ExtractedElement, ExtractedPanel } from "../../lib/extractor/types";
 import { ElementType, ELEMENT_TYPES } from "../../types";
 import { ELEMENT_TYPE_ALIASES, normalizeElementType } from "../orb/elements";
@@ -17,15 +18,12 @@ import {
   Palette,
   SlidersHorizontal,
   RefreshCw,
-  Boxes,
-  X,
-  ChevronDown,
-  ChevronRight,
 } from "lucide-react";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
 
 interface ExtractTrayProps {
+  canProcess?: boolean;
   elements: ExtractedElement[];
   onDelete: (id: string) => void;
   onUpdate: (id: string, updates: Partial<ExtractedElement>) => void;
@@ -57,6 +55,7 @@ interface ExtractTrayProps {
 }
 
 export default function ExtractTray({
+  canProcess = true,
   elements,
   onDelete,
   onUpdate,
@@ -84,15 +83,7 @@ export default function ExtractTray({
   const reproFor = (el: ExtractedElement): number =>
     reproSens[el.id] ?? sensitivity;
 
-  // Which panel sections are expanded. A missing entry means open (panels
-  // default open); a stored `false` means the user has collapsed it.
-  const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({});
-  const isPanelOpen = (id: string): boolean => openPanels[id] !== false;
-  const togglePanel = (id: string): void =>
-    setOpenPanels((prev) => ({ ...prev, [id]: prev[id] === false }));
-
   const labeledEls = elements.filter((el) => el.status === "labeled");
-
   // Alias-normalized detected type, defaulting to "Image" — NOT "Knob" — when
   // the detector's raw type has no alias entry. normalizeElementType alone
   // falls back to "Knob", which would misfile a logo/graphic as a knob; a
@@ -368,7 +359,8 @@ export default function ExtractTray({
                 <button
                   type="button"
                   onClick={() => onReprocess(el, reproFor(el))}
-                  className="text-app-accent hover:text-app-main flex items-center gap-1 font-sans font-medium text-[11px] shrink-0"
+                  disabled={!canProcess}
+                  className="text-app-accent hover:text-app-main disabled:opacity-50 flex items-center gap-1 font-sans font-medium text-[11px] shrink-0"
                   title="Re-run detection + cutout on this element at the sensitivity above"
                 >
                   <RefreshCw className="w-3 h-3" />
@@ -428,91 +420,6 @@ export default function ExtractTray({
             </div>
           </div>
         </div>
-      </div>
-    );
-  };
-
-  // A collapsible module-panel section: header (title + child count + scanning
-  // spinner + Place Module + delete) over the panel's member cards.
-  const renderPanelSection = (panel: ExtractedPanel) => {
-    const members = elements.filter((el) => el.panelId === panel.id);
-    const open = isPanelOpen(panel.id);
-    // Placement needs every member fully processed (labeled) so each control
-    // has a cutout/face; an empty panel has nothing to place.
-    const allLabeled =
-      members.length > 0 && members.every((el) => el.status === "labeled");
-    const placeDisabled = !allLabeled;
-    const placeTitle = placeDisabled
-      ? members.length === 0
-        ? "No controls detected in this panel yet"
-        : "Every control in this panel must finish processing (labeled) before the module can be placed"
-      : "Place this whole module — backplate + its controls — onto the canvas as a Group";
-
-    return (
-      <div
-        key={panel.id}
-        className="border border-app-border rounded-lg overflow-hidden bg-app-base"
-      >
-        <div className="flex items-center gap-2 px-2 py-2 bg-app-surface border-b border-app-border">
-          <button
-            type="button"
-            onClick={() => togglePanel(panel.id)}
-            aria-expanded={open}
-            aria-label={
-              (open ? "Collapse" : "Expand") + " panel " + panel.title
-            }
-            className="text-app-muted hover:text-app-main shrink-0"
-          >
-            {open ? (
-              <ChevronDown className="w-4 h-4" />
-            ) : (
-              <ChevronRight className="w-4 h-4" />
-            )}
-          </button>
-          <div className="flex-1 min-w-0 flex items-center gap-1.5">
-            <span className="text-sm font-semibold text-app-main truncate">
-              {panel.title}
-            </span>
-            <span className="text-[11px] text-app-muted font-mono shrink-0">
-              ({members.length})
-            </span>
-            {panel.status === "scanning" && (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400 shrink-0" />
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              onPlaceModule(
-                panel,
-                members.map((el) => ({
-                  el,
-                  controlType: selectionFor(el),
-                })),
-              )
-            }
-            disabled={placeDisabled}
-            title={placeTitle}
-            className="btn-3d text-white text-xs flex items-center gap-1.5 disabled:opacity-50 py-1 px-2 rounded shrink-0"
-          >
-            <Boxes className="w-3.5 h-3.5" />
-            Place Module
-          </button>
-          <button
-            type="button"
-            onClick={() => onDeletePanel(panel.id)}
-            aria-label={"Delete panel " + panel.title}
-            title={"Delete panel " + panel.title}
-            className="text-app-muted hover:text-red-400 shrink-0 p-1 rounded"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        {open && (
-          <div className="p-3 space-y-4">
-            {members.map((el) => renderCard(el))}
-          </div>
-        )}
       </div>
     );
   };
@@ -588,18 +495,13 @@ export default function ExtractTray({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {panels.map((panel) => renderPanelSection(panel))}
+        <ModuleSections elements={elements} panels={panels} renderCard={renderCard}
+          selectionFor={selectionFor} onPlaceModule={onPlaceModule} onDeletePanel={onDeletePanel} />
 
-        {elements.length === 0 && panels.length === 0 ? (
+        {elements.length === 0 && panels.length === 0 && (
           <div className="text-app-muted text-sm text-center mt-10">
             Drag a box on the image to capture an asset.
           </div>
-        ) : (
-          elements
-            .filter((el) => !el.panelId)
-            .slice()
-            .reverse()
-            .map((el) => renderCard(el))
         )}
       </div>
     </div>

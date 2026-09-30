@@ -27,6 +27,11 @@ SHARE = "\\\\attacker\\share\\loop.wav"
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """theDAW's own UI on this machine: a loopback TCP peer, which is what
+    every call from it looks like on the wire (directly, or through the Vite
+    proxy on this machine). ``TestClient``'s default peer is a non-loopback
+    stand-in, which the routes now treat as a caller on another machine; the
+    LAN cases have their own clients in ``tests/test_lan_paired_device.py``."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -36,7 +41,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         known_paths, "_STORE_PATH", tmp_path / "state" / "known_paths.json"
     )
     monkeypatch.setattr(known_paths, "_GRANTS", {})
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 def _touch(path: Path, data: bytes = b"x") -> Path:

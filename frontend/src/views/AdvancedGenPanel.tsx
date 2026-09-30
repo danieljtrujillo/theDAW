@@ -7,7 +7,7 @@ import {
   Music2, Dice5, Repeat, Aperture,
 } from 'lucide-react';
 import { useGenerateParamsStore, type GenerateParamsState, type WavBitDepth } from '../state/generateParamsStore';
-import { useGenerateStore } from '../state/generateStore';
+import { useGenerateStore, probeLyriaCheckedOut } from '../state/generateStore';
 import { useLibraryStore } from '../state/libraryStore';
 import { useEditorStore } from '../state/editorStore';
 import { SemanticWave } from '../components/audio/SemanticWave';
@@ -30,11 +30,13 @@ import { RoundToggle } from '../components/audio/RoundToggle';
 import { VisualizerPanel } from '../components/audio/VisualizerPanelLazy';
 import { getMasterGain, usePlayerStore } from '../state/playerStore';
 import { fetchMagentaEngineStatus, installMagentaEngine, swapEngineForModel } from '../lib/magentaEngineClient';
+import { handleEngineElsewhere } from '../lib/magentaElsewhere';
 import { CLOUD_MODELS } from '../lib/cloudModels';
 import {
   fetchCheckpoints, pickFile, setLocalOnly, storageErrorStatus, type RegisteredCheckpoint,
 } from '../lib/storageClient';
 import { basenameOf, isLocalClient, placesApi } from '../lib/placesClient';
+import { pairingHeaderFor } from '../lib/apiJson';
 import { describeHttpError } from '../lib/httpError';
 import { classifyModelGate } from '../lib/modelDownloadClient';
 import { requireFeature } from '../notices/featureGateStore';
@@ -334,6 +336,16 @@ export const AdvancedGenPanel: React.FC<{
       .catch(() => setLocalModels([]));
   }, []);
 
+  // INT-005: the Lyria option was always offered even when its sidecar was
+  // never checked out. Fails open (true) until the probe answers, so a
+  // slow/unreachable backend never hides an option that was there before.
+  const [lyriaCheckedOut, setLyriaCheckedOut] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void probeLyriaCheckedOut().then((ok) => { if (!cancelled) setLyriaCheckedOut(ok); });
+    return () => { cancelled = true; };
+  }, []);
+
   // Pre-load (LOAD button): fire the checkpoint onto the GPU before CREATE.
   // activeModel mirrors the backend's resident pipeline so the button reads
   // LOADED when the selection is already up.
@@ -387,8 +399,14 @@ export const AdvancedGenPanel: React.FC<{
       form.append('model', model);
       const r = await fetch('/api/model/load', { method: 'POST', body: form });
       if (!r.ok) {
-        const detail = await r.json().then((j) => j?.detail).catch(() => null);
-        throw new Error(typeof detail === 'string' ? detail : `HTTP ${r.status}`);
+        const detail: unknown = await r.json().then((j) => j?.detail).catch(() => null);
+        // Another copy's Magenta engine holds the GPU: its card names the
+        // engine and offers to stop it.
+        handleEngineElsewhere({ detail }, 'Stable Audio cannot load beside it.');
+        const message = (detail as { message?: unknown } | null)?.message;
+        throw new Error(
+          typeof detail === 'string' ? detail : typeof message === 'string' ? message : `HTTP ${r.status}`,
+        );
       }
       const d = await r.json();
       // Echo the backend's resolution trail: the exact file paths used and
@@ -514,7 +532,8 @@ export const AdvancedGenPanel: React.FC<{
     const name = basenameOf(path);
     setLoraLoadingIdx(i);
     try {
-      const res = await fetch(placesApi.fileUrl(path));
+      const url = placesApi.fileUrl(path);
+      const res = await fetch(url, { headers: pairingHeaderFor(url) });
       if (!res.ok) throw new Error(await describeHttpError(res));
       const blob = await res.blob();
       setLoraFile(i, new File([blob], name, { type: blob.type || 'application/octet-stream' }));
@@ -544,6 +563,9 @@ export const AdvancedGenPanel: React.FC<{
   const genError = useGenerateStore((s) => s.error);
   const genStatusLabel = useGenerateStore((s) => s.statusLabel);
   const promptRequired = genStatusLabel === 'PROMPT REQUIRED' && !!genError;
+  // T01 contract: the seed the backend actually resolved for the last
+  // submitted job (a submitted -1 becomes a concrete value).
+  const lastSeedUsed = useGenerateStore((s) => s.lastSeedUsed);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     const onFocusPrompt = () => {
@@ -797,10 +819,14 @@ export const AdvancedGenPanel: React.FC<{
             <span className="text-[9px] text-purple-200 truncate flex-1 min-w-0">{p.initAudioFile ? p.initAudioFile.name : (isMagenta ? 'drop a clip to clone its vibe' : 'drop audio / load')}</span>
             {!isMagenta && (
               <>
+                {/* FE-005: RF-Inversion is accepted by the form but the backend
+                    always answers 501 for it (server.py's _validate_init_audio_mode
+                    — the SA3 pipeline has no inversion path yet), so it is not
+                    offered here. Restore the option once that 501 is gone. */}
                 <div className="flex items-center gap-1 shrink-0">
                   <label htmlFor="gen-init-type" className="text-[9px] text-zinc-400">Type</label>
                   <select id="gen-init-type" name="gen-init-type" className="compact-input h-5 py-0 text-[9px] w-20" value={p.initType} onChange={(e) => sf('initType', e.target.value)} style={{ colorScheme: 'dark' }}>
-                    <option value="Audio">Audio</option><option value="RF-Inversion">RF-Inv</option>
+                    <option value="Audio">Audio</option>
                   </select>
                 </div>
                 <div className="flex items-center gap-1 shrink-0" title="Init noise — denoising strength for the init audio (0 = keep init exactly, 1 = full noise / ignore init). Set this BEFORE generating.">
@@ -950,7 +976,12 @@ export const AdvancedGenPanel: React.FC<{
                   <option value="medium-rf">Medium-RF</option>
                   <option value="magenta-small">Magenta RT2 (text→music)</option>
                   <option value="suno">Suno (Cloud)</option>
-                  <option value="lyria">Lyria 3 Pro (Cloud)</option>
+                  {/* INT-005: offered only once its sidecar is checked out, or
+                      when it is already the active selection (so a stale
+                      pick from before a checkout was removed still shows). */}
+                  {(lyriaCheckedOut || p.model === 'lyria') && (
+                    <option value="lyria">Lyria 3 Pro (Cloud)</option>
+                  )}
                   {localModels.length > 0 && (
                     <optgroup label="Local checkpoints">
                       {localModels.map((l) => (
@@ -1032,6 +1063,25 @@ export const AdvancedGenPanel: React.FC<{
                   <SlideRow label="CFG" value={p.cfg} onChange={(v) => sf('cfg', v)} min={0} max={25} step={0.1} tipKey="cfg" />
                   <SlideRow label="Seed" value={p.seed} onChange={(v) => sf('seed', v)} min={-1} max={2147483647} step={1} tipKey="seed"
                     onRandomize={() => sf('seed', Math.floor(Math.random() * 2147483647))} />
+                  {/* T01 contract: the seed the backend actually resolved
+                      (a submitted -1 becomes a concrete value) for the last
+                      submitted job. Lets a fresh run be reproduced exactly. */}
+                  {lastSeedUsed !== null && (
+                    <div className="flex items-center gap-2 -mt-1">
+                      <span className="w-16 shrink-0" aria-hidden="true" />
+                      <span className="text-[9px] text-zinc-500 font-mono flex-1 min-w-0 truncate">
+                        Seed used: <span className="text-zinc-300 tabular-nums">{lastSeedUsed}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => sf('seed', lastSeedUsed)}
+                        className="btn-ghost cursor-pointer text-[9px] shrink-0 px-1.5 py-0.5 rounded border border-white/10 hover:bg-white/5"
+                        title="Copy the last generation's actual seed into the Seed field above"
+                      >
+                        Reuse seed
+                      </button>
+                    </div>
+                  )}
                   {/* Batch — value field aligned (flush right) with the SlideRows above */}
                   <div className="flex items-center gap-2">
                     <label htmlFor="gen-batch" className="text-[11px] text-zinc-300 w-16 shrink-0 whitespace-nowrap">Batch</label>

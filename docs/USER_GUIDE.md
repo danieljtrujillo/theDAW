@@ -685,7 +685,7 @@ DJ MIDI-learn binds a hardware controller to deck, mixer, and hotcue actions. It
 
 ### 9.7 Automix, Sampler, and Side List
 
-- **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9). **Prepared performance sets** load from `data/performance-sets/<Set>/performance.json` (a folder of audio files plus a timeline, as written by Z-AutoDJ or by hand; `GET /api/library/setlists` lists them and the audio is registered in the library in place). A prepared track carries a cue-in point, a mix-out point and a transition length, and automix follows them instead of its fixed distance-from-end rule. The assistant orb can steer a running set: read what is on, make a set active, start or stop automix, blend into the next track now, or move a named track to play next.
+- **Automix** sequences a setlist hands-free, beatmatching each transition. Starting a set is §9.10, and what happens inside a blend is §9.11. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9). **Prepared performance sets** load from `data/performance-sets/<Set>/performance.json` (a folder of audio files plus a timeline, as written by Z-AutoDJ or by hand; `GET /api/library/setlists` lists them and the audio is registered in the library in place). A prepared track carries a cue-in point, a mix-out point and a transition length, and automix follows them instead of its fixed distance-from-end rule. The assistant orb can steer a running set: read what is on, make a set active, start or stop automix, blend into the next track now, or move a named track to play next.
 - **Sampler bank**: drag a clip onto a pad to load it, then trigger pads during a set. Each pad has a **Loop** toggle (the pad holds the sample until pressed again) and a **Choke** toggle (firing one choke pad cuts the others, for mutually exclusive sounds like open and closed hats). Pad assignments and their loop and choke settings persist across reloads.
 - **Side List**: a play-next staging lane above the browser. Stage upcoming tracks, reorder them, and pull them onto a deck when ready.
 
@@ -696,6 +696,18 @@ The browser loads tracks onto a deck by drag or click. The source tree exposes r
 ### 9.9 Design Mode
 
 A floating **Edit Layout** control turns on Design Mode. In Design Mode, panels and the mixer control groups can be dragged to reorder and dragged at their borders to resize, snapped to a grid. The layout persists across sessions, a Reset restores the default, and a Copy action exports the layout as JSON to bake in as the new default.
+
+### 9.10 Starting a set
+
+**START AUTO DJ** in the DJ header above the decks is the one-click way in. It is never a disabled `<button>` — a disabled control loses its tooltip and its place in tab order, so the reason would never reach you — but it marks itself `aria-disabled` whenever the press cannot change anything, which is the "pick a set" and "add tracks" cases. With no sets at all the press does do something: it creates the set it is asking for. The tooltip says what is missing — "Create a set first — click to make one", "Pick a set below", "Add at least 2 tracks to this set" — and the accessible name a screen reader announces carries the same reason in its own wording ("Start Auto DJ — pick a set below first"). While a mix runs it reads **STOP AUTO DJ**, which stops the sequencer and leaves the decks playing. In the Source Tree, each Sets row opens the set by name, badges the set automix actually reads as **ACTIVE**, and carries a **▶** that auto-DJs it; the ▶ is dimmed while the set's tracks are being registered or while it holds fewer than two tracks. Until a deck holds a track, a three-line hint floats over the decks — pick a set, press START AUTO DJ, or drag a track onto a deck. If the first deck never finishes decoding, automix gives up after 15 seconds with "Automix: Deck A never finished loading" and switches itself off. The full walkthrough is in [guides/dj-and-genealogy.md](guides/dj-and-genealogy.md).
+
+### 9.11 Inside an automix blend
+
+A blend starts on a 16-beat phrase line of the outgoing track, quantised down from the mix-out point (a prepared set's own point, else 18 seconds from the end, and never before half the track has played — so a track shorter than about 18 seconds mixes out from its midpoint rather than its first frame). The first track of a set waits up to 3 seconds for its tempo and then starts on its first beat. Across the fade, the outgoing low band is handed to the incoming one over the middle third (the bass swap), the follower is pulled into phase by bending the platter rather than seeking, sync-lock is held for the whole blend so the two decks cannot drift apart, and key-lock engages when the match needed more than about 3 % of pitch. The messages are honest about what happened: "NOT beatmatched" means the pitch fader cannot reach that tempo at the selected ±range, so the deck is left at 0 % with no key-lock and no phase nudge, and "Automix: mixing unmatched" means the blend went ahead without a beatmatch, naming the reason — the incoming tempo is unknown, the outgoing one is, or the pair is outside the ±range. There is no dead air — a deck that ran out is rescued with a one-second crossfade, while a deck that has never played is waited for instead of being skipped — and with at least three tracks still to come, a key clash straight ahead is skipped for the nearest Camelot-compatible track. Each behaviour is covered in full in [guides/dj-and-genealogy.md](guides/dj-and-genealogy.md).
+
+### 9.12 Auto-seeded hot cues
+
+When a track's analysis lands, its four hotcue pads are seeded the way a DJ places them by hand: the first downbeat (the first beat when no downbeats are known), then the starts of the 16, 32 and 48-bar phrases after it, with matching markers on the waveform. Cues you set or clear yourself are never overwritten — after any edit the seeder leaves that track alone — and a phrase that falls past the end of a short track leaves its pad empty instead of stacking another marker on the end. Downbeats come from the rhythm module's cache, which the DJ tab only ever reads: a deck load asks for a cached analysis and falls back to plain beats when there is none, and it never starts a rhythm run of its own. Run the **Rhythm** analysis on a track (see [guides/rhythm-analysis.md](guides/rhythm-analysis.md)) and the DJ tab picks up real bar lines on the next deck load, for the beatgrid, the cue seeding, and the phrase a blend starts on.
 
 ---
 
@@ -841,6 +853,28 @@ theDAW carries several other rich visualizations, each documented in its own sec
 
 ![The cymatics and ferrofluid-orb visualizer](screenshots/ferro-orb.png)
 
+### 12.4 The lineage explorer: every number opens a list
+
+On a library of a few hundred thousand songs there is no whole-library picture to draw, so LEARN opens on a landing page of counted headlines, relationship-kind rows, and ranked lists. Every number on that page is a button: pressing one opens the list of songs it counted, read one page at a time from `GET /api/lineage-scale/explore/*`.
+
+What opens:
+
+- **Songs with lineage** and **songs without**, the two numbers under the Songs card. Together they are the whole library.
+- **One relationship kind**, with the song as parent, as child, or on either end (`/explore/kinds/{kind}`). Each row carries that song's own count for the kind and role asked for.
+- **A ranking** for any kind in either role, "most links of kind K as a parent" or "as a child" (`/explore/rankings`), not only the four presets the landing page shows.
+- **Families** by size (`/explore/families`) and the members of one family (`/explore/families/{id}/members`). A family is a connected component over ancestry links only. A mashup cluster welds unrelated trees into one component tens of thousands of songs wide, so it is counted on its own and is not a family.
+
+Every list pages; the songs, kind, and family-member lists also search and sort. A ranking is count-ordered only and the family list is size-ordered only — neither has a search box. A page is 50 rows and the server counts the rest, so the browser holds 50 rows whether the list is 50 songs or 173,000; the page box commits on Enter or when it loses focus. Search is a title substring match, sanitised by the Library's own search tokeniser so the two cannot disagree about what counts as a token — but it matches titles only, not prompts, tags, or lyrics. A row shows the provider badge, the title, the number the list was ranked by, and two named buttons: **Focus** draws that song's neighbourhood, **Copy id** copies its entry id. A family row opens the family instead.
+
+The whole-graph counts are computed once per change to the link graph and cached, and the pass is warmed by a background thread about twenty seconds after startup, so opening a list does not read the relations table.
+
+### 12.5 The classic graph of one song, inside LEARN
+
+The classic lineage view stays reachable on a library too large for the library-wide drawing. The header's **Classic graph** button mounts it inside LEARN, rooted at the song in focus; pressing it again closes it. Its two whole-library tabs, Genealogy and the 3D graph, are refused there and say why on the controls themselves ("library too large for the whole-library graph; use the per-track graph"), and the whole-library request is never sent.
+
+The per-track answer is bounded by the server rather than by the browser. `GET /api/library/{entry_id}/lineage` walks parents and children breadth-first, stops at 600 nodes, and reads at most 4,000 relation rows for any one hop. The cut follows the walk, so a hop is admitted whole before the next is looked at: the near family is complete and distant relatives are what is dropped. When the cap bites, the answer is marked truncated and the view shows "Showing the nearest N of a larger family."
+
+
 ---
 
 ![The 2D lineage family tree in LEARN](screenshots/learn-2d.png)
@@ -883,7 +917,7 @@ Waveform editor mixdowns, MIX outputs, mic recordings, imports, and Chimera rend
 
 ### 13.2 List and Grid Views
 
-Toggle between a dense **List** view (one row per entry) and a **Grid** view (tile cards) through the icons in the section header. List view shows title, prompt preview, model chip, duration, date, file size, and a per-entry action cluster.
+Toggle between a dense **List** view (one row per entry) and a **Grid** view (tile cards) through the icons in the section header. List view shows title, prompt preview, model chip, duration, date, file size, and a per-entry action cluster. Each row also carries a **provider badge** — Stable Audio, theDAW, Suno, Udio, Riffusion, Magenta, Imported, or Unknown — classified from the file's embedded tags first and its `model` and `source` fields second; a `chirp-*` model is Suno's own model family, so those entries badge as Suno (§29).
 
 ### 13.3 Search, Filter, Sort
 
@@ -966,6 +1000,16 @@ The `convert` module (`/api/convert`) performs generic FFmpeg format conversion 
 
 A stats footer shows the total entry count, the favorites count, cumulative storage size, and cumulative playback duration.
 
+Analysis runs in one of two profiles. The **full** profile runs every step — tempo and beats, key, RMS, pitch statistics, integrated loudness, an inferred prompt — and takes roughly 10-20 seconds per track on a cache miss. The **dj** profile (`POST /api/analysis/{id}/run?profile=dj`) runs only what a deck reads: ffprobe, one shared decode, tempo and beats with the detector's confidence, key, and RMS. It skips the pitch statistics and the second, full-rate decode that integrated loudness needs, which together are most of the cost — about 2-3 seconds instead of 10. The DJ tab uses it for every track it analyses, so loading a deck no longer waits on work no deck shows.
+
+A row written by the dj profile is a **partial** row, and it says so: `GET /api/analysis/{id}` and the entry's stored analysis carry a `profile` field, so the Details panel, the node inspector and the prompt route can tell a partial row from a complete one whose expensive fields happen to be empty. Running the full profile later completes it and clears the marker; a full run that fails to measure something falls back to the values already stored rather than erasing them, so a re-run whose tempo step fails cannot wipe a BPM that was measured before.
+
+`bpm_confidence` is the beat detector's own confidence in the BPM it reported, from 0 to 1. A low value means the tempo is a guess — a shifting or rubato track, a sparse intro, a file the detector could not lock onto. Treat a low-confidence BPM as a number to look at rather than to beatmatch on: the value is persisted with the analysis and carried on the deck’s analysis row, so a shaky reading can be told apart from a solid one — nothing greys it out in the interface yet — and an automix blend into a track whose tempo is wrong says "NOT beatmatched" instead of pretending (§9.11).
+
+At most **two analyses run at once in the whole backend process**. The cap sits on the analysis itself, not on the HTTP route, so a manual run, a deck load and the library's background auto-analysis all share it; callers asking for the same entry and profile join the run already in flight instead of starting a second one. Each analysis is a full decode of hundreds of megabytes on one core, so two keeps a core busy without letting the decodes pile up.
+
+The DJ tab queues analyses in two lanes. A **request** lane holds what you actually asked for — the tracks on the decks — and is drained first and never dropped. A **sweep** lane pre-analyses the rows worth having next, capped at 24 and ranked decks → the active set → the visible browser rows; each sweep replaces the previous one, so scrolling re-aims the window instead of building a backlog. A row whose analysis fails is retried after 60 s, then after 120 s, then given up on at the third failure — loading it onto a deck still runs it, because asking for a track is a statement that it is worth another try. The queue can also be paused and resumed as a whole, so nothing new starts while something latency-sensitive is going on.
+
 ### 13.10 Suggest a Playlist
 
 The **SUGGEST** button opens a playlist builder that sequences analyzed tracks into a continuous set. The criteria are a target length, an optional BPM range, a flow shape (Steady, Build up, Wind down, or Wave), a harmonic toggle, and an optional genre or text filter. The backend engine (`POST /api/library/suggest-playlist`) reads each track's analysis and orders the set by harmonic key on the Camelot wheel, the chosen BPM flow, and small nudges toward popular and stylistically varied picks, filling the time budget. Each result row shows its BPM, Camelot code, and the reason it was chosen.
@@ -985,7 +1029,26 @@ Shown until the first generation. It contains a **Go generate something** button
 
 The library splits its contents into four sub-tabs: **Tracks**, **Stems**, **MIDI**, and **Video**. Stems and MIDI are first-class items rather than attachments to a parent track. Each row plays through the shared engine, can be favorited, and can be deleted on its own without touching the source track.
 
-A stem row plays its separated audio and shows the separation model. Its right-click menu sends the stem to a new editor track, to the tail of the first track, to Init audio, to Inpaint, or to the Chimera stack, and offers a `.wav` download. A MIDI row plays through the synth and can be sent to the Piano Roll, the Step Sequencer, or (rendered to audio) to the editor, Init audio, Inpaint, or Chimera, with a `.mid` download. Favoriting or deleting a stem or MIDI row affects only that row, never its parent entry.
+A stem row plays its separated audio and shows the separation model. Its right-click menu sends the stem to a new editor track, to the tail of the first track, to Init audio, to Inpaint, or to the Chimera stack, and offers a `.wav` download. A MIDI row plays through the synth and can be sent to the Piano Roll, the Step Sequencer, or (rendered to audio) to the editor, Init audio, Inpaint, or Chimera, with a `.mid` download. Its menu also brings every stem MIDI of the row's song in at once, and never the full-mix MIDI. **All stems to piano roll** puts one roll part per stem into the MIDI tab in place of the roll's parts, and a song with one stem sends it into the part being edited. **All stems to EDIT as tracks** puts one EDIT track per stem at the start of the timeline, in one undo step. Each part or track is named for its stem and plays its stem's instrument, the drums on channel 10 on a drum track, and each roll part takes the next free channel. Every note stays at the second it was transcribed at, on one tempo map the stems share, and a stem's pitch wheel becomes its notes' own bends. Both items show the number of stems beside them, and a song with no stem MIDI shows them off with "no stems". A stem whose file does not load is named in the LOG, and the other stems come in without it. Favoriting or deleting a stem or MIDI row affects only that row, never its parent entry.
+
+A MIDI row dragged onto an EDIT lane lands as one piano-roll clip that plays the file's own program. A drum file plays its kit on a drum track. On a drum track that has a kit of its own, a drum file on program 0, which a writer puts on channel 10 when it names no kit, plays the track's kit. A blank lane (no clips, no instrument) takes the file's kind, drum or melodic, and the file's program. A lane of the other kind that holds clips or an instrument keeps its voice, the file goes on a new track, and the LOG says why. The clip opens in the piano roll as a percussion part for a drum file, and MATCH keeps its notes at their seconds.
+
+### 13.13 Media roots: entries whose audio lives outside the library
+
+An entry can exist whose audio was never written under `data/generations/`: catalogued from a provider that kept the file behind a URL, imported as metadata, or restored from a backup that carried the database and not the files. **Media roots** are the folders on this machine the library searches for those files.
+
+Set them in **Settings → Storage → Media roots**, or in the `theDAW_MEDIA_ROOTS` environment variable (folders separated by `;` on Windows, `:` elsewhere). The environment variable wins outright: when it is set, the Settings list is not consulted at all. A root must be an absolute path to a folder that exists, and a folder inside another root is dropped because the outer walk already reaches it. A root typed into Settings that breaks those rules is refused there with the reason; a bad entry in the environment variable is logged and dropped, and the remaining roots still index.
+
+One background scan indexes every root. A file is matched to an entry by its name, in two shapes: the entry's full 36-character id anywhere in the name, or the first eight hex digits of that id in square brackets immediately before the extension — the short tag a library export writes (`Some Title [c27de18c].flac`). When both shapes claim one entry the full id wins; between two short tags the newest file wins. (Entry ids are uuids; an entry whose id is not a uuid is not matched by either shape.) The walk runs on its own thread, because a few hundred thousand files on a spinning disk takes minutes, and until it finishes a lookup answers exactly as it did before any roots existed.
+
+Nothing is copied. A file found this way is played in place: no bytes are written into the entry's folder and its metadata is not touched. The library asks the entry's own folder first, the media-root index second, and only then a remote copy.
+
+The panel reports the index — how many files, how old, whether a walk is running — and a **Rescan** button walks the roots again on a background thread and answers immediately. A root is re-checked at most every 30 seconds while audio is being served, and a rescan starts when the root folder itself changed (gained or lost a top-level child). Files added deeper inside a root need **Rescan**.
+
+AIFF, WMA, and APE are containers the browser has no demuxer for. When one of those is served from a media root it is remuxed to WAV once (header only, nothing re-encoded, no bit depth lost) and the copy is cached under `data/playable-cache/<entry id>/` rather than beside your file. That cache is derived state and can be deleted at any time; it is rebuilt on the next play.
+
+The routes (`GET /api/library/media-roots`, `POST /api/library/media-roots/rescan`) and the settings keys that set the list answer only to this machine: loopback, or the desktop shell's launch token. A phone or LAN companion reads "Hidden on this device — manage media roots on the theDAW PC" in place of the folders and cannot set them. Naming every media folder on a machine is reconnaissance for anyone on the network, and a panel that cannot write the list has no use for its contents.
+
 
 ---
 
@@ -1073,7 +1136,8 @@ The Play button starts a step-based clock that advances `currentStep` and trigge
 
 ### 15.4 BPM and Grid Length
 
-- **BPM** sets the tempo for playback and offline render. Range: 40 to 240.
+- **BPM** sets the roll's starting tempo for playback and offline render. Range: 20 to 300.
+- **KEEP TIME**, beside BPM, decides what a new BPM does to the notes. On, every note keeps its time in seconds, so a transcription stays on the audio it came from. Off, every note keeps its place in the bar and plays faster or slower. It starts on for a roll whose parts came from a song's audio and off for a roll written on the grid. A press holds for that roll, also while the MIDI tab is closed and opened again. A controller knob mapped to BPM sets the tempo through the same choice. A BPM typed with KEEP TIME on writes to the LOG how many notes kept their time in seconds.
 - **Total Steps** defines the loop length in 16th-note steps. Longer values extend the grid horizontally.
 
 ### 15.5 MIDI Import and Export
@@ -1094,6 +1158,29 @@ Clips in the waveform editor whose `sourceKind` is `'piano-roll'` display an **E
 The **Instrument** picker chooses how the Piano Roll's notes sound, both for preview and for the soundfont-backed render. The default is **Basic (sawtooth)**, the lightweight built-in synth. The **General MIDI** group selects any of the 128 GM programs, played through a bundled SoundFont (`gm.sf3`) on the SpessaSynth engine; the soundfont warms up on first use and falls back to the sawtooth if it cannot load.
 
 The picker also lists procedural synth voices grouped as **Bass**, **Lead / Chord**, **FX**, **Psychoacoustic** (phantom-sub, binaural, Shepard, difference-tone, and related voices), and **Talk-Box** (formant-filtered vowel voices in Bass, Tenor, Countertenor, Alto, and Soprano ranges, each with five sung vowels). A Talk-Box voice runs a sawtooth glottal source through a bank of formant filters, so each vowel reads as a sung "ah/eh/ee/oh/oo." The selected instrument also drives live MIDI playback in the timeline (see §7.10).
+
+A part can also play through a **VST3 instrument**. The part's **Sound** select in the MIDI tab's parts column lists the scanned VST3 instruments under **VST3 instruments**, the same list EDIT's MIDI track VST slot offers, and the rescan key beside the label runs the scan again. With one chosen, a **VST3 instrument** box opens under the select: the plugin's name (press it to open the plugin's own window over the roll; what you set there is kept with the part and saved with the project), a status dot and word (**Live**, **Opening**, **Fallback**, **Off**), a power key that switches the plugin off and on with its settings kept, and an X that takes it away. PLAY, a note drawn or clicked on the keyboard, the arpeggiator and a hardware key all sound through the plugin, on the roll's tempo and transport. **Fallback** picks the General MIDI program the part plays whenever the plugin cannot (while it opens, if it fails to load, or with no live VST host installed) and that a MIDI export writes; a plugin that fails says so in the LOG and the part plays that program. **Articulations** picks how the plugin is told a note's articulation: keyswitch notes from C0, or UACC on CC 32. The EDIT key sends the plugin with the part onto its EDIT track's VST slot, where every bounce, freeze and export prints it.
+
+### 15.9 Transcriptions and MATCH
+
+A part whose notes were timed against a song's audio is marked as such: a LIBRARY MIDI row sent to the piano roll, **All stems to piano roll**, a MIDI row dropped on EDIT and opened in the roll, and the notes of a vocal take. **MATCH** gives the roll the song's tempo and meter, and every marked part keeps its notes at their seconds under the new tempo, so a transcription stays on the song. Every other part keeps its place in the bar. MATCH's status line says how many notes from the song's audio kept their time. The mark travels with the part in its EDIT clip, in a `.tasmo` and in a MIDI file the roll writes. Recording over the part with a MIDI keyboard and **CLEAR** remove it, and so does importing any other file into the part. A stem sent into one part while other parts hold notes lands at its transcribed seconds on the roll's tempo map, also after MATCH has changed that map.
+
+### 15.10 CLEAN
+
+**CLEAN**, after **TRANSFORM** on the MIDI tab's action rail, opens a card with two tools for tidying a transcription. Both work on the selected notes, else on every note of the part being edited.
+
+- **ONE AT A TIME** reduces the notes to one line. Its **Keep** choice picks **Top line** (where notes overlap the higher note stays, for a melody), **Bottom line** (the lower note stays, for a bass line) or **Latest note** (each note cuts the one before it, as a monophonic synth plays). A pitch struck again while it still sounds cuts the note it repeats and plays on.
+- **KEEP RANGE** removes every note below **LOW** or above **HIGH**, both MIDI note numbers shown with their note names. The range starts at the part instrument's range, else at the lowest and highest pitch of the notes.
+
+Each tool is one undo step, keeps the notes it left selected, and writes what it did to the LOG.
+
+### 15.11 A stem's instrument on import
+
+basic-pitch writes its transcriptions on General MIDI program 4, Electric Piano 1. A part that arrives on program 4 from a file named for a song stem takes that stem's instrument: the voice for vocals, the electric bass, the electric guitar, the piano, the organ, and a drum kit on channel 10 for drums and for each piece of a split kit (kick, snare, toms, hi-hat, cymbals). A part the file left unnamed takes the stem's name. The stem comes from the LIBRARY row, or from the file's name (`bass.mid`) when the file comes in through the MIDI tab's **IMPORT** and its **As EDIT tracks**, EDIT's MIDI drop or the LIBRARY's **Import a .mid file into the piano roll** key. A stem that names no instrument (other, the full mix, no_vocals) keeps the file's program. A stem sent into the part being edited replaces the part's instrument, and a part named for its old instrument takes the new instrument's name. A name you gave the part stays.
+
+### 15.12 Pitch wheel under chords
+
+A MIDI file that moves one channel's pitch wheel under overlapping notes is read note by note. While one note sounds, the wheel becomes that note's own bend. While several sound, the wheel is left out and the chord plays unbent. The LOG says how many notes took their bend and warns how many chords play unbent. A channel that plays one note at a time keeps its bend lane and curve, and a file the roll wrote keeps its lanes' curves as written. **IMPORT**, **Send to piano roll**, **As EDIT tracks** and EDIT's MIDI drop all read files this way.
 
 ---
 
@@ -1791,6 +1878,8 @@ The **Models** section sits directly below the pinned Restart/Shutdown controls 
 
 **No usable model?** Pressing CREATE (or LOAD) with nothing installed, or with a selection that local-only would block, never fails silently: the run stops with a plain-language explanation and Settings opens straight to the Models section, which pulses to show where the fix lives.
 
+**Media roots** sit one section over, under **Settings → Storage**: the folders the library searches for an entry whose audio was never written under `data/generations/`. Files there are referenced in place and never copied, and both the list and its routes can only be read or set from this machine (§13.13).
+
 | Method · Path | Purpose |
 |---|---|
 | `GET /api/storage/locations` | Every model/data location with size, file count, and the per-directory model inventory (`?refresh=1` recomputes). |
@@ -2210,7 +2299,7 @@ A seventh module, **AI Analyzer** (`/api/edit/analyzer`), is an experimental dec
 
 ## 29. Catalogue
 
-The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry (Suno, Magenta, import, and forward-compatible slots for other providers) from its `model` and `source` fields. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
+The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry from its embedded tags first and its `model` and `source` fields second: Stable Audio (theDAW's own generations), Suno, Udio, Riffusion, Magenta, Import, and theDAW (made here, origin unspecified — performance sets, renders, VJ output). A Suno, Udio or Riffusion frame in an imported file is labeled as such and its embedded prompt, style and lyrics are ingested; the badge is filterable. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
 
 ---
 

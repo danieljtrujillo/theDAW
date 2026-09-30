@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import {
   parseLoom,
   serializeLoom,
@@ -67,7 +68,12 @@ interface LoomState {
   /** Lanes GROW leaves alone. */
   keepLanes: string[];
 
-  /** Plane (lanes) or colony (cells and arrows). */
+  /**
+   * The LOOM tab's view: 'colony' (cells and wires on the dish) or 'plane'
+   * (the lane score: lanes with their own grids, 1/12-1/28 tuplets and the
+   * meter directive). Chosen with the view switch in the tab's header and
+   * saved with the tab's other settings.
+   */
   mode: LoomMode;
   colonyText: string;
   colonyApplied: ColonyScore;
@@ -128,6 +134,8 @@ interface LoomState {
   addLane: () => void;
   removeLane: (lane: string) => void;
   setBpm: (bpm: number) => void;
+  /** The lane score's `meter` directive: the bar the beat clock counts while it plays; null removes it. */
+  setMeter: (meter: Meter | null) => void;
   resetStarter: () => void;
   /** GROW: a mutated child of the applied score becomes the score. */
   mutate: (intensity: number) => void;
@@ -141,9 +149,9 @@ interface LoomState {
   toggleKeepLane: (lane: string) => void;
   /** Return to an earlier generation. */
   revert: (index: number) => void;
-  /** Load a sample score: text + apply + its songs into the crate. Returns the
-   *  song references that could not be found in the library. */
-  loadTemplate: (id: string) => string[];
+  /** Load a sample score: text + apply + its songs into the crate. Resolves
+   *  to the song references the library lacks. */
+  loadTemplate: (id: string) => Promise<string[]>;
   resolvedFor: (tile: ShardTile) => ShardRow | null;
 }
 
@@ -156,8 +164,27 @@ function pickBeats(beats: number, role?: string): number {
   return 16;
 }
 
+/**
+ * Look each song reference up over the whole library and put what is found in
+ * the crate, in the template's order. Resolves to the references nothing in
+ * the library answers to.
+ */
+async function addSongsToCrate(refs: readonly string[]): Promise<string[]> {
+  const ids = await Promise.all(refs.map((ref) => resolveEntryRef(ref)));
+  const idx = useShardIndexStore.getState();
+  const missing: string[] = [];
+  ids.forEach((id, i) => {
+    if (id) idx.addToCrate(id);
+    else missing.push(refs[i]);
+  });
+  return missing;
+}
+
 function entryTitle(id: string): string {
-  return useLibraryStore.getState().entries.find((e) => e.id === id)?.title ?? id.slice(0, 8);
+  // By id: `entries` holds only the loaded rows, so a crate song from a page
+  // nobody has open used to fall back to its uuid. `getById` also answers from
+  // the single-entry cache, and warms it for the next render when it cannot.
+  return useLibraryStore.getState().getById(id)?.title ?? id.slice(0, 8);
 }
 
 /** The key everything is transposed toward: the score's, or the first crate song's. */
@@ -189,14 +216,15 @@ function pickRanked(cands: ShardRow[], target: { key: string; scale: string } | 
 async function resolveQuery(q: LoomQuery, ctx: ResolveCtx, score: LoomScore): Promise<ShardRow | null> {
   const idx = useShardIndexStore.getState();
   const target = targetKey(score);
+  const excludeId = q.excludeEntry ? await resolveEntryRef(q.excludeEntry) : null;
   if (q.shardId) {
     const entryId = q.shardId.split('__')[0];
     await idx.ensureEntry(entryId, { run: false });
-    return localCandidates(q, [entryId])[0] ?? null;
+    return localCandidates(q, [entryId], excludeId)[0] ?? null;
   }
   let entryIds: string[];
   if (q.entry) {
-    const id = resolveEntryRef(q.entry);
+    const id = await resolveEntryRef(q.entry);
     if (!id) return null;
     await idx.ensureEntry(id, { run: true });
     entryIds = [id];
@@ -211,7 +239,7 @@ async function resolveQuery(q: LoomQuery, ctx: ResolveCtx, score: LoomScore): Pr
       const rows = await idx.query({
         role: q.role,
         beats,
-        exclude_entry: q.excludeEntry ? resolveEntryRef(q.excludeEntry) ?? undefined : undefined,
+        exclude_entry: excludeId ?? undefined,
         key: target?.key,
         scale: target?.scale,
         bpm: ctx.bpm,
@@ -226,9 +254,9 @@ async function resolveQuery(q: LoomQuery, ctx: ResolveCtx, score: LoomScore): Pr
       return null;
     }
   }
-  let cands = localCandidates({ ...q, beats }, entryIds);
-  if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...q, beats: 4 }, entryIds);
-  if (cands.length === 0) cands = localCandidates({ ...q, beats: undefined }, entryIds);
+  let cands = localCandidates({ ...q, beats }, entryIds, excludeId);
+  if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...q, beats: 4 }, entryIds, excludeId);
+  if (cands.length === 0) cands = localCandidates({ ...q, beats: undefined }, entryIds, excludeId);
   if (cands.length === 0 && q.role && q.role !== 'mix') {
     // No stem for that role yet: play the mix now and get the stems cut in
     // the background; the score re-resolves when they land. Silence is the
@@ -236,9 +264,9 @@ async function resolveQuery(q: LoomQuery, ctx: ResolveCtx, score: LoomScore): Pr
     const unstemmed = entryIds.filter((id) => !(idx.byEntry[id] ?? []).some((r) => r.stem_name !== 'mix'));
     for (const id of unstemmed) void requestStems(id);
     const mixQ: LoomQuery = { ...q, role: 'mix' };
-    cands = localCandidates({ ...mixQ, beats }, entryIds);
-    if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...mixQ, beats: 4 }, entryIds);
-    if (cands.length === 0) cands = localCandidates({ ...mixQ, beats: undefined }, entryIds);
+    cands = localCandidates({ ...mixQ, beats }, entryIds, excludeId);
+    if (cands.length === 0 && beats !== 4) cands = localCandidates({ ...mixQ, beats: 4 }, entryIds, excludeId);
+    if (cands.length === 0) cands = localCandidates({ ...mixQ, beats: undefined }, entryIds, excludeId);
   }
   return pickRanked(cands, target);
 }
@@ -820,6 +848,13 @@ export const useLoomStore = create<LoomState>()(
           set({ selected: null });
         },
 
+        setMeter: (meter) => {
+          const next = clone(get().applied);
+          if (meter) next.meter = { num: meter.num, den: meter.den, groups: [...meter.groups] };
+          else delete next.meter;
+          commit(next);
+        },
+
         setBpm: (bpm) => {
           const v = Math.max(20, Math.min(300, bpm));
           beatClock.setBpm(v, 'loom');
@@ -852,8 +887,9 @@ export const useLoomStore = create<LoomState>()(
           set({ history: [...st.history, { text: st.text, label: `gen ${gen - 1}`, at: Date.now() }].slice(-24), selected: null });
           commit(child);
           if (tpl) {
-            const idx = useShardIndexStore.getState();
-            for (const ref of tpl.songs) { const id = resolveEntryRef(ref); if (id) idx.addToCrate(id); }
+            // The partner's songs join the crate as each one is found in the
+            // library; the child plays meanwhile.
+            void addSongsToCrate(tpl.songs);
           }
           logInfo('loom', `Bred generation ${gen} with ${tpl ? tpl.name : 'the pasted score'}`);
           return true;
@@ -901,7 +937,7 @@ export const useLoomStore = create<LoomState>()(
 
         loadTemplate: (id) => {
           const t = loomTemplateById(id);
-          if (!t) return [];
+          if (!t) return Promise.resolve([]);
           if (t.mode === 'colony') {
             if (get().running) get().stop();
             const c = parseColony(t.text);
@@ -909,27 +945,21 @@ export const useLoomStore = create<LoomState>()(
             ceng.setScore(c.score);
             if (c.score.bpm) beatClock.setBpm(c.score.bpm, 'loom');
             set({ mode: 'colony', colonyText: t.text, colonyApplied: c.score, colonyErrors: c.errors, colonyDirty: false, colonySelected: null, colonySelectedEdge: null, colonyFocus: null, colonyPositions: {}, colonyUnresolved: [], bpm: c.score.bpm ?? beatClock.bpm, colonyGen: 0 });
-            const missingC: string[] = [];
-            const idxC = useShardIndexStore.getState();
-            for (const ref of t.songs) { const eid = resolveEntryRef(ref); if (eid) idxC.addToCrate(eid); else missingC.push(ref); }
             logInfo('loom', `Loaded colony "${t.name}"`);
-            return missingC;
+            return addSongsToCrate(t.songs);
           }
           const { score, errors } = parseLoom(t.text);
           const eng = getEngine();
           eng.setScore(score);
           if (score.bpm && !eng.running) beatClock.setBpm(score.bpm, 'loom');
           set({ text: t.text, applied: score, errors, dirty: false, selected: null, queued: eng.running && eng.hasQueued, unresolved: [], bpm: score.bpm ?? beatClock.bpm });
-          const missing: string[] = [];
-          const idx = useShardIndexStore.getState();
-          for (const ref of t.songs) {
-            const entryId = resolveEntryRef(ref);
-            if (entryId) idx.addToCrate(entryId); else missing.push(ref);
-          }
-          logInfo('loom', missing.length
-            ? `Loaded "${t.name}" — not in the library: ${missing.join(', ')}`
-            : `Loaded "${t.name}"${eng.running ? ' (swaps at the master wrap)' : ''}`);
-          return missing;
+          const running = eng.running;
+          return addSongsToCrate(t.songs).then((missing) => {
+            logInfo('loom', missing.length
+              ? `Loaded "${t.name}" — not in the library: ${missing.join(', ')}`
+              : `Loaded "${t.name}"${running ? ' (swaps at the master wrap)' : ''}`);
+            return missing;
+          });
         },
 
         resolvedFor: (tile) => getEngine().resolvedFor(tile),
@@ -937,13 +967,17 @@ export const useLoomStore = create<LoomState>()(
     },
     {
       name: 'thedaw-loom-v1',
-      version: 2,
-      migrate: (persisted) => ({ ...(persisted as object), mode: 'colony' }),
+      storage: persistStorage(),
+      // v2 forced the colony view on every load, so the lane score had no way
+      // in; v3 keeps the view the user chose. A v1 save (the old plane-first
+      // tab) opens on the colony, as v2 did; a v2 save carries 'colony'.
+      version: 3,
+      migrate: (persisted, version) => (version < 2 ? { ...(persisted as object), mode: 'colony' } : (persisted as object)),
       partialize: (s) => ({ text: s.text, colonyText: s.colonyText, mode: s.mode, colonyPositions: s.colonyPositions }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        // The LOOM tab has one view now: the colony.
-        if (state.mode !== 'colony') useLoomStore.setState({ mode: 'colony' });
+        // A stored view that is neither known view opens the colony.
+        if (state.mode !== 'colony' && state.mode !== 'plane') useLoomStore.setState({ mode: 'colony' });
         const { score, errors } = parseLoom(state.text);
         useLoomStore.setState({ applied: score, errors, dirty: false, bpm: score.bpm ?? beatClock.bpm });
         getEngine().setScore(score);

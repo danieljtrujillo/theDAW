@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { logError, logInfo, logWarn } from './logStore';
+import { setDecodeContext } from '../lib/djAudioCache';
 
 /**
  * Global playback engine — a single HTMLAudioElement piped through a single
@@ -8,7 +9,7 @@ import { logError, logInfo, logWarn } from './logStore';
  * always reflect whatever's audible.
  *
  *   HTMLAudioElement ──┐
- *                      ├──▶ master bus ──▶ [master insert] ──▶ [live-FX insert] ──▶ analyser ──▶ monitor ──▶ destination
+ *                      ├──▶ master bus ──▶ [master insert] ──▶ [live-FX insert] ──▶ [safety insert] ──▶ analyser ──▶ monitor ──▶ destination
  *   editor preview  ───┤                                                        ▲
  *   sequencer voices ──┘                                                        └── meter taps here (getMeterTap)
  *
@@ -25,6 +26,12 @@ import { logError, logInfo, logWarn } from './logStore';
  * rack. The always-available live master FX chain (lib/liveMasterFx — the
  * VST-Foundry "Live Audio" bind-test surface) splices itself there, so it
  * shapes the final mixed output independently of the MIX rack.
+ *
+ * The [safety insert] is a third passthrough bus (safetyIn ─▶ safetyOut) at the
+ * end of the chain, where the soundfont engine splices its safety limiter
+ * (lib/synthOutputStage): a sound bank preset lifted above unity by its
+ * playback gain can take the sum past full scale, and the limiter holds it
+ * under -0.3 dBFS while such a preset plays. The meters read its output.
  */
 
 let _ctx: AudioContext | null = null;
@@ -36,6 +43,9 @@ let _insertOut: GainNode | null = null;
 // Live-FX insert bus: insertOut -> fxIn -> [live master FX] -> fxOut -> analyser.
 let _fxIn: GainNode | null = null;
 let _fxOut: GainNode | null = null;
+// Safety insert: fxOut -> safetyIn -> [safety limiter] -> safetyOut -> analyser.
+let _safetyIn: GainNode | null = null;
+let _safetyOut: GainNode | null = null;
 let _monitor: GainNode | null = null;
 let _audioEl: HTMLAudioElement | null = null;
 let _mediaSrc: MediaElementAudioSourceNode | null = null;
@@ -84,6 +94,12 @@ export const ensureEngine = (): EngineHandles => {
     (window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
   const ctx = new Ctor();
+  // Every waveform decode made from here on runs through this context, so
+  // it lands at the rate playback runs at and shares its cache entry with
+  // the deck that plays the same file (lib/djAudioCache). Before this the
+  // cache never learned the engine existed and decoded everything at the
+  // offline fallback's 44.1 kHz.
+  setDecodeContext(ctx);
   const master = ctx.createGain();
   master.gain.value = 1;
   const analyser = ctx.createAnalyser();
@@ -112,7 +128,12 @@ export const ensureEngine = (): EngineHandles => {
   insertIn.connect(insertOut);
   insertOut.connect(fxIn);
   fxIn.connect(fxOut);
-  fxOut.connect(analyser);
+  // Safety insert: a passthrough until the soundfont engine splices its limiter in.
+  const safetyIn = ctx.createGain();
+  const safetyOut = ctx.createGain();
+  fxOut.connect(safetyIn);
+  safetyIn.connect(safetyOut);
+  safetyOut.connect(analyser);
   analyser.connect(monitor);
   monitor.connect(ctx.destination);
   // A device may already have been chosen before anything built the graph
@@ -162,6 +183,8 @@ export const ensureEngine = (): EngineHandles => {
   _insertOut = insertOut;
   _fxIn = fxIn;
   _fxOut = fxOut;
+  _safetyIn = safetyIn;
+  _safetyOut = safetyOut;
   _monitor = monitor;
   _audioEl = audioEl;
   _mediaSrc = mediaSrc;
@@ -253,11 +276,22 @@ export const getMasterGain = (): GainNode => ensureEngine().master;
  * MIX rack insert and the live master FX) but BEFORE the monitor fader. This is
  * the signal that actually gets exported, which is what a LUFS / true-peak meter
  * must measure. Do not meter `getMasterGain()` — that is the pre-FX summing bus
- * and, before the monitor node was moved, was also post-listening-volume.
+ * and, before the monitor node was moved, was also post-listening-volume. It is
+ * the safety insert's output, so the meters read what the speakers get.
  */
 export const getMeterTap = (): GainNode => {
   ensureEngine();
-  return _fxOut!;
+  return _safetyOut!;
+};
+
+/**
+ * The safety insert at the end of the master chain, after the live-FX insert:
+ * `input -> output`, a passthrough until the soundfont engine splices its
+ * safety limiter between them (lib/synthOutputStage).
+ */
+export const getSafetyInsert = (): { ctx: AudioContext; input: GainNode; output: GainNode } => {
+  ensureEngine();
+  return { ctx: _ctx!, input: _safetyIn!, output: _safetyOut! };
 };
 export const getAnalyser = (): AnalyserNode => ensureEngine().analyser;
 export const getEngineCtx = (): AudioContext => ensureEngine().ctx;
@@ -606,7 +640,9 @@ export const dumpAudioChain = (): Record<string, unknown> => {
   return out;
 };
 
-if (typeof window !== 'undefined' && import.meta.env.DEV) {
+// `?.`: plain tsx has no import.meta.env, and a node test that installs a
+// jsdom window before importing this module still loads it.
+if (typeof window !== 'undefined' && import.meta.env?.DEV) {
   (window as unknown as { dumpAudioChain?: () => Record<string, unknown> }).dumpAudioChain =
     dumpAudioChain;
 }

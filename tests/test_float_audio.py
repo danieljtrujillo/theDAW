@@ -226,6 +226,57 @@ def test_write_like_source_min_depth_is_a_floor_not_a_target(tmp_path: Path):
     ) == ("FLOAT")
 
 
+def _truncate_then_fail(file, *args, **kwargs):
+    """A libsndfile write that dies partway: the target is opened and
+    truncated, a header's worth of bytes lands, then the encode raises."""
+    with open(file, "wb") as fh:
+        fh.write(b"RIFF")
+    raise RuntimeError("disk full")
+
+
+def test_write_like_source_in_place_failure_leaves_the_source_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An in-place filter: read the stem, process it, write it back over
+    itself. The write fails halfway; the user's only copy must survive."""
+    src = _write_fixture(tmp_path / "stem.wav", "FLOAT")
+    before = src.read_bytes()
+    data, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    monkeypatch.setattr(sf, "write", _truncate_then_fail)
+    with pytest.raises(RuntimeError, match="disk full"):
+        write_like_source(src, data * 0.5, sr, src)
+    assert src.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["stem.wav"]
+
+
+def test_write_like_source_in_place_success_replaces_the_source(tmp_path: Path):
+    src = _write_fixture(tmp_path / "stem.wav", "FLOAT")
+    data, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    assert write_like_source(src, data * 0.5, sr, src) == "FLOAT"
+    assert _peak_of(src) == pytest.approx(PEAK * 0.5, abs=1e-6)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["stem.wav"]
+
+
+def test_write_like_source_keeps_a_double_source_at_double_precision(
+    tmp_path: Path,
+):
+    src = _write_fixture(tmp_path / "src64.wav", "DOUBLE")
+    out = tmp_path / "out.wav"
+    # 1 + 2**-40 is exact in float64 and rounds to 1.0 in float32.
+    data = np.full((64, 2), 1.0 + 2.0**-40, dtype=np.float64)
+    assert write_like_source(out, data, SR, src) == "DOUBLE"
+    back, _ = sf.read(str(out), dtype="float64", always_2d=True)
+    assert np.array_equal(back, data)
+
+
+def test_write_like_source_writes_mono_frames(tmp_path: Path):
+    src = _write_fixture(tmp_path / "mono.wav", "PCM_24", channels=1)
+    out = tmp_path / "out.wav"
+    assert write_like_source(out, _ramp(channels=1), SR, src) == "PCM_24"
+    info = sf.info(str(out))
+    assert (info.channels, info.frames) == (1, 4096)
+
+
 # ---------------------------------------------------------------------------
 # intake: the decode path the generation endpoints use
 # ---------------------------------------------------------------------------

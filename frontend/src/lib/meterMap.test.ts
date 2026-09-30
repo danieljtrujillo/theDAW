@@ -149,4 +149,40 @@ const MAP: MeterSegment[] = [{ bar: 0, meter: M44 }, { bar: 2, meter: M78 }, { b
   assert.deepEqual(clipped.map((n) => [n.step, n.length]), [[10, 8], [22, 8]]);
 }
 
+// A repeat carries its OWN ticks, not the ticks of the note it came from: it is
+// a whole number of cycles away, so the arithmetic is exact. A note built
+// without ticks stays without them rather than being given a grid it never had.
+{
+  const lanes = [{ id: 1, name: 'B', cycleSteps: 8 }];
+  const per = 240; // the roll's 16ths at PPQ 960 — the notes below carry it themselves
+
+  // On the grid: step 1 -> tick 240, and each repeat is 8 steps = 1920 ticks on.
+  const onGrid = unrollLanes([{ id: 'g', note: 48, step: 1, length: 2, velocity: 90, lane: 1, tick: 240, ticks: 480 }], lanes, 32);
+  assert.deepEqual(onGrid.map((n) => [n.step, n.tick]), [[1, 240], [9, 2160], [17, 4080], [25, 6000]]);
+  assert.deepEqual([...new Set(onGrid.map((n) => n.ticks))], [480]);
+  for (const n of onGrid) assert.equal(n.tick, Math.round(n.step * per), `${n.id} tick vs step`);
+
+  // Off the grid: a swung note keeps its 5-tick offset in every pass.
+  const swung = unrollLanes([{ id: 's', note: 50, step: 605 / per, length: 60 / per, velocity: 90, lane: 1, tick: 605, ticks: 60 }], lanes, 24);
+  assert.deepEqual(swung.map((n) => n.tick), [605, 2525, 4445]);
+  assert.deepEqual([...new Set(swung.map((n) => n.ticks))], [60]);
+
+  // A note placed past its lane's first cycle wraps, and its ticks wrap with it.
+  const wrapped = unrollLanes([{ id: 'w', note: 52, step: 10, length: 1, velocity: 90, lane: 1, tick: 2400, ticks: 240 }], lanes, 24);
+  assert.deepEqual(wrapped.map((n) => [n.step, n.tick]), [[2, 480], [10, 2400], [18, 4320]]);
+
+  // A tail clipped by the roll's end loses the same ticks it loses steps.
+  const clipped = unrollLanes([{ id: 'c', note: 54, step: 2, length: 8, velocity: 90, lane: 1, tick: 480, ticks: 1920 }], lanes, 12);
+  assert.deepEqual(clipped.map((n) => [n.step, n.length, n.ticks]), [[2, 8, 1920], [10, 2, 480]]);
+
+  // No ticks in, no ticks out — helpers that predate the tick model are untouched.
+  const bare = unrollLanes([{ id: 'b', note: 56, step: 1, length: 1, velocity: 90, lane: 1 }], lanes, 24);
+  assert.deepEqual(bare.map((n) => n.step), [1, 9, 17]);
+  assert.equal(bare.some((n) => 'tick' in n || 'ticks' in n), false);
+
+  // A note that does not repeat is handed back as the very same object.
+  const [passed] = unrollLanes([{ id: 'p', note: 60, step: 3, length: 1, velocity: 90, tick: 720, ticks: 240 }], lanes, 24);
+  assert.deepEqual([passed.step, passed.tick, passed.ticks], [3, 720, 240]);
+}
+
 console.log('meterMap: ok');

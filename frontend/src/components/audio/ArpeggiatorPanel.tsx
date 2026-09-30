@@ -19,6 +19,9 @@ import {
 import { COLUMN_CUE_PX, arpCompact, panelStep, rowPage, wholeRows, type PanelBox } from '../../lib/arpLayout';
 import { getEngineCtx } from '../../state/playerStore';
 import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { rollPartVoice } from '../../lib/rollPartVoice';
+import { vstBaseChannel } from '../../lib/rollVstPlay';
+import { auditionRollVstNote } from '../../state/rollInstruments';
 import { playedRollBends } from '../../lib/pitchBend';
 import { InstrumentPicker } from './InstrumentPicker';
 import { CueKey, FIELD_LEGEND, KEY_ON, KEY_REST, MINI_GLYPH, STRIP_GLYPH, StripKey } from './midiDockKit';
@@ -336,6 +339,25 @@ export const ArpeggiatorPanel: React.FC<{ playing: boolean }> = ({ playing }) =>
   useEffect(() => {
     engine.setMeter({ meterMap, pickupSteps });
   }, [engine, meterMap, pickupSteps]);
+
+  // The arpeggiator sounds as the part it writes into: the roll part being
+  // edited (its VST3 instrument while that plays, else its program; a drum
+  // part's kit is no voice for chords, so the picker's plays then).
+  useEffect(() => {
+    engine.voiceOf = () => {
+      const voice = rollPartVoice();
+      const vst = voice.vst;
+      if (vst) {
+        const channel = vstBaseChannel(vst.channel);
+        const play = (midi: number, velocity: number, when: number, duration: number) => auditionRollVstNote(vst.entryId, channel, midi, velocity, when, duration);
+        return voice.percussion || voice.program === undefined ? { play } : { program: voice.program, bank: voice.bank, play };
+      }
+      return voice.percussion || voice.program === undefined ? {} : { program: voice.program, bank: voice.bank };
+    };
+    return () => {
+      engine.voiceOf = null;
+    };
+  }, [engine]);
 
   // The arpeggiator bends with the roll's lane A, its curve looping at the roll's length.
   const bends = usePianoRollStore((s) => s.bends);

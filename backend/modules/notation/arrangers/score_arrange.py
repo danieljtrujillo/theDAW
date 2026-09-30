@@ -8,15 +8,31 @@ arrangements rendered as MusicXML:
   - ``simplified``      single-staff melody only, quantized
   - ``band-score``      one staff per source stem (percussion staff for drum
                         MIDIs, clef by register, redundant 'full' mix skipped),
-                        every staff on one beat grid
+                        every staff on one beat grid; a stem given an
+                        instrument from the orchestral registry
+                        (:mod:`..instruments`) is named, ordered, clefed and
+                        transposed as that instrument
 
 Pure music21; no new dependencies. Each builder returns a ``music21`` score
 that the engine writes to MusicXML, so the results render in the existing
 OpenSheetMusicDisplay viewer.
+
+Every builder writes fresh parts, so each one copies the source's meter, key
+and tempo into them: every time signature, key signature and metronome mark at
+the offset where the source states it (a band score takes one meter and key
+map for all its staves, see :func:`_band_marks`). Each time signature sits on
+the bar line where it takes effect, and a source that opens with a pickup bar
+gives the arrangement the same pickup (:func:`_bar_like_source`). Each head
+keeps the velocity of the notes it stands for. An arrangement is at concert
+pitch, except a band-score staff given a transposing instrument: that part is
+marked as sounding pitch and carries the instrument, so music21's writer puts
+it at written pitch under its ``<transpose>``, as MusicXML stores a part for a
+transposing instrument.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import tempfile
@@ -55,6 +71,11 @@ _BAND_MAX_CHORD = 4
 # beside the real stems (measured Jaccard 0.47 against the stem union) and
 # always the tallest staff.
 _MIX_STEM_NAMES = frozenset({"full", "mix", "master"})
+# A band-score meter or key change read in seconds is put on the beat grid at
+# the nearest 64th note, which every bar line of a standard meter lies on.
+_MARK_STEPS_PER_QUARTER = 16
+# Offsets closer than this many quarters are one offset.
+_EPS = 1e-6
 
 
 def arrange(
@@ -63,12 +84,17 @@ def arrange(
     *,
     title: str = "",
     reference_bpm: Optional[float] = None,
+    instruments: Optional[list[Optional[str]]] = None,
 ) -> dict[str, Any]:
     """Build an arrangement of ``style`` from one or more source MIDIs.
 
     ``reference_bpm`` (the song's analysed tempo) is the beat grid a band score
     lays every staff out at; see :func:`_grid_bpm` for the tempo used without
     it. The single-source styles keep their source's own tempo.
+
+    ``instruments`` (band score only) holds, for each source in order, the id
+    of the registry instrument its staff is written for, or None to name and
+    clef the staff from its file. An unknown id is an error.
 
     Returns a result dict; on success it carries the music21 ``score`` for the
     caller to write. Never raises.
@@ -77,10 +103,11 @@ def arrange(
     if style not in STYLES:
         return {"ok": False, "error": f"unknown arrangement style: {style!r}"}
     try:
-        import music21  # type: ignore[import] # noqa: F401 - availability check
+        import music21  # noqa: F401 - availability check
     except ImportError:
         return {"ok": False, "error": "music21 is not installed."}
 
+    from ..grid import is_exact, quantize_score
     from ..midi_read import read_score
 
     paths = [Path(s) for s in sources]
@@ -89,27 +116,41 @@ def arrange(
     for path in paths:
         if not path.is_file():
             return {"ok": False, "error": f"source not found: {path}"}
+    if instruments:
+        from ..instruments import by_id
+
+        unknown = [i for i in instruments if i and by_id(i) is None]
+        if unknown:
+            return {"ok": False, "error": f"unknown instrument(s): {unknown}"}
 
     extra_stats: dict[str, Any] = {}
     try:
         if style == "band-score":
-            score, extra_stats = _band_score(paths, title, reference_bpm)
+            score, extra_stats = _band_score(
+                paths, title, reference_bpm, instruments=instruments
+            )
         else:
             base = read_score(paths[0])
+            # A part for a transposing instrument may hold written pitch; the
+            # arrangement, its notes and its key are at concert pitch.
+            base.toSoundingPitch(inPlace=True)
+            context = _source_context(base)
+            pickup = _pickup(base)
+            exact = is_exact(base)
             try:
-                base = base.quantize((4, 3), inPlace=False, recurse=True)
+                base = quantize_score(base, exact=exact)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: quantize skipped for %s: %s", paths[0], exc)
             if style == "piano-reduction":
-                score = _piano_reduction(base, title)
+                score = _piano_reduction(base, title, context)
             elif style == "lead-sheet":
-                score = _lead_sheet(base, title)
+                score = _lead_sheet(base, title, context)
             else:
-                score = _simplified(base, title)
+                score = _simplified(base, title, context)
             # Re-quantize AFTER the merge. These styles all route through
             # _skyline_chords -> chordify(), which slices a new sonority at every
             # onset boundary across every part. When the source mixes duple and
-            # triple positions (which the (4, 3) grid above permits by design),
+            # triple positions (which the per-bar grid above permits by design),
             # those slice widths are differences between the two grids and are
             # not representable as a plain note value, so music21 renders them as
             # nonsense tuplets: 12:7, 24:19, 11:8, 17:16. Snapping the assembled
@@ -118,9 +159,10 @@ def arrange(
             # irrational tuplet notes 8 -> 0, total tuplets 690 -> 214, note
             # count unchanged at 1183.
             try:
-                score = score.quantize((4, 3), inPlace=False, recurse=True)
+                score = quantize_score(score, exact=exact)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: post-merge quantize skipped for %s: %s", style, exc)
+            _bar_like_source(score, pickup)
     except Exception as exc:  # noqa: BLE001
         log.warning("arrange: %s failed: %s", style, exc)
         return {"ok": False, "error": repr(exc)}
@@ -135,10 +177,128 @@ def arrange(
 
 def _skyline_chords(base: Any) -> list[Any]:
     """Collapse a score to vertical sonorities with absolute offsets."""
-    from music21 import chord  # type: ignore[import]
+    from music21 import chord
 
     flat = base.chordify().flatten()
     return list(flat.getElementsByClass(chord.Chord))
+
+
+def _is_hidden(mark: Any) -> bool:
+    return bool(getattr(getattr(mark, "style", None), "hideObjectOnPrint", False))
+
+
+def _source_context(base: Any) -> list[tuple[Any, Any]]:
+    """``(offset, mark)`` for every time signature, key signature and metronome
+    mark of ``base``, once per kind and offset, in offset order.
+
+    ``base`` must be at sounding pitch, or a transposing part's key signature is
+    its written key. Every part of a MIDI repeats the conductor track's marks
+    and music21 hides each tempo mark it copies past the first part, so the
+    first mark of a kind at an offset stands, a shown tempo mark ahead of a
+    hidden one. Parts with pitched notes are read first, because a percussion
+    part states no key of the music.
+    """
+    from music21 import common, key, meter, tempo
+
+    kinds = (meter.TimeSignature, key.KeySignature, tempo.MetronomeMark)
+    flats = [part.flatten() for part in (list(getattr(base, "parts", ())) or [base])]
+    flats.sort(key=lambda flat: 0 if any(el.pitches for el in flat.notes) else 1)
+    found: dict[tuple[Any, int], Any] = {}
+    for flat in flats:
+        for mark in flat.getElementsByClass(kinds):
+            kind = next(i for i, cls in enumerate(kinds) if isinstance(mark, cls))
+            at = (common.opFrac(mark.getOffsetBySite(flat)), kind)
+            held = found.get(at)
+            if held is None or (_is_hidden(held) and not _is_hidden(mark)):
+                found[at] = mark
+    return [(offset, found[(offset, kind)]) for offset, kind in sorted(found)]
+
+
+def _pickup(base: Any) -> float:
+    """How far into its first bar a source that opens with a pickup starts:
+    the quarters music21 pads its first measure by (``paddingLeft``, which the
+    MusicXML reader sets on a short first measure), 0 without a pickup or for
+    a source read without measures, as a MIDI is."""
+    from music21 import stream
+
+    for part in list(getattr(base, "parts", ())) or [base]:
+        first = part.getElementsByClass(stream.Measure).first()
+        if first is None:
+            continue
+        padding = float(first.paddingLeft or 0.0)
+        bar = float(first.barDuration.quarterLength)
+        return padding if _EPS < padding < bar - _EPS else 0.0
+    return 0.0
+
+
+def _snap_meters(part: Any) -> None:
+    """Move each time signature of the unbarred ``part`` to the bar line where
+    ``makeMeasures`` puts it in force (:func:`..bar_lines.snap_part_meters`)."""
+    from ..bar_lines import snap_part_meters
+
+    snap_part_meters(part)
+
+
+def _pickup_bar_fits(part: Any, pickup: float) -> bool:
+    """:func:`..bar_lines.pickup_bar_fits`."""
+    from ..bar_lines import pickup_bar_fits
+
+    return pickup_bar_fits(part, pickup)
+
+
+def _open_with_pickup(part: Any, pickup: float) -> None:
+    """:func:`..bar_lines.open_with_pickup`: the first bar of ``part`` becomes
+    the pickup, bar 0."""
+    from ..bar_lines import open_with_pickup
+
+    open_with_pickup(part, pickup)
+
+
+def _bar_like_source(score: Any, pickup: float) -> None:
+    """Bar the unbarred parts of a single-source arrangement as the source is
+    (:func:`..bar_lines.bar_like_source`), opening with the source's pickup
+    (:func:`_pickup`)."""
+    from ..bar_lines import bar_like_source
+
+    bar_like_source(score, pickup)
+
+
+def _hidden_tempo(mark: Any) -> Any:
+    """A copy of ``mark`` as music21 writes a MIDI's tempo into every part after
+    the first: nothing printed, the same ``<sound tempo>``."""
+    hidden = copy.deepcopy(mark)
+    hidden.numberImplicit = True
+    hidden.style.hideObjectOnPrint = True
+    return hidden
+
+
+def _carry_context(
+    part: Any, context: list[tuple[Any, Any]], *, shows_tempo: bool
+) -> None:
+    """Insert a copy of every ``(offset, mark)`` of ``context`` into ``part``.
+
+    Only the part that ``shows_tempo`` prints the metronome marks; every other
+    part carries each one hidden, so a part extracted on its own still plays
+    at its tempo.
+    """
+    from music21 import tempo
+
+    for offset, mark in context:
+        if isinstance(mark, tempo.MetronomeMark) and not shows_tempo:
+            part.insert(offset, _hidden_tempo(mark))
+        else:
+            part.insert(offset, copy.deepcopy(mark))
+
+
+def _velocity(notes: list[Any]) -> Optional[int]:
+    """The velocity of a head written for ``notes``: the loudest of them, or
+    None when none carries one."""
+    values = [
+        n.volume.velocity
+        for n in notes
+        if n.hasVolumeInformation() and n.volume.velocity is not None
+    ]
+    return max(values) if values else None
 
 
 def _tie_type(notes: list[Any]) -> Optional[str]:
@@ -160,17 +320,24 @@ def _tie_type(notes: list[Any]) -> Optional[str]:
     return None
 
 
-def _voice(heads: list[tuple[Any, Optional[str]]], quarter_length: float) -> Any:
-    """A note or chord of ``(pitch, tie type)`` heads."""
-    from music21 import chord, note, tie  # type: ignore[import]
+def _voice(
+    heads: list[tuple[Any, Optional[str], Optional[int]]], quarter_length: float
+) -> Any:
+    """A note or chord of ``(pitch, tie type, velocity)`` heads."""
+    from music21 import chord, note, tie
+
+    from ..midi_read import carry_chord_velocity
 
     notes = []
-    for pitch, tie_type in heads:
+    for pitch, tie_type, velocity in heads:
         head = note.Note(pitch)
         if tie_type:
             head.tie = tie.Tie(tie_type)
+        if velocity is not None:
+            head.volume.velocity = velocity
         notes.append(head)
     element = notes[0] if len(notes) == 1 else chord.Chord(notes)
+    carry_chord_velocity(element)
     element.duration.quarterLength = quarter_length or 1.0
     return element
 
@@ -185,7 +352,7 @@ def _mend_ties(part: Any) -> None:
     so it never reads as a new note. A tie out of a head that no head
     continues is released.
     """
-    from music21 import chord, common, harmony, note, tie  # type: ignore[import]
+    from music21 import chord, common, harmony, note, tie
 
     heads: list[tuple[Any, Any, int, Any, Any]] = []
     for element in part.getElementsByClass((note.Note, chord.Chord)):
@@ -230,6 +397,8 @@ def _mend_ties(part: Any) -> None:
     for head, tie_type in decided:
         head.tie = tie.Tie(tie_type) if tie_type else None
 
+    from ..midi_read import carry_chord_velocity
+
     for element, gone in dropped.values():
         members = list(element.notes) if isinstance(element, chord.Chord) else [element]
         if len(gone) == len(members):
@@ -237,10 +406,11 @@ def _mend_ties(part: Any) -> None:
         else:
             for head in gone:
                 element.remove(head)
+            carry_chord_velocity(element)
 
 
 def _new_score(title: str, fallback: str) -> Any:
-    from music21 import metadata, stream  # type: ignore[import]
+    from music21 import metadata, stream
 
     score = stream.Score()
     score.insert(0, metadata.Metadata())
@@ -248,20 +418,22 @@ def _new_score(title: str, fallback: str) -> Any:
     return score
 
 
-def _piano_reduction(base: Any, title: str) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+def _piano_reduction(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
+    from music21 import clef, stream
 
     treble = stream.Part()
     treble.partName = "Piano R.H."
     treble.insert(0, clef.TrebleClef())
+    _carry_context(treble, context, shows_tempo=True)
     bass = stream.Part()
     bass.partName = "Piano L.H."
     bass.insert(0, clef.BassClef())
+    _carry_context(bass, context, shows_tempo=False)
 
     for sonority in _skyline_chords(base):
         ql = sonority.duration.quarterLength
         heads = sorted(
-            ((n.pitch, _tie_type([n])) for n in sonority.notes),
+            ((n.pitch, _tie_type([n]), _velocity([n])) for n in sonority.notes),
             key=lambda head: head[0].midi,
         )
         high = [head for head in heads if head[0].midi >= _TREBLE_BASS_SPLIT]
@@ -279,16 +451,18 @@ def _piano_reduction(base: Any, title: str) -> Any:
     return score
 
 
-def _simplified(base: Any, title: str) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+def _simplified(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
+    from music21 import clef, stream
 
     melody = stream.Part()
     melody.partName = "Melody"
     melody.insert(0, clef.TrebleClef())
+    _carry_context(melody, context, shows_tempo=True)
     for sonority in _skyline_chords(base):
         top = max(sonority.notes, key=lambda n: n.pitch.midi)
         element = _voice(
-            [(top.pitch, _tie_type([top]))], sonority.duration.quarterLength
+            [(top.pitch, _tie_type([top]), _velocity([top]))],
+            sonority.duration.quarterLength,
         )
         melody.insert(sonority.offset, element)
     _mend_ties(melody)
@@ -305,7 +479,7 @@ def _safe_chord_symbol(sonority: Any) -> Any:
     chords it can't name, and inserting one crashes MusicXML export with
     "no pitches in chord". This rebuilds from the figure and verifies it.
     """
-    from music21 import harmony  # type: ignore[import]
+    from music21 import harmony
 
     try:
         figure = getattr(harmony.chordSymbolFromChord(sonority), "figure", "") or ""
@@ -320,17 +494,19 @@ def _safe_chord_symbol(sonority: Any) -> Any:
     return clean if clean.pitches else None
 
 
-def _lead_sheet(base: Any, title: str) -> Any:
-    from music21 import clef, stream  # type: ignore[import]
+def _lead_sheet(base: Any, title: str, context: list[tuple[Any, Any]]) -> Any:
+    from music21 import clef, stream
 
     lead = stream.Part()
     lead.partName = "Lead"
     lead.insert(0, clef.TrebleClef())
+    _carry_context(lead, context, shows_tempo=True)
     last_figure = None
     for sonority in _skyline_chords(base):
         top = max(sonority.notes, key=lambda n: n.pitch.midi)
         element = _voice(
-            [(top.pitch, _tie_type([top]))], sonority.duration.quarterLength
+            [(top.pitch, _tie_type([top]), _velocity([top]))],
+            sonority.duration.quarterLength,
         )
         lead.insert(sonority.offset, element)
         # A triad is the minimum for a meaningful, identifiable chord symbol.
@@ -390,9 +566,10 @@ def _band_voice(
 ) -> tuple[Any, int]:
     """One band-score sonority: the notes of a chordified sonority folded into
     the clef window, deduped, capped at ``_BAND_MAX_CHORD`` (lowest + top
-    three), each head tied as the notes it stands for are. Returns the element
-    and the number of pitches that were folded."""
-    from music21 import pitch as m21pitch  # type: ignore[import]
+    three), each head tied as the notes it stands for are and as loud as the
+    loudest of them. Returns the element and the number of pitches that were
+    folded."""
+    from music21 import pitch as m21pitch
 
     low, high = window
     folded = 0
@@ -406,7 +583,10 @@ def _band_voice(
     kept = sorted(sources)
     if len(kept) > _BAND_MAX_CHORD:
         kept = [kept[0]] + kept[-(_BAND_MAX_CHORD - 1) :]
-    heads = [(m21pitch.Pitch(midi=m), _tie_type(sources[m])) for m in kept]
+    heads = [
+        (m21pitch.Pitch(midi=m), _tie_type(sources[m]), _velocity(sources[m]))
+        for m in kept
+    ]
     return _voice(heads, quarter_length), folded
 
 
@@ -419,7 +599,7 @@ def _grid_bpm(
     first drum-kit MIDI, because the drum transcriber writes the song's
     analysed tempo; otherwise the first staff's own tempo.
     """
-    import pretty_midi  # type: ignore[import]
+    import pretty_midi
 
     from .percussion import _DEFAULT_TEMPO, _initial_tempo
 
@@ -431,6 +611,90 @@ def _grid_bpm(
     return _initial_tempo(pretty_midi.PrettyMIDI(str(path)))
 
 
+def _grid_offset(seconds: float, bpm: float) -> Any:
+    """``seconds`` as quarters of ``bpm``, at the nearest 64th note."""
+    from music21 import common
+
+    steps = round(float(seconds) * bpm / 60.0 * _MARK_STEPS_PER_QUARTER)
+    return common.opFrac(steps / _MARK_STEPS_PER_QUARTER)
+
+
+def _changes_only(marks: list[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    """``(offset, value)`` marks in offset order, keeping the later of two at
+    one offset and dropping any that restates the value in force."""
+    out: list[tuple[Any, Any]] = []
+    for offset, value in sorted(marks, key=lambda mark: mark[0]):
+        if out and out[-1][0] == offset:
+            out.pop()
+        if not out or out[-1][1] != value:
+            out.append((offset, value))
+    return out
+
+
+def _band_marks(
+    staves: list[tuple[Path, str, bool]], bpm: float
+) -> tuple[list[tuple[Any, str]], list[tuple[Any, Any]]]:
+    """The one meter map and the one key map every staff of a band score is
+    barred and keyed by: ``([(offset, spec)], [(offset, Key)])`` (a spec is
+    ``"n/d"`` or a grouped ``"n/d g+g"``, :mod:`..bar_lines`), each offset
+    on the ``bpm`` grid and each meter on the bar line it takes effect on
+    (:func:`..bar_lines.snap_meters_to_bar_lines`).
+
+    The stems of one song are separate files, and a staff barred by its own
+    file disagrees with its neighbours wherever the files do (basic-pitch
+    states no meter at all). The meter map is that of the first stem that
+    states a time signature, a drum-kit MIDI ahead of the rest as for the grid
+    tempo; the key map is that of the first pitched stem that states a key.
+    Stems that state neither leave the score in music21's default 4/4 with no
+    key signature.
+    """
+    import pretty_midi
+    from music21 import common, key
+
+    from ..bar_lines import snap_meters_to_bar_lines
+    from ..midi_read import read_midi_meters
+
+    files = {path: pretty_midi.PrettyMIDI(str(path)) for path, _name, _drum in staves}
+    meters: list[tuple[Any, str]] = []
+    for path, _name, _drum in sorted(staves, key=lambda staff: not staff[2]):
+        # Every track's signatures, each with its grouping (read_midi_meters);
+        # the pretty_midi list (the first track only) when the file does not read.
+        stated_meters = read_midi_meters(path)
+        pm = files[path]
+        if stated_meters is not None:
+            stated = [
+                (_grid_offset(pm.tick_to_time(mark.tick), bpm), mark.spec)
+                for mark in stated_meters.marks
+            ]
+        else:
+            stated = [
+                (
+                    _grid_offset(ts.time, bpm),
+                    f"{int(ts.numerator)}/{int(ts.denominator)}",
+                )
+                for ts in pm.time_signature_changes
+                if ts.numerator > 0 and ts.denominator > 0
+            ]
+        if stated:
+            meters = [
+                (common.opFrac(offset), ratio)
+                for offset, ratio, _i in snap_meters_to_bar_lines(stated)
+            ]
+            break
+    keys: list[tuple[Any, Any]] = []
+    for path, _name, drum_kit in staves:
+        if drum_kit or not files[path].key_signature_changes:
+            continue
+        stated_keys = []
+        for ks in files[path].key_signature_changes:
+            mode, sharps = pretty_midi.key_number_to_mode_accidentals(ks.key_number)
+            tonality = key.KeySignature(sharps).asKey("minor" if mode else "major")
+            stated_keys.append((_grid_offset(ks.time, bpm), tonality))
+        keys = _changes_only(stated_keys)
+        break
+    return meters, keys
+
+
 def _conform_midi(source: Path, bpm: float, target: Path) -> Path:
     """Put ``source`` on a constant ``bpm`` grid and return the file to read.
 
@@ -439,7 +703,7 @@ def _conform_midi(source: Path, bpm: float, target: Path) -> Path:
     key signature at the second it sounds in ``source``, and ``target`` is
     returned. Its quarter-note offsets then count beats of ``bpm``.
     """
-    import pretty_midi  # type: ignore[import]
+    import pretty_midi
 
     from .percussion import _initial_tempo
 
@@ -458,8 +722,67 @@ def _conform_midi(source: Path, bpm: float, target: Path) -> Path:
     return target
 
 
+def _staff_names(
+    staves: list[tuple[Path, str, bool]], records: list[Any]
+) -> list[tuple[str, str]]:
+    """``(name, abbreviation)`` for each staff: the registry's for a staff given
+    an instrument, numbered when two or more staves share it ("Horn in F 1",
+    "Horn in F 2"); the file's otherwise."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record is not None:
+            counts[record.id] = counts.get(record.id, 0) + 1
+    seen: dict[str, int] = {}
+    out: list[tuple[str, str]] = []
+    for (_path, part_name, _drum), record in zip(staves, records):
+        if record is None:
+            out.append((part_name, part_name[:6]))
+            continue
+        if counts[record.id] == 1:
+            out.append((record.name, record.abbreviation))
+            continue
+        seen[record.id] = seen.get(record.id, 0) + 1
+        n = seen[record.id]
+        out.append((f"{record.name} {n}", f"{record.abbreviation} {n}"))
+    return out
+
+
+def _family_groups(score: Any, parts: list[Any], records: list[Any]) -> int:
+    """Bracket each run of two or more adjacent staves of one registry family,
+    as a full score groups its sections. Returns the number of groups."""
+    from music21 import layout
+
+    from ..instruments import family_label
+
+    groups = 0
+    start = 0
+    while start < len(parts):
+        family = records[start].family if records[start] is not None else None
+        end = start + 1
+        while (
+            family is not None
+            and end < len(parts)
+            and records[end] is not None
+            and records[end].family == family
+        ):
+            end += 1
+        if family is not None and end - start >= 2:
+            group = layout.StaffGroup(
+                parts[start:end], name=family_label(family), symbol="bracket"
+            )
+            group.barTogether = True
+            score.insert(0, group)
+            groups += 1
+        start = end
+    return groups
+
+
 def _band_score(
-    paths: list[Path], title: str, reference_bpm: Optional[float] = None
+    paths: list[Path],
+    title: str,
+    reference_bpm: Optional[float] = None,
+    *,
+    instruments: Optional[list[Optional[str]]] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """One staff per stem, every staff on one beat grid.
 
@@ -477,13 +800,38 @@ def _band_score(
     writes the analysed tempo and basic-pitch writes 120. A quarter note is a
     different length of time in each, so every staff is laid out at the one
     tempo :func:`_grid_bpm` picks, each note at the second it sounds in its own
-    file, and the score carries one metronome mark at that tempo.
+    file, and the score prints one metronome mark at that tempo: on the first
+    percussion staff, else on the top staff. Every other staff carries the
+    mark unprinted. Every staff is barred and keyed by :func:`_band_marks`.
+
+    ``instruments[i]`` names the registry instrument source ``i`` is written
+    for (see :func:`arrange`). A staff given a pitched instrument, or a
+    percussion instrument over kit data, is never skipped, because the reader
+    asked for it; a percussion instrument given to a pitched transcription
+    still meets the skip rules above. The staff is named after the instrument,
+    takes the one of the instrument's clefs that shows the most of its notes,
+    folds outliers into that clef's window cut to the instrument's practical
+    range, and carries the instrument, so a transposing part is written at
+    written pitch.
+    Staves given instruments go first, in score order; the rest follow in file
+    order. Each run of two or more staves of one family is bracketed.
 
     Returns ``(score, stats)`` with ``stats = {skipped, skip_reasons, clefs,
-    folded_notes}``.
+    folded_notes}``, plus ``instruments`` (staff name to registry id) and
+    ``groups`` (brackets written) when any staff was given an instrument.
     """
-    from music21 import chord, clef, stream, tempo  # type: ignore[import]
+    from music21 import chord, clef, stream
 
+    from ..instruments import (
+        best_clef,
+        by_id,
+        music21_clef,
+        sounding_window,
+        to_music21,
+    )
+    from ..instruments import instruments as registry
+    from ..bar_lines import time_signature
+    from ..grid import quantize_score
     from ..midi_read import read_score
     from ..tempo_marks import metronome_mark
     from .percussion import build_percussion_part, is_drum_midi
@@ -495,10 +843,21 @@ def _band_score(
     folded_total = 0
     multi = len(paths) > 1
 
+    picks = list(instruments or [])
     staves: list[tuple[Path, str, bool]] = []
+    records: list[Any] = []
     for index, path in enumerate(paths):
         part_name = path.stem[:24] or f"Part {index + 1}"
         drum_kit = is_drum_midi(path)
+        record = by_id(picks[index]) if index < len(picks) and picks[index] else None
+        # A pitched instrument keeps the staff whatever the stem is. A
+        # percussion instrument needs kit data: given to a pitched
+        # transcription (a drum stem basic-pitch read as notes) it cannot be
+        # written, so the skip rules below still apply to it.
+        if record is not None and (drum_kit or not record.percussion):
+            staves.append((path, part_name, drum_kit))
+            records.append(record)
+            continue
         if multi and not drum_kit and _is_mix_stem(path):
             skipped.append(path.stem)
             skip_reasons[path.stem] = "whole-mix transcription duplicates the stems"
@@ -510,14 +869,39 @@ def _band_score(
             )
             continue
         staves.append((path, part_name, drum_kit))
+        records.append(record)
+
+    given = any(record is not None for record in records)
+    if given:
+        after = len(registry())
+        order = sorted(
+            range(len(staves)),
+            key=lambda i: records[i].order if records[i] is not None else after + i,
+        )
+        staves = [staves[i] for i in order]
+        records = [records[i] for i in order]
+    names = _staff_names(staves, records)
 
     bpm = _grid_bpm(staves, reference_bpm)
+    meters, keys = _band_marks(staves, bpm)
+    shows_tempo = next((i for i, staff in enumerate(staves) if staff[2]), 0)
+    parts: list[Any] = []
     with tempfile.TemporaryDirectory(prefix="band_grid_") as scratch:
-        for index, (path, part_name, drum_kit) in enumerate(staves):
+        for index, (path, _file_name, drum_kit) in enumerate(staves):
+            record = records[index]
+            part_name, abbreviation = names[index]
             if drum_kit:
-                part = build_percussion_part(path, title=part_name, bpm=bpm)
+                part = build_percussion_part(
+                    path,
+                    title=part_name,
+                    bpm=bpm,
+                    time_signatures=meters,
+                    shows_tempo=index == shows_tempo,
+                )
+                part.partAbbreviation = abbreviation
                 clefs[part_name] = "percussion"
                 score.insert(0, part)
+                parts.append(part)
                 continue
 
             staff_midi = _conform_midi(path, bpm, Path(scratch) / f"{index}.mid")
@@ -525,16 +909,22 @@ def _band_score(
             # otherwise pickle it into its cache under a path never read again.
             source = read_score(staff_midi, cache=staff_midi == path)
             try:
-                source = source.quantize((4, 3), inPlace=False, recurse=True)
+                source = quantize_score(source)
             except Exception as exc:  # noqa: BLE001 - quantize is best-effort
                 log.debug("arrange: quantize skipped for %s: %s", path, exc)
             sonorities = list(
                 source.chordify().flatten().getElementsByClass(chord.Chord)
             )
-            clef_sign = _clef_for_pitches(
-                [int(p.midi) for sonority in sonorities for p in sonority.pitches]
-            )
-            window = _CLEF_WINDOWS[clef_sign]
+            pitches = [int(p.midi) for sonority in sonorities for p in sonority.pitches]
+            # An unpitched percussion instrument given to a pitched stem names
+            # the staff; its clef and window come from the notes as before.
+            pitched = record if record is not None and not record.percussion else None
+            if pitched is not None:
+                clef_id = best_clef(pitched, pitches)
+                window = sounding_window(pitched, clef_id)
+            else:
+                clef_id = _clef_for_pitches(pitches)
+                window = _CLEF_WINDOWS[clef_id]
             # Rebuild each stem into a fresh part (as the other builders do) so
             # the MusicXML writer bars it with a consistent time signature.
             # Inserting chordify()'s pre-measured stream directly produced scores
@@ -542,8 +932,22 @@ def _band_score(
             # (reading 'denominator')").
             part = stream.Part()
             part.partName = part_name
-            part.partAbbreviation = part_name[:6]
-            part.insert(0, clef.BassClef() if clef_sign == "F" else clef.TrebleClef())
+            part.partAbbreviation = abbreviation
+            if pitched is not None:
+                # The notes are the pitches that sound. With the instrument on
+                # a part marked as sounding, music21's writer moves a
+                # transposing part to the written pitch its <transpose> states.
+                part.atSoundingPitch = True
+                part.insert(0, to_music21(pitched))
+                part.insert(0, music21_clef(clef_id))
+            else:
+                part.insert(0, clef.BassClef() if clef_id == "F" else clef.TrebleClef())
+            for offset, spec in meters:
+                part.insert(offset, time_signature(spec))
+            for offset, tonality in keys:
+                part.insert(offset, copy.deepcopy(tonality))
+            mark = metronome_mark(bpm)
+            part.insert(0, mark if index == shows_tempo else _hidden_tempo(mark))
             for sonority in sonorities:
                 element, folded = _band_voice(
                     list(sonority.notes), sonority.duration.quarterLength, window
@@ -551,17 +955,9 @@ def _band_score(
                 folded_total += folded
                 part.insert(sonority.offset, element)
             _mend_ties(part)
-            clefs[part_name] = clef_sign
+            clefs[part_name] = clef_id
             score.insert(0, part)
-
-    # A percussion staff carries the grid's mark; a score of pitched staves
-    # gets it on the top staff.
-    parts = list(score.parts)
-    if (
-        parts
-        and score.recurse().getElementsByClass(tempo.MetronomeMark).first() is None
-    ):
-        parts[0].insert(0, metronome_mark(bpm))
+            parts.append(part)
 
     stats: dict[str, Any] = {
         "skipped": skipped,
@@ -569,4 +965,11 @@ def _band_score(
         "clefs": clefs,
         "folded_notes": folded_total,
     }
+    if given:
+        stats["instruments"] = {
+            name: record.id
+            for (name, _abbreviation), record in zip(names, records)
+            if record is not None
+        }
+        stats["groups"] = _family_groups(score, parts, records)
     return score, stats

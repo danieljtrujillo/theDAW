@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
+
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -77,11 +78,13 @@ def classify_ext(filename: str) -> Optional[str]:
 
 
 def find_ffmpeg() -> Optional[str]:
-    return shutil.which("ffmpeg")
+    """The ffmpeg ``backend.lib.ffmpeg_tools`` chose, or None."""
+    return ffmpeg_tools.find_ffmpeg()
 
 
 def find_ffprobe() -> Optional[str]:
-    return shutil.which("ffprobe")
+    """The ffprobe from that same build, or None."""
+    return ffmpeg_tools.find_ffprobe()
 
 
 def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:

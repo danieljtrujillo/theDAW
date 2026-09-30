@@ -1,9 +1,11 @@
 import { TextureGenParams, LoraEntry } from '../../types';
 import { ProviderTab, SdType } from './types';
+import { withOpenRouterModel } from '../../features/openrouter-textures/helpers';
+import type { OpenRouterTextureParams } from '../../features/openrouter-textures/types';
 
 // Inputs required to assemble the generation request body. These mirror the
 // closure variables the original inline buildParams() read from component state.
-export interface BuildParamsArgs {
+export interface BuildParamsArgs extends OpenRouterTextureParams {
   provider: string;
   prompt: string;
   isSdTab: boolean;
@@ -54,6 +56,7 @@ export function buildParams(args: BuildParamsArgs): TextureGenParams {
     quality,
     style,
     apiKey,
+    orModel,
   } = args;
 
   const base: TextureGenParams = {
@@ -83,5 +86,5 @@ export function buildParams(args: BuildParamsArgs): TextureGenParams {
     }
     if (apiKey.trim()) base.apiKey = apiKey.trim();
   }
-  return base;
+  return withOpenRouterModel(base, orModel);
 }

@@ -6,15 +6,28 @@
  * soundfont-player. Instrument selection maps onto General MIDI programs; the
  * compact panel also exposes theDAW's own instrument picker for the full 128-program
  * range. WAV export uses theDAW's offline soundfont render.
+ *
+ * The panel's voice is the voice the piano roll's active part plays
+ * (lib/rollPartVoice). The assistant's instrument choice and the panel's ROLL VOICE
+ * select set it through lib/rollVoiceChoice: on a roll linked to an EDIT clip
+ * they set that clip's track instrument, and on an unlinked roll the roll's own
+ * voice (pianoRollStore `voiceProgram`), and on a part with a program of its
+ * own that program. The panel previews and exports with
+ * it. It never writes the global picker, whose program every EDIT clip without
+ * one of its own follows. Left unset, all of them play the picker's program.
  */
 import type { NoteEvent } from './types';
 import {
+  getActiveProgram,
   previewNoteSF,
   renderNotesToBlobSF,
   liveAllNotesOff,
-  useSoundfontStore,
 } from '../../../lib/soundfontEngine';
 import type { RenderNote } from '../../../lib/midiSynth';
+import type { ClipVoice } from '../../../lib/clipProgram';
+import { rollPartVoice } from '../../../lib/rollPartVoice';
+import { chooseRollVoice } from '../../../lib/rollVoiceChoice';
+import { DRUM_CHANNEL } from '../../../lib/editChannels';
 import { getEngineCtx } from '../../../state/playerStore';
 
 export type InstrumentType = 'synth' | 'piano' | 'kick' | 'bass' | 'guitar' | 'strings' | 'organ';
@@ -32,6 +45,17 @@ const INSTRUMENT_GM: Record<InstrumentType, { name: string; program: number }> =
   strings: { name: 'String Ensemble', program: 48 },
   organ: { name: 'Rock Organ', program: 18 },
 };
+
+/** The voice the panel previews and renders with: the roll's (its linked
+ *  clip's, else its own), with the picker's program when that has none. */
+export const vocalVoice = (): ClipVoice => {
+  // The active part's voice (lib/rollPartVoice): its own program, else its linked clip's, else the roll's.
+  const voice = rollPartVoice();
+  return { program: voice.program ?? getActiveProgram(), percussion: voice.percussion };
+};
+
+/** The program the panel previews and renders with (see vocalVoice). */
+export const vocalVoiceProgram = (): number => vocalVoice().program ?? getActiveProgram();
 
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -52,12 +76,11 @@ export class MidiSynth {
   private startedAt = 0;
   private startOffset = 0;
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async setInstrument(instrument: InstrumentType): Promise<void> {
+  setInstrument(instrument: InstrumentType): Promise<void> {
     this.instrument = instrument;
-    const sf = useSoundfontStore.getState();
-    sf.setActiveProgram(INSTRUMENT_GM[instrument].program);
-    sf.setUseSoundfont(true);
+    // Every assistant instrument is a melodic GM program, so on a roll linked to a drum track it turns drums off.
+    chooseRollVoice(INSTRUMENT_GM[instrument].program, false);
+    return Promise.resolve();
   }
 
   getInstrument(): InstrumentType {
@@ -73,8 +96,7 @@ export class MidiSynth {
    * into the sequence (notes before it are skipped). Each note triggers a live
    * soundfont voice at its absolute start, scaled by the synth volume.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async playNotes(notes: NoteEvent[], onEnd?: () => void, startFromTime = 0): Promise<void> {
+  playNotes(notes: NoteEvent[], onEnd?: () => void, startFromTime = 0): Promise<void> {
     this.stop();
     const ctx = getEngineCtx();
     if (ctx.state === 'suspended') void ctx.resume();
@@ -89,7 +111,8 @@ export class MidiSynth {
       if (at < 0) continue;
       const vel = Math.max(1, Math.min(127, Math.round(n.velocity * (0.4 + this.volume * 0.6))));
       const id = window.setTimeout(() => {
-        void previewNoteSF(n.midiNote, vel, n.duration);
+        const voice = vocalVoice();
+        void previewNoteSF(n.midiNote, vel, n.duration, voice.percussion ? DRUM_CHANNEL : 0, undefined, voice.program);
       }, Math.max(0, at * 1000));
       this.timers.push(id);
     }
@@ -99,6 +122,7 @@ export class MidiSynth {
       this.endTimer = null;
       onEnd?.();
     }, totalMs);
+    return Promise.resolve();
   }
 
   /** Alias kept for callers that use `play(notes, bpm)`. */
@@ -132,7 +156,9 @@ export class MidiSynth {
 
   /** Render the notes to a WAV Blob through theDAW's offline soundfont render. */
   async renderToWav(notes: NoteEvent[]): Promise<Blob> {
-    const { blob } = await renderNotesToBlobSF(toRenderNotes(notes));
+    const voice = vocalVoice();
+    const render = toRenderNotes(notes);
+    const { blob } = await renderNotesToBlobSF(voice.percussion ? render.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : render, { program: voice.program });
     return blob;
   }
 

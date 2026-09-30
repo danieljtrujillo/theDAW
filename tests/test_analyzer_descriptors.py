@@ -97,3 +97,22 @@ def test_clipping_report_carries_the_measured_peak(tmp_path: Path):
     bundle = asyncio.run(extract_descriptors(src))
     clipping = bundle["high_level"]["artifact_flags"]["clipping"]
     assert clipping["sample_peak"] == pytest.approx(1.5, abs=1e-3)
+
+
+def test_extract_descriptors_reads_a_file_sampled_under_c7(tmp_path: Path):
+    """The F0 search ran pyin over C2..C7 at any rate, and pyin refuses an
+    fmax above Nyquist, which C7 (2093 Hz) is below 4186 Hz: a 4 kHz file
+    raised ParameterError out of extract_descriptors, a 500 from both analyzer
+    endpoints. The range now stops at Nyquist."""
+    from backend.lib.audio_io import save_audio
+    from backend.modules.analyzer.descriptors import extract_descriptors
+
+    sr = 4000
+    t = np.arange(sr * 4, dtype=np.float64) / sr
+    y = 0.5 * np.sin(2 * np.pi * 220.0 * t)
+    src = tmp_path / "tone-4k.wav"
+    save_audio(src, np.stack([y, y]), sr, subtype="PCM_16")
+
+    bundle = asyncio.run(extract_descriptors(src))
+    assert bundle["sample_rate"] == sr
+    assert bundle["mid_level"]["f0_hz"] == pytest.approx(220.0, rel=0.02)

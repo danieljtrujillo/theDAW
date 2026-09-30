@@ -17,9 +17,15 @@
     -Yes            assume "yes" to the prompts (non-interactive)
     -UnderfitVenv   only run the Underfit trainer-tab venv bootstrap, then exit
                     (theDAW.bat calls this after the main venv is built)
+    -VstHost        only run the native live-VST host build offer, then exit
+                    (theDAW.bat calls this when scripts/check_vst_host.py
+                    reports the host exe missing and CMake is on PATH)
+    -FFmpegCheck    only look for an FFmpeg with libsoxr, print nothing, and
+                    exit 0 when one is found, 1 when none is (theDAW.bat calls
+                    this when the first ffmpeg on PATH has no libsoxr)
 #>
 [CmdletBinding()]
-param([switch]$Yes, [switch]$UnderfitVenv)
+param([switch]$Yes, [switch]$UnderfitVenv, [switch]$VstHost, [switch]$FFmpegCheck)
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------------- #
@@ -37,6 +43,13 @@ function Ask($q){
   $a = Read-Host "  $q  [Y/n]"
   return ($a -eq '' -or $a -match '^(y|yes)$')
 }
+
+# Ask() reads an empty line as yes, which is right for a prompt a person is
+# looking at. On a redirected or closed stdin Read-Host hands back that empty
+# line straight away, so an OPTIONAL multi-minute build would start itself in
+# CI or a piped launch. Callers that must not do that test the console first
+# and treat 'no console' as a decline. -Yes still wins: it is a real answer.
+function Interactive(){ try { return (-not [Console]::IsInputRedirected) } catch { return $false } }
 
 function Have($name){ return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
@@ -80,6 +93,62 @@ function Initialize-UnderfitVenv(){
     if($LASTEXITCODE -eq 0){ OK 'Underfit trainer env created.' }
     else { WARN "uv sync exited $LASTEXITCODE - the Underfit tab stays unavailable for now." }
   } finally { Pop-Location }
+}
+
+# Remembering a 'no'. theDAW.bat skips its build offer while this file
+# exists, so declining once is not re-asked on every launch; deleting it, or
+# running setup.ps1 -VstHost by hand, brings the offer back, and a successful
+# build clears it. ONLY an interactive decline writes it - the no-console
+# auto-decline below must leave nothing behind, or one redirected launch (CI,
+# a piped run) would silence the offer on a real console afterwards. Both the
+# write and the delete are best-effort: on a read-only or locked checkout the
+# next launch simply asks again, which is not worth a line of output.
+function Set-VstHostDeclined($hostDir, $declined){
+  $marker = Join-Path $hostDir '.build-declined'
+  try {
+    if($declined){
+      $stamp = (Get-Date).ToString('s')
+      Set-Content -Path $marker -Encoding Ascii -Value "$stamp  delete this file to be asked again"
+    } else {
+      Remove-Item -Force -ErrorAction SilentlyContinue $marker
+    }
+  } catch { }
+}
+
+# The native live-VST host (native/vst-host) is what lets real VST3 plugins
+# process the live signal during playback. It is C++17 against Win32, built
+# locally with CMake + the Visual Studio Build Tools, and never committed
+# (native/vst-host/bin/ is gitignored), so a fresh clone has no exe. theDAW.bat
+# offers this when scripts/check_vst_host.py reports the exe missing. Like the
+# Underfit env above it is consent-gated and never blocks theDAW - declining
+# leaves live VST hosting unavailable for the session and plugins still work
+# offline. build.ps1 throws on a failed configure or build, so the call is
+# wrapped: a broken toolchain must not take setup.ps1 down with it.
+function Initialize-VstHost(){
+  Update-Path
+  $root    = Split-Path -Parent $PSScriptRoot
+  $hostDir = Join-Path $root 'native\vst-host'
+  $builder = Join-Path $hostDir 'build.ps1'
+  if(-not (Test-Path $builder)){ return }   # not vendored
+  if(Test-Path (Join-Path $hostDir 'bin\thedaw-vst-host.exe')){ OK 'Live VST host present'; return }
+  Head 'Live VST host (optional)'
+  if(-not (Have 'cmake')){ WARN 'CMake is required to build the live VST host - install CMake, then re-launch.'; return }
+  Info 'Real VST3 plugins only process the live signal when this native host is built.'
+  Info 'This runs native\vst-host\build.ps1 (needs the Visual Studio Build Tools; a few minutes).'
+  if(-not (Interactive) -and -not $Yes){ WARN 'Skipped - no console to ask at; live VST hosting stays unavailable and plugins still work offline.'; return }
+  if(-not (Ask 'Build the live VST host now?')){
+    Set-VstHostDeclined $hostDir $true
+    WARN 'Skipped, and not asked again at launch: delete native\vst-host\.build-declined or run install\setup.ps1 -VstHost to be offered it again, or set THEDAW_SKIP_VST_HOST_BUILD=1 to suppress the offer outright. Plugins still work offline.'
+    return
+  }
+  Info 'Building via: native\vst-host\build.ps1'
+  try {
+    & $builder
+    if($LASTEXITCODE -eq 0){ Set-VstHostDeclined $hostDir $false; OK 'Live VST host built.' }
+    else { WARN "build.ps1 exited $LASTEXITCODE - live VST hosting stays unavailable; plugins still work offline." }
+  } catch {
+    WARN ('Live VST host build failed: ' + $_.Exception.Message)
+  }
 }
 
 $wingetOk = Have 'winget'
@@ -137,9 +206,101 @@ function Install-AppInstaller(){
   }
 }
 
+# FFmpeg: theDAW needs a build with libsoxr. Classical Upsample, Super-Res and
+# High-Quality SRC resample through it, and gyan.dev's "essentials" build, which
+# other apps ship and put on PATH, has none. The backend
+# (backend/lib/ffmpeg_tools.py) probes these same places in this same order and
+# runs the first build that passes, so a full build anywhere here is enough.
+function Get-FFmpegCandidates(){
+  $list = New-Object System.Collections.ArrayList
+  if($env:THEDAW_FFMPEG){
+    $p = $env:THEDAW_FFMPEG.Trim().Trim('"')
+    if(Test-Path -LiteralPath $p -PathType Container){ $p = Join-Path $p 'ffmpeg.exe' }
+    [void]$list.Add($p)
+  }
+  foreach($c in @(Get-Command ffmpeg -All -CommandType Application -ErrorAction SilentlyContinue)){
+    [void]$list.Add($c.Path)
+  }
+  $bases = @()
+  if($env:LOCALAPPDATA){ $bases += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet') }
+  if($env:ProgramFiles){ $bases += (Join-Path $env:ProgramFiles 'WinGet') }
+  foreach($base in $bases){
+    [void]$list.Add((Join-Path $base 'Links\ffmpeg.exe'))
+    $packages = Join-Path $base 'Packages'
+    if(Test-Path -LiteralPath $packages){
+      foreach($pkg in @(Get-ChildItem -LiteralPath $packages -Directory -Filter 'Gyan.FFmpeg*' -ErrorAction SilentlyContinue)){
+        foreach($ver in @(Get-ChildItem -LiteralPath $pkg.FullName -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)){
+          [void]$list.Add((Join-Path $ver.FullName 'bin\ffmpeg.exe'))
+        }
+      }
+    }
+  }
+  if($env:USERPROFILE){ [void]$list.Add((Join-Path $env:USERPROFILE 'scoop\shims\ffmpeg.exe')) }
+  if($env:ProgramData){ [void]$list.Add((Join-Path $env:ProgramData 'chocolatey\bin\ffmpeg.exe')) }
+  $seen = @{}
+  $out = New-Object System.Collections.ArrayList
+  foreach($p in $list){
+    if(-not $p){ continue }
+    if(-not (Test-Path -LiteralPath $p -PathType Leaf)){ continue }
+    $k = $p.ToLowerInvariant()
+    if($seen.ContainsKey($k)){ continue }
+    $seen[$k] = $true
+    [void]$out.Add($p)
+  }
+  return ,$out
+}
+
+# A 50 ms sine resampled through soxr into the null muxer: exit 0 only when the
+# build has libsoxr. Run through Process directly so ffmpeg's stderr never
+# becomes a PowerShell error record under $ErrorActionPreference = 'Stop'.
+function Test-FFmpegSoxr($exe){
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '-hide_banner -nostdin -loglevel error -f lavfi -i sine=d=0.05 -af aresample=48000:resampler=soxr -f null -'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    $null = $proc.StandardOutput.ReadToEnd()
+    if(-not $proc.WaitForExit(20000)){
+      try { $proc.Kill() } catch { }
+      return $false
+    }
+    $null = $errTask.Result
+    return ($proc.ExitCode -eq 0)
+  } catch {
+    return $false
+  }
+}
+
+# State = 'ok' (a build with libsoxr, at Path), 'nosoxr' (FFmpeg present, none
+# with libsoxr; Path is the one theDAW would run) or 'missing'.
+function Get-FFmpegState(){
+  $candidates = Get-FFmpegCandidates
+  if($candidates.Count -eq 0){ return [pscustomobject]@{ State='missing'; Path=$null } }
+  foreach($c in $candidates){
+    if(Test-FFmpegSoxr $c){ return [pscustomobject]@{ State='ok'; Path=$c } }
+  }
+  return [pscustomobject]@{ State='nosoxr'; Path=$candidates[0] }
+}
+
+# Dedicated mode: theDAW.bat calls `setup.ps1 -FFmpegCheck` when the first
+# ffmpeg on PATH fails the soxr probe, to learn whether a full build is
+# installed somewhere else the backend looks. Silent; the exit code is the answer.
+if($FFmpegCheck){
+  if((Get-FFmpegState).State -eq 'ok'){ exit 0 } else { exit 1 }
+}
+
 # Dedicated mode: theDAW.bat calls `setup.ps1 -UnderfitVenv` after the main venv
 # bootstrap to create the optional Underfit trainer env if it's missing.
 if($UnderfitVenv){ Initialize-UnderfitVenv; exit 0 }
+
+# Dedicated mode: theDAW.bat calls `setup.ps1 -VstHost` when the launch-time
+# check finds no host exe. It always exits 0 - the launch continues either way.
+if($VstHost){ Initialize-VstHost; exit 0 }
 
 Clear-Host
 Write-Host ""
@@ -196,7 +357,18 @@ function Need($present, $name, $label, $size, $required, $action){
 
 Need (Have 'uv')     'uv'     'uv (Python env manager)'  '~15 MB'  $true  'uv'
 Need (Have 'node')   'node'   'Node.js LTS + npm'        '~30 MB'  $true  'OpenJS.NodeJS.LTS'
-Need (Have 'ffmpeg') 'ffmpeg' 'FFmpeg (all audio I/O)'   '~80 MB'  $false 'Gyan.FFmpeg'
+# FFmpeg counts as present only when a build with libsoxr is found. One without
+# it is offered the full build (winget Gyan.FFmpeg) through the same consent.
+$ffmpeg = Get-FFmpegState
+if($ffmpeg.State -eq 'ok'){
+  OK "FFmpeg with libsoxr found ($($ffmpeg.Path))"
+} elseif($ffmpeg.State -eq 'nosoxr'){
+  WARN "FFmpeg at $($ffmpeg.Path) has no libsoxr (recommended: the full build)"
+  Info "Classical Upsample, Super-Res and High-Quality SRC resample with libsoxr and fail on this build."
+  [void]$todo.Add([pscustomobject]@{ Name='ffmpeg'; Label='FFmpeg full build (libsoxr resampler)'; Size='~80 MB'; Required=$false; Action='Gyan.FFmpeg' })
+} else {
+  Need $false 'ffmpeg' 'FFmpeg full build (all audio I/O)' '~80 MB' $false 'Gyan.FFmpeg'
+}
 Need (Have 'git')    'git'    'Git'                      '~60 MB'  $false 'Git.Git'
 
 # MuseScore engraves SVG score exports. PDF does NOT need it (that renders

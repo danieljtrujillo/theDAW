@@ -58,6 +58,14 @@ class FoundryConfig:
 
 
 _state_lock = Lock()
+# The Foundry THIS process spawned, and nothing else. `stop()` acts only when
+# `_proc` is set: a Foundry already serving on the port when we arrived belongs
+# to somebody else (the user's running app, another backend) and is reused by
+# `ensure_running`, never shut down or killed by us. Without that ownership
+# gate, any import of this module (pytest registers the atexit hook below) or
+# any lifespan shutdown -- including a FastAPI TestClient's -- would POST
+# /api/shutdown to whatever answered on port 5472 and kill the user's live
+# Foundry out from under them.
 _proc: Optional[subprocess.Popen[bytes]] = None
 _resolved_url: Optional[str] = None
 
@@ -297,7 +305,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             try:
                 creationflags = 0
                 if sys.platform == "win32":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 with _open_log() as log_fh:
                     _proc = subprocess.Popen(
                         cmd,
@@ -339,8 +347,20 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
 
 
 def stop() -> bool:
+    """Stop the Foundry THIS process spawned. No-op for a foreign listener.
+
+    Returns False without touching the network or the process table when we
+    never spawned one -- an adopted/foreign Foundry on the port is somebody
+    else's process and is never asked to shut down and never killed.
+    """
     global _proc, _resolved_url
     with _state_lock:
+        if _proc is None:
+            # Nothing of ours to stop. Drop any URL we cached from reusing a
+            # foreign Foundry, but leave that process strictly alone.
+            _resolved_url = None
+            return False
+
         cfg = resolve_config()
         was_running = _is_foundry_server(cfg.port)
         stopped = False
@@ -352,8 +372,9 @@ def stop() -> bool:
                 _resolved_url = None
                 return True
 
+        own_pid = _proc.pid
         try:
-            if _proc is not None and _proc.poll() is None:
+            if _proc.poll() is None:
                 _proc.terminate()
                 _proc.wait(timeout=5.0)
                 stopped = _wait_until_not_foundry(cfg.port) or stopped
@@ -366,8 +387,11 @@ def stop() -> bool:
             _resolved_url = None
 
         if _is_foundry_server(cfg.port):
+            # Last resort, and only against our OWN child: if something else
+            # took the port over (or a foreign Foundry was there all along),
+            # the listening pid is not ours and we leave it running.
             pid = _pid_listening_on_port(cfg.port)
-            if pid is not None:
+            if pid is not None and pid == own_pid:
                 stopped = _terminate_pid(pid) or stopped
                 deadline = time.monotonic() + 5.0
                 while time.monotonic() < deadline and _is_foundry_server(cfg.port):

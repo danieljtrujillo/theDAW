@@ -1,0 +1,10 @@
+{
+  "name": "candidates",
+  "label": "Candidates",
+  "enabled": true,
+  "icon": "Layers",
+  "sidebar": false,
+  "api_prefix": "/api/candidates",
+  "backend": true,
+  "description": "Generate-several / audition / accept. Candidate audio lives outside the library until accepted."
+}

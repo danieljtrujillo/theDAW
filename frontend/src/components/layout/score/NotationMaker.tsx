@@ -5,6 +5,11 @@
  * straight from a MIDI, tablature, an arrangement, a chord track). The
  * instrument decides which ways are offered and which stem's MIDI is read;
  * notationMakerModel.ts turns the choice into the one request it needs.
+ *
+ * A band score lists every stem MIDI with the orchestral instrument its staff
+ * is written for (lib/orchestra.ts, the registry the backend builds the part
+ * on): the staff's name, clef, transposition and place in score order all
+ * come from that pick.
  */
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import { Drum, Guitar, Loader2, MicVocal, Piano, Users } from 'lucide-react';
@@ -17,6 +22,7 @@ import {
   type NotationCapabilities,
 } from '../../../lib/notationClient';
 import { logError, logInfo } from '../../../state/logStore';
+import { describeInstrument, orchestraByFamily, orchestraInstrument } from '../../../lib/orchestra';
 import {
   DIFFICULTIES,
   INSTRUMENT_NAMES,
@@ -24,6 +30,7 @@ import {
   needsMidi,
   pickSource,
   planFor,
+  staffInstrumentValue,
   stemOf,
   tuningsFor,
   WAY_HINTS,
@@ -62,6 +69,9 @@ const tuningName = (t: string): string => {
 
 const LABEL = 'font-display text-xs font-bold uppercase text-zinc-500';
 const FIELD = 'form-select h-7 w-full px-1.5 text-xs font-bold';
+// Every registry instrument, grouped by family in score order, for the staff pickers.
+const ORCHESTRA_GROUPS = orchestraByFamily();
+
 const TILE =
   'rounded border flex items-center justify-center gap-1 text-xs font-bold transition-colors outline-none focus-visible:ring-1 focus-visible:ring-[rgb(var(--et-accent)/0.6)]';
 const TILE_ON = 'border-[rgb(var(--et-accent)/0.55)] bg-[rgb(var(--et-accent)/0.15)] et-accent-legend';
@@ -85,6 +95,8 @@ export const NotationMaker: React.FC<NotationMakerProps> = ({ entryId, midis, ca
   const [capo, setCapo] = useState(0);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [busy, setBusy] = useState(false);
+  // The band score's instrument picks by artifact id; '' keeps the stem's name.
+  const [staffPicks, setStaffPicks] = useState<Record<string, string>>({});
 
   const tunings = useMemo(
     () => tuningsFor(instrument, caps?.tab_tunings ?? DEFAULT_TUNINGS),
@@ -98,13 +110,17 @@ export const NotationMaker: React.FC<NotationMakerProps> = ({ entryId, midis, ca
   useEffect(() => {
     setSourceId('');
   }, [entryId, instrument]);
+  // A new song starts from each stem's own instrument again.
+  useEffect(() => {
+    setStaffPicks({});
+  }, [entryId]);
   useEffect(() => {
     if (tunings.length && !tunings.includes(tuning)) {
       setTuning(tunings.find((t) => t.endsWith('-standard')) ?? tunings[0]);
     }
   }, [tunings, tuning]);
 
-  const plan = planFor({ instrument, way, source, midis, tuning, capo, difficulty });
+  const plan = planFor({ instrument, way, source, midis, tuning, capo, difficulty, staffInstruments: staffPicks });
   const blocked = 'error' in plan ? plan.error : null;
 
   const chooseInstrument = (next: MakerInstrument) => {
@@ -142,6 +158,7 @@ export const NotationMaker: React.FC<NotationMakerProps> = ({ entryId, midis, ca
   };
 
   const showSource = needsMidi(way) && way !== 'score' && midis.length > 0;
+  const showStaves = way === 'score' && midis.length > 0;
 
   return (
     <div className="flex flex-col gap-3 border-b border-white/10 p-3 text-xs font-bold">
@@ -195,6 +212,54 @@ export const NotationMaker: React.FC<NotationMakerProps> = ({ entryId, midis, ca
               <option key={m.id} value={m.id}>{stemOf(m)} MIDI</option>
             ))}
           </select>
+        </div>
+      )}
+
+      {showStaves && (
+        <div className="flex flex-col gap-1.5">
+          <span id={`${uid}-staves`} className={LABEL}>Staves</span>
+          <div
+            role="group"
+            aria-labelledby={`${uid}-staves`}
+            className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
+          >
+            {midis.map((m, i) => {
+              const fieldId = `${uid}-staff-${i}`;
+              const picked = staffInstrumentValue(m, staffPicks);
+              const inst = orchestraInstrument(picked);
+              return (
+                <React.Fragment key={m.id}>
+                  <label
+                    htmlFor={fieldId}
+                    className="max-w-24 truncate text-xs font-bold text-zinc-300"
+                    title={`${stemOf(m)} MIDI`}
+                  >
+                    {stemOf(m)}
+                  </label>
+                  <select
+                    id={fieldId}
+                    name={fieldId}
+                    className={FIELD}
+                    value={picked}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setStaffPicks((prev) => ({ ...prev, [m.id]: next }));
+                    }}
+                    title={inst ? describeInstrument(inst) : 'The staff keeps the stem name and takes a clef from its notes'}
+                  >
+                    <option value="">Stem name</option>
+                    {ORCHESTRA_GROUPS.map((g) => (
+                      <optgroup key={g.family.id} label={g.family.label}>
+                        {g.instruments.map((o) => (
+                          <option key={o.id} value={o.id}>{o.name}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </React.Fragment>
+              );
+            })}
+          </div>
         </div>
       )}
 

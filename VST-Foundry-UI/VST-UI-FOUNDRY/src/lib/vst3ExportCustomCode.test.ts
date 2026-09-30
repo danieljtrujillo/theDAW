@@ -56,7 +56,7 @@ describe("buildVst3Manifest — CustomCode params", () => {
     expect(m.params[0].cc).not.toBe(m.params[1].cc); // unique CCs
   });
 
-  it("ignores non-numeric params (color/select/toggle/text)", () => {
+  it("ignores non-exportable params (color/select/text) but emits toggles as boolean", () => {
     const cc = el({
       id: "cc2",
       params: [
@@ -66,7 +66,24 @@ describe("buildVst3Manifest — CustomCode params", () => {
         { key: "note", label: "Note", type: "text", value: "hi" },
       ],
     });
-    expect(buildVst3Manifest([cc], canvas, "P").params).toHaveLength(0);
+    const params = buildVst3Manifest([cc], canvas, "P").params;
+    expect(params).toHaveLength(1);
+    const p = params[0];
+    expect(p.id).toBe(`${slugify("cc2")}-${slugify("on")}`);
+    expect(p.elementId).toBe("cc2");
+    expect(p.kind).toBe("boolean");
+    expect(p.default).toBe(true);
+    expect(p.cc).toBeGreaterThanOrEqual(0);
+  });
+
+  it("emits a toggle with string 'false' value as default false", () => {
+    const cc = el({
+      id: "cc2b",
+      params: [{ key: "armed", label: "Armed", type: "toggle", value: "false" }],
+    });
+    const p = buildVst3Manifest([cc], canvas, "P").params[0];
+    expect(p.kind).toBe("boolean");
+    expect(p.default).toBe(false);
   });
 
   it("emits nothing for CustomCode with no params (unchanged from prior behavior)", () => {

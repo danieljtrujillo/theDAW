@@ -456,7 +456,7 @@ async function applyMedia(spec: MediaSpec): Promise<{ tracks: number; clips: num
   // Automation lane in WRITE mode: draw a real volume curve on the first track.
   if (spec.automationWrite) {
     try {
-      editor.getState().setAutomationWrite(true);
+      editor.getState().setAutomationMode('write');
       const t0 = editor.getState().tracks[0];
       if (t0) {
         const target = { kind: 'trackVolume', trackId: t0.id };

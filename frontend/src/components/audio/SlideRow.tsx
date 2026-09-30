@@ -50,7 +50,7 @@ export function SlideRow({ label, value, onChange, min, max, step = 1, tipKey, o
   return (
     <div className="flex items-center gap-2" style={accentVars(t)}>
       <div className="w-16 shrink-0 flex items-center gap-1">
-        {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
+        {tip ? <HoverTip text={tip} focusable focusLabel={label}>{labelEl}</HoverTip> : labelEl}
         {onRandomize && (
           <button onClick={onRandomize} title="Randomize" className="btn-ghost cursor-pointer p-0.5 shrink-0 text-zinc-500 hover:text-purple-300">
             <RefreshCw className="w-2.5 h-2.5" />

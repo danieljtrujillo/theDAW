@@ -10,9 +10,9 @@
  * list. Stems, Chimera renders, generated takes, DAW-imported clips and mic
  * recordings are all `'audio'` clips that differ only in where the Blob came
  * from; video and image library entries have no clip kind at all and cannot go
- * on a track. So the menu is two kinds x two sources, plus the two things the
- * store can already do to a lane without fetching anything (paste the clip
- * clipboard, make an empty track).
+ * on a track. So the menu is two kinds x two sources, plus the three things the
+ * store can do to a lane without fetching anything (make an empty MIDI part to
+ * write into, paste the clip clipboard, make an empty track).
  *
  * The target is resolved from the click the same way a drop is: the lane under
  * the pointer, or `trackId: null` when the click landed below every track — in
@@ -30,6 +30,8 @@ export type AddToTrackEntryId =
   | 'audio-system'
   | 'midi-library'
   | 'midi-system'
+  | 'midi-tracks'
+  | 'midi-empty'
   | 'paste'
   | 'new-track';
 
@@ -167,6 +169,29 @@ export function buildAddToTrackMenu(
       createsTrack,
     },
     {
+      // A whole orchestral file: every part on a new track of its own, so this
+      // entry always creates tracks, whichever lane was clicked.
+      id: 'midi-tracks',
+      label: 'MIDI file as tracks…',
+      kind: 'midi',
+      source: 'system',
+      enabled: true,
+      title: `Pick a .mid file from this computer: each of its parts lands on a new track of its own ${atSuffix(target)}, on its own instrument, drums on a drum track`,
+      shortReason: null,
+      createsTrack: true,
+    },
+    {
+      id: 'midi-empty',
+      label: 'Empty MIDI part…',
+      kind: 'midi',
+      // Nothing is fetched: the part is made here, empty, to write into.
+      source: null,
+      enabled: true,
+      title: `Make an empty MIDI part ${onTrackSuffix(target)}, on an instrument you pick, in the arrangement's meter and tempo from the bar at ${target.atSec.toFixed(2)}s`,
+      shortReason: null,
+      createsTrack,
+    },
+    {
       id: 'paste',
       label:
         caps.clipboardClipCount > 1
@@ -206,14 +231,15 @@ export function buildAddToTrackMenu(
   return entries;
 }
 
-/** The four add-something entries, in menu order — the group the "Add to
+/** The five add-something entries, in menu order — the group the "Add to
  *  track" header covers. Used by the track-header menu, which offers the same
- *  sources but not paste / new-track (it already has a track). */
+ *  entries but not paste / new-track (it already has a track). */
 export const ADD_SOURCE_ENTRY_IDS: readonly AddToTrackEntryId[] = [
   'audio-library',
   'audio-system',
   'midi-library',
   'midi-system',
+  'midi-empty',
 ];
 
 export const isAddSourceEntry = (entry: AddToTrackEntry): boolean =>

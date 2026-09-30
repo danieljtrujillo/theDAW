@@ -1,28 +1,15 @@
-import React from 'react';
-import { inferProvider, providerMeta, providerBadgeClass } from './catalogProviders';
-
 /**
- * CatalogueProviderBadge — small pill showing which platform produced a track.
+ * CatalogueProviderBadge — merged into `components/library/ProviderBadge`.
  *
- * Accepts EITHER an explicit `provider` id, OR a `{ model, source }` pair from
- * which the provider is derived (the library has no `provider` field). Pass
- * whichever is convenient at the call site. Dynamic-safe: any provider id
- * renders, known ones get their brand color.
+ * There were two provider badges: this one, which DERIVED a platform from
+ * `model` + `source` and always rendered, and `ProviderBadge`, which drew the
+ * provider the backend DETECTED in the file's metadata. Every render site had
+ * to pick one with a conditional. There is one provider per entry now
+ * (`inferProvider`), so there is one badge, and it is `ProviderBadge`: it
+ * takes the whole entry (`entry={…}`) rather than loose `provider` / `model` /
+ * `source` props.
+ *
+ * This alias is kept so the name still resolves; nothing in the app imports
+ * it. Import `ProviderBadge` directly in new code.
  */
-export const CatalogueProviderBadge: React.FC<{
-  provider?: string;
-  model?: string | null;
-  source?: string | null;
-  className?: string;
-}> = ({ provider, model, source, className }) => {
-  const id = provider ?? inferProvider({ model, source });
-  const meta = providerMeta(id);
-  return (
-    <span
-      className={`inline-flex items-center rounded border px-1 py-px text-[7px] font-mono uppercase tracking-wider leading-none ${providerBadgeClass(id)} ${className ?? ''}`}
-      title={`Provider: ${meta.label}`}
-    >
-      {meta.label}
-    </span>
-  );
-};
+export { ProviderBadge as CatalogueProviderBadge } from '../components/library/ProviderBadge';

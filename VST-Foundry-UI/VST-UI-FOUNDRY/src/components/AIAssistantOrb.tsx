@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   MessageSquare,
@@ -45,6 +45,7 @@ import { useSpeechInput } from "./orb/useSpeechInput";
 import { useToolActions } from "./orb/useToolActions";
 import { useChatStream } from "./orb/useChatStream";
 import { Transcript } from "./orb/Transcript";
+import { PermissionModeSelect } from "./orb/PermissionModeSelect";
 
 // Re-export the markdown link renderer so existing importers (and the
 // inlineMd.test.ts regression suite) keep resolving it from this module.
@@ -59,7 +60,20 @@ export default function AIAssistantOrb({
 }: AIAssistantOrbProps) {
   // UI Toggles & Panel State
   const [isOpen, setIsOpen] = useState(false);
-  const [panelPos, setPanelPos] = useState({ x: window.innerWidth - 450, y: 120 });
+  // The panel is ATTACHED to the orb: its position is derived from the orb's
+  // own position (ported from theDAW's OrbChatAssembled), never dragged on its
+  // own. `orbPosition` is fed by GantasmoOrb's onPositionChange, so the panel
+  // follows the orb pixel for pixel while the orb is dragged.
+  const [orbPosition, setOrbPosition] = useState<{ x: number; y: number }>(() => ({
+    x: 20,
+    y: typeof window !== "undefined" ? window.innerHeight - 140 : 500,
+  }));
+  // Viewport size is state (not a raw window read) so the derived panel
+  // position recomputes on resize, the same way the orb re-clamps itself.
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window !== "undefined" ? window.innerWidth : 1280,
+    height: typeof window !== "undefined" ? window.innerHeight : 800,
+  }));
   const [panelSize, setPanelSize] = useState({ width: 400, height: 580 });
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -308,10 +322,8 @@ export default function AIAssistantOrb({
   >([]);
   const [queuedSends, setQueuedSends] = useState<string[]>([]);
 
-  // Dragging states
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStart = useRef({ x: 0, y: 0 });
-  const panelStart = useRef({ x: 0, y: 0 });
+  // No panel drag state: the panel is anchored to the orb, so the ORB is the
+  // thing you drag. Resizing is still the panel's own.
 
   // Resizing states
   const [isResizing, setIsResizing] = useState(false);
@@ -577,14 +589,36 @@ export default function AIAssistantOrb({
     }
   }, [messages, currentThinking, currentText, currentToolCalls, isStreaming]);
 
-  // Handle panel dragging
-  const handleDragStart = (e: React.MouseEvent) => {
-    if (e.target instanceof HTMLButtonElement || e.target instanceof HTMLSelectElement) return;
-    setIsDragging(true);
-    dragStart.current = { x: e.clientX, y: e.clientY };
-    panelStart.current = { x: panelPos.x, y: panelPos.y };
-    e.preventDefault();
-  };
+  // Track viewport changes so the derived panel position stays on screen.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Panel placement, derived from the orb (port of OrbChatAssembled.panelPosition):
+  // flip to the orb's free side by screen half, 16px margin, clamped to viewport.
+  const panelPos = useMemo(() => {
+    const panelWidth = panelSize.width;
+    const panelHeight = panelSize.height;
+    const orbCenterX = orbPosition.x + 32;
+    const orbCenterY = orbPosition.y + 32;
+    const isRight = orbCenterX > viewport.width / 2;
+    const isBottom = orbCenterY > viewport.height / 2;
+    const margin = 16;
+
+    let x = isRight
+      ? Math.max(margin, orbPosition.x - panelWidth - margin)
+      : Math.min(viewport.width - panelWidth - margin, orbPosition.x + 80);
+    let y = isBottom
+      ? Math.max(margin, orbPosition.y - panelHeight - margin)
+      : Math.min(viewport.height - panelHeight - margin - 80, orbPosition.y);
+
+    x = Math.max(margin, Math.min(x, viewport.width - panelWidth - margin));
+    y = Math.max(margin, Math.min(y, viewport.height - panelHeight - margin - 80));
+    return { x, y };
+  }, [orbPosition, panelSize.width, panelSize.height, viewport.width, viewport.height]);
 
   const handleResizeStart = (e: React.MouseEvent) => {
     setIsResizing(true);
@@ -596,14 +630,6 @@ export default function AIAssistantOrb({
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (isDragging) {
-        const dx = e.clientX - dragStart.current.x;
-        const dy = e.clientY - dragStart.current.y;
-        setPanelPos({
-          x: Math.max(10, Math.min(window.innerWidth - panelSize.width - 10, panelStart.current.x + dx)),
-          y: Math.max(10, Math.min(window.innerHeight - panelSize.height - 10, panelStart.current.y + dy)),
-        });
-      }
       if (isResizing) {
         const dx = e.clientX - resizeStart.current.x;
         const dy = e.clientY - resizeStart.current.y;
@@ -615,11 +641,10 @@ export default function AIAssistantOrb({
     };
 
     const handleMouseUp = () => {
-      setIsDragging(false);
       setIsResizing(false);
     };
 
-    if (isDragging || isResizing) {
+    if (isResizing) {
       window.addEventListener("mousemove", handleMouseMove);
       window.addEventListener("mouseup", handleMouseUp);
     }
@@ -628,7 +653,7 @@ export default function AIAssistantOrb({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, isResizing, panelSize]);
+  }, [isResizing, panelSize]);
 
   // File Upload Handling
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -795,6 +820,7 @@ export default function AIAssistantOrb({
         onToggle={() => setIsOpen(!isOpen)}
         ariaLabel="Toggle AI assistant"
         persistenceKey="vst-foundry-orb-position"
+        onPositionChange={setOrbPosition}
       />
 
       {/* 2. Interactive Drag-and-Resize Chat Panel */}
@@ -820,11 +846,11 @@ export default function AIAssistantOrb({
               boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
             }}
           >
-            {/* Header Handle for dragging */}
+            {/* Header — no longer a drag handle: the panel is attached to the
+                orb, so dragging the ORB moves both. */}
             <div
               ref={headerRef}
-              className="cursor-move select-none"
-              onMouseDown={handleDragStart}
+              className="select-none"
               style={{
                 display: "flex", alignItems: "center", justifyContent: "space-between",
                 padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)",
@@ -849,6 +875,13 @@ export default function AIAssistantOrb({
 
               {/* Action Toolbar */}
               <div className="flex items-center" style={{ gap: 4, flexShrink: 0 }} onMouseDown={(e) => e.stopPropagation()}>
+                {selectedProvider === "claude" && (
+                  <PermissionModeSelect
+                    conversationId={currentSessionId || null}
+                    claudeSessionId={claudeSessionId}
+                    compact
+                  />
+                )}
                 <button
                   onClick={() => setShowHistory(!showHistory)}
                   style={{ padding: 6, borderRadius: 8, background: "none", border: "none", cursor: "pointer", color: showHistory ? "#f87171" : "#52525b", display: "flex" }}

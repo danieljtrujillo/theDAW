@@ -1,0 +1,1194 @@
+/**
+ * The assistant's editor tool facade, driven against the REAL zustand store.
+ *
+ * Not a mock in sight on the store side: every assertion below reads
+ * `useEditorStore.getState()` after the tool ran, because the whole point of
+ * this layer is that it writes through the store's own actions — which is what
+ * makes the edits undoable and what makes "it reported success" mean "the
+ * document changed". A facade tested against a fake store would prove nothing
+ * about either.
+ *
+ * Two seams ARE injected, because Node has neither: `OfflineAudioContext` (a
+ * fake that decodes the app's own `encodeWav` output) and the MIDI synth (a
+ * stub renderer that records what it was asked to render). Everything else —
+ * note maths, clip geometry, undo, selection, automation — is the real thing.
+ *
+ * Every exported tool is exercised on its happy path AND on the error it is
+ * most likely to be handed in practice, because a tool that throws instead of
+ * returning `{ ok: false, error }` takes the assistant's whole turn down.
+ *
+ * Run: `npx tsx src/state/editorTools.test.ts`
+ */
+import assert from 'node:assert/strict';
+import { useEditorStore } from './editorStore';
+import type { AudioClip, EditorTrack } from './editorStore';
+/** Bar 1's meter, as the single project meter read before the arrangement held a meter map. */
+const barOneMeter = () => { const m = useEditorStore.getState().meterMap[0].meter; return { num: m.num, den: m.den }; };
+import type { PianoNote } from './pianoRollStore';
+import { registerEditorPlayback, unregisterEditorPlayback } from './editorPlaybackBridge';
+import { getSelectedClips } from './editorSelectionBridge';
+import { encodeWav } from '../lib/wavEncode';
+import type { OfflineCtxFactory, StepNoteRenderer } from '../lib/clipOps';
+import * as tools from './editorTools';
+import type { ToolResult } from './editorTools';
+
+/* ── harness ─────────────────────────────────────────────────────────────── */
+
+const SR = 8000;
+/** Worst-case round-trip error through `encodeWav`'s 16-bit PCM mode. */
+const QUANT = 1e-4;
+
+const bufferOf = (channels: Float32Array[], sampleRate: number): AudioBuffer =>
+  ({
+    numberOfChannels: channels.length,
+    sampleRate,
+    length: channels[0]?.length ?? 0,
+    duration: (channels[0]?.length ?? 0) / sampleRate,
+    getChannelData: (c: number) => channels[c],
+  }) as unknown as AudioBuffer;
+
+/** Minimal RIFF reader for what `encodeWav` writes in its default 16-bit mode. */
+const decodeWav = (data: ArrayBuffer): AudioBuffer => {
+  const view = new DataView(data);
+  const numCh = view.getUint16(22, true);
+  const sampleRate = view.getUint32(24, true);
+  const bytes = view.getUint32(40, true);
+  const frames = bytes / (numCh * 2);
+  const channels = Array.from({ length: numCh }, () => new Float32Array(frames));
+  let off = 44;
+  for (let i = 0; i < frames; i += 1) {
+    for (let c = 0; c < numCh; c += 1) {
+      const v = view.getInt16(off, true);
+      channels[c][i] = v < 0 ? v / 0x8000 : v / 0x7fff;
+      off += 2;
+    }
+  }
+  return bufferOf(channels, sampleRate);
+};
+
+const ctxFactory: OfflineCtxFactory = () => ({
+  decodeAudioData: async (data: ArrayBuffer) => decodeWav(data),
+  createBuffer: (numberOfChannels: number, length: number, sampleRate: number) =>
+    bufferOf(Array.from({ length: numberOfChannels }, () => new Float32Array(length)), sampleRate),
+});
+
+const wavOf = (samples: Float32Array | number[], sampleRate = SR): Blob =>
+  encodeWav(bufferOf([samples instanceof Float32Array ? samples : Float32Array.from(samples)], sampleRate));
+
+const samplesOf = async (blob: Blob): Promise<Float32Array> =>
+  decodeWav(await blob.arrayBuffer()).getChannelData(0);
+
+/** A stub for `midiSynth.renderStepNotesToBlob` that records every call. The
+ *  first sample encodes the note count so two renders of different note lists
+ *  are distinguishable without decoding a synth. */
+interface RenderCall { notes: readonly { note: number; step: number }[]; bpm: number; totalSteps: number; program?: number; percussion?: boolean }
+let renderCalls: RenderCall[] = [];
+
+const render: StepNoteRenderer = async (notes, bpm, totalSteps, opts) => {
+  renderCalls.push({ notes: notes.map((n) => ({ note: n.note, step: n.step })), bpm, totalSteps, program: opts?.program, percussion: opts?.percussion });
+  const duration = (totalSteps * (60 / bpm)) / 4;
+  const frames = Math.max(2, Math.round(duration * SR));
+  const data = new Float32Array(frames);
+  data[0] = notes.length / 100;
+  data[1] = bpm / 1000;
+  return { blob: wavOf(data), duration: frames / SR };
+};
+
+/** Every audio-touching tool gets the same two seams. */
+const seams = { render, ctxFactory, sample_rate: SR };
+
+const okOf = (r: ToolResult, what: string): ToolResult => {
+  assert.ok(r.ok, `${what}: expected ok, got error: ${r.error}`);
+  return r;
+};
+const errOf = (r: ToolResult, what: string): string => {
+  assert.ok(!r.ok, `${what}: expected an error, got ok: ${r.message}`);
+  return r.error;
+};
+
+const track = (id: string, over: Partial<EditorTrack> = {}): EditorTrack => ({
+  id,
+  name: id,
+  nameAutoGenerated: false,
+  volume: 0.8,
+  pan: 0,
+  mute: false,
+  solo: false,
+  color: '#8b5cf6',
+  ...over,
+});
+
+const NOTES = (): PianoNote[] => [
+  { id: 'n1', note: 60, step: 0.3, length: 8, velocity: 100 },
+  { id: 'n2', note: 64, step: 4.2, length: 2, velocity: 60 },
+  { id: 'n3', note: 60, step: 4.2, length: 2, velocity: 40 },
+  // A transcription blip: too short and too quiet to be a real note.
+  { id: 'n4', note: 67, step: 8.1, length: 0.1, velocity: 5 },
+];
+
+/** 1s of ascending ramp, so a reversal is visible in the samples. */
+const RAMP = Float32Array.from({ length: SR }, (_, i) => (i / SR) * 0.5);
+
+const seed = (): void => {
+  renderCalls = [];
+  useEditorStore.getState().loadProject({
+    tracks: [track('t1', { name: 'Keys' }), track('t2', { name: 'Drums' })],
+    clips: [
+      {
+        id: 'midi1',
+        trackId: 't1',
+        label: 'bass',
+        audioBlob: wavOf(new Float32Array(SR * 2)),
+        mimeType: 'audio/wav',
+        sourceDuration: 2,
+        offsetIntoSource: 0,
+        durationSec: 2,
+        startSec: 0,
+        color: '#8b5cf6',
+        sourceKind: 'piano-roll',
+        sourcePianoRoll: NOTES(),
+        sourceBpm: 120,
+        sourceTotalSteps: 16,
+        instrumentProgram: 33,
+        renderedProgram: 33,
+      },
+      {
+        id: 'aud1',
+        trackId: 't2',
+        label: 'loop A',
+        audioBlob: wavOf(RAMP),
+        mimeType: 'audio/wav',
+        sourceDuration: 1,
+        // Trimmed: the blob holds a second of audio but only half of it plays,
+        // which is what every sample-domain op here has to respect.
+        offsetIntoSource: 0.25,
+        durationSec: 0.5,
+        startSec: 0,
+        color: '#06b6d4',
+        gain: 0.5,
+        fadeInSec: 0.1,
+      },
+      {
+        id: 'aud2',
+        trackId: 't2',
+        label: 'loop B',
+        audioBlob: wavOf(RAMP),
+        mimeType: 'audio/wav',
+        sourceDuration: 1,
+        offsetIntoSource: 0,
+        durationSec: 1,
+        startSec: 1,
+        color: '#06b6d4',
+      },
+    ],
+    bpm: 120,
+  });
+};
+
+const clipOf = (id: string): AudioClip => useEditorStore.getState().clips.find((c) => c.id === id);
+
+/** Longer than the store's HISTORY_COALESCE_MS, so the next edit opens its own
+ *  undo step rather than folding into the previous one. */
+const settle = () => new Promise((r) => setTimeout(r, 340));
+
+/* ── resolution: ids, names, misses, ambiguity ───────────────────────────── */
+{
+  seed();
+
+  // By id, and by label case-insensitively.
+  okOf(tools.getNotes({ clip_id: 'midi1' }), 'by id');
+  okOf(tools.getNotes({ clip_id: 'BASS' }), 'by label');
+
+  assert.match(errOf(tools.getNotes({ clip_id: 'nope' }), 'miss'), /No clip "nope"\. Known clips: bass \(midi1\)/);
+  assert.match(errOf(tools.getNotes({}), 'no ref'), /pass an id or a name/);
+
+  // Two clips sharing a label must not be silently disambiguated.
+  useEditorStore.getState().updateClip('aud2', { label: 'loop A' });
+  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 90 }), 'ambiguous'), /2 clips are called "loop A".*Pass the id/s);
+
+  // A note op on an audio clip names the mismatch rather than half-working.
+  seed();
+  assert.match(errOf(tools.getNotes({ clip_id: 'aud1' }), 'audio clip'), /is an audio clip; note operations need a piano-roll/);
+}
+
+/* ── getNotes / setNotes ─────────────────────────────────────────────────── */
+{
+  seed();
+  const read = okOf(tools.getNotes({ clip_id: 'bass' }), 'getNotes');
+  const data = read.data as { notes: PianoNote[]; bpm: number; totalSteps: number };
+  assert.equal(data.notes.length, 4);
+  assert.equal(data.bpm, 120);
+  assert.notEqual(data.notes[0], clipOf('midi1').sourcePianoRoll[0], 'the notes come back as copies');
+
+  const written = okOf(
+    await tools.setNotes({ clip_id: 'bass', notes: [{ note: 48, step: 0, length: 4, velocity: 90 }], ...seams }),
+    'setNotes',
+  );
+  assert.match(written.message, /1 note/);
+  const after = clipOf('midi1');
+  assert.equal(after.sourcePianoRoll.length, 1);
+  assert.ok(after.sourcePianoRoll[0].id, 'a note without an id gets one');
+  assert.equal(after.sourceTotalSteps, 16, 'the grid floors at one bar of 16ths');
+  assert.equal(after.durationSec, 2, 're-rendered length replaces the old one');
+  assert.equal(after.peaks, undefined, 'the stale waveform cache is dropped');
+  assert.equal(renderCalls.at(-1).program, 33, 'the clip instrument is carried into the render');
+
+  assert.match(errOf(await tools.setNotes({ clip_id: 'bass', notes: 'nope', ...seams }), 'bad notes'), /array of/);
+  assert.match(
+    errOf(await tools.setNotes({ clip_id: 'bass', notes: [{ note: 60, step: 0, length: 4, velocity: 0 }], ...seams }), 'bad velocity'),
+    /velocity 1-127/,
+  );
+  assert.match(errOf(await tools.setNotes({ clip_id: 'bass', notes: [], ...seams }), 'empty'), /no notes at all/);
+}
+
+/* ── quantize, and undo reverses it ──────────────────────────────────────── */
+{
+  seed();
+  const before = clipOf('midi1');
+
+  const res = okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', strength: 1, ...seams }), 'quantize');
+  assert.equal(res.message, 'Quantized 4 notes to 1/4 at 100% (swing 0) on "bass"');
+
+  const steps = clipOf('midi1').sourcePianoRoll.map((n) => n.step);
+  assert.deepEqual(steps, [0, 4, 4, 8], 'every note landed on a quarter-note line');
+  assert.notEqual(clipOf('midi1').audioBlob, before.audioBlob, 'the audio was re-bounced');
+  assert.equal(renderCalls.length, 1);
+  assert.equal(renderCalls[0].bpm, 120, 'rendered at the clip source tempo, not the project tempo');
+
+  // The store's own history subscription recorded it: one tool call, one step.
+  okOf(tools.undo(), 'undo');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0.3, 4.2, 4.2, 8.1]);
+  assert.equal(clipOf('midi1').audioBlob, before.audioBlob, 'and the pre-quantize audio came back with it');
+
+  okOf(tools.redo(), 'redo');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0, 4, 4, 8]);
+
+  // Partial strength moves toward the grid without landing on it.
+  seed();
+  okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', strength: 0.5, ...seams }), 'half quantize');
+  assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[0].step - 0.15) < 1e-9);
+
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/5', ...seams }), 'bad grid'), /is not a grid\. Use one of/);
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: 'off', ...seams }), 'off grid'), /is not a grid/);
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', strength: 3, ...seams }), 'bad strength'), /strength must be between 0 and 1/);
+}
+
+/* ── quantize a roll clip: the roll's own notes and the played list together,
+      with a groove in the clip's meter ─────────────────────────────────────── */
+// Up to afd27bea quantize wrote only the played list (sourcePianoRoll), so a
+// bounced roll clip reopened in the piano roll (which reads sourceRollNotes)
+// showed every note where it was before the quantize.
+{
+  seed();
+  const own: PianoNote[] = [
+    { id: 'a', note: 60, step: 0.3, length: 2, velocity: 100 },
+    { id: 'b', note: 62, step: 2.2, length: 2, velocity: 90 },
+    { id: 'c', note: 64, step: 4.1, length: 2, velocity: 90 },
+    { id: 'd', note: 65, step: 5.8, length: 2, velocity: 90 },
+  ];
+  useEditorStore.getState().updateClip('midi1', {
+    sourceRollNotes: own,
+    sourcePianoRoll: own,
+    sourceLanes: [{ id: 0, name: 'A', cycleSteps: null }],
+    sourceMeterMap: [{ bar: 0, meter: { num: 7, den: 8, groups: [3, 2, 2] } }],
+    sourcePickupSteps: 0,
+    sourceTotalSteps: 14,
+  });
+  okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', strength: 1, ...seams }), 'quantize roll clip');
+  assert.deepEqual(clipOf('midi1').sourceRollNotes?.map((n) => n.step), [0, 2, 4, 6], "the roll's own notes are quantized");
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0, 2, 4, 6], 'and the played list matches them');
+  const { clipRollLoad } = await import('../lib/rollClip');
+  const { usePianoRollStore } = await import('./pianoRollStore');
+  usePianoRollStore.getState().loadFromClip(...clipRollLoad(clipOf('midi1')));
+  assert.deepEqual(usePianoRollStore.getState().notes.map((n) => n.step).sort((x, y) => x - y), [0, 2, 4, 6], 'EDIT IN PIANO ROLL opens the quantized notes');
+  okOf(tools.undo(), 'undo roll quantize');
+  assert.deepEqual(clipOf('midi1').sourceRollNotes?.map((n) => n.step), [0.3, 2.2, 4.1, 5.8], 'undo brings both lists back');
+
+  // A group swing in 7/8 3+2+2: each group's off-8th lands late, the group starts stay.
+  const res = okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'group8:66', groove_strength: 1, ...seams }), 'groove');
+  assert.match(res.message, /\(swing 0, .+ at 100%\) on "bass"/, `the result names the groove (${res.message})`);
+  const swung = clipOf('midi1').sourceRollNotes?.map((n) => n.step) ?? [];
+  assert.equal(swung[0], 0, 'group 1 starts on the bar line');
+  assert.ok(swung[1] > 2, `the off-8th of group 1 lands late (${swung[1]})`);
+  assert.equal(swung[2], 6 - 2, 'group 2 starts on its line');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), swung, 'the played list takes the same groove');
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'nope', ...seams }), 'bad groove'), /is not a groove/);
+  assert.match(errOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/8', groove: 'straight', groove_strength: 2, ...seams }), 'bad groove strength'), /groove_strength must be between 0 and 1/);
+}
+
+/* ── nudge / transpose / velocity / humanize / overlaps / filter ─────────── */
+{
+  seed();
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', steps: 2, ...seams }), 'nudge steps');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [2.3, 6.2, 6.2, 10.1]);
+
+  // Milliseconds convert through the clip's own tempo: 120bpm => 2 steps = 250ms.
+  seed();
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, ...seams }), 'nudge ms');
+  assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[0].step - 2.3) < 1e-9);
+
+  // A clip with a tempo map moves each note by the ms at its own place: 60 bpm
+  // to beat 1 (step 4), then 240. 250 ms is one step at 60 and four at 240.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { sourceBpm: 60, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 240 }] });
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, ...seams }), 'nudge ms through a tempo map');
+  const mapped = clipOf('midi1').sourcePianoRoll.map((n) => n.step);
+  [1.3, 8.2, 8.2, 12.1].forEach((want, i) => assert.ok(Math.abs(mapped[i] - want) < 1e-9, `mapped nudge note ${i}: ${mapped[i]} vs ${want}`));
+  // An explicit bpm keeps the one-tempo conversion.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { sourceBpm: 60, sourceTempoMap: [{ beat: 0, bpm: 60 }, { beat: 1, bpm: 240 }] });
+  okOf(await tools.nudgeNotes({ clip_id: 'bass', ms: 250, bpm: 120, ...seams }), 'nudge ms at a named bpm');
+  assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[1].step - 6.2) < 1e-9);
+
+  // `clipNotes.nudgeNotes` THROWS on an ambiguous unit; the tool must turn that
+  // into a sentence, not let it escape into the assistant's turn.
+  seed();
+  const ambiguous = errOf(await tools.nudgeNotes({ clip_id: 'bass', steps: 1, ms: 10, ...seams }), 'two units');
+  assert.match(ambiguous, /nudge: nudgeNotes: expected exactly one of steps\/ms\/ticks, got steps and ms/);
+  assert.match(errOf(await tools.nudgeNotes({ clip_id: 'bass', ...seams }), 'no unit'), /expected exactly one/);
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0.3, 4.2, 4.2, 8.1], 'a refused nudge changed nothing');
+
+  seed();
+  const t = okOf(await tools.transposeClip({ clip_id: 'bass', semitones: -12, ...seams }), 'transpose');
+  assert.match(t.message, /-12 semitone/);
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.note), [48, 52, 48, 55]);
+  assert.match(errOf(await tools.transposeClip({ clip_id: 'bass', ...seams }), 'no semitones'), /pass semitones/);
+
+  seed();
+  okOf(await tools.scaleVelocity({ clip_id: 'bass', factor: 0.5, min: 20, ...seams }), 'velocity');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.velocity), [50, 30, 20, 20]);
+  assert.match(errOf(await tools.scaleVelocity({ clip_id: 'bass', ...seams }), 'no velocity args'), /pass factor and\/or offset/);
+
+  seed();
+  okOf(await tools.humanizeClip({ clip_id: 'bass', timing_steps: 0.25, velocity: 6, seed: 7, ...seams }), 'humanize');
+  const humanized = clipOf('midi1').sourcePianoRoll;
+  assert.equal(humanized.length, 4, 'humanize never adds or drops notes');
+  assert.notDeepEqual(humanized.map((n) => n.step), [0.3, 4.2, 4.2, 8.1]);
+  for (const n of humanized) assert.ok(Math.abs(n.step - NOTES().find((o) => o.id === n.id).step) <= 0.2500001);
+  assert.match(errOf(await tools.humanizeClip({ clip_id: 'bass', timing_steps: 0, velocity: 0, ...seams }), 'nothing to scatter'), /nothing to scatter/);
+
+  seed();
+  const fixed = okOf(await tools.fixOverlaps({ clip_id: 'bass', mode: 'trim', ...seams }), 'overlaps');
+  assert.match(fixed.message, /4 notes kept/);
+  // n1 ran 0.3..8.3 over n3's onset at 4.2; trimming cuts its tail there.
+  assert.ok(Math.abs(clipOf('midi1').sourcePianoRoll[0].length - 3.9) < 1e-9);
+  assert.match(errOf(await tools.fixOverlaps({ clip_id: 'bass', mode: 'glue', ...seams }), 'bad mode'), /mode must be one of legato, trim, dedupe/);
+
+  // A repeated-note run 0.125 steps apart (128ths), each note held half a step
+  // into the next ones, the way a sustain-pedal take records. TRIM and LEGATO
+  // each end every note where the next begins. Both used to raise any gap under
+  // 0.25 steps to 0.25, so every note still overlapped the next.
+  for (const mode of ['trim', 'legato'] as const) {
+    seed();
+    const run: PianoNote[] = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, note: 72, step: i * 0.125, length: 0.5, velocity: 90 }));
+    useEditorStore.setState({ clips: useEditorStore.getState().clips.map((c) => (c.id === 'midi1' ? { ...c, sourcePianoRoll: run } : c)) });
+    okOf(await tools.fixOverlaps({ clip_id: 'bass', mode, ...seams }), `${mode} a fast run`);
+    const out = [...clipOf('midi1').sourcePianoRoll].sort((a, b) => a.step - b.step);
+    for (let i = 0; i < out.length - 1; i += 1) {
+      assert.ok(Math.abs(out[i].length - 0.125) < 1e-9, `${mode}: note ${i} runs into the next onset (got ${out[i].length})`);
+      assert.ok(out[i].step + out[i].length <= out[i + 1].step + 1e-9, `${mode}: note ${i} ends before note ${i + 1} starts`);
+    }
+    assert.equal(out[out.length - 1].length, 0.5, `${mode}: the last note of the run keeps its length`);
+  }
+
+  seed();
+  const filtered = okOf(await tools.filterNotes({ clip_id: 'bass', min_length_steps: 0.5, min_velocity: 20, ...seams }), 'filter');
+  assert.match(filtered.message, /Removed 1 junk note\(s\).*3 kept/);
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.id), ['n1', 'n2', 'n3']);
+  assert.match(errOf(await tools.filterNotes({ clip_id: 'bass', ...seams }), 'no thresholds'), /at least one threshold/);
+  assert.match(errOf(await tools.filterNotes({ clip_id: 'bass', min_velocity: 127, ...seams }), 'removes all'), /would remove all 3 notes/);
+}
+
+/* ── a note edit that resizes the clip says so ───────────────────────────── */
+{
+  seed();
+  // A MIDI clip trimmed down to half of what its notes render to. Re-bouncing
+  // it restores the full rendered length — a real change to where everything
+  // after it sits on the timeline, so the message has to mention it rather than
+  // report a quantize and quietly double the clip.
+  useEditorStore.getState().updateClip('midi1', { durationSec: 1 });
+  assert.equal(clipOf('midi1').durationSec, 1);
+
+  const res = okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams }), 'quantize a trimmed clip');
+  assert.equal(res.message, 'Quantized 4 notes to 1/4 at 100% (swing 0) on "bass" (clip length 1s → 2s)');
+  assert.equal(clipOf('midi1').durationSec, 2);
+
+  // Same edit on a clip whose length does not move stays quiet about length.
+  seed();
+  const same = okOf(await tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams }), 'quantize an untrimmed clip');
+  assert.equal(same.message, 'Quantized 4 notes to 1/4 at 100% (swing 0) on "bass"');
+
+  // Every note tool routes through the same commit, so the suffix is not
+  // quantize-specific.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { durationSec: 0.5 });
+  const shifted = okOf(await tools.transposeClip({ clip_id: 'bass', semitones: 2, ...seams }), 'transpose a trimmed clip');
+  assert.match(shifted.message, /\(clip length 0\.50s → 2s\)$/);
+}
+
+/* ── instrument, source tempo, stretch ───────────────────────────────────── */
+{
+  seed();
+  const inst = okOf(await tools.setClipInstrument({ clip_id: 'bass', program: 11, ...seams }), 'instrument');
+  assert.match(inst.message, /GM program 11/);
+  assert.equal(clipOf('midi1').instrumentProgram, 11);
+  assert.equal(clipOf('midi1').renderedProgram, 11, 'the blob and the program stay in step');
+  assert.equal(renderCalls.at(-1).program, 11);
+  assert.match(errOf(await tools.setClipInstrument({ clip_id: 'bass', program: 200, ...seams }), 'bad program'), /0-127/);
+
+  // The clip's track becomes a drum track (the drum key), then the assistant
+  // edits the clip. The re-bounce renders on the drum channel with the Standard
+  // kit and is stamped as a drum render, so EDIT does not re-render it again.
+  // At 8039b45 the tools rendered it as a melodic part.
+  seed();
+  useEditorStore.getState().updateClip('midi1', { instrumentProgram: undefined });
+  useEditorStore.getState().updateTrack('t1', { isPercussion: true });
+  okOf(await tools.transposeClip({ clip_id: 'bass', semitones: 2, ...seams }), 'transpose on a drum track');
+  assert.equal(renderCalls.at(-1).program, 0, 'the Standard kit');
+  assert.equal(renderCalls.at(-1).percussion, true, 'on the drum channel');
+  assert.equal(clipOf('midi1').renderedProgram, 0);
+  assert.equal(clipOf('midi1').renderedPercussion, true);
+
+  seed();
+  okOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 95 }), 'source bpm');
+  assert.equal(clipOf('aud1').sourceBpm, 95);
+  assert.match(errOf(tools.setClipSourceBpm({ clip_id: 'loop A', bpm: 5 }), 'bad bpm'), /between 20 and 300/);
+
+  seed();
+  const stretched = okOf(await tools.stretchClip({ clip_id: 'bass', target_bpm: 60, ...seams }), 'stretch midi');
+  assert.match(stretched.message, /x2\.000/);
+  assert.equal(clipOf('midi1').sourceBpm, 60, 'the clip now declares the tempo its audio was rendered at');
+  assert.equal(renderCalls.at(-1).bpm, 60);
+  assert.ok(Math.abs(clipOf('midi1').durationSec - 4) < 1e-3, 'half the tempo, twice the length');
+
+  // Audio is refused by name rather than resampled (which would move its pitch).
+  assert.equal(
+    errOf(await tools.stretchClip({ clip_id: 'loop A', target_duration_sec: 1, ...seams }), 'stretch audio'),
+    'audio stretch is a backend operation (T13)',
+  );
+  assert.match(errOf(await tools.stretchClip({ clip_id: 'bass', ...seams }), 'no target'), /target is required/);
+}
+
+/* ── meter, transport, loop ──────────────────────────────────────────────── */
+{
+  seed();
+  okOf(tools.setTimeSignature({ num: 3, den: 4 }), 'meter');
+  assert.deepEqual(barOneMeter(), { num: 3, den: 4 });
+  okOf(tools.setTimeSignature({ time_signature: '7/8' }), 'meter compact');
+  assert.deepEqual(barOneMeter(), { num: 7, den: 8 });
+  assert.match(errOf(tools.setTimeSignature({ num: 4, den: 5 }), 'bad den'), /not a meter the editor can bar out/);
+  assert.match(errOf(tools.setTimeSignature({}), 'no args'), /pass num and den/);
+
+  // Bar length follows the meter: 7/8 at 120bpm is 7 eighth-notes = 1.75s.
+  okOf(tools.seekBar({ bar: 3 }), 'seek');
+  assert.ok(Math.abs(useEditorStore.getState().playheadSec - 3.5) < 1e-9);
+  okOf(tools.setTimeSignature({ num: 4, den: 4 }), 'back to 4/4');
+  okOf(tools.seekBar({ bar: 2 }), 'seek 4/4');
+  assert.equal(useEditorStore.getState().playheadSec, 2);
+  assert.match(errOf(tools.seekBar({ bar: 0 }), 'bar 0'), /bar >= 1/);
+
+  // No timeline mounted, no transport — and the refusal says where to go.
+  unregisterEditorPlayback();
+  assert.match(errOf(tools.play(), 'play unmounted'), /EDIT timeline is not open/);
+  assert.match(errOf(tools.stop(), 'stop unmounted'), /EDIT timeline is not open/);
+
+  let played = 0;
+  let stopped = 0;
+  registerEditorPlayback(() => { played += 1; }, () => { stopped += 1; });
+  okOf(tools.play(), 'play');
+  okOf(tools.stop(), 'stop');
+  assert.equal(played, 1);
+  assert.equal(stopped, 1);
+  unregisterEditorPlayback();
+
+  // loop_selection spans the selection, min start to max end.
+  assert.match(errOf(tools.loopSelection(), 'no selection'), /nothing is selected/);
+  okOf(tools.selectClips({ clip_ids: ['loop A', 'loop B'] }), 'select for loop');
+  const loop = okOf(tools.loopSelection(), 'loop');
+  assert.match(loop.message, /Looping 0s–2s over 2 clip\(s\)/);
+  assert.equal(useEditorStore.getState().loopStart, 0);
+  assert.equal(useEditorStore.getState().loopEnd, 2);
+  assert.equal(useEditorStore.getState().loopEnabled, true);
+}
+
+/* ── the arrangement's meter map and tempo map ────────────────────────────── */
+{
+  seed();
+  // 4/4 for two bars at 120, then 7/8 3+2+2 at 60: bar 3 at 4 s, bar 4 at 7.5 s.
+  const set = okOf(tools.setMeterMap({
+    meter_map: [{ bar: 1, num: 4, den: 4 }, { bar: 3, meter: '7/8 3+2+2' }],
+    tempo_map: [{ bar: 1, bpm: 120 }, { bar: 3, bpm: 60 }],
+  }), 'set maps');
+  assert.match(set.message, /4\/4 from bar 1, 7\/8 3\+2\+2 from bar 3; 120 BPM from bar 1, 60 BPM from bar 3/);
+  assert.deepEqual(
+    useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den, m.meter.groups.join('+')]),
+    [[0, 4, 4, ''], [2, 7, 8, '3+2+2']],
+  );
+  assert.deepEqual(useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm]), [[0, 120], [8, 60]]);
+  assert.deepEqual((set.data as { tempo_map: unknown[] }).tempo_map, [{ bar: 1, beat: 0, bpm: 120, curve: 'step' }, { bar: 3, beat: 0, bpm: 60, curve: 'step' }]);
+
+  // editor_seek_bar and editor_nudge_clip count the map's bars at the map's tempo.
+  const seek = okOf(tools.seekBar({ bar: 4 }), 'seek bar 4');
+  assert.ok(Math.abs(useEditorStore.getState().playheadSec - 7.5) < 1e-9, `bar 4 at 7.5 s, got ${useEditorStore.getState().playheadSec}`);
+  assert.match(seek.message, /7\/8 3\+2\+2 at 60 bpm/);
+  useEditorStore.getState().updateClip('midi1', { startSec: 1 });
+  okOf(tools.nudgeClip({ clip_id: 'midi1', bars: 2 }), 'nudge 2 bars');
+  assert.ok(Math.abs(clipOf('midi1').startSec - 5.75) < 1e-9, 'halfway through bar 1 to halfway through the 7/8 bar 3');
+  useEditorStore.getState().updateClip('midi1', { startSec: 4 });
+  okOf(tools.nudgeClip({ clip_id: 'midi1', beats: 3 }), 'nudge 3 beats');
+  assert.ok(Math.abs(clipOf('midi1').startSec - 5.5) < 1e-9, 'three 8ths at 60 BPM');
+
+  // A tempo position is a bar and quarter notes into it; ramps and fermatas ride along.
+  okOf(tools.setMeterMap({ tempo_map: [{ bar: 3, beat: 1, bpm: 90, curve: 'linear' }, { bar: 5, bpm: 132 }, { bar: 5, beat: 1, fermata: { beats: 2, stretch: 3 } }] }), 'tempo only');
+  assert.deepEqual(
+    useEditorStore.getState().tempoMap.map((e) => [e.beat, e.bpm, e.fermata ? 'hold' : e.curve]),
+    [[0, 120, 'step'], [9, 90, 'linear'], [15, 132, 'step'], [16, 120, 'hold']],
+    'bar 1 keeps its start tempo; bar 5 starts at beat 15 after a 3.5-quarter 7/8 bar',
+  );
+  // Without a bar-1 entry, bar 1 keeps its meter.
+  okOf(tools.setMeterMap({ meter_map: [{ bar: 9, num: 5, den: 4 }] }), 'meter only');
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den]), [[0, 4, 4], [8, 5, 4]]);
+  // One call is one undo step.
+  useEditorStore.getState().undo();
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => m.bar), [0, 2]);
+
+  assert.match(errOf(tools.setMeterMap({}), 'nothing'), /pass meter_map, tempo_map, or adopt_clip_id/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 0, num: 4, den: 4 }] }), 'bar 0'), /bar >= 1/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 2, meter: '7/8 3+3' }] }), 'bad groups'), /not a meter/);
+  assert.match(errOf(tools.setMeterMap({ meter_map: [{ bar: 2, num: 7, den: 8, groups: [3, 3] }] }), 'bad groups list'), /not a meter/);
+  assert.match(errOf(tools.setMeterMap({ tempo_map: [{ bar: 2, bpm: 400 }] }), 'bpm'), /20-300/);
+  assert.match(errOf(tools.setMeterMap({ tempo_map: [{ bar: 2, bpm: 90, curve: 'swing' }] }), 'curve'), /"step" \(hold\) or "linear"/);
+  assert.match(errOf(tools.setMeterMap({ adopt_clip_id: 'bass', meter_map: [] }), 'both'), /not both/);
+  assert.match(errOf(tools.setMeterMap({ adopt_clip_id: 'loop A' }), 'audio'), /MIDI|piano/i);
+
+  // adopt_clip_id: the arrangement follows a MIDI clip from its first step.
+  useEditorStore.getState().updateClip('midi1', {
+    startSec: 0,
+    sourceBpm: 96,
+    sourceMeterMap: [{ bar: 0, meter: { num: 5, den: 4, groups: [] } }],
+  });
+  const adopted = okOf(tools.setMeterMap({ adopt_clip_id: 'bass' }), 'adopt');
+  assert.match(adopted.message, /follows "bass"/);
+  assert.deepEqual(useEditorStore.getState().meterMap.map((m) => [m.bar, m.meter.num, m.meter.den]), [[0, 5, 4]]);
+  assert.equal(useEditorStore.getState().bpm, 96);
+  // A load without a meter keeps the session's (as bpm-less loads always have),
+  // so the blocks after this one start from 4/4 again.
+  useEditorStore.getState().setMeterMap([{ bar: 0, meter: { num: 4, den: 4, groups: [] } }]);
+}
+
+/* ── clip geometry: set, trim, duplicate, nudge ──────────────────────────── */
+{
+  seed();
+  const set = okOf(tools.setClip({ clip_id: 'loop A', gain: 0.25, muted: true }), 'setClip');
+  assert.match(set.message, /gain=0\.25, muted=true/);
+  assert.equal(clipOf('aud1').gain, 0.25);
+  assert.equal(clipOf('aud1').muted, true);
+
+  // A fade that could never finish inside the clip is refused as a unit, not
+  // written and then contradicted.
+  assert.match(errOf(tools.setClip({ clip_id: 'loop A', fade_in_sec: 5 }), 'long fade'), /cannot be longer than the clip/);
+  assert.match(errOf(tools.setClip({ clip_id: 'loop A' }), 'empty patch'), /nothing to change/);
+  assert.match(errOf(tools.setClip({ clip_id: 'bass', instrument_program: 4 }), 'program via setClip'), /use set_clip_instrument/);
+
+  seed();
+  okOf(tools.trimClip({ clip_id: 'loop A', in_sec: 0.1, out_sec: 0.4 }), 'trim');
+  const trimmed = clipOf('aud1');
+  assert.ok(Math.abs(trimmed.startSec - 0.1) < 1e-9);
+  assert.ok(Math.abs(trimmed.durationSec - 0.3) < 1e-9);
+  assert.ok(Math.abs(trimmed.offsetIntoSource - 0.35) < 1e-9, 'the audio under the clip did not slide');
+  assert.match(errOf(tools.trimClip({ clip_id: 'loop A' }), 'no bounds'), /pass in_sec and\/or out_sec/);
+
+  seed();
+  const dup = okOf(tools.duplicateClip({ clip_id: 'loop A' }), 'duplicate');
+  const dupId = (dup.data as { clipId: string }).clipId;
+  assert.notEqual(dupId, 'aud1');
+  assert.equal(clipOf(dupId).startSec, 0.5, 'butt-joined onto the end of the original by default');
+  assert.equal(clipOf(dupId).audioBlob, clipOf('aud1').audioBlob, 'the media is shared');
+
+  seed();
+  okOf(tools.nudgeClip({ clip_id: 'loop B', beats: -1 }), 'nudge beats');
+  assert.equal(clipOf('aud2').startSec, 0.5, 'one beat at 120bpm is half a second');
+  okOf(tools.nudgeClip({ clip_id: 'loop B', bars: 1 }), 'nudge bars');
+  assert.equal(clipOf('aud2').startSec, 2.5);
+  // Clamped at the timeline origin rather than moved into negative time.
+  okOf(tools.nudgeClip({ clip_id: 'loop B', delta_sec: -99 }), 'nudge past zero');
+  assert.equal(clipOf('aud2').startSec, 0);
+  assert.match(errOf(tools.nudgeClip({ clip_id: 'loop B', beats: 1, bars: 1 }), 'two units'), /exactly one of delta_sec\/beats\/bars/);
+}
+
+/* ── sample-domain: reverse, normalize, bounce, merge, crossfade ─────────── */
+{
+  seed();
+  // "loop A" plays 0.25s..0.75s of a rising ramp, so reversing its WINDOW (not
+  // its whole source blob) must start where the window ended.
+  okOf(await tools.reverseClip({ clip_id: 'loop A', ...seams }), 'reverse');
+  const reversed = clipOf('aud1');
+  assert.equal(reversed.offsetIntoSource, 0, 'the new blob IS the clip');
+  assert.ok(Math.abs(reversed.durationSec - 0.5) < 1e-6);
+  const rev = await samplesOf(reversed.audioBlob);
+  assert.equal(rev.length, 4000);
+  assert.ok(Math.abs(rev[0] - RAMP[5999]) <= QUANT, `reversed head was ${rev[0]}`);
+  assert.ok(Math.abs(rev[3999] - RAMP[2000]) <= QUANT, `reversed tail was ${rev[3999]}`);
+  assert.match(errOf(await tools.reverseClip({ clip_id: 'bass', ...seams }), 'reverse midi'), /is a MIDI clip.*Bounce it first/s);
+
+  seed();
+  okOf(await tools.normalizeClip({ clip_id: 'loop A', peak_db: -6, ...seams }), 'normalize');
+  const norm = await samplesOf(clipOf('aud1').audioBlob);
+  let peak = 0;
+  for (const v of norm) peak = Math.max(peak, Math.abs(v));
+  assert.ok(Math.abs(peak - Math.pow(10, -6 / 20)) <= QUANT, `peak landed at ${peak}`);
+  assert.match(errOf(await tools.normalizeClip({ clip_id: 'loop A', peak_db: 3, ...seams }), 'positive dbfs'), /must be <= 0/);
+
+  seed();
+  // Bouncing an audio clip prints its fade and gain and neutralises both, so the
+  // blob every offline export reads needs nothing applied on top of it.
+  okOf(await tools.bounceClip({ clip_id: 'loop A', ...seams }), 'bounce audio');
+  const bounced = clipOf('aud1');
+  assert.equal(bounced.gain, 1);
+  assert.equal(bounced.fadeInSec, 0);
+  const printed = await samplesOf(bounced.audioBlob);
+  assert.ok(Math.abs(printed[0]) <= QUANT, 'the fade-in starts at silence');
+  assert.ok(Math.abs(printed[3999] - RAMP[5999] * 0.5) <= QUANT, 'and the clip gain is baked in');
+
+  seed();
+  const flat = okOf(await tools.bounceClip({ clip_id: 'bass', flatten: true, ...seams }), 'bounce midi');
+  assert.match(flat.message, /now a plain audio clip/);
+  assert.equal(clipOf('midi1').sourceKind, 'audio');
+  assert.equal(clipOf('midi1').sourcePianoRoll, undefined);
+  // Which is exactly what makes reversing it legal afterwards.
+  okOf(await tools.reverseClip({ clip_id: 'bass', ...seams }), 'reverse after flatten');
+
+  seed();
+  const merged = okOf(await tools.mergeClips({ clip_ids: ['loop A', 'loop B'], ...seams }), 'merge');
+  const mergedId = (merged.data as { clipId: string }).clipId;
+  assert.equal(useEditorStore.getState().clips.filter((c) => c.trackId === 't2').length, 1, 'the parts were consumed');
+  const mergedClip = clipOf(mergedId);
+  // 0.5s + a 0.5s gap + 1s.
+  assert.ok(Math.abs(mergedClip.durationSec - 2) < 1e-6, `merged length was ${mergedClip.durationSec}`);
+  assert.equal(mergedClip.startSec, 0);
+  const mergedSamples = await samplesOf(mergedClip.audioBlob);
+  assert.ok(Math.abs(mergedSamples[4100]) <= QUANT, 'the gap between the parts really is silence');
+
+  seed();
+  assert.match(errOf(await tools.mergeClips({ clip_ids: ['loop A'], ...seams }), 'one clip'), /at least two/);
+  assert.match(errOf(await tools.mergeClips({ clip_ids: ['loop A', 'bass'], ...seams }), 'cross track'), /same track to merge/);
+
+  seed();
+  // "loop A" ends at 0.5s and "loop B" starts at 1s, so they do not touch yet.
+  assert.match(errOf(tools.crossfadeClips({ clip_a: 'loop A', clip_b: 'loop B', overlap_sec: 0.2 }), 'apart'), /0\.500s apart/);
+  okOf(tools.nudgeClip({ clip_id: 'loop B', delta_sec: -0.5 }), 'close the gap');
+  const xf = okOf(tools.crossfadeClips({ clip_a: 'loop B', clip_b: 'loop A', overlap_sec: 0.2 }), 'crossfade');
+  assert.match(xf.message, /Crossfaded over 0\.20s at 0\.30s/);
+  assert.ok(Math.abs(clipOf('aud1').fadeOutSec - 0.2) < 1e-9, 'the earlier clip fades out');
+  assert.ok(Math.abs(clipOf('aud2').fadeInSec - 0.2) < 1e-9, 'the later one fades in');
+  assert.ok(Math.abs(clipOf('aud2').startSec - 0.3) < 1e-9, 'and slides back to where the overlap begins');
+
+  // A crossfade is a transition on ONE timeline. Two clips on different tracks
+  // can abut perfectly and still have nothing to fade between — they are heard
+  // simultaneously, not in sequence — so `crossfadePlan`'s gap test passes and
+  // the write has to be refused before it, not after.
+  seed();
+  okOf(tools.nudgeClip({ clip_id: 'loop A', delta_sec: 2 }), 'abut loop A onto bass');
+  assert.equal(clipOf('aud1').startSec, 2, 'bass ends at 2s, so they now touch exactly');
+  assert.equal(clipOf('midi1').trackId, 't1');
+  assert.equal(clipOf('aud1').trackId, 't2');
+  assert.equal(
+    errOf(tools.crossfadeClips({ clip_a: 'bass', clip_b: 'loop A', overlap_sec: 0.2 }), 'cross-track crossfade'),
+    'both clips must be on the same track to crossfade',
+  );
+  assert.equal(clipOf('midi1').fadeOutSec, undefined, 'the earlier clip was not touched');
+  assert.equal(clipOf('aud1').fadeInSec, 0.1, 'nor was the later one');
+  assert.equal(clipOf('aud1').startSec, 2, 'and nothing slid');
+}
+
+/* ── selection and tools ─────────────────────────────────────────────────── */
+{
+  seed();
+  const sel = okOf(tools.selectClips({ clip_ids: ['loop A', 'midi1'] }), 'selectClips');
+  assert.deepEqual((sel.data as { clipIds: string[] }).clipIds, ['aud1', 'midi1']);
+  assert.deepEqual(useEditorStore.getState().selectedClipIds, ['aud1', 'midi1']);
+  assert.equal(useEditorStore.getState().selectedClipId, 'aud1', 'single-select consumers still see something');
+  assert.deepEqual(getSelectedClips(), ['aud1', 'midi1'], 'and the bridge is published for non-React readers');
+  assert.match(errOf(tools.selectClips({ clip_ids: ['ghost'] }), 'bad id'), /No clip "ghost"/);
+
+  const range = okOf(tools.selectRange({ start_sec: 0.4, end_sec: 1.2 }), 'selectRange');
+  // "bass" spans 0–2s, "loop A" 0–0.5s, "loop B" 1–2s; ties on start time break
+  // by id, so the result is stable across runs.
+  assert.deepEqual((range.data as { clipIds: string[] }).clipIds, ['aud1', 'midi1', 'aud2']);
+  assert.deepEqual(useEditorStore.getState().selectedClipIds, ['aud1', 'midi1', 'aud2']);
+
+  const onTrack = okOf(tools.selectRange({ start_sec: 0.4, end_sec: 1.2, track_ids: ['Drums'] }), 'selectRange on track');
+  assert.deepEqual((onTrack.data as { clipIds: string[] }).clipIds, ['aud1', 'aud2']);
+  assert.match(errOf(tools.selectRange({ start_sec: 0 }), 'no end'), /pass start_sec and end_sec/);
+
+  okOf(tools.selectClips({ clip_ids: [] }), 'clear selection');
+  assert.deepEqual(useEditorStore.getState().selectedClipIds, []);
+  assert.equal(useEditorStore.getState().selectedClipId, null);
+
+  // Note selection lives on this module; nothing in the store renders it.
+  const notes = okOf(tools.selectNotes({ clip_id: 'bass', min_pitch: 62 }), 'selectNotes by pitch');
+  assert.deepEqual((notes.data as { noteIds: string[] }).noteIds, ['n2', 'n4']);
+  assert.deepEqual(tools.getSelectedNotes(), { clipId: 'midi1', noteIds: ['n2', 'n4'] });
+  okOf(tools.selectNotes({ clip_id: 'bass', note_ids: ['n1'] }), 'selectNotes by id');
+  assert.deepEqual(tools.getSelectedNotes().noteIds, ['n1']);
+  assert.match(errOf(tools.selectNotes({ clip_id: 'bass', note_ids: ['nope'] }), 'bad note id'), /is not a note in "bass"/);
+  assert.match(errOf(tools.selectNotes({ clip_id: 'bass' }), 'no filter'), /pass note_ids, or a filter/);
+
+  okOf(tools.setSnap({ snap: '1/8T' }), 'snap');
+  assert.equal(useEditorStore.getState().snap, '1/8T');
+  assert.match(errOf(tools.setSnap({ snap: '1/5' }), 'bad snap'), /is not a snap division/);
+
+  okOf(tools.setTool({ tool: 'split' }), 'tool');
+  assert.equal(useEditorStore.getState().tool, 'split');
+  assert.match(errOf(tools.setTool({ tool: 'lasso' }), 'bad tool'), /must be one of move, cut, split/);
+}
+
+/* ── tracks ──────────────────────────────────────────────────────────────── */
+{
+  seed();
+  const upd = okOf(tools.setTrack({ track_id: 'Keys', volume: 0.4, pan: -0.5, armed: true, solo: true, instrument_program: 40 }), 'setTrack');
+  assert.match(upd.message, /solo=true/);
+  const keys = useEditorStore.getState().tracks.find((t) => t.id === 't1');
+  assert.equal(keys.volume, 0.4);
+  assert.equal(keys.pan, -0.5);
+  assert.equal(keys.armed, true);
+  assert.equal(keys.solo, true);
+  assert.equal(keys.instrumentProgram, 40);
+  // Solo went through toggleSolo, so it stayed exclusive.
+  assert.equal(useEditorStore.getState().tracks.find((t) => t.id === 't2').solo, false);
+
+  assert.match(errOf(tools.setTrack({ track_id: 'Keys', volume: 4 }), 'loud'), /volume must be between 0 and 1/);
+  assert.match(errOf(tools.setTrack({ track_id: 'Keys' }), 'empty'), /nothing to change/);
+  // Freezing needs a printed stem, which this layer cannot render — and the
+  // refusal has to name where the user can actually do it.
+  assert.match(errOf(tools.setTrack({ track_id: 'Keys', frozen: true }), 'freeze via setTrack'), /freeze button in the EDIT track header/);
+  assert.match(errOf(tools.setTrack({ track_id: 'Keys', frozen: false }), 'unfreeze unfrozen'), /is not frozen/);
+  assert.match(errOf(tools.freezeTrack({ track_id: 'Keys' }), 'freeze'), /offline renderer.*EDIT track header/s);
+
+  // Unfreezing IS supported, because the store already holds the originals.
+  useEditorStore.getState().freezeTrack('t1', { audioBlob: wavOf(new Float32Array(100)), durationSec: 0.0125 });
+  assert.equal(useEditorStore.getState().clips.filter((c) => c.trackId === 't1').length, 1);
+
+  // Asking to freeze a track that IS frozen is a no-op, and a no-op that reports
+  // "Updated track ...:" with nothing after the colon reads as work done.
+  assert.equal(
+    errOf(tools.setTrack({ track_id: 'Keys', frozen: true }), 'freeze an already-frozen track'),
+    'set_track: "Keys" is already frozen',
+  );
+
+  okOf(tools.setTrack({ track_id: 'Keys', frozen: false }), 'unfreeze');
+  assert.equal(clipOf('midi1').id, 'midi1', 'the original clip came back');
+
+  seed();
+  const order = okOf(tools.reorderTracks({ track_ids: ['Drums'] }), 'reorder');
+  assert.deepEqual((order.data as { order: string[] }).order, ['t2', 't1']);
+  assert.match(errOf(tools.reorderTracks({ track_ids: [] }), 'empty order'), /pass track_ids/);
+  assert.match(errOf(tools.reorderTracks({ track_ids: ['t1', 'Keys'] }), 'dupe'), /was listed twice/);
+
+  seed();
+  const copy = okOf(tools.duplicateTrack({ track_id: 'Keys' }), 'duplicateTrack');
+  const copyId = (copy.data as { trackId: string }).trackId;
+  assert.match(copy.message, /with 1 clip/);
+  assert.equal(useEditorStore.getState().tracks[1].id, copyId);
+  assert.equal(useEditorStore.getState().clips.filter((c) => c.trackId === copyId).length, 1);
+  assert.match(errOf(tools.duplicateTrack({ track_id: 'ghost' }), 'no track'), /No track "ghost"/);
+}
+
+/* ── markers ─────────────────────────────────────────────────────────────── */
+{
+  seed();
+  useEditorStore.getState().addMarker(4, 'chorus');
+  useEditorStore.getState().addMarker(8, 'bridge');
+
+  okOf(tools.renameMarker({ marker_id: 'chorus', label: 'Chorus 1' }), 'rename');
+  assert.equal(useEditorStore.getState().markers[0].label, 'Chorus 1');
+  assert.match(errOf(tools.renameMarker({ marker_id: 'Chorus 1' }), 'no label'), /pass label/);
+
+  okOf(tools.removeMarker({ marker_id: 'bridge' }), 'remove');
+  assert.deepEqual(useEditorStore.getState().markers.map((m) => m.label), ['Chorus 1']);
+  assert.match(errOf(tools.removeMarker({ marker_id: 'bridge' }), 'gone'), /No marker "bridge"/);
+}
+
+/* ── automation ──────────────────────────────────────────────────────────── */
+{
+  seed();
+  assert.match(errOf(tools.addAutomationLane({ kind: 'trackGain', track_id: 'Keys' }), 'bad kind'), /kind must be one of/);
+  assert.match(errOf(tools.addAutomationLane({ kind: 'trackFx', track_id: 'Keys' }), 'no entry'), /needs entry_id and param_key/);
+
+  const lane = okOf(tools.addAutomationLane({ kind: 'trackVolume', track_id: 'Keys' }), 'lane');
+  const laneId = (lane.data as { laneId: string }).laneId;
+  assert.match(lane.message, /holding its current value \(0\.8\)/);
+  assert.equal(useEditorStore.getState().automationLanes.length, 1);
+
+  // Asking twice reports the lane that exists instead of minting a second one.
+  const again = okOf(tools.addAutomationLane({ kind: 'trackVolume', track_id: 'Keys' }), 'lane again');
+  assert.match(again.message, /already has an automation lane/);
+  assert.equal(useEditorStore.getState().automationLanes.length, 1);
+
+  const written = okOf(
+    tools.setAutomationPoints({ lane_id: laneId, points: [{ t: 2, v: 0.9 }, { t: 0, v: 0.2 }] }),
+    'points',
+  );
+  assert.match(written.message, /Wrote 2 breakpoint/);
+  assert.deepEqual(useEditorStore.getState().automationLanes[0].points, [{ t: 0, v: 0.2 }, { t: 2, v: 0.9 }]);
+
+  // The store thins breakpoints closer than 20ms; the tool says so rather than
+  // claiming it wrote three.
+  const thinned = okOf(
+    tools.setAutomationPoints({ kind: 'trackVolume', track_id: 'Keys', points: [{ t: 0, v: 0.1 }, { t: 0.005, v: 0.3 }, { t: 1, v: 1 }] }),
+    'thinning',
+  );
+  assert.match(thinned.message, /Wrote 2 breakpoint\(s\).*closer than the 20ms minimum/);
+
+  assert.match(errOf(tools.setAutomationPoints({ lane_id: 'nope', points: [{ t: 0, v: 0 }] }), 'bad lane'), /no lane "nope"/);
+  assert.match(errOf(tools.setAutomationPoints({ lane_id: laneId, points: [] }), 'no points'), /non-empty array/);
+  assert.match(errOf(tools.setAutomationPoints({ lane_id: laneId, points: [{ t: -1, v: 0 }] }), 'negative t'), /needs t >= 0/);
+  assert.match(errOf(tools.setAutomationPoints({ kind: 'trackPan', track_id: 'Drums', points: [{ t: 0, v: 0 }] }), 'no lane yet'), /has no automation lane yet/);
+}
+
+/* ── history: undo, redo, named snapshots ────────────────────────────────── */
+{
+  seed();
+  assert.match(errOf(tools.undo(), 'nothing to undo'), /nothing left to undo/);
+  assert.match(errOf(tools.redo(), 'nothing to redo'), /nothing to redo/);
+
+  assert.match(okOf(tools.listSnapshots(), 'empty snapshots').message, /No snapshots have been taken yet/);
+  assert.match(errOf(tools.snapshot({}), 'no name'), /pass a name/);
+  assert.match(errOf(tools.restore({ name: 'ghost' }), 'no such snapshot'), /no snapshot called "ghost"/);
+
+  const taken = okOf(tools.snapshot({ name: 'before edits' }), 'snapshot');
+  assert.match(taken.message, /2 track\(s\), 3 clip\(s\) at 120 bpm/);
+  assert.deepEqual((okOf(tools.listSnapshots(), 'list').data as { snapshots: string[] }).snapshots, ['before edits']);
+  assert.equal(useEditorStore.getState()._undo.length, 0, 'taking a snapshot did not cost an undo step');
+
+  okOf(tools.setClip({ clip_id: 'loop A', muted: true }), 'edit after snapshot');
+  useEditorStore.getState().removeClip('aud2');
+  assert.equal(useEditorStore.getState().clips.length, 2);
+
+  await settle();
+  const restored = okOf(tools.restore({ name: 'before edits' }), 'restore');
+  assert.match(restored.message, /3 clip\(s\)/);
+  assert.equal(useEditorStore.getState().clips.length, 3);
+  assert.equal(clipOf('aud1').muted, undefined, 'the round trip put the pre-edit clip back verbatim');
+
+  // A restore is itself an edit, so the user can step back out of it.
+  okOf(tools.undo(), 'undo the restore');
+  assert.equal(useEditorStore.getState().clips.length, 2);
+}
+
+/* ── V4-2: nothing rendered from a stale clip is ever written ──────────── */
+
+/** A render stub parked on a gate: the tool is suspended mid-render until the
+ *  test opens it, which is exactly the window in which a user drags, trims or
+ *  edits the clip the render was started from. */
+const gatedRender = () => {
+  let open: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  let started = false;
+  const fn: StepNoteRenderer = async (notes, bpm, totalSteps, opts) => {
+    started = true;
+    await gate;
+    return render(notes, bpm, totalSteps, opts);
+  };
+  return { fn, open: () => open(), started: () => started };
+};
+
+/** The same, for the decode step every sample-domain op awaits. */
+const gatedCtx = () => {
+  let open: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  let decodes = 0;
+  const factory: OfflineCtxFactory = (sampleRate) => {
+    const inner = ctxFactory(sampleRate);
+    return {
+      decodeAudioData: async (data: ArrayBuffer) => {
+        decodes += 1;
+        await gate;
+        return inner.decodeAudioData(data);
+      },
+      createBuffer: inner.createBuffer,
+    };
+  };
+  return { factory, open: () => open(), started: () => decodes > 0 };
+};
+
+/** Let pending microtasks and I/O settle until `cond` holds (bounded). */
+const until = async (cond: () => boolean, what: string) => {
+  for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 1));
+  assert.ok(cond(), `${what}: never started`);
+};
+
+{
+  // A drag during a quantize: the clip's window moved, so the re-bounce (which
+  // writes a window of its own) would stomp on where the user put it.
+  seed();
+  const blobBefore = clipOf('midi1').audioBlob;
+  const g = gatedRender();
+  const pending = tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams, render: g.fn });
+  await until(g.started, 'quantize render');
+  useEditorStore.getState().updateClip('midi1', { startSec: 3 });
+  g.open();
+  const moved = errOf(await pending, 'quantize, clip dragged mid-render');
+  assert.equal(moved, '"bass" changed while rendering (startSec) — nothing written');
+  assert.equal(clipOf('midi1').startSec, 3, 'the drag survives');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0.3, 4.2, 4.2, 8.1], 'the notes were not quantized');
+  assert.equal(clipOf('midi1').audioBlob, blobBefore, 'and the audio was not replaced');
+}
+{
+  // The notes themselves edited in the piano roll during the render: writing the
+  // tool's result would silently throw the user's note edit away.
+  seed();
+  const g = gatedRender();
+  const pending = tools.transposeClip({ clip_id: 'bass', semitones: 5, ...seams, render: g.fn });
+  await until(g.started, 'transpose render');
+  const userNotes = [{ id: 'u1', note: 72, step: 0, length: 4, velocity: 90 }];
+  useEditorStore.getState().updateClip('midi1', { sourcePianoRoll: userNotes });
+  g.open();
+  assert.match(errOf(await pending, 'transpose, notes edited mid-render'), /changed while rendering \(sourcePianoRoll\) — nothing written/);
+  assert.equal(clipOf('midi1').sourcePianoRoll, userNotes, 'the note edit made by the user is what remains');
+}
+{
+  // Stretch re-renders at a new tempo; a trim during it is refused too.
+  seed();
+  const g = gatedRender();
+  const pending = tools.stretchClip({ clip_id: 'bass', target_bpm: 60, ...seams, render: g.fn });
+  await until(g.started, 'stretch render');
+  useEditorStore.getState().updateClip('midi1', { durationSec: 1.5 });
+  g.open();
+  assert.match(errOf(await pending, 'stretch, clip trimmed mid-render'), /changed while rendering \(durationSec\)/);
+  assert.equal(clipOf('midi1').durationSec, 1.5);
+  assert.equal(clipOf('midi1').sourceBpm, 120, 'the source tempo was not moved either');
+}
+{
+  // Positive control: a change that does NOT invalidate the render (a rename)
+  // lets the write through — and the write is built on the CURRENT record, so
+  // the rename is kept rather than reverted by a stale copy.
+  seed();
+  const g = gatedRender();
+  const pending = tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams, render: g.fn });
+  await until(g.started, 'quantize render (rename)');
+  useEditorStore.getState().updateClip('midi1', { label: 'renamed bass', gain: 0.3 });
+  g.open();
+  okOf(await pending, 'quantize, clip renamed mid-render');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0, 4, 4, 8]);
+  assert.equal(clipOf('midi1').label, 'renamed bass');
+  assert.equal(clipOf('midi1').gain, 0.3);
+}
+{
+  // Sample-domain ops: a trim during reverse.
+  seed();
+  const blobBefore = clipOf('aud1').audioBlob;
+  const g = gatedCtx();
+  const pending = tools.reverseClip({ clip_id: 'loop A', ...seams, ctxFactory: g.factory });
+  await until(g.started, 'reverse decode');
+  useEditorStore.getState().updateClip('aud1', { offsetIntoSource: 0.4 });
+  g.open();
+  assert.equal(errOf(await pending, 'reverse, clip trimmed mid-render'), '"loop A" changed while rendering (offsetIntoSource) — nothing written');
+  assert.equal(clipOf('aud1').offsetIntoSource, 0.4);
+  assert.equal(clipOf('aud1').audioBlob, blobBefore);
+}
+{
+  // A move to another track during normalize.
+  seed();
+  const g = gatedCtx();
+  const pending = tools.normalizeClip({ clip_id: 'loop A', ...seams, ctxFactory: g.factory });
+  await until(g.started, 'normalize decode');
+  useEditorStore.getState().updateClip('aud1', { trackId: 't1' });
+  g.open();
+  assert.match(errOf(await pending, 'normalize, clip moved track mid-render'), /changed while rendering \(trackId\)/);
+  assert.equal(clipOf('aud1').trackId, 't1');
+}
+{
+  // Bounce bakes the fades and gain it READ; a gain ride during the bake would
+  // be printed wrong and then zeroed, so it is refused.
+  seed();
+  const g = gatedCtx();
+  const pending = tools.bounceClip({ clip_id: 'loop A', ...seams, ctxFactory: g.factory });
+  await until(g.started, 'bounce decode');
+  useEditorStore.getState().updateClip('aud1', { gain: 0.9 });
+  g.open();
+  assert.match(errOf(await pending, 'bounce, gain changed mid-render'), /changed while rendering \(gain\)/);
+  assert.equal(clipOf('aud1').gain, 0.9);
+  assert.equal(clipOf('aud1').fadeInSec, 0.1, 'nothing was reset to neutral');
+}
+{
+  // Merge: one part moved during the decode, so no parts consumed, no merged clip.
+  seed();
+  const g = gatedCtx();
+  const pending = tools.mergeClips({ clip_ids: ['loop A', 'loop B'], ...seams, ctxFactory: g.factory });
+  await until(g.started, 'merge decode');
+  useEditorStore.getState().updateClip('aud2', { startSec: 1.5 });
+  g.open();
+  assert.match(errOf(await pending, 'merge, part moved mid-render'), /"loop B" changed while rendering \(startSec\) — nothing written/);
+  assert.deepEqual(useEditorStore.getState().clips.map((c) => c.id), ['midi1', 'aud1', 'aud2']);
+  assert.equal(clipOf('aud2').startSec, 1.5);
+
+  // A rename during a merge is not a conflict; the merged clip is named from
+  // the CURRENT record.
+  seed();
+  const g2 = gatedCtx();
+  const renamed = tools.mergeClips({ clip_ids: ['loop A', 'loop B'], ...seams, ctxFactory: g2.factory });
+  await until(g2.started, 'merge decode (rename)');
+  useEditorStore.getState().updateClip('aud1', { label: 'intro' });
+  g2.open();
+  const merged = okOf(await renamed, 'merge, part renamed mid-render');
+  assert.equal(clipOf((merged.data as { clipId: string }).clipId).label, 'intro (merged)');
+}
+{
+  // Deleted outright during a render still gets its own message.
+  seed();
+  const g = gatedRender();
+  const pending = tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams, render: g.fn });
+  await until(g.started, 'quantize render (delete)');
+  useEditorStore.getState().removeClip('midi1');
+  g.open();
+  assert.match(errOf(await pending, 'quantize, clip deleted mid-render'), /was removed while .*rendering; nothing was written/);
+}
+
+/* ── V4-5: one tool call is one undo step ────────────────────────────────── */
+{
+  // bounce with flatten: re-render AND drop the note list.
+  seed();
+  const clipsBefore = useEditorStore.getState().clips;
+  okOf(await tools.bounceClip({ clip_id: 'bass', flatten: true, ...seams }), 'bounce flatten');
+  assert.equal(clipOf('midi1').sourceKind, 'audio');
+  assert.equal(useEditorStore.getState()._undo.length, 1, 'bounce+flatten recorded exactly one undo step');
+  useEditorStore.getState().undo();
+  assert.equal(useEditorStore.getState().clips, clipsBefore, 'one undo puts the MIDI clip back, notes and all');
+  assert.equal(clipOf('midi1').sourceKind, 'piano-roll');
+  assert.equal(useEditorStore.getState()._undo.length, 0);
+}
+{
+  // setTrack touching fields, solo (toggleSolo) and unfreeze (unfreezeTrack).
+  seed();
+  useEditorStore.getState().freezeTrack('t1', { audioBlob: wavOf(new Float32Array(100)), durationSec: 0.0125 });
+  await settle(); // the freeze is its own, earlier step
+  const depth = useEditorStore.getState()._undo.length;
+  const tracksBefore = useEditorStore.getState().tracks;
+  const clipsBefore = useEditorStore.getState().clips;
+  okOf(tools.setTrack({ track_id: 'Keys', volume: 0.3, solo: true, frozen: false }), 'setTrack multi');
+  assert.equal(useEditorStore.getState()._undo.length, depth + 1, 'three store writes, one undo step');
+  useEditorStore.getState().undo();
+  assert.equal(useEditorStore.getState().tracks, tracksBefore, 'volume, solo AND the freeze all come back in one undo');
+  assert.equal(useEditorStore.getState().clips, clipsBefore);
+}
+{
+  // merge: N removes + 1 add.
+  seed();
+  const clipsBefore = useEditorStore.getState().clips;
+  okOf(await tools.mergeClips({ clip_ids: ['loop A', 'loop B'], ...seams }), 'merge');
+  assert.equal(useEditorStore.getState()._undo.length, 1, 'removes + add recorded as one step');
+  useEditorStore.getState().undo();
+  assert.equal(useEditorStore.getState().clips, clipsBefore, 'one undo un-merges completely');
+}
+
+/* ── every tool call is its own undo step, whatever the timing ───────────── */
+{
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const depth = () => useEditorStore.getState()._undo.length;
+
+  // A user edit 50 ms before a tool call is inside HISTORY_COALESCE_MS. Without
+  // a forced boundary the tool's writes join the user's step, and undoing "the
+  // tool" also throws away what the user did just before asking for it.
+
+  // Single-write tool.
+  seed();
+  useEditorStore.getState().updateClip('aud1', { label: 'user edit' });
+  await wait(50);
+  okOf(tools.setClip({ clip_id: 'loop B', gain: 0.5 }), 'setClip after a user edit');
+  assert.equal(depth(), 2, 'setClip: user edit and tool are two steps');
+  okOf(tools.undo(), 'undo setClip');
+  assert.equal(clipOf('aud2').gain, undefined, 'the tool was undone');
+  assert.equal(clipOf('aud1').label, 'user edit', 'the user edit was not');
+
+  // Multi-write tool (updateTrack + toggleSolo).
+  seed();
+  useEditorStore.getState().updateTrack('t2', { volume: 0.1 });
+  await wait(50);
+  okOf(tools.setTrack({ track_id: 'Keys', volume: 0.3, solo: true }), 'setTrack after a user edit');
+  assert.equal(depth(), 2, 'setTrack: user edit and tool are two steps');
+  okOf(tools.undo(), 'undo setTrack');
+  const tracks = useEditorStore.getState().tracks;
+  assert.equal(tracks[0].volume, 0.8);
+  assert.equal(tracks[0].solo, false, 'both of the tool writes were undone together');
+  assert.equal(tracks[1].volume, 0.1, 'the user fader move survived');
+
+  // Async tool: the boundary is taken at the commit, after the render.
+  seed();
+  useEditorStore.getState().updateClip('aud1', { label: 'user edit' });
+  await wait(50);
+  const quantizing = tools.quantizeClip({ clip_id: 'bass', grid: '1/4', ...seams });
+  okOf(await quantizing, 'quantize after a user edit');
+  assert.equal(depth(), 2, 'quantize: user edit and tool are two steps');
+  okOf(tools.undo(), 'undo quantize');
+  assert.deepEqual(clipOf('midi1').sourcePianoRoll.map((n) => n.step), [0.3, 4.2, 4.2, 8.1]);
+  assert.equal(clipOf('aud1').label, 'user edit');
+
+  // Multi-write, previously relying on timing: crossfade (two clips) and
+  // setAutomationPoints (a clear plus one write per breakpoint).
+  seed();
+  okOf(tools.nudgeClip({ clip_id: 'loop B', delta_sec: -0.5 }), 'close the gap');
+  await wait(50);
+  okOf(tools.crossfadeClips({ clip_a: 'loop A', clip_b: 'loop B', overlap_sec: 0.2 }), 'crossfade after a nudge');
+  assert.equal(depth(), 2, 'the nudge and the crossfade are separate steps');
+  okOf(tools.undo(), 'undo crossfade');
+  assert.equal(clipOf('aud1').fadeOutSec, undefined);
+  assert.equal(clipOf('aud2').fadeInSec, undefined);
+  assert.equal(clipOf('aud2').startSec, 0.5, 'the nudge is still there');
+
+  seed();
+  okOf(tools.addAutomationLane({ kind: 'trackVolume', track_id: 'Keys' }), 'lane');
+  await wait(50);
+  okOf(tools.setAutomationPoints({ kind: 'trackVolume', track_id: 'Keys', points: [{ t: 0, v: 0.1 }, { t: 1, v: 0.5 }, { t: 2, v: 0.9 }] }), 'points');
+  assert.equal(depth(), 2, 'adding the lane and writing four times into it are two steps');
+  okOf(tools.undo(), 'undo points');
+  assert.equal(useEditorStore.getState().automationLanes[0].points.length, 1, 'back to the seed point, lane kept');
+
+  // And the boundary after: a user edit 50 ms AFTER a tool is its own step.
+  seed();
+  okOf(tools.setClip({ clip_id: 'loop B', gain: 0.5 }), 'tool first');
+  await wait(50);
+  useEditorStore.getState().updateClip('aud1', { label: 'user after' });
+  assert.equal(depth(), 2, 'the later user edit did not fold into the tool step');
+  okOf(tools.undo(), 'undo the user edit');
+  assert.equal(clipOf('aud2').gain, 0.5, 'the tool step is intact');
+
+  // restore is a single store write but must still be its own step.
+  seed();
+  okOf(tools.snapshot({ name: 's' }), 'snapshot');
+  useEditorStore.getState().removeClip('aud2');
+  await wait(50);
+  okOf(tools.restore({ name: 's' }), 'restore right after an edit');
+  assert.equal(depth(), 2, 'the delete and the restore are separate steps');
+  okOf(tools.undo(), 'undo restore');
+  assert.equal(useEditorStore.getState().clips.length, 2, 'undo of the restore lands on the post-delete state');
+}
+
+/* ── a clip the size of a symphony ───────────────────────────────────────── */
+{
+  // The assistant transposes a roll clip of 130,000 notes. commitNotes used to
+  // spread every note into Math.max for the grid length, which throws
+  // "Maximum call stack size exceeded" past about 125,000 arguments, so the
+  // edit failed as a crash.
+  seed();
+  const big: PianoNote[] = Array.from({ length: 130_000 }, (_, i) => ({ id: `b${i}`, note: 48 + (i % 24), step: i * 0.25, length: 1, velocity: 90 }));
+  useEditorStore.getState().updateClip('midi1', { sourcePianoRoll: big });
+  await settle();
+  const r = okOf(await tools.transposeClip({ clip_id: 'bass', semitones: 1, ...seams }), 'transpose a huge clip');
+  assert.match(r.message, /1 semitone/);
+  const after = clipOf('midi1');
+  assert.equal(after.sourcePianoRoll.length, 130_000);
+  assert.equal(after.sourcePianoRoll[0].note, 49);
+  assert.equal(after.sourceTotalSteps, 130_000 * 0.25 - 0.25 + 1, 'the grid runs to the last note end');
+}
+
+/* ── the operations this layer refuses to fake ───────────────────────────── */
+{
+  const unsupported = Object.keys(tools.UNSUPPORTED_OPERATIONS);
+  assert.deepEqual(unsupported.sort(), ['editor_freeze_track', 'editor_stretch_audio', 'set_metronome', 'tempo_map']);
+  for (const key of unsupported) {
+    assert.ok(tools.UNSUPPORTED_OPERATIONS[key].length > 40, `${key}: the reason has to say why, not just "no"`);
+  }
+}
+
+console.log('editorTools: ok');

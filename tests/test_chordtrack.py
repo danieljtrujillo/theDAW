@@ -18,8 +18,9 @@ from typing import Any
 
 import numpy as np
 import pytest
-import soundfile as sf  # type: ignore[import]
+import soundfile as sf
 
+from backend.modules.notation.exporters import chordtrack as chordtrack_module
 from backend.modules.notation.exporters.chordtrack import (
     SCHEMA,
     SCHEMA_VERSION,
@@ -62,7 +63,7 @@ def _write_lead_sheet(
 ) -> Path:
     """A one-part lead sheet: ``quarters`` quarter notes plus chord symbols at
     the given quarter offsets (music21 figures, ``-`` spells flats)."""
-    from music21 import harmony, key, meter, note, stream, tempo  # type: ignore[import]
+    from music21 import harmony, key, meter, note, stream, tempo
 
     score = stream.Score()
     part = stream.Part()
@@ -212,6 +213,69 @@ def test_harmony_spells_flats_in_flat_keys_and_reads_slash_bass(tmp_path: Path):
     assert doc["chords"][2]["bassPc"] == 4
     assert doc["chords"][2]["rootPc"] == 0
     assert doc["key"]["tonic"] == "F"
+
+
+def test_harmony_reads_roman_numerals_in_the_local_key(tmp_path: Path):
+    sheet = _write_lead_sheet(
+        tmp_path / "lead.musicxml",
+        [(0.0, "G"), (4.0, "C"), (8.0, "D7"), (12.0, "G")],
+        key_name="G",
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=sheet,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["I", "IV", "V7", "I"]
+    assert {c["romanKey"] for c in doc["chords"]} == {"G major"}
+    assert _find_null(doc) == ""
+
+
+def test_roman_numerals_follow_inversions_applied_chords_and_minor(tmp_path: Path):
+    sheet = _write_lead_sheet(
+        tmp_path / "lead.musicxml",
+        [(0.0, "C"), (4.0, "A7/C#"), (8.0, "Dm"), (12.0, "G7/B"), (16.0, "C")],
+        quarters=20,
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=sheet,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["I", "V65/ii", "ii", "V65", "I"]
+    minor = _write_lead_sheet(
+        tmp_path / "minor.musicxml",
+        [(0.0, "Am"), (4.0, "Dm"), (8.0, "E7"), (12.0, "Am")],
+        key_name="a",
+    )
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=None,
+        analysis_row=None,
+        lead_sheet_path=minor,
+        method="harmony",
+    )
+    assert [c["roman"] for c in doc["chords"]] == ["i", "iv", "V7", "i"]
+    assert doc["chords"][0]["romanKey"] == "A minor"
+
+
+def test_chroma_chords_carry_romans_in_the_analysed_key(
+    c_then_g_wav: Path, analysis_row: dict[str, Any]
+):
+    doc = build_chordtrack(
+        entry_id="e",
+        audio_path=c_then_g_wav,
+        analysis_row=analysis_row,
+        lead_sheet_path=None,
+        method="chroma",
+    )
+    by_root = {c["rootPc"]: c for c in doc["chords"]}
+    assert by_root[0]["roman"] == "I" and by_root[0]["romanKey"] == "C major"
+    assert by_root[7]["roman"] == "V"
 
 
 def test_harmony_merges_repeated_symbols(tmp_path: Path):
@@ -367,6 +431,259 @@ def test_chroma_needs_audio():
 
 
 # --------------------------------------------------------------------------
+# no chord (N.C.): contrast and silence, never a lifted chroma floor
+# --------------------------------------------------------------------------
+
+
+def _partials(midis: list[int], seconds: float, drive: float = 0.0) -> np.ndarray:
+    """Sawtooth-like tones (12 partials each); ``drive`` > 0 clips them through
+    tanh, the way an overdriven guitar adds its own harmonics."""
+    t = np.arange(int(_SR * seconds)) / _SR
+    out = np.zeros_like(t)
+    for midi in midis:
+        freq = 440.0 * 2 ** ((midi - 69) / 12)
+        for k in range(1, 13):
+            if freq * k < _SR / 2:
+                out += np.sin(2 * np.pi * freq * k * t) / k
+    out /= len(midis)
+    return np.tanh(out * drive) / np.tanh(drive) if drive else out
+
+
+def _noise(seconds: float, seed: int, tilt: float = 0.5) -> np.ndarray:
+    """Seeded noise with a 1/f**tilt power spectrum (0 white, 1 pink)."""
+    rng = np.random.default_rng(seed)
+    n = int(_SR * seconds)
+    spectrum = np.fft.rfft(rng.standard_normal(n))
+    freqs = np.fft.rfftfreq(n, 1.0 / _SR)
+    freqs[0] = freqs[1]
+    return np.fft.irfft(spectrum / freqs ** (tilt / 2.0), n)
+
+
+def _kit(seconds: float, seed: int = 11) -> np.ndarray:
+    """An unpitched drum kit at 120 bpm: a noise thump on 1, a noise snare on
+    3, a hi-hat on every eighth."""
+    rng = np.random.default_rng(seed)
+    n = int(_SR * seconds)
+    out = np.zeros(n)
+    t = np.arange(int(0.15 * _SR)) / _SR
+    kick = np.cumsum(rng.standard_normal(len(t))) * np.exp(-t * 40)
+    kick = (kick - kick.mean()) / np.abs(kick - kick.mean()).max()
+    snare = rng.standard_normal(len(t)) * np.exp(-t * 25)
+    hat = np.diff(rng.standard_normal(len(t) + 1)) * np.exp(-t * 80) * 0.5
+    for eighth in range(int(seconds / 0.25) + 1):
+        start = int(eighth * 0.25 * _SR)
+        end = min(n, start + len(t))
+        if end <= start:
+            continue
+        hit = hat + (kick if eighth % 4 == 0 else snare if eighth % 4 == 2 else 0.0)
+        out[start:end] += hit[: end - start]
+    return out
+
+
+def _at_db(signal: np.ndarray, dbfs: float) -> np.ndarray:
+    """``signal`` scaled to an RMS of ``dbfs``."""
+    return signal / np.sqrt(np.mean(signal**2)) * 10 ** (dbfs / 20)
+
+
+def _chroma_track(
+    tmp_path: Path, audio: np.ndarray, key: tuple[str, str] = ("F", "minor")
+) -> dict[str, Any]:
+    """Write ``audio`` and build its chord track from the chroma, with an
+    analysis row of 120 bpm beats and ``key``, as the route passes it."""
+    path = tmp_path / "mix.wav"
+    sf.write(str(path), audio.astype(np.float32), _SR)
+    beats = [i * 0.5 for i in range(int(len(audio) / _SR / 0.5))]
+    row = {
+        "bpm": 120,
+        "beats_json": json.dumps(beats),
+        "key": key[0],
+        "scale": key[1],
+    }
+    return build_chordtrack(
+        entry_id="e",
+        audio_path=path,
+        analysis_row=row,
+        lead_sheet_path=None,
+        method="chroma",
+    )
+
+
+def _nc_seconds(doc: dict[str, Any], start: float = 0.0, end: float = 1e9) -> float:
+    """Seconds of N.C. inside [start, end]."""
+    return sum(
+        max(0.0, min(end, c["endSec"]) - max(start, c["startSec"]))
+        for c in doc["chords"]
+        if c["symbol"] == "N.C."
+    )
+
+
+def test_dense_power_chord_reads_its_chord_not_nc(tmp_path: Path):
+    # An overdriven F5 (F2 C3 F3 C4) under a noise wash 3 dB louder than it and
+    # a drum kit: the wash lifts every pitch class, which is what a dense full
+    # mix does to the chroma. The flat no-chord template used to outscore every
+    # chord here and the whole track read N.C.
+    seconds = 8.0
+    audio = (
+        _at_db(_partials([41, 48, 53, 60], seconds, drive=4.0), -12)
+        + _at_db(_noise(seconds, seed=1), -9)
+        + _at_db(_kit(seconds), -12)
+    )
+    doc = _chroma_track(tmp_path, audio)
+    assert _nc_seconds(doc) == 0.0, [c["symbol"] for c in doc["chords"]]
+    for chord in doc["chords"]:
+        assert chord["rootPc"] == 5, chord["symbol"]
+        assert 0 in chord["pitchClasses"], chord["symbol"]
+
+
+@pytest.mark.parametrize(
+    "voicing",
+    [
+        pytest.param([53, 55, 60, 65], id="Fsus2"),
+        pytest.param([53, 58, 60, 65], id="Fsus4"),
+    ],
+)
+def test_dense_sus_chord_reads_a_chord_not_nc(tmp_path: Path, voicing: list[int]):
+    # A sus chord over its root in the bass, under the same wash and kit: no
+    # third to speak of, still a chord on F with its fifth.
+    seconds = 8.0
+    audio = (
+        _at_db(_partials(voicing, seconds, drive=2.0), -12)
+        + _at_db(_partials([41], seconds), -18)
+        + _at_db(_noise(seconds, seed=2), -9)
+        + _at_db(_kit(seconds), -12)
+    )
+    doc = _chroma_track(tmp_path, audio)
+    assert _nc_seconds(doc) == 0.0, [c["symbol"] for c in doc["chords"]]
+    for chord in doc["chords"]:
+        assert {5, 0} <= set(chord["pitchClasses"]), chord["symbol"]
+
+
+@pytest.mark.parametrize("quiet", ["digital silence", "room tone"])
+def test_silence_around_a_chord_reads_nc(tmp_path: Path, quiet: str):
+    # Room tone is what a recording holds before the music: a -90 dBFS hiss
+    # and a -75 dBFS mains hum at 60 Hz. The hum is a pitch, and it used to
+    # read as a chord (B major seventh) where nothing plays.
+    edge = 2.0
+    if quiet == "room tone":
+        t = np.arange(int(_SR * edge)) / _SR
+        still = _at_db(_noise(edge, seed=7, tilt=0.0), -90) + _at_db(
+            np.sin(2 * np.pi * 60.0 * t), -75
+        )
+    else:
+        still = np.zeros(int(_SR * edge))
+    audio = np.concatenate([still, _at_db(_partials([60, 64, 67], 4.0), -14), still])
+    doc = _chroma_track(tmp_path, audio, key=("C", "major"))
+
+    assert {c["symbol"] for c in doc["chords"]} == {"N.C.", "C"}
+    assert _nc_seconds(doc, 0.0, edge) >= edge - 0.5
+    assert _nc_seconds(doc, 6.0, 8.0) >= edge - 0.5
+    assert _nc_seconds(doc, 2.5, 5.5) == 0.0
+    assert [c["symbol"] for c in doc["chords"]] == ["N.C.", "C", "N.C."]
+
+
+@pytest.mark.parametrize(
+    "texture",
+    [
+        pytest.param(lambda s: _at_db(_noise(s, seed=4, tilt=0.0), -20), id="white"),
+        pytest.param(lambda s: _at_db(_noise(s, seed=5, tilt=1.0), -20), id="pink"),
+        pytest.param(lambda s: _at_db(_kit(s), -12), id="drum kit"),
+        pytest.param(
+            lambda s: _at_db(_kit(s), -12) + _at_db(_noise(s, seed=6), -20),
+            id="drum kit and wash",
+        ),
+    ],
+)
+def test_unpitched_texture_reads_nc(tmp_path: Path, texture: Any):
+    doc = _chroma_track(tmp_path, texture(8.0))
+    assert [c["symbol"] for c in doc["chords"]] == ["N.C."]
+    assert 0.0 < doc["chords"][0]["confidence"] <= 1.0
+
+
+def test_drum_break_between_chords_reads_nc(tmp_path: Path):
+    audio = np.concatenate(
+        [
+            _at_db(_partials([60, 64, 67], 4.0), -14),
+            _at_db(_kit(6.0), -12),
+            _at_db(_partials([55, 59, 62], 4.0), -14),
+        ]
+    )
+    doc = _chroma_track(tmp_path, audio, key=("C", "major"))
+    assert _nc_seconds(doc, 4.0, 10.0) >= 5.0
+    assert doc["chords"][0]["symbol"] == "C"
+    assert doc["chords"][-1]["symbol"] == "G"
+
+
+def _chord_over_floor(floor: float) -> np.ndarray:
+    """One beat of chroma: F minor's F, Ab and C over ``floor`` on the other
+    nine pitch classes (L1-normalised, as the pooling leaves it)."""
+    column = np.full(12, floor)
+    column[5], column[8], column[0] = 1.0, 0.8, 0.9
+    return column / column.sum()
+
+
+def _decode(labels: list[tuple[int, str]], log_emission: np.ndarray) -> list[int]:
+    stay = chordtrack_module._STAY_PROB
+    switch = (1.0 - stay) / (len(labels) - 1)
+    return chordtrack_module._viterbi(log_emission, stay, switch)
+
+
+@pytest.mark.parametrize("floor", [0.1, 0.3, 0.5, 0.6])
+def test_a_lifted_chroma_floor_keeps_the_chord(floor: float):
+    pooled = np.tile(_chord_over_floor(floor), (16, 1))
+    labels, log_emission, _ = chordtrack_module._emissions(
+        pooled, np.ones(16), True, 5, "minor"
+    )
+    path = _decode(labels, log_emission)
+    assert {labels[s] for s in path} <= {(5, "minor"), (5, "minor-seventh")}, [
+        labels[s] for s in path
+    ]
+
+
+def test_the_lifted_floor_outscores_every_chord_on_a_flat_template():
+    # Why the flat template read N.C. over a dense mix: with the chord tones
+    # at not quite twice the floor, the flat profile is closer by cosine than
+    # any chord template.
+    column = _chord_over_floor(0.6)
+    labels, templates = chordtrack_module._templates(True)
+    chords = [i for i, (_, kind) in enumerate(labels) if kind != "N"]
+    templates = templates[chords]
+    unit = column / np.linalg.norm(column)
+    flat = np.full(12, 1.0 / np.sqrt(12.0))
+    assert float(unit @ flat) > float((templates @ unit).max()) + 0.25
+
+
+def test_flat_or_silent_beats_read_nc():
+    chord = _chord_over_floor(0.1)
+    flat = np.full(12, 1.0 / 12.0)
+    pooled = np.vstack([chord] * 4 + [flat] * 4 + [chord] * 4 + [chord] * 4)
+    presence = np.array([1.0] * 12 + [0.0] * 4)
+    labels, log_emission, confidence = chordtrack_module._emissions(
+        pooled, presence, True, 5, "minor"
+    )
+    path = _decode(labels, log_emission)
+    kinds = [labels[s][1] for s in path]
+    assert kinds[:4] == ["minor"] * 4
+    assert kinds[4:8] == ["N"] * 4
+    assert kinds[8:12] == ["minor"] * 4
+    assert kinds[12:] == ["N"] * 4
+    no_chord = confidence[:, -1]
+    assert no_chord[4:8] == pytest.approx([1.0] * 4)
+    assert no_chord[12:] == pytest.approx([1.0] * 4)
+    assert (no_chord[:4] < 0.5).all()
+
+
+def test_presence_is_zero_for_true_silence_and_one_for_music():
+    levels = np.array([-200.0, -95.0, -75.0, -40.0, -20.0, -14.0, -12.0])
+    presence = chordtrack_module._presence(levels)
+    # -200 and -95 dBFS: digital silence and dither, under the absolute floor.
+    assert presence[:2] == pytest.approx([0.0, 0.0])
+    # -75 dBFS: over the absolute floor, but 62 dB under the loud beats.
+    assert presence[2] == pytest.approx(0.0)
+    # Anything a mix plays at keeps all of its chord evidence.
+    assert presence[3:] == pytest.approx([1.0] * 4)
+
+
+# --------------------------------------------------------------------------
 # auto selection
 # --------------------------------------------------------------------------
 
@@ -465,22 +782,8 @@ def test_write_chordtrack_refuses_an_empty_result(tmp_path: Path):
 # --------------------------------------------------------------------------
 
 
-@pytest.fixture
-def notation_client(tmp_path: Path, monkeypatch) -> Any:
-    """Library + notation routers on a fresh tmp library root (the
-    ``tests/test_library_endpoints.py`` pattern)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from backend.modules.library import router as library_router_module
-    from backend.modules.notation import router as notation_router_module
-
-    monkeypatch.setattr(library_router_module, "_store", None)
-    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
-    app = FastAPI()
-    app.include_router(library_router_module.router, prefix="/api/library")
-    app.include_router(notation_router_module.router, prefix="/api/notation")
-    return TestClient(app)
+# notation_client: the library and notation routers on a tmp library root
+# (tests/conftest.py).
 
 
 def test_chords_route_404s_without_sources(notation_client: Any, tmp_path: Path):

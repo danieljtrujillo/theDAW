@@ -62,8 +62,9 @@ namespace Gantasmo.NoteChart.EditorTools
                       "spawn and hit anchors, and a pooled glyph template. Next: assign the Bravura TMP font " +
                       "asset on 'Flying Note Template/Glyph' (see the package README for how to generate it, " +
                       "character set Unicode Range (Hex) E000-ECFF), then point the loader at a chart by " +
-                      "artifact id or drop the .unity.json into StreamingAssets. Defaults reach theDAW at " +
-                      "127.0.0.1:8600 over the backend's adb-reverse USB tunnel.");
+                      "artifact id or drop the .notechart.json (renamed to NoteChartLoader.fileName) into " +
+                      "StreamingAssets. Defaults reach theDAW at 127.0.0.1:8600 over the backend's " +
+                      "adb-reverse USB tunnel.");
         }
 
         /// <summary>

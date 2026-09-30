@@ -7,10 +7,11 @@
  * speed, size, file counter, and destination, plus an actionable error block
  * for failed downloads.
  *
- * Two kinds of row share the stack: Stable Audio checkpoints (Hugging Face,
- * this PC) and Magenta RT2 checkpoints (fetched by the sidecar's CLI inside
- * WSL — progress is parsed from its log, so the bar is indeterminate until the
- * CLI reports a size).
+ * Three kinds of row share the stack: Stable Audio checkpoints (Hugging Face,
+ * this PC), orchestral sound banks (GitHub releases or the Internet Archive,
+ * this PC; the row names the bank's licence), and Magenta RT2 checkpoints
+ * (fetched by the sidecar's CLI inside WSL — progress is parsed from its log,
+ * so the bar is indeterminate until the CLI reports a size).
  *
  * "Actionable" is literal for the two failures a token fixes (gated repo, rate
  * limit): the error block embeds <HfTokenField />, so the row that failed is
@@ -30,6 +31,7 @@ import {
 } from 'lucide-react';
 import { useDownloadStore } from '../../state/downloadStore';
 import { classifyDownloadError, type DownloadJob } from '../../lib/modelDownloadClient';
+import { classifySoundbankError } from '../../lib/soundbankClient';
 import { formatBytes } from '../../lib/storageClient';
 import { HfTokenField } from '../ui/HfTokenField';
 
@@ -151,7 +153,7 @@ export const DownloadDock: React.FC = () => {
             : 'Expand downloads (drag to move)'
         }
         style={posStyle}
-        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border bg-[#0a080f]/95 px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest backdrop-blur-md transition-colors cursor-grab active:cursor-grabbing touch-none select-none ${
+        className={`${posClass} inline-flex items-center gap-1.5 rounded-lg border bg-[#0a080f]/95 px-2.5 py-1.5 text-xs font-bold uppercase tracking-widest backdrop-blur-md transition-colors cursor-grab active:cursor-grabbing touch-none select-none ${
           failedCount > 0 && activeJobs.length === 0
             ? 'border-rose-500/50 text-rose-200 shadow-[0_0_16px_rgba(244,63,94,0.35)] hover:bg-rose-500/15 hover:text-white'
             : 'border-purple-500/40 text-purple-200 shadow-[0_0_16px_rgba(168,85,247,0.35)] hover:bg-purple-500/15 hover:text-white'
@@ -182,8 +184,8 @@ export const DownloadDock: React.FC = () => {
         className="flex items-center gap-2 px-2.5 py-2 border-b border-white/5 bg-linear-to-r from-purple-900/25 to-purple-900/10 cursor-grab active:cursor-grabbing touch-none select-none"
       >
         <Download className="w-3.5 h-3.5 text-purple-300 shrink-0" />
-        <span className="text-[10px] font-black uppercase tracking-widest text-purple-200">Downloads</span>
-        <span className="text-[8px] font-mono text-zinc-500">
+        <span className="text-xs font-black uppercase tracking-widest text-purple-200">Downloads</span>
+        <span className="text-xs font-bold text-zinc-500">
           {activeJobs.length > 0
             ? `${activeJobs.length} active${totalSpeed > 0 ? ` · ${formatSpeed(totalSpeed)}` : ''}`
             : `${jobs.length} total`}
@@ -195,7 +197,7 @@ export const DownloadDock: React.FC = () => {
             onClick={() => void clear()}
             aria-label="Clear finished downloads"
             title="Clear finished / errored downloads"
-            className="inline-flex items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-widest text-zinc-500 hover:bg-white/5 hover:text-zinc-200 transition-colors"
+            className="inline-flex items-center gap-1 rounded border border-white/10 px-1.5 py-0.5 text-xs font-bold uppercase tracking-widest text-zinc-500 hover:bg-white/5 hover:text-zinc-200 transition-colors"
           >
             <Trash2 className="w-2.5 h-2.5" />
             Clear
@@ -250,17 +252,29 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
         ) : (
           <AlertCircle className="w-3 h-3 text-rose-300 shrink-0" />
         )}
-        <span className="text-[10px] font-bold text-zinc-100 truncate" title={job.label}>{job.label}</span>
+        <span className="text-xs font-bold text-zinc-100 truncate" title={job.label}>{job.label}</span>
         {isMagenta && (
           <span
-            className="shrink-0 rounded border border-cyan-500/30 bg-cyan-500/10 px-1 text-[8px] font-mono uppercase tracking-wider text-cyan-200"
+            className="shrink-0 rounded border border-cyan-500/30 bg-cyan-500/10 px-1 text-xs font-bold uppercase tracking-wider text-cyan-200"
             title="Fetched by the Magenta sidecar's own CLI inside WSL"
           >
             WSL
           </span>
         )}
+        {job.kind === 'soundbank' && job.licence && (
+          <a
+            href={job.licence.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`Downloaded under ${job.licence.name}`}
+            aria-label={`Licence: ${job.licence.name} (opens in a new window)`}
+            className="shrink-0 max-w-40 truncate rounded border border-emerald-500/30 bg-emerald-500/10 px-1 text-xs font-bold text-emerald-200 hover:text-emerald-100"
+          >
+            {job.licence.name}
+          </a>
+        )}
         {fileCount > 1 && (
-          <span className="ml-auto shrink-0 text-[8px] font-mono text-zinc-500 tabular-nums">
+          <span className="ml-auto shrink-0 text-xs font-bold text-zinc-500 tabular-nums">
             file {Math.min(job.current_file + 1, fileCount)} of {fileCount}
           </span>
         )}
@@ -271,7 +285,7 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
       ) : (
         <>
           {file?.filename && (
-            <div className="text-[8px] font-mono text-zinc-500 truncate mb-1" title={file.filename}>
+            <div className="text-xs font-bold text-zinc-500 truncate mb-1" title={file.filename}>
               {file.filename}
             </div>
           )}
@@ -291,7 +305,7 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
               style={{ width: `${isDone ? 100 : indeterminate ? 100 : pct}%` }}
             />
           </div>
-          <div className="flex items-center gap-2 mt-1 text-[8px] font-mono text-zinc-500 tabular-nums">
+          <div className="flex items-center gap-2 mt-1 text-xs font-bold text-zinc-500 tabular-nums">
             {indeterminate ? (
               <span>in progress · size reported by the sidecar once known</span>
             ) : (
@@ -315,7 +329,10 @@ const DownloadRow: React.FC<{ job: DownloadJob }> = ({ job }) => {
 };
 
 const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
-  const info = classifyDownloadError(job.error_detail ?? '', job.error_repo_id ?? undefined);
+  const info =
+    job.kind === 'soundbank'
+      ? classifySoundbankError(job.error_detail ?? '', job.repo_id || undefined)
+      : classifyDownloadError(job.error_detail ?? '', job.error_repo_id ?? undefined);
   const startDownload = useDownloadStore((s) => s.startDownload);
   const kind = job.kind ?? 'model';
   // The retry arrives as a NEW job row (the backend only rejoins live jobs), so
@@ -347,12 +364,12 @@ const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
   };
   return (
     <div className="rounded border border-rose-500/30 bg-rose-500/5 px-2 py-1.5">
-      <div className="text-[9px] font-black uppercase tracking-widest text-rose-300">{magentaHeadline ?? info.headline}</div>
-      <p className="mt-0.5 text-[8px] leading-relaxed text-rose-200/80 whitespace-pre-line line-clamp-4" title={job.error_detail ?? undefined}>
+      <div className="text-xs font-black uppercase tracking-widest text-rose-300">{magentaHeadline ?? info.headline}</div>
+      <p className="mt-0.5 text-xs font-bold leading-relaxed text-rose-200/80 whitespace-pre-line line-clamp-4" title={job.error_detail ?? undefined}>
         {info.fix}
       </p>
       {job.log && (
-        <p className="mt-0.5 text-[8px] font-mono text-zinc-500 truncate" title={job.log}>
+        <p className="mt-0.5 text-xs font-bold text-zinc-500 truncate" title={job.log}>
           log: {job.log}
         </p>
       )}
@@ -364,7 +381,7 @@ const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
               href={link.url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[8px] font-mono text-rose-300 hover:text-rose-100 transition-colors"
+              className="inline-flex items-center gap-1 text-xs font-bold text-rose-300 hover:text-rose-100 transition-colors"
             >
               <ExternalLink className="w-2.5 h-2.5" /> {link.label}
             </a>
@@ -372,7 +389,7 @@ const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
         </div>
       )}
       {retried ? (
-        <p className="mt-1.5 flex items-center gap-1.5 text-[8px] text-emerald-300">
+        <p className="mt-1.5 flex items-center gap-1.5 text-xs font-bold text-emerald-300">
           <CheckCircle2 className="w-3 h-3 shrink-0" />
           Restarted — follow the new row.
         </p>
@@ -388,13 +405,13 @@ const DownloadError: React.FC<{ job: DownloadJob }> = ({ job }) => {
             type="button"
             onClick={() => void retry()}
             disabled={retrying}
-            className="mt-1.5 inline-flex items-center gap-1 rounded border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-rose-100 hover:bg-rose-500/20 transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/70"
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-xs font-black uppercase tracking-widest text-rose-100 hover:bg-rose-500/20 transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/70"
           >
             {retrying && <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />}
             {retrying ? 'Retrying' : 'Retry'}
           </button>
           {retryError && (
-            <p role="alert" className="mt-0.5 text-[8px] text-rose-300">
+            <p role="alert" className="mt-0.5 text-xs font-bold text-rose-300">
               {retryError}
             </p>
           )}

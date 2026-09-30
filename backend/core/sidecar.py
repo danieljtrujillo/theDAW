@@ -1,5 +1,7 @@
 """GPUSidecar — manages a long-lived neural model server subprocess.
 
+kept: imported by tests/test_launch_token_child_env.py:596
+
 Mirrors the pattern in ``backend/modules/stems/sidecar.py``: heavy ML deps live
 in an isolated venv/process so the main API stays light; the sidecar is spawned
 lazily on first use, health-checked over HTTP, and kept warm. One sidecar can

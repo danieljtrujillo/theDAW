@@ -21,6 +21,7 @@ import { useLogStore } from '../state/logStore';
 import {
   DESKTOP_DROP_ORIGIN,
   LIBRARY_ID_MIME,
+  LIBRARY_IDS_MIME,
   dropHasLibraryOrFiles,
   entriesFromDrop,
   libraryListDropIntent,
@@ -151,6 +152,94 @@ assert.deepEqual(
   [],
   'a DJ drag is not read by a library-mime caller (no files either)',
 );
+
+// ── entriesFromDrop: a multi-selection drag resolves every id, in order ─────
+reset();
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: JSON.stringify(['b2', 'a1']), [LIBRARY_ID_MIME]: 'b2' },
+    }),
+    { entries: library, deps },
+  ),
+  [library[1], library[0]],
+  'the ids resolve to entries in payload order (dragged row first)',
+);
+assert.equal(importCalls.length, 0, 'no import for a multi in-app drag');
+
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: JSON.stringify(['a1', 'ghost', 'b2']), [LIBRARY_ID_MIME]: 'a1' },
+    }),
+    { entries: library, deps },
+  ),
+  [library[0], library[1]],
+  'unknown ids are skipped, known ones kept in order',
+);
+
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: JSON.stringify(['x', 'y']), [LIBRARY_ID_MIME]: 'x' },
+    }),
+    { entries: library, deps },
+  ),
+  [],
+  'all-unknown ids -> []',
+);
+
+// A single-slot target honours `max` for a multi-id drag too, exactly as it
+// does for a multi-file desktop drop.
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: JSON.stringify(['b2', 'a1', 'ghost']), [LIBRARY_ID_MIME]: 'b2' },
+    }),
+    { entries: library, deps, max: 1 },
+  ),
+  [library[1]],
+  'max: 1 -> only the first (dragged) entry',
+);
+
+// Empty / malformed multi payload falls back to the single-id branch.
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: JSON.stringify([]), [LIBRARY_ID_MIME]: 'b2' },
+    }),
+    { entries: library, deps },
+  ),
+  [library[1]],
+  'an empty ids array falls back to the single id',
+);
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({
+      types: [LIBRARY_IDS_MIME, LIBRARY_ID_MIME],
+      data: { [LIBRARY_IDS_MIME]: 'not json', [LIBRARY_ID_MIME]: 'a1' },
+    }),
+    { entries: library, deps },
+  ),
+  [library[0]],
+  'a malformed payload falls back to the single id',
+);
+
+// A caller that opted into only its own mime never reads the library multi payload.
+assert.deepEqual(
+  await entriesFromDrop(
+    makeDt({ types: [LIBRARY_IDS_MIME], data: { [LIBRARY_IDS_MIME]: JSON.stringify(['a1', 'b2']) } }),
+    { mimes: [DJ_MIME], entries: library, deps },
+  ),
+  [],
+  'the multi payload is a library concept; a DJ-only caller ignores it',
+);
+assert.equal(importCalls.length, 0, 'no import for the multi-id checks');
 
 // ── entriesFromDrop: OS files import in order ───────────────────────────────
 reset();

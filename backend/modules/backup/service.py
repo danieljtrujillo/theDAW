@@ -9,8 +9,14 @@ All user-data roots worth backing up are enumerated by :func:`user_data_roots`:
   (``known_paths.projects_dir()``, ``~/Documents/theDAW Projects`` by default).
 - ``settings`` — the top-level ``data/*.json`` registries (``settings.json``,
   ``local_checkpoints.json``, ``recent_projects.json``). ``known_paths.json``
-  is left out of every archive and ignored in one, because its sources decide
-  which files /api/places/file serves (``_NEVER_BACKED_UP``).
+  and the /clip-audio folder grants (``clip_audio_roots.json``,
+  ``media_roots.json``) are left out of every archive and ignored in one,
+  because they decide which files /api/places/file and /api/project/clip-audio
+  serve (``_NEVER_BACKED_UP``). The Lyria key file and its copy
+  (``lyria_gemini_key.json``, ``lyria_provider_keys.json``) are both in every
+  archive; on import they go through the Lyria sidecar's own restore
+  (``_LYRIA_KEY_FILES``), which reconciles an archive made by any build with
+  the keys held now.
 
 Export and import both run in daemon threads tracked by an in-memory job
 table so the FastAPI event loop is never blocked; callers poll job status.
@@ -55,9 +61,26 @@ _SKIP_DIR_NAMES = {
 }
 
 # Settings files never written to an archive and never restored from one,
-# compared case-insensitively. known_paths.json records which files the app may
-# serve; a restored copy would let an archive choose them.
-_NEVER_BACKED_UP = frozenset({"known_paths.json"})
+# compared case-insensitively. Each records what the app may serve, so a
+# restored copy would let an archive choose it: known_paths.json the files
+# /api/places/file serves, and clip_audio_roots.json with its older-build copy
+# media_roots.json (backend/modules/project/media_access.py) the folders
+# /api/project/clip-audio serves. A folder grant is the user opening a project
+# on this machine; the project opened again after a restore grants it again.
+_NEVER_BACKED_UP = frozenset(
+    {"known_paths.json", "clip_audio_roots.json", "media_roots.json"}
+)
+
+# The Lyria key file and the copy beside it. Written as plain files, a main
+# backup's ``{"key": ...}`` would land next to this build's copy with a new
+# file identity, which the sidecar reads as main deleting and saving the key
+# (forgetting every other Gemini key); so import hands both to
+# lyria.sidecar.restore_key_files instead, which reads the archive on its own
+# terms. Compared case-insensitively, as Windows opens them.
+_LYRIA_KEY_FILES = frozenset({"lyria_gemini_key.json", "lyria_provider_keys.json"})
+# A key file is a few hundred bytes; an archive member claiming more is not
+# one and is restored no further than this.
+_LYRIA_KEY_FILE_MAX_BYTES = 1024 * 1024
 
 _VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
 
@@ -211,6 +234,11 @@ class _Job:
     bytes_written: int = 0
     progress: float = 0.0
     error: Optional[str] = None
+    # Members an import chose not to write: an unknown root id, a disallowed
+    # settings filename, an already-there file in merge mode, or a real write
+    # failure. A "done" state does not mean every member was restored — this
+    # count (and the message it produces) is what makes that visible.
+    skipped: int = 0
 
 
 _jobs: dict[str, _Job] = {}
@@ -237,12 +265,19 @@ def job_status(job_id: str, kind: str) -> Optional[dict]:
         job = _jobs.get(job_id)
         if job is None or job.kind != kind:
             return None
+        message = (
+            f"{job.skipped} file(s) skipped (see server log for details)."
+            if job.skipped
+            else ""
+        )
         return {
             "state": job.state,
             "zip_path": job.zip_path,
             "bytes_written": job.bytes_written,
             "progress": round(job.progress, 4),
             "error": job.error,
+            "skipped": job.skipped,
+            "message": message,
         }
 
 
@@ -290,9 +325,37 @@ def start_export(dest_dir: Optional[str], include: Optional[list[str]]) -> str:
     return job.id
 
 
+def _lyria_key_files_root() -> Optional[Path]:
+    """The folder the Lyria sidecar keeps its key file in, or None when the
+    sidecar cannot be imported."""
+    try:
+        from backend.modules.lyria import sidecar
+    except ImportError as e:
+        log.warning("backup: the Lyria sidecar is unavailable: %s", e)
+        return None
+    return sidecar._KEY_FILE.parent
+
+
+def _settle_lyria_keys(settings_root: Path) -> None:
+    """Have the Lyria sidecar write back any change another build made to its
+    key file, so the archive holds a key file and a copy that agree. Only
+    when the settings root being archived is the folder the key file is in:
+    anywhere else there is nothing of Lyria's in the archive to settle."""
+    try:
+        from backend.modules.lyria import sidecar
+    except ImportError as e:
+        log.warning("backup: the Lyria sidecar is unavailable: %s", e)
+        return
+    if _same_folder(settings_root, sidecar._KEY_FILE.parent):
+        sidecar.settle_key_files()
+
+
 def _run_export(job: _Job, dest: Path, include: Optional[list[str]]) -> None:
     try:
         specs = [s for s in user_data_roots() if include is None or s.id in include]
+        for spec in specs:
+            if spec.id == "settings":
+                _settle_lyria_keys(spec.path)
         # Enumerate first so progress has a denominator.
         plan: list[tuple[Path, str, int]] = []
         per_root: dict[str, dict] = {
@@ -412,12 +475,52 @@ def start_import(zip_path: str, mode: str) -> str:
     return job.id
 
 
+def _same_folder(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _restore_lyria_keys(members: dict[str, bytes], mode: str) -> bool:
+    """Restore the Lyria key file and its copy through the sidecar
+    (_LYRIA_KEY_FILES), then stop a running Lyria so the next open hands it
+    the restored keys, as every key change does. False when nothing was
+    restored."""
+    try:
+        from backend.modules.lyria import sidecar
+    except ImportError as e:
+        log.warning("backup: the Lyria sidecar is unavailable: %s", e)
+        return False
+    try:
+        restored = sidecar.restore_key_files(
+            members.get("lyria_gemini_key.json"),
+            members.get("lyria_provider_keys.json"),
+            mode,
+        )
+    except OSError as e:
+        log.warning("backup: failed to restore the Lyria keys: %s", e)
+        return False
+    if not restored:
+        log.warning("backup: the archive's Lyria key files hold no keys to restore")
+        return False
+    sidecar.stop()
+    return True
+
+
 def _run_import(job: _Job, zip_path: Path, mode: str) -> None:
     try:
         # The archive's projects land in the projects folder in use now.
         roots_by_id = {s.id: s for s in user_data_roots()}
         written = 0
         processed = 0
+        skipped = 0
+        # The Lyria key file and its copy, when the settings root is the
+        # folder the sidecar keeps them in: held here and restored together
+        # after the loop (_LYRIA_KEY_FILES).
+        lyria_root = _lyria_key_files_root()
+        lyria_members: dict[str, bytes] = {}
+        lyria_size = 0
         with zipfile.ZipFile(zip_path) as zf:
             members = [
                 m
@@ -429,6 +532,13 @@ def _run_import(job: _Job, zip_path: Path, mode: str) -> None:
                 processed += m.file_size
                 parts = m.filename.split("/", 2)
                 if len(parts) < 3 or not parts[2]:
+                    log.warning(
+                        "backup: malformed member path in archive: %s", m.filename
+                    )
+                    skipped += 1
+                    with _jobs_lock:
+                        job.skipped = skipped
+                        job.progress = processed / total
                     continue
                 spec = roots_by_id.get(parts[1])
                 if spec is None:
@@ -437,10 +547,42 @@ def _run_import(job: _Job, zip_path: Path, mode: str) -> None:
                         parts[1],
                         m.filename,
                     )
+                    skipped += 1
+                    with _jobs_lock:
+                        job.skipped = skipped
+                        job.progress = processed / total
                     continue
                 if spec.kind == "files" and not _is_restorable_settings_name(parts[2]):
                     log.warning("backup: not restoring settings member %s", m.filename)
+                    skipped += 1
                     with _jobs_lock:
+                        job.skipped = skipped
+                        job.progress = processed / total
+                    continue
+                if (
+                    spec.kind == "files"
+                    and lyria_root is not None
+                    and parts[2].rstrip(" .").casefold() in _LYRIA_KEY_FILES
+                    and _same_folder(spec.path, lyria_root)
+                ):
+                    if m.file_size > _LYRIA_KEY_FILE_MAX_BYTES:
+                        log.warning(
+                            "backup: %s is too large to be a key file", m.filename
+                        )
+                        skipped += 1
+                    else:
+                        with zf.open(m) as src:
+                            data = src.read(_LYRIA_KEY_FILE_MAX_BYTES + 1)
+                        if len(data) > _LYRIA_KEY_FILE_MAX_BYTES:
+                            log.warning(
+                                "backup: %s is too large to be a key file", m.filename
+                            )
+                            skipped += 1
+                        else:
+                            lyria_members[parts[2].rstrip(" .").casefold()] = data
+                            lyria_size += m.file_size
+                    with _jobs_lock:
+                        job.skipped = skipped
                         job.progress = processed / total
                     continue
                 base = spec.path
@@ -452,12 +594,26 @@ def _run_import(job: _Job, zip_path: Path, mode: str) -> None:
                         log.warning(
                             "backup: refusing path outside root: %s", m.filename
                         )
+                        skipped += 1
+                        with _jobs_lock:
+                            job.skipped = skipped
+                            job.progress = processed / total
                         continue
                 except OSError as e:
                     log.warning("backup: cannot resolve %s: %s", m.filename, e)
+                    skipped += 1
+                    with _jobs_lock:
+                        job.skipped = skipped
+                        job.progress = processed / total
                     continue
                 if mode == "merge" and target.exists():
+                    log.warning(
+                        "backup: not overwriting existing file in merge mode: %s",
+                        m.filename,
+                    )
+                    skipped += 1
                     with _jobs_lock:
+                        job.skipped = skipped
                         job.progress = processed / total
                     continue
                 try:
@@ -466,15 +622,35 @@ def _run_import(job: _Job, zip_path: Path, mode: str) -> None:
                         shutil.copyfileobj(src, dst, _COPY_CHUNK_BYTES)
                 except OSError as e:
                     log.warning("backup: failed to restore %s: %s", m.filename, e)
+                    skipped += 1
+                    with _jobs_lock:
+                        job.skipped = skipped
+                        job.progress = processed / total
                     continue
                 written += m.file_size
                 with _jobs_lock:
                     job.bytes_written = written
                     job.progress = processed / total
+        if lyria_members:
+            if _restore_lyria_keys(lyria_members, mode):
+                written += lyria_size
+            else:
+                skipped += len(lyria_members)
         with _jobs_lock:
             job.bytes_written = written
             job.progress = 1.0
+            job.skipped = skipped
             job.state = "done"
+        if skipped:
+            log.warning(
+                "backup: import %s restored %d bytes but skipped %d member(s) "
+                "from %s (mode=%s)",
+                job.id,
+                written,
+                skipped,
+                zip_path,
+                mode,
+            )
         log.info(
             "backup: import %s restored %d bytes from %s (mode=%s)",
             job.id,

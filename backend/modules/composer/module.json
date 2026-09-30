@@ -1,0 +1,10 @@
+{
+  "name": "composer",
+  "label": "Composer",
+  "enabled": true,
+  "icon": "FileMusic",
+  "sidebar": false,
+  "api_prefix": "/api/composer",
+  "backend": true,
+  "description": "Composition by rule on music21: a seeded harmony planner (roman-numeral progressions with sevenths, applied dominants, the Neapolitan and the Italian, French and German sixths, five cadence types and pivot-chord modulation) voiced in SATB, a voice-leading checker (parallels, hidden fifths and octaves, crossing, overlap, spacing, ranges, unresolved leading tones and sevenths) a figured-bass realizer, and form plans (sonata, rondo, theme and variations, minuet and trio, scherzo, a four-movement symphony) whose sections carry keys, tempi, meters and pivot-chord modulations and voice in SATB, and composer style profiles (roman-numeral vocabulary, cadences, harmonic rhythm, texture, meter devices and melodic intervals, counted from the music21 corpus or authored from textbook facts) that the planner writes in, species counterpoint one to five above or below a cantus firmus, invertible counterpoint at the octave, tenth and twelfth, canons at any interval and lag, fugue expositions with tonal answers, countersubjects, sequential episodes and a stretto search, and orchestration of a sketch for a string, chamber, classical or romantic ensemble on the notation registry's instruments (the melody to the lead family by section, the bass to cellos and basses, the harmony spread by voice leading, timpani on I and V, a CC 1 swell per phrase). Chords sit on the roll's meter map, notes in 960 PPQ ticks. No model."
+}

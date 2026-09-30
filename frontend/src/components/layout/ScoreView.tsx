@@ -1,9 +1,13 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, Loader2, Minus, Plus, RefreshCw } from 'lucide-react';
+import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ChevronDown, ChevronLeft, ChevronRight, Download, Expand, Loader2, Minus, Plus, RefreshCw, Shrink, Waves } from 'lucide-react';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
+import { isAudioEntry } from '../../state/libraryEntry';
 import { usePlayerStore } from '../../state/playerStore';
 import { logError, logInfo } from '../../state/logStore';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
+import { RhythmBlock } from './RhythmBlock';
+import type { AnalysisSummary } from './rhythmReport';
 import {
   buildTimeMap,
   createCursorDriver,
@@ -16,10 +20,14 @@ import {
 import { readSoundingTempi } from './soundingTempo';
 import {
   exportArtifact,
+  performScore,
+  getMuseScoreStatus,
   getNotationCapabilities,
   listNotationArtifacts,
+  renderScoreAudio,
   fetchArtifactText,
   invalidateArtifactText,
+  type MuseScoreRenderStatus,
   type NotationArtifact,
   type NotationCapabilities,
 } from '../../lib/notationClient';
@@ -47,6 +55,7 @@ import {
 import { fitZoomToPage, type FitReport } from './score/scoreFit';
 import { NotationMaker } from './score/NotationMaker';
 import { stemOf } from './score/notationMakerModel';
+import { announceImportedScore, ScoreImport } from './score/ScoreImport';
 
 // The zoom a score fitted to per (artifact, page width): a re-open renders
 // once at that zoom instead of measuring-and-fitting again. Bounded.
@@ -112,6 +121,7 @@ import {
 } from '../../state/playAlongStore';
 import { ModeSwitch } from './score/playAlong/ModeSwitch';
 import { ExportMenu } from './score/ExportMenu';
+import { LegacySheetNotice } from './score/LegacySheetNotice';
 import { PlayAlongTransportCompact } from './score/playAlong/PlayAlongTransport';
 import { usePlayAlong } from './score/playAlong/usePlayAlongClock';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
@@ -146,21 +156,143 @@ const KINDS_WITHOUT_ENTRY = ['musicxml', 'alphatex', 'notechart', 'chordtrack'];
 const NO_FRAME = (): void => {};
 
 const LazyFallback: React.FC = () => (
-  <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">Loading…</div>
+  <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">Loading…</div>
 );
 
 export const ScoreView: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const entries = useLibraryStore((s) => s.entries);
-  const entry = useMemo(
-    () => entries.find((candidate) => candidate.id === selectedEntryId) ?? null,
-    [entries, selectedEntryId],
+  // An entry off every loaded page (an imported composition is never on the
+  // audio pages) is fetched by id; lookupVersion bumps when it lands.
+  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
+  const libraryEntry = useMemo<LibraryEntry | null>(
+    () => {
+      if (!selectedEntryId) return null;
+      return entries.find((candidate) => candidate.id === selectedEntryId)
+        ?? useLibraryStore.getState().getById(selectedEntryId)
+        ?? null;
+    },
+    [entries, selectedEntryId, lookupVersion],
   );
+  // The track the play-along follows: only an audio entry has a recording. A
+  // composition (kind 'score') is read unplayed, like a sheet with no track.
+  const entry = libraryEntry && isAudioEntry(libraryEntry) ? libraryEntry : null;
   const [artifacts, setArtifacts] = useState<NotationArtifact[]>([]);
+  // Focus mode: pop the whole Score panel to a fullscreen overlay and hide the
+  // artifact sidebar, so the follow-along (strip/highway/chords) is large and
+  // isolated instead of a tiny afterthought. Additive; default off.
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFocused(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [focused]);
+  // The panel lives inside the bottom dock, whose row is `relative z-30`
+  // (Shell.tsx) — a stacking context. An in-tree `z-50` overlay is therefore
+  // ordered WITHIN z-30 and paints UNDER the app header (z-40) and the library
+  // edge tab (z-50), which keep intercepting clicks. Raising the child z-index
+  // cannot beat a sibling context, so in Focus mode we escape the context by
+  // portalling the panel to <body>. To keep the toggle from reloading the score,
+  // the portal target is a STABLE host node that we REPARENT NATIVELY
+  // (Node.appendChild moves a subtree without recreating it): React keeps
+  // rendering into the same host element across the toggle, so the heavy
+  // alphaTab/OSMD children are never unmounted/remounted. <body> has no
+  // transform ancestor, so the fixed overlay is not re-contained.
+  //
+  // The host is held in a LAZY REF, not useMemo: useMemo is a performance hint
+  // that React may drop, and a new container would remount the whole
+  // alphaTab/OSMD subtree AND orphan the superseded host (with stale DOM)
+  // inside the anchor. A ref guarantees one identity for the component's life,
+  // and because refs survive StrictMode's double render the node is created
+  // exactly once.
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  if (!hostRef.current && typeof document !== 'undefined') {
+    hostRef.current = document.createElement('div');
+  }
+  const overlayHost = hostRef.current;
+  const focusAnchorRef = useRef<HTMLDivElement | null>(null);
+  const focusToggleRef = useRef<HTMLButtonElement | null>(null);
+  // Only pull focus back on a real exit, never on the initial mount.
+  const wasFocusedRef = useRef(false);
+  useLayoutEffect(() => {
+    const host = overlayHost;
+    if (!host) return;
+    if (focused) {
+      // `z-60` is the repo's existing fullscreen-overlay step (HomeScreen.tsx,
+      // Shell.tsx), so reuse it rather than a one-off literal. It clears the
+      // header (z-40) and the edge tab (z-50). Where z ties (a z-50 modal or
+      // any other equal-z sibling), the body-APPENDED host wins on DOM order,
+      // since equal-z siblings paint in tree order. The tall modals
+      // (z-200/z-300) still draw above this.
+      //
+      // The transport footer is also z-50, so z alone would cover it. Instead we
+      // clear it GEOMETRICALLY: the footer is `fixed bottom-0 … h-16`
+      // (PlayerFooter.tsx), so `bottom-16` matches its height token exactly and
+      // leaves it visible — a follow-along you cannot play/pause/scrub is broken.
+      host.className = 'fixed inset-x-0 top-0 bottom-16 z-60';
+      if (host.parentNode !== document.body) document.body.appendChild(host);
+      // Keep the keyboard inside the overlay (Escape still exits: the handler
+      // is bound to window, and focus inside the host bubbles there).
+      host.tabIndex = -1;
+      host.focus();
+      wasFocusedRef.current = true;
+    } else {
+      // Reparent back into the in-flow anchor so default rendering is unchanged.
+      host.className = 'h-full';
+      const anchor = focusAnchorRef.current;
+      if (anchor && host.parentNode !== anchor) anchor.appendChild(host);
+      if (wasFocusedRef.current) {
+        wasFocusedRef.current = false;
+        focusToggleRef.current?.focus();
+      }
+    }
+  }, [focused, overlayHost]);
+  useEffect(() => () => { overlayHost?.remove(); }, [overlayHost]);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [caps, setCaps] = useState<NotationCapabilities | null>(null);
+  // RENDER WITH MUSESCORE's status (GET /musescore); null until read.
+  const [musescoreStatus, setMusescoreStatus] = useState<MuseScoreRenderStatus | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  // Bumped when a sheet is rewritten in place (same artifact id, new bytes),
+  // so the preview, keyed by it, reads the file again.
+  const [previewRevision, setPreviewRevision] = useState(0);
+  // METER MAP popover: the same RhythmBlock the library menu (save-meter-map)
+  // and DETAILS embed, reached here so a track opened straight into SCORE (or
+  // the SING split) does not need a trip back to DETAILS just to read it.
+  const [meterOpen, setMeterOpen] = useState(false);
+  const meterPanelRef = useRef<HTMLDivElement | null>(null);
+  const meterToggleRef = useRef<HTMLButtonElement | null>(null);
+  // Focus lands here when the dialog opens (WAI-ARIA dialog pattern), and it
+  // is what stopPropagation below is protecting: this component's own
+  // focus-mode toggle (above) listens for Escape on `window` too, and
+  // `document` precedes `window` in the bubble chain, so without
+  // stopPropagation one press exited fullscreen focus mode AND closed this
+  // dialog at once. RhythmBlock's own SAVE menu no longer competes here — it
+  // stops its OWN Escape via a React onKeyDown on its menu wrapper, not a
+  // second document listener.
+  const meterDialogRef = useRef<HTMLDivElement | null>(null);
+  const meterPanelId = `score-meter-map-${useId()}`;
+  useEffect(() => {
+    if (!meterOpen) return;
+    meterDialogRef.current?.focus();
+    const onDown = (e: PointerEvent) => {
+      if (!meterPanelRef.current?.contains(e.target as Node)) setMeterOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setMeterOpen(false);
+      meterToggleRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [meterOpen]);
   // Beat Saber export popover: open flag, and the part names it offers (learnt
   // from a loaded view or fetched from the sheet's part-list; null = all).
   const [bsOpen, setBsOpen] = useState(false);
@@ -260,8 +392,32 @@ export const ScoreView: React.FC = () => {
     void getNotationCapabilities()
       .then((next) => { if (!cancelled) setCaps(next); })
       .catch(() => { if (!cancelled) setCaps(null); });
+    void getMuseScoreStatus()
+      .then((next) => { if (!cancelled) setMusescoreStatus(next); })
+      .catch(() => {
+        if (!cancelled) setMusescoreStatus({ found: false, path: null, muse_sounds: false, reason: 'MuseScore status unreadable' });
+      });
     return () => { cancelled = true; };
   }, []);
+
+  /** RENDER WITH MUSESCORE: MuseScore 4 plays the sheet (or one part) with
+   *  Muse Sounds into a WAV the backend adds to the Library as a new entry. */
+  const renderWithMuseScore = async (partIndex: number | null) => {
+    if (!selectedEntryId || !selectedArtifact) return;
+    setExporting('audio');
+    const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
+    logInfo('score', `Rendering ${partName ?? 'the score'} with MuseScore and Muse Sounds…`);
+    try {
+      const options = partIndex === null ? undefined : { parts: [partIndex] };
+      const made = await renderScoreAudio(selectedEntryId, selectedArtifact.id, options);
+      logInfo('score', `MuseScore render added to the Library: ${made.title}`);
+      await useLibraryStore.getState().refresh();
+    } catch (e) {
+      logError('score', `MuseScore render failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(null);
+    }
+  };
 
   // Any part, any format: options.parts scopes every export-route format to
   // one part (the backend filters the sheet with stage_parts, then converts);
@@ -270,16 +426,26 @@ export const ScoreView: React.FC = () => {
   const exportSelectedAs = async (format: string, partIndex: number | null = null) => {
     if (!selectedEntryId || !selectedArtifact) return;
     if (selectedArtifact.kind !== 'musicxml' && selectedArtifact.kind !== 'midi') return;
+    if (format === 'audio') {
+      await renderWithMuseScore(partIndex);
+      return;
+    }
     setExporting(format);
     try {
       const options = partIndex === null ? undefined : { parts: [partIndex] };
-      const artifact = await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
+      // PERFORM has its own route; its MIDI lands in the artifact list like
+      // any export's result and is opened the same way below.
+      const artifact = format === 'perform'
+        ? await performScore(selectedEntryId, selectedArtifact.id, analysisBpm ?? undefined)
+        : await exportArtifact(selectedEntryId, selectedArtifact.id, format, options);
       const partName = partIndex === null ? null : (selectedParts?.[partIndex]?.name || `part ${partIndex + 1}`);
       logInfo(
         'score',
-        partName
-          ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
-          : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
+        format === 'perform'
+          ? `Performed ${selectedArtifact.id} as MIDI${artifact?.path ? ` (${artifact.path})` : ''}`
+          : partName
+            ? `Exported ${format.toUpperCase()} of ${partName} from ${selectedArtifact.id}`
+            : `Exported ${format.toUpperCase()} from ${selectedArtifact.id}`,
       );
       await loadArtifacts();
       if (artifact?.id) setSelectedArtifactId(artifact.id);
@@ -291,6 +457,14 @@ export const ScoreView: React.FC = () => {
   };
 
   // ---- Play-along integration ---------------------------------------------
+
+  /** "Rewrite from MIDI" wrote the selected sheet again over the same file:
+   *  list it (dropping its cached text) and read it again. */
+  const onSheetRewritten = async (artifact: NotationArtifact | null) => {
+    await loadArtifacts();
+    if (artifact?.id) setSelectedArtifactId(artifact.id);
+    setPreviewRevision((r) => r + 1);
+  };
 
   /** The maker made something: list it, open it, and open a chord track in
    *  the CHORDS view. */
@@ -426,6 +600,7 @@ export const ScoreView: React.FC = () => {
       }
       const next = await getNotationCapabilities();
       setCaps(next);
+      if (next.musescore_render) setMusescoreStatus(next.musescore_render);
       logInfo(
         'score',
         next.musescore
@@ -455,7 +630,7 @@ export const ScoreView: React.FC = () => {
   const renderPreview = (): React.ReactNode => {
     if (!selectedArtifact) {
       return (
-        <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-600">
+        <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">
           Select a score artifact to preview.
         </div>
       );
@@ -511,89 +686,105 @@ export const ScoreView: React.FC = () => {
       default:
         if (effectiveMode === 'chords' && entry) return chords();
         return (
-          <div className="h-full grid place-items-center text-[10px] font-mono text-zinc-500">
+          <div className="h-full grid place-items-center text-xs font-bold text-zinc-400">
             {selectedArtifact.kind.toUpperCase()} artifact selected. Download or send it to MIDI/Score tools.
           </div>
         );
     }
   };
 
-  return (
-    <div className="h-full min-h-0 flex bg-[#07050a] text-zinc-200">
+  // `root` rather than a direct return: focus mode portals this same element
+  // into the body-level host (see the wrapper return at the end).
+  const root = (
+    <div className="h-full w-full min-h-0 flex bg-[#07050a] text-zinc-200">
       {/* The left rail (maker + made list) folds to a thin strip so the score
-          can take the whole width. */}
-      <CollapsibleRail
-        id="score-notation-rail"
-        side="left"
-        name="Notation"
-        label="the notation rail"
-        storageKey="score.railCollapsed.v1"
-        className="w-72 shrink-0 border-r border-white/10 flex flex-col min-h-0 bg-black/30"
-      >
-        {(foldKey) => (
-          <>
-            <div className="h-10 shrink-0 border-b border-white/10 flex items-center gap-2 px-3">
-              <span className="font-display text-xs font-bold uppercase text-zinc-300">Notation</span>
-              <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={entry?.title}>
-                {entry?.title ?? 'Select a library track'}
-              </span>
-              <button
-                type="button"
-                className="h-7 w-7 shrink-0 rounded border border-white/10 flex items-center justify-center text-zinc-400 transition-colors hover:border-[rgb(var(--et-accent)/0.5)] hover:text-zinc-100 disabled:opacity-40 outline-none focus-visible:ring-1 focus-visible:ring-[rgb(var(--et-accent)/0.6)]"
-                onClick={() => void loadArtifacts()}
-                disabled={!selectedEntryId || loading}
-                aria-label="Refresh notation"
-                title="Refresh notation"
-              >
-                {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="size-3.5" aria-hidden="true" />}
-              </button>
-              {/* At the rail's inner edge, beside the score. */}
-              <span className="-mr-1 flex">{foldKey}</span>
-            </div>
+          can take the whole width. Focus hides it outright — `hidden` rather
+          than unmounting, so the rail (and the maker's in-progress state)
+          survives the toggle; `contents` leaves the rail and its folded strip
+          as direct flex items of the row when it is shown. */}
+      <div className={focused ? 'hidden' : 'contents'}>
+        <CollapsibleRail
+          id="score-notation-rail"
+          side="left"
+          name="Notation"
+          label="the notation rail"
+          storageKey="score.railCollapsed.v1"
+          className="w-72 shrink-0 border-r border-white/10 flex flex-col min-h-0 bg-black/30"
+        >
+          {(foldKey) => (
+            <>
+              <div className="h-10 shrink-0 border-b border-white/10 flex items-center gap-2 px-3">
+                <span className="font-display text-xs font-bold uppercase text-zinc-300">Notation</span>
+                <span className="min-w-0 flex-1 truncate text-xs font-bold text-zinc-500" title={libraryEntry?.title}>
+                  {libraryEntry?.title ?? 'Select a library track'}
+                </span>
+                <button
+                  type="button"
+                  className="h-7 w-7 shrink-0 rounded border border-white/10 flex items-center justify-center text-zinc-400 transition-colors hover:border-[rgb(var(--et-accent)/0.5)] hover:text-zinc-100 disabled:opacity-40 outline-none focus-visible:ring-1 focus-visible:ring-[rgb(var(--et-accent)/0.6)]"
+                  onClick={() => void loadArtifacts()}
+                  disabled={!selectedEntryId || loading}
+                  aria-label="Refresh notation"
+                  title="Refresh notation"
+                >
+                  {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="size-3.5" aria-hidden="true" />}
+                </button>
+                {/* At the rail's inner edge, beside the score. */}
+                <span className="-mr-1 flex">{foldKey}</span>
+              </div>
 
-            <NotationMaker
-              entryId={selectedEntryId}
-              midis={midiArtifacts}
-              caps={caps}
-              onMade={(artifact, way) => void onMade(artifact, way)}
-            />
+              {/* A score of its own, not made from a track: a file, or a
+                  piece of the music21 corpus. Selecting the new composition
+                  lists and opens its sheet here. */}
+              <ScoreImport caps={caps} onImported={announceImportedScore} />
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-1 text-xs font-bold">
-              {artifacts.length > 0 && <span className="pb-1 font-display uppercase text-zinc-500">Made</span>}
-              {artifacts.map((artifact) => {
-                const active = artifact.id === selectedArtifactId;
-                return (
-                  <button
-                    key={artifact.id}
-                    type="button"
-                    onClick={() => setSelectedArtifactId(artifact.id)}
-                    aria-current={active ? 'true' : undefined}
-                    className={`w-full text-left rounded border px-2.5 py-1.5 transition-colors ${
-                      active
-                        ? 'border-[rgb(var(--et-accent)/0.55)] bg-[rgb(var(--et-accent)/0.15)] et-accent-legend'
-                        : 'border-white/10 text-zinc-300 hover:border-white/25 hover:text-zinc-100'
-                    }`}
-                  >
-                    <div className="truncate">
-                      {describeArtifact(artifact)}
-                      {artifact.kind === 'midi' ? ` · ${stemOf(artifact)}` : ''}
-                    </div>
-                    <div className="truncate font-semibold text-zinc-500">
-                      {artifact.kind}
-                      {artifact.engine ? ` · ${artifact.engine}` : ''}
-                    </div>
-                  </button>
-                );
-              })}
-              {!loading && selectedEntryId && artifacts.length === 0 && (
-                <p className="rounded border border-dashed border-white/10 p-3 leading-5 text-zinc-500">
-                  Nothing made yet. Chords work from the audio alone; everything else needs the track converted to MIDI first (right-click it in the library).
-                </p>
-              )}
-            </div>
-          </>
-        )}
-      </CollapsibleRail>
+              <NotationMaker
+                entryId={selectedEntryId}
+                midis={midiArtifacts}
+                caps={caps}
+                onMade={(artifact, way) => void onMade(artifact, way)}
+              />
+
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-1 text-xs font-bold">
+                {artifacts.length > 0 && <span className="pb-1 font-display uppercase text-zinc-500">Made</span>}
+                {artifacts.map((artifact) => {
+                  const active = artifact.id === selectedArtifactId;
+                  return (
+                    <button
+                      key={artifact.id}
+                      type="button"
+                      onClick={() => setSelectedArtifactId(artifact.id)}
+                      aria-current={active ? 'true' : undefined}
+                      className={`w-full text-left rounded border px-2.5 py-1.5 transition-colors ${
+                        active
+                          ? 'border-[rgb(var(--et-accent)/0.55)] bg-[rgb(var(--et-accent)/0.15)] et-accent-legend'
+                          : 'border-white/10 text-zinc-300 hover:border-white/25 hover:text-zinc-100'
+                      }`}
+                    >
+                      <div className="truncate">
+                        {describeArtifact(artifact)}
+                        {artifact.kind === 'midi' ? ` · ${stemOf(artifact)}` : ''}
+                      </div>
+                      <div className="truncate font-semibold text-zinc-500">
+                        {artifact.kind}
+                        {artifact.engine ? ` · ${artifact.engine}` : ''}
+                      </div>
+                      {/* A sheet an older build wrote at sounding pitch; the bar over its preview rewrites it. */}
+                      {artifact.legacy_sounding_pitch && (
+                        <div className="truncate text-amber-300">Older sheet: sounding pitch</div>
+                      )}
+                    </button>
+                  );
+                })}
+                {!loading && selectedEntryId && artifacts.length === 0 && (
+                  <p className="rounded border border-dashed border-white/10 p-3 leading-5 text-zinc-500">
+                    Nothing made yet. Chords work from the audio alone; everything else needs the track converted to MIDI first (right-click it in the library).
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </CollapsibleRail>
+      </div>
 
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         <div className="h-8 shrink-0 border-b border-white/5 bg-black/30 flex items-center gap-2 px-2">
@@ -614,7 +805,7 @@ export const ScoreView: React.FC = () => {
                 title={transportLabel}
               />
               <span
-                className={`shrink-0 whitespace-nowrap text-[9px] font-mono text-amber-300/90 ${playAlong.otherTrackLoaded ? '' : 'invisible'}`}
+                className={`shrink-0 whitespace-nowrap font-display text-xs font-bold text-amber-300 ${playAlong.otherTrackLoaded ? '' : 'invisible'}`}
                 aria-hidden={playAlong.otherTrackLoaded ? undefined : true}
                 title={playAlong.otherTrackLoaded
                   ? 'The player is holding a different track, so the score is parked. Press play here to load this track.'
@@ -624,7 +815,7 @@ export const ScoreView: React.FC = () => {
               </span>
             </>
           )}
-          <span className="text-[9px] font-mono text-zinc-500 truncate flex-1">
+          <span className="text-xs font-bold text-zinc-400 truncate flex-1">
             {selectedArtifact
               ? `${describeArtifact(selectedArtifact)} · ${selectedArtifact.kind} · ${selectedArtifact.id}`
               : 'No artifact selected'}
@@ -632,11 +823,22 @@ export const ScoreView: React.FC = () => {
           {selectedArtifact && allowed.length > 0 && (
             <ModeSwitch allowed={allowed} value={effectiveMode} onChange={setMode} hint={modeHint} />
           )}
+          <button
+            type="button"
+            ref={focusToggleRef}
+            onClick={() => setFocused((v) => !v)}
+            className="shrink-0 rounded border border-white/10 bg-black/30 p-1 text-zinc-400 hover:text-emerald-200 hover:border-emerald-500/40 transition-colors"
+            title={focused ? 'Exit focus (Esc): restore the panel' : 'Focus: enlarge the follow-along to fullscreen and hide the sidebar'}
+            aria-label={focused ? 'Exit score focus' : 'Focus score (fullscreen)'}
+            aria-pressed={focused}
+          >
+            {focused ? <Shrink className="w-3 h-3" /> : <Expand className="w-3 h-3" />}
+          </button>
           <label htmlFor="score-instrument" className="sr-only">Instrument preset</label>
           <select
             id="score-instrument"
             name="score-instrument"
-            className="form-select text-[8px] px-1 py-0.5 shrink-0"
+            className="form-select text-xs font-bold px-1 py-0.5 shrink-0"
             value={instrument}
             disabled={!selectedArtifact}
             onChange={(e) => onPlayAlongInstrument(e.target.value)}
@@ -646,9 +848,43 @@ export const ScoreView: React.FC = () => {
               <option key={inst} value={inst}>{INSTRUMENT_LABELS[inst]}</option>
             ))}
           </select>
+          <div ref={meterPanelRef} className="relative shrink-0">
+            <button
+              type="button"
+              ref={meterToggleRef}
+              onClick={() => setMeterOpen((v) => !v)}
+              disabled={!entry}
+              className="shrink-0 rounded border border-white/10 bg-black/30 p-1 flex items-center gap-0.5 text-zinc-400 hover:text-fuchsia-200 hover:border-fuchsia-500/40 transition-colors disabled:opacity-40"
+              title="Meter map: time signature per section, tempo segments, syncopation, swing"
+              aria-label="Meter map"
+              aria-haspopup="dialog"
+              aria-expanded={meterOpen}
+              aria-controls={meterOpen ? meterPanelId : undefined}
+            >
+              <Waves className="w-3 h-3" />
+              <ChevronDown className="w-3 h-3" aria-hidden="true" />
+            </button>
+            {meterOpen && (
+              <div
+                ref={meterDialogRef}
+                id={meterPanelId}
+                role="dialog"
+                aria-label="Meter map"
+                tabIndex={-1}
+                className="et-opaque absolute right-0 top-full z-30 mt-1 w-96 max-h-[70vh] overflow-y-auto rounded-md border border-white/10 bg-[#0a080f] p-1 shadow-[0_8px_24px_rgba(0,0,0,0.6)] outline-none"
+              >
+                <RhythmBlock
+                  entryId={entry?.id ?? null}
+                  title={entry?.title ?? 'track'}
+                  analysis={(entry?.analysis as AnalysisSummary | undefined) ?? null}
+                />
+              </div>
+            )}
+          </div>
           <ExportMenu
             artifact={selectedArtifact}
             caps={caps}
+            musescore={musescoreStatus}
             parts={selectedParts}
             partsLoading={partsLoading}
             exporting={exporting}
@@ -676,12 +912,79 @@ export const ScoreView: React.FC = () => {
             )}
           </ExportMenu>
         </div>
-        <div className="relative flex-1 min-h-0 bg-[#0b0810]">
+        {selectedEntryId && selectedArtifact && (
+          <LegacySheetNotice key={selectedArtifact.id} entryId={selectedEntryId} artifact={selectedArtifact} onRewritten={onSheetRewritten} />
+        )}
+        <div key={previewRevision} className="relative flex-1 min-h-0 bg-[#0b0810]">
           {renderPreview()}
         </div>
       </div>
     </div>
   );
+
+  // Focus escapes the dock's stacking context by portalling `root` into a
+  // body-level host; unfocused, the host is reparented into this in-flow
+  // anchor (display:contents adds no box) so default rendering is unchanged.
+  // `root` keeps a stable identity across the toggle, so its subtree
+  // (alphaTab/OSMD) is never remounted.
+  return (
+    <div ref={focusAnchorRef} className="contents">
+      {overlayHost ? createPortal(root, overlayHost) : root}
+    </div>
+  );
+};
+
+/** OSMD only ever builds a part-name label for the very first system of the
+ *  WHOLE piece (`createMusicSystemLabel(..., isFirstSystem)`, called with
+ *  `isFirstSystem = 1 === musicSystems.length`): every later system — the
+ *  second system of page 1 included, not just later pages — gets nothing
+ *  unless the source XML carries a `<part-abbreviation>`, in which case OSMD
+ *  prints THAT, never the full name (EngravingRules.RenderPartAbbreviations).
+ *  `RenderSystemLabelsAfterFirstPage` only controls whether an existing label
+ *  is drawn on page 2+; it cannot make OSMD build one it never created.
+ *
+ *  A multi-part chart is unreadable past the first system without a name to
+ *  tell the parts apart, so before OSMD ever sees the XML we copy each part's
+ *  full name into its own abbreviation slot: the "abbreviation" every later
+ *  system prints is then the full name too.
+ *
+ *  Single-part scores are skipped — not because OSMD is unable to label them:
+ *  its own gate (`1 === this.staffLines.length`) counts STAFF LINES, not
+ *  parts, so a solo grand staff (piano, harp, organ — one part, two staff
+ *  lines) would happily get one. They are skipped because there is only one
+ *  part in the piece to tell apart from another: naming it on every system
+ *  disambiguates nothing a reader needs. */
+/** Guarantees a leading `<?xml ...?>` declaration without doubling one that
+ *  is already there. jsdom's `XMLSerializer` always drops it; OSMD 1.9.9's
+ *  `load()` rejects input that doesn't start with one. */
+export const ensureXmlDeclaration = (s: string): string =>
+  s.startsWith('<?xml') ? s : `<?xml version="1.0" encoding="UTF-8"?>\n${s}`;
+
+export const withPartNamesOnEverySystem = (xml: string): string => {
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    if (doc.querySelector('parsererror')) return xml;
+    const scoreParts = Array.from(doc.querySelectorAll('part-list > score-part'));
+    if (scoreParts.length < 2) return xml;
+    for (const scorePart of scoreParts) {
+      const nameEl = scorePart.querySelector('part-name');
+      const name = (nameEl?.textContent || '').trim();
+      if (!name) continue;
+      let abbr = scorePart.querySelector('part-abbreviation');
+      if (!abbr) {
+        abbr = doc.createElement('part-abbreviation');
+        // MusicXML orders part-abbreviation right after part-name-display
+        // when the part has one, else right after part-name itself.
+        const insertAfter = scorePart.querySelector('part-name-display') ?? nameEl;
+        if (insertAfter?.nextSibling) scorePart.insertBefore(abbr, insertAfter.nextSibling);
+        else scorePart.appendChild(abbr);
+      }
+      abbr.textContent = name;
+    }
+    return ensureXmlDeclaration(new XMLSerializer().serializeToString(doc));
+  } catch {
+    return xml;
+  }
 };
 
 /** Sheet-music preview. Renders the score as real A4 pages laid out left-to-
@@ -1089,6 +1392,19 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         osmd.cursorsOptions = [{ type: CursorType.ThinLeft, color: highlightColor(), alpha: 0.95, follow: false }];
         osmd.FollowCursor = false;
         applySheetEngraving(osmd.EngravingRules);
+        // Part names on every system, not just the first: see
+        // withPartNamesOnEverySystem for why the rules alone cannot do
+        // this. The three below already default true in the installed OSMD
+        // (confirmed by reading opensheetmusicdisplay's own source), so this
+        // makes that explicit rather than changing it; the try/catch is only
+        // for a future OSMD upgrade that might rename or drop one of them.
+        try {
+          osmd.EngravingRules.RenderPartNames = true;
+          osmd.EngravingRules.RenderPartAbbreviations = true;
+          osmd.EngravingRules.RenderSystemLabelsAfterFirstPage = true;
+        } catch {
+          /* a future OSMD upgrade renamed or dropped one of these */
+        }
         // Song as the centered title (wrapped if long), artist as the subtitle
         // under it; capture the song name for the running page footer.
         const prepared = prepareMusicXml(xml, computePageW(), artist);
@@ -1098,7 +1414,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
         // title; only a real arrangement or tab label is worth printing.
         const label = describeArtifact(artifact);
         footerLabelRef.current = label === 'Sheet' ? '' : label;
-        await osmd.load(prepared.xml);
+        await osmd.load(withPartNamesOnEverySystem(prepared.xml));
         if (cancelled) return;
         osmdRef.current = osmd;
         // The map needs only Sheet.MusicPartManager, which exists as soon as
@@ -1324,10 +1640,10 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
   return (
     <div className="relative h-full flex flex-col bg-[#23222a]">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto p-4">
-        {status && <div className="p-4 text-xs font-mono text-zinc-300">{status}</div>}
+        {status && <div className="p-4 text-xs font-bold text-zinc-300">{status}</div>}
         {heavy && (
           <div className="p-4 grid place-items-center">
-            <div className="max-w-md rounded border border-amber-400/30 bg-amber-400/5 p-4 text-[11px] font-mono text-zinc-300">
+            <div className="max-w-md rounded border border-amber-400/30 bg-amber-400/5 p-4 text-xs font-bold text-zinc-300">
               <p className="mb-2 font-black uppercase tracking-[0.18em] text-amber-300">Large score</p>
               <p className="mb-3 leading-relaxed">
                 {`${heavy.measures} measures across ${heavy.parts} ${heavy.parts === 1 ? 'part' : 'parts'} `}
@@ -1379,7 +1695,7 @@ const MusicXmlPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntr
           falls back to flex-start the moment the content stops fitting, so
           the row only ever overflows to the right. Identical to
           justify-center while it fits. */}
-      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center-safe gap-1.5 px-2 text-[10px] font-mono text-zinc-300">
+      <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center justify-center-safe gap-1.5 px-2 text-xs font-bold text-zinc-300">
         <input
           id="score-follow"
           name="score-follow"
@@ -1598,7 +1914,7 @@ const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | n
   return (
     <div className="relative h-full">
       <div ref={scrollRef} className="h-full overflow-auto bg-white text-black">
-        {status && <div className="p-4 text-xs font-mono text-zinc-600">{status}</div>}
+        {status && <div className="p-4 text-xs font-bold text-zinc-600">{status}</div>}
         <div ref={containerRef} className="min-h-full" />
       </div>
       {/* Follow toggle — mirrors the sheet's checkbox. */}
@@ -1611,11 +1927,11 @@ const TabPreview: React.FC<{ artifact: NotationArtifact; entry: LibraryEntry | n
           onChange={(e) => setFollow(e.target.checked)}
           className="h-3 w-3 accent-emerald-500"
         />
-        <label htmlFor="tab-follow" className="text-[9px] font-mono uppercase tracking-wider text-zinc-700">
+        <label htmlFor="tab-follow" className="font-display text-xs font-bold uppercase tracking-wider text-zinc-700">
           Follow
         </label>
         {follow && entryId && !isSameTrack && (
-          <span className="text-[8px] font-mono uppercase tracking-wider text-amber-600">other track</span>
+          <span className="font-display text-xs font-bold uppercase tracking-wider text-amber-700">other track</span>
         )}
       </div>
       <ZoomControls

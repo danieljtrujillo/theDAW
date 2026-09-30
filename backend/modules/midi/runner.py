@@ -12,18 +12,41 @@ common when basic-pitch is installed but piano-transcription isn't.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
+from backend.modules.analysis.tempo import SANE_BPM_MAX, SANE_BPM_MIN, analysis_tempo
 from backend.modules.library.db import LibraryDB
 
-from .engine import MidiHint, convert_to_midi, hint_for_stem
+from .engine import MidiHint, convert_to_midi, hint_for_stem, role_for_stem
 
 log = logging.getLogger(__name__)
+
+
+def _mirror_as_notation_artifact(db: LibraryDB, entry_id: str) -> None:
+    """Mirror this entry's ``midis`` rows into ``notation_artifacts`` right
+    away, so a freshly-converted MIDI is a first-class notation artifact
+    without waiting on a GET's old self-heal (removed, SCORE-009) or a
+    later backfill launch. Local import: ``.notation.engine`` is a separate,
+    heavier module (music21 et al.) that this module otherwise has no reason
+    to load, and importing it at module scope here risks becoming a cycle if
+    notation code ever needs something from ``midi`` in the future -- there
+    is no cycle today, but every other caller of ``register_existing_midis``
+    (``library.store``, ``notation.backfill``) already imports it locally for
+    the same reason. Best-effort: a mirroring failure must not fail the MIDI
+    conversion that already succeeded and is already recorded.
+    """
+    try:
+        from backend.modules.notation.engine import register_existing_midis
+
+        register_existing_midis(db, entry_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fail the conversion
+        log.debug(
+            "midi.runner: notation-artifact mirror failed for %s: %s", entry_id, exc
+        )
 
 
 def convert_entry(
@@ -46,10 +69,19 @@ def convert_entry(
 
     results: list[dict] = []
 
+    # Every target gets the entry's real tempo: the drum engine quantises to
+    # it, the pitched engines have it stamped over their 120 BPM placeholder.
+    # Read once, up front, so all of them agree.
+    tempo_bpm, tempo_beats = _analysis_tempo_map(db, entry_id)
+
     # Full-track conversion.
     full_out = midi_dir / "full.mid"
     full_res = convert_to_midi(
-        audio_path, full_out, hint="generic", auto_install=auto_install
+        audio_path,
+        full_out,
+        hint="generic",
+        auto_install=auto_install,
+        bpm=tempo_bpm,
     )
     results.append({"target": "full", **full_res})
     if full_res.get("ok"):
@@ -72,7 +104,6 @@ def convert_entry(
     # Per-stem conversions (if requested + stems exist).
     if from_stems:
         stems = db.list_stems(entry_id)
-        tempo_map: Optional[tuple[Optional[float], list[float]]] = None
         for stem_row in stems:
             stem_name = stem_row.get("stem_name") or ""
             stem_audio = Path(stem_row.get("audio_path") or "")
@@ -80,13 +111,11 @@ def convert_entry(
                 continue
             hint: MidiHint = hint_for_stem(stem_name)
             stem_out = midi_dir / f"{stem_name}.mid"
-            extra: dict = {}
+            extra: dict = {"bpm": tempo_bpm, "role": role_for_stem(stem_name)}
             if hint == "drums":
-                # The drum engine writes the entry's real tempo map and snaps
-                # on-grid hits to it; read the analysis row once, lazily.
-                if tempo_map is None:
-                    tempo_map = _analysis_tempo_map(db, entry_id)
-                extra = {"bpm": tempo_map[0], "beats": tempo_map[1] or None}
+                # Only the drum engine consumes the beat list — it snaps
+                # on-grid hits to it. The pitched engines just need the tempo.
+                extra["beats"] = tempo_beats or None
             stem_res = convert_to_midi(
                 stem_audio, stem_out, hint=hint, auto_install=auto_install, **extra
             )
@@ -112,6 +141,16 @@ def convert_entry(
     successes = sum(1 for r in results if r.get("ok"))
     failures = len(results) - successes
 
+    if successes:
+        # Once, after every target has been attempted, not once per target:
+        # register_existing_midis mirrors the ENTIRE entry (every midis row,
+        # not just the one just added), so calling it inside the per-target
+        # loop mirrored the whole table again per success -- a 6-stem entry
+        # mirrored (and bumped library_revision) 7 times for one conversion
+        # pass. Guarded on at least one success: a run where everything
+        # failed added no new midis row, so there is nothing new to mirror.
+        _mirror_as_notation_artifact(db, entry_id)
+
     if successes == 0 and failures > 0:
         _set_status(db, entry_id, "failed")
         status = "failed"
@@ -134,29 +173,41 @@ def convert_entry(
 def _analysis_tempo_map(
     db: LibraryDB, entry_id: str
 ) -> tuple[Optional[float], list[float]]:
-    """``(bpm, beats)`` from the entry's analysis row; ``(None, [])`` when
-    the entry has not been analysed or the row is malformed."""
+    """``(bpm, beats)`` from the entry's analysis row
+    (:func:`backend.modules.analysis.tempo.analysis_tempo`); ``(None, [])``
+    when the entry has not been analysed or the row is malformed.
+
+    The row's BPM is used when it lies in ``SANE_BPM_MIN``-``SANE_BPM_MAX``.
+    Otherwise (or when the row has none) the tempo comes from the beat list,
+    when that lies in the range; when neither does, no tempo is stamped and
+    the beats are not used for the drum grid either."""
     try:
         row = db.get_analysis(entry_id)
     except Exception as e:
         log.debug("midi.runner: analysis lookup failed for %s: %s", entry_id, e)
         return None, []
-    if not row:
-        return None, []
-    bpm: Optional[float] = None
-    try:
-        raw_bpm = row.get("bpm")
-        if raw_bpm is not None and float(raw_bpm) > 0.0:
-            bpm = float(raw_bpm)
-    except (TypeError, ValueError):
-        bpm = None
-    beats: list[float] = []
-    try:
-        parsed = json.loads(row.get("beats_json") or "[]")
-        beats = [float(b) for b in parsed if b is not None]
-    except (TypeError, ValueError):
-        beats = []
-    return bpm, beats
+    tempo = analysis_tempo(row)
+    if tempo.rejected_bpm is not None and tempo.bpm is not None:
+        log.info(
+            "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f; "
+            "stamping %.2f BPM from its beat list",
+            entry_id,
+            tempo.rejected_bpm,
+            SANE_BPM_MIN,
+            SANE_BPM_MAX,
+            tempo.bpm,
+        )
+    elif tempo.rejected_bpm is not None:
+        log.warning(
+            "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f and "
+            "its beat list gives no tempo inside it; its MIDI keeps no tempo "
+            "from the analysis",
+            entry_id,
+            tempo.rejected_bpm,
+            SANE_BPM_MIN,
+            SANE_BPM_MAX,
+        )
+    return tempo.bpm, tempo.beats
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:

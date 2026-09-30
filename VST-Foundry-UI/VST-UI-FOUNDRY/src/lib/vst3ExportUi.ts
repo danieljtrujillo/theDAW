@@ -16,6 +16,7 @@
 // it must contain NO backticks and NO `${` sequences — string concatenation only.
 
 import { BRIDGE_BOOTSTRAP_SOURCE } from "./customCodeBridge";
+import { CUSTOM_CODE_RENDERER_SOURCE } from "../features/custom-code-export/rendererSource";
 
 const BASE_CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; background: #0b0b0f; }
@@ -104,8 +105,8 @@ const RENDERER_JS = `(function () {
   function vstRange(id) {
     if (id === "vst:transport.tempo") return [20, 300];
     if (id === "vst:mod.random.rate") return [0.1, 20];
-    if (/^vst:lfo\.\d+\.rate$/.test(id)) return [0.05, 20];
-    if (/^vst:lfo\.\d+\.shape$/.test(id)) return [0, 4];
+    if (/^vst:lfo\\.\\d+\\.rate$/.test(id)) return [0.05, 20];
+    if (/^vst:lfo\\.\\d+\\.shape$/.test(id)) return [0, 4];
     return [0, 100];
   }
 
@@ -134,7 +135,7 @@ const RENDERER_JS = `(function () {
   function vstLocalWrite(id, v0to100) {
     var r = vstRange(id);
     var real = r[0] + clamp01(v0to100 / 100) * (r[1] - r[0]);
-    var m = /^vst:macro\.(\d+)$/.exec(id);
+    var m = /^vst:macro\\.(\\d+)$/.exec(id);
     if (m) {
       var mn = parseInt(m[1], 10);
       if (mn >= 1 && mn <= MACRO_N) {
@@ -143,7 +144,7 @@ const RENDERER_JS = `(function () {
       }
       return;
     }
-    m = /^vst:lfo\.(\d+)\.(rate|depth|shape)$/.exec(id);
+    m = /^vst:lfo\\.(\\d+)\\.(rate|depth|shape)$/.exec(id);
     if (m) {
       var ln = parseInt(m[1], 10);
       if (ln >= 1 && ln <= LFO_N) {
@@ -643,177 +644,7 @@ const RENDERER_JS = `(function () {
     return box;
   }
 
-  // Map a CustomCode element's visual fields onto the --el-* CSS vars the bridge
-  // exposes inside the iframe (mirrors elementStyleTokens in customCodeBridge.ts)
-  // so skins/materials survive export.
-  function ccStyleVars(el) {
-    var m = {};
-    if (el.baseColor) m["--el-base-color"] = el.baseColor;
-    if (el.activeColor) m["--el-active-color"] = el.activeColor;
-    if (el.borderColor) m["--el-border-color"] = el.borderColor;
-    if (el.textColor) m["--el-text-color"] = el.textColor;
-    if (el.opacity != null) m["--el-opacity"] = String(num(el.opacity, 100) / 100);
-    if (el.skin) m["--el-skin"] = el.skin;
-    return m;
-  }
-  function cssDecls(m) {
-    var s = "", k;
-    for (k in m) {
-      if (Object.prototype.hasOwnProperty.call(m, k)) s += k + ":" + m[k] + ";";
-    }
-    return s;
-  }
-  // Escape a JSON string embedded in the iframe's <script> (same rules as the
-  // shared bridge's escapeScriptJson): neutralize '<' and the U+2028/9 line
-  // separators that are illegal in JS string literals.
-  function escForScript(json) {
-    return String(json).split("<").join("\\u003c")
-      .split(U2028).join("\\u2028")
-      .split(U2029).join("\\u2029");
-  }
-
-  function buildCustomDoc(code, paramsJson, styleVarsCss) {
-    // Script tags are split so their literal text never appears in the OUTER
-    // renderer <script>; the browser reassembles them when parsing srcdoc.
-    return "<!DOCTYPE html><html><head><meta charset='utf-8'>" +
-      "<style>*{margin:0;padding:0;box-sizing:border-box;}" +
-      "html,body{width:100%;height:100%;overflow:hidden;background:transparent;}" +
-      ":root{" + (styleVarsCss || "") + "}" +
-      "body{color:var(--el-text-color,inherit);accent-color:var(--el-active-color);}</style>" +
-      "<scr" + "ipt>window.PARAMS=" + (paramsJson || "{}") + ";</scr" + "ipt>" +
-      "<scr" + "ipt>" + BRIDGE_SOURCE + "</scr" + "ipt>" +
-      "</head><body>" + (code || "") + "</body></html>";
-  }
-
-  function renderCustomCode(el) {
-    var box = mkBox(el);
-    box.style.overflow = "hidden";
-
-    var fit = el.customCodeFit || "scale";
-    var params = Array.isArray(el.params) ? el.params : [];
-
-    // Numeric params <-> host param ids. MUST match buildVst3Manifest:
-    // <element-slug>-<param-slug>, continuous, normalized 0..1 over [min,max].
-    var numeric = [];
-    var initial = {};
-    var pi, p;
-    for (pi = 0; pi < params.length; pi++) {
-      p = params[pi];
-      if (!p || !p.key) continue;
-      initial[p.key] = p.value;
-      if (p.type === "number") {
-        var mn = num(p.min, 0), mx = num(p.max, 100);
-        if (mx === mn) mx = mn + 1;
-        numeric.push({
-          key: p.key,
-          paramId: foundrySlugify(el.id) + "-" + foundrySlugify(p.key),
-          min: mn, max: mx
-        });
-      }
-    }
-
-    var iframe = document.createElement("iframe");
-    iframe.setAttribute("sandbox", "allow-scripts");
-    iframe.style.position = "absolute";
-    iframe.style.left = "0"; iframe.style.top = "0";
-    iframe.style.width = "100%"; iframe.style.height = "100%";
-    iframe.style.border = "none"; iframe.style.background = "transparent";
-    iframe.title = "custom-" + (el.name || el.id);
-    iframe.srcdoc = buildCustomDoc(
-      el.customCode || "",
-      escForScript(JSON.stringify(initial)),
-      cssDecls(ccStyleVars(el))
-    );
-    box.appendChild(iframe);
-
-    function postToFrame(msg) {
-      try { if (iframe.contentWindow) iframe.contentWindow.postMessage(msg, "*"); } catch (e) {}
-    }
-    function setParamsMsg(key, value) {
-      var p = {}; p[key] = value;
-      return { type: "foundry:setParams", params: p };
-    }
-
-    // scale-fit: render at natural content size (from foundry:contentSize) and
-    // transform-scale to fill the box. "stretch"/"none" leave the iframe at 100%
-    // (the static bundle has no live resize channel, so they behave alike here).
-    var natural = { w: 0, h: 0 };
-    function applyFit() {
-      if (fit === "scale" && natural.w > 0 && natural.h > 0) {
-        iframe.style.width = natural.w + "px";
-        iframe.style.height = natural.h + "px";
-        iframe.style.transformOrigin = "top left";
-        iframe.style.transform = "scale(" +
-          (num(el.width, 40) / natural.w) + "," + (num(el.height, 40) / natural.h) + ")";
-      } else {
-        iframe.style.width = "100%"; iframe.style.height = "100%";
-        iframe.style.transform = "none";
-      }
-    }
-    applyFit();
-
-    var byKey = {};
-    var lastNorm = {};
-    var ni;
-    for (ni = 0; ni < numeric.length; ni++) {
-      byKey[numeric[ni].key] = numeric[ni];
-      (function (m) {
-        // host -> UI: plugin sets the param; forward the denormalized value in.
-        applyHandlers[m.paramId] = function (n) {
-          var norm = clamp01(n);
-          lastNorm[m.paramId] = norm;
-          postToFrame(setParamsMsg(m.key, m.min + norm * (m.max - m.min)));
-        };
-      })(numeric[ni]);
-    }
-
-    // Per-param vst: binds (el.paramBindings) — bidirectional, mirroring the
-    // in-app CustomCodeFrame: a bound LISTEN source pushes into the iframe
-    // param; iframe-side changes to a bound param write the local runtime.
-    var vstByKey = {};
-    var pbs = Array.isArray(el.paramBindings) ? el.paramBindings : [];
-    var pbi;
-    for (pbi = 0; pbi < pbs.length; pbi++) {
-      (function (pb) {
-        if (!pb || !isVstBind(pb.targetId)) return;
-        var meta = byKey[pb.key];
-        if (!meta) return;
-        vstByKey[pb.key] = pb.targetId;
-        onBindValue(pb.targetId, function (v) {
-          postToFrame(setParamsMsg(meta.key, meta.min + (bindPct(v) / 100) * (meta.max - meta.min)));
-        });
-      })(pbs[pbi]);
-    }
-
-    window.addEventListener("message", function (e) {
-      if (!iframe.contentWindow || e.source !== iframe.contentWindow) return;
-      var d = e.data;
-      if (!d || typeof d !== "object") return;
-      if (d.type === "foundry:paramChanged") {
-        // UI -> host: a control moved inside the iframe.
-        var m = byKey[d.key];
-        if (m) {
-          var norm = clamp01((num(d.value, m.min) - m.min) / (m.max - m.min));
-          sendParam(m.paramId, norm);
-          if (vstByKey[d.key]) vstLocalWrite(vstByKey[d.key], norm * 100);
-        }
-      } else if (d.type === "foundry:contentSize") {
-        natural.w = num(d.w, 0); natural.h = num(d.h, 0);
-        applyFit();
-      } else if (d.type === "foundry:ready") {
-        // Flush any values the host set before the iframe was listening.
-        var q, m2;
-        for (q = 0; q < numeric.length; q++) {
-          m2 = numeric[q];
-          if (lastNorm[m2.paramId] != null) {
-            postToFrame(setParamsMsg(m2.key, m2.min + lastNorm[m2.paramId] * (m2.max - m2.min)));
-          }
-        }
-      }
-    });
-
-    return box;
-  }
+  __CUSTOM_CODE_RENDERER__
 
   function renderWaveform(el) {
     var box = mkBox(el);
@@ -1078,7 +909,8 @@ export function buildIndexHtml(slugFnSource: string): string {
   const renderer = RENDERER_JS.replace(
     "__SLUG_FN_SOURCE__",
     () => slugFnSource,
-  ).replace("__BRIDGE_BOOTSTRAP__", () => bridgeLiteral);
+  ).replace("__BRIDGE_BOOTSTRAP__", () => bridgeLiteral)
+    .replace("__CUSTOM_CODE_RENDERER__", () => CUSTOM_CODE_RENDERER_SOURCE);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -385,6 +385,8 @@ export async function generateViaGemini(params: GenParams): Promise<string[]> {
   }
 }
 
+export { generateViaOpenRouter } from "./features/openrouter/images";
+
 export async function saveImagesToFiles(
   images: string[],
   params: GenParams

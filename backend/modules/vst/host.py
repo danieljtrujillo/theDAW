@@ -1,6 +1,10 @@
-"""VST3 plugin host — manages loaded plugin instances via pedalboard.
+"""VST3 plugin host — loads and runs plugins through pedalboard.
 
-In-process hosting: pedalboard runs inside the same Python process.
+The functions here that load a plugin run third-party native code, and some
+plugins crash the process that loads them. They run only inside a process
+started for that purpose: ``plugin_worker.py`` (renders, inserts and the
+``/api/vst/load`` instances, reached through ``isolation.py``), the scanner's
+load probe, and the editor sidecar. The backend itself never calls them.
 Each loaded plugin gets a unique instance_id (UUID).
 
 Every call that touches a plugin is funnelled onto one dedicated thread. VST3
@@ -22,6 +26,12 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 import numpy as np
+
+from backend.modules.vst.param_automation import (
+    AUTOMATION_BLOCK_SIZE,
+    ParamAutomation,
+    automation_value_at,
+)
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +180,30 @@ def set_plugin_parameter(plugin: Any, name: str, value: float) -> None:
         raise ValueError(str(raw_error)) from raw_error
 
 
+@on_host_thread
+def set_plugin_raw_parameter(plugin: Any, name: str, value: float) -> None:
+    """Set one parameter by its normalized 0..1 position (``raw_value``).
+
+    The SwayCommand cockpit's track panel stores every VST parameter this way,
+    the position of a 0..1 slider, and its desktop sidecar applies it as
+    ``raw_value``; through theDAW the same number reaches the plugin the same
+    way, so a render matches what the panel shows. Raises KeyError for an
+    unknown name and ValueError for a position outside 0..1 or one the plugin
+    rejects.
+    """
+    params = plugin.parameters
+    key = name if name in params else param_key(name)
+    if key not in params:
+        raise KeyError(f"Unknown parameter: {name}")
+    position = float(value)
+    if not 0.0 <= position <= 1.0:
+        raise ValueError(f"raw value {position} is outside 0..1")
+    try:
+        params[key].raw_value = position
+    except Exception as raw_error:
+        raise ValueError(str(raw_error)) from raw_error
+
+
 def _raw_state_bytes(plugin: Any) -> bytes | None:
     try:
         return bytes(plugin.raw_state)
@@ -300,6 +334,8 @@ def process_with_plugin(
     params: dict[str, float] | None = None,
     raw_state: str | bytes | None = None,
     warnings: list[str] | None = None,
+    raw_params: dict[str, float] | None = None,
+    automation: list[ParamAutomation] | None = None,
 ) -> np.ndarray:
     """Process audio through a single VST3 plugin, statelessly.
 
@@ -308,6 +344,15 @@ def process_with_plugin(
     parameters are applied, the audio is processed, and the plugin is discarded
     (it is never added to the instance registry). This mirrors the studio effect
     pipeline so a VST3 can be one stage of the MIX effect chain.
+
+    ``params`` are values in each parameter's own units, as the MIX chain
+    stores them. ``raw_params`` are normalized 0..1 positions, which is what
+    the SwayCommand cockpit stores for a track's plugin (pedalboard's
+    ``raw_value``); they are applied after ``params``.
+
+    ``automation`` moves parameters while the audio plays (EDIT's lanes on the
+    insert): the audio then runs through in blocks, each parameter set to its
+    curve's value at the start of each block (``process_automated``).
 
     Anything that could not be applied is appended to ``warnings`` rather than
     swallowed, because the audible symptom of a silent skip (a plugin running at
@@ -333,7 +378,215 @@ def process_with_plugin(
             except Exception as e:
                 notes.append(f"parameter '{name}' not applied: {e}")
                 log.warning("VST param '%s' rejected by %s: %s", name, path.stem, e)
+    if raw_params:
+        for name, value in raw_params.items():
+            try:
+                set_plugin_raw_parameter(plugin, name, float(value))
+            except Exception as e:
+                notes.append(f"parameter '{name}' not applied: {e}")
+                log.warning("VST raw param '%s' rejected by %s: %s", name, path.stem, e)
+    if automation:
+        return process_automated(plugin, audio, sample_rate, automation, notes)
     return plugin(audio, sample_rate)
+
+
+def _automation_targets(
+    plugin: Any, automation: list[ParamAutomation], notes: list[str]
+) -> list[tuple[Any, ParamAutomation]]:
+    """Each automated parameter as the pedalboard parameter it moves.
+
+    Pedalboard numbers a plugin's parameters its own way, so the index a lane
+    carries (theDAW host's own list) cannot address one here: the plugin's own
+    NAME for it can. One it cannot find is reported, and the print holds that
+    parameter where the state left it.
+    """
+    params = plugin.parameters
+    found: list[tuple[Any, ParamAutomation]] = []
+    for item in automation:
+        key = None
+        if item.name:
+            key = item.name if item.name in params else param_key(item.name)
+        if key is None or key not in params:
+            label = f"'{item.name}'" if item.name else f"number {item.index}"
+            notes.append(
+                f"automation of parameter {label} was not applied: this renderer "
+                "finds no parameter of that name"
+            )
+            continue
+        found.append((params[key], item))
+    return found
+
+
+def process_automated(
+    plugin: Any,
+    audio: np.ndarray,
+    sample_rate: int,
+    automation: list[ParamAutomation],
+    notes: list[str],
+    block: int = AUTOMATION_BLOCK_SIZE,
+) -> np.ndarray:
+    """Run ``audio`` (frames, channels) through ``plugin`` in blocks of
+    ``block`` frames, moving each automated parameter at the start of every
+    block to its curve's value there. Same length and layout out as in.
+
+    Every call hands the plugin a full block (the last one padded with
+    silence): pedalboard tells frames from channels by which dimension is
+    smaller, and a short final block could read the wrong way round. Silence
+    past the end also flushes a plugin's latency, which pedalboard holds back
+    across calls when it is not reset between them.
+    """
+    targets = _automation_targets(plugin, automation, notes)
+    frames = int(audio.shape[0])
+    channels = int(audio.shape[1]) if audio.ndim > 1 else 1
+    signal = audio.reshape(frames, channels).astype(np.float32, copy=False)
+    try:
+        latency = max(0, int(getattr(plugin, "reported_latency_samples", 0) or 0))
+    except Exception:
+        latency = 0
+    needed = frames + latency
+    padded_frames = max(block, -(-needed // block) * block)
+    padded = np.zeros((padded_frames, channels), dtype=np.float32)
+    padded[:frames] = signal
+    sent: dict[int, float] = {}
+    pieces: list[np.ndarray] = []
+    for start in range(0, padded_frames, block):
+        for param, item in targets:
+            value = automation_value_at(item.points, start)
+            if sent.get(id(param)) == value:
+                continue
+            param.raw_value = value
+            sent[id(param)] = value
+        out = plugin.process(
+            padded[start : start + block],
+            sample_rate,
+            buffer_size=block,
+            reset=start == 0,
+        )
+        arr = np.asarray(out, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        elif arr.shape[0] == channels and arr.shape[1] != channels:
+            arr = arr.T
+        pieces.append(arr)
+    joined = (
+        np.concatenate(pieces, axis=0)
+        if pieces
+        else np.zeros((0, channels), dtype=np.float32)
+    )
+    result = np.zeros((frames, channels), dtype=np.float32)
+    take = min(frames, int(joined.shape[0]))
+    result[:take] = joined[:take, :channels]
+    return result.reshape(audio.shape)
+
+
+#: Channel voice messages only: a status byte 0x80-0xEF, and how many data bytes
+#: each kind carries. System messages (SysEx, clock, reset) are not part of a
+#: rendered part and are refused rather than passed to a plugin.
+_MIDI_DATA_BYTES = {
+    0x80: 2,  # note off
+    0x90: 2,  # note on
+    0xA0: 2,  # polyphonic pressure
+    0xB0: 2,  # control change
+    0xC0: 1,  # program change
+    0xD0: 1,  # channel pressure
+    0xE0: 2,  # pitch bend
+}
+
+
+def midi_message_bytes(data: Any) -> bytes:
+    """One channel voice message as the bytes pedalboard sends to a plugin.
+
+    Raises ValueError for anything that is not a complete channel message: a
+    missing or wrong-length data section, a value out of range, or a system
+    message (status 0xF0 and up).
+    """
+    if not isinstance(data, (list, tuple)) or not data:
+        raise ValueError("a MIDI message is a list of 1 to 3 byte values")
+    values: list[int] = []
+    for v in data:
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255:
+            raise ValueError(f"MIDI byte out of range: {v!r}")
+        values.append(v)
+    status = values[0]
+    kind = status & 0xF0
+    if kind not in _MIDI_DATA_BYTES:
+        raise ValueError(f"not a channel voice message: status {status:#04x}")
+    if len(values) != 1 + _MIDI_DATA_BYTES[kind]:
+        raise ValueError(
+            f"status {status:#04x} takes {_MIDI_DATA_BYTES[kind]} data byte(s), "
+            f"got {len(values) - 1}"
+        )
+    if any(b > 127 for b in values[1:]):
+        raise ValueError("MIDI data bytes are 0-127")
+    return bytes(values)
+
+
+def _channels_last(rendered: Any, num_channels: int) -> np.ndarray:
+    """pedalboard's instrument output as (frames, channels) float32.
+
+    pedalboard answers a MIDI render channels-first, (channels, frames); the
+    rest of this module and ``write_like_source`` work in (frames, channels).
+    """
+    arr = np.asarray(rendered, dtype=np.float32)
+    if arr.ndim == 1:
+        return arr.reshape(-1, 1)
+    if arr.shape[0] == num_channels and arr.shape[1] != num_channels:
+        return np.ascontiguousarray(arr.T)
+    return np.ascontiguousarray(arr)
+
+
+@on_host_thread
+def render_instrument(
+    plugin_path: str,
+    midi_messages: list[tuple[bytes, float]],
+    duration: float,
+    sample_rate: int,
+    params: dict[str, float] | None = None,
+    raw_state: str | bytes | None = None,
+    warnings: list[str] | None = None,
+    num_channels: int = 2,
+) -> np.ndarray:
+    """Render MIDI through a VST3 instrument, statelessly; (frames, channels).
+
+    The plugin is loaded fresh, its captured ``raw_state`` and any individual
+    ``params`` are applied exactly as ``process_with_plugin`` applies them to
+    an effect, and pedalboard's instrument call plays ``midi_messages`` (each
+    ``(bytes, seconds)``) for ``duration`` seconds:
+    ``plugin(midi_messages, duration, sample_rate, num_channels)``. The plugin
+    is discarded afterwards and never enters the instance registry.
+
+    Raises FileNotFoundError for a missing file and ValueError for a plugin
+    that is not an instrument (an effect given MIDI would only render silence).
+    """
+    pb = _get_pedalboard()
+    path = Path(plugin_path)
+    if not path.exists():
+        raise FileNotFoundError(f"VST3 plugin not found: {plugin_path}")
+    plugin = load_plugin_file(pb, str(path))
+    if not getattr(plugin, "is_instrument", False):
+        raise ValueError(
+            f"{path.stem} is not an instrument plugin, so it cannot play MIDI"
+        )
+    notes = warnings if warnings is not None else []
+    if raw_state:
+        error = _apply_raw_state(plugin, raw_state)
+        if error:
+            notes.append(f"saved instrument state could not be restored: {error}")
+            log.warning("VST raw_state rejected by %s: %s", path.stem, error)
+    if params:
+        for name, value in params.items():
+            try:
+                set_plugin_parameter(plugin, name, float(value))
+            except Exception as e:
+                notes.append(f"parameter '{name}' not applied: {e}")
+                log.warning("VST param '%s' rejected by %s: %s", name, path.stem, e)
+    rendered = plugin(
+        midi_messages,
+        duration=float(duration),
+        sample_rate=float(sample_rate),
+        num_channels=int(num_channels),
+    )
+    return _channels_last(rendered, int(num_channels))
 
 
 # Container / abstract / non-effect pedalboard classes to exclude from the

@@ -13,7 +13,8 @@ This module:
     (defaults to the main venv; overridable via theDAW_STEMS_PYTHON
     so users can point at an isolated venv where the heavy deps live).
   * ``probe()`` — non-spawning health check: does the package exist?
-    Does the configured Python import demucs?
+    Does the configured Python import demucs? Are the LARSNET weights the
+    12-stem drum split loads on disk (``larsnet_weights()``)?
   * ``ensure_running()`` — lazy spawn. Starts the sidecar as a
     subprocess via ``run_backend.py``, watches for ``backend_port.txt``
     to appear, polls ``/health`` until ready, then caches the port.
@@ -44,16 +45,30 @@ from typing import Optional
 import httpx
 from backend.lib.launch_token import child_env
 
+from .manifest import LARSNET_PARTS, LARSNET_WEIGHTS_LICENSE
+
 log = logging.getLogger(__name__)
 
 
-# Packages the sidecar genuinely needs to separate stems. demucs imports but
+# Packages the sidecar really needs to serve a separation. demucs imports but
 # is useless without torch/torchaudio; torchcrepe drives the crepe pitch path.
 # The historical probe only checked demucs, so a venv with demucs present but
 # torch/torchcrepe missing spawned anyway — then run_backend.py tried to self-
 # install them and blew the entire 300s readiness window. We now gate on ALL of
 # these being importable before spawning.
-_CRITICAL_PACKAGES: tuple[str, ...] = ("demucs", "torch", "torchaudio", "torchcrepe")
+#
+# fastapi/uvicorn belong here too. Without them the sidecar dies before it ever
+# binds a port, which is indistinguishable from a hang: probe() reported
+# ok=True for a venv that could never serve, and the only symptom the user got
+# was an opaque 300s port-file timeout.
+_CRITICAL_PACKAGES: tuple[str, ...] = (
+    "demucs",
+    "torch",
+    "torchaudio",
+    "torchcrepe",
+    "fastapi",
+    "uvicorn",
+)
 
 
 def _probe_packages(python_exe: Path) -> dict:
@@ -167,8 +182,9 @@ def resolve_config() -> SidecarConfig:
         # Default to the package's dedicated, isolated venv. We create it
         # on demand (see _bootstrap_sidecar_venv) so the sidecar's heavy
         # ML deps never collide with the main app's environment. The
-        # integration-package's requirements.txt pins scipy==1.11.4 etc.
-        # which is incompatible with our main venv's numpy/scipy stack.
+        # integration-package's requirements.txt pins its own exact versions
+        # (demucs, torchcodec, LARSNET's stack), which must not be resolved
+        # together with the main venv's packages.
         python_exe = _sidecar_venv_python(package_path)
     port_env = os.getenv("theDAW_STEMS_PORT")
     port = int(port_env) if (port_env and port_env.isdigit()) else None
@@ -241,6 +257,81 @@ def _is_port_in_use(host: str, port: int) -> bool:
             return False
 
 
+LARSNET_DIRNAME = "larsnet"
+LARSNET_MODELS_DIRNAME = "pretrained_larsnet_models"
+LARSNET_MODELS_ZIP = "pretrained_larsnet_models.zip"
+
+
+def _larsnet_model_paths(config_path: Path) -> dict[str, str]:
+    """The ``inference_models`` block of LARSNET's ``config.yaml``: kit part
+    -> checkpoint path relative to the config's folder, which is where
+    ``LarsNet`` resolves them. The block is flat ``part: 'path'`` lines, so it
+    is read line by line and the probe needs no YAML parser."""
+    out: dict[str, str] = {}
+    in_block = False
+    for raw in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            in_block = line.strip() == "inference_models:"
+            continue
+        if in_block:
+            key, sep, value = line.strip().partition(":")
+            if sep and value.strip():
+                out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def larsnet_weights(package_path: Path) -> dict:
+    """Whether the LARSNET checkpoints the 12-stem drum split loads are on
+    disk, one per kit part, at the paths its ``config.yaml`` names.
+
+    ``state`` is ``present`` (every part's weights are there), ``packed``
+    (none are, but ``pretrained_larsnet_models.zip`` is, which the sidecar
+    unpacks on the first 12-stem run) or ``missing``. Without every part's
+    weights a 12-stem run keeps the undivided ``drums`` stem.
+    """
+    base = package_path / LARSNET_DIRNAME
+    config = base / "config.yaml"
+    zip_path = base / LARSNET_MODELS_ZIP
+    report: dict = {
+        "ok": False,
+        "state": "missing",
+        "config_path": str(config),
+        "config_found": config.is_file(),
+        "models_dir": str(base / LARSNET_MODELS_DIRNAME),
+        "zip_path": str(zip_path),
+        "zip_present": zip_path.is_file(),
+        "license": LARSNET_WEIGHTS_LICENSE,
+        "weights": {},
+        "missing": [],
+    }
+    paths: dict[str, str] = {}
+    if report["config_found"]:
+        try:
+            paths = _larsnet_model_paths(config)
+        except (OSError, UnicodeDecodeError) as e:
+            report["error"] = f"config.yaml unreadable: {e}"
+    parts = list(paths) or list(LARSNET_PARTS)
+    for part in parts:
+        rel = paths.get(part)
+        path = base / rel if rel else None
+        present = bool(path and path.is_file() and path.stat().st_size > 0)
+        report["weights"][part] = {
+            "path": str(path) if path else None,
+            "present": present,
+        }
+        if not present:
+            report["missing"].append(part)
+    report["ok"] = bool(paths) and not report["missing"]
+    if report["ok"]:
+        report["state"] = "present"
+    elif report["zip_present"] and len(report["missing"]) == len(parts):
+        report["state"] = "packed"
+    return report
+
+
 def probe(cfg: Optional[SidecarConfig] = None) -> dict:
     """Non-spawning health snapshot used by /api/stems/probe."""
     cfg = cfg or resolve_config()
@@ -259,6 +350,8 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
         "port_hint": cfg.port,
         "running": False,
     }
+    out["larsnet"] = larsnet_weights(cfg.package_path)
+    out["larsnet_weights_ok"] = out["larsnet"]["ok"]
     if not out["package_exists"]:
         out["error"] = (
             f"integration-package not found at {cfg.package_path}. "
@@ -321,6 +414,45 @@ def probe(cfg: Optional[SidecarConfig] = None) -> dict:
         out["package_exists"] and out["run_backend_exists"] and out["critical_ok"]
     )
     return out
+
+
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Kill the launcher AND everything it spawned.
+
+    run_backend.py is only a launcher: it execs uvicorn as a *child*, so
+    terminating the Popen we hold leaves uvicorn running and still holding the
+    port. The next ensure_running() then finds that port occupied, connects to
+    the orphan, and serves stale code forever — a restart that silently does
+    nothing. Kill the tree instead.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        # taskkill /T walks the child chain; Popen.terminate does not.
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=30,
+                env=child_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        proc.wait(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5.0)
+        except OSError:
+            pass
 
 
 class StemsSidecar:
@@ -446,12 +578,20 @@ class StemsSidecar:
         try:
             stdout_fp = open(self._stdout_log, "wb")
             stderr_fp = open(self._stderr_log, "wb")
+            # Own process group/session: lets _terminate_tree reap the
+            # uvicorn child along with the launcher on both platforms.
+            group_kwargs = (
+                {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
             self._process = subprocess.Popen(
                 cmd,
                 cwd=str(self.cfg.package_path),
                 stdout=stdout_fp,
                 stderr=stderr_fp,
                 env=child_env(),
+                **group_kwargs,
             )
         except OSError as e:
             raise RuntimeError(f"failed to spawn stems sidecar: {e}") from e
@@ -524,12 +664,7 @@ class StemsSidecar:
     def stop(self) -> None:
         if self._process is not None:
             try:
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=10.0)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                    self._process.wait(timeout=5.0)
+                _terminate_tree(self._process)
             except OSError:
                 pass
             finally:
@@ -661,10 +796,9 @@ def _stems_install_cmd(python_exe: Path, req: Path) -> tuple[list[str], str]:
 
     Prefer ``uv pip install --python <exe>`` because the host project
     is uv-based and uv resolves conflicts that classic pip rejects with
-    ResolutionImpossible (matters here because integration-package's
-    requirements.txt pins old scipy/numpy that pip refuses to reconcile
-    against the main env's modern versions, but uv handles via a fresh
-    resolver pass when targeting a clean venv).
+    ResolutionImpossible (integration-package's requirements.txt pins
+    exact versions and takes torch from the PyTorch CUDA index, which uv
+    resolves in one fresh pass when targeting a clean venv).
     """
     # Prefer uv when available — it's the host project's package manager
     # and side-steps pip's classic resolver entirely.
@@ -856,9 +990,12 @@ def _ensure_windows_decode_support(cfg: SidecarConfig) -> dict:
 def _materialize_filtered_requirements(cfg: SidecarConfig) -> Path:
     """Read requirements.txt, drop entries in _FILTERED_REQS, write the
     cleaned list to ``<pkg>/.sidecar_venv_requirements.txt`` and return
-    that path. We do this because audio-separator's newer versions pull
-    scipy>=1.13.0 while the integration-package pins scipy==1.11.4 →
-    ResolutionImpossible. The package gracefully degrades without it."""
+    that path. audio-separator was filtered because it needed
+    scipy>=1.13.0 while the integration-package pinned scipy==1.11.4
+    (ResolutionImpossible). The requirements now pin scipy 1.18.1, with
+    which audio-separator 0.47.0 resolves, but it stays filtered until a
+    sidecar install with it is tested. The package gracefully degrades
+    without it."""
     src = cfg.package_path / "requirements.txt"
     dst = cfg.package_path / ".sidecar_venv_requirements.txt"
     cleaned_lines: list[str] = []

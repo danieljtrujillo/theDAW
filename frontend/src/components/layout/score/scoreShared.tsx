@@ -192,7 +192,7 @@ export const ZoomControls: React.FC<{
       <Minus className="w-3 h-3" />
     </button>
     <button
-      className="min-w-9 text-center text-[9px] font-mono text-purple-200 hover:text-white px-0.5"
+      className="min-w-11 text-center text-xs font-bold tabular-nums text-purple-200 hover:text-white px-0.5"
       onClick={onReset}
       title="Reset zoom"
       aria-label="Reset zoom to the default scale"

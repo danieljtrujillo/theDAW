@@ -16,9 +16,15 @@ interface ChopControlsProps {
   params: Record<string, number>;
   onChange: (params: Record<string, number>) => void;
   idPrefix: string;
+  /** The panel's gesture boundary, straight through to the SLIDE sliders: one
+   *  start before the first `onChange` of a drag / key press / wheel burst and
+   *  one end after its last. Lets a consumer recording a gesture (automation
+   *  touch) stop guessing it from a deadline. See lib/gestureTracker.ts. */
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
 }
 
-export function ChopControls({ params, onChange, idPrefix }: ChopControlsProps) {
+export function ChopControls({ params, onChange, idPrefix, onGestureStart, onGestureEnd }: ChopControlsProps) {
   const program = Math.round(params.program ?? 0);
   const rate = params.rate ?? 8;
   const slice = params.slice ?? 0.5;
@@ -77,27 +83,29 @@ export function ChopControls({ params, onChange, idPrefix }: ChopControlsProps) 
       </div>
 
       <SliderRow labelId={rateId} label="Rate" value={rate} min={0.5} max={32} step={0.5} dflt={8} unit="Hz"
-        onChange={(v) => set('rate', v)} />
+        onChange={(v) => set('rate', v)} onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
       <SliderRow labelId={sliceId} label="Slice" value={slice} min={0.05} max={1} step={0.01} dflt={0.5}
-        onChange={(v) => set('slice', v)} />
+        onChange={(v) => set('slice', v)} onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
       <SliderRow labelId={mixId} label="Mix" value={mix} min={0} max={1} step={0.01} dflt={1}
-        onChange={(v) => set('mix', v)} />
+        onChange={(v) => set('mix', v)} onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
     </div>
   );
 }
 
 function SliderRow({
-  labelId, label, value, min, max, step, dflt, unit, onChange,
+  labelId, label, value, min, max, step, dflt, unit, onChange, onGestureStart, onGestureEnd,
 }: {
   labelId: string; label: string; value: number; min: number; max: number;
   step: number; dflt: number; unit?: string; onChange: (v: number) => void;
+  onGestureStart?: () => void; onGestureEnd?: () => void;
 }) {
   const decimals = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
   return (
     <div className="flex items-center gap-2">
       <span id={labelId} className="font-sans text-xs font-bold text-zinc-400 w-16 shrink-0">{label}</span>
       <SlideTrack value={value} min={min} max={max} step={step} defaultValue={dflt}
-        ariaLabelledBy={labelId} className="flex-1" onChange={onChange} />
+        ariaLabelledBy={labelId} className="flex-1" onChange={onChange}
+        onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
       <span className="font-sans text-xs font-bold text-zinc-300 w-16 shrink-0 text-right tabular-nums">
         {value.toFixed(decimals)}{unit ? ` ${unit}` : ''}
       </span>

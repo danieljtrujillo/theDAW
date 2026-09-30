@@ -68,3 +68,38 @@ def test_place_words_applies_the_clock_scale():
 def test_available_and_downloaded_never_raise(monkeypatch):
     assert fa.available() in (True, False)
     assert fa.model_downloaded() in (True, False)
+
+
+def test_romanize_folds_latin_marks_and_ligatures_for_the_aligner():
+    assert fa.romanize("dīvīsa") == "divisa"
+    assert fa.romanize("Trōiae,") == "troiae"
+    assert fa.romanize("Cæsar") == "caesar"
+    assert fa.romanize("Æneās") == "aeneas"
+    assert fa.romanize("Ky-ri-e") == "kyrie"
+    assert fa.romanize("ȳ") == "y"
+    # Inscriptional capitals: the vowel V is heard as u, the consonant V as v.
+    assert fa.romanize("POPVLVSQVE", "la") == "populusque"
+    assert fa.romanize("VENI", "la") == "veni"
+    # Outside a Latin lyric a V is a V.
+    assert fa.romanize("VVV") == "vvv"
+
+
+def test_tokenize_lines_spells_latin_words_the_way_they_are_sung():
+    lines = split_text("Gallia est omnis dīvīsa\nCæsar et SENATVS POPVLVSQVE")
+    tokens, refs = fa.tokenize_lines(lines, DICT, "la")
+    inv = {v: k for k, v in DICT.items()}
+    spelled = [
+        "".join(inv[t] for t in tokens[r.token_start : r.token_end]) for r in refs
+    ]
+    assert spelled == [
+        "gallia",
+        "est",
+        "omnis",
+        "divisa",
+        "caesar",
+        "et",
+        "senatus",
+        "populusque",
+    ]
+    # The words on the page keep their marks.
+    assert [w.text for w in lines[0].words][3] == "dīvīsa"

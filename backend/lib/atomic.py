@@ -71,24 +71,58 @@ def atomic_write(
     payload: Union[bytes, str],
     *,
     encoding: str = "utf-8",
+    mode: int | None = None,
 ) -> None:
     """Write ``payload`` to ``dest`` so a reader sees the old file or the new one.
 
     Never a half-written one, and never another caller's. The parent directory
     is created if it is missing; the temp file is removed on any failure.
+
+    ``mode``, when given, is applied to the temp file before the rename --
+    e.g. owner-only (``0o600``) for a secret (backend/lib/pairing.py's
+    token), which must never be world/group-readable even for the instant
+    between write and rename. Left ``None`` (the default) for every other
+    caller of this module, whose files (recent-projects lists, module
+    configs, ...) have no reason to have their mode changed by every write.
+    On Windows a POSIX mode only clears the read-only attribute bit (no
+    POSIX-style multi-user ACL to restrict) -- real protection where it
+    matters is the CI Linux runner and any future non-Windows target.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = temp_sibling(dest)
+    # Tracks whether THIS call actually created `tmp`, so the except handler
+    # below never unlinks a file it did not create -- the `mode` branch's
+    # O_EXCL can fail on a name collision before the open happens, in which
+    # case `tmp` belongs to whatever process/file already holds that name.
+    created = False
     try:
-        if isinstance(payload, bytes):
+        if mode is not None:
+            # Create the file already at `mode`, instead of creating it under
+            # the default umask and chmod-ing afterward: the latter leaves a
+            # window -- however brief -- where the temp file sits on disk at
+            # the umask's permissions before the chmod lands, which is
+            # exactly the instant the docstring above claims never exists.
+            # O_EXCL also guarantees this call, not a leftover temp name from
+            # a previous failed write, is what ends up at `mode`.
+            fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_EXCL, mode)
+            created = True
+            binary = isinstance(payload, bytes)
+            with os.fdopen(
+                fd, "wb" if binary else "w", encoding=None if binary else encoding
+            ) as f:
+                f.write(payload)
+        elif isinstance(payload, bytes):
+            created = True
             tmp.write_bytes(payload)
         else:
+            created = True
             tmp.write_text(payload, encoding=encoding)
         atomic_replace(tmp, dest)
     except BaseException:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            log.debug("atomic_write: leftover temp file %s", tmp)
+        if created:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                log.debug("atomic_write: leftover temp file %s", tmp)
         raise

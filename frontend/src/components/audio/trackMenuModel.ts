@@ -51,7 +51,9 @@ export const probeFailed = <T>(detail?: string): Probe<T> => ({ state: 'failed',
 export interface TrackMenuEntry {
   id: string;
   title: string;
-  kind: 'audio' | 'video' | 'image';
+  /** 'score' is a composition (a score with no recording): like a video or
+   *  an image, every audio action is gated off it (REASON.notAudio). */
+  kind: 'audio' | 'video' | 'image' | 'score';
   model: string;
   prompt: string;
   /** deriveStyle(entry), trimmed. */
@@ -369,6 +371,9 @@ export function buildTrackMenu(f: TrackMenuFacts): TrackMenuGroup[] {
         'Put the clip at 0s on the first empty EDIT lane, adding a lane when every one is taken', firstReason(bytes), { goes: center('edit') }),
       makeRow('edit-append', 'End of EDIT lane 1', 'arrow-right-to-line',
         'Put the clip on the first empty EDIT lane, or after the last clip on lane 1 when every lane is taken', firstReason(bytes), { goes: center('edit') }),
+      makeRow('edit-song-tempo', 'Song tempo in EDIT', 'gauge',
+        "Show what EDIT's tempo and meter become from this song's rhythm analysis, bar 1 on its clip's first downbeat, and apply them on a press",
+        firstReason(audioEntry), { goes: center('edit') }),
       makeRow('edit-stems', 'Stems as EDIT tracks', 'layers',
         'Pick the stem count, device and quality, separate it, then add one EDIT track per stem',
         firstReason(audioEntry), { goes: center('edit'), longJob: true }),

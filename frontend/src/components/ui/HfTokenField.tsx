@@ -88,16 +88,60 @@ export const HfTokenField: React.FC<Props> = ({
   // a stale env var. Say so rather than letting downloads keep failing.
   const envOverride = status?.token_source === 'env';
   const text = compact ? 'text-[11px]' : 'text-[9px]';
+  // The status call itself failed — fetchHfStatus never throws for this; it
+  // reports the failure in `status.error` precisely so a dead backend is
+  // distinguishable from "not signed in" (see hfAuthClient.ts). Read it here
+  // so that distinction actually reaches the user instead of being dropped on
+  // the floor, which left this field rendering an ordinary "paste your token"
+  // form during a backend outage with no explanation for why sign-in status
+  // was unknown.
+  const statusError = status?.error?.message ?? null;
+
+  // Bumped whenever something more authoritative than an in-flight status
+  // check writes status — a successful save() — so a status check that
+  // started earlier and settles later cannot clobber it. This is NOT
+  // redundant with the `live` flags below: those only go false once React
+  // actually runs the effect's cleanup, which happens on its own schedule
+  // relative to a state update; this ref is bumped synchronously, inside
+  // save() itself, the instant login succeeds, with no render or effect-flush
+  // in between. A slow status check's own multi-hop promise chain (reading
+  // the response body, formatting a hop-aware error message) can easily still
+  // be unwinding at that exact moment and land its `setStatus` AFTER save()'s,
+  // transiently — or, depending on timing, permanently — resurrecting the
+  // error alert over a session the user just successfully signed in to.
+  const statusGenRef = React.useRef(0);
 
   React.useEffect(() => {
     let live = true;
+    const startGen = statusGenRef.current;
     void fetchHfStatus().then((s) => {
-      if (live) setStatus(s);
+      if (live && statusGenRef.current === startGen) setStatus(s);
     });
     return () => {
       live = false;
     };
   }, []);
+
+  // While the status check is failing, re-ask on window focus — the user
+  // alt-tabbing back after restarting theDAW is exactly this moment — and
+  // clear the alert on its own once the backend answers healthy again, no
+  // manual retry and no remount needed. Nothing to listen for once the error
+  // clears (the effect re-runs and skips registering).
+  React.useEffect(() => {
+    if (!statusError) return;
+    let live = true;
+    const onFocus = () => {
+      const startGen = statusGenRef.current;
+      void fetchHfStatus().then((s) => {
+        if (live && statusGenRef.current === startGen) setStatus(s);
+      });
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      live = false;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [statusError]);
 
   const save = async () => {
     const trimmed = token.trim();
@@ -110,6 +154,10 @@ export const HfTokenField: React.FC<Props> = ({
       setShow(false);
       setReplacing(false);
       setSavedAs(username);
+      // Bump BEFORE writing status: any status check already in flight
+      // (mount, or a focus refetch) is now stale and must ignore its own
+      // result when it settles, however long that takes.
+      statusGenRef.current += 1;
       setStatus((prev) => ({
         logged_in: true,
         username,
@@ -255,6 +303,16 @@ export const HfTokenField: React.FC<Props> = ({
             <AlertTriangle className="w-3 h-3" aria-label="HF_TOKEN environment variable takes priority" />
           </span>
         )}
+        {statusError && !error && (
+          <span role="alert" className={`shrink-0 ${text} text-rose-300`} title={statusError}>
+            <AlertTriangle className="w-3 h-3" role="img" aria-label="Could not check sign-in status" />
+            {/* The icon's aria-label is a fixed summary, not the actual reason
+                (a backend-down sentence vs. a Hub-rejected one, say) — a
+                screen reader user gets the same specific text a sighted user
+                reads from the title tooltip, not just "could not check". */}
+            <span className="sr-only">{statusError}</span>
+          </span>
+        )}
         {error && (
           <p role="alert" className={`min-w-0 truncate ${text} text-rose-300`} title={error}>
             {error}
@@ -287,6 +345,10 @@ export const HfTokenField: React.FC<Props> = ({
         {error ? (
           <p role="alert" className="min-w-0 flex-1 text-[9px] text-rose-300">
             {error}
+          </p>
+        ) : statusError ? (
+          <p role="alert" className="min-w-0 flex-1 text-[9px] text-rose-300">
+            {statusError}
           </p>
         ) : (
           <p className="min-w-0 flex-1 text-[9px] text-zinc-500">{SAVED_HELP}</p>

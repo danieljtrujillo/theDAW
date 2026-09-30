@@ -27,7 +27,7 @@ export const RICH_TOOLTIPS: Record<string, { title: string; body: string }> = {
   },
   initAudio: {
     title: 'Init Audio (Audio-to-Audio)',
-    body: `Upload a recording as a starting point. The model transforms it based on your prompt.\n\nLower noise level = more of the original preserved.\n\n• Init Audio — Adds noise to your audio, then regenerates. Simple and effective.\n• RF-Inversion — Reverse-engineers your audio back into noise space more carefully, then regenerates. Better preserves timing and transients. RF models only.`,
+    body: `Upload a recording as a starting point. The model adds noise to it, then regenerates based on your prompt.\n\nLower noise level = more of the original preserved.\n\n(RF-Inversion — a more careful noise-space pass that better preserves timing and transients — is not offered yet; the pipeline doesn't implement it.)`,
   },
   inpainting: {
     title: 'Inpainting',

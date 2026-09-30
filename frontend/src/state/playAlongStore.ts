@@ -72,6 +72,8 @@ export interface PlayAlongPrefs {
   chordInstrument: ChordInstrument;
   chordTuning: string;
   capo: number;
+  /** The CHORDS strip shows each chord's roman numeral under its name. */
+  chordRoman: boolean;
   judgeEnabled: boolean;
   /** Instrument preset: picks the parts and a sensible mode. */
   instrument: PlayAlongInstrument;
@@ -93,6 +95,7 @@ export interface PlayAlongState extends PlayAlongPrefs {
   setChordInstrument: (instrument: ChordInstrument) => void;
   setChordTuning: (tuning: string) => void;
   setCapo: (capo: number) => void;
+  setChordRoman: (show: boolean) => void;
   setJudgeEnabled: (enabled: boolean) => void;
   setInstrument: (instrument: PlayAlongInstrument) => void;
   setNowLine: (pos: NowLinePos) => void;
@@ -113,6 +116,7 @@ const DEFAULT_PREFS: PlayAlongPrefs = {
   chordInstrument: 'guitar',
   chordTuning: 'guitar-standard',
   capo: 0,
+  chordRoman: true,
   judgeEnabled: false,
   instrument: 'all',
   nowLine: 'left',
@@ -142,6 +146,7 @@ function sanitize(raw: Partial<Record<keyof PlayAlongPrefs, unknown>>): PlayAlon
     chordInstrument: oneOf(raw.chordInstrument, ['guitar', 'bass', 'ukulele'] as const, DEFAULT_PREFS.chordInstrument),
     chordTuning: typeof raw.chordTuning === 'string' && raw.chordTuning ? raw.chordTuning : DEFAULT_PREFS.chordTuning,
     capo: clamp(Math.round(finite(raw.capo, 0)), 0, 12),
+    chordRoman: raw.chordRoman !== false,
     judgeEnabled: raw.judgeEnabled === true,
     instrument: oneOf(raw.instrument, PLAY_ALONG_INSTRUMENTS, DEFAULT_PREFS.instrument),
     nowLine: oneOf(raw.nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine),
@@ -177,6 +182,7 @@ function savePrefs(state: PlayAlongPrefs): void {
       chordInstrument: state.chordInstrument,
       chordTuning: state.chordTuning,
       capo: state.capo,
+      chordRoman: state.chordRoman,
       judgeEnabled: state.judgeEnabled,
       instrument: state.instrument,
       nowLine: state.nowLine,
@@ -209,6 +215,7 @@ export const usePlayAlongStore = create<PlayAlongState>()((set, get) => {
     setChordInstrument: (chordInstrument) => update({ chordInstrument }),
     setChordTuning: (chordTuning) => update({ chordTuning }),
     setCapo: (capo) => update({ capo: clamp(Math.round(finite(capo, 0)), 0, 12) }),
+    setChordRoman: (chordRoman) => update({ chordRoman: chordRoman === true }),
     setJudgeEnabled: (judgeEnabled) => update({ judgeEnabled }),
     setInstrument: (instrument) => update({ instrument }),
     setNowLine: (nowLine) => update({ nowLine: oneOf(nowLine, NOW_LINE_POSITIONS, DEFAULT_PREFS.nowLine) }),

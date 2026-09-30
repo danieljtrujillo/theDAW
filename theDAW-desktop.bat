@@ -9,12 +9,15 @@ title theDAW (Desktop)
 :: Electron shell directly — no need to change any setting. It does NOT modify
 :: your saved launch_mode; double-click theDAW.bat any time to go back to web.
 ::
-:: It mirrors theDAW.bat's preflight + desktop branch, and it kills any stale
-:: backend on :8600 FIRST so the Electron shell spawns a fresh, supervised
-:: backend (which loads every backend module — e.g. the VST Foundry tab)
-:: instead of reattaching to an old process that started before those modules
-:: existed. (The Electron main process reuses an already-running backend; a
-:: stale one is exactly why a newly-added tab can stay broken across restarts.)
+:: It mirrors theDAW.bat's preflight + desktop branch, and it calls
+:: `python -m backend.ports --free --all-ports` FIRST, which stops only the
+:: listeners running from THIS checkout — a stale theDAW backend on :8600, not
+:: whatever else happens to hold a port. That way the Electron shell spawns a
+:: fresh, supervised backend (which loads every backend module — e.g. the VST
+:: Foundry tab) instead of reattaching to an old process that started before
+:: those modules existed. (The Electron main process reuses an already-running
+:: backend; a stale one is exactly why a newly-added tab can stay broken across
+:: restarts.) Another program's server is left alone and left running.
 :: ===========================================================================
 
 :: Run from the repo root (this script's folder).
@@ -70,16 +73,17 @@ if not exist "VST-Foundry-UI\VST-UI-FOUNDRY\node_modules" (
     popd
 )
 
-:: -- Kill any stale processes on our ports ------------------------------
-:: Critical for desktop mode: the Electron shell reuses an already-running
-:: backend on :8600 instead of spawning a fresh one. Killing it forces a fresh,
-:: SUPERVISED backend that loads every module (and makes the in-app Restart
-:: button work again).
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8600 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5173 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5187 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":5472 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-timeout /t 1 /nobreak >nul
+:: -- Stop theDAW's OWN stale listeners -- and nothing else -------------
+:: backend.ports --free stops a listener ONLY when its command line or working
+:: directory is inside THIS checkout: the PID is revalidated just before the
+:: signal, and a backend is asked to shut down cleanly first. Any other
+:: program on these ports -- another project's Vite, another Electron app's
+:: server -- is LEFT ALONE and named in the log. This used to be a blind
+:: netstat ^| taskkill that killed whatever held the port.
+:: Desktop mode needs this: the Electron shell reuses a running backend on
+:: :8600, so a stale one of OURS is stopped to get a fresh, supervised one.
+:: Without the venv nothing of ours can be running from this checkout.
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --free --all-ports
 
 echo.
 echo Launch mode: DESKTOP ^(Electron^)  -  dedicated launcher
@@ -119,6 +123,20 @@ if not exist "electron-ui\node_modules\electron\dist\electron.exe" (
     echo       then re-run this launcher.
     echo.
     pause
+    exit /b 1
+)
+
+:: -- The window's address must be free ---------------------------------
+:: The desktop window loads http://localhost:5173, and its saved settings and
+:: mic/MIDI permissions belong to that address. When another program holds
+:: 5173 the launch stops here with that program's name, since on any other
+:: port the window would open with all of them empty.
+ver >nul
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --require-frontend-port
+if errorlevel 1 (
+    echo.
+    echo theDAW ^(desktop^) did not start. Press any key to close this window...
+    pause >nul
     exit /b 1
 )
 

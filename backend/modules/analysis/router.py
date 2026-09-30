@@ -7,6 +7,7 @@ Endpoints (prefix from module.json → ``/api/analysis``):
     POST /{id}/run      run analysis synchronously and return the
                         result. Foreground call; bumps the idle
                         manager so background workers don't compete.
+                        ``?profile=dj`` runs the deck-only subset.
 """
 
 from __future__ import annotations
@@ -15,11 +16,18 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.modules.library.router import get_store as get_library_store
 
-from .engine import ANALYSIS_VERSION, analyze_and_persist
+from .engine import (
+    ANALYSIS_VERSION,
+    PROFILE_DJ,
+    PROFILE_FULL,
+    AnalysisBusy,
+    analyze_and_persist,
+    profile_of_row,
+)
 from .ffprobe import has_ffprobe
 from .prompt import generate_prompt
 
@@ -110,11 +118,29 @@ def get_analysis(entry_id: str) -> dict:
     # fallback — heal themselves instead of looking permanently analyzed.
     if int(row.get("version") or 0) < ANALYSIS_VERSION:
         return {"entry_id": entry_id, "status": "pending"}
-    return row
+    # WHICH profile wrote this row. A 'dj' row has no pitch statistics and no
+    # integrated loudness, and without this field every reader -- the Details
+    # panel, the node inspector, the prompt route -- showed a partial row as a
+    # complete one whose expensive fields happened to be empty.
+    return {**row, "profile": profile_of_row(row)}
 
 
 @router.post("/{entry_id}/run")
-def run_analysis(entry_id: str) -> dict:
+def run_analysis(
+    entry_id: str,
+    profile: str = Query(
+        PROFILE_FULL,
+        description=(
+            "'full' runs every step; 'dj' runs only what a deck reads "
+            "(ffprobe, one decode, tempo+beats+confidence, key, rms) and "
+            "leaves pitch and LUFS for a later full run."
+        ),
+    ),
+) -> dict:
+    if profile not in (PROFILE_FULL, PROFILE_DJ):
+        raise HTTPException(
+            422, f"unknown analysis profile {profile!r} (expected 'full' or 'dj')"
+        )
     store = get_library_store()
     if store.db is None:
         raise HTTPException(503, "library DB not available")
@@ -138,13 +164,26 @@ def run_analysis(entry_id: str) -> dict:
         pass
 
     try:
-        payload = analyze_and_persist(
+        # The concurrency cap and the single-flight live in the engine, on
+        # analyze_and_persist itself: the library store's background queue
+        # calls that function directly and would otherwise bypass a gate kept
+        # here. This endpoint owns the profile validation above and nothing
+        # else about scheduling.
+        return analyze_and_persist(
             store.db,
             entry_id,
             Path(audio_path),
             metadata_path=metadata_path,
+            # The store whose metadata lock the entry's other writers take:
+            # this runs on FastAPI's threadpool alongside user edits of the
+            # same entry, and metadata.json is the source of truth.
+            store=store,
+            profile=profile,
         )
-        return payload
+    except AnalysisBusy as e:
+        # Another run of this entry is still going (a slow decode). Nothing
+        # was cancelled; the client's queue retries on its own schedule.
+        raise HTTPException(503, str(e)) from e
     finally:
         try:
             from backend.core.idle import get_idle_manager

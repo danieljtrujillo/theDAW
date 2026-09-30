@@ -1,0 +1,114 @@
+{
+  "schema": "thedaw.composer.style",
+  "schemaVersion": 1,
+  "id": "brahms",
+  "name": "Johannes Brahms",
+  "era": "Romantic (1833-1897)",
+  "source": "authored",
+  "basis": "authored from harmony-textbook accounts of Brahms (Aldwell-Schachter, Kostka-Payne): functional tonality with modal mixture (iv, bVI and iiø7 in major), applied dominants, plagal closes, hemiola and cross-rhythm, and thick doubled textures",
+  "works": [],
+  "sample": {
+    "works": 0,
+    "note": "written by hand from the textbook facts in basis; not counted from any score"
+  },
+  "modes": {
+    "major": 0.55,
+    "minor": 0.45
+  },
+  "vocabulary": {
+    "major": {
+      "I": 0.2,
+      "V": 0.12,
+      "V7": 0.1,
+      "IV": 0.07,
+      "ii7": 0.06,
+      "ii": 0.05,
+      "vi": 0.05,
+      "iv": 0.05,
+      "bVI": 0.04,
+      "V7/V": 0.03,
+      "viio7": 0.03,
+      "iiø7": 0.03,
+      "iii": 0.02,
+      "V7/IV": 0.02,
+      "V7/ii": 0.02,
+      "Ger65": 0.02,
+      "I7": 0.02,
+      "IV7": 0.02,
+      "vi7": 0.02,
+      "N": 0.01,
+      "It6": 0.01,
+      "V/vi": 0.01
+    },
+    "minor": {
+      "i": 0.2,
+      "V": 0.12,
+      "V7": 0.1,
+      "iv": 0.09,
+      "iiø7": 0.06,
+      "VI": 0.06,
+      "viio7": 0.06,
+      "iio": 0.04,
+      "III": 0.04,
+      "V7/iv": 0.03,
+      "iv7": 0.03,
+      "VII": 0.02,
+      "N": 0.02,
+      "Ger65": 0.02,
+      "It6": 0.02,
+      "V/III": 0.02,
+      "VI7": 0.02,
+      "I": 0.02,
+      "v": 0.02,
+      "Fr43": 0.01
+    }
+  },
+  "cadences": {
+    "authentic_perfect": 0.4,
+    "authentic_imperfect": 0.18,
+    "half": 0.22,
+    "plagal": 0.12,
+    "deceptive": 0.06,
+    "phrygian_half": 0.02
+  },
+  "cadence_other": 0.15,
+  "harmonic_rhythm": {
+    "chords_per_bar": 2.0,
+    "chords_per_pulse": 0.6
+  },
+  "texture": {
+    "voices": 5.5,
+    "homophony": 0.55,
+    "polyphony": 0.45
+  },
+  "meter": {
+    "meters": {
+      "4/4": 0.35,
+      "3/4": 0.25,
+      "6/8": 0.1,
+      "2/2": 0.1,
+      "2/4": 0.1,
+      "6/4": 0.05,
+      "9/8": 0.05
+    },
+    "hemiola": 0.12,
+    "syncopation": 0.15
+  },
+  "intervals": {
+    "0": 0.14,
+    "1": 0.2,
+    "2": 0.26,
+    "3": 0.1,
+    "4": 0.08,
+    "5": 0.07,
+    "6": 0.015,
+    "7": 0.04,
+    "8": 0.025,
+    "9": 0.02,
+    "10": 0.01,
+    "11": 0.005,
+    "12": 0.02,
+    "13+": 0.015
+  },
+  "orchestration": "romantic_orchestra"
+}

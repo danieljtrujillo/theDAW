@@ -8,14 +8,50 @@
 // their absolute on-disk path (the load step relinks embedded audio to disk, and
 // /api/project/clip-audio serves any absolute path — see dawImportClient's
 // dawImportAudioUrl). MIDI clips carry step-based notes, converted here to the
-// seconds-based shape the grid renders.
+// seconds-based shape the grid renders. A note the file already holds in
+// seconds (an imported set's, and every MIDI cell PERFORM saves) is kept as it is.
+//
+// Each project, track and clip also keeps the .tasmo record it came from
+// (`tasmo`), and each device its entry id and captured plugin state, so a save
+// from PERFORM (projectClient dawProjectToTasmo) writes back everything the
+// grid does not show.
 
 import type { DawProject, DawTrack, DawClip, DawDevice } from './dawImportClient';
-import type { TasmoProjectLoaded } from './projectClient';
+import { bankSelectOf, gmProgramOf, playedNotesFromRoll, tasmoClipBpm, tasmoMeterToClip, ticksMatching, type TasmoProjectLoaded } from './projectClient';
+import { MIN_NOTE_TICKS, PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
+import { parseFollowAction } from './followAction';
+import { MIN_NOTE_STEPS } from '../state/pianoRollStore';
+import { spanSec, stepClock } from './rollTempo';
+
+/** A saved note's start and length in seconds, or null for a note in roll steps.
+ *  The start fields are the ones lib/projectImport reads a seconds note by. */
+function secondsNote(n: Record<string, number>): { start: number; duration: number } | null {
+  const start = [n.start, n.startSec, n.start_time, n.time].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (start === undefined) return null;
+  const duration = [n.duration, n.durationSec, n.dur, n.length_sec].find((v) => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  return { start: Math.max(0, start), duration: duration ?? 0.25 };
+}
+
+/** A saved clip's or track's program, bank and sound bank, each only when the
+ *  file has one, read as EDIT's loader reads them: a whole program 0-127 (the
+ *  file is hand-editable) and a bank only beside a program. */
+function voiceFields(v: {
+  instrument_program?: number | null;
+  instrument_bank?: number | null;
+  instrument_bank_id?: string | null;
+}): Pick<DawTrack, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id'> {
+  const program = gmProgramOf(v.instrument_program);
+  if (program === undefined) return {};
+  const bank = bankSelectOf(v.instrument_bank);
+  return {
+    instrument_program: program,
+    ...(bank > 0 ? { instrument_bank: bank } : {}),
+    ...(v.instrument_bank_id ? { instrument_bank_id: v.instrument_bank_id } : {}),
+  };
+}
 
 export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject {
   const bpm = loaded.tempo || 120;
-  const stepSec = 60 / Math.max(40, bpm) / 4; // one 16th-note step in seconds
 
   const tracks: DawTrack[] = loaded.tracks.map((t, ti) => {
     // A file written from a real grid already knows where every clip goes.
@@ -24,20 +60,44 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       ? [...t.clips]
       : [...t.clips].sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
     const clips: DawClip[] = sorted.map((c, ci) => {
-      const isMidi =
-        c.clip_type === 'midi' && Array.isArray(c.midi_notes) && c.midi_notes.length > 0;
+      // The notes as they sound: `midi_notes` when the file carries them, else
+      // the roll notes unrolled across the clip's lanes, which is all a
+      // piano-roll clip saved with only its roll notes has (clipNotesToTasmo).
+      const stepNotes: Array<Record<string, number>> =
+        Array.isArray(c.midi_notes) && c.midi_notes.length > 0
+          ? c.midi_notes
+          : c.clip_type === 'midi'
+            ? playedNotesFromRoll(tasmoMeterToClip(c)).map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity }))
+            : [];
+      const isMidi = c.clip_type === 'midi' && stepNotes.length > 0;
+      // Steps are 16ths at the tempo the clip's notes were written at, through
+      // its tempo map when it has one (lib/rollTempo stepClock).
+      const clock = stepClock(tasmoClipBpm(c, bpm), isMidi ? tasmoMeterToClip(c).sourceTempoMap : undefined);
       return {
         name: c.name || `Clip ${ci + 1}`,
         start_time: c.start_time ?? 0,
         end_time: c.end_time ?? 0,
         file_path: !isMidi ? (c.audio_file ?? null) : null,
         midi_notes: isMidi
-          ? (c.midi_notes ?? []).map((n) => ({
-              pitch: Number(n.note ?? n.pitch ?? 60),
-              start: Number(n.step ?? 0) * stepSec,
-              duration: Math.max(1, Number(n.length ?? 1)) * stepSec,
-              velocity: Number(n.velocity ?? 100),
-            }))
+          ? stepNotes.map((n) => {
+              const sec = secondsNote(n);
+              if (sec) {
+                return { pitch: Number(n.pitch ?? n.note ?? n.midi ?? 60), ...sec, velocity: Number(n.velocity ?? 100) };
+              }
+              const length = Number(n.length ?? 1);
+              // The note's own ticks when the file carries them, else its own
+              // length in steps down to the roll's one tick (a missing or
+              // non-positive one reads as one step): flooring it to a step
+              // turned a saved triplet sixteenth into a full sixteenth.
+              const ticks = ticksMatching(n.ticks, length, MIN_NOTE_TICKS);
+              const steps = ticks !== undefined ? ticks / (PPQ / ROLL_STEPS_PER_BEAT) : length > 0 ? Math.max(MIN_NOTE_STEPS, length) : 1;
+              return {
+                pitch: Number(n.note ?? n.pitch ?? 60),
+                start: clock.at(Number(n.step ?? 0)),
+                duration: spanSec(clock, Number(n.step ?? 0), steps),
+                velocity: Number(n.velocity ?? 100),
+              };
+            })
           : null,
         track_index: c.track_index ?? ti,
         scene_index: c.scene_index ?? (hasGrid ? null : ci),
@@ -49,11 +109,27 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
         loop_start: c.loop_start ?? null,
         loop_end: c.loop_end ?? null,
         loop_on: (c.loop_end ?? 0) > (c.loop_start ?? 0),
+        // The clip's follow action, if the file carries one this build can act
+        // on. Storage is tolerant (every backend field is defaulted so an older
+        // file validates); interpretation is not, so an unknown kind loads as
+        // no rule rather than as some other rule.
+        followAction: parseFollowAction(c.follow_action),
+        // The file's own clip, for the PERFORM save: its id, gain, fades,
+        // tempo, library entry, step notes, render and takes, none of which
+        // the grid shows.
+        tasmo: c,
+        // The clip's own voice, which the grid renders it with ahead of its track's.
+        ...voiceFields(c),
       };
     });
+    const { clips: _clips, ...trackRecord } = t;
     return {
       name: t.name || `Track ${ti + 1}`,
       type: t.type === 'midi' ? 'midi' : 'audio',
+      // The column's voice: every MIDI cell on it renders with this program,
+      // bank and drum channel unless the cell has a program of its own.
+      ...voiceFields(t),
+      ...(t.is_percussion ? { is_percussion: true } : {}),
       volume_db: t.volume_db ?? 0,
       pan: t.pan ?? 0,
       mute: !!t.mute,
@@ -62,27 +138,38 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
       clips,
       // A .tasmo track's saved FX chain becomes the grid's live device chain,
       // exactly like an imported .als set's devices: built-in entries build the
-      // live rack; vst3 entries stay listed-but-inert (the same behavior as
-      // EDIT). Without this a saved set reached PERFORM with a bare
-      // passthrough, so nothing existed for fx routes (the Sway XY / deck
-      // assignments) to hit.
+      // live rack; a plugin is hosted live, at the state it was saved with.
+      // Without this a saved set reached PERFORM with a bare passthrough, so
+      // nothing existed for fx routes (the Sway XY / deck assignments) to hit.
       devices: (t.effect_chain ?? []).map<DawDevice>((n) => ({
         name: n.effect_name,
-        plugin_type: n.node_type === 'vst3' ? 'vst3' : 'builtin',
+        // An Audio Unit stays one: read as builtin, its name could
+        // pattern-match a rack effect.
+        plugin_type: n.node_type === 'vst3' || n.node_type === 'audiounit' ? n.node_type : 'builtin',
         // Carry the real plugin path: with it null, dawDeviceToEffectNode's
         // plugin test failed and a VST node fell into the BUILTIN branch,
         // where its display name could pattern-match a rack effect ("…Verb"
         // -> reverb at defaults). With the path present it classifies as
-        // vst3 and stays cleanly inert in the live grid, exactly like EDIT.
+        // vst3 and is hosted, exactly like EDIT.
         plugin_path: n.vst_state?.plugin_path ?? null,
         parameters: n.parameters ?? {},
         bypass: !!n.bypass,
         is_instrument: false,
         is_rack: false,
+        // The insert's id (automation lanes and controller mappings key off
+        // it in EDIT) and the plugin state theDAW captured, which PERFORM
+        // hosts the plugin at and a PERFORM save writes back.
+        id: n.id ?? null,
+        raw_state: n.vst_state?.raw_state ?? null,
+        state_host: n.vst_state?.state_host ?? null,
       })),
+      // The file's own track, for the PERFORM save: its id, instrument,
+      // routing and folder place.
+      tasmo: trackRecord,
     };
   });
 
+  const { tracks: _tracks, ...projectRecord } = loaded;
   return {
     source_daw: 'tasmo',
     source_version: '',
@@ -97,5 +184,7 @@ export function tasmoLoadedToDawProject(loaded: TasmoProjectLoaded): DawProject 
     plugins_used: [],
     warnings: [],
     missing_files: [],
+    // The file's own project-level fields, for the PERFORM save.
+    tasmo: projectRecord,
   };
 }

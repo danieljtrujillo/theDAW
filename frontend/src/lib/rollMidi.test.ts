@@ -7,8 +7,8 @@ import { meterMapToMidiEvents, normalizeMeterMap, unrollLanes, type MeterSegment
 import { notesToSmf } from './midiWrite.ts';
 import { MAX_BENT_LANES, bendValueAt, unrollBend, type BendPoint, type BendShape, type LaneBend } from './pitchBend.ts';
 import { playedRollNotes } from './rollClip.ts';
-import { midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
-import { pianoNotesToMidiNotes, type PianoNote } from '../state/pianoRollStore.ts';
+import { ROLL_PPQ, midiFileNoteCount, midiFileToRoll, rollToMidiFile } from './rollMidi.ts';
+import { PPQ, migrateNotes, pianoNotesToMidiNotes, usePianoRollStore, withTicks, type PianoNote } from '../state/pianoRollStore.ts';
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 const hasBytes = (hay: Uint8Array, needle: number[]): boolean => {
@@ -139,13 +139,19 @@ const ROLL = { notes: NOTES, lanes: LANES, totalSteps: TOTAL, bpm: 100, meterMap
 const canonical = (notes: readonly PianoNote[]) =>
   notes.map((n) => [n.step, n.note, n.length, n.velocity, n.lane ?? 0]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 
-// Export: each bent lane on its own channel with its range and wheel, the unbent lane on the next channel.
+// Export: one track per lane with its lane text, each bent lane on its own channel with its range and wheel, the
+// unbent lane on the next channel.
 const file = rollToMidiFile(ROLL);
 const bytes = encodeMidi(file);
 {
-  const notes = file.tracks[0].notes;
+  assert.deepEqual(file.tracks.map((t) => t.name), ['Lane A', 'Lane B', 'Lane C']);
+  assert.deepEqual(file.tracks.map((t) => JSON.parse(t.laneMeta ?? 'null')), LANES);
+  const notes = file.tracks.flatMap((t) => t.notes);
   assert.deepEqual([0, 1, 2].map((ch) => notes.filter((n) => n.channel === ch).length), [2, 8, 2]);
-  assert.deepEqual(file.tracks[0].bendRanges, [{ tick: 0, channel: 0, semitones: 2 }, { tick: 0, channel: 1, semitones: 12 }]);
+  assert.deepEqual(file.tracks.map((t) => t.notes.length), [2, 8, 2], 'each lane in its own track, lane B written out');
+  // The export's LOG line reports every lane's notes, not lane A's track alone.
+  assert.equal(midiFileNoteCount(file), 12, 'the exported count is every track');
+  assert.deepEqual(file.tracks.flatMap((t) => t.bendRanges ?? []), [{ tick: 0, channel: 0, semitones: 2 }, { tick: 0, channel: 1, semitones: 12 }]);
   assert.ok(hasBytes(bytes, [0xb0, 6, 2]) && hasBytes(bytes, [0xb1, 6, 12]));
   // Lane A at full up on channel 0, lane B at full down on channel 1.
   assert.ok(hasBytes(bytes, [0xe0, 0x7f, 0x7f]) && hasBytes(bytes, [0xe1, 0x00, 0x00]));
@@ -157,13 +163,17 @@ const bytes = encodeMidi(file);
   assert.equal(back.bpm, 100);
   assert.deepEqual(back.meter.meterMap, normalizeMeterMap(MAP));
   assert.equal(back.meter.pickupSteps, 0);
-  // The file holds the notes as they sound, so lane B's repeats come back written out and its lane no longer loops.
-  assert.deepEqual(back.meter.lanes, [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: null }, { id: 2, name: 'C', cycleSteps: null }]);
-  assert.deepEqual(canonical(back.notes), canonical(unrollLanes(NOTES, LANES, TOTAL)));
+  // The lane texts bring every lane back, lane B still looping every 8 steps, and each lane's notes: the file holds
+  // lane B's repeats written out, and the import keeps its first cycle, so the roll plays what it played.
+  assert.deepEqual(back.meter.lanes, LANES);
+  assert.deepEqual(canonical(back.notes), canonical(NOTES));
+  assert.deepEqual(canonical(unrollLanes(back.notes, back.meter.lanes, TOTAL)), canonical(unrollLanes(NOTES, LANES, TOTAL)));
   assert.deepEqual(back.bends.map((b) => [b.lane, b.range]), [[0, 2], [1, 12]]);
   for (const original of BENDS) {
     const played = unrollBend(original.points, LANES[original.lane].cycleSteps, TOTAL);
-    const curve = back.bends.find((b) => b.lane === original.lane)?.points ?? [];
+    // Lane B's curve comes back as one cycle, which loops with the lane.
+    const own = back.bends.find((b) => b.lane === original.lane)?.points ?? [];
+    const curve = unrollBend(own, LANES[original.lane].cycleSteps, TOTAL);
     for (let s = 0; s <= TOTAL + 2; s += 1 / 16) {
       const want = bendValueAt(played, s);
       assert.ok(Math.abs(bendValueAt(curve, s) - want) <= 0.04, `lane ${original.lane} at step ${s}: ${bendValueAt(curve, s)} vs ${want}`);
@@ -189,8 +199,20 @@ const bytes = encodeMidi(file);
   }
 }
 
-// With no bend the export is the file the roll wrote before it had bends, and it imports into lane A alone.
+// A roll with lane A alone and no bend exports the file the roll wrote before it had bends or lanes, at the roll's
+// own 960 PPQ (ROLL_PPQ); a file an older build wrote for a roll with lanes (one track, the lanes written out, no
+// lane texts, at 480 PPQ) imports into lane A alone.
 {
+  const laneA = NOTES.filter((n) => n.lane === undefined);
+  assert.equal(ROLL_PPQ, 960, 'the roll writes its own resolution');
+  const single = encodeMidi({
+    ppq: ROLL_PPQ,
+    bpm: 100,
+    tempos: [{ tick: 0, bpm: 100 }],
+    timeSignatures: meterMapToMidiEvents(MAP, ROLL_PPQ, 0),
+    tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(laneA, ROLL_PPQ) }],
+  });
+  assert.equal(hex(encodeMidi(rollToMidiFile({ ...ROLL, notes: laneA, lanes: [LANES[0]], bends: [] }))), hex(single));
   const legacy = encodeMidi({
     ppq: 480,
     bpm: 100,
@@ -198,7 +220,6 @@ const bytes = encodeMidi(file);
     timeSignatures: meterMapToMidiEvents(MAP, 480, 0),
     tracks: [{ name: 'Piano Roll', notes: pianoNotesToMidiNotes(playedRollNotes(NOTES, LANES, TOTAL), 480) }],
   });
-  assert.equal(hex(encodeMidi(rollToMidiFile({ ...ROLL, bends: [] }))), hex(legacy));
   const back = midiFileToRoll(parseMidi(legacy));
   assert.deepEqual(back.bends, []);
   assert.deepEqual(back.meter.lanes, [{ id: 0, name: 'A', cycleSteps: null }]);
@@ -298,6 +319,145 @@ const bytes = encodeMidi(file);
   }))), 'm2');
   assert.equal(again.meter.lanes.length, MAX_BENT_LANES + 1);
   assert.deepEqual(canonical(again.notes), canonical(many.notes));
+}
+
+// ── Ticks through the file ───────────────────────────────────────────────────
+
+// A round trip at the model's own PPQ is EXACT, off-grid notes included: the
+// export writes each note's ticks and the import reads them back, so nothing is
+// quantised to the 16th grid in either direction.
+{
+  const notes: PianoNote[] = migrateNotes([
+    { id: 'on-grid', note: 60, step: 0, length: 4, velocity: 100 },
+    // 605 ticks is 2.52 steps — between two 16ths, where a swung or humanised
+    // note lives. The old export rounded it to a step; this one does not.
+    { id: 'off-grid', note: 64, velocity: 90, tick: 605, ticks: 61 } as PianoNote,
+    { id: 'tiny', note: 67, velocity: 80, tick: 4801, ticks: 1 } as PianoNote,
+  ]);
+  const roll = { notes, lanes: [LANES[0]], totalSteps: 64, bpm: 120, meterMap: [MAP[0]], pickupSteps: 0, bends: [] };
+  const exported = rollToMidiFile(roll, PPQ);
+  assert.equal(exported.ppq, PPQ);
+  assert.deepEqual(
+    exported.tracks[0].notes.map((n) => [n.tick, n.durationTicks]),
+    [[0, 960], [605, 61], [4801, 1]],
+    'the file carries the notes\' own ticks, unrounded',
+  );
+  const back = midiFileToRoll(parseMidi(encodeMidi(exported)), 'x');
+  assert.deepEqual(back.notes.map((n) => [n.tick, n.ticks]), notes.map((n) => [n.tick, n.ticks]), 'ticks survive a 960 PPQ trip exactly');
+  // And the step view the roll draws is derived from those ticks, not re-snapped.
+  assert.deepEqual(back.notes.map((n) => [n.step, n.length]), notes.map((n) => [n.step, n.length]));
+  // The store keeps them as they came back.
+  usePianoRollStore.getState().importNotes(back.notes);
+  assert.deepEqual(usePianoRollStore.getState().notes.map((n) => n.tick), [0, 605, 4801]);
+}
+
+// A file at another PPQ scales into the model rather than snapping: 480 doubles,
+// 96 is x10, and the step view follows.
+{
+  const at = (ppq: number, tick: number, durationTicks: number) =>
+    midiFileToRoll(parseMidi(encodeMidi({
+      ppq,
+      bpm: 120,
+      tracks: [{ name: 'x', notes: [{ tick, note: 60, velocity: 100, durationTicks, channel: 0 }] }],
+    })), 's').notes[0];
+
+  const half = at(480, 605, 61);
+  assert.deepEqual([half.tick, half.ticks], [1210, 122], '480 PPQ doubles into 960');
+  assert.equal(half.step, 1210 / 240);
+  const coarse = at(96, 25, 7);
+  assert.deepEqual([coarse.tick, coarse.ticks], [250, 70], '96 PPQ scales x10');
+  assert.equal(coarse.step, 250 / 240, 'and lands between 16ths rather than on one');
+  // A zero-length note is still a note: the codec gives it the file's shortest
+  // tick, which scales to ten of the model's at 96 PPQ.
+  assert.equal(at(96, 0, 0).ticks, 10);
+  // A 480 PPQ export of a 480-grid roll is unchanged from what it always was.
+  const whole = at(480, 960, 480);
+  assert.deepEqual([whole.tick, whole.ticks, whole.step, whole.length], [1920, 960, 8, 4]);
+}
+
+// A looping lane's repeats are re-ticked from where the unroll put them, which
+// is exact because a lane cycle is a whole number of steps — an off-grid note in
+// a looping lane keeps its offset in every pass.
+{
+  const swung: PianoNote = withTicks({ id: 'sw', note: 48, velocity: 100, tick: 605, ticks: 60, lane: 1 } as PianoNote);
+  const roll = {
+    notes: [swung],
+    lanes: [LANES[0], { id: 1, name: 'B', cycleSteps: 8 }],
+    totalSteps: 32,
+    bpm: 120,
+    meterMap: [MAP[0]],
+    pickupSteps: 0,
+    bends: [],
+  };
+  const out = rollToMidiFile(roll, PPQ).tracks.find((t) => t.name === 'Lane B')?.notes ?? [];
+  // 8 steps = 1920 ticks a pass, and the 5-tick offset off the grid rides along.
+  assert.deepEqual(out.map((n) => n.tick), [605, 2525, 4445, 6365]);
+  assert.deepEqual([...new Set(out.map((n) => n.durationTicks))], [60]);
+  // The SHIPPED export (PianoRoll's .mid button) takes the default ppq, 480,
+  // where an odd model tick has no exact home: it rounds by at most half a file
+  // tick, which is one model tick. Nothing quantises to the grid.
+  const atDefault = (rollToMidiFile(roll).tracks.find((t) => t.name === 'Lane B')?.notes[0].tick ?? Number.NaN) * (PPQ / ROLL_PPQ);
+  assert.ok(Math.abs(atDefault - 605) <= 1, `default ppq put tick 605 at ${atDefault}`);
+}
+
+// A roll at a fractional tempo (a take imported at a detected 97.3) goes out
+// as a .mid and comes back through the roll's IMPORT at 97.3, every note at
+// the second it played at. parseMidi used to round the file's tempo to 97 and
+// importNotes rounded again, so the file came back 0.3 % slow; a whole BPM
+// still reads back whole, so a file an older build wrote opens as it did.
+{
+  const played: PianoNote[] = migrateNotes([
+    { id: 'a', note: 60, step: 0, length: 1, velocity: 100, tick: 0, ticks: 170 },
+    { id: 'b', note: 62, step: 0, length: 1, velocity: 90, tick: 38, ticks: 119 },
+    { id: 'c', note: 64, step: 0, length: 1, velocity: 80, tick: 96_037, ticks: 480 },
+  ]);
+  const roll = usePianoRollStore.getState();
+  roll.importNotes(played, 97.3);
+  const s = usePianoRollStore.getState();
+  assert.equal(s.bpm, 97.3, 'the roll keeps the tempo it was handed');
+  const bytes = encodeMidi(rollToMidiFile({ ...s, totalSteps: s.totalSteps }));
+  const parsed = parseMidi(bytes);
+  // FF 51 holds 616650 us and reads back at exactly that; the roll's tempo text brings 97.3 back.
+  assert.equal(parsed.bpm, 60_000_000 / 616650, 'the FF 51 reads at its exact microseconds');
+  assert.equal(parsed.dawTempoMap, '0:97.3', 'a tempo FF 51 cannot hold rides in the tempo text');
+  const back = midiFileToRoll(parsed, 'rt');
+  assert.equal(back.bpm, 97.3, 'the file opens in the roll at 97.3');
+  usePianoRollStore.getState().importNotes(back.notes, back.bpm, back.meter, back.bends);
+  const again = usePianoRollStore.getState();
+  assert.equal(again.bpm, 97.3, 'IMPORT puts the roll back at 97.3');
+  const secs = (tick: number, bpm: number) => (tick / PPQ) * (60 / bpm);
+  const sorted = [...again.notes].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0));
+  sorted.forEach((n, i) => {
+    assert.equal(n.tick, played[i].tick, `note ${i} keeps its tick`);
+    assert.equal(n.ticks, played[i].ticks, `note ${i} keeps its length`);
+    near(secs(n.tick ?? 0, again.bpm), secs(played[i].tick ?? 0, 97.3), 1e-9, `note ${i} plays at its second`);
+  });
+  // A file an older build's roll wrote (whole BPMs, no tempo text) reads at its FF 51's exact microseconds;
+  // the tempos a whole number of microseconds holds read back whole.
+  for (const bpm of [60, 97, 120, 133, 240]) {
+    const micros = Math.round(60_000_000 / bpm);
+    assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, 60_000_000 / micros, `${bpm} BPM reads back at ${micros} us`);
+  }
+  for (const bpm of [60, 120, 240]) assert.equal(parseMidi(encodeMidi({ ppq: 480, bpm, tracks: [] })).bpm, bpm, `${bpm} BPM reads back whole`);
+}
+
+// Export count: one note in lane A and two in lane B is three notes exported, though lane A's track holds one.
+{
+  const two = rollToMidiFile({
+    notes: [
+      { id: 'x0', note: 60, step: 0, length: 2, velocity: 100 },
+      { id: 'x1', note: 40, step: 2, length: 2, velocity: 100, lane: 1 },
+      { id: 'x2', note: 41, step: 4, length: 2, velocity: 100, lane: 1 },
+    ],
+    lanes: [{ id: 0, name: 'A', cycleSteps: null }, { id: 1, name: 'B', cycleSteps: null }],
+    totalSteps: 16,
+    bpm: 120,
+    meterMap: [{ bar: 0, meter: { num: 4, den: 4, groups: [] } }],
+    pickupSteps: 0,
+    bends: [],
+  });
+  assert.equal(two.tracks[0].notes.length, 1);
+  assert.equal(midiFileNoteCount(two), 3, 'a two-lane export reports 3 notes');
 }
 
 console.log('rollMidi: ok');

@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
-import soundfile as sf  # type: ignore[import]
+import soundfile as sf
 
 from backend.modules.midi import drums
 from backend.modules.midi.drums import GM, transcribe_drums

@@ -678,8 +678,11 @@ def _lyria_provider_status() -> dict:
     """Lyria runs as an embedded sidecar with its own key handling, so
     "configured" here means the checkout is present and startable, not that a
     key exists: the app's own Settings modal accepts a key at runtime, and the
-    sidecar also passes GEMINI_API_KEY through when theDAW already holds one.
-    Mock mode needs no key at all, which is the default.
+    sidecar also hands the child the keys from the environment and the Lyria
+    card (plus the assistant's pool: its first Gemini key when nothing else has
+    one, all of it once the user shares it) -- one per provider for an older
+    checkout, an ordered list it fails over through for one with
+    server/keys.ts. Mock mode needs no key at all, which is the default.
     """
     try:
         from backend.modules.lyria.sidecar import is_mock, probe
@@ -689,18 +692,59 @@ def _lyria_provider_status() -> dict:
         missing = status.get("missing") or []
         install = status.get("install") or {}
         installing = install.get("status") in ("cloning", "installing")
-        ok = not issues
+        # A confirmed-listening sidecar (probe()'s identity-checked
+        # "listening", INT-001) is demonstrably usable right now regardless
+        # of what the static prerequisite checks say -- e.g. a key removed
+        # from disk after the currently-running process already picked one
+        # up. Ignoring `listening` here (INT-004) made "ready" purely a
+        # function of stale-at-read-time prerequisites.
+        listening = bool(status.get("listening"))
+        # process_alive = theDAW itself holds a live handle to the listening
+        # process, i.e. WE spawned it (sidecar.owns_process()). A confirmed
+        # listener that isn't process_alive was launched outside theDAW
+        # (INT-001's "one the user launched manually"): its cost mode is
+        # whatever ITS OWN environment says, which theDAW never set and
+        # cannot see -- claiming "mock" or "live" for it would be a guess
+        # dressed up as a fact, so say so instead (item 5).
+        process_alive = bool(status.get("process_alive"))
+        external = listening and not process_alive
+        ok = listening or not issues
         mock = is_mock()
         if ok:
-            summary = (
-                "Mock mode: generations are free and synthesized locally."
-                if mock
-                else "Live mode: each generation costs $0.08 (Pro) / $0.04 (Clip)."
-            )
-            if status.get("gemini_key"):
-                summary += f" Gemini key: {status.get('gemini_key_source')}."
-            elif mock:
-                summary += " Add a Gemini key before switching to live mode."
+            if external:
+                summary = (
+                    "Running, but not started by theDAW (an external process "
+                    "already holds the port): its cost mode is unknown. Press "
+                    "Restart with current keys in the Lyria tab to hand it "
+                    "theDAW's keys and cost mode."
+                )
+            else:
+                summary = (
+                    "Mock mode: generations are free and synthesized locally."
+                    if mock
+                    else "Live mode: each generation costs $0.08 (Pro) / $0.04 (Clip)."
+                )
+                # Either provider can generate on its own, and OpenRouter is
+                # the one that reliably can (Google's free tier grants zero
+                # Lyria requests per day), so both are reported and the
+                # warning only fires when BOTH are absent.
+                if status.get("gemini_key"):
+                    summary += f" Gemini keys: {status.get('gemini_keys') or 1}"
+                    summary += f" ({status.get('gemini_key_source')})."
+                if status.get("openrouter_key"):
+                    summary += f" OpenRouter keys: {status.get('openrouter_keys') or 1}"
+                    summary += f" ({status.get('openrouter_key_source')})."
+                if not status.get("gemini_key") and not status.get("openrouter_key"):
+                    if mock:
+                        summary += (
+                            " Add a Gemini or OpenRouter key before switching to "
+                            "live mode."
+                        )
+                    else:
+                        summary += (
+                            " GEMINI_API_KEY is not set: live mode cannot generate "
+                            "without a Gemini or OpenRouter key."
+                        )
         elif installing:
             summary = f"Installing: {install.get('message')}"
         elif install.get("status") == "error":
@@ -721,7 +765,18 @@ def _lyria_provider_status() -> dict:
                 "install": install,
                 "gemini_key": bool(status.get("gemini_key")),
                 "gemini_key_source": status.get("gemini_key_source"),
-                "mock": mock,
+                "openrouter_key": bool(status.get("openrouter_key")),
+                "openrouter_key_source": status.get("openrouter_key_source"),
+                # Counts only -- the card shows how many keys the child gets
+                # and where the first one comes from, never a value.
+                "gemini_keys": int(status.get("gemini_keys") or 0),
+                "openrouter_keys": int(status.get("openrouter_keys") or 0),
+                "provider_preference": status.get("provider_preference"),
+                # theDAW's own LYRIA_MOCK preference only describes a process
+                # WE spawned -- an external process's cost mode is unknown
+                # (item 5 / item 7), so don't report it as mock/live either.
+                "mock": None if external else mock,
+                "external": external,
                 "project_path": status.get("project_path"),
                 "repo": status.get("repo"),
                 "repo_url": status.get("repo_url"),
@@ -737,10 +792,18 @@ def _lyria_provider_status() -> dict:
                     "source": "api" if ok else "missing",
                     "recommended": ok,
                     "reason": (
-                        "mock mode (free)" if mock else "live — $0.08 per generation"
-                    )
-                    if ok
-                    else summary,
+                        (
+                            "external process (cost mode unknown)"
+                            if external
+                            else (
+                                "mock mode (free)"
+                                if mock
+                                else "live — $0.08 per generation"
+                            )
+                        )
+                        if ok
+                        else summary
+                    ),
                 }
             ],
         }
@@ -784,7 +847,8 @@ def _demucs_provider_status() -> dict:
                     "recommended": ok,
                     "reason": status.get("demucs_version")
                     or status.get("demucs_error"),
-                }
+                },
+                _larsnet_chip(status.get("larsnet") or {}),
             ],
             "details": status,
         }
@@ -792,13 +856,53 @@ def _demucs_provider_status() -> dict:
         return _unavailable_provider("demucs", "Demucs / Stems", str(e))
 
 
+def _larsnet_chip(larsnet: dict) -> dict:
+    """The Stems card's chip for the LARSNET drum-split weights (the probe's
+    ``larsnet`` report): green when every kit part's checkpoint is on disk,
+    blue while they are still in their zip, red naming the missing parts."""
+    state = larsnet.get("state") or "missing"
+    missing = list(larsnet.get("missing") or [])
+    if state == "present":
+        source = "local"
+        reason = "Every kit part's weights are on disk; 12-stem runs split the drums."
+    elif state == "packed":
+        source = "cached"
+        reason = (
+            "The weights are in pretrained_larsnet_models.zip; the first 12-stem "
+            "run unpacks them."
+        )
+    else:
+        source = "missing"
+        reason = (
+            f"Missing weights: {', '.join(missing) or 'all'}. 12-stem runs keep "
+            "the undivided drums stem."
+        )
+    return {
+        "id": "larsnet-weights",
+        "label": "LARSNET drum weights",
+        "source": source,
+        "path": larsnet.get("models_dir"),
+        "recommended": False,
+        "reason": reason,
+    }
+
+
 def _midi_provider_status() -> dict:
     try:
-        from backend.modules.midi.engine import engine_capabilities
+        from backend.modules.midi.engine import (
+            engine_capabilities,
+            engine_unavailable_reasons,
+        )
 
         caps = engine_capabilities()
+        reasons = engine_unavailable_reasons()
         engines = [name for name, ok in caps.items() if ok]
-        ready = bool(engines)
+        # The drum engine needs nothing and is always there; the card is ready
+        # when a pitched engine is, the one a full track or a pitched stem
+        # converts with (the /api/midi capability report's ``ok``).
+        ready = bool(
+            caps.get("basic_pitch") or caps.get("piano_transcription_inference")
+        )
         return {
             "id": "midi",
             "label": "MIDI Engines",
@@ -807,7 +911,8 @@ def _midi_provider_status() -> dict:
             # that calls /api/midi/install for the user.
             "summary": ", ".join(engines)
             if ready
-            else "No MIDI engine installed yet. Install one to convert audio to MIDI.",
+            else "No pitched MIDI engine installed yet; only drum stems convert. "
+            "Install one to convert audio to MIDI.",
             "active": ready,
             "models": [
                 {
@@ -815,6 +920,7 @@ def _midi_provider_status() -> dict:
                     "label": name.replace("_", " ").title(),
                     "source": "local" if ok else "missing",
                     "recommended": name == "basic_pitch" and ok,
+                    "reason": None if ok else reasons.get(name),
                 }
                 for name, ok in caps.items()
             ],

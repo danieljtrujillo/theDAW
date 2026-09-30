@@ -184,7 +184,13 @@ def _tracked_backend_sources() -> list[str]:
         text=True,
         check=True,
     ).stdout.splitlines()
-    return [rel for rel in tracked if rel.endswith(".py")]
+    # backend/deprecated/ is an archive of retired code that nothing imports; it
+    # is kept as it was, not maintained.
+    return [
+        rel
+        for rel in tracked
+        if rel.endswith(".py") and not rel.startswith("backend/deprecated/")
+    ]
 
 
 def test_every_backend_spawn_names_its_environment() -> None:
@@ -327,11 +333,19 @@ def _ts_function(source: str, name: str) -> tuple[int, int]:
     return start, start + len(_bracketed(source, start, "{", "}"))
 
 
+#: The one spawn that cannot pass ``buildBaseEnv()`` straight through: the LAN
+#: HTTPS listener needs three more names (main/lanHttps.ts). It is still built
+#: FROM buildBaseEnv(), and lanListenerEnv drops the token a second time --
+#: asserted separately below, and behaviourally in main/lanHttps.test.ts.
+LAN_LISTENER_ENV = "env: lanListenerEnv(buildBaseEnv(), plan)"
+
+
 def test_the_desktop_shell_hands_the_token_only_to_the_backend() -> None:
-    """The main process starts uv sync, an import probe and taskkill as well as
-    the backend. uv sync runs package build scripts, so only spawnBackend uses
-    buildBackendEnv, and every other spawn gets buildBaseEnv, which drops an
-    inherited THEDAW_LAUNCH_TOKEN whatever its case."""
+    """The main process starts uv sync, an import probe, taskkill and the LAN
+    HTTPS listener as well as the backend. uv sync runs package build scripts,
+    so only spawnBackend uses buildBackendEnv, and every other spawn gets
+    buildBaseEnv, which drops an inherited THEDAW_LAUNCH_TOKEN whatever its
+    case."""
     source = ELECTRON_MAIN.read_text(encoding="utf-8")
     backend = _ts_function(source, "spawnBackend")
     with_token = _ts_function(source, "buildBackendEnv")
@@ -364,7 +378,66 @@ def test_the_desktop_shell_hands_the_token_only_to_the_backend() -> None:
         if backend[0] <= m.start() < backend[1]:
             assert re.search(r"\benv\b", args), where
         else:
-            assert "env: buildBaseEnv()" in args, where
+            assert "env: buildBaseEnv()" in args or LAN_LISTENER_ENV in args, where
+
+
+def test_the_lan_listeners_environment_drops_the_token_a_second_time() -> None:
+    """main/lanHttps.ts adds three names to buildBaseEnv()'s result, so it is
+    the one place a future caller could hand the listener a base that still
+    carried the token. It removes it itself, under every spelling, exactly as
+    buildBaseEnv does -- vite runs the frontend's own devDependencies, and
+    none of that may send X-TheDAW-Launch-Token."""
+    helper = (REPO_ROOT / "electron-ui" / "main" / "lanHttps.ts").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"\.toUpperCase\(\)\s*===\s*LAUNCH_TOKEN_ENV", helper)
+    assert "const LAUNCH_TOKEN_ENV = 'THEDAW_LAUNCH_TOKEN'" in helper
+    assert "delete env[" in helper
+    # And it never writes one back in.
+    assert not re.search(r"env\[\s*LAUNCH_TOKEN_ENV\s*\]\s*=", helper)
+    assert "THEDAW_LAUNCH_TOKEN" not in helper.replace(
+        "const LAUNCH_TOKEN_ENV = 'THEDAW_LAUNCH_TOKEN'", ""
+    ), "the name belongs only where it is declared, to be removed"
+
+
+def test_the_lan_https_listener_starts_without_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The web launcher's second Vite listener (backend/_devstack.py). The
+    launchers are exempt from the static scan above because they start the
+    backend, which DOES need the token -- so this child is checked by running
+    the start and reading what it was handed."""
+    from backend import _devstack
+    from backend.lib import lan_cert, lan_https
+
+    cert = lan_cert.CertPaths(
+        cert=tmp_path / "lan-cert.pem", key=tmp_path / "lan-key.pem"
+    )
+    plan = lan_https.plan_lan_https(
+        {},
+        {},
+        ["192.168.1.34"],
+        cert,
+        vite="C:/theDAW/frontend/node_modules/.bin/vite.cmd",
+    )
+    monkeypatch.setattr(_devstack.lan_https, "resolve_plan", lambda: plan)
+    # Pass-through, so a launch that happens to have it set is not what makes
+    # the assertion below pass.
+    monkeypatch.delenv("ENABLE_HMR", raising=False)
+    # The real describe_occupant binds the port to find out who holds it.
+    monkeypatch.setattr(_devstack.ports, "describe_occupant", lambda port: None)
+    monkeypatch.setattr(_devstack, "_emit", lambda tag, line: None)
+    spawns = _Spawns().install(monkeypatch, _devstack)
+
+    assert _devstack._start_lan_listener([], str(tmp_path)) is True
+    [env] = spawns.of("Popen")
+    _assert_clean([env])
+    assert env is not None
+    assert env[lan_https.ENV_CERT] == str(cert.cert)
+    assert env[lan_https.ENV_KEY] == str(cert.key)
+    # ENABLE_HMR is passed through from the base rather than forced on here,
+    # so the listener starts no watcher the launcher did not ask for.
+    assert "ENABLE_HMR" not in env
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +570,8 @@ def test_the_magenta_engine_starts_without_the_token(
     monkeypatch.setattr(sidecar, "_ENGINE_SCRIPT", script)
     monkeypatch.setattr(sidecar, "_NATIVE_PYTHON", str(python))
     monkeypatch.setattr(sidecar, "_LOG_DIR", tmp_path / "logs")
+    # The native spawn records the engine pid; it belongs in tmp_path.
+    monkeypatch.setattr(sidecar, "_PID_FILE", tmp_path / "magenta_engine.pid")
     monkeypatch.setattr(sidecar, "_wsl_distro", lambda: "Ubuntu")
     monkeypatch.setattr(sidecar, "_resolve_start_model", lambda: ("mrt2_small", None))
     spawns = _Spawns().install(monkeypatch, sidecar)
@@ -569,7 +644,12 @@ def test_the_vj_build_and_server_start_without_the_token(
 ) -> None:
     from backend.modules.vj import sidecar
 
-    (tmp_path / "node_modules").mkdir()
+    # _vite_bin_js spawns VJ-9000's vite CLI directly (node
+    # node_modules/vite/bin/vite.js) instead of going through npm scripts,
+    # so the fixture must stub that exact file, not just node_modules/.
+    vite_js = tmp_path / "node_modules" / "vite" / "bin" / "vite.js"
+    vite_js.parent.mkdir(parents=True)
+    vite_js.write_text("", encoding="utf-8")
     monkeypatch.setenv("theDAW_VJ_PROJECT", str(tmp_path))
     monkeypatch.delenv("theDAW_VJ_DEV", raising=False)
     monkeypatch.setattr(sidecar, "_proc", None)

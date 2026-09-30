@@ -4,14 +4,14 @@ VST Foundry can generate textures with AI and drop them straight into your proje
 
 Generation is exposed through a **Gen** button in the Texture Library panel. Clicking it opens the generation modal, where you pick a provider, write a prompt, and generate. Finished images are added to the Texture Library automatically, ready to apply to elements like any other uploaded asset.
 
-You can generate locally with **Stable Diffusion** (free, runs on your own GPU) or through a cloud provider (**DALL-E** or **Gemini / Nano Banana**).
+You can generate locally with **Stable Diffusion** or through **DALL-E**, **Gemini**, or **OpenRouter**. OpenRouter offers image models through your OpenRouter account; available models and their limits come from the provider.
 
 ---
 
 ## Quick Start
 
 1. Open the **Texture Library** panel and click the **Gen** button in its header.
-2. Select a provider tab: **Stable Diffusion**, **DALL-E**, or **Gemini**.
+2. Select a provider tab: **Stable Diffusion**, **DALL-E**, **Gemini**, or **OpenRouter**.
 3. Enter a prompt describing the texture you want.
 4. Click **Generate**.
 5. The finished image(s) appear in the **Texture Library** automatically.
@@ -26,7 +26,8 @@ That's the whole loop. Everything below covers provider setup, options, and wher
 |----------|------|------|---------|-------------|----------|
 | **Stable Diffusion** | Locally (your GPU) | Free | None | Batch via queue | Full control, custom models, LoRAs, offline use |
 | **DALL-E** | OpenAI cloud | Paid (OpenAI) | OpenAI key | 1–4 | Fast, high-quality results with zero setup |
-| **Gemini / Nano Banana** | Google cloud | Paid (Google) | Gemini key | 1–4 | Photorealistic textures, natural-language edits, zero setup |
+| **Gemini** | Google cloud | Paid (Google) | Gemini key | 1–4 | Existing Imagen generation adapter |
+| **OpenRouter** | OpenRouter cloud | Paid (OpenRouter) | OpenRouter key | 1–4 | Catalog-selected image models through one account |
 
 ---
 
@@ -68,11 +69,11 @@ DALL-E runs in OpenAI's cloud, so there is nothing to install. It supports **DAL
 
 ---
 
-## Gemini / Nano Banana (Google)
+## Gemini (Google)
 
 The Google provider runs in Google's cloud and requires no local install.
 
-> **Deprecation notice:** the legacy **Gemini Imagen** models (`imagen-3.0-generate-002` and other Imagen models) are **deprecated as of 2026-08-17**. Migrate to the **Gemini / Nano Banana** provider, which supersedes Imagen for texture generation and also unlocks natural-language image editing (see the **editTexture** tool in *Advanced Generation & Editing* below).
+The Generate modal currently uses the existing Imagen `:predict` adapter, with `imagen-3.0-generate-002` as its default. It forwards the image count as `sampleCount`; it does not forward the shared size field. This change does not migrate that adapter. Use the OpenRouter tab to choose from its image model catalog, including Gemini image models when available.
 
 **Requirements:** a Gemini API key, configured in the AI Assistant settings (see [Cloud Providers — API Keys](#cloud-providers--api-keys)).
 
@@ -81,6 +82,28 @@ The Google provider runs in Google's cloud and requires no local install.
 | Option | Values | Notes |
 |--------|--------|-------|
 | **Count** | 1–4 images | Number of variations per generation |
+
+---
+
+## OpenRouter
+
+The **OpenRouter** tab loads its model picker through `/api/textures/openrouter-image-models`. The catalog is fetched without credentials and prefers a Gemini image model when one is available; another catalog model can be selected manually.
+
+Generation calls OpenRouter's dedicated `/api/v1/images` endpoint with the selected model, prompt, count (`n`), and size (`size`). The app accepts counts from **1–4**. Model support for counts and dimensions varies; upstream errors are shown instead of silently changing the request. If a successful response contains fewer or more images than requested, generation fails with both counts rather than saving an incomplete result.
+
+An HTTP **404/405** stops generation with an actionable error. Chat-completions fallback is disabled because it cannot guarantee the requested count and size. No second generation request is made. Ordinary provider errors are surfaced with the submitted key redacted, and requests time out after five minutes.
+
+The model catalog is cancelled when leaving the tab or closing the modal; late responses cannot replace a newer selection. Entering another cloud tab selects that provider's own key override.
+
+Verified against the official [image generation API](https://openrouter.ai/docs/api/api-reference/images/generate-an-image) and [image model discovery guide](https://openrouter.ai/docs/guides/overview/multimodal/image-generation) on 2026-09-13. OpenRouter defines `n` as an upper bound; the app intentionally requires the requested count before saving. A rejected partial response may still have incurred provider charges.
+
+Implementation: `server/features/openrouter/` owns generation, catalog routes, extraction dispatch, schema conversion, and expanded extractor prompts. `src/features/openrouter-textures/` owns the model picker, catalog lifecycle, provider key isolation, request extensions, and synthetic tests. Shared files contain explicit integration hooks.
+
+Focused offline regression command, from `VST-Foundry-UI/VST-UI-FOUNDRY`:
+
+```sh
+npx --no-install vitest run src/features/openrouter-textures --maxWorkers=1
+```
 
 ---
 
@@ -200,25 +223,25 @@ Provide a **reference image** that guides the structure of the generated texture
 
 ## Cloud Providers — API Keys
 
-DALL-E and Gemini use the **same API keys as the AI Design Assistant**. There is no separate key entry for texture generation.
+Each cloud tab has an optional key override. Overrides stay with their provider while switching tabs and are cleared when the modal closes.
 
-- Configure your **OpenAI** and **Gemini** keys in the **AI Assistant settings panel** — open it from the floating assistant orb.
-- Keys are stored **per-session** and are **never written to disk**.
+- **DALL-E:** override, then the server's `OPENAI_API_KEY`.
+- **Gemini:** override, then the server's `GEMINI_API_KEY`.
+- **OpenRouter:** override, then the assistant's saved `openrouter` key, then the server's `OPENROUTER_API_KEY`.
 
-Because keys live only for the session, you re-enter them when you start a fresh session. This keeps your credentials out of any saved file or project export.
+The saved OpenRouter key is read from browser local storage when constructing each request, so updates and removals take effect without reopening the modal. Blocked or malformed storage falls back to the server key. Assistant-saved keys can persist across browser sessions; the generation modal does not write key overrides to storage.
 
 ---
 
 ## Where Generated Textures Are Saved
 
-Every generated image is written to two places:
+The Generate modal writes each returned image into the Texture Library:
 
 | Stage | Location | Served At |
 |-------|----------|-----------|
-| **Raw output** | `./data/generated/<uuid>.png` | — |
-| **Library copy** | `./data/textures/<uuid>.png` | `/textures/<uuid>.png` |
+| **Library output** | `./data/textures/<uuid>.png` | `/textures/<uuid>.png` |
 
-When generation finishes, the raw output is auto-copied into the textures folder, where it becomes part of the Texture Library and is served to the app at `/textures/<uuid>.png`.
+The existing saver decodes returned base64 bytes and writes them under a `.png` filename; it does not re-encode image formats. The new provider uses that same save path.
 
 Both `./data/generated/` and `./data/textures/` are **gitignored**, so generated assets never get committed to version control by accident.
 
@@ -232,7 +255,9 @@ Both `./data/generated/` and `./data/textures/` are **gitignored**, so generated
 | SD won't connect | Wrong port | Confirm 7860 (A1111) or 8188 (ComfyUI), matching your install. |
 | Wrong / no Python found | Python Path manually set incorrectly | Clear the field and let the app auto-detect from the venv. |
 | No checkpoints listed | Model Library Directory not set (A1111) | Point it at your checkpoints folder (`Data/Models/Stable-diffusion` for SM). |
-| Cloud generation fails | Missing API key | Add the OpenAI / Gemini key in the AI Assistant settings (orb). |
+| Cloud generation fails | Missing API key | Enter the matching tab's override or configure its server environment key. OpenRouter also reads the assistant's saved key. |
+| OpenRouter images endpoint unavailable | HTTP 404/405 | Check the selected model and OpenRouter endpoint availability; the app stops before a fallback can drop count or size. |
+| OpenRouter returned a different image count | Provider generated a partial batch | Request a supported count or select a model that supports that batch size. |
 | Orphaned GPU process | — | Not an issue here: SD is auto-killed when the app server closes. |
 
 ---

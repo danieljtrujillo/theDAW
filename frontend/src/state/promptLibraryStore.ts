@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { uuid } from '../orb-kit/utils';
 
 export interface SavedPrompt {
@@ -43,7 +44,7 @@ export const usePromptLibraryStore = create<PromptLibraryState>()(
         );
       },
     }),
-    { name: 'thedaw-prompt-library' },
+    { name: 'thedaw-prompt-library', storage: persistStorage() },
   ),
 );
 

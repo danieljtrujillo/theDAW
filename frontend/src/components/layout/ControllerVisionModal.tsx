@@ -13,12 +13,19 @@
  * note each control sends. The modal says so and points to Learn/MIDI-map for
  * the actual binding.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { ScanLine, Upload, Search, X, Check, AlertTriangle, Smartphone, Sparkles } from 'lucide-react';
 import {
   detectFromUpload, detectByName, identifyWithAi, cvCapabilities,
   createPhoneSession, lanIp, pollPhoneSession, type CvResult, type CvIdentifyResult,
 } from '../../lib/controllerVision';
+// The phone-pairing QR used to be rendered by GETting a third-party QR-image
+// service with the pairing URL (which carries the session id — a bearer
+// credential for uploading into this session) folded into a query param.
+// That leaked the credential to that service's access logs and any
+// TLS-terminating proxy in between. Render locally instead; lazy so the QR
+// chunk only loads when this modal is open. Matches Shell.tsx's usage.
+const QRCode = lazy(() => import('react-qr-code'));
 import { useLearnedProfilesStore } from '../../state/learnedProfilesStore';
 import { detectProfile } from '../../state/controllerProfiles';
 
@@ -290,11 +297,11 @@ export const ControllerVisionModal: React.FC<Props> = ({ onClose, onBuilt }) => 
           {/* Phone-pairing QR */}
           {phoneUrl && (
             <div className="flex items-center gap-3 p-3 rounded border border-indigo-500/30 bg-indigo-500/8">
-              <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=8&data=${encodeURIComponent(phoneUrl)}`}
-                alt="Scan to upload from phone"
-                className="w-30 h-30 rounded bg-white p-1 shrink-0"
-              />
+              <div className="w-30 h-30 rounded bg-white p-1 shrink-0 flex items-center justify-center">
+                <Suspense fallback={<div className="w-28 h-28" aria-label="Phone-pairing QR code loading" />}>
+                  <QRCode value={phoneUrl} size={112} bgColor="#ffffff" fgColor="#000000" level="M" title="Scan to upload from phone" />
+                </Suspense>
+              </div>
               <div className="min-w-0 text-[10px] text-zinc-300 space-y-1">
                 <div className="font-bold text-indigo-200">Scan with your phone</div>
                 <div className="text-zinc-400">Open this QR on a phone on the same network, take a straight-on photo of your controller, and it’ll appear here to confirm.</div>

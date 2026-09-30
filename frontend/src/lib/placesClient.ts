@@ -10,7 +10,7 @@
 // control it sits beside. Actions the user asked for (reveal, projectsDir,
 // setProjectsDir) throw with the backend's own message.
 
-import { getJson, postJson, putJson } from './apiJson';
+import { getJson, pairingHeaderFor, postJson, putJson } from './apiJson';
 import { describeHttpError } from './httpError';
 
 export interface PlaceItem {
@@ -144,9 +144,12 @@ export function normalizeExts(exts: string[] | undefined): string[] {
   return out;
 }
 
-/** Fetch a servable recorded file as a File named after it. */
+/** Fetch a servable recorded file as a File named after it. /api/places/file
+ *  answers a paired device only with its pairing header, which getJson would
+ *  add and a bare fetch does not. */
 export async function fileFromPlace(item: PlaceItem): Promise<File> {
-  const res = await fetch(placesApi.fileUrl(item.path));
+  const url = placesApi.fileUrl(item.path);
+  const res = await fetch(url, { headers: pairingHeaderFor(url) });
   if (!res.ok) throw new Error(await describeHttpError(res));
   const blob = await res.blob();
   return new File([blob], item.name || basenameOf(item.path), { type: blob.type });

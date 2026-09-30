@@ -3,6 +3,8 @@
     POST   /{name}/download        start (or rejoin) a download for a catalog model
     GET    /downloads              every download job this session, with live progress
     POST   /downloads/clear        drop all finished (done|error) jobs
+    GET    /soundbanks             the sound bank catalog, licences, what is installed
+    POST   /soundbanks/{id}/download  start (or rejoin) a sound bank download
 
 This is a session-scoped JOB REGISTRY, not a fire-and-forget downloader. Each
 job tracks per-file byte progress and transfer speed so the Settings download
@@ -33,9 +35,11 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from huggingface_hub.utils import tqdm
 
+from backend.lib.cross_site import refuse_cross_site
+from backend.modules.modeldl import soundbanks
 from stable_audio_3.model_configs import (
     AutoencoderModelConfig,
     ModelConfig,
@@ -45,7 +49,11 @@ from stable_audio_3.model_configs import (
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+# Every route here starts a download of hundreds of megabytes onto this
+# machine's disk or reports on one, so a web page outside theDAW, which can
+# send a simple POST to 127.0.0.1 without a preflight, is refused; theDAW's own
+# UI, the desktop shell and a paired device on the LAN pass.
+router = APIRouter(dependencies=[Depends(refuse_cross_site)])
 
 # job_id -> job dict. Guarded by _LOCK for every read and write, because worker
 # threads mutate jobs while request handlers read them.
@@ -372,6 +380,107 @@ def _run_job(job_id: str) -> None:
             job["status"] = "done"
 
 
+def _new_soundbank_job(entry: soundbanks.SoundbankEntry) -> dict:
+    """A job for a sound bank download. Caller must hold _LOCK when inserting it.
+
+    Same shape as a model job, plus ``kind`` and the licence, so the download
+    dock can say what the user is fetching and under which terms.
+    """
+    return {
+        "id": uuid.uuid4().hex,
+        "name": entry.id,
+        "kind": "soundbank",
+        "repo_id": entry.homepage,
+        "label": entry.label,
+        "status": "queued",
+        "files": [],
+        "current_file": -1,
+        "dest_dir": "",
+        "error_detail": None,
+        "error_repo_id": None,
+        "licence": {"name": entry.licence.name, "url": entry.licence.url},
+        "installed": [],
+    }
+
+
+def _run_soundbank_job(job_id: str) -> None:
+    """Worker body for a sound bank: download, unpack, register.
+
+    Byte progress comes from ``soundbanks.install``'s callback; each file gets
+    its own entry, like a model job's config + checkpoint.
+    """
+    with _LOCK:
+        job = _REGISTRY.get(job_id)
+        if job is None:
+            return
+        job["status"] = "downloading"
+        entry = soundbanks.get_entry(job["name"])
+    started = [time.monotonic()]
+
+    def on_file(name: str) -> None:
+        with _LOCK:
+            job = _REGISTRY.get(job_id)
+            if job is None:
+                return
+            if job["files"]:
+                job["files"][-1]["done"] = True
+            job["files"].append(
+                {
+                    "filename": name,
+                    "bytes_done": 0,
+                    "bytes_total": 0,
+                    "speed": 0.0,
+                    "done": False,
+                }
+            )
+            job["current_file"] = len(job["files"]) - 1
+        started[0] = time.monotonic()
+
+    def progress(done: int, total: int) -> None:
+        elapsed = max(1e-6, time.monotonic() - started[0])
+        with _LOCK:
+            job = _REGISTRY.get(job_id)
+            if job is None or not job["files"]:
+                return
+            file_entry = job["files"][job["current_file"]]
+            file_entry["bytes_done"] = int(done)
+            file_entry["bytes_total"] = int(total)
+            file_entry["speed"] = done / elapsed
+
+    try:
+        if entry is None:
+            raise LookupError(f"Unknown sound bank {job['name']!r}")
+        banks = soundbanks.install(entry, on_file, progress)
+    except Exception as exc:
+        log.exception("modeldl: sound bank job %s failed", job_id)
+        with _LOCK:
+            job = _REGISTRY.get(job_id)
+            if job is not None:
+                job["status"] = "error"
+                job["error_detail"] = str(exc)
+        return
+
+    with _LOCK:
+        job = _REGISTRY.get(job_id)
+        if job is not None:
+            for file_entry in job["files"]:
+                file_entry["done"] = True
+                if file_entry["bytes_total"]:
+                    file_entry["bytes_done"] = file_entry["bytes_total"]
+            job["dest_dir"] = str(soundbanks.bank_dir(entry))
+            job["installed"] = [str(p) for p in banks]
+            job["status"] = "done"
+
+
+def _evict_terminal_jobs() -> None:
+    """Bound growth: drop the oldest finished jobs beyond the cap. Holds _LOCK."""
+    terminal = [
+        jid for jid, j in _REGISTRY.items() if j["status"] in _FINISHED_STATUSES
+    ]
+    for jid in terminal[: max(0, len(terminal) - _MAX_TERMINAL_JOBS)]:
+        del _REGISTRY[jid]
+
+
 def _public_job(job: dict) -> dict:
     """A job dict stripped of private keys, safe to serialize. Caller holds _LOCK.
 
@@ -410,12 +519,7 @@ def start_download(name: str) -> dict:
         job_id = job["id"]
         status = job["status"]
 
-        # Bound growth: evict the oldest terminal jobs beyond the cap.
-        terminal = [
-            jid for jid, j in _REGISTRY.items() if j["status"] in _FINISHED_STATUSES
-        ]
-        for jid in terminal[: max(0, len(terminal) - _MAX_TERMINAL_JOBS)]:
-            del _REGISTRY[jid]
+        _evict_terminal_jobs()
 
     _EXECUTOR.submit(_run_job, job_id)
     return {"job_id": job_id, "name": name, "status": status}
@@ -439,3 +543,66 @@ def clear_downloads() -> dict:
         for job_id in finished:
             del _REGISTRY[job_id]
     return {"cleared": len(finished)}
+
+
+@router.get("/soundbanks")
+def list_soundbanks() -> dict:
+    """Every catalog bank with its licence, whether it downloads or links out,
+    and the files an earlier download installed."""
+    with _LOCK:
+        live = {
+            j["name"]: j["id"]
+            for j in _REGISTRY.values()
+            if j.get("kind") == "soundbank" and j["status"] in _LIVE_STATUSES
+        }
+    banks = []
+    for entry in soundbanks.CATALOG:
+        item = soundbanks.public_entry(entry)
+        item["job_id"] = live.get(entry.id)
+        banks.append(item)
+    return {"banks": banks}
+
+
+@router.get("/soundbanks/{bank_id}/manifest")
+def soundbank_manifest(bank_id: str) -> dict:
+    """The installed bank's build manifest (its presets, levelling and the
+    ``playback_gain`` table the app applies), or 404 when none is installed."""
+    entry = soundbanks.get_entry(bank_id)
+    if entry is None:
+        raise HTTPException(404, f"Unknown sound bank {bank_id!r}")
+    manifest = soundbanks.installed_manifest(entry)
+    if manifest is None:
+        raise HTTPException(404, f"{entry.label} has no installed manifest")
+    return manifest
+
+
+@router.post("/soundbanks/{bank_id}/download")
+def start_soundbank_download(bank_id: str) -> dict:
+    entry = soundbanks.get_entry(bank_id)
+    if entry is None:
+        raise HTTPException(404, f"Unknown sound bank {bank_id!r}")
+    if entry.kind != "download":
+        raise HTTPException(
+            409,
+            f"{entry.label} is published as SFZ; open {entry.homepage} to download it.",
+        )
+    with _LOCK:
+        for existing in _REGISTRY.values():
+            if (
+                existing.get("kind") == "soundbank"
+                and existing["name"] == bank_id
+                and existing["status"] in _LIVE_STATUSES
+            ):
+                return {
+                    "job_id": existing["id"],
+                    "name": existing["name"],
+                    "status": existing["status"],
+                }
+        job = _new_soundbank_job(entry)
+        _REGISTRY[job["id"]] = job
+        job_id = job["id"]
+        status = job["status"]
+        _evict_terminal_jobs()
+
+    _EXECUTOR.submit(_run_soundbank_job, job_id)
+    return {"job_id": job_id, "name": bank_id, "status": status}

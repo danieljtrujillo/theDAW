@@ -55,7 +55,7 @@ def engrave_mark(mark: Any) -> None:
 def metronome_mark(bpm: float) -> Any:
     """A quarter-note ``MetronomeMark`` that prints ``bpm`` rounded to a whole
     number and sounds at ``bpm``."""
-    from music21 import tempo  # type: ignore[import]
+    from music21 import tempo
 
     mark = tempo.MetronomeMark(number=bpm)
     engrave_mark(mark)
@@ -65,7 +65,7 @@ def metronome_mark(bpm: float) -> Any:
 def engrave_tempo_marks(score: Any) -> Any:
     """Apply :func:`engrave_mark` to every metronome mark in ``score`` and
     return ``score``. Call it on a score just before it is written as MusicXML."""
-    from music21 import tempo  # type: ignore[import]
+    from music21 import tempo
 
     for mark in score.recurse().getElementsByClass(tempo.MetronomeMark):
         engrave_mark(mark)
@@ -139,7 +139,7 @@ def restore_sounding_tempi(score: Any, source_path: Path) -> int:
     if not table:
         return 0
 
-    from music21 import stream, tempo  # type: ignore[import]
+    from music21 import stream, tempo
 
     restored = 0
     for part in getattr(score, "parts", None) or []:

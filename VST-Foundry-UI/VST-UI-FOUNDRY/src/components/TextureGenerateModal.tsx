@@ -22,6 +22,8 @@ import {
   SDResources,
 } from './texture-gen/types';
 import { btnCls, STATUS_POLL_MS } from './texture-gen/constants';
+import { useOpenRouterTextures } from '../features/openrouter-textures/useOpenRouterTextures';
+import { useTextureProviderKeys } from '../features/openrouter-textures/useTextureProviderKeys';
 import { buildParams as buildGenParams } from './texture-gen/buildParams';
 import GenerateForm from './texture-gen/GenerateForm';
 import ResultsGrid from './texture-gen/ResultsGrid';
@@ -83,7 +85,8 @@ export default function TextureGenerateModal({
   const [count, setCount] = useState(1);
   const [quality, setQuality] = useState<'standard' | 'hd'>('standard');
   const [style, setStyle] = useState<'vivid' | 'natural'>('vivid');
-  const [apiKey, setApiKey] = useState('');
+  const { apiKey, setApiKey, resolveApiKey } = useTextureProviderKeys(isOpen, activeTab);
+  const openRouter = useOpenRouterTextures(isOpen, activeTab === 'openrouter');
 
   // ---- Generation state ----
   const [generating, setGenerating] = useState(false);
@@ -104,7 +107,8 @@ export default function TextureGenerateModal({
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-  const provider = activeTab === 'sd' ? sdType : activeTab === 'dalle' ? 'openai' : 'gemini';
+  const provider =
+    activeTab === 'sd' ? sdType : activeTab === 'dalle' ? 'openai' : activeTab;
   const isSdTab = activeTab === 'sd';
 
   const sdInstance = config
@@ -211,7 +215,6 @@ export default function TextureGenerateModal({
     setCount(1);
     setQuality('standard');
     setStyle('vivid');
-    setApiKey('');
   }, [isOpen]);
 
   // Fetch SD resources when the SD tab is active & configured
@@ -426,7 +429,8 @@ export default function TextureGenerateModal({
       activeTab,
       quality,
       style,
-      apiKey,
+      apiKey: resolveApiKey(),
+      orModel: openRouter.model,
     });
 
   const validateSd = (): boolean => {
@@ -524,6 +528,7 @@ export default function TextureGenerateModal({
           {tabBtn('sd', 'Stable Diffusion')}
           {tabBtn('dalle', 'DALL-E')}
           {tabBtn('gemini', 'Gemini')}
+          {tabBtn('openrouter', 'OpenRouter')}
         </div>
 
         {/* Body (scroll) */}
@@ -570,6 +575,7 @@ export default function TextureGenerateModal({
             setStyle={setStyle}
             apiKey={apiKey}
             setApiKey={setApiKey}
+            openRouter={openRouter}
             advancedOpen={advancedOpen}
             setAdvancedOpen={setAdvancedOpen}
             model={model}

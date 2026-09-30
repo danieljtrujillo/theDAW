@@ -6,7 +6,8 @@ import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { SunoModeFields } from './SunoModeFields';
 import { SunoJobList } from './SunoJobList';
 import { HoverTip, InfoTip } from '../components/ui/Tooltip';
-import { PANEL_MODEL_OPTIONS } from '../lib/cloudModels';
+import { panelModelDefaults, panelModelOptions } from '../lib/cloudModels';
+import { probeLyriaCheckedOut } from '../state/generateStore';
 
 /**
  * SunoGenPanel — the cloud (Suno) generation workspace ("Aurora Cloud Console").
@@ -81,8 +82,8 @@ const OUTPUT_TIP = {
 
 // Stable Audio models + the cloud providers, so the user can switch back (or
 // across to Lyria) from the same dropdown. Shared with LyriaPanel, which has
-// the identical need — see PANEL_MODEL_OPTIONS for why magenta-* is excluded.
-const MODEL_OPTIONS = PANEL_MODEL_OPTIONS;
+// the identical need — see panelModelOptions for why magenta-* is excluded,
+// and INT-005 for why lyria drops out while its sidecar isn't checked out.
 
 /** Slim "key required" notice. The actual key INPUT lives in Settings → Models,
  *  on the Suno card (ProviderCards' SunoKeyInput); this just points the user
@@ -174,6 +175,9 @@ export const SunoGenPanel: React.FC = () => {
   const patchParams = useGenerateParamsStore((s) => s.patch);
 
   const [err, setErr] = useState<string | null>(null);
+  // INT-005: fails open (true) until the probe answers — see LyriaPanel's
+  // identical probe, which this mirrors.
+  const [lyriaCheckedOut, setLyriaCheckedOut] = useState(true);
 
   // On mount: confirm key state, hydrate jobs (resumes polling), pull usage.
   useEffect(() => {
@@ -181,6 +185,12 @@ export const SunoGenPanel: React.FC = () => {
     void loadJobs();
     void loadUsage();
   }, [checkStatus, loadJobs, loadUsage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void probeLyriaCheckedOut().then((ok) => { if (!cancelled) setLyriaCheckedOut(ok); });
+    return () => { cancelled = true; };
+  }, []);
 
   const onGenerate = async () => {
     setErr(null);
@@ -233,13 +243,22 @@ export const SunoGenPanel: React.FC = () => {
           <UsageBadge />
           <HoverTip text="Switch the active model. Pick a Stable Audio model to return to the local generator; keep Suno (Cloud) for cloud generation.">
             <div className="relative">
+              <label htmlFor="suno-model" className="sr-only">
+                Active model
+              </label>
               <select
+                id="suno-model"
                 name="suno-model"
                 className="appearance-none rounded-full border border-purple-400/30 bg-purple-500/10 hover:bg-purple-500/15 pl-3 pr-7 py-1 text-[10px] font-bold uppercase tracking-wider text-purple-100 outline-none transition-colors cursor-pointer"
                 value={model}
-                onChange={(e) => patchParams({ model: e.target.value })}
+                onChange={(e) => {
+                  const m = e.target.value;
+                  // FE-006: mirror the real MAKE dropdown's steps/cfg preset
+                  // switch — see LyriaPanel's identical fix.
+                  patchParams({ model: m, ...panelModelDefaults(m) });
+                }}
               >
-                {MODEL_OPTIONS.map((m) => (
+                {panelModelOptions(model, lyriaCheckedOut).map((m) => (
                   <option key={m.value} value={m.value} className="bg-[#0a080f] text-zinc-200 normal-case tracking-normal">
                     {m.label}
                   </option>

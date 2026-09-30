@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soundfile as sf
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 if TYPE_CHECKING:
@@ -85,12 +86,13 @@ def save_audio(
 
     Fixed-point subtypes get the -1..1 clip (int PCM wraps rather than
     saturates on overflow); float subtypes do not, because a peak above 0 dBFS
-    surviving is the whole point of asking for float.
+    surviving is the whole point of asking for float. A DOUBLE subtype keeps a
+    float64 array at float64; every other subtype is written from float32.
     """
-    data = _frames_by_channels(audio)
     fmt = _format_of(dst, format)
     if subtype is None:
         subtype = save_subtype(fmt, "16")
+    data = _frames_by_channels(audio, keep_double=subtype == "DOUBLE")
     if subtype not in ("FLOAT", "DOUBLE"):
         data = np.clip(data, -1.0, 1.0)
     target = str(dst) if isinstance(dst, (str, Path)) else dst
@@ -137,10 +139,13 @@ def load_audio(
 # ---------------------------------------------------------------- internals
 
 
-def _frames_by_channels(audio: Any) -> np.ndarray:
+def _frames_by_channels(audio: Any, *, keep_double: bool = False) -> np.ndarray:
     if hasattr(audio, "detach"):  # torch tensor, on any device
-        audio = audio.detach().cpu().float().numpy()
-    arr = np.asarray(audio, dtype=np.float32)
+        audio = audio.detach().cpu()
+        wide_tensor = keep_double and str(audio.dtype) == "torch.float64"
+        audio = (audio if wide_tensor else audio.float()).numpy()
+    wide = keep_double and np.asarray(audio).dtype == np.float64
+    arr = np.asarray(audio, dtype=np.float64 if wide else np.float32)
     if arr.ndim == 1:
         arr = arr[None, :]
     if arr.ndim != 2:
@@ -163,10 +168,10 @@ def _sf_hint(fmt: str | None) -> str | None:
 
 
 def _read_via_ffmpeg(src: Any, cause: Exception) -> tuple[np.ndarray, int]:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = ffmpeg_tools.find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError(
-            f"libsndfile could not open the audio ({cause}) and ffmpeg is not on PATH"
+            f"libsndfile could not open the audio ({cause}) and no ffmpeg was found"
         ) from cause
     tmp = Path(tempfile.mkdtemp(prefix="thedaw-audio-"))
     try:

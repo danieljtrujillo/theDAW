@@ -15,17 +15,20 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
 
 
 def has_ffprobe() -> bool:
-    return shutil.which("ffprobe") is not None
+    """Whether an ffprobe exists: the one from the build
+    ``backend.lib.ffmpeg_tools`` chose, else the first on PATH."""
+    return ffmpeg_tools.find_ffprobe() is not None
 
 
 def probe_file(path: Path, timeout_sec: float = 20.0) -> dict[str, Any]:
@@ -50,7 +53,8 @@ def probe_file(path: Path, timeout_sec: float = 20.0) -> dict[str, Any]:
         }
       }
     """
-    if not has_ffprobe():
+    ffprobe = ffmpeg_tools.find_ffprobe()
+    if ffprobe is None:
         return {}
     p = Path(path)
     if not p.is_file():
@@ -58,7 +62,7 @@ def probe_file(path: Path, timeout_sec: float = 20.0) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe,
                 "-v",
                 "error",
                 "-of",

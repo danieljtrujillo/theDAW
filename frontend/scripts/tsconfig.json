@@ -1,0 +1,20 @@
+{
+  // The app's tsconfig only includes `src`, so everything under `scripts/` was
+  // invisible to `npm run lint` and could rot against the modules it imports
+  // without anyone noticing. This typechecks it under the SAME compiler options
+  // (relative paths in the extended config resolve against `frontend/`, so its
+  // `paths` aliases still point at the app).
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // A build-info file of its own; sharing the app's would make the two
+    // projects invalidate each other on every run.
+    "tsBuildInfoFile": "../node_modules/.cache/tsbuildinfo.scripts"
+  },
+  // `../src/*.d.ts` carries the app's ambient declarations (`vite/client`, so
+  // `import.meta.env` and `?url` imports resolve, plus the untyped-module
+  // shims). The app config gets them free from `include: ["src"]`; without
+  // them here the app modules the harness imports fail to compile for reasons
+  // that have nothing to do with the harness.
+  "include": ["ab-bounce", "../src/*.d.ts"]
+}

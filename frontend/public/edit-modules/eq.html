@@ -897,7 +897,9 @@ btnProcess.addEventListener('click',async()=>{
     formData.append('effect','parametric_eq');
     const p = {
       lowFreq: BANDS[0].freq, lowGain: BANDS[0].gain,
+      lowMidFreq: BANDS[1].freq, lowMidGain: BANDS[1].gain, lowMidQ: BANDS[1].q,
       midFreq: BANDS[2].freq, midGain: BANDS[2].gain, midQ: BANDS[2].q,
+      highMidFreq: BANDS[3].freq, highMidGain: BANDS[3].gain, highMidQ: BANDS[3].q,
       highFreq: BANDS[4].freq, highGain: BANDS[4].gain,
       outputGain: outputGain
     };
@@ -954,7 +956,7 @@ draw();
 // Every element play/pause is reported to the parent stage so its toggle stays
 // truthful even when playback starts from the in-module LOAD/TONE/PROCESS buttons.
 function postTransportState(playing){
-  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*');
+  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, window.location.origin);
 }
 const reportPreviewState=()=>postTransportState(!audioIn.paused||!audioOut.paused);
 ['play','pause'].forEach(evt=>{
@@ -969,6 +971,7 @@ audioOut.addEventListener('play',()=>{lastActive='out';});
 
 // ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
+  if (e.source !== window.parent) return;
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });

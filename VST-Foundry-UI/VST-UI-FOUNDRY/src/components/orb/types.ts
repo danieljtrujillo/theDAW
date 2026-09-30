@@ -34,7 +34,17 @@ export interface PendingControl {
   toolName: string;
   input: any;
   suggestions?: any[];
+  /** The CLI's own `decision_reason` (AskUserQuestion), when it sends one. */
   reason?: string;
+  /** Set only for a can_use_tool prompt the server's OWN policy bubbled
+   *  (server/permissions.ts `decide()`, forwarded as the frame's `policy`
+   *  field) — e.g. "Modifies the assistant's own surface: server/routes.ts".
+   *  Distinct from `reason` above, which is the CLI's own text. */
+  policyReason?: string;
+  /** Non-null only when this request would edit the assistant's own tool
+   *  surface (server/permissions.ts SELF_SURFACE_GLOBS) — the repo-relative
+   *  path it would write to. */
+  selfModifyPath?: string | null;
 }
 
 // A canvas element the user attached to a message as context (context menu

@@ -184,13 +184,13 @@ cd frontend && npm run dev
 
 The application window has five regions:
 
-- **Full-width header** (top): the theDAW logo, the center workspace tabs, and four actions on the right — mobile access QR/link, the **?** help search, **IMPORT**, and the app menu (§37).
+- **Full-width header** (top): the theDAW logo, the center workspace tabs, and five actions on the right: **Fullscreen**, mobile access QR/link, the **?** help search, **IMPORT**, and the app menu (§37).
 - **Center workspace**: the center tab bar at the top and the active workspace below it, including that tab's own controls and run action.
 - **Library rail** (right, collapsible): browse and route library material without leaving the active workspace.
 - **Global bottom dock**: the bottom multi-tab panel and the processing log, side by side.
 - **Player footer** (bottom): a fixed transport bar.
 
-**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, the center tab bar, and the four right-hand actions above, in that order. Settings opens only from the app menu — the header gear was retired; Docs opens from inside the **?** help popover; the global search moved to the player footer; and the AI Assistant orb is a free-floating draggable element over the app rather than a header button. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
+**Full-width header:** a fixed bar spanning the entire window width. It holds the theDAW logo dot, the center tab bar, and the five right-hand actions above, in that order. **Fullscreen** is the first of them, immediately left of mobile access: it toggles browser fullscreen on `document.documentElement`, and its icon flips back when Esc leaves fullscreen. Settings opens only from the app menu — the header gear was retired; Docs opens from inside the **?** help popover; the global search moved to the player footer; and the AI Assistant orb is a free-floating draggable element over the app rather than a header button. There is no left panel and no left-panel toggle; the only collapsible side panel is the Library rail on the right.
 
 **The ? help search:** the **?** button opens a search over the feature registry — the same entries the Feature Tour and the pinned Feature Notes read, so the three can never drift apart. Type what you are after and each hit says what the thing is, how to use it, and which tab it lives in; **LOCATE** hands the id to the solo spotlight, which switches workspace, opens the panel the control lives in, and rings the real control on the real screen. The field takes focus on open, Down steps into the results, Up comes back out of the top of them, Enter locates the best hit, and Escape closes and hands focus back to the button. **Docs** sits beside the input and still opens this manual untouched.
 
@@ -685,7 +685,7 @@ DJ MIDI-learn binds a hardware controller to deck, mixer, and hotcue actions. It
 
 ### 9.7 Automix, Sampler, and Side List
 
-- **Automix** sequences a setlist hands-free, beatmatching each transition. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9). **Prepared performance sets** load from `data/performance-sets/<Set>/performance.json` (a folder of audio files plus a timeline, as written by Z-AutoDJ or by hand; `GET /api/library/setlists` lists them and the audio is registered in the library in place). A prepared track carries a cue-in point, a mix-out point and a transition length, and automix follows them instead of its fixed distance-from-end rule. The assistant orb can steer a running set: read what is on, make a set active, start or stop automix, blend into the next track now, or move a named track to play next.
+- **Automix** sequences a setlist hands-free, beatmatching each transition. Starting a set is §9.10, and what happens inside a blend is §9.11. The Library's **Suggest a Playlist** can populate this set and start it in one step through its **Send to DJ** action (see §13.9). **Prepared performance sets** load from `data/performance-sets/<Set>/performance.json` (a folder of audio files plus a timeline, as written by Z-AutoDJ or by hand; `GET /api/library/setlists` lists them and the audio is registered in the library in place). A prepared track carries a cue-in point, a mix-out point and a transition length, and automix follows them instead of its fixed distance-from-end rule. The assistant orb can steer a running set: read what is on, make a set active, start or stop automix, blend into the next track now, or move a named track to play next.
 - **Sampler bank**: drag a clip onto a pad to load it, then trigger pads during a set. Each pad has a **Loop** toggle (the pad holds the sample until pressed again) and a **Choke** toggle (firing one choke pad cuts the others, for mutually exclusive sounds like open and closed hats). Pad assignments and their loop and choke settings persist across reloads.
 - **Side List**: a play-next staging lane above the browser. Stage upcoming tracks, reorder them, and pull them onto a deck when ready.
 
@@ -696,6 +696,18 @@ The browser loads tracks onto a deck by drag or click. The source tree exposes r
 ### 9.9 Design Mode
 
 A floating **Edit Layout** control turns on Design Mode. In Design Mode, panels and the mixer control groups can be dragged to reorder and dragged at their borders to resize, snapped to a grid. The layout persists across sessions, a Reset restores the default, and a Copy action exports the layout as JSON to bake in as the new default.
+
+### 9.10 Starting a set
+
+**START AUTO DJ** in the DJ header above the decks is the one-click way in. It is never a disabled `<button>` — a disabled control loses its tooltip and its place in tab order, so the reason would never reach you — but it marks itself `aria-disabled` whenever the press cannot change anything, which is the "pick a set" and "add tracks" cases. With no sets at all the press does do something: it creates the set it is asking for. The tooltip says what is missing — "Create a set first — click to make one", "Pick a set below", "Add at least 2 tracks to this set" — and the accessible name a screen reader announces carries the same reason in its own wording ("Start Auto DJ — pick a set below first"). While a mix runs it reads **STOP AUTO DJ**, which stops the sequencer and leaves the decks playing. In the Source Tree, each Sets row opens the set by name, badges the set automix actually reads as **ACTIVE**, and carries a **▶** that auto-DJs it; the ▶ is dimmed while the set's tracks are being registered or while it holds fewer than two tracks. Until a deck holds a track, a three-line hint floats over the decks — pick a set, press START AUTO DJ, or drag a track onto a deck. If the first deck never finishes decoding, automix gives up after 15 seconds with "Automix: Deck A never finished loading" and switches itself off. The full walkthrough is in [guides/dj-and-genealogy.md](guides/dj-and-genealogy.md).
+
+### 9.11 Inside an automix blend
+
+A blend starts on a 16-beat phrase line of the outgoing track, quantised down from the mix-out point (a prepared set's own point, else 18 seconds from the end, and never before half the track has played — so a track shorter than about 18 seconds mixes out from its midpoint rather than its first frame). The first track of a set waits up to 3 seconds for its tempo and then starts on its first beat. Across the fade, the outgoing low band is handed to the incoming one over the middle third (the bass swap), the follower is pulled into phase by bending the platter rather than seeking, sync-lock is held for the whole blend so the two decks cannot drift apart, and key-lock engages when the match needed more than about 3 % of pitch. The messages are honest about what happened: "NOT beatmatched" means the pitch fader cannot reach that tempo at the selected ±range, so the deck is left at 0 % with no key-lock and no phase nudge, and "Automix: mixing unmatched" means the blend went ahead without a beatmatch, naming the reason — the incoming tempo is unknown, the outgoing one is, or the pair is outside the ±range. There is no dead air — a deck that ran out is rescued with a one-second crossfade, while a deck that has never played is waited for instead of being skipped — and with at least three tracks still to come, a key clash straight ahead is skipped for the nearest Camelot-compatible track. Each behaviour is covered in full in [guides/dj-and-genealogy.md](guides/dj-and-genealogy.md).
+
+### 9.12 Auto-seeded hot cues
+
+When a track's analysis lands, its four hotcue pads are seeded the way a DJ places them by hand: the first downbeat (the first beat when no downbeats are known), then the starts of the 16, 32 and 48-bar phrases after it, with matching markers on the waveform. Cues you set or clear yourself are never overwritten — after any edit the seeder leaves that track alone — and a phrase that falls past the end of a short track leaves its pad empty instead of stacking another marker on the end. Downbeats come from the rhythm module's cache, which the DJ tab only ever reads: a deck load asks for a cached analysis and falls back to plain beats when there is none, and it never starts a rhythm run of its own. Run the **Rhythm** analysis on a track (see [guides/rhythm-analysis.md](guides/rhythm-analysis.md)) and the DJ tab picks up real bar lines on the next deck load, for the beatgrid, the cue seeding, and the phrase a blend starts on.
 
 ---
 
@@ -841,6 +853,28 @@ theDAW carries several other rich visualizations, each documented in its own sec
 
 ![The cymatics and ferrofluid-orb visualizer](screenshots/ferro-orb.png)
 
+### 12.4 The lineage explorer: every number opens a list
+
+On a library of a few hundred thousand songs there is no whole-library picture to draw, so LEARN opens on a landing page of counted headlines, relationship-kind rows, and ranked lists. Every number on that page is a button: pressing one opens the list of songs it counted, read one page at a time from `GET /api/lineage-scale/explore/*`.
+
+What opens:
+
+- **Songs with lineage** and **songs without**, the two numbers under the Songs card. Together they are the whole library.
+- **One relationship kind**, with the song as parent, as child, or on either end (`/explore/kinds/{kind}`). Each row carries that song's own count for the kind and role asked for.
+- **A ranking** for any kind in either role, "most links of kind K as a parent" or "as a child" (`/explore/rankings`), not only the four presets the landing page shows.
+- **Families** by size (`/explore/families`) and the members of one family (`/explore/families/{id}/members`). A family is a connected component over ancestry links only. A mashup cluster welds unrelated trees into one component tens of thousands of songs wide, so it is counted on its own and is not a family.
+
+Every list pages; the songs, kind, and family-member lists also search and sort. A ranking is count-ordered only and the family list is size-ordered only — neither has a search box. A page is 50 rows and the server counts the rest, so the browser holds 50 rows whether the list is 50 songs or 173,000; the page box commits on Enter or when it loses focus. Search is a title substring match, sanitised by the Library's own search tokeniser so the two cannot disagree about what counts as a token — but it matches titles only, not prompts, tags, or lyrics. A row shows the provider badge, the title, the number the list was ranked by, and two named buttons: **Focus** draws that song's neighbourhood, **Copy id** copies its entry id. A family row opens the family instead.
+
+The whole-graph counts are computed once per change to the link graph and cached, and the pass is warmed by a background thread about twenty seconds after startup, so opening a list does not read the relations table.
+
+### 12.5 The classic graph of one song, inside LEARN
+
+The classic lineage view stays reachable on a library too large for the library-wide drawing. The header's **Classic graph** button mounts it inside LEARN, rooted at the song in focus; pressing it again closes it. Its two whole-library tabs, Genealogy and the 3D graph, are refused there and say why on the controls themselves ("library too large for the whole-library graph; use the per-track graph"), and the whole-library request is never sent.
+
+The per-track answer is bounded by the server rather than by the browser. `GET /api/library/{entry_id}/lineage` walks parents and children breadth-first, stops at 600 nodes, and reads at most 4,000 relation rows for any one hop. The cut follows the walk, so a hop is admitted whole before the next is looked at: the near family is complete and distant relatives are what is dropped. When the cap bites, the answer is marked truncated and the view shows "Showing the nearest N of a larger family."
+
+
 ---
 
 ![The 2D lineage family tree in LEARN](screenshots/learn-2d.png)
@@ -883,7 +917,7 @@ Waveform editor mixdowns, MIX outputs, mic recordings, imports, and Chimera rend
 
 ### 13.2 List and Grid Views
 
-Toggle between a dense **List** view (one row per entry) and a **Grid** view (tile cards) through the icons in the section header. List view shows title, prompt preview, model chip, duration, date, file size, and a per-entry action cluster.
+Toggle between a dense **List** view (one row per entry) and a **Grid** view (tile cards) through the icons in the section header. List view shows title, prompt preview, model chip, duration, date, file size, and a per-entry action cluster. Each row also carries a **provider badge** — Stable Audio, theDAW, Suno, Udio, Riffusion, Magenta, Imported, or Unknown — classified from the file's embedded tags first and its `model` and `source` fields second; a `chirp-*` model is Suno's own model family, so those entries badge as Suno (§29).
 
 ### 13.3 Search, Filter, Sort
 
@@ -966,6 +1000,16 @@ The `convert` module (`/api/convert`) performs generic FFmpeg format conversion 
 
 A stats footer shows the total entry count, the favorites count, cumulative storage size, and cumulative playback duration.
 
+Analysis runs in one of two profiles. The **full** profile runs every step — tempo and beats, key, RMS, pitch statistics, integrated loudness, an inferred prompt — and takes roughly 10-20 seconds per track on a cache miss. The **dj** profile (`POST /api/analysis/{id}/run?profile=dj`) runs only what a deck reads: ffprobe, one shared decode, tempo and beats with the detector's confidence, key, and RMS. It skips the pitch statistics and the second, full-rate decode that integrated loudness needs, which together are most of the cost — about 2-3 seconds instead of 10. The DJ tab uses it for every track it analyses, so loading a deck no longer waits on work no deck shows.
+
+A row written by the dj profile is a **partial** row, and it says so: `GET /api/analysis/{id}` and the entry's stored analysis carry a `profile` field, so the Details panel, the node inspector and the prompt route can tell a partial row from a complete one whose expensive fields happen to be empty. Running the full profile later completes it and clears the marker; a full run that fails to measure something falls back to the values already stored rather than erasing them, so a re-run whose tempo step fails cannot wipe a BPM that was measured before.
+
+`bpm_confidence` is the beat detector's own confidence in the BPM it reported, from 0 to 1. A low value means the tempo is a guess — a shifting or rubato track, a sparse intro, a file the detector could not lock onto. Treat a low-confidence BPM as a number to look at rather than to beatmatch on: the value is persisted with the analysis and carried on the deck’s analysis row, so a shaky reading can be told apart from a solid one — nothing greys it out in the interface yet — and an automix blend into a track whose tempo is wrong says "NOT beatmatched" instead of pretending (§9.11).
+
+At most **two analyses run at once in the whole backend process**. The cap sits on the analysis itself, not on the HTTP route, so a manual run, a deck load and the library's background auto-analysis all share it; callers asking for the same entry and profile join the run already in flight instead of starting a second one. Each analysis is a full decode of hundreds of megabytes on one core, so two keeps a core busy without letting the decodes pile up.
+
+The DJ tab queues analyses in two lanes. A **request** lane holds what you actually asked for — the tracks on the decks — and is drained first and never dropped. A **sweep** lane pre-analyses the rows worth having next, capped at 24 and ranked decks → the active set → the visible browser rows; each sweep replaces the previous one, so scrolling re-aims the window instead of building a backlog. A row whose analysis fails is retried after 60 s, then after 120 s, then given up on at the third failure — loading it onto a deck still runs it, because asking for a track is a statement that it is worth another try. The queue can also be paused and resumed as a whole, so nothing new starts while something latency-sensitive is going on.
+
 ### 13.10 Suggest a Playlist
 
 The **SUGGEST** button opens a playlist builder that sequences analyzed tracks into a continuous set. The criteria are a target length, an optional BPM range, a flow shape (Steady, Build up, Wind down, or Wave), a harmonic toggle, and an optional genre or text filter. The backend engine (`POST /api/library/suggest-playlist`) reads each track's analysis and orders the set by harmonic key on the Camelot wheel, the chosen BPM flow, and small nudges toward popular and stylistically varied picks, filling the time budget. Each result row shows its BPM, Camelot code, and the reason it was chosen.
@@ -986,6 +1030,23 @@ Shown until the first generation. It contains a **Go generate something** button
 The library splits its contents into four sub-tabs: **Tracks**, **Stems**, **MIDI**, and **Video**. Stems and MIDI are first-class items rather than attachments to a parent track. Each row plays through the shared engine, can be favorited, and can be deleted on its own without touching the source track.
 
 A stem row plays its separated audio and shows the separation model. Its right-click menu sends the stem to a new editor track, to the tail of the first track, to Init audio, to Inpaint, or to the Chimera stack, and offers a `.wav` download. A MIDI row plays through the synth and can be sent to the Piano Roll, the Step Sequencer, or (rendered to audio) to the editor, Init audio, Inpaint, or Chimera, with a `.mid` download. Favoriting or deleting a stem or MIDI row affects only that row, never its parent entry.
+
+### 13.13 Media roots: entries whose audio lives outside the library
+
+An entry can exist whose audio was never written under `data/generations/`: catalogued from a provider that kept the file behind a URL, imported as metadata, or restored from a backup that carried the database and not the files. **Media roots** are the folders on this machine the library searches for those files.
+
+Set them in **Settings → Storage → Media roots**, or in the `theDAW_MEDIA_ROOTS` environment variable (folders separated by `;` on Windows, `:` elsewhere). The environment variable wins outright: when it is set, the Settings list is not consulted at all. A root must be an absolute path to a folder that exists, and a folder inside another root is dropped because the outer walk already reaches it. A root typed into Settings that breaks those rules is refused there with the reason; a bad entry in the environment variable is logged and dropped, and the remaining roots still index.
+
+One background scan indexes every root. A file is matched to an entry by its name, in two shapes: the entry's full 36-character id anywhere in the name, or the first eight hex digits of that id in square brackets immediately before the extension — the short tag a library export writes (`Some Title [c27de18c].flac`). When both shapes claim one entry the full id wins; between two short tags the newest file wins. (Entry ids are uuids; an entry whose id is not a uuid is not matched by either shape.) The walk runs on its own thread, because a few hundred thousand files on a spinning disk takes minutes, and until it finishes a lookup answers exactly as it did before any roots existed.
+
+Nothing is copied. A file found this way is played in place: no bytes are written into the entry's folder and its metadata is not touched. The library asks the entry's own folder first, the media-root index second, and only then a remote copy.
+
+The panel reports the index — how many files, how old, whether a walk is running — and a **Rescan** button walks the roots again on a background thread and answers immediately. A root is re-checked at most every 30 seconds while audio is being served, and a rescan starts when the root folder itself changed (gained or lost a top-level child). Files added deeper inside a root need **Rescan**.
+
+AIFF, WMA, and APE are containers the browser has no demuxer for. When one of those is served from a media root it is remuxed to WAV once (header only, nothing re-encoded, no bit depth lost) and the copy is cached under `data/playable-cache/<entry id>/` rather than beside your file. That cache is derived state and can be deleted at any time; it is rebuilt on the next play.
+
+The routes (`GET /api/library/media-roots`, `POST /api/library/media-roots/rescan`) and the settings keys that set the list answer only to this machine: loopback, or the desktop shell's launch token. A phone or LAN companion reads "Hidden on this device — manage media roots on the theDAW PC" in place of the folders and cannot set them. Naming every media folder on a machine is reconnaissance for anyone on the network, and a panel that cannot write the list has no use for its contents.
+
 
 ---
 
@@ -1210,7 +1271,7 @@ The result records to the library or appends to the EDIT timeline. Sound modes c
 
 ### 16.10 SWAY
 
-The SWAY tab hosts the **SwayCommand cockpit** — the Audima Sway's own performance app, embedded in theDAW. The tab boots the cockpit straight into a project rather than its splash screen: it opens the most recent project saved from the cockpit, or the bundled `will-i-dream` template on a fresh install, and theDAW registers that project's media so its clips are allowed to load.
+The SWAY tab hosts the **SwayCommand cockpit** — the Audima Labs Sway's own performance app, embedded in theDAW. The tab boots the cockpit straight into a project rather than its splash screen: it opens the most recent project saved from the cockpit, or the bundled `will-i-dream` template on a fresh install, and theDAW registers that project's media so its clips are allowed to load.
 
 Saving inside the cockpit is durable: a save writes a `.sway` file into `data/sway-projects/` through theDAW's backend (`POST /api/sway/project-save`) and its media paths are allowlisted at the same time, so the project reopens intact.
 
@@ -1252,7 +1313,7 @@ The transport is a single matte plate of five labelled keys on a hairline grid, 
 | **END** | Calls `playerStore.seekByFraction(1)`. |
 | **RAND** | Random order: any other library track plays next instead of the following one. |
 
-Fullscreen is no longer on the plate — it is a window utility and sits with Mute, Volume and Download on the right (§17.3).
+Fullscreen is not on the plate. It is in the header, immediately left of mobile access (§5).
 
 **Scrub strip:** the footer's first row is a scrub strip, centred at three-fifths of the footer width with the elapsed and total times either side of it. The rail is a flat hairline that thickens under the pointer or keyboard focus; the filled part draws in the theme accent, and the playhead is a small cursor bar that widens under the hand. Click or drag anywhere to seek, and a time bubble follows the pointer. It is a real slider for assistive technology (`role="slider"` with `aria-valuetext`): Left/Right and Up/Down step by 5 s, Shift multiplies the step by six, and Home and End jump to the ends. The footer synchronizes its playhead with the Waveform Editor; scrubbing updates the editor timeline position when the editor timeline is the active audio source.
 
@@ -1262,7 +1323,6 @@ Fullscreen is no longer on the plate — it is a window utility and sits with Mu
 - **Master FX indicator** is a chip that appears whenever the global master insert has effects on it. It says how many, and its tooltip says whether any of them take level; clicking it opens MIX, and the chevron beside it expands a list of what is on the insert. It draws in the theme accent and is hidden when the insert is empty.
 - **Mute toggle** switches the `playbackStore` mute flag. The volume icon changes to a red `VolumeX` when muted.
 - **Volume**: a `SlideTrack` (a custom `role="slider"`, keyboard-operable) drives `playbackStore.volume` (0 to 100). The combined `volume × !muted` value is forwarded to `playerStore.setMasterGain`, which drives the shared Web Audio master gain node.
-- **Fullscreen** toggles browser fullscreen on `document.documentElement`. It moved here from the transport plate.
 - **Download** retrieves the library entry whose `id` matches `playerStore.currentEntryId` and triggers a browser file download.
 - **More** is decorative.
 
@@ -1792,6 +1852,8 @@ The **Models** section sits directly below the pinned Restart/Shutdown controls 
 
 **No usable model?** Pressing CREATE (or LOAD) with nothing installed, or with a selection that local-only would block, never fails silently: the run stops with a plain-language explanation and Settings opens straight to the Models section, which pulses to show where the fix lives.
 
+**Media roots** sit one section over, under **Settings → Storage**: the folders the library searches for an entry whose audio was never written under `data/generations/`. Files there are referenced in place and never copied, and both the list and its routes can only be read or set from this machine (§13.13).
+
 | Method · Path | Purpose |
 |---|---|
 | `GET /api/storage/locations` | Every model/data location with size, file count, and the per-directory model inventory (`?refresh=1` recomputes). |
@@ -2211,7 +2273,7 @@ A seventh module, **AI Analyzer** (`/api/edit/analyzer`), is an experimental dec
 
 ## 29. Catalogue
 
-The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry (Suno, Magenta, import, and forward-compatible slots for other providers) from its `model` and `source` fields. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
+The **Catalogue** view (`CatalogueView`, lazy-loaded in the shell) is a cross-provider gallery over the Library. It presents grid and list layouts, a filter bar, an inspector with on-demand spectrograms, a lineage panel, and **provider badges** that classify each entry from its embedded tags first and its `model` and `source` fields second: Stable Audio (theDAW's own generations), Suno, Udio, Riffusion, Magenta, Import, and theDAW (made here, origin unspecified — performance sets, renders, VJ output). A Suno, Udio or Riffusion frame in an imported file is labeled as such and its embedded prompt, style and lyrics are ingested; the badge is filterable. Its context menu runs Suno cover and mashup directly from a Library entry (§26). It reads the same backend Library API (§13) and the per-entry lineage route `GET /api/library/{id}/lineage`.
 
 ---
 
@@ -2276,7 +2338,7 @@ The assistant streams chat from any configured provider: Claude Code over the CL
 
 theDAW turns audio into symbolic music and back: audio → MIDI → sheet music, guitar and bass tabs, and playable arrangements, plus an inferred Stable Audio prompt for any track. The symbolic side lives in the **Score** tab of the bottom panel (§16.7) and the **Details** panel (§16.4), backed by the `notation` module (`/api/notation`) and the `analysis` module. The standalone guide is [guides/notation-and-score.md](guides/notation-and-score.md).
 
-A track needs a MIDI first. Convert one from the Library (right-click → Convert to MIDI, §13.7); once a MIDI artifact exists, the Score buttons activate.
+A track needs a MIDI first. Convert one from the Library (right-click → Convert to MIDI, §13.7); once a MIDI artifact exists, every way of writing it activates.
 
 ![Guitar tablature rendered from a track's MIDI in the Score panel](screenshots/score.png)
 
@@ -2284,24 +2346,24 @@ A track needs a MIDI first. Convert one from the Library (right-click → Conver
 
 Every symbolic file a track produces is a notation artifact with a kind: `midi`, `musicxml`, `abc`, `alphatex` (tabs), `pdf`, or `svg`. The Score panel's left rail lists them; selecting one previews it (MusicXML as sheet music through OpenSheetMusicDisplay, alphaTex as tablature through alphaTab), and DOWNLOAD saves it. Artifacts are stored under `data/generations/<entry_id>/notation/` and tracked in the library database with lineage back to their source MIDI or score.
 
-### 33.2 Sheet music (MAKE SHEET)
+### 33.2 Making notation (the maker)
 
-MAKE SHEET converts the first MIDI artifact to MusicXML with music21, quantizing rhythm, splitting parts, and inferring a time signature. MusicXML is the canonical interchange format and also feeds tabs, arrangements, and exports.
+The top of the Score panel's left rail is one maker: pick an Instrument (Piano, Voice, Guitar, Bass, Ukulele, Drums, Band), pick how to Write as, and press MAKE. Piano offers Grand, Lead, Exact and Chords; Voice offers Melody, Lead and Exact; Guitar offers Tab, Chords, Melody and Exact; Bass offers Tab and Exact; Ukulele offers Tab and Chords; Drums offers Exact (a drum-kit MIDI becomes a percussion staff); Band offers Score. From picks the MIDI to read and starts on the instrument's own stem, falling back to the full-mix MIDI. Exact converts that MIDI to MusicXML with music21, quantizing rhythm, splitting parts, and inferring a time signature; MusicXML is the canonical interchange format and also feeds exports. Chords builds the chord track from the lead sheet when one exists, else from the audio, and needs no MIDI. When MAKE cannot run, the reason is printed under it. The « key in the rail's header collapses the rail to a thin strip and » opens it again.
 
 ### 33.3 Tabs
 
-The Tabs section turns a MIDI into tablature. Choose the instrument (Guitar or Bass), a tuning (standard, drop D, 7-string, 4- or 5-string bass), a capo fret, and a difficulty (Easy / Medium / Hard, which caps fret height and reach), then press MAKE TABS. Because the same pitch can be played at several string and fret positions, a dynamic-programming pass chooses positions that minimize hand travel, prefer open strings and low frets, and keep simultaneous notes on distinct strings. The output is alphaTex, rendered as interactive tablature by alphaTab. Notes outside the instrument's range are reported as unplayable rather than forced.
+Pick Guitar, Bass or Ukulele and Tab, then a Tuning (only that instrument's: standard, drop D or 7-string guitar; 4- or 5-string bass; standard ukulele), a Level (Easy / Medium / Hard, which caps fret height and reach) and a Capo fret, and press MAKE. Because the same pitch can be played at several string and fret positions, a dynamic-programming pass chooses positions that minimize hand travel, prefer open strings and low frets, and keep simultaneous notes on distinct strings. The output is alphaTex, rendered as interactive tablature by alphaTab. Notes outside the instrument's range are reported as unplayable rather than forced.
 
 ### 33.4 Arrangements
 
-The Arrange section produces a playable MusicXML arrangement from a track's MIDIs. The styles are:
+Four of the maker's ways are rule-based arrangements:
 
-- **lead-sheet**: the melody (skyline) with chord symbols above it.
-- **piano-reduction**: a two-staff grand staff split at middle C.
-- **simplified**: a single-staff quantized melody.
-- **band-score**: one staff per separated stem, combined into a full score.
+- **Lead** (`lead-sheet`): the melody (skyline) with chord symbols above it.
+- **Grand** (`piano-reduction`): a two-staff grand staff split at middle C.
+- **Melody** (`simplified`): a single-staff quantized melody.
+- **Score** on Band (`band-score`): one staff per separated stem, combined into a full score.
 
-Arrangements render in the same in-browser sheet-music viewer as MAKE SHEET and are saved as MusicXML artifacts.
+Arrangements render in the same in-browser sheet-music viewer and are saved as MusicXML artifacts. In the STRIP view every part's name is pinned to the left edge, level with its staves, while the score scrolls.
 
 ### 33.5 Exporting scores (the EXPORT menu)
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.modules.library import db as db_module
 from backend.modules.library.db import SCHEMA_VERSION, LibraryDB
 from backend.modules.library.store import LibraryStore
 
@@ -38,10 +39,196 @@ def _make_entry_payload(entry_id: str, **overrides) -> dict:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Migrations: every step is all-or-nothing, and a resumable one at that
+#
+# The statements a migration runs are DDL, and Python's sqlite3 in legacy
+# transaction mode opens an implicit transaction before DML only -- so without
+# an explicit BEGIN every ALTER and CREATE INDEX commits on its own, ahead of
+# the schema_version bump that records them. Three index builds over a
+# 200,000-entry library is a window of seconds to minutes in which a close, a
+# crash or a kill leaves the schema ahead of its recorded version. The next
+# open then re-runs the step, and a bare ALTER ADD COLUMN -- the one shape
+# SQLite has no IF NOT EXISTS for -- raises "duplicate column name" out of
+# LibraryDB.__init__: a library nobody can open until someone hand-edits
+# schema_meta. These tests pin both halves of the fix.
+# ---------------------------------------------------------------------------
+
+
+#: The step that ADDS ``entries.provider`` and builds the provider indexes --
+#: the ``ADD COLUMN`` these tests reproduce a half-finished run of. Named by its
+#: own version rather than as ``SCHEMA_VERSION - 1``: step 10 rebuilt those
+#: indexes when the provider fallback's last arm changed and step 11 rebuilt
+#: them again when its Suno arm learned ``chirp``, so the current version is no
+#: longer the one that adds a column.
+PROVIDER_COLUMN_VERSION = 9
+
+
+def _open_at(path: Path, version: int) -> LibraryDB:
+    """A database migrated only as far as ``version`` -- what an older build of
+    theDAW left behind."""
+    current = db_module._MIGRATIONS
+    db_module._MIGRATIONS = [step for step in current if step[0] <= version]
+    try:
+        db = LibraryDB(path)
+    finally:
+        db_module._MIGRATIONS = current
+    assert db.schema_version() == version
+    return db
+
+
+def _insert_old_row(db: LibraryDB, entry_id: str) -> None:
+    """A row written by the build that owned this schema -- its INSERT cannot
+    name a column that does not exist yet, which is the point of these tests."""
+    db._conn.execute(
+        "INSERT INTO entries (id, kind, title, model, source, created_at, "
+        "updated_at, metadata_json) VALUES (?, 'audio', ?, 'small', 'generate', "
+        "1.0, 1.0, '{}')",
+        (entry_id, entry_id),
+    )
+    db._conn.commit()
+
+
+def _schema(conn) -> set[str]:
+    return {
+        str(r[0])
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'idx_entries_provider%' "
+            "OR name = 'idx_entries_facet_provider'"
+        )
+    }
+
+
 def test_schema_migrates_on_first_open(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     assert db.schema_version() == SCHEMA_VERSION
     assert db.count_entries() == 0
+
+
+def test_an_interrupted_migration_is_finished_on_the_next_open(tmp_path: Path):
+    """The crash this is about: the ALTER committed, the version bump did not.
+
+    Against a migration that runs a bare ``ALTER TABLE ... ADD COLUMN``, the
+    reopen raises ``duplicate column name: provider`` and the library cannot be
+    opened at all. Skipping a column that is already there finishes the upgrade
+    instead.
+    """
+    path = tmp_path / "library.db"
+    old = _open_at(path, PROVIDER_COLUMN_VERSION - 1)
+    _insert_old_row(old, "survivor")
+    # Exactly what a kill between the ALTER and the bump leaves behind.
+    old._conn.execute("ALTER TABLE entries ADD COLUMN provider TEXT")
+    old._conn.commit()
+    old.close()
+
+    db = LibraryDB(path)
+    assert db.schema_version() == SCHEMA_VERSION
+    assert _schema(db._conn) == {
+        "idx_entries_provider",
+        "idx_entries_provider_created",
+        "idx_entries_provider_any_kind",
+        "idx_entries_facet_provider",
+    }
+    assert db.get_entry("survivor") is not None
+    db.close()
+
+
+def test_an_older_add_column_migration_is_idempotent_too(tmp_path: Path):
+    """Not a special case for the newest step: the same rescue applies to every
+    ``ADD COLUMN`` in the list, because they were all written by the old,
+    non-atomic mechanism."""
+    path = tmp_path / "library.db"
+    old = _open_at(path, 3)
+    # v4's first statement, run without its bump.
+    old._conn.execute(
+        "ALTER TABLE entries ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0"
+    )
+    old._conn.commit()
+    old.close()
+
+    db = LibraryDB(path)
+    assert db.schema_version() == SCHEMA_VERSION
+    assert db._has_column("entries", "play_count")
+    assert db._has_column("entries", "last_played_at")
+    db.close()
+
+
+def test_a_migration_that_fails_part_way_leaves_the_database_untouched(
+    tmp_path: Path, monkeypatch
+):
+    """All-or-nothing: a step that raises on its SECOND statement must leave
+    neither the column, nor an index, nor a bumped version -- otherwise the
+    recorded version stops describing what is on disk."""
+    path = tmp_path / "library.db"
+    old = _open_at(path, PROVIDER_COLUMN_VERSION - 1)
+    _insert_old_row(old, "survivor")
+    before = [tuple(r) for r in old._conn.execute("SELECT * FROM entries")]
+    old.close()
+
+    # The provider step, whose first statement is the ADD COLUMN and whose
+    # remaining ones build the indexes this asserts the absence of.
+    steps = db_module._MIGRATIONS
+    provider_step = next(s for s in steps if s[0] == PROVIDER_COLUMN_VERSION)
+    monkeypatch.setattr(
+        db_module,
+        "_MIGRATIONS",
+        [
+            *(s for s in steps if s[0] < PROVIDER_COLUMN_VERSION),
+            (
+                PROVIDER_COLUMN_VERSION,
+                [
+                    provider_step[1][0],
+                    "CREATE INDEX no_such_table_idx ON nope(x)",
+                ],
+            ),
+        ],
+    )
+    with pytest.raises(Exception):
+        LibraryDB(path)
+
+    survivor = _open_at(path, PROVIDER_COLUMN_VERSION - 1)
+    assert survivor.schema_version() == PROVIDER_COLUMN_VERSION - 1
+    assert not survivor._has_column("entries", "provider")
+    assert _schema(survivor._conn) == set()
+    assert [tuple(r) for r in survivor._conn.execute("SELECT * FROM entries")] == before
+    survivor.close()
+
+    # And a clean reopen -- with the real statement list back -- still
+    # migrates the whole way, so the rollback cost nothing but the attempt.
+    monkeypatch.undo()
+    db = LibraryDB(path)
+    assert db.schema_version() == SCHEMA_VERSION
+    assert db._has_column("entries", "provider")
+    db.close()
+
+
+def test_opening_an_up_to_date_database_runs_no_migration_statement(tmp_path: Path):
+    """Every open of the user's library would otherwise re-run three index
+    builds over 200,000 rows."""
+    path = tmp_path / "library.db"
+    LibraryDB(path).close()
+
+    seen: list[str] = []
+    original = LibraryDB._migrate
+
+    def _watch(self):
+        self._conn.set_trace_callback(seen.append)
+        try:
+            original(self)
+        finally:
+            self._conn.set_trace_callback(None)
+
+    monkeypatch_target = LibraryDB._migrate
+    LibraryDB._migrate = _watch
+    try:
+        LibraryDB(path).close()
+    finally:
+        LibraryDB._migrate = monkeypatch_target
+    assert not [
+        sql
+        for sql in seen
+        if sql.lstrip().upper().startswith(("ALTER", "CREATE", "BEGIN", "INSERT"))
+    ], seen
 
 
 def test_increment_play_count(tmp_path: Path):

@@ -54,7 +54,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sidecar, "STATIC_MOUNTED", True)
     monkeypatch.setattr(catalog, "EXAMPLES_DIR", examples)
     monkeypatch.setattr(sway_api, "_template_media_registered", False)
-    monkeypatch.setattr(media_access, "_ROOTS_STATE", tmp_path / "media_roots.json")
+    monkeypatch.setattr(
+        media_access, "_ROOTS_STATE", tmp_path / "clip_audio_roots.json"
+    )
     monkeypatch.setattr(media_access, "_session_roots", [])
     monkeypatch.setattr(media_access, "_stand_ins", {})
     monkeypatch.delenv("theDAW_MEDIA_ROOTS", raising=False)
@@ -62,8 +64,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app = FastAPI()
     app.include_router(project_api, prefix="/api/project")
     app.include_router(sway_api.router, prefix="/api/sway")
+    # /clip-audio is loopback-gated (T02): TestClient's default peer is
+    # "testclient", which is not loopback, so name a real loopback peer the
+    # way tests/test_vst_render_host.py does.
     return {
-        "client": TestClient(app),
+        "client": TestClient(app, client=("127.0.0.1", 51000)),
         "dist": dist,
         "song": song,
         "author": tmp_path / "author" / "Music",

@@ -1,7 +1,7 @@
 // The roll's pitch bend actions in the order a UI calls them: points added,
 // moved past each other and removed, a range set, then the meter and length
 // changed, lanes added and removed, and the roll imported and loaded over.
-// The roll has no undo history, so there is none to join.
+// Undo/redo of these edits is covered separately in pianoRollHistory.test.ts.
 import assert from 'node:assert/strict';
 import { laneName, usePianoRollStore, type PianoNote } from './pianoRollStore.ts';
 import { MAX_BENT_LANES, type BendShape } from '../lib/pitchBend.ts';

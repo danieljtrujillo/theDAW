@@ -8,10 +8,20 @@ import { CenterTabBar } from './CenterTabBar';
 import { LogBody, LogStripCompactInfo } from './ProcessingLog';
 import { BottomMultiTabPanel, BOTTOM_TAB_LABELS } from './BottomMultiTabPanel';
 import { AutosaveRecoveryNotice } from './AutosaveRecoveryNotice';
+import { AudioWorkletUnavailableNotice } from './AudioWorkletUnavailableNotice';
 import { initEditorAutosave } from '../../lib/editorAutosave';
 // Lazy: the docs modal bundles a markdown/HTML renderer + screenshots; keep it
 // out of first paint and only fetch the chunk when the user opens Docs.
 const DocsModal = lazy(() => import('./DocsModal').then((m) => ({ default: m.DocsModal })));
+// T20 re-audit item 1: QR codes for the mobile-access link and the phone
+// companion link (the latter can carry the LAN pairing token in its URL
+// fragment) used to be rendered by GETting a third-party QR-image service
+// with the full URL folded into a query param — that leaks the token to
+// that service's access logs and any TLS-terminating proxy in between.
+// Render locally instead; lazy so the QR renderer chunk only loads when a
+// share/companion panel is actually opened, the same pattern
+// DocsModal/CatalogueView use.
+const QRCode = lazy(() => import('react-qr-code'));
 import { SettingsModal } from './SettingsModal';
 import { DawImportModal } from './DawImportModal';
 import { ProjectModal } from './ProjectModal';
@@ -33,13 +43,24 @@ import { ImportMenu, IMPORT_AUDIO_EVENT } from './ImportMenu';
 import FeatureGateNotices from '../../notices/FeatureGateNotices';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { backendHttpBase, lanReachablePort } from '../../lib/backendBase';
+import { pairedShareLink } from '../../lib/shareLink';
+import { clickNewPairingLink, scheduleDisarm, type RevokeState } from '../../lib/pairingRevoke';
 import { setXrHostPosture, onXrPeersChanged, kickXrPeer, type XrPeer } from '../../state/xrControlClient';
 import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 import { useLayoutZoom, FOOTER_H } from '../../lib/layoutScale';
+import { keyBelongsToFocusedControl } from '../../lib/keyTargets';
 
 const RIGHT_RAIL_MIN = 280;
 const RIGHT_RAIL_MAX = 640;
+
+// How often, and for how long, the share panel re-asks `/api/network/lan`
+// whether the LAN TLS listener has come up (see the effect that uses these).
+// Fast enough to catch it appearing a few seconds into a launch, slow enough
+// that nobody notices the requests; bounded, because after a minute the answer
+// is not going to change.
+const LAN_HTTPS_POLL_INTERVAL_MS = 3_000;
+const LAN_HTTPS_POLL_WINDOW_MS = 60_000;
 
 export const Shell: React.FC = () => {
   const navigateTo = useAppUiStore((state) => state.navigateTo);
@@ -110,8 +131,9 @@ export const Shell: React.FC = () => {
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Not while typing. A focused fader is not typing: bailing out there let Ctrl+S fall
+      // through to the browser's own "save page" dialog.
+      if (keyBelongsToFocusedControl(e)) return;
       e.preventDefault();
       openProject('save');
     };
@@ -130,30 +152,84 @@ export const Shell: React.FC = () => {
   // from the backend so the QR points phones at a real address instead
   // of localhost. Falls back to window.location.origin when there's no
   // LAN IP (e.g. offline). Mirrors how the VJ tab builds its mobile QR.
+  //
+  // `GET /api/network/lan` answers with `https_url` as well when the launcher
+  // has a TLS listener UP on this machine right now (backend/lib/lan_https.py,
+  // frontend/vite.lan.config.ts). That address is the one to hand out: a
+  // browser exposes AudioWorklet, the microphone, Web MIDI, the clipboard and
+  // crypto.subtle only in a secure context, so a phone or second PC opening
+  // the plain-http address gets an app whose EDIT tab cannot start audio at
+  // all. When no listener is up the link is exactly the http one it was.
   const [lanUrl, setLanUrl] = React.useState('');
+  const [lanHttpsUrl, setLanHttpsUrl] = React.useState('');
   const isBackendReadyForLan = useStatusBarStore((s) => s.isBackendReady);
   React.useEffect(() => {
     // Wait for the backend: on a packaged cold start this fetch used to fire
     // once before :8600 was bound, fail, and leave the share link on the
     // app://. origin fallback forever.
-    if (!isBackendReadyForLan || lanUrl) return;
+    //
+    // Deliberately NOT guarded on `lanUrl`. `https_url` is a LIVENESS fact —
+    // the route reports it only while something answers on the TLS port right
+    // now — and on the desktop the listener comes up AFTER the backend is
+    // ready: the plan is read (a cold `uv run`), a certificate is minted, then
+    // vite starts. So the FIRST answer says "no listener" on the very machine
+    // that hands out the link, and stopping there latched the http address for
+    // the life of the window. Instead: show the http address at once, keep
+    // asking on a bounded schedule, and adopt the secure address when it
+    // arrives (which stops the polling, because `lanHttpsUrl` is the guard).
+    //
+    // Nor is it guarded on the share-URL override. The override decides what
+    // the SHARE LINK is (see `shareUrl` below, where it still wins), but
+    // `lanHttpsUrl` is a separate fact about this machine that the rest of the
+    // UI needs: AudioWorkletUnavailableNotice names it as the address to
+    // reopen the app on. Suspending the poll while an override was typed in
+    // left that notice with no concrete https address to offer.
+    if (!isBackendReadyForLan || lanHttpsUrl) return;
     let cancelled = false;
-    void fetch('/api/vj/lan-ip')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j: { lan_ip?: string | null } | null) => {
-        if (cancelled || !j?.lan_ip || typeof window === 'undefined') return;
-        // Packaged app has no window port (app://. origin) — phones reach it
-        // on the backend port; browser dev keeps its own port (5173 fallback).
-        const port = lanReachablePort() || '5173';
-        setLanUrl(`http://${j.lan_ip}:${port}`);
-      })
-      .catch(() => {
-        /* no backend / no LAN — keep the http fallback */
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const giveUpAt = Date.now() + LAN_HTTPS_POLL_WINDOW_MS;
+    const askAgainLater = (): void => {
+      // Bounded: after the window there is no listener coming, and an endless
+      // poll would run for as long as the app is open.
+      if (cancelled || Date.now() >= giveUpAt) return;
+      timer = setTimeout(ask, LAN_HTTPS_POLL_INTERVAL_MS);
+    };
+    function ask(): void {
+      void fetch('/api/network/lan')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: { lan_ip?: string | null; https_url?: string | null } | null) => {
+          if (cancelled || typeof window === 'undefined') return;
+          if (!j?.lan_ip) {
+            askAgainLater();
+            return;
+          }
+          // Only an https address is an upgrade; anything else and we would be
+          // swapping one insecure origin for another.
+          const secure = (j.https_url ?? '').trim();
+          if (secure.toLowerCase().startsWith('https://')) {
+            setLanHttpsUrl(secure);
+            setLanUrl(secure);
+            return;
+          }
+          // Packaged app has no window port (app://. origin) — phones reach it
+          // on the backend port; browser dev keeps its own port (5173
+          // fallback). Shown straight away, so the panel is never blank while
+          // the secure address is still being waited for.
+          const port = lanReachablePort() || '5173';
+          setLanUrl(`http://${j.lan_ip}:${port}`);
+          askAgainLater();
+        })
+        .catch(() => {
+          /* no backend / no LAN — keep the http fallback and try again */
+          askAgainLater();
+        });
+    }
+    ask();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [isBackendReadyForLan, lanUrl]);
+  }, [isBackendReadyForLan, lanHttpsUrl]);
 
   // Never fall back to window.location.origin blindly: in the packaged app
   // that is app://., which is useless on a phone AND opens a second copy of
@@ -161,14 +237,20 @@ export const Shell: React.FC = () => {
   const detectedShareUrl =
     lanUrl || (typeof window === 'undefined' ? '' : backendHttpBase());
   const shareUrl = shareUrlOverride.trim() || detectedShareUrl;
-  const qrImageUrl = useMemo(
-    () => `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(shareUrl)}`,
-    [shareUrl],
-  );
+  // True only when the link being handed out is THIS machine's own TLS
+  // listener — not when the user has pasted some other https URL (a Cloudflare
+  // tunnel, say) into the override, where the certificate note below would be
+  // wrong: a tunnel presents a certificate the browser already trusts.
+  const shareUrlIsLanHttps = Boolean(lanHttpsUrl) && shareUrl === lanHttpsUrl;
 
   // Phone-companion pairing. The host picks the posture (open LAN or a required
-  // code) before handing out the QR; the code rides the URL as ?pair=<code> so
-  // scanning auto-fills it. See docs/companion-control-contract.md.
+  // code) before handing out the QR; the code rides the URL as ?xrcode=<code>
+  // (T20 re-audit item 7 — was ?pair=, which collided in NAME, though never in
+  // code, with the unrelated LAN pairing token below that rides #pair=<token>
+  // in the URL fragment; RemoteGate's on-screen guidance told a user holding
+  // that token to paste it here, where it would silently fail as an XR
+  // posture code) so scanning auto-fills it. See
+  // docs/companion-control-contract.md.
   const [postureMode, setPostureMode] = React.useState<'open' | 'code'>('open');
   const [pairCode, setPairCode] = React.useState('');
   const [companionPeers, setCompanionPeers] = React.useState<XrPeer[]>([]);
@@ -179,19 +261,67 @@ export const Shell: React.FC = () => {
     setXrHostPosture({ mode: postureMode, code: postureMode === 'code' ? pairCode : null });
   }, [postureMode, pairCode]);
 
+  // T20 re-audit item 6: the LAN pairing token (backend/lib/pairing.py) was
+  // minted by the backend and consumed by frontend/src/lib/pairing.ts, but
+  // nothing in the UI ever fetched it or put it on a link — the companion
+  // link worked only because SEC-001's loopback/cross-site gate on phones
+  // reaching over a real LAN IP was never actually enforced end-to-end. This
+  // fetches it once (loopback-or-launch-token gated route: this machine's own
+  // UI or the desktop shell) and appends it to the companion link and the
+  // Share URL as `#pair=<token>`, the URL FRAGMENT — never sent to any server
+  // or proxy log, per pairing.ts. A failed fetch (no backend yet, route gate
+  // rejected) must not break either link; they ship without the LAN pairing
+  // token, and the dialog says what that leaves out.
+  const [lanPairingToken, setLanPairingToken] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/pairing/token')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { token?: string } | null) => {
+        if (!cancelled && j?.token) setLanPairingToken(j.token);
+      })
+      .catch(() => {
+        /* no backend yet, or this isn't the desktop shell — companion link
+           still works, just without a LAN pairing token attached */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The Share URL for the full desktop UI carries the same token, so the device
+  // that opens it (or scans its QR) is paired. Without it that device was a
+  // stranger to the backend: every save, open, project clip, VST effect and
+  // Gemini call it made was refused (backend/lib/cross_site.py). The companion
+  // link below builds its own fragment the same way. See lib/shareLink.ts.
+  const pairedShareUrl = useMemo(
+    () => pairedShareLink(shareUrl, lanPairingToken),
+    [shareUrl, lanPairingToken],
+  );
+
+  // "New pairing link" replaces the token (POST /api/pairing/token/regenerate,
+  // same gate as the read), so every link handed out before stops working. It
+  // un-pairs every device already paired, hence two clicks: the first arms it
+  // for a few seconds, the second makes the new link. See lib/pairingRevoke.ts.
+  const [revokeArmed, setRevokeArmed] = React.useState(false);
+  const [revokeState, setRevokeState] = React.useState<RevokeState>('idle');
+  React.useEffect(() => scheduleDisarm(revokeArmed, setRevokeArmed), [revokeArmed]);
+  const revokePairing = () =>
+    clickNewPairingLink({
+      armed: revokeArmed,
+      state: revokeState,
+      setArmed: setRevokeArmed,
+      setState: setRevokeState,
+      adoptToken: setLanPairingToken,
+    });
+
   const companionUrl = useMemo(() => {
     const base = (shareUrl || '').replace(/\/+$/, '');
     if (!base) return '';
-    const q = postureMode === 'code' && pairCode ? `?pair=${pairCode}` : '';
-    return `${base}/mobile.html${q}`;
-  }, [shareUrl, postureMode, pairCode]);
-  const companionQrUrl = useMemo(
-    () =>
-      companionUrl
-        ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=12&data=${encodeURIComponent(companionUrl)}`
-        : '',
-    [companionUrl],
-  );
+    const q = postureMode === 'code' && pairCode ? `?xrcode=${pairCode}` : '';
+    const fragment = lanPairingToken ? `#pair=${encodeURIComponent(lanPairingToken)}` : '';
+    return `${base}/mobile.html${q}${fragment}`;
+  }, [shareUrl, postureMode, pairCode, lanPairingToken]);
   const chooseCodePosture = () => {
     setPairCode((c) => c || Math.floor(1000 + Math.random() * 9000).toString());
     setPostureMode('code');
@@ -215,7 +345,7 @@ export const Shell: React.FC = () => {
 
   const copyShareUrl = async () => {
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(pairedShareUrl);
       setCopiedShareUrl(true);
       window.setTimeout(() => setCopiedShareUrl(false), 1400);
     } catch {
@@ -458,53 +588,99 @@ export const Shell: React.FC = () => {
       {shareOpen && (
         <div className="fixed inset-0 z-60 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={() => setShareOpen(false)} />
-          <div className="relative w-[min(420px,92vw)] bg-[#0c0a14] border border-emerald-500/30 rounded-lg shadow-2xl overflow-hidden">
+          <div
+            role="dialog"
+            aria-labelledby="shell-share-title"
+            className="relative flex max-h-[92vh] w-[min(460px,92vw)] flex-col overflow-hidden rounded-lg border border-emerald-500/30 bg-[#0c0a14] shadow-2xl"
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-linear-to-r from-emerald-900/25 to-purple-900/15">
               <div className="flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-emerald-300" />
                 <div className="flex flex-col leading-tight">
-                  <span className="text-[11px] font-black uppercase tracking-widest text-emerald-200">Mobile Access</span>
-                  <span className="text-[8px] font-mono uppercase tracking-wider text-emerald-300/60">QR + tunnel-friendly link</span>
+                  <span id="shell-share-title" className="font-display text-sm font-bold uppercase tracking-widest text-emerald-200">Mobile Access</span>
+                  <span className="text-xs font-semibold text-emerald-300/70">QR code and share link</span>
                 </div>
               </div>
-              <button onClick={() => setShareOpen(false)} className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5" title="Close">
-                <X className="w-3.5 h-3.5" />
+              <button
+                type="button"
+                onClick={() => setShareOpen(false)}
+                aria-label="Close Mobile Access"
+                className="p-1 text-zinc-500 hover:text-white transition-colors rounded hover:bg-white/5"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 flex flex-col gap-4">
+            <div className="p-4 flex flex-col gap-4 overflow-y-auto">
               <div className="flex justify-center">
                 <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(16,185,129,0.16)]">
-                  <img src={qrImageUrl} alt="theDAW mobile access QR code" className="w-55 h-55" />
+                  <Suspense fallback={<div className="w-55 h-55" role="img" aria-label="theDAW mobile access QR code loading" />}>
+                    <QRCode value={pairedShareUrl} size={220} title="theDAW mobile access QR code" />
+                  </Suspense>
                 </div>
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="shell-share-url" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Share URL</label>
+                <label htmlFor="shell-share-url" className="text-xs font-bold uppercase tracking-wider text-zinc-300">Share URL</label>
                 <div className="flex gap-2">
                   <input
                     id="shell-share-url"
                     type="text"
                     name="shell-share-url"
-                    value={shareUrl}
+                    value={pairedShareUrl}
                     readOnly
-                    className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 outline-none"
+                    className="min-w-0 flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-semibold text-zinc-200 outline-none"
                   />
                   <button
+                    type="button"
                     onClick={() => void copyShareUrl()}
-                    className="px-2 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-200 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
+                    className="px-2 py-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-200 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
                     title="Copy share URL"
                   >
-                    <Copy className="w-3 h-3" /> {copiedShareUrl ? 'Copied' : 'Copy'}
+                    <Copy className="w-3.5 h-3.5" /> {copiedShareUrl ? 'Copied' : 'Copy'}
                   </button>
                 </div>
-                <a href={shareUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-300/75 hover:text-emerald-200 transition-colors">
-                  <ExternalLink className="w-2.5 h-2.5" /> Open link in new tab
+                <a href={pairedShareUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-300/80 hover:text-emerald-200 transition-colors">
+                  <ExternalLink className="w-3.5 h-3.5" /> Open link in new tab
                 </a>
+                {lanPairingToken ? (
+                  <p className="text-xs leading-relaxed text-zinc-400">
+                    This link pairs the device that opens it: that device can save and open projects in your projects folder, run VST effects and use the Gemini assistant. Plugin windows and Show in folder stay on this computer. Share it only with devices you trust.
+                  </p>
+                ) : (
+                  <p className="text-xs leading-relaxed text-amber-300/80">
+                    This link carries no pairing token, so the device that opens it cannot save or open projects, run VST effects or use the Gemini assistant. Open Mobile Access on the computer running theDAW to get a paired link.
+                  </p>
+                )}
+                {shareUrlIsLanHttps && (
+                  <p className="text-xs leading-relaxed text-emerald-300/80">
+                    Secure address &mdash; audio, mic and MIDI work on other devices. The first visit shows a certificate warning; choose Proceed.
+                  </p>
+                )}
+                {lanPairingToken && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => void revokePairing()}
+                      disabled={revokeState === 'busy'}
+                      className={`px-2 py-1.5 rounded border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-50 ${revokeArmed ? 'border-red-500/50 bg-red-500/15 text-red-200 hover:bg-red-500/25' : 'border-white/10 bg-black/30 text-zinc-300 hover:text-white'}`}
+                      title="Make a new pairing link; every link shared before stops working"
+                    >
+                      {revokeArmed ? 'Confirm: old links stop working' : 'New pairing link'}
+                    </button>
+                    {revokeState === 'done' && (
+                      <span role="status" className="text-xs font-semibold text-emerald-300/80">New link made. Links shared before no longer work.</span>
+                    )}
+                    {revokeState === 'failed' && (
+                      <span role="status" className="text-xs font-semibold text-red-300/80">Could not make a new link. The old one still works.</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="shell-share-url-override" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">External URL override</label>
+                <label htmlFor="shell-share-url-override" className="text-xs font-bold uppercase tracking-wider text-zinc-300">External URL override</label>
                 <input
                   id="shell-share-url-override"
                   type="url"
@@ -512,21 +688,21 @@ export const Shell: React.FC = () => {
                   value={shareUrlOverride}
                   onChange={(e) => updateShareUrlOverride(e.target.value)}
                   placeholder="Paste Cloudflare tunnel URL, e.g. https://name.trycloudflare.com"
-                  className="bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-emerald-500/50 transition-colors"
+                  className="bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-semibold text-zinc-200 placeholder:text-zinc-500 outline-none focus:border-emerald-500/50 transition-colors"
                 />
-                <p className="text-[9px] leading-relaxed text-zinc-500">
-                  By default this uses <span className="font-mono text-zinc-400">{detectedShareUrl}</span>. Paste a Cloudflare Tunnel or other public URL here when your phone is not on the same network.
+                <p className="text-xs leading-relaxed text-zinc-400">
+                  By default this uses <span className="font-semibold text-zinc-300">{detectedShareUrl}</span>. Paste a Cloudflare Tunnel or other public URL here when your phone is not on the same network.
                 </p>
               </div>
 
               {/* Phone companion — a lean remote app (library + player control),
                   separate from opening the full desktop UI above. */}
               <div className="flex flex-col gap-2 pt-3 border-t border-white/5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-purple-300">Phone companion</span>
-                  <span className="text-[8px] font-mono uppercase tracking-wider text-purple-300/50">library + remote</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-display text-xs font-bold uppercase tracking-widest text-purple-300">Phone companion</span>
+                  <span className="text-xs font-semibold text-purple-300/70">Library and remote</span>
                 </div>
-                <p className="text-[9px] leading-relaxed text-zinc-500">
+                <p className="text-xs leading-relaxed text-zinc-400">
                   A lightweight phone app to browse and play the library and remote-control the player. Choose who may drive this desktop before you share the code.
                 </p>
 
@@ -536,7 +712,7 @@ export const Shell: React.FC = () => {
                     type="button"
                     aria-pressed={postureMode === 'open'}
                     onClick={() => setPostureMode('open')}
-                    className={`flex-1 px-2 py-1.5 rounded border text-[9px] font-black uppercase tracking-widest transition-colors ${postureMode === 'open' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
+                    className={`flex-1 px-2 py-1.5 rounded border text-xs font-bold uppercase tracking-wider transition-colors ${postureMode === 'open' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
                   >
                     Open LAN
                   </button>
@@ -544,7 +720,7 @@ export const Shell: React.FC = () => {
                     type="button"
                     aria-pressed={postureMode === 'code'}
                     onClick={chooseCodePosture}
-                    className={`flex-1 px-2 py-1.5 rounded border text-[9px] font-black uppercase tracking-widest transition-colors ${postureMode === 'code' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
+                    className={`flex-1 px-2 py-1.5 rounded border text-xs font-bold uppercase tracking-wider transition-colors ${postureMode === 'code' ? 'border-purple-400/60 bg-purple-500/20 text-purple-100' : 'border-white/10 bg-black/30 text-zinc-400 hover:text-zinc-200'}`}
                   >
                     Require code
                   </button>
@@ -552,21 +728,23 @@ export const Shell: React.FC = () => {
 
                 {postureMode === 'code' && (
                   <div className="flex items-center justify-between px-3 py-2 rounded bg-black/40 border border-purple-500/20">
-                    <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-400">Pair code</span>
-                    <span className="text-[15px] font-mono font-black tracking-[0.35em] text-purple-200">{pairCode}</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">Pair code</span>
+                    <span className="text-base font-black tabular-nums tracking-[0.35em] text-purple-200">{pairCode}</span>
                   </div>
                 )}
 
-                {companionQrUrl && (
+                {companionUrl && (
                   <div className="flex justify-center pt-1">
                     <div className="p-3 rounded-lg bg-white shadow-[0_0_24px_rgba(139,92,246,0.16)]">
-                      <img src={companionQrUrl} alt="theDAW phone companion QR code" className="w-44 h-44" />
+                      <Suspense fallback={<div className="w-44 h-44" role="img" aria-label="theDAW phone companion QR code loading" />}>
+                        <QRCode value={companionUrl} size={176} title="theDAW phone companion QR code" />
+                      </Suspense>
                     </div>
                   </div>
                 )}
 
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="shell-companion-url" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Companion URL</label>
+                  <label htmlFor="shell-companion-url" className="text-xs font-bold uppercase tracking-wider text-zinc-300">Companion URL</label>
                   <div className="flex gap-2">
                     <input
                       id="shell-companion-url"
@@ -574,30 +752,31 @@ export const Shell: React.FC = () => {
                       name="shell-companion-url"
                       value={companionUrl}
                       readOnly
-                      className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-zinc-200 outline-none"
+                      className="min-w-0 flex-1 bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-semibold text-zinc-200 outline-none"
                     />
                     <button
+                      type="button"
                       onClick={() => void copyCompanionUrl()}
-                      className="px-2 py-1.5 rounded border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5"
+                      className="px-2 py-1.5 rounded border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
                       title="Copy companion URL"
                     >
-                      <Copy className="w-3 h-3" /> {copiedCompanion ? 'Copied' : 'Copy'}
+                      <Copy className="w-3.5 h-3.5" /> {copiedCompanion ? 'Copied' : 'Copy'}
                     </button>
                   </div>
                 </div>
 
                 {companionPeers.length > 0 && (
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Connected ({companionPeers.length})</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">Connected ({companionPeers.length})</span>
                     <ul className="flex flex-col gap-1">
                       {companionPeers.map((p) => (
                         <li key={p.peerId} className="flex items-center justify-between px-2 py-1.5 rounded bg-black/30 border border-white/10">
-                          <span className="text-[10px] font-mono text-zinc-200">{p.label}</span>
+                          <span className="text-xs font-semibold text-zinc-200">{p.label}</span>
                           <button
                             type="button"
                             onClick={() => kickXrPeer(p.peerId)}
                             aria-label={`Disconnect ${p.label}`}
-                            className="px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-200 text-[8px] font-black uppercase tracking-widest"
+                            className="px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-200 text-xs font-bold uppercase tracking-wider"
                           >
                             Kick
                           </button>
@@ -624,6 +803,10 @@ export const Shell: React.FC = () => {
       {/* Crash-recovery offer for the editor autosave (top-center; renders null
           when there is nothing to recover). */}
       <AutosaveRecoveryNotice />
+      {/* Standing explanation when this page cannot run AudioWorklet at all
+          (plain-http LAN address, or a browser without it). Renders null on a
+          page that is fine, and once dismissed for this session. */}
+      <AudioWorkletUnavailableNotice secureUrl={lanHttpsUrl || null} />
       {/* Startup HOME landing (card grid per workspace). Auto-opened by App on
           returning launches; also reachable from the app menu. */}
       {homeOpen && (

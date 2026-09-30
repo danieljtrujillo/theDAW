@@ -23,15 +23,32 @@ import OrbDripTrail from './components/audio/OrbDripTrail';
 import { OrbStatusFloat } from './components/audio/OrbStatusFloat';
 import { useBottomPanelStore } from './state/bottomPanelStore';
 import { useAssistantActivityStore } from './state/assistantActivityStore';
+import { ASSISTANT_FOCUS_EVENT } from './state/assistantReferenceStore';
 import { logInfo, logWarn, useLogStore, type LogLevel } from './state/logStore';
-import { handletheDAWAction } from './orb-kit/actionHandlers';
+import { handletheDAWActionResult } from './orb-kit/actionHandlers';
 import { useStatusBarStore } from './state/statusBarStore';
 import { useLibraryStore } from './state/libraryStore';
 import { useModuleStore } from './state/moduleStore';
 import { useDownloadStore } from './state/downloadStore';
+import { useSoundBankStore } from './state/soundBankStore';
 import { useLayoutPrefs } from './state/layoutPrefsStore';
-import { triggerPianoNoteFromMidi } from './lib/pianoTrigger';
-import { publishMidi } from './state/midiBus';
+import { startHeldNote, startRoutedNote, stopHeldNote, type HeldNote } from './lib/pianoTrigger';
+import { createKeyboardMonitor, monitorVoice, monitoredTrack } from './lib/keyboardMonitor';
+import { publishMidi, subscribeToMidi } from './state/midiBus';
+import { isMidiMessageIgnored } from './state/midiIgnoreStore';
+// Live MIDI capture (see the mount below). Every module here is already in this
+// file's eager import graph via Shell/pianoTrigger EXCEPT `recordingStore`,
+// which has to be loaded anyway for anything to record.
+import { startMidiCapture } from './lib/midiCapture';
+import { currentPassPunchWindow, useRecordingStore } from './state/recordingStore';
+import { beginUndoStep, computePeaks, useEditorStore } from './state/editorStore';
+import { currentTransportSec } from './state/liveMixer';
+import { renderStepNotesToBlob } from './lib/midiSynth';
+import { midiRenderSig } from './lib/midiRender';
+import { withRenderTurn } from './state/midiRenderQueue';
+import { configureAppMidiRenderQueue } from './state/appMidiRenderer';
+import { ensureSoundfontReady, getActiveProgram, getGlobalVoice, isSoundfontActive } from './lib/soundfontEngine';
+import { postStatus } from './state/statusNoticeStore';
 import { startQuestMidi, stopQuestMidi } from './state/questMidiClient';
 import { startXrControl, stopXrControl, registerXrControlSource } from './state/xrControlClient';
 import { djControlSource } from './state/xrControlDjSource';
@@ -45,7 +62,6 @@ import { startSwayRouting } from './state/swayRouting';
 import { startSwaySurface, swaySurfaceConsumes } from './state/swaySurface';
 import { startSwayImportDriver } from './state/swayImportStore';
 import { useSwaySurfaceStore } from './state/swaySurfaceStore';
-import { detectProfileFromNames, AUDIMA_SWAY_ID } from './state/controllerProfiles';
 import { poseControlSource, startPoseXrMirror } from './state/poseControlSource';
 import { startPoseRouting } from './state/poseRouting';
 import { startXrViz, stopXrViz } from './state/xrViz';
@@ -58,10 +74,17 @@ import { useFeatureToggleStore } from './state/featureToggleStore';
 import { useGanStore } from './state/ganStore';
 import { useProjectStore } from './state/projectStore';
 import { useAppUiStore } from './state/appUiStore';
+import { startRenderRunner } from './state/renderJobs';
+import { requireFeature } from './notices/featureGateStore';
 import { notifyPlacesChanged } from './lib/placesClient';
 
 import './orb-kit/styles/gantasmo-orb.css';
 import './orb-kit/chat/orb-chat.css';
+
+// The MIDI render queue reads the app's own picker and live plan from the
+// moment the app loads, so an assistant note edit made before EDIT was ever
+// opened decides whether to render from what EDIT will play.
+configureAppMidiRenderQueue();
 
 export default function App() {
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
@@ -103,6 +126,10 @@ export default function App() {
   useEffect(() => {
     if (!isBackendReady) return;
     void rehydrateDownloads();
+    // The sound bank list, once the backend answers: a bank downloaded in an
+    // earlier session is listed (the backend lists what the download manager
+    // installed) and its playback gains are registered before anything plays.
+    void useSoundBankStore.getState().refresh();
   }, [isBackendReady, rehydrateDownloads]);
 
   // Health polling lives here so it runs during the boot screen.
@@ -215,6 +242,16 @@ export default function App() {
     if (isAssistantOpen) setAssistantMounted(true);
   }, [isAssistantOpen]);
 
+  // F17 — something somewhere added a reference chip and wants the composer.
+  // Opening the panel is ALL this does: a reference is not a request, so no
+  // message is ever sent, and an already-open panel is left exactly as it is
+  // rather than being toggled shut by a second "Reference…" click.
+  useEffect(() => {
+    const onFocus = () => setIsAssistantOpen(true);
+    window.addEventListener(ASSISTANT_FOCUS_EVENT, onFocus);
+    return () => window.removeEventListener(ASSISTANT_FOCUS_EVENT, onFocus);
+  }, []);
+
   // App-wide TEXT size: publish the persisted scale as the `--text-scale` CSS
   // variable. index.css multiplies every font-size utility by it (font-size
   // ONLY — layout, padding, icons, gaps are untouched). 1.0 = native (no
@@ -227,10 +264,10 @@ export default function App() {
   }, [uiScale]);
 
   // ── Global Web MIDI listener ───────────────────────────────────
-  // Any connected MIDI controller's note-on messages trigger the
-  // synthesizer voice exposed by PianoRoll (triggerPianoNoteFromMidi).
-  // Velocity is preserved 0-127. note-off events stop nothing —
-  // the synth voice has its own envelope that naturally decays.
+  // Any connected MIDI controller is monitored through lib/keyboardMonitor:
+  // each key sounds from its note-on to its note-off, held on while the
+  // sustain pedal (CC64) is down, in the armed MIDI track's instrument (the
+  // global picker's when none is armed). Velocity is preserved 0-127.
   // Hot-plug aware via MIDIAccess.onstatechange.
   const midiEnabled = useMidiTriggerStore((s) => s.enabled);
   // Which ports are let through (Settings -> Inputs & outputs). Re-attaching on
@@ -254,6 +291,22 @@ export default function App() {
     if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) return;
     let access: MIDIAccess | null = null;
     let cancelled = false;
+    const monitor = createKeyboardMonitor({
+      voice: () => {
+        const ed = useEditorStore.getState();
+        return monitorVoice(useRecordingStore.getState().armedTrackIds, ed.tracks, ed.clips, getGlobalVoice());
+      },
+      start: (key) => {
+        // With no EDIT track armed, a key claimed by the MIDI tab (its active part plays
+        // through a VST3 instrument, state/rollInstruments) plays that plugin.
+        const ed = useEditorStore.getState();
+        const routed = monitoredTrack(useRecordingStore.getState().armedTrackIds, ed.tracks, ed.clips)
+          ? null
+          : startRoutedNote(key.note, key.velocity);
+        return routed ?? startHeldNote(key.note, key.velocity, key.voice);
+      },
+      stop: (handle) => stopHeldNote(handle as HeldNote),
+    });
 
     const onMidiMessage = (e: MIDIMessageEvent) => {
       if (!e.data) return;
@@ -263,18 +316,31 @@ export default function App() {
       //    what to do with it. ONE Web MIDI listener, many readers.
       publishMidi(e.data);
 
-      // 2. Built-in piano-synth trigger on note-on. Skipped when the
-      //    user has muted MIDI audio triggering (VJ performers who
-      //    want the controller to drive effects only). The bus
-      //    publish above still runs, so visual effects keep reacting.
-      const [status, data1, data2] = e.data;
+      // 2. The keyboard monitor. This reads raw `e.data` directly —
+      //    it is NOT a bus subscriber, so publishMidi's own ignore
+      //    filter (midiBus.ts) never sees it and the check has to be
+      //    repeated here. A message the Sway surface consumes, or one
+      //    on the DJ MIDI map's ignore list, never reaches it. A
+      //    note-on is also skipped while the user has muted MIDI
+      //    audio triggering (VJ performers who want the controller to
+      //    drive effects only); note-offs and the pedal always pass,
+      //    so a key held across the mute still releases. The bus
+      //    publish above still runs (minus ignored controls), so
+      //    visual effects keep reacting.
+      const [status, , data2] = e.data;
       const command = status & 0xf0;
-      if (command === 0x90 && data2 > 0 && !isMidiAudioMuted() && !swaySurfaceConsumes(e.data)) {
+      const noteOn = command === 0x90 && data2 > 0;
+      if (
+        (command === 0x80 || command === 0x90 || command === 0xb0) &&
+        !(noteOn && isMidiAudioMuted()) &&
+        !swaySurfaceConsumes(e.data) &&
+        !isMidiMessageIgnored(e.data)
+      ) {
         try {
-          triggerPianoNoteFromMidi(data1, data2);
+          monitor.message(e.data);
         } catch (err) {
           /* a single failed voice should not silence the whole bus */
-          console.error('[midi] note trigger failed:', err);
+          console.error('[midi] keyboard monitor failed:', err);
         }
       }
     };
@@ -297,9 +363,10 @@ export default function App() {
       // And the {id,label} pairs for the I/O menu: names alone are not
       // identities (two identical controllers collide, and unplug/replug
       // reorders the list).
-      const outs: Array<{ id: string; name: string; send: (data: number[]) => void }> = [];
+      // A track's MIDI output stamps each message with the moment it sounds (state/midiOutBus).
+      const outs: Array<{ id: string; name: string; send: (data: number[], timestamp?: number) => void }> = [];
       a.outputs.forEach((out) => {
-        outs.push({ id: out.id, name: out.name ?? 'unnamed', send: (data) => out.send(data) });
+        outs.push({ id: out.id, name: out.name ?? 'unnamed', send: (data, timestamp) => out.send(data, timestamp) });
       });
       setMidiOutputPorts(outs);
       useIoDevicesStore.getState().setMidiPorts(ports);
@@ -336,6 +403,8 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      // Keys held when MIDI is turned off or the ports change would get no note-off.
+      monitor.panic();
       if (access) {
         access.inputs.forEach((input) => {
           input.onmidimessage = null;
@@ -347,15 +416,83 @@ export default function App() {
     };
   }, [midiEnabled, midiInputKey]);
 
+  // ── Live MIDI capture ──────────────────────────────────────────
+  // The bus above carries every inbound message; this is the one thing that
+  // KEEPS one. A pass on an armed MIDI-instrument track becomes a piano-roll
+  // clip at the transport second it was played at (lib/midiCapture).
+  //
+  // Mounted once, unconditionally, and deliberately NOT gated on `midiEnabled`:
+  // that flag guards `requestMIDIAccess` only, while the bus also carries the
+  // Quest bridge and the synthetic Sway surface — a pass played through either
+  // is still a pass. Live monitoring (lib/keyboardMonitor, above) is
+  // untouched: capture reads the bus, it does not consume it.
+  useEffect(
+    () =>
+      startMidiCapture({
+        subscribeMidi: subscribeToMidi,
+        subscribeStatus: (cb) => useRecordingStore.subscribe(() => { cb(); }),
+        status: () => useRecordingStore.getState().status,
+        armedTrackIds: () => useRecordingStore.getState().armedTrackIds,
+        tracks: () => useEditorStore.getState().tracks,
+        clips: () => useEditorStore.getState().clips,
+        transportSec: currentTransportSec,
+        bpm: () => useEditorStore.getState().bpm,
+        // THE window this pass was pressed with, straight off `recordingStore`
+        // — not a restatement of its derivation. That store freezes the window
+        // at the PRESS, and the capture opens on the flip into `recording`,
+        // which for a pass with a count-in is a bar or more later: deriving it
+        // again here would crop the notes to a window the take crop is not
+        // using the moment the user touched the loop region during the count.
+        punchWindow: currentPassPunchWindow,
+        // The last term of lib/clipProgram's `effectiveProgramFor`, resolved the
+        // same way its MIDI-insert path does: the picker's program only while
+        // soundfonts are on.
+        globalProgram: () => (isSoundfontActive() ? getActiveProgram() : undefined),
+        ensureSoundfontReady,
+        beginUndoStep,
+        addClipToTrack: (clip) => useEditorStore.getState().addClipToTrack(clip),
+        applyClipRender: (id, updates, peaks) => useEditorStore.getState().applyClipRender(id, updates, peaks),
+        clipWindow: (id) => useEditorStore.getState().clips.find((c) => c.id === id),
+        // A take's first render takes the MIDI render queue's turn, so it never
+        // overlaps another render, and records what it was made from.
+        renderStepNotes: (notes, bpm, totalSteps, opts) =>
+          withRenderTurn('', 'MIDI take', () => renderStepNotesToBlob(notes, bpm, totalSteps, opts)),
+        renderSig: midiRenderSig,
+        computePeaks,
+        postStatus,
+      }),
+    [],
+  );
+
   // Auto-enable the Sway DAW-control mirror when the Audima Sway is the detected
   // controller — until the user manually toggles it, after which their choice
   // sticks (autoEnable is a no-op once touched).
+  //
+  // FE-025: controllerProfiles.ts is a 400+ line static table of every known
+  // DJ/MIDI controller's control layout, only ever consulted here (once a MIDI
+  // device is actually connected) — never during initial render. A DYNAMIC
+  // import keeps it out of the first-paint bundle, the same pattern the render
+  // runner below uses for WaveformEditor's runRenderJob.
   const midiInputNames = useMidiDevicesStore((s) => s.inputs);
   useEffect(() => {
     if (!midiInputNames.length) return;
-    if (detectProfileFromNames(midiInputNames)?.id === AUDIMA_SWAY_ID) {
-      useSwaySurfaceStore.getState().autoEnable();
-    }
+    let cancelled = false;
+    void import('./state/controllerProfiles')
+      .then(({ detectProfileFromNames, AUDIMA_SWAY_ID }) => {
+        if (cancelled) return;
+        if (detectProfileFromNames(midiInputNames)?.id === AUDIMA_SWAY_ID) {
+          useSwaySurfaceStore.getState().autoEnable();
+        }
+      })
+      .catch((err: unknown) => {
+        // A failed chunk fetch (stale build after a deploy, dev server gone)
+        // must not fail silently: without this, connecting the Audima Sway
+        // would just never auto-enable its mirror with no diagnostic at all.
+        console.warn('[controllerProfiles] failed to load for Sway auto-detect:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [midiInputNames]);
 
   // Quest MIDI bridge (loopMIDI-free): when MIDI is on, open the WebSocket to
@@ -434,6 +571,42 @@ export default function App() {
     return stop;
   }, []);
 
+  // ONE render runner for the whole app. The timeline's offline renders — the
+  // master mixdown, the selection bounce, the master and per-track VST freezes —
+  // are jobs on `state/renderJobs` now, and something has to drain that queue.
+  // It cannot be EDIT: DAWCenterPanel unmounts the tab on every switch, and a
+  // mixdown the user started must keep going while they go and look at MIX.
+  // Starting it here also means a job left `running` by a reload is failed on
+  // the next boot instead of wedging the queue forever (see startRenderRunner).
+  //
+  // `runRenderJob` is reached through a DYNAMIC import: a static one would pull
+  // the whole EDIT chunk — wavesurfer, the effect stacks, the whole timeline —
+  // into the first-paint bundle that the lazy() in DAWCenterPanel exists to keep
+  // it out of. Nothing can enqueue a job without EDIT having been opened first,
+  // so by the time this resolves the chunk is already in memory.
+  useEffect(() => startRenderRunner({
+    run: async (job, onProgress, isCancelled) => {
+      let runRenderJob;
+      try {
+        ({ runRenderJob } = await import('./components/audio/WaveformEditor'));
+      } catch (e) {
+        // The chunk fetch itself failed — a stale build after a deploy, or the
+        // dev server gone. `runRenderJob` never gets to raise its own notice, so
+        // without this the job would land `failed` with a message nobody renders.
+        const message = e instanceof Error ? e.message : String(e);
+        requireFeature({
+          id: 'render:runner-unavailable',
+          kind: 'error',
+          title: 'Render engine could not be loaded',
+          message,
+          autoDismissMs: 10000,
+        });
+        throw e;
+      }
+      return runRenderJob(job, onProgress, isCancelled);
+    },
+  }), []);
+
   // OS file associations (desktop): a double-clicked .tasmo / .gan is delivered
   // by the Electron main process; route it to the right opener and show MIX.
   useEffect(() => {
@@ -492,9 +665,17 @@ export default function App() {
     };
   }, []);
 
-  const handleAssistantAction = useCallback((action: { type: string; payload?: any }) => {
-    const result = handletheDAWAction(action);
-    logInfo('assistant', `Action: ${action.type} → ${result}`);
+  // The host hook for a DAW action. It dispatches through the RESULT form so
+  // this log says what actually happened: the plain dispatcher answers with the
+  // message alone, which used to let a miss read as "Executed action: X".
+  // Awaited because the editor tools answer only once their audio re-render is
+  // done — without the await this logs "[object Promise]". The result is
+  // returned for hosts that read it; the assistant panel runs its own dispatch
+  // (calling this prop for a result would execute every action twice).
+  const handleAssistantAction = useCallback(async (action: { type: string; payload?: any }) => {
+    const result = await handletheDAWActionResult(action);
+    logInfo('assistant', `Action: ${action.type} → ${result.ok ? 'ok' : 'FAILED'}: ${result.message}`);
+    return result;
   }, []);
 
   // The loading screen is gated purely on real backend readiness — it lifts the

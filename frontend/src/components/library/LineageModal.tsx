@@ -29,9 +29,48 @@ export interface GraphEdge {
 interface GraphPayload {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Set by the per-track route when the family was larger than its node cap. */
+  truncated?: boolean;
+  node_cap?: number;
 }
 
 type LineageTab = 'track' | 'genealogy' | 'graph3d';
+
+/** Why the two library-wide tabs are refused, said on the controls themselves. */
+export const WHOLE_LIBRARY_REFUSED =
+  'library too large for the whole-library graph; use the per-track graph';
+
+/** The note carrying that reason — named so the refused tabs can point at it. */
+export const WHOLE_LIBRARY_REFUSED_ID = 'lineage-whole-library-refused';
+
+/**
+ * Which tab opens. A song opens on its own graph; only a library-wide open
+ * starts on the genealogy — and only where the library can be drawn at all,
+ * because that tab is what fires the whole-library request.
+ */
+export const defaultLineageTab = (
+  rootEntryId: string | null,
+  wholeLibraryAllowed: boolean,
+): LineageTab => (rootEntryId || !wholeLibraryAllowed ? 'track' : 'genealogy');
+
+/**
+ * Whether the whole-library graph — the 128 MB answer — is fetched.
+ *
+ * It is the MOUNT of a library-wide tab that fires it, so the gate is the tab
+ * actually being selected, not merely the component being on screen. On a
+ * library too big to draw, `wholeLibraryAllowed` is false and no tab fires it.
+ */
+export const shouldFetchWholeLibrary = (
+  active: boolean,
+  visible: boolean,
+  tab: LineageTab,
+  wholeLibraryAllowed: boolean,
+): boolean =>
+  active && visible && wholeLibraryAllowed && (tab === 'genealogy' || tab === 'graph3d');
+
+/** One line when the per-track answer was cut at the server's node cap. */
+export const truncationNotice = (payload: GraphPayload | null): string | null =>
+  payload?.truncated ? `Showing the nearest ${payload.nodes.length} of a larger family.` : null;
 
 interface LineageModalProps {
   open: boolean;
@@ -48,6 +87,12 @@ interface LineageModalProps {
    *  of the bulk graph endpoint (rebuild only if the payload changed).
    *  Defaults to true so modal callers keep their behaviour. */
   visible?: boolean;
+  /** False on a library too large to draw at once: the genealogy and 3D-graph
+   *  tabs are refused (visibly, with the reason) and the whole-library request
+   *  is never made, while the per-track graph — bounded by the server's node
+   *  cap — is offered exactly as it always was. Defaults to true, so every
+   *  existing caller keeps its behaviour. */
+  wholeLibraryAllowed?: boolean;
 }
 
 type VizPreset =
@@ -324,9 +369,9 @@ const CLUSTER_TINT_BY_SOURCE: Record<string, string> = {
   other: '#94a3b8',
 };
 
-export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, onClose, mode = 'modal', visible = true }) => {
+export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, onClose, mode = 'modal', visible = true, wholeLibraryAllowed = true }) => {
   const embedded = mode === 'embedded';
-  const [tab, setTab] = useState<LineageTab>('track');
+  const [tab, setTab] = useState<LineageTab>(() => defaultLineageTab(rootEntryId, wholeLibraryAllowed));
   const [perTrack, setPerTrack] = useState<GraphPayload | null>(null);
   const [libraryGraph, setLibraryGraph] = useState<GraphPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -425,8 +470,8 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
   // When opened library-wide, jump straight to the genealogy view.
   useEffect(() => {
     if (!active) return;
-    setTab(rootEntryId ? 'track' : 'genealogy');
-  }, [active, rootEntryId]);
+    setTab(defaultLineageTab(rootEntryId, wholeLibraryAllowed));
+  }, [active, rootEntryId, wholeLibraryAllowed]);
 
   // Fetch the per-track BFS.
   useEffect(() => {
@@ -472,10 +517,9 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
       });
   }, []);
   useEffect(() => {
-    if (!active || !visible) return;
-    if (tab !== 'genealogy' && tab !== 'graph3d') return;
+    if (!shouldFetchWholeLibrary(active, visible, tab, wholeLibraryAllowed)) return;
     fetchLibraryGraph();
-  }, [active, visible, tab, fetchLibraryGraph]);
+  }, [active, visible, tab, wholeLibraryAllowed, fetchLibraryGraph]);
 
   // The embedded fullscreen overlay portals to document.body, so it
   // escapes the warm-mounted tab's display:none wrapper. A programmatic
@@ -515,6 +559,14 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
       )}
       <div className={modalShellClass}>
+        {!wholeLibraryAllowed && (
+          <p
+            id={WHOLE_LIBRARY_REFUSED_ID}
+            className="shrink-0 border-b border-white/5 px-4 py-1 text-[9px] font-mono text-amber-200/80"
+          >
+            {WHOLE_LIBRARY_REFUSED}
+          </p>
+        )}
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
           <div className="flex items-center gap-2">
@@ -550,10 +602,24 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
                 </button>
               </>
             )}
-            <TabButton active={tab === 'genealogy'} onClick={() => setTab('genealogy')} icon={<GitFork className="w-3 h-3" />}>
+            <TabButton
+              active={tab === 'genealogy'}
+              onClick={() => setTab('genealogy')}
+              icon={<GitFork className="w-3 h-3" />}
+              disabled={!wholeLibraryAllowed}
+              title={wholeLibraryAllowed ? undefined : WHOLE_LIBRARY_REFUSED}
+              describedBy={WHOLE_LIBRARY_REFUSED_ID}
+            >
               Genealogy
             </TabButton>
-            <TabButton active={tab === 'graph3d'} onClick={() => setTab('graph3d')} icon={<Workflow className="w-3 h-3" />}>
+            <TabButton
+              active={tab === 'graph3d'}
+              onClick={() => setTab('graph3d')}
+              icon={<Workflow className="w-3 h-3" />}
+              disabled={!wholeLibraryAllowed}
+              title={wholeLibraryAllowed ? undefined : WHOLE_LIBRARY_REFUSED}
+              describedBy={WHOLE_LIBRARY_REFUSED_ID}
+            >
               3D graph
             </TabButton>
             {(tab === 'genealogy' || tab === 'graph3d') && (
@@ -652,6 +718,14 @@ export const LineageModal: React.FC<LineageModalProps> = ({ open, rootEntryId, o
             {tab === 'track' && rootEntryId && perTrack && (
               <TrackTreeView root={rootEntryId} payload={perTrack} />
             )}
+            {tab === 'track' && truncationNotice(perTrack) && (
+              <p
+                role="status"
+                className="absolute inset-x-0 top-0 px-4 py-1 text-[9px] font-mono text-amber-200/80"
+              >
+                {truncationNotice(perTrack)}
+              </p>
+            )}
             {tab === 'genealogy' && libraryGraph && (
               <GenealogyView payload={libraryGraph} appearance={appearance} controlsRef={genControls} highlightSet={highlightSet} />
             )}
@@ -730,15 +804,35 @@ interface TabButtonProps {
   onClick: () => void;
   icon: React.ReactNode;
   children: React.ReactNode;
+  /** A tab that cannot be opened here.
+   *
+   *  NOT the native `disabled` attribute: that takes the control out of the
+   *  tab order, so a keyboard or screen-reader user never reaches it and
+   *  never hears why it is refused — and `title` on a disabled button is not
+   *  surfaced either. It stays focusable, announces itself refused with
+   *  `aria-disabled`, points at the visible note with `aria-describedby`, and
+   *  the handler is what actually refuses the click. */
+  disabled?: boolean;
+  title?: string;
+  describedBy?: string;
 }
 
-const TabButton: React.FC<TabButtonProps> = ({ active, onClick, icon, children }) => (
+const TabButton: React.FC<TabButtonProps> = ({ active, onClick, icon, children, disabled = false, title, describedBy }) => (
   <button
-    onClick={onClick}
+    type="button"
+    onClick={() => {
+      if (disabled) return;
+      onClick();
+    }}
+    aria-disabled={disabled || undefined}
+    aria-describedby={disabled ? describedBy : undefined}
+    title={title}
     className={`flex items-center gap-1.5 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border transition-colors ${
-      active
-        ? 'bg-purple-500/15 border-purple-500/40 text-purple-200'
-        : 'border-white/5 text-zinc-500 hover:text-zinc-300'
+      disabled
+        ? 'border-white/5 text-zinc-600 opacity-60 cursor-not-allowed'
+        : active
+          ? 'bg-purple-500/15 border-purple-500/40 text-purple-200'
+          : 'border-white/5 text-zinc-500 hover:text-zinc-300'
     }`}
   >
     {icon}

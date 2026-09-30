@@ -15,6 +15,7 @@ from backend.lib.audio_depth import (
     probe_depth,
     widest,
 )
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 router = APIRouter()
@@ -128,14 +129,15 @@ _librubberband: bool | None = None
 
 
 def _has_librubberband() -> bool:
-    """Whether the FFmpeg on PATH was built with the (GPL) rubberband filter.
+    """Whether the resolved FFmpeg (``backend.lib.ffmpeg_tools``) was built
+    with the (GPL) rubberband filter.
     Cached after the first probe. Rubberband gives high-quality independent
     time/pitch; without it we fall back to built-in atempo + resample tricks."""
     global _librubberband
     if _librubberband is None:
         try:
             out = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-filters"],
+                [ffmpeg_tools.ffmpeg_exe(), "-hide_banner", "-filters"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -180,8 +182,54 @@ def _validate_param(value: float, bounds: tuple[float, float], name: str) -> flo
     return val
 
 
+def _afftdn_delay_samples(sample_rate: int) -> int:
+    """Exact algorithmic group delay ffmpeg's ``afftdn`` introduces.
+
+    Derived from ffmpeg's own source (libavfilter/af_afftdn.c,
+    ``config_input``): ``sample_advance = sample_rate // 80`` (int
+    truncation), ``window_length = 3 * sample_advance``, and its overlap-add
+    output delay is ``window_length - sample_advance = 2 * sample_advance``
+    samples — independent of ``nr``. Verified against real ffmpeg with a
+    single-sample impulse: 44100 Hz -> 1102 samples (exact). See the
+    identical, more fully documented copy of this derivation in
+    ``backend/modules/enhance/router.py`` (duplicated rather than imported
+    across families to keep each family's write set self-contained).
+    """
+    sample_advance = sample_rate // 80
+    return 2 * sample_advance
+
+
+# The only four effects whose filter graph reads ``sample_rate`` (see
+# ``_build_filter``): mastering_chain / vocal_processing / loudnorm's
+# resample-back target, and denoise's afftdn delay compensation. Gating the
+# probe to these means a rate-independent effect (volume, highpass, ...)
+# never depends on ffprobe being installed.
+_RATE_DEPENDENT_EFFECTS = {"mastering_chain", "vocal_processing", "loudnorm", "denoise"}
+
+
+def _probe_sample_rate(path: Path) -> int:
+    """Source sample rate via ffprobe.
+
+    Raises instead of silently defaulting to 44.1 kHz when ffprobe is
+    missing or the probe fails (``probe_file`` never raises, it returns
+    ``{}`` instead) — a wrong assumed rate here would shift the ``denoise``
+    effect's afftdn delay compensation and the loudnorm chains' resample
+    target away from the real source rate. A loud failure beats quiet
+    corruption.
+    """
+    from backend.modules.analysis.ffprobe import probe_file
+
+    info = probe_file(path)
+    rate = info.get("_summary", {}).get("sample_rate")
+    if not rate:
+        raise RuntimeError(
+            f"Could not probe sample rate for {path}: ffprobe returned {info!r}"
+        )
+    return int(rate)
+
+
 def _build_filter(
-    effect: str, params: dict[str, float], output_format: str = "wav"
+    effect: str, params: dict[str, float], output_format: str, sample_rate: int
 ) -> list[str]:
     """Build FFmpeg audio filter arguments. Returns ['-af', 'filter_string'] or more complex args."""
     if effect == "mastering_chain":
@@ -193,12 +241,18 @@ def _build_filter(
             f"anequalizer=c0 f=40 w=80 g={low_boost} t=1|c0 f=10000 w=5000 g={high_boost} t=2,"
             f"compand=attacks=0.001:decays=0.3:points=-80/-80|-40/-20|-20/-10|0/-5,"
             f"alimiter=limit={limiter},"
-            f"loudnorm=I={lufs}:LRA=7:TP=-1"
+            f"loudnorm=I={lufs}:LRA=7:TP=-1,"
+            f"aresample={sample_rate}"
         )
         # No codec here: the caller picks one from the source's depth, with a
         # 24-bit floor for this effect (see MASTERING_FLOOR). A PCM codec name
         # is only valid in a WAV container anyway — every other format lets
         # FFmpeg pick (mp3 → libmp3lame, aac → aac, …).
+        #
+        # loudnorm only operates at 192 kHz — ffmpeg silently inserts an
+        # implicit resampler before it, and its OUTPUT stays at 192 kHz
+        # unless resampled back explicitly (see the identical fix/comment in
+        # enhance/router.py's ``_studio_enhance``).
         return ["-af", af]
 
     elif effect == "compression":
@@ -229,7 +283,8 @@ def _build_filter(
             f"highpass=f={hp},"
             f"anequalizer=c0 f=200 w=100 g=-2 t=0|c0 f=3000 w=1000 g={boost} t=1,"
             f"compand=attacks=0.1:decays=0.3:points=-80/-80|-30/-10|0/-3|20/-0.5,"
-            f"loudnorm=I={lufs}:LRA=11:TP=-1.5"
+            f"loudnorm=I={lufs}:LRA=11:TP=-1.5,"
+            f"aresample={sample_rate}"
         )
         return ["-af", af]
 
@@ -278,15 +333,31 @@ def _build_filter(
     elif effect == "loudnorm":
         lufs = params["targetLUFS"]
         tp = params["truePeak"]
-        return ["-af", f"loudnorm=I={lufs}:LRA=7:TP={tp}"]
+        return ["-af", f"loudnorm=I={lufs}:LRA=7:TP={tp},aresample={sample_rate}"]
 
     elif effect == "lowpass":
         freq = params["frequency"]
         return ["-af", f"lowpass=f={freq}"]
 
     elif effect == "pitch_shift":
-        shift = params["shift"]
-        return ["-af", f"afreqshift=shift={shift}"]
+        # `shift` is in cents and the effect must keep tempo. afreqshift was the
+        # wrong filter twice over: it is a linear frequency shifter (every
+        # partial moves by the same Hz, so harmonics stop being harmonic) and it
+        # takes Hz, so the cents value was being fed in as a Hz offset.
+        cents = params["shift"]
+        pitch_scale = 2.0 ** (cents / 1200.0)
+        if _has_librubberband():
+            return ["-af", f"rubberband=tempo=1.0:pitch={pitch_scale:.6f}"]
+        # Same built-in fallback as time_pitch with tempo held at 1.0:
+        # asetrate shifts pitch and tempo together, atempo undoes the tempo.
+        base = 44100
+        af = (
+            f"aresample={base},"
+            f"asetrate={int(round(base * pitch_scale))},"
+            f"{_atempo_chain(1.0 / pitch_scale)},"
+            f"aresample={base}"
+        )
+        return ["-af", af]
 
     elif effect == "time_pitch":
         tempo = params["tempo"]
@@ -332,7 +403,16 @@ def _build_filter(
 
     elif effect == "denoise":
         nr = params["noiseReduction"]
-        return ["-af", f"afftdn=nr={nr}"]
+        # afftdn has a real algorithmic group delay (see
+        # ``_afftdn_delay_samples``) that otherwise leaves the whole render
+        # ~25ms late relative to the input. apad BEFORE afftdn, then trim
+        # the same amount off the head afterward — apad first so the trim
+        # doesn't drop the LAST `delay` samples of real tail content
+        # (afftdn never gets to flush them without it). Same pattern as
+        # enhance/router.py's ``_neural_denoise``.
+        delay = _afftdn_delay_samples(sample_rate)
+        chain = f"apad=pad_len={delay},afftdn=nr={nr}"
+        return ["-af", f"{chain},atrim=start_sample={delay},asetpts=PTS-STARTPTS"]
 
     elif effect == "declick":
         w = params["windowSize"]
@@ -401,12 +481,6 @@ async def studio_process(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    # Build filter args
-    try:
-        filter_args = _build_filter(effect, validated, output_format)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
     mime_types = {
         "wav": "audio/wav",
         "flac": "audio/flac",
@@ -427,6 +501,26 @@ async def studio_process(
             while chunk := await audio.read(1 << 20):
                 f.write(chunk)
 
+        # Build filter args. Only the rate-dependent effects need the real
+        # source sample rate (denoise's afftdn delay compensation, and the
+        # loudnorm chains' resample-back target — see
+        # _afftdn_delay_samples / _probe_sample_rate); gating the probe to
+        # just those keeps a rate-independent effect (e.g. volume) working
+        # even when ffprobe is not installed, and a probe failure on one of
+        # the four surfaces as a real error instead of an opaque 500.
+        try:
+            sample_rate = (
+                await asyncio.to_thread(_probe_sample_rate, input_path)
+                if effect in _RATE_DEPENDENT_EFFECTS
+                else 0
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        try:
+            filter_args = _build_filter(effect, validated, output_format, sample_rate)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # ffmpeg's WAV default is pcm_s16le, so without this a float upload
         # came back requantized from an effect that only touched its tone. A
         # mastered render is a delivery-grade file and keeps 24-bit as a floor;
@@ -439,8 +533,9 @@ async def studio_process(
             else ffmpeg_pcm_args(widest(probe_depth(input_path), floor), output_format)
         )
 
+        resolution = await ffmpeg_tools.aresolve()
         cmd = [
-            "ffmpeg",
+            resolution.build.ffmpeg if resolution.build else "ffmpeg",
             "-y",
             "-i",
             str(input_path),
@@ -448,6 +543,9 @@ async def studio_process(
             *depth_args,
             str(output_path),
         ]
+        problem = ffmpeg_tools.soxr_problem(cmd, resolution)
+        if problem:
+            raise HTTPException(status_code=500, detail=problem)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -461,27 +559,25 @@ async def studio_process(
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(status_code=504, detail="FFmpeg timed out after 600s")
 
         if proc.returncode != 0:
             err = (stderr or b"").decode("utf-8", errors="replace")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(
                 status_code=500,
                 detail=f"FFmpeg error: {err[-500:] if err else 'unknown error'}",
             )
 
         if not output_path.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="FFmpeg produced no output")
 
         # Read the entire output into memory so the temp dir can be cleaned
         # immediately.  This avoids Vite-proxy streaming issues where
         # FileResponse's chunked pipe breaks mid-transfer for large files,
         # causing net::ERR_FAILED in the browser.
-        output_bytes = output_path.read_bytes()
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        # read_bytes() is blocking file I/O — offload to a thread so it
+        # doesn't stall the event loop for the duration of the read.
+        output_bytes = await asyncio.to_thread(output_path.read_bytes)
 
         return Response(
             content=output_bytes,
@@ -490,8 +586,5 @@ async def studio_process(
                 "Content-Disposition": f'attachment; filename="processed.{output_ext}"',
             },
         )
-    except HTTPException:
-        raise
-    except Exception:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
+    finally:
+        await asyncio.to_thread(shutil.rmtree, tmp_dir, ignore_errors=True)

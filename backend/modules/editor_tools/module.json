@@ -1,0 +1,10 @@
+{
+  "name": "editor_tools",
+  "label": "Editor Tools",
+  "enabled": true,
+  "icon": "Ruler",
+  "sidebar": false,
+  "api_prefix": "/api/editor-tools",
+  "backend": true,
+  "description": "Measuring tools for the Edit timeline: analyze a clip (onsets, tempo, key, peak/RMS), detect its tempo, compare MIDI note starts against audio onsets to get the offset to nudge by, and time-stretch audio to a ratio or a tempo without moving its pitch (ffmpeg atempo chain). Reuses the rhythm engine for tempo and the analysis module's Krumhansl key detection; no model."
+}

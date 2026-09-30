@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export interface LoraSlot {
   name: string;
@@ -441,6 +442,7 @@ export const useGenerateParamsStore = create<ParamsStore>()(persist((set) => ({
   })),
 }), {
   name: 'thedaw-generate-params-v1',
+  storage: persistStorage(),
   // Only the model choice persists. It used to reset to 'medium' on every
   // reload, so a user who had switched to 'small' (the only ungated model on
   // a fresh install) silently went back to requesting the gated one — and the

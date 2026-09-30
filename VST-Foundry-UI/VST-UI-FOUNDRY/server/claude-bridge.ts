@@ -16,6 +16,15 @@ import {
   normalizeRole,
   screenshotBase64,
 } from "./tools";
+import {
+  DEFAULT_PERMISSION_MODE,
+  PermissionMode,
+  ALLOWED_TOOLS,
+  decide,
+  denyKey,
+  normalizePermissionMode,
+  cliPermissionMode,
+} from "./permissions";
 
 // Claude session ids THIS sidecar process has created (captured from the CLI's
 // system/init session_id). The orb persists its claudeSessionId in the browser,
@@ -84,7 +93,7 @@ function findClaudeCmd(): string {
 }
 
 const CLAUDE_CMD = findClaudeCmd();
-const PROJECT_CWD = process.cwd();
+export const PROJECT_CWD = process.cwd();
 
 // Platform-conditional spawn of the `claude` CLI. On Windows the CLI is a .cmd
 // shim, so it must run via `cmd.exe /c`; elsewhere it is invoked directly.
@@ -316,7 +325,7 @@ const CLAUDE_TURN_STALL_MS = 300_000; // 5 min of stdout silence while busy
 // object stored in `activeSessions` under `relayId` (and aliased under Claude's
 // session_id) so the MCP relay endpoints resolve in-turn tool calls; its
 // `sseRes` is re-pointed at the current turn's response on every turn.
-interface ClaudeSession {
+export interface ClaudeSession {
   proc: ChildProcess;
   relayId: string;
   conversationId: string;
@@ -325,6 +334,26 @@ interface ClaudeSession {
   mcpConfigWritten: boolean;
   model: string;
   effort: string;
+  // Permission policy state (server/permissions.ts). `permissionMode` is the
+  // user's choice for THIS session; `sessionAllow` remembers tools the user
+  // approved for the rest of it; `denyCounts` backs the "declined 3x" rule,
+  // keyed on the identical (tool, input) pair.
+  permissionMode: PermissionMode;
+  // A mode change requested (setClaudeSessionPermissionMode) while the
+  // session was busy — the respawn it needs can't happen mid-turn, so it's
+  // stashed here and applied definitively (respawned) the moment the turn
+  // actually ends (finishClaudeTurn), independent of whether the CLIENT's
+  // next chat request happens to resend the same mode. null when there is no
+  // deferred change.
+  pendingPermissionMode: PermissionMode | null;
+  sessionAllow: Set<string>;
+  denyCounts: Map<string, number>;
+  // Tool name/input for every `can_use_tool` control_request currently bubbled
+  // to the orb (verdict "ask"), keyed by request_id. POST /api/assistant/
+  // control-response looks this up (and deletes it) so it can feed the user's
+  // answer back into recordClaudePermissionAnswer — the client only ever sends
+  // back {requestId, response}, never the original tool name/input.
+  pendingToolRequests: Map<string, { toolName: string; toolInput: unknown }>;
   activeSse: ExpressResponse | null;
   stdoutBuf: string;
   stderr: string;
@@ -378,18 +407,38 @@ function isClaudeProcAlive(proc: ChildProcess): boolean {
   return proc.exitCode === null && !proc.killed && !!proc.stdin && !proc.stdin.destroyed;
 }
 
-// Base CLI args (no resume / no mcp-config). EXACT set + order from the proven
-// per-message path — do NOT reorder or drop -p/--verbose/--include-partial-messages.
-function buildClaudeBaseArgs(useModel: string, useEffort: string): string[] {
+// Setting sources the CLI may load. `user` is deliberately EXCLUDED — this
+// machine's ~/.claude/settings.json sets permissions.defaultMode=bypassPermissions
+// plus ~290 Bash allow rules, so a live proof showed a Bash call running under
+// the user file's authority with NO control_request at all while an
+// mcp__vst-foundry__* call (no matching allow rule) still bubbled — the user's
+// file, not this app's policy, was deciding. Dropping `user` restores app-side
+// authority; `project`/`local` stay so repo-scoped settings still apply.
+// Mirrors theDAW's Python SETTING_SOURCES (backend/modules/assistant/
+// claude_session.py) verbatim, including the reasoning.
+const CLAUDE_SETTING_SOURCES = "project,local";
+
+// Base CLI args (no resume / no mcp-config). EXACT set + order ported from
+// theDAW's Python build_base_args (backend/modules/assistant/
+// claude_session.py) — do NOT reorder or drop members.
+//
+// Deliberately ABSENT: --dangerously-skip-permissions. Permissions are the
+// whole point of this policy layer; the host answers every prompt through
+// --permission-prompt-tool stdio + --permission-prompts host instead of the
+// CLI auto-approving everything.
+export function buildClaudeBaseArgs(useModel: string, useEffort: string, permissionMode: PermissionMode): string[] {
   const cmdArgs = [
     "--model", useModel,
-    "--dangerously-skip-permissions",
-    "--permission-prompt-tool", "stdio",
     "-p",
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--verbose",
     "--include-partial-messages",
+    "--permission-prompt-tool", "stdio",
+    "--permission-prompts", "host",
+    "--permission-mode", cliPermissionMode(permissionMode),
+    "--setting-sources", CLAUDE_SETTING_SOURCES,
+    "--allowedTools", ...ALLOWED_TOOLS,
   ];
   if (CLAUDE_VALID_EFFORTS.includes(useEffort)) cmdArgs.push("--effort", useEffort);
   // No --max-turns: the CLI has no such flag (v2.1.195) and must run the agentic
@@ -476,9 +525,25 @@ function armClaudeStallWatchdog(session: ClaudeSession): void {
 // End the in-flight turn: optionally emit a synthetic done (only when the child
 // died without a `result`), detach the SSE, mark idle, end the response, and
 // release the route awaiting turn completion. Does NOT kill the child.
-function finishClaudeTurn(
+export function finishClaudeTurn(
   session: ClaudeSession,
-  opts: { viaClose: boolean; exitCode?: number | null; viaStall?: boolean },
+  opts: {
+    viaClose: boolean;
+    exitCode?: number | null;
+    viaStall?: boolean;
+    // G5 audit round 3, item 2 (MAJOR): set ONLY by the child's own "error"/
+    // "close" handlers — the two paths where the CALLER tears down the
+    // session (teardown(..., doKill=false), since it assumes the child is
+    // "already dead" and skips killing it) immediately after this returns.
+    // Guards the deferred-mode respawn below: respawning there would swap
+    // session.proc to a brand-NEW child that the caller's doKill=false
+    // teardown then abandons — unreachable by teardown, the LRU reaper, and
+    // killAllClaudeSessions alike. An orphan CLI process, plus its MCP
+    // server. viaStall (self-heal after an interrupt) and a normal
+    // result-driven end do NOT set this — those paths keep the SAME live
+    // child and never teardown, so a respawn there is safe.
+    childDied?: boolean;
+  },
 ): void {
   if (!session.busy && !opts.viaClose) return;
   stopClaudeHeartbeat(session);
@@ -502,6 +567,11 @@ function finishClaudeTurn(
   }
   session.activeSse = null;
   session.busy = false;
+  // Any can_use_tool prompt still bubbled to the orb when this turn ended
+  // (close/stall/result) can never be answered — the requestId it was keyed
+  // under dies with the turn. Drop it so a later requestId collision (however
+  // unlikely) can't resolve a stale answer against the wrong tool/input.
+  session.pendingToolRequests.clear();
   session.lastActivity = Date.now();
   // FIX 8: this turn ended WITHOUT consuming a matching `result` (close/stall).
   // Resync the result FIFO so the NEXT turn's `result` matches (mirrors
@@ -515,6 +585,28 @@ function finishClaudeTurn(
     try { res.end(); } catch {}
   }
   if (resolver) resolver();
+  // G5 audit item 4: apply a permission-mode change deferred while this turn
+  // was busy (setClaudeSessionPermissionMode) NOW that the session is
+  // provably idle — respawn happens here unconditionally, rather than
+  // waiting on (and depending on) the client's next chat request happening
+  // to resend the same mode. Must run BEFORE releasing idle waiters below, so
+  // a queued turn that wakes immediately sees the already-respawned child.
+  // G5 item 2: NEVER when childDied — see opts.childDied's comment. If there
+  // is a next turn, its own dispatch-time check (streamClaude) respawns the
+  // freshly-created child with the right mode instead; a torn-down session
+  // has no "own mode" left to preserve, so the deferred value is simply
+  // dropped along with the rest of the session.
+  if (
+    !opts.childDied &&
+    session.pendingPermissionMode &&
+    session.pendingPermissionMode !== session.permissionMode
+  ) {
+    const nextMode = session.pendingPermissionMode;
+    session.pendingPermissionMode = null;
+    respawnClaudeSession(session, session.model, session.effort, nextMode);
+  } else {
+    session.pendingPermissionMode = null;
+  }
   // BCC parity: the slot just freed — wake the next queued turn (if any).
   releaseClaudeIdleWaiters(session);
 }
@@ -540,7 +632,114 @@ function writeClaudeInterrupt(session: ClaudeSession): void {
 // BCC's controlResolvers map; resolved from the stdout handler below.
 export const claudeControlWaiters = new Map<string, { resolve: (v: any) => void; timer: NodeJS.Timeout }>();
 
-function handleClaudeStdoutLine(session: ClaudeSession, data: any, rawLine: string): void {
+// Answer a control_request the CLI is BLOCKED on. Same envelope the orb's
+// answer route (POST /api/assistant/control-response) writes — the CLI cannot
+// tell whether the user or the policy replied.
+export function writeClaudeControlResponse(
+  session: ClaudeSession,
+  requestId: string,
+  response: Record<string, unknown>,
+): boolean {
+  const stdin = session.proc.stdin;
+  if (!stdin || stdin.destroyed) return false;
+  try {
+    stdin.write(
+      JSON.stringify({
+        type: "control_response",
+        response: { subtype: "success", request_id: requestId, response },
+      }) + "\n",
+    );
+    return true;
+  } catch (e: any) {
+    appendLog(`[Claude] control_response write failed id=${requestId}: ${e?.message || e}`);
+    return false;
+  }
+}
+
+// Change a live session's permission mode. G5 item 1 means every mode now
+// produces the IDENTICAL CLI argv (--permission-mode default, always — see
+// CLI_PERMISSION_MODES' comment in permissions.ts) — the respawn below is no
+// longer about applying a different spawn arg. It exists purely because
+// respawnClaudeSession is the ONLY writer of session.permissionMode (see its
+// comment), and this function calls it rather than mutating the field
+// directly, so the field only ever changes alongside an actual spawn.
+// Returns false for an unknown mode; the caller (POST /api/
+// assistant/permission-mode) turns that into a 400.
+//
+// A respawn mid-turn would kill the live streaming response (swap the child
+// out from under an in-flight SSE), so a change requested while the session
+// is busy is deferred rather than applied here: session.permissionMode stays
+// at the OLD (currently-running) value, and session.pendingPermissionMode
+// stores the target so finishClaudeTurn can apply (respawn) it definitively
+// the moment the turn actually ends — see finishClaudeTurn's comment.
+// streamClaude's own dispatch-time check (`session.permissionMode !==
+// turnPermissionMode`, alongside its existing model/effort check) remains as
+// a secondary fallback for the next turn, but is redundant once
+// finishClaudeTurn has already applied the deferred change. Mirrors Python's
+// claude_session.py, which only
+// ever compares/respawns at that same per-turn dispatch point (~L1245).
+export function setClaudeSessionPermissionMode(session: ClaudeSession, mode: unknown): boolean {
+  const normalized = normalizePermissionMode(mode);
+  if (!normalized) return false;
+  if (session.permissionMode === normalized) {
+    session.pendingPermissionMode = null; // a same-as-current request cancels any earlier deferral
+    return true;
+  }
+  if (session.busy) {
+    // G5 audit item 4: don't just log it — STORE it. finishClaudeTurn applies
+    // (respawns) this the moment the turn actually ends, so the change takes
+    // effect deterministically rather than depending on the client's NEXT
+    // chat request happening to resend the same mode (streamClaude's own
+    // dispatch-time comparison is now a harmless no-op fallback once this
+    // fires first).
+    session.pendingPermissionMode = normalized;
+    appendLog(
+      `[Claude] permission mode change to ${normalized} deferred (turn busy) conv=${session.conversationId}`,
+    );
+    return true;
+  }
+  session.pendingPermissionMode = null;
+  respawnClaudeSession(session, session.model, session.effort, normalized);
+  return true;
+}
+
+// Remember that the user allowed a tool for the rest of this session, or that
+// they declined this exact (tool, input) again — the two pieces of state the
+// policy reads. Called from the orb's answer route.
+export function recordClaudePermissionAnswer(
+  session: ClaudeSession,
+  toolName: string,
+  toolInput: unknown,
+  behavior: string,
+  rememberForSession: boolean,
+): void {
+  if (!toolName) return;
+  if (behavior === "allow") {
+    if (rememberForSession) session.sessionAllow.add(toolName);
+    return;
+  }
+  if (behavior === "deny") {
+    const key = denyKey(toolName, toolInput);
+    session.denyCounts.set(key, (session.denyCounts.get(key) ?? 0) + 1);
+  }
+}
+
+/** Pop (get + delete) the tool name/input recorded for a bubbled `ask`
+ *  control_request, or undefined if this requestId never had one (e.g. an
+ *  AskUserQuestion, which isn't a can_use_tool prompt). Called from POST
+ *  /api/assistant/control-response so it can feed the user's answer into
+ *  recordClaudePermissionAnswer — the client's request body only carries
+ *  {requestId, response}, not the original tool name/input. */
+export function takeClaudePendingToolRequest(
+  session: ClaudeSession,
+  requestId: string,
+): { toolName: string; toolInput: unknown } | undefined {
+  const pending = session.pendingToolRequests.get(requestId);
+  if (pending) session.pendingToolRequests.delete(requestId);
+  return pending;
+}
+
+export function handleClaudeStdoutLine(session: ClaudeSession, data: any, rawLine: string): void {
   const rawType = data?.type;
   // A control_response FROM the CLI answers a UI-initiated control_request
   // (get_context_usage etc.). Match it to its pending waiter by request_id and
@@ -611,10 +810,87 @@ function handleClaudeStdoutLine(session: ClaudeSession, data: any, rawLine: stri
     }
     if (frame.type === "control_request") {
       const r: any = (frame as any).request || {};
+      const requestId = String((frame as any).requestId || "");
       appendLog(
-        `[Claude] control_request id=${(frame as any).requestId} ` +
+        `[Claude] control_request id=${requestId} ` +
           `subtype=${r.subtype} tool=${r.tool_name} conv=${session.conversationId}`,
       );
+      // Permission policy (server/permissions.ts): a `can_use_tool` request the
+      // session's mode already answers is settled HERE and never reaches the
+      // orb. Only an "ask" verdict becomes a permission card.
+      if (r.subtype === "can_use_tool" && requestId) {
+        const toolName = typeof r.tool_name === "string" ? r.tool_name : "";
+        const toolInput = r.input && typeof r.input === "object" ? r.input : {};
+        let verdict;
+        try {
+          verdict = decide(session.permissionMode, toolName, toolInput, {
+            sessionAllow: session.sessionAllow,
+            denyCount: session.denyCounts.get(denyKey(toolName, toolInput)) ?? 0,
+            repoRoot: PROJECT_CWD,
+          });
+        } catch {
+          verdict = null; // an impossible mode must not strand the CLI — ask.
+        }
+        if (verdict && verdict.action !== "ask") {
+          const answer =
+            verdict.action === "allow"
+              ? { behavior: "allow", updatedInput: toolInput }
+              : { behavior: "deny", message: verdict.reason };
+          writeClaudeControlResponse(session, requestId, answer);
+          appendLog(
+            `[Claude] policy ${verdict.action} mode=${session.permissionMode} ` +
+              `tool=${toolName} conv=${session.conversationId} reason=${verdict.reason}`,
+          );
+          continue;
+        }
+        // Bubbling to the orb ("ask", including a self-modify prompt) — remember
+        // the tool/input so control-response can resolve it back to a policy
+        // decision (session-allow / deny-count) once the user answers.
+        session.pendingToolRequests.set(requestId, { toolName, toolInput });
+        // m3: attach WHY this is bubbling — the orb's ControlRequestCard
+        // (src/components/orb/Transcript.tsx) renders `policy.selfModifyPath`
+        // as an explicit "edits the assistant's own code" line so the user
+        // isn't just told "permission requested" with no context. `verdict` is
+        // non-null here whenever decide() didn't throw (an impossible mode);
+        // in that rare case the frame goes out without a `policy` field and
+        // the card falls back to its generic copy.
+        if (verdict) {
+          (frame as Frame).policy = { reason: verdict.reason, selfModifyPath: verdict.selfModifyPath };
+        }
+      } else if (requestId) {
+        // G5 round 4 item 3: track EVERY bubbled control_request, not only
+        // can_use_tool ones — AskUserQuestion included. Without this, an
+        // AskUserQuestion answer always had `pending == null` in
+        // routes.ts's control-response handler by DESIGN, which made "no
+        // pending entry" ambiguous between "legitimate AskUserQuestion
+        // answer" and "replayed/unknown/already-consumed requestId" — the
+        // route could only tell them apart with a client-controlled shape
+        // heuristic, which a crafted payload could spoof. Tracking every
+        // type here (mirrors Python's session.pending_controls, which does
+        // the same) lets the route require a live entry for ANY requestId
+        // (404 otherwise, matching Python) while still recognizing a
+        // genuine AskUserQuestion by toolName === "AskUserQuestion".
+        const toolName =
+          typeof r.tool_name === "string" && r.tool_name
+            ? r.tool_name
+            : typeof r.subtype === "string"
+              ? r.subtype
+              : "unknown";
+        session.pendingToolRequests.set(requestId, {
+          toolName,
+          toolInput: r.input && typeof r.input === "object" ? r.input : {},
+        });
+      }
+      writeFrameToActiveSse(session, frame);
+      continue;
+    }
+    if (frame.type === "control_cancel") {
+      // The CLI retracted a control_request (already answered / superseded) —
+      // drop any pending tool/input we were holding for it so a later
+      // control-response for this (now-dead) requestId can't resolve against
+      // stale data, and so it can never linger in the map past its request.
+      const requestId = String((frame as any).requestId || "");
+      if (requestId) session.pendingToolRequests.delete(requestId);
       writeFrameToActiveSse(session, frame);
       continue;
     }
@@ -634,7 +910,9 @@ function attachClaudeHandlers(session: ClaudeSession): void {
     // (~5 min). Surface the error, end the turn, and drop the session so the next
     // turn respawns a fresh child.
     writeFrameToActiveSse(session, { type: "error", message: `Claude CLI failed to start: ${err.message}` });
-    if (session.busy) finishClaudeTurn(session, { viaClose: true });
+    // childDied:true — the very next line tears down the session assuming no
+    // live child needs killing; finishClaudeTurn must not respawn one here.
+    if (session.busy) finishClaudeTurn(session, { viaClose: true, childDied: true });
     teardownClaudeSession(session.conversationId, false);
   });
   proc.stdout?.on("data", (chunk: Buffer) => {
@@ -659,7 +937,14 @@ function attachClaudeHandlers(session: ClaudeSession): void {
   proc.on("close", (code) => {
     if (session.proc !== proc) return; // a respawn replaced this child — ignore its death
     appendLog(`[Claude] child closed conv=${session.conversationId} code=${code} busy=${session.busy}`);
-    if (session.busy) finishClaudeTurn(session, { viaClose: true, exitCode: code }); // close-fallback turn-end
+    // childDied:true — teardownClaudeSession(..., false) below assumes no
+    // live child needs killing; finishClaudeTurn must not respawn one here.
+    if (session.busy) finishClaudeTurn(session, { viaClose: true, exitCode: code, childDied: true }); // close-fallback turn-end
+    // Belt-and-braces: finishClaudeTurn already clears this when busy, and
+    // teardownClaudeSession below drops the whole session object regardless —
+    // but a dead child can close while NOT busy (idle reap raced a crash), so
+    // clear explicitly here too rather than relying on the busy branch above.
+    session.pendingToolRequests.clear();
     teardownClaudeSession(session.conversationId, false); // already dead — don't re-kill
   });
 }
@@ -687,11 +972,12 @@ function createClaudeSession(
   useEffort: string,
   claudeSessionId: string | undefined,
   res: ExpressResponse,
+  permissionMode: PermissionMode = DEFAULT_PERMISSION_MODE,
 ): ClaudeSession {
   reapLruClaudeSessionsIfNeeded();
   const relayId = randomUUID();
   const mcpConfigPath = path.join(os.tmpdir(), `vst-mcp-${relayId}.json`);
-  const cmdArgs = buildClaudeBaseArgs(useModel, useEffort);
+  const cmdArgs = buildClaudeBaseArgs(useModel, useEffort, permissionMode);
   // Only resume an id THIS process created (a stale orb id 404s the whole turn).
   const resume = isUuidLike(claudeSessionId) && knownClaudeSessions.has(claudeSessionId!);
   if (resume) cmdArgs.push("--resume", claudeSessionId!);
@@ -718,6 +1004,11 @@ function createClaudeSession(
     mcpConfigWritten,
     model: useModel,
     effort: useEffort,
+    permissionMode,
+    pendingPermissionMode: null,
+    sessionAllow: new Set<string>(),
+    denyCounts: new Map<string, number>(),
+    pendingToolRequests: new Map<string, { toolName: string; toolInput: unknown }>(),
     activeSse: res,
     stdoutBuf: "",
     stderr: "",
@@ -749,15 +1040,22 @@ function createClaudeSession(
   return session;
 }
 
-// Respawn a session's child in place (model/effort change). Ports BCC switchModel:
-// set session.proc = newProc BEFORE killing the old one so the old child's late
-// handlers no-op. relayId + mcpConfigPath are reused, so the relay aliasing and
-// pending map stay valid across the swap.
-function respawnClaudeSession(session: ClaudeSession, useModel: string, useEffort: string): void {
+// Respawn a session's child in place (model / effort / permission-mode
+// change — the mode is baked into the spawn args, so a live mode switch can
+// only take effect via a respawn, same as Python's _respawn). Ports BCC
+// switchModel: set session.proc = newProc BEFORE killing the old one so the
+// old child's late handlers no-op. relayId + mcpConfigPath are reused, so the
+// relay aliasing and pending map stay valid across the swap.
+export function respawnClaudeSession(
+  session: ClaudeSession,
+  useModel: string,
+  useEffort: string,
+  permissionMode: PermissionMode,
+): void {
   const oldProc = session.proc;
   const sid = session.claudeSessionId;
   const canResume = !!sid && isUuidLike(sid) && knownClaudeSessions.has(sid);
-  const cmdArgs = buildClaudeBaseArgs(useModel, useEffort);
+  const cmdArgs = buildClaudeBaseArgs(useModel, useEffort, permissionMode);
   if (canResume) cmdArgs.push("--resume", sid!);
   if (session.mcpConfigWritten) {
     cmdArgs.push("--mcp-config", session.mcpConfigPath);
@@ -765,12 +1063,18 @@ function respawnClaudeSession(session: ClaudeSession, useModel: string, useEffor
   }
   appendLog(
     `[Claude] respawn child conv=${session.conversationId} ` +
-      `model=${session.model}->${useModel} effort=${session.effort}->${useEffort} resume=${canResume}`,
+      `model=${session.model}->${useModel} effort=${session.effort}->${useEffort} ` +
+      `mode=${session.permissionMode}->${permissionMode} resume=${canResume}`,
   );
   const newProc = spawnClaudeCli(cmdArgs, { cwd: PROJECT_CWD });
   session.proc = newProc; // swap BEFORE kill so old handlers are stale-guarded
   session.model = useModel;
   session.effort = useEffort;
+  // The single writer of permissionMode (mirrors Python's claude_session.py:
+  // session.permission_mode is only ever mutated inside _respawn/spawn, never
+  // by an out-of-band setter) — so a policy decision mid-turn always reflects
+  // the mode the CURRENTLY RUNNING child was actually spawned with.
+  session.permissionMode = permissionMode;
   session.stdoutBuf = "";
   session.stderr = "";
   session.firstTurnPending = !canResume; // resumed => context restored by the CLI
@@ -880,10 +1184,14 @@ export async function streamClaude(opts: {
   conversationId?: string;
   claudeSessionId?: string;
   effort?: string;
+  permissionMode?: string;
   appState?: any;
   screenshot?: string;
 }): Promise<void> {
   const { req, res, messages, appState, screenshot } = opts;
+  // The orb sends its dropdown's mode with every turn, so a mode chosen before
+  // the session existed still governs this one.
+  const turnPermissionMode = normalizePermissionMode(opts.permissionMode);
   const useModel = resolveClaudeModel(opts.model);
   const useEffort = resolveClaudeEffort(opts.effort);
   let conversationId = (opts.conversationId || "").trim();
@@ -895,7 +1203,15 @@ export async function streamClaude(opts: {
   };
 
   let session = resolveLiveClaudeSession(conversationId || undefined, claudeSessionId);
-  if (session) conversationId = session.conversationId;
+  if (session) {
+    conversationId = session.conversationId;
+    // NOTE: does NOT mutate session.permissionMode here. respawnClaudeSession
+    // is the single writer (see its comment) — mutating eagerly here would
+    // make the "did the mode change?" check below (which respawns the child
+    // so the new mode's --permission-mode arg actually takes effect) always
+    // see equal values and never fire. turnPermissionMode is compared against
+    // the OLD session.permissionMode a few lines down instead.
+  }
 
   // Open the SSE stream immediately — even if we're about to queue behind a busy
   // turn, the client must get response headers so its fetch resolves and starts
@@ -945,14 +1261,38 @@ export async function streamClaude(opts: {
     }
   }
 
-  // Model/effort switch on a live session -> respawn (resume keeps context).
-  if (session && (session.model !== useModel || session.effort !== useEffort)) {
-    respawnClaudeSession(session, useModel, useEffort);
+  // Model / effort / permission-mode switch on a live session -> respawn
+  // (resume keeps context). Model/effort actually change the spawn args;
+  // permission-mode (G5 item 1) no longer does — every mode now produces the
+  // IDENTICAL --permission-mode default argv — so this leg exists only to
+  // keep session.permissionMode itself correct (respawnClaudeSession is its
+  // sole writer). It is a SECONDARY fallback for setClaudeSessionPermissionMode's
+  // mid-turn deferral: finishClaudeTurn (its primary applier — see that
+  // function's comment) already respawns the instant the turn ends, so by
+  // the time a next turn reaches here session.permissionMode is normally
+  // already correct and this is a no-op; it only fires for real if that
+  // application somehow didn't happen. Falls back to the session's own
+  // current mode (no-op) when this turn didn't specify one.
+  const wantPermissionMode = turnPermissionMode ?? session?.permissionMode ?? DEFAULT_PERMISSION_MODE;
+  if (
+    session &&
+    (session.model !== useModel ||
+      session.effort !== useEffort ||
+      session.permissionMode !== wantPermissionMode)
+  ) {
+    respawnClaudeSession(session, useModel, useEffort, wantPermissionMode);
   }
 
   // Create the persistent child on first contact for this conversation.
   if (!session) {
-    session = createClaudeSession(conversationId, useModel, useEffort, claudeSessionId, res);
+    session = createClaudeSession(
+      conversationId,
+      useModel,
+      useEffort,
+      claudeSessionId,
+      res,
+      turnPermissionMode ?? DEFAULT_PERMISSION_MODE,
+    );
   }
 
   const stdin = session.proc.stdin;

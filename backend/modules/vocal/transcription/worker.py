@@ -26,8 +26,20 @@ Response : {"ok": true, "language": str, "text": str, "device_used": str,
 import json
 import os
 import sys
+from pathlib import Path
 
 LIB_DIRS_ENV = "theDAW_WHISPER_LIB_DIRS"
+
+
+def _is_large_model(model_size: str) -> bool:
+    """Is this a GPU-sized ("large") whisper model, whatever shape its id takes?
+
+    The model may arrive as a bare name (``large-v3``), a HuggingFace repo id
+    (``Systran/faster-whisper-large-v3``) or an absolute local CTranslate2
+    directory (``D:/models/faster-whisper-large-v3``). ``Path(...).name`` is the
+    last segment in all three cases, so the check works on any of them — a plain
+    ``startswith("large")`` only ever matched the bare name."""
+    return "large" in Path(model_size).name.lower()
 
 
 def _load_cuda_lib_dirs() -> None:
@@ -125,7 +137,7 @@ def main() -> int:
             # A GPU-sized model on the CPU is minutes per song; the CPU
             # fallback runs the CPU-sized one so a broken driver costs
             # accuracy, not the whole afternoon.
-            model_used = "small" if model_size.startswith("large") else model_size
+            model_used = "small" if _is_large_model(model_size) else model_size
             sys.stderr.write(
                 f"[whisper] {device} failed ({e!r}); retrying {model_used} on cpu int8\n"
             )

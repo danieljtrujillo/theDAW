@@ -17,6 +17,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from backend.lib import ffmpeg_tools
+
 from .engine import YtImportError, download_audio
 
 log = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ def get_capabilities() -> dict:
     return {
         "ok": have_ytdlp,
         "yt_dlp": have_ytdlp,
-        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "ffmpeg": ffmpeg_tools.find_ffmpeg() is not None,
         "codec": "opus",
     }
 

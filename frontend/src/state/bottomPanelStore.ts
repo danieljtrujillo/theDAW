@@ -12,6 +12,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export type BottomPanelTab =
   | 'levels'
@@ -21,6 +22,10 @@ export type BottomPanelTab =
   | 'sing'
   | 'lyric'
   | 'midi'
+  // The clip-bound audio editor. Adding an id is forward-compatible with the
+  // persisted 'thedaw-bottom-panel-v5' state: nothing stores the union, only
+  // whichever member was last active.
+  | 'audio-edit'
   | 'step-seq'
   | 'draw'
   | 'slide';
@@ -117,6 +122,7 @@ export const useBottomPanelStore = create<BottomPanelState>()(
     }),
     {
       name: 'thedaw-bottom-panel-v5',
+      storage: persistStorage(),
       version: 1,
       // The old 'piano-roll' and 'vocal' tabs merged into one 'midi' tab; map a
       // persisted active tab forward so a returning user lands somewhere valid.

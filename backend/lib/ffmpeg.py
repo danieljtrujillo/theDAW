@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+
+from backend.lib import ffmpeg_tools
 from backend.lib.launch_token import child_env
 
 
@@ -22,8 +24,42 @@ class FFmpegError(RuntimeError):
         super().__init__(f"ffmpeg exited {returncode}: {stderr[-500:]}")
 
 
+class FFmpegCapabilityError(FFmpegError):
+    """Raised before running a command the chosen FFmpeg build cannot do (a
+    soxr filter on a build without libsoxr). The message names the problem and
+    the FFmpeg in use, and is meant to reach the user whole."""
+
+    def __init__(self, message: str):
+        self.returncode = -1
+        self.stderr = message
+        RuntimeError.__init__(self, message)
+
+
+async def _prepare(cmd: list[str]) -> list[str]:
+    """Point a bare ``ffmpeg``/``ffprobe`` argv[0] at the resolved build, and
+    refuse a soxr filter the build cannot run."""
+    if not cmd:
+        return cmd
+    resolution = await ffmpeg_tools.aresolve()
+    build = resolution.build
+    head = cmd[0]
+    if head == "ffmpeg" and build is not None:
+        cmd = [build.ffmpeg, *cmd[1:]]
+    elif head == "ffprobe" and resolution.ffprobe:
+        cmd = [resolution.ffprobe, *cmd[1:]]
+    problem = ffmpeg_tools.soxr_problem(cmd, resolution)
+    if problem:
+        raise FFmpegCapabilityError(problem)
+    return cmd
+
+
 async def run(cmd: list[str], timeout: float = 600.0) -> str:
-    """Run an ffmpeg/ffprobe command. Returns stderr text. Raises on failure."""
+    """Run an ffmpeg/ffprobe command. Returns stderr text. Raises on failure.
+
+    A bare ``"ffmpeg"`` or ``"ffprobe"`` in argv[0] runs the build
+    ``backend.lib.ffmpeg_tools`` chose. A command that asks for the soxr
+    resampler raises ``FFmpegCapabilityError`` when that build has no libsoxr."""
+    cmd = await _prepare(cmd)
     # stdin=DEVNULL: the backend does not always own a real console (Pinokio's
     # ConPTY shells, service wrappers). An inherited stdin handle makes
     # ffmpeg's console input reader block forever, which presents as a timeout
@@ -57,7 +93,7 @@ async def render(
     """Render input → output applying ``filter_args`` (e.g. ['-af', '...'] or
     ['-filter_complex', '...', '-map', '[out]']). Returns output_path."""
     cmd = [
-        "ffmpeg",
+        await ffmpeg_tools.ffmpeg_exe_async(),
         "-y",
         "-i",
         str(input_path),
@@ -80,7 +116,7 @@ async def render_multi(
     timeout: float = 600.0,
 ) -> Path:
     """Render with multiple inputs through a -filter_complex graph."""
-    cmd = ["ffmpeg", "-y"]
+    cmd = [await ffmpeg_tools.ffmpeg_exe_async(), "-y"]
     for p in inputs:
         cmd += ["-i", str(p)]
     cmd += ["-filter_complex", filter_complex]

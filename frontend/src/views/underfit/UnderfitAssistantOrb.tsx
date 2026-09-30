@@ -33,16 +33,23 @@ import GantasmoOrb from "../../orb-kit/react/GantasmoOrb";
 import "../../orb-kit/styles/gantasmo-orb.css";
 import "../../orb-kit/chat/orb-chat.css";
 import "./underfit-orb.css";
+import {
+  AssistantBackendStatusBar,
+  assistantStatusDetail,
+  useAssistantBackendStatus,
+} from "./assistantBackendStatus";
 
 // Assistant backend base URL. This orb is bundled INTO underfit's dashboard
 // (served on :8791). It talks to underfit's OWN assistant backend — a clone of
 // the VST Foundry assistant (identical providers/models + Better Claude Code) —
-// running on :5473 (cross-origin fetch/SSE). Override at runtime via
-// window.__UNDERFIT_ASSISTANT_BASE__.
+// running on :5473 (cross-origin fetch/SSE). Override at runtime with the
+// `assistant_api` query parameter (the Underfit tab sets it from the port
+// theDAW's backend reports) or window.__UNDERFIT_ASSISTANT_BASE__.
 const ASSISTANT_API_BASE =
   (typeof window !== "undefined" &&
-    (window as unknown as { __UNDERFIT_ASSISTANT_BASE__?: string })
-      .__UNDERFIT_ASSISTANT_BASE__) ||
+    (new URLSearchParams(window.location.search).get("assistant_api") ||
+      (window as unknown as { __UNDERFIT_ASSISTANT_BASE__?: string })
+        .__UNDERFIT_ASSISTANT_BASE__)) ||
   "http://localhost:5473";
 
 // One tool the agent invoked, paired with its result. `inputJson` is the tool
@@ -470,6 +477,14 @@ export default function UnderfitAssistantOrb() {
   // ---------------------------------------------------------------------------
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  // The latest catalog, for the model fetch's fallback to the provider's
+  // default model when its reply lands (a dependency would refetch models).
+  const providersRef = useRef<ProviderInfo[]>([]);
+  providersRef.current = providers;
+  // Bumped each time the assistant backend comes online, so the provider and
+  // model catalogs load again after a Start (or after it finishes booting).
+  const [catalogKey, setCatalogKey] = useState(0);
+  const backend = useAssistantBackendStatus(ASSISTANT_API_BASE, () => setCatalogKey((k) => k + 1));
   const [models, setModels] = useState<ModelInfo[]>([]);
   // theDAW-style settings: [Chat | Keys] tabs + per-provider key editing.
   const [settingsTab, setSettingsTab] = useState<"model" | "keys">("model");
@@ -522,17 +537,19 @@ export default function UnderfitAssistantOrb() {
         const normalized = normalizeProviders(rawList);
         setProviders(normalized);
         // If the persisted provider no longer exists, fall back sensibly.
-        if (normalized.length && !normalized.find((p) => p.id === selectedProvider)) {
-          const fallback = normalized.find((p) => p.id === DEFAULT_PROVIDER) || normalized[0];
-          setSelectedProvider(fallback.id);
+        if (normalized.length) {
+          setSelectedProvider((current) =>
+            normalized.some((p) => p.id === current)
+              ? current
+              : (normalized.find((p) => p.id === DEFAULT_PROVIDER) || normalized[0]).id,
+          );
         }
       })
       .catch((e) => console.warn("Failed to load providers", e));
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [catalogKey]);
 
   // Fetch models whenever the provider (or its API key) changes.
   useEffect(() => {
@@ -550,21 +567,23 @@ export default function UnderfitAssistantOrb() {
         const rawList = Array.isArray(data) ? data : data?.models || [];
         const normalized = normalizeModels(rawList);
         setModels(normalized);
-        if (normalized.length && !normalized.find((m) => m.id === selectedModel)) {
-          const provInfo = providers.find((p) => p.id === selectedProvider);
-          const preferred =
-            (provInfo?.defaultModel &&
-              normalized.find((m) => m.id === provInfo.defaultModel)?.id) ||
-            normalized[0].id;
-          setSelectedModel(preferred);
+        if (normalized.length) {
+          setSelectedModel((current) => {
+            if (normalized.some((m) => m.id === current)) return current;
+            const provInfo = providersRef.current.find((p) => p.id === selectedProvider);
+            return (
+              (provInfo?.defaultModel &&
+                normalized.find((m) => m.id === provInfo.defaultModel)?.id) ||
+              normalized[0].id
+            );
+          });
         }
       })
       .catch((e) => console.warn("Failed to load models for", selectedProvider, e));
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProvider, providerApiKeys]);
+  }, [selectedProvider, providerApiKeys, catalogKey]);
 
   // Styling / Scale Modifiers
   const [textScale, setTextScale] = useState<"xs" | "sm" | "md" | "lg">("sm");
@@ -602,6 +621,10 @@ export default function UnderfitAssistantOrb() {
 
   // Sessions History
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  // The rendered session list, for the save effect below: a `sessions`
+  // dependency would re-run it on its own write and loop.
+  const sessionsRef = useRef<ChatSession[]>([]);
+  sessionsRef.current = sessions;
   const [currentSessionId, setCurrentSessionId] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // Live mirror of `messages` so async continuations (notably the mid-turn
@@ -652,27 +675,9 @@ export default function UnderfitAssistantOrb() {
     setClaudeSessionId(sess.claudeSessionId ?? null);
   };
 
-  // Load Saved Chat Sessions on Mount. Every new app session starts a FRESH
-  // chat — prior chats are kept as history (welcome-only empties are pruned so
-  // reloads don't pile up blank entries).
-  useEffect(() => {
-    let history: ChatSession[] = [];
-    try {
-      const savedSessions = localStorage.getItem(LS_SESSIONS);
-      if (savedSessions) {
-        history = (JSON.parse(savedSessions) as ChatSession[]).filter(
-          (s) => (s.messages?.length ?? 0) > 1,
-        );
-      }
-    } catch (e) {
-      console.error("Failed to load assistant sessions", e);
-    }
-    startNewChat(false, history);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Sync session changes to localStorage
-  const saveSessionsToStorage = (updatedSessions: ChatSession[]) => {
+  // Sync session changes to localStorage. Uses only setSessions and
+  // localStorage, so one instance serves every render.
+  const saveSessionsToStorage = useCallback((updatedSessions: ChatSession[]) => {
     setSessions(updatedSessions);
     try {
       // Strip heavy base64 images to prevent exceeding the browser's 5MB localStorage quota
@@ -702,7 +707,7 @@ export default function UnderfitAssistantOrb() {
         console.error("Critical: Failed to save fallback sessions to localStorage", innerErr);
       }
     }
-  };
+  }, []);
 
   // Tell the backend to release the persistent Claude process tied to an
   // abandoned conversation. Fire-and-forget + idempotent: never blocks the UI
@@ -754,6 +759,27 @@ export default function UnderfitAssistantOrb() {
     }
   };
 
+  // Load Saved Chat Sessions on Mount. Every new app session starts a FRESH
+  // chat — prior chats are kept as history (welcome-only empties are pruned so
+  // reloads don't pile up blank entries). Runs once: it calls the current
+  // startNewChat through a ref, since startNewChat is rebuilt every render.
+  const startNewChatRef = useRef(startNewChat);
+  startNewChatRef.current = startNewChat;
+  useEffect(() => {
+    let history: ChatSession[] = [];
+    try {
+      const savedSessions = localStorage.getItem(LS_SESSIONS);
+      if (savedSessions) {
+        history = (JSON.parse(savedSessions) as ChatSession[]).filter(
+          (s) => (s.messages?.length ?? 0) > 1,
+        );
+      }
+    } catch (e) {
+      console.error("Failed to load assistant sessions", e);
+    }
+    startNewChatRef.current(false, history);
+  }, []);
+
   // Load an existing session
   const loadSession = (sessionId: string) => {
     const sess = sessions.find((s) => s.id === sessionId);
@@ -784,6 +810,7 @@ export default function UnderfitAssistantOrb() {
   // Save current thread messages + active AI configuration
   useEffect(() => {
     if (!currentSessionId) return;
+    const sessions = sessionsRef.current;
     const sessionToUpdate = sessions.find((s) => s.id === currentSessionId);
     if (sessionToUpdate) {
       const updatedMessages = [...messages];
@@ -809,8 +836,15 @@ export default function UnderfitAssistantOrb() {
       });
       saveSessionsToStorage(updated);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, selectedProvider, selectedModel, effort, claudeSessionId]);
+  }, [
+    messages,
+    selectedProvider,
+    selectedModel,
+    effort,
+    claudeSessionId,
+    currentSessionId,
+    saveSessionsToStorage,
+  ]);
 
   // Keep chat scrolled to bottom
   useEffect(() => {
@@ -1648,6 +1682,12 @@ export default function UnderfitAssistantOrb() {
                 </button>
               </div>
             </div>
+
+            <AssistantBackendStatusBar
+              state={backend.state}
+              detail={assistantStatusDetail(backend.state, backend.sidecar, backend.startError, backend.thedawReachable)}
+              onStart={() => void backend.start()}
+            />
 
             {/* Inner Panels Overlay */}
             <div className="flex-1 relative overflow-hidden flex flex-col">

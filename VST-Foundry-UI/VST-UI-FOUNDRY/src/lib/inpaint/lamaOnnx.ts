@@ -24,6 +24,7 @@
 // when a removal actually runs, and the plain-wasm fallback reuses it.
 import * as ort from "onnxruntime-web/webgpu";
 import { get as idbGet, set as idbSet } from "idb-keyval";
+import { createSessionPolicy } from "../../features/inpainting/sessionPolicy";
 
 const SIZE = 512;
 // Default weights. Overridable via localStorage "foundry:lamaModelUrl" so a
@@ -106,26 +107,23 @@ async function fetchModelBytes(onProgress?: (p: InpaintProgress) => void): Promi
   return buf;
 }
 
-let sessionPromise: Promise<ort.InferenceSession> | null = null;
+const sessions = createSessionPolicy<ort.InferenceSession, InpaintProgress>({
+  hasWebGpu: () => typeof navigator !== "undefined" && "gpu" in navigator && !!navigator.gpu,
+  storage: () => localStorage,
+  create: async (executionProviders, onProgress) => {
+    configureOrt();
+    const bytes = await fetchModelBytes(onProgress);
+    onProgress?.({ phase: "init" });
+    return ort.InferenceSession.create(bytes, { executionProviders });
+  },
+});
 
 // Load (once) and cache the inference session. WebGPU when the browser exposes
-// it, WASM otherwise. Re-throws and clears the cache on failure so a later call
-// can retry (e.g. after the user frees storage or reconnects).
+// it and hasn't already failed here, WASM otherwise. Re-throws and clears the
+// cache on failure so a later call can retry (e.g. after the user frees storage
+// or reconnects).
 export async function getSession(onProgress?: (p: InpaintProgress) => void): Promise<ort.InferenceSession> {
-  configureOrt();
-  if (!sessionPromise) {
-    sessionPromise = (async () => {
-      const bytes = await fetchModelBytes(onProgress);
-      onProgress?.({ phase: "init" });
-      const hasWebGpu = typeof navigator !== "undefined" && !!(navigator as any).gpu;
-      const eps = hasWebGpu ? ["webgpu", "wasm"] : ["wasm"];
-      return ort.InferenceSession.create(bytes, { executionProviders: eps as any });
-    })().catch((e) => {
-      sessionPromise = null;
-      throw e;
-    });
-  }
-  return sessionPromise;
+  return sessions.getSession(onProgress);
 }
 
 // True if the model is already cached locally (drives the UI's "will download
@@ -224,7 +222,7 @@ function toMaskTensor(rgba: Uint8ClampedArray): ort.Tensor {
   return new ort.Tensor("float32", f, [1, 1, SIZE, SIZE]);
 }
 
-function outputToRgba(data: Float32Array): Uint8ClampedArray {
+function outputToRgba(data: Float32Array): Uint8ClampedArray<ArrayBuffer> {
   const n = SIZE * SIZE;
   const rgba = new Uint8ClampedArray(n * 4);
   for (let i = 0; i < n; i++) {
@@ -241,7 +239,7 @@ async function runLama512(
   crop512: HTMLCanvasElement,
   maskCrop512: HTMLCanvasElement,
   session: ort.InferenceSession,
-): Promise<Uint8ClampedArray> {
+): Promise<Uint8ClampedArray<ArrayBuffer>> {
   const imgData = ctxOf(crop512).getImageData(0, 0, SIZE, SIZE).data;
   const maskData = ctxOf(maskCrop512).getImageData(0, 0, SIZE, SIZE).data;
   const feeds: Record<string, ort.Tensor> = {
@@ -273,8 +271,7 @@ export async function removeObject(
   const bbox = maskBBox(maskCanvas);
   if (!bbox) return null;
 
-  const session = await getSession(onProgress);
-  onProgress?.({ phase: "run" });
+  await getSession(onProgress);
 
   const bw = bbox.x1 - bbox.x0 + 1;
   const bh = bbox.y1 - bbox.y0 + 1;
@@ -312,7 +309,10 @@ export async function removeObject(
   const maskCrop512 = makeCanvas(SIZE, SIZE);
   ctxOf(maskCrop512).drawImage(dilated, rx, ry, rs, rs, 0, 0, SIZE, SIZE);
 
-  const out512 = await runLama512(crop512, maskCrop512, session);
+  const out512 = await sessions.run((session) => {
+    onProgress?.({ phase: "run" });
+    return runLama512(crop512, maskCrop512, session);
+  }, onProgress);
 
   // Put the 512 result into a canvas, resize back to region size.
   const out512Canvas = makeCanvas(SIZE, SIZE);

@@ -18,8 +18,8 @@
  *   exact      — whole field equals the query (trimmed, case-insensitive)
  *   regex      — user-authored RegExp (invalid pattern matches nothing)
  *
- * Filter dimensions: favorites, source, provider (derived), model, rating,
- * duration min/max. Sorts: newest | oldest | duration | title.
+ * Filter dimensions: favorites, source, provider, model, rating, duration
+ * min/max. Sorts: newest | oldest | duration | title.
  *
  * lyrics/style are not first-class on `LibraryEntry`, so they're derived
  * best-effort from tags/notes (and analysis when present) — for Suno tracks
@@ -27,7 +27,7 @@
  */
 
 import type { LibraryEntry } from '../state/libraryEntry';
-import { inferProvider } from './catalogProviders';
+import { hasProvider, providerSearchText } from '../lib/providerLabel';
 
 export type CatalogueSearchTarget =
   | 'all'
@@ -64,7 +64,11 @@ export interface CatalogueSearchState {
   // Filters
   onlyFavorites: boolean;
   sourceFilter: CatalogueSourceFilter;
-  /** Derived-provider filter; null/'' = all. */
+  /**
+   * A provider id (`inferProvider`); null/'' = every provider. Applied by the
+   * SERVER through `applyCatalogueServerQuery`, and re-applied client-side for
+   * the rows in hand whenever another filter has forced a local pass.
+   */
   providerFilter: string | null;
   /** Exact model match; null/'' = all. */
   modelFilter: string | null;
@@ -173,7 +177,9 @@ const fieldText = (e: LibraryEntry, target: CatalogueSearchTarget): string => {
     case 'model':
       return e.model;
     case 'provider':
-      return inferProvider(e);
+      // Both the id and the display name, so "bandcamp" and "Apple Music"
+      // each find their rows.
+      return providerSearchText(e);
     case 'tags':
       return e.tags.join(' ');
     case 'notes':
@@ -189,7 +195,7 @@ const fieldText = (e: LibraryEntry, target: CatalogueSearchTarget): string => {
         e.prompt,
         e.negativePrompt,
         e.model,
-        inferProvider(e),
+        providerSearchText(e),
         e.tags.join(' '),
         e.notes,
         String(e.seed),
@@ -272,7 +278,8 @@ const passesFilters = (e: LibraryEntry, state: CatalogueSearchState): boolean =>
   if (state.onlyFavorites && !e.favorite) return false;
   if (state.sourceFilter !== 'all' && e.source !== state.sourceFilter) return false;
   if (state.modelFilter && e.model !== state.modelFilter) return false;
-  if (state.providerFilter && inferProvider(e) !== state.providerFilter) return false;
+  // The same membership test the library store runs, over the same one id.
+  if (state.providerFilter && !hasProvider(e, state.providerFilter)) return false;
   if (state.ratingFilter !== 'all') {
     if (state.ratingFilter === 'unrated' && e.rating != null) return false;
     if (state.ratingFilter === 'like' && e.rating !== 'like') return false;
@@ -304,6 +311,97 @@ export const filterAndSort = (
 ): LibraryEntry[] => {
   const out = entries.filter((e) => passesFilters(e, state) && entryMatches(e, state));
   return out.sort((a, b) => compareEntries(a, b, state.sortBy));
+};
+
+// ---------------------------------------------------------------------------
+// Which knobs the SERVER can apply
+// ---------------------------------------------------------------------------
+
+/**
+ * The Catalogue drives the same paged library store the side panel does, so
+ * its query text, favourites, source, PROVIDER and sort are sent to the
+ * backend and only the rows on screen are ever fetched.
+ *
+ * Its remaining knobs — a field-scoped target, the stricter match modes, an
+ * exact model, a rating, a duration window — have no server equivalent.
+ * `isServerOnly` says whether the state uses ONLY what the backend applies;
+ * when it does not, the view refines the rows it has loaded and says so,
+ * rather than pretending to have searched 200,000 entries.
+ *
+ * The provider filter used to live in that second list, back when a provider
+ * was derived on the client and the server had never heard of one. The server
+ * applies `provider=` now, over the same id, so a provider filter covers the
+ * whole library like the source filter does.
+ *
+ * `fuzzy` and `contains` both count as server-equivalent: the backend's search
+ * is a prefix match per token, which is the same intent, not the same letters.
+ */
+export const isServerOnly = (state: CatalogueSearchState): boolean =>
+  state.searchTarget === 'all'
+  && (state.mode === 'fuzzy' || state.mode === 'contains')
+  && !state.modelFilter
+  && state.ratingFilter === 'all'
+  && state.durationMin == null
+  && state.durationMax == null;
+
+/** The Catalogue's sort names happen to be the library store's own names. */
+export type CatalogueServerSource = 'generate' | 'studio' | 'import' | null;
+
+/** The part of a Catalogue state the library store can carry to the backend. */
+export interface CatalogueServerQuery {
+  q: string;
+  sortBy: CatalogueSortBy;
+  onlyFavorites: boolean;
+  source: CatalogueServerSource;
+  /** A provider id, or null for every provider. */
+  provider: string | null;
+}
+
+export const catalogueServerQuery = (state: CatalogueSearchState): CatalogueServerQuery => ({
+  q: state.query,
+  sortBy: state.sortBy,
+  onlyFavorites: state.onlyFavorites,
+  source: state.sourceFilter === 'all' ? null : state.sourceFilter,
+  provider: state.providerFilter ? state.providerFilter : null,
+});
+
+/**
+ * The library-store surface this module drives. Narrower than the store on
+ * purpose: the sync is a pure-ish function of a search state and these six
+ * members, so it can be tested without a store, a React tree or a network.
+ */
+export interface CatalogueLibrarySink {
+  readonly searchQuery: string;
+  setSearchQuery: (q: string) => void;
+  setOnlyFavorites: (v: boolean) => void;
+  setSortBy: (s: CatalogueSortBy) => void;
+  setSourceFilter: (source: string | null) => void;
+  setProviderFilter: (provider: string | null) => void;
+}
+
+/**
+ * Push a Catalogue search state into the library store — THE one sync path.
+ *
+ * Every filter the server can apply is set here, including the provider, so a
+ * dropdown never has to call a store setter from its own onChange and the two
+ * halves of a filter (the client-side refinement and the server request)
+ * cannot drift apart. Clearing a filter is the same call with null/''.
+ *
+ * Each setter is a no-op when the value already matches, so re-running this on
+ * an unrelated state change does not throw the page cache away.
+ */
+export const applyCatalogueServerQuery = (
+  state: CatalogueSearchState,
+  lib: CatalogueLibrarySink,
+): void => {
+  const query = catalogueServerQuery(state);
+  // Set only on a real change: the store DEBOUNCES this one, and re-setting
+  // the same text would keep restarting that timer.
+  if (lib.searchQuery !== query.q) lib.setSearchQuery(query.q);
+  lib.setOnlyFavorites(query.onlyFavorites);
+  lib.setSortBy(query.sortBy);
+  lib.setSourceFilter(query.source);
+  lib.setProviderFilter(query.provider);
 };
 
 // ---------------------------------------------------------------------------

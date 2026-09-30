@@ -20,7 +20,7 @@ export function RemoteGate({ children }: { children: ReactNode }) {
       </h2>
       <p>
         {status === 'rejected'
-          ? 'This host requires a pairing code. Rescan the QR from the desktop, or open the URL with ?pair=<code>.'
+          ? 'This host requires a pairing code. Rescan the QR from the desktop, or open the URL with ?xrcode=<code>.'
           : 'Open theDAW on your computer and keep it on this network. The remote drives its live rig.'}
       </p>
       {status !== 'connecting' ? (

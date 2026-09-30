@@ -202,7 +202,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             env = child_env()
             env["UNDERFIT_DASHBOARD_PORT"] = str(cfg.port)
             LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            log_handle = open(LOG_PATH, "ab")  # noqa: SIM115 — child owns it
+            log_handle = open(LOG_PATH, "ab")  # the child owns the handle
             log.info(
                 "underfit.sidecar: spawning %s %s (cwd=%s, port=%s)",
                 cfg.python_path,

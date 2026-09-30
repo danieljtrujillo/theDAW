@@ -32,7 +32,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from ..lib import ffmpeg
+from ..lib import ffmpeg, ffmpeg_tools, resampler
 from ..lib.audio_depth import ffmpeg_pcm_args, probe_depth
 from ..lib.filtergraph import FilterGraph
 from ..lib.params import ToolSpec
@@ -48,6 +48,27 @@ MIME = {
 }
 
 
+def tool_manifest(tool: ToolSpec) -> dict:
+    """``tool.to_dict()`` plus whether it can run on this machine.
+
+    ``notice`` carries the swr fallback message for a tool that prefers
+    libsoxr on an FFmpeg without it; the tool stays available.
+
+    ``available`` is False, with ``unavailable_reason`` naming the missing
+    library, the fix and the FFmpeg in use, when the tool requires libsoxr and
+    the resolved FFmpeg has none. It reads the resolution the startup probe
+    cached (the same one ``GET /api/health`` reports) and never probes; before
+    that probe finishes a tool reads as available."""
+    d = tool.to_dict()
+    reason = ffmpeg_tools.soxr_unavailable_reason() if "soxr" in tool.requires else None
+    d["available"] = reason is None
+    d["unavailable_reason"] = reason
+    # A tool that prefers libsoxr still runs without it (swr at matching
+    # quality); ``notice`` says so, with the fix, and is None otherwise.
+    d["notice"] = resampler.swr_notice() if "soxr" in tool.prefers else None
+    return d
+
+
 def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
     router = APIRouter()
     by_id = {t.id: t for t in tools}
@@ -57,7 +78,7 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
         return {
             "family": family,
             "count": len(tools),
-            "tools": [t.to_dict() for t in tools],
+            "tools": [tool_manifest(t) for t in tools],
         }
 
     @router.get("/tools/{tool_id}")
@@ -65,7 +86,7 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
         tool = by_id.get(tool_id)
         if not tool:
             raise HTTPException(404, f"Unknown tool: {tool_id}")
-        return tool.to_dict()
+        return tool_manifest(tool)
 
     @router.post("/process")
     async def process(
@@ -110,6 +131,10 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
             in_path = tmp / "input.wav"
             out_path = tmp / f"output.{output_format}"
             await ffmpeg.stream_upload_to(in_path, audio)
+            # A handler that picks its resampler (backend.lib.resampler) asks
+            # the resolved FFmpeg; before the startup probe has finished that
+            # would probe on the event loop, so resolve here, off the loop.
+            await ffmpeg_tools.aresolve()
 
             if tool.mode == "filter":
                 built = tool.handler(validated)
@@ -143,6 +168,10 @@ def build_router(family: str, tools: list[ToolSpec]) -> APIRouter:
                     "Content-Disposition": f'attachment; filename="processed.{output_format}"'
                 },
             )
+        except ffmpeg.FFmpegCapabilityError as e:
+            # The whole message: it names the missing library and the FFmpeg
+            # in use, and the path can run past the 400-char stderr tail.
+            raise HTTPException(500, f"{tool.name}: {e}")
         except ffmpeg.FFmpegError as e:
             raise HTTPException(500, f"ffmpeg error: {e.stderr[-400:]}")
         except HTTPException:

@@ -10,6 +10,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { uuid } from '../orb-kit/utils';
 import { rackEffectDefaults } from '../lib/rackEffects';
 import type { ChainEntry } from './effectChainStore';
@@ -48,6 +49,7 @@ export const useDrawFxStore = create<DrawFxState>()(
     }),
     {
       name: 'thedaw-draw-fx-chain',
+      storage: persistStorage(),
       partialize: (s) => ({ chain: s.chain }),
     },
   ),

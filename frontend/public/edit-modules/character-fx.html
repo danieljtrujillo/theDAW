@@ -545,7 +545,7 @@ function rebuildChain(){
 /* theDAW host transport: playback start/stop is reported to the parent stage. */
 let liveBuf = null;
 function postTransportState(playing){
-  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*');
+  window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, window.location.origin);
 }
 function stopSource(){
   if (!source) return;
@@ -857,6 +857,7 @@ function previewStillAudible() {
 
 // ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
+  if (e.source !== window.parent) return;
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });

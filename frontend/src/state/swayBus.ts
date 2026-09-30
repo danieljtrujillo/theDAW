@@ -17,6 +17,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { subscribeToMidi } from './midiBus';
 
 export type SwayDim = 'strike' | 'sway' | 'pulse' | 'glide' | 'press' | 'sculpt';
@@ -104,6 +105,7 @@ export const useSwayStore = create<SwayState>()(
     }),
     {
       name: 'thedaw-sway-bindings-v1',
+      storage: persistStorage(),
       partialize: (s) => ({ bindings: s.bindings }),
       // v2: factory-layout defaults arrived. Fill only the slots the persisted
       // state left EMPTY — anything the user learned stays exactly as learned.

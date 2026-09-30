@@ -53,7 +53,7 @@ export const PlayAlongTransport: React.FC<PlayAlongTransportProps> = ({
   };
 
   return (
-    <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center gap-2 px-2 text-[10px] font-mono text-zinc-300">
+    <div className="shrink-0 h-8 border-t border-white/10 bg-[#0a080f] flex items-center gap-2 px-2 text-xs font-bold text-zinc-300">
       {children}
       <span className="ml-auto">
         <LookControls />
@@ -72,7 +72,7 @@ export const PlayAlongTransport: React.FC<PlayAlongTransportProps> = ({
             step={5}
             value={userOffsetMs}
             onChange={(e) => setUserOffsetMs(Number(e.target.value) || 0)}
-            className="w-14 form-select text-[10px] px-1 py-0.5 tabular-nums"
+            className="w-16 form-select text-xs font-bold px-1 py-0.5 tabular-nums"
           />
           <button
             type="button"

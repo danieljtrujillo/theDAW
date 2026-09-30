@@ -4,10 +4,20 @@ import { QuantizeValue, ScaleType, Genre } from "./types";
 import type { ProcessingConfig, NoteEvent } from "./types";
 import { quantizeNotes, transposeNotes, changeKey, snapNotesToScale, deleteNote } from "./midiEditor";
 import { GENRE_PROFILES } from "./constants";
+import { pairingHeader } from "../../../lib/pairing";
 
 // theDAW keeps API keys server-side; route all Gemini calls through the backend proxy.
 const PROXY_BASE = (typeof window !== 'undefined' ? window.location.origin : '') + '/api/genai-proxy';
-const ai = new GoogleGenAI({ apiKey: 'thedaw-proxy', httpOptions: { baseUrl: PROXY_BASE } });
+// SEC-001: a non-loopback caller (the phone, over a plain http://<lan-ip>
+// share link) needs a real secret to reach the proxy — see
+// backend/lib/pairing.py. pairingHeader() is {} on this machine's own UI.
+// Read once at construction, not per request — see the same note in
+// lib/aiComposeClient.ts (the SDK's HttpOptions.headers has no per-call hook,
+// so a token regenerated after this loads needs a reload here to take effect).
+const ai = new GoogleGenAI({
+  apiKey: 'thedaw-proxy',
+  httpOptions: { baseUrl: PROXY_BASE, headers: pairingHeader() },
+});
 
 // Helper to convert config enums to string description for the prompt
 const getConfigDescription = (config: ProcessingConfig) => {
@@ -244,7 +254,7 @@ Piano Roll State:
 - Key: ${currentKeyName}
 - Genre: ${context.config.genre}
 - Notes: ${getNotesDescription(context.pianoRoll.notes)}
-- Total Duration: ${context.pianoRoll.notes.length > 0 ? Math.max(...context.pianoRoll.notes.map(n => n.startTime + n.duration)).toFixed(2) : 0}s
+- Total Duration: ${context.pianoRoll.notes.length > 0 ? context.pianoRoll.notes.reduce((end, n) => Math.max(end, n.startTime + n.duration), 0).toFixed(2) : 0}s
 - Playing: ${context.pianoRoll.isPlaying}
 
 === YOUR CAPABILITIES ===

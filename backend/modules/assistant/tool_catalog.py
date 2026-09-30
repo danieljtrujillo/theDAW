@@ -1,0 +1,2296 @@
+"""
+Shared theDAW tool catalog — ONE source of truth for every provider surface.
+
+These declarations were moved here VERBATIM from ``backend/assistant_routes.py``
+(the inline ``theDAW_TOOLS`` list). Nothing about them was renamed, reordered, or
+re-described: the OpenAI / Gemini / Anthropic function-calling paths and the
+Claude Code MCP path must advertise the identical tools, or the browser-side
+handlers in ``frontend/src/orb-kit/actionHandlers.ts`` stop matching.
+
+Two views of the same data:
+
+* ``PROVIDER_TOOLS`` — OpenAI function-calling shape
+  ``{"type": "function", "function": {name, description, parameters}}``.
+* ``thedaw_mcp_tools()`` — MCP ``tools/list`` shape
+  ``{name, description, inputSchema}``. Names stay UNPREFIXED here; the Claude
+  Code CLI namespaces them itself as ``mcp__thedaw__<name>``.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+__all__ = ["PROVIDER_TOOLS", "thedaw_mcp_tools"]
+
+
+# ---------------------------------------------------------------------------
+# Provider (OpenAI function-calling) declarations — moved verbatim.
+# ---------------------------------------------------------------------------
+PROVIDER_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "navigate",
+            "description": (
+                "Switch the active workspace tab in theDAW. 'library' opens the "
+                "library rail; 'perform' is the session/clip-launch grid. Legacy "
+                "names create/advanced (MAKE) and train (UNDERFIT) still resolve."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "string",
+                        "enum": [
+                            "make",
+                            "edit",
+                            "mix",
+                            "perform",
+                            "session",
+                            "dj",
+                            "vj",
+                            "sway",
+                            "foundry",
+                            "underfit",
+                            "nodefi",
+                            "loom",
+                            "learn",
+                            "tour",
+                            "library",
+                            "create",
+                            "advanced",
+                            "train",
+                            "audimate",
+                        ],
+                        "description": "Workspace to navigate to",
+                    }
+                },
+                "required": ["tab"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_docs",
+            "description": "Open the theDAW documentation modal",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_docs",
+            "description": "Close the theDAW documentation modal",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_left_panel",
+            "description": "Open the left app panel that contains the generation tabs",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_left_panel",
+            "description": "Collapse the left app panel",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_prompt",
+            "description": "Set the audio generation prompt text",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The text prompt for audio generation",
+                    }
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_prompt",
+            "description": "Append descriptive text to the current audio prompt",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to append to the current prompt",
+                    }
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "improve_prompt",
+            "description": "Replace the current prompt with an improved production-ready audio prompt",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Improved prompt"},
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": "Optional negative prompt",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_negative_prompt",
+            "description": "Set the negative prompt (what to avoid in generation)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Negative prompt text"}
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_model",
+            "description": "Set the audio generation model",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "enum": ["small", "medium", "small-rf", "medium-rf"],
+                        "description": "Model name",
+                    }
+                },
+                "required": ["model"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_duration",
+            "description": "Set audio generation duration in seconds (1-180)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "number", "description": "Duration in seconds"}
+                },
+                "required": ["duration"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_steps",
+            "description": "Set diffusion sampling steps",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "integer",
+                        "description": "Number of diffusion steps",
+                    }
+                },
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_cfg",
+            "description": "Set classifier-free guidance scale",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cfg": {"type": "number", "description": "CFG scale value"}
+                },
+                "required": ["cfg"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_seed",
+            "description": "Set generation seed (-1 for random)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seed": {
+                        "type": "integer",
+                        "description": "Seed value, -1 for random",
+                    }
+                },
+                "required": ["seed"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_batch",
+            "description": "Set batch size for generation",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "batch": {"type": "integer", "description": "Batch size"}
+                },
+                "required": ["batch"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_sampler",
+            "description": "Set the diffusion sampler type",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sampler": {
+                        "type": "string",
+                        "enum": ["pingpong", "euler", "rk4", "dpmpp"],
+                        "description": "Sampler type",
+                    }
+                },
+                "required": ["sampler"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_shift_mode",
+            "description": "Set timestep shift mode",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["LogSNR", "Flux", "Full", "None"],
+                        "description": "Shift mode",
+                    }
+                },
+                "required": ["mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_init_noise",
+            "description": "Set init noise level for audio-to-audio (0=keep original, 1=full noise)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "noise": {"type": "number", "description": "Noise level 0.0-1.0"}
+                },
+                "required": ["noise"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_params",
+            "description": "Set multiple generation parameters at once, including advanced settings",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "negative_prompt": {"type": "string"},
+                    "model": {"type": "string"},
+                    "duration": {"type": "number"},
+                    "steps": {"type": "integer"},
+                    "cfg": {"type": "number"},
+                    "seed": {"type": "integer"},
+                    "batch": {"type": "integer"},
+                    "sampler": {"type": "string"},
+                    "sigma_max": {"type": "number"},
+                    "duration_padding_sec": {"type": "number"},
+                    "apg_scale": {"type": "number"},
+                    "cfg_rescale": {"type": "number"},
+                    "cfg_norm_threshold": {"type": "number"},
+                    "cfg_interval_min": {"type": "number"},
+                    "cfg_interval_max": {"type": "number"},
+                    "shift_mode": {"type": "string"},
+                    "logsnr_anchor_length": {"type": "number"},
+                    "logsnr_anchor_logsnr": {"type": "number"},
+                    "logsnr_rate": {"type": "number"},
+                    "logsnr_end": {"type": "number"},
+                    "flux_min_len": {"type": "number"},
+                    "flux_max_len": {"type": "number"},
+                    "flux_alpha_min": {"type": "number"},
+                    "flux_alpha_max": {"type": "number"},
+                    "full_base_shift": {"type": "number"},
+                    "full_max_shift": {"type": "number"},
+                    "full_min_len": {"type": "number"},
+                    "full_max_len": {"type": "number"},
+                    "init_noise": {"type": "number"},
+                    "inversion_steps": {"type": "number"},
+                    "inversion_gamma": {"type": "number"},
+                    "inversion_unconditional": {"type": "boolean"},
+                    "file_format": {"type": "string"},
+                    "file_naming": {"type": "string"},
+                    "cut_to_duration": {"type": "boolean"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate",
+            "description": "Start audio generation with current parameters",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "abort",
+            "description": "Cancel the current audio generation",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_status",
+            "description": "Get current generation status and parameters",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    # ── EDIT arrangement vocabulary (editor_*) ──────────────────────────────
+    # The frontend executes these against the editor store; current tracks /
+    # clips / playhead / selection arrive in the editorState block of the app
+    # context, so the model can reference real ids. Destructive ops
+    # (remove_track / remove_clip) are confirmation-gated client-side.
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_get_state",
+            "description": "The full EDIT arrangement: every track (id, name, kind midi/audio/mixed/empty, instrumentProgram, fxChain, mute/solo/armed/frozen) and clip (id, label, kind midi/audio, start, duration, noteCount, instrumentProgram), plus bpm, snap, tool, loop, markers, playhead",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_add_track",
+            "description": "Add a new track to the EDIT arrangement",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Track name"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_remove_track",
+            "description": "Remove an EDIT track and all of its clips (user confirms in the UI)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {
+                        "type": "string",
+                        "description": "Track id or exact track name",
+                    },
+                },
+                "required": ["track_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_track",
+            "description": (
+                "Update an EDIT track's volume, pan, mute, solo, name, record "
+                "arm, or default MIDI instrument and its kind (drums or "
+                "melodic). Freezing is UI-only (there is no offline renderer "
+                "here) — frozen=true is refused with the path to the freeze "
+                "button; frozen=false DOES unfreeze."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {
+                        "type": "string",
+                        "description": "Track id or exact name",
+                    },
+                    "volume": {"type": "number", "description": "Linear gain 0..1"},
+                    "pan": {"type": "number", "description": "-1 (left) .. 1 (right)"},
+                    "mute": {"type": "boolean"},
+                    "solo": {"type": "boolean"},
+                    "name": {"type": "string", "description": "New track name"},
+                    "armed": {
+                        "type": "boolean",
+                        "description": "Record-arm the track",
+                    },
+                    "instrument_program": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 127,
+                        "description": (
+                            "Default program for this track's MIDI clips: a "
+                            "General MIDI program on a melodic track, a drum kit "
+                            "number (0 = Standard) on a drum track (editorState "
+                            "tracks[].drums). A clip with its own "
+                            "instrumentProgram wins."
+                        ),
+                    },
+                    "drums": {
+                        "type": "boolean",
+                        "description": (
+                            "The kind of instrument_program: true makes this a "
+                            "drum track and reads it as a drum kit, false makes "
+                            "it melodic and reads it as a General MIDI program. "
+                            "Changing the kind clears the clips' own programs. "
+                            "Omit to keep the track's kind."
+                        ),
+                    },
+                    "frozen": {
+                        "type": "boolean",
+                        "description": (
+                            "false unfreezes a frozen track. true is refused — "
+                            "freeze from the EDIT track header."
+                        ),
+                    },
+                },
+                "required": ["track_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_move_clip",
+            "description": "Move an EDIT clip to a new start time and/or another track",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                    "start_sec": {
+                        "type": "number",
+                        "description": "New timeline start (seconds)",
+                    },
+                    "track_id": {
+                        "type": "string",
+                        "description": "Destination track id or name",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_remove_clip",
+            "description": "Delete an EDIT clip from the arrangement (user confirms in the UI)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_split_clip",
+            "description": "Split an EDIT clip at a timeline position inside the clip",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                    "at_sec": {
+                        "type": "number",
+                        "description": "Timeline seconds inside the clip",
+                    },
+                },
+                "required": ["clip_id", "at_sec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_select_clip",
+            "description": "Select an EDIT clip (drives clip-scoped UI actions)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "description": "Clip id (from editorState)",
+                    },
+                },
+                "required": ["clip_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_playhead",
+            "description": "Move the EDIT playhead to a timeline position",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Timeline seconds (>= 0)",
+                    },
+                },
+                "required": ["seconds"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_bpm",
+            "description": "Set the EDIT arrangement tempo",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bpm": {
+                        "type": "number",
+                        "minimum": 20,
+                        "maximum": 300,
+                        "description": (
+                            "Beats per minute, 20-300 (the app's tempo range); "
+                            "a fraction is kept"
+                        ),
+                    },
+                },
+                "required": ["bpm"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_set_loop",
+            "description": "Enable/disable the EDIT loop and optionally set its region",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "start_sec": {"type": "number"},
+                    "end_sec": {"type": "number"},
+                },
+                "required": ["enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "editor_add_marker",
+            "description": "Add a named marker to the EDIT timeline",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Timeline seconds (>= 0)",
+                    },
+                    "name": {"type": "string", "description": "Marker label"},
+                },
+                "required": ["seconds"],
+            },
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Overdrive tools — the editor capabilities T09-T12 built, plus the five DJ
+# actions that already had handlers and were never declared.
+#
+# Written here rather than moved, so unlike the block above they use a builder.
+# The literals above are archaeology (moved verbatim out of assistant_routes so
+# the diff could be proved empty); these are new text, and 51 hand-rolled
+# ``{"type": "function", "function": {...}}`` wrappers would bury the part a
+# reviewer actually has to check — the names, the enums and the required lists.
+#
+# Every tool here is executed by ``frontend/src/orb-kit/actionHandlers.ts``
+# through the facade in ``frontend/src/state/editorTools.ts`` (or, for the four
+# that need DSP, ``orb-kit/editorToolBridge.ts`` → ``/api/editor-tools/*``), and
+# tiered in ``frontend/src/orb-kit/tool-tiers.ts``. ``tests/
+# test_assistant_provider_tools.py`` fails if any of those three fall out of
+# step with this list.
+# ---------------------------------------------------------------------------
+
+
+def _fn(
+    name: str,
+    description: str,
+    properties: dict[str, Any] | None = None,
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = {"type": "object", "properties": properties or {}}
+    if required:
+        parameters["required"] = required
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
+#: Every ``*_id`` argument accepts an id OR the object's label/name, matched
+#: case-insensitively; an ambiguous name is refused with its candidates rather
+#: than resolved to a guess.
+_CLIP_ID = {
+    "type": "string",
+    "description": "Clip id from editorState, or the clip's exact label",
+}
+_TRACK_ID = {
+    "type": "string",
+    "description": "Track id from editorState, or the track's exact name",
+}
+
+#: ``editorStore.SNAP_DIVISIONS``. Quantize cannot use 'off' (there is no grid
+#: to snap to), so the two enums differ by exactly that member.
+_SNAP_DIVISIONS = [
+    "off",
+    "1/1",
+    "1/2",
+    "1/4",
+    "1/8",
+    "1/16",
+    "1/32",
+    "1/64",
+    "1/4T",
+    "1/8T",
+    "1/16T",
+    "1/32T",
+    "1/16Q",
+    "1/16S",
+    "1/4D",
+    "1/8D",
+    "1/16D",
+]
+_GRID_DIVISIONS = [d for d in _SNAP_DIVISIONS if d != "off"]
+
+_MIDI_ONLY = (
+    " Piano-roll (MIDI) clips only — it edits the note list, and the piano roll "
+    "opens with the edit. A clip holding rendered audio (or with no instrument "
+    "to play live) is re-rendered; one that plays live renders when exported."
+)
+_LENGTH_WARNING = (
+    " A note edit resets the clip to its whole grid (plus the render's ring-out "
+    "when it renders), so a previously trimmed clip grows back; the result says "
+    "so when the length moved."
+)
+_METER_ITEMS = {
+    "type": "object",
+    "properties": {
+        "bar": {"type": "integer", "minimum": 1},
+        "num": {"type": "integer", "minimum": 1, "maximum": 64},
+        "den": {"type": "integer", "enum": [1, 2, 4, 8, 16, 32]},
+        "groups": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 1},
+            "description": "Additive grouping that sums to num, e.g. [3, 2, 2]",
+        },
+        "meter": {
+            "type": "string",
+            "description": "The meter as text, e.g. '7/8' or '7/8 3+2+2'",
+        },
+    },
+    "required": ["bar"],
+}
+
+_OVERDRIVE_TOOLS: list[dict[str, Any]] = [
+    # ── notes ───────────────────────────────────────────────────────────────
+    _fn(
+        "editor_quantize_clip",
+        "Snap a MIDI clip's notes toward a grid." + _MIDI_ONLY + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "grid": {
+                "type": "string",
+                "enum": _GRID_DIVISIONS,
+                "description": "Grid to snap to. T = triplet, Q = quintuplet (five in a beat), S = septuplet (seven in a beat), D = dotted.",
+            },
+            "strength": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "0 = no move, 1 = hard on the grid. Default 1.",
+            },
+            "swing": {
+                "type": "number",
+                "minimum": -1,
+                "maximum": 1,
+                "description": "Delays off-beat grid slots. Default 0.",
+            },
+            "quantize_ends": {
+                "type": "boolean",
+                "description": "Also snap note ends (lengths). Default false.",
+            },
+            "groove": {
+                "type": "string",
+                "description": (
+                    "A feel laid over the grid, in the clip's own meter: straight, "
+                    "swing8:<pct> or swing16:<pct> (the off-8ths or off-16ths of each "
+                    "bar), group8:<pct> or group16:<pct> (the same pairs counted from "
+                    "each of the bar's groups, so 7/8 3+2+2 swings inside each group), "
+                    "inegales:60, ddot:8 or ddot:4; pct is 50-75 (66.7 is a triplet "
+                    "feel). Omit for none."
+                ),
+            },
+            "groove_strength": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "How far into the groove, 0-1. Default 1.",
+            },
+        },
+        ["clip_id", "grid"],
+    ),
+    _fn(
+        "editor_get_notes",
+        "Read a MIDI clip's note list: every note as {id, note (pitch 0-127), "
+        "step (16ths from the clip start), length (steps), velocity (1-127)}, "
+        "plus the clip's total steps and source BPM. Read this before writing "
+        "notes back with editor_set_notes.",
+        {"clip_id": _CLIP_ID},
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_notes",
+        "Replace a MIDI clip's note list wholesale; the piano roll opens with "
+        "it, and a clip holding rendered audio (or with no instrument) is "
+        "re-rendered. The list you pass becomes the clip — notes you omit are "
+        "gone. An empty part from editor_create_midi_clip takes its first notes "
+        "here." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "notes": {
+                "type": "array",
+                "description": "The complete new note list (may not be empty).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "note": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 127,
+                            "description": "MIDI pitch (60 = middle C)",
+                        },
+                        "step": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Start, in 16th-note steps from the clip start",
+                        },
+                        "length": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "description": "Length in steps",
+                        },
+                        "velocity": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 127,
+                        },
+                        "id": {
+                            "type": "string",
+                            "description": "Keep an existing note's id, or omit for a new one",
+                        },
+                    },
+                    "required": ["note", "step", "length", "velocity"],
+                },
+            },
+        },
+        ["clip_id", "notes"],
+    ),
+    _fn(
+        "editor_nudge_notes",
+        "Shift every note of a MIDI clip in time. Pass EXACTLY ONE unit — two "
+        "units, or none, is refused rather than guessed." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "steps": {
+                "type": "number",
+                "description": "16th-note steps (may be fractional)",
+            },
+            "ms": {
+                "type": "number",
+                "description": (
+                    "Milliseconds, converted at the clip's source BPM, or at "
+                    "each note's place in the clip's tempo map when it has "
+                    "one. This is the unit editor_compare_timing's answer is "
+                    "given in."
+                ),
+            },
+            "ticks": {"type": "number", "description": "MIDI ticks at 480 PPQ"},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_transpose_clip",
+        "Transpose a MIDI clip's notes, clamped to the MIDI pitch range."
+        + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "semitones": {
+                "type": "integer",
+                "description": "Negative moves down. 12 = one octave up.",
+            },
+        },
+        ["clip_id", "semitones"],
+    ),
+    _fn(
+        "editor_scale_velocity",
+        "Scale and/or shift a MIDI clip's velocities. Pass factor, offset, or "
+        "both (factor first, then offset); min/max clamp the result." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "factor": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Multiplier, e.g. 0.8",
+            },
+            "offset": {"type": "number", "description": "Added after the factor"},
+            "min": {"type": "integer", "minimum": 1, "maximum": 127},
+            "max": {"type": "integer", "minimum": 1, "maximum": 127},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_humanize_clip",
+        "Scatter a MIDI clip's timing and velocity so it stops sounding "
+        "drawn-in. Pass a seed to make the same scatter reproducible."
+        + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "timing_steps": {
+                "type": "number",
+                "description": "Maximum timing jitter in steps, +/-. Default 0.1.",
+            },
+            "velocity": {
+                "type": "number",
+                "description": "Maximum velocity jitter, +/-. Default 8.",
+            },
+            "seed": {"type": "integer", "description": "Repeatable randomisation"},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_fix_overlaps",
+        "Resolve same-pitch collisions inside a MIDI clip." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "mode": {
+                "type": "string",
+                "enum": ["legato", "trim", "dedupe"],
+                "description": (
+                    "legato = stretch each note to the next; trim = cut the "
+                    "earlier note where the later one starts; dedupe = drop the "
+                    "duplicate."
+                ),
+            },
+        },
+        ["clip_id", "mode"],
+    ),
+    _fn(
+        "editor_filter_notes",
+        "Strip junk notes from a MIDI clip (blips, near-silent notes, "
+        "out-of-range notes, stranded ones). Pass at least one threshold. "
+        "Thresholds that would remove every note are refused." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "min_length_steps": {
+                "type": "number",
+                "description": "Drop notes shorter than this",
+            },
+            "min_velocity": {
+                "type": "integer",
+                "description": "Drop notes quieter than this",
+            },
+            "min_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+            "max_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+            "max_gap_steps": {
+                "type": "number",
+                "description": "Drop notes isolated by a bigger gap than this",
+            },
+        },
+        ["clip_id"],
+    ),
+    # ── roll parts ─────────────────────────────────────────────────────────
+    _fn(
+        "editor_create_midi_clip",
+        "Make an empty MIDI clip: one part of a score with a General MIDI "
+        "instrument, the arrangement's meters and tempo from the bar it starts "
+        "on, and a length in bars. Without track_id it gets a new track named "
+        "for its instrument. It plays live, so nothing renders. Fill it with "
+        "editor_set_notes or editor_set_roll_part. One undo step.",
+        {
+            "program": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 127,
+                "description": "GM program (0 = Acoustic Grand Piano, 40 = Violin, "
+                "42 = Cello, 56 = Trumpet, 73 = Flute); on a percussion part the kit "
+                "(0 = Standard, 48 = Orchestral). Default: the instrument of the "
+                "track named by track_id; a new melodic part needs one",
+            },
+            "percussion": {
+                "type": "boolean",
+                "description": "A drum part: its new track plays on the drum channel. "
+                "With track_id it must match that track: a drum track holds drum "
+                "parts and a melodic track melodic ones, and a mismatch is refused",
+            },
+            "track_id": {
+                "type": "string",
+                "description": "Put the part on this track (id or name) instead of a "
+                "new one; the track decides whether the part is a drum part",
+            },
+            "track_name": {
+                "type": "string",
+                "description": "The new track's name (default: the instrument's)",
+            },
+            "start_bar": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Arrangement bar the part starts on (default 1)",
+            },
+            "start_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Or the timeline second it starts at",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "Length in bars (default 4)",
+            },
+            "label": {"type": "string", "description": "The clip's name"},
+        },
+    ),
+    _fn(
+        "editor_list_roll_parts",
+        "List every MIDI clip as a part: its instrument, track, start bar, "
+        "bars, note count, lanes, and whether it plays live or holds rendered "
+        "audio.",
+        {},
+    ),
+    _fn(
+        "editor_get_roll_part",
+        "Read one MIDI part whole: instrument, tempo and tempo map, meter map "
+        "(1-based bars), pickup, grid length, polymeter lanes, bends, and its own "
+        "notes, each {id, note, step (16ths from the part's start), length, "
+        "velocity, lane?} (the notes the piano roll opens with). Up to 4000 notes "
+        "per read; from_bar/to_bar page through longer parts.",
+        {
+            "clip_id": _CLIP_ID,
+            "from_bar": {"type": "integer", "minimum": 1},
+            "to_bar": {"type": "integer", "minimum": 1},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_roll_part",
+        "Write a MIDI part back: any of its notes (with lanes), lanes, meter "
+        "map, pickup, length and instrument. Notes passed replace all of them "
+        "([] empties the part). The notes it plays are derived from its notes "
+        "and lanes the way the piano roll's EDIT key does it. One undo step; a "
+        "part holding rendered audio is re-rendered." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "notes": {
+                "type": "array",
+                "description": "The part's complete note list",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "note": {"type": "integer", "minimum": 0, "maximum": 127},
+                        "step": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Start, in 16ths from the part's start (fractions for tuplets)",
+                        },
+                        "length": {"type": "number", "exclusiveMinimum": 0},
+                        "velocity": {"type": "integer", "minimum": 1, "maximum": 127},
+                        "lane": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Polymeter lane id (default 0, lane A)",
+                        },
+                        "id": {"type": "string"},
+                    },
+                    "required": ["note", "step", "length", "velocity"],
+                },
+            },
+            "lanes": {
+                "type": "array",
+                "description": "The part's polymeter lanes; lane 0 (A) is always kept",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "minimum": 0},
+                        "name": {"type": "string"},
+                        "cycle_steps": {
+                            "type": "number",
+                            "minimum": 1,
+                            "description": "Loop length in 16ths; leave it out for a lane that does not loop",
+                        },
+                        "span_start": {"type": "number", "minimum": 0},
+                        "span_end": {
+                            "type": "number",
+                            "description": "Where the lane stops; leave it out for the part end",
+                        },
+                        "meter_map": {
+                            "type": "array",
+                            "description": "The lane's own meters, from its bar 1",
+                            "items": _METER_ITEMS,
+                        },
+                        "tuplet": {
+                            "type": "object",
+                            "properties": {
+                                "n": {"type": "integer", "minimum": 1, "maximum": 16},
+                                "m": {"type": "integer", "minimum": 1, "maximum": 16},
+                            },
+                            "required": ["n", "m"],
+                        },
+                    },
+                    "required": ["id"],
+                },
+            },
+            "meter_map": {
+                "type": "array",
+                "description": "The part's meters, bar 1 first (1-based bars)",
+                "items": _METER_ITEMS,
+            },
+            "pickup_steps": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 64,
+                "description": "16ths before the part's bar 1",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "The part's length in bars (after the pickup)",
+            },
+            "total_steps": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Or its length in 16ths",
+            },
+            "program": {"type": "integer", "minimum": 0, "maximum": 127},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_clip_instrument",
+        "Point a MIDI clip at a General MIDI program. It plays live through "
+        "that program, and a clip holding rendered audio is re-rendered through "
+        "it. Use this rather than editor_set_clip for instrument changes, so "
+        "exports match playback." + _LENGTH_WARNING,
+        {
+            "clip_id": _CLIP_ID,
+            "program": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 127,
+                "description": "GM program (0 = Acoustic Grand Piano, 33 = Electric Bass)",
+            },
+        },
+        ["clip_id", "program"],
+    ),
+    # ── tempo and time ──────────────────────────────────────────────────────
+    _fn(
+        "editor_set_clip_source_bpm",
+        "Declare the tempo a clip's media was recorded or rendered at. This "
+        "does NOT stretch anything — it is the reference editor_stretch_clip "
+        "needs to turn a target tempo into a ratio, and the first thing to fix "
+        "when a tempo match lands off the beat. Get the number from "
+        "editor_detect_tempo.",
+        {
+            "clip_id": _CLIP_ID,
+            "bpm": {"type": "number", "minimum": 20, "maximum": 300},
+        },
+        ["clip_id", "bpm"],
+    ),
+    _fn(
+        "editor_stretch_clip",
+        "Time-stretch a clip. A MIDI clip takes the new tempo (and is "
+        "re-rendered in the browser when it holds rendered audio or has no "
+        "instrument); an AUDIO clip goes to the backend for a pitch-preserving "
+        "stretch (ratio 0.25x-4x). Pass exactly one target. target_bpm needs "
+        "the clip's sourceBpm set.",
+        {
+            "clip_id": _CLIP_ID,
+            "target_bpm": {
+                "type": "number",
+                "minimum": 20,
+                "maximum": 300,
+                "description": "Play the clip as if it were authored at this tempo",
+            },
+            "target_duration_sec": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Make the clip last exactly this long",
+            },
+            "ratio": {
+                "type": "number",
+                "minimum": 0.25,
+                "maximum": 4,
+                "description": "new_duration / old_duration. 2 = twice as long (half speed).",
+            },
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_detect_tempo",
+        "Detect a clip's tempo on the backend: returns {bpm, confidence, "
+        "beats}. bpm is null when nothing periodic was found. Feed the answer "
+        "to editor_set_clip_source_bpm before any tempo match.",
+        {"clip_id": _CLIP_ID},
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_meter_map",
+        "Set the EDIT arrangement's meter map, tempo map, or both, or take "
+        "both from a MIDI clip. Bars are 1-based, as on screen. A map passed "
+        "replaces the whole map; without a bar-1 entry, bar 1 keeps its meter "
+        "(or start tempo). Tempo positions are a bar plus quarter notes into "
+        "it, read against the meter map this call ends with. Clips stay where "
+        "they are in seconds; the grid, snap, editor_seek_bar and bar nudges "
+        "follow the maps. editor_get_meter_map reads both maps back.",
+        {
+            "meter_map": {
+                "type": "array",
+                "description": "Every meter change, bar 1 first. Each item: "
+                "{bar, num, den, groups?} or {bar, meter: '7/8 3+2+2'}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "num": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "den": {"type": "integer", "enum": [1, 2, 4, 8, 16, 32]},
+                        "groups": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Additive grouping that sums to num, e.g. [3, 2, 2]",
+                        },
+                        "meter": {
+                            "type": "string",
+                            "description": "The meter as text, e.g. '7/8' or '7/8 3+2+2'",
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "tempo_map": {
+                "type": "array",
+                "description": "Every tempo change and fermata. Each item: "
+                "{bar, beat?, bpm, curve?} or {bar, beat?, fermata: {beats, stretch}}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {"type": "integer", "minimum": 1},
+                        "beat": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Quarter notes into the bar (default 0)",
+                        },
+                        "bpm": {"type": "number", "minimum": 20, "maximum": 300},
+                        "curve": {
+                            "type": "string",
+                            "enum": ["step", "linear"],
+                            "description": "step holds the tempo; linear ramps to the next tempo",
+                        },
+                        "fermata": {
+                            "type": "object",
+                            "properties": {
+                                "beats": {"type": "number", "exclusiveMinimum": 0},
+                                "stretch": {
+                                    "type": "number",
+                                    "minimum": 1,
+                                    "maximum": 8,
+                                },
+                            },
+                            "required": ["beats", "stretch"],
+                        },
+                    },
+                    "required": ["bar"],
+                },
+            },
+            "adopt_clip_id": {
+                "type": "string",
+                "description": "A MIDI clip whose tempo and meter the arrangement "
+                "takes from the clip's first step on. Pass it alone.",
+            },
+        },
+    ),
+    _fn(
+        "editor_get_meter_map",
+        "Read the EDIT arrangement's meter map and tempo map: every meter "
+        "change {bar, num, den, groups, label} and every tempo event {bar, "
+        "beat, bpm, curve} or fermata, bars 1-based, plus how many bars the "
+        "clips span. from_bar/to_bar read a range (the meter and tempo in "
+        "force at from_bar come first); up to 2000 entries of each per read. "
+        "editor_get_state lists only the first 64.",
+        {
+            "from_bar": {"type": "integer", "minimum": 1},
+            "to_bar": {"type": "integer", "minimum": 1},
+        },
+    ),
+    _fn(
+        "editor_set_time_signature",
+        "Set bar 1's meter; later meter changes stay. Bars, and therefore "
+        "editor_seek_bar, are counted from the meter map "
+        "(editor_set_meter_map sets the whole map).",
+        {
+            "num": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 32,
+                "description": "Beats per bar (the 7 of 7/8)",
+            },
+            "den": {
+                "type": "integer",
+                "enum": [1, 2, 4, 8, 16, 32],
+                "description": "Beat unit (the 8 of 7/8)",
+            },
+        },
+        ["num", "den"],
+    ),
+    _fn(
+        "editor_nudge_clip",
+        "Move a clip along the timeline. Pass exactly one distance; beats and "
+        "bars are converted at the project tempo and meter. The clip is "
+        "clamped at the timeline origin.",
+        {
+            "clip_id": _CLIP_ID,
+            "delta_sec": {
+                "type": "number",
+                "description": "Seconds, negative moves earlier",
+            },
+            "beats": {"type": "number"},
+            "bars": {"type": "number"},
+        },
+        ["clip_id"],
+    ),
+    # ── transport ───────────────────────────────────────────────────────────
+    _fn(
+        "editor_play",
+        "Start playback on the EDIT timeline from the playhead. Fails with a "
+        "reason when the EDIT workspace is not open — there is no transport to "
+        "drive until it is.",
+    ),
+    _fn("editor_stop", "Stop playback on the EDIT timeline."),
+    _fn(
+        "editor_seek_bar",
+        "Put the playhead at the top of a bar. Bars are 1-based, exactly as "
+        "they are numbered on screen: bar 1 is the start of the song.",
+        {"bar": {"type": "integer", "minimum": 1}},
+        ["bar"],
+    ),
+    _fn(
+        "editor_loop_selection",
+        "Set the loop region to span some clips: the given clip_ids, or the "
+        "current selection when none are given.",
+        {
+            "clip_ids": {
+                "type": "array",
+                "items": _CLIP_ID,
+                "description": "Defaults to the current selection",
+            }
+        },
+    ),
+    # ── clips ───────────────────────────────────────────────────────────────
+    _fn(
+        "editor_set_clip",
+        "Set a clip's playback properties. Fades longer than the clip, or a "
+        "duration past the end of the clip's source media, are refused rather "
+        "than clamped. For instrument_program use editor_set_clip_instrument.",
+        {
+            "clip_id": _CLIP_ID,
+            "gain": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Linear gain, 1 = unity",
+            },
+            "fade_in_sec": {"type": "number", "minimum": 0},
+            "fade_out_sec": {"type": "number", "minimum": 0},
+            "muted": {"type": "boolean"},
+            "duration_sec": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "New length; the in point stays put",
+            },
+            "label": {"type": "string"},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_trim_clip",
+        "Move a clip's in and/or out point, in TIMELINE seconds (not seconds "
+        "into the clip). Trimming the in point moves the clip's start and its "
+        "window into the source together, so the audio under the remaining "
+        "part does not shift.",
+        {
+            "clip_id": _CLIP_ID,
+            "in_sec": {"type": "number", "description": "New start, timeline seconds"},
+            "out_sec": {"type": "number", "description": "New end, timeline seconds"},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_duplicate_clip",
+        "Copy a clip onto the same track. Without at_sec the copy is "
+        "butt-joined onto the end of the original.",
+        {
+            "clip_id": _CLIP_ID,
+            "at_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Where to put the copy",
+            },
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_merge_clips",
+        "Concatenate two or more clips on ONE track into a single audio clip. "
+        "Each part's fades, gain and mute are baked into the samples first, "
+        "then the originals are removed — this is not reversible except by "
+        "editor_undo.",
+        {
+            "clip_ids": {
+                "type": "array",
+                "items": _CLIP_ID,
+                "minItems": 2,
+                "description": "At least two clips, all on the same track",
+            }
+        },
+        ["clip_ids"],
+    ),
+    _fn(
+        "editor_crossfade_clips",
+        "Crossfade two touching or overlapping clips on the same track: "
+        "symmetric fades across the overlap, and the later clip slides back to "
+        "where the overlap begins. Clips with a gap between them, or on "
+        "different tracks, are refused.",
+        {
+            "clip_id_a": _CLIP_ID,
+            "clip_id_b": _CLIP_ID,
+            "overlap_sec": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Shortened to fit the clips if it does not",
+            },
+        },
+        ["clip_id_a", "clip_id_b", "overlap_sec"],
+    ),
+    _fn(
+        "editor_reverse_clip",
+        "Play a clip's audio backwards. Audio clips only: a MIDI clip is "
+        "re-synthesised from its notes at playback, so reversing its rendered "
+        "blob would only change exports — bounce it with flatten first.",
+        {"clip_id": _CLIP_ID},
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_normalize_clip",
+        "Scale a clip's audio so its loudest sample lands on peak_db. Audio "
+        "clips only, for the same reason as editor_reverse_clip.",
+        {
+            "clip_id": _CLIP_ID,
+            "peak_db": {
+                "type": "number",
+                "maximum": 0,
+                "description": "Target peak in dBFS. Default -1.",
+            },
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_bounce_clip",
+        "Make a clip's audio equal what the clip actually sounds like: a MIDI "
+        "clip is re-synthesised from its notes, an audio clip has its fade "
+        "envelope and gain printed into the samples. Use flatten to turn a "
+        "MIDI clip into a plain audio clip (its notes are dropped).",
+        {
+            "clip_id": _CLIP_ID,
+            "flatten": {
+                "type": "boolean",
+                "description": "MIDI only: drop the note list afterwards. Default false.",
+            },
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_export_midi",
+        "Write the arrangement's MIDI notes as one type-1 .mid file at 960 PPQ "
+        "and open a Save As for it: one named MIDI track per EDIT track, each "
+        "note where EDIT plays it, each track on its own channel (drum tracks "
+        "on channel 10) with its program, bank and controller changes, and the "
+        "arrangement's tempo changes and time signatures. With no track_ids or "
+        "clip_ids it takes every track as the mix plays them (mute and solo). "
+        "Audio clips hold no notes and are never in it. Changes nothing in the "
+        "arrangement.",
+        {
+            "track_ids": {
+                "type": "array",
+                "items": _TRACK_ID,
+                "description": "Only these tracks (ids or names), mute and solo ignored",
+            },
+            "clip_ids": {
+                "type": "array",
+                "items": _CLIP_ID,
+                "description": "Only these MIDI clips (ids or labels). Not with track_ids.",
+            },
+            "start_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Start of a span of the timeline; the file starts on the bar line at or before it. With end_sec.",
+            },
+            "end_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "End of the span; notes that start before it are kept, cut here. With start_sec.",
+            },
+            "name": {
+                "type": "string",
+                "description": "The file's name. Default arrangement.mid.",
+            },
+        },
+    ),
+    # ── selection and grid ──────────────────────────────────────────────────
+    _fn(
+        "editor_select_clips",
+        "Replace the timeline's clip selection. An empty array clears it.",
+        {"clip_ids": {"type": "array", "items": _CLIP_ID}},
+        ["clip_ids"],
+    ),
+    _fn(
+        "editor_select_range",
+        "Select every clip that overlaps a span of the timeline, optionally "
+        "restricted to some tracks.",
+        {
+            "start_sec": {"type": "number"},
+            "end_sec": {"type": "number"},
+            "track_ids": {
+                "type": "array",
+                "items": _TRACK_ID,
+                "description": "Defaults to every track",
+            },
+        },
+        ["start_sec", "end_sec"],
+    ),
+    _fn(
+        "editor_select_notes",
+        "Select notes inside a MIDI clip, by id or by a pitch/step window. "
+        "Pass note_ids, or at least one of the filters.",
+        {
+            "clip_id": _CLIP_ID,
+            "note_ids": {"type": "array", "items": {"type": "string"}},
+            "min_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+            "max_pitch": {"type": "integer", "minimum": 0, "maximum": 127},
+            "start_step": {"type": "number"},
+            "end_step": {"type": "number"},
+        },
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_set_snap",
+        "Set the grid that timeline clip edits snap to. 'off' disables "
+        "snapping. T = triplet, Q = quintuplet, S = septuplet, D = dotted.",
+        {"snap": {"type": "string", "enum": _SNAP_DIVISIONS}},
+        ["snap"],
+    ),
+    _fn(
+        "editor_set_tool",
+        "Set the timeline's active mouse tool.",
+        {
+            "tool": {
+                "type": "string",
+                "enum": ["move", "cut", "split"],
+                "description": "move drags clips; cut and split divide them",
+            }
+        },
+        ["tool"],
+    ),
+    # ── tracks ──────────────────────────────────────────────────────────────
+    _fn(
+        "editor_reorder_tracks",
+        "Reorder tracks, top first. A partial list moves just those tracks to "
+        "the top in that order and leaves the rest below in their current "
+        "order.",
+        {"track_ids": {"type": "array", "items": _TRACK_ID, "minItems": 1}},
+        ["track_ids"],
+    ),
+    _fn(
+        "editor_duplicate_track",
+        "Copy a track together with all of its clips.",
+        {"track_id": _TRACK_ID},
+        ["track_id"],
+    ),
+    _fn(
+        "editor_freeze_track",
+        "Freeze a track to a printed stem. NOT AVAILABLE from here: freezing "
+        "runs the offline renderer inside the EDIT timeline component, which "
+        "the tool layer cannot reach, so this returns the path to the freeze "
+        "button in the track header instead of pretending. Unfreezing IS "
+        "supported — editor_set_track with frozen=false.",
+        {"track_id": _TRACK_ID},
+        ["track_id"],
+    ),
+    _fn(
+        "editor_add_symphony_template",
+        "Add the Symphony orchestra template after the arrangement's tracks: "
+        "a folder of sixteen section tracks (strings, woodwinds, harp, brass, "
+        "percussion) on their instruments, panned to their seats, each on its "
+        "section's bus; the five section buses send to one Hall bus whose "
+        "Reverb plays the measured Detmold Konzerthaus, and every track's synth "
+        "reverb send (CC 91) is 0. One undo step; deletes nothing.",
+        {
+            "seating": {
+                "type": "string",
+                "enum": ["american", "european"],
+                "description": (
+                    "american (default): violins together on the left; european: "
+                    "first and second violins facing each other"
+                ),
+            }
+        },
+    ),
+    _fn(
+        "editor_set_track_instrument",
+        "Put one of the user's scanned VST3 instruments in a track's instrument "
+        "slot, switch the slot on or off, or empty it. The track's MIDI then "
+        "plays live through the plugin ahead of its inserts, and every bounce, "
+        "freeze and export prints through it; switched off or empty, it plays "
+        "on EDIT's soundfont synths. One undo step.",
+        {
+            "track_id": _TRACK_ID,
+            "plugin": {
+                "type": "string",
+                "description": (
+                    "A scanned VST3 instrument by its name or its path. The "
+                    "answer lists the scanned instruments when none matches."
+                ),
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "Switch the slot on or off, keeping its plugin",
+            },
+            "remove": {
+                "type": "boolean",
+                "description": "true empties the slot. Not with plugin.",
+            },
+        },
+        ["track_id"],
+    ),
+    # ── sound banks and tuning ──────────────────────────────────────────────
+    _fn(
+        "editor_list_sound_banks",
+        "The user's sound banks: each bank's id, name, the bank select offset "
+        "it plays at, and its presets (bank, program, name, drum, and the bank "
+        "select a synth and a MIDI file send for it). Changes nothing.",
+        {},
+    ),
+    _fn(
+        "editor_load_sound_bank",
+        "Add a sound bank from an .sf2, .sf3 or .dls file on this machine. The "
+        "app stores a copy, gives it a bank select range of its own, and every "
+        "instrument picker and synth lists its presets at once.",
+        {
+            "path": {
+                "type": "string",
+                "description": "The bank file's full path on this machine",
+            }
+        },
+        ["path"],
+    ),
+    _fn(
+        "editor_set_tuning",
+        "Set the project tuning: A4's pitch, the temperament and the pitch "
+        "class it is laid from. Every live synth, render and MIDI export "
+        "follows it, and the project file keeps it. A Scala scale is imported "
+        "from its file in EDIT's tuning panel.",
+        {
+            "reference_hz": {
+                "type": "number",
+                "minimum": 380,
+                "maximum": 480,
+                "description": "A4 in Hz: 415 Baroque, 430 Classical, 440 modern, 442 orchestral",
+            },
+            "temperament": {
+                "type": "string",
+                "enum": [
+                    "equal",
+                    "meantone",
+                    "werckmeister3",
+                    "kirnberger3",
+                    "vallotti",
+                ],
+            },
+            "root": {
+                "type": "string",
+                "description": "The temperament's root: a note name ('C', 'F#', 'Bb') or 0-11",
+            },
+        },
+    ),
+    # ── analysis ────────────────────────────────────────────────────────────
+    _fn(
+        "editor_analyze_clip",
+        "Measure a clip on the backend: duration, sample rate, channels, peak "
+        "and RMS dBFS, detected tempo with its beats, onset times, and key. "
+        "Onsets and beats are in the clip's own source time. Use it before "
+        "deciding a gain, a tempo, or where the transients are.",
+        {"clip_id": _CLIP_ID},
+        ["clip_id"],
+    ),
+    _fn(
+        "editor_compare_timing",
+        "Measure how far a MIDI clip's notes sit from an audio clip's "
+        "transients, and say which way to move them. Returns medianOffsetSec "
+        "(audio minus MIDI: positive means the MIDI is EARLY and should move "
+        "later) plus the exact editor_nudge_notes ms value to apply.",
+        {
+            "midi_clip_id": {
+                "type": "string",
+                "description": "The piano-roll clip whose notes are being aligned",
+            },
+            "audio_clip_id": {
+                "type": "string",
+                "description": "The audio clip to align them to (the reference)",
+            },
+            "max_match_sec": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Furthest a note may be from an onset to count as the same hit. Default 0.25.",
+            },
+        },
+        ["midi_clip_id", "audio_clip_id"],
+    ),
+    _fn(
+        "editor_get_waveform_peaks",
+        "Downsample a clip's audio to absolute peak values in [0, 1], one per "
+        "bucket, so the shape of the clip can be reasoned about without "
+        "listening to it.",
+        {
+            "clip_id": _CLIP_ID,
+            "buckets": {
+                "type": "integer",
+                "minimum": 8,
+                "maximum": 2048,
+                "description": "Number of buckets across the clip's source. Default 200.",
+            },
+        },
+        ["clip_id"],
+    ),
+    # ── markers ─────────────────────────────────────────────────────────────
+    _fn(
+        "editor_remove_marker",
+        "Delete a timeline marker.",
+        {
+            "marker_id": {
+                "type": "string",
+                "description": "Marker id from editorState, or its exact current label",
+            }
+        },
+        ["marker_id"],
+    ),
+    _fn(
+        "editor_rename_marker",
+        "Rename a timeline marker. BOTH arguments are required: marker_id "
+        "picks the marker (its id, or its exact CURRENT label) and name is the "
+        "NEW label it gets. name never identifies the marker.",
+        {
+            "marker_id": {
+                "type": "string",
+                "description": (
+                    "Required. Which marker: its id from editorState, or its "
+                    "exact current label"
+                ),
+            },
+            "name": {
+                "type": "string",
+                "description": "Required. The NEW label — not the current one",
+            },
+        },
+        ["marker_id", "name"],
+    ),
+    # ── automation ──────────────────────────────────────────────────────────
+    _fn(
+        "editor_add_automation_lane",
+        "Create an automation lane for a parameter, or report the one that "
+        "already exists. A new lane is born holding the parameter's current "
+        "value, so adding it changes nothing about how the mix sounds. Write "
+        "the shape with editor_set_automation_points.",
+        {
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "trackVolume",
+                    "trackPan",
+                    "trackFx",
+                    "masterFx",
+                    "trackMidiCc",
+                ],
+                "description": "What is being automated; trackMidiCc is a MIDI "
+                "track's controller (0-127) on every channel its MIDI plays on",
+            },
+            "track_id": {
+                **_TRACK_ID,
+                "description": "Required for trackVolume / trackPan / trackFx / trackMidiCc",
+            },
+            "entry_id": {
+                "type": "string",
+                "description": "FX chain entry id, required for trackFx / masterFx",
+            },
+            "param_key": {
+                "type": "string",
+                "description": "Numeric parameter on that FX entry, required for "
+                "trackFx / masterFx; for trackMidiCc the controller number: 1, 7, "
+                "10, 11, 64, 74 or 91",
+            },
+        },
+        ["kind"],
+    ),
+    _fn(
+        "editor_set_automation_points",
+        "Replace a lane's breakpoints. Identify the lane by lane_id, or by the "
+        "same kind/track_id/entry_id/param_key that created it. Breakpoints "
+        "closer together than 20ms are merged, and the result says how many "
+        "actually landed.",
+        {
+            "lane_id": {
+                "type": "string",
+                "description": "From editor_add_automation_lane",
+            },
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "trackVolume",
+                    "trackPan",
+                    "trackFx",
+                    "masterFx",
+                    "trackMidiCc",
+                ],
+            },
+            "track_id": _TRACK_ID,
+            "entry_id": {"type": "string"},
+            "param_key": {"type": "string"},
+            "points": {
+                "type": "array",
+                "minItems": 1,
+                "description": "The complete new breakpoint list",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "t": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Timeline seconds",
+                        },
+                        "v": {"type": "number", "description": "Parameter value at t"},
+                    },
+                    "required": ["t", "v"],
+                },
+            },
+        },
+        ["points"],
+    ),
+    # ── safety net ──────────────────────────────────────────────────────────
+    _fn(
+        "editor_undo",
+        "Step one edit backwards on the EDIT timeline. Every tool that writes "
+        "through this catalog is undoable.",
+    ),
+    _fn("editor_redo", "Step one edit forwards again."),
+    _fn(
+        "editor_snapshot",
+        "Bookmark the whole arrangement under a name, outside undo history. "
+        "Take one before any run of destructive edits; editor_restore puts it "
+        "back. Re-using a name replaces that snapshot.",
+        {"name": {"type": "string", "description": "What to call it"}},
+        ["name"],
+    ),
+    _fn(
+        "editor_restore",
+        "Put a named snapshot back, replacing the current arrangement. The "
+        "restore is itself undoable.",
+        {
+            "name": {
+                "type": "string",
+                "description": "A name from a previous editor_snapshot",
+            }
+        },
+        ["name"],
+    ),
+    # ── DJ performance control ──────────────────────────────────────────────
+    # Handlers have existed since the DJ tab shipped; these declarations are
+    # what finally let a tool-calling provider reach them instead of writing
+    # <action> blocks that only the scraper could see.
+    _fn(
+        "dj_get_state",
+        "What is on in the DJ tab: the active set's name, the now-playing "
+        "track, the running order, and every setlist that exists.",
+    ),
+    _fn(
+        "dj_load_set",
+        "Make a setlist active and switch to the DJ tab.",
+        {
+            "name": {
+                "type": "string",
+                "description": "Set name, case-insensitive; a substring matches",
+            }
+        },
+        ["name"],
+    ),
+    _fn(
+        "dj_automix",
+        "Start or stop the automated set. Starting also switches to the DJ tab.",
+        {"on": {"type": "boolean", "description": "true starts, false stops"}},
+        ["on"],
+    ),
+    _fn(
+        "dj_transition_now",
+        "Blend into the next track at the next automix tick, instead of "
+        "waiting for the prepared mix point.",
+    ),
+    _fn(
+        "dj_set_next",
+        "Reorder the live set so the named track plays next, straight after "
+        "the one currently playing.",
+        {
+            "label": {
+                "type": "string",
+                "description": "Track title or label; a substring matches",
+            }
+        },
+        ["label"],
+    ),
+]
+
+PROVIDER_TOOLS.extend(_OVERDRIVE_TOOLS)
+
+
+# ---------------------------------------------------------------------------
+# Composer and score tools: the piano roll's COMPOSE backends
+# (backend/modules/composer) and score import / the music21 corpus
+# (backend/modules/notation).
+#
+# Executed in the browser by ``frontend/src/orb-kit/composerTools.ts``, which
+# builds each request with the COMPOSE panel's own model and writes into the
+# piano roll the way the panel does. Enums and limits are the composer
+# router's Pydantic ones; ``tests/test_assistant_composer_tools.py`` reads
+# them back from router.py and spec.py so the two cannot drift.
+# ---------------------------------------------------------------------------
+_KEY = {
+    "type": "string",
+    "description": "Tonic: 'C', 'F#', 'Bb'. A lowercase letter with no mode is minor",
+}
+_KEY_MODE = {"type": "string", "enum": ["major", "minor"]}
+_MODAL_MODE = {
+    "type": "string",
+    "enum": [
+        "major",
+        "minor",
+        "ionian",
+        "dorian",
+        "phrygian",
+        "lydian",
+        "mixolydian",
+        "aeolian",
+    ],
+}
+_SEED = {
+    "type": "integer",
+    "minimum": 0,
+    "description": "Same seed, same answer; change it for another",
+}
+_ROLL_PART = (
+    "A piano-roll part by name (case-insensitive) or id; 'active' for the part "
+    "being edited"
+)
+
+_COMPOSER_TOOLS: list[dict[str, Any]] = [
+    _fn(
+        "composer_plan",
+        "Plan a roman-numeral phrase in a key and voice it in four parts "
+        "(soprano, alto, tenor, bass) with no voice-leading faults, on the piano "
+        "roll's meter, optionally in a composer's style (ids from "
+        "composer_styles). Writes the four parts into the MIDI tab's piano roll "
+        "unless write is false: an empty roll becomes the four parts; otherwise "
+        "parts with those names are replaced and the rest kept. Answers with the "
+        "chords (bar, beat, figure, key). A phrase that cannot be planned is "
+        "refused with the reason.",
+        {
+            "key": _KEY,
+            "mode": _KEY_MODE,
+            "bars": {"type": "integer", "minimum": 2, "maximum": 64},
+            "cadence": {
+                "type": "string",
+                "enum": [
+                    "authentic_perfect",
+                    "authentic_imperfect",
+                    "half",
+                    "plagal",
+                    "deceptive",
+                    "phrygian_half",
+                ],
+                "description": "Default: perfect authentic, or drawn from the style",
+            },
+            "harmonic_rhythm": {
+                "type": "string",
+                "enum": ["pulse", "bar", "style"],
+                "description": "A chord on every pulse, one a bar, or the style's "
+                "rate ('style' needs a style)",
+            },
+            "style": {
+                "type": "string",
+                "description": "A style id from composer_styles, e.g. 'bach'",
+            },
+            "include": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "seventh",
+                        "applied",
+                        "neapolitan",
+                        "italian",
+                        "french",
+                        "german",
+                    ],
+                },
+                "description": "Chromatic and seventh chords to put in",
+            },
+            "modulate_to": {
+                "type": "string",
+                "description": "A closely related key to modulate to through a "
+                "pivot chord",
+            },
+            "seed": _SEED,
+            "write": {
+                "type": "boolean",
+                "description": "Write the parts into the piano roll (default true)",
+            },
+        },
+    ),
+    _fn(
+        "composer_check",
+        "Check every piano-roll part that has notes for voice-leading faults: "
+        "parallel and hidden fifths and octaves, crossing, overlap, spacing, "
+        "range, unresolved leading tones and sevenths. Answers with the count "
+        "by rule and each flag's bar, beat, parts and message.",
+        {
+            "key": {
+                "type": "string",
+                "description": "Read the harmony in this key (a tonic, as in "
+                "composer_plan)",
+            },
+            "mode": _KEY_MODE,
+        },
+    ),
+    _fn(
+        "composer_form",
+        "Plan a whole form: its movements and sections with their roles, keys, "
+        "bars and tempi. With realize true, every section is voiced in four "
+        "parts and one movement is written into the piano roll, REPLACING its "
+        "parts (undo brings them back), with the movement's meter map, tempo "
+        "map and a marker at each section. A symphony is four movements that "
+        "keep their own meters and tempi.",
+        {
+            "form": {
+                "type": "string",
+                "enum": [
+                    "sonata",
+                    "rondo",
+                    "theme_and_variations",
+                    "minuet_and_trio",
+                    "scherzo",
+                    "symphony",
+                ],
+            },
+            "key": _KEY,
+            "mode": _KEY_MODE,
+            "bars": {
+                "type": "integer",
+                "minimum": 16,
+                "maximum": 800,
+                "description": "Bars in all (default: the form's own). A single "
+                "form at most 400; a symphony's four movements share up to 800",
+            },
+            "tempo": {
+                "type": "number",
+                "minimum": 20,
+                "maximum": 300,
+                "description": "Quarter notes a minute (single forms only)",
+            },
+            "meter": {
+                "type": "string",
+                "description": "A single form's meter, e.g. '3/4' or '6/8'",
+            },
+            "rondo": {"type": "string", "enum": ["ABACA", "ABACABA"]},
+            "variations": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "Theme and variations: how many",
+            },
+            "seed": _SEED,
+            "realize": {
+                "type": "boolean",
+                "description": "Voice it and write a movement into the roll "
+                "(default false: plan only)",
+            },
+            "movement": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "description": "Which movement realize writes (default 1)",
+            },
+        },
+        ["form"],
+    ),
+    _fn(
+        "composer_species",
+        "Write species counterpoint (first to fifth) above or below a cantus "
+        "firmus with no rule broken, and put the line and its cantus into the "
+        "piano roll as two parts. The cantus is one of Fux's (preset) or a "
+        "roll part's notes, one a bar (cantus_part, at most 32 notes).",
+        {
+            "species": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+            "position": {"type": "string", "enum": ["above", "below"]},
+            "preset": {
+                "type": "string",
+                "enum": [
+                    "fux_dorian",
+                    "fux_phrygian",
+                    "fux_mixolydian",
+                    "fux_aeolian",
+                    "fux_ionian",
+                ],
+                "description": "One of Fux's cantus firmi (default fux_dorian)",
+            },
+            "cantus_part": {"type": "string", "description": _ROLL_PART},
+            "key": {
+                "type": "string",
+                "description": "With cantus_part: 'D' or 'D dorian'; default read "
+                "from the cantus",
+            },
+            "mode": _MODAL_MODE,
+            "invertible": {
+                "type": "integer",
+                "enum": [8, 10, 12],
+                "description": "Accept only a line that also inverts at the "
+                "octave, tenth or twelfth",
+            },
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_canon",
+        "Write a two-voice canon at an interval and a lag, closed with a "
+        "cadence, into the piano roll as the parts Leader and Follower.",
+        {
+            "key": _KEY,
+            "mode": _MODAL_MODE,
+            "interval": {
+                "type": "integer",
+                "minimum": -15,
+                "maximum": 15,
+                "description": "The follower's generic interval: 1 unison, 5 a "
+                "fifth above, 8 an octave above, -4 a fourth below (never 0 or -1)",
+            },
+            "lag_beats": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "How many quarter notes the follower comes in "
+                "after the leader",
+            },
+            "bars": {
+                "type": "integer",
+                "minimum": 4,
+                "maximum": 32,
+                "description": "At least ceil((lag_beats + 1) / 4) + 2",
+            },
+            "transposition": {
+                "type": "string",
+                "enum": ["diatonic", "real"],
+                "description": "Stay in the key, or move by the exact interval",
+            },
+            "rhythm": {"type": "string", "enum": ["mixed", "halves", "quarters"]},
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_fugue",
+        "Write a fugue exposition (subject, tonal or real answer, "
+        "countersubject, episodes) with its stretto search, into the piano roll "
+        "one part a voice. The subject is written for you, or taken from a roll "
+        "part (subject_part, 2 to 32 notes, at most four bars).",
+        {
+            "key": _KEY,
+            "mode": _MODAL_MODE,
+            "voices": {"type": "integer", "enum": [2, 3, 4]},
+            "subject_part": {"type": "string", "description": _ROLL_PART},
+            "subject_start": {
+                "type": "string",
+                "enum": ["tonic", "dominant"],
+                "description": "Where a written subject starts",
+            },
+            "episodes": {"type": "integer", "enum": [0, 1, 2]},
+            "countersubject": {"type": "boolean"},
+            "seed": _SEED,
+        },
+    ),
+    _fn(
+        "composer_styles",
+        "List the composer style profiles: id, name, era, and whether each was "
+        "measured from scores or authored from textbook facts.",
+    ),
+    _fn(
+        "composer_profile",
+        "A style profile's numbers: top chords by mode, cadences, harmonic "
+        "rhythm. Count one from music21 corpus pieces (ids from "
+        "notation_corpus_search) or a library composition's score (entry_id), "
+        "or show a shipped style (style). Give exactly one of the three.",
+        {
+            "corpus": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 40,
+            },
+            "entry_id": {"type": "string"},
+            "style": {
+                "type": "string",
+                "description": "A style id from composer_styles",
+            },
+            "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9_-]{1,40}$",
+                "description": "The new profile's id",
+            },
+            "name": {"type": "string", "maxLength": 80},
+            "max_bars": {"type": "integer", "minimum": 4, "maximum": 400},
+        },
+    ),
+    _fn(
+        "notation_import",
+        "Import a score written as text (MusicXML, ABC or Humdrum **kern) as a "
+        "library composition with a MusicXML sheet for the SCORE tab, and with "
+        "into_roll true open it in the piano roll too, one part per staff.",
+        {
+            "filename": {
+                "type": "string",
+                "description": "Ends in .musicxml, .xml, .abc or .krn; names the entry",
+            },
+            "content": {"type": "string", "description": "The score file's text"},
+            "into_roll": {"type": "boolean"},
+        },
+        ["filename", "content"],
+    ),
+    _fn(
+        "notation_corpus_search",
+        "Search the music21 corpus by composer, title or movement. Each result "
+        "has the id notation_corpus_open and composer_profile take.",
+        {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        ["query"],
+    ),
+    _fn(
+        "notation_corpus_open",
+        "Import one music21 corpus piece as a library composition, and with "
+        "into_roll true open it in the piano roll too.",
+        {
+            "id": {"type": "string", "description": "From notation_corpus_search"},
+            "into_roll": {"type": "boolean"},
+        },
+        ["id"],
+    ),
+]
+
+PROVIDER_TOOLS.extend(_COMPOSER_TOOLS)
+
+
+# ---------------------------------------------------------------------------
+# MCP view
+# ---------------------------------------------------------------------------
+def thedaw_mcp_tools() -> list[dict[str, Any]]:
+    """Return ``PROVIDER_TOOLS`` in the MCP ``tools/list`` shape.
+
+    ``parameters`` becomes ``inputSchema``; everything else is carried over
+    unchanged. The result is a deep copy so a caller that mutates it (e.g. the
+    stdio server clamping a schema) cannot corrupt the shared catalog.
+
+    ``description`` and ``parameters`` are read defensively: this runs at IMPORT
+    time inside the stdio MCP child, so one half-written declaration must not
+    take the whole tool surface down with a KeyError. ``name`` stays required —
+    a nameless tool is unusable and has to fail loudly.
+    """
+    tools: list[dict[str, Any]] = []
+    for tool in PROVIDER_TOOLS:
+        fn = tool["function"]
+        tools.append(
+            {
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                # Deep-copied per tool, so the fallback is never a shared dict.
+                "inputSchema": copy.deepcopy(
+                    fn.get("parameters", {"type": "object", "properties": {}})
+                ),
+            }
+        )
+    return tools

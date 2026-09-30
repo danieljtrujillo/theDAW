@@ -34,6 +34,7 @@ const IDLE: ActionKeyInput = {
   isGenerating: false,
   progressPct: 0,
   statusLabel: 'READY',
+  sunoSubmitting: false,
   isProcessing: false,
   isChainProcessing: false,
   trainingRun: null,
@@ -351,6 +352,44 @@ const face = (input: ActionKeyInput): ActionKeyFace => {
 {
   assert.equal(face({ ...IDLE, centerTab: 'dj', vjTargetActive: true }).label, 'Send the active setlist to the VJ performance');
   assert.match(face({ ...IDLE, centerTab: 'dj', vjTargetActive: false }).label, /queued and delivers when the VJ tab opens/);
+}
+
+// (k) P0: CREATE's label never claims /api/generate-jobs for a cloud model —
+// generateStore.submitGeneration routes Suno/Lyria elsewhere (or not at all).
+{
+  assert.equal(face({ ...IDLE, model: 'suno' }).label, 'Create: submit to Suno (its own render queue)');
+  assert.doesNotMatch(face({ ...IDLE, model: 'suno' }).label, /generate-jobs/);
+  assert.equal(
+    face({ ...IDLE, model: 'lyria' }).label,
+    'Create: use the controls inside the Lyria tab — this key has no route into it',
+  );
+  assert.doesNotMatch(face({ ...IDLE, model: 'lyria' }).label, /generate-jobs/);
+  // generateStore never sets isGenerating for a cloud model (there is no
+  // pollable job), so this combination cannot happen in the running app; it
+  // only pins the branch order (the sunoSubmitting busy check runs first).
+  assert.equal(face({ ...IDLE, model: 'suno', isGenerating: true }).legend, 'STOP');
+}
+
+// (l) A Suno submit in flight (sunoStore.submitting) has no job to cancel, so
+// the key must NOT read STOP (a press there implies "abort the run") — it
+// renders busy/disabled instead.
+{
+  const f = face({ ...IDLE, model: 'suno', sunoSubmitting: true });
+  assert.equal(f.legend, 'CREATE', 'never STOP — a Suno submit cannot be cancelled from the footer');
+  assert.notEqual(f.glyph, 'stop');
+  assert.equal(f.disabled, true);
+  assert.equal(f.on, true);
+  assert.match(f.label, /Suno/i);
+  assert.equal(f.caption?.tone, 'running');
+  // isGenerating: true alongside it changes nothing — the Suno busy check
+  // runs before the isGenerating/STOP branch.
+  assert.equal(face({ ...IDLE, model: 'suno', sunoSubmitting: true, isGenerating: true }).legend, 'CREATE');
+  // sunoSubmitting only means something for model 'suno': Lyria and local
+  // models ignore it (it can never actually be true for them in the app).
+  assert.equal(face({ ...IDLE, model: 'lyria', sunoSubmitting: true }).legend, 'CREATE');
+  assert.doesNotMatch(face({ ...IDLE, model: 'lyria', sunoSubmitting: true }).label, /Suno/i);
+  assert.equal(face({ ...IDLE, model: 'small', sunoSubmitting: true }).legend, 'CREATE');
+  assert.equal(face({ ...IDLE, model: 'small', sunoSubmitting: true }).disabled, false);
 }
 
 console.log('actionKeyFace: all assertions passed');

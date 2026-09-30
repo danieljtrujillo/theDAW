@@ -78,8 +78,33 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
+        # IPv4-only bind, deliberately paired with forwarded_allow_ips below:
+        # a request coming in on 0.0.0.0 always arrives with an IPv4 peer, so
+        # only "127.0.0.1" needs to be trusted. If this ever became "::"
+        # (dual-stack), the Vite dev proxy's own loopback connection could
+        # arrive as the IPv4-mapped "::ffff:127.0.0.1" -- untrusted here (not
+        # a literal "127.0.0.1"), so X-Forwarded-For would be silently
+        # dropped, BUT backend/lib/pairing.py's and genaiproxy/access.py's
+        # _peer_ip() unwraps that same address to plain loopback on its own.
+        # The two effects together would launder a real LAN phone (arriving
+        # with an X-Forwarded-For nobody read) into what every gate treats as
+        # this machine's own caller. Do not change one of these two settings
+        # without the other.
         host="0.0.0.0",
         port=BACKEND_PORT,
         reload=False,
         log_level="info",
+        # uvicorn trusts X-Forwarded-For from forwarded_allow_ips to set
+        # request.client (backend/lib/pairing.py, backend/lib/launch_token.py
+        # and genaiproxy/access.py's SEC-001 check all gate on that address
+        # being the real TCP peer). Left as None it falls back to
+        # os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1") (uvicorn 0.52.4's
+        # actual default -- not "127.0.0.1,::1", which only later releases
+        # add) -- an environment variable this process does not control (set
+        # on the machine, or inherited by whatever spawns it) could set
+        # FORWARDED_ALLOW_IPS=* and make every one of those gates trust
+        # X-Forwarded-For from literally any peer. Passed explicitly here, a
+        # code change is the only way to widen it.
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1",
     )

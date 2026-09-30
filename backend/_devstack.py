@@ -29,10 +29,15 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from backend import ports
 from backend._update_sync import UPDATE_EXIT_CODE, run_dependency_sync
+from backend.lib import lan_https, launch_token
 
 RESTART_EXIT_CODE = 88
-FRONTEND_URL = "http://localhost:5173"
+FRONTEND_URL = f"http://localhost:{ports.FRONTEND_PORT}"
+#: The port the web UI binds this launch: ports.FRONTEND_PORT. main() stops the
+#: stack instead of moving it; see ports.frontend_port_blocker for why.
+_frontend_port = ports.FRONTEND_PORT
 IS_WINDOWS = os.name == "nt"
 
 # One ANSI color per stream so the merged feed stays readable. Blanked at
@@ -41,6 +46,7 @@ COLORS = {
     "backend": "\033[36m",  # cyan
     "frontend": "\033[35m",  # magenta
     "tunnel": "\033[33m",  # yellow
+    "lan": "\033[94m",  # bright blue (the LAN HTTPS listener)
     "stack": "\033[32m",  # green (our own notices)
 }
 RESET = "\033[0m"
@@ -257,11 +263,23 @@ def _run_backend(children: list) -> None:
     """Backend supervisor loop: respawn on rc=88, else trip shutdown."""
     env = os.environ.copy()
     env["SA3_SUPERVISOR_PRESENT"] = "1"
+    # The port the web UI ACTUALLY took (main() chose it before this thread
+    # starts). The backend advertises the web UI's address to other devices
+    # through GET /api/network/lan; without this it would hand a phone :5173,
+    # which in the case that moved us is another program entirely.
+    env[ports.FRONTEND_PORT_ENV] = str(_frontend_port)
     cmd = [sys.executable, "-m", "backend.run"]
     while not _shutdown.is_set():
         _emit("stack", "launching backend: " + " ".join(cmd))
         proc = _spawn(cmd, cwd=os.getcwd(), env=env)
-        children.append(proc)
+        if not _register_child(children, proc):
+            # This loop can pass the _shutdown check above and spawn a backend
+            # after main()'s kill loop has taken its snapshot: nothing else
+            # would ever kill it, and it would hold :8600 against the next
+            # launch. Same gate as the LAN listener.
+            _kill_tree(proc)
+            _emit("stack", "the stack is stopping - backend dropped")
+            return
         _pump("backend", proc)  # blocks until the backend process exits
         rc = proc.wait()
         if rc == RESTART_EXIT_CODE and not _shutdown.is_set():
@@ -288,12 +306,135 @@ def _run_backend(children: list) -> None:
         return
 
 
+#: ``children`` is created on the main thread but appended to from the backend
+#: supervisor thread and, now that the LAN listener no longer runs inline, from
+#: the listener thread too -- which can still be waiting on a 120 s openssl when
+#: the user hits Ctrl-C. A plain append races ``main()``'s final kill loop, and
+#: one that lands after it leaves a vite holding the TLS port against the next
+#: launch. So the list is CLOSED before that loop runs and a child registered
+#: too late is killed by the thread that started it instead.
+_children_lock = threading.Lock()
+_children_closed = False
+
+
+def _register_child(children: list, proc: subprocess.Popen) -> bool:
+    """Add ``proc`` to the shutdown list.
+
+    False when the stack is already tearing down, in which case the caller owns
+    the process and must kill it itself.
+    """
+    with _children_lock:
+        if _children_closed:
+            return False
+        children.append(proc)
+        return True
+
+
+def _close_children(children: list) -> list:
+    """Take a snapshot of the shutdown list and refuse every later register."""
+    global _children_closed
+    with _children_lock:
+        _children_closed = True
+        return list(children)
+
+
+def _start_lan_listener(children: list, frontend_dir: str) -> bool:
+    """Start the second Vite listener — the same app over TLS — beside the
+    plain http one, so another device on the network gets a SECURE CONTEXT
+    and therefore an audio engine, a microphone and Web MIDI.
+
+    Never fatal, at any step. The listener is a convenience; the stack has to
+    come up without it, and the user has to be told in one line why it did
+    not rather than left wondering why the LAN address is still plain http.
+    A port that is already taken is reported through
+    ``backend.ports.describe_occupant`` — the same sentence the backend's own
+    port clash produces — instead of letting Vite die on strictPort.
+
+    The child's environment starts from ``launch_token.child_env()``: vite
+    runs the frontend's own devDependencies, and none of that may be able to
+    send the desktop shell's ``X-TheDAW-Launch-Token``.
+    """
+    try:
+        plan = lan_https.resolve_plan()
+    except Exception as exc:  # pragma: no cover - resolve_plan does not raise
+        _emit("stack", f"LAN (https): off - could not be worked out ({exc})")
+        return False
+
+    if not plan.enabled:
+        _emit("stack", plan.log_line())
+        return False
+
+    occupant = ports.describe_occupant(plan.port)
+    if occupant:
+        _emit("stack", f"LAN (https): port {plan.port} is taken - {occupant}")
+        return False
+
+    try:
+        env = lan_https.listener_env(plan, launch_token.child_env())
+        proc = _spawn(lan_https.listener_command(plan), cwd=frontend_dir, env=env)
+    except Exception as exc:
+        _emit("stack", f"LAN (https): off - the listener could not start ({exc})")
+        return False
+
+    if not _register_child(children, proc):
+        # The stack started stopping while openssl was running: nothing is left
+        # to kill this on the way out, so it goes now.
+        _kill_tree(proc)
+        _emit("stack", "LAN (https): the stack is stopping - listener dropped")
+        return False
+    threading.Thread(target=_pump, args=("lan", proc), daemon=True).start()
+    _emit("stack", plan.log_line())
+    return True
+
+
 def _port_open(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=0.25):
             return True
     except OSError:
         return False
+
+
+def _frontend_blocker() -> str | None:
+    """Why the web UI cannot start, or None when its port is free.
+
+    The launchers stop only theDAW's own stale listeners (backend.ports --free),
+    so anything still on the port by now belongs to another program -- another
+    project's Vite, or theDAW from another folder. That program is left running
+    and theDAW does not start: moving to 5174 would open the app on a new
+    browser origin with none of its saved settings and none of its microphone
+    or MIDI permissions (ports.frontend_port_blocker has the whole reason).
+    """
+    return ports.frontend_port_blocker(ports.FRONTEND_PORT)
+
+
+def _use_frontend_port(port: int) -> None:
+    """Point everything that names the web UI's address at ``port``."""
+    global _frontend_port, FRONTEND_URL
+    _frontend_port = port
+    FRONTEND_URL = f"http://localhost:{port}"
+
+
+def _frontend_command(port: int) -> str:
+    """How to start the web UI's Vite on ``port``.
+
+    The preferred port keeps ``npm run dev`` exactly as before. Any other port
+    runs the frontend's own Vite with an explicit ``--port``: the dev script
+    already passes ``--port=5173``, and a second ``--port`` appended through
+    ``npm run dev --`` reaches Vite as a list rather than a number.
+
+    ``strictPort`` stays on, deliberately. The port was free when
+    ``_frontend_blocker`` looked, and something else can still take it in
+    the moment between that check and Vite's bind. With strictPort on, that
+    race fails LOUDLY through Vite's own error, which the frontend pump prints
+    in this console; with it off, Vite would silently slide to another port and
+    every address this process then advertises -- the browser it opens, the
+    tunnel, the LAN link -- would point at nothing. No retry loop here: a
+    second guess would be just as racy, and the honest report is the error.
+    """
+    if port == ports.FRONTEND_PORT:
+        return "npm run dev"
+    return f"npx --no-install vite --port={port} --host=0.0.0.0"
 
 
 def _wait_then_open_browser() -> None:
@@ -307,7 +448,7 @@ def _wait_then_open_browser() -> None:
     _open_browser()
     deadline = time.time() + 60.0
     while not _shutdown.is_set() and time.time() < deadline:
-        if _port_open("127.0.0.1", 5173):
+        if _port_open("127.0.0.1", _frontend_port):
             _emit("stack", f"frontend ready at {FRONTEND_URL}")
             return
         time.sleep(0.05)
@@ -356,11 +497,6 @@ def _warm_sidecars() -> None:
 
 
 def main() -> int:
-    # Drop the launcher console immediately so the user sees only the app, never
-    # the log stream. It keeps running (restorable from the taskbar);
-    # theDAW_KEEP_CONSOLE=1 keeps it in front for debugging.
-    _minimize_console()
-
     if not _enable_ansi():
         for key in COLORS:
             COLORS[key] = ""
@@ -372,16 +508,48 @@ def main() -> int:
 
     _emit("stack", "theDAW dev stack — one console for backend + frontend + tunnel")
 
+    # Before anything starts and before the console is minimized: when another
+    # program holds the web UI's port, the stack stops here and this console,
+    # still in front, says which program it is. theDAW.bat then waits for a
+    # key, so the sentence stays on screen; theDAW.sh leaves it in its terminal.
+    blocker = _frontend_blocker()
+    if blocker:
+        _emit("stack", f"theDAW cannot start: {blocker}")
+        return 1
+
+    # Drop the launcher console now so the user sees only the app, never the
+    # log stream. It keeps running (restorable from the taskbar);
+    # theDAW_KEEP_CONSOLE=1 keeps it in front for debugging.
+    _minimize_console()
+
     # Frontend (Vite). ENABLE_HMR mirrors the previous launcher behavior.
     fe_env = os.environ.copy()
     fe_env["ENABLE_HMR"] = "true"
-    frontend = _spawn("npm run dev", cwd=frontend_dir, env=fe_env)
+    port = ports.FRONTEND_PORT
+    _use_frontend_port(port)
+    frontend = _spawn(_frontend_command(port), cwd=frontend_dir, env=fe_env)
     children.append(frontend)
     threading.Thread(target=_pump, args=("frontend", frontend), daemon=True).start()
 
+    # The same app over TLS on the LAN port, so another device gets a secure
+    # context. Off, with a reason, when there is no network, no certificate or
+    # the user turned it off; never blocks or fails the stack.
+    #
+    # On its own thread, like _warm_sidecars below, because getting to the
+    # decision is slow: resolve_plan() shells out to openssl to mint an RSA key
+    # (a 120 s timeout) and describe_occupant enumerates every listener on the
+    # machine. Inline, all of that sat in front of the backend supervisor and
+    # the browser, so a first launch waited on a certificate and a hung openssl
+    # held the whole app for two minutes.
+    threading.Thread(
+        target=_start_lan_listener, args=(children, frontend_dir), daemon=True
+    ).start()
+
     # Tunnel (optional) — only if localtunnel is installed.
     if shutil.which("lt"):
-        tunnel = _spawn("lt --port 5173 --subdomain thedaw --print-requests")
+        tunnel = _spawn(
+            f"lt --port {_frontend_port} --subdomain thedaw --print-requests"
+        )
         children.append(tunnel)
         threading.Thread(target=_pump, args=("tunnel", tunnel), daemon=True).start()
     else:
@@ -401,7 +569,10 @@ def main() -> int:
         _emit("stack", "Ctrl-C — stopping all processes")
     finally:
         _shutdown.set()
-        for proc in children:
+        # Closed first: a child registered after this point (the LAN listener
+        # thread finishing its openssl call during shutdown) is killed by that
+        # thread rather than missed by this loop.
+        for proc in _close_children(children):
             _kill_tree(proc)
     return 0
 

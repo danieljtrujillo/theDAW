@@ -18,6 +18,12 @@ Cache and build folders are always skipped, so a backup never carries `__pycache
 
 Every zip is written with a `theDAW-backup-manifest.json` entry at its root. The manifest records the app name, the app version read from `pyproject.toml`, the creation timestamp, the included roots, and the total byte count. Import refuses any zip that lacks this manifest.
 
+### What a backup does not contain
+
+Files in your **media roots** are not in any of the three roots above. An entry whose audio lives in one of your own media folders is referenced in place, outside the library folder entirely, so the export carries its database row and not its audio (see USER_GUIDE §13.13). Copy those folders to the new machine yourself, alongside the zip, and set the media roots again there — the paths are a setting of that machine, not of the library.
+
+`data/playable-cache/` is derived state: browser-playable remuxes of files the library only references. It is not backed up and does not need to be. A missing cache is rebuilt on the next play.
+
 ### Choosing what to export
 
 When the dialog opens it loads the backup manifest from the backend and lists each root with its label and size on disk. Every root starts selected. Clear a checkbox to leave that root out of the export. The size scan runs under a time budget on the backend, so on a large library the reported sizes are lower bounds rather than exact totals.

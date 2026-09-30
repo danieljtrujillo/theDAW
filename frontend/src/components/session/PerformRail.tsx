@@ -8,14 +8,15 @@
  *   PARAMS — the selected effect's parameters. Pick any track device; its
  *   rack descriptors render as tendril controls whose edits push straight
  *   into the grid's RUNNING chain instance (same entry ids the CC routes
- *   drive), so tweaks are audible live. VST3 devices are listed but inert,
- *   exactly as they are in the live graph.
+ *   drive), so tweaks are audible live. A hosted VST3 device PROCESSES live
+ *   (the grid spawns a host process for it) but has no parameters to offer
+ *   here — see `railDevices`.
  */
 import React, { useMemo, useState } from 'react';
 import { ChevronsRight, Search, X } from 'lucide-react';
 import type { DawProject, DawTrack } from '../../lib/dawImportClient';
 import { performTracks } from '../../lib/performModel';
-import { dawDeviceToEffectNode } from '../../lib/dawEffectMap';
+import { dawDeviceToEffectNode, isHostedPluginDevice } from '../../lib/dawEffectMap';
 import { getRackEffect, rackEffectDefaults } from '../../lib/rackEffects';
 import { effectiveZoom } from '../../lib/canvasScale';
 import { usePerformRoutingStore } from '../../state/performRouting';
@@ -30,7 +31,13 @@ interface RailDevice {
   name: string;
   effect: string;
   params: Record<string, number>;
+  /** This rail can edit the device: it resolved to a rack effect, so there are
+   *  descriptors (key/min/max/step) to build tendril controls from. */
   live: boolean;
+  /** A re-hostable plugin. It IS in the live graph — the Perform grid spawns a
+   *  native host for it — but its parameters are opaque indices the plugin only
+   *  reports at runtime, so they belong to its own GUI, not to this rail. */
+  hosted: boolean;
 }
 
 /** The grid's device indexing: instruments/racks filtered out, order kept. */
@@ -44,7 +51,17 @@ function railDevices(track: DawTrack): RailDevice[] {
         name: d.name || node.effect_name,
         effect: node.effect_name,
         params: (node.parameters ?? {}) as Record<string, number>,
-        live: node.effect_name !== 'vst3' && !!getRackEffect(node.effect_name),
+        // The `vst3` exclusion that used to sit here is KEPT, but for its real
+        // reason, not the one it was written for. It was "VST3 cannot run in
+        // the live graph", which is no longer true. What IS still true is that
+        // a VST3 plugin exposes no static parameter catalog: its parameters are
+        // indices discovered from the running host, with no key/min/max/step to
+        // render a tendril from — and this rail is built from a parsed project
+        // before any host exists. (The check also never fired: for a plugin
+        // `effect_name` is the DEVICE's name, so the rack lookup beside it is
+        // what excluded it.)
+        live: !!getRackEffect(node.effect_name),
+        hosted: isHostedPluginDevice(d),
       };
     });
 }
@@ -190,7 +207,13 @@ function ParamsTab({ tracks }: { tracks: DawTrack[] }): React.ReactElement {
                       type="button"
                       onClick={() => select(trackIndex, d.deviceIndex)}
                       aria-pressed={active}
-                      title={d.live ? `Edit ${d.name} live` : `${d.name} — VST/unknown device, preserved but not live-editable here`}
+                      title={
+                        d.live
+                          ? `Edit ${d.name} live`
+                          : d.hosted
+                            ? `${d.name} — processing live in its own plugin host; its controls are in the plugin's own window`
+                            : `${d.name} — unknown device, preserved but not live-editable here`
+                      }
                       className={`w-full flex items-center gap-1.5 rounded border px-1.5 py-1 text-left transition-colors ${
                         active
                           ? 'text-(--text-primary)'
@@ -199,7 +222,16 @@ function ParamsTab({ tracks }: { tracks: DawTrack[] }): React.ReactElement {
                       style={active ? { borderColor: `${PERFORM_ACCENT}aa`, background: `${PERFORM_ACCENT}14` } : undefined}
                     >
                       <span className="min-w-0 flex-1 truncate text-[10px] font-mono font-semibold">{d.name}</span>
-                      {!d.live && <span className="shrink-0 text-[9px] font-mono text-zinc-600">inert</span>}
+                      {!d.live && (
+                        // A hosted plugin is NOT inert any more — it is
+                        // processing — so calling it that would be a lie the
+                        // user can hear. It simply has no controls here.
+                        <span
+                          className={`shrink-0 text-[9px] font-mono ${d.hosted ? 'text-teal-400/70' : 'text-zinc-600'}`}
+                        >
+                          {d.hosted ? 'plugin' : 'inert'}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -238,7 +270,9 @@ function ParamsTab({ tracks }: { tracks: DawTrack[] }): React.ReactElement {
             ))
           ) : (
             <div className="text-[10px] font-mono text-zinc-500">
-              This device is preserved in the set but has no live parameters here.
+              {selected.device.hosted
+                ? 'This plugin is processing live in its own host — open its own window to edit it.'
+                : 'This device is preserved in the set but has no live parameters here.'}
             </div>
           )}
         </div>

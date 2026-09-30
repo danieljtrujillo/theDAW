@@ -190,7 +190,8 @@ non-browser LAN client still spends it in the default posture), `FX-001` (file u
   - `ensure_running()` returns for any open port without checking that process's cost mode, and `/url` reports mode from theDAW's own env, not the adopted child's.
   - An orphan or hand-started live-mode server bills $0.08 per generation behind a Mock badge.
 
-- [ ] **INT-002** P1 L Lyria output never reaches the library `backend/modules/lyria/router.py:1`
+- [x] **INT-002** P1 L Lyria output never reaches the library `backend/modules/lyria/router.py:1`
+  - FIXED 2026-09-23. `backend/modules/lyria/importer.py` pulls the sidecar's `/api/generations` over its own loopback origin and registers each new track through `library.store.import_blob`; `POST /api/lyria/import-new` (plus `GET /api/lyria/imports`) drives it from the panel's Sync to library button and its 30 s auto-sync, and the `lyria` provider rule badges the result "Lyria 3 Pro".
   - The module is spawn-and-iframe only; generations stay in the sidecar's own library, invisible to the catalog, lineage, EDIT, stems and export. Suno does the opposite and registers finished tracks as first-class entries.
   - This is the work that unblocks the stems seam and the EDIT hand-off.
 

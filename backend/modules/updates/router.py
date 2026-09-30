@@ -4,6 +4,7 @@
     GET  /releases      up to 10 recent releases for a restore-previous-version picker
     POST /apply         update a git-clone install in place (pull, then restart)
     GET  /apply-status  progress of the last /apply
+    GET  /build         git short SHA + start time of THIS backend process
 
 Install kinds. A clone (theDAW.bat, theDAW.sh, Pinokio, dev Electron) has a
 ``.git`` at the repo root: ``/apply`` pulls it and exits the backend with code
@@ -37,6 +38,7 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -200,6 +202,39 @@ def _is_newer(latest: str, current: str) -> bool | None:
     return latest_t > current_t
 
 
+def _resolve_build_sha(repo_root: Path) -> str | None:
+    """The short git SHA this backend is running from, or None when unknown.
+
+    ``THEDAW_BUILD_SHA`` wins when set, for builds with no ``.git`` (Docker
+    excludes it). Otherwise ``git rev-parse --short HEAD`` in ``repo_root``.
+    Never raises: a missing git, a non-repo, or a timeout all yield None."""
+    override = os.environ.get("THEDAW_BUILD_SHA", "").strip()
+    if override:
+        return override
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            env=child_env(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if out.returncode != 0:
+        return None
+    sha = out.stdout.strip()
+    return sha or None
+
+
+# Resolved once: the code this process runs cannot change under it (an update
+# restarts the backend), so the SHA and start time describe this process.
+_BUILD_SHA: str | None = _resolve_build_sha(_REPO_ROOT)
+_STARTED_AT: str = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _install_kind() -> str:
     """'git' for a clone (bat/sh/Pinokio/dev Electron), 'packaged' for the
     installer build, whose resources/python tree carries no .git."""
@@ -221,6 +256,13 @@ def _install_facts() -> dict[str, Any]:
         # without one (raw `backend.run`) the user has to relaunch.
         "restart_mode": "auto" if _supervisor_present() else "manual",
     }
+
+
+@router.get("/build")
+def build_info() -> dict[str, Any]:
+    """Which code this backend runs, so the UI can spot a stale frontend bundle
+    (its compiled-in SHA differs from this one)."""
+    return {"git_sha": _BUILD_SHA, "started_at": _STARTED_AT}
 
 
 @router.get("/check")

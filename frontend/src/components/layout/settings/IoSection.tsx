@@ -7,6 +7,10 @@
  * right now>)", so a user with several interfaces can see what they are
  * overriding before they override it.
  *
+ * The Quest MIDI row (QuestMidiRow.tsx) sits with the MIDI slots: it says
+ * whether the headset reaches theDAW and, when another program serves the
+ * headset's port, names that program and offers Take over.
+ *
  * What is deliberately NOT a control here is as important as what is. A slot
  * that cannot be wired end to end gets a sentence, not a dead dropdown: the VJ
  * camera list lives on the VJ's own origin, the assistant's speech API has no
@@ -26,6 +30,8 @@ import {
 import { IO_SURFACES } from '../../../state/ioSurfaces';
 import { useFeatureToggleStore } from '../../../state/featureToggleStore';
 import { getEngineOutputInfo } from '../../../state/playerStore';
+import { useQuestMidiStatusStore } from '../../../state/questMidiStatus';
+import { QuestMidiRow } from './QuestMidiRow';
 import { BODY, BTN_GHOST, CARD, SECTION_META, SectionHeader, Segmented } from './shared';
 
 const ROW = 'flex flex-wrap items-center gap-1.5 px-1.5 py-1 border-b border-white/5 last:border-b-0';
@@ -40,6 +46,7 @@ export const IoSection: React.FC = () => {
   const midiIn = useIoDevicesStore((s) => s.midiIn);
   const refresh = useIoDevicesStore((s) => s.refresh);
   const refreshDisplays = useIoDevicesStore((s) => s.refreshDisplays);
+  const refreshQuestMidi = useQuestMidiStatusStore((s) => s.refresh);
   const io = useFeatureToggleStore((s) => s.settings.io);
   const [open, setOpen] = useState(false);
 
@@ -69,6 +76,7 @@ export const IoSection: React.FC = () => {
           onClick={() => {
             void refresh();
             void refreshDisplays();
+            void refreshQuestMidi();
           }}
           aria-label="Re-scan devices"
           title="Re-scan connected devices"
@@ -180,6 +188,9 @@ export const IoSection: React.FC = () => {
             })}
           </div>
         )}
+
+        {/* Quest MIDI: the headset bridge, and who has the headset ---------- */}
+        <QuestMidiRow />
 
         {/* MIDI out (thru) ------------------------------------------------- */}
         <div className={ROW}>

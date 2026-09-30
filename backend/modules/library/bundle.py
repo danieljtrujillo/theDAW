@@ -109,6 +109,9 @@ def build_bundle_bytes(
                 # Sheets AND tabs both engrave to PDF (MusicXML via OSMD,
                 # alphaTex via alphaTab), so a downloaded bundle carries a
                 # printable copy of every piece of notation it holds.
+                # Suffix set mirrors notation/pdf_render.py PDF_RENDERABLE_SUFFIXES
+                # (not imported here on purpose: this module avoids importing
+                # notation).
                 if sp.suffix.lower() in (".musicxml", ".xml", ".alphatex"):
                     sheet_sources.append(sp)
 

@@ -200,19 +200,34 @@ def write_like_source(
     ``min_depth`` raises the floor for tools whose output is synthesized rather
     than filtered, where the source depth is a lower bound rather than a target.
     Returns the subtype actually used.
+
+    ``data`` is (frames, channels) or mono (frames,). The samples go to a
+    scratch file beside ``output_path`` through ``audio_io.save_audio`` and
+    land with one rename, so an output that is also the source (an in-place
+    filter, a VST chain writing back over its stem) is either the old file or
+    the new one, never a truncated one, when the encode fails partway.
     """
     import numpy as np
-    import soundfile as sf
+
+    from backend.lib.atomic import atomic_replace, temp_sibling
+    from backend.lib.audio_io import save_audio
 
     out = Path(output_path)
     depth = probe_depth(source_path)
     if min_depth is not None:
         depth = widest(depth, min_depth)
-    subtype = sf_subtype(depth, out.suffix or "WAV")
-    if subtype not in ("FLOAT", "DOUBLE"):
-        data = np.clip(data, -1.0, 1.0)
-    sf.write(str(out), data, samplerate, subtype=subtype)
-    return subtype
+    fmt = (out.suffix or ".wav").lstrip(".")
+    subtype = sf_subtype(depth, fmt)
+    arr = np.asarray(data)
+    channels_first = arr.T if arr.ndim == 2 else arr
+    tmp = temp_sibling(out)
+    try:
+        used = save_audio(tmp, channels_first, samplerate, format=fmt, subtype=subtype)
+        atomic_replace(tmp, out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return used
 
 
 def browser_can_decode(depth: PcmDepth) -> bool:

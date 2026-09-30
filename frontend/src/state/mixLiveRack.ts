@@ -31,11 +31,30 @@ import { getEngineCtx, getMasterInsert, registerChainProbe } from './playerStore
 import { buildEffectChain, ensureChopModule, ensureGranularModule, getRackEffect, type ChainHandle } from '../lib/rackEffects';
 import type { ChainEntry } from './effectChainStore';
 
-/** The psychoacoustic subset of the unified chain — the only entries built onto
- *  the live master insert (backend + VST + the 4 collision ids are ignored here;
- *  they are applied offline by processChain). */
-const rackSubset = (chain: ChainEntry[]): ChainEntry[] =>
-  chain.filter((e) => MIX_RACK_IDS.has(e.effect));
+/** Is this entry built onto the live master insert? The psychoacoustic subset
+ *  of the unified chain PLUS every hosted `vst3` entry.
+ *
+ *  The plugin belongs here for the same reason the rack effects do: MIX is
+ *  where the user adds Ozone, and until the live host existed a `vst3` entry
+ *  filtered out HERE could not be heard at all — it only printed at bounce.
+ *  The decision about whether a given plugin can actually be hosted on this
+ *  machine is NOT taken here; it belongs to `buildEffectChain`'s `vst3` branch,
+ *  which falls back to an inert passthrough (reported through `inertIds()`)
+ *  when there is no host binary. Letting the entry through is what gives that
+ *  branch the chance to run at all.
+ *
+ *  The four collision ids (stereo_widener/delay/highpass/lowpass) and every
+ *  other backend-owned effect are still excluded, exactly as before: they are
+ *  applied offline by processChain. */
+const inMixRack = (e: ChainEntry): boolean => MIX_RACK_IDS.has(e.effect) || e.effect === 'vst3';
+
+/** The entries of `chain` the live master insert is built from, in chain order.
+ *  Exported for `mixLiveRack.test.ts`: the filter is the whole reason a plugin
+ *  added in MIX is now audible, so it is asserted directly rather than through
+ *  a master insert no test runtime can build. */
+export const mixRackSubset = (chain: ChainEntry[]): ChainEntry[] => chain.filter(inMixRack);
+
+const rackSubset = mixRackSubset;
 
 /** Whether the rack is spliced onto the master insert. A module-scope flag can't
  *  drive a render, and the UI whose whole job is to say "your master is not
@@ -49,9 +68,12 @@ export const useMixLiveRackStore = create<{ attached: boolean }>(() => ({ attach
 export const liveRackEntries = (chain: ChainEntry[], attached: boolean): ChainEntry[] =>
   attached ? rackSubset(chain).filter((e) => e.enabled) : [];
 
-/** Display name for a live-rack entry, so MIX and the footer never disagree. */
+/** Display name for a live-rack entry, so MIX and the footer never disagree.
+ *  A hosted plugin has no rack definition to name it, so its own plugin name is
+ *  the answer — the bare format id 'vst3' would tell the user nothing about
+ *  which plugin is on their master. */
 export const rackEntryLabel = (e: ChainEntry): string =>
-  getRackEffect(e.effect)?.label ?? e.label ?? e.effect;
+  getRackEffect(e.effect)?.label ?? e.label ?? e.vst?.plugin_name ?? e.effect;
 
 /** Rack effects that change how LOUD the master is, not just how it sounds — the
  *  ones that can answer "why is everything suddenly so quiet". The spatializer is
@@ -70,7 +92,10 @@ export const LEVEL_TAKING_RACK_IDS: Set<string> = new Set([
  *  times; the chain is persisted, so the master stays clean next session too. */
 export function bypassLiveRack(): void {
   const { chain } = useEffectChainStore.getState();
-  const live = (e: ChainEntry): boolean => MIX_RACK_IDS.has(e.effect) && e.enabled;
+  // `inMixRack`, so the one click that promises a clean master really delivers
+  // one: a hosted plugin is on the insert now, and leaving it enabled would
+  // leave the master coloured by the loudest thing on it.
+  const live = (e: ChainEntry): boolean => inMixRack(e) && e.enabled;
   if (!chain.some(live)) return;
   useEffectChainStore.setState({ chain: chain.map((e) => (live(e) ? { ...e, enabled: false } : e)) });
 }

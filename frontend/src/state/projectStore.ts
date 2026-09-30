@@ -14,11 +14,13 @@ import type { PerformRoutingSnapshot } from './performRouting';
 import { logError, logInfo, logWarn } from './logStore';
 import { useStatusBarStore } from './statusBarStore';
 import { useEditorStore } from './editorStore';
+import { meterToTasmo } from '../lib/timeSignatureIO';
 import {
   loadProjectIntoEditor,
   captureEditorSession,
-  captureControllerMappings,
+  captureProjectDocument,
 } from '../lib/projectImport';
+import { captureLiveVstStates } from './vstEditorStore';
 
 type ProjectTab = 'save' | 'open';
 
@@ -34,7 +36,14 @@ interface ProjectState {
   tempo: number;
   embedAudio: boolean;
   savePath: string;
+  /** The payload a seeded open (PERFORM's Save as .tasmo) handed over, kept
+   *  whole so a save writes every field it carries (the scene names, the tempo
+   *  and meter maps). Null when the dialog was opened without a seed. */
+  pendingProject: TasmoProjectInput | null;
   pendingTracks: TasmoTrackInput[];
+  /** Meter of a seeded (imported) project, carried through so saving it does
+   *  not drop the source's time signature. Null when nothing seeded one. */
+  pendingTimeSignature: number[] | null;
   sourceDaw: string | null;
   importWarnings: string[];
   // Perform-tab routing carried from a Perform save seed, so save() persists it
@@ -89,6 +98,60 @@ const writeLocal = (key: string, value: string) => {
 };
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The parts of a save payload beside its tracks and its time: the mix buses,
+ *  the markers, the loop, the master chains, the automation, the controller
+ *  mappings, the roll voice and the tuning. */
+type ProjectDocument = Pick<
+  TasmoProjectInput,
+  | 'buses'
+  | 'locators'
+  | 'loop'
+  | 'master_fx_chain'
+  | 'master_vst_chain'
+  | 'automation_lanes'
+  | 'controller_mappings'
+  | 'roll_voice'
+  | 'tuning'
+>;
+const DOCUMENT_KEYS = [
+  'buses',
+  'locators',
+  'loop',
+  'master_fx_chain',
+  'master_vst_chain',
+  'automation_lanes',
+  'controller_mappings',
+  'roll_voice',
+  'tuning',
+] as const satisfies readonly (keyof ProjectDocument)[];
+
+/**
+ * The document a seeded save (PERFORM's Save as .tasmo) writes.
+ *
+ * EDIT's, when EDIT holds the project being saved: a .tasmo opened in EDIT
+ * seeds PERFORM from the same load, so its tracks carry the ids EDIT's tracks
+ * have, and an edit made in EDIT since (a bus renamed, a master insert added)
+ * belongs in the file. Otherwise EDIT holds some other project, and the seed's
+ * own fields are the project's: a .tasmo PERFORM opened by itself carries its
+ * buses, markers, loop, master chains, automation, controller mappings, roll
+ * voice and tuning. EDIT's fill only what the seed does not carry, which is all
+ * of it for a seed with none (a DAW import carries only its markers).
+ */
+function seededDocument(
+  seed: TasmoProjectInput | null,
+  seedTracks: readonly TasmoTrackInput[],
+  edit: ProjectDocument,
+): ProjectDocument {
+  if (!seed) return edit;
+  const inEdit = new Set(useEditorStore.getState().tracks.map((t) => t.id));
+  if (seedTracks.some((t) => inEdit.has(t.id))) return edit;
+  const own: ProjectDocument = { ...edit };
+  for (const key of DOCUMENT_KEYS) {
+    if (seed[key] !== undefined) Object.assign(own, { [key]: seed[key] });
+  }
+  return own;
+}
 
 const applyDefaultDir = (dir: string) => {
   writeLocal(PROJECTS_DIR_KEY, dir);
@@ -182,7 +245,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   tempo: 120,
   embedAudio: false,
   savePath: '',
+  pendingProject: null,
   pendingTracks: [],
+  pendingTimeSignature: null,
   sourceDaw: null,
   importWarnings: [],
   pendingPerformRouting: null,
@@ -198,11 +263,26 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       set({
         projectName: seed.project_name || 'Untitled',
         tempo: seed.tempo ?? 120,
+        pendingProject: seed,
         pendingTracks: seed.tracks ?? [],
+        pendingTimeSignature: seed.time_signature ?? null,
         sourceDaw: seed.source_daw ?? null,
         importWarnings: seed.import_warnings ?? [],
         pendingPerformRouting: seed.perform_routing ?? null,
         lastSaved: null,
+      });
+    } else {
+      // No seed: Ctrl+S, the App menu's Save, or Open. The dialog saves the
+      // EDIT timeline, so a seed an earlier PERFORM save left behind is let
+      // go. Kept, it made every later Save write that PERFORM structure over
+      // the work done in EDIT since.
+      set({
+        pendingProject: null,
+        pendingTracks: [],
+        pendingTimeSignature: null,
+        sourceDaw: null,
+        importWarnings: [],
+        pendingPerformRouting: null,
       });
     }
     set({ isOpen: true, tab, error: null });
@@ -277,7 +357,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       tempo,
       embedAudio,
       savePath,
+      pendingProject,
       pendingTracks,
+      pendingTimeSignature,
       sourceDaw,
       importWarnings,
       pendingPerformRouting,
@@ -290,6 +372,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     const path = savePath.trim();
     set({ busy: true, error: null });
     try {
+      // Whatever a live plugin is holding right now is part of this document.
+      // Without this the file records the state captured the last time an
+      // editor happened to be open, so a plugin dialed in from the FX row — or
+      // left running with its window closed — saves at settings it left long
+      // ago and loads back sounding different. Bounded, parallel, and it never
+      // rejects: a save must not fail because a plugin was slow.
+      await captureLiveVstStates();
       // Two distinct save paths:
       //  - An imported DAW project (pendingTracks seeded): save that structure,
       //    linking/embedding the sample files already on disk.
@@ -297,13 +386,45 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       //    bytes (editor clips are in-memory blobs with no path to link).
       let res: { path: string; manifest: ProjectManifest };
       if (pendingTracks.length > 0) {
+        // The TRACKS are the seed's structure. The rest of the document comes
+        // from the same capture helper the live-session branch uses, unless
+        // the seed carries its own and EDIT holds another project
+        // (seededDocument). This branch used to build its own payload from
+        // four fields, so saving an imported project wrote no markers, no
+        // loop, no buses, no master chains and no automation.
+        //
+        // The lane filter is the reason the helper takes the track ids: an
+        // automation lane keys off a TRACK id, and these tracks are the
+        // importer's, so a lane naming an editor track is left out rather than
+        // written as a dangler.
+        const doc = captureProjectDocument(pendingTracks.map((t) => t.id));
+        const document = seededDocument(pendingProject, pendingTracks, {
+          buses: doc.buses,
+          locators: doc.locators,
+          loop: doc.loop,
+          master_fx_chain: doc.masterFxChain,
+          master_vst_chain: doc.masterVstChain,
+          automation_lanes: doc.automationLanes,
+          controller_mappings: doc.controllerMappings ?? null,
+          roll_voice: doc.rollVoice,
+          tuning: doc.tuning,
+        });
         const project: TasmoProjectInput = {
+          // Every field the seed carries (the scene names, the tempo and meter
+          // maps, the sample rate); the fields below replace their own keys.
+          ...pendingProject,
+          // The dialog's Tempo is the start tempo, which a tempo map states
+          // again in its first event; the map wins on load, so it follows.
+          ...(pendingProject?.tempo_map?.length
+            ? { tempo_map: pendingProject.tempo_map.map((e) => (e.beat === 0 && !e.fermata ? { ...e, bpm: tempo } : e)) }
+            : {}),
           project_name: name,
           tempo,
+          time_signature: pendingTimeSignature ?? [4, 4],
           tracks: pendingTracks,
           source_daw: sourceDaw,
           import_warnings: importWarnings,
-          controller_mappings: captureControllerMappings(),
+          ...document,
           perform_routing: pendingPerformRouting,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
@@ -322,8 +443,37 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         const project: TasmoProjectInput = {
           project_name: name,
           tempo: session.bpm,
+          // The meter is document state exactly as the tempo is; without it a
+          // 7/8 session reopened in whatever meter the session it replaced held.
+          time_signature: meterToTasmo(session.timeSignature),
+          // The arrangement's whole tempo map and meter map. `tempo` and
+          // `time_signature` above stay the start tempo and bar 1's meter, so a
+          // reader that knows only those still opens the song at its start.
+          tempo_map: session.tempoMap,
+          meter_map: session.meterMap,
           tracks: session.tracks,
+          // The mix buses the tracks' output_routing / send_amounts name. Without
+          // this the file could name a bus that had nowhere to live, and the
+          // session reopened with every edge collapsed onto the master.
+          buses: session.buses,
+          // Timeline markers and the transport's cycle region. Both are cleared
+          // by loadProject, so before these two keys existed a saved session
+          // reopened with every marker and the loop region gone.
+          locators: session.locators,
+          loop: session.loop,
+          // The master bus's insert rack, its hosted-VST chain and the
+          // automation lanes. Written even when empty: an empty array is what
+          // tells the loader this project HAS none, so the master rack of the
+          // project opened before it does not carry over into this one.
+          master_fx_chain: session.masterFxChain,
+          master_vst_chain: session.masterVstChain,
+          automation_lanes: session.automationLanes,
           controller_mappings: session.controllerMappings ?? null,
+          // The piano roll's own voice, so a reopened project's roll auditions
+          // and bounces on the instrument it was left on.
+          roll_voice: session.rollVoice,
+          // The project tuning, so a reopened project plays at the pitch and temperament it was left in.
+          tuning: session.tuning,
         };
         logInfo(
           'project',
@@ -332,8 +482,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         res = await projectApi.saveSession(project, path, session.files);
       }
       set({ busy: false, lastSaved: { path: res.path, manifest: res.manifest } });
-      // The document now matches what is on disk — clear the unsaved-changes guard.
-      useEditorStore.getState().markSaved();
+      // The EDIT document now matches what is on disk — clear the unsaved-changes
+      // guard. Only after a save of the EDIT timeline: a seeded save writes
+      // PERFORM's tracks, so EDIT's own changes (to another project, or to this
+      // one since it was opened) are still unsaved, and New Project and closing
+      // the app must still ask before they are lost.
+      if (pendingTracks.length === 0) useEditorStore.getState().markSaved();
       status(`PROJECT SAVED (${res.manifest.audio_mode}): ${res.path}`);
       void get().refreshRecent();
     } catch (e) {

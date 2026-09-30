@@ -6,19 +6,34 @@
  * audio-rate motion, and a path overlay previews where the source travels and,
  * for orbits, which way it spins.
  *
+ * The pad is a pointer surface; its two axes are also real sliders on lines
+ * through the source (PadAxisSlider): X is left/right and Z is front/back, in
+ * the pad's distance units, so the keyboard and a screen reader move the
+ * source across and forward one axis at a time.
+ *
  * Rendered by FxRack in place of the generic sliders when the effect is the
  * spatializer. Values round-trip through the same ChainEntry.params the audio
  * factory reads, so the pad and the sound stay in sync.
  */
 
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { SlideTrack } from './SlideTrack';
+import { PadAxisSlider } from './PadAxisSlider';
+import { createGestureTracker } from '../../lib/gestureTracker';
 import { getRackEffect, SPATIAL_MOTIONS, SPATIAL_PRESETS } from '../../lib/rackEffects';
 
 interface SpatializerPadProps {
   params: Record<string, number>;
   onChange: (params: Record<string, number>) => void;
   idPrefix: string;
+  /** The panel's gesture boundary: one start before the first `onChange` of a
+   *  drag / key press / wheel burst and one end after its last. Lets a consumer
+   *  recording a gesture (automation touch) stop guessing it from a deadline.
+   *  See lib/gestureTracker.ts. The SLIDE sliders forward their own; the
+   *  top-down pad is a bespoke pointer target with a single input, so it
+   *  reports the pair directly from its pointerdown / pointerup. */
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
 }
 
 const PAD = 140;              // svg viewport (square)
@@ -27,6 +42,48 @@ const R = C - 12;             // usable radius (leave a ring margin)
 const MAX_DIST = 8;           // distance value mapped to the pad edge
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
+/** Source azimuth/distance -> left/right (x) and front/back (z) in distance units. */
+const sourceAxes = (azDeg: number, dist: number): { x: number; z: number } => {
+  const az = (azDeg * Math.PI) / 180;
+  return { x: Math.sin(az) * dist, z: Math.cos(az) * dist };
+};
+
+/** Left/right and front/back back to the azimuth (whole degrees) and distance the effect reads. */
+const axesToSource = (x: number, z: number, minDist: number, maxDist: number): { azimuth: number; distance: number } => ({
+  azimuth: Math.round((Math.atan2(x, z) * 180) / Math.PI),
+  distance: +clamp(Math.hypot(x, z), minDist, maxDist).toFixed(2),
+});
+
+/**
+ * A key step on one axis slider: the source's new azimuth and distance.
+ *
+ * The distance has a floor (the param's minimum, 0.5), so the ring inside it
+ * around the listener is no place a source can be. A step that lands inside it
+ * is carried across the centre to the ring's far side on that axis, so the
+ * arrows move a source through the listener (front to behind, left to right)
+ * and never stick at the floor. `next` is the axis value the key gave; `x` and
+ * `z` are where the source is now.
+ */
+export const stepSourceAxes = (
+  axis: 'x' | 'z',
+  next: number,
+  x: number,
+  z: number,
+  minDist: number,
+  maxDist: number,
+): { azimuth: number; distance: number } => {
+  const now = axis === 'x' ? x : z;
+  const other = axis === 'x' ? z : x;
+  let v = next;
+  if (Math.hypot(v, other) < minDist) {
+    // This axis line meets the floor ring at +edge and -edge; the step goes on to the one in its direction.
+    const edge = Math.sqrt(Math.max(0, minDist * minDist - other * other));
+    const dir = Math.sign(next - now) || Math.sign(-now) || 1;
+    v = dir * edge;
+  }
+  return axis === 'x' ? axesToSource(v, other, minDist, maxDist) : axesToSource(other, v, minDist, maxDist);
+};
+
 /** Source azimuth/distance -> pad pixel coords (front = up, right = right). */
 const sourceXY = (azDeg: number, dist: number) => {
   const az = (azDeg * Math.PI) / 180;
@@ -34,9 +91,26 @@ const sourceXY = (azDeg: number, dist: number) => {
   return { x: C + Math.sin(az) * r, y: C - Math.cos(az) * r };
 };
 
-export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadProps) {
+export function SpatializerPad({ params, onChange, idPrefix, onGestureStart, onGestureEnd }: SpatializerPadProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragging = useRef(false);
+  // Unmounting mid-drag must still close the gesture: the pad's own pointerup
+  // will never arrive, and a begun lane with no end is the one failure the
+  // automation store cannot recover from (lib/automationGesture.ts). Read
+  // through a ref so the cleanup cannot close over a stale prop.
+  const endRef = useRef(onGestureEnd); endRef.current = onGestureEnd;
+  const startRef = useRef(onGestureStart); startRef.current = onGestureStart;
+  // The axis sliders' key gestures, closed on keyup, blur or unmount.
+  const keyGesture = useRef<ReturnType<typeof createGestureTracker> | null>(null);
+  const getKeyGesture = () => (keyGesture.current ??= createGestureTracker({
+    onStart: () => startRef.current?.(),
+    onEnd: () => endRef.current?.(),
+  }));
+  useEffect(() => () => {
+    if (dragging.current) endRef.current?.();
+    keyGesture.current?.dispose();
+    keyGesture.current = null;
+  }, []);
   const def = getRackEffect('spatializer');
 
   const azimuth = params.azimuth ?? 0;
@@ -70,13 +144,18 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     dragging.current = true;
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    onGestureStart?.(); // before the press's own write, below
     fromPointer(e.clientX, e.clientY);
     e.preventDefault();
   };
   const onMove = (e: React.PointerEvent) => { if (dragging.current) fromPointer(e.clientX, e.clientY); };
   const onUp = (e: React.PointerEvent) => {
+    // pointerup and pointercancel both land here; only the one that actually
+    // ended a drag closes the gesture, so the pair stays balanced.
+    const wasDragging = dragging.current;
     dragging.current = false;
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    if (wasDragging) onGestureEnd?.();
   };
 
   // Path overlay describing the motion around the source point. The pad is a
@@ -191,6 +270,19 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
     return null;
   };
 
+  const distParam = def?.params.find((p) => p.key === 'distance');
+  const minDist = distParam?.min ?? 0.5;
+  // The axis sliders span the distance param's whole range (10), past the pad's edge (MAX_DIST), so
+  // aria-valuenow never exceeds aria-valuemax and a first key press never pulls a far source in.
+  const maxDist = distParam?.max ?? 10;
+  const axes = sourceAxes(azimuth, distance);
+  const axisText = (v: number, neg: string, pos: string) => (Math.abs(v) < 0.005 ? 'centre' : `${Math.abs(v).toFixed(1)} ${v < 0 ? neg : pos}`);
+  const keyMove = (key: string, axis: 'x' | 'z', next: number) => {
+    getKeyGesture().key('down', key);
+    onChange({ ...params, ...stepSourceAxes(axis, next, axes.x, axes.z, minDist, maxDist) });
+  };
+  const keyRelease = (key?: string) => getKeyGesture().key('up', key);
+
   const motionId = `${idPrefix}-motion`;
 
   return (
@@ -201,8 +293,9 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
           width={PAD}
           height={PAD}
           viewBox={`0 0 ${PAD} ${PAD}`}
-          role="application"
-          aria-label="Spatial position pad. Drag to set azimuth and distance. Precise values are in the sliders below."
+          role="group"
+          aria-roledescription="XY pad"
+          aria-label="Spatial position pad. Drag to set azimuth and distance, or use the left-right and front-back sliders through the source. Precise values are in the sliders below."
           className="shrink-0 rounded bg-black/50 border border-white/10 cursor-crosshair touch-none"
           onPointerDown={onDown}
           onPointerMove={onMove}
@@ -224,6 +317,34 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
           {/* source */}
           <line x1={C} y1={C} x2={src.x} y2={src.y} stroke="#a855f7" strokeOpacity={0.35} strokeWidth={1} />
           <circle cx={src.x} cy={src.y} r={5} fill="#a855f7" stroke="#fff" strokeWidth={1} />
+          <PadAxisSlider
+            axis="x"
+            label="Source left-right (X)"
+            value={+axes.x.toFixed(2)}
+            min={-maxDist}
+            max={maxDist}
+            step={0.1}
+            valueText={axisText(axes.x, 'left', 'right')}
+            pos={src.x}
+            size={PAD}
+            color="#a855f7"
+            onKey={(next, key) => keyMove(key, 'x', next)}
+            onKeyRelease={keyRelease}
+          />
+          <PadAxisSlider
+            axis="y"
+            label="Source front-back (Z)"
+            value={+axes.z.toFixed(2)}
+            min={-maxDist}
+            max={maxDist}
+            step={0.1}
+            valueText={axisText(axes.z, 'behind', 'in front')}
+            pos={src.y}
+            size={PAD}
+            color="#a855f7"
+            onKey={(next, key) => keyMove(key, 'z', next)}
+            onKeyRelease={keyRelease}
+          />
         </svg>
 
         <div className="flex-1 flex flex-col gap-1.5 min-w-0">
@@ -277,6 +398,8 @@ export function SpatializerPad({ params, onChange, idPrefix }: SpatializerPadPro
                 ariaLabelledBy={labelId}
                 className="flex-1"
                 onChange={(v) => set(p.key, v)}
+                onGestureStart={onGestureStart}
+                onGestureEnd={onGestureEnd}
               />
               <span className="font-sans text-xs font-bold text-zinc-300 w-16 shrink-0 text-right tabular-nums">
                 {p.value.toFixed(decimals)}{p.unit ? ` ${p.unit}` : ''}

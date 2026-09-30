@@ -6,6 +6,177 @@ by build, test, or observed behaviour.
 
 Newest first.
 
+## 2026-09-25
+
+### DJ: a real way to start a set, and cue points that are already there (commits 9201efb, 7713d42; verified by tests: djCueSeed.test.ts, djRhythmStore.test.ts, DJView.dj3.test.ts)
+
+- **START AUTO DJ** sits in the DJ header above the decks. When it cannot start
+  it says what is missing in its tooltip — "Create a set first — click to make
+  one", "Pick a set below", "Add at least 2 tracks to this set" — and the
+  accessible name a screen reader reads carries the same reason in its own
+  wording, instead of the Automix chip silently un-toggling itself. The button is
+  never disabled in the DOM (that would take its tooltip and its tab stop with
+  it); it is marked `aria-disabled` only where the press cannot change anything,
+  and with no sets at all the press creates the set it is asking for. While a mix runs it reads STOP AUTO DJ, which stops the sequencer and
+  leaves the decks playing.
+- A bundled performance set is registered first and then started, by the header
+  button and the Sets row's ▶ alike, so a full set no longer looks empty until
+  something has clicked it. One shared count backs the button, the row and the
+  sequencer, so they cannot disagree.
+- Sets rows show an **ACTIVE** badge on the set automix actually reads (after a
+  Send to DJ that is not the set you last opened), a spinner while their tracks
+  register, and a ▶ that auto-DJs the set.
+- A three-line hint sits over the decks until one holds a track: pick a set,
+  press START AUTO DJ, or drag a track onto a deck.
+- **Hot cues are seeded from the analysis**: the first downbeat, then the 16,
+  32 and 48-bar phrase starts after it, with markers on the waveform. Cues you
+  set or clear are never overwritten, and a phrase past the end of a short
+  track leaves its pad empty instead of stacking a second marker on the end.
+- Real bar lines come from the rhythm module's cache, read-only — the DJ tab
+  never starts a rhythm run of its own. Run the Rhythm analysis on a track and
+  the beatgrid, the cue seeding and the automix phrase alignment pick it up on
+  the next deck load.
+
+### DJ: automix that actually mixes (commits 889c4d9, 7cd2707; verified by tests: djAutomixPlan.test.ts, DJView.b12.test.ts)
+
+- **One bassline at a time.** The outgoing low band is handed over to the
+  incoming one across the middle third of the blend, relative to your own EQ.
+- **Blends start on the phrase.** The mix-out point is quantised down to a
+  16-beat phrase line of the outgoing track, from real downbeats when the
+  rhythm cache has them and the beatgrid otherwise.
+- **Honest beatmatch messages.** A tempo the pitch fader cannot reach is said
+  out loud ("NOT beatmatched", "mixing unmatched") instead of the fader being
+  parked at its limit under a "BPM Sync" label. Half and double time still
+  count as a match.
+- **Phase is corrected by bending the platter**, not by restarting the track,
+  so the incoming deck no longer stutters as it comes in; what a bend could not
+  deliver in one window is carried to the next tick. Sync-lock is held for the
+  whole blend and released on the swap, so two decks cannot drift apart over a
+  ten-second fade. Key-lock engages when the match needed a real pitch pull.
+- **No dead air**, and no fader stranded mid-fade: an outgoing track that ends
+  early starts the next one at once, and the crossfader always lands exactly on
+  the incoming deck. The first track of a set starts on its first beat with a
+  grid.
+- **A key clash straight ahead is skipped** for the nearest harmonically
+  compatible track when at least three tracks remain; strict set order
+  otherwise, and an unanalysed track is never skipped over.
+- A track shorter than the 18-second blend tail mixes out from its midpoint
+  instead of the instant it starts, and a deck that never finishes loading
+  stops automix after 15 seconds with "Deck A never finished loading" rather
+  than polling for the rest of the session.
+
+### DJ: automix waits for a deck that has not started (commit 5fb90a9; verified by tests: djAutomixPlan.test.ts, DJView.b12.test.ts)
+
+- A deck that is still decoding no longer reads as dead air. START AUTO DJ used
+  to load a deck and then "rescue" the set into the next track every half
+  second while it decoded — a new track every few seconds, and nothing ever
+  played. Only a deck that has actually made a sound can be rescued.
+- A tempo match the pitch range cannot reach now pulls nothing: the pitch stays
+  at 0 % with no key-lock and no phase nudge, instead of both faders sitting at
+  their rails at the wrong speed while the message said "NOT beatmatched".
+- Turning Automix on with a loaded-but-paused deck starts that deck (crossfader
+  normalised, first beat) instead of waiting silently for a manual play.
+
+### DJ: decks decode once and the waveforms analyse off the main thread (commits cc206b2, dfaedbe, 70b92eb; verified by tests: djAudioCache.test.ts, djSemanticWaveformAnalysis.worker.test.ts, djSemanticWaveformAnalysis.cost.test.ts, DJSemanticWaveform.b12.test.ts, DJSemanticWaveform.perf.test.tsx)
+
+- Loading a deck fetched and decoded the same file three times and analysed its
+  waveform on the main thread. Now each file is fetched and decoded once per
+  sample rate, shared by every waveform and the engine, and kept in a
+  four-buffer cache — decoded audio is large, so the cache holds two decks plus
+  one either side of a transition. Decoding no longer opens throwaway output
+  devices.
+- Waveform analysis runs in a Worker, sized to the lane's real width and
+  memoised, and rendered waveforms are cached offscreen at the app's actual
+  zoom geometry. Measured on a 210-second stereo track across the four waveform
+  instances a deck load mounts: 644.5 ms of main-thread work before, 41.8 ms
+  after — the "lags super bad at the beginning".
+- Library audio is served with a long `Cache-Control: private, max-age`, so a
+  deck reload does not pull the whole file down again; it is deliberately not
+  `immutable`, because the transcode cache for browser-unplayable containers is
+  re-done when a source file is replaced. That cache (`data/playable-cache/`)
+  is runtime data and is now ignored by git.
+
+### Analysis: a DJ profile, a concurrency cap, and a BPM confidence (commits 86dafd0, 980889e; verified by tests: tests/test_analysis.py, tests/test_analysis_concurrency.py, tests/test_library_endpoints.py, djAnalysisStore.test.ts)
+
+- A cache-miss analysis took 10-20 seconds per track. `?profile=dj` runs only
+  what a deck reads — tempo, beats, confidence, key, RMS — and skips the pitch
+  statistics and the second full-rate decode that loudness needs: about 2-3
+  seconds instead of 10. The DJ tab uses it for everything it analyses.
+- A partial row says so. The stored analysis and `GET /api/analysis/{id}` carry
+  the profile that wrote them, so a partial row can no longer be read as a
+  complete one whose expensive fields happen to be empty; a later full run
+  completes it. A run that fails to measure something falls back to the stored
+  values rather than erasing them, so a re-run whose tempo step fails cannot
+  wipe a measured BPM.
+- **`bpm_confidence`** (0 to 1) is kept now instead of thrown away. It is
+  persisted with the analysis and carried on the deck’s analysis row, so a BPM
+  detected at 0.1 confidence can be told apart from a solid one; no view renders
+  it differently yet.
+- At most two analyses run at once in the whole backend process, and callers
+  asking for the same entry and profile join the run in flight. The cap sits on
+  the analysis itself, so the library's background auto-analysis shares it
+  instead of walking past it.
+- The DJ tab's queue puts deck loads first and never drops them, while the
+  browsing sweep is a replaceable window of at most 24 rows ranked decks →
+  active set → visible rows, so scrolling re-aims it instead of building a
+  backlog. A failing row is retried after 60 s, then after 120 s, and is given up
+  on at the third failure — loading it onto a deck runs it anyway; the whole queue
+  can be paused and resumed.
+
+## 2026-09-22
+
+### Listing performance sets no longer writes to the library (verified by tests: tests/test_library_setlists.py, tests/test_library_api_at_scale.py)
+
+- `GET /api/library/setlists` registered every unregistered track of every performance set as a library entry and
+  rewrote a sidecar on each read (25 commits per listing on a three-set folder). Listing is read-only; a set is
+  registered once when it is opened, through `POST /api/library/setlists/{id}/register` (cross-site refused, 404 on
+  an unknown id, no id echoed).
+- Registering fills entry ids into the user's own list, matched by file name, so reorders, removals and hand-added
+  tracks survive; it is not counted as an edit. Two overlapping opens register each file once: the store reuses the
+  entry an identical resolved path already has, and the route holds a per-folder lock.
+- A set's id hashes its files rather than its registrations, so it survives registration; bundled sets already in a
+  browser re-import once under the new id.
+- The API scale guard now points `theDAW_DATA_DIR` into its fixture, so its probes never read the developer's own
+  data tree; a test pins that.
+
+### Media roots: the library serves files it never owned (verified by tests: tests/test_library_media_roots.py)
+
+- An entry whose audio was never written under `data/generations/` is served
+  from your own media folders. `theDAW_MEDIA_ROOTS` names them and wins
+  outright; otherwise Settings → Storage → Media roots does. One background
+  scan indexes every file whose name carries the entry's full id, or its first
+  eight hex digits in brackets right before the extension.
+- The file is referenced in place. Nothing is copied into the entry, its
+  metadata is not touched, and the roots are asked after the entry's own folder
+  and before any remote copy.
+- The Settings panel reports the index and rescans on demand. A root must be an
+  absolute folder that exists and may not sit inside another root; one refused
+  from the environment variable is logged and dropped, and the rest still index.
+- The routes and the settings keys answer only to this machine. A LAN caller
+  reads "Hidden on this device" in place of the folder list and cannot set it.
+- When served from a media root, AIFF, WMA and APE are remuxed to WAV once
+  for the browser and cached under `data/playable-cache/<id>/` instead of
+  beside your file; an entry's own audio still remuxes into its entry folder's
+  `_playable/`.
+
+### LEARN: every number on the landing page opens a list (verified by tests: tests/test_lineagescale_explore.py)
+
+- Songs with lineage and songs without, any relationship kind as parent, child
+  or either end with the per-song count, rankings for any kind in either role,
+  families by size and the members of one family — each of them a list now,
+  searchable, sortable and paged at 50 rows.
+- A row badges the provider and carries Focus and Copy id. Search reuses the
+  library's own search tokeniser, over titles. A mashup cluster is counted apart: it is not a family.
+
+### LEARN: the classic graph of one song, in the tab (verified by tests: LineageScaleView.test.tsx, LearnHost.test.tsx)
+
+- **Classic graph** opens the classic view on the song in focus, inside LEARN,
+  on a library far too large for the whole-library drawing. The Genealogy and
+  3D tabs stay refused there and say why.
+- The family is capped at 600 nodes, with a bounded number of relation rows per
+  hop, and the cut takes from the far edge. When it bites the view says
+  "Showing the nearest N of a larger family."
+
 ## 2026-09-15
 
 ### Magenta RealTime 2 loads on one card (verified by build + tests; measured on a 2080 Ti)

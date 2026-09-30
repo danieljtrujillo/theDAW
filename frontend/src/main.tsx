@@ -1,5 +1,10 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
+// Side-effect import, first of the app's own modules: lib/pairing.ts reads the
+// `#pair=<token>` the Mobile Access share link carries, stores it and strips it
+// from the address bar as it loads, before any request goes out. It is also
+// reached through App's imports, but this entry must not depend on that chain.
+import './lib/pairing';
 import App from './App.tsx';
 import {migrateBrandKeys} from './lib/migrateBrandKeys';
 import {logInfo, logWarn, logError} from './state/logStore';

@@ -10,6 +10,8 @@
  */
 import React, { useRef } from 'react';
 import { DJSemanticWaveform } from './DJSemanticWaveform';
+import { WaveformModeToggle } from './WaveformModeControl';
+import { useWaveformStyleStore } from '../../state/waveformStyleStore';
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
 
@@ -37,6 +39,18 @@ export interface SemanticWaveProps {
   transparentBg?: boolean;
   className?: string;
   ariaLabel?: string;
+  /** `true` (default, unchanged): rescale peaks to this track's own loudest
+   *  sample — see `DJSemanticWaveform`'s prop of the same name. `false`:
+   *  absolute amplitude, never rescaled (REAPER's default). */
+  normalize?: boolean;
+  /** Show the corner button that cycles the global waveform color mode
+   *  (semantic / plain / clipping) and carries its legend (see
+   *  `WaveformModeControl`). Default true. Pass false where the waveform
+   *  carries edit handles (EDIT clips, the clip editor drawer): those
+   *  surfaces put the toggle in their own toolbar, so it never sits over a
+   *  trim handle or a fade grip. The mode, set from anywhere, applies
+   *  everywhere. */
+  showModeToggle?: boolean;
 }
 
 export const SemanticWave: React.FC<SemanticWaveProps> = ({
@@ -51,8 +65,11 @@ export const SemanticWave: React.FC<SemanticWaveProps> = ({
   transparentBg = false,
   className,
   ariaLabel,
+  normalize = true,
+  showModeToggle = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const mode = useWaveformStyleStore((s) => s.mode);
   const span = Math.max(1e-6, viewportEnd - viewportStart);
 
   // Map a full-track fraction to a horizontal percentage within the viewport.
@@ -115,7 +132,12 @@ export const SemanticWave: React.FC<SemanticWaveProps> = ({
         viewportStart={viewportStart}
         viewportEnd={viewportEnd}
         onDuration={onDuration}
+        transparentBg={transparentBg}
+        normalize={normalize}
+        mode={mode}
       />
+
+      {showModeToggle && <WaveformModeToggle variant="corner" />}
 
       {/* scrub layer */}
       {onSeek && (

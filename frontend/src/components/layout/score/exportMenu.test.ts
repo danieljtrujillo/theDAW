@@ -4,11 +4,12 @@ import {
   ALL_PARTS,
   buildExportMenu,
   MUSESCORE_DOWNLOAD_URL,
+  musescoreRenderReason,
   routeFormatFor,
   SHEET_EXPORT_ORDER,
   type ExportMenuEntry,
 } from './exportMenuModel.ts';
-import type { NotationCapabilities } from '../../../lib/notationClient.ts';
+import type { MuseScoreRenderStatus, NotationCapabilities } from '../../../lib/notationClient.ts';
 
 const fullCaps: NotationCapabilities = {
   ok: true,
@@ -18,7 +19,12 @@ const fullCaps: NotationCapabilities = {
   ffmpeg: true,
   engravers: { pdf: ['osmd', 'musescore'], svg: ['osmd', 'musescore'] },
   musescore_download_url: 'https://musescore.org/download',
-  formats: ['midi', 'musicxml', 'abc', 'json', 'alphatex', 'notechart', 'beatsaber', 'chordtrack', 'pdf', 'svg'],
+  // The real list capabilities() returns (backend/modules/notation/engine.py):
+  // "json" / "alphatex" are artifact kinds, never /export targets, and
+  // "chordtrack" is its own caps["chords"] flag, not a formats entry. "midi"
+  // is both an artifact kind and the sounding-pitch MIDI /export target.
+  formats: ['musicxml', 'abc', 'notechart', 'beatsaber', 'midi', 'pdf', 'svg'],
+  perform: true,
 };
 
 /** Neither engraver: no node, no MuseScore — pdf and svg are not listed. */
@@ -37,6 +43,8 @@ const bandParts = [
 ];
 
 const FORMAT_IDS = ['xml', 'pack', ...SHEET_EXPORT_ORDER];
+// All parts ends its formats with PERFORM; a single part does not offer it.
+const ALL_IDS = [...FORMAT_IDS, 'perform'];
 const ENGRAVER_IDS = ['get-musescore', 'locate-musescore'];
 
 const ids = (entries: ExportMenuEntry[]) => entries.map((e) => e.id);
@@ -56,7 +64,7 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   assert.deepEqual(menu.parts.map((p) => p.index), [null, 0, 1, 2]);
   assert.equal(menu.parts[2].isPercussion, true);
   const all = menu.formatsFor(menu.parts[0]);
-  assert.deepEqual(ids(all), FORMAT_IDS);
+  assert.deepEqual(ids(all), ALL_IDS);
   assert.equal(all[0].id, 'xml');
   assert.ok(all.every((e) => e.enabled), 'every format enabled');
   assert.equal(byId(all, 'xml').kind, 'download');
@@ -81,7 +89,7 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
 // link carries the backend's download URL.
 {
   const all = buildExportMenu({ artifactKind: 'musicxml', caps: noEngraverCaps, parts: bandParts }).formatsFor(ALL_PARTS);
-  assert.deepEqual(ids(all), [...FORMAT_IDS, ...ENGRAVER_IDS]);
+  assert.deepEqual(ids(all), [...ALL_IDS, ...ENGRAVER_IDS]);
   for (const id of ['pdf', 'svg'] as const) {
     const e = byId(all, id);
     assert.equal(e.enabled, false, `${id} disabled without an engraver`);
@@ -114,7 +122,7 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   const all = buildExportMenu({ artifactKind: 'musicxml', caps: svgOnly, parts: null }).formatsFor(ALL_PARTS);
   assert.deepEqual(ids(all).slice(-2), ENGRAVER_IDS);
   const osmdOnly: NotationCapabilities = { ...fullCaps, musescore: false, engravers: { pdf: ['osmd'], svg: ['osmd'] } };
-  assert.deepEqual(ids(buildExportMenu({ artifactKind: 'musicxml', caps: osmdOnly, parts: null }).formatsFor(ALL_PARTS)), FORMAT_IDS);
+  assert.deepEqual(ids(buildExportMenu({ artifactKind: 'musicxml', caps: osmdOnly, parts: null }).formatsFor(ALL_PARTS)), ALL_IDS);
 }
 
 // A backend that does not list a chart format says so, without guessing.
@@ -130,10 +138,10 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
 // and there is nothing to fetch or locate until the backend has spoken.
 {
   const all = buildExportMenu({ artifactKind: 'musicxml', caps: null, parts: bandParts }).formatsFor(ALL_PARTS);
-  assert.deepEqual(ids(all), FORMAT_IDS);
+  assert.deepEqual(ids(all), ALL_IDS);
   assert.equal(byId(all, 'xml').enabled, true);
   assert.equal(byId(all, 'pack').enabled, true);
-  for (const id of SHEET_EXPORT_ORDER) {
+  for (const id of [...SHEET_EXPORT_ORDER, 'perform']) {
     const e = byId(all, id);
     assert.equal(e.enabled, false, `${id} disabled without caps`);
     assert.ok(e.title.toLowerCase().includes('capabilities'), e.title);
@@ -217,7 +225,7 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   const menu = buildExportMenu({ artifactKind: 'midi', caps: fullCaps, parts: bandParts });
   assert.deepEqual(menu.parts.map((p) => p.label), ['All parts']);
   const all = menu.formatsFor(menu.parts[0]);
-  assert.deepEqual(ids(all), FORMAT_IDS);
+  assert.deepEqual(ids(all), ALL_IDS);
   const xml = byId(all, 'xml');
   assert.equal(xml.kind, 'export');
   assert.equal(xml.enabled, true);
@@ -233,6 +241,36 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   const pending = buildExportMenu({ artifactKind: 'midi', caps: null, parts: null }).formatsFor(ALL_PARTS);
   assert.equal(byId(pending, 'xml').enabled, false);
   assert.equal(byId(pending, 'pack').enabled, true);
+}
+
+// PERFORM: the whole sheet only, an 'export' entry the owner routes to
+// POST /perform; a MIDI shows it disabled (make the sheet first), and a
+// backend without partitura says so.
+{
+  const menu = buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: bandParts });
+  const perform = byId(menu.formatsFor(ALL_PARTS), 'perform');
+  assert.equal(perform.kind, 'export');
+  assert.equal(perform.enabled, true);
+  assert.equal(perform.partScoped, false);
+  assert.equal(perform.label, 'PERFORM (MIDI)');
+  assert.equal(routeFormatFor(perform), 'perform');
+  assert.ok(perform.title.includes('MIDI'), perform.title);
+  for (const part of menu.parts.slice(1)) {
+    assert.ok(!ids(menu.formatsFor(part)).includes('perform'), `no PERFORM for ${part.label}`);
+  }
+
+  const midi = byId(buildExportMenu({ artifactKind: 'midi', caps: fullCaps, parts: null }).formatsFor(ALL_PARTS), 'perform');
+  assert.equal(midi.enabled, false);
+  assert.ok(midi.title.includes('XML (sheet)'), midi.title);
+
+  const noPartitura: NotationCapabilities = { ...fullCaps, perform: false };
+  const missing = byId(buildExportMenu({ artifactKind: 'musicxml', caps: noPartitura, parts: null }).formatsFor(ALL_PARTS), 'perform');
+  assert.equal(missing.enabled, false);
+  assert.ok(missing.title.includes('partitura'), missing.title);
+
+  // With no engraver, PERFORM still comes before GET / LOCATE MUSESCORE.
+  const noEngraver = buildExportMenu({ artifactKind: 'musicxml', caps: noEngraverCaps, parts: null }).formatsFor(ALL_PARTS);
+  assert.deepEqual(ids(noEngraver).slice(-3), ['perform', ...ENGRAVER_IDS]);
 }
 
 // (g) Anything that is not a sheet or a MIDI: All parts only, and one
@@ -253,10 +291,83 @@ const formatEntries = (entries: ExportMenuEntry[]) => entries.filter((e) => !ENG
   assert.equal(noneFormats[0].enabled, false);
 }
 
+// MIDI at sounding pitch: offered after SVG for the whole sheet and for one
+// part, exported through the route as 'midi', and its hover says what
+// "sounding" means. A backend that does not list it says so.
+{
+  const menu = buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: bandParts });
+  const all = menu.formatsFor(ALL_PARTS);
+  assert.deepEqual(ids(all).slice(4, 6), ['svg', 'midi']);
+  const midi = byId(all, 'midi');
+  assert.equal(midi.label, 'MIDI (SOUNDING)');
+  assert.equal(midi.kind, 'export');
+  assert.equal(midi.enabled, true);
+  assert.equal(routeFormatFor(midi), 'midi');
+  assert.ok(midi.title.includes('pitch it sounds') && midi.title.includes('tempo and meter'), midi.title);
+  const bass = byId(menu.formatsFor(menu.parts[1]), 'midi');
+  assert.equal(bass.partScoped, true);
+  assert.ok(bass.title.includes('Bass only'), bass.title);
+  const older: NotationCapabilities = { ...fullCaps, formats: fullCaps.formats.filter((f) => f !== 'midi') };
+  const missing = byId(buildExportMenu({ artifactKind: 'musicxml', caps: older, parts: null }).formatsFor(ALL_PARTS), 'midi');
+  assert.equal(missing.enabled, false);
+  assert.ok(missing.title.includes('not offered'), missing.title);
+}
+
 // A nameless part gets a positional label.
 {
   const menu = buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: [{ name: '' }, { name: 'Lead' }] });
   assert.deepEqual(menu.parts.map((p) => p.label), ['All parts', 'Part 1', 'Lead']);
+}
+
+// (h) RENDER WITH MUSESCORE: listed after the formats when the owner passes
+// the render status, enabled with MuseScore 4 and Muse Sounds, otherwise
+// disabled with a short reason printed under it (note) and in its hover text.
+{
+  const ready: MuseScoreRenderStatus = { found: true, path: 'C:/Program Files/MuseScore 4/bin/MuseScore4.exe', muse_sounds: true, reason: '' };
+  const noSounds: MuseScoreRenderStatus = { ...ready, muse_sounds: false, reason: 'Muse Sounds is not installed (MuseHub)' };
+  const noMuseScore: MuseScoreRenderStatus = { found: false, path: null, muse_sounds: false, reason: 'MuseScore 4 is not installed' };
+
+  const menu = (musescore: MuseScoreRenderStatus | null) =>
+    buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: bandParts, musescore });
+
+  const all = menu(ready).formatsFor(ALL_PARTS);
+  assert.deepEqual(ids(all), [...ALL_IDS, 'audio']);
+  const render = byId(all, 'audio');
+  assert.equal(render.label, 'RENDER WITH MUSESCORE');
+  assert.equal(render.kind, 'export');
+  assert.equal(render.enabled, true);
+  assert.equal(render.note, undefined);
+  assert.equal(render.partScoped, false);
+  assert.equal(routeFormatFor(render), 'audio');
+
+  const bass = menu(ready).formatsFor(menu(ready).parts[1]);
+  assert.equal(byId(bass, 'audio').partScoped, true);
+  assert.match(byId(bass, 'audio').title, /Bass only/);
+
+  const withoutSounds = byId(menu(noSounds).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(withoutSounds.enabled, false);
+  assert.equal(withoutSounds.note, 'Needs Muse Sounds (MuseHub)');
+  assert.equal(musescoreRenderReason(noSounds), 'Needs Muse Sounds (MuseHub)');
+  assert.match(withoutSounds.title, /^Needs Muse Sounds/);
+
+  const withoutMuseScore = byId(menu(noMuseScore).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(withoutMuseScore.enabled, false);
+  assert.equal(withoutMuseScore.note, 'Needs MuseScore 4');
+
+  const reading = byId(menu(null).formatsFor(ALL_PARTS), 'audio');
+  assert.equal(reading.enabled, false);
+  assert.equal(reading.note, 'Checking for MuseScore 4…');
+
+  // A MIDI sheet renders too (the backend stages it as MusicXML).
+  const midi = buildExportMenu({ artifactKind: 'midi', caps: fullCaps, parts: null, musescore: ready });
+  assert.equal(byId(midi.formatsFor(ALL_PARTS), 'audio').enabled, true);
+
+  // An owner that passes no status lists no render entry.
+  assert.ok(!ids(buildExportMenu({ artifactKind: 'musicxml', caps: fullCaps, parts: null }).formatsFor(ALL_PARTS)).includes('audio'));
+
+  // Without an engraver the render still sits before GET / LOCATE MUSESCORE.
+  const bare = buildExportMenu({ artifactKind: 'musicxml', caps: noEngraverCaps, parts: null, musescore: noMuseScore });
+  assert.deepEqual(ids(bare.formatsFor(ALL_PARTS)).slice(-3), ['audio', ...ENGRAVER_IDS]);
 }
 
 console.log('exportMenu tests passed');

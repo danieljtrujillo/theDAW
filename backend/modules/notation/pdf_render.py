@@ -164,6 +164,12 @@ def _spawn_renderer(
 
     if not source.is_file():
         return failure(f"source not found: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in PDF_RENDERABLE_SUFFIXES:
+        return failure(
+            f"cannot engrave {source.name}: unsupported source suffix {suffix!r}, "
+            f"expected one of {sorted(PDF_RENDERABLE_SUFFIXES)}"
+        )
 
     frontend = _frontend_dir()
     if frontend is None:
@@ -189,12 +195,14 @@ def _spawn_renderer(
     # stays relative to it for the same reason.
     # Tablature is alphaTex, which OSMD cannot read; alphaTab renders it instead.
     # Both scripts share the same argv shape and the same one-line JSON result.
-    is_tab = source.suffix.lower() == ".alphatex"
+    is_tab = suffix == ".alphatex"
     if is_tab and svg:
         return failure("tablature (.alphatex) renders to PDF only, not SVG")
     script = _TAB_SCRIPT_RELPATH if is_tab else _SCRIPT_RELPATH
     cmd = [node, str(script.as_posix()), str(source), str(output)]
-    if artist.strip() and not is_tab:
+    # renderTabPdf.mjs accepts --artist too (prints it under the title, same
+    # as the OSMD path), so tablature must not be excluded from the credit.
+    if artist.strip():
         cmd += ["--artist", artist.strip()]
     if not is_tab:
         if page_width is not None and page_width > 0:
@@ -205,7 +213,9 @@ def _spawn_renderer(
             cmd.append("--check-fit")
         if svg:
             cmd.append("--svg")
-    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    creationflags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    )
     try:
         proc = subprocess.run(
             cmd,

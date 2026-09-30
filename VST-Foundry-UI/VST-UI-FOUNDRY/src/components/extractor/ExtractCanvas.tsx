@@ -1,8 +1,9 @@
 import React, { useState, useRef } from "react";
 import { ExtractedElement } from "../../lib/extractor/types";
 import { X, Loader2 } from "lucide-react";
+import { completeMarquee, selectCapture, type CanvasSelectionProps } from "../../features/extractor/canvasSelection";
 
-interface ExtractCanvasProps {
+interface ExtractCanvasProps extends CanvasSelectionProps {
   imageUrl: string;
   onLoad: (e: React.SyntheticEvent<HTMLImageElement>) => void;
   elements: ExtractedElement[];
@@ -11,7 +12,7 @@ interface ExtractCanvasProps {
   lassoMode?: boolean;
 }
 
-export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, onDeleteElement, lassoMode }: ExtractCanvasProps) {
+export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, onDeleteElement, lassoMode, selectMode, selectedIds, onSelectElement, onMarqueeSelect }: ExtractCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [isDrawing, setIsDrawing] = useState(false);
@@ -31,7 +32,7 @@ export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, o
     setStartPos({ x, y });
     setCurrentPos({ x, y });
     
-    if (e.altKey || lassoMode) {
+    if (!selectMode && (e.altKey || lassoMode)) {
       setIsLasso(true);
       setLassoPoints([{x, y}]);
     } else {
@@ -65,7 +66,14 @@ export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, o
     e.currentTarget.releasePointerCapture(e.pointerId);
     
     const rect = containerRef.current.getBoundingClientRect();
-    
+
+    if (selectMode) {
+      completeMarquee(startPos, currentPos, rect, elements, e.shiftKey || e.ctrlKey || e.metaKey, onMarqueeSelect);
+      setLassoPoints([]);
+      setIsLasso(false);
+      return;
+    }
+
     if (isLasso && lassoPoints.length > 2) {
       // Calculate bounds from lasso
       const xs = lassoPoints.map(p => p.x);
@@ -108,7 +116,7 @@ export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, o
     <div className="relative shadow-2xl inline-block max-w-full max-h-full">
       <div 
         ref={containerRef}
-        className="relative select-none cursor-crosshair touch-none"
+        className={`relative select-none touch-none ${selectMode ? "cursor-cell" : "cursor-crosshair"}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -130,22 +138,23 @@ export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, o
           const topStr = `${el.ymin * 100}%`;
 
           const isProcessing = el.status === 'processing';
-          const currentImg = 
+          const isSelected = selectedIds?.has(el.id) ?? false;
+          const currentImg =
               el.displayMode === "mask" && el.maskDataUrl ? el.maskDataUrl :
-              el.displayMode === "cutout" && el.cutoutDataUrl ? el.cutoutDataUrl : 
+              el.displayMode === "cutout" && el.cutoutDataUrl ? el.cutoutDataUrl :
               null;
 
           return (
-            <div 
+            <div
               key={el.id}
-              className={`absolute pointer-events-auto transition-colors group ${!currentImg && !isProcessing ? 'border-2 border-blue-500 bg-blue-500/10 hover:bg-blue-500/20' : ''} ${isProcessing ? 'border-2 border-dashed border-purple-500 bg-purple-500/10' : ''}`}
+              className={`absolute pointer-events-auto transition-colors group ${!currentImg && !isProcessing ? 'border-2 border-blue-500 bg-blue-500/10 hover:bg-blue-500/20' : ''} ${isProcessing ? 'border-2 border-dashed border-purple-500 bg-purple-500/10' : ''} ${isSelected ? 'ring-2 ring-yellow-400 ring-offset-1 ring-offset-transparent bg-yellow-400/10 z-10' : ''}`}
               style={{
                 left: leftStr,
                 top: topStr,
                 width: widthStr,
                 height: heightStr,
               }}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(event) => selectCapture(event, el, onSelectElement)}
             >
               {currentImg && !isProcessing && (
                 <img 
@@ -192,8 +201,8 @@ export default function ExtractCanvas({ imageUrl, onLoad, elements, onDrawBox, o
               />
             </svg>
           ) : (
-            <div 
-              className="absolute border-2 border-dashed border-white bg-white/10 pointer-events-none"
+            <div
+              className={`absolute border-2 border-dashed pointer-events-none ${selectMode ? "border-yellow-400 bg-yellow-400/10" : "border-white bg-white/10"}`}
               style={{
                 left: Math.min(startPos.x, currentPos.x),
                 top: Math.min(startPos.y, currentPos.y),

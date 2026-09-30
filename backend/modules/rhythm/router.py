@@ -56,6 +56,12 @@ def _read_cache(entry_id: str) -> Optional[dict[str, Any]]:
     return data
 
 
+def cached_rhythm(entry_id: str) -> Optional[dict[str, Any]]:
+    """The entry's cached analysis from this engine version, or None. Other
+    modules read the bar grid through this (the section finder)."""
+    return _read_cache(entry_id)
+
+
 def _write_cache(entry_id: str, data: dict[str, Any]) -> None:
     atomic_write(_cache_path(entry_id), json.dumps(data))
 

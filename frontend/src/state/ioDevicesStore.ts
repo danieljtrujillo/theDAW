@@ -18,7 +18,6 @@
  */
 import { create } from 'zustand';
 import {
-  applyElementSink,
   refreshSinkElements,
   setSinkResolver,
   supportsContextSink,
@@ -536,8 +535,3 @@ export function useResolvedGlobal(slot: IoSlot): Resolved {
   useFeatureToggleStore((s) => s.settings.io);
   return resolveGlobal(slot);
 }
-
-/** Point one element at its surface's output and keep it there. */
-export const followSurfaceSink = (surface: SurfaceId, el: HTMLMediaElement | null): void => {
-  if (el) void applyElementSink(el, resolveSurface(surface).deviceId);
-};

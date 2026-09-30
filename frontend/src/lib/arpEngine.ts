@@ -352,6 +352,19 @@ export class ArpPlayerEngine {
 
   onTick: ((t: ArpTick) => void) | null = null;
   onStop: (() => void) | null = null;
+  /**
+   * The voice the arpeggiator sounds: the roll part it writes into
+   * (lib/rollPartVoice), read at every note. A program plays through the
+   * soundfont even with the picker on Basic, as the part does in the roll; no
+   * program (or no source) is the picker's voice, as before parts.
+   */
+  /**
+   * The voice the arpeggiator plays with: a program and bank on the preview
+   * synth, or `play`, which sounds a note elsewhere (the roll part's VST3
+   * instrument) and says whether it took it; a note it refuses plays on the
+   * synth.
+   */
+  voiceOf: (() => { program?: number; bank?: number; play?: (midi: number, velocity: number, when: number, duration: number) => boolean }) | null = null;
 
   /** Count the rag's odd 16ths from each bar start of `meter`; undefined restores 4/4 from step 0. */
   setMeter(meter?: ArpMeter): void {
@@ -441,9 +454,11 @@ export class ArpPlayerEngine {
   /** `pos` is the step the voice belongs to, which sounds on the grid at `gridTime`; swing and humanize move `when`, not the curve. */
   private _voice(midi: number, when: number, duration: number, velocity: number, pos: number, gridTime: number): void {
     const ctx = getEngineCtx();
-    if (isSoundfontActive()) {
+    const voice = this.voiceOf?.();
+    if (voice?.play?.(midi, velocity, when, duration)) return;
+    if (voice?.program !== undefined || isSoundfontActive()) {
       // Timed at `when` on the arpeggiator's own channel, which _scheduleWheel bends for the same times.
-      void previewNoteSF(midi, velocity, duration, ARP_LIVE_CHANNEL, when);
+      void previewNoteSF(midi, velocity, duration, ARP_LIVE_CHANNEL, when, voice?.program, voice?.bank ?? 0);
       return;
     }
     void getActiveProgram();
@@ -458,7 +473,8 @@ export class ArpPlayerEngine {
 
   /** The arpeggiator channel's wheel messages for grid step `pos`, which sounds at `gridTime`, when the soundfont plays and a bend is set. */
   private _scheduleWheel(pos: number, gridTime: number): void {
-    if (!this.bend || !isSoundfontActive()) return;
+    // The wheel bends the soundfont voice, which a part's program plays even with the picker on Basic.
+    if (!this.bend || !(this.voiceOf?.().program !== undefined || isSoundfontActive())) return;
     const stepSec = this.stepDur();
     if (this.wheelRange !== this.bend.range) {
       sfPitchWheelRange(ARP_LIVE_CHANNEL, this.bend.range);

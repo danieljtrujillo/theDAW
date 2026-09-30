@@ -22,7 +22,9 @@ import { useShardIndexStore } from '../../state/shardIndexStore';
 import { useNodefiStore } from '../../state/nodefiStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { useVirtuosoStore } from '../../state/virtuosoStore';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../../state/pianoRollStore';
+import { artifactTake } from '../../lib/takeNotes';
+import { importTake } from '../../lib/rollTakes';
 import { useMidiSongBoxRequest } from '../../state/midiSongBoxStore';
 import { useDjSideList } from '../../state/djSideListStore';
 import { useDjSampler } from '../../state/djSamplerStore';
@@ -32,12 +34,14 @@ import { sendToDjAutomix } from '../../state/djAutomixStore';
 import { useMediaBucketStore } from '../../state/mediaBucketStore';
 import { usePlayAlongStore } from '../../state/playAlongStore';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
-import { useEditorStore, computePeaks } from '../../state/editorStore';
+import { useEditorStore, beginUndoStep, computePeaks } from '../../state/editorStore';
+import { planStemInsert, skippedAggregatesNote, stemClipPlacement } from './clipDoubleClick';
 import { useLyricsStore } from '../../state/lyricsStore';
 import { useTrackMenuJobs } from '../../state/trackMenuJobStore';
 import { sendTrackToVj } from '../../state/vjSetBus';
 import { startQueue } from '../../state/playlistQueue';
 import { logError, logInfo, logWarn } from '../../state/logStore';
+import { linkSongTime } from '../../lib/songTimeLink';
 import {
   midiIdToSendable,
   sendAudioToChimera,
@@ -72,6 +76,7 @@ import {
 } from '../../lib/notationClient';
 import { refreshCoverArt } from '../../lib/mediaLibrary';
 import { saveFile } from '../../lib/saveFile';
+import { saveWholeLineage } from '../../lib/lineageFamily';
 import { convertLibraryEntry, entryAudioFileName, entryFileName, loadConvertFormats } from '../../convert/convertClient';
 import { placesApi } from '../../lib/placesClient';
 import { backendHttpBase } from '../../lib/backendBase';
@@ -181,20 +186,18 @@ async function copyText(text: string, what: string): Promise<void> {
   logInfo(SRC, `Copied the ${what}`);
 }
 
-/** Notes in milliseconds on the piano roll's sixteenth-note grid at `bpm`. */
-const toRollNotes = (notes: ArtifactNote[], bpm: number, prefix: string): PianoNote[] => {
-  const stepSec = 60 / bpm / 4;
-  return notes.map((n, i) => ({
-    id: `${prefix}-${i}-${n.start_ms}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.start_ms / 1000 / stepSec)),
-    length: Math.max(1, Math.round((n.end_ms - n.start_ms) / 1000 / stepSec)),
-    velocity: n.velocity,
-  }));
+/**
+ * Notes in milliseconds into the piano roll (lib/rollTakes), at the ticks they
+ * were heard on: never snapped to 16ths, since APPLY is where the roll
+ * quantises. The roll takes the track's tempo with its fraction, so each note
+ * plays at the second it sits at in the track.
+ */
+const importTakeToRoll = (notes: ArtifactNote[], bpm: number, prefix: string): void => {
+  importTake(artifactTake(notes), bpm, prefix);
 };
 
 /** A playlist that flows by key and BPM from the entry, the entry first. */
-async function suggestFrom(entry: LibraryEntry): Promise<Array<{ id: string; title: string }>> {
+export async function suggestFrom(entry: LibraryEntry): Promise<Array<{ id: string; title: string }>> {
   const res = await fetch('/api/library/suggest-playlist', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -204,11 +207,32 @@ async function suggestFrom(entry: LibraryEntry): Promise<Array<{ id: string; tit
   const body = (await res.json()) as { tracks?: Array<{ id: string; title?: string }>; reason?: string };
   const rest = (body.tracks ?? []).filter((t) => t.id && t.id !== entry.id);
   if (rest.length === 0) throw new Error(body.reason || 'the suggester found no analyzed track to follow it');
-  const titles = new Map(useLibraryStore.getState().entries.map((e) => [e.id, e.title]));
-  return [
-    { id: entry.id, title: entry.title },
-    ...rest.map((t) => ({ id: t.id, title: t.title || titles.get(t.id) || t.id })),
-  ];
+  // The suggester answers over the WHOLE library, so most of what it names is
+  // on no loaded page: `entries` cannot title those, and they used to show as
+  // raw uuids. Ask the store by id instead — one fetch per row it has to go
+  // and get, all of them at once, bounded by the suggester's own result size.
+  const lib = useLibraryStore.getState();
+  const rows = await Promise.all(
+    rest.map(async (t) => {
+      if (t.title) return { id: t.id, title: t.title };
+      const known = lib.getById(t.id) ?? (await lib.ensureEntry(t.id));
+      return { id: t.id, title: known?.title || t.id };
+    }),
+  );
+  return [{ id: entry.id, title: entry.title }, ...rows];
+}
+
+/**
+ * Star / unstar an entry and confirm the change landed. The store logs a failed
+ * save and resolves, so the RECORD is what says whether it worked — and that
+ * record has to be read BY ID: a row on an evicted page is in no `entries`, so
+ * checking there reported "saved" for every one of them.
+ */
+export async function toggleFavoriteChecked(entryId: string, starring: boolean): Promise<void> {
+  await useLibraryStore.getState().toggleFavorite(entryId);
+  const lib = useLibraryStore.getState();
+  const now = lib.getById(entryId) ?? (await lib.ensureEntry(entryId));
+  if (now && now.favorite !== starring) throw new Error('the library did not save the change');
 }
 
 /** A point near the top left of what the NodeF.I. canvas shows, in graph units. */
@@ -240,8 +264,11 @@ async function shardsFor(entryId: string): Promise<number> {
 
 /** The question a row asks before it runs, or null to run at once. */
 function questionFor(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuActionContext, title: string): string | null {
-  const rollNotes = usePianoRollStore.getState().notes.length;
-  const replacingRoll = rollNotes > 0 ? `Replace the ${rollNotes} note${rollNotes === 1 ? '' : 's'} in the piano roll` : null;
+  const roll = usePianoRollStore.getState();
+  const rollNotes = roll.notes.length;
+  // The notes go into the part being edited, which a roll of several parts names.
+  const where = roll.tracks.length > 1 ? `the part ${activeTrackOf(roll).name}` : 'the piano roll';
+  const replacingRoll = rollNotes > 0 ? `Replace the ${rollNotes} note${rollNotes === 1 ? '' : 's'} in ${where}` : null;
   switch (row.id) {
     case 'midi-detect':
       return replacingRoll && `${replacingRoll} with the notes detected in "${title}"?`;
@@ -267,7 +294,8 @@ async function runStemKey(
   const entry = requireEntry(subject);
   const stem = ctx.stems.find((s) => s.id === stemId);
   if (!stem) throw new Error('that stem is no longer listed');
-  const audio = stemRowToSendable({ id: stem.id, stem_name: stem.name, parent_title: entry.title });
+  // The stem is the time of the song it was separated from.
+  const audio = stemRowToSendable({ id: stem.id, stem_name: stem.name, parent_title: entry.title, entry_id: entry.id });
   switch (action) {
     case 'edit':
       openCenter('edit');
@@ -350,13 +378,28 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       openCenter('edit');
       await sendAudioToEditor(sendable(subject), row.id === 'edit-new-track' ? 'editor-new-track' : 'editor-first-track');
       return;
+    case 'edit-song-tempo': {
+      // EDIT previews the song's tempo and meter, lined up with its clip, and
+      // applies them on a press (components/audio/SongTempoDialog).
+      const entry = requireEntry(subject);
+      useEditorStore.getState().requestSongTempo({ entryId: entry.id });
+      openCenter('edit');
+      return;
+    }
     case 'edit-stems': {
       const entry = requireEntry(subject);
       const opts = stemOptions(ctx);
       const refs = await ensureStems(entry.id, opts);
       if (refs.length === 0) throw new Error('separation produced no stems');
-      let placed = 0;
-      for (const ref of refs) {
+      // Sums of the other stems (`drums` over the LARSNET kit parts,
+      // `no_vocals` over everything but the vocal) are left off: placing one
+      // beside its members puts that audio in EDIT twice at double level. A
+      // run that reports no roles at all is placed whole, as before.
+      const plan = planStemInsert(refs);
+      // Download and decode everything first, so the store writes below land in
+      // one coalescing burst and the whole batch is a single undo step.
+      const decoded: Array<{ name: string; blob: Blob; peaks: Float32Array; duration: number }> = [];
+      for (const ref of plan.insert) {
         const res = await fetch(ref.url);
         if (!res.ok) {
           logWarn(SRC, `Stem ${ref.name} of "${title}" could not be read (${res.status})`);
@@ -364,8 +407,17 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
         }
         const blob = await res.blob();
         const { peaks, duration } = await computePeaks(blob, 240);
+        decoded.push({ name: ref.name, blob, peaks, duration });
+      }
+      if (decoded.length === 0) throw new Error('no stem audio could be read');
+      // There is no parent clip on the timeline here, so the stems go in at the
+      // EDIT CURSOR — where the user is working — rather than at 0, which would
+      // bury them under whatever already starts the arrangement.
+      const startSec = Math.max(0, useEditorStore.getState().editCursorSec);
+      beginUndoStep();
+      for (const { name: stemName, blob, peaks, duration } of decoded) {
         const editor = useEditorStore.getState();
-        const name = `${entry.title} · ${ref.name}`;
+        const name = `${entry.title} · ${stemName}`;
         const trackId = editor.addTrack({ name });
         const color = useEditorStore.getState().tracks.find((t) => t.id === trackId)?.color ?? '#8b5cf6';
         const clipId = editor.addClipToTrack({
@@ -374,16 +426,22 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
           audioBlob: blob,
           mimeType: 'audio/wav',
           sourceDuration: duration,
-          offsetIntoSource: 0,
-          durationSec: duration,
-          startSec: 0,
+          // The whole stem, from its head, at the cursor: the same placement
+          // helper the timeline's explode path uses, given a full-length window.
+          ...stemClipPlacement({ startSec, durationSec: duration, offsetIntoSource: 0 }, duration, startSec),
           color,
+          // A stem is the time of the entry it was separated from.
+          songTime: linkSongTime(entry.id),
         });
         editor.cachePeaks(clipId, peaks);
-        placed += 1;
       }
-      if (placed === 0) throw new Error('no stem audio could be read');
-      logInfo(SRC, `Placed ${placed} stem track${placed === 1 ? '' : 's'} of "${title}" in EDIT (${opts.stems}-stem, ${opts.quality})`);
+      const placed = decoded.length;
+      const note = skippedAggregatesNote(plan.skipped);
+      logInfo(
+        SRC,
+        `Placed ${placed} stem track${placed === 1 ? '' : 's'} of "${title}" in EDIT at ${startSec.toFixed(2)}s`
+        + ` (${opts.stems}-stem, ${opts.quality})${note ? ` — ${note}` : ''}`,
+      );
       openCenter('edit');
       return;
     }
@@ -574,10 +632,9 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       const body = (await res.json()) as { notes?: ArtifactNote[] };
       const notes = body.notes ?? [];
       if (notes.length === 0) throw new Error('no notes were detected');
-      const bpm = usePianoRollStore.getState().bpm || 120;
       // importNotes, not placeRecording: a whole track is longer than the
       // roll's default grid, and importNotes fits the grid to the notes.
-      usePianoRollStore.getState().importNotes(toRollNotes(notes, bpm, 'detect'), bpm);
+      importTakeToRoll(notes, usePianoRollStore.getState().bpm || 120, 'detect');
       openDock('midi');
       logInfo(SRC, `Put ${notes.length} notes detected in "${title}" in the piano roll (${usePianoRollStore.getState().totalSteps} steps)`);
       return;
@@ -587,8 +644,7 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       const doc = await fetchVocalArtifact(entry.id);
       if (!doc) throw new Error('it has no vocal melody yet');
       if (doc.notes.length === 0) throw new Error('its vocal melody has no notes');
-      const bpm = doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm || 120;
-      usePianoRollStore.getState().importNotes(toRollNotes(doc.notes, bpm, 'melody'), bpm);
+      importTakeToRoll(doc.notes, doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm || 120, 'melody');
       openDock('midi');
       logInfo(SRC, `Put the ${doc.notes.length} notes of the vocal melody of "${title}" in the piano roll`);
       return;
@@ -838,12 +894,10 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       return;
     }
     case 'save-lineage': {
+      // The whole family, never the lineage window's capped answer; its size
+      // goes to the status bar and the LOG before the Save dialog opens.
       const entry = requireEntry(subject);
-      await saveFile({
-        url: `/api/library/${encodeURIComponent(entry.id)}/lineage?depth=8`,
-        suggestedName: entryFileName(`${entry.title}-lineage`, 'json'),
-        kind: 'lineage-json',
-      });
+      await saveWholeLineage(entry, entryFileName(`${entry.title}-lineage`, 'json'));
       return;
     }
     case 'save-lrc':
@@ -932,10 +986,7 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
     case 'favorite': {
       const entry = requireEntry(subject);
       const starring = !entry.favorite;
-      await useLibraryStore.getState().toggleFavorite(entry.id);
-      // The store logs a failed save and resolves; the record says whether it landed.
-      const now = useLibraryStore.getState().entries.find((e) => e.id === entry.id);
-      if (now && now.favorite !== starring) throw new Error('the library did not save the change');
+      await toggleFavoriteChecked(entry.id, starring);
       if (starring) logInfo(SRC, `Starred "${title}". Stems, lyrics, MIDI and a score are queued for it`);
       return;
     }
@@ -964,9 +1015,14 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
         if (failed) throw new Error(failed);
       } else {
         const saved = await importLyrics(entry.id, fmt, text);
-        useLibraryStore.setState((s) => ({
-          entries: s.entries.map((e) => (e.id === entry.id ? { ...e, lyrics: saved.text } : e)),
-        }));
+        // Through the store's own action, not a raw `setState` of `entries`.
+        // `entries` is a PROJECTION of the page cache: writing it directly left
+        // the cached page row holding the old lyrics, so the next re-projection
+        // (a page load, a filter change, a refresh) silently put them back.
+        // `upsertEntry` patches the cache and re-projects, and — unlike
+        // `updateEntry` — does not write to the backend a second time, which is
+        // right here because `importLyrics` above already persisted them.
+        useLibraryStore.getState().upsertEntry({ ...entry, lyrics: saved.text });
       }
       logInfo(SRC, `Loaded the lyrics of "${title}" from ${file.name}`);
       return;

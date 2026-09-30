@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tv2,
   ExternalLink,
@@ -37,6 +37,55 @@ import { importMedia, isMediaFile } from '../lib/mediaLibrary';
 import { describeQuestCastStatus, type QuestCastStatus } from '../components/vj/QuestCastPreview';
 import { resolveGlobal } from '../state/ioDevicesStore';
 
+// The mobile-URL QR used to be rendered by GETting a third-party QR-image
+// service with the LAN URL folded into a query param — a third party had no
+// reason to see it. Render locally instead; lazy so the QR chunk only loads
+// when the Mobile popover is opened. Matches Shell.tsx's usage.
+const QRCode = lazy(() => import('react-qr-code'));
+
+/**
+ * True when an inbound `MessageEvent.source` is one of OUR own VJ windows —
+ * the in-tab iframe's contentWindow, or the detached pop-out window — AND it
+ * actually came from the VJ's own origin. Used instead of comparing only the
+ * iframe so control-sync / SET-ack / camera-state messages from a popped-out
+ * VJ are not silently dropped.
+ *
+ * Window-identity alone is not enough: a popped-out window keeps the same JS
+ * `Window` handle even after navigating to a DIFFERENT origin (e.g. a link
+ * clicked inside it, or a compromised/misbehaving page it navigated to), so a
+ * same-object sender from that other origin used to pass the check. `origin`
+ * is required to match `expectedOrigin` whenever `expectedOrigin` isn't the
+ * `'*'` fallback (used only when the VJ's own URL couldn't be parsed, so
+ * there's no origin to pin against).
+ */
+export function isTrustedVjSource(
+  source: MessageEventSource | null,
+  iframeWindow: Window | null,
+  poppedWindow: Window | null,
+  origin: string,
+  expectedOrigin: string,
+): boolean {
+  if (source == null) return false;
+  if (source !== iframeWindow && source !== poppedWindow) return false;
+  if (expectedOrigin !== '*' && origin !== expectedOrigin) return false;
+  return true;
+}
+
+/** Trims a VJ load-failure detail for display; empty/whitespace-only renders nothing. */
+export function formatVjErrorDetail(detail: string): string | null {
+  const trimmed = detail.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Whether a background poll tied to the VJ tab should be running right now.
+ * Mirrors the audio-bridge effect's own gate: active while popped out (its
+ * own monitor — independent of SA3's page visibility), or while the VJ tab
+ * is the visible center tab AND the document itself isn't backgrounded.
+ */
+export function isVjPollActive(popped: boolean, isVjVisible: boolean, docVisible: boolean): boolean {
+  return popped || (isVjVisible && docVisible);
+}
 
 /**
  * VJ tab — embeds the GANTASMO-LIVE-VJ Vite dev server in an iframe.
@@ -223,9 +272,13 @@ export const VJView: React.FC = () => {
     if (!popped && !iframeLoadedRef.current) return;
     try { w.postMessage(payload, vjOrigin); } catch { /* mid-navigation; retried next tick */ }
   };
-  // Trust inbound messages only from our own in-tab iframe (a popped-out window
-  // is a separate top-level window and can't postMessage back to us anyway).
-  const isFromVj = (e: MessageEvent) => e.source != null && e.source === iframeRef.current?.contentWindow;
+  // Trust inbound messages from our own in-tab iframe OR the popped-out window
+  // — a popped-out VJ is a separate top-level window and DOES postMessage back
+  // (SET-ack, camera-state, control-changed, etc.) while detached. Also pins
+  // the sender's origin to vjOrigin (see isTrustedVjSource) so a popped-out
+  // window that navigated to a different origin can't spoof a message.
+  const isFromVj = (e: MessageEvent) =>
+    isTrustedVjSource(e.source, iframeRef.current?.contentWindow ?? null, poppedWindowRef.current, e.origin, vjOrigin);
 
   // A new VJ src reloads the iframe — re-gate posting until its onLoad fires again.
   useEffect(() => {
@@ -387,11 +440,15 @@ export const VJView: React.FC = () => {
 
   // QuestCast diagnostics: lightweight polling only reads backend state. Start
   // and stop are explicit button actions so ADB/scrcpy never spawn silently.
+  // Paused while the VJ tab is hidden (warm-mounted behind another center tab)
+  // or the window itself is backgrounded — a hidden warm tab used to poll
+  // every 5s forever (FE-016). Re-polls immediately on becoming active again.
   useEffect(() => {
+    if (!isVjPollActive(popped, isVjVisible, docVisible)) return;
     void loadQuestStatus(true);
     const timer = window.setInterval(() => void loadQuestStatus(true), 5000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [popped, isVjVisible, docVisible]);
 
   // ── Audio bridge: read SA3's master AnalyserNode every animation
   // frame, derive bass/mid/high/volume buckets (matching VJ's existing
@@ -948,14 +1005,11 @@ export const VJView: React.FC = () => {
                       Make sure the device is on the same Wi-Fi, then scan
                       the code or type the URL into its browser.
                     </span>
-                    <img
-                      // Offline-friendly: the QR is rendered by the api.qrserver.com
-                      // service when online; if the host is offline the
-                      // copyable URL below is the reliable fallback.
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(mobileUrl)}`}
-                      alt={`QR code for ${mobileUrl}`}
-                      className="self-center w-40 h-40 rounded bg-white p-1.5"
-                    />
+                    <div className="self-center w-40 h-40 rounded bg-white p-1.5 flex items-center justify-center">
+                      <Suspense fallback={<div className="w-37 h-37" aria-label={`QR code for ${mobileUrl} loading`} />}>
+                        <QRCode value={mobileUrl} size={148} bgColor="#ffffff" fgColor="#000000" level="M" title={`QR code for ${mobileUrl}`} />
+                      </Suspense>
+                    </div>
                     <div className="flex items-center gap-1">
                       <code className="flex-1 text-[9px] font-mono text-sky-200 bg-black/40 rounded px-2 py-1 truncate">
                         {mobileUrl}
@@ -1045,6 +1099,14 @@ export const VJView: React.FC = () => {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-300 px-6">
             <AlertCircle className="w-5 h-5 text-zinc-500" />
             <span className="text-sm">The VJ engine didn’t start.</span>
+            {formatVjErrorDetail(detail) && (
+              <p
+                role="alert"
+                className="max-w-lg text-center rounded border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[10px] font-mono leading-relaxed text-rose-200 whitespace-pre-wrap wrap-break-word"
+              >
+                {formatVjErrorDetail(detail)}
+              </p>
+            )}
             <button
               type="button"
               onClick={() => void loadUrl(true)}

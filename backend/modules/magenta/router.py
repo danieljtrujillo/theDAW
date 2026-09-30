@@ -7,6 +7,7 @@ Endpoints (mounted at /api/magenta):
     POST /jobs/{job_id}/cancel    -> end a queued or running job as "cancelled"
     GET  /engine/status           -> health + install probe + machine-readable state
     POST /engine/start|stop|restart
+    POST /engine/stop-process     -> stop one named Magenta engine (the card's confirmed action)
     POST /engine/install          -> launch the consented one-time installer
     GET  /engine/models           -> the checkpoints the sidecar supports (+ active)
     PUT  /engine/model            -> pick the checkpoint the engine loads
@@ -98,6 +99,30 @@ def _consume(task: asyncio.Future) -> None:
         )
 
 
+class EngineElsewhere(RuntimeError):
+    """A Magenta engine kept running after this checkout stopped its own, so
+    the engine cannot start beside it. ``detail`` is the 409 payload
+    (``sidecar.elsewhere_detail``)."""
+
+    def __init__(self, detail: dict) -> None:
+        super().__init__(detail["message"])
+        self.detail = detail
+
+
+async def _stop_ours_or_refuse(loop: asyncio.AbstractEventLoop) -> dict:
+    """Stop this checkout's engines before a spawn; raise ``EngineElsewhere``
+    when any magenta engine is still running afterwards. Another copy's engine
+    holds the GPU (the load would run out of memory) and, when it is an
+    extended engine, the port, so a spawn beside it fails with no reason given."""
+    stopped = await loop.run_in_executor(None, sidecar.stop_engine)
+    left = sidecar.engines_still_running(stopped)
+    if left:
+        raise EngineElsewhere(
+            sidecar.elsewhere_detail(left, "the Magenta engine cannot start")
+        )
+    return stopped
+
+
 # Serializes on-demand engine bring-up so concurrent CREATE presses don't each
 # park SA3 + spawn WSL; the first wins, the rest see it ready inside the lock.
 _bringup_lock = asyncio.Lock()
@@ -165,18 +190,20 @@ def _normalize_style_audio(audio_bytes: bytes) -> bytes:
         )
 
     import os
-    import shutil
     import subprocess
     import tempfile
 
-    if not shutil.which("ffmpeg"):
+    from backend.lib import ffmpeg_tools
+
+    ffmpeg = ffmpeg_tools.find_ffmpeg()
+    if not ffmpeg:
         raise ValueError("style clip format not recognised and ffmpeg is unavailable")
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
         out_path = tf.name
     try:
         proc = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg,
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -256,7 +283,7 @@ async def _bring_up_sidecar(
                         "magenta: SA3 offload before engine start failed",
                         exc_info=True,
                     )
-                await loop.run_in_executor(None, sidecar.stop_engine)
+                await _stop_ours_or_refuse(loop)
                 await loop.run_in_executor(None, sidecar.start_engine)
             # A load that runs out of GPU memory on one card gets ONE more go
             # split across every card the machine has, when it has more than
@@ -297,7 +324,7 @@ async def _bring_up_sidecar(
                                 "starting",
                                 f"the model did not fit one card; restarting it split across {gpus} cards",
                             )
-                        await loop.run_in_executor(None, sidecar.stop_engine)
+                        await _stop_ours_or_refuse(loop)
                         await loop.run_in_executor(
                             None, functools.partial(sidecar.start_engine, shard=True)
                         )
@@ -333,10 +360,11 @@ async def probe():
 
 # ── engine lifecycle: the Model dropdown's GPU swap, no terminal anywhere ────
 #
-# /engine/start parks the SA3 model in CPU RAM (frees VRAM), stops any OTHER
-# magenta engine (including the bundled JSON-protocol Studio server), and spawns
-# the extended sidecar in WSL2. /engine/stop kills every magenta engine and
-# swaps SA3 back onto the GPU. Both refuse with 409 while a generation runs.
+# /engine/start parks the SA3 model in CPU RAM (frees VRAM), stops the engine
+# this checkout started before (and this checkout's bundled JSON-protocol Studio
+# server), and spawns the extended sidecar in WSL2. /engine/stop stops those same
+# engines and swaps SA3 back onto the GPU; another checkout's engine is left
+# running (sidecar.stop_engine). Both refuse with 409 while a generation runs.
 
 
 async def _start_engine(refresh: bool) -> dict:
@@ -358,6 +386,16 @@ async def _start_engine(refresh: bool) -> dict:
     if gate:
         raise gate
 
+    # A Magenta engine this checkout did not start holds the GPU (and, when it
+    # is an extended engine, the port): a spawn beside it fails. Refuse with
+    # the engine named, so the card can offer to stop it. This checkout's own
+    # engines are not in the list; the start stops those itself.
+    elsewhere = await loop.run_in_executor(None, sidecar.engines_elsewhere)
+    if elsewhere:
+        raise HTTPException(
+            409, sidecar.elsewhere_detail(elsewhere, "the Magenta engine cannot start")
+        )
+
     # The engine's JAX runtime grabs its weights on the GPU at load. Anything
     # else on the card meanwhile — a Demucs separation, whisper, basic-pitch,
     # the resident SA3 model — makes that load die with RESOURCE_EXHAUSTED
@@ -367,7 +405,7 @@ async def _start_engine(refresh: bool) -> dict:
     # holds the lane until the engine reports ready (or fails), so nothing
     # heavy starts underneath it. The HTTP reply does not wait; /engine/status
     # reports "starting" (with a "waiting for the GPU" message while queued).
-    global _start_task
+    global _start_task, _start_blocked, _start_failure
     if _start_task is not None and not _start_task.done():
         return {
             "ok": True,
@@ -375,17 +413,24 @@ async def _start_engine(refresh: bool) -> dict:
             "state": "starting",
             "queued": True,
         }
+    _start_blocked = None
+    _start_failure = ""
     _start_task = asyncio.create_task(_start_engine_on_gpu_lane(), name="magenta:start")
     return {"ok": True, "already_running": False, "state": "starting", "queued": True}
 
 
 _start_task: "asyncio.Task[None] | None" = None
 _start_note: str = ""
+# Why the last start did not spawn or failed, kept after its task ends so
+# /engine/status can say it: the 409 detail of an engine left running, and the
+# failure line of any other error.
+_start_blocked: dict | None = None
+_start_failure: str = ""
 _ENGINE_LOAD_TIMEOUT_SEC = 240
 
 
 async def _start_engine_on_gpu_lane() -> None:
-    global _start_note
+    global _start_note, _start_blocked, _start_failure
     from backend.core import pipeline
 
     loop = asyncio.get_running_loop()
@@ -396,7 +441,7 @@ async def _start_engine_on_gpu_lane() -> None:
             from backend import server as srv
 
             await srv.offload_model()
-            await loop.run_in_executor(None, sidecar.stop_engine)
+            await _stop_ours_or_refuse(loop)
             await loop.run_in_executor(None, sidecar.start_engine)
             _start_note = "loading the checkpoint on the GPU"
             deadline = loop.time() + _ENGINE_LOAD_TIMEOUT_SEC
@@ -408,9 +453,16 @@ async def _start_engine_on_gpu_lane() -> None:
                     break
                 if state == "not_running" and not sidecar.engine_process_alive():
                     break
-    except Exception as e:  # noqa: BLE001 - reported through /engine/status
-        log.exception("magenta: engine start failed")
+    except EngineElsewhere as e:
+        log.warning("magenta: engine start refused: %s", e)
+        _start_blocked = e.detail
+        _start_failure = str(e)
         _start_note = f"start failed: {e}"
+        return
+    except Exception as e:  # any failure is reported through /engine/status
+        log.exception("magenta: engine start failed")
+        _start_failure = f"start failed: {e}"
+        _start_note = _start_failure
         return
     _start_note = ""
 
@@ -569,10 +621,47 @@ async def engine_install():
     return {"launched": True, **info, **setup}
 
 
+class EngineProcessBody(BaseModel):
+    pid: int
+
+
+@router.post("/engine/stop-process")
+async def engine_stop_process(body: EngineProcessBody):
+    """Stop one Magenta engine by pid, whoever started it: the confirmed
+    "Stop that engine" on the card that names an engine left running. The pid
+    must run a Magenta engine or Studio server when the request arrives
+    (404 otherwise); 503 when the engine side's processes cannot be listed."""
+    global _start_blocked, _start_failure
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, sidecar.stop_engine_process, body.pid)
+    except sidecar.EngineNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if result["stopped"]:
+        _start_blocked = None
+        _start_failure = ""
+    return {"ok": bool(result["stopped"]), **result}
+
+
 @router.post("/engine/stop")
 async def engine_stop():
     loop = asyncio.get_running_loop()
     stopped = await loop.run_in_executor(None, sidecar.stop_engine)
+    still_running = sidecar.engines_still_running(stopped)
+    if still_running:
+        # Another engine holds the GPU: moving SA3 back beside it is the
+        # contention the pre-clear refuses. SA3 stays parked; the client names
+        # the engine and offers to stop it, and the next CREATE wakes SA3 once
+        # the GPU is clear.
+        detail = sidecar.elsewhere_detail(still_running, "Stable Audio stays parked")
+        return {
+            "ok": True,
+            **stopped,
+            "sa3": {"skipped": detail["message"]},
+            "state": "not_running",
+        }
 
     from backend import server as srv
 
@@ -618,6 +707,14 @@ async def engine_status(refresh: bool = False):
     ):
         out["state"] = "starting"
         out["message"] = _start_note
+    elif out["state"] == "not_running" and (_start_blocked or _start_failure):
+        # The last start ended without an engine: say why, so the client
+        # reports the reason (and, for an engine left running, offers to stop
+        # it) in place of "the engine process exited".
+        out["start_error"] = _start_failure
+        if _start_blocked:
+            out["blocked"] = _start_blocked
+        out["message"] = _start_failure
     if out["state"] == "error":
         # Measure the card before saying anything about it: an OOM message that
         # blames another process while 10 GiB sit free sends the user looking
@@ -924,13 +1021,13 @@ def _save_magenta_to_library(
         entry_id = f"{job_id}_00"
         record = store.get_entry(entry_id)
         if record is not None and store.db is not None:
-            entry_dir = store._dir_for(entry_id)  # noqa: SLF001
+            entry_dir = store._dir_for(entry_id)
             meta: dict = {}
             if entry_dir and (entry_dir / "metadata.json").is_file():
                 meta = json.loads(
                     (entry_dir / "metadata.json").read_text(encoding="utf-8")
                 )
-            store._sync_record_to_db(record, meta)  # noqa: SLF001
+            store._sync_record_to_db(record, meta)
             _maybe_enqueue_analysis(store, entry_id, source="generate")
             _maybe_enqueue_stems(store, entry_id, source="generate")
             _maybe_enqueue_midi(store, entry_id, source="generate")

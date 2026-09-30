@@ -1,10 +1,13 @@
 /** Library tab: browse and play the desktop's library over REST. Standalone —
- *  needs no desktop browser open. Audio streams to the phone's own <audio>. */
-import { useEffect, useMemo, useRef, useState } from 'react';
+ *  needs no desktop browser open. Audio streams to the phone's own <audio>.
+ *  The search box searches the WHOLE library through the backend, a page at a
+ *  time (`useLibrarySearch`), with every field the desktop search matches. */
+import { useRef, useState } from 'react';
 import { Play, Pause } from 'lucide-react';
 import { Scroller } from '../ui/Scroller';
 import { useLibraryStore } from '../../state/libraryStore';
 import type { LibraryEntry } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
 
 function fmtDuration(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return '';
@@ -14,29 +17,15 @@ function fmtDuration(sec: number): string {
 }
 
 export function MobileLibrary() {
-  const entries = useLibraryStore((s) => s.entries);
-  const loaded = useLibraryStore((s) => s.loaded);
-  const loading = useLibraryStore((s) => s.loading);
-  const load = useLibraryStore((s) => s.load);
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
 
   const [query, setQuery] = useState('');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  useEffect(() => {
-    if (!loaded && !loading) void load();
-  }, [loaded, loading, load]);
-
-  const filtered = useMemo(() => {
-    const audio = entries.filter((e) => (e.kind ?? 'audio') === 'audio');
-    const q = query.trim().toLowerCase();
-    if (!q) return audio;
-    return audio.filter(
-      (e) =>
-        e.title.toLowerCase().includes(q) || (e.prompt ?? '').toLowerCase().includes(q),
-    );
-  }, [entries, query]);
+  const search = useLibrarySearch({ q: query, kind: 'audio', sort: 'created_desc' });
+  const filtered = search.rows;
+  const answered = !search.loading || filtered.length > 0 || search.error !== null;
 
   function toggle(entry: LibraryEntry): void {
     const el = audioRef.current;
@@ -67,7 +56,11 @@ export function MobileLibrary() {
       <Scroller>
         {filtered.length === 0 ? (
           <p className="m-empty">
-            {loading ? 'Loading library…' : loaded ? 'No tracks found.' : 'Connecting…'}
+            {search.error
+              ? `Could not load the library: ${search.error}`
+              : !answered
+                ? 'Loading library…'
+                : 'No tracks found.'}
           </p>
         ) : (
           <ul className="m-list">
@@ -93,6 +86,20 @@ export function MobileLibrary() {
                 </li>
               );
             })}
+            {search.hasMore && (
+              <li className="m-more">
+                <button
+                  type="button"
+                  className="m-btn"
+                  onClick={search.loadMore}
+                  disabled={search.loading}
+                >
+                  {search.loading
+                    ? 'Loading…'
+                    : `Show more (${(search.total - filtered.length).toLocaleString()} left)`}
+                </button>
+              </li>
+            )}
           </ul>
         )}
       </Scroller>

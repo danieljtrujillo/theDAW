@@ -49,13 +49,17 @@ const KEY_MIC_OFFSET = 'sing.micOffsetMs';
 const KEY_LANGUAGE = 'sing.language';
 const KEY_AUTO_ALIGN = 'sing.autoAlign';
 
-/** Whisper language codes offered in the picker; 'auto' lets whisper detect. */
+/** Language codes offered in the picker; 'auto' lets whisper detect. A picked
+ *  code is saved on the lyrics document, where ALIGN and STUDY read it: a Latin
+ *  document is aligned with its macrons folded and analysed by the Latin
+ *  reading rules. */
 export const SING_LANGUAGES: Array<[string, string]> = [
-  ['auto', 'Auto-detect'], ['en', 'English'], ['es', 'Spanish'], ['pt', 'Portuguese'], ['fr', 'French'],
-  ['de', 'German'], ['it', 'Italian'], ['nl', 'Dutch'], ['sv', 'Swedish'], ['pl', 'Polish'],
-  ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'],
-  ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['vi', 'Vietnamese'],
-  ['th', 'Thai'], ['id', 'Indonesian'], ['tl', 'Tagalog'], ['el', 'Greek'], ['fi', 'Finnish'],
+  ['auto', 'Auto-detect'], ['en', 'English'], ['la', 'Latin'], ['es', 'Spanish'], ['pt', 'Portuguese'],
+  ['fr', 'French'], ['de', 'German'], ['it', 'Italian'], ['nl', 'Dutch'], ['sv', 'Swedish'],
+  ['pl', 'Polish'], ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'], ['ar', 'Arabic'],
+  ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'],
+  ['vi', 'Vietnamese'], ['th', 'Thai'], ['id', 'Indonesian'], ['tl', 'Tagalog'], ['el', 'Greek'],
+  ['fi', 'Finnish'],
 ];
 const readString = (key: string, fallback: string): string => {
   try {
@@ -155,10 +159,26 @@ let snapshots: Array<{ doc: LyricsDoc; lastTapped: number }> = [];
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/**
+ * Refresh the library row that carries these words. Through the store's own
+ * action, not a raw `setState` of `entries`: `entries` is a PROJECTION of the
+ * page cache, so writing it directly left the cached page row holding the old
+ * lyrics and the next re-projection (a page load, a filter change, a refresh)
+ * silently put them back — and for a row on no loaded page there was nothing
+ * in `entries` to patch at all. `upsertEntry` patches the cache and — unlike
+ * `updateEntry` — does not write to the backend a second time, which is right
+ * here because every caller has already persisted the lyrics server-side.
+ */
 const patchLibraryEntry = (entryId: string, lyrics: string): void => {
-  useLibraryStore.setState((s) => ({
-    entries: s.entries.map((e) => (e.id === entryId ? { ...e, lyrics } : e)),
-  }));
+  const lib = useLibraryStore.getState();
+  const current = lib.getById(entryId);
+  if (current) {
+    lib.upsertEntry({ ...current, lyrics });
+    return;
+  }
+  void lib.ensureEntry(entryId).then((entry) => {
+    if (entry) useLibraryStore.getState().upsertEntry({ ...entry, lyrics });
+  });
 };
 
 export const useLyricsStore = create<LyricsState>()((set, get) => {
@@ -368,6 +388,14 @@ export const useLyricsStore = create<LyricsState>()((set, get) => {
       const v = (code || 'auto').trim().toLowerCase();
       set({ language: v });
       writeStorage(KEY_LANGUAGE, v);
+      // A named language is the language of the words on the page, so the
+      // document carries it: STUDY reads a Latin lyric by the Latin rules
+      // and ALIGN folds its macrons only when the document says "la". 'auto'
+      // is an instruction to whisper, and leaves the document as it is.
+      const { doc } = get();
+      if (v !== 'auto' && doc && doc.language !== v) {
+        get().setDoc({ ...doc, language: v });
+      }
     },
 
     setAutoAlign: (on) => {

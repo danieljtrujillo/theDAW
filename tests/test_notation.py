@@ -16,9 +16,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.modules.library.db import LibraryDB
@@ -37,6 +36,20 @@ from backend.modules.notation.engine import (
     stage_parts,
 )
 from backend.modules.notation.exporters import beatsaber
+from backend.modules.settings import router as settings_router
+from backend.modules.settings.store import SettingsStore
+
+
+@pytest.fixture(autouse=True)
+def _own_settings_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine reads the artist credit and the MuseScore path from the
+    process-wide settings store, which is data/settings.json: tests read and
+    migrated the checkout's real file, and a sheet took the credit of whoever
+    ran them. Each test gets a store of its own; a test that sets up its own
+    settings replaces this one."""
+    monkeypatch.setattr(
+        settings_router, "_store", SettingsStore(tmp_path / "settings.json")
+    )
 
 
 def _write_scale_midi(path: Path) -> None:
@@ -89,7 +102,11 @@ def test_capabilities_reports_music21_available():
     assert "musicxml" in caps["formats"]
     # Play-along / Beat Saber targets are unconditional (pure-Python writers).
     assert "beatsaber" in caps["formats"]
-    assert "chordtrack" in caps["formats"]
+    # Chord tracks are built through their own POST /{entry_id}/chords route,
+    # never through /export, so they are advertised as caps["chords"], not
+    # as a "chordtrack" entry in caps["formats"].
+    assert "chordtrack" not in caps["formats"]
+    assert caps["chords"] is True
     assert caps["engines"]["score_to_beatsaber"] == "beatsaber"
     assert caps["engines"]["chords"] == "chordtrack"
     # song.ogg encoding depends on ffmpeg; the UI reads a plain bool.
@@ -379,17 +396,8 @@ def test_convert_score_beatsaber_falls_back_to_chart_bpm_without_analysis(
 # --------------------------------------------------------------------------
 
 
-@pytest.fixture
-def notation_client(tmp_path: Path, monkeypatch) -> TestClient:
-    from backend.modules.library import router as library_router_module
-    from backend.modules.notation import router as notation_router_module
-
-    monkeypatch.setattr(library_router_module, "_store", None)
-    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
-    app = FastAPI()
-    app.include_router(library_router_module.router, prefix="/api/library")
-    app.include_router(notation_router_module.router, prefix="/api/notation")
-    return TestClient(app)
+# notation_client: the library and notation routers on a tmp library root
+# (tests/conftest.py, shared with the chord-track and band-score route tests).
 
 
 def test_chords_route_builds_from_lead_sheet_and_serves_json(
@@ -530,6 +538,41 @@ def test_export_route_beatsaber_lands_in_its_own_folder_and_serves_zip(
     assert chart["audio"]["durationSec"] == 30.0
 
 
+def test_export_route_lays_out_a_nonsense_analysis_tempo_at_the_beat_list_tempo(
+    notation_client: TestClient, tmp_path: Path, monkeypatch
+):
+    """Entries in a real library carry aubio's 40.69 BPM closing estimate
+    over a beat list that keeps 151.65 BPM. The MIDI runner stamps the beat
+    list's tempo on the entry's MIDI; an export from that MIDI is laid out at
+    the same tempo, not at 40.69."""
+    from backend.modules.library import router as library_router_module
+    from tests.test_library_store import _seed_generate_entry
+
+    monkeypatch.setattr(beatsaber, "find_ffmpeg", lambda: None)
+    _seed_generate_entry(tmp_path, "job_bt", 0)
+    entry_id = "job_bt_00"
+    store = library_router_module.get_store()
+    entry_dir = tmp_path / "job_bt" / "00"
+    midi = entry_dir / "midi" / "scale.mid"
+    _write_scale_midi(midi)
+    store.db.add_notation_artifact(
+        artifact_id="scale_mid", entry_id=entry_id, kind="midi", path=str(midi)
+    )
+    gap = 60.0 / 151.65
+    store.db.upsert_analysis(
+        entry_id, {"bpm": 40.692665, "beats": [0.2 + gap * i for i in range(36)]}
+    )
+
+    r = notation_client.post(
+        f"/api/notation/{entry_id}/export",
+        json={"source_artifact_id": "scale_mid", "format": "beatsaber"},
+    )
+    assert r.status_code == 200, r.text
+    meta = json.loads(r.json()["artifact"]["metadata_json"])
+    assert meta["bpm_source"] == "analysis"
+    assert meta["bpm"] == pytest.approx(151.65, abs=0.01)
+
+
 def test_midi_to_musicxml_end_to_end(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})
@@ -567,6 +610,127 @@ def test_midi_to_musicxml_end_to_end(tmp_path: Path):
         r["to_id"] == "scale__musicxml" and r["kind"] == "rendered_as_notation"
         for r in related
     )
+
+
+def test_abc_writes_the_naturals_the_key_and_the_bar_would_otherwise_alter(
+    tmp_path: Path,
+):
+    """A sheet in E-flat with an E natural, then an F sharp and an F natural in
+    one bar, exported as ABC and read back. An ABC reader applies K:Eb to every
+    E and holds an accidental to the bar line, so both naturals need an ``=``.
+    The writer wrote neither: the E read back as E flat, and the F after the
+    F sharp is an F sharp to any reader that follows the standard."""
+    from music21 import converter as m21converter
+    from music21 import key, meter, note, stream
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(key.Key("E-"))
+    bar.append(meter.TimeSignature("4/4"))
+    for name in ("E-4", "E4", "F#4", "F4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+    sheet = tmp_path / "sheet.musicxml"
+    score.write("musicxml", fp=str(sheet))
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=tmp_path / "notation" / "sheet.abc",
+    )
+    assert result["ok"] is True, result
+    text = Path(result["path"]).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    body = lines[lines.index("K:Eb") + 1]
+    assert body.split()[:4] == ["E2", "=E2", "^F2", "=F2"], body
+    reparsed = m21converter.parse(text, format="abc")
+    assert [n.nameWithOctave for n in reparsed.recurse().notes] == [
+        "E-4",
+        "E4",
+        "F#4",
+        "F4",
+    ]
+
+
+def _write_e_flat_sheet(path: Path) -> None:
+    """One 4/4 bar in E-flat holding an E flat and an E natural, as MusicXML."""
+    from music21 import key, meter, note, stream
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(key.Key("E-"))
+    bar.append(meter.TimeSignature("4/4"))
+    for name in ("E-4", "E4", "G4", "B-4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+    score.write("musicxml", fp=str(path))
+
+
+def test_abc_export_reports_a_key_it_cannot_read(tmp_path: Path, monkeypatch):
+    """A sheet in E-flat exported as ABC while music21 fails to list the key's
+    altered pitches. The writer caught that failure and carried on with no key
+    alterations, so it wrote K:Eb over a body spelled as if in C (a redundant
+    flat on every E flat and B flat) and the export reported success. The
+    export now fails and says why."""
+    from music21 import key
+
+    def _raise(self):
+        raise RuntimeError("altered pitches unavailable")
+
+    sheet = tmp_path / "sheet.musicxml"
+    _write_e_flat_sheet(sheet)
+    monkeypatch.setattr(key.KeySignature, "alteredPitches", property(_raise))
+    db = LibraryDB(tmp_path / "library.db")
+    db.upsert_entry({"id": "track"})
+    result = convert_score(
+        db,
+        entry_id="track",
+        source_path=sheet,
+        fmt="abc",
+        output_path=tmp_path / "notation" / "sheet.abc",
+    )
+    assert result["ok"] is False, result
+    assert "altered pitches unavailable" in result["error"]
+    assert not (tmp_path / "notation" / "sheet.abc").exists()
+    assert db.list_notation_artifacts("track", kind="abc") == []
+
+
+def test_abc_export_logs_a_tempo_mark_it_cannot_write(caplog):
+    """A score whose tempo mark reads 0 beats per minute, written as ABC.
+    music21 raises ZeroDivisionError converting it to a quarter-note tempo.
+    The writer dropped the Q: line with no word in the log; it still writes
+    the tune without Q:, and the log now says which mark was left out."""
+    import logging
+
+    from music21 import meter, note, stream, tempo
+
+    from backend.modules.notation.exporters.abc_writer import score_to_abc
+
+    score = stream.Score()
+    part = stream.Part()
+    bar = stream.Measure(number=1)
+    bar.append(meter.TimeSignature("4/4"))
+    bar.append(tempo.MetronomeMark(number=0))
+    for name in ("C4", "D4", "E4", "F4"):
+        bar.append(note.Note(name, quarterLength=1))
+    part.append(bar)
+    score.append(part)
+
+    with caplog.at_level(
+        logging.WARNING, logger="backend.modules.notation.exporters.abc_writer"
+    ):
+        text = score_to_abc(score, title="Tempo")
+    assert not any(line.startswith("Q:") for line in text.splitlines()), text
+    assert "C2 D2 E2 F2" in text, text
+    assert any("Q: left out" in r.getMessage() for r in caplog.records), caplog.text
 
 
 def test_convert_score_to_abc_end_to_end(tmp_path: Path):
@@ -668,7 +832,7 @@ def test_pdf_export_no_longer_needs_musescore(tmp_path: Path):
         assert result["engine"] in ("osmd", "musescore"), result
         # The staging MusicXML written for a MIDI source must be cleaned up, and
         # must never leave a DB row pointing at a deleted path.
-        assert not list(final.parent.glob("*__osmd_src.musicxml"))
+        assert not list(final.parent.glob("*__staged_src.musicxml"))
     elif musescore_binary() is None:
         assert result["ok"] is False
         assert "OSMD" in result["error"] and "MuseScore" in result["error"], result
@@ -731,7 +895,7 @@ def _write_six_staff_musicxml(path: Path) -> None:
     for (OSMD cannot split a system across pages and would otherwise draw it
     straight off the sheet).
     """
-    from music21 import chord, clef, meter, stream, tempo  # type: ignore[import]
+    from music21 import chord, clef, meter, stream, tempo
 
     score = stream.Score()
     for index in range(6):
@@ -755,7 +919,7 @@ def _write_six_staff_musicxml(path: Path) -> None:
 def _write_lead_sheet_musicxml(path: Path) -> None:
     """A single-staff melody long enough for several pages: the ordinary sheet
     the auto-fit must leave exactly as it was."""
-    from music21 import clef, meter, note, stream, tempo  # type: ignore[import]
+    from music21 import clef, meter, note, stream, tempo
 
     part = stream.Part(id="P1")
     part.partName = "Lead"
@@ -850,7 +1014,7 @@ def test_pdf_render_leaves_a_lead_sheet_unchanged(tmp_path: Path):
 def _write_two_part_musicxml(path: Path) -> None:
     """Two named parts, Lead (treble) then Bass (bass clef), a few notes each,
     in that ``<part-list>`` order."""
-    from music21 import clef, meter, note, stream  # type: ignore[import]
+    from music21 import clef, meter, note, stream
 
     score = stream.Score()
     for index, (name, pitches, part_clef) in enumerate(
@@ -1203,7 +1367,7 @@ def test_pack_route_packs_a_midi_source_too(
     assert any(n.endswith(".mid") for n in names), names
     if pdf_render.available()["ok"] or musescore_binary() is not None:
         assert any(n.endswith(".pdf") for n in names), names
-    assert not list((entry_dir / "notation").glob("*__osmd_src.musicxml"))
+    assert not list((entry_dir / "notation").glob("*__staged_src.musicxml"))
 
 
 def test_arrange_route_lays_a_band_score_out_at_the_analysed_tempo(

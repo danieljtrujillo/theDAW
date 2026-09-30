@@ -10,6 +10,7 @@
 
 import { SlideTrack } from './SlideTrack';
 import { GATER_DIVISIONS } from '../../lib/rackEffects';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 
 const SHAPES = ['Sine', 'Square', 'Saw'] as const;
 
@@ -19,9 +20,15 @@ interface GaterControlsProps {
   idPrefix: string;
   /** Current project tempo, offered for the "match project" button when synced. */
   projectBpm?: number;
+  /** The panel's gesture boundary, straight through to the SLIDE sliders: one
+   *  start before the first `onChange` of a drag / key press / wheel burst and
+   *  one end after its last. Lets a consumer recording a gesture (automation
+   *  touch) stop guessing it from a deadline. See lib/gestureTracker.ts. */
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
 }
 
-export function GaterControls({ params, onChange, idPrefix, projectBpm }: GaterControlsProps) {
+export function GaterControls({ params, onChange, idPrefix, projectBpm, onGestureStart, onGestureEnd }: GaterControlsProps) {
   const synced = (params.sync ?? 0) >= 0.5;
   const shape = Math.round(params.shape ?? 1);
   const depth = params.depth ?? 0.8;
@@ -78,8 +85,9 @@ export function GaterControls({ params, onChange, idPrefix, projectBpm }: GaterC
           </div>
           <div className="flex items-center gap-2">
             <span id={bpmId} className="font-sans text-xs font-bold text-zinc-400 w-16 shrink-0">BPM</span>
-            <SlideTrack value={bpm} min={40} max={240} step={1} defaultValue={projectBpm ?? 120}
-              ariaLabelledBy={bpmId} className="flex-1" onChange={(v) => set('bpm', v)} />
+            <SlideTrack value={bpm} min={TEMPO_BPM_MIN} max={TEMPO_BPM_MAX} step={1} defaultValue={projectBpm ?? 120}
+              ariaLabelledBy={bpmId} className="flex-1" onChange={(v) => set('bpm', v)}
+              onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
             {projectBpm != null && projectBpm !== bpm && (
               <button
                 onClick={() => set('bpm', projectBpm)}
@@ -97,11 +105,11 @@ export function GaterControls({ params, onChange, idPrefix, projectBpm }: GaterC
         </>
       ) : (
         <SliderRow labelId={rateId} label="Rate" value={rate} min={0.1} max={30} step={0.1} dflt={6} unit="Hz"
-          onChange={(v) => set('rate', v)} />
+          onChange={(v) => set('rate', v)} onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
       )}
 
       <SliderRow labelId={depthId} label="Depth" value={depth} min={0} max={1} step={0.01} dflt={0.8}
-        onChange={(v) => set('depth', v)} />
+        onChange={(v) => set('depth', v)} onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
 
       <div className="flex items-center gap-2">
         <label htmlFor={shapeId} className="font-sans text-xs font-bold text-zinc-400 w-16 shrink-0">Shape</label>
@@ -123,17 +131,19 @@ export function GaterControls({ params, onChange, idPrefix, projectBpm }: GaterC
 }
 
 function SliderRow({
-  labelId, label, value, min, max, step, dflt, unit, onChange,
+  labelId, label, value, min, max, step, dflt, unit, onChange, onGestureStart, onGestureEnd,
 }: {
   labelId: string; label: string; value: number; min: number; max: number;
   step: number; dflt: number; unit?: string; onChange: (v: number) => void;
+  onGestureStart?: () => void; onGestureEnd?: () => void;
 }) {
   const decimals = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
   return (
     <div className="flex items-center gap-2">
       <span id={labelId} className="font-sans text-xs font-bold text-zinc-400 w-16 shrink-0">{label}</span>
       <SlideTrack value={value} min={min} max={max} step={step} defaultValue={dflt}
-        ariaLabelledBy={labelId} className="flex-1" onChange={onChange} />
+        ariaLabelledBy={labelId} className="flex-1" onChange={onChange}
+        onGestureStart={onGestureStart} onGestureEnd={onGestureEnd} />
       <span className="font-sans text-xs font-bold text-zinc-300 w-16 shrink-0 text-right tabular-nums">
         {value.toFixed(decimals)}{unit ? ` ${unit}` : ''}
       </span>

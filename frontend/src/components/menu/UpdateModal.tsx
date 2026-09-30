@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUpCircle, CheckCircle2, ChevronDown, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpCircle, CheckCircle2, ChevronDown, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, X } from 'lucide-react';
+import {
+  type BuildStamp,
+  formatBuildTime,
+  formatSha,
+  frontendBuild,
+  parseBackendBuild,
+  staleBundle,
+} from '../../lib/buildInfo';
 
 /* ------------------------------------------------------------------ */
 /* Types + defensive JSON helpers (updates backend responses)          */
@@ -156,6 +164,17 @@ const BTN =
 const BTN_PURPLE = `${BTN} border-purple-500/30 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20`;
 const BTN_GHOST = `${BTN} border-white/10 bg-white/3 text-zinc-300 hover:bg-white/8`;
 
+/** One "Frontend build" / "Backend build" row: label, SHA, and a time. */
+const BuildRow: React.FC<{ label: string; sha: string; time: string }> = ({ label, sha, time }) => (
+  <div className="flex items-baseline gap-2">
+    <span className="w-24 shrink-0 text-[8px] font-mono uppercase tracking-widest text-zinc-600">
+      {label}
+    </span>
+    <span className="text-[11px] font-mono text-zinc-200">{sha}</span>
+    {time && <span className="text-[9px] font-mono text-zinc-500">{time}</span>}
+  </div>
+);
+
 const SectionDivider: React.FC<{ label: string }> = ({ label }) => (
   <div className="flex items-center gap-1.5">
     <span className="text-[10px] font-black uppercase tracking-widest text-zinc-200">{label}</span>
@@ -193,6 +212,22 @@ export const UpdateModal: React.FC<{
   const [releasesLoading, setReleasesLoading] = useState(false);
   const [releases, setReleases] = useState<ReleaseRow[] | null>(null);
   const [releasesError, setReleasesError] = useState<string | null>(null);
+
+  // The backend's own build id (GET /api/updates/build). null while loading.
+  const [backendBuild, setBackendBuild] = useState<BuildStamp | null>(null);
+  const [backendBuildFailed, setBackendBuildFailed] = useState(false);
+
+  const loadBackendBuild = useCallback(async () => {
+    setBackendBuild(null);
+    setBackendBuildFailed(false);
+    try {
+      const res = await fetch('/api/updates/build', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBackendBuild(parseBackendBuild(await res.json()));
+    } catch {
+      setBackendBuildFailed(true);
+    }
+  }, []);
 
   const runCheck = useCallback(async (force: boolean) => {
     setChecking(true);
@@ -369,7 +404,8 @@ export const UpdateModal: React.FC<{
     setReleasesError(null);
     setApply(null);
     void runCheck(false);
-  }, [open, initialShowReleases, runCheck]);
+    void loadBackendBuild();
+  }, [open, initialShowReleases, runCheck, loadBackendBuild]);
 
   // Lazy-load the releases list the first time it is expanded.
   useEffect(() => {
@@ -399,6 +435,9 @@ export const UpdateModal: React.FC<{
     check !== null && !offline && check.updateAvailable === null && check.latestVersion !== null;
   const canUpdateHere =
     check !== null && (check.canApply || check.installKind === 'packaged');
+
+  const frontBuild = frontendBuild();
+  const bundleStale = staleBundle(frontBuild.sha, backendBuild?.sha ?? null);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -452,6 +491,36 @@ export const UpdateModal: React.FC<{
               {offline ? 'Retry' : 'Check again'}
             </button>
           </div>
+
+          {/* Build identity: a stale bundle shows as differing SHAs. */}
+          <div className="flex flex-col gap-1">
+            <BuildRow
+              label="Frontend build"
+              sha={formatSha(frontBuild.sha)}
+              time={formatBuildTime(frontBuild.time)}
+            />
+            <BuildRow
+              label="Backend build"
+              sha={
+                backendBuildFailed
+                  ? 'unavailable'
+                  : backendBuild === null
+                    ? '...'
+                    : formatSha(backendBuild.sha)
+              }
+              time={backendBuild ? formatBuildTime(backendBuild.time) : ''}
+            />
+          </div>
+
+          {bundleStale && (
+            <div role="status" className="flex items-start gap-1.5 text-[10px] text-amber-200">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>
+                This page is an older bundle than the backend is running. Restart theDAW (or
+                rebuild the frontend) to load the current build.
+              </span>
+            </div>
+          )}
 
           {/* Status line */}
           {checking && !check && (

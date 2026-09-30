@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { createLogger } from 'vite'
 import { plainAscii } from '../frontend/src/lib/plainText'
+import { buildInfoDefines } from '../frontend/buildInfo.config'
 
 // The desktop console carries the backend, the Electron main process and the
 // dev server in one stream, and it is read to find out what broke. Vite
@@ -51,6 +52,9 @@ export default defineConfig({
       }
     },
     plugins: [react(), tailwindcss()],
+    // Same build identity as frontend/vite.config.ts; electron-vite never
+    // loads that file, so the defines have to be repeated here.
+    define: buildInfoDefines(resolve(__dirname, '../frontend')),
     // alphaTab resolves its Bravura font + worker via import.meta.url relative
     // to its own dist/. Vite's dep pre-bundling rewrites that into .vite/deps/
     // where the worker does NOT exist, which wedges the renderer ("alphaTab.
@@ -66,6 +70,13 @@ export default defineConfig({
     },
     server: {
       port: 5173,
+      // Never slide to 5174. The window's saved settings (every persisted store
+      // in localStorage) and its mic/MIDI permissions belong to the ORIGIN, and
+      // the port is part of it, so a silent move opened the app with all of them
+      // empty. The launchers stop first and name whatever holds 5173
+      // (python -m backend.ports --require-frontend-port); this makes a program
+      // that grabs the port after that check a loud error, not a new origin.
+      strictPort: true,
       // Bind ALL interfaces (not loopback) so a phone on the LAN can reach the
       // companion (mobile.html + the /api control-bus proxy) while the DESKTOP
       // app is the host. electron-vite/Vite default to localhost-only, which is
@@ -92,7 +103,12 @@ export default defineConfig({
           // never reaches consumers (VST-Foundry bindings, XR headset).
           ws: true,
           timeout: 0,
-          proxyTimeout: 0
+          proxyTimeout: 0,
+          // Stamps X-Forwarded-For/-Proto/-Port (matches frontend/vite.config.ts)
+          // so the backend can recover the real caller's address instead of
+          // this proxy's own loopback peer — see that file's comment for why
+          // this matters for loopback-gated routes (LAN2).
+          xfwd: true
         },
         // Static VJ build served by the backend (matches frontend/vite.config.ts).
         // Without this the VJ iframe's /vj-app/ request fell through to Vite's

@@ -26,6 +26,40 @@ import {
 /** What a Library row puts on a drag (LibraryView / CatalogueGrid / CatalogueList). */
 export const LIBRARY_ID_MIME = 'application/x-thedaw-library-id';
 
+/**
+ * What a MIDI row in the library's MIDI sub-tab puts on a drag. Deliberately
+ * NOT `LIBRARY_ID_MIME`: the value is a row id in the `midis` table, not a
+ * library entry id, so `entriesFromDrop` could never resolve it — it would
+ * look the id up in the entries array, miss, and the drop would die silently
+ * as "entry not found". A separate mime makes a target opt in explicitly.
+ */
+export const MIDI_ID_MIME = 'application/x-thedaw-midi-id';
+
+/**
+ * What a Library track row puts on a drag when it is part of a multi-selection:
+ * a `JSON.stringify(string[])` of the selected entry ids, in selection order
+ * with the dragged row FIRST. `LIBRARY_ID_MIME` is still written alongside it
+ * (the single dragged id) so legacy single-id targets keep working; a target
+ * that understands multi reads this one first. Only library entry ids go here.
+ */
+export const LIBRARY_IDS_MIME = 'application/x-thedaw-library-ids';
+
+/**
+ * What a separated-stem row in the library's stem sub-tab puts on a drag. Like
+ * `MIDI_ID_MIME`, deliberately NOT `LIBRARY_ID_MIME`: the value is a row id in
+ * the `stems` table, not a library entry id, so `entriesFromDrop` could never
+ * resolve it. A target opts in explicitly and fetches the stem's audio.
+ */
+export const STEM_ID_MIME = 'application/x-thedaw-stem-id';
+
+/**
+ * Written beside `STEM_ID_MIME`: the library entry id of the song the stem was
+ * separated from. The stem is that song's own time, so the clip it lands as is
+ * tied to the song's analysis (lib/clipSongTime) and SYNC and "Use song tempo"
+ * read the song's tempo, beats and downbeats for it.
+ */
+export const STEM_SONG_MIME = 'application/x-thedaw-stem-song';
+
 /** The provenance every desktop drop records, whichever surface took it. */
 export const DESKTOP_DROP_ORIGIN: AudioImportOrigin = {
   prompt: 'Imported from Finder drop',
@@ -102,6 +136,29 @@ export async function entriesFromDrop(
 ): Promise<LibraryEntry[]> {
   const mimes = opts.mimes ?? [LIBRARY_ID_MIME];
   // Synchronous reads first — see the header comment on protected mode.
+  // A multi-selection library drag carries every selected id (dragged row
+  // first). Only honoured for a library-mime caller; a >0 id list resolves to
+  // its entries, skipping misses. An empty/malformed payload falls through to
+  // the single-id branch below, so single drags are untouched.
+  if (mimes.includes(LIBRARY_ID_MIME)) {
+    const raw = dt.getData(LIBRARY_IDS_MIME);
+    if (raw) {
+      let ids: unknown;
+      try {
+        ids = JSON.parse(raw);
+      } catch {
+        ids = null;
+      }
+      if (Array.isArray(ids) && ids.length > 0) {
+        const resolved = ids
+          .map((id) => opts.entries.find((e) => e.id === id))
+          .filter((e): e is LibraryEntry => e != null);
+        // `max` binds here exactly as it does on the file path below: a
+        // single-slot target (a sampler pad, the MIDI song box) takes the first.
+        return opts.max != null ? resolved.slice(0, Math.max(0, opts.max)) : resolved;
+      }
+    }
+  }
   for (const mime of mimes) {
     const id = dt.getData(mime);
     if (id) {

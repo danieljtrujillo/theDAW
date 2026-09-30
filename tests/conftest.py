@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -32,8 +34,58 @@ def pytest_addoption(parser):
 
 
 # ---------------------------------------------------------------------------
+# The writable data root
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Point the backend's writable roots at a new directory for the session.
+
+    ``backend.lib.paths`` puts everything the backend writes under
+    ``theDAW_DATA_DIR`` (default ``<checkout>/data``) and the library under
+    ``theDAW_GENERATIONS_DIR``, and a few modules resolve a path when they are
+    imported (the VST router's preset directory). Without this, a broad run
+    wrote known_paths.json, logs, settings and VST preset files into the
+    checkout's data/, which in the live app's tree is the user's own data.
+
+    Set here, before collection imports any test module, and always, even when
+    the shell already names a root: a launcher may point these variables at the
+    live data. A test that needs a root of its own still monkeypatches them.
+    The directory is left in the system temp folder, as pytest leaves its own.
+    """
+    root = Path(tempfile.mkdtemp(prefix="thedaw-pytest-"))
+    os.environ["theDAW_DATA_DIR"] = str(root / "data")
+    os.environ["theDAW_GENERATIONS_DIR"] = str(root / "generations")
+    # The assistant's index, which backend.rag resolves when it is imported. It
+    # follows theDAW_DATA_DIR unless the shell names its own, so name it too.
+    os.environ["theDAW_RAG_INDEX_DIR"] = str(root / "rag_index")
+    config.thedaw_data_root = root
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def settings_file_outside_the_checkout(tmp_path_factory):
+    """The process-wide settings store reads theDAW_SETTINGS_PATH, else
+    data/settings.json of the checkout running the suite. Any test reaching
+    it without its own store (the notation engine reads its section on every
+    arrangement) opened that file, and a file at another schema was migrated
+    and written back: run from the app tree, that rewrote the user's
+    settings. The session gets a settings file of its own; a test that sets
+    the variable or the store itself still wins."""
+    from backend.modules.settings import router as settings_router
+
+    patch = pytest.MonkeyPatch()
+    patch.setenv(
+        "theDAW_SETTINGS_PATH",
+        str(tmp_path_factory.mktemp("settings") / "settings.json"),
+    )
+    patch.setattr(settings_router, "_store", None)
+    yield
+    patch.undo()
 
 
 @pytest.fixture(scope="session")
@@ -72,6 +124,27 @@ def autoencoder(request):
         pytest.skip(f"{name} requires a CUDA GPU — none detected")
 
     return AutoencoderModel.from_pretrained(name, device=ACCEL_DEVICE)
+
+
+@pytest.fixture
+def notation_client(tmp_path: Path, monkeypatch):
+    """The library and notation routers on a fresh library root in ``tmp_path``
+    (the ``tests/test_library_endpoints.py`` pattern), shared by the notation,
+    chord-track and band-score route tests."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.modules.library import router as library_router_module
+    from backend.modules.notation import router as notation_router_module
+
+    monkeypatch.setattr(library_router_module, "_store", None)
+    monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path))
+    app = FastAPI()
+    app.include_router(library_router_module.router, prefix="/api/library")
+    app.include_router(notation_router_module.router, prefix="/api/notation")
+    # This machine's own UI (a loopback peer): the notation routes that write
+    # a file answer only to it, the desktop shell or a paired device.
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 @pytest.fixture
@@ -119,7 +192,8 @@ def test_flash_attention_available(sa3_model, request):
     except ImportError:
         pytest.fail(
             "flash_attn is not importable. It is a base dependency on Windows "
-            "(pyproject pins a cu128/cp310 wheel gated to sys_platform == 'win32'), "
+            "(pyproject pins a torch 2.14 / cu130 wheel per Python minor, gated to "
+            "sys_platform == 'win32'), "
             "so on Windows run `uv sync` and check the wheel matches this torch/CUDA/"
             "Python — see docs/windows/troubleshooting.md. On Linux/macOS it is not "
             "installed by design and the model uses the SDPA fallback; this check is "

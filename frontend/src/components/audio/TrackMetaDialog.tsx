@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import type { LibraryEntry } from '../../state/libraryEntry';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLibraryCounts } from '../../state/libraryCountsStore';
 import { getStorageProvider } from '../../lib/backendLocalProvider';
 import { logError, logInfo } from '../../state/logStore';
 import { FLYOUT_CARD } from './midiDockKit';
@@ -87,7 +88,17 @@ export const TrackMetaDialog: React.FC<TrackMetaDialogProps> = ({ entry, host, o
       // The provider directly: libraryStore.updateEntry logs a failed save and
       // resolves, and the dialog has to stay open on a save that did not land.
       const updated = await getStorageProvider().update(entry.id, { title: nextTitle, tags: parseTags(tags), notes });
-      useLibraryStore.setState((s) => ({ entries: s.entries.map((e) => (e.id === entry.id ? updated : e)) }));
+      // …but the RESULT goes back through the store, never through a raw
+      // `setState({entries})`: `entries` is a projection of the paged cache and
+      // the next page that lands re-derives it, so a row written straight into
+      // it was lost on the next scroll. `upsertEntry` patches the row wherever
+      // it is cached (page, by-id cache, or the whole-library fallback) and, for
+      // a row on no loaded page, re-reads the visible range — which is also the
+      // right answer when a renamed track moves under a title sort.
+      useLibraryStore.getState().upsertEntry(updated);
+      // A committed write bumps `library_revision`; the counts the tab strip
+      // prints are derived from it, so they are asked for again.
+      useLibraryCounts.getState().invalidate();
       logInfo('track-menu', `Saved the details of "${nextTitle}"`);
       onClose();
     } catch (e) {

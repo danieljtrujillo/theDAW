@@ -10,6 +10,7 @@
  * reason: it is picture plumbing, not part of the audio storage contract.
  */
 
+import { stripSourceId } from './displayName';
 import type { LibraryEntry } from '../state/libraryEntry';
 
 const BASE = '/api/library';
@@ -39,7 +40,8 @@ interface ServerMediaRecord {
 
 const toEntry = (r: ServerMediaRecord): LibraryEntry => ({
   id: r.id,
-  title: r.title,
+  // Same read-boundary strip as backendLocalProvider.toEntry.
+  title: stripSourceId(r.title),
   prompt: r.prompt ?? '',
   negativePrompt: '',
   model: '',
@@ -111,25 +113,39 @@ export async function deleteMedia(id: string): Promise<void> {
   }
 }
 
+/** What a folder import answers. */
+export interface ImportFolderResult {
+  cancelled: boolean;
+  folder: string | null;
+  name?: string;
+  /** The created entries, capped by the backend at the first 200. */
+  entries: { id: string; title: string }[];
+  /** How many entries the import created in all; absent when cancelled, and
+   *  on a backend older than the cap. */
+  created_total?: number;
+}
+
+/** The log line for a finished folder import: the count it really created.
+ *  `entries` is the backend's capped echo, so it is only the count when the
+ *  backend is too old to report `created_total`. */
+export function describeFolderImport(res: ImportFolderResult): string {
+  const added = res.created_total ?? res.entries.length;
+  return `Added ${added.toLocaleString('en-US')} track${added === 1 ? '' : 's'} from ${res.folder}`;
+}
+
 /** Add a local folder of audio as a playlist, REFERENCE-IN-PLACE — nothing is
  *  copied; theDAW registers entries that point at the on-disk files. With no
  *  path, the backend opens a native folder picker. Returns the registered
- *  entries (id + title) for the caller to build a setlist from. */
-export async function importFolder(
-  path?: string,
-): Promise<{ cancelled: boolean; folder: string | null; name?: string; entries: { id: string; title: string }[] }> {
+ *  entries (id + title, the first 200) for the caller to build a setlist from,
+ *  and `created_total`, the full count. */
+export async function importFolder(path?: string): Promise<ImportFolderResult> {
   const r = await fetch(`${BASE}/import-folder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(path ? { path } : {}),
   });
   if (!r.ok) throw new Error(`importFolder: ${await errorText(r)}`);
-  return (await r.json()) as {
-    cancelled: boolean;
-    folder: string | null;
-    name?: string;
-    entries: { id: string; title: string }[];
-  };
+  return (await r.json()) as ImportFolderResult;
 }
 
 /** Counts one cover backfill pass returns. */

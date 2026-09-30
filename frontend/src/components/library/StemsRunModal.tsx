@@ -2,6 +2,8 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { Scissors, X } from 'lucide-react';
 import { useFeatureToggleStore } from '../../state/featureToggleStore';
 import { FLYOUT_CARD } from '../audio/midiDockKit';
+import { QUALITY_TIERS, STEM_MODES, qualityDetail } from './stemModes';
+import type { QualityValue, StemModeValue } from './stemModes';
 
 /**
  * Pre-run dialog for stem separation.
@@ -16,9 +18,10 @@ import { FLYOUT_CARD } from '../audio/midiDockKit';
  */
 
 export type StemsRunOptions = {
-  stems: 2 | 4 | 6 | 12;
+  /** Wire value, not a file count: 12 yields ten parts. See stemModes.ts. */
+  stems: StemModeValue;
   device: 'cuda' | 'cpu' | 'auto';
-  quality: 'fast' | 'balanced' | 'hq';
+  quality: QualityValue;
   /** If true, also PATCH /api/settings so these become the new defaults. */
   persistAsDefault: boolean;
 };
@@ -30,23 +33,10 @@ interface Props {
   onConfirm: (opts: StemsRunOptions) => void;
 }
 
-const STEM_OPTIONS: Array<{ value: 2 | 4 | 6 | 12; label: string; hint: string; model: string }> = [
-  { value: 2, label: '2 stems', hint: 'Vocals and accompaniment', model: 'mdx_extra' },
-  { value: 4, label: '4 stems', hint: 'Vocals, drums, bass, other', model: 'htdemucs' },
-  { value: 6, label: '6 stems', hint: 'Adds guitar and piano', model: 'htdemucs_6s' },
-  { value: 12, label: '12 stems', hint: 'Adds kick, snare, hi-hat, cymbals, toms', model: 'htdemucs_6s with LARSNET drum stems' },
-];
-
 const DEVICE_OPTIONS: Array<{ value: 'cuda' | 'cpu' | 'auto'; label: string }> = [
   { value: 'cuda', label: 'GPU' },
   { value: 'cpu', label: 'CPU' },
   { value: 'auto', label: 'Auto' },
-];
-
-const QUALITY_OPTIONS: Array<{ value: 'fast' | 'balanced' | 'hq'; label: string; hint: string; model: string }> = [
-  { value: 'fast', label: 'Fast', hint: 'About 30 s a track', model: 'shifts 1, overlap 0.25' },
-  { value: 'balanced', label: 'Balanced', hint: 'About 1 to 2 min', model: 'shifts 2, overlap 0.5' },
-  { value: 'hq', label: 'HQ', hint: 'About 5 to 15 min', model: 'shifts 10, overlap 0.9' },
 ];
 
 const LEGEND = 'font-display text-xs font-bold uppercase tracking-wider et-ink-2';
@@ -76,7 +66,9 @@ const Option: React.FC<{ selected: boolean; label: string; hint?: string; title?
   </button>
 );
 
-const OptionGroup: React.FC<{ id: string; label: string; columns: 2 | 3; children: React.ReactNode }> = ({
+const COLUMNS: Record<1 | 2 | 3, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3' };
+
+const OptionGroup: React.FC<{ id: string; label: string; columns: 1 | 2 | 3; children: React.ReactNode }> = ({
   id,
   label,
   columns,
@@ -84,7 +76,7 @@ const OptionGroup: React.FC<{ id: string; label: string; columns: 2 | 3; childre
 }) => (
   <div role="group" aria-labelledby={id} className="flex flex-col gap-1">
     <span id={id} className={LEGEND}>{label}</span>
-    <div className={`grid gap-1 ${columns === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>{children}</div>
+    <div className={`grid gap-1 ${COLUMNS[columns]}`}>{children}</div>
   </div>
 );
 
@@ -102,18 +94,18 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
   const runRef = useRef<HTMLButtonElement | null>(null);
   // Local working copy so the user can try options without persisting
   // anything until they press Run.
-  const [stems, setStems] = useState<2 | 4 | 6 | 12>(() => (settings.default_count as 2 | 4 | 6 | 12) || 4);
+  const [stems, setStems] = useState<StemModeValue>(() => (settings.default_count as StemModeValue) || 4);
   const [device, setDevice] = useState<'cuda' | 'cpu' | 'auto'>(() => (settings.device as 'cuda' | 'cpu' | 'auto') || 'cuda');
-  const [quality, setQuality] = useState<'fast' | 'balanced' | 'hq'>(() => (settings.quality as 'fast' | 'balanced' | 'hq') || 'balanced');
+  const [quality, setQuality] = useState<QualityValue>(() => (settings.quality as QualityValue) || 'balanced');
   const [persist, setPersist] = useState(false);
 
   // Reload defaults whenever the dialog opens (settings may have changed
   // while it was closed).
   useEffect(() => {
     if (!open) return;
-    setStems((settings.default_count as 2 | 4 | 6 | 12) || 4);
+    setStems((settings.default_count as StemModeValue) || 4);
     setDevice((settings.device as 'cuda' | 'cpu' | 'auto') || 'cuda');
-    setQuality((settings.quality as 'fast' | 'balanced' | 'hq') || 'balanced');
+    setQuality((settings.quality as QualityValue) || 'balanced');
     setPersist(false);
   }, [open, settings.default_count, settings.device, settings.quality]);
 
@@ -124,6 +116,7 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
   if (!open) return null;
 
   const confirm = () => onConfirm({ stems, device, quality, persistAsDefault: persist });
+  const selectedQuality = QUALITY_TIERS.find((t) => t.value === quality) ?? QUALITY_TIERS[1];
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     e.stopPropagation();
@@ -188,18 +181,23 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
             </p>
           )}
 
-          <OptionGroup id={ids.stems} label="Stems" columns={2}>
-            {STEM_OPTIONS.map((opt) => (
+          <OptionGroup id={ids.stems} label="Stems" columns={1}>
+            {STEM_MODES.map((mode) => (
               <Option
-                key={opt.value}
-                selected={stems === opt.value}
-                label={opt.label}
-                hint={opt.hint}
-                title={opt.model}
-                onSelect={() => setStems(opt.value)}
+                key={mode.value}
+                selected={stems === mode.value}
+                label={mode.label}
+                hint={mode.hint}
+                title={`${mode.partCount} files: ${mode.roles.join(', ')}`}
+                onSelect={() => setStems(mode.value)}
               />
             ))}
           </OptionGroup>
+          {STEM_MODES.filter((mode) => mode.notice).map((mode) => (
+            <p key={mode.value} className="-mt-2 text-xs font-semibold et-ink-3">
+              {mode.notice}
+            </p>
+          ))}
 
           <OptionGroup id={ids.device} label="Device" columns={3}>
             {DEVICE_OPTIONS.map((opt) => (
@@ -208,17 +206,22 @@ export const StemsRunModal: React.FC<Props> = ({ open, entryLabel, onCancel, onC
           </OptionGroup>
 
           <OptionGroup id={ids.quality} label="Quality" columns={3}>
-            {QUALITY_OPTIONS.map((opt) => (
+            {QUALITY_TIERS.map((tier) => (
               <Option
-                key={opt.value}
-                selected={quality === opt.value}
-                label={opt.label}
-                hint={opt.hint}
-                title={opt.model}
-                onSelect={() => setQuality(opt.value)}
+                key={tier.value}
+                selected={quality === tier.value}
+                label={tier.label}
+                hint={tier.hint}
+                title={qualityDetail(tier, stems)}
+                onSelect={() => setQuality(tier.value)}
               />
             ))}
           </OptionGroup>
+          <p className="-mt-2 text-xs font-semibold et-ink-3">
+            {stems === 4
+              ? `Quality picks the model and the passes: ${qualityDetail(selectedQuality, 4)}.`
+              : `This mode's model is fixed, so quality changes passes and overlap only: ${qualityDetail(selectedQuality, stems)}.`}
+          </p>
 
           <div className="flex items-center gap-2">
             <input

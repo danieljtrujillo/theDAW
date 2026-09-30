@@ -63,12 +63,54 @@ def _frac(value: Any) -> Fraction:
         return Fraction(1)
 
 
-def _abc_pitch(pitch: Any) -> str:
+class _Accidentals:
+    """The alteration an ABC reader gives each note, so an accidental is
+    written exactly where the pitch differs from it.
+
+    A reader applies the ``K:`` line's alteration to every note of that letter,
+    and an accidental written in a bar holds for that letter and octave until
+    the bar line. A natural against either needs an explicit ``=``: without it
+    an E natural under ``K:Eb`` read back as E flat, and the F after an ``^F``
+    in one bar read back as F sharp.
+    """
+
+    def __init__(self, key_alters: dict[str, int]) -> None:
+        self._key = key_alters
+        self._bar: dict[tuple[str, int], int] = {}
+
+    def new_bar(self) -> None:
+        self._bar = {}
+
+    def prefix(self, step: str, octave: int, alter: int) -> str:
+        implied = self._bar.get((step, octave), self._key.get(step, 0))
+        self._bar[(step, octave)] = alter
+        if alter == implied:
+            return ""
+        if alter > 0:
+            return "^" * min(alter, 2)
+        if alter < 0:
+            return "_" * min(-alter, 2)
+        return "="
+
+
+def _key_alters(key_obj: Any) -> dict[str, int]:
+    """Letter -> the alteration the ``K:`` line written for ``key_obj`` puts on
+    every note of that letter (``_key_token`` spells the same key)."""
+    out: dict[str, int] = {}
+    if key_obj is None:
+        return out
+    for altered in key_obj.alteredPitches:
+        out[str(altered.step)] = int(altered.alter)
+    return out
+
+
+def _abc_pitch(pitch: Any, accidentals: _Accidentals) -> str:
     """One music21 pitch as an ABC pitch token.
 
     ABC puts middle C (C4) at bare uppercase ``C``; the octave above is
     lowercase, higher octaves add ``'`` and lower ones add ``,``. Accidentals
-    are prefixes: ``^`` sharp, ``_`` flat, ``=`` natural.
+    are prefixes: ``^`` sharp, ``_`` flat, ``=`` natural, written only where
+    the pitch differs from what the reader already gives it (``_Accidentals``).
     """
     step = str(getattr(pitch, "step", "C") or "C")
     octave = getattr(pitch, "octave", None)
@@ -78,12 +120,7 @@ def _abc_pitch(pitch: Any) -> str:
     except (TypeError, ValueError):
         alter = 0
 
-    if alter > 0:
-        accidental = "^" * min(alter, 2)
-    elif alter < 0:
-        accidental = "_" * min(-alter, 2)
-    else:
-        accidental = ""
+    accidental = accidentals.prefix(step, octave, alter)
 
     if octave >= 5:
         letter = step.lower()
@@ -146,14 +183,10 @@ def _key_token(key_obj: Any) -> str:
 
 def _first(stream_obj: Any, cls: Any) -> Any:
     """The first element of a class anywhere in a stream, or None."""
-    try:
-        found = list(stream_obj.recurse().getElementsByClass(cls))
-        return found[0] if found else None
-    except Exception:  # noqa: BLE001 - music21 raises broadly on odd streams
-        return None
+    return next(iter(stream_obj.recurse().getElementsByClass(cls)), None)
 
 
-def _element_token(element: Any, unit: Fraction) -> str:
+def _element_token(element: Any, unit: Fraction, accidentals: _Accidentals) -> str:
     """One note, chord, or rest as an ABC token (without a trailing bar line).
 
     Durations are always the SOUNDING length. ABC expresses any rational length
@@ -164,7 +197,7 @@ def _element_token(element: Any, unit: Fraction) -> str:
     durations music21 rejected on re-parse with "Unknown type: complex".
     Sounding lengths round-trip cleanly and carry the same rhythm.
     """
-    from music21 import chord, note  # type: ignore[import]
+    from music21 import chord, note
 
     quarter_length = getattr(getattr(element, "duration", None), "quarterLength", 1)
     length = _abc_duration(quarter_length, unit)
@@ -172,10 +205,10 @@ def _element_token(element: Any, unit: Fraction) -> str:
     if isinstance(element, note.Rest):
         return f"z{length}"
     if isinstance(element, chord.Chord):
-        pitches = "".join(_abc_pitch(p) for p in element.pitches)
+        pitches = "".join(_abc_pitch(p, accidentals) for p in element.pitches)
         token = f"[{pitches}]{length}"
     elif isinstance(element, note.Note):
-        token = f"{_abc_pitch(element.pitch)}{length}"
+        token = f"{_abc_pitch(element.pitch, accidentals)}{length}"
     else:
         return ""
 
@@ -185,9 +218,11 @@ def _element_token(element: Any, unit: Fraction) -> str:
     return token
 
 
-def _voice_body(part: Any, unit: Fraction) -> str:
-    """The ABC body for a single part: measures separated by bar lines."""
-    from music21 import chord, note, stream  # type: ignore[import]
+def _voice_body(part: Any, unit: Fraction, key_alters: dict[str, int]) -> str:
+    """The ABC body for a single part: measures separated by bar lines, each
+    accidental written against ``key_alters`` (the ``K:`` line's) and the ones
+    already written in its bar."""
+    from music21 import chord, note, stream
 
     measures = list(part.getElementsByClass(stream.Measure))
     if not measures:
@@ -195,12 +230,14 @@ def _voice_body(part: Any, unit: Fraction) -> str:
         measures = [part]
 
     lines: list[str] = []
+    accidentals = _Accidentals(key_alters)
     for measure in measures:
+        accidentals.new_bar()
         tokens: list[str] = []
         for element in measure.recurse().getElementsByClass(
             (note.Note, note.Rest, chord.Chord)
         ):
-            token = _element_token(element, unit)
+            token = _element_token(element, unit, accidentals)
             if token:
                 tokens.append(token)
         if tokens:
@@ -219,10 +256,10 @@ def score_to_abc(
     Returns the ABC text. Raises ValueError when the score carries no notes,
     so a caller never registers an empty export as a success.
     """
-    from music21 import key as m21key  # type: ignore[import]
-    from music21 import meter as m21meter  # type: ignore[import]
-    from music21 import stream as m21stream  # type: ignore[import]
-    from music21 import tempo as m21tempo  # type: ignore[import]
+    from music21 import key as m21key
+    from music21 import meter as m21meter
+    from music21 import stream as m21stream
+    from music21 import tempo as m21tempo
 
     if len(list(score.recurse().notes)) == 0:
         raise ValueError("score contains no notes")
@@ -245,12 +282,20 @@ def score_to_abc(
         header.append(f"C:{composer.strip()}")
     marking = _first(score, m21tempo.MetronomeMark)
     if marking is not None:
+        # A mark of 0 beats per minute, or one whose referent has no length,
+        # has no quarter-note tempo (music21 divides by both); the tune is
+        # written without Q: and the log names the mark.
         try:
             bpm = int(round(float(marking.getQuarterBPM() or 0)))
-            if bpm > 0:
-                header.append(f"Q:1/4={bpm}")
-        except Exception:  # noqa: BLE001 - tempo is decorative here
-            pass
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            log.warning(
+                "ABC export: tempo mark %r has no quarter-note tempo (%s); Q: left out",
+                marking,
+                exc,
+            )
+            bpm = 0
+        if bpm > 0:
+            header.append(f"Q:1/4={bpm}")
     header.append(f"M:{meter_token}")
     header.append(f"L:{unit.numerator * 1}/{unit.denominator * 4}")
 
@@ -260,7 +305,7 @@ def score_to_abc(
 
     bodies: list[tuple[str, str, str]] = []
     for index, part in enumerate(parts, start=1):
-        body = _voice_body(part, unit)
+        body = _voice_body(part, unit, _key_alters(key_obj))
         if not body:
             continue
         name = str(getattr(part, "partName", "") or "").strip()

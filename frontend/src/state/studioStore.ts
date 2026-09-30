@@ -4,10 +4,19 @@ import { logError, logInfo } from './logStore';
 import { uuid } from '../orb-kit/utils';
 import { useLibraryStore } from './libraryStore';
 import { usePlayerStore } from './playerStore';
-import { useEffectChainStore, EFFECT_LABELS, MIX_RACK_IDS } from './effectChainStore';
+import {
+  useEffectChainStore,
+  EFFECT_LABELS,
+  MIX_RACK_IDS,
+  vstStateHost,
+  vstStatesLoaded,
+  type VstStateHost,
+} from './effectChainStore';
 import { useAdvancedEditorSourceStore } from './advancedEditorStore';
 import { getRackEffect, buildEffectChain, ensureChopModule, ensureGranularModule } from '../lib/rackEffects';
+import { ensureHallIrsForChains } from '../lib/hallIrs';
 import { encodeWav } from '../lib/wavEncode';
+import { pairingHeader } from '../lib/pairing';
 
 interface StudioHistoryEntry {
   id: string;
@@ -39,7 +48,14 @@ interface StudioStoreState {
   processAudio: (payload: { effect: string; params: Record<string, number>; skipLibrary?: boolean; quiet?: boolean }) => Promise<void>;
   // VST3 chain stage: uploads the current audio + plugin path to
   // /api/vst/process-file (mirrors processAudio) and returns processed audio.
-  processVst: (payload: { pluginPath: string; pluginName: string; params: Record<string, number>; rawState?: string; skipLibrary?: boolean; quiet?: boolean }) => Promise<void>;
+  // `stateHost` names WHICH host captured `rawState`. Plugin state IS
+  // interchangeable between theDAW's live host and the pedalboard renderer
+  // (measured: parameters restore exactly, containers are byte-identical) —
+  // `stateHost` doesn't gate whether the state can be reused, only which
+  // renderer processes the request. Omitted (or 'pedalboard') leaves the
+  // request byte-for-byte what it always was, which is what every
+  // pre-existing project and every older backend expects.
+  processVst: (payload: { pluginPath: string; pluginName: string; params: Record<string, number>; rawState?: string; stateHost?: VstStateHost; skipLibrary?: boolean; quiet?: boolean }) => Promise<void>;
   // Runs the enabled effects in useEffectChainStore in series over the
   // source in useAdvancedEditorSourceStore, then imports the final result
   // to the library, loads the player, and writes advancedEditorStore.outputUrl.
@@ -222,7 +238,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     }
   },
 
-  processVst: async ({ pluginPath, pluginName, params, rawState, skipLibrary, quiet }) => {
+  processVst: async ({ pluginPath, pluginName, params, rawState, stateHost, skipLibrary, quiet }) => {
     if (get().isProcessing) {
       logInfo('studio', `VST ${pluginName} ignored: a studio process is already running`);
       return;
@@ -245,13 +261,28 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     const form = new FormData();
     form.append('audio', source);
     form.append('plugin_path', pluginPath);
+    // Which plugin inside the file: a .vst3 can hold several, the live host
+    // loads the one the entry names, and theDAW's render host loads the first
+    // one when it is given no name.
+    if (pluginName) form.append('plugin_name', pluginName);
     form.append('params', JSON.stringify(params || {}));
     if (rawState) form.append('raw_state', rawState);
+    // Only the 'thedaw' case is sent: absent means the backend's existing
+    // pedalboard path, which is what an old project (and an old backend) must
+    // keep getting. A failure from the 'thedaw' path is reported as the backend
+    // words it and NOT retried through pedalboard — the entry asked for a
+    // specific renderer, and silently swapping renderers would change the
+    // rendered result, so the failure is surfaced instead of masked.
+    if (stateHost === 'thedaw') form.append('state_host', 'thedaw');
 
     try {
+      // The pairing header is what lets a device opened from the Mobile Access
+      // share link render VST stages (backend/lib/cross_site.py); it is {} on
+      // this machine's own UI.
       const response = await fetchWithTimeout('/api/vst/process-file', {
         method: 'POST',
         body: form,
+        headers: pairingHeader(),
       });
       if (!response.ok) {
         const detail = await parseErrorText(response);
@@ -313,10 +344,16 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
       return;
     }
 
+    // Busy BEFORE the wait below, so a second click inside the (startup-only)
+    // load window cannot queue a second render of the same chain.
+    set({ isChainProcessing: true, error: null });
+    // A plugin's saved state arrives from IndexedDB a moment after startup;
+    // read the chain only once it has, never the empty value before it.
+    await vstStatesLoaded;
     const enabled = useEffectChainStore.getState().chain.filter((e) => e.enabled);
     if (enabled.length === 0) {
       const message = 'Add at least one enabled effect to the chain.';
-      set({ error: message });
+      set({ error: message, isChainProcessing: false });
       useStatusBarStore.getState().setText(`MIX FAILED: ${message}`);
       return;
     }
@@ -325,7 +362,6 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     const chainLabel = enabled
       .map((e) => (e.vst ? e.vst.plugin_name : EFFECT_LABELS[e.effect] || getRackEffect(e.effect)?.label || e.effect))
       .join(' → ');
-    set({ isChainProcessing: true, error: null });
     useStatusBarStore.getState().setText(`MIX CHAIN STARTED: ${chainLabel}`);
     logInfo('studio', `Chain process: ${chainLabel} (${enabled.length} effects) format=${fmt}`);
 
@@ -356,6 +392,8 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
         if (entries.some((e) => e.effect === 'ares')) {
           try { await ensureGranularModule(offline); } catch { /* falls back to passthrough */ }
         }
+        // A Reverb on a measured hall renders it, not the synthesized room (lib/hallIrs).
+        await ensureHallIrsForChains(offline, [entries]);
         const inGain = offline.createGain();
         buildEffectChain(offline, inGain, offline.destination, entries);
         const src = offline.createBufferSource();
@@ -393,6 +431,7 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
               pluginName: entry.vst.plugin_name,
               params: entry.params,
               rawState: entry.vst.raw_state,
+              stateHost: vstStateHost(entry.vst),
               skipLibrary: true,
               quiet: true,
             });

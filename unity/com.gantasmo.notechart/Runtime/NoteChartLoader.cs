@@ -31,8 +31,9 @@ namespace Gantasmo.NoteChart
         [Tooltip("Chart JSON dropped straight into the scene. Wins over every other source.")]
         [SerializeField] TextAsset chartAsset;
 
-        [Tooltip("File name looked for under StreamingAssets and then persistentDataPath.")]
-        public string fileName = "notechart.unity.json";
+        [Tooltip("File name looked for under StreamingAssets and then persistentDataPath. " +
+                 "Rename theDAW's SCORE-tab export (which always ends \".notechart.json\") to this.")]
+        public string fileName = "chart.notechart.json";
 
         [Tooltip("theDAW artifact id of the chart, fetched from the backend when no file is found.")]
         public string artifactId = "";

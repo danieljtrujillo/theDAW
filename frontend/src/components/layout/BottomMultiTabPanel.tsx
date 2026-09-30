@@ -15,7 +15,13 @@ import { AdvancedVisualizer } from '../audio/AdvancedVisualizer';
 import { StepSequencer } from '../audio/StepSequencer';
 import { DetailsMediaView } from './DetailsMediaView';
 import { ScoreView } from './ScoreView';
-import { SlidePanel } from './SlidePanel';
+// Lazy: SlidePanel pulls in controllerProfiles.ts's 400+ line controller
+// table (device layouts + auto-detect matching) — this file is reachable
+// eagerly (App -> Shell -> BottomMultiTabPanel, neither lazy), so a static
+// import here would drag that table into the first-paint bundle even though
+// it's only needed once the user opens the SLIDE tab. Same pattern as
+// MidiPanel / LyricStudioView below.
+const SlidePanel = lazy(() => import('./SlidePanel').then((m) => ({ default: m.SlidePanel })));
 import { LevelsPanel } from '../audio/levels/LevelsPanel';
 // Lazy: the MIDI tab (piano roll + vocal2midi) drags in @google/genai
 // (AI compose + gemini vocal services). Keep it out of first paint; the chunk
@@ -31,8 +37,10 @@ import { SingScoreView } from './sing/SingScoreView';
 const LyricStudioView = lazy(() =>
   import('./lyricstudio/LyricStudioView').then((m) => ({ default: m.LyricStudioView })),
 );
+import { AudioEditorPanel } from './AudioEditorPanel';
 import { DrawPanel } from './DrawPanel';
 import { DetachableWindow } from './DetachableWindow';
+import { TabErrorBoundary } from './TabErrorBoundary';
 import { useBottomPanelStore, type BottomPanelTab } from '../../state/bottomPanelStore';
 import { useSlideStore } from '../../state/slideStore';
 import { XrBusButton } from '../dev/XrBusButton';
@@ -50,6 +58,7 @@ const TAB_DEFS: Array<{ id: BottomPanelTab; label: string }> = [
   { id: 'levels',   label: 'Levels' },
   { id: 'spectral', label: 'Visualize' },
   { id: 'midi',     label: 'MIDI' },
+  { id: 'audio-edit', label: 'Clip' },
   { id: 'step-seq', label: 'Sequence' },
   { id: 'draw',     label: 'DRAW' },
   { id: 'score',    label: 'Score' },
@@ -188,6 +197,11 @@ export const BottomMultiTabPanel: React.FC = () => {
             </Suspense>
           </div>
         )}
+        {activeTab === 'audio-edit' && (
+          <div className="absolute inset-0" data-tour="audio-edit-panel">
+            <AudioEditorPanel />
+          </div>
+        )}
         {activeTab === 'draw' && (
           <div className="absolute inset-0">
             <DrawPanel />
@@ -232,7 +246,11 @@ export const BottomMultiTabPanel: React.FC = () => {
                   </button>
                 </div>
                 <DetachableWindow win={slideWin} title="theDAW — SLIDE" onClose={() => setSlideWin(null)}>
-                  <SlidePanel />
+                  <TabErrorBoundary tabName="Slide">
+                    <Suspense fallback={null}>
+                      <SlidePanel />
+                    </Suspense>
+                  </TabErrorBoundary>
                 </DetachableWindow>
               </>
             ) : (
@@ -242,7 +260,11 @@ export const BottomMultiTabPanel: React.FC = () => {
                     Pop-up blocked — allow pop-ups for this site, then click the ⤢ button again.
                   </div>
                 )}
-                <SlidePanel />
+                <TabErrorBoundary tabName="Slide">
+                  <Suspense fallback={null}>
+                    <SlidePanel />
+                  </Suspense>
+                </TabErrorBoundary>
               </>
             )}
           </div>

@@ -7,6 +7,8 @@ supervisor flag faked so nothing on the developer's clone changes.
 
 from __future__ import annotations
 
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -147,3 +149,64 @@ def test_apply_starts_worker_and_reports_status(client, monkeypatch, tmp_path):
     again = client.post("/api/updates/apply").json()
     assert again["state"] == "running"
     assert client.get("/api/updates/apply-status").json()["state"] == "running"
+
+
+def test_build_reports_sha_and_start_time(client, monkeypatch):
+    monkeypatch.setattr(updates, "_BUILD_SHA", "abc1234")
+    monkeypatch.setattr(updates, "_STARTED_AT", "2026-09-18T12:00:00.000000Z")
+    body = client.get("/api/updates/build").json()
+    assert body == {"git_sha": "abc1234", "started_at": "2026-09-18T12:00:00.000000Z"}
+
+
+def test_build_started_at_is_utc_iso():
+    started = updates._STARTED_AT
+    assert started.endswith("Z")
+    datetime.fromisoformat(started.replace("Z", "+00:00"))
+
+
+def test_build_sha_env_override_wins(monkeypatch, tmp_path):
+    def _no_git(*args, **kwargs):
+        raise AssertionError("git must not run when THEDAW_BUILD_SHA is set")
+
+    monkeypatch.setenv("THEDAW_BUILD_SHA", "  deadbee  ")
+    monkeypatch.setattr(updates.subprocess, "run", _no_git)
+    assert updates._resolve_build_sha(tmp_path) == "deadbee"
+
+
+def test_build_sha_reads_git(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="f00ba12\n", stderr="")
+
+    monkeypatch.delenv("THEDAW_BUILD_SHA", raising=False)
+    monkeypatch.setattr(updates.subprocess, "run", _fake_run)
+    assert updates._resolve_build_sha(tmp_path) == "f00ba12"
+    assert calls == [["git", "-C", str(tmp_path), "rev-parse", "--short", "HEAD"]]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("git"),
+        subprocess.TimeoutExpired(["git"], 5),
+        "nonzero",
+    ],
+)
+def test_build_sha_git_failure_is_null(monkeypatch, tmp_path, failure):
+    def _fake_run(cmd, **kwargs):
+        if failure == "nonzero":
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal")
+        raise failure
+
+    monkeypatch.delenv("THEDAW_BUILD_SHA", raising=False)
+    monkeypatch.setattr(updates.subprocess, "run", _fake_run)
+    assert updates._resolve_build_sha(tmp_path) is None
+
+
+def test_build_endpoint_null_sha(client, monkeypatch):
+    monkeypatch.setattr(updates, "_BUILD_SHA", None)
+    body = client.get("/api/updates/build").json()
+    assert body["git_sha"] is None
+    assert isinstance(body["started_at"], str)

@@ -27,14 +27,30 @@ export interface LyriaInstallState {
   log_path?: string;
 }
 
+/** Where the FIRST key of a provider comes from. */
+export type LyriaKeySource = 'env' | 'file' | 'pool' | 'none' | string;
+
+/** gemini | openrouter, or null for "let Lyria decide". */
+export type LyriaProvider = 'gemini' | 'openrouter';
+
 export interface LyriaProviderExtras {
-  /** Absent pieces by id: project | deps | git | node | key. */
+  /** Absent pieces by id: project | deps | git | node | key. `key` means BOTH
+   *  providers are empty — either one on its own can generate. */
   missing: string[];
   installable: boolean;
   installing: boolean;
   install: LyriaInstallState;
   gemini_key: boolean;
-  gemini_key_source: 'env' | 'file' | 'pool' | 'none' | string;
+  gemini_key_source: LyriaKeySource;
+  openrouter_key?: boolean;
+  openrouter_key_source?: LyriaKeySource;
+  /** How many keys theDAW holds for the sidecar per provider (counts, never
+   *  values). A checkout with server/keys.ts gets up to ten and skips a
+   *  rejected one; an older checkout gets the first only. */
+  gemini_keys?: number;
+  openrouter_keys?: number;
+  /** The provider the user pinned for the child, null for "let Lyria decide". */
+  provider_preference?: LyriaProvider | null;
   mock: boolean;
   project_path: string;
   repo: string;

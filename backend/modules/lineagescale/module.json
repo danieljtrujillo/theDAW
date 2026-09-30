@@ -1,0 +1,10 @@
+{
+  "name": "lineagescale",
+  "label": "Lineage",
+  "enabled": true,
+  "icon": "GitBranch",
+  "sidebar": false,
+  "api_prefix": "/api/lineage-scale",
+  "backend": true,
+  "description": "Lineage for a library too big to draw at once. One song at a time: its sources above, its derivatives below, fans of hundreds collapsed into counted groups you open as a list. Plus a landing page of headline numbers and ranked lists (most derived, deepest chain, biggest mashup sources, most recently extended), where every number opens a list in the explorer: songs with or without lineage, any relationship kind as parent or child, rankings for any kind and role, families and their members, searchable, sortable and paged. Read-only; the whole-library graph view is untouched."
+}

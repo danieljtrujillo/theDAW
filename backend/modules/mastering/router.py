@@ -22,7 +22,8 @@ import numpy as np
 import soundfile as sf
 
 from ...core.module_base import build_router
-from ...lib import audio_analysis, ffmpeg, fir_utils
+from ...lib import audio_analysis, ffmpeg, ffmpeg_tools, fir_utils
+from ...lib.audio_depth import ffmpeg_pcm_args, probe_depth
 from ...lib.params import ParamSpec as P
 from ...lib.params import ToolSpec
 
@@ -36,7 +37,9 @@ def _eq(params: dict) -> list[str]:
         ",".join(
             [
                 f"bass=g={params['lowGain']}:f={params['lowFreq']}",
+                f"equalizer=f={params['lowMidFreq']}:width_type=q:w={params['lowMidQ']}:g={params['lowMidGain']}",
                 f"equalizer=f={params['midFreq']}:width_type=q:w={params['midQ']}:g={params['midGain']}",
+                f"equalizer=f={params['highMidFreq']}:width_type=q:w={params['highMidQ']}:g={params['highMidGain']}",
                 f"treble=g={params['highGain']}:f={params['highFreq']}",
                 f"volume={params['outputGain']}dB",
             ]
@@ -52,14 +55,29 @@ async def _maximizer(inp: Path, out: Path, params: dict) -> None:
         target_lra=params["targetLRA"],
         target_tp=params["ceiling"],
     )
+    # loudnorm only operates at 192 kHz — ffmpeg silently inserts an
+    # implicit resampler before it, and its OUTPUT stays at 192 kHz unless
+    # resampled back explicitly (same bug/fix as enhance/restoration's
+    # afftdn chains — see their ``_afftdn_delay_samples``-adjacent comments).
+    source_rate = _source_samplerate(inp)
     ln = (
         f"loudnorm=I={params['targetLUFS']}:LRA={params['targetLRA']}:TP={params['ceiling']}"
         f":measured_I={m['input_i']}:measured_LRA={m['input_lra']}"
         f":measured_TP={m['input_tp']}:measured_thresh={m['input_thresh']}"
         f":offset={m.get('target_offset', 0.0)}:linear=true"
     )
-    lim = f"alimiter=limit={10 ** (params['ceiling'] / 20):.4f}:attack={params['attack']}:release={params['release']}:asc=1"
-    await ffmpeg.render(inp, out, ["-af", f"{ln},{lim}"])
+    lim = f"alimiter=limit={10 ** (params['ceiling'] / 20):.4f}:attack={params['attack']}:release={params['release']}:asc=1:latency=true"
+    # process-mode handlers own their render call, so — unlike filter-mode,
+    # which gets this for free from build_router.process() — bit-depth
+    # preservation must be applied explicitly: without it every render came
+    # back at ffmpeg's WAV default (16-bit) regardless of source depth.
+    pcm_args = ffmpeg_pcm_args(probe_depth(inp), out.suffix.lstrip("."))
+    await ffmpeg.render(
+        inp,
+        out,
+        ["-af", f"{ln},{lim},aresample={source_rate}"],
+        extra_out_args=pcm_args,
+    )
 
 
 # ── Stereo Imager (filter) ─────────────────────────────────────────────
@@ -82,11 +100,49 @@ def _imager(params: dict) -> list[str]:
 # they await subprocesses.
 
 
+def _guarded_sf_read(path: Path, **kwargs):
+    """``sf.read`` with an ffmpeg-decode fallback for containers libsndfile
+    can't open (m4a/aac/wma uploaded as .wav) — same defect class, same fix
+    pattern as ``_source_samplerate`` below, applied to the actual sample
+    data instead of just its rate."""
+    try:
+        return sf.read(str(path), **kwargs)
+    except Exception:
+        import subprocess
+        import tempfile
+
+        from backend.lib.launch_token import child_env
+
+        with tempfile.TemporaryDirectory() as tmp:
+            decoded = Path(tmp) / "decoded.wav"
+            try:
+                subprocess.run(
+                    [
+                        ffmpeg_tools.ffmpeg_exe(),
+                        "-y",
+                        "-i",
+                        str(path),
+                        "-c:a",
+                        "pcm_f32le",
+                        str(decoded),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=600.0,
+                    env=child_env(),
+                )
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or b"").decode("utf-8", errors="replace")
+                raise ffmpeg.FFmpegError(e.returncode or -1, stderr) from e
+            return sf.read(str(decoded), **kwargs)
+
+
 # ── Dynamic EQ (process, numpy/scipy) ─────────────────────────────────
 def _dynamic_eq(inp: Path, out: Path, params: dict) -> None:
     from .dsp import dynamic_eq_process
 
-    audio, sr = sf.read(str(inp), always_2d=True)
+    audio, sr = _guarded_sf_read(inp, always_2d=True)
     bands = [
         {
             "freq": params["band1Freq"],
@@ -156,7 +212,7 @@ def _match_eq(inp: Path, out: Path, params: dict) -> None:
 
     # Design and apply FIR
     fir_kernel = fir_utils.design_fir_from_curve(freqs, correction, sr=sr, numtaps=4097)
-    audio, sr_read = sf.read(str(inp), always_2d=True)
+    audio, sr_read = _guarded_sf_read(inp, always_2d=True)
     result = fir_utils.apply_fir(audio, fir_kernel)
     sf.write(str(out), result.astype(np.float32), sr_read, subtype="FLOAT")
 
@@ -207,7 +263,7 @@ def _harmonic_exciter(params: dict) -> list[str]:
 def _transient_shaper(inp: Path, out: Path, params: dict) -> None:
     from .dsp import transient_shape
 
-    audio, sr = sf.read(str(inp), always_2d=True)
+    audio, sr = _guarded_sf_read(inp, always_2d=True)
     # Params are 0-100 range, map to -1..+1 multiplier
     attack = params["attack"] / 100.0
     sustain = params["sustain"] / 100.0
@@ -229,13 +285,32 @@ def _transient_shaper(inp: Path, out: Path, params: dict) -> None:
 def _spectral_stabilizer(inp: Path, out: Path, params: dict) -> None:
     from .dsp import spectral_stabilize
 
-    audio, sr = sf.read(str(inp), always_2d=True)
+    audio, sr = _guarded_sf_read(inp, always_2d=True)
     result = spectral_stabilize(
         audio,
         sr,
         amount_db=params["amount"],
     )
     sf.write(str(out), result.astype(np.float32), sr, subtype="FLOAT")
+
+
+def _source_samplerate(path: Path) -> int:
+    """Source sample rate for the loudnorm resample-back target.
+
+    ``sf.info`` raises ``LibsndfileError`` on containers libsndfile cannot
+    open (m4a/aac/wma uploaded as .wav); falls back to ffprobe, which
+    decodes those fine (see ``backend.lib.audio_depth.probe_depth`` for the
+    identical pattern).
+    """
+    try:
+        return sf.info(str(path)).samplerate
+    except Exception:
+        from ...modules.analysis.ffprobe import probe_file
+
+        rate = (probe_file(Path(path)).get("_summary") or {}).get("sample_rate")
+        if not rate:
+            raise
+        return int(rate)
 
 
 # ── Loudness Meter (process, ebur128 normalize) ───────────────────────
@@ -249,13 +324,23 @@ async def _loudness_meter(inp: Path, out: Path, params: dict) -> None:
         target_lra=params["targetLRA"],
         target_tp=target_tp,
     )
+    # loudnorm only operates at 192 kHz — ffmpeg silently inserts an
+    # implicit resampler before it, and its OUTPUT stays at 192 kHz unless
+    # resampled back explicitly (same bug/fix as _maximizer above).
+    source_rate = _source_samplerate(inp)
     ln = (
         f"loudnorm=I={target_lufs}:LRA={params['targetLRA']}:TP={target_tp}"
         f":measured_I={m['input_i']}:measured_LRA={m['input_lra']}"
         f":measured_TP={m['input_tp']}:measured_thresh={m['input_thresh']}"
         f":offset={m.get('target_offset', 0.0)}:linear=true"
     )
-    await ffmpeg.render(inp, out, ["-af", ln])
+    # process-mode handlers own their render call, so — unlike filter-mode,
+    # which gets this for free from build_router.process() — bit-depth
+    # preservation must be applied explicitly (see _maximizer above).
+    pcm_args = ffmpeg_pcm_args(probe_depth(inp), out.suffix.lstrip("."))
+    await ffmpeg.render(
+        inp, out, ["-af", f"{ln},aresample={source_rate}"], extra_out_args=pcm_args
+    )
 
 
 # ── AI Master Assistant (process, DSP master chain) ───────────────────
@@ -288,6 +373,10 @@ async def _master_assistant(inp: Path, out: Path, params: dict) -> None:
         target_tp=-1.0,
     )
 
+    # loudnorm only operates at 192 kHz — ffmpeg silently inserts an
+    # implicit resampler before it, and its OUTPUT stays at 192 kHz unless
+    # resampled back explicitly (same bug/fix as _maximizer above).
+    source_rate = _source_samplerate(inp)
     chain = ",".join(
         [
             f"bass=g={low_g:.1f}:f=120",
@@ -299,9 +388,14 @@ async def _master_assistant(inp: Path, out: Path, params: dict) -> None:
                 f":measured_TP={m['input_tp']}:measured_thresh={m['input_thresh']}"
                 f":offset={m.get('target_offset', 0.0)}:linear=true"
             ),
+            f"aresample={source_rate}",
         ]
     )
-    await ffmpeg.render(inp, out, ["-af", chain])
+    # process-mode handlers own their render call, so — unlike filter-mode,
+    # which gets this for free from build_router.process() — bit-depth
+    # preservation must be applied explicitly (see _maximizer above).
+    pcm_args = ffmpeg_pcm_args(probe_depth(inp), out.suffix.lstrip("."))
+    await ffmpeg.render(inp, out, ["-af", chain], extra_out_args=pcm_args)
 
 
 TOOLS: list[ToolSpec] = [
@@ -313,14 +407,36 @@ TOOLS: list[ToolSpec] = [
         engine="ffmpeg:bass+equalizer+treble",
         license="LGPL",
         handler=_eq,
-        description="3-band parametric EQ (low shelf / mid bell / high shelf) over a live spectrum.",
+        description="5-band parametric EQ (low shelf / low-mid / mid / high-mid / high shelf bells) over a live spectrum.",
+        # Frequency 20-20000 Hz / Q 0.1-18 on every band (bell AND shelf)
+        # matches what the two frontend pages actually let a user send:
+        # parametric-eq.html's Frequency/Q sliders are shared across all 5
+        # bands with those exact bounds (no per-band clamp), so a value the
+        # backend previously rejected with a bare 400 — e.g. a low shelf
+        # dragged above 500 Hz, or a bell's Q pushed past 10 — was reachable
+        # from the live UI, not just a hypothetical client.
         params=[
-            P("lowFreq", "float", 20, 500, 80, "Hz", "ParamKnob", "Low Freq"),
+            P("lowFreq", "float", 20, 20000, 80, "Hz", "ParamKnob", "Low Freq"),
             P("lowGain", "float", -18, 18, 0, "dB", "ParamSlider", "Low Gain"),
-            P("midFreq", "float", 200, 8000, 1000, "Hz", "ParamKnob", "Mid Freq"),
+            P("lowMidFreq", "float", 20, 20000, 300, "Hz", "ParamKnob", "Low-Mid Freq"),
+            P("lowMidGain", "float", -18, 18, 0, "dB", "ParamSlider", "Low-Mid Gain"),
+            P("lowMidQ", "float", 0.1, 18, 1.5, "", "ParamKnob", "Low-Mid Q"),
+            P("midFreq", "float", 20, 20000, 1000, "Hz", "ParamKnob", "Mid Freq"),
             P("midGain", "float", -18, 18, 0, "dB", "ParamSlider", "Mid Gain"),
-            P("midQ", "float", 0.1, 10, 1.0, "", "ParamKnob", "Mid Q"),
-            P("highFreq", "float", 2000, 18000, 8000, "Hz", "ParamKnob", "High Freq"),
+            P("midQ", "float", 0.1, 18, 1.0, "", "ParamKnob", "Mid Q"),
+            P(
+                "highMidFreq",
+                "float",
+                20,
+                20000,
+                3500,
+                "Hz",
+                "ParamKnob",
+                "High-Mid Freq",
+            ),
+            P("highMidGain", "float", -18, 18, 0, "dB", "ParamSlider", "High-Mid Gain"),
+            P("highMidQ", "float", 0.1, 18, 1.5, "", "ParamKnob", "High-Mid Q"),
+            P("highFreq", "float", 20, 20000, 8000, "Hz", "ParamKnob", "High Freq"),
             P("highGain", "float", -18, 18, 0, "dB", "ParamSlider", "High Gain"),
             P("outputGain", "float", -12, 12, 0, "dB", "ParamKnob", "Output"),
         ],

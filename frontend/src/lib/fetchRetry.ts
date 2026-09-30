@@ -8,6 +8,7 @@
  * ride over that window — the file on disk is fine, the connection just dropped.
  */
 import { logWarn } from '../state/logStore';
+import { ApiError, describeApiError } from './apiJson';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -19,29 +20,14 @@ interface RetryOpts {
 
 async function fetchOk(url: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  // The STATUS is not the answer the user needs. `/api/library/audio/{id}`
+  // 404s with a detail that says why there is no audio — no file in the entry,
+  // none in any media root, and a remote copy that refused — and "Drop decode
+  // failed: HTTP 404" threw all of that away. `describeApiError` prefers the
+  // route's own `detail`/`error` and falls back to the described status, so a
+  // route that says nothing reads exactly as it did before.
+  if (!res.ok) throw new ApiError(await describeApiError(res), res.status);
   return res;
-}
-
-/** Fetch bytes with retries; rejects only after the last attempt fails. */
-export async function fetchBytesWithRetry(url: string, opts: RetryOpts = {}): Promise<ArrayBuffer> {
-  const { retries = 3, backoffMs = 450, label } = opts;
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      const res = await fetchOk(url);
-      const buf = await res.arrayBuffer();
-      if (buf.byteLength === 0) throw new Error('empty response body');
-      return buf;
-    } catch (e) {
-      lastErr = e;
-      if (attempt < retries) {
-        if (label) logWarn('library', `${label}: fetch attempt ${attempt + 1} failed (${e instanceof Error ? e.message : String(e)}); retrying…`);
-        await sleep(backoffMs * (attempt + 1));
-      }
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 /** True when the bytes are a structurally complete Standard MIDI File (header

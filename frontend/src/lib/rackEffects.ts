@@ -17,7 +17,19 @@
  */
 
 import { distCurve } from './synthVoiceKit';
+import { addWorkletModule } from './audioWorkletSupport';
+import { createVstLiveNode } from './vstLive/vstLiveNode';
+import { vstLiveLatencySec } from '../state/vstLiveStore';
 import type { ChainEntry } from '../state/effectChainStore';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from './tempoMap';
+import { HALL_OPTION_LABELS, POSITION_OPTION_LABELS, cachedHallIr, hallIrUrl, loadHallIr } from './hallIrs';
+
+/** The effect id a hosted VST3 plugin carries. It is deliberately NOT a
+ *  `RACK_EFFECTS` entry — `getRackEffect('vst3')` stays undefined — because a
+ *  VST entry is not built from numeric params but from its `vst` block
+ *  (plugin path, stored state), which no `RackEffectFactory` signature can
+ *  carry. `buildEffectChain` and `chainLatencyReport` special-case it instead. */
+const VST3_EFFECT_ID = 'vst3';
 
 /** One scheduled spatial jump: position (x,y,z) to hold from absolute ctx time `when`. */
 export interface TeleportEvent {
@@ -32,6 +44,20 @@ export interface RackEffectInstance {
   input: AudioNode;
   /** Processed signal leaves here. */
   output: AudioNode;
+  /**
+   * KEY (sidechain) input — present only on instances of a definition that
+   * declares `keyInput: true`. Connect another strip's post-pan tap here and the
+   * effect's detector reads THAT signal instead of only its own input; leave it
+   * unconnected and the instance behaves exactly as it did before there was one
+   * (see `makeKeyFollower` for why that is exact rather than approximate).
+   *
+   * A `GainNode` rather than the detector itself, so the caller has one stable
+   * node to connect into for the life of the instance, and so several sources
+   * keying one entry simply SUM — which is what a mixer does with several
+   * inputs, and what `wireRoutingGraph` relies on when a graph holds more than
+   * one `CONN_SIDECHAIN` edge aimed at the same `targetEntryId`.
+   */
+  keyIn?: AudioNode;
   /** Push new parameter values onto the live nodes (click-free where possible). */
   setParams: (p: Record<string, number>) => void;
   /** Spatializer only: drive panner position from a transport-synced schedule
@@ -99,6 +125,17 @@ export interface RackXYPad {
   y: string;
 }
 
+/**
+ * How much latency an effect adds, in SECONDS. A constant for most effects that
+ * have any; a function when it depends on the effect's own params or on the
+ * context sample rate (a look-ahead expressed in samples, say). `sampleRate` is
+ * whatever the caller supplied — it is not invented, so a declaration that
+ * needs one must handle `undefined`.
+ */
+export type RackLatencySpec =
+  | number
+  | ((params: Record<string, number>, sampleRate?: number) => number);
+
 export interface RackEffectDef {
   id: string;
   label: string;
@@ -108,10 +145,56 @@ export interface RackEffectDef {
   make: RackEffectFactory;
   /** The param that acts as wet/dry; the panel gives it a fixed header slot. */
   mixKey?: string;
+  /**
+   * This effect can be KEYED from another strip: its instance exposes
+   * `RackEffectInstance.keyIn`, and the UI offers a "Key from" picker for it.
+   *
+   * Declared on the DEFINITION rather than inferred from the instance because
+   * the picker has to exist before anything is built — `EffectWindows` asks the
+   * registry, not the live graph, and an offline bounce has no live graph to
+   * ask at all. A definition that sets this MUST return a `keyIn` from `make`.
+   */
+  keyInput?: boolean;
   /** Sensible starting points for this effect (plus the implicit Default). */
   presets?: readonly RackEffectPreset[];
   /** Declared XY pads; each pair also stays reachable as individual controls. */
   xy?: readonly RackXYPad[];
+  /** Latency this effect adds to the signal, in seconds. ABSENT MEANS 0 — an
+   *  effect only declares a value when its OUTPUT ONSET actually lags its
+   *  input, i.e. it looks ahead or buffers. An internal delay line that only
+   *  feeds a wet path alongside an undelayed dry path is not latency: the dry
+   *  signal still leaves at t=0, so the effect is time-aligned and declaring a
+   *  number would push the whole chain late. The one effect with no dry path,
+   *  `spatializer` (100 % wet through an HRTF `PannerNode`), still declares
+   *  nothing: HRTF convolution latency is implementation-defined rather than
+   *  fixed by the spec, so there is no honest constant to put here.
+   *  See `chainLatencySec`. */
+  latencySec?: RackLatencySpec;
+  /**
+   * True when rendering this effect in separate `OfflineAudioContext` chunks
+   * would change the audio AUDIBLY at the seam. Each chunk is a fresh context:
+   * every node starts from silence and every clock restarts at t = 0. Three
+   * families qualify, and each declaration below names which one it is:
+   *
+   *  a. AUDIO MEMORY longer than a render quantum — a reverb tail, a feedback
+   *     delay line, a history ring the effect replays from.
+   *  b. ADAPTIVE STATE that takes time to settle — an envelope follower, a
+   *     zero-crossing/pitch tracker. It would re-converge at every seam.
+   *  c. A FREE-RUNNING GENERATOR whose phase IS the effect — a gate LFO's
+   *     rhythm, a ring modulator's carrier. Started at context time 0, it
+   *     re-phases at every seam: the pattern jumps, or the product steps.
+   *
+   * ABSENT MEANS FALSE, and two things are deliberately absent: biquad filters
+   * (two samples of memory) and `crossfeed`'s 300 us inter-aural delay (13
+   * samples at 44.1 kHz). Both carry state, but less than one 128-sample render
+   * quantum of it, so no seam can produce an artefact a listener could hear.
+   *
+   * Read by `state/renderJobs.chainIsChunkSafe`, which gates chunked rendering;
+   * a bypassed entry is routed around, so its declaration never counts.
+   * `renderJobs.test.ts` asserts the EXACT set of ids that declare this, so a
+   * new factory carrying state across a seam cannot be added without deciding.
+   */
+  chunkUnsafe?: boolean;
 }
 
 /* ── small helpers ─────────────────────────────────────────────────────────── */
@@ -517,8 +600,8 @@ const makeSpatializer: RackEffectFactory = (ctx, params) => {
   };
 
   // Live-only buffers (allocated in ensureAutopilot so offline never allocates them).
-  let freqBuf: Uint8Array | null = null;
-  let timeBuf: Uint8Array | null = null;
+  let freqBuf: Uint8Array<ArrayBuffer> | null = null;
+  let timeBuf: Uint8Array<ArrayBuffer> | null = null;
   let prevFreq: Uint8Array | null = null;
   let bands: Array<{ lo: number; hi: number }> = [];
   const agcState: Record<string, { min: number; max: number }> = {};
@@ -932,7 +1015,7 @@ const makeGater: RackEffectFactory = (ctx, params) => {
 
   const apply = (p: Record<string, number>) => {
     const synced = (p.sync ?? 0) >= 0.5;
-    const bpm = clamp(p.bpm ?? 120, 40, 240);
+    const bpm = clamp(p.bpm ?? 120, TEMPO_BPM_MIN, TEMPO_BPM_MAX);
     const div = Math.round(clamp(p.div ?? 3, 0, GATER_DIV_CYCLES.length - 1));
     const rate = synced ? (bpm / 60) * GATER_DIV_CYCLES[div] : clamp(p.rate ?? 6, 0.1, 30);
     const depth = clamp(p.depth ?? 0.8, 0, 1);
@@ -963,7 +1046,7 @@ const makeGater: RackEffectFactory = (ctx, params) => {
    A stepped waveshaper quantizes the signal to 2^bits levels for lo-fi crunch,
    blended against the dry signal. (Sample-rate reduction, the other half of a
    classic crusher, needs a per-sample worklet and lands with the chop suite.) */
-const bitcrushCurve = (bits: number): Float32Array => {
+const bitcrushCurve = (bits: number): Float32Array<ArrayBuffer> => {
   const n = 2048;
   const curve = new Float32Array(n);
   const levels = Math.pow(2, clamp(bits, 1, 16));
@@ -1048,7 +1131,7 @@ const chopModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
 export const ensureChopModule = (ctx: BaseAudioContext): Promise<void> => {
   let p = chopModuleByCtx.get(ctx);
   if (!p) {
-    p = ctx.audioWorklet.addModule('/chop.worklet.js').catch((e) => {
+    p = addWorkletModule(ctx, '/chop.worklet.js').catch((e) => {
       chopModuleByCtx.delete(ctx);
       throw e;
     });
@@ -1064,7 +1147,7 @@ const granularModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
 export const ensureGranularModule = (ctx: BaseAudioContext): Promise<void> => {
   let p = granularModuleByCtx.get(ctx);
   if (!p) {
-    p = ctx.audioWorklet.addModule('/granular.worklet.js').catch((e) => {
+    p = addWorkletModule(ctx, '/granular.worklet.js').catch((e) => {
       granularModuleByCtx.delete(ctx);
       throw e;
     });
@@ -1201,7 +1284,7 @@ const subharmonicModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
 export const ensureSubharmonicModule = (ctx: BaseAudioContext): Promise<void> => {
   let p = subharmonicModuleByCtx.get(ctx);
   if (!p) {
-    p = ctx.audioWorklet.addModule('/subharmonic.worklet.js').catch((e) => {
+    p = addWorkletModule(ctx, '/subharmonic.worklet.js').catch((e) => {
       subharmonicModuleByCtx.delete(ctx);
       throw e;
     });
@@ -1424,13 +1507,172 @@ const makeParametricEq: RackEffectFactory = (ctx, params) => {
   };
 };
 
-/* Compressor: native DynamicsCompressor + makeup gain. */
+/* ── the key (sidechain) follower ───────────────────────────────────────────────
+   A `DynamicsCompressorNode` has ONE input and no key, so "duck the bass from
+   the kick" cannot be expressed by handing the native node a second signal. It
+   has to be built: the key drives a gain node ON the audio path, and the whole
+   detector is made of audio nodes.
+
+   THE DESIGN CHOICE, and it is the one the bounce depends on. The obvious
+   alternative — a second `DynamicsCompressorNode` fed the key, whose `reduction`
+   is polled and written onto the audio path — CANNOT be used here, because
+   `reduction` is a float a JS timer reads. Live that timer runs at whatever rate
+   the tab gets; in an `OfflineAudioContext` a 300 s bounce renders in a fraction
+   of a second and the timer fires a handful of times or not at all. The two
+   renders would not merely round differently, they would duck at different
+   moments. `export == preview` is a hard rule in this app, so the follower is
+   built entirely out of nodes and NO JAVASCRIPT IS IN THE LOOP: given the same
+   key samples, live and offline compute the same gain sample for sample.
+
+     keyIn (sens) -> shaper (full-wave rectify) -> lowpass (smooth) -> depth
+                                                                       |
+                            input -> comp -> makeup -> [ gain ] -> output
+                                                          ^ intrinsic 1, plus
+                                                            the negative depth
+
+   An `AudioParam` sums its connected inputs with its INTRINSIC value — the same
+   arithmetic `makeGater` already leans on (`gate.gain.value = 0`, bias + LFO
+   connected to it) — so a gain whose intrinsic value is 1, fed a negative
+   envelope, is `1 - reduction`.
+
+   WHY IT IS EXACTLY TRANSPARENT UNKEYED. With nothing connected to `keyIn` the
+   shaper sees silence, and the rectifier curve is sampled at an ODD length so
+   its centre sample is |0| = 0 exactly; a biquad with a zero input and zero
+   state stays at zero; the depth gain scales zero. The param computes
+   `1 + 0 = 1` and a multiply by 1 is exact in float32, so every existing render
+   of a compressor is sample-for-sample what it was before this node existed.
+
+   WHY THE GAIN CAN NEVER GO NEGATIVE (which would invert the signal rather than
+   duck it): the rectifier's output is bounded by 1 because the shaper clamps
+   inputs outside [-1, 1] to its end samples, and the smoothing filter is a
+   biquad lowpass at `Q = 0.5` — critically damped, a double real pole, whose
+   impulse response is non-negative with unit area. A non-negative unit-area
+   kernel cannot lift a signal above its own maximum, so the envelope stays in
+   [0, 1] and the reduction stays in [0, `depth`] with `depth < 1`.
+
+   LATENCY: none. `KEY_FOLLOWER_LATENCY_SEC` is the term this adds to a keyed
+   effect's declaration, and it is 0 by construction — every node of the
+   follower is on the CONTROL path, and the only node it adds to the AUDIO path
+   is a `GainNode`, which the spec gives no latency. The smoothing filter's group
+   delay is real, but it delays the ENVELOPE, not the signal, so an effect that
+   declares anything for it would push its whole chain late for a lag nothing
+   downstream experiences. (See `RackEffectDef.latencySec`: a value belongs there
+   only when the OUTPUT ONSET lags the input.) */
+
+/** Samples in the rectifier curve. ODD, so index `(N-1)/2` is exactly x = 0 and
+ *  a silent key maps to exactly zero reduction. */
+const KEY_SHAPER_SAMPLES = 1025;
+
+/** Smoothing filter Q. 0.5 is the critically damped double pole: no overshoot,
+ *  which is what bounds the envelope by the rectifier's own maximum. */
+const KEY_SMOOTH_Q = 0.5;
+
+/**
+ * Seconds a key follower adds to the AUDIO path: zero, by construction. Exported
+ * so a keyed effect's latency declaration can state the term explicitly instead
+ * of silently omitting it, and so a test can pin that the number is zero rather
+ * than merely absent.
+ */
+export const KEY_FOLLOWER_LATENCY_SEC = 0;
+
+/** The follower, as its owner holds it. */
+interface KeyFollower {
+  /** The node a key source connects into. */
+  keyIn: GainNode;
+  /** Re-read `keySens` / `keySmooth` / `keyDuck` off a param set. */
+  setParams: (p: Record<string, number>) => void;
+  dispose: () => void;
+}
+
+/**
+ * Build the detector and splice a key-driven gain onto `path`, returning the
+ * follower plus the node the audio now leaves from.
+ *
+ * `path` keeps feeding the new gain, so the caller's existing wiring upstream of
+ * it is untouched; the caller must publish `audioOut` as the instance's output.
+ */
+function makeKeyFollower(
+  ctx: BaseAudioContext,
+  path: AudioNode,
+  params: Record<string, number>,
+): { follower: KeyFollower; audioOut: GainNode } {
+  const keyIn = ctx.createGain();
+  const shaper = ctx.createWaveShaper();
+  const curve = new Float32Array(KEY_SHAPER_SAMPLES);
+  for (let i = 0; i < KEY_SHAPER_SAMPLES; i += 1) {
+    curve[i] = Math.abs(-1 + (2 * i) / (KEY_SHAPER_SAMPLES - 1));
+  }
+  shaper.curve = curve;
+  // No oversampling: the curve is |x|, whose only harmonic content is the
+  // rectification itself, and the smoothing filter below removes it. Oversampling
+  // would add its own resampling latency to a path that has none.
+  shaper.oversample = 'none';
+  const smooth = ctx.createBiquadFilter();
+  smooth.type = 'lowpass';
+  smooth.Q.value = KEY_SMOOTH_Q;
+  const depth = ctx.createGain();
+  const audioOut = ctx.createGain();
+  // The intrinsic value the reduction is subtracted FROM. Set explicitly rather
+  // than left at its default so the arithmetic is stated where it is relied on.
+  audioOut.gain.value = 1;
+
+  keyIn.connect(shaper).connect(smooth).connect(depth);
+  depth.connect(audioOut.gain);
+  path.connect(audioOut);
+
+  const setParams = (p: Record<string, number>) => {
+    const t = ctx.currentTime;
+    // Sensitivity is gain INTO the rectifier, so the shaper's own [-1, 1] clamp
+    // is the detector's ceiling: at +12 dB a key peaking at -12 dBFS already
+    // reaches full reduction.
+    keyIn.gain.setValueAtTime(dbToGain(clamp(p.keySens ?? 12, 0, 48)), t);
+    // A one-pole time constant expressed as a corner frequency: tau = 1/(2*pi*f).
+    // Clamped above 0.05 Hz so a 20 s smoothing cannot be asked for by a damaged
+    // param set, and below a fifth of Nyquist so it stays a smoother rather than
+    // an audio-band filter of the envelope.
+    const tau = clamp(p.keySmooth ?? 80, 1, 500) / 1000;
+    const hz = clamp(1 / (2 * Math.PI * tau), 0.05, ctx.sampleRate / 10);
+    smooth.frequency.setValueAtTime(hz, t);
+    // Depth as the FRACTION of the signal the key removes at full envelope:
+    // `1 - 10^(-duck/20)`, negated because it is subtracted from unity. A duck
+    // of 0 dB is 0 — the picker can be set while the effect stays transparent.
+    const duckDb = clamp(p.keyDuck ?? 12, 0, 48);
+    depth.gain.setValueAtTime(-(1 - dbToGain(-duckDb)), t);
+  };
+  setParams(params);
+
+  return {
+    follower: {
+      keyIn,
+      setParams,
+      dispose: () => {
+        try {
+          keyIn.disconnect();
+          shaper.disconnect();
+          smooth.disconnect();
+          depth.disconnect();
+          audioOut.disconnect();
+        } catch {
+          /* already gone */
+        }
+      },
+    },
+    audioOut,
+  };
+}
+
+/* Compressor: native DynamicsCompressor + makeup gain, plus a key follower whose
+   reduction is zero until something is connected to `keyIn`. */
 const makeCompressor: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
   const comp = ctx.createDynamicsCompressor();
   const makeup = ctx.createGain();
   input.connect(comp);
   comp.connect(makeup);
+  // Post-makeup: the key ducks what the compressor produced, which is where a
+  // sidechain sits on a console and what keeps the internal detector's own
+  // behaviour identical to the unkeyed version.
+  const { follower, audioOut } = makeKeyFollower(ctx, makeup, params);
   const setParams = (p: Record<string, number>) => {
     const t = ctx.currentTime;
     comp.threshold.setValueAtTime(clamp(p.threshold ?? -24, -60, 0), t);
@@ -1439,11 +1681,13 @@ const makeCompressor: RackEffectFactory = (ctx, params) => {
     comp.attack.setValueAtTime(clamp((p.attack ?? 10) / 1000, 0, 1), t);
     comp.release.setValueAtTime(clamp((p.release ?? 150) / 1000, 0, 1), t);
     ramp(makeup.gain, dbToGain(clamp(p.makeup ?? 0, 0, 24)), ctx);
+    follower.setParams(p);
   };
   setParams(params);
   return {
     input,
-    output: makeup,
+    output: audioOut,
+    keyIn: follower.keyIn,
     setParams,
     dispose: () => {
       try {
@@ -1453,6 +1697,7 @@ const makeCompressor: RackEffectFactory = (ctx, params) => {
       } catch {
         /* already gone */
       }
+      follower.dispose();
     },
   };
 };
@@ -1471,7 +1716,27 @@ const makeReverbIR = (ctx: BaseAudioContext, seconds: number): AudioBuffer => {
   return ir;
 };
 
-/* Reverb: convolution of a synthesized IR, with predelay, tone and wet/dry. */
+/**
+ * Reverb: convolution with predelay, tone and wet/dry.
+ *
+ * The impulse response is the synthesized room (decaying noise `decay`
+ * seconds long) unless `hall` names a measured one (lib/hallIrs): a concert
+ * hall heard from an audience seat, from the stage `position` the source
+ * sits at. A measured response is an asset loaded with `decodeAudioData`
+ * (hallIrs loadHallIr). When it is already decoded for this context's rate
+ * the convolver gets it at once, which is how an offline bounce plays it
+ * (renderCore awaits hallIrs ensureHallIrsForChains before building); live,
+ * the synthesized room plays until the file arrives and the response is
+ * swapped in then. A file that cannot load leaves the synthesized room.
+ * `decay` shapes only the synthesized room: a measured hall rings as long as
+ * the hall does.
+ *
+ * A measured response is one source heard by two ears, so on a hall the
+ * convolver takes its input as mono (the sum of a stereo input): a panned
+ * part excites the hall from its seat and both ears hear the room, as in the
+ * measurement. The synthesized room keeps the convolver's stereo input, left
+ * into the left response and right into the right.
+ */
 const makeReverb: RackEffectFactory = (ctx, params) => {
   const input = ctx.createGain();
   const output = ctx.createGain();
@@ -1488,12 +1753,47 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
   conv.connect(tone);
   tone.connect(wet);
   wet.connect(output);
-  let curSeconds = -1;
+  /** What the convolver holds: a hall file's URL, or `synth:<seconds>`. */
+  let current = '';
+  /** The response the params ask for, which a load in flight checks before it lands. */
+  let wanted = '';
+  let disposed = false;
+  /** Mono input for a measured hall, the convolver's own stereo input for the room. */
+  const setInputMono = (mono: boolean) => {
+    conv.channelCount = mono ? 1 : 2;
+    conv.channelCountMode = mono ? 'explicit' : 'clamped-max';
+  };
+  const setSynthetic = (seconds: number) => {
+    const key = `synth:${seconds}`;
+    if (current === key) return;
+    conv.buffer = makeReverbIR(ctx, seconds);
+    setInputMono(false);
+    current = key;
+  };
+  const setHall = (url: string, buf: AudioBuffer) => {
+    conv.buffer = buf;
+    setInputMono(true);
+    current = url;
+  };
   const setParams = (p: Record<string, number>) => {
     const seconds = clamp(p.decay ?? 2.0, 0.1, 8);
-    if (seconds !== curSeconds) {
-      conv.buffer = makeReverbIR(ctx, seconds);
-      curSeconds = seconds;
+    const url = hallIrUrl(p.hall, p.position);
+    if (!url) {
+      wanted = `synth:${seconds}`;
+      setSynthetic(seconds);
+    } else if (wanted !== url || current !== url) {
+      wanted = url;
+      const ready = cachedHallIr(url, ctx.sampleRate);
+      if (ready) {
+        if (current !== url) setHall(url, ready);
+      } else {
+        // Until the file arrives the room is heard, never silence.
+        if (!current) setSynthetic(seconds);
+        void loadHallIr(ctx, url).then((buf) => {
+          if (!buf || disposed || wanted !== url || current === url) return;
+          setHall(url, buf);
+        });
+      }
     }
     pre.delayTime.setValueAtTime(clamp((p.predelay ?? 20) / 1000, 0, 0.5), ctx.currentTime);
     tone.frequency.value = clamp(p.tone ?? 8000, 500, 18000);
@@ -1507,6 +1807,7 @@ const makeReverb: RackEffectFactory = (ctx, params) => {
     output,
     setParams,
     dispose: () => {
+      disposed = true;
       try {
         input.disconnect();
         dry.disconnect();
@@ -1760,6 +2061,12 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Sygyt Whistle', values: { subLevel: 0.6, growlDepth: 0.4, whistleAmt: 1, whistleHz: 1900, vowel: 3.5 } },
       { label: 'Talking Bass', values: { vowel: 2, motionRate: 2.5, motionDepth: 0.9, growlDepth: 0.5, drive: 20 } },
     ],
+    // (b) ADAPTIVE STATE + (c) FREE-RUNNING GENERATOR: the subharmonic worklet
+    // holds a Schmitt-trigger sign, an envelope follower and DC-blocker memories
+    // (`public/subharmonic.worklet.js`), so the octave divider has to re-lock to
+    // the fundamental at every seam; the growl and vowel-motion oscillators
+    // re-phase on top of that.
+    chunkUnsafe: true,
     make: makeKargyraa,
   },
   {
@@ -1812,6 +2119,11 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'motionDepth', label: 'Depth', min: 0, max: 8, step: 0.1, default: 1.5, unit: 'm', group: 'Motion' },
     ],
     presets: SPATIAL_PRESETS,
+    // (a) AUDIO MEMORY + (c) FREE-RUNNING GENERATOR: the HRTF `PannerNode`
+    // convolves against an impulse response, so it carries a tail; three motion
+    // LFOs run free from context time 0; and `scheduleTeleport` writes its jumps
+    // at ABSOLUTE context times, which a per-chunk context would not share.
+    chunkUnsafe: true,
     make: makeSpatializer,
   },
   {
@@ -1851,6 +2163,10 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Delay Throw', values: { program: 3, x: 0.4, y: 0.55, active: 1 } },
       { label: 'Filter + Delay', values: { program: 4, x: 0.5, y: 0.5, active: 1 } },
     ],
+    // FEEDBACK LOOP: two of its five programs (Delay Throw, Filter + Delay) are
+    // feedback delays, and the program is a param the user can move — so the pad
+    // is unsafe whichever one is selected right now, rather than conditionally.
+    chunkUnsafe: true,
     make: makeOwlPad,
   },
   {
@@ -1862,7 +2178,7 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'sync', label: 'Sync', min: 0, max: 1, step: 1, default: 0, kind: 'toggle', group: 'Clock', tip: 'Tempo-sync: the rate follows Division × BPM instead of the Rate knob.' },
       { key: 'rate', label: 'Rate', min: 0.1, max: 30, step: 0.1, default: 6, unit: 'Hz', curve: 'log', group: 'Clock' },
       { key: 'div', label: 'Division', min: 0, max: 7, step: 1, default: 3, options: GATER_DIVISIONS, group: 'Clock' },
-      { key: 'bpm', label: 'BPM', min: 40, max: 240, step: 1, default: 120, group: 'Clock' },
+      { key: 'bpm', label: 'BPM', min: TEMPO_BPM_MIN, max: TEMPO_BPM_MAX, step: 1, default: 120, group: 'Clock' },
       { key: 'shape', label: 'Shape', min: 0, max: 2, step: 1, default: 1, options: ['Sine', 'Square', 'Saw'], group: 'Gate' },
       { key: 'depth', label: 'Depth', min: 0, max: 1, step: 0.01, default: 0.8, display: 'percent', group: 'Gate' },
     ],
@@ -1872,6 +2188,12 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Tremolo', values: { sync: 0, rate: 5, shape: 0, depth: 0.5 } },
       { label: 'Helicopter', values: { sync: 0, rate: 14, shape: 2, depth: 1 } },
     ],
+    // (c) FREE-RUNNING GENERATOR: the gate is an oscillator + constant-source
+    // started with `lfo.start()`, i.e. at context time 0. Its PHASE is the
+    // effect — a square gate re-phasing at a seam lands its openings somewhere
+    // else, which is the rhythm changing, not a subtlety. It carries no audio
+    // across the seam, but the re-phasing alone is plainly audible.
+    chunkUnsafe: true,
     make: makeGater,
   },
   {
@@ -1907,6 +2229,11 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Bell', values: { frequency: 1200, mix: 0.7 } },
       { label: 'Sub Tremor', values: { frequency: 30, mix: 1 } },
     ],
+    // (c) FREE-RUNNING GENERATOR: the output is the input multiplied by a
+    // carrier started at context time 0. Restarting that carrier mid-signal
+    // steps the product discontinuously — a click at every seam, and the
+    // sidebands shift phase either side of it.
+    chunkUnsafe: true,
     make: makeRingMod,
   },
   {
@@ -1928,6 +2255,11 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Beat Repeat', values: { program: 1, rate: 4, slice: 0.5 } },
       { label: 'Shuffle', values: { program: 2, rate: 2, slice: 1 } },
     ],
+    // (a) AUDIO MEMORY: the worklet keeps a 2 s ring of recent input and
+    // replays slices of it on every trigger (`public/chop.worklet.js`), so its
+    // output is literally audio from before the seam. A fresh context starts
+    // with a silent ring — the first triggers of every chunk would play nothing.
+    chunkUnsafe: true,
     make: makeChop,
   },
   {
@@ -1954,7 +2286,14 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     id: 'compressor',
     label: 'Compressor',
     group: 'EQ & Dynamics',
-    description: 'Dynamics compressor with makeup gain (threshold/ratio/attack/release).',
+    description:
+      'Dynamics compressor with makeup gain (threshold/ratio/attack/release), keyable from another strip.',
+    // The one keyable effect in the rack today. The other two candidates a
+    // sidechain UI usually offers do not exist here to key: there is no noise
+    // gate (`gater` is an LFO tremolo, whose opening is a phase and not a
+    // detector) and no separate ducker — a compressor keyed from another strip
+    // IS the ducker, which is why one is not added.
+    keyInput: true,
     params: [
       { key: 'threshold', label: 'Threshold', min: -60, max: 0, step: 0.5, default: -24, unit: 'dB', group: 'Detector' },
       { key: 'ratio', label: 'Ratio', min: 1, max: 20, step: 0.1, default: 3, unit: ':1', group: 'Detector' },
@@ -1962,6 +2301,12 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { key: 'attack', label: 'Attack', min: 0, max: 200, step: 1, default: 10, unit: 'ms', group: 'Envelope' },
       { key: 'release', label: 'Release', min: 5, max: 1000, step: 5, default: 150, unit: 'ms', curve: 'log', group: 'Envelope' },
       { key: 'makeup', label: 'Makeup', min: 0, max: 24, step: 0.5, default: 0, unit: 'dB', group: 'Output' },
+      // The key follower. Inert until a `CONN_SIDECHAIN` edge connects something
+      // to `keyIn`, so these three change nothing on an unkeyed compressor
+      // whatever they are set to — see `makeKeyFollower`.
+      { key: 'keyDuck', label: 'Key Duck', min: 0, max: 48, step: 0.5, default: 12, unit: 'dB', group: 'Key', tip: 'How far the key signal pulls this down at full level. 0 = keyed but transparent.' },
+      { key: 'keySens', label: 'Key Sens', min: 0, max: 48, step: 0.5, default: 12, unit: 'dB', group: 'Key', tip: 'Gain into the key detector — at 12 dB a key peaking at -12 dBFS already ducks fully.' },
+      { key: 'keySmooth', label: 'Key Smooth', min: 1, max: 500, step: 1, default: 80, unit: 'ms', curve: 'log', group: 'Key', tip: 'Key envelope time constant. Short = it follows every transient; long = it breathes.' },
     ],
     xy: [{ label: 'Threshold / Ratio', x: 'threshold', y: 'ratio' }],
     presets: [
@@ -1970,15 +2315,38 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Drum Smash', values: { threshold: -30, ratio: 10, knee: 2, attack: 2, release: 60, makeup: 6 } },
       { label: 'Peak Stop', values: { threshold: -6, ratio: 20, knee: 0, attack: 1, release: 50, makeup: 0 } },
     ],
+    // The Web Audio API specifies DynamicsCompressorNode as having a "Fixed
+    // look-ahead (this means that a DynamicsCompressorNode adds a fixed latency
+    // to the signal chain)", and its normative internal graph realises that
+    // pre-delay as `new DelayNode(context, {delayTime: 0.006})` — 6 ms, given in
+    // seconds and independent of sample rate and of every compressor param.
+    // Source: W3C Web Audio API, §1.19.4 DynamicsCompressorNode "Processing"
+    // (https://webaudio.github.io/web-audio-api/), read 2026-09-15.
+    //
+    // THE KEY FOLLOWER ADDS NOTHING TO THIS, and the zero is a statement rather
+    // than an omission: the declaration is `0.006 + KEY_FOLLOWER_LATENCY_SEC`,
+    // and that constant is 0 because every node the follower adds is on the
+    // CONTROL path — the one node it puts on the audio path is a `GainNode`.
+    // The value stays a plain number (not a function of the key params) because
+    // the number does not depend on them, and `rackEffects.latency.test.ts`
+    // reads it as one. `rackEffects.sidechain.test.ts` pins the sum.
+    latencySec: 0.006,
+    // The envelope follower's gain reduction is a function of everything that
+    // came before it, over attack/release times up to a second. A chunk boundary
+    // would restart it un-compressed at full gain, so the first moments of every
+    // chunk would pump. (Its 6 ms look-ahead pre-delay would also re-prime.)
+    chunkUnsafe: true,
     make: makeCompressor,
   },
   {
     id: 'reverb',
     label: 'Reverb',
     group: 'Space',
-    description: 'Convolution reverb (synthesized IR) with predelay, tone and wet/dry mix.',
+    description: 'Convolution reverb with predelay, tone and wet/dry mix: a synthesized room, or a measured concert hall heard from the stage position a part sits at.',
     params: [
-      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's', curve: 'log', group: 'Space' },
+      { key: 'hall', label: 'Hall', min: 0, max: HALL_OPTION_LABELS.length - 1, step: 1, default: 0, kind: 'select', options: HALL_OPTION_LABELS, group: 'Hall', tip: 'The impulse response: the synthesized room, or the Detmold Konzerthaus measured from an audience seat (CC BY 4.0).' },
+      { key: 'position', label: 'Stage position', min: 0, max: POSITION_OPTION_LABELS.length - 1, step: 1, default: 0, kind: 'select', options: POSITION_OPTION_LABELS, group: 'Hall', tip: 'Where on the stage the source sits, seen from the audience. Measured halls only.' },
+      { key: 'decay', label: 'Decay', min: 0.1, max: 8, step: 0.1, default: 2.0, unit: 's', curve: 'log', group: 'Space', tip: 'Length of the synthesized room. A measured hall rings as long as the hall does.' },
       { key: 'predelay', label: 'Predelay', min: 0, max: 200, step: 1, default: 20, unit: 'ms', group: 'Space' },
       { key: 'tone', label: 'Tone', min: 500, max: 18000, step: 50, default: 8000, unit: 'Hz', curve: 'log', group: 'Tone', tip: 'Low-pass on the reverb tail.' },
       { key: 'wet', label: 'Mix', min: 0, max: 1, step: 0.01, default: 0.3, display: 'percent', group: 'Output' },
@@ -1986,11 +2354,17 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
     mixKey: 'wet',
     xy: [{ label: 'Decay / Mix', x: 'decay', y: 'wet' }],
     presets: [
-      { label: 'Room', values: { decay: 0.8, predelay: 10, tone: 6000, wet: 0.2 } },
-      { label: 'Plate', values: { decay: 1.8, predelay: 0, tone: 12000, wet: 0.3 } },
-      { label: 'Hall', values: { decay: 3, predelay: 30, tone: 8000, wet: 0.35 } },
-      { label: 'Cathedral', values: { decay: 6, predelay: 60, tone: 5000, wet: 0.45 } },
+      { label: 'Room', values: { hall: 0, decay: 0.8, predelay: 10, tone: 6000, wet: 0.2 } },
+      { label: 'Plate', values: { hall: 0, decay: 1.8, predelay: 0, tone: 12000, wet: 0.3 } },
+      { label: 'Hall', values: { hall: 0, decay: 3, predelay: 30, tone: 8000, wet: 0.35 } },
+      { label: 'Cathedral', values: { hall: 0, decay: 6, predelay: 60, tone: 5000, wet: 0.45 } },
+      { label: 'Konzerthaus, front stalls', values: { hall: 1, position: 0, predelay: 0, tone: 18000, wet: 0.35 } },
+      { label: 'Konzerthaus, rear stalls', values: { hall: 2, position: 0, predelay: 0, tone: 18000, wet: 0.45 } },
     ],
+    // TAIL: the convolver keeps ringing for `decay` seconds (up to 8) after its
+    // input stops, so audio from one chunk belongs in the next. A boundary would
+    // truncate every tail that crossed it and start the next chunk dry.
+    chunkUnsafe: true,
     make: makeReverb,
   },
   {
@@ -2012,6 +2386,10 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Dotted 1/8 @ 120', values: { time: 375, feedback: 0.45, tone: 5000, wet: 0.3 } },
       { label: 'Dub', values: { time: 450, feedback: 0.7, tone: 2000, wet: 0.4 } },
     ],
+    // FEEDBACK STATE: the delay line holds up to 2 s of audio and feeds it back
+    // at up to 0.95, so repeats outlive their source by many seconds. A fresh
+    // context starts with an empty line — every repeat crossing a seam is lost.
+    chunkUnsafe: true,
     make: makeDelay,
   },
   {
@@ -2092,6 +2470,11 @@ export const RACK_EFFECTS: readonly RackEffectDef[] = [
       { label: 'Shimmer Cloud', values: { filterOn: 0, delayOn: 0, reverbOn: 1, reverbSize: 0.9, reverbMix: 0.6, grainsOn: 1, grainsDensity: 0.7, grainsSize: 0.6, grainsSpread: 0.8, grainsMix: 0.7, gateOn: 0, freeze: 0, wetDry: 0.9 } },
       { label: 'Trance Gate', values: { filterOn: 1, filterType: 0, filterCutoff: 0.6, filterReso: 0.5, delayOn: 1, delayTime: 0.25, delayFeedback: 0.3, delayMix: 0.3, reverbOn: 0, grainsOn: 0, gateOn: 1, gateRate: 0.4, gateDepth: 0.9, freeze: 0, wetDry: 1 } },
     ],
+    // (a) AUDIO MEMORY + (c) FREE-RUNNING GENERATOR: ARES is a composite —
+    // `makeDelay` at up to 0.9 feedback, `makeReverb` at up to 8 s decay, a
+    // granular worklet holding its own buffer, and `makeGater`'s LFO — so it
+    // inherits every reason the four of them have, in one box.
+    chunkUnsafe: true,
     make: makeAres,
   },
 ];
@@ -2109,10 +2492,159 @@ export const rackEffectDefaults = (id: string): Record<string, number> => {
   return out;
 };
 
-const withDefaults = (id: string, params: Record<string, number>): Record<string, number> => ({
-  ...rackEffectDefaults(id),
-  ...params,
-});
+/** Catalog defaults of `def`, overridden by the entry's authored params. Takes
+ *  the definition rather than the id so the chain builder and its resolver
+ *  always agree on which catalog an entry's defaults come from. */
+const withDefaults = (def: RackEffectDef, params: Record<string, number>): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const p of def.params) out[p.key] = p.default;
+  return { ...out, ...params };
+};
+
+/* ── declared latency ──────────────────────────────────────────────────────────
+   The two pure pieces plugin delay compensation is built from. Nothing here
+   touches Web Audio, so the live graph, the offline bounce and the DJ decks can
+   all ask the same question and get the same answer.
+
+   The summing rule below is the design of Tracktion Engine's SummingNode
+   (oss-refs/tracktion_engine/modules/tracktion_graph/tracktion_graph/nodes/
+   tracktion_SummingNode.h — GPL-3/commercial; read for its behaviour only,
+   NOTHING COPIED): a node that sums several inputs takes the MAXIMUM of their
+   latencies as its own, then inserts a latency node on every input carrying the
+   difference, so all inputs line up before they are added. `djEngine.ts`'s
+   `updateLatencyComp` is today's hand-rolled two-input special case of exactly
+   this rule.
+
+   The compressor's declared value is cited at its registry entry: the W3C Web
+   Audio API spec, §1.19.4 DynamicsCompressorNode "Processing", which fixes the
+   look-ahead pre-delay at 0.006 s. */
+
+/** Seams for the latency accumulator. The app passes none. */
+export interface ChainLatencyOptions {
+  /** Resolve an effect id to its definition (default: the rack registry). The
+   *  same test seam `buildEffectChain` takes, so latency can be asserted with
+   *  no AudioContext in sight. */
+  resolve?: (id: string) => RackEffectDef | undefined;
+  /** Context sample rate, for declarations expressed in samples. Passed through
+   *  verbatim; when omitted, such a declaration receives `undefined`. */
+  sampleRate?: number;
+  /** Seconds a hosted `vst3` entry adds to the LIVE path, by `ChainEntry.id`.
+   *  Defaults to `vstLiveStore.vstLiveLatencySec`, which answers 0 for every
+   *  entry that is not live — so an entry only counts once its plugin is
+   *  actually in the graph. A test seam, and the one place PDC and the live
+   *  node cannot disagree about who is processing. */
+  liveLatencySec?: (entryId: string) => number;
+}
+
+/** What one chain entry contributed, and why it did not. */
+export interface ChainLatencyEntry {
+  /** ChainEntry.id. */
+  id: string;
+  /** ChainEntry.effect (the rack id, or `vst3` / an imported DAW's effect). */
+  effect: string;
+  /** Seconds this entry contributed to `totalSec` — 0 whenever `counted` is
+   *  false, so the per-entry numbers always add up to the total. */
+  latencySec: number;
+  /** True only for an entry that is enabled AND resolvable. A false here is the
+   *  UI's cue that the total does not describe this entry. */
+  counted: boolean;
+}
+
+export interface ChainLatencyReport {
+  totalSec: number;
+  perEntry: ChainLatencyEntry[];
+}
+
+/** Evaluate one definition's declaration against an entry's effective params. */
+const declaredLatencySec = (
+  def: RackEffectDef,
+  entryParams: Record<string, number>,
+  sampleRate: number | undefined,
+): number => {
+  const spec = def.latencySec;
+  if (spec === undefined) return 0;
+  const v = typeof spec === 'function' ? spec(withDefaults(def, entryParams), sampleRate) : spec;
+  return Number.isFinite(v) ? v : 0;
+};
+
+/**
+ * Per-entry breakdown of a chain's latency, so the UI can show what a compensation
+ * number covers and — more importantly — what it does not.
+ *
+ * An entry counts only when it is BOTH enabled and resolvable:
+ *
+ *  - A bypassed entry is routed AROUND by `buildEffectChain`, so however much
+ *    latency its effect declares, it is not in the path and delays nothing.
+ *  - An unresolvable id (every hosted `vst3` entry, and effects imported from
+ *    another DAW) is an inert passthrough in the live graph, so it delays
+ *    nothing live either. It is listed with `counted: false` rather than
+ *    dropped, because it WILL contribute at freeze/bounce and a user staring at
+ *    a compensation figure needs to know it was excluded.
+ */
+export function chainLatencyReport(
+  entries: ChainEntry[],
+  opts: ChainLatencyOptions = {},
+): ChainLatencyReport {
+  const resolveDef = opts.resolve ?? ((id: string) => RACK_BY_ID.get(id));
+  const liveLatency = opts.liveLatencySec ?? vstLiveLatencySec;
+  let totalSec = 0;
+  const perEntry: ChainLatencyEntry[] = [];
+  for (const e of entries) {
+    const def = e.enabled ? resolveDef(e.effect) : undefined;
+    if (!def) {
+      // A hosted VST3 that is LIVE really is in the path and really does delay
+      // the chain — plugin latency plus the bridge's fixed buffer — so it
+      // counts, and the mixer's alignment follows its `ready` / `latency`
+      // events. A `vst3` entry that is not live answers 0 and stays
+      // `counted: false`, which is the same inert entry it always was.
+      const liveSec =
+        e.enabled && e.effect === VST3_EFFECT_ID ? Math.max(0, liveLatency(e.id)) : 0;
+      if (liveSec > 0) {
+        totalSec += liveSec;
+        perEntry.push({ id: e.id, effect: e.effect, latencySec: liveSec, counted: true });
+        continue;
+      }
+      perEntry.push({ id: e.id, effect: e.effect, latencySec: 0, counted: false });
+      continue;
+    }
+    const latencySec = Math.max(0, declaredLatencySec(def, e.params, opts.sampleRate));
+    totalSec += latencySec;
+    perEntry.push({ id: e.id, effect: e.effect, latencySec, counted: true });
+  }
+  return { totalSec, perEntry };
+}
+
+/**
+ * Total latency an insert chain adds, in seconds — the amount a downstream sum
+ * has to wait for it. Series effects accumulate; see `chainLatencyReport` for
+ * which entries count and why.
+ */
+export function chainLatencySec(entries: ChainEntry[], opts: ChainLatencyOptions = {}): number {
+  return chainLatencyReport(entries, opts).totalSec;
+}
+
+/**
+ * Delay to insert on each input of a sum so they all line up, given each input's
+ * own latency in seconds and in the same order. The slowest input sets the
+ * meeting point and is never delayed; everything earlier waits the difference.
+ * Empty in, empty out. Pure — the caller owns the delay nodes.
+ *
+ * Every input is normalised to a finite, non-negative number FIRST, so a NaN or
+ * a negative latency can neither skew the meeting point nor escape into a
+ * result: these values are fed straight to `AudioParam.setTargetAtTime`, which
+ * throws on a non-finite target, and a caller must never have to sanitise the
+ * output of a compensation calculation.
+ *
+ * (Tracktion `SummingNode`'s rule, generalised from the two-deck special case in
+ * `djEngine.updateLatencyComp`. Design only; nothing copied.)
+ */
+export function summingDelaysSec(latencies: number[]): number[] {
+  if (latencies.length === 0) return [];
+  const own = latencies.map((l) => (Number.isFinite(l) ? Math.max(0, l) : 0));
+  let maxL = 0;
+  for (const l of own) if (l > maxL) maxL = l;
+  return own.map((l) => Math.max(0, maxL - l));
+}
 
 /* ── chain builder ─────────────────────────────────────────────────────────── */
 
@@ -2122,10 +2654,34 @@ export interface ChainHandle {
   /** Push live param values into one running effect without a rebuild. */
   updateParams: (entryId: string, params: Record<string, number>) => void;
   /** Live effect instances keyed by ChainEntry.id — lets the caller reach an
-   *  instance for transport-synced scheduling (e.g. the spatializer's teleport). */
+   *  instance for transport-synced scheduling (e.g. the spatializer's teleport).
+   *  Includes bypassed entries: their instance is kept, just unwired. */
   instances: () => { id: string; effect: string; inst: RackEffectInstance }[];
+  /** Ids of entries this chain cannot render live: an ENABLED entry whose
+   *  effect id is not a rack effect — every hosted `vst3` entry, and effects
+   *  imported from another DAW. They are inert passthroughs here and only
+   *  print at freeze/bounce, so the UI can say that instead of the entry
+   *  appearing to process. `buildEffectChain` always provides this; it is
+   *  optional so the interface stays source-compatible with older callers. */
+  inertIds?: () => string[];
   /** Disconnect and dispose everything (leaves input/output untouched). */
   dispose: () => void;
+}
+
+/** Optional seams for `buildEffectChain`. The app passes none. */
+export interface BuildChainOptions {
+  /** Resolve an effect id to its definition (default: the rack registry).
+   *  This is a test seam: the real factories build concrete Web Audio nodes
+   *  that no fake context can satisfy, so `rackEffects.chain.test.ts` injects
+   *  fake single-node effects here to assert the wiring. */
+  resolve?: (id: string) => RackEffectDef | undefined;
+  /** Build the live node for a `vst3` entry (default: the live VST bridge).
+   *  Takes the whole ENTRY, not a param record: a plugin is identified by its
+   *  path and restored from its stored state, neither of which fits through
+   *  `RackEffectFactory`'s `Record<string, number>`. Returning null leaves the
+   *  entry inert — reported by `inertIds()` and warned about once — which is
+   *  what happens when there is no host binary on this machine. */
+  vstFactory?: (ctx: BaseAudioContext, entry: ChainEntry) => RackEffectInstance | null;
 }
 
 interface LiveInstance {
@@ -2139,21 +2695,48 @@ interface LiveInstance {
 }
 
 /**
- * Wire `entries` in series between caller-owned `input` and `output`. Enabled
- * effects only; a disabled or absent chain is a clean `input -> output` pass.
- * Instances persist across rebuilds where the effect id at a slot is unchanged,
- * so param tweaks stay click-free.
+ * Wire `entries` in series between caller-owned `input` and `output`. An empty
+ * chain (or one with nothing renderable enabled) is a clean `input -> output`
+ * pass. Instances persist across rebuilds where the effect id at an entry id is
+ * unchanged, so param tweaks stay click-free.
+ *
+ * Two rules the naive "filter to enabled-and-known, build that" version got
+ * wrong, both modelled on oss-refs/ACE-Step-DAW/src/engine/PluginEngine.ts
+ * (`setPluginBypassed`, `getOutputNode`, `rebuildChain`'s registry miss):
+ *
+ *  - **Bypass is routing, not teardown.** An `enabled: false` entry keeps its
+ *    instance and its params; the chain simply connects its predecessor to its
+ *    successor around it, exactly as `setPluginBypassed` does. Re-enabling puts
+ *    the SAME instance back in the path with its reverb tail, delay buffer and
+ *    worklet state intact. Disposal happens only when the entry leaves the
+ *    chain or the handle is disposed.
+ *  - **An unknown effect id is inert, not invisible.** Entries whose id is not
+ *    in the rack (every hosted `vst3` entry) contribute no node — but they are
+ *    reported through `inertIds()` and warned about once each, so the UI can
+ *    say "renders at freeze/bounce, inert live" rather than letting the entry
+ *    look like it is processing. The enabled effects around one still wire in
+ *    order.
  */
 export function buildEffectChain(
   ctx: BaseAudioContext,
   input: AudioNode,
   output: AudioNode,
   entries: ChainEntry[],
+  opts: BuildChainOptions = {},
 ): ChainHandle {
   const instances = new Map<string, LiveInstance>(); // keyed by ChainEntry.id
+  const resolveDef = opts.resolve ?? ((id: string) => RACK_BY_ID.get(id));
+  const vstFactory = opts.vstFactory ?? createVstLiveNode;
+  /** `entryId:effectId` pairs already warned about, so a 60 Hz rebuild loop
+   *  cannot spam — keyed on the pair, so an entry that is later pointed at a
+   *  different unknown effect is reported again. */
+  const warned = new Set<string>();
+  let inert: string[] = [];
 
   const clearWiring = () => {
     try { input.disconnect(); } catch { /* nothing wired */ }
+    // Every instance, bypassed ones included — a bypassed instance must leave
+    // no edge behind, and its only upstream is input or another instance out.
     for (const { inst } of instances.values()) {
       try { inst.output.disconnect(); } catch { /* gone */ }
     }
@@ -2161,36 +2744,85 @@ export function buildEffectChain(
 
   const rebuild = (next: ChainEntry[]) => {
     clearWiring();
-    const enabled = next.filter((e) => e.enabled && RACK_BY_ID.has(e.effect));
 
-    // Dispose instances that are no longer present.
-    const keepIds = new Set(enabled.map((e) => e.id));
+    // Split the chain into what this graph can render and what it cannot. A
+    // `def` of null is the `vst3` branch: not a rack effect, but hosted live by
+    // `vstFactory` — which may still decline (no host binary), in which case the
+    // entry falls back to inert exactly as it always was.
+    const renderable: { entry: ChainEntry; def: RackEffectDef | null }[] = [];
+    const inertIdSet = new Set<string>();
+    const reportInert = (e: ChainEntry) => {
+      inertIdSet.add(e.id);
+      const warnKey = `${e.id}:${e.effect}`;
+      if (warned.has(warnKey)) return;
+      warned.add(warnKey);
+      console.warn(
+        `[rackEffects] chain entry ${e.id} (${e.label ?? e.effect}) has no live rack effect ` +
+          `for id "${e.effect}" — it passes audio through untouched in the live graph and ` +
+          `only renders at freeze/bounce.`,
+      );
+    };
+    for (const e of next) {
+      const def = resolveDef(e.effect);
+      if (def) { renderable.push({ entry: e, def }); continue; }
+      // A hosted plugin is a candidate even while bypassed: the rule below —
+      // "a bypassed entry with no instance is never instantiated" — is what
+      // keeps a bypassed entry from opening a host process at all.
+      if (e.effect === VST3_EFFECT_ID && e.vst?.plugin_path) {
+        renderable.push({ entry: e, def: null });
+        continue;
+      }
+      if (!e.enabled) continue; // switched off by intent — nothing to report
+      reportInert(e);
+    }
+
+    // Dispose only what LEFT the chain. A bypassed entry is still in it.
+    const keepIds = new Set(renderable.map((r) => r.entry.id));
     for (const [id, li] of instances) {
       if (!keepIds.has(id)) { li.inst.dispose(); instances.delete(id); }
     }
 
-    if (enabled.length === 0) {
-      input.connect(output);
-      return;
-    }
-
     let prev: AudioNode = input;
-    for (const e of enabled) {
+    for (const { entry: e, def } of renderable) {
       let li = instances.get(e.id);
-      if (!li || li.effect !== e.effect) {
-        if (li) li.inst.dispose();
-        const def = RACK_BY_ID.get(e.effect)!;
-        const params = withDefaults(e.effect, e.params);
-        li = { effect: e.effect, inst: def.make(ctx, params), params };
+      if (li && li.effect !== e.effect) { li.inst.dispose(); instances.delete(e.id); li = undefined; }
+      // A bypassed entry that has no instance yet stays uninstantiated —
+      // building oscillators/worklets for an effect that is switched off costs
+      // CPU for silence. One that DOES have an instance keeps it (that is the
+      // whole point of bypass), and keeps taking param pushes so re-enabling
+      // is already in sync.
+      if (!li && !e.enabled) continue;
+      if (!li) {
+        if (def) {
+          const params = withDefaults(def, e.params);
+          li = { effect: e.effect, inst: def.make(ctx, params), params };
+        } else {
+          // `vst3`: the factory returns a passthrough NOW and swaps the plugin
+          // in when its host session is ready, or null when this machine has no
+          // host to swap in — in which case the entry is inert, exactly as
+          // every hosted plugin was before the live host existed.
+          const inst = vstFactory(ctx, e);
+          if (!inst) {
+            if (e.enabled) reportInert(e);
+            continue;
+          }
+          li = { effect: e.effect, inst, params: { ...e.params } };
+        }
         instances.set(e.id, li);
       } else {
-        li.params = withDefaults(e.effect, e.params);
+        // A `vst3` entry has no definition to merge defaults from: its params
+        // ARE the plugin's normalized parameter values (`p<index>`), and a
+        // default it did not author would be a value nobody asked for.
+        li.params = def ? withDefaults(def, e.params) : { ...e.params };
         li.inst.setParams(li.params);
       }
+      if (!e.enabled) continue; // kept alive, routed around
       prev.connect(li.inst.input);
       prev = li.inst.output;
     }
     prev.connect(output);
+    // In chain order, whichever pass discovered them.
+    inert = next.filter((e) => inertIdSet.has(e.id)).map((e) => e.id);
   };
 
   rebuild(entries);
@@ -2205,8 +2837,10 @@ export function buildEffectChain(
     },
     instances: () =>
       Array.from(instances.entries()).map(([id, li]) => ({ id, effect: li.effect, inst: li.inst })),
+    inertIds: () => [...inert],
     dispose: () => {
       clearWiring();
+      inert = []; // a dead chain renders nothing, so it has nothing inert to report
       for (const { inst } of instances.values()) inst.dispose();
       instances.clear();
     },

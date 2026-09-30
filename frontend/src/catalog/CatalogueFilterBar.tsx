@@ -17,10 +17,25 @@ import {
   type CatalogueSourceFilter,
   type CatalogueRatingFilter,
 } from './catalogSearch';
-import { inferProvider, providerMeta, DEFAULT_PROVIDER_ORDER } from './catalogProviders';
+import {
+  entryProviderMeta,
+  inferProvider,
+  providerMeta,
+  DEFAULT_PROVIDER_ORDER,
+} from './catalogProviders';
+import { facetOptionLabel, facetOptions, type LibraryFacetField } from '../lib/libraryFacets';
 
 const SOURCES: CatalogueSourceFilter[] = ['all', 'generate', 'studio', 'import'];
 const RATINGS: CatalogueRatingFilter[] = ['all', 'like', 'dislike', 'unrated'];
+
+/**
+ * The facet the backend counts for us. Model only, on purpose: a provider
+ * count would have to be right for both halves of `inferProvider` (the slug
+ * the backend detected AND the model/source derivation), and a number that is
+ * wrong for imports is worse than no number. Provider options are named, not
+ * counted — see `providers` below.
+ */
+const FACET_FIELDS: readonly LibraryFacetField[] = ['model'];
 
 // CHANGED: tooltip copy. Each search MODE chip explains how the query is matched
 // (mirrors the Advanced page's HoverTip granular-control pattern).
@@ -43,10 +58,10 @@ const TARGET_TIP =
   'Search field — restrict the query to one field (Title, Lyrics, Style, Model, Tags, Notes, Seed, ID, …) or “All Fields” to search the entire record, including analysis + embedded tags.';
 const SORT_TIP = 'Sort order for the result list — newest/oldest by created date, by length, or alphabetically by title.';
 const FAVS_TIP = 'Toggle to show ONLY favorited tracks (the starred ones).';
-const PROVIDER_TIP = 'Filter by platform/provider (Stable Audio, Suno, Magenta, …), derived from each track’s model + source.';
+const PROVIDER_TIP = 'Filter by provider — who made the track (Stable Audio, Suno, Udio, …), taken from what the file itself says when it says anything, and from the model + source otherwise. Applied by the server, so it searches the whole library, not just the rows on screen.';
 const SOURCE_TIP = 'Filter by how the track entered the library: generated, studio render, or imported.';
 const RATING_TIP = 'Filter by your thumbs rating: liked, disliked, or unrated.';
-const MODEL_TIP = 'Filter to a single model. Options are derived live from the models present in your library.';
+const MODEL_TIP = 'Filter to a single model. Every model in the library is listed, with how many entries use it — not just the models on the rows currently loaded.';
 const LIST_TIP = 'List view — dense, virtualized rows. Scales to tens of thousands of tracks.';
 const GRID_TIP = 'Grid view — visual card thumbnails. Best for smaller, browse-y sets.';
 
@@ -67,6 +82,20 @@ interface Props {
  */
 export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
   const entries = useLibraryStore((s) => s.entries);
+  // Facets: the distinct values across the WHOLE library, not the loaded page.
+  const facets = useLibraryStore((s) => s.facets);
+  const libraryQuery = useLibraryStore((s) => s.searchQuery);
+  const libraryKind = useLibraryStore((s) => s.kindFilter);
+  const libraryFavorites = useLibraryStore((s) => s.onlyFavorites);
+  const librarySource = useLibraryStore((s) => s.sourceFilter);
+  const libraryRevision = useLibraryStore((s) => s.revision);
+  const ensureFacets = useLibraryStore((s) => s.ensureFacets);
+
+  // One request per (query, revision); the store answers the rest from its
+  // cache, so re-opening a dropdown or re-sorting the list costs nothing.
+  useEffect(() => {
+    void ensureFacets(FACET_FIELDS);
+  }, [ensureFacets, libraryQuery, libraryKind, libraryFavorites, librarySource, libraryRevision]);
 
   // CHANGED: was `useCatalogueUiStore()` (no selector) which subscribes to the
   // ENTIRE store and re-renders the bar on every unrelated change. Subscribe to
@@ -97,18 +126,41 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
   };
 
   // Derived dropdown option lists — computed downstream of the stable
-  // `entries` reference, NOT inside a selector.
+  // `entries` / `facets` references, NOT inside a selector.
+  //
+  // The server's facet values come first, each with the number of entries it
+  // matches across the whole library; the models on the rows in hand follow, so
+  // a backend with no facets route (or one that has not answered yet) still
+  // offers exactly what it used to.
   const models = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of entries) if (e.model) set.add(e.model);
-    return Array.from(set).sort();
-  }, [entries]);
+    const loaded = new Set<string>();
+    for (const e of entries) if (e.model) loaded.add(e.model);
+    return facetOptions(facets.model, Array.from(loaded).sort());
+  }, [entries, facets]);
 
+  // The provider options: the platforms we always offer, in their fixed
+  // order, then every distinct provider on the rows in hand — the slug the
+  // backend detected as readily as a derived one, because `inferProvider` is
+  // the one answer for both — and finally whatever is selected, so the current
+  // value always has an <option> to sit in. Nothing is invented: a name gets
+  // here from this app's own registry or from an entry the backend sent.
+  //
+  // First label wins, so the list does not re-word itself as pages load.
   const providers = useMemo(() => {
-    const set = new Set<string>(DEFAULT_PROVIDER_ORDER);
-    for (const e of entries) set.add(inferProvider(e));
-    return Array.from(set);
-  }, [entries]);
+    const labels = new Map<string, string>();
+    for (const slug of DEFAULT_PROVIDER_ORDER) {
+      if (!labels.has(slug)) labels.set(slug, providerMeta(slug).label);
+    }
+    for (const e of entries) {
+      const slug = inferProvider(e);
+      if (!labels.has(slug)) labels.set(slug, entryProviderMeta(e).label);
+    }
+    const selected = search.providerFilter;
+    if (selected && !labels.has(selected)) {
+      labels.set(selected, providerMeta(selected).label);
+    }
+    return Array.from(labels, ([value, label]) => ({ value, label }));
+  }, [entries, search.providerFilter]);
 
   return (
     <div className="flex flex-col gap-2 px-2 pt-2 pb-1 border-b border-white/5 bg-[#0a080f]/60 shrink-0">
@@ -214,19 +266,26 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
         </HoverTip>
 
         <HoverTip text={PROVIDER_TIP}>
-          <select
-            id="catalog-filter-provider"
-            name="catalog-filter-provider"
-            aria-label="Filter by platform"
-            className="compact-input text-[9px]! py-0.5! bg-black/40"
-            value={search.providerFilter ?? ''}
-            onChange={(e) => patchSearch({ providerFilter: e.target.value || null })}
-          >
-            <option value="">ALL PLATFORMS</option>
-            {providers.map((p) => (
-              <option key={p} value={p}>{providerMeta(p).label.toUpperCase()}</option>
-            ))}
-          </select>
+          <div className="flex items-center">
+            {/* Native select → a real <label htmlFor>, visually hidden because
+                the bar is icon-dense. A labelled native control needs no
+                aria-label on top (see PermissionModeSelect.test.tsx). */}
+            <label htmlFor="catalog-filter-provider" className="sr-only">
+              Filter by provider
+            </label>
+            <select
+              id="catalog-filter-provider"
+              name="catalog-filter-provider"
+              className="compact-input text-[9px]! py-0.5! bg-black/40"
+              value={search.providerFilter ?? ''}
+              onChange={(e) => patchSearch({ providerFilter: e.target.value || null })}
+            >
+              <option value="">ALL PROVIDERS</option>
+              {providers.map((p) => (
+                <option key={p.value} value={p.value}>{p.label.toUpperCase()}</option>
+              ))}
+            </select>
+          </div>
         </HoverTip>
 
         <HoverTip text={SOURCE_TIP}>
@@ -271,7 +330,7 @@ export const CatalogueFilterBar: React.FC<Props> = ({ resultCount }) => {
             >
               <option value="">ALL MODELS</option>
               {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
+                <option key={m.value} value={m.value}>{facetOptionLabel(m)}</option>
               ))}
             </select>
           </HoverTip>

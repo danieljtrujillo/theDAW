@@ -11,6 +11,7 @@
  * means.
  */
 import type { LibraryEntry } from '../state/libraryEntry';
+import { stripSourceId } from './displayName';
 
 /** The orders the library offers; `libraryStore.sortBy` is one of these. */
 export type LibrarySortBy = 'newest' | 'oldest' | 'duration' | 'title' | 'plays';
@@ -121,7 +122,12 @@ export function libraryRowText(entry: LibraryEntry): LibraryRowText {
     formatRowDate(entry.timestamp),
   ].filter((p) => p.length > 0);
   return {
-    title: (entry.title ?? '').trim() || entry.audioFilename || 'untitled',
+    // The filename fallback is where an importer's source id leaks into
+    // the UI, so the name is cleaned here rather than at every caller.
+    title:
+      stripSourceId((entry.title ?? '').trim()) ||
+      stripSourceId(entry.audioFilename) ||
+      'untitled',
     meta: parts.join(' · '),
   };
 }

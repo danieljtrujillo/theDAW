@@ -6,5 +6,5 @@
   "sidebar": false,
   "api_prefix": "/api/analysis",
   "backend": true,
-  "description": "Audio analysis: tempo (aubio), key (chroma/Krumhansl), pitch (pyin), bars, ffprobe metadata. Runs opt-in during idle."
+  "description": "Audio analysis: tempo (aubio), key (chroma/Krumhansl), pitch (pyin), loudness (LUFS), bars, ffprobe metadata. Runs automatically after import/generate (default-on, user-configurable per source in Settings) once the app goes idle; also available on demand via the manual /run endpoint."
 }

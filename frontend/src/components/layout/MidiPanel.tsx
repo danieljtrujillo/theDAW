@@ -6,10 +6,10 @@
  *   - the SETTINGS strip: the roll's transport, instrument, zoom and timing
  *     feel, the library song field with ANALYZE (LOAD / VALIDATE in its menu),
  *     a status readout, the note count and the MIDI mapper (MAP);
- *   - the body: the ACTION rail (REC, IMPORT, EXPORT, EDIT, AI, BEAT, ARP,
- *     VOICE, CLEAR), the roll grid (or the arpeggiator face), the vocal
- *     artifact rail when an artifact is loaded, and the Vocal2MIDI column when
- *     VOICE is on;
+ *   - the body: the ACTION rail (REC, IMPORT, EXPORT, EDIT, AI, COMPOSE, BEAT,
+ *     ARP, VOICE, CLEAR), the roll grid (or the arpeggiator face), the vocal
+ *     artifact rail when an artifact is loaded, the COMPOSE column when COMPOSE
+ *     is on, and the Vocal2MIDI column when VOICE is on;
  *   - the SHAPE row (VirtuosoControls).
  * Vocal is one INPUT option: a live mic recording is converted to notes through
  * the SAME backend basic-pitch path as "Analyze" (far better than the live YIN),
@@ -28,7 +28,9 @@ import {
   ChevronUp,
   Download,
   Drum,
+  Feather,
   FileCheck2,
+  ListTree,
   FolderOpen,
   Loader2,
   Mic,
@@ -56,10 +58,16 @@ import {
 import { IoSurfaceSelect } from '../audio/IoDeviceSelect';
 import { useIoDevicesStore, useResolvedSurface } from '../../state/ioDevicesStore';
 import { useLibraryStore } from '../../state/libraryStore';
+import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { isAudioEntry } from '../../state/libraryEntry';
-import { logInfo, logWarn } from '../../state/logStore';
+import { logError, logInfo, logWarn } from '../../state/logStore';
+import { applySongFormToRoll } from '../../lib/songSectionActions';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
-import { usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { activeTrackOf, rollTracksOf, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { RollVstEditorHost } from '../audio/RollVstEditorHost';
+import { partComposeInstrument } from '../../lib/rollTracks';
+import { artifactTake } from '../../lib/takeNotes';
+import { importTake, placeTake } from '../../lib/rollTakes';
 import { usePlayerStore } from '../../state/playerStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import {
@@ -69,8 +77,10 @@ import {
   PianoRollFeel,
   PianoRollMapKey,
   PianoRollBendKey,
+  PianoRollTempoKey,
   PianoRollNoteCount,
   PianoRollTransport,
+  PianoRollVoiceKey,
   PianoRollZoom,
   exportRollMidi,
   importMidiFileToRoll,
@@ -79,9 +89,18 @@ import {
 } from '../audio/PianoRoll';
 import { ArpeggiatorPanel } from '../audio/ArpeggiatorPanel';
 import { VirtuosoControls } from '../audio/VirtuosoControls';
+import { RollSnapControls } from '../audio/RollSnapControls';
 import { Vocal2MidiPanel } from '../audio/vocal2midi/Vocal2MidiPanel';
 import { AiComposePopover } from '../audio/AiComposePopover';
+import { ComposerPanel } from '../audio/ComposerPanel';
+import { PianoRollHarmonyKey } from '../audio/RollHarmonyRow';
+import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
+import { PianoRollCcKey } from '../audio/CcLane';
+import { PianoRollArticulationKey } from '../audio/ArticulationLane';
+import { PianoRollTransformKey } from '../audio/RollTransforms';
+import { PianoRollCleanKey } from '../audio/RollCleanup';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
+import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
 import {
   CORNER_CHEVRON_VIEWBOX,
@@ -144,17 +163,8 @@ const stepSec = (bpm: number): number => 60 / bpm / 4;
 
 /** Where the VOICE key remembers whether the Vocal2MIDI column is shown. */
 const VOICE_COLUMN_KEY = 'thedaw-midi-voice-column-v1';
-
-const artifactToPiano = (notes: ArtifactNote[], bpm: number): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `art-${i}-${n.start_ms}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.start_ms / 1000 / ss)),
-    length: Math.max(1, Math.round((n.end_ms - n.start_ms) / 1000 / ss)),
-    velocity: n.velocity,
-  }));
-};
+/** Where the COMPOSE key remembers whether the COMPOSE column is shown. */
+const COMPOSE_COLUMN_KEY = 'thedaw-midi-compose-column-v1';
 
 const pianoToArtifact = (notes: PianoNote[], bpm: number): ArtifactNote[] => {
   const ss = stepSec(bpm);
@@ -214,10 +224,15 @@ const RecLevel: React.FC<{ monitorRef: React.MutableRefObject<InputMonitor | nul
   );
 };
 
+/** Songs the asset field's list offers at once. */
+const ASSET_MATCHES = 12;
+
 export const MidiPanel: React.FC = () => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
-  const entries = useLibraryStore((s) => s.entries);
   const [assetId, setAssetId] = useState('');
+  // The field's id once it is known to name an audio entry (MATCH reads that
+  // song's rhythm analysis). Set by a pick, or by looking the id up.
+  const [songAudioId, setSongAudioId] = useState('');
   // What the search box shows (a friendly title); the actual API uses assetId.
   const [assetQuery, setAssetQuery] = useState('');
   const [assetOpen, setAssetOpen] = useState(false);
@@ -232,15 +247,32 @@ export const MidiPanel: React.FC = () => {
   const [arpOn, setArpOn] = useState(false);
   const [arpPlaying, setArpPlaying] = useState(false);
   const [voiceOn, setVoiceOn] = useStoredToggle(VOICE_COLUMN_KEY, true);
+  const [composeOn, setComposeOn] = useStoredToggle(COMPOSE_COLUMN_KEY, false);
   // Step width is shared by the strip's zoom keys and the grid's ctrl+wheel.
   const [stepPx, setStepPx] = useState(16);
   /** The pitch bend lane under the grid; the strip's BEND key opens it. */
   const [showBend, setShowBend] = useState(false);
+  /** The tempo lane under the grid; the strip's TEMPO key opens it. */
+  const [showTempo, setShowTempo] = useState(false);
+  /** The CC lane under the grid; the strip's CC key opens it. */
+  const [showCc, setShowCc] = useState(false);
+  /** The articulation lane under the grid; the strip's ART key opens it. */
+  const [showArticulations, setShowArticulations] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const [songMenuOpen, setSongMenuOpen] = useState(false);
+  // FORM is reading (or finding) the song's sections and chord track.
+  const [formBusy, setFormBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const rollBpm = usePianoRollStore((s) => s.bpm);
+  const rollMeterMap = usePianoRollStore((s) => s.meterMap);
+  const rollPickup = usePianoRollStore((s) => s.pickupSteps);
+  // The part AI COMPOSE writes into, and the instrument it can write for.
+  const activePart = usePianoRollStore((s) => activeTrackOf(s));
+  const composePart = React.useMemo(
+    () => ({ name: activePart.name, instrument: partComposeInstrument(activePart) }),
+    [activePart],
+  );
   // The device comes from the global I/O menu (Settings -> Inputs & outputs),
   // with a per-surface override in the REC key's input menu. It used to be a
   // useState seeded from localStorage with NO try/catch — which threw during
@@ -328,8 +360,10 @@ export const MidiPanel: React.FC = () => {
   useEffect(() => {
     if (selectedEntryId && !assetId) {
       setAssetId(selectedEntryId);
-      const sel = useLibraryStore.getState().entries.find((e) => e.id === selectedEntryId);
-      if (sel) setAssetQuery(sel.title);
+      // The selection can be a row on no loaded page: look it up by id.
+      void useLibraryStore.getState().ensureEntry(selectedEntryId).then((sel) => {
+        if (sel) setAssetQuery((shown) => shown || sel.title);
+      });
     }
   }, [selectedEntryId, assetId]);
 
@@ -340,6 +374,23 @@ export const MidiPanel: React.FC = () => {
     setAssetOpen(false);
   }, []);
 
+  // Whether the field's id names an audio entry, over the whole library. A
+  // pause first, so typing a name does not look up every keystroke.
+  useEffect(() => {
+    const id = assetId;
+    if (!id) return undefined;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void useLibraryStore.getState().ensureEntry(id).then((e) => {
+        if (live && e && isAudioEntry(e)) setSongAudioId(id);
+      });
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [assetId]);
+
   // A song sent from outside the dock (the footer track menu) replaces whatever
   // the box holds, and the Vocal2MIDI column that shows the box comes on. A
   // request made while the tab was closed is taken when the panel mounts.
@@ -347,18 +398,26 @@ export const MidiPanel: React.FC = () => {
   useEffect(() => {
     if (!songBoxRequest) return;
     useMidiSongBoxRequest.getState().consume();
-    const requested = useLibraryStore.getState().entries.find((e) => e.id === songBoxRequest);
+    const lib = useLibraryStore.getState();
+    const requested = lib.getById(songBoxRequest);
     pickAsset(songBoxRequest, requested?.title ?? songBoxRequest);
+    if (!requested) {
+      // On no loaded page: show its title once the lookup lands, unless the
+      // box has moved on to something else by then.
+      void lib.ensureEntry(songBoxRequest).then((e) => {
+        if (e) setAssetQuery((shown) => (shown === songBoxRequest ? e.title : shown));
+      });
+    }
     setVoiceOn(true);
   }, [songBoxRequest, pickAsset, setVoiceOn]);
 
-  // Library entries whose title matches the current search text (cap the list).
-  const assetMatches = (() => {
-    const q = assetQuery.trim().toLowerCase();
-    const audio = entries.filter(isAudioEntry);
-    const list = q ? audio.filter((e) => e.title.toLowerCase().includes(q)) : audio;
-    return list.slice(0, 12);
-  })();
+  // Library songs matching the search text, over the whole library (the
+  // first 12), asked only while the list is open.
+  const assetSearch = useLibrarySearch(
+    { q: assetQuery, kind: 'audio', sort: 'created_desc' },
+    { enabled: assetOpen, pageSize: ASSET_MATCHES },
+  );
+  const assetMatches = assetSearch.rows.slice(0, ASSET_MATCHES);
 
   const refreshInputs = useCallback(async () => {
     await useIoDevicesStore.getState().refresh();
@@ -415,8 +474,9 @@ export const MidiPanel: React.FC = () => {
       return;
     }
     setArtifact(doc);
-    const bpm = doc.timing?.tempo_bpm || usePianoRollStore.getState().bpm;
-    usePianoRollStore.getState().importNotes(artifactToPiano(doc.notes, bpm), bpm);
+    // The roll takes the song's tempo with its fraction, and each note lands
+    // at the tick it was sung on (lib/rollTakes).
+    importTake(artifactTake(doc.notes), doc.timing?.tempo_bpm ?? 0, 'art');
     setStatus(`loaded ${doc.notes.length} notes`);
   }, []);
 
@@ -454,12 +514,11 @@ export const MidiPanel: React.FC = () => {
           const res = await fetch('/api/vocal/audio-to-notes', { method: 'POST', body: fd });
           const data = await res.json();
           const notes: ArtifactNote[] = data.notes ?? [];
-          const bpm = usePianoRollStore.getState().bpm;
-          const piano = artifactToPiano(notes, bpm);
-          const endStep = Math.max(1, Math.ceil(elapsedSec / stepSec(bpm)));
-          usePianoRollStore.getState().placeRecording(piano, { startStep: 0, endStep });
-          setStatus(`recorded ${piano.length} notes (${elapsedSec.toFixed(1)}s)`);
-          logInfo('vocal', `recording -> ${piano.length} notes via basic-pitch`);
+          // At the ticks basic-pitch heard each note on, never snapped to 16ths
+          // (APPLY quantises), at the roll's own tempo (lib/rollTakes).
+          const placed = placeTake(artifactTake(notes), elapsedSec, 'art');
+          setStatus(`recorded ${placed} notes (${elapsedSec.toFixed(1)}s)`);
+          logInfo('vocal', `recording -> ${placed} notes via basic-pitch`);
         } catch (e) {
           setStatus(`convert error: ${String(e)}`);
           logWarn('vocal', `audio-to-notes failed: ${String(e)}`);
@@ -531,7 +590,10 @@ export const MidiPanel: React.FC = () => {
   }, [assetId, loadArtifact]);
 
   const exportMidi = useCallback(async () => {
-    const { notes, bpm, lanes, totalSteps, meterMap, pickupSteps } = usePianoRollStore.getState();
+    const roll = usePianoRollStore.getState();
+    const { bpm, lanes, totalSteps, meterMap, pickupSteps } = roll;
+    // Every part's notes: this writer has one channel, so the parts share it.
+    const notes = rollTracksOf(roll).flatMap((t) => t.notes);
     if (!notes.length) {
       setStatus('no notes to export');
       return;
@@ -610,7 +672,7 @@ export const MidiPanel: React.FC = () => {
   const listOpen = assetOpen && assetMatches.length > 0;
   // MATCH reads a library song's rhythm analysis, so it gets the field's id only
   // when that id names an audio entry; typed text that matches none leaves it off.
-  const songEntryId = entries.some((e) => isAudioEntry(e) && e.id === assetId) ? assetId : undefined;
+  const songEntryId = assetId && songAudioId === assetId ? assetId : undefined;
 
   return (
     // data-keyscope: this tab and the EDIT timeline both bind Delete; see
@@ -627,9 +689,18 @@ export const MidiPanel: React.FC = () => {
         <PianoRollTransport arpShowing={arpOn} arpPlaying={arpPlaying} onArpPlayingChange={setArpPlaying} />
         <Sep />
         <InstrumentPicker compact />
+        <PianoRollVoiceKey />
         <Sep />
         <PianoRollZoom stepPx={stepPx} onStepPxChange={setStepPx} />
         <PianoRollBendKey on={showBend} onChange={setShowBend} />
+        <PianoRollCcKey on={showCc} onChange={setShowCc} />
+        <PianoRollArticulationKey on={showArticulations} onChange={setShowArticulations} />
+        <PianoRollTempoKey on={showTempo} onChange={setShowTempo} />
+        {/* The composer's rows: the harmony row over the ruler and the figured-bass lane under the grid. */}
+        <PianoRollHarmonyKey />
+        <PianoRollFiguresKey />
+        <Sep />
+        <RollSnapControls />
         <Sep />
         <PianoRollFeel />
         <Sep />
@@ -638,7 +709,7 @@ export const MidiPanel: React.FC = () => {
             library item here instead of pasting a raw id, or drop an audio
             file from the desktop (it imports to the library, then lands here). */}
         <div
-          className={`${FIELD} relative w-44`}
+          className={`${FIELD} relative w-32`}
           onDragOver={(e) => {
             if (dropHasLibraryOrFiles(e.dataTransfer)) {
               e.preventDefault();
@@ -656,8 +727,12 @@ export const MidiPanel: React.FC = () => {
                 pickAsset(first.id, first.title);
                 if (!id) logInfo('vocal', `Imported "${first.title}" from the desktop into the song box`);
               } else if (id) {
-                // An id the library does not know: keep the raw id, as before.
+                // An id on no loaded page: keep the raw id, and show its
+                // title if the whole library knows it.
                 pickAsset(id, id);
+                void useLibraryStore.getState().ensureEntry(id).then((found) => {
+                  if (found) setAssetQuery((shown) => (shown === id ? found.title : shown));
+                });
               }
             });
           }}
@@ -700,7 +775,10 @@ export const MidiPanel: React.FC = () => {
                   role="option"
                   aria-selected={e.id === assetId}
                   onMouseDown={(ev) => ev.preventDefault()}
-                  onClick={() => pickAsset(e.id, e.title)}
+                  onClick={() => {
+                    pickAsset(e.id, e.title);
+                    setSongAudioId(e.id);
+                  }}
                   className={`w-full text-left px-2 py-1.5 text-[12px] font-semibold border-b border-white/5 last:border-0 transition-shadow hover:shadow-[inset_0_0_0_100px_rgba(255,255,255,0.06)] ${
                     e.id === assetId ? 'text-[rgb(var(--et-accent))]' : 'text-zinc-200'
                   }`}
@@ -713,8 +791,10 @@ export const MidiPanel: React.FC = () => {
           )}
         </div>
         <StripKey
+          iconOnly
           onClick={() => void analyze()}
           unavailable={busy}
+          aria-label="Analyze"
           description="Detect notes, pitch and lyrics from the library vocal (basic-pitch) and load them into the roll"
           icon={busy ? <Loader2 className={`${STRIP_GLYPH} animate-spin`} /> : <Activity className={STRIP_GLYPH} />}
           legend="Analyze"
@@ -727,7 +807,7 @@ export const MidiPanel: React.FC = () => {
           aria-expanded={songMenuOpen}
           aria-controls="midi-song-menu"
           aria-label="More song actions"
-          description="Load or validate the song's artifact"
+          description="Load or validate the song's artifact, or write the song's form into the roll"
           on={songMenuOpen}
           icon={<ChevronDown className={STRIP_GLYPH} />}
           legend="More"
@@ -763,6 +843,31 @@ export const MidiPanel: React.FC = () => {
             title="Check the notes survive a notes -> MIDI -> notes round-trip and report any timing drift"
             icon={<FileCheck2 className="w-3 h-3" />}
             legend="Validate"
+          />
+          <MenuKey
+            onClick={() => {
+              setSongMenuOpen(false);
+              if (!songEntryId || formBusy) return;
+              setFormBusy(true);
+              setStatus("FORM IS READING THE SONG'S SECTIONS.");
+              void applySongFormToRoll(songEntryId, assetQuery || songEntryId)
+                .then((r) => setStatus(r.status))
+                .catch((e: unknown) => {
+                  const why = e instanceof Error ? e.message : String(e);
+                  setStatus(`FORM COULD NOT READ THE SONG'S SECTIONS: ${why}`);
+                  logError('piano-roll', `Form failed: ${why}`);
+                })
+                .finally(() => setFormBusy(false));
+            }}
+            disabled={!songEntryId || formBusy}
+            aria-busy={formBusy || undefined}
+            title={
+              songEntryId
+                ? "The song's sections as markers on the marker row, and its chord track's chords in the HARMONY row (the sections are found first when the song has none). MATCH first puts the roll's bars on the song's."
+                : "Pick a song from the song field's list to write its form"
+            }
+            icon={formBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ListTree className="w-3 h-3" />}
+            legend="Form"
           />
         </DockFlyout>
 
@@ -865,7 +970,11 @@ export const MidiPanel: React.FC = () => {
                 )}
               </DockFlyout>
 
-              <MidiImportPopover onImportFile={importMidiFileToRoll} onImportSheetFile={importSheetFileToRoll} />
+              <MidiImportPopover
+                onImportFile={importMidiFileToRoll}
+                onImportSheetFile={importSheetFileToRoll}
+                onImportTracksFile={importMidiFileAsTracks}
+              />
 
               <RailKey
                 ref={exportKeyRef}
@@ -914,9 +1023,29 @@ export const MidiPanel: React.FC = () => {
 
               <AiComposePopover
                 currentBpm={rollBpm}
-                onGenerated={(result) => usePianoRollStore.getState().importNotes(result.notes, result.bpm)}
+                meterMap={rollMeterMap}
+                pickupSteps={rollPickup}
+                part={composePart}
+                // The part comes back in the meter it was asked for, whatever the roll holds by then.
+                onGenerated={(result) =>
+                  usePianoRollStore.getState().importNotes(result.notes, result.bpm, { meterMap: result.meterMap, pickupSteps: result.pickupSteps })
+                }
               />
 
+              <RailKey
+                onClick={() => setComposeOn(!composeOn)}
+                aria-pressed={composeOn}
+                aria-label="Compose: harmony, form, counterpoint and voice-leading check"
+                description={composeOn ? 'Hide the COMPOSE column' : 'Show the COMPOSE column: plan harmony and forms, write counterpoint, check voice leading, count style profiles'}
+                on={composeOn}
+                data-tour="midi-compose"
+                icon={<Feather className={RAIL_GLYPH} />}
+                legend="Compose"
+              />
+              {/* TRANSFORM: the motif transforms of the selected notes, beside the composer's column. */}
+              <PianoRollTransformKey />
+              {/* CLEAN: one note at a time and a pitch range, for a transcription's notes. */}
+              <PianoRollCleanKey />
               <RailKey
                 onClick={() => void makeBeat()}
                 aria-label="Beat from the notes"
@@ -954,11 +1083,13 @@ export const MidiPanel: React.FC = () => {
             running when toggling back to the roll. */}
         <div className="flex-1 min-w-0 relative">
           <div className={arpOn ? 'hidden' : 'absolute inset-0'}>
-            <PianoRoll stepPx={stepPx} onStepPxChange={setStepPx} showBend={showBend} />
+            <PianoRoll stepPx={stepPx} onStepPxChange={setStepPx} showBend={showBend} showTempo={showTempo} showCc={showCc} showArticulations={showArticulations} />
           </div>
           <div className={arpOn ? 'absolute inset-0' : 'hidden'}>
             <ArpeggiatorPanel playing={arpPlaying} />
           </div>
+          {/* A roll part's VST3 instrument opens its own window here. */}
+          <RollVstEditorHost />
         </div>
 
         {!arpOn && artifact && (
@@ -1014,6 +1145,10 @@ export const MidiPanel: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* COMPOSE column: harmony, form, counterpoint, the voice-leading
+            check and style profiles, writing into the roll. */}
+        {!arpOn && composeOn && <ComposerPanel onClose={() => setComposeOn(false)} />}
 
         {/* Vocal2MIDI suite — the full vocal-to-MIDI tool as a collapsible right
             column, shown while VOICE is on. Its recorder/AI/editor write notes

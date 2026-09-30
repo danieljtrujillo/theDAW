@@ -8,9 +8,19 @@
  * for effect panels. Shared behaviours: vertical drag (Shift = fine), a wheel
  * that only turns the dial holding focus, arrow/Home/End keys, aria-slider
  * semantics.
+ *
+ * Like SlideTrack, the dial also reports its GESTURE boundary —
+ * `onGestureStart` before the first `onChange` of a drag / key press / wheel
+ * burst and `onGestureEnd` after its last — so a consumer recording a gesture
+ * (automation touch, an undo coalescer) does not have to infer one from a
+ * deadline. This is the default control of every schema-driven effect panel,
+ * so without it a rack knob's whole automation pass hung on an idle timer.
+ * Both props are optional and the dial behaves identically without them; the
+ * rules live in `lib/gestureTracker.ts`.
  */
 import React, { memo, useEffect, useId, useRef, useState } from 'react';
 import { accentVars, colorAt, rgb, rgba } from '../../../lib/trackColor';
+import { createGestureTracker } from '../../../lib/gestureTracker';
 import { formatParamValue, fromNorm, snapParam, toNorm, type ParamSchema } from './paramFormat';
 
 const PX_FULL = 170; // px of vertical drag to sweep the whole travel
@@ -27,14 +37,38 @@ interface EffectKnobProps {
   /** Value a double-click resets to (defaults to the schema default). */
   resetValue?: number;
   disabled?: boolean;
+  /** Fired once before the first `onChange` of a gesture. */
+  onGestureStart?: () => void;
+  /** Fired once after the last `onChange` of a gesture — including a gesture
+   *  that produced no change at all, and including an unmount mid-gesture. */
+  onGestureEnd?: () => void;
 }
 
-const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, label, size = 40, tint, resetValue, disabled }) => {
+const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, label, size = 40, tint, resetValue, disabled, onGestureStart, onGestureEnd }) => {
   const dialRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const lastY = useRef(0);
   const [active, setActive] = useState(false);
   const labelId = useId();
+  // The tracker outlives every render (a gesture spans many), so it reads the
+  // callbacks through refs rather than closing over the props of the render that
+  // happened to create it.
+  const startRef = useRef(onGestureStart); startRef.current = onGestureStart;
+  const endRef = useRef(onGestureEnd); endRef.current = onGestureEnd;
+  const gestureRef = useRef<ReturnType<typeof createGestureTracker> | null>(null);
+  // Created ON DEMAND, never during render, and dropped by the unmount cleanup:
+  // `dispose()` is terminal, and StrictMode runs mount → cleanup → mount on the
+  // SAME instance with refs intact, so a tracker kept across a cleanup would
+  // leave every handler a no-op for the whole dev session. See SlideTrack.
+  const getGesture = () => (gestureRef.current ??= createGestureTracker({
+    onStart: () => startRef.current?.(),
+    onEnd: () => endRef.current?.(),
+  }));
+  // Unmounting mid-gesture still closes it, exactly once.
+  useEffect(() => () => {
+    gestureRef.current?.dispose();
+    gestureRef.current = null;
+  }, []);
 
   const t = toNorm(param, value);
   const colorT = tint ?? t;
@@ -66,6 +100,9 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
     // never be document.activeElement and the wheel gate below would be shut
     // forever. preventScroll because effect racks are scrolling panels.
     el.focus({ preventScroll: true });
+    // Before the first value write of the drag — which is the first move, not
+    // this press: a press with no move is still a balanced pair.
+    getGesture().pointerDown();
     e.preventDefault();
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -77,6 +114,7 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
   const onPointerUp = (e: React.PointerEvent) => {
     dragging.current = false; setActive(false);
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    getGesture().pointerUp();
   };
   // The wheel moves ONLY the focused dial. Every parameter of every effect in
   // the rack is one of these, including each effect's wet/dry MIX — and the MIX
@@ -87,7 +125,12 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
   // preventDefault() is a silent no-op — and the pass-through path returns
   // BEFORE preventDefault, so scrolling over an unfocused dial still scrolls.
   const wheelStep = useRef<(e: WheelEvent) => void>(() => undefined);
-  wheelStep.current = (e) => stepBy((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  wheelStep.current = (e) => {
+    // Before the tick's own change; a burst of ticks is one gesture, closed by
+    // the tracker's idle window because the wheel has no release event.
+    getGesture().wheelTick();
+    stepBy((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1));
+  };
   useEffect(() => {
     const el = dialRef.current;
     if (!el || disabled) return;
@@ -99,24 +142,39 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [disabled]);
-  const onDoubleClick = () => set(resetValue ?? param.default);
+  const onDoubleClick = () => {
+    // A disabled dial writes nothing, so it must not open a gesture either —
+    // the same early return the pointer path takes.
+    if (disabled) return;
+    // The reset is a gesture of one change, in its own pair: the clicks that
+    // produced the double-click closed their own gestures on their pointerups.
+    const g = getGesture();
+    g.pointerDown();
+    set(resetValue ?? param.default);
+    g.pointerUp();
+  };
+  // The write is chosen BEFORE anything is dispatched, so the gesture can open
+  // ahead of the change it belongs to and an unhandled key stays inert.
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
     const mult = e.shiftKey ? 10 : 1;
-    let handled = true;
+    let write: (() => void) | null = null;
     switch (e.key) {
-      case 'ArrowUp': case 'ArrowRight': stepBy(mult); break;
-      case 'ArrowDown': case 'ArrowLeft': stepBy(-mult); break;
-      case 'PageUp': stepBy(10); break;
-      case 'PageDown': stepBy(-10); break;
-      case 'Home': set(param.min); break;
-      case 'End': set(param.max); break;
-      case 'Backspace': case 'Delete': set(resetValue ?? param.default); break;
-      default: handled = false;
+      case 'ArrowUp': case 'ArrowRight': write = () => stepBy(mult); break;
+      case 'ArrowDown': case 'ArrowLeft': write = () => stepBy(-mult); break;
+      case 'PageUp': write = () => stepBy(10); break;
+      case 'PageDown': write = () => stepBy(-10); break;
+      case 'Home': write = () => set(param.min); break;
+      case 'End': write = () => set(param.max); break;
+      case 'Backspace': case 'Delete': write = () => set(resetValue ?? param.default); break;
     }
+    if (!write) return;
+    getGesture().key('down', e.key);
+    write();
     // stopPropagation as well as preventDefault: a dial now takes focus on
     // click, so its arrows/Home/End must not ALSO run the window-level editor
     // shortcuts (nudge clip, jump playhead) that share those keys.
-    if (handled) { e.preventDefault(); e.stopPropagation(); }
+    e.preventDefault(); e.stopPropagation();
   };
 
   const text = formatParamValue(param, value);
@@ -151,6 +209,11 @@ const EffectKnobImpl: React.FC<EffectKnobProps> = ({ param, value, onChange, lab
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
+        // The keyup closes the key gesture; blur is the backstop for a focus
+        // lost mid-press, whose keyup is delivered somewhere else. Neither can
+        // touch a pointer drag or a wheel burst — see lib/gestureTracker.ts.
+        onKeyUp={(e) => getGesture().key('up', e.key)}
+        onBlur={() => getGesture().key('up')}
         onMouseEnter={() => setActive(true)}
         onMouseLeave={() => { if (!dragging.current) setActive(false); }}
       >

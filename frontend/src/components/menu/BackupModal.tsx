@@ -23,9 +23,17 @@ interface JobView {
   message: string;
   zipPath: string | null;
   error: string | null;
+  skipped: number;
 }
 
-const IDLE_JOB: JobView = { state: 'idle', progress: 0, message: '', zipPath: null, error: null };
+const IDLE_JOB: JobView = {
+  state: 'idle',
+  progress: 0,
+  message: '',
+  zipPath: null,
+  error: null,
+  skipped: 0,
+};
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : {};
@@ -87,6 +95,7 @@ const normalizeJob = (raw: unknown): JobView => {
     message: asStr(j.message) ?? asStr(j.current) ?? asStr(j.stage) ?? '',
     zipPath: asStr(j.zip_path) ?? asStr(j.path) ?? asStr(j.output) ?? null,
     error: asStr(j.error) ?? asStr(j.detail) ?? null,
+    skipped: asNum(j.skipped) ?? 0,
   };
 };
 
@@ -537,7 +546,11 @@ export const BackupModal: React.FC<{ open: boolean; onClose: () => void }> = ({ 
               Import
             </button>
             {importJob.state === 'done' && (
-              <span className="text-[9px] font-mono text-emerald-300 min-w-0 break-all">
+              <span
+                className={`text-[9px] font-mono min-w-0 break-all ${
+                  importJob.skipped > 0 ? 'text-amber-300' : 'text-emerald-300'
+                }`}
+              >
                 Import complete{importJob.message ? ` - ${importJob.message}` : '.'}
               </span>
             )}

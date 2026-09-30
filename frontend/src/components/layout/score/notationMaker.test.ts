@@ -1,11 +1,14 @@
 // Run with: npx tsx src/components/layout/score/notationMaker.test.ts
 import assert from 'node:assert/strict';
 import {
+  defaultStaffInstrument,
   legacyMidiId,
   MAKER_INSTRUMENTS,
   needsMidi,
   pickSource,
   planFor,
+  staffInstrumentsFor,
+  staffInstrumentValue,
   stemOf,
   tuningsFor,
   wayAfterInstrumentChange,
@@ -100,6 +103,45 @@ const band = planFor(choice({ instrument: 'band', way: 'score', source: null }))
 assert.ok('route' in band && band.route === 'arrange');
 assert.equal(band.req.style, 'band-score');
 assert.equal(band.req.source_artifact_ids?.length, MIDIS.length, 'a band score reads every stem');
+
+// ── a band score writes each stem for an instrument from the registry ────────
+assert.deepEqual(
+  MIDIS.map(defaultStaffInstrument),
+  ['', 'electric-bass', 'drum-kit', 'electric-guitar', '', 'piano', 'voice'],
+  'each stem starts on its own instrument; the full mix and "other" keep their names',
+);
+assert.equal(defaultStaffInstrument(midi('Flute 1')), 'flute', 'a stem named for an instrument is that instrument');
+assert.deepEqual(band.req.instruments, {
+  [`${ENTRY}__bass`]: 'electric-bass',
+  [`${ENTRY}__drums`]: 'drum-kit',
+  [`${ENTRY}__guitar`]: 'electric-guitar',
+  [`${ENTRY}__piano`]: 'piano',
+  [`${ENTRY}__vocals`]: 'voice',
+});
+const picked = planFor(choice({
+  instrument: 'band',
+  way: 'score',
+  source: null,
+  staffInstruments: { [`${ENTRY}__other`]: 'cello', [`${ENTRY}__vocals`]: '', [`${ENTRY}__piano`]: 'no-such-instrument' },
+}));
+assert.ok('route' in picked && picked.route === 'arrange');
+assert.deepEqual(picked.req.instruments, {
+  [`${ENTRY}__bass`]: 'electric-bass',
+  [`${ENTRY}__drums`]: 'drum-kit',
+  [`${ENTRY}__guitar`]: 'electric-guitar',
+  [`${ENTRY}__other`]: 'cello',
+}, 'a pick replaces the default, "" keeps the stem name, an unknown id is never sent');
+assert.equal(staffInstrumentValue(MIDIS[6], { [`${ENTRY}__vocals`]: '' }), '');
+assert.equal(staffInstrumentValue(MIDIS[6], {}), 'voice');
+const plain = planFor(choice({
+  instrument: 'band',
+  way: 'score',
+  source: null,
+  midis: [midi('full'), midi('other')],
+}));
+assert.ok('route' in plain && plain.route === 'arrange');
+assert.equal('instruments' in plain.req, false, 'no instrument picked: the request is the one older builds sent');
+assert.deepEqual(staffInstrumentsFor([midi('bass')], {}), { [`${ENTRY}__bass`]: 'electric-bass' });
 
 // ── chords need no MIDI; everything else says why it cannot run ──────────────
 assert.deepEqual(planFor(choice({ instrument: 'guitar', way: 'chords', midis: [], source: null })), { route: 'chords' });

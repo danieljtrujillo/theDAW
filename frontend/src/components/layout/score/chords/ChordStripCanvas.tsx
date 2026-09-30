@@ -20,6 +20,8 @@ export interface ChordStripCanvasProps {
   onSeek: (sec: number) => void;
   /** Fires when the sounding chord index changes between draws (-1 before the first). */
   onChordChange?: (index: number) => void;
+  /** Draw each chord's roman numeral under its name (when the track has them). */
+  showRoman?: boolean;
   ariaLabel: string;
 }
 
@@ -29,11 +31,16 @@ export interface ChordStripCanvasHandle {
 }
 
 /** Vertical layout, CSS px. */
-const RULER_H = 18;
+const RULER_H = 20;
 const ROW_GAP = 4;
 const LYRIC_ROW_H = 26;
 const BLOCK_GAP_PX = 1;
-const FONT_MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+/** Bold sans for every label on the strip; nothing drawn below 12px. */
+const FONT_SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+const SYMBOL_PX = 14;
+const ROMAN_PX = 12;
+/** The chord row needs this much height to hold the roman under the name. */
+const ROMAN_MIN_ROW_H = SYMBOL_PX + ROMAN_PX + 10;
 
 const BG = '#0a080f';
 const RULER_INK = 'rgba(228, 228, 231, 0.55)'; // zinc-200
@@ -79,7 +86,7 @@ function downbeatNumbers(beats: readonly number[], downbeats: readonly number[])
  * and an optional lyric row. Clicking seeks to the time under the pointer.
  */
 export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCanvasProps>(
-  ({ track, lyrics, pxPerSec, getTime, onSeek, onChordChange, ariaLabel }, ref) => {
+  ({ track, lyrics, pxPerSec, getTime, onSeek, onChordChange, showRoman = true, ariaLabel }, ref) => {
     const wrapRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const boxRef = useRef<CanvasBox | null>(null);
@@ -139,7 +146,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
 
         // Beat ruler: ticks for every beat in the window, downbeats taller with
         // a bar number; a faint grid line runs down the chord row on downbeats.
-        ctx.font = `9px ${FONT_MONO}`;
+        ctx.font = `bold 12px ${FONT_SANS}`;
         ctx.textBaseline = 'top';
         ctx.textAlign = 'left';
         for (let i = lowerBound(beats, t0); i < beats.length && beats[i] <= t1; i += 1) {
@@ -149,7 +156,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
           ctx.strokeStyle = isDown ? BAR_INK : RULER_INK;
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(x, isDown ? RULER_H - 12 : RULER_H - 6);
+          ctx.moveTo(x, isDown ? RULER_H - 14 : RULER_H - 6);
           ctx.lineTo(x, RULER_H);
           ctx.stroke();
           if (isDown) {
@@ -174,7 +181,9 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
         const currentIndex = chordIndexAt(track, t);
         let i = chordIndexAt(track, t0);
         if (i < 0) i = 0;
-        ctx.font = `bold 13px ${FONT_MONO}`;
+        const withRoman = showRoman && chordH >= ROMAN_MIN_ROW_H;
+        const symbolY = withRoman ? chordTop + chordH / 2 - ROMAN_PX / 2 - 2 : chordTop + chordH / 2;
+        const romanY = symbolY + SYMBOL_PX / 2 + ROMAN_PX / 2 + 3;
         ctx.textBaseline = 'middle';
         for (; i < chords.length && chords[i].startSec < t1; i += 1) {
           const span = chords[i];
@@ -193,7 +202,8 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
             ctx.lineWidth = 2;
             ctx.strokeRect(xs + 1, chordTop + 1, w - 2, chordH - 2);
           }
-          // Symbol, left-aligned, clipped to its block.
+          // Symbol, left-aligned, clipped to its block; the roman numeral
+          // in the local key sits under it.
           if (w > 12) {
             ctx.save();
             ctx.beginPath();
@@ -201,7 +211,12 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
             ctx.clip();
             ctx.fillStyle = SYMBOL_INK;
             ctx.textAlign = 'left';
-            ctx.fillText(span.symbol, xs + 6, chordTop + chordH / 2);
+            ctx.font = `bold ${SYMBOL_PX}px ${FONT_SANS}`;
+            ctx.fillText(span.symbol, xs + 6, symbolY);
+            if (withRoman && span.roman) {
+              ctx.font = `bold ${ROMAN_PX}px ${FONT_SANS}`;
+              ctx.fillText(span.roman, xs + 6, romanY);
+            }
             ctx.restore();
           }
         }
@@ -214,7 +229,7 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
           ctx.moveTo(0, rowTop - ROW_GAP / 2 + 0.5);
           ctx.lineTo(W, rowTop - ROW_GAP / 2 + 0.5);
           ctx.stroke();
-          ctx.font = `11px ${FONT_MONO}`;
+          ctx.font = `600 13px ${FONT_SANS}`;
           ctx.textBaseline = 'middle';
           ctx.textAlign = 'left';
           // Words are sorted by start; a word can start before the window and
@@ -242,11 +257,12 @@ export const ChordStripCanvas = forwardRef<ChordStripCanvasHandle, ChordStripCan
 
         if (lastChordRef.current !== currentIndex) {
           lastChordRef.current = currentIndex;
-          setLiveSymbol(currentIndex >= 0 ? chords[currentIndex].symbol : '');
+          const live = currentIndex >= 0 ? chords[currentIndex] : null;
+          setLiveSymbol(live ? (live.roman && showRoman ? `${live.symbol}, ${live.roman}` : live.symbol) : '');
           onChordChangeRef.current?.(currentIndex);
         }
       },
-      [track, lyrics, lyricStarts, beats, barNumbers, scale, measure],
+      [track, lyrics, lyricStarts, beats, barNumbers, scale, measure, showRoman],
     );
 
     useImperativeHandle(ref, () => ({ draw }), [draw]);

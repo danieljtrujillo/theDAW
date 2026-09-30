@@ -36,8 +36,9 @@ import {
   type StackBinding,
   type StackMedia,
 } from '../../state/slideStore';
-import { useMediaBucketStore } from '../../state/mediaBucketStore';
+import { useMediaBucketStore, type BucketItem } from '../../state/mediaBucketStore';
 import { loadStackMedia, refreshStack } from '../../state/controlSyncBus';
+import { logError } from '../../state/logStore';
 import {
   CONTROLLER_PROFILES,
   profileById,
@@ -209,6 +210,86 @@ Slot.displayName = 'Slot';
 const kindOfMime = (mime: string): StackMedia['kind'] =>
   mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'video';
 
+/**
+ * Blob object URLs created via `URL.createObjectURL` are scoped to the page
+ * that created them — but a stack's `media` is persisted (slideStore.ts
+ * partialize includes `stacks`). After a reload, a persisted `blob:` URL no
+ * longer resolves to anything, so `loadStackMedia` silently posts a dead URL
+ * into the VJ (FE-014). This module-level set tracks every blob URL actually
+ * created THIS page load; anything the persisted store references that ISN'T
+ * in this set is stale and needs to be re-derived from the media bucket
+ * (whose blobs DO survive reload — see mediaBucketStore.ts).
+ */
+const liveStackMediaUrls = new Set<string>();
+
+/**
+ * Decide which stacks' persisted media needs a fresh object URL — or, when
+ * the source media no longer exists in the bucket at all, needs CLEARING
+ * (`media: null`) rather than being left pointing at a permanently-dead
+ * `blob:` URL (2nd audit follow-up, MINOR #5). Pure so it can be tested
+ * without real Blob/URL APIs — the component supplies `URL.createObjectURL`
+ * as `createObjectUrl`.
+ */
+export function resolveStaleStackMedia(
+  stacks: StackBinding[],
+  bucketItems: BucketItem[],
+  liveUrls: ReadonlySet<string>,
+  createObjectUrl: (blob: Blob) => string,
+): Array<{ id: string; media: StackMedia | null }> {
+  const updates: Array<{ id: string; media: StackMedia | null }> = [];
+  for (const stack of stacks) {
+    const media = stack.media;
+    if (!media || !media.url.startsWith('blob:') || liveUrls.has(media.url)) continue;
+    if (!media.entryId) continue;
+    const item = bucketItems.find((b) => b.id === media.entryId);
+    if (!item) {
+      // The source media is gone — nothing can ever resolve this URL again.
+      updates.push({ id: stack.id, media: null });
+      continue;
+    }
+    updates.push({ id: stack.id, media: { ...media, url: createObjectUrl(item.blob) } });
+  }
+  return updates;
+}
+
+/**
+ * Runs one pass of the stale-media refresh. Takes stacks via a `getStacks()`
+ * callback — not a plain array — so a caller can re-read the LIVE store on
+ * every invocation instead of closing over a snapshot from render time. This
+ * matters under StrictMode: React invokes an effect's setup twice against the
+ * same pre-effect snapshot, so a closed-over `stacks` array would see the
+ * same "stale" media on both invocations and mint a second, orphaned object
+ * URL for it (the first is silently dropped — never revoked, never
+ * referenced again). Reading fresh each call means the second invocation
+ * observes the first invocation's `applyUpdate` and correctly no-ops.
+ */
+export function runStackMediaRefresh(
+  getStacks: () => StackBinding[],
+  bucketItems: BucketItem[],
+  liveUrls: ReadonlySet<string>,
+  createObjectUrl: (blob: Blob) => string,
+  applyUpdate: (id: string, media: StackMedia | null) => void,
+): void {
+  const updates = resolveStaleStackMedia(getStacks(), bucketItems, liveUrls, createObjectUrl);
+  for (const { id, media } of updates) applyUpdate(id, media);
+}
+
+/**
+ * Revokes a stack's media object URL (if any) and drops it from the
+ * session's live-URL set, so it's never mistaken for still-live. Used both
+ * when a stack's media is replaced/cleared and when the stack itself is
+ * deleted — deleting a stack used to skip this entirely, leaking the URL.
+ */
+export function releaseStackMedia(
+  media: StackMedia | null | undefined,
+  liveUrls: Set<string>,
+  revokeObjectUrl: (url: string) => void,
+): void {
+  if (!media?.url) return;
+  revokeObjectUrl(media.url);
+  liveUrls.delete(media.url);
+}
+
 // A custom stack lane: a fader (keyed `stack:<id>`, so controlSyncBus fans it
 // out to the bound targets) titled by the stack name, with a media chip + a
 // gear that opens the binding editor. Looks itself up from the store so the
@@ -261,17 +342,19 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
   const assignMedia = (id: string) => {
     const item = bucket.find((b) => b.id === id);
     if (!item) return;
-    if (stack.media?.url) URL.revokeObjectURL(stack.media.url);
+    releaseStackMedia(stack.media, liveStackMediaUrls, URL.revokeObjectURL);
+    const url = URL.createObjectURL(item.blob);
+    liveStackMediaUrls.add(url);
     const media: StackMedia = {
       kind: kindOfMime(item.mimeType),
-      url: URL.createObjectURL(item.blob),
+      url,
       label: item.name,
       entryId: item.id,
     };
     updateStack(stack.id, { media });
   };
   const clearMedia = () => {
-    if (stack.media?.url) URL.revokeObjectURL(stack.media.url);
+    releaseStackMedia(stack.media, liveStackMediaUrls, URL.revokeObjectURL);
     updateStack(stack.id, { media: null });
   };
 
@@ -368,7 +451,14 @@ const StackEditor: React.FC<{ stack: StackBinding; onClose: () => void }> = ({ s
       ))}
       <button className="sl-se-add" onClick={addTarget}><Plus className="w-3 h-3" /> Add target</button>
 
-      <button className="sl-se-delete" onClick={() => { removeStack(stack.id); onClose(); }}>
+      <button
+        className="sl-se-delete"
+        onClick={() => {
+          releaseStackMedia(stack.media, liveStackMediaUrls, URL.revokeObjectURL);
+          removeStack(stack.id);
+          onClose();
+        }}
+      >
         <Trash2 className="w-3 h-3" /> Delete stack
       </button>
     </div>
@@ -577,6 +667,39 @@ export const SlidePanel: React.FC = () => {
   const setAutoDetect = useSlideStore((s) => s.setAutoDetect);
   const setBank = useSlideStore((s) => s.setBank);
   const midiInputs = useMidiDevicesStore((s) => s.inputs);
+
+  // FE-014: a stack's persisted media.url can be a blob: URL from a PREVIOUS
+  // session — dead on this one. Once the media bucket is hydrated (its blobs
+  // survive reload via IndexedDB), re-derive a fresh object URL for any stale
+  // reference so loadStackMedia never posts a dead blob: URL into the VJ.
+  const allStacks = useSlideStore((s) => s.stacks);
+  const updateStack = useSlideStore((s) => s.updateStack);
+  const bucketHydrated = useMediaBucketStore((s) => s.hydrated);
+  const bucketItems = useMediaBucketStore((s) => s.items);
+  const hydrateBucket = useMediaBucketStore((s) => s.hydrate);
+  useEffect(() => {
+    if (!bucketHydrated) {
+      void hydrateBucket().catch((e) => {
+        logError('slide', `Media bucket hydration failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      return;
+    }
+    // Read the store fresh rather than closing over `allStacks` — under
+    // StrictMode this effect's setup runs twice against the same pre-effect
+    // render, and a closed-over array would see the same "stale" media both
+    // times and mint two object URLs for it (one orphaned, never revoked).
+    runStackMediaRefresh(
+      () => useSlideStore.getState().stacks,
+      bucketItems,
+      liveStackMediaUrls,
+      (blob) => {
+        const url = URL.createObjectURL(blob);
+        liveStackMediaUrls.add(url);
+        return url;
+      },
+      (id, media) => updateStack(id, { media }),
+    );
+  }, [bucketHydrated, bucketItems, allStacks, updateStack, hydrateBucket]);
   // Learned (capture-built) profiles — the universal path for custom rigs that
   // no name-detected preset can match (e.g. a 92-control combined setup).
   const learnedProfiles = useLearnedProfilesStore((s) => s.profiles);

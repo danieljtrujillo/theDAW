@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pretty_midi  # type: ignore[import]
+import pretty_midi
 
 from backend.modules.library.db import LibraryDB
 from backend.modules.notation.arrangers.guitar_tab import TUNINGS, arrange_tabs

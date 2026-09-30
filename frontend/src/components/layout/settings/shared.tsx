@@ -12,8 +12,8 @@ import { ToggleLeft, ToggleRight, Loader2 } from 'lucide-react';
 import { InfoTip } from '../../ui/Tooltip';
 
 export const SECTION_TITLE = 'text-xs font-black uppercase tracking-widest text-zinc-200';
-export const SECTION_META = 'text-[11px] font-mono text-zinc-400';
-export const FIELD_LABEL = 'text-[11px] font-mono uppercase tracking-wider text-zinc-300';
+export const SECTION_META = 'text-xs font-semibold tabular-nums text-zinc-400';
+export const FIELD_LABEL = 'text-xs font-bold uppercase tracking-wider text-zinc-300';
 export const BODY = 'text-xs text-zinc-300';
 export const CARD = 'rounded border border-white/8 bg-white/3';
 export const INPUT =
@@ -24,13 +24,23 @@ export const INPUT =
 export const SELECT =
   'min-w-0 max-w-48 rounded border border-white/10 bg-black/40 px-1.5 py-1 text-xs font-mono text-zinc-200 outline-none focus:border-purple-500/50 disabled:opacity-50';
 
-const BTN_BASE =
-  'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-black uppercase tracking-widest transition-colors disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-1';
-export const BTN_GHOST = `${BTN_BASE} border-white/10 text-zinc-300 hover:text-white hover:bg-white/5 focus-visible:ring-white/30`;
-export const BTN_PURPLE = `${BTN_BASE} border-purple-500/40 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25 focus-visible:ring-purple-400/70`;
+const BTN_SHAPE =
+  'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 uppercase tracking-widest transition-colors disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-1';
+const BTN_BASE = `${BTN_SHAPE} text-xs font-black`;
+const GHOST_TONE = 'border-white/10 text-zinc-300 hover:text-white hover:bg-white/5 focus-visible:ring-white/30';
+const PURPLE_TONE = 'border-purple-500/40 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25 focus-visible:ring-purple-400/70';
+export const BTN_GHOST = `${BTN_BASE} ${GHOST_TONE}`;
+export const BTN_PURPLE = `${BTN_BASE} ${PURPLE_TONE}`;
 export const BTN_AMBER = `${BTN_BASE} border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 hover:text-amber-100 focus-visible:ring-amber-400/70`;
 export const BTN_ROSE = `${BTN_BASE} border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20 hover:text-rose-100 focus-visible:ring-rose-400/70`;
 export const BTN_SKY = `${BTN_BASE} border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20 hover:text-sky-100 focus-visible:ring-sky-400/70`;
+
+/** The Lyria key lists' labels and buttons: 12 px bold sans, the floor the
+ *  rest of the modal's 11 px meta type sits under. */
+export const FIELD_LABEL_12 = 'text-xs font-bold uppercase tracking-wider text-zinc-300';
+const BTN_BASE_12 = `${BTN_SHAPE} text-xs font-bold`;
+export const BTN_GHOST_12 = `${BTN_BASE_12} ${GHOST_TONE}`;
+export const BTN_PURPLE_12 = `${BTN_BASE_12} ${PURPLE_TONE}`;
 
 /** Section header: icon + terse title + InfoTip with the long copy + optional
  *  right-aligned meta chip + optional extra controls. */
@@ -64,7 +74,7 @@ export const Segmented: React.FC<{
         type="button"
         onClick={() => onChange(v)}
         aria-pressed={value === v}
-        className={`text-[11px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
+        className={`text-xs font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border transition-colors ${
           value === v ? 'bg-purple-500/25 border-purple-400/60 text-purple-100' : 'border-white/10 text-zinc-300 hover:text-white hover:bg-white/5'
         }`}
       >
@@ -105,7 +115,7 @@ export const IconToggle: React.FC<{
       <ToggleLeft className="w-5 h-5 text-zinc-500 group-hover:text-zinc-400" />
     )}
     {caption && (
-      <span className={`text-[11px] font-mono uppercase tracking-widest ${enabled ? 'text-purple-200' : 'text-zinc-400'}`}>
+      <span className={`text-xs font-bold uppercase tracking-widest ${enabled ? 'text-purple-200' : 'text-zinc-400'}`}>
         {caption}
       </span>
     )}

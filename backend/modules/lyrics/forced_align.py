@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .align import _finish_lines, _spread
+from .align import _finish_lines, _spread, fold_letters, is_latin
 from .schema import MIN_WORD_MS, LyricLine, LyricsStats
 
 log = logging.getLogger(__name__)
@@ -71,11 +71,21 @@ def model_downloaded() -> bool:
         return False
 
 
-def romanize(word: str) -> str:
-    """A lyric word as the aligner spells it: accents stripped, lower-case,
-    only a-z and the apostrophe kept ("Don't" -> "don't", "Café" -> "cafe",
-    "2" -> "")."""
-    decomposed = unicodedata.normalize("NFKD", word or "")
+def romanize(word: str, language: str = "") -> str:
+    """A lyric word as the aligner spells it: accents and length marks
+    stripped, ligatures spelled out, lower-case, only a-z and the apostrophe
+    kept ("Don't" -> "don't", "Café" -> "cafe", "dīvīsa" -> "divisa",
+    "Cæsar" -> "caesar", "2" -> ""). The word on the page keeps its marks;
+    only the aligner's copy loses them.
+
+    In a Latin lyric a word in inscriptional capitals spells its vowel u with
+    a V ("POPVLVSQVE"); the aligner hears a vowel there, so it gets a u."""
+    text = word or ""
+    if is_latin(language):
+        from backend.modules.lyricanalysis.latin import spell_vowel_u
+
+        text = spell_vowel_u(text)
+    decomposed = unicodedata.normalize("NFKD", fold_letters(text))
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return _KEEP_RE.sub("", _APOS_RE.sub("'", stripped).casefold())
 
@@ -89,7 +99,7 @@ class _WordRef:
 
 
 def tokenize_lines(
-    lines: list[LyricLine], dictionary: dict[str, int]
+    lines: list[LyricLine], dictionary: dict[str, int], language: str = ""
 ) -> tuple[list[int], list[_WordRef]]:
     """Every lyric word, in order, as aligner label ids; a word whose
     romanisation has no labels gets an empty span."""
@@ -99,7 +109,9 @@ def tokenize_lines(
         if line.kind != "lyric" or not line.text.strip():
             continue
         for wi, word in enumerate(line.words):
-            ids = [dictionary[c] for c in romanize(word.text) if c in dictionary]
+            ids = [
+                dictionary[c] for c in romanize(word.text, language) if c in dictionary
+            ]
             refs.append(_WordRef(li, wi, len(tokens), len(tokens) + len(ids)))
             tokens.extend(ids)
     return tokens, refs
@@ -258,10 +270,12 @@ def align_lines(
     scale: float = 1.0,
     device: Optional[str] = None,
     progress: Optional[Callable[[str], None]] = None,
+    language: str = "",
 ) -> tuple[list[LyricLine], LyricsStats]:
     """Time ``lines`` against ``audio_path``. ``scale`` maps the aligned
-    file's clock onto the song's (a resampled stem). Blocking: run it in a
-    thread, on the GPU lane."""
+    file's clock onto the song's (a resampled stem). ``language`` is the
+    lyric's own (see ``romanize``). Blocking: run it in a thread, on the GPU
+    lane."""
     import torch
     import torchaudio.functional as F
 
@@ -269,7 +283,7 @@ def align_lines(
     if progress and not model_downloaded():
         progress("downloading the aligner model (1.2 GB, once)")
     model, dictionary, sample_rate, dev = _load_model(dev)
-    tokens, refs = tokenize_lines(lines, dictionary)
+    tokens, refs = tokenize_lines(lines, dictionary, language)
     if not tokens:
         raise ValueError("no alignable words: the lyrics have no Latin letters")
     if progress:

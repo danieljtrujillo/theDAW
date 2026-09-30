@@ -24,6 +24,7 @@ import { useAppUiStore } from '../../state/appUiStore';
 import { useStatusBarStore } from '../../state/statusBarStore';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { saveFile } from '../../lib/saveFile';
+import { useSunoStore } from '../../suno/sunoStore';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,10 @@ export const LogActionButton: React.FC = () => {
   const submitGeneration = useGenerateStore((s) => s.submitGeneration);
   const cancelGeneration = useGenerateStore((s) => s.cancelGeneration);
   const model         = useGenerateParamsStore((s) => s.model);
+  // CREATE with Suno selected routes to sunoStore.submit (generateStore never
+  // claims isGenerating for it), so the footer key needs Suno's own busy flag
+  // to show anything at all while a submit is in flight.
+  const sunoSubmitting = useSunoStore((s) => s.submitting);
   const isProcessing  = useStudioStore((s) => s.isProcessing);
   const isChainProcessing = useStudioStore((s) => s.isChainProcessing);
   const underfitRuns  = useUnderfitRunsStore((s) => s.runs);
@@ -394,6 +399,7 @@ export const LogActionButton: React.FC = () => {
     isGenerating,
     progressPct,
     statusLabel,
+    sunoSubmitting,
     isProcessing,
     isChainProcessing,
     trainingRun: liveRun

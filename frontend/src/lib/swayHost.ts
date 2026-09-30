@@ -38,7 +38,40 @@ export type CockpitAction =
   | { kind: 'request-scenes' }
   | { kind: 'open-scene'; name: string | null; path: string | null }
   | { kind: 'choose-scene-file' }
+  | { kind: 'choose-plugin-file' }
   | { kind: 'track-menu'; trackId: string; name: string; empty: boolean; x: number; y: number };
+
+/** This host answers sway/choose-plugin-file with sway/plugin-file. Listed in
+ *  sway/host-ready's caps, so the cockpit waits for the dialog instead of
+ *  giving up on a host that never answers. */
+export const HOST_CAP_PLUGIN_FILE = 'plugin-file';
+
+/** What this host can do for the cockpit, sent in sway/host-ready. */
+export const HOST_CAPS: readonly string[] = [HOST_CAP_PLUGIN_FILE];
+
+/** The sway/plugin-file frame that answers a sway/choose-plugin-file. */
+export interface PluginFileFrame {
+  type: 'sway/plugin-file';
+  /** The picked .gan's absolute path, or null for a cancel or a failure. */
+  path: string | null;
+  /** The file's name, for the cockpit's notice; absent without a path. */
+  name?: string;
+  /** Why no file could be picked; absent for a pick or a plain cancel. */
+  failure?: string;
+}
+
+/**
+ * The answer to a sway/choose-plugin-file: a picked path, a cancel (no path,
+ * no failure), or a failure. A path that is not a .gan is a failure too, so
+ * the cockpit never asks theDAW to open a file of another kind.
+ */
+export function pluginFileFrame(picked: { path?: string | null; cancelled?: boolean } | null, failure?: string | null): PluginFileFrame {
+  if (failure) return { type: 'sway/plugin-file', path: null, failure };
+  const path = picked && !picked.cancelled && typeof picked.path === 'string' && picked.path.trim() ? picked.path : null;
+  if (!path) return { type: 'sway/plugin-file', path: null };
+  if (!/\.gan$/i.test(path)) return { type: 'sway/plugin-file', path: null, failure: 'Choose a file that ends in .gan.' };
+  return { type: 'sway/plugin-file', path, name: basenameOf(path) };
+}
 
 const nonEmpty = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
 
@@ -70,6 +103,8 @@ export function cockpitAction(data: unknown): CockpitAction | null {
     }
     case 'sway/choose-scene-file':
       return { kind: 'choose-scene-file' };
+    case 'sway/choose-plugin-file':
+      return { kind: 'choose-plugin-file' };
     case 'sway/track-menu': {
       // x, y are viewport px inside the cockpit's frame; the host adds the
       // frame's own offset before opening its menu.

@@ -465,7 +465,7 @@ export const ColonyCanvas: React.FC = () => {
           ctx2d.lineWidth = big ? 2.5 : 1.2;
           ctx2d.stroke();
         }
-        if (r > 24 && b.vit > 0.3) label(ctx2d, `${b.node.id} · ${meterText(g.meter)}${g.tempo !== 1 ? ` ×${g.tempo}` : ''} · bar ${lap + 1}`, p.x, p.y - r - 10, Math.max(11, Math.min(15, 13 * Math.min(1.2, v.k))), col, bg, 'center', true);
+        if (r > 24 && b.vit > 0.3) label(ctx2d, `${b.node.id} · ${meterText(g.meter)}${g.tempo !== 1 ? ` ×${g.tempo}` : ''} · bar ${lap + 1}`, p.x, p.y - r - 10, Math.max(12, Math.min(15, 13 * Math.min(1.2, v.k))), col, bg, 'center', true);
         if (b.vit > 0.5) drawNub(ctx2d, p.x + r + 10, p.y, hover.current === b.key || isSel, col, bg);
       }
 
@@ -570,7 +570,7 @@ export const ColonyCanvas: React.FC = () => {
           }
           if (e.on != null) {
             const m = ropeAt(pts, rope.live, 0.5);
-            label(ctx2d, `on ${e.on}`, m.x, m.y - 9, 11, col, bg, 'center', true);
+            label(ctx2d, `on ${e.on}`, m.x, m.y - 9, 12, col, bg, 'center', true);
           }
         }
       }
@@ -754,7 +754,7 @@ export const ColonyCanvas: React.FC = () => {
               : n.kind === 'gate' ? `${n.id} · ${n.pct != null ? `${n.pct}%` : `${(n.laps ?? []).join(',')}/${n.period}`}`
               : n.id;
             ctx2d.globalAlpha = detail ? 1 : 0.72;
-            label(ctx2d, sub, p.x, p.y + r * 1.15 + 15, Math.max(11, Math.min(14, 12.5 * Math.min(1.2, k))), col, bg, 'center', true);
+            label(ctx2d, sub, p.x, p.y + r * 1.15 + 15, Math.max(12, Math.min(14, 12.5 * Math.min(1.2, k))), col, bg, 'center', true);
             ctx2d.globalAlpha = 1;
           }
         }
@@ -1011,7 +1011,7 @@ export const ColonyCanvas: React.FC = () => {
   const selResolved = sel?.node.kind === 'loop' ? colonyResolvedFor(sel.node.query) : null;
   const hoverBody = hoverKey ? bodies.current.get(hoverKey) : null;
   const cursor = wire.current || wireMode ? 'cursor-crosshair' : hoverBody ? 'cursor-grab active:cursor-grabbing' : 'cursor-move';
-  const toolBtn = 'rounded-md border border-white/25 bg-black/60 px-2.5 py-1 text-xs font-mono font-semibold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+  const toolBtn = 'rounded-md border border-white/25 bg-black/60 px-2.5 py-1 text-xs font-display font-bold uppercase tracking-wider et-ink hover:bg-white/10 transition-colors disabled:opacity-40 disabled:pointer-events-none';
 
   return (
     <div className="absolute inset-0">
@@ -1051,7 +1051,7 @@ export const ColonyCanvas: React.FC = () => {
       </div>
 
       {/* Caption: what is selected, in ink that reads (left-32 clears the assistant orb). */}
-      <div className="pointer-events-none absolute left-32 bottom-2 max-w-[65%] rounded-md bg-black/60 px-2.5 py-1.5 text-xs font-mono font-semibold et-ink leading-snug" aria-live="polite">
+      <div className="pointer-events-none absolute left-32 bottom-2 max-w-[65%] rounded-md bg-black/60 px-2.5 py-1.5 text-xs font-sans font-bold et-ink leading-snug" aria-live="polite">
         {note
           ? note
           : sel
@@ -1223,7 +1223,8 @@ function worldOfIn(map: Map<string, Body>, b: Body): { x: number; y: number; k: 
 
 /** Text with a halo of the background so it reads over anything. */
 function label(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, bgRgb: string, align: CanvasTextAlign, bold: boolean, baseline: CanvasTextBaseline = 'alphabetic'): void {
-  ctx.font = `${bold ? '800 ' : '700 '}${size}px ui-monospace, "Cascadia Mono", Menlo, monospace`;
+  // IBM Plex Sans, the app's sans (index.css --font-sans), bold.
+  ctx.font = `${bold ? '800 ' : '700 '}${size}px "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif`;
   ctx.textAlign = align;
   ctx.textBaseline = baseline;
   ctx.lineJoin = 'round';

@@ -625,7 +625,7 @@ async def _resolve_vocal_audio(
     and backup mixed together); the stemmer run now when it is installed and
     ``isolate`` is on; the mid/side isolation of the mix into ``work``; the
     mix itself."""
-    store = get_store()
+    store = await asyncio.to_thread(get_store)
     stems = _vocal_stem_paths(entry_id)
     if stems:
         return _mix_stems(stems, work / "vocals_mix.wav"), "stem"
@@ -734,7 +734,7 @@ async def run_transcribe(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                 progress=0.2,
                 message=f"transcribing ({cfg.model} on {cfg.device}; first run installs whisper)",
             )
-            record = get_store().get_entry(entry_id)
+            record = (await asyncio.to_thread(get_store)).get_entry(entry_id)
             title = Path(str(getattr(record, "title", "") or "")).stem
             res = await transcription.transcribe(
                 path, language, extra=decode_options(None, title)
@@ -785,18 +785,27 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             if existing is not None and existing.text.strip():
                 text = existing.text
             else:
-                derived, _ = derive_untimed_doc(get_store(), entry_id)
+                derived, _ = derive_untimed_doc(
+                    await asyncio.to_thread(get_store), entry_id
+                )
                 text = derived.text
         if not str(text or "").strip():
             raise RuntimeError("no lyrics to align: paste or transcribe them first")
         base_lines = split_text(str(text))
         lyric_text = "\n".join(ln.text for ln in base_lines if ln.kind == "lyric")
         aligner = str(req.get("aligner") or "").strip().lower() or aligner_choice()
+        # The language the words on the page are in: the one asked for, else
+        # the one the document already says.
+        text_language = (
+            language
+            if language != "auto"
+            else (existing.language if existing else "en")
+        )
         with tempfile.TemporaryDirectory() as td:
             path, audio_source = await _resolve_vocal_audio(
                 entry_id, Path(td), bool(req.get("isolate", True)), job
             )
-            src = get_store().get_audio_path(entry_id)
+            src = (await asyncio.to_thread(get_store)).get_audio_path(entry_id)
             scale = _frame_ratio(Path(src), path) if src else 1.0
             if abs(scale - 1.0) > 1e-3:
                 log.info("lyrics: rescaling ASR times by %.4f for %s", scale, entry_id)
@@ -819,6 +828,7 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                         duration_ms=duration_ms,
                         scale=scale,
                         progress=lambda m: job.update(message=m),
+                        language=text_language,
                     )
                 log.info(
                     "lyrics: forced-aligned %s from %s in %.1fs (%d/%d words)",
@@ -828,11 +838,7 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                     stats.matched,
                     stats.total,
                 )
-                doc_language = (
-                    language
-                    if language != "auto"
-                    else (existing.language if existing else "en")
-                )
+                doc_language = text_language
             else:
                 cfg = transcription.resolve_config()
                 job.update(
@@ -852,11 +858,14 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                     float(res.get("elapsed") or 0.0),
                 )
                 job.update(progress=0.85, message="aligning")
+                doc_language = _language_detected(res, language)
                 lines, stats = align_words(
-                    base_lines, _asr_words(res, scale), duration_ms
+                    base_lines,
+                    _asr_words(res, scale),
+                    duration_ms,
+                    language=doc_language,
                 )
                 stats.aligner = "whisper"
-                doc_language = _language_detected(res, language)
         stats.audio_source = audio_source
         doc = LyricsDoc(
             entry_id=entry_id,
@@ -912,7 +921,7 @@ async def run_review(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             path, audio_source = await _resolve_vocal_audio(
                 entry_id, Path(td), True, job
             )
-            src = get_store().get_audio_path(entry_id)
+            src = (await asyncio.to_thread(get_store)).get_audio_path(entry_id)
             scale = _frame_ratio(Path(src), path) if src else 1.0
             duration_ms = _duration_ms(entry_id, Path(src) if src else path)
             cfg = transcription.resolve_config()
@@ -927,7 +936,10 @@ async def run_review(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             raise RuntimeError(str(res.get("error") or "transcription failed"))
         job.update(progress=0.85, message="review: comparing the words")
         heard_lines, rstats = align_words(
-            doc.lines, _asr_words(res, scale), duration_ms
+            doc.lines,
+            _asr_words(res, scale),
+            duration_ms,
+            language=doc.language,
         )
         fresh = load_doc(entry_id) or doc  # the user may have edited meanwhile
         # Whisper is wrong far more often than the lyric sheet on sung vocals,

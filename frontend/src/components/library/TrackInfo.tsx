@@ -36,6 +36,7 @@ import {
   type Themes,
 } from '../../lib/lineageInsights';
 import { deriveLyrics } from '../../catalog/catalogSearch';
+import { LineageFamilyNotice, RelativeList, useLineageFamily } from './LineageFamilyNotice';
 
 type Row = Record<string, unknown>;
 
@@ -100,11 +101,14 @@ export const TrackInfo: React.FC<{
 }> = ({ entryId, stems, midis, scores, onOpenDetails, onOpenLineage, onSelectEntry }) => {
   const entry = useLibraryStore((s) => (entryId ? s.entries.find((e) => e.id === entryId) : undefined));
   const libraryEntries = useLibraryStore((s) => s.entries);
+  // One lookup for every relative row: a whole family can list thousands.
+  const libraryTitles = useMemo(() => new Map(libraryEntries.map((e) => [e.id, e.title])), [libraryEntries]);
 
   const [analysis, setAnalysis] = useState<AnalysisRow | null>(null);
   const [identity, setIdentity] = useState<NotationIdentity | null>(null);
   const [rhythm, setRhythm] = useState<RhythmRead | null>(null);
-  const [lineage, setLineage] = useState<{ nodes: LineageNode[]; edges: LineageEdge[] } | null>(null);
+  // The capped family, and the whole one when the user asks for it.
+  const lineage = useLineageFamily(entryId, 4);
   const [loading, setLoading] = useState(false);
   const [themes, setThemes] = useState<(Themes & { count: number; truncated: boolean }) | null>(null);
   const [themesBusy, setThemesBusy] = useState(false);
@@ -117,7 +121,6 @@ export const TrackInfo: React.FC<{
     setAnalysis(null);
     setIdentity(null);
     setRhythm(null);
-    setLineage(null);
     setThemes(null);
     if (!entryId) return;
     let cancelled = false;
@@ -130,10 +133,6 @@ export const TrackInfo: React.FC<{
         .then((r) => (r.ok ? r.json() : null))
         .then((j: RhythmRead | null) => !cancelled && setRhythm(j && j.status === 'ready' ? j : null))
         .catch(() => undefined),
-      fetch(`/api/library/${id}/lineage?depth=4`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => !cancelled && setLineage(j ? { nodes: j.nodes ?? [], edges: j.edges ?? [] } : null))
-        .catch(() => undefined),
     ]).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -142,12 +141,22 @@ export const TrackInfo: React.FC<{
     };
   }, [entryId]);
 
+  const lineageRead = lineage.family;
+  // Themes are read from one family. When the whole family replaces the
+  // capped one they are dropped, and a read still running on the replaced
+  // family is dropped when it lands, so "Read from N of the family" never
+  // describes the family that was replaced.
+  const shownFamilyRef = useRef(lineageRead);
+  shownFamilyRef.current = lineageRead;
+  useEffect(() => {
+    setThemes(null);
+  }, [lineageRead]);
   const family = useMemo(() => {
-    if (!entryId || !lineage) return null;
+    if (!entryId || !lineageRead) return null;
     const byId: Record<string, LineageNode> = {};
-    for (const n of lineage.nodes) byId[n.id] = n;
-    return { byId, ...relativesOf(entryId, lineage.edges) };
-  }, [entryId, lineage]);
+    for (const n of lineageRead.nodes) byId[n.id] = n;
+    return { read: lineageRead, byId, ...relativesOf(entryId, lineageRead.edges) };
+  }, [entryId, lineageRead]);
 
   // Themes fetch every entry in the family, so they are read on request.
   const readThemes = async () => {
@@ -155,6 +164,7 @@ export const TrackInfo: React.FC<{
     const ids = [...family.ancestors, ...family.descendants].filter((id) => family.byId[id]?.kind === 'entry');
     const use = ids.slice(0, LINEAGE_FETCH_CAP);
     const askedFor = entryId;
+    const askedFamily = lineageRead;
     setThemesBusy(true);
     try {
       const rows = await Promise.all(
@@ -164,7 +174,7 @@ export const TrackInfo: React.FC<{
             .catch(() => null),
         ),
       );
-      if (shownIdRef.current !== askedFor) return;
+      if (shownIdRef.current !== askedFor || shownFamilyRef.current !== askedFamily) return;
       setThemes({ ...themesOf(rows), count: use.length, truncated: ids.length > use.length });
     } finally {
       setThemesBusy(false);
@@ -180,8 +190,8 @@ export const TrackInfo: React.FC<{
   }
 
   const lyrics = entry.lyrics || deriveLyrics(entry);
-  const inLibrary = (id: string) => libraryEntries.some((e) => e.id === id);
-  const nodeTitle = (id: string) => family?.byId[id]?.title || libraryEntries.find((e) => e.id === id)?.title || `${id.slice(0, 12)}…`;
+  const inLibrary = (id: string) => libraryTitles.has(id);
+  const nodeTitle = (id: string) => family?.byId[id]?.title || libraryTitles.get(id) || `${id.slice(0, 12)}…`;
 
   const relativeRow = (edge: LineageEdge, otherId: string, i: number) => {
     const title = nodeTitle(otherId);
@@ -235,7 +245,7 @@ export const TrackInfo: React.FC<{
           <button type="button" className={KEY} onClick={() => onOpenLineage(entry.id)} title="Open this track's lineage graph">
             <Network className="size-3.5" aria-hidden="true" /> Lineage
           </button>
-          {loading && <Loader2 className="size-3.5 animate-spin text-purple-300" aria-label="Loading" />}
+          {(loading || lineage.loading) && <Loader2 className="size-3.5 animate-spin text-purple-300" aria-label="Loading" />}
         </div>
       </div>
 
@@ -372,8 +382,22 @@ export const TrackInfo: React.FC<{
         title="Lineage"
         hint={family ? `${family.ancestors.size} before · ${family.descendants.size} after` : undefined}
       >
+        {lineageRead && (
+          <LineageFamilyNotice
+            family={lineageRead}
+            busy={lineage.wholeBusy}
+            error={lineage.wholeError}
+            onLoadWhole={lineage.loadWhole}
+          />
+        )}
         {!family ? (
-          <p className="text-xs font-bold text-zinc-500">{loading ? 'loading…' : 'No lineage recorded.'}</p>
+          <p className="text-xs font-bold text-zinc-500">
+            {lineage.loading
+              ? 'loading…'
+              : lineage.error
+                ? `Could not read the lineage: ${lineage.error}`
+                : 'No lineage recorded.'}
+          </p>
         ) : family.incoming.length === 0 && family.outgoing.length === 0 ? (
           <p className="text-xs font-bold text-zinc-500">No relatives: nothing made this track and nothing was made from it.</p>
         ) : (
@@ -381,13 +405,23 @@ export const TrackInfo: React.FC<{
             {family.incoming.length > 0 && (
               <>
                 <span className="text-xs font-bold text-zinc-500">Came from ({family.incoming.length})</span>
-                <ul className="flex flex-col gap-0.5">{family.incoming.map((e, i) => relativeRow(e, e.from_id, i))}</ul>
+                <RelativeList
+                  items={family.incoming}
+                  family={family.read}
+                  className="flex flex-col gap-0.5"
+                  render={(e, i) => relativeRow(e, e.from_id, i)}
+                />
               </>
             )}
             {family.outgoing.length > 0 && (
               <>
                 <span className="text-xs font-bold text-zinc-500">Led to ({family.outgoing.length})</span>
-                <ul className="flex flex-col gap-0.5">{family.outgoing.map((e, i) => relativeRow(e, e.to_id, i))}</ul>
+                <RelativeList
+                  items={family.outgoing}
+                  family={family.read}
+                  className="flex flex-col gap-0.5"
+                  render={(e, i) => relativeRow(e, e.to_id, i)}
+                />
               </>
             )}
             {Object.keys(family.spawnedByKind).length > 0 && (

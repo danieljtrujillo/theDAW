@@ -1,5 +1,6 @@
 import { create, type StateCreator } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { WidgetId, CustomWidgetDef, ButtonShape, FrameShape } from '../components/surface/widgetTypes';
 
 /* Generic, data-driven control-surface layout.
@@ -995,6 +996,7 @@ export function createLayoutStore(surfaceId: string, defaultLayout: SurfaceLayou
       })),
       {
         name: `thedaw.surface.${surfaceId}.v1`,
+        storage: persistStorage(),
         version: defaultLayout.version,
         // designMode is session-only; never persist it.
         partialize: (s) => ({ layout: s.layout }),

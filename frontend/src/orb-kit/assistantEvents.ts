@@ -3,7 +3,18 @@ export interface AssistantExecutableAction {
     payload?: Record<string, unknown>;
 }
 
-const theDAW_ACTION_TYPES = new Set([
+/**
+ * Every action name the browser will execute.
+ *
+ * Exported because it is half of a contract that spans two languages: the
+ * `editor_*` / `dj_*` members here must match the declarations in
+ * `backend/modules/assistant/tool_catalog.py` exactly. A name declared to the
+ * model and missing here is a tool that silently refuses; a name here and
+ * missing there is a capability no provider is ever told about.
+ * `tests/test_assistant_provider_tools.py` reads this literal and fails on
+ * either kind of drift.
+ */
+export const theDAW_ACTION_TYPES = new Set([
     'navigate',
     'navigate_to',
     'open_docs',
@@ -47,6 +58,97 @@ const theDAW_ACTION_TYPES = new Set([
     'editor_set_bpm',
     'editor_set_loop',
     'editor_add_marker',
+    // Notes — piano-roll clips, edited as notes (a clip holding rendered audio re-renders).
+    'editor_quantize_clip',
+    'editor_get_notes',
+    'editor_set_notes',
+    'editor_nudge_notes',
+    'editor_transpose_clip',
+    'editor_scale_velocity',
+    'editor_humanize_clip',
+    'editor_fix_overlaps',
+    'editor_filter_notes',
+    'editor_set_clip_instrument',
+    // Roll parts: a MIDI clip as one part of a score.
+    'editor_create_midi_clip',
+    'editor_list_roll_parts',
+    'editor_get_roll_part',
+    'editor_set_roll_part',
+    // Tempo and time.
+    'editor_set_clip_source_bpm',
+    'editor_stretch_clip',
+    'editor_detect_tempo',
+    'editor_set_time_signature',
+    'editor_set_meter_map',
+    'editor_get_meter_map',
+    'editor_nudge_clip',
+    // Transport.
+    'editor_play',
+    'editor_stop',
+    'editor_seek_bar',
+    'editor_loop_selection',
+    // Clip geometry and audio.
+    'editor_set_clip',
+    'editor_trim_clip',
+    'editor_duplicate_clip',
+    'editor_merge_clips',
+    'editor_crossfade_clips',
+    'editor_reverse_clip',
+    'editor_normalize_clip',
+    'editor_bounce_clip',
+    // The arrangement's notes as one MIDI file (Save As).
+    'editor_export_midi',
+    // Selection and grid.
+    'editor_select_clips',
+    'editor_select_range',
+    'editor_select_notes',
+    'editor_set_snap',
+    'editor_set_tool',
+    // Tracks.
+    'editor_reorder_tracks',
+    'editor_duplicate_track',
+    'editor_freeze_track',
+    // Templates.
+    'editor_add_symphony_template',
+    // A track's VST3 instrument slot, the user's sound banks and the project tuning.
+    'editor_set_track_instrument',
+    'editor_list_sound_banks',
+    'editor_load_sound_bank',
+    'editor_set_tuning',
+    // Analysis (backend DSP).
+    'editor_analyze_clip',
+    'editor_compare_timing',
+    'editor_get_waveform_peaks',
+    // Markers.
+    'editor_remove_marker',
+    'editor_rename_marker',
+    // Automation.
+    'editor_add_automation_lane',
+    'editor_set_automation_points',
+    // Safety net.
+    'editor_undo',
+    'editor_redo',
+    'editor_snapshot',
+    'editor_restore',
+    // DJ performance control (handlers predate the declarations).
+    'dj_get_state',
+    'dj_load_set',
+    'dj_automix',
+    'dj_transition_now',
+    'dj_set_next',
+    // Composer: the piano roll's COMPOSE backends (orb-kit/composerTools).
+    'composer_plan',
+    'composer_check',
+    'composer_form',
+    'composer_species',
+    'composer_canon',
+    'composer_fugue',
+    'composer_styles',
+    'composer_profile',
+    // Scores: import a score file, search and open the music21 corpus.
+    'notation_import',
+    'notation_corpus_search',
+    'notation_corpus_open',
 ]);
 
 /** Validate an arbitrary parsed object (e.g. from a scraped <action> block)

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { List, useListRef, type RowComponentProps } from 'react-window';
 import {
   Search, Database, Clock, Play, Pause, Download, Trash2,
   Music, Star, Tag, Filter, ArrowUpDown, Sparkles,
@@ -9,18 +10,35 @@ import {
 } from 'lucide-react';
 import { CoverArt } from '../catalog/CoverArt';
 import { importUrlToLibrary } from '../lib/onlineImport';
-import { importFolder } from '../lib/mediaLibrary';
+import { importFolderToLibrary } from '../lib/folderImport';
+import { formatDuration, formatSize } from '../lib/libraryFormat';
 import { startQueue } from '../state/playlistQueue';
-import { DESKTOP_DROP_ORIGIN, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, STEM_SONG_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { linkSongTime } from '../lib/songTimeLink';
+import { midiRowPart, type LibraryMidiRow } from '../lib/libraryIndex';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
 import { LineageModal } from '../components/library/LineageModal';
 import { SuggestPlaylistModal } from '../components/library/SuggestPlaylistModal';
 import { StemsRunModal, type StemsRunOptions } from '../components/library/StemsRunModal';
+import { AssetInspectorModal } from '../components/library/AssetInspectorModal';
 import { TrackInfo } from '../components/library/TrackInfo';
+import { ProviderBadge } from '../components/library/ProviderBadge';
 import { MicRecorder } from '../components/audio/MicRecorder';
 import { Section } from '../components/ui/Section';
-import { useLibraryStore, type LibraryEntry } from '../state/libraryStore';
+import { useLibraryStore, LibraryIdCapError, type LibraryEntry } from '../state/libraryStore';
+import { LibraryStatsStrip } from '../components/library/LibraryStatsStrip';
+import { LibraryIndexProgress } from '../components/library/LibraryIndexProgress';
+import { useLibraryIndexStatus } from '../state/libraryIndexStatusStore';
+import { libraryOpeningText } from '../lib/libraryIndexStatus';
+import {
+  describeBulkConflict,
+  LibraryBulkConflictError,
+  LibrarySearchIndexBuildingError,
+  fetchLibraryMatchCount,
+  plainLibraryQuery,
+} from '../lib/backendLocalProvider';
+import { useLibraryCounts, type LibraryCountKey } from '../state/libraryCountsStore';
 import { useGenerateParamsStore } from '../state/generateParamsStore';
 import { useEditorStore, computePeaks } from '../state/editorStore';
 import { usePlayerStore } from '../state/playerStore';
@@ -30,6 +48,7 @@ import { useFeatureToggleStore } from '../state/featureToggleStore';
 import { logError, logInfo, logWarn } from '../state/logStore';
 import { addBlobsToChimera } from '../lib/chimeraClient';
 import { saveFile, extOfName } from '../lib/saveFile';
+import { saveWholeLineage } from '../lib/lineageFamily';
 import { basenameOf } from '../lib/placesClient';
 import { KnownFilesMenu } from '../components/ui/KnownFilesMenu';
 import {
@@ -51,15 +70,9 @@ import {
   sendMidiIdToTarget,
   stemRowToSendable,
 } from '../lib/sendToTargets';
+import { stemMidiRows, stemMidisToEdit, stemMidisToRoll } from '../lib/stemMidiSet';
+import { getGlobalVoice } from '../lib/soundfontEngine';
 
-
-const formatDuration = (sec: number): string => {
-  if (!Number.isFinite(sec) || sec <= 0) return '--:--';
-  const total = Math.round(sec);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-};
 
 const formatDate = (iso: string): string => {
   try {
@@ -67,12 +80,6 @@ const formatDate = (iso: string): string => {
   } catch {
     return iso;
   }
-};
-
-const formatSize = (bytes: number): string => {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
 };
 
 // Every save in this view goes through saveFile: Save As opens in the folder
@@ -128,13 +135,403 @@ const offsetInRegion = (el: HTMLElement, region: HTMLElement): { top: number; bo
   return { top: (e.top - r.top) / z, bottom: (e.bottom - r.top) / z };
 };
 
+/* ═════════════════════ virtualized TRACKS list (react-window) ══════════════
+ *
+ * The library can hold 200,000 entries, so the list renders the rows on screen
+ * and nothing else. Row indices are GLOBAL indices into the store's current
+ * result set — the same space `entryAt` and the backend's `offset` use — and a
+ * row whose page has not arrived yet draws a skeleton of the identical height,
+ * so the scrollbar never jumps while pages load.
+ */
+
+/** List mode: card height (64) plus the 4px gap under it, in CSS px. */
+const TRACK_ROW_HEIGHT = 68;
+/** Grid mode: two square cards per line with `gap-2` between them. */
+const GRID_COLUMNS = 2;
+/** `gap-2`, in CSS px — used to turn a measured width into a row height. */
+const GRID_GAP = 8;
+/** Rows kept rendered beyond the viewport, per the ticket. */
+const TRACK_OVERSCAN = 8;
+
+/** Everything a track card needs that is the same for every row. */
+interface TrackCardActions {
+  viewMode: 'list' | 'grid';
+  selectedIds: ReadonlySet<string>;
+  selectedEntryId: string | null;
+  engineEntryId: string | null;
+  engineIsPlaying: boolean;
+  onSelect: (entry: LibraryEntry, event: React.MouseEvent) => void;
+  onInspect: (entry: LibraryEntry) => void;
+  onContextMenu: (event: React.MouseEvent, entry: LibraryEntry) => void;
+  onDragStart: (event: React.DragEvent<HTMLElement>, entry: LibraryEntry) => void;
+  onPlay: (entry: LibraryEntry) => void;
+  onToggleFavorite: (id: string) => void;
+  onOpenDetails: (id: string) => void;
+  onSendToNewTrack: (entry: LibraryEntry) => void;
+  onSendToInit: (entry: LibraryEntry) => void;
+  onSendToInpaint: (entry: LibraryEntry) => void;
+  onSave: (entry: LibraryEntry) => void;
+  onDelete: (entry: LibraryEntry) => void;
+}
+
+/** One library row. Single click selects; DOUBLE click opens the inspector. */
+const TrackCard: React.FC<TrackCardActions & { entry: LibraryEntry }> = ({
+  entry,
+  viewMode,
+  selectedIds,
+  selectedEntryId,
+  engineEntryId,
+  engineIsPlaying,
+  onSelect,
+  onInspect,
+  onContextMenu,
+  onDragStart,
+  onPlay,
+  onToggleFavorite,
+  onOpenDetails,
+  onSendToNewTrack,
+  onSendToInit,
+  onSendToInpaint,
+  onSave,
+  onDelete,
+}) => {
+  const isCurrent = engineEntryId === entry.id && engineIsPlaying;
+  return (
+    <div
+      data-library-entry-id={entry.id}
+      data-follow-id={entry.id}
+      draggable
+      onDragStart={(e) => onDragStart(e, entry)}
+      onClick={(e) => onSelect(entry, e)}
+      onDoubleClick={() => onInspect(entry)}
+      onContextMenu={(e) => onContextMenu(e, entry)}
+      className={`hardware-card p-0! group cursor-grab active:cursor-grabbing transition-all hover:bg-white/4 overflow-hidden
+        ${selectedIds.has(entry.id) || selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}
+        ${viewMode === 'list' ? 'h-16 flex-row items-center p-1' : 'aspect-square flex-col'}`}
+      title="Double-click for details. Drag onto a Waveform Editor track."
+    >
+      {viewMode === 'grid' && (
+        <div className="flex-1 bg-black/40 relative">
+          <CoverArt
+            coverUrl={entry.coverUrl}
+            title={entry.title}
+            className="absolute inset-0 w-full h-full"
+          />
+          <button
+            type="button"
+            className="absolute top-1 right-1 p-1 bg-black/80 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+            aria-label={isCurrent ? `Pause ${entry.title}` : `Play ${entry.title}`}
+            onClick={(e) => { e.stopPropagation(); onPlay(entry); }}
+          >
+            {isCurrent ? <Pause className="w-3 h-3 text-purple-300" /> : <Play className="w-3 h-3 text-zinc-300" />}
+          </button>
+        </div>
+      )}
+
+      {viewMode === 'list' && (
+        <CoverArt
+          coverUrl={entry.coverUrl}
+          title={entry.title}
+          className="w-8 h-8 ml-0.5 shrink-0 rounded-sm"
+          iconClassName="w-3.5 h-3.5"
+        />
+      )}
+
+      <div className={`p-1.5 flex flex-col gap-0.5 min-w-0 ${viewMode === 'list' ? 'flex-1' : ''}`}>
+        <div className="flex items-center justify-between overflow-hidden gap-2">
+          <span className="font-bold text-[10px] truncate pr-2 text-zinc-200" title={entry.title}>
+            {entry.title}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleFavorite(entry.id); }}
+            className="shrink-0"
+            title={entry.favorite ? 'Unfavorite' : 'Favorite'}
+            aria-label={entry.favorite ? `Unfavorite ${entry.title}` : `Favorite ${entry.title}`}
+          >
+            <Star className={`w-2.5 h-2.5 ${entry.favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
+          </button>
+        </div>
+        {entry.prompt && (
+          <span className="mono-label text-[8px]! text-zinc-500! truncate" title={entry.prompt}>
+            {entry.prompt}
+          </span>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 min-w-0">
+            {/* The entry's one provider: what the file said about its origin
+                when it said anything, derived from model/source otherwise. */}
+            <ProviderBadge entry={entry} className="shrink-0" />
+            <span className="text-[8px] font-mono text-purple-400/80 uppercase tracking-wider truncate">{entry.model}</span>
+          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            {(entry.playCount ?? 0) > 0 && (
+              <span className="text-[8px] font-mono text-purple-300/70 flex items-center gap-0.5" title={`Played ${entry.playCount}x`}>
+                <Play className="w-2 h-2 fill-current" />{entry.playCount}
+              </span>
+            )}
+            <span className="text-[8px] font-mono text-zinc-600">{formatDuration(entry.duration)}</span>
+            <span className="text-[8px] font-mono text-zinc-700">{formatDate(entry.timestamp)}</span>
+            <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.fileSizeBytes)}</span>
+            {viewMode === 'list' && (
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onPlay(entry); }}
+                  title={isCurrent ? 'Pause' : 'Play'}
+                  aria-label={isCurrent ? `Pause ${entry.title}` : `Play ${entry.title}`}
+                >
+                  {isCurrent ? <Pause className="w-2.5 h-2.5 text-purple-400" /> : <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />}
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onOpenDetails(entry.id); }}
+                  title="Open details (metadata, prompt, analysis)"
+                  aria-label={`Open details for ${entry.title}`}
+                >
+                  <Info className="w-2.5 h-2.5 text-zinc-500 hover:text-emerald-300" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onSendToNewTrack(entry); }}
+                  title="Send to editor as a new track"
+                  aria-label={`Send ${entry.title} to the editor as a new track`}
+                >
+                  <Layers className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onSendToInit(entry); }}
+                  title="Send to Init audio"
+                  aria-label={`Send ${entry.title} to Init audio`}
+                >
+                  <Wand2 className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onSendToInpaint(entry); }}
+                  title="Send to Inpaint"
+                  aria-label={`Send ${entry.title} to Inpaint`}
+                >
+                  <PenLine className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onSave(entry); }}
+                  title="Save this file to a folder you choose."
+                  aria-label={`Save ${entry.title}`}
+                >
+                  <Download className="w-2.5 h-2.5 text-zinc-600 hover:text-white" />
+                </button>
+                <button
+                  type="button"
+                  className="p-1 hover:bg-white/10 rounded"
+                  onClick={(e) => { e.stopPropagation(); onDelete(entry); }}
+                  title="Delete"
+                  aria-label={`Delete ${entry.title}`}
+                >
+                  <Trash2 className="w-2.5 h-2.5 text-zinc-600 hover:text-red-400" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** A row whose page has not arrived. Same box, so nothing shifts when it does. */
+const TrackSkeleton: React.FC<{ viewMode: 'list' | 'grid' }> = ({ viewMode }) => (
+  <div
+    aria-hidden="true"
+    className={`hardware-card p-0! animate-pulse bg-white/3 ${viewMode === 'list' ? 'h-16 flex-row items-center p-1' : 'aspect-square flex-col'}`}
+  >
+    <div className={`bg-white/5 rounded-sm ${viewMode === 'list' ? 'w-8 h-8 ml-0.5 shrink-0' : 'flex-1'}`} />
+    <div className="p-1.5 flex flex-col gap-1 flex-1 min-w-0">
+      <div className="h-2 w-2/3 rounded bg-white/5" />
+      <div className="h-1.5 w-1/3 rounded bg-white/5" />
+    </div>
+  </div>
+);
+
+/** `rowProps` for the virtualized track list. */
+interface TrackRowData extends TrackCardActions {
+  /** Cards per rendered row: 1 in list mode, `GRID_COLUMNS` in grid mode. */
+  perRow: number;
+  /** Rows matching the query, loaded or not. */
+  total: number;
+  /** The row at a global index, or undefined while its page is coming. */
+  entryAt: (index: number) => LibraryEntry | undefined;
+  /** New reference whenever a page lands, so rendered rows re-read `entryAt`. */
+  loadedRows: readonly LibraryEntry[];
+}
+
+function TrackRow({ index, style, ariaAttributes, ...data }: RowComponentProps<TrackRowData>) {
+  const { perRow, total, entryAt, viewMode } = data;
+  const first = index * perRow;
+  const cells: React.ReactNode[] = [];
+  for (let column = 0; column < perRow; column += 1) {
+    const at = first + column;
+    if (at >= total) break;
+    const entry = entryAt(at);
+    cells.push(
+      entry
+        ? <TrackCard key={entry.id} entry={entry} {...data} />
+        : <TrackSkeleton key={`skeleton-${at}`} viewMode={viewMode} />,
+    );
+  }
+  return (
+    <div
+      style={style}
+      {...ariaAttributes}
+      className={viewMode === 'list' ? 'pb-1' : 'grid grid-cols-2 gap-2 pb-2'}
+    >
+      {cells}
+    </div>
+  );
+}
+
+/**
+ * The whole-library numbers the two Clear actions act on. `nonFavorites` is
+ * over the kind the list is showing (the filter those actions send); `all` is
+ * every entry of every kind, which is what an empty filter deletes.
+ */
+interface MaintenanceCounts {
+  nonFavorites: number;
+  all: number;
+}
+
+/**
+ * The confirmation for deleting the WHOLE library.
+ *
+ * Deleting 200,000 entries — favourites included, managed files off disk — is
+ * not something an OK button should be able to do by accident, so the user
+ * types the number back. A real modal rather than `window.prompt`: prompt is
+ * unavailable in parts of the desktop shell, and this way the count, the
+ * warning and the field are one labelled, focus-trapped dialog.
+ */
+const ClearAllDialog: React.FC<{
+  total: number;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}> = ({ total, busy, onCancel, onConfirm }) => {
+  const uid = React.useId();
+  const ids = { heading: `${uid}-heading`, hint: `${uid}-hint`, field: `${uid}-count` };
+  const [typed, setTyped] = useState('');
+  const fieldRef = React.useRef<HTMLInputElement | null>(null);
+  const expected = String(total);
+  const matches = typed.trim() === expected;
+
+  React.useEffect(() => {
+    fieldRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={ids.heading}
+        aria-describedby={ids.hint}
+        onKeyDown={(e) => e.stopPropagation()}
+        className="w-full max-w-md flex flex-col gap-3 rounded border border-red-500/40 bg-[#0a080f] p-4 shadow-2xl"
+      >
+        <h2 id={ids.heading} className="text-[11px] font-black uppercase tracking-wider text-red-300">
+          Delete the entire library
+        </h2>
+        <p id={ids.hint} className="text-[10px] leading-relaxed text-zinc-300">
+          This removes all {total.toLocaleString()} entries — favourites included — and the audio
+          files theDAW manages for them. Tracks you imported in place keep their original files.
+          It cannot be undone.
+        </p>
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (matches && !busy) onConfirm();
+          }}
+        >
+          <label htmlFor={ids.field} className="text-[9px] font-bold uppercase tracking-wider text-zinc-400">
+            Type {expected} to confirm
+          </label>
+          <input
+            ref={fieldRef}
+            id={ids.field}
+            name={ids.field}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            className="w-full rounded border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] font-mono text-zinc-100 focus:border-red-400/60 focus:outline-none"
+          />
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded border border-white/10 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/5"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!matches || busy}
+              className="rounded border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-red-200 hover:bg-red-500/25 disabled:opacity-30"
+            >
+              {busy ? 'Deleting…' : `Delete ${total.toLocaleString()}`}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpand?: () => void }> = ({ onSwitchTab, onExpand }) => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [subTab, setSubTab] = useState<LibrarySubTab>('tracks');
   const [lineageOpen, setLineageOpen] = useState<string | null>(null);
   const [suggestOpen, setSuggestOpen] = useState(false);
-  const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
+  // Selection is a SET of ids, not an array of rows: a select-all over 200,000
+  // entries has to be cheap to hold and cheap to test membership in, and the
+  // rows it names mostly are not loaded.
+  const [selectedEntryIds, setSelectedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  /** Shown under the toolbar when a select-all hits the server's id cap. */
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  /**
+   * Whole-library counts for the two Clear actions, or null when the backend
+   * has no bulk-delete route (the labels then say "loaded" and mean it).
+   * Fetched when the OPTIONS menu opens, so a library nobody is maintaining
+   * costs nothing.
+   */
+  const [maintenanceCounts, setMaintenanceCounts] = useState<MaintenanceCounts | null>(null);
+  /** The whole-library total the typed "clear all" confirmation is asking for. */
+  const [clearAllTotal, setClearAllTotal] = useState<number | null>(null);
+  const [clearAllBusy, setClearAllBusy] = useState(false);
+  /** The asset the inspector (T22) is open on; null when it is closed. */
+  const [inspectEntryId, setInspectEntryId] = useState<string | null>(null);
+  /** An entry revealed from elsewhere that is on no loaded page. */
+  const [pinnedEntry, setPinnedEntry] = useState<LibraryEntry | null>(null);
   // Per-entry right-click menu now uses the shared ContextMenu
   // primitive (zoom-compensated, closes on outside-click / Esc / wheel
   // automatically). Payload carries the entryId of the right-clicked
@@ -168,6 +565,22 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const [micOpen, setMicOpen] = useState(false);
   const midiFileInputRef = useRef<HTMLInputElement | null>(null);
   const patchFeatures = useFeatureToggleStore((s) => s.patch);
+  // Category counts for the sub-tab strip. They arrive with the library at
+  // boot, so STEMS / MIDI / VIDEO / SCORE show a real number before their tab
+  // has ever been opened; a tab that HAS loaded its own rows prefers those.
+  const libraryCounts = useLibraryCounts((s) => s.counts);
+  const countsStatus = useLibraryCounts((s) => s.status);
+  const countsError = useLibraryCounts((s) => s.error);
+  /** What a sub-tab prints between its parentheses: the tab's own rows once it
+   *  has loaded them, else the boot-time summary, else '…' while the summary
+   *  is still coming. If the summary failed and nothing was ever loaded the
+   *  tabs print '—' and the strip grows one retry control — a button nested
+   *  inside a tab button would be invalid DOM, so it lives beside them. */
+  const tabCount = (own: number | null | undefined, key: LibraryCountKey): string => {
+    if (own != null) return String(own);
+    if (libraryCounts) return String(libraryCounts[key]);
+    return countsStatus === 'error' ? '—' : '…';
+  };
 
 
   const abortStems = async () => {
@@ -345,6 +758,8 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       // Invalidate sub-tab caches so the new stems/midi show up.
       if (kind === 'stems') setAllStems(null);
       if (kind === 'midi') setAllMidis(null);
+      // …and the strip's counts, which a finished stems / MIDI job moved.
+      if (kind === 'stems' || kind === 'midi') useLibraryCounts.getState().invalidate();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (kind === 'stems' && /aborted|AbortError/i.test(msg)) {
@@ -401,6 +816,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     } catch (e) {
       logError('library', `Failed to refresh media library: ${e instanceof Error ? e.message : String(e)}`);
     }
+    useLibraryCounts.getState().invalidate();
   }, []);
 
   // In-place refresh of the stems / midi indexes (no null-flicker, unlike the
@@ -413,6 +829,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     } catch (e) {
       logError('library', `Failed to refresh stems: ${e instanceof Error ? e.message : String(e)}`);
     }
+    useLibraryCounts.getState().invalidate();
   }, []);
 
   const refreshMidi = React.useCallback(async () => {
@@ -422,7 +839,35 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     } catch (e) {
       logError('library', `Failed to refresh MIDI: ${e instanceof Error ? e.message : String(e)}`);
     }
+    useLibraryCounts.getState().invalidate();
   }, []);
+
+  // A score made or imported anywhere else (SCORE's IMPORT SCORE FILE and
+  // BROWSE CORPUS, a MAKE) invalidates the library counts; when the score
+  // count moves and this list has been loaded, fetch it again so the new
+  // score is listed without a manual refresh. Fetched directly rather than
+  // through refreshScores, which would invalidate the counts once more.
+  const scoreCount = libraryCounts?.score ?? null;
+  const scoresLoaded = allScores !== null;
+  const seenScoreCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (scoreCount === null) return;
+    const seen = seenScoreCountRef.current;
+    seenScoreCountRef.current = scoreCount;
+    if (seen === null || seen === scoreCount || !scoresLoaded) return;
+    let cancelled = false;
+    void fetch('/api/library/_all/scores')
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancelled) setAllScores(j.scores || []);
+      })
+      .catch((e: unknown) => {
+        logError('library', `Failed to refresh scores: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scoreCount, scoresLoaded]);
 
   const refreshScores = React.useCallback(async () => {
     try {
@@ -431,7 +876,25 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     } catch (e) {
       logError('library', `Failed to refresh scores: ${e instanceof Error ? e.message : String(e)}`);
     }
+    // The score tab's refresh IS the notation commit path from here: every
+    // notation write the view knows about ends in one of these.
+    useLibraryCounts.getState().invalidate();
   }, []);
+
+  /** Parent-track titles for the Stems / MIDI / Score groups.
+   *  The aggregate endpoints JOIN the title onto every row (`parent_title`),
+   *  so this never walks the library — which at 200,000 entries it could not. */
+  const parentTitles = useMemo(() => {
+    const titles: Record<string, string> = {};
+    for (const rows of [allStems, allMidis, allScores]) {
+      for (const row of rows ?? []) {
+        const pid = String(row.parent_id ?? '');
+        const title = row.parent_title;
+        if (pid && typeof title === 'string' && title) titles[pid] = title;
+      }
+    }
+    return titles;
+  }, [allStems, allMidis, allScores]);
 
   const stemsByParent = useMemo(() => {
     const map: Record<string, Array<Record<string, unknown>>> = {};
@@ -477,8 +940,17 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite);
   const removeEntry = useLibraryStore((s) => s.removeEntry);
   const getAudioUrl = useLibraryStore((s) => s.getAudioUrl);
-  const getFiltered = useLibraryStore((s) => s.getFiltered);
   const refreshLibrary = useLibraryStore((s) => s.refresh);
+  // Paging surface: `total` is every row matching the query (loaded or not),
+  // `entries` is only the rows in hand, and `entryAt` resolves a global index.
+  const total = useLibraryStore((s) => s.total);
+  const pagesLoading = useLibraryStore((s) => s.pagesLoading);
+  const pageError = useLibraryStore((s) => s.pageError);
+  const libraryOpening = useLibraryStore((s) => s.libraryOpening);
+  const indexStatus = useLibraryIndexStatus((s) => s.status);
+  const entryAt = useLibraryStore((s) => s.entryAt);
+  const ensureRange = useLibraryStore((s) => s.ensureRange);
+  const getById = useLibraryStore((s) => s.getById);
 
   // Cover art. Both actions re-list afterwards: the entry record is what
   // carries the (version-stamped) cover URL, so the rail only repaints once
@@ -529,8 +1001,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     }
   }, [isBackendReady, loaded, load]);
 
-  const filteredEntries = getFiltered();
-  const selectedEntries = filteredEntries.filter((entry) => selectedEntryIds.includes(entry.id));
+  // The selected rows we actually hold. At 200,000 entries a selection names
+  // ids, not records: everything that needs a record works over the loaded
+  // ones, and everything that only needs a count uses `selectedCount`.
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selectedEntryIds.has(entry.id)),
+    [entries, selectedEntryIds],
+  );
+  const selectedCount = selectedEntryIds.size;
   const engineEntryId = usePlayerStore((s) => s.currentEntryId);
   const engineIsPlaying = usePlayerStore((s) => s.isPlaying);
   const engineLoad = usePlayerStore((s) => s.load);
@@ -570,11 +1048,18 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     });
   };
 
-  const parentTitles = useMemo(() => Object.fromEntries(entries.map((e) => [e.id, e.title])), [entries]);
-  // Only an audio track has stems, MIDI or scores to look for.
-  const selectedEntry = selectedEntryId
-    ? entries.find((e) => e.id === selectedEntryId && (e.kind ?? 'audio') === 'audio') ?? null
-    : null;
+  // Only an audio track has stems, MIDI or scores to look for. `getById`
+  // answers from the loaded pages and, failing that, from a cached
+  // single-entry fetch — so a selection made before its page was in hand
+  // still resolves.
+  const lookupVersion = useLibraryStore((s) => s.lookupVersion);
+  const selectedEntry = useMemo(() => {
+    if (!selectedEntryId) return null;
+    const found = getById(selectedEntryId);
+    return found && (found.kind ?? 'audio') === 'audio' ? found : null;
+    // `lookupVersion` is the re-read trigger: it bumps when a by-id fetch lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEntryId, getById, entries, lookupVersion]);
   /** The selected track has nothing in a Stems / MIDI / Score list that has loaded. */
   const missingFor = (byParent: Record<string, unknown[]>, loadedRows: unknown[] | null): boolean =>
     !!selectedEntry && loadedRows !== null && !byParent[selectedEntry.id]?.length;
@@ -615,9 +1100,76 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     }
   };
 
+  /** The virtualized tracks list, and how many cards each of its rows holds. */
+  const trackListRef = useListRef(null);
+  const perRow = viewMode === 'grid' ? GRID_COLUMNS : 1;
+  const perRowRef = useRef(perRow);
+  useEffect(() => { perRowRef.current = perRow; }, [perRow]);
+
+  // A query change invalidates the selection: the ids it names need not be in
+  // the new result set at all, and at 200,000 entries there is no cheap way to
+  // intersect the old selection with the new one.
   useEffect(() => {
-    setSelectedEntryIds((prev) => prev.filter((id) => entries.some((entry) => entry.id === id)));
-  }, [entries]);
+    setSelectedEntryIds(new Set());
+    setSelectionAnchorId(null);
+    setSelectionNotice(null);
+    setPinnedEntry(null);
+  }, [searchQuery, onlyFavorites, sortBy]);
+
+  /**
+   * Scroll the list to a row, ignoring a row index the list does not have.
+   * `scrollToRow` throws a RangeError for an out-of-range index, and the index
+   * we resolved and the `total` the list was built from can disagree for a
+   * frame while a query is settling — that is not worth an unhandled throw.
+   */
+  const scrollToRowSafely = React.useCallback((row: number, align: 'center' | 'smart') => {
+    try {
+      trackListRef.current?.scrollToRow({ index: row, align });
+    } catch {
+      /* the row is not in the list (yet) — leave the scroll position alone */
+    }
+  }, [trackListRef]);
+
+  /** Bring a GLOBAL row index into view, loading the page it needs first. */
+  const jumpToIndex = React.useCallback(async (index: number) => {
+    await useLibraryStore.getState().ensureRange(index, index + 1);
+    scrollToRowSafely(Math.floor(index / Math.max(1, perRowRef.current)), 'center');
+  }, [scrollToRowSafely]);
+
+  /**
+   * Select an entry and scroll to it, wherever it is in the result set.
+   *
+   * The position comes from the server's id list, because the row is usually
+   * on a page nobody has loaded. When the server refuses to enumerate that
+   * many ids, the entry itself is pinned above the list instead, with a way
+   * to try the jump again once the search has been narrowed.
+   */
+  const revealEntry = React.useCallback(async (id: string) => {
+    setSubTab('tracks');
+    setSelectedEntryIds(new Set([id]));
+    setSelectionAnchorId(id);
+    setSelectedEntry(id);
+    setPinnedEntry(null);
+    try {
+      // The list's own matches: during a search index build that is the part
+      // of the library the list shows, which is where the row can be scrolled.
+      const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
+      const at = ids.indexOf(id);
+      if (at >= 0) {
+        setSelectionNotice(null);
+        await jumpToIndex(at);
+        return;
+      }
+    } catch (e) {
+      setSelectionNotice(
+        e instanceof LibraryIdCapError
+          ? e.message
+          : `Could not locate the track: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const entry = await useLibraryStore.getState().ensureEntry(id);
+    if (entry) setPinnedEntry(entry);
+  }, [jumpToIndex, setSelectedEntry]);
 
   // Shared ContextMenu handles outside-click / Esc / wheel close, so
   // the old per-mount global listener block is gone.
@@ -634,18 +1186,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     const onReveal = (e: Event) => {
       const id = (e as CustomEvent).detail?.entryId;
       if (typeof id !== 'string') return;
-      setSelectedEntryIds([id]);
-      setSelectionAnchorId(id);
-      setSelectedEntry(id);
       showBottomTab('details');
-      // Schedule a scrollIntoView after the next paint so the entry
-      // row exists in the DOM by the time we look for it.
-      window.requestAnimationFrame(() => {
-        const el = document.querySelector(`[data-library-entry-id="${id}"]`);
-        if (el && 'scrollIntoView' in el) {
-          (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      });
+      // The row is almost certainly on a page nobody has loaded, so this
+      // resolves its index first and scrolls the virtual list there.
+      void revealEntry(id);
     };
     window.addEventListener('thedaw:open-lineage', onOpenLineage);
     window.addEventListener('thedaw:reveal-library-entry', onReveal);
@@ -653,42 +1197,63 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       window.removeEventListener('thedaw:open-lineage', onOpenLineage);
       window.removeEventListener('thedaw:reveal-library-entry', onReveal);
     };
-  }, [setSelectedEntry, showBottomTab]);
+  }, [revealEntry, showBottomTab]);
 
-  const handleSelectEntry = (entry: LibraryEntry, event?: React.MouseEvent) => {
+  const handleSelectEntry = React.useCallback((entry: LibraryEntry, event?: React.MouseEvent) => {
     const additive = !!(event?.ctrlKey || event?.metaKey);
     const range = !!event?.shiftKey;
 
     if (range && selectionAnchorId) {
-      const orderedIds = filteredEntries.map((item) => item.id);
-      const anchorIndex = orderedIds.indexOf(selectionAnchorId);
-      const targetIndex = orderedIds.indexOf(entry.id);
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-        const rangeIds = orderedIds.slice(start, end + 1);
-        setSelectedEntryIds((prev) => (additive ? Array.from(new Set([...prev, ...rangeIds])) : rangeIds));
-      } else {
-        setSelectedEntryIds([entry.id]);
-      }
+      // A shift-range routinely spans pages nobody has loaded, so the ORDER
+      // comes from the server's id list, never from the rows on screen.
+      void (async () => {
+        try {
+          const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
+          const anchorIndex = ids.indexOf(selectionAnchorId);
+          const targetIndex = ids.indexOf(entry.id);
+          if (anchorIndex < 0 || targetIndex < 0) {
+            setSelectedEntryIds(new Set([entry.id]));
+            return;
+          }
+          const [from, to] = anchorIndex < targetIndex
+            ? [anchorIndex, targetIndex]
+            : [targetIndex, anchorIndex];
+          const rangeIds = ids.slice(from, to + 1);
+          setSelectedEntryIds((prev) => (
+            additive ? new Set([...prev, ...rangeIds]) : new Set(rangeIds)
+          ));
+          setSelectionNotice(null);
+        } catch (e) {
+          setSelectionNotice(
+            e instanceof LibraryIdCapError
+              ? e.message
+              : `Could not select the range: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          setSelectedEntryIds(new Set([entry.id]));
+        }
+      })();
     } else if (additive) {
-      setSelectedEntryIds((prev) => (
-        prev.includes(entry.id) ? prev.filter((id) => id !== entry.id) : [...prev, entry.id]
-      ));
+      setSelectedEntryIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(entry.id)) next.delete(entry.id);
+        else next.add(entry.id);
+        return next;
+      });
       setSelectionAnchorId(entry.id);
     } else {
-      setSelectedEntryIds([entry.id]);
+      setSelectedEntryIds(new Set([entry.id]));
       setSelectionAnchorId(entry.id);
     }
 
     setSelectedEntry(entry.id);
     // Selecting a track no longer auto-opens the Details tab (per user).
     // Details is still reachable via the bottom-panel tab + open-lineage events.
-  };
+  }, [selectionAnchorId, setSelectedEntry]);
 
   // Select one track by id, as a plain click on its row does: from a group
   // title in Stems / MIDI / Score, or a relative in INFO.
   const selectEntryById = (id: string) => {
-    setSelectedEntryIds([id]);
+    setSelectedEntryIds(new Set([id]));
     setSelectionAnchorId(id);
     setSelectedEntry(id);
   };
@@ -705,7 +1270,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           : true;
   useEffect(() => {
     const region = listRef.current;
-    if (!region || !tabLoaded) return;
+    // TRACKS scrolls inside the virtualized List, which owns its own scroll
+    // position (restored below); the DOM walk below only applies to the tabs
+    // that still render every row.
+    if (!region || !tabLoaded || subTab === 'tracks') return;
     const raf = window.requestAnimationFrame(() => {
       const tabChanged = followedTabRef.current !== subTab;
       followedTabRef.current = subTab;
@@ -727,15 +1295,31 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     return () => window.cancelAnimationFrame(raf);
   }, [subTab, selectedEntryId, tabLoaded]);
 
-  const handleEntryContextMenu = (event: React.MouseEvent, entry: LibraryEntry) => {
+  // Scroll restoration for the virtualized TRACKS list: leaving the tab
+  // records where the user was, and coming back puts them there again.
+  const trackScrollTopRef = useRef(0);
+  useEffect(() => {
+    if (subTab !== 'tracks') return;
+    const api = trackListRef.current;
+    const element = api?.element ?? null;
+    if (element && trackScrollTopRef.current > 0) {
+      element.scrollTop = trackScrollTopRef.current;
+    }
+    return () => {
+      const el = trackListRef.current?.element;
+      if (el) trackScrollTopRef.current = el.scrollTop;
+    };
+  }, [subTab, trackListRef]);
+
+  const handleEntryContextMenu = React.useCallback((event: React.MouseEvent, entry: LibraryEntry) => {
     event.stopPropagation();
-    if (!selectedEntryIds.includes(entry.id)) {
-      setSelectedEntryIds([entry.id]);
+    setSelectedEntryIds((prev) => (prev.has(entry.id) ? prev : new Set([entry.id])));
+    if (!selectedEntryIds.has(entry.id)) {
       setSelectionAnchorId(entry.id);
       setSelectedEntry(entry.id);
     }
     entryMenu.open(event, { entryId: entry.id });
-  };
+  }, [entryMenu, selectedEntryIds, setSelectedEntry]);
 
   const sendEntryToTrack = async (
     entry: LibraryEntry,
@@ -774,6 +1358,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         startSec: tail,
         color: trackColor,
         libraryEntryId: entry.id,
+        songTime: linkSongTime(entry.id),
       });
       editor.cachePeaks(clipId, peaks);
     } catch (e) {
@@ -805,7 +1390,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       ? selectedEntries
       : (() => {
           const ctxId = entryMenu.payload?.entryId;
-          const ctxEntry = entries.find((entry) => entry.id === ctxId);
+          const ctxEntry = ctxId ? getById(ctxId) : undefined;
           return ctxEntry ? [ctxEntry] : [];
         })();
     if (targets.length === 0) return;
@@ -888,6 +1473,46 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     for (const file of files) void onLoadMidiFile(file);
   };
 
+  /**
+   * The whole-library counts the Clear actions name, straight from the server:
+   * one row fetched three times for its `total`, never a page of rows.
+   *
+   * Non-favourites are counted as (this kind) − (this kind, favourited) rather
+   * than by asking for `favorite=false`, because the list endpoint's `favorite`
+   * parameter only ever means "favourites only" — a false there would quietly
+   * count the whole library and the number under the Delete button has to be
+   * the number that gets deleted.
+   *
+   * Null against a backend with no paged list (it has every row in hand, so the
+   * loaded-row wording is the true wording there).
+   */
+  const refreshMaintenanceCounts = React.useCallback(async (): Promise<MaintenanceCounts | null> => {
+    const store = useLibraryStore.getState();
+    if (!store.paged || !store.bulkDeleteSupported) return null;
+    // `provider` is cleared alongside q/favorite/source: these counts are what
+    // the bulk-delete filter below actually targets, and that filter carries no
+    // provider. Leaving it in would print a count the server then refuses.
+    // One helper does that clearing for every counting call site in the app.
+    const kindOnly = plainLibraryQuery(store.getQuery());
+    try {
+      const [everyKind, thisKind, favourites] = await Promise.all([
+        fetchLibraryMatchCount({ ...kindOnly, kind: 'all' }),
+        fetchLibraryMatchCount(kindOnly),
+        fetchLibraryMatchCount({ ...kindOnly, favorite: true }),
+      ]);
+      if (everyKind == null || thisKind == null || favourites == null) return null;
+      const next: MaintenanceCounts = {
+        nonFavorites: Math.max(0, thisKind - favourites),
+        all: everyKind,
+      };
+      setMaintenanceCounts(next);
+      return next;
+    } catch (e) {
+      logWarn('library', `Could not count the library: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }, []);
+
   const handlePlay = async (entry: LibraryEntry) => {
     // If this entry is already loaded in the global engine, just toggle play/pause.
     if (engineEntryId === entry.id) {
@@ -900,15 +1525,30 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
       }
       return;
     }
-    // Play the list, not the track: pressing play on a row queues everything
-    // currently visible (so a filter or a search narrows what plays) starting
-    // at that row. The transport's repeat mode decides what happens at the
-    // end — stop, wrap, or loop this one track.
-    const list = filteredEntries.map((e) => e.id);
-    const at = list.indexOf(entry.id);
-    if (at >= 0) {
-      await startQueue(list, at);
-      return;
+    // Play the list, not the track: pressing play on a row queues EVERY row
+    // the current filters match — the server's id list, not the few hundred
+    // rows in hand — starting at that row. The transport's repeat mode decides
+    // what happens at the end: stop, wrap, or loop this one track. The queue
+    // re-resolves each id as it reaches it, so a track whose page was evicted
+    // an hour into the set still plays.
+    try {
+      // partial: while the search index builds, the queue is the matches the
+      // list shows (it says how much of the library that is).
+      const ids = await useLibraryStore.getState().listFilteredIds({ partial: true });
+      const at = ids.indexOf(entry.id);
+      if (at >= 0) {
+        setSelectionNotice(null);
+        await startQueue(ids, at);
+        return;
+      }
+    } catch (e) {
+      // Over the server's id cap (or the route failed): say so, then play the
+      // one track the user actually clicked rather than nothing at all.
+      setSelectionNotice(
+        e instanceof LibraryIdCapError
+          ? `${e.message} Playing this track on its own.`
+          : `Could not queue the list: ${e instanceof Error ? e.message : String(e)}. Playing this track on its own.`,
+      );
     }
     const blob = await useLibraryStore.getState().fetchAudioBlob(entry);
     await engineLoad(blob, { label: entry.title, entryId: entry.id });
@@ -916,29 +1556,145 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
     setPlayingId(entry.id);
   };
 
-  const handleImportFolder = async () => {
-    try {
-      const res = await importFolder();
-      if (res.cancelled) return;
-      await useLibraryStore.getState().refresh();
-      logInfo(
-        'library',
-        `Added ${res.entries.length} track${res.entries.length === 1 ? '' : 's'} from ${res.folder}`,
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      logError('library', `Folder import failed: ${msg}`);
-      useStatusBarStore.getState().setText(`FOLDER IMPORT FAILED: ${msg}`);
-    }
-  };
+  const handleImportFolder = importFolderToLibrary;
 
-  // Compact analytics strip at the very top of the panel — the user
-  // wanted the prior "LIBRARY ANALYSIS" section's stats hoisted up
-  // here as small chip-style features instead of taking up real
-  // estate at the bottom of the panel.
-  const totalSize = entries.reduce((s, e) => s + e.fileSizeBytes, 0);
-  const totalDur = entries.reduce((s, e) => s + e.duration, 0);
-  const favCount = entries.filter((e) => e.favorite).length;
+  /** "200,134 tracks", with the query echoed when one is active. */
+  const totalLabel = `${total.toLocaleString()} ${total === 1 ? 'track' : 'tracks'}`;
+
+  /* ── the virtualized tracks list ──────────────────────────────────────── */
+
+  // Measured from the List itself: grid rows are as tall as a card is wide
+  // (the cards are aspect-square), and a page-down step is a viewport of rows.
+  const [listSize, setListSize] = useState({ width: 0, height: 0 });
+  const handleListResize = React.useCallback(
+    (size: { width: number; height: number }) => setListSize(size),
+    [],
+  );
+  const trackRowHeight = viewMode === 'grid'
+    ? Math.max(96, Math.round((listSize.width - GRID_GAP) / GRID_COLUMNS) + GRID_GAP)
+    : TRACK_ROW_HEIGHT;
+
+  /** The rows react-window has rendered, INCLUDING overscan, drive the fetch. */
+  const handleRowsRendered = React.useCallback((
+    _visible: { startIndex: number; stopIndex: number },
+    rendered: { startIndex: number; stopIndex: number },
+  ) => {
+    const step = Math.max(1, perRowRef.current);
+    void ensureRange(rendered.startIndex * step, (rendered.stopIndex + 1) * step - 1);
+  }, [ensureRange]);
+
+  const handleRowDragStart = React.useCallback((e: React.DragEvent<HTMLElement>, entry: LibraryEntry) => {
+    e.dataTransfer.setData('application/x-thedaw-library-id', entry.id);
+    e.dataTransfer.setData('text/plain', entry.title);
+    e.dataTransfer.effectAllowed = 'copyMove';
+    // A drag of a multi-selection carries the rows we HOLD; ids on pages that
+    // were never loaded have no blob to fetch and no label to show.
+    const lib = useLibraryStore.getState();
+    const selected = selectedEntryIds.has(entry.id)
+      ? lib.entries.filter((en) => selectedEntryIds.has(en.id))
+      : [];
+    const dragItems = selected.length > 1 ? selected : [entry];
+    // A >1 selection carries every selected id — the dragged row first, the
+    // rest in selection order — so the editor places each on its own track.
+    // The single id above still serves legacy single-id targets; single drags
+    // write nothing new.
+    if (dragItems.length > 1) {
+      const ids = [entry.id, ...dragItems.filter((en) => en.id !== entry.id).map((en) => en.id)];
+      e.dataTransfer.setData(LIBRARY_IDS_MIME, JSON.stringify(ids));
+    }
+    setAudioDragData(e, dragItems.map((en) => ({
+      fetcher: () => lib.fetchAudioBlob(en),
+      mimeType: en.mimeType,
+      label: en.title,
+      entryId: en.id,
+    })));
+  }, [selectedEntryIds]);
+
+  const handleDeleteRow = React.useCallback((entry: LibraryEntry) => {
+    if (confirm(`Delete "${entry.title}"?`)) void removeEntry(entry.id);
+  }, [removeEntry]);
+
+  const handleSaveRow = React.useCallback((entry: LibraryEntry) => {
+    void saveEntryFile(entry, getAudioUrl(entry));
+  }, [getAudioUrl]);
+
+  const handleToggleFavorite = React.useCallback((id: string) => {
+    void toggleFavorite(id);
+  }, [toggleFavorite]);
+
+  const handlePlayRow = React.useCallback((entry: LibraryEntry) => {
+    void handlePlay(entry);
+    // `handlePlay` is re-created each render; it reads live state, so a stale
+    // identity here would still do the right thing — but keep it honest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handlePlay]);
+
+  /** Keyboard navigation over the virtual list: the row a key lands on is
+   *  loaded, scrolled to, and selected, exactly as a click would. */
+  const [focusIndex, setFocusIndex] = useState(0);
+  const onTracksKeyDown = React.useCallback((event: React.KeyboardEvent) => {
+    if (total === 0) return;
+    const step = Math.max(1, perRowRef.current);
+    const rowsPerViewport = Math.max(1, Math.floor(listSize.height / Math.max(1, trackRowHeight)));
+    let next: number;
+    switch (event.key) {
+      case 'ArrowDown': next = focusIndex + step; break;
+      case 'ArrowUp': next = focusIndex - step; break;
+      case 'ArrowRight': next = focusIndex + 1; break;
+      case 'ArrowLeft': next = focusIndex - 1; break;
+      case 'PageDown': next = focusIndex + rowsPerViewport * step; break;
+      case 'PageUp': next = focusIndex - rowsPerViewport * step; break;
+      case 'Home': next = 0; break;
+      case 'End': next = total - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    const at = Math.max(0, Math.min(total - 1, next));
+    setFocusIndex(at);
+    void (async () => {
+      await ensureRange(at, at);
+      scrollToRowSafely(Math.floor(at / step), 'smart');
+      const entry = useLibraryStore.getState().entryAt(at);
+      if (!entry) return;
+      setSelectedEntryIds(new Set([entry.id]));
+      setSelectionAnchorId(entry.id);
+      setSelectedEntry(entry.id);
+    })();
+  }, [ensureRange, focusIndex, listSize.height, scrollToRowSafely, setSelectedEntry, total, trackRowHeight]);
+
+  const trackRowProps = useMemo(() => ({
+    perRow,
+    total,
+    entryAt,
+    // A new reference every time a page lands, which is what makes the
+    // rendered rows re-read `entryAt` and swap their skeletons for real rows.
+    loadedRows: entries,
+    viewMode,
+    selectedIds: selectedEntryIds,
+    selectedEntryId,
+    engineEntryId,
+    engineIsPlaying,
+    onSelect: handleSelectEntry,
+    onInspect: (entry: LibraryEntry) => setInspectEntryId(entry.id),
+    onContextMenu: handleEntryContextMenu,
+    onDragStart: handleRowDragStart,
+    onPlay: handlePlayRow,
+    onToggleFavorite: handleToggleFavorite,
+    onOpenDetails: openDetailsForEntry,
+    onSendToNewTrack: handleSendToNewTrack,
+    onSendToInit: (entry: LibraryEntry) => { void handleSendToInit(entry); },
+    onSendToInpaint: (entry: LibraryEntry) => { void handleSendToInpaint(entry); },
+    onSave: handleSaveRow,
+    onDelete: handleDeleteRow,
+    // `openDetailsForEntry`, `handleSendTo*` are re-created each render and
+    // read live state; re-running this memo on every render is cheap next to
+    // the ~20 rows it feeds.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [
+    perRow, total, entryAt, entries, viewMode, selectedEntryIds, selectedEntryId,
+    engineEntryId, engineIsPlaying, handleSelectEntry, handleEntryContextMenu,
+    handleRowDragStart, handlePlayRow, handleToggleFavorite, handleSaveRow, handleDeleteRow,
+  ]);
 
   return (
     // The panel itself does NOT scroll (overflow-hidden); the upper region
@@ -950,21 +1706,11 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
       {/* Top stats strip — compact "features" version of the old
           LIBRARY ANALYSIS section. */}
-      <div className="shrink-0 flex items-center gap-1 flex-wrap text-[8px] font-mono uppercase tracking-widest text-zinc-500 pb-1 border-b border-white/5">
-        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
-          <span className="text-zinc-300">{entries.length}</span> entries
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-yellow-500/10 border border-yellow-500/20">
-          <Star className="w-2 h-2 fill-current inline-block text-yellow-400 -mt-0.5" />{' '}
-          <span className="text-yellow-200">{favCount}</span>
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
-          <span className="text-zinc-300">{formatSize(totalSize)}</span>
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10">
-          <span className="text-zinc-300">{formatDuration(totalDur)}</span>
-        </span>
-      </div>
+      <LibraryStatsStrip total={total} searchQuery={searchQuery} loadedRows={entries.length} />
+
+      {/* The backend opening the library: schema upgrade, first read, search
+          index build. Hidden once the library is ready. */}
+      <LibraryIndexProgress />
 
       {/* Stems running banner. Shows live phase + progress + an Abort
           button so the user can bail without right-click-finding the
@@ -1003,6 +1749,14 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         onConfirm={(opts) => void onConfirmStemsModal(opts)}
       />
 
+      {/* Everything the app knows about one asset. Opened by double-clicking a
+          row, and keyed by that asset's stable id — sorting, filtering or a
+          page landing under it cannot make it show a different asset. */}
+      <AssetInspectorModal
+        entryId={inspectEntryId}
+        onClose={() => setInspectEntryId(null)}
+      />
+
       {/* Hidden file picker — used by the "Import MIDI" toolbar button.
           Drives loadMidiIntoPianoRoll() so users can pull a .mid off
           disk straight into the piano roll without running basic-pitch.
@@ -1027,7 +1781,10 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
       <Section title="LIBRARY" icon={Database} defaultOpen={true} resizable={false} collapsible={false} fill maxContentHeight={null} rightNode={
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          <span className="text-[8px] font-mono text-zinc-600">{entries.length} TRACKS</span>
+          <span className="text-[8px] font-mono text-zinc-600" title={`${totalLabel} match the current filters`}>
+            {totalLabel.toUpperCase()}
+            {searchQuery.trim() ? ` · SHOWING RESULTS FOR “${searchQuery.trim()}”` : ''}
+          </span>
           {/* Mic-in toggle removed per spec — the MicRecorder lives
               on EDIT + VJ now, not Library. */}
           <button
@@ -1164,31 +1921,46 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             stays a single sticky strip above the scrolling lists. */}
         <div className="shrink-0 flex items-center gap-1 mb-2 border-b border-white/5 pb-1 overflow-x-auto no-scrollbar">
           <SubTabButton active={subTab === 'tracks'} onClick={() => setSubTab('tracks')}>
-            Tracks ({entries.length})
+            {/* The strip counts the LIBRARY, not the current query, so it reads
+                the T21 summary rather than the rows this view has loaded. */}
+            Tracks ({tabCount(null, 'tracks')})
           </SubTabButton>
           <SubTabButton active={subTab === 'stems'} onClick={() => setSubTab('stems')}>
-            Stems ({allStems?.length ?? '…'})
+            Stems ({tabCount(allStems?.length, 'stems')})
           </SubTabButton>
           <SubTabButton active={subTab === 'midi'} onClick={() => setSubTab('midi')}>
-            MIDI ({allMidis?.length ?? '…'})
+            MIDI ({tabCount(allMidis?.length, 'midi')})
           </SubTabButton>
           <SubTabButton active={subTab === 'video'} onClick={() => setSubTab('video')}>
-            Video ({mediaEntries?.length ?? '…'})
+            Video ({tabCount(mediaEntries?.length, 'video')})
           </SubTabButton>
           <SubTabButton active={subTab === 'score'} onClick={() => setSubTab('score')}>
-            Score ({allScores?.length ?? '…'})
+            Score ({tabCount(allScores?.length, 'score')})
           </SubTabButton>
           <SubTabButton active={subTab === 'info'} onClick={() => setSubTab('info')}>
             Info
           </SubTabButton>
+          {countsStatus === 'error' && !libraryCounts && (
+            <button
+              type="button"
+              onClick={() => { void useLibraryCounts.getState().load(); }}
+              aria-label="Retry loading library counts"
+              title={countsError ?? 'Library counts failed to load'}
+              className="shrink-0 p-1 rounded border border-white/5 text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              <RefreshCw className="w-2.5 h-2.5" />
+            </button>
+          )}
         </div>
 
         {/* THE scroll region: only the per-tab lists scroll; everything
             above (stats / search / filters / sub-tab strip) stays pinned.
+            TRACKS does not scroll here — it is virtualized and owns its own
+            scroll container — so the region is overflow-hidden on that tab.
             It is also the drop target for audio files from the desktop. */}
         <div
           ref={listRef}
-          className={`flex-1 min-h-0 overflow-y-auto no-scrollbar flex flex-col transition-colors ${fileDragOver ? 'ring-1 ring-inset ring-purple-400/60 bg-purple-500/5' : ''}`}
+          className={`flex-1 min-h-0 flex flex-col transition-colors ${subTab === 'tracks' || subTab === 'video' ? 'overflow-hidden' : 'overflow-y-auto no-scrollbar'} ${fileDragOver ? 'ring-1 ring-inset ring-purple-400/60 bg-purple-500/5' : ''}`}
           onDragOver={onListDragOver}
           onDragLeave={onListDragLeave}
           onDrop={onListDrop}
@@ -1196,29 +1968,47 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
         {subTab === 'tracks' && (<>
         {/* Icon-only top-level actions toolbar (user request 2026-05-28).
-            All actions operate on selectedEntries; SELECT toggles
-            select-all-visible. Tooltips on hover (title attr) — names
+            Actions work on the SELECTION (a set of ids); SELECT toggles
+            select-all over every row matching the current filters, which the
+            server enumerates. Tooltips on hover (title attr) — names
             are not visible inline. */}
         <LibraryActionsToolbar
           selectedEntries={selectedEntries}
-          visibleEntries={filteredEntries}
-          allEntries={entries}
+          selectedCount={selectedCount}
+          totalCount={total}
+          loadedEntries={entries}
           onToggleSelectAll={() => {
-            const visIds = filteredEntries.map((e) => e.id);
-            const allVisSelected = visIds.length > 0 && visIds.every((id) => selectedEntryIds.includes(id));
-            setSelectedEntryIds(allVisSelected ? [] : visIds);
-            setSelectionAnchorId(allVisSelected ? null : visIds[0] ?? null);
+            if (selectedCount > 0) {
+              setSelectedEntryIds(new Set());
+              setSelectionAnchorId(null);
+              setSelectionNotice(null);
+              return;
+            }
+            void (async () => {
+              try {
+                const ids = await useLibraryStore.getState().listFilteredIds();
+                setSelectedEntryIds(new Set(ids));
+                setSelectionAnchorId(ids[0] ?? null);
+                setSelectionNotice(null);
+              } catch (e) {
+                setSelectionNotice(
+                  e instanceof LibraryIdCapError || e instanceof LibrarySearchIndexBuildingError
+                    ? e.message
+                    : `Select-all failed: ${e instanceof Error ? e.message : String(e)}`,
+                );
+              }
+            })();
           }}
           onDeleteSelected={async () => {
-            const targets = selectedEntries.length > 0 ? selectedEntries : [];
-            if (targets.length === 0) return;
+            const ids = [...selectedEntryIds];
+            if (ids.length === 0) return;
             const ok = window.confirm(
-              `Delete ${targets.length} entr${targets.length === 1 ? 'y' : 'ies'} from disk? This cannot be undone.`,
+              `Delete ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'} from disk? This cannot be undone.`,
             );
             if (!ok) return;
-            const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
+            const { deleted, failed } = await useLibraryStore.getState().removeMany(ids);
             window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
-            setSelectedEntryIds([]);
+            setSelectedEntryIds(new Set());
           }}
           onFuseSelected={handleSendSelectedToInit}
           onInpaintSelected={() => {
@@ -1228,26 +2018,163 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             onSwitchTab?.('create');
           }}
           onFetchMissingCovers={fetchMissingCovers}
+          maintenanceCounts={maintenanceCounts}
+          onOptionsOpen={() => { void refreshMaintenanceCounts(); }}
           onClearNonFavorites={async () => {
+            // One request for the whole library, when the backend has the
+            // route. The count in the question is the server's, and the server
+            // re-counts before it deletes anything: if the library moved in
+            // between it refuses, and the user is asked again with the new
+            // number rather than having a stale promise carried out.
+            const store = useLibraryStore.getState();
+            if (store.bulkDeleteSupported && store.paged) {
+              const kind = store.getQuery().kind;
+              let counts = maintenanceCounts ?? (await refreshMaintenanceCounts());
+              for (let attempt = 0; attempt < 2; attempt += 1) {
+                if (!counts) break;
+                if (counts.nonFavorites === 0) return;
+                const ok = window.confirm(
+                  `Delete ${counts.nonFavorites.toLocaleString()} non-favorite entr${counts.nonFavorites === 1 ? 'y' : 'ies'} from the library? Favorites and their audio files are kept.\n\nThis cannot be undone.`,
+                );
+                if (!ok) return;
+                try {
+                  const result = await store.bulkDelete({
+                    filter: { favorite: false, kind },
+                    confirmTotal: counts.nonFavorites,
+                  });
+                  if (result === null) break; // no route after all: fall through
+                  setMaintenanceCounts(null);
+                  window.alert(
+                    `Removed ${result.deleted.toLocaleString()} entr${result.deleted === 1 ? 'y' : 'ies'}${result.failed.length > 0 ? `, ${result.failed.length} failed` : ''}.`,
+                  );
+                  return;
+                } catch (e) {
+                  if (e instanceof LibraryBulkConflictError) {
+                    const notice = describeBulkConflict(e.totalMatched);
+                    if (notice.total === null) {
+                      // Unknown count — nothing safe to re-confirm with, and
+                      // nothing here to overwrite `counts` with either; leave
+                      // it as it was rather than storing NaN.
+                      window.alert(notice.message);
+                      return;
+                    }
+                    counts = { nonFavorites: notice.total, all: counts.all };
+                    setMaintenanceCounts(counts);
+                    continue;
+                  }
+                  window.alert(`Nothing was deleted: ${e instanceof Error ? e.message : String(e)}`);
+                  return;
+                }
+              }
+              if (counts) return;
+            }
+            // Old backend: exactly what it always did, over the rows in hand.
             const targets = entries.filter((e) => !e.favorite);
             if (targets.length === 0) return;
             const ok = window.confirm(
-              `Delete ${targets.length} non-favorite entr${targets.length === 1 ? 'y' : 'ies'} from disk? Favorites and their audio files are kept.`,
+              `Delete ${targets.length} non-favorite loaded entr${targets.length === 1 ? 'y' : 'ies'} from disk? Favorites and their audio files are kept.`,
             );
             if (!ok) return;
             const { deleted, failed } = await useLibraryStore.getState().removeMany(targets.map((t) => t.id));
             window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
           }}
           onClearAll={async () => {
+            const store = useLibraryStore.getState();
+            if (store.bulkDeleteSupported && store.paged) {
+              const counts = maintenanceCounts ?? (await refreshMaintenanceCounts());
+              if (counts) {
+                // Irreversible and unbounded: the user types the count back.
+                setClearAllTotal(counts.all);
+                return;
+              }
+            }
             const ok = window.confirm(
-              `Delete ALL ${entries.length} library entr${entries.length === 1 ? 'y' : 'ies'} including favorites from disk?\n\nThis cannot be undone.`,
+              `Delete the ${entries.length} loaded library entr${entries.length === 1 ? 'y' : 'ies'} including favorites from disk?\n\nThis cannot be undone.`,
             );
             if (!ok) return;
             const { deleted, failed } = await useLibraryStore.getState().clearAll();
             window.alert(`Removed ${deleted} entr${deleted === 1 ? 'y' : 'ies'}${failed > 0 ? `, ${failed} failed` : ''}.`);
           }}
         />
-        <div className="flex items-center justify-between px-1 mb-1 text-[8px] font-mono text-zinc-600 uppercase border-b border-white/5 pb-1">
+
+        {/* A select-all that hit the server's id cap, or a range that could
+            not be resolved, says so here rather than silently doing less. */}
+        {selectionNotice && (
+          <div
+            role="status"
+            className="shrink-0 mx-1 mb-1 flex items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[9px] font-mono text-amber-200"
+          >
+            <span className="flex-1 min-w-0">{selectionNotice}</span>
+            <button
+              type="button"
+              onClick={() => setSelectionNotice(null)}
+              className="shrink-0 text-amber-300 hover:text-amber-100"
+              aria-label="Dismiss the selection message"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Slim loading bar while pages are in flight, announced once for
+            anyone who cannot see it move. */}
+        <div className="shrink-0 h-0.5 mx-1 mb-1 overflow-hidden rounded bg-white/5" role="status" aria-live="polite">
+          {pagesLoading > 0 && (
+            <>
+              <span className="sr-only">Loading more tracks</span>
+              <div className="h-full w-1/3 animate-pulse rounded bg-purple-500/70" aria-hidden="true" />
+            </>
+          )}
+        </div>
+
+        {/* A page that failed is an explicit row with a retry, never a blank. */}
+        {pageError && (
+          <div
+            role="alert"
+            className="shrink-0 mx-1 mb-1 flex items-center gap-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[9px] font-mono text-rose-200"
+          >
+            <span className="flex-1 min-w-0 truncate" title={pageError}>{pageError}</span>
+            <button
+              type="button"
+              onClick={() => { void useLibraryStore.getState().retryPages(); }}
+              className="shrink-0 rounded border border-rose-400/40 px-1.5 py-0.5 text-rose-200 hover:bg-rose-500/20"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* A track revealed from elsewhere whose position in this result set
+            the server would not enumerate: shown here rather than not at all. */}
+        {pinnedEntry && (
+          <div className="shrink-0 mx-1 mb-1 rounded border border-purple-500/40 bg-purple-500/10 p-1.5">
+            <div className="flex items-center gap-2">
+              <span className="flex-1 min-w-0 truncate text-[10px] font-bold text-purple-200" title={pinnedEntry.title}>
+                {pinnedEntry.title}
+              </span>
+              <button
+                type="button"
+                onClick={() => { void revealEntry(pinnedEntry.id); }}
+                className="shrink-0 rounded border border-purple-400/40 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-widest text-purple-200 hover:bg-purple-500/20"
+              >
+                Jump to position
+              </button>
+              <button
+                type="button"
+                onClick={() => setPinnedEntry(null)}
+                className="shrink-0 text-purple-300 hover:text-purple-100"
+                aria-label="Stop pinning this track"
+              >
+                ✕
+              </button>
+            </div>
+            <span className="mt-0.5 block text-[8px] font-mono text-zinc-500">
+              Pinned — its position in this list is not known yet.
+            </span>
+          </div>
+        )}
+
+        <div className="shrink-0 flex items-center justify-between px-1 mb-1 text-[8px] font-mono text-zinc-600 uppercase border-b border-white/5 pb-1">
           <button type="button" className="flex items-center gap-1 hover:text-zinc-300" onClick={() => setSortBy('title')}>
             <ArrowUpDown className="w-2 h-2" /> NAME
           </button>
@@ -1258,189 +2185,49 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
           </div>
         </div>
 
-        <div className={viewMode === 'list' ? 'flex flex-col gap-1' : 'grid grid-cols-2 gap-2'}>
-          {filteredEntries.map((entry) => (
-            <div
-              key={entry.id}
-              data-library-entry-id={entry.id}
-              data-follow-id={entry.id}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-thedaw-library-id', entry.id);
-                e.dataTransfer.setData('text/plain', entry.title);
-                e.dataTransfer.effectAllowed = 'copyMove';
-                const dragItems = selectedEntryIds.includes(entry.id) && selectedEntries.length > 1
-                  ? selectedEntries
-                  : [entry];
-                const fetchBlob = useLibraryStore.getState().fetchAudioBlob;
-                setAudioDragData(e, dragItems.map((en) => ({
-                  fetcher: () => fetchBlob(en),
-                  mimeType: en.mimeType,
-                  label: en.title,
-                  entryId: en.id,
-                })));
-              }}
-              onClick={(e) => handleSelectEntry(entry, e)}
-              onContextMenu={(e) => handleEntryContextMenu(e, entry)}
-              className={`hardware-card p-0! group cursor-grab active:cursor-grabbing transition-all hover:bg-white/4
-                ${selectedEntryIds.includes(entry.id) || selectedEntryId === entry.id ? 'ring-1 ring-purple-500/60 bg-purple-500/6' : ''}
-                ${viewMode === 'list' ? 'flex-row items-center p-1' : 'aspect-square flex-col'}`}
-              title="Click to inspect metadata. Drag onto a Waveform Editor track."
-            >
-              {viewMode === 'grid' && (
-                <div className="flex-1 bg-black/40 relative">
-                  <CoverArt
-                    coverUrl={entry.coverUrl}
-                    title={entry.title}
-                    className="absolute inset-0 w-full h-full"
-                  />
+        {/* The virtualized list. Row indices are GLOBAL indices into the
+            result set, so scrolling to row 150,000 costs one page fetch and
+            not a 200,000-row render. `onRowsRendered` is what asks for the
+            pages a scroll position needs. */}
+        <div className="flex-1 min-h-0">
+          {total === 0 && pagesLoading === 0 && !pageError ? (
+            <div className="py-8 flex flex-col items-center justify-center opacity-30 italic gap-2">
+              <Database className="w-8 h-8" />
+              {libraryOpening ? (
+                <p className="text-xs font-bold not-italic">{libraryOpeningText(indexStatus)}</p>
+              ) : searchQuery.trim() || onlyFavorites ? (
+                <p>No entries match your filter.</p>
+              ) : (
+                <>
+                  <p>Library is empty.</p>
                   <button
                     type="button"
-                    className="absolute top-1 right-1 p-1 bg-black/80 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
-                    aria-label={engineEntryId === entry.id && engineIsPlaying ? `Pause ${entry.title}` : `Play ${entry.title}`}
-                    onClick={() => handlePlay(entry)}
+                    className="mono-tag bg-purple-600/20! text-purple-300! border-purple-500/40! cursor-pointer"
+                    onClick={() => onSwitchTab?.('create')}
                   >
-                    {engineEntryId === entry.id && engineIsPlaying ? <Pause className="w-3 h-3 text-purple-300" /> : <Play className="w-3 h-3 text-zinc-300" />}
+                    Go generate something
                   </button>
-                </div>
+                </>
               )}
-
-              {viewMode === 'list' && (
-                <CoverArt
-                  coverUrl={entry.coverUrl}
-                  title={entry.title}
-                  className="w-8 h-8 ml-0.5 shrink-0 rounded-sm"
-                  iconClassName="w-3.5 h-3.5"
-                />
-              )}
-
-              <div className={`p-1.5 flex flex-col gap-0.5 ${viewMode === 'list' ? 'flex-1 min-w-0' : ''}`}>
-                <div className="flex items-center justify-between overflow-hidden gap-2">
-                  <span className="font-bold text-[10px] truncate pr-2 text-zinc-200" title={entry.title}>
-                    {entry.title}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); void toggleFavorite(entry.id); }}
-                    className="shrink-0"
-                    title={entry.favorite ? 'Unfavorite' : 'Favorite'}
-                    aria-label={entry.favorite ? `Unfavorite ${entry.title}` : `Favorite ${entry.title}`}
-                  >
-                    <Star className={`w-2.5 h-2.5 ${entry.favorite ? 'text-yellow-500 fill-current' : 'text-zinc-700'}`} />
-                  </button>
-                </div>
-                {entry.prompt && (
-                  <span className="mono-label text-[8px]! text-zinc-500! truncate" title={entry.prompt}>
-                    {entry.prompt}
-                  </span>
-                )}
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[8px] font-mono text-purple-400/80 uppercase tracking-wider">{entry.model}</span>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {(entry.playCount ?? 0) > 0 && (
-                      <span className="text-[8px] font-mono text-purple-300/70 flex items-center gap-0.5" title={`Played ${entry.playCount}x`}>
-                        <Play className="w-2 h-2 fill-current" />{entry.playCount}
-                      </span>
-                    )}
-                    <span className="text-[8px] font-mono text-zinc-600">{formatDuration(entry.duration)}</span>
-                    <span className="text-[8px] font-mono text-zinc-700">{formatDate(entry.timestamp)}</span>
-                    <span className="text-[8px] font-mono text-zinc-700">{formatSize(entry.fileSizeBytes)}</span>
-                    {viewMode === 'list' && (
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); handlePlay(entry); }}
-                          title={engineEntryId === entry.id && engineIsPlaying ? 'Pause' : 'Play'}
-                          aria-label={engineEntryId === entry.id && engineIsPlaying ? `Pause ${entry.title}` : `Play ${entry.title}`}
-                        >
-                          {engineEntryId === entry.id && engineIsPlaying ? <Pause className="w-2.5 h-2.5 text-purple-400" /> : <Play className="w-2.5 h-2.5 text-zinc-400 group-hover:text-purple-400" />}
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); openDetailsForEntry(entry.id); }}
-                          title="Open details (metadata, prompt, analysis)"
-                          aria-label={`Open details for ${entry.title}`}
-                        >
-                          <Info className="w-2.5 h-2.5 text-zinc-500 hover:text-emerald-300" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); handleSendToNewTrack(entry); }}
-                          title="Send to editor as a new track"
-                          aria-label={`Send ${entry.title} to the editor as a new track`}
-                        >
-                          <Layers className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); handleSendToInit(entry); }}
-                          title="Send to Init audio"
-                          aria-label={`Send ${entry.title} to Init audio`}
-                        >
-                          <Wand2 className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); handleSendToInpaint(entry); }}
-                          title="Send to Inpaint"
-                          aria-label={`Send ${entry.title} to Inpaint`}
-                        >
-                          <PenLine className="w-2.5 h-2.5 text-zinc-500 hover:text-purple-300" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => { e.stopPropagation(); void saveEntryFile(entry, getAudioUrl(entry)); }}
-                          title="Save this file to a folder you choose."
-                          aria-label={`Save ${entry.title}`}
-                        >
-                          <Download className="w-2.5 h-2.5 text-zinc-600 hover:text-white" />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 hover:bg-white/10 rounded"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`Delete "${entry.title}"?`)) void removeEntry(entry.id);
-                          }}
-                          title="Delete"
-                          aria-label={`Delete ${entry.title}`}
-                        >
-                          <Trash2 className="w-2.5 h-2.5 text-zinc-600 hover:text-red-400" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
             </div>
-          ))}
+          ) : (
+            <List
+              className="no-scrollbar"
+              listRef={trackListRef}
+              rowComponent={TrackRow}
+              rowCount={Math.ceil(total / perRow)}
+              rowHeight={trackRowHeight}
+              rowProps={trackRowProps}
+              overscanCount={TRACK_OVERSCAN}
+              onRowsRendered={handleRowsRendered}
+              onResize={handleListResize}
+              onKeyDown={onTracksKeyDown}
+              tabIndex={0}
+              aria-label="Library tracks"
+              style={{ height: '100%' }}
+            />
+          )}
         </div>
-
-        {filteredEntries.length === 0 && (
-          <div className="py-8 flex flex-col items-center justify-center opacity-30 italic gap-2">
-            <Database className="w-8 h-8" />
-            {entries.length === 0 ? (
-              <>
-                <p>Library is empty.</p>
-                <button
-                  type="button"
-                  className="mono-tag bg-purple-600/20! text-purple-300! border-purple-500/40! cursor-pointer"
-                  onClick={() => onSwitchTab?.('create')}
-                >
-                  Go generate something
-                </button>
-              </>
-            ) : (
-              <p>No entries match your filter.</p>
-            )}
-          </div>
-        )}
         </>)}
 
         {subTab === 'stems' && (<>
@@ -1515,7 +2302,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             parentTitles={parentTitles}
             placeholder={allScores === null
               ? 'Loading scores…'
-              : 'No scores yet. Open a track in SCORE, pick an instrument and press MAKE.'}
+              : 'No scores yet. Open a track in SCORE, pick an instrument and press MAKE, or import a score file or a corpus piece there.'}
             onOpen={openScoreForEntry}
             onRefresh={refreshScores}
             selectedId={selectedEntryId}
@@ -1573,7 +2360,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             hint: 'demucs',
             disabled: isRunning('stems'),
             onSelect: () => {
-              const title = entries.find((e) => e.id === ctxEntryId)?.title ?? ctxEntryId;
+              const title = getById(ctxEntryId)?.title ?? ctxEntryId;
               setStemsModal({ entryId: ctxEntryId, entryTitle: title });
             },
           },
@@ -1615,7 +2402,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             icon: <Download className="w-3 h-3" />,
             hint: 'file',
             onSelect: () => {
-              const entry = entries.find((e) => e.id === ctxEntryId);
+              const entry = getById(ctxEntryId);
               void saveFile({
                 url: `/api/library/audio/${ctxEntryId}`,
                 suggestedName: entry ? entryFileName(entry) : fileSafe(ctxEntryId),
@@ -1629,7 +2416,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             icon: <Repeat className="w-3 h-3" />,
             hint: 'ffmpeg',
             onSelect: () => {
-              const title = entries.find((e) => e.id === ctxEntryId)?.title ?? ctxEntryId;
+              const title = getById(ctxEntryId)?.title ?? ctxEntryId;
               if (ctxPos) convertMenu.openAt(ctxPos, { entryId: ctxEntryId, title, kind: 'audio' });
             },
           },
@@ -1639,7 +2426,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
             icon: <Package className="w-3 h-3" />,
             hint: '.zip+scores',
             onSelect: () => {
-              const title = entries.find((e) => e.id === ctxEntryId)?.title ?? '';
+              const title = getById(ctxEntryId)?.title ?? '';
               void saveFile({
                 url: `/api/library/${ctxEntryId}/bundle`,
                 suggestedName: bundleFileName(ctxEntryId, title),
@@ -1676,6 +2463,52 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
       <SuggestPlaylistModal open={suggestOpen} onClose={() => setSuggestOpen(false)} />
 
+      {clearAllTotal !== null && (
+        <ClearAllDialog
+          total={clearAllTotal}
+          busy={clearAllBusy}
+          onCancel={() => setClearAllTotal(null)}
+          onConfirm={() => {
+            void (async () => {
+              setClearAllBusy(true);
+              try {
+                const result = await useLibraryStore.getState().bulkDelete({
+                  filter: {},
+                  confirmTotal: clearAllTotal,
+                  all: true,
+                });
+                setClearAllTotal(null);
+                setMaintenanceCounts(null);
+                if (result === null) {
+                  window.alert('This backend cannot delete in bulk — nothing was deleted.');
+                  return;
+                }
+                window.alert(
+                  `Removed ${result.deleted.toLocaleString()} entr${result.deleted === 1 ? 'y' : 'ies'}${result.failed.length > 0 ? `, ${result.failed.length} failed` : ''}.`,
+                );
+              } catch (e) {
+                // A 409 means the library moved: re-ask with the count it has
+                // now, so the typed number is one the server will accept.
+                if (e instanceof LibraryBulkConflictError) {
+                  const notice = describeBulkConflict(e.totalMatched);
+                  // Unknown count (server omitted it): leave `clearAllTotal`
+                  // as it was rather than storing NaN — there is nothing
+                  // valid to re-confirm with anyway.
+                  if (notice.total !== null) setClearAllTotal(notice.total);
+                  setMaintenanceCounts(null);
+                  window.alert(notice.message);
+                  return;
+                }
+                setClearAllTotal(null);
+                window.alert(`Nothing was deleted: ${e instanceof Error ? e.message : String(e)}`);
+              } finally {
+                setClearAllBusy(false);
+              }
+            })();
+          }}
+        />
+      )}
+
       {/* Maintenance actions (Clear Non-Favorites / Clear All) moved
           into the icon toolbar's OPTIONS submenu per user request
           2026-05-28. Section removed entirely. */}
@@ -1686,9 +2519,22 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
 
 
 interface LibraryActionsToolbarProps {
+  /** The selected rows we HOLD — a selection can name rows on unloaded pages. */
   selectedEntries: LibraryEntry[];
-  visibleEntries: LibraryEntry[];
-  allEntries: LibraryEntry[];
+  /** How many ids are selected, loaded or not. */
+  selectedCount: number;
+  /** Rows matching the current filters, across every page. */
+  totalCount: number;
+  /** The rows currently loaded — what maintenance actions can act on. */
+  loadedEntries: LibraryEntry[];
+  /**
+   * Whole-library counts for the two Clear actions, or null when this backend
+   * can only delete one row per request — the labels then say "loaded", which
+   * is all those actions can honestly promise.
+   */
+  maintenanceCounts: MaintenanceCounts | null;
+  /** The OPTIONS menu is opening: a good moment to (re)count the library. */
+  onOptionsOpen: () => void;
   onToggleSelectAll: () => void;
   onDeleteSelected: () => void | Promise<void>;
   onFuseSelected: () => void;
@@ -1703,11 +2549,14 @@ interface LibraryActionsToolbarProps {
  *  anchored to the click. Empty selection disables destructive actions
  *  (delete / fuse / inpaint) but leaves SELECT / DOWNLOAD / OPTIONS
  *  usable so the user can act on the visible set without selecting
- *  first. */
-const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
+ *  first. Exported so its DOWNLOAD menu is tested on its own. */
+export const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
   selectedEntries,
-  visibleEntries,
-  allEntries,
+  selectedCount,
+  totalCount,
+  loadedEntries,
+  maintenanceCounts,
+  onOptionsOpen,
   onToggleSelectAll,
   onDeleteSelected,
   onFuseSelected,
@@ -1718,18 +2567,16 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
 }) => {
   const downloadMenu = useContextMenu<'download'>();
   const optionsMenu = useContextMenu<'options'>();
-  const selCount = selectedEntries.length;
+  const selCount = selectedCount;
   const hasSelection = selCount > 0;
-  const visIds = visibleEntries.map((e) => e.id);
-  const selectedIds = new Set(selectedEntries.map((e) => e.id));
-  const allVisibleSelected = visIds.length > 0 && visIds.every((id) => selectedIds.has(id));
+  const allSelected = totalCount > 0 && selCount >= totalCount;
 
-  // For DOWNLOAD: the target set is selectedEntries when populated,
-  // otherwise the full visible set (so the user gets a "bulk download
-  // everything on screen" affordance without having to click SELECT
-  // first). DELETE always requires explicit selection — too destructive
-  // to default-target the visible set.
-  const downloadTargets = hasSelection ? selectedEntries : visibleEntries;
+  // For DOWNLOAD: the target set is the selected rows when there are any,
+  // otherwise the rows in hand (so the user gets a "bulk download everything
+  // on screen" affordance without having to click SELECT first). Both are
+  // rows we HOLD: a download needs the record, not just the id. DELETE
+  // always requires explicit selection — too destructive to default-target.
+  const downloadTargets = hasSelection ? selectedEntries : loadedEntries;
 
   // One Save As per file, in order; cancelling one stops the rest. A browser on
   // another machine gets an ordinary download of each file.
@@ -1757,11 +2604,8 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
           kind: 'zip',
         });
       } else if (kind === 'lineage') {
-        result = await saveFile({
-          url: `/api/library/${entry.id}/lineage?depth=8`,
-          suggestedName: `${fileSafe(entry.title)}-lineage.json`,
-          kind: 'lineage-json',
-        });
+        // The whole family of each song, with its size said before its dialog.
+        result = await saveWholeLineage(entry, `${fileSafe(entry.title)}-lineage.json`);
       } else {
         // Build a metadata JSON client-side from what the store already
         // has cached — no backend round-trip. If the user needs the
@@ -1817,9 +2661,20 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
     },
   ];
 
-  const missingCovers = allEntries.filter((e) => !e.coverUrl).length;
+  // Cover art still walks the rows in hand one at a time, and its label says
+  // so. The two Clear actions delete in ONE request against a backend that has
+  // the bulk route, so their labels carry the server's whole-library counts —
+  // and fall back to the honest "loaded" wording when it does not.
+  const missingCovers = loadedEntries.filter((e) => !e.coverUrl).length;
+  const nonFavorites = loadedEntries.filter((e) => !e.favorite).length;
+  const clearNonFavoritesLabel = maintenanceCounts
+    ? `Clear non-favorites (${maintenanceCounts.nonFavorites.toLocaleString()})`
+    : `Clear non-favorites (${nonFavorites} loaded)`;
+  const clearAllLabel = maintenanceCounts
+    ? `Clear all (${maintenanceCounts.all.toLocaleString()})`
+    : `Clear loaded (${loadedEntries.length})`;
   const optionsItems: ContextMenuItem[] = [
-    { type: 'header', label: 'Library maintenance' },
+    { type: 'header', label: maintenanceCounts ? 'Library maintenance' : 'Library maintenance · loaded rows' },
     {
       type: 'item',
       label: `Fetch cover art (${missingCovers} without)`,
@@ -1831,17 +2686,17 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
     { type: 'separator' },
     {
       type: 'item',
-      label: `Clear non-favorites (${allEntries.filter((e) => !e.favorite).length})`,
+      label: clearNonFavoritesLabel,
       icon: <Trash2 className="w-3 h-3" />,
-      disabled: allEntries.filter((e) => !e.favorite).length === 0,
+      disabled: maintenanceCounts ? maintenanceCounts.nonFavorites === 0 : nonFavorites === 0,
       onSelect: () => void onClearNonFavorites(),
     },
     {
       type: 'item',
-      label: `Clear ALL (${allEntries.length})`,
+      label: clearAllLabel,
       icon: <Trash2 className="w-3 h-3" />,
       danger: true,
-      disabled: allEntries.length === 0,
+      disabled: maintenanceCounts ? maintenanceCounts.all === 0 : loadedEntries.length === 0,
       onSelect: () => void onClearAll(),
     },
   ];
@@ -1858,15 +2713,15 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
         <button
           type="button"
           onClick={onToggleSelectAll}
-          className={allVisibleSelected ? activeBtn : idleBtn}
+          className={allSelected ? activeBtn : idleBtn}
           title={
-            allVisibleSelected
-              ? 'Clear selection'
-              : `Select all visible (${visIds.length})`
+            hasSelection
+              ? `Clear the selection (${selCount.toLocaleString()} selected)`
+              : `Select all ${totalCount.toLocaleString()} matching entries`
           }
-          aria-label="Select all visible"
+          aria-label={hasSelection ? 'Clear the selection' : 'Select every matching entry'}
         >
-          {allVisibleSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+          {hasSelection ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
         </button>
         <button
           type="button"
@@ -1922,7 +2777,7 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
         </button>
         <button
           type="button"
-          onClick={(e) => optionsMenu.open(e, 'options')}
+          onClick={(e) => { onOptionsOpen(); optionsMenu.open(e, 'options'); }}
           className={idleBtn}
           title="More options…"
           aria-label="More options"
@@ -1931,7 +2786,9 @@ const LibraryActionsToolbar: React.FC<LibraryActionsToolbarProps> = ({
         </button>
       </div>
       <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-600 pr-1">
-        {hasSelection ? `${selCount}/${visIds.length} sel` : `${visIds.length} shown`}
+        {hasSelection
+          ? `${selCount.toLocaleString()}/${totalCount.toLocaleString()} sel`
+          : `${totalCount.toLocaleString()} match`}
       </span>
 
       <ContextMenu
@@ -1979,6 +2836,38 @@ const SubTabButton: React.FC<SubTabButtonProps> = ({ active, onClick, icon, chil
 
 /* ═══════════════════════════════ MediaGrid ════════════════════════════════ */
 
+/** `rowProps` for the virtualized media grid. */
+interface MediaRowData {
+  entries: LibraryEntry[];
+  onRemove: (entry: LibraryEntry) => void;
+  onSendToVj: (entry: LibraryEntry) => void;
+  onContextMenu: (event: React.MouseEvent, entry: LibraryEntry) => void;
+}
+
+/** One line of the media grid: `GRID_COLUMNS` cards, or fewer at the end. */
+function MediaRow({ index, style, ariaAttributes, entries, onRemove, onSendToVj, onContextMenu }: RowComponentProps<MediaRowData>) {
+  const first = index * GRID_COLUMNS;
+  const cells: React.ReactNode[] = [];
+  for (let column = 0; column < GRID_COLUMNS; column += 1) {
+    const entry = entries[first + column];
+    if (!entry) break;
+    cells.push(
+      <MediaCard
+        key={entry.id}
+        entry={entry}
+        onRemove={() => onRemove(entry)}
+        onSendToVj={() => onSendToVj(entry)}
+        onContextMenu={(e) => onContextMenu(e, entry)}
+      />,
+    );
+  }
+  return (
+    <div style={style} {...ariaAttributes} className="grid grid-cols-2 gap-2 pb-2">
+      {cells}
+    </div>
+  );
+}
+
 /** VJ video library: a thumbnail grid of imported video/image entries with
  *  an import button. Videos and alpha-capable media (transparent PNG/WebP,
  *  alpha WebM) are badged so overlay-capable clips are identifiable. Entries
@@ -2015,16 +2904,16 @@ const MediaGrid: React.FC<{
     await onChanged();
   };
 
-  const onRemove = async (entry: LibraryEntry) => {
+  const onRemove = React.useCallback(async (entry: LibraryEntry) => {
     try {
       await deleteMedia(entry.id);
       await onChanged();
     } catch (e) {
       logError('library', `Media delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  };
+  }, [onChanged]);
 
-  const sendToVj = (entry: LibraryEntry) => {
+  const sendToVj = React.useCallback((entry: LibraryEntry) => {
     sendTrackToVj({
       entryId: entry.id,
       label: entry.title,
@@ -2033,7 +2922,25 @@ const MediaGrid: React.FC<{
       thumbUrl: entry.thumbUrl ?? null,
     });
     logInfo('library', `Sent "${entry.title}" to the VJ.`);
-  };
+  }, []);
+
+  // A media card is `aspect-video` with a one-line title under it, so a row is
+  // as tall as half the measured width in 16:9, plus that footer and the gap.
+  const [mediaWidth, setMediaWidth] = useState(0);
+  const handleMediaResize = React.useCallback(
+    (size: { width: number; height: number }) => setMediaWidth(size.width),
+    [],
+  );
+  const mediaRowHeight = Math.max(
+    72,
+    Math.round(((mediaWidth - GRID_GAP) / GRID_COLUMNS) * (9 / 16)) + 29,
+  );
+  const mediaRowProps = useMemo<MediaRowData>(() => ({
+    entries: entries ?? [],
+    onRemove: (entry: LibraryEntry) => { void onRemove(entry); },
+    onSendToVj: sendToVj,
+    onContextMenu: (e: React.MouseEvent, entry: LibraryEntry) => mediaMenu.open(e, entry),
+  }), [entries, onRemove, sendToVj, mediaMenu]);
 
   const ctxEntry = mediaMenu.payload;
   const ctxPos = mediaMenu.position;
@@ -2093,8 +3000,10 @@ const MediaGrid: React.FC<{
     : [];
 
   return (
-    <div className="px-1">
-      <div className="flex items-center justify-between mb-2">
+    // A flex column so the virtualized grid below can fill what the header
+    // leaves, which is what gives the List a bounded height to window into.
+    <div className="px-1 flex flex-1 flex-col min-h-0">
+      <div className="shrink-0 flex items-center justify-between mb-2">
         <span className="text-[9px] font-mono text-zinc-600">
           Videos and images for the VJ tab. Transparent media can act as overlays.
         </span>
@@ -2141,16 +3050,21 @@ const MediaGrid: React.FC<{
           No media yet. Import videos or images, or load clips in the VJ tab — they are saved here.
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2">
-          {entries.map((entry) => (
-            <MediaCard
-              key={entry.id}
-              entry={entry}
-              onRemove={() => onRemove(entry)}
-              onSendToVj={() => sendToVj(entry)}
-              onContextMenu={(e) => mediaMenu.open(e, entry)}
-            />
-          ))}
+        // Virtualized for the same reason the tracks list is: a VJ library of
+        // video clips is as long as the user's disk, and one <video> poster
+        // per row is far more expensive than one audio card.
+        <div className="flex-1 min-h-0">
+          <List
+            className="no-scrollbar"
+            rowComponent={MediaRow}
+            rowCount={Math.ceil(entries.length / GRID_COLUMNS)}
+            rowHeight={mediaRowHeight}
+            rowProps={mediaRowProps}
+            overscanCount={TRACK_OVERSCAN}
+            onResize={handleMediaResize}
+            aria-label="Video and image library"
+            style={{ height: '100%' }}
+          />
         </div>
       )}
 
@@ -2361,15 +3275,40 @@ const SubTabRow = React.memo<{
   onContext: (e: React.MouseEvent, payload: SubTabRowPayload) => void;
 }>(({ row, isMidi, parentTitle, isPlaying, isBusy, onPlay, onFavorite, onDelete, onContext }) => {
   const rowId = String(row.id ?? '');
-  const name = isMidi ? String(row.source ?? 'midi') : String(row.stem_name ?? 'stem');
+  // A per-stem MIDI carries `source: "stem"` for every part; the real
+  // instrument lives in the filename, which `midiRowPart` derives (shared with
+  // the pickers). A stem row uses its `stem_name` as before.
+  const name = isMidi
+    ? midiRowPart(row as unknown as LibraryMidiRow)
+    : String(row.stem_name ?? 'stem');
   const label = parentTitle ? `${parentTitle} · ${name}` : name;
   const favorite = !!row.favorite;
   const meta = isMidi ? `${row.engine ?? ''}` : `${row.model ?? ''} ${row.model_variant ?? ''}`.trim();
+  // A MIDI row drags onto the EDIT timeline carrying its own mime and its midi
+  // id (a row in `midis`, not a library entry). A stem row likewise drags with
+  // STEM_ID_MIME = its `stems` row id; the editor fetches the stem's audio.
+  // Both use a dedicated mime rather than LIBRARY_ID_MIME so a library-entry
+  // lookup can never miss the id and die silently.
+  const onDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData(isMidi ? MIDI_ID_MIME : STEM_ID_MIME, rowId);
+    // A stem is its song's time: the song's entry id goes along, so the clip
+    // it lands as in EDIT reads the song's tempo, beats and downbeats.
+    const songId = isMidi ? '' : String(row.entry_id ?? row.parent_id ?? '');
+    if (songId) e.dataTransfer.setData(STEM_SONG_MIME, songId);
+    e.dataTransfer.setData('text/plain', label);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
   return (
     <div
       className="group flex items-center gap-1 text-[10px] font-mono text-zinc-300 px-1 py-0.5 hover:bg-white/5 rounded"
+      draggable
+      onDragStart={onDragStart}
       onContextMenu={(e) => onContext(e, isMidi ? { kind: 'midi', midiId: rowId, label } : { kind: 'stem', row })}
-      title="Right-click for more — send to editor / init / inpaint / chimera"
+      title={
+        isMidi
+          ? 'Drag onto the timeline — or right-click for piano roll / step sequencer / editor'
+          : 'Drag onto the timeline — or right-click for more (send to editor / init / inpaint / chimera)'
+      }
     >
       <button
         type="button"
@@ -2413,7 +3352,8 @@ const SubTabRow = React.memo<{
 SubTabRow.displayName = 'SubTabRow';
 
 
-const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
+/** The Stems and MIDI sub-tabs' list: each song's rows, with the row menu (exported for its mount test). */
+export const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
   const parentIds = Object.keys(byParent);
   // Shared ContextMenu primitive — fixes drift under .dense-layout
   // zoom and gives consistent close-on-outside behavior across the
@@ -2513,6 +3453,11 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   if (payload?.kind === 'midi') {
     const sendable = midiIdToSendable(payload.midiId, payload.label);
     menuTitle = `MIDI · ${payload.label}`;
+    // The song this row belongs to, and its stem MIDI rows: every row of its group but the full mix (lib/stemMidiSet).
+    const parentId = parentIds.find((pid) => byParent[pid].some((r) => String(r.id ?? '') === payload.midiId));
+    const stemRows = parentId ? stemMidiRows(byParent[parentId].map((r) => ({ ...r, id: String(r.id ?? '') }))) : [];
+    const songTitle = (parentId ? parentTitles[parentId] : undefined) || payload.label;
+    const stemHint = stemRows.length ? `${stemRows.length} stem${stemRows.length === 1 ? '' : 's'}` : 'no stems';
     menuItems = [
       {
         type: 'item',
@@ -2525,6 +3470,25 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         label: 'Send to step sequencer',
         icon: <ListOrdered className="w-3 h-3" />,
         onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'step-seq'); },
+      },
+      { type: 'separator' },
+      {
+        type: 'item',
+        label: 'All stems to piano roll',
+        icon: <Piano className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song into the piano roll, one part a stem, each on its stem's instrument and at the seconds it was transcribed at",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToRoll(stemRows, songTitle); },
+      },
+      {
+        type: 'item',
+        label: 'All stems to EDIT as tracks',
+        icon: <Layers className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song on an EDIT track of its own from the start of the timeline, each on its stem's instrument, the drums on a drum track",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToEdit(stemRows, songTitle, { global: getGlobalVoice }); },
       },
       { type: 'separator' },
       {

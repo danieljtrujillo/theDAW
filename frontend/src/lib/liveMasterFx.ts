@@ -105,7 +105,7 @@ const ramp = (p: AudioParam, v: number, ctx: AudioContext): void => {
 };
 
 /** Normalized tanh drive curve: identity at amount 0, hard saturation at 1. */
-const driveCurve = (amount01: number): Float32Array => {
+const driveCurve = (amount01: number): Float32Array<ArrayBuffer> => {
   const n = 1024;
   const curve = new Float32Array(n);
   const k = amount01 * 30 + 1e-3;

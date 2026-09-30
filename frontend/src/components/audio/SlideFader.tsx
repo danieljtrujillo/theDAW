@@ -143,7 +143,7 @@ const SlideFaderImpl: React.FC<SlideFaderProps> = ({ label, value, onChange, min
         ['--scale-gap' as string]: '2px',
       }}
     >
-      {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
+      {tip ? <HoverTip text={tip} focusable focusLabel={label}>{labelEl}</HoverTip> : labelEl}
       <div className="ts-stage flex-1 min-h-0" style={{ width: 'var(--body-w)' }}>
         <div className={`ts-scale${rulerSide === 'right' ? ' ts-scale--right' : ''}`}>{marks}</div>
         <div

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "paths": {
+      "file-saver": ["scripts/shims/file-saver.ts"]
+    }
+  },
+  "include": ["./export-powermode.mts", "./power-mode/**/*.ts", "./power-mode/**/*.mts", "./shims/file-saver.ts"]
+}

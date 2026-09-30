@@ -1,0 +1,142 @@
+# Builds thedaw-vst-host.exe (and the vst3_probe.exe test driver) on windows-latest,
+# runs the host's built-in --selftest, runs the Python tests that drive both binaries,
+# and uploads everything as a downloadable Actions artifact.
+#
+# native/vst-host/bin/*.exe is gitignored: no prebuilt binary ships in the repo, and
+# nothing in the app downloads one automatically. This workflow is the only way to get
+# a proven-good thedaw-vst-host.exe without owning a local CMake + MSVC toolchain -- a
+# fresh clone, or any PR that touches native/vst-host, gets a real build, a real
+# self-test and a real pytest run here, with the result attached to the run.
+
+name: build-vst-host
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'native/vst-host/**'
+      - '.github/workflows/build-vst-host.yml'
+  pull_request:
+    paths:
+      - 'native/vst-host/**'
+      - '.github/workflows/build-vst-host.yml'
+
+permissions:
+  contents: read
+
+# uv is installed at its latest release, as in test.yml, the Dockerfile's
+# ghcr.io/astral-sh/uv:latest and electron-ui/scripts/fetch-runtime-tools.mjs.
+
+jobs:
+  windows-x86_64:
+    runs-on: windows-latest
+    # The C++ configure/build runs twice (see below) plus a full `uv sync --group dev`
+    # (torch/CUDA wheels); the default 6h is fine but a tighter cap surfaces a hang sooner.
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: '.python-version'
+
+      - name: Install uv
+        # pipx, not astral-sh/setup-uv@v5: house style (lint.yml, test.yml) keeps
+        # third-party Actions out of the tooling chain in favour of pip/pipx installs.
+        run: pipx install uv
+
+      # cmake and the MSVC toolchain (Build Tools + Windows SDK) are preinstalled on the
+      # windows-latest image, so there is no setup step for either one.
+      - name: Configure the host
+        run: |
+          cmake -S native/vst-host -B build/vst-host -A x64 -DTHEDAW_VST3=ON -DTHEDAW_WERROR=ON -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure (host) failed with exit code $LASTEXITCODE" }
+
+      - name: Build the host
+        run: |
+          cmake --build build/vst-host --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake build (host) failed with exit code $LASTEXITCODE" }
+
+      # native/vst-host/src/vst3/CMakeLists.txt only adds tools/vst3_probe as a subdirectory
+      # when THAT directory is configured as CMake's top-level project (THEDAW_VST3_STANDALONE,
+      # set by comparing CMAKE_SOURCE_DIR to CMAKE_CURRENT_SOURCE_DIR) -- not merely whenever
+      # THEDAW_VST3=ON. The host configure above therefore never produces vst3_probe.exe; it
+      # needs this second, independent configure of src/vst3 as its own top-level project,
+      # exactly as documented in that file's own header comment and in
+      # tests/test_vst3_probe.py's module docstring. THEDAW_WERROR=ON here matches the host
+      # build; src/vst3/CMakeLists.txt already defaults to the same strictness on its own.
+      - name: Configure vst3_probe (standalone)
+        run: |
+          cmake -S native/vst-host/src/vst3 -B build/vst-host-vst3-probe -A x64 -DTHEDAW_WERROR=ON -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure (vst3_probe) failed with exit code $LASTEXITCODE" }
+
+      - name: Build vst3_probe (standalone)
+        run: |
+          cmake --build build/vst-host-vst3-probe --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake build (vst3_probe) failed with exit code $LASTEXITCODE" }
+
+      - name: Collect the built binaries into native/vst-host/bin
+        run: |
+          New-Item -ItemType Directory -Force -Path native/vst-host/bin | Out-Null
+
+          $hostCandidates = @(
+            'build/vst-host/Release/thedaw-vst-host.exe',
+            'build/vst-host/thedaw-vst-host.exe'
+          )
+          $hostExe = $hostCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $hostExe) {
+            throw "thedaw-vst-host.exe was not found under build/vst-host (looked in: $($hostCandidates -join ', '))"
+          }
+          Copy-Item -Force $hostExe native/vst-host/bin/thedaw-vst-host.exe
+          Write-Host "host:  $hostExe -> native/vst-host/bin/thedaw-vst-host.exe"
+
+          # Optional: warn rather than fail if some future CMake refactor moves or drops it.
+          $probeExe = Get-ChildItem -Path build -Filter 'vst3_probe.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($probeExe) {
+            Copy-Item -Force $probeExe.FullName native/vst-host/bin/vst3_probe.exe
+            Write-Host "probe: $($probeExe.FullName) -> native/vst-host/bin/vst3_probe.exe"
+          } else {
+            Write-Warning "vst3_probe.exe was not found under build/; skipping (optional)."
+          }
+
+      - name: Self test (thedaw-vst-host.exe --selftest)
+        run: |
+          & native/vst-host/bin/thedaw-vst-host.exe --selftest
+          if ($LASTEXITCODE -ne 0) { throw "thedaw-vst-host.exe --selftest failed with exit code $LASTEXITCODE" }
+
+      # Documented local command (see CLAUDE.md); --frozen fails loudly on a stale lock
+      # instead of silently re-resolving one, matching test.yml's own dependency step.
+      - name: Install Python dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Python host tests (real-plugin cases skip themselves)
+        env:
+          THEDAW_VST_HOST: native/vst-host/bin/thedaw-vst-host.exe
+          THEDAW_VST3_PROBE: native/vst-host/bin/vst3_probe.exe
+        run: uv run pytest tests/test_vst_host_native.py tests/test_vst3_probe.py -q
+
+      - name: Generate SHA256SUMS
+        run: |
+          $files = Get-ChildItem -Path native/vst-host/bin -Filter '*.exe'
+          $lines = foreach ($file in $files) {
+            $hash = Get-FileHash -Algorithm SHA256 -Path $file.FullName
+            "$($hash.Hash.ToLower())  $($file.Name)"
+          }
+          Set-Content -Path native/vst-host/bin/SHA256SUMS -Value $lines -Encoding ascii
+          Get-Content native/vst-host/bin/SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: thedaw-vst-host-win64
+          path: |
+            native/vst-host/bin/thedaw-vst-host.exe
+            native/vst-host/bin/vst3_probe.exe
+            native/vst-host/bin/SHA256SUMS
+          if-no-files-found: error

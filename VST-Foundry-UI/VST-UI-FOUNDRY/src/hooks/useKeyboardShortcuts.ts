@@ -12,6 +12,7 @@ type SetActiveTool = (
 ) => void;
 
 interface UseKeyboardShortcutsArgs {
+  enabled?: boolean;
   elements: UIElement[];
   selectedElementIds: string[];
   setElements: SetElements;
@@ -29,6 +30,7 @@ interface UseKeyboardShortcutsArgs {
 // e.key === "c"/"v" (case-sensitive) while tool/undo use e.key.toLowerCase() —
 // preserved exactly as the original.
 export function useKeyboardShortcuts({
+  enabled = true,
   elements,
   selectedElementIds,
   setElements,
@@ -41,6 +43,7 @@ export function useKeyboardShortcuts({
   cutSelection,
 }: UseKeyboardShortcutsArgs) {
   useEffect(() => {
+    if (!enabled) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
@@ -153,6 +156,7 @@ export function useKeyboardShortcuts({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    enabled,
     selectedElementIds,
     undo,
     redo,

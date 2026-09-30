@@ -5,7 +5,7 @@ namespace Gantasmo.NoteChart
     /// <summary>
     /// Mirror of the gantasmo.notechart schema (schemaVersion 1) exported by
     /// theDAW's SCORE tab (POST /api/notation/{entry}/export with format
-    /// "unity").
+    /// "notechart").
     ///
     /// Shaped for UnityEngine.JsonUtility: the root is an object, every array is
     /// a named field of [Serializable] classes, and there is no dictionary, no

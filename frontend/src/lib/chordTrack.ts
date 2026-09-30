@@ -35,6 +35,11 @@ export interface ChordSpan {
   pitchClasses: number[];
   /** 0..1 (1.0 for lead-sheet harmony). */
   confidence: number;
+  /** Roman numeral in the local key ('V7', 'ii6', 'V7/V'); '' for N.C. or
+   *  when music21 cannot read the chord. Absent from tracks built before it. */
+  roman?: string;
+  /** The local key the roman is read in ('G major'); '' when there is none. */
+  romanKey?: string;
 }
 
 export interface ChordTrack {

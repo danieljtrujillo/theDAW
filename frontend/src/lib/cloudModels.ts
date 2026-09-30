@@ -29,3 +29,45 @@ export const PANEL_MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }
   { value: 'suno', label: 'Suno (Cloud)' },
   { value: 'lyria', label: 'Lyria 3 Pro (Cloud)' },
 ];
+
+// The value /api/storage/model-status reports for the lyria provider's `state`
+// field before its sidecar app (StarskreamEXE/lyria-3-pro) has been cloned and
+// installed — see ProviderCards.tsx's `state === 'needs_setup'` handling,
+// which is the same signal this reads (LyriaProviderExtras' `installable` /
+// `missing` fields go further, but the base `state` string is enough to gate
+// "offer this in a switcher" and needs no import from settings/).
+const LYRIA_NEEDS_SETUP_STATE = 'needs_setup';
+
+/** True once the Lyria sidecar has something to actually switch to — a
+ *  missing/unreachable probe reads true (fail open, same convention as
+ *  generateStore's modelGateMessage: an absent status never blocks). */
+export const isLyriaCheckedOut = (lyriaProviderState: string | null | undefined): boolean =>
+  lyriaProviderState == null || lyriaProviderState !== LYRIA_NEEDS_SETUP_STATE;
+
+/**
+ * INT-005: a cloud panel's own model switcher offered Lyria even when its
+ * sidecar was never checked out, so picking it stranded the user on a "didn't
+ * start" screen with no visible reason. Drops the `lyria` entry unless it is
+ * checked out — but never drops the CURRENTLY selected value out from under a
+ * controlled <select>, or the element renders with no matching option.
+ */
+export function panelModelOptions(
+  currentModel: string,
+  lyriaCheckedOut: boolean,
+): ReadonlyArray<{ value: string; label: string }> {
+  if (lyriaCheckedOut) return PANEL_MODEL_OPTIONS;
+  return PANEL_MODEL_OPTIONS.filter((o) => o.value !== 'lyria' || o.value === currentModel);
+}
+
+/**
+ * FE-006: the cloud panels' own "switch back to a local model" dropdown only
+ * patched `model`, leaving the RF-Inversion-era steps/cfg defaults on an ARC
+ * selection (or vice versa) until the user opened MAKE's real dropdown and
+ * touched it again. Mirrors AdvancedGenPanel's real Model select, which
+ * always recomputes steps/cfg on change; PANEL_MODEL_OPTIONS never offers
+ * magenta-* or a local checkpoint, so the ARC/RF filename convention is the
+ * whole rule here.
+ */
+export function panelModelDefaults(model: string): { steps: number; cfg: number } {
+  return model.endsWith('-rf') ? { steps: 50, cfg: 7.0 } : { steps: 8, cfg: 1.0 };
+}

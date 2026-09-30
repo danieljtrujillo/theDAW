@@ -134,8 +134,20 @@ def _clear_env(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
+def _no_cached_models(monkeypatch):
+    """Hide whatever whisper models the host actually has on disk.
+
+    resolve_config() prefers the largest already-cached model on the GPU path, so
+    a developer machine with a real HuggingFace cache (or a configured
+    models.extra_folders entry) would otherwise make the "pristine device
+    default" assertions below depend on that host's downloads. These tests are
+    about the default when nothing is cached or overridden."""
+    monkeypatch.setattr(sidecar, "_best_cached_whisper_model", lambda: None)
+
+
 def test_config_prefers_the_gpu_when_cuda_is_available(monkeypatch):
     _clear_env(monkeypatch)
+    _no_cached_models(monkeypatch)
     monkeypatch.setattr(sidecar, "cuda_available", lambda: True)
     cfg = sidecar.resolve_config()
     assert (
@@ -148,6 +160,7 @@ def test_config_prefers_the_gpu_when_cuda_is_available(monkeypatch):
 
 def test_config_is_cpu_int8_small_without_cuda(monkeypatch):
     _clear_env(monkeypatch)
+    _no_cached_models(monkeypatch)
     monkeypatch.setattr(sidecar, "cuda_available", lambda: False)
     cfg = sidecar.resolve_config()
     assert cfg.device == "cpu" and cfg.compute_type == "int8" and cfg.model == "small"
@@ -165,6 +178,9 @@ def test_config_env_overrides_win(monkeypatch):
 
 def test_worker_env_hands_the_cuda_lib_dirs_to_the_child(monkeypatch):
     _clear_env(monkeypatch)
+    # Only LIB_DIRS_ENV is under test; skip the model scan so this does not walk
+    # the developer's real multi-GB HuggingFace cache.
+    _no_cached_models(monkeypatch)
     monkeypatch.setattr(sidecar, "cuda_available", lambda: True)
     monkeypatch.setattr(
         sidecar, "cuda_lib_dirs", lambda exe: ["/x/cublas/bin", "/x/cudnn/bin"]

@@ -28,11 +28,12 @@ import {
 import { NOTE_NAMES, SOUND_PROFILES, GENRE_PROFILES } from './constants';
 import {
   detectPitch, frequencyToMidi, cleanupNotes, snapToScale, processNotesWithProfile, generateMidiFile,
-  slideBendPoints, V2M_BEND_RANGE,
 } from './audioProcessing';
+import { applyVocalNotesToRoll } from './rollBridge';
 import { quantizeNotes, transposeNotes, snapNotesToScale, changeKey, getKeyName } from './midiEditor';
 import { detectKeyAndScale, getRelatedKeys } from './musicTheory';
 import { getMidiSynth } from './midiSynth';
+import { GM_NAMES } from '../../../lib/gmInstruments';
 import { analyzeAudioWithGemini, smartCleanupMidi, type AnalysisContext } from './geminiService';
 import { Visualizer } from './Visualizer';
 import { BpmTapper } from './BpmTapper';
@@ -40,7 +41,11 @@ import { RecordingHistory } from './RecordingHistory';
 import { AssistantOrb } from './AssistantOrb';
 import { saveFile, type SaveFileResult } from '../../../lib/saveFile';
 
-import { usePianoRollStore, type PianoNote } from '../../../state/pianoRollStore';
+import { activeTrackOf, usePianoRollStore } from '../../../state/pianoRollStore';
+import { useEditorStore } from '../../../state/editorStore';
+import { chooseRollVoice, rollVoiceChoice } from '../../../lib/rollVoiceChoice';
+import { GM_DRUM_KITS, drumKitName } from '../../../lib/clipProgram';
+import { parseVoiceValue, voiceValue } from '../../../lib/voiceOptions';
 import { encodeWav } from '../../../lib/wavEncode';
 import { logInfo, logWarn } from '../../../state/logStore';
 import { describeMicFailure } from '../../../lib/micErrors';
@@ -68,20 +73,6 @@ const DEFAULT_CONFIG: ProcessingConfig = {
 };
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
-
-const stepSec = (bpm: number): number => 60 / Math.max(1, bpm) / 4;
-
-/** Bridge: vocal2midi NoteEvent[] (absolute seconds) -> theDAW step-based notes. */
-const toPianoNotes = (notes: NoteEvent[], bpm: number): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `v2m-${i}-${n.startTime.toFixed(3)}-${n.midiNote}`,
-    note: Math.max(0, Math.min(127, Math.round(n.midiNote))),
-    step: Math.max(0, Math.round(n.startTime / ss)),
-    length: Math.max(1, Math.round(n.duration / ss)),
-    velocity: Math.max(1, Math.min(127, Math.round(n.velocity))),
-  }));
-};
 
 /** gemini-3.5-flash accepts wav/mp3/ogg/flac (not webm) — convert before AI. */
 async function toWavBlob(blob: Blob): Promise<Blob> {
@@ -126,6 +117,16 @@ const chipOn = KEY_ON;
 export const Vocal2MidiPanel: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [config, setConfig] = useState<ProcessingConfig>({ ...DEFAULT_CONFIG });
+  // The voice the roll plays: its linked EDIT clip's (set on the clip's track),
+  // else its own. Both are chosen here and by the assistant (lib/rollVoiceChoice).
+  const rollProgram = usePianoRollStore((st) => st.voiceProgram);
+  const editingClipId = usePianoRollStore((st) => st.editingClipId);
+  // Only the linked clip and its track: selecting every clip would re-render
+  // this panel on each frame of an EDIT drag.
+  const linkedClip = useEditorStore((st) => (editingClipId ? st.clips.find((c) => c.id === editingClipId) : undefined));
+  const linkedTrack = useEditorStore((st) => (linkedClip ? st.tracks.find((t) => t.id === linkedClip.trackId) : undefined));
+  const activePart = usePianoRollStore((st) => activeTrackOf(st));
+  const voiceChoice = rollVoiceChoice(editingClipId, linkedClip ? [linkedClip] : [], linkedTrack ? [linkedTrack] : [], rollProgram, activePart);
   const [capturedNotes, setCapturedNotes] = useState<NoteEvent[]>([]);
   const [processedNotes, setProcessedNotes] = useState<NoteEvent[]>([]);
   const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysisResult | null>(null);
@@ -199,20 +200,13 @@ export const Vocal2MidiPanel: React.FC = () => {
   const bpm = audioAnalysis?.detectedBpm || config.manualBpm || 120;
 
   // With Pitch bend on, the slides the MIDI export writes go to the roll's lane
-  // A at the range that export assumes. A write replaces every note in the roll,
-  // so every other lane's points go and keep their range; with no slides,
-  // importNotes clears every lane's points itself.
+  // A too (rollBridge.applyVocalNotesToRoll).
   const pitchBendRef = useRef(config.experimentalPitchBend);
   useEffect(() => { pitchBendRef.current = config.experimentalPitchBend; }, [config.experimentalPitchBend]);
 
-  /** Write notes into theDAW's existing piano roll. */
+  /** Write notes into theDAW's existing piano roll, at the ticks they arrive on. */
   const applyToRoll = useCallback((notes: NoteEvent[], atBpm: number) => {
-    const roll = usePianoRollStore.getState();
-    const points = pitchBendRef.current ? slideBendPoints(notes, atBpm) : [];
-    const bends = points.length
-      ? [...roll.bends.filter((b) => b.lane !== 0).map((b) => ({ ...b, points: [] })), { lane: 0, range: V2M_BEND_RANGE, points }]
-      : undefined;
-    roll.importNotes(toPianoNotes(notes, atBpm), atBpm, undefined, bends);
+    applyVocalNotesToRoll(notes, atBpm, pitchBendRef.current);
   }, []);
 
   /* ── recorder (ported YIN capture) ─────────────────────────────────────── */
@@ -428,8 +422,7 @@ export const Vocal2MidiPanel: React.FC = () => {
     const finalNotes = processNotesWithProfile(scaled, b, q, profile);
     setProcessedNotes(finalNotes);
     applyToRoll(finalNotes, b);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.rootNote, config.scale, config.quantizeMode, config.manualQuantizeValue, config.activeProfileId, capturedNotes, audioAnalysis]);
+  }, [config.rootNote, config.scale, config.quantizeMode, config.manualQuantizeValue, config.activeProfileId, capturedNotes, audioAnalysis, applyToRoll]);
 
   /* ── editor tools (operate on processedNotes -> roll) ──────────────────── */
   const pushNotes = useCallback((notes: NoteEvent[], atBpm = bpm) => {
@@ -658,6 +651,54 @@ export const Vocal2MidiPanel: React.FC = () => {
                 owns `pr-instrument`. */}
             <div className="mt-0.5"><InstrumentPicker idPrefix="v2m-instrument" /></div>
           </div>
+          <div>
+            {/* The voice the roll plays: PLAY, WAV export, and the roll these
+                notes go to all use it. On a roll linked to an EDIT clip it is
+                that clip's track instrument; otherwise the roll's own. The
+                assistant's instrument choice lands here too, never on the
+                picker above, whose program every EDIT clip without its own
+                follows. */}
+            <label htmlFor="v2m-preview-voice" className={labelCls}>
+              {voiceChoice.track ? `Roll voice: track ${voiceChoice.track.name}` : 'Roll voice'}
+            </label>
+            <select
+              id="v2m-preview-voice"
+              name="v2m-preview-voice"
+              value={voiceChoice.program === null ? 'picker' : voiceChoice.track ? voiceValue(voiceChoice.program, voiceChoice.drums) : String(voiceChoice.program)}
+              onChange={(e) => {
+                if (e.target.value === 'picker') { chooseRollVoice(null); return; }
+                const pick = parseVoiceValue(e.target.value, voiceChoice.drums);
+                chooseRollVoice(pick.program ?? null, voiceChoice.track ? pick.drums : undefined);
+              }}
+              title={voiceChoice.track
+                ? `The roll is linked to an EDIT clip on track ${voiceChoice.track.name}: the choice sets that track's ${voiceChoice.drums ? 'drum kit' : 'instrument'}. An instrument on a drum track turns its drum flag off; a kit turns it on.`
+                : 'The voice this roll auditions and bounces with while no EDIT clip is linked.'}
+              className="mt-0.5 block form-select px-2 py-1 text-xs font-semibold max-w-44"
+              style={{ colorScheme: 'dark' }}
+            >
+              <option value="picker">Same as the instrument</option>
+              {voiceChoice.track ? (() => {
+                // Linked: the instruments and the kits, the track's own kind first.
+                const kits = (
+                  <optgroup key="kits" label="Drum kits">
+                    {GM_DRUM_KITS.map((k) => <option key={k.program} value={voiceValue(k.program, true)}>{`${k.name} kit`}</option>)}
+                    {/* A program the kit list lacks stays listed, so the select shows what the track holds. */}
+                    {voiceChoice.drums && voiceChoice.program !== null && !GM_DRUM_KITS.some((k) => k.program === voiceChoice.program) && (
+                      <option value={voiceValue(voiceChoice.program, true)}>{`${drumKitName(voiceChoice.program)} kit`}</option>
+                    )}
+                  </optgroup>
+                );
+                const instruments = (
+                  <optgroup key="instruments" label="Instruments">
+                    {GM_NAMES.map((n, i) => <option key={n} value={voiceValue(i, false)}>{`${i + 1}. ${n}`}</option>)}
+                  </optgroup>
+                );
+                return voiceChoice.drums ? [kits, instruments] : [instruments, kits];
+              })() : GM_NAMES.map((n, i) => (
+                <option key={n} value={i}>{`${i + 1}. ${n}`}</option>
+              ))}
+            </select>
+          </div>
         </Section>
 
         <Section title="Edit tools" defaultOpen={false}>
@@ -710,7 +751,15 @@ export const Vocal2MidiPanel: React.FC = () => {
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => void handleExportMidi()} disabled={processedNotes.length === 0} className={`${chip} ${chipOff} flex items-center gap-1`}><Download aria-hidden="true" className="w-3 h-3" /> <span>MIDI</span></button>
             <button type="button" onClick={() => void handleExportWav()} disabled={processedNotes.length === 0} className={`${chip} ${chipOff} flex items-center gap-1`}><Music4 aria-hidden="true" className="w-3 h-3" /> <span>WAV</span></button>
-            <button type="button" onClick={() => { setCapturedNotes([]); setProcessedNotes([]); usePianoRollStore.getState().clear(); setStatus('cleared'); }} className={`${chip} ${chipOff} flex items-center gap-1`}><Trash2 aria-hidden="true" className="w-3 h-3" /> <span>Clear</span></button>
+            <button
+              type="button"
+              onClick={() => { setCapturedNotes([]); setProcessedNotes([]); usePianoRollStore.getState().clear(); setStatus('cleared'); }}
+              aria-label="Clear the take and the roll part's notes and controller changes"
+              title="Clears the captured take, and the piano roll part being edited: its notes, lane bends and controller changes (the roll's undo brings the part back)"
+              className={`${chip} ${chipOff} flex items-center gap-1`}
+            >
+              <Trash2 aria-hidden="true" className="w-3 h-3" /> <span>Clear</span>
+            </button>
           </div>
         </Section>
 

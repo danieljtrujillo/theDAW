@@ -102,12 +102,12 @@ export const FeatureGateNotices: React.FC = () => {
   return (
     <div
       aria-live="polite"
-      className={`fixed right-4 ${dockPresent ? 'bottom-44' : 'bottom-28'} z-50 flex w-80 max-w-[92vw] flex-col items-end gap-2 pointer-events-none`}
+      className={`fixed right-4 ${dockPresent ? 'bottom-44' : 'bottom-28'} z-50 flex w-96 max-w-[92vw] flex-col items-end gap-2 pointer-events-none`}
     >
       {hiddenCount > 0 && (
         <div
           title={hiddenTitles}
-          className="pointer-events-auto rounded-full border border-white/10 bg-[#0a080f]/95 px-2 py-0.5 text-[9px] font-mono uppercase tracking-widest text-zinc-500 backdrop-blur-md"
+          className="pointer-events-auto rounded-full border border-white/10 bg-[#0a080f]/95 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-zinc-400 backdrop-blur-md"
         >
           +{hiddenCount} more
         </div>
@@ -155,20 +155,20 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
       <div className="flex items-start gap-2 px-2.5 py-2">
         <Icon className={`w-3.5 h-3.5 mt-px shrink-0 ${style.icon} ${style.spin ? 'animate-spin' : ''}`} />
         <div className="min-w-0 flex-1">
-          <div className={`text-[10px] font-black uppercase tracking-widest ${style.title}`}>
+          <div className={`text-xs font-black uppercase tracking-wider ${style.title}`}>
             {notice.title}
           </div>
           {/* Clamped, not truncated: these messages are the instructions for
               the control right below them, and a one-line ellipsis throws the
               instruction away. The title still carries the full text. */}
           <p
-            className="mt-0.5 text-[10px] leading-snug text-zinc-400 line-clamp-3"
+            className="mt-0.5 text-xs leading-snug text-zinc-300 line-clamp-4"
             title={notice.message}
           >
             {notice.message}
           </p>
           {notice.docsHint && (
-            <p className="mt-0.5 text-[8px] font-mono uppercase tracking-wider text-zinc-600 truncate">
+            <p className="mt-0.5 text-xs font-bold uppercase tracking-wide text-zinc-500 truncate">
               {notice.docsHint}
             </p>
           )}
@@ -191,7 +191,7 @@ const NoticeCard: React.FC<{ notice: FeatureGateNotice }> = ({ notice }) => {
                 type="button"
                 onClick={() => void runAction()}
                 disabled={running}
-                className={`mt-1.5 inline-flex items-center gap-1.5 rounded border px-2 py-1 text-[9px] font-black uppercase tracking-widest transition-colors focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50 ${style.button}`}
+                className={`mt-1.5 inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs font-black uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50 ${style.button}`}
               >
                 {running && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
                 {notice.action.label}

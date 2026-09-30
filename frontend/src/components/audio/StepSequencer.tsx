@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN, clampTempoBpm } from '../../lib/tempoMap';
+import { useTempoField } from '../../lib/useTempoField';
 import {
   Target,
   Trash2, Sparkles, Plus, Activity,
@@ -20,7 +22,7 @@ import {
 } from '../../lib/drumStyleGenerator';
 
 const SEQUENCE_MIDI_PARAMS = [
-  { key: 'bpm' as const, label: 'BPM', min: 40, max: 240, autoCc: 14, integer: true },
+  { key: 'bpm' as const, label: 'BPM', min: TEMPO_BPM_MIN, max: TEMPO_BPM_MAX, autoCc: 14, integer: true },
 ];
 
 type Voice = 'kick' | 'snare' | 'hat' | 'tone' | 'noise';
@@ -261,7 +263,7 @@ const buildMidiFile = (
   tracks: Track[],
   bpm: number,
   mode: 'single' | 'multi',
-): Uint8Array => {
+): Uint8Array<ArrayBuffer> => {
   const conductor = buildConductorTrack(bpm);
   const noteChunks: number[][] = [];
   if (mode === 'single') {
@@ -327,6 +329,9 @@ export const StepSequencer: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [bpm, setBpm] = useState(128);
+  // Typing keeps a draft (lib/useTempoField) that lands on Enter or blur, so a playing pattern never
+  // jumps to the "25" of a typed 250; an arrow or spin step lands at once. The pattern takes whole BPM.
+  const bpmField = useTempoField(bpm, (n) => setBpm(Math.round(n)));
   const [exportMode, setExportMode] = useState<'single' | 'multi'>('single');
   const [exportBars, setExportBars] = useState(2);
   const [isBouncing, setIsBouncing] = useState(false);
@@ -362,7 +367,7 @@ export const StepSequencer: React.FC = () => {
   // Sequencer clock — advance step + fire active voices.
   useEffect(() => {
     if (!isPlaying) return;
-    const stepMs = 60000 / Math.max(40, Math.min(240, bpm)) / 4; // 16th notes
+    const stepMs = 60000 / clampTempoBpm(bpm) / 4; // 16th notes
     const interval = window.setInterval(() => {
       const nextStep = (currentStepRef.current + 1) % STEPS;
       currentStepRef.current = nextStep;
@@ -574,16 +579,15 @@ export const StepSequencer: React.FC = () => {
         <div className="flex items-center gap-4 min-h-7.5">
           <SurfacePlayKey size="bar" playing={isPlaying} onToggle={handlePlayToggle} what="the pattern" />
           <div className="flex flex-col">
-            <label htmlFor="step-seq-bpm" className="text-[7px] font-mono text-zinc-600 uppercase leading-none">Tempo (BPM)</label>
+            <label htmlFor="step-seq-bpm" className="text-xs font-sans font-bold text-zinc-400 uppercase leading-none">Tempo (BPM)</label>
             <input
               id="step-seq-bpm"
               type="number"
               name="step-seq-bpm"
-              value={bpm}
-              min={40}
-              max={240}
-              onChange={(e) => setBpm(parseInt(e.target.value) || 120)}
-              className="bg-transparent border-none outline-none text-[12px] font-mono text-cyan-500 w-14 font-black"
+              {...bpmField}
+              min={TEMPO_BPM_MIN}
+              max={TEMPO_BPM_MAX}
+              className="bg-transparent border-none outline-none text-xs font-sans tabular-nums text-cyan-500 w-14 font-black"
             />
           </div>
         </div>

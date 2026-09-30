@@ -69,13 +69,13 @@ Manually drawn boxes are queued rather than processed on the spot, so you can ca
 
 The detected children land as ordinary captured assets tagged with the panel as their group, so you refine, re-label, and **Process Pending** them exactly like any other detection. Every control in a panel must finish processing (reach the *labeled* state) before that module can be placed.
 
-### Module panel sections
+### Module cards
 
-Each panel is a **collapsible section** at the top of the tray, above the loose asset list. Its header shows the panel title, the member count, a scanning spinner while the second pass runs, a **Place Module** button, and a delete (**X**). Collapse a section to fold its member cards out of the way. Deleting a panel keeps its member controls — they drop back into the loose list as ungrouped assets, so nothing is thrown away.
+Each panel is a **module card** at the top of the tray, above **Individual Pieces**. Its header shows a thumbnail, title, piece count, scanning spinner, **Place as Group**, and delete (**X**). Modules start collapsed; **Pieces** expands the individual controls for editing. Deleting a module keeps its member controls as loose assets.
 
-### Place Module
+### Place as Group
 
-**Place Module** drops the whole panel onto the canvas as one Foundry **Group**: the panel backplate becomes a **Frame** element wearing the panel crop as its face, and every member control is placed over it — each wearing its own cutout as its face, at its original offset inside the panel. Choose each member's target control type with the per-card **Control type** select before placing (a graphic with no control meaning stays an **Image**). The backplate crop and every child cutout also land in the Asset library.
+**Place as Group** drops the whole panel onto the canvas as one Foundry **Group**: the panel backplate becomes a **Frame** element wearing the panel crop as its face, and every member control is placed over it — each wearing its own cutout as its face, at its original offset inside the panel. Choose each member's target control type with the per-card **Control type** select before placing (a graphic with no control meaning stays an **Image**). The backplate crop and every child cutout also land in the Asset library.
 
 Because the module is a real Group, you can select it, save it to the **Arsenal**, and drag that saved module into any project — backplate, controls, offsets and all.
 
@@ -84,6 +84,10 @@ Because the module is a real Group, you can select it, save it to the **Arsenal*
 ---
 
 ## Refining Assets
+
+Click a capture box to select it. Shift/Ctrl/Command-click toggles boxes in the selection; **All** selects every capture. **Select** mode changes dragging into a marquee that selects overlapping boxes; modifier-drag adds to the selection. A blank click clears it. Switch Select mode off to draw new captures again.
+
+**Delete (count)**, **Delete**, or **Backspace** removes the selected captures. Keyboard deletion belongs to the open extractor and cannot delete selected design elements behind it. Input fields, selects, editable text, composition events, and the mask editor retain their editing behavior. Closing and reopening preserves captures; changing the source image resets them.
 
 Every captured asset appears as a card in the **Captured Assets** tray on the right. Each card offers:
 
@@ -112,7 +116,7 @@ You can get assets out of the extractor eight ways:
 | **Place All as Layers** | Tray header | Adds the assets *and* places them on the canvas as Image layers, positioned over the background at their exact original coordinates. |
 | **→ Design** (per card) | On each asset card | Places that single asset onto the canvas as a positioned layer. |
 | **Tex** (per card) | On each asset card | Adds that single asset to the Texture Library. |
-| **Place Module** | Module panel header (per panel) | Places the whole module — the backplate as a **Frame** plus its member controls as face-wearing controls, at their original offsets — onto the canvas as one Foundry Group. See [Detecting Modules](#detecting-modules). |
+| **Place as Group** | Module card (per panel) | Places the whole module — the backplate as a **Frame** plus its member controls as face-wearing controls, at their original offsets — onto the canvas as one Foundry Group. See [Detecting Modules](#detecting-modules). |
 
 Placed layers use each asset's normalized bounds scaled to the canvas dimensions. Because the background sets the canvas size on upload, placed layers land exactly where the component sat in the original image.
 
@@ -120,12 +124,21 @@ Placed layers use each asset's normalized bounds scaled to the canvas dimensions
 
 ## Provider, Key, and Model
 
-The extractor uses **Gemini** for both detection and labeling, and it shares Foundry's existing provider configuration — there is no separate setup:
+The extractor uses **Gemini** for both detection and labeling — either through the **direct Google API** or through **OpenRouter** (your OpenRouter account, useful when the direct Gemini API keeps rate-limiting you). It shares Foundry's existing provider configuration — there is no separate setup:
 
-- **API key** — the same Gemini key you set in the **AI Assistant settings** (stored in the browser). If no in-app key is present, the server falls back to its `GEMINI_API_KEY` environment variable. There is no key field in the extractor.
-- **Model** — the **Model** dropdown in the toolbar is fetched live from the API. Nothing is hardcoded; whatever Gemini models your key exposes are what you can pick.
+- **Provider** — the **Provider** dropdown in the toolbar switches between **Gemini** (direct Google API) and **OpenRouter**. OpenRouter runs the same detection/labeling calls against Gemini (or any other vision-capable model) billed to your OpenRouter account instead of Google's free tier.
+- **API key** — the key for the selected provider from the **AI Assistant settings** (stored in the browser). If no in-app key is present, the server falls back to its environment variable (`GEMINI_API_KEY` or `OPENROUTER_API_KEY`). There is no key field in the extractor.
+- **Model** — the **Model** dropdown is fetched from the selected provider. OpenRouter lists only vision-capable models and prefers Gemini flash-lite, then flash, then other Gemini entries. Direct Gemini prefers the extractor's flash-lite choice when listed. Preferences and provider defaults are used only when their IDs occur in the fetched list. Your valid model choice is remembered separately for each provider while the workspace stays mounted.
+
+Switching providers clears the active model while the new list loads. Detection and processing wait for a listed model; an empty OpenRouter vision list displays **No vision models available** instead of falling back to a text-only default. Failed model loading displays **Could not load models**; switch providers or reopen the workspace to retry.
 
 The first time the generic background-removal fallback runs, it downloads its model (~40MB WASM) once. Subsequent cutouts reuse it.
+
+### Implementation boundaries
+
+`src/features/extractor/` owns selection state and controls, marquee helpers, scoped keyboard handling, provider/model state and controls, and module cards/sections. The existing extractor hosts retain capture, processing, placement, and individual asset editing with explicit feature hooks. `useKeyboardShortcuts` defaults to enabled; App passes `enabled: !isExtractorOpen`. The extractor uses a dialog key handler rather than a second global Delete listener. HTTP bodies retain `provider`, `apiKey`, `model`, image, MIME type, and sensitivity.
+
+Focused synthetic regressions: `node node_modules/vitest/vitest.mjs run src/features/extractor --maxWorkers=1`. They use the real React hooks and modal with synthetic DOM/image and fetch doubles, without provider requests.
 
 ---
 
@@ -138,8 +151,11 @@ The first time the generic background-removal fallback runs, it downloads its mo
 | Model dropdown is empty | Model list could not be fetched | Confirm the Gemini key is valid; the list is fetched live from the API. |
 | First cutout is slow | One-time ~40MB WASM download for background removal | Wait for it to finish; later cutouts reuse the cached model. |
 | Detection returns nothing after a fresh install | The `/api/extract` endpoints were not registered | Restart the Foundry server. The extraction endpoints go live only after a relaunch. |
+| Object removal fails with `[WebGPU] Kernel "[Add] .../ffc/convg2g/Add" failed` | The LaMa inpainting model's Fast Fourier Convolution (FFC) ops are unreliable on the browser's WebGPU backend | Handled automatically — the app now retries the removal on the WASM backend and remembers the choice. See the note below. |
 
 > **Note:** After installing this feature, the `/api/extract/detect` and `/api/extract/label` endpoints require a **Foundry server restart** to become available. The frontend workspace loads immediately, but detection and labeling calls will 404 until the server is relaunched.
+
+> **WebGPU inpainting fallback:** Object removal ("Remove" in the mask editor) runs the **Carve/LaMa** model in-browser via `onnxruntime-web` (`src/lib/inpaint/lamaOnnx.ts`). The session is created with `["webgpu", "wasm"]`, but that list only chooses a backend **when the graph is built** — it does **not** retry on the GPU if a kernel throws mid-run. LaMa's FFC blocks (FFT → complex math → inverse FFT) can build onto WebGPU fine and then fail during `session.run()` with an error like `[Add] /generator/model/model.5/conv1/ffc/convg2g/Add`. Because there is no per-op runtime fallback, `removeObject()` catches a genuine WebGPU run failure, rebuilds a **WASM-only** session, retries once, and sets `localStorage["foundry:lamaDisableWebGpu"] = "1"` so every later run and page reload skips WebGPU entirely. WASM is slightly slower but produces identical output; machines where WebGPU works are unaffected. To reset (e.g. after a browser/driver update that fixes WebGPU), clear that localStorage key.
 
 ---
 

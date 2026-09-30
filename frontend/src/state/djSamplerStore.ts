@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* DJ sampler bank (D7) — persisted pad → library-entry assignments. The decoded
  * one-shot buffers live in djEngine (re-decoded on mount from each entry's
@@ -40,6 +41,6 @@ export const useDjSampler = create<DjSamplerState>()(
         return { pads: p };
       }),
     }),
-    { name: 'thedaw.dj.sampler.v1' },
+    { name: 'thedaw.dj.sampler.v1', storage: persistStorage() },
   ),
 );

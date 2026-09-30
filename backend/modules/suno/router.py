@@ -311,7 +311,7 @@ async def _register_completed_job(job: dict[str, Any]) -> Optional[str]:
     try:
         from backend.modules.library.router import get_store
 
-        store = get_store()
+        store = await asyncio.to_thread(get_store)
         rec = store.import_blob(
             mp3_bytes,
             filename,
@@ -332,7 +332,11 @@ async def _register_completed_job(job: dict[str, Any]) -> Optional[str]:
 
     entry_id = rec.id
 
-    # Lineage edges for derived tracks (cover/mashup).
+    # Lineage edges for derived tracks (cover/mashup). NOTE the direction:
+    # from_id is the PARENT and to_id is the new entry, the opposite way round
+    # from the promoted-lineage writer. Both bare kinds are registered with
+    # that orientation in `backend/modules/lineagescale/graph.py` (KIND_ROLES);
+    # a kind written here and missing there reads backwards in the graph.
     if mode in ("cover", "mashup"):
         parents = _gather_parent_clip_ids(job, meta)
         for parent_clip_id in parents:
@@ -529,7 +533,9 @@ async def audio(job_id: str) -> Response:
         try:
             from backend.modules.library.router import get_store
 
-            audio_path = get_store().get_audio_path(entry_id)
+            # Off the event loop: the path may live in a media root whose
+            # stat can block (see library.router.stream_audio).
+            audio_path = await asyncio.to_thread(get_store().get_audio_path, entry_id)
             if audio_path and audio_path.is_file():
                 return Response(
                     content=audio_path.read_bytes(), media_type="audio/mpeg"

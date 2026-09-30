@@ -46,7 +46,12 @@ _ALLOWED_PATH = re.compile(
 )
 
 
-@router.api_route("/{rest:path}", methods=["GET", "POST", "OPTIONS"])
+# One route per method, each with its own operation id: a single api_route
+# over the three gives them one id, and FastAPI warns on every build of the
+# OpenAPI schema.
+@router.get("/{rest:path}", operation_id="genai_proxy_get")
+@router.post("/{rest:path}", operation_id="genai_proxy_post")
+@router.options("/{rest:path}", operation_id="genai_proxy_options")
 async def proxy(rest: str, request: Request) -> Response:
     """Forward an allowlisted path + method to Google, injecting the server key."""
     denial = access.denial_reason(request)

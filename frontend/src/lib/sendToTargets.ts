@@ -21,10 +21,12 @@ import { useBottomPanelStore } from '../state/bottomPanelStore';
 import { usePianoRollStore } from '../state/pianoRollStore';
 import { addBlobsToChimera } from './chimeraClient';
 import { parseMidi } from './midi';
-import { midiFileToRoll } from './rollMidi';
+import { chordBendLog, midiFileToRoll } from './rollMidi';
+import { KEPT_DOCUMENT_LOG, importMidiParts, pastEndLog } from './rollPartsImport';
 import { renderMidiBufferToBlob } from './midiSynth';
 import { fetchMidiBytesWithRetry, fetchBlobWithRetry } from './fetchRetry';
-import { logError, logInfo } from '../state/logStore';
+import { logError, logInfo, logWarn } from '../state/logStore';
+import { linkSongTime } from './songTimeLink';
 
 /** Default mime for stems / mic recordings when none provided. */
 const DEFAULT_AUDIO_MIME = 'audio/wav';
@@ -39,6 +41,10 @@ export interface SendableAudio {
   /** Library entry id when the audio is a library take — lets Chimera reuse
    *  the cached analysis row (BPM / key / beats) and cached stems. */
   entryId?: string;
+  /** The library song this audio is the time of, when that is not `entryId`
+   *  itself: the song a stem was separated from. EDIT ties the clip to that
+   *  song's analysis (lib/songTimeLink), so SYNC and "Use song tempo" work on it. */
+  songEntryId?: string;
 }
 
 export type AudioSendTarget =
@@ -96,6 +102,9 @@ export async function sendAudioToEditor(
       // Keeps the clip tied to its library entry, so EDIT's Separate Stems
       // reuses that entry's cached stems instead of importing the clip again.
       libraryEntryId: audio.entryId,
+      // And to the song whose analysis times it: its own entry, or the song a
+      // stem was separated from.
+      songTime: linkSongTime(audio.songEntryId ?? audio.entryId),
     });
     editor.cachePeaks(clipId, peaks);
     return clipId;
@@ -167,25 +176,46 @@ export function loadMidiIntoPianoRoll(
   buf: ArrayBuffer | Uint8Array,
   target: MidiSendTarget = 'piano-roll',
   labelForLog = 'midi',
+  opts: { fromAudio?: boolean; stem?: string } = {},
 ): boolean {
   try {
     const midi = parseMidi(buf);
     // Every track's notes, and the file's time signatures set the roll's meter (a file with no FF 58 is
     // 4/4 by the MIDI spec). A channel whose pitch wheel moves gets its own lane and curve; every other
     // note is in lane A (lib/rollMidi).
-    const { notes, bpm, meter, bends } = midiFileToRoll(midi, 'pn');
+    const read = midiFileToRoll(midi, 'pn');
+    const { notes, bpm, meter, bends, tempoMap, markers } = read;
     if (notes.length === 0) {
       logError('send-to', `MIDI ${labelForLog} parsed empty — no note-on events`);
       return false;
     }
-    const piano = usePianoRollStore.getState();
-    piano.importNotes(notes, bpm, meter, bends); // auto-fits length + pitch range to the import
+    // Auto-fits length + pitch range to the import; the file's tempo changes become the roll's tempo map.
+    // The piano roll takes a file of several tracks as one part each, on its own
+    // instrument (lib/rollPartsImport); the step sequencer's hand-off keeps the
+    // notes in one layer, as it always has. A new file is a new document: its
+    // markers (FF 06) replace the previous one's, unless other parts keep the document.
+    // A library song's MIDI was timed against its audio: the parts are marked so MATCH keeps their seconds.
+    const audio = opts.fromAudio === true ? { fromAudio: true } : {};
+    // A stem's transcription plays its stem's instrument, not basic-pitch's stock Electric Piano (lib/stemRole):
+    // the row id or the file's name ("bass.mid" off the disk) names the stem.
+    const parts = target === 'piano-roll' ? importMidiParts(midi, 'pn', { ...audio, stem: opts.stem ?? labelForLog }) : null;
+    const kept = parts
+      ? parts.keptDocument
+      : usePianoRollStore.getState().importNotes(notes, bpm, meter, bends, tempoMap, { markers, part: audio }).keptDocument;
     useBottomPanelStore.getState().showTab(target === 'piano-roll' ? 'midi' : 'step-seq');
     const totalSteps = usePianoRollStore.getState().totalSteps;
+    const partText = parts && parts.into === 'parts' ? `, ${parts.parts} parts` : '';
     logInfo(
       'send-to',
-      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps)`,
+      `Loaded ${notes.length} note(s) → ${target === 'piano-roll' ? 'piano roll' : 'step sequencer'} (bpm=${midi.bpm.toFixed(0)}, ${totalSteps} steps${partText})`,
     );
+    // A one-part file into a roll whose other parts hold notes leaves the roll's own tempo, meter and bends in place.
+    if (kept) logInfo('send-to', KEPT_DOCUMENT_LOG);
+    if (parts?.pastEnd) logWarn('send-to', pastEndLog(parts.pastEnd));
+    // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+    const chordBends = chordBendLog(labelForLog, read);
+    for (const line of chordBends.info) logInfo('send-to', line);
+    for (const line of chordBends.warn) logWarn('send-to', line);
     return true;
   } catch (e) {
     logError('send-to', `MIDI parse failed for ${labelForLog}: ${e instanceof Error ? e.message : String(e)}`);
@@ -197,7 +227,9 @@ export function loadMidiIntoPianoRoll(
 export async function sendMidiIdToTarget(midiId: string, target: MidiSendTarget): Promise<void> {
   try {
     const buf = await fetchMidiBytesWithRetry(`/api/midi/file/${midiId}`, { label: midiId });
-    loadMidiIntoPianoRoll(buf, target, midiId);
+    // Every library MIDI row is a transcription of the song's audio (backend/modules/midi/runner).
+    // Its id names its stem (`<entry>__<stem>_midi`), which gives the part its instrument.
+    loadMidiIntoPianoRoll(buf, target, midiId, { fromAudio: true, stem: midiId });
   } catch (e) {
     logError('send-to', `Send MIDI failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -227,9 +259,11 @@ export function stemRowToSendable(row: Record<string, unknown>): SendableAudio {
   const stemName = String(row.stem_name ?? 'stem');
   const parentTitle = String(row.parent_title ?? '');
   const label = parentTitle ? `${parentTitle} · ${stemName}` : stemName;
+  const songEntryId = String(row.entry_id ?? row.parent_id ?? '');
   return {
     label,
     mimeType: 'audio/wav',
+    ...(songEntryId ? { songEntryId } : {}),
     fetcher: () => fetchBlobWithRetry(`/api/library/stems/${stemId}/audio`, { label }),
   };
 }

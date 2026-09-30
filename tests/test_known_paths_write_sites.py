@@ -52,10 +52,8 @@ FOUNDRY_PROJECT = {
 SHARE = "\\\\attacker\\share\\x.gan"
 
 
-@pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """The app with known_paths, the recent-projects file and every data folder
-    these routes write moved into tmp_path."""
+def _configure_client_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move every data folder these routes write into tmp_path."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -64,8 +62,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         known_paths, "_STORE_PATH", tmp_path / "state" / "known_paths.json"
     )
     monkeypatch.setattr(known_paths, "_GRANTS", {})
-    # Opening a project allowlists its folders in data/media_roots.json; keep
-    # that file out of the test.
+    # Opening a project allowlists its folders in data/clip_audio_roots.json
+    # (and its data/media_roots.json mirror); keep those files out of the test.
     monkeypatch.setattr(media_access, "register_paths", lambda paths: list(paths))
 
     monkeypatch.setattr(
@@ -76,7 +74,24 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(sway_router, "_PROJECTS_DIR", tmp_path / "sway-projects")
     monkeypatch.setattr(plugin_router, "GAN_DIR", tmp_path / "plugins")
     monkeypatch.setattr(plugin_router, "RUNTIME_DIR", tmp_path / "plugins" / "_runtime")
+
+
+@pytest.fixture
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """The app with known_paths, the recent-projects file and every data folder
+    these routes write moved into tmp_path."""
+    _configure_client_env(tmp_path, monkeypatch)
     return TestClient(app)
+
+
+@pytest.fixture
+def client_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """Same as ``client``, but with a real loopback TCP peer -- what theDAW's
+    own UI actually looks like on the wire, unlike ``TestClient``'s default
+    fake, non-loopback ``("testclient", 50000)`` peer. Needed for routes
+    gated by ``require_loopback_or_launch_token`` (ITW security P1)."""
+    _configure_client_env(tmp_path, monkeypatch)
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 def _only(kind: str) -> dict[str, Any]:
@@ -107,10 +122,10 @@ def _foundry_export(folder: Path) -> Path:
 
 
 def test_a_saved_project_is_remembered_and_never_served(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     songs = tmp_path / "Songs"
-    resp = client.post(
+    resp = client_loopback.post(
         "/api/project/save",
         json={"project": _project("Kept"), "path": str(songs / "kept")},
     )
@@ -128,12 +143,12 @@ def test_a_saved_project_is_remembered_and_never_served(
     assert "tasmo" not in _stored_folders(tmp_path)
     # A save can embed any file its body names, so its archive is never handed
     # back by /api/places/file.
-    served = client.get("/api/places/file", params={"path": saved})
+    served = client_loopback.get("/api/places/file", params={"path": saved})
     assert served.status_code == 403
 
 
 def test_a_save_to_a_new_folder_leaves_the_project_picker_where_the_user_left_it(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client_loopback: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The order the Session tab produces: the user picks a .tasmo from their
     own folder, then a save names a folder that did not exist. The next project
@@ -151,12 +166,14 @@ def test_a_save_to_a_new_folder_leaves_the_project_picker_where_the_user_left_it
     monkeypatch.setattr(folder_dialog, "picker_available", lambda: True)
     monkeypatch.setattr(folder_dialog, "pick_open_file", pick_open_file)
 
-    chosen = client.post("/api/storage/pick-file", json={"kind": "tasmo"}).json()
+    chosen = client_loopback.post(
+        "/api/storage/pick-file", json={"kind": "tasmo"}
+    ).json()
     assert chosen == {"path": str(picked), "cancelled": False}
     assert known_paths.last_folder("tasmo") == str(picked.parent)
 
     elsewhere = tmp_path / "Brand New" / "Folder"
-    saved = client.post(
+    saved = client_loopback.post(
         "/api/project/save",
         json={"project": _project("Fresh"), "path": str(elsewhere / "fresh")},
     )
@@ -168,41 +185,49 @@ def test_a_save_to_a_new_folder_leaves_the_project_picker_where_the_user_left_it
     ]
     assert known_paths.last_folder("tasmo") == str(picked.parent)
 
-    client.post("/api/storage/pick-file", json={"kind": "tasmo"})
+    client_loopback.post("/api/storage/pick-file", json={"kind": "tasmo"})
     assert calls[1]["initial_dir"] == str(picked.parent)
 
 
 def test_an_opened_project_is_remembered_and_never_served(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     path = tmp_path / "Gig" / "set.tasmo"
     path.parent.mkdir()
     TasmoFile.save(TasmoProject(project_name="Set"), str(path))
 
-    assert client.post("/api/project/load", json={"path": str(path)}).status_code == 200
+    assert (
+        client_loopback.post("/api/project/load", json={"path": str(path)}).status_code
+        == 200
+    )
     entry = _only("tasmo")
     assert (entry["path"], entry["source"]) == (str(path), "client")
     assert known_paths.find_servable(path) is None
 
 
 def test_an_installed_project_stays_servable_after_it_is_opened(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     path = tmp_path / "Projects" / "demo.tasmo"
     path.parent.mkdir()
     TasmoFile.save(TasmoProject(project_name="Demo"), str(path))
     known_paths.record(path, source="install")
 
-    assert client.post("/api/project/load", json={"path": str(path)}).status_code == 200
+    assert (
+        client_loopback.post("/api/project/load", json={"path": str(path)}).status_code
+        == 200
+    )
     assert (_only("tasmo")["source"], _only("tasmo")["servable"]) == ("install", True)
 
 
 def test_a_project_that_fails_to_open_is_not_remembered(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     broken = tmp_path / "broken.tasmo"
     broken.write_bytes(b"not a zip")
-    assert client.post("/api/project/load", json={"path": str(broken)}).status_code in (
+    assert client_loopback.post(
+        "/api/project/load", json={"path": str(broken)}
+    ).status_code in (
         400,
         500,
     )
@@ -210,25 +235,29 @@ def test_a_project_that_fails_to_open_is_not_remembered(
 
 
 def test_the_default_dir_is_the_projects_folder(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     chosen = tmp_path / "My Projects"
     known_paths.set_projects_dir(chosen)
-    assert client.get("/api/project/default-dir").json() == {"path": str(chosen)}
+    assert client_loopback.get("/api/project/default-dir").json() == {
+        "path": str(chosen)
+    }
 
 
 def test_recent_rereads_a_file_a_restore_rewrote(
-    client: TestClient, tmp_path: Path
+    client_loopback: TestClient, tmp_path: Path
 ) -> None:
     """The sequence a backup restore produces: the app has saved a project, the
     restore rewrites recent_projects.json on disk, the UI asks for the list and
     then saves again. Both the list and the next write must carry the restored
     entries."""
     before = tmp_path / "before.tasmo"
-    client.post(
+    client_loopback.post(
         "/api/project/save", json={"project": _project("B"), "path": str(before)}
     )
-    assert [r["name"] for r in client.get("/api/project/recent").json()] == ["B"]
+    assert [r["name"] for r in client_loopback.get("/api/project/recent").json()] == [
+        "B"
+    ]
 
     restored = [
         {"path": str(tmp_path / "old1.tasmo"), "name": "Old One"},
@@ -239,22 +268,22 @@ def test_recent_rereads_a_file_a_restore_rewrote(
     st = recent_file.stat()
     os.utime(recent_file, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
 
-    assert client.get("/api/project/recent").json() == restored
+    assert client_loopback.get("/api/project/recent").json() == restored
 
     after = tmp_path / "after.tasmo"
-    client.post(
+    client_loopback.post(
         "/api/project/save", json={"project": _project("A"), "path": str(after)}
     )
-    names = [r["name"] for r in client.get("/api/project/recent").json()]
+    names = [r["name"] for r in client_loopback.get("/api/project/recent").json()]
     assert names == ["A", "Old One", "Old Two"]
     on_disk = json.loads(recent_file.read_text(encoding="utf-8"))
     assert [r["name"] for r in on_disk] == names
 
 
 def test_recent_does_not_reread_an_unchanged_file(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client_loopback: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client.post(
+    client_loopback.post(
         "/api/project/save",
         json={"project": _project("Once"), "path": str(tmp_path / "once.tasmo")},
     )
@@ -264,7 +293,9 @@ def test_recent_does_not_reread_an_unchanged_file(
         project_router, "_load_recent", lambda: reads.append(1) or real()
     )
     for _ in range(3):
-        assert [r["name"] for r in client.get("/api/project/recent").json()] == ["Once"]
+        assert [
+            r["name"] for r in client_loopback.get("/api/project/recent").json()
+        ] == ["Once"]
     assert reads == []
 
 
@@ -473,8 +504,9 @@ def test_an_imported_foundry_export_is_remembered_without_moving_the_gan_folder(
 
 
 def test_reveal_goes_through_the_shared_helper(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client_loopback: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """theDAW's own UI (a loopback caller) reaches the real handler."""
     shown: list[str] = []
 
     def fake_reveal(path: str) -> str:
@@ -483,13 +515,23 @@ def test_reveal_goes_through_the_shared_helper(
 
     monkeypatch.setattr(plugin_router.reveal_lib, "reveal", fake_reveal)
     target = tmp_path / "x.gan"
-    body = client.post("/api/plugin/reveal", json={"path": str(target)}).json()
+    body = client_loopback.post("/api/plugin/reveal", json={"path": str(target)}).json()
     assert body == {"status": "ok", "path": f"shown:{target}"}
     assert shown == [str(target)]
 
 
+def test_reveal_from_a_lan_peer_without_a_token_is_refused(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """ITW security P1: a non-loopback caller with no launch token never
+    reaches the handler at all (403 from the gate), unlike a loopback caller
+    naming a path that merely doesn't exist (404, see the test above)."""
+    resp = client.post("/api/plugin/reveal", json={"path": str(tmp_path / "x.gan")})
+    assert resp.status_code == 403
+
+
 def test_reveal_answers_404_400_and_500_apart(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client_loopback: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     started: list[list[str]] = []
     monkeypatch.setattr(
@@ -497,9 +539,11 @@ def test_reveal_answers_404_400_and_500_apart(
         "Popen",
         lambda args, *a, **k: started.append(args) or SimpleNamespace(),
     )
-    missing = client.post("/api/plugin/reveal", json={"path": str(tmp_path / "gone")})
+    missing = client_loopback.post(
+        "/api/plugin/reveal", json={"path": str(tmp_path / "gone")}
+    )
     assert missing.status_code == 404
-    share = client.post("/api/plugin/reveal", json={"path": SHARE})
+    share = client_loopback.post("/api/plugin/reveal", json={"path": SHARE})
     assert share.status_code == 400
     assert started == []
 
@@ -507,7 +551,7 @@ def test_reveal_answers_404_400_and_500_apart(
         raise OSError("no file manager")
 
     monkeypatch.setattr(plugin_router.reveal_lib, "reveal", broken)
-    failed = client.post("/api/plugin/reveal", json={"path": str(tmp_path)})
+    failed = client_loopback.post("/api/plugin/reveal", json={"path": str(tmp_path)})
     assert failed.status_code == 500
 
 

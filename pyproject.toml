@@ -3,7 +3,7 @@ name = "stable-audio-3"
 version = "0.2.0"
 description = "Stable Audio 3: A state-of-the-art open platform for fast, high-quality generated audio and music"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "einops>=0.8.2",
     "einops-exts>=0.0.4",
@@ -71,10 +71,16 @@ dependencies = [
     # basic-pitch). Downloads its checkpoint (~165 MB) to ~/piano_transcription
     # on first use.
     "piano-transcription-inference>=0.0.5",
+    # piano-transcription-inference imports audioread at module level (its
+    # utilities.py) but does not declare it, so without this line the package
+    # never imports and every piano stem falls back to basic-pitch. theDAW
+    # decodes the audio itself (backend/lib/audio_io.py); audioread is needed
+    # for the import alone.
+    "audioread>=3.1.0",
     "pretty_midi>=0.2.11",
     "mido>=1.3.3",
     # notation module — symbolic music conversion / analysis backbone.
-    "music21>=9.7.1,<10.3.0",
+    "music21>=9.7.1",
     "partitura>=1.9.0",
     # controllervision module — classical CV (Hough/contours) to infer a MIDI
     # controller's layout from a product photo. Headless (no GUI libs). The
@@ -107,6 +113,10 @@ dependencies = [
     # guards its import and falls back to its own letter-to-sound rules, so
     # the backend still boots if this is absent.
     "cmudict>=1.0.0",
+    # Suno cache staging (backend/modules/library/suno_stage.py) — streams a
+    # multi-GB `{"songs": [...]}` cache without loading it. JSONL needs nothing;
+    # only the big-JSON path imports this, and it prefers the C backend.
+    "ijson>=3.3",
 ]
 
 [project.optional-dependencies]
@@ -118,7 +128,7 @@ ui = [
 ]
 
 lora = [
-  "pytorch_lightning==2.6.5",
+  "pytorch_lightning==2.6.6",
   "dill>=0.4.1",
 ]
 
@@ -154,9 +164,9 @@ flash-attn = [
 # 2.x); the Windows wheel is built the same way. Platforms without a wheel here
 # (e.g. linux aarch64) fall back to the PyPI sdist.
 aubio = [
-  { path = "wheels/aubio-0.4.9-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" },
-  { path = "wheels/aubio-0.4.9-cp312-cp312-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
-  { path = "wheels/aubio-0.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64' and python_version == '3.12'" },
+  { path = "wheels/aubio-0.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'" },
 ]
 torch = [
   { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
@@ -245,6 +255,9 @@ exclude = [
     # Vendored subrepo (dada-bots/underfit + local mods); keeps its own style,
     # not linted by the parent project — same policy as the MRT2 sidecar above.
     "underfit",
+    # Verbatim reference helpers extracted from the 2026-09-18 handoff pack; never
+    # imported or run — ported into backend/ with the project's own style.
+    "docs/design/repair-pack",
     # Runtime-created isolated venv for the faster-whisper transcription sidecar.
     "backend/modules/vocal/transcription/.whisper_venv",
     # Vendored stems-separation sidecar (Demucs/LARSNET server); runs in its own

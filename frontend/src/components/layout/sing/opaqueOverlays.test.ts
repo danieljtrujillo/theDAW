@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 import { CUSTOM_IMAGE_ID, EDIT_THEMES, resolveEditThemeVars } from '../../../lib/editThemes';
 
 const here = dirname(fileURLToPath(import.meta.url));

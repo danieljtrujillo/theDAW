@@ -36,6 +36,8 @@ import {
 } from './rackEffects';
 import type { ChainEntry } from '../state/effectChainStore';
 import { ensureSoundfontReady, liveNoteOff, liveNoteOn } from './soundfontEngine';
+import { drawStrokeChannel } from './pitchBend';
+import { keyHz } from './tuning';
 
 // ── musical constants (from art2music) ────────────────────────────────────────
 const SCALE = ['B3', 'Db4', 'Eb4', 'F4', 'G4', 'A4', 'B4', 'Db5', 'Eb5', 'F5', 'G5', 'A5', 'B5', 'Db6'];
@@ -60,7 +62,8 @@ const noteToMidi = (n: string): number => {
   if (!m) return 60;
   return (parseInt(m[2], 10) + 1) * 12 + (SEMI[m[1]] ?? 0);
 };
-const midiToFreq = (m: number): number => 440 * 2 ** ((m - 69) / 12);
+/** A key's frequency in the project tuning (lib/tuning keyHz). */
+const midiToFreq = (m: number): number => keyHz(m);
 
 // ── tiny vec + rng helpers ────────────────────────────────────────────────────
 interface Pt { x: number; y: number }
@@ -72,7 +75,7 @@ const clampN = (v: number, lo: number, hi: number): number => Math.max(lo, Math.
 const easeOutQuart = (t: number): number => 1 - --t * t * t * t;
 
 // ── waveshaper curves ─────────────────────────────────────────────────────────
-const driveCurve = (k: number): Float32Array => {
+const driveCurve = (k: number): Float32Array<ArrayBuffer> => {
   const n = 1024;
   const c = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -81,7 +84,7 @@ const driveCurve = (k: number): Float32Array => {
   }
   return c;
 };
-const bitCurve = (bits: number): Float32Array => {
+const bitCurve = (bits: number): Float32Array<ArrayBuffer> => {
   const n = 2048;
   const c = new Float32Array(n);
   const levels = Math.pow(2, clampN(bits, 1, 16));
@@ -92,7 +95,7 @@ const bitCurve = (bits: number): Float32Array => {
   }
   return c;
 };
-const softClipCurve = (drive: number): Float32Array => {
+const softClipCurve = (drive: number): Float32Array<ArrayBuffer> => {
   const n = 1024;
   const c = new Float32Array(n);
   const d = Math.tanh(drive);
@@ -382,7 +385,7 @@ export class DrawEngine {
   private chainHandle: ChainHandle | null = null;
   private effects: Record<string, AudioNode> = {};
   private fxOsc: OscillatorNode[] = [];
-  private sfChannelSeq = 1;
+  private sfChannelSeq = 0;
   private grainBuffer: AudioBuffer | null = null;
   private grainSeq = 0;
   private magentaLoop = false;
@@ -1078,7 +1081,8 @@ export class DrawEngine {
         p.voice.panner.pan.setTargetAtTime(pan, ctx.currentTime, 0.03);
       } else if (this.soundMode === 'soundfont') {
         if (p.sfMidi === undefined) {
-          const channel = (this.sfChannelSeq = (this.sfChannelSeq % 15) + 1);
+          // Each stroke takes the next of DRAW's own channels, never a drum channel.
+          const channel = drawStrokeChannel(this.sfChannelSeq++);
           const midi = noteToMidi(SCALE[p.noteIndex]);
           const vel = Math.round(scale01(energy, [44, 118]));
           p.sfChannel = channel;

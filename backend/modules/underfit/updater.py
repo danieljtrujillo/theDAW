@@ -226,7 +226,7 @@ def apply() -> dict:
         try:
             sidecar.stop()
             sidecar.ensure_running(wait_for_ready=False)
-        except Exception as e:  # noqa: BLE001 — restart is best-effort
+        except Exception as e:  # restart is best-effort
             log.warning(
                 "underfit.updater: dashboard restart after update failed: %s", e
             )

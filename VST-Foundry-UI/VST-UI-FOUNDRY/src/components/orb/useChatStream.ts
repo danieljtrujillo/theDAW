@@ -2,6 +2,7 @@ import type React from "react";
 import { useRef } from "react";
 import type { UIElement, CanvasState } from "../../types";
 import type { ChatMessage, ElementRef, ToolCallEntry, TurnMeta, PendingControl } from "./types";
+import { readStoredPermissionMode } from "./PermissionModeSelect";
 
 // ---------------------------------------------------------------------------
 // Chat streaming (SSE fetch/read loop) + mid-turn send queue drain.
@@ -253,6 +254,10 @@ export function useChatStream(params: UseChatStreamParams) {
       // Claude Code-specific fields only when that provider is active.
       if (activeProvider === "claude") {
         body.effort = effortRef.current;
+        // The permission mode the orb's dropdown last stored. The server applies
+        // it to the session before the turn runs, so a mode picked while no
+        // conversation existed still governs this turn.
+        body.permissionMode = readStoredPermissionMode();
         if (claudeSessionIdRef.current) body.claudeSessionId = claudeSessionIdRef.current;
       }
 
@@ -459,6 +464,12 @@ export function useChatStream(params: UseChatStreamParams) {
                     ? request.permission_suggestions
                     : undefined,
                   reason: typeof request.decision_reason === "string" ? request.decision_reason : undefined,
+                  // server/claude-bridge.ts attaches this only when its OWN
+                  // policy (server/permissions.ts decide()) is the reason this
+                  // bubbled — never present on a decision_reason the CLI sent.
+                  policyReason: typeof dataObj.policy?.reason === "string" ? dataObj.policy.reason : undefined,
+                  selfModifyPath:
+                    typeof dataObj.policy?.selfModifyPath === "string" ? dataObj.policy.selfModifyPath : null,
                 });
                 notifyDesktop("Foundry", "The agent needs your answer");
               }

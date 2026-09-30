@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import sys
 import threading
 
@@ -14,6 +15,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -23,19 +25,33 @@ import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
-from fastapi import Body, FastAPI, Form, File, HTTPException, Request, UploadFile
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    Form,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from backend.admin_routes import SHUTDOWN_HANDLERS_STATE
 from backend.admin_routes import router as admin_router
 from backend.lib.audio_io import load_audio, load_audio_array, save_audio, save_subtype
+from backend.assistant_routes import mcp_relay_router
 from backend.assistant_routes import router as assistant_router
 from backend.modules.loader import load_modules
-from backend.lib import paths
+from backend.lib import ffmpeg_tools, pairing, paths
+from backend.lib.atomic import atomic_write
+from backend.lib.cross_site import refuse_cross_site, require_loopback_or_launch_token
 from backend.lib.launch_token import child_env
 
 # Heavy imports (torch, torchaudio, matplotlib, and the stable_audio_3 model
@@ -52,21 +68,51 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def _lifespan(_: FastAPI):
+async def _lifespan(app_: FastAPI):
     """FastAPI lifespan (replaces the deprecated on_event hooks). The startup
     and shutdown bodies live in `_on_startup` / `_on_shutdown` below; globals
-    resolve at call time, so their later definition is fine."""
+    resolve at call time, so their later definition is fine.
+
+    `_on_shutdown` is also published on `app.state` for POST
+    /api/admin/shutdown and /restart: they end the process with os._exit, which
+    never reaches the code after `yield`, so they run the same handlers first
+    (backend/admin_routes.py)."""
     await _on_startup()
+    setattr(app_.state, SHUTDOWN_HANDLERS_STATE, _on_shutdown)
     yield
     await _on_shutdown()
 
 
 app = FastAPI(title="theDAW API", lifespan=_lifespan)
 
+# A page's own site never triggers CORS at all -- only cross-origin browser
+# JS does -- so this only has to cover the one legitimate cross-origin
+# browser caller: Vite's dev server (a different port on this same machine)
+# talking to this API, plus the packaged app's own custom scheme, which
+# reports an origin of "app://." rather than an http(s) one (registered
+# `scheme: 'app'` with no host, electron-ui/main/index.ts:1348-1358 -- so
+# "app://." is the ONE origin that scheme ever produces; a bare `app://.*`
+# would needlessly also match a host-bearing app://evil that scheme cannot
+# actually emit). A LAN client (the phone companion, a headset) reaches the
+# API at its own address, which is same-origin from the browser's point of
+# view and is therefore unaffected by this restriction either way; routes
+# that must additionally tell a genuine LAN caller apart from a hostile one
+# gate on a real secret themselves (backend/lib/launch_token.py,
+# backend/lib/pairing.py, backend/lib/cross_site.py), not on CORS. No request
+# here carries cookies or any other ambient credential (grepped: nothing sets
+# `credentials: 'include'`), so nothing needs Access-Control-Allow-Credentials
+# either -- leaving it off means a response is never even eligible to be read
+# by an origin this regex missed.
+_CORS_ORIGIN_REGEX = (
+    r"^(https?://(localhost|127\.0\.0\.1|\[?::1\]?)(:\d+)?"
+    r"|app://\."
+    r"|(file|tauri|capacitor)://.*)$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -76,6 +122,70 @@ sample_rate = 44100
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODULES_DIR = Path(__file__).parent / "modules"
 
+#: GET /api/build-info's payload, resolved once in `_on_startup` (git and
+#: pyproject reads are ~ms-cheap but have no business running per-request).
+#: Every field stays null until startup fills it, so the route always answers
+#: — including under a bare TestClient that never runs the lifespan.
+_BUILD_INFO: dict[str, Any] = {"commit": None, "built": None, "version": None}
+
+#: Stamped on the console handler this module installs, so a second call finds
+#: its own handler instead of adding another one.
+CONSOLE_LOG_MARKER = "_thedaw_console_handler"
+
+#: Chatty third parties stay at WARNING while the app's own modules log at INFO
+#: (same list as ``backend/run.py``).
+_NOISY_LOGGERS = ("httpx", "httpcore", "urllib3", "numba", "filelock")
+
+
+def _configure_console_logging() -> None:
+    """Put the app's own log lines on stderr, where every launcher captures them.
+
+    ``backend/run.py`` does this for the ``theDAW.bat`` / Electron path, but it
+    is only reached when the process STARTS there. Launched the documented dev
+    way — ``uvicorn backend.server:app`` — nothing configures the root logger:
+    uvicorn's dictConfig names only its own loggers, and the one handler root
+    does get (``log_ring``) writes to the LOG panel's ring buffer, not to a
+    stream. So every ``logger.info`` in ``backend/`` went nowhere, including
+    the ``[claude_session]`` spawned/respawned/torn-down lines that are the
+    only record of a persistent ``claude`` child being created or killed.
+
+    Idempotent, and yields to whoever already owns the console: if ``run.py``
+    (or a host process) put a stderr/stdout handler on root, this adds nothing,
+    so no line is ever printed twice.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if getattr(handler, CONSOLE_LOG_MARKER, False):
+            return
+        # Not `isinstance` alone: pytest's LogCaptureHandler is a StreamHandler
+        # over a StringIO, and yielding to it would silence the console under
+        # the test runner (and only there).
+        if isinstance(handler, logging.StreamHandler) and getattr(
+            handler, "stream", None
+        ) in (sys.stderr, sys.stdout):
+            return
+    level_name = os.getenv("THEDAW_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    setattr(handler, CONSOLE_LOG_MARKER, True)
+    root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > level:
+        root.setLevel(level)
+    for noisy in _NOISY_LOGGERS:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+# BEFORE modules load, so module-load lines (and failures) are on the console;
+# the lifespan re-runs it in case uvicorn's logging setup replaced root handlers
+# in between.
+try:
+    _configure_console_logging()
+except Exception:  # logging must never block boot
+    pass
+
 # Install the LOG-panel ring handler BEFORE modules load, so module-load
 # lines (and failures) are captured; the lifespan re-attaches it in case
 # uvicorn's logging setup replaced root handlers in between.
@@ -83,7 +193,7 @@ try:
     from backend.log_ring import install_log_ring as _install_log_ring
 
     _install_log_ring()
-except Exception:  # noqa: BLE001 — logging must never block boot
+except Exception:  # logging must never block boot
     pass
 
 app.state.loaded_modules = load_modules(app, MODULES_DIR)
@@ -173,7 +283,7 @@ def _warm_heavy() -> None:
         importlib.import_module("stable_audio_3.inference.distribution_shift")
 
         logger.info("startup: heavy imports warmed (torch + stable_audio_3 ready)")
-    except Exception as e:  # noqa: BLE001 — warming is best-effort
+    except Exception as e:  # warming is best-effort
         logger.warning("startup: heavy-import warm failed: %s", e)
 
 
@@ -278,7 +388,17 @@ def _ensure_gpu_clear_of_magenta() -> None:
     AND several GB of host commit through the WSL2 VM, and stacking the SA3
     checkpoint load on top is exactly the combination that exhausts the
     Windows commit limit (os error 1455 -> access-violation crash).
+
+    stop_engine stops only this checkout's engines. When a magenta engine keeps
+    running afterwards (another copy of theDAW's, one started by hand, or ours
+    refusing to die) the load is refused with a 409 whose detail names it
+    (``state`` "engine_elsewhere"); the UI shows that as a card with a
+    confirmed "Stop that engine" action. An engine that cannot be identified
+    (the process list could not be read) is only logged: nothing proves it is
+    an engine, and refusing on a bare port would block Stable Audio for good
+    beside any program that happens to use 8777.
     """
+    still_running: list[dict] = []
     try:
         import socket
 
@@ -286,8 +406,9 @@ def _ensure_gpu_clear_of_magenta() -> None:
 
         listening = magenta_sidecar.engine_process_alive()
         if not listening:
-            # Engines started outside this process (the .vbs launcher, a
-            # manual run): probe the two known ports cheaply.
+            # Engines started outside this process (a backend of this checkout
+            # that restarted, this checkout's .vbs Studio launcher, another
+            # copy of theDAW): probe the two known ports cheaply.
             for port in (8777, 8778):
                 try:
                     with socket.create_connection(("127.0.0.1", port), timeout=0.25):
@@ -297,12 +418,26 @@ def _ensure_gpu_clear_of_magenta() -> None:
                     continue
         if listening:
             logger.info("model.swap: stopping resident MRT2 engine before SA3 load")
-            magenta_sidecar.stop_engine()
+            stopped = magenta_sidecar.stop_engine()
+            still_running = magenta_sidecar.engines_still_running(stopped)
+            if not stopped.get("listed"):
+                logger.warning(
+                    "model.swap: the engine side's processes could not be listed; "
+                    "an engine another copy started may still hold the GPU"
+                )
     except Exception:
         # WARNING, not debug: if this guard fails, the SA3 load proceeds into
         # exactly the GPU-commit-exhaustion crash it exists to prevent, and
         # the user needs to see why.
         logger.warning("model.swap: magenta engine pre-clear failed", exc_info=True)
+    if still_running:
+        from backend.modules.magenta import sidecar as magenta_sidecar
+
+        detail = magenta_sidecar.elsewhere_detail(
+            still_running, "Stable Audio will not load"
+        )
+        logger.warning("model.swap: SA3 load refused: %s", detail["message"])
+        raise HTTPException(status_code=409, detail=detail)
 
 
 def _get_or_load_generation_pipeline(model_name: str):
@@ -460,6 +595,47 @@ def _safe_filename(filename: str | None, fallback: str = "output.wav") -> str:
     return f"{stem}{suffix}"
 
 
+#: Exclusive upper bound for a *resolved* random seed — 2**31 (not the full
+#: unsigned 32-bit range), so a resolved seed always fits the UI's Seed
+#: slider (AdvancedGenPanel.tsx: ``max={2147483647}``, i.e. 2**31 - 1). A
+#: batch take's actual seed can still exceed this bound (``base + i`` for a
+#: large ``base`` near the top of the range and ``batch_size > 1``); that is
+#: existing, accepted behaviour for explicit non-default seeds, not something
+#: this bound constrains.
+_SEED_RESOLUTION_BOUND = 2**31
+
+
+def _resolve_seed(seed: int) -> int:
+    """Resolve a caller-supplied generation seed.
+
+    ``-1`` means "pick one for me" (the Form default on every generate
+    route); any other value is used exactly as given. Callers must reject
+    ``seed < -1`` before this point (see ``_require_valid_seed``) — passing
+    it through here would return it unchanged and indistinguishable from a
+    deliberate negative seed. The concrete value is never -1 so it can be
+    reported back to the caller (response JSON / X-Seed header) and reused
+    verbatim.
+    """
+    if seed == -1:
+        return random.randint(0, _SEED_RESOLUTION_BOUND - 1)
+    return seed
+
+
+def _require_valid_seed(seed: int) -> None:
+    """Reject a seed below -1.
+
+    -1 is the "pick one for me" sentinel; anything below it is not a valid
+    seed and, for a batch request, ``base + i`` (see ``_run_generate_job``)
+    could land exactly on -1 for some take (e.g. base -2, batch 3) — which
+    would then be silently re-resolved to a random seed instead of failing.
+    """
+    if seed < -1:
+        raise HTTPException(
+            status_code=400,
+            detail="seed must be -1 (pick one for me) or a non-negative integer",
+        )
+
+
 def _make_generation_filename(
     job_id: str,
     index: int,
@@ -536,7 +712,10 @@ def _save_generation_artifacts_sync(
         "saved_at": time.time(),
         **(metadata or {}),
     }
-    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    # Atomic, like every other metadata.json writer: a reader (the library
+    # walk, the analysis pass) sees the old document or the new one, never a
+    # half-written file, and a crash mid-write cannot leave one behind.
+    atomic_write(metadata_path, json.dumps(metadata_payload, indent=2))
 
     return {
         "artifact_dir": str(item_dir),
@@ -916,8 +1095,54 @@ def _generate_spectrograms(waveform: torch.Tensor, sr: int) -> dict[str, str]:
     return result
 
 
+def _resolve_build_commit(repo_root: Path) -> str | None:
+    """The full git SHA this backend is running from, or None when git or the
+    repo is unavailable. Called once at startup; never raises — a missing
+    git, a non-repo checkout, or a timeout must not crash the server."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            env=child_env(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if out.returncode != 0:
+        return None
+    sha = out.stdout.strip()
+    return sha or None
+
+
+def _read_pyproject_version(repo_root: Path) -> str | None:
+    """The ``[project].version`` string from ``pyproject.toml``, or None when
+    the file is missing or malformed."""
+    try:
+        import tomllib
+
+        with (repo_root / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError) as e:
+        logger.debug("build-info: pyproject.toml read failed: %s", e)
+        return None
+    version = data.get("project", {}).get("version")
+    return version if isinstance(version, str) else None
+
+
 async def _on_startup():
     startup_t0 = time.perf_counter()
+
+    # Re-run the console handler install: uvicorn's logging setup runs between
+    # this module's import and the lifespan, and a dictConfig there can drop
+    # root handlers. Idempotent — no second handler, no doubled lines.
+    try:
+        _configure_console_logging()
+    except Exception:
+        pass
 
     # Attach the in-memory log ring so the LOG panel (VERBOSE mode) can stream
     # real backend activity. Runs after uvicorn's logging setup and re-attaches
@@ -928,6 +1153,17 @@ async def _on_startup():
         install_log_ring()
     except Exception:
         logger.debug("log ring install failed", exc_info=True)
+
+    # Build identity for GET /api/build-info: resolved once here so the
+    # request path never shells out to git or reopens pyproject.toml. A
+    # missing git/.git or malformed pyproject leaves the field null rather
+    # than failing startup.
+    try:
+        _BUILD_INFO["commit"] = _resolve_build_commit(PROJECT_ROOT)
+        _BUILD_INFO["built"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        _BUILD_INFO["version"] = _read_pyproject_version(PROJECT_ROOT)
+    except Exception as e:
+        logger.warning("startup: build-info probe failed: %s", e)
 
     # System stats (kept torch-free so server-ready never waits on the ~9.6s
     # torch/stable_audio_3 import; the GPU/torch line is logged by _warm_heavy
@@ -950,6 +1186,14 @@ async def _on_startup():
     # fast. Models THEMSELVES still load on demand (single-resident policy): the
     # server must come up independently of any checkpoint.
     threading.Thread(target=_warm_heavy, name="warm-heavy", daemon=True).start()
+
+    # Choose the FFmpeg build once, off the request path: every candidate is
+    # probed for libsoxr (backend.lib.ffmpeg_tools), which takes a few hundred
+    # ms per build. The choice and any missing libsoxr are logged, and
+    # GET /api/health reports them once this finishes.
+    threading.Thread(
+        target=ffmpeg_tools.resolve, name="ffmpeg-resolve", daemon=True
+    ).start()
 
     logger.info(
         "startup: server ready in %.2fs — generation models load on demand "
@@ -976,17 +1220,32 @@ async def _on_startup():
     # (and existing sheets get their "Music21 Fragment" placeholder replaced
     # with the real song name). Idempotent + serialized, so it's safe to run
     # every launch — it only does work where a sheet is missing or mistitled.
+    # The library opens on a thread of its own (library.router.start_opening):
+    # a schema upgrade of a 200,000-entry library from main's schema 6 builds
+    # indexes for seconds to minutes, and the lifespan must not wait for it --
+    # /api/health and every other route answer meanwhile, and the LIBRARY tab
+    # shows the upgrade's progress from GET /api/library/index-status.
+    try:
+        from backend.modules.library.router import start_opening as _open_library
+
+        _open_library()
+    except Exception as e:
+        logger.warning("startup: opening the library failed to start: %s", e)
+
     try:
         from backend.core.background_workers import get_background_queue
         from backend.modules.library.router import get_store as _get_lib_store
         from backend.modules.notation.backfill import backfill_scores
 
-        _bf_store = _get_lib_store()
+        def _backfill_when_open() -> None:
+            # get_store() waits for the open on this worker thread, never on
+            # the event loop.
+            backfill_scores(_get_lib_store())
 
         async def _run_backfill() -> None:
             import asyncio
 
-            await asyncio.to_thread(backfill_scores, _bf_store)
+            await asyncio.to_thread(_backfill_when_open)
 
         get_background_queue().enqueue("notation:backfill", _run_backfill)
     except Exception as e:
@@ -994,13 +1253,28 @@ async def _on_startup():
 
     # Module startup hooks (core/startup.py): what routers used to hang off the
     # deprecated @router.on_event("startup"). Last, so a module finds the
-    # background queue and the library store already up.
+    # background queue up and the library opening; a hook that needs the
+    # library store gets it through get_store() on a thread of its own.
     from backend.core.startup import run_startup_hooks
 
     run_startup_hooks()
 
 
 async def _on_shutdown() -> None:
+    # The live VST hosts go first. POST /api/admin/shutdown gives this whole
+    # function one time budget (admin_routes.SHUTDOWN_HANDLER_BUDGET_SEC), and
+    # the sidecar stops below can wait many seconds each; the plugin state the
+    # hosts save is the user's work, and a slow sidecar must never cut it off.
+    try:
+        from backend.modules.vst.live_host import kill_all as stop_live_vst_hosts
+
+        # One native plugin host per live chain entry; each is asked to save
+        # its state before it is signalled, so this blocks — off the loop too.
+        await asyncio.to_thread(stop_live_vst_hosts)
+    except Exception:
+        # Never blocks the exit, but a failed stop can drop plugin state and
+        # leave host processes running; this line is the only trace of why.
+        logger.warning("shutdown: stopping the live VST hosts failed", exc_info=True)
     try:
         from backend.core.background_workers import get_background_queue
 
@@ -1009,12 +1283,23 @@ async def _on_shutdown() -> None:
         # Shutdown is best-effort; never block process exit.
         pass
     try:
+        # Every live conversation holds a persistent `claude` child, and each of
+        # those holds a stdio MCP child of its own. Nothing else reaps them, so
+        # without this a restart orphans the whole tree until the machine does.
+        from backend.modules.assistant.claude_session import kill_all
+
+        await kill_all()
+    except Exception:
+        # Still best-effort, but never silent: a failed reap leaves the claude
+        # tree orphaned, and this line is the only trace of why.
+        logger.warning("shutdown: claude_session.kill_all failed", exc_info=True)
+    try:
         from backend.core.teardown import stop_all_sidecars
 
         # Off the loop: sidecar stops block on process waits.
         await asyncio.to_thread(stop_all_sidecars)
     except Exception:
-        pass
+        logger.warning("shutdown: stopping the sidecars failed", exc_info=True)
 
 
 @app.get("/api/modules")
@@ -1062,11 +1347,49 @@ async def set_module_enabled(module_name: str, enabled: bool = Body(..., embed=T
         raise HTTPException(status_code=400, detail="Invalid module name")
     if not config_path.exists():
         raise HTTPException(status_code=404, detail="Module not found")
-    config = json.loads(config_path.read_text())
-    config["enabled"] = enabled
-    config_path.write_text(json.dumps(config, indent=2))
+    # newline="" on both read and write: disables Python's universal-newline
+    # translation so a file's original line endings pass through untouched
+    # instead of `write_text`'s platform default (`\n` -> `\r\n` on Windows,
+    # which would rewrite every one of the 53 module.json files' line endings
+    # on the first toggle). `Path.read_text` has no `newline` parameter, so
+    # the read side goes through `open()` directly.
+    with config_path.open("r", encoding="utf-8", newline="") as f:
+        raw = f.read()
+    new_text = _toggle_module_enabled_text(raw, enabled)
+    config_path.write_text(new_text, encoding="utf-8", newline="")
+    config = json.loads(new_text)
     config["_dir"] = module_name
     return config
+
+
+_MODULE_ENABLED_LITERAL_RE = re.compile(r'"enabled"\s*:\s*(true|false)')
+
+
+def _toggle_module_enabled_text(raw: str, enabled: bool) -> str:
+    """Flip a module.json's ``enabled`` value by editing the raw text in
+    place, so every other byte — line endings, key order, and any literal
+    ``\\uXXXX`` escape already in the file — survives untouched.
+
+    Falls back to a full ``json.dumps(..., ensure_ascii=False)`` rewrite only
+    when the literal can't be found unambiguously (the key is missing, or the
+    pattern matches more than once, e.g. inside a string value); that
+    fallback still preserves the original trailing newline and is validated
+    with ``json.loads`` before it is ever returned, matching the format 45 of
+    53 real module.json files already use.
+    """
+    replacement = "true" if enabled else "false"
+    matches = list(_MODULE_ENABLED_LITERAL_RE.finditer(raw))
+    if len(matches) == 1:
+        start, end = matches[0].span(1)
+        new_text = raw[:start] + replacement + raw[end:]
+    else:
+        config = json.loads(raw)
+        config["enabled"] = enabled
+        new_text = json.dumps(config, indent=2, ensure_ascii=False) + (
+            "\n" if raw.endswith("\n") else ""
+        )
+    json.loads(new_text)  # never write text that wouldn't parse back
+    return new_text
 
 
 def _gpu_snapshot() -> list[dict]:
@@ -1197,8 +1520,12 @@ def _require_inpaint_region(mask_start: float, mask_end: float) -> None:
 _FA_WARNED: set[str] = set()
 
 
+@functools.lru_cache(maxsize=1)
 def _flash_attn_installed() -> bool:
-    """Cheap, import-free: is the flash_attn package present at all?"""
+    """Import-free: is the flash_attn package present at all? Answered once:
+    find_spec walks and stats every sys.path entry, and /api/health must not
+    touch the filesystem on every call (behind a library index build's fsyncs
+    those stats took over a second on a CI disk)."""
     import importlib.util
 
     return importlib.util.find_spec("flash_attn") is not None
@@ -1235,6 +1562,54 @@ def _flash_attn_imported() -> bool:
     return mod is not None and getattr(mod, "flash_attn_func", None) is not None
 
 
+@app.get("/api/build-info")
+async def build_info() -> dict[str, Any]:
+    """Which code this backend runs: git commit, when this process started
+    (its build stamp — there is no separate compiled-artifact step to stamp
+    instead), and the pyproject-declared version. All three are resolved once
+    in ``_on_startup``; this route never touches git or the filesystem."""
+    return dict(_BUILD_INFO)
+
+
+@app.get(
+    "/api/pairing/token",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_or_launch_token),
+    ],
+)
+async def pairing_token() -> dict[str, str]:
+    """The LAN pairing token, for the desktop shell only (loopback or the
+    launch token -- never the pairing token itself, which would let a
+    caller who already has it mint nothing new). The share link carries it
+    in the URL fragment (``#pair=<token>``), which no server or proxy log
+    ever sees; see ``backend/lib/pairing.py``.
+
+    ``refuse_cross_site`` matters here specifically because the loopback gate
+    alone is not enough: a page the user's own desktop browser visits has a
+    loopback TCP peer too, so without it a hostile page could reach this
+    route (and, worse, the regenerate route below) with no preflight and no
+    CORS header needed for a simple request -- silently un-pairing every
+    phone even though it could never read the token back."""
+    return {"token": pairing.get_token()}
+
+
+@app.post(
+    "/api/pairing/token/regenerate",
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_or_launch_token),
+    ],
+)
+async def regenerate_pairing_token() -> dict[str, str]:
+    """Replace the pairing token, revoking every share link issued so far --
+    same gate as ``GET /api/pairing/token``. A paired phone's already-open tab
+    keeps sending the OLD token until the user reloads it (or re-scans a new
+    share link/QR), at which point it gets refused like any other stale
+    credential."""
+    return {"token": pairing.regenerate_token()}
+
+
 @app.get("/api/health")
 async def health():
     return {
@@ -1245,6 +1620,10 @@ async def health():
         # (pyproject gates the wheel to win32) — the SDPA fallback is used.
         "flash_attention_installed": _flash_attn_installed(),
         "flash_attention_active": _flash_attn_active(),
+        # The FFmpeg build every tool runs, and whether it has libsoxr (the
+        # resampler Classical Upsample, Super-Res and High-Quality SRC need).
+        # Read from the cache the startup probe fills; never probes here.
+        "ffmpeg": ffmpeg_tools.status(),
     }
 
 
@@ -1610,6 +1989,12 @@ async def generate(
     # frontend sends them; USER_GUIDE lists them) but the local pipeline has
     # no inversion path yet, so they are accepted and intentionally unused.
     _ = (inversion_steps, inversion_gamma, inversion_unconditional)
+
+    # -1 ("pick one for me", the Form default) is resolved to a concrete seed
+    # here so it can be generated with, reported in the X-Seed header /
+    # filename below, and reused verbatim by the caller ("reuse seed").
+    _require_valid_seed(seed)
+    seed = _resolve_seed(seed)
 
     import torch
     from stable_audio_3.inference.distribution_shift import (
@@ -2023,7 +2408,9 @@ async def _run_generate_job(
                             _maybe_enqueue_stems,
                         )
 
-                        _lib_store = _get_library_store()
+                        # Off the loop: the first call after a start can wait
+                        # for the library to finish opening (library.router).
+                        _lib_store = await asyncio.to_thread(_get_library_store)
                         _entry_id = f"{job_id}_{i:02d}"
                         _record = _lib_store.get_entry(_entry_id)
                         if _record is not None and _lib_store.db is not None:
@@ -2070,6 +2457,10 @@ async def _run_generate_job(
                             "mime_type": mime_type,
                             "filename": filename,
                             "spectrograms": spectrograms,
+                            # CONTRACT (T01 -> T17): the seed actually used for
+                            # this take — never -1, `_resolve_seed` already
+                            # ran on `base_args["seed"]` before this loop.
+                            "seed": int(args.get("seed", -1)),
                             **artifact_info,
                         }
                     )
@@ -2176,6 +2567,11 @@ async def generate_jobs(
     # no inversion path yet, so they are accepted and intentionally unused.
     _ = (inversion_steps, inversion_gamma, inversion_unconditional)
 
+    # Reject before any model load / idle-gate hold: a batch take's seed is
+    # derived as base + i (below), and an explicit seed < -1 could otherwise
+    # land a take exactly on -1, the "pick one for me" sentinel.
+    _require_valid_seed(seed)
+
     from stable_audio_3.inference.distribution_shift import (
         DistributionShift,
         FluxDistributionShift,
@@ -2266,7 +2662,10 @@ async def generate_jobs(
             "duration": float(duration),
             "steps": int(steps),
             "cfg_scale": float(cfg_scale),
-            "seed": int(seed),
+            # -1 ("pick one for me") is resolved once here, before the batch
+            # loop in `_run_generate_job` derives each take's seed from it and
+            # every take reports the seed it actually used.
+            "seed": _resolve_seed(int(seed)),
             "apg_scale": float(apg_scale),
             "duration_padding_sec": float(duration_padding_sec),
             "scale_phi": float(cfg_rescale),
@@ -2348,7 +2747,12 @@ async def generate_jobs(
         # The task now owns the hold and releases "generate" in its own finally.
         hold.hand_off()
 
-        return {"job": {"id": job_id}}
+        # base_args["seed"] is the resolved base seed: for batch_size > 1
+        # each take actually uses base + i (`_run_generate_job`), reported
+        # per-take once the job completes. `generateStore.extractResolvedSeed`
+        # reads this field so the UI's "Seed used" / "reuse seed" don't have
+        # to wait for a poll.
+        return {"job": {"id": job_id, "seed": base_args["seed"]}}
 
 
 @app.get("/api/jobs")
@@ -2448,6 +2852,9 @@ async def get_log(since: int = 0, limit: int = 1000):
 
 
 app.include_router(assistant_router)
+# Claude Code MCP relay (/api/mcp-relay/call|result|tools): the stdio MCP
+# child POSTs tool calls here and the browser POSTs their results back.
+app.include_router(mcp_relay_router)
 app.include_router(admin_router)
 
 
@@ -2497,7 +2904,10 @@ def _serve_static_build(
     # The builds keep fixed file names (embed.bundle.js, styles.css), so a
     # response without Cache-Control lets the browser reuse an old copy on its
     # own heuristic for hours after a new build is staged. no-cache makes every
-    # load revalidate, and a matching ETag answers 304 without the body.
+    # load revalidate, and a matching ETag answers 304 without the body. That
+    # covers index.html too, which names the bundle a rebuild replaces: a cached
+    # entry page pinned the tab (and Electron's persistent cache) to a build
+    # that no longer existed.
     response = FileResponse(
         target, stat_result=target.stat(), headers={"Cache-Control": "no-cache"}
     )
@@ -2530,7 +2940,7 @@ try:
         _vj_sidecar.STATIC_MOUNT_PATH,
         _vj_sidecar.resolve_dist_dir() or "(none staged yet)",
     )
-except Exception as _vj_mount_err:  # noqa: BLE001 — never block boot on VJ
+except Exception as _vj_mount_err:  # never block boot on VJ
     logger.warning("vj: static route not registered: %s", _vj_mount_err)
 
 # SwayCommand cockpit served as a static embed build, same shape as the VJ mount
@@ -2557,7 +2967,7 @@ try:
         _sway_sidecar.STATIC_MOUNT_PATH,
         _sway_sidecar.resolve_dist_dir() or "(none staged yet)",
     )
-except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Sway
+except Exception as _sway_mount_err:  # never block boot on Sway
     logger.warning("sway: static route not registered: %s", _sway_mount_err)
 
 # Single-container / companion UI serving. Every API route lives under /api and
@@ -2568,8 +2978,10 @@ except Exception as _sway_mount_err:  # noqa: BLE001 — never block boot on Swa
 # packaged desktop bundles ship a dist), so the desktop UI AND the phone
 # companion entry (frontend/mobile.html -> /mobile.html, with /assets at root)
 # are both reachable over http on the LAN. In pure dev (no dist) it is a no-op:
-# Vite serves the UI on :5173, proxies /api to :8600, and the phone loads
-# http://<lan-ip>:5173/mobile.html directly.
+# Vite serves the UI on ports.frontend_port() -- :5173, the only port the
+# launchers start it on -- proxies /api to :8600, and the phone loads
+# http://<lan-ip>:<that port>/mobile.html directly.
+# GET /api/network/lan hands out that address; never hard-code 5173 here.
 _ui_dist = PROJECT_ROOT / "frontend" / "dist"
 _serve_ui = (
     os.environ.get("theDAW_SERVE_UI") == "1" or (_ui_dist / "index.html").is_file()

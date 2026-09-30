@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from backend.lib import ffmpeg_tools
 from backend.modules.chimera.stretch import stretch_audio
 from backend.modules.chimera.config import probe
 
@@ -203,7 +204,7 @@ def test_stretch_rejects_unknown_rb_option(tmp_path: Path):
 def test_stretch_default_command_unchanged():
     cmd = _build_rubberband_cmd("in.wav", "out.wav", 1.5)
     assert cmd == [
-        "ffmpeg",
+        ffmpeg_tools.ffmpeg_exe(),
         "-nostdin",
         "-y",
         "-hide_banner",

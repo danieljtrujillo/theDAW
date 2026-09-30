@@ -6,7 +6,7 @@
  * captured source. Key, scale, style and the groove reference sit beside them.
  * CAPTURE snapshots the current roll as the morph base; SONG assembles a full
  * multi-section arrangement; FORM opens the song-structure editor above the row,
- * which lays out the sections (role, bar count, meter) the build uses.
+ * which lays out the sections (role, bar count, meter, tempo) the build uses.
  *
  * A SHAPE | METER switch at the row's left end flips it to the METER face
  * (MeterFace.tsx), remembered across sessions; the row keeps its height, its
@@ -17,14 +17,18 @@ import { Camera, ChevronLeft, ChevronRight, LayoutTemplate, ListMusic, Plus, Rot
 import { useVirtuosoStore } from '../../state/virtuosoStore';
 import { LibraryPicker, MIDI_ONLY_TABS } from './LibraryPicker';
 import { MeterFace } from './MeterFace';
+import { ExpressionKey } from './ExpressionKey';
 import { logError } from '../../state/logStore';
 import { meterLabel, parseMeterLabel, sectionMeterChoices } from '../../lib/meterFace';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import {
   STYLES,
   STYLE_NAMES,
   ROLES,
   ROLE_LABELS,
   defaultSections,
+  harmonyDescription,
+  heldSectionTempo,
   type VirtuosoAmounts,
   type StyleName,
   type Role,
@@ -60,12 +64,12 @@ const MODES = [
 ];
 
 /** Legend = the one printed word, which names the range through its <label>;
- *  label = the full name, in the field's tooltip. */
-const SLIDERS: Array<{ k: keyof VirtuosoAmounts; legend: string; label: string }> = [
+ *  label = the full name, in the field's tooltip, with `more` after it when set. */
+const SLIDERS: Array<{ k: keyof VirtuosoAmounts; legend: string; label: string; more?: string }> = [
   { k: 'harmony', legend: 'Harmony', label: 'Harmony' },
   { k: 'ragtime', legend: 'Ragtime', label: 'Ragtime' },
   { k: 'runs', legend: 'Runs', label: 'Runs' },
-  { k: 'rhythm', legend: 'Poly', label: 'Polyrhythm' },
+  { k: 'rhythm', legend: 'Poly', label: 'Polyrhythm', more: "cross-accents, and real 3:2, 4:3 and 5:4 notes over a share of each bar's groups" },
   { k: 'humanize', legend: 'Humanize', label: 'Humanize' },
 ];
 
@@ -81,6 +85,7 @@ const SongStructure: React.FC = () => {
   const setSectionRole = useVirtuosoStore((s) => s.setSectionRole);
   const setSectionBars = useVirtuosoStore((s) => s.setSectionBars);
   const setSectionMeter = useVirtuosoStore((s) => s.setSectionMeter);
+  const setSectionTempo = useVirtuosoStore((s) => s.setSectionTempo);
   const addSection = useVirtuosoStore((s) => s.addSection);
   const removeSection = useVirtuosoStore((s) => s.removeSection);
   const moveSection = useVirtuosoStore((s) => s.moveSection);
@@ -179,6 +184,39 @@ const SongStructure: React.FC = () => {
                 <option key={c.value} value={c.value}>{c.label}</option>
               ))}
             </select>
+            {/* The section's tempo. Empty keeps the tempo in force, as in a
+                score: an earlier section's tempo (its number shows as the
+                placeholder), else the roll's tempo map. A typed tempo applies
+                on Enter or when the field loses focus, so the "1" of a typed
+                132 is never taken as a tempo of its own. */}
+            <label htmlFor={`vt-sec-bpm-${i}`} className="sr-only">{`Section ${i + 1} tempo in BPM`}</label>
+            <input
+              key={`${i}:${sec.bpm ?? ''}`}
+              id={`vt-sec-bpm-${i}`}
+              name={`vt-sec-bpm-${i}`}
+              type="number"
+              min={TEMPO_BPM_MIN}
+              max={TEMPO_BPM_MAX}
+              step="any"
+              placeholder={heldSectionTempo(sections, i) === undefined ? 'BPM' : String(heldSectionTempo(sections, i))}
+              defaultValue={sec.bpm ?? ''}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+              onBlur={(e) => {
+                const text = e.target.value.trim();
+                const v = Number.parseFloat(text);
+                if (text === '') setSectionTempo(i, null);
+                else if (Number.isFinite(v) && v > 0) setSectionTempo(i, v);
+                else e.target.value = sec.bpm === undefined ? '' : String(sec.bpm);
+              }}
+              title={
+                heldSectionTempo(sections, i) === undefined
+                  ? "The section's tempo; empty follows the piano roll's tempo map. The build slows into each section's last bar."
+                  : `The section's tempo; empty keeps ${heldSectionTempo(sections, i)} BPM from an earlier section, as a tempo marking holds until the next one. The build slows into each section's last bar.`
+              }
+              className={`${sectionField} w-13`}
+            />
             <button
               type="button"
               className={`${MINI_ICON_KEY} ${KEY_REST}`}
@@ -274,22 +312,29 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
         {/* A short row gives up width in order: the groove name first (96px to 48px,
             by the row's container width), then the five ranges (48px to 32px).
             1366x768 with a groove loaded lands at a 48px name and ranges of 40px. */}
-        {SLIDERS.map(({ k, legend, label }) => (
-          <div key={k} className={FIELD_SHRINK} title={`${label} amount`}>
-            <label htmlFor={`vt-${k}`} className={FIELD_LEGEND}>{legend}</label>
-            <input
-              id={`vt-${k}`}
-              name={`vt-${k}`}
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(amounts[k] * 100)}
-              onChange={(e) => setAmount(k, (parseInt(e.target.value, 10) || 0) / 100)}
-              className={RANGE_FILL}
-            />
-            <span className={`${FIELD_VALUE} w-5.5`}>{Math.round(amounts[k] * 100)}</span>
-          </div>
-        ))}
+        {SLIDERS.map(({ k, legend, label, more }) => {
+          // Harmony says what each range does; its description is also the
+          // range's accessible description.
+          const tip = k === 'harmony' ? harmonyDescription(amounts[k]) : `${label} amount${more ? `: ${more}` : ''}`;
+          return (
+            <div key={k} className={FIELD_SHRINK} title={tip}>
+              <label htmlFor={`vt-${k}`} className={FIELD_LEGEND}>{legend}</label>
+              <input
+                id={`vt-${k}`}
+                name={`vt-${k}`}
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(amounts[k] * 100)}
+                onChange={(e) => setAmount(k, (parseInt(e.target.value, 10) || 0) / 100)}
+                aria-describedby={k === 'harmony' ? 'vt-harmony-desc' : undefined}
+                className={RANGE_FILL}
+              />
+              {k === 'harmony' && <span id="vt-harmony-desc" className="sr-only">{tip}</span>}
+              <span className={`${FIELD_VALUE} w-5.5`}>{Math.round(amounts[k] * 100)}</span>
+            </div>
+          );
+        })}
 
         <Sep />
 
@@ -396,11 +441,12 @@ export const VirtuosoControls: React.FC<{ songEntryId?: string; onStatus?: (text
             onClick={buildSong}
             aria-pressed={songMode}
             aria-label="Song: build a full arrangement"
-            description="Build a full, developing arrangement from the source in the chosen style/structure, with voice-leading, a melody, a crescendo, and rubato. While built, the sliders reshape the whole song; Reset returns to the phrase."
+            description="Build a full, developing arrangement from the source in the chosen style/structure, with voice-leading, a melody, a crescendo, and a ritardando into each section end written into the tempo map. While built, the sliders reshape the whole song; Reset returns to the phrase."
             on={songMode}
             icon={<ListMusic className={STRIP_GLYPH} />}
             legend="Song"
           />
+          <ExpressionKey iconOnly />
         </div>
         </div>
         )}

@@ -49,6 +49,10 @@ DOC_PATHS = [
     # its confidence and `?` marks, syncopation, swing, polymeter, cross-rhythms
     # — and the six things that silently break any beat-synchronous analysis.
     PROJECT_ROOT / "docs" / "guides" / "rhythm-analysis.md",
+    # The section finder (backend/modules/sections): the bar grid it reads,
+    # the DETAILS SECTIONS block, EDIT section markers, the MIDI Form entry,
+    # the API and its limits.
+    PROJECT_ROOT / "docs" / "guides" / "song-sections.md",
     # Onboarding: the header's "?" feature search, the pinned LOG and PANELS
     # labels, why they retire themselves, and the menu entry that brings them
     # back. Indexed because "where is the library?" is exactly what gets asked
@@ -74,6 +78,7 @@ DOC_PATHS = [
     # Feature guides added in the July 2026 documentation overhaul.
     PROJECT_ROOT / "docs" / "guides" / "edit-automation.md",
     PROJECT_ROOT / "docs" / "guides" / "mix-vst-and-gan.md",
+    PROJECT_ROOT / "docs" / "guides" / "sound-banks-and-midi-out.md",
     PROJECT_ROOT / "docs" / "guides" / "projects-and-daw-import.md",
     PROJECT_ROOT / "docs" / "guides" / "quest-deploy.md",
     PROJECT_ROOT / "docs" / "guides" / "backup-and-updates.md",

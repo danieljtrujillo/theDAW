@@ -29,14 +29,19 @@ import {
   Blocks, ChevronDown, ChevronUp, Eye, EyeOff, Loader2, Plug, Plus, RefreshCw,
   SlidersHorizontal, X,
 } from 'lucide-react';
+import { VstLiveRowBadge } from './VstLiveRowBadge';
+import { VstParamPanel } from './VstParamPanel';
 import { FxRack } from './FxRack';
 import { EffectControls } from './effects/EffectControls';
 import { schemaForRackEffect } from './effects/effectSchema';
 import { VstEmbedHost } from './VstEmbedHost';
 import { GanPluginStage } from './GanPluginStage';
 import { useEditorStore } from '../../state/editorStore';
-import { useVstEditorStore } from '../../state/vstEditorStore';
+import { sidechainsInto, wouldCycle, type RoutingRefusal } from '../../state/routingGraph';
+import { requireFeature } from '../../notices/featureGateStore';
+import { useVstEditorStore, vstEntryName } from '../../state/vstEditorStore';
 import { useGanStore } from '../../state/ganStore';
+import { useVstStore, vst3InstallHint } from '../../state/vstStore';
 import { EFFECT_LABELS, type ChainEntry } from '../../state/effectChainStore';
 import { getRackEffect, RACK_EFFECTS } from '../../lib/rackEffects';
 import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../../lib/aresBridge';
@@ -47,9 +52,8 @@ import type { Vst3PluginInfo } from '../../lib/vstClient';
 export type FxScope =
   | { kind: 'master' }
   | { kind: 'masterVst' }
-  | { kind: 'track'; trackId: string };
-
-const scopeKey = (s: FxScope): string => (s.kind === 'track' ? `track:${s.trackId}` : s.kind);
+  | { kind: 'track'; trackId: string }
+  | { kind: 'bus'; busId: string };
 
 /** The chain of a lane that has never had an insert. One shared array, so a
  *  store selector that resolves to it returns the same reference on every read.
@@ -69,6 +73,7 @@ export function chainInState(
 ): readonly ChainEntry[] {
   if (scope.kind === 'master') return st.masterFxChain;
   if (scope.kind === 'masterVst') return st.masterVstChain;
+  if (scope.kind === 'bus') return st.buses.find((b) => b.id === scope.busId)?.fxChain ?? NO_ENTRIES;
   return st.tracks.find((t) => t.id === scope.trackId)?.fxChain ?? NO_ENTRIES;
 }
 
@@ -81,7 +86,11 @@ export function chainForScope(scope: FxScope): readonly ChainEntry[] {
  *  with a backend effect ('delay': "Delay", the backend's "Stereo Delay") reads
  *  the same in the menu and in its row. */
 export function effectEntryLabel(entry: ChainEntry): string {
-  if (entry.vst) return entry.vst.plugin_name;
+  // A VST entry is named after the PLUGIN. vstEntryName covers a chain saved
+  // before the scanner learned real names (or written by an importer) whose
+  // stored plugin_name is empty, so a row never falls back to the blank string
+  // — nor to 'vst3', which names the hosting format, not the effect.
+  if (entry.vst) return vstEntryName(entry.vst.plugin_name, entry.vst.plugin_path);
   return getRackEffect(entry.effect)?.label || EFFECT_LABELS[entry.effect] || entry.label || entry.effect;
 }
 
@@ -184,6 +193,21 @@ export function takeAresOwnership(scope: FxScope, entryId: string): void {
   })();
 }
 
+/**
+ * Open a VST entry's own editor, with its captured state written back onto the
+ * chain the scope names: a track's inserts, a bus's inserts or the master VST
+ * chain. The one opener every FX list shares, EDIT's racks and the mixer's.
+ */
+export function openVstEditorForScope(scope: FxScope, entry: ChainEntry): void {
+  const sink = (entryId: string, raw: string): void => {
+    const st = useEditorStore.getState();
+    if (scope.kind === 'track') st.setTrackVstRawState(scope.trackId, entryId, raw);
+    else if (scope.kind === 'bus') st.setBusVstRawState(scope.busId, entryId, raw);
+    else st.setMasterVstRawState(entryId, raw);
+  };
+  useVstEditorStore.getState().open(entry, sink);
+}
+
 /** The single entry point the FX lists use: open (or focus) the entry's
  *  window and kick the kind-specific session (native VST GUI / gan surface). */
 export function openEffectWindow(
@@ -200,8 +224,14 @@ export function openEffectWindow(
 // ── Host props (WaveformEditor supplies its automation-aware param plumbing) ─
 
 export interface EffectWindowsHostProps {
-  writeParams: (scope: { kind: 'master' } | { kind: 'track'; trackId: string }, entryId: string, params: Record<string, number>) => void;
-  displayParams: (scope: { kind: 'master' } | { kind: 'track'; trackId: string }, entryId: string) => Record<string, number> | undefined;
+  writeParams: (scope: FxScope, entryId: string, params: Record<string, number>) => void;
+  /** The gesture boundary around a run of `writeParams` calls. Every panel a
+   *  window can show reports one — FxRack's bespoke panels and the
+   *  schema-driven EffectControls alike. Per ENTRY: one surface writes several
+   *  param keys. See FxRack's `onParamsGestureStart`. */
+  gestureStart: (scope: FxScope, entryId: string) => void;
+  gestureEnd: (scope: FxScope, entryId: string) => void;
+  displayParams: (scope: FxScope, entryId: string) => Record<string, number> | undefined;
   openVst: (scope: FxScope, entry: ChainEntry) => void;
   projectBpm: number;
 }
@@ -212,6 +242,7 @@ function removeEntry(scope: FxScope, entryId: string): void {
   const st = useEditorStore.getState();
   if (scope.kind === 'master') st.removeMasterEffect(entryId);
   else if (scope.kind === 'masterVst') st.removeMasterVst(entryId);
+  else if (scope.kind === 'bus') st.removeBusEffect(scope.busId, entryId);
   else st.removeTrackEffect(scope.trackId, entryId);
   useEffectWindowStore.getState().close(entryId);
 }
@@ -219,16 +250,103 @@ function removeEntry(scope: FxScope, entryId: string): void {
 function toggleEntry(scope: FxScope, entryId: string): void {
   const st = useEditorStore.getState();
   if (scope.kind === 'master') st.toggleMasterEffect(entryId);
-  else if (scope.kind === 'track') st.toggleTrackEffect(scope.trackId, entryId);
-  // masterVst entries have no enable toggle (the frozen render applies all).
+  else if (scope.kind === 'masterVst') st.toggleMasterVst(entryId);
+  else if (scope.kind === 'bus') st.toggleBusEffect(scope.busId, entryId);
+  else st.toggleTrackEffect(scope.trackId, entryId);
 }
 
 function reorderEntry(scope: FxScope, from: number, to: number): void {
   const st = useEditorStore.getState();
   if (scope.kind === 'master') st.reorderMasterEffect(from, to);
   else if (scope.kind === 'masterVst') st.reorderMasterVst(from, to);
+  else if (scope.kind === 'bus') st.reorderBusEffect(scope.busId, from, to);
   else st.reorderTrackEffect(scope.trackId, from, to);
 }
+
+// ── "Key from": the sidechain picker ─────────────────────────────────────────
+
+/** Why the graph said no, in the picker's own words. Only `'cycle'` is
+ *  reachable from a list that offers other strips and nothing else; the rest are
+ *  named rather than swallowed, because a silent no-op on a `<select>` that
+ *  visibly moved is the worst outcome. */
+function keyRefusalMessage(reason: RoutingRefusal): string {
+  if (reason === 'cycle') {
+    return 'That strip already receives this one, so keying from it would feed the mix back '
+      + 'into itself — which in Web Audio is silence, not feedback.';
+  }
+  return `The routing graph refused the key (${reason}).`;
+}
+
+/**
+ * The "Key from" `<select>`: choose which strip's output drives this effect's
+ * key input, or none.
+ *
+ * Its own component so it can hold hooks — the card renders it only for an
+ * effect that declares `keyInput`, and hooks cannot be called conditionally.
+ *
+ * An option that would close a loop is DISABLED rather than offered and then
+ * rejected (`MixerStrips`' output picker does the same), because the model's
+ * `wouldCycle` is the same predicate the store will apply. A refusal that gets
+ * through anyway — the store is the authority, and the graph can move between
+ * render and click — is surfaced as a notice.
+ */
+const KeyFromPicker: React.FC<{ nodeKind: 'track' | 'bus'; nodeId: string; entryId: string; label: string }> = ({
+  nodeKind, nodeId, entryId, label,
+}) => {
+  const routing = useEditorStore((s) => s.routing);
+  const tracks = useEditorStore((s) => s.tracks);
+  const buses = useEditorStore((s) => s.buses);
+  const setEffectSidechain = useEditorStore((s) => s.setEffectSidechain);
+  const selectId = `fxwin-key-${entryId}`;
+
+  // The entry's current key, straight off the graph — no mirrored state, so an
+  // undo or a mixer edit moves this select with it.
+  const current = sidechainsInto(routing, nodeId).find((e) => e.targetEntryId === entryId)?.from ?? '';
+
+  // Every OTHER track, then every bus. The master is not offered: it is
+  // downstream of everything, so keying from it is a loop by definition.
+  const sources = [
+    ...tracks.filter((t) => t.id !== nodeId).map((t) => ({ id: t.id, name: t.name })),
+    ...buses.filter((b) => b.id !== nodeId).map((b) => ({ id: b.id, name: b.name })),
+  ];
+
+  return (
+    <div className="flex items-center gap-2 rounded border border-purple-500/20 bg-purple-500/5 px-2 py-1.5">
+      <label htmlFor={selectId} className="font-display text-xs font-bold uppercase tracking-wider text-purple-300/80 shrink-0">
+        Key from
+      </label>
+      <select
+        id={selectId}
+        name={selectId}
+        value={current}
+        title={`Sidechain key input for ${label}`}
+        onChange={(e) => {
+          const next = e.target.value;
+          const refusal = setEffectSidechain({ kind: nodeKind, id: nodeId }, entryId, next || null);
+          if (!refusal) return;
+          requireFeature({
+            id: 'routing:refused',
+            kind: 'error',
+            title: 'That key was refused',
+            message: keyRefusalMessage(refusal),
+            autoDismissMs: 6000,
+          });
+        }}
+        className="flex-1 min-w-0 rounded-md bg-white/5 border border-white/10 px-1 py-0.5 text-xs text-zinc-300 hover:text-white focus:outline-hidden focus:ring-1 focus:ring-[rgb(var(--et-accent))]"
+      >
+        <option value="">None</option>
+        {sources.map((s) => {
+          const loops = wouldCycle(routing, s.id, nodeId);
+          return (
+            <option key={s.id} value={s.id} disabled={loops && s.id !== current}>
+              {loops ? `${s.name} (would feed back)` : s.name}
+            </option>
+          );
+        })}
+      </select>
+    </div>
+  );
+};
 
 // ── The floating window card ─────────────────────────────────────────────────
 
@@ -245,11 +363,7 @@ const EffectWindowCard: React.FC<{
 }> = ({ win, index, host }) => {
   // Subscribe to the owning chain so the window re-renders with param edits
   // and auto-closes when the entry (or its track) is removed elsewhere.
-  const entry = useEditorStore((s) => {
-    if (win.scope.kind === 'master') return s.masterFxChain.find((e) => e.id === win.entryId);
-    if (win.scope.kind === 'masterVst') return s.masterVstChain.find((e) => e.id === win.entryId);
-    return s.tracks.find((t) => t.id === (win.scope as { trackId: string }).trackId)?.fxChain?.find((e) => e.id === win.entryId);
-  });
+  const entry = useEditorStore((s) => chainInState(s, win.scope).find((e) => e.id === win.entryId));
   const close = useEffectWindowStore((s) => s.close);
   const bringToFront = useEffectWindowStore((s) => s.bringToFront);
   const move = useEffectWindowStore((s) => s.move);
@@ -342,10 +456,7 @@ const EffectWindowCard: React.FC<{
     window.addEventListener('pointercancel', onUp);
   };
 
-  const paramScope =
-    win.scope.kind === 'track'
-      ? ({ kind: 'track', trackId: win.scope.trackId } as const)
-      : ({ kind: 'master' } as const);
+  const paramScope = win.scope;
 
   return createPortal(
     <div
@@ -365,7 +476,7 @@ const EffectWindowCard: React.FC<{
           : kind === 'gan' ? <Blocks className={`w-3.5 h-3.5 ${tint.text}`} />
             : <SlidersHorizontal className={`w-3.5 h-3.5 ${tint.text}`} />}
         <span className={`font-display text-xs font-bold uppercase tracking-wider truncate ${tint.text}`}>{label}</span>
-        {win.scope.kind !== 'masterVst' && kind !== 'vst' && (
+        {kind !== 'vst' && (
           <button
             onClick={() => toggleEntry(win.scope, entry.id)}
             aria-pressed={entry.enabled}
@@ -398,17 +509,29 @@ const EffectWindowCard: React.FC<{
             />
           </div>
         ) : (
-          <div className="p-4 flex flex-col items-center gap-2 text-center">
-            <Plug className="w-5 h-5 text-teal-300/60" />
-            <span className="font-sans text-xs font-bold text-zinc-400">
-              {entry.vst?.raw_state ? 'Custom settings saved.' : 'Native editor closed.'}
-            </span>
-            <button
-              onClick={() => host.openVst(win.scope, entry)}
-              className="px-3 py-1.5 rounded border border-teal-500/40 bg-teal-500/15 text-teal-200 hover:bg-teal-500/25 font-display text-xs font-bold uppercase tracking-wider"
-            >
-              Open plugin GUI
-            </button>
+          /* The plugin's own window is closed (or cannot open here): its parameters are still one
+             panel away — every one the plugin declares, with the plugin's own words for each value. */
+          <div className="p-2 flex flex-col gap-2 min-h-0 overflow-hidden">
+            <div className="flex items-center gap-2 rounded border border-teal-500/20 bg-teal-500/5 px-2 py-1.5">
+              <Plug className="w-4 h-4 text-teal-300/70 shrink-0" />
+              <span className="font-sans text-xs font-bold text-zinc-400 flex-1 min-w-0 truncate">
+                {entry.vst?.raw_state ? 'Custom settings saved.' : 'Native editor closed.'}
+              </span>
+              <button
+                onClick={() => host.openVst(win.scope, entry)}
+                className="shrink-0 px-2 py-1 rounded border border-teal-500/40 bg-teal-500/15 text-teal-200 hover:bg-teal-500/25 font-display text-xs font-bold uppercase tracking-wider"
+              >
+                Open plugin GUI
+              </button>
+            </div>
+            <VstParamPanel
+              entry={entry}
+              idPrefix={`fxwin-${entry.id}`}
+              display={host.displayParams(paramScope, entry.id)}
+              onWrite={(p) => host.writeParams(paramScope, entry.id, p)}
+              onGestureStart={() => host.gestureStart(paramScope, entry.id)}
+              onGestureEnd={() => host.gestureEnd(paramScope, entry.id)}
+            />
           </div>
         )
       ) : kind === 'gan' ? (
@@ -444,13 +567,24 @@ const EffectWindowCard: React.FC<{
                   layout="expanded"
                   hideHeader
                   onChange={(p) => host.writeParams(paramScope, entry.id, p)}
+                  onGestureStart={() => host.gestureStart(paramScope, entry.id)}
+                  onGestureEnd={() => host.gestureEnd(paramScope, entry.id)}
                 />
               ) : null;
             })()}
           </div>
         )
       ) : (
-        <div className="p-2 overflow-y-auto min-h-0">
+        <div className="p-2 overflow-y-auto min-h-0 flex flex-col gap-2">
+          {/* The key picker, for an effect that takes one: `wireRoutingGraph`
+              keys track and bus racks alike. The master rack is downstream of
+              the sum and is deliberately not keyable. */}
+          {win.scope.kind === 'track' && getRackEffect(entry.effect)?.keyInput && (
+            <KeyFromPicker nodeKind="track" nodeId={win.scope.trackId} entryId={entry.id} label={label} />
+          )}
+          {win.scope.kind === 'bus' && getRackEffect(entry.effect)?.keyInput && (
+            <KeyFromPicker nodeKind="bus" nodeId={win.scope.busId} entryId={entry.id} label={label} />
+          )}
           <FxRack
             chain={[entry]}
             idPrefix={`fxwin-${entry.id}`}
@@ -461,6 +595,8 @@ const EffectWindowCard: React.FC<{
             onReorder={() => undefined}
             onToggle={(id) => toggleEntry(win.scope, id)}
             onUpdateParams={(id, p) => host.writeParams(paramScope, id, p)}
+            onParamsGestureStart={(id) => host.gestureStart(paramScope, id)}
+            onParamsGestureEnd={(id) => host.gestureEnd(paramScope, id)}
             projectBpm={host.projectBpm}
             displayParams={(id) => host.displayParams(paramScope, id)}
           />
@@ -493,6 +629,7 @@ export const EffectWindowsHost: React.FC<EffectWindowsHostProps> = (props) => {
       updateParams: (id, params) => {
         const st = useEditorStore.getState();
         if (scope.kind === 'track') st.updateTrackEffectParams(scope.trackId, id, params);
+        else if (scope.kind === 'bus') st.updateBusEffectParams(scope.busId, id, params);
         else st.updateMasterEffectParams(id, params);
       },
     });
@@ -537,6 +674,11 @@ export interface FxChainListProps {
   scrollRows?: boolean;
 }
 
+// The "no chain yet" case takes the one shared NO_ENTRIES reference through
+// `chainInState` above — a fresh `[]` per read makes useSyncExternalStore see a
+// new snapshot every render ("getSnapshot should be cached" → infinite
+// re-render loop), so both lists subscribe through that single helper.
+
 export const FxChainList: React.FC<FxChainListProps> = ({
   scope,
   onOpenEntry,
@@ -552,6 +694,7 @@ export const FxChainList: React.FC<FxChainListProps> = ({
   // reference for a lane with no chain yet; see its comment.
   const chain = useEditorStore((s) => chainInState(s, scope));
   const openWindows = useEffectWindowStore((s) => s.windows);
+  const vstInstallFolder = useVstStore((s) => s.installFolder);
   const [showVstBrowser, setShowVstBrowser] = useState(false);
   const addEffectId = `fx-add-effect-${useId()}`;
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -594,19 +737,17 @@ export const FxChainList: React.FC<FxChainListProps> = ({
                   isOpen ? 'border-purple-500/40 bg-purple-500/10' : 'border-white/5 bg-black/40 hover:bg-white/5'
                 }`}
               >
-                {scope.kind !== 'masterVst' && (
-                  <button
-                    onClick={() => toggleEntry(scope, entry.id)}
-                    aria-pressed={entry.enabled}
-                    aria-label={entry.enabled ? `Bypass ${effectEntryLabel(entry)}` : `Enable ${effectEntryLabel(entry)}`}
-                    title={entry.enabled ? 'Bypass' : 'Enable'}
-                    className={`w-2.5 h-2.5 rounded-full shrink-0 border ${
-                      entry.enabled
-                        ? 'bg-purple-400 border-purple-300 shadow-[0_0_6px_rgba(192,132,252,0.7)]'
-                        : 'bg-transparent border-zinc-600'
-                    }`}
-                  />
-                )}
+                <button
+                  onClick={() => toggleEntry(scope, entry.id)}
+                  aria-pressed={entry.enabled}
+                  aria-label={entry.enabled ? `Bypass ${effectEntryLabel(entry)}` : `Enable ${effectEntryLabel(entry)}`}
+                  title={entry.enabled ? 'Bypass' : 'Enable'}
+                  className={`w-2.5 h-2.5 rounded-full shrink-0 border ${
+                    entry.enabled
+                      ? 'bg-purple-400 border-purple-300 shadow-[0_0_6px_rgba(192,132,252,0.7)]'
+                      : 'bg-transparent border-zinc-600'
+                  }`}
+                />
                 {/* Row body — clicking opens the entry's control window. */}
                 <button
                   onClick={() => onOpenEntry(scope, entry, windowOrigin())}
@@ -620,6 +761,10 @@ export const FxChainList: React.FC<FxChainListProps> = ({
                     {kind === 'vst' ? 'VST' : kind === 'gan' ? 'GAN' : 'FX'}
                   </span>
                 </button>
+                {/* A hosted plugin says what it is doing right now: LIVE + latency, starting, a dead
+                    host with a retry, or render-only. Outside the row-body button: the retry is a
+                    control of its own and a button cannot hold another. */}
+                <VstLiveRowBadge entry={entry} label={effectEntryLabel(entry)} />
                 <button
                   onClick={() => reorderEntry(scope, i, i - 1)}
                   disabled={i === 0}
@@ -704,23 +849,31 @@ export const FxChainList: React.FC<FxChainListProps> = ({
               </div>
               {vstPlugins.length === 0 ? (
                 <p className="font-sans text-xs font-bold text-zinc-500 leading-relaxed">
-                  {vstScanning ? 'Scanning…' : 'No VST3 plugins found. Set your plugin folders in Settings, then rescan.'}
+                  {vstScanning ? 'Scanning…' : `No VST3 plugins found. ${vst3InstallHint(vstInstallFolder)}`}
                 </p>
               ) : (
                 <div className="max-h-32 overflow-y-auto flex flex-col gap-0.5">
                   {vstPlugins.map((pl) => {
                     const inChain = chain.some((e) => e.vst?.plugin_path === pl.path);
+                    // The plugin's OWN name once the backend probe has read it;
+                    // the file stem is only the fallback. The vendor rides
+                    // alongside as a muted secondary label, so two plugins that
+                    // share a short name stay tellable apart.
+                    const name = pl.display_name || pl.name;
                     return (
                       <button
                         key={pl.path}
                         onClick={() => onAddVst(pl)}
-                        title={inChain ? `Open ${pl.name} controls` : `Insert ${pl.name}`}
+                        title={inChain ? `Open ${name} controls` : `Insert ${name}`}
                         className={`flex items-center gap-1.5 text-left px-1.5 py-1 rounded font-sans text-xs font-bold truncate transition-colors border ${
                           inChain ? 'bg-teal-500/15 text-teal-300 border-teal-500/30' : 'text-zinc-400 hover:bg-white/5 hover:text-white border-transparent'
                         }`}
                       >
                         <Plug className="w-3 h-3 text-teal-300 shrink-0" />
-                        <span className="flex-1 min-w-0 truncate">{pl.name}</span>
+                        <span className="flex-1 min-w-0 truncate">{name}</span>
+                        {pl.manufacturer && (
+                          <span className="shrink-0 max-w-20 truncate font-sans text-xs font-bold text-zinc-600">{pl.manufacturer}</span>
+                        )}
                         {!inChain && <Plus className="w-3 h-3 text-zinc-500 shrink-0" />}
                       </button>
                     );

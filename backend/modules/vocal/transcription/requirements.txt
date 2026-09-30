@@ -1,4 +1,12 @@
 # Installed into the isolated .whisper_venv on first transcription request.
-# faster-whisper pulls ctranslate2 + tokenizers + huggingface_hub + onnxruntime + av.
+# faster-whisper pulls ctranslate2 + tokenizers + huggingface_hub + av.
 # CPU int8 is the default compute path, so no CUDA/cuDNN wheels are required here.
 faster-whisper>=1.0.0
+# onnxruntime runs the Silero VAD model. faster-whisper 1.0.x pulled it in
+# transitively, so it used to arrive for free; 1.2.x demoted it to an optional
+# extra, and the venv silently lost it — every transcribe then died with
+# "Applying the VAD filter requires the onnxruntime package" because
+# decode_options() always sets vad_filter=True. Declared explicitly so the
+# VAD path can never depend on another package's transitive graph again.
+# CPU build on purpose: VAD is a tiny model, and this venv has no CUDA stack.
+onnxruntime>=1.17

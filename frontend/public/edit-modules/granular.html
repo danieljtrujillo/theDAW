@@ -283,7 +283,7 @@ function connectGranularChain() {
 function ensureAudio() { if (actx) return; actx = new AudioContext(); analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.82; buildGranularChain(); }
 /* theDAW host transport: playback start/stop is reported to the parent stage. */
 let liveBuf = null;
-function postTransportState(playing) { window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, '*'); }
+function postTransportState(playing) { window.parent.postMessage({ type: 'thedaw-transport-state', playing: playing }, window.location.origin); }
 function stopSource() { if (!source) return; try { source.stop(); } catch(e) {} source = null; postTransportState(false); }
 /* startSource() builds a fresh looping source from the last prepared buffer. A stopped
    loop restarts from zero on the next play, which is acceptable for a loop preview. */
@@ -492,6 +492,7 @@ function previewStillAudible() {
 
 // ── Receive audio + transport from parent page ──
 window.addEventListener('message', async (e) => {
+  if (e.source !== window.parent) return;
   if (e.data && e.data.type === 'thedaw-audio' && e.data.buffer) {
     try {
       const blob = new Blob([e.data.buffer], { type: 'audio/wav' });

@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Volume, Volume2, Download, Share2, Heart, Repeat, Repeat1, Shuffle, VolumeX, Cast, Check, Activity, Headphones, Speaker } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Volume, Volume2, Download, Share2, Heart, Repeat, Repeat1, Shuffle, VolumeX, Cast, Check, Activity, Circle, Headphones, Speaker, Triangle } from 'lucide-react';
 import { useGenerateStore } from '../../state/generateStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { usePlayerStore, getLoadedAudioUrl } from '../../state/playerStore';
@@ -31,6 +32,7 @@ import { useEditThemeStore } from '../../state/editThemeStore';
 import { resolveEditThemeVars } from '../../lib/editThemes';
 import { LogActionButton } from '../layout/ProcessingLog';
 import {
+  keyLabel,
   transportKey,
   transportKeyDead,
   transportKeyOff,
@@ -47,6 +49,25 @@ import { entryAudioFileName, entryFileName } from '../../convert/convertClient';
 import { saveFile } from '../../lib/saveFile';
 import { TrackMenu } from './TrackMenu';
 import { audioExtForMime, EDITOR_TIMELINE_ID } from './trackMenuModel';
+import {
+  COUNT_IN_CHOICES,
+  initMetronome,
+  metronomeCountIn,
+  useMetronomeStore,
+  type CountInBars,
+} from '../../state/metronomeStore';
+import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type ClickMode } from '../../lib/metronome';
+import {
+  PUNCH_CHOICES,
+  initRecording,
+  useRecordingPrefs,
+  useRecordingStore,
+  type PunchMode,
+  type RecordingStatus,
+} from '../../state/recordingStore';
+import { ContextMenu, menuAnchorFromEvent, usePopoverShell, type ContextMenuPosition } from '../ui/ContextMenu';
+import { postStatus } from '../../state/statusNoticeStore';
+import { keyBelongsToFocusedControl } from '../../lib/keyTargets';
 
 /**
  * What each repeat state is called, in the tooltip and for a screen reader.
@@ -57,6 +78,218 @@ const REPEAT_LABEL: Record<'off' | 'all' | 'one', string> = {
   off: 'Loop off - play the list through and stop',
   all: 'Loop all - the list starts again at the end',
   one: 'Loop one - this track loops',
+};
+
+/** Why the RECORD key is dead. Shown on the key and on its plate — see there. */
+const RECORD_NEEDS_ARM = 'Record: arm a track first - the red dot in its header';
+
+/** The punch window, on the key's NAME and title and in its select — and, from
+ *  T26, the way to CHANGE it at any width. `off` names no window because a key
+ *  that says nothing about punch is a key that is not punching, but every mode
+ *  including `off` carries the right-click hint: the menu is the only way in
+ *  below 2xl, and an affordance nothing mentions is one nobody finds. It rides
+ *  the `aria-label` as well as the title for the reason the dead key's does
+ *  (see RecordKey): a title is mouse-only, and a disabled key takes no hover. */
+const PUNCH_TITLE: Record<PunchMode, string> = {
+  off: ' - right-click for punch',
+  in: ' (punch in) - right-click for punch',
+  out: ' (punch out) - right-click for punch',
+  'in-out': ' (punch in-out) - right-click for punch',
+};
+
+/** The select's own option texts. Short because the footer row is 48px and this
+ *  select sits beside the count-in one; the sr-only label says which is which. */
+const PUNCH_OPTION: Record<PunchMode, string> = {
+  off: 'Off',
+  in: 'In',
+  out: 'Out',
+  'in-out': 'In/Out',
+};
+
+/** The right-click menu's own row texts. Each one starts with the word PUNCH
+ *  the menu is titled with, so a speech command that reads a row off the screen
+ *  finds it, and each says the whole mode rather than the select's abbreviation
+ *  — the menu has the width the footer row has not. */
+const PUNCH_MENU_LABEL: Record<PunchMode, string> = {
+  off: 'Punch off',
+  in: 'Punch in',
+  out: 'Punch out',
+  'in-out': 'Punch in-out',
+};
+
+/** What each mode actually does to a take, on the row's own tooltip. The window
+ *  is the editor's LOOP region in every one of them. */
+const PUNCH_MENU_TITLE: Record<PunchMode, string> = {
+  off: 'Record the whole pass - no window',
+  in: 'Start the take at the loop region and run on past its end',
+  out: 'Keep the take from where it started and cut it at the loop region end',
+  'in-out': 'Keep only what falls inside the loop region',
+};
+
+/**
+ * The RECORD key, on a matte plate of its own — PLAY's grammar, the way the
+ * workspace action key has one.
+ *
+ * It is rendered at TWO homes and is never in the tree at both: `hidden` is
+ * display:none, so exactly one is in the accessibility tree at any width. Why
+ * two, measured at the widths the footer actually has to survive (Chrome, the
+ * EDIT tab, the numbers are getBoundingClientRect):
+ *
+ *   - 960px, the desktop app's minimum. The grid is 318.4 · 275.1 · 318.4 and
+ *     the right track's utilities are 312px of that 318.4 — 6.4px spare. A
+ *     48px key plus the track's 16px gap overflowed it by 57.6px and, with
+ *     `justify-end` pinning the right edge, landed the key at 568–616px: ON the
+ *     transport plate (342.4–617.6), covering RAND. Icon-only at 32px only
+ *     brings that back to 33.6px of overlap — there is no width of key that
+ *     fits. So below xl the key goes in the LEFT track instead, beside the
+ *     click controls, where the now-playing block is `flex-1 min-w-0` and gives
+ *     the room. Measured there: the key sits at 302.4–334.4, 8px clear of the
+ *     plate, with 0px of row and footer overflow, and the cost is the
+ *     now-playing title, 68.4px -> 32.4px. That is the trade, and it is the
+ *     cheap side of it: the title truncates, where the right-track key was
+ *     unreachable under RAND.
+ *   - 1024px, the same home: key at 334.4–366.4, title 64.4px, no overflow.
+ *   - 1280px (xl) and up, the right track has room once the utilities are
+ *     placed (measured: key at 793.6–841.6, 16px — the track's own gap — off
+ *     the plate, "Up Next" still 70.4px), so the key sits at the plate's right
+ *     edge with its legend. The left track cannot host it there: the orb bubble
+ *     takes 192px of it from xl and the now-playing title is already down to
+ *     8.4px without any key. That is why the two homes are the two sides of xl
+ *     and not one side with a narrower key.
+ *
+ * PLAY is unmoved by either: both tracks are `minmax(0,1fr)`, so the middle
+ * `auto` column — and the plate centred in it — never shifts. Measured
+ * plate-centre offset from the viewport centre: 0px at 960, 1024, 1280 and
+ * 1536, and 0px of footer overflow at all four.
+ *
+ * A custom control (CLAUDE.md rule 3): the name and the state ride on the
+ * BUTTON (aria-label + aria-pressed), never a wrapping <label>. The reason a
+ * DEAD key is dead rides in the NAME rather than only in a title, because a
+ * disabled key takes no hover of its own (`transportKey` ends in
+ * `disabled:pointer-events-none`) and a title on the plate is mouse-only.
+ *
+ * THE PUNCH MENU (T26). The mode is a persisted preference, and its `<select>`
+ * is `hidden 2xl:flex` — below 1536px a mode set on a wide screen could be read
+ * off the key's title but not changed. So the key's PLATE takes a right-click
+ * and opens a four-item radio menu. The listener is on the plate <div> and not
+ * on the button for the reason the dead key's title is: `transportKey` ends in
+ * `disabled:pointer-events-none`, so a dead button receives no contextmenu at
+ * all — and the dead key is exactly when a user is most likely to be setting up
+ * a punch before arming.
+ *
+ * NO `aria-haspopup` on the button. The button's action is RECORD; a menu that
+ * opens from the plate's secondary gesture is not what the primary action does,
+ * and announcing "has popup menu" on a key that records would be a lie about
+ * what pressing it will do. The affordance travels in the NAME instead — every
+ * `PUNCH_TITLE` ends in "right-click for punch", on the aria-label as well as
+ * the title, so a screen-reader user hears it and a mouse user sees it.
+ *
+ * The keyboard opener (Shift+F10 and the Menu key, the platform's own gesture
+ * for "context menu on the focused thing") sits on the plate too and catches
+ * the keydown bubbling off the focused button. From there the menu drives
+ * itself: ContextMenu focuses its first row on open, Arrow Up/Down and Home/End
+ * move between the four, Enter or Space picks one, Escape closes — and on close
+ * focus comes back to this RECORD button, so the gesture starts and ends on the
+ * same key. It works on a LIVE key only: a disabled button is not focusable, so
+ * no key event originates there. The 2xl select and a right-click are the two
+ * ways in for that case; below 2xl a dead key's punch is mouse-only. Making the
+ * plate itself focusable would put a new stop in the footer's tab order, which
+ * is not this ticket's to spend.
+ */
+const RecordKey: React.FC<{
+  status: RecordingStatus;
+  armedCount: number;
+  /** The punch window this press would write into — named in the title so the
+   *  key never records less than the user expected without saying so. */
+  punch: PunchMode;
+  /** Pick a mode from the plate's right-click menu. */
+  onSetPunch: (mode: PunchMode) => void;
+  onPress: () => void;
+  /** No legend, 32px — the below-xl form. */
+  compact?: boolean;
+  className?: string;
+  tourId?: string;
+}> = ({ status, armedCount, punch, onSetPunch, onPress, compact = false, className = '', tourId }) => {
+  const dead = status === 'idle' && armedCount === 0;
+  const live = status === 'counting' || status === 'recording';
+  // The menu is per-key state: the two homes are never both displayed, so
+  // neither can hold a menu the other opened.
+  const [punchMenu, setPunchMenu] = useState<ContextMenuPosition | null>(null);
+  const plateRef = useRef<HTMLDivElement | null>(null);
+  const punchSuffix = PUNCH_TITLE[punch];
+  const title = (dead
+    ? RECORD_NEEDS_ARM
+    : status === 'counting'
+      ? 'Counting in - press to cancel'
+      : status === 'idle'
+        ? `Record a take on ${armedCount} armed track${armedCount === 1 ? '' : 's'} (R)`
+        : 'Stop recording (R)') + punchSuffix;
+  return (
+    <div
+      ref={plateRef}
+      data-tour={tourId}
+      title={dead ? RECORD_NEEDS_ARM + punchSuffix : undefined}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setPunchMenu(menuAnchorFromEvent(e));
+      }}
+      onKeyDown={(e) => {
+        // The platform's own "context menu here" gestures, caught as they
+        // bubble off the focused button. ContextMenu clamps the anchor into
+        // the viewport, so the plate's top-left is a safe one from a footer.
+        if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return;
+        e.preventDefault();
+        const rect = plateRef.current?.getBoundingClientRect();
+        setPunchMenu({ x: rect?.left ?? 0, y: rect?.top ?? 0 });
+      }}
+      className={`shrink-0 ${compact ? 'w-8' : 'w-12'} ${transportPlate} ${className}`}
+    >
+      <button
+        type="button"
+        onClick={onPress}
+        disabled={dead}
+        aria-label={
+          (dead ? RECORD_NEEDS_ARM : status === 'idle' ? 'Record' : 'Stop recording') + punchSuffix
+        }
+        aria-pressed={status !== 'idle'}
+        title={title}
+        className={`${transportKey} w-full ${
+          status === 'idle' ? (dead ? transportKeyDead : transportKeyOff) : transportKeyOn
+        }`}
+      >
+        {/* The dot is red in every state and every theme — a record light is not
+            the accent's to take. It pulses while the key is counting in or
+            rolling, and the dead key's *:opacity-40 dims it with the legend. */}
+        <Circle
+          className={`w-3.5 h-3.5 fill-current text-red-500 ${live ? 'animate-pulse' : ''}`}
+          strokeWidth={1.5}
+          absoluteStrokeWidth
+        />
+        {/* Dropped in the compact form: the key is the dot, and its name still
+            says Record. */}
+        {!compact && <span aria-hidden="true" className={keyLabel}>REC</span>}
+      </button>
+      {/* Four settings of ONE thing, so every row is a `menuitemradio` carrying
+          `aria-checked` and the live one is tinted and ticked. The tick is a
+          fixed-width spacer on the other three so the labels stay on one
+          column. The menu portals to <body>, so it costs the footer no layout:
+          the plate's measured numbers at 960/1024/1280/1536 are untouched. */}
+      <ContextMenu
+        position={punchMenu}
+        onClose={() => setPunchMenu(null)}
+        title="Punch"
+        minWidth="11rem"
+        items={PUNCH_CHOICES.map((m) => ({
+          type: 'item' as const,
+          label: PUNCH_MENU_LABEL[m],
+          title: PUNCH_MENU_TITLE[m],
+          checked: m === punch,
+          icon: <Check aria-hidden="true" className={`w-3 h-3 ${m === punch ? '' : 'opacity-0'}`} />,
+          onSelect: () => onSetPunch(m),
+        }))}
+      />
+    </div>
+  );
 };
 
 const formatDuration = (sec: number | null | undefined): string => {
@@ -448,6 +681,208 @@ const INFO_BLOCK = 'basis-48 2xl:basis-64 shrink min-w-0 overflow-hidden flex-co
  *  box so PLAYING, PAUSED and IDLE all take the same room. */
 const STATE_WORD = 'w-20 shrink-0 text-center font-display font-bold text-xs leading-4 uppercase rounded-xs border px-1';
 
+/**
+ * The click's level. `metronomeStore.setVolume` had no caller before this —
+ * the click was stuck at its persisted default with no way to turn it down
+ * against the mix. A custom SlideTrack, same as the master Volume control
+ * elsewhere in this footer, so it carries its own aria-label and is never
+ * wrapped in a <label>.
+ *
+ * Exported and props-only (no store read inside it) so it can be rendered in
+ * isolation in a test, the same way `MixerStrips.tsx` exports `BusNameField`
+ * to avoid standing up the whole drawer just to prove a control's wiring.
+ * `volume` is the store's 0..1 scale; the 0..100 SlideTrack scale is the
+ * footer's own convention (see the master Volume control below).
+ */
+export function MetronomeVolumeControl({ volume, onChange }: { volume: number; onChange: (v: number) => void }) {
+  return (
+    <SlideTrack
+      min={0}
+      max={100}
+      step={1}
+      value={Math.round(volume * 100)}
+      onChange={(v) => onChange(v / 100)}
+      className="w-10"
+      ariaLabel="Metronome volume"
+    />
+  );
+}
+
+/**
+ * The metronome level's below-2xl home. `MetronomeVolumeControl` itself is
+ * gated `hidden 2xl:flex` beside the metronome toggle (see that wrapper's
+ * comment), so below 2xl the only way to `setVolume` is a second gesture on
+ * the toggle button itself — right-click, Shift+F10, or the Menu key, same
+ * three openers RecordKey's plate documents for PUNCH. The toggle carries no
+ * `disabled:pointer-events-none` (it is never disabled), so unlike RecordKey
+ * the listener sits directly on the button rather than needing a wrapping
+ * plate.
+ *
+ * Not built on `ContextMenu`: that primitive is a list of discrete items,
+ * and this hosts one continuous control (`MetronomeVolumeControl`'s
+ * `SlideTrack`), not a set of rows to choose between. This panel is a
+ * smaller sibling that shares ContextMenu's contract — portal to <body>,
+ * clamp into the viewport, dismiss on outside click / Escape / wheel-scroll,
+ * and hand focus to its one control on open and back to the opener on close
+ * — rather than reusing its item-rendering internals.
+ */
+export const MetronomeLevelPopover: React.FC<{
+  position: ContextMenuPosition | null;
+  onClose: () => void;
+  volume: number;
+  onChange: (v: number) => void;
+  /** What each bar's clicks fall on (metronomeStore.clickMode): the piano roll's Beat select, the same setting. */
+  clickMode?: ClickMode;
+  onChangeClickMode?: (mode: ClickMode) => void;
+}> = ({ position, onClose, volume, onChange, clickMode, onChangeClickMode }) => {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Focus the slider on open, and hand focus back to whatever opened the
+  // panel on close — same contract as ContextMenu's first-row focus. Stable
+  // identity: it closes only over the ref, never over props.
+  const focusSlider = useCallback(
+    () => panelRef.current?.querySelector<HTMLElement>('[role="slider"]') ?? null,
+    [],
+  );
+  // Clamp into the viewport, outside-click/Escape/wheel dismiss (guarded
+  // against the popover's own hosted slider — finding 1, T25b edit B
+  // re-audit), and the open/close focus round trip — shared with ContextMenu
+  // via `usePopoverShell`.
+  const adjusted = usePopoverShell({ position, onClose, panelRef, focusOnOpen: focusSlider });
+
+  // The panel portals to <body>, outside the Shell's `.edit-theme-scope`,
+  // same reason ContextMenu carries this wrapper (finding 4, T25b edit B
+  // re-audit) — without it, `et-ink-2` on the "Level" label below has no
+  // `--et-*` value in scope and silently falls back to body ink.
+  const editThemeId = useEditThemeStore((s) => s.themeId);
+  const editThemeImage = useEditThemeStore((s) => s.customImage);
+  const editTheme = React.useMemo(() => {
+    const { vars, light } = resolveEditThemeVars(editThemeId, editThemeImage);
+    const scopeVars = Object.fromEntries(Object.entries(vars).filter(([name]) => name !== '--et-root-bg'));
+    return { vars: scopeVars, light };
+  }, [editThemeId, editThemeImage]);
+
+  if (!position) return null;
+  const pos = adjusted ?? { x: -9999, y: -9999 };
+
+  return createPortal(
+    <div
+      className="edit-theme-scope contents"
+      data-et-light={editTheme.light ? '1' : undefined}
+      style={editTheme.vars as React.CSSProperties}
+    >
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Metronome level and beat"
+      className="fixed z-10000 bg-[#0a080f] border border-purple-500/40 rounded shadow-[0_8px_24px_rgba(0,0,0,0.6)] px-3 py-2 flex flex-wrap items-center gap-2 font-sans text-xs font-bold select-none"
+      style={{ left: pos.x, top: pos.y }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <span className="et-ink-2 uppercase tracking-wider">Level</span>
+      <MetronomeVolumeControl volume={volume} onChange={onChange} />
+      {/* The EDIT click's Beat: the piano roll's Beat select, the same one
+          setting (metronomeStore.clickMode), so 7/8 3+2+2 clicks its three
+          group starts and 6/8 its dotted beats on the timeline as well. A
+          native select with its own id, name and <label htmlFor>. */}
+      {clickMode !== undefined && onChangeClickMode && (
+        <span className="flex items-center gap-1.5" title={CLICK_MODE_TITLE[clickMode]}>
+          <label htmlFor="metronome-click-mode" className="et-ink-2 uppercase tracking-wider">Beat</label>
+          <select
+            id="metronome-click-mode"
+            name="metronomeClickMode"
+            value={clickMode}
+            onChange={(e) => onChangeClickMode(asClickMode(e.target.value))}
+            className="rounded-md bg-white/5 border border-white/10 px-1 py-0.5 text-xs font-bold text-zinc-200 hover:text-white focus:outline-hidden focus:ring-1 focus:ring-[rgb(var(--et-accent))]"
+            style={{ colorScheme: 'dark' }}
+          >
+            {CLICK_MODES.map((m) => (
+              <option key={m} value={m} title={CLICK_MODE_TITLE[m]}>{CLICK_MODE_LABEL[m]}</option>
+            ))}
+          </select>
+        </span>
+      )}
+    </div>
+    </div>,
+    document.body,
+  );
+};
+
+/**
+ * Whether a keydown on the metronome toggle should open
+ * `MetronomeLevelPopover` — the platform's own "context menu here" gestures
+ * (Shift+F10, the Menu/ContextMenu key), same predicate RecordKey's plate
+ * uses inline for PUNCH. Exported and unit-tested on its own (finding 2,
+ * T25b edit B re-audit) so `MetronomeToggle`'s onKeyDown below can never
+ * drift from what the tests assert.
+ */
+export const opensLevelPopover = (e: { key: string; shiftKey: boolean }): boolean =>
+  e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
+
+/**
+ * The metronome toggle button plus its below-2xl level-popover opener,
+ * split out from `PlayerFooter`'s body (finding 2, T25b edit B re-audit) so
+ * the toggle -> popover wiring — the single route to `setVolume` below
+ * 1536px — is renderable and testable without standing up the whole footer
+ * and its store graph.
+ */
+export const MetronomeToggle: React.FC<{
+  metronomeOn: boolean;
+  onToggle: () => void;
+  volume: number;
+  onChangeVolume: (v: number) => void;
+  clickMode?: ClickMode;
+  onChangeClickMode?: (mode: ClickMode) => void;
+  className?: string;
+}> = ({ metronomeOn, onToggle, volume, onChangeVolume, clickMode, onChangeClickMode, className = '' }) => {
+  const [levelPopover, setLevelPopover] = useState<ContextMenuPosition | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  return (
+    <>
+      {/* A custom control, so it carries its own accessible name and its
+          state in aria-pressed — never a wrapping <label>. It is also the
+          below-2xl opener for the level popover (right-click / Shift+F10 /
+          Menu key) — see MetronomeVolumeControl's wrapper and
+          MetronomeLevelPopover's own comment for why. The button carries no
+          `disabled:pointer-events-none` (it is never disabled), so the
+          listener sits on it directly rather than needing RecordKey's
+          wrapping plate. */}
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={onToggle}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setLevelPopover(menuAnchorFromEvent(e));
+        }}
+        onKeyDown={(e) => {
+          if (!opensLevelPopover(e)) return;
+          e.preventDefault();
+          const rect = btnRef.current?.getBoundingClientRect();
+          setLevelPopover({ x: rect?.left ?? 0, y: rect?.bottom ?? 0 });
+        }}
+        aria-label={`Metronome click ${metronomeOn ? 'on' : 'off'} - right-click for level and beat`}
+        aria-pressed={metronomeOn}
+        title={`Metronome click ${metronomeOn ? 'on' : 'off'} - the EDIT timeline's count${clickMode ? `, on ${CLICK_MODE_LABEL[clickMode].toLowerCase()}` : ''} - right-click for level and beat`}
+        className={`${iconButton} ${metronomeOn ? 'text-[rgb(var(--et-accent))] bg-white/5' : ''} ${className}`}
+      >
+        <Triangle className="w-3.5 h-3.5" strokeWidth={1.5} absoluteStrokeWidth />
+      </button>
+      <MetronomeLevelPopover
+        position={levelPopover}
+        onClose={() => setLevelPopover(null)}
+        volume={volume}
+        onChange={onChangeVolume}
+        clickMode={clickMode}
+        onChangeClickMode={onChangeClickMode}
+      />
+    </>
+  );
+};
+
 export const PlayerFooter: React.FC = () => {
   const [isLiked, setIsLiked] = useState(false);
   // The footer sits OUTSIDE Shell (to escape the layout zoom), so it must
@@ -543,6 +978,85 @@ export const PlayerFooter: React.FC = () => {
     setMasterGain(isMuted ? 0 : volume / 100);
   }, [volume, isMuted, setMasterGain]);
 
+  // The transport click. `initMetronome` only subscribes (idempotent, so
+  // StrictMode's double mount is free); the scheduler runs off the audio clock
+  // and schedules nothing until EDIT plays with the metronome on.
+  const metronomeOn = useMetronomeStore((s) => s.enabled);
+  const toggleMetronome = useMetronomeStore((s) => s.toggle);
+  const metronomeVolume = useMetronomeStore((s) => s.volume);
+  const setMetronomeVolume = useMetronomeStore((s) => s.setVolume);
+  const countInBars = useMetronomeStore((s) => s.countInBars);
+  const setCountInBars = useMetronomeStore((s) => s.setCountInBars);
+  const clickMode = useMetronomeStore((s) => s.clickMode);
+  const setClickMode = useMetronomeStore((s) => s.setClickMode);
+  useEffect(() => { initMetronome(); }, []);
+  // A count-in in flight: the cancel that stops its clicks without ever having
+  // moved the playhead. Cleared the moment the transport is released.
+  const countInRef = useRef<(() => void) | null>(null);
+  const [countingIn, setCountingIn] = useState(false);
+  useEffect(() => () => { countInRef.current?.(); }, []);
+
+  /* ── RECORD ──────────────────────────────────────────────────────────────
+     state/recordingStore.ts owns the press, the count-in, the arming mirror
+     and where a take lands; this key and the R shortcut are its only UI here
+     (the arm button and the take meter live in the track header — T12b-b).
+     `initRecording` only subscribes, so StrictMode's double mount is free and
+     no input is opened until a press. */
+  const recStatus = useRecordingStore((s) => s.status);
+  const recArmedCount = useRecordingStore((s) => s.armedTrackIds.length);
+  const recError = useRecordingStore((s) => s.lastError);
+  const recNotice = useRecordingStore((s) => s.lastNotice);
+  const recordPress = useRecordingStore((s) => s.recordPress);
+  // The punch window is the editor's LOOP region; this only picks which of its
+  // edges the pass may cross. `recordingStore` owns the crop.
+  const recPunch = useRecordingPrefs((s) => s.punch);
+  const setRecPunch = useRecordingPrefs((s) => s.setPunch);
+  useEffect(() => { initRecording(); }, []);
+  // A failure surfaces through the app's ONE status channel — the orb bubble
+  // this footer already draws (statusNoticeStore -> OrbTipBubble), which also
+  // files it in the LOG. "RECORD FAILED" reads as an error level from its
+  // label, so the bubble draws it in the failure colours.
+  useEffect(() => {
+    if (!recError) return;
+    postStatus(`RECORD FAILED: ${recError.message}`, { source: 'recording' });
+  }, [recError]);
+  // The INFORMATIONAL half of the same channel: a press that is proceeding
+  // normally but has something to say (a punch mode with no loop region to
+  // punch into). "RECORD" is the whole label — `statusNoticeStore.statusLevel`
+  // reads the text before the first ": " and matches no error or warn word in
+  // it — so this lands at info, where "RECORD FAILED" lands at error.
+  useEffect(() => {
+    if (!recNotice) return;
+    postStatus(`RECORD: ${recNotice.text}`, { source: 'recording' });
+  }, [recNotice]);
+  /**
+   * R toggles record, on EDIT only. The EDIT timeline's own bare-letter keys
+   * are v / c / s / m / l and Shift+F (WaveformEditor's EDIT_SHORTCUTS list);
+   * r is free there and everywhere else — the only other footer binding is
+   * Ctrl/Cmd+K. Bound HERE rather than on the timeline because `inEditorMode`
+   * is what gates the key, and because the press belongs to the transport.
+   * The field exclusions are the timeline handler's, SELECT included, so a
+   * bare letter never steals type-to-jump inside a dropdown.
+   */
+  useEffect(() => {
+    if (!inEditorMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      // Shift is rejected above, so the uppercase arm is reached only with CAPS
+      // LOCK on — where `key` is 'R' and `shiftKey` is false. It is not dead
+      // code; dropping it would silently lose the shortcut for those users.
+      if (e.key !== 'r' && e.key !== 'R') return;
+      if (keyBelongsToFocusedControl(e)) return; // an "r" typed into a field; a focused fader does not count
+      e.preventDefault();
+      // Unconditional, unlike the key itself: with nothing armed the store
+      // raises `nothing-armed` and the bubble says so, which beats a shortcut
+      // that silently does nothing.
+      useRecordingStore.getState().recordPress();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [inEditorMode]);
+
   // Auto-load: when a new generation lands and nothing is currently loaded, load it.
   useEffect(() => {
     if (hasTrack) return;
@@ -594,6 +1108,18 @@ export const PlayerFooter: React.FC = () => {
     (isDjMode && djMaster === 'playing') ||
     (centerTab === 'vj' && vjState === 'playing');
 
+  // A count-in holds a deferred "now start" that was decided for THIS surface
+  // and this transport state. If something else starts playback, or the user
+  // moves to a tab where PLAY means the DJ/VJ master instead, that release is
+  // stale — drop it (and its clicks) rather than fire it somewhere it no longer
+  // belongs. Nothing was moved during the count, so there is nothing to undo.
+  useEffect(() => {
+    if (!countingIn || !(isPlaying || isDjMode || isVjMode)) return;
+    countInRef.current?.();
+    countInRef.current = null;
+    setCountingIn(false);
+  }, [countingIn, isPlaying, isDjMode, isVjMode]);
+
   const handleToggle = () => {
     // DJ-tab mode: the footer ▶ is the Live Master — play/pause the DJ decks
     // (or start the active set from the top) and start the VJ visuals with it.
@@ -615,11 +1141,36 @@ export const PlayerFooter: React.FC = () => {
     }
     // In editor mode, if editor audio isn't loaded yet, trigger the offline render+play.
     // Once loaded (entryId === 'editor-timeline'), toggle works natively.
-    if (inEditorMode && currentEntryId !== 'editor-timeline') {
-      callEditorPlay();
-    } else {
-      toggle();
+    const startTransport = () => {
+      if (inEditorMode && currentEntryId !== 'editor-timeline') {
+        callEditorPlay();
+      } else {
+        toggle();
+      }
+    };
+    // A second press during the count-in cancels it. Nothing has moved — the
+    // playhead is where it was and no pass was recorded — so there is nothing
+    // to undo, just the clicks to silence.
+    if (countInRef.current) {
+      countInRef.current();
+      countInRef.current = null;
+      setCountingIn(false);
+      return;
     }
+    // Pausing goes straight through; only STARTING counts in.
+    if (isPlaying) { startTransport(); return; }
+    setCountingIn(true);
+    // metronomeCountIn releases the transport itself when there is no count-in
+    // to play, in which case `done` is already true and there is nothing to
+    // cancel — never store that no-op, or the next press would be swallowed.
+    let done = false;
+    const cancel = metronomeCountIn(() => {
+      done = true;
+      countInRef.current = null;
+      setCountingIn(false);
+      startTransport();
+    }, { editor: inEditorMode, playing: isPlaying });
+    countInRef.current = done ? null : cancel;
   };
 
   // Save a copy of what the footer holds: the library file for an entry, the
@@ -797,6 +1348,89 @@ export const PlayerFooter: React.FC = () => {
               </span>
             </div>
           </div>
+          {/* The click track, immediately left of the transport plate. It sits
+              in THIS track rather than on the plate because the plate's key
+              count (2 + PLAY + 2) is what holds PLAY on the viewport centre —
+              a sixth key would push it off. The left track is 1fr either way,
+              and the now-playing block beside it is flex-1 min-w-0, so the pair
+              stays glued to the plate at every width without moving it. RECORD
+              is in the RIGHT track for the same reason; see the plate comment
+              below for why no sixth key can balance. */}
+          <div className="flex shrink-0 items-center gap-1">
+            {/* Toggle + below-2xl level-popover opener, in one component so
+                the wiring between them is testable on its own — see
+                MetronomeToggle's comment. */}
+            <MetronomeToggle
+              metronomeOn={metronomeOn}
+              onToggle={toggleMetronome}
+              volume={metronomeVolume}
+              onChangeVolume={setMetronomeVolume}
+              clickMode={clickMode}
+              onChangeClickMode={setClickMode}
+            />
+            {/* MetronomeVolumeControl: gated `hidden 2xl:flex`, the count-in
+                select's own PUNCH-select neighbour's pattern. This is a
+                w-10 SlideTrack, 40px plus the same 4px gap — 44px, against
+                the 960px measurements this file records above (RECORD's
+                comment): 40.4px of slack
+                before the plate, so 44px lands the compact RECORD key's right
+                edge at 346.0 against the plate's left edge at 342.4, 3.6px of
+                overlap — the same failure the rejected 68px PUNCH experiment
+                caused (see the removed-experiment comment below), just
+                smaller. So this renders nothing below 2xl, and the metronome
+                TOGGLE button above takes the second gesture instead — same
+                model as RecordKey's plate right-click for PUNCH — so
+                `setVolume` stays reachable at every width, not only
+                >=1536px. */}
+            <div className="hidden 2xl:flex shrink-0 items-center gap-1">
+              <MetronomeVolumeControl volume={metronomeVolume} onChange={setMetronomeVolume} />
+            </div>
+            {/* A native select, so it needs a real id/name and a <label htmlFor>.
+                The label is sr-only: the footer row is 48px and the three option
+                texts already say what the control is on screen. */}
+            <label htmlFor="metronome-count-in" className="sr-only">Count-in bars</label>
+            <select
+              id="metronome-count-in"
+              name="metronomeCountIn"
+              value={countInBars}
+              onChange={(e) => setCountInBars(Number(e.target.value) as CountInBars)}
+              title="Bars of clicks before the transport starts"
+              className="w-16 rounded-md bg-white/5 border border-white/10 px-1 py-0.5 text-xs text-zinc-300 hover:text-white focus:outline-hidden focus:ring-1 focus:ring-[rgb(var(--et-accent))]"
+            >
+              {COUNT_IN_CHOICES.map((n) => (
+                <option key={n} value={n}>{n === 0 ? 'Off' : `${n} bar${n === 1 ? '' : 's'}`}</option>
+              ))}
+            </select>
+            {/* PUNCH is NOT here, beside the count-in select it copies. It was,
+                and it cost the whole now-playing title AND put RECORD on the
+                transport plate: measured at 960px (Chrome, EDIT tab,
+                getBoundingClientRect) a w-16 select plus the row's 4px gap took
+                the title from batch 7's 32.4px to 0.4px — it is `flex-1
+                min-w-0`, so it collapses silently rather than overflowing — and
+                slid the
+                compact RECORD key to 338-370, 27.6px INSIDE the plate
+                (342.4-617.6), which is the exact failure RecordKey's comment
+                below was written about. This track has no room at any width:
+                from xl the orb bubble takes 192px of it and the title is down
+                to 8.4px before any key. So the SELECT lives in the RIGHT track
+                from 2xl — see there — and every width below it changes the mode
+                through the RECORD key's own right-click menu, which costs the
+                footer no layout at all (it portals to <body>). */}
+            {/* RECORD's below-xl home, glued to the plate's LEFT edge — see
+                RecordKey for the 960px measurement that put it here. Hidden
+                from xl, where the copy at the plate's right edge takes over. */}
+            {inEditorMode && (
+              <RecordKey
+                compact
+                className="xl:hidden"
+                status={recStatus}
+                armedCount={recArmedCount}
+                punch={recPunch}
+                onSetPunch={setRecPunch}
+                onPress={recordPress}
+              />
+            )}
+          </div>
         </div>
 
         {/* 2. Transport — one matte plate (transportPlate): LOOP · START · PLAY ·
@@ -808,7 +1442,27 @@ export const PlayerFooter: React.FC = () => {
             is its widest legend at 12px Orbitron bold plus about 4px a side:
             RAND 39.9px, START 48.1px, PAUSE 48.6px. The playhead is in the
             strip above. Fullscreen lives in the top bar beside Mobile — an even
-            key count is what keeps PLAY dead centre. */}
+            key count is what keeps PLAY dead centre.
+
+            RECORD is NOT on this plate, for the same reason, and no spacer key
+            was added to make room for it: PLAY is centred only while the keys
+            either side of it pair up in width, and 12·12·14·14 (the four keys
+            that are not PLAY) cannot be split into two equal halves once a
+            fifth width joins them — 26 units a side is the only split, which
+            leaves RECORD exactly 0 units. (Algebraically: with RECORD at r the
+            half is 26 + r/2, so its own side must carry 26 - r/2 of
+            {12,12,14,14}; the reachable subset sums are 0/12/14/24/26/28/…, so
+            r is 0, or 4 — a 16px key. No key fits.) A blank sixth slot would
+            balance it at the price of a dead tile on the plate AND 98px of
+            plate width, which the 960px desktop minimum has not got: the side
+            tracks are 318px there against 312px of utilities. So RECORD sits
+            on a plate of its OWN, outside this one — at this plate's right
+            edge from xl, and beside the click controls on its left below xl
+            (the 960px right track has 6.4px spare against 312px of utilities;
+            see RecordKey for the measurement). The middle grid column is
+            untouched either way, both side columns are minmax(0,1fr), so this
+            plate — and PLAY on its centre — stays on the viewport centre:
+            measured 0px off centre at 960, 1280 and 1536. */}
         <div data-tour="transport" className={`shrink-0 ${transportPlate}`}>
           {/* Three states, one key: off -> the list plays through and stops,
               all -> the list wraps, one -> this track repeats. aria-pressed is
@@ -841,8 +1495,8 @@ export const PlayerFooter: React.FC = () => {
             type="button"
             onClick={handleToggle}
             disabled={playDisabled}
-            aria-label={displayIsPlaying ? 'Pause' : 'Play'}
-            title={displayIsPlaying ? 'Pause' : 'Play'}
+            aria-label={countingIn ? 'Counting in - press to cancel' : displayIsPlaying ? 'Pause' : 'Play'}
+            title={countingIn ? 'Counting in - press to cancel' : displayIsPlaying ? 'Pause' : 'Play'}
             className={`${transportPlayKey} w-11 ${playDisabled ? transportPlayDead : displayIsPlaying ? transportPlayOn : transportPlayRest}`}
           >
             {displayIsPlaying
@@ -876,6 +1530,76 @@ export const PlayerFooter: React.FC = () => {
             if the utilities ever outgrow the track, they overflow toward the
             transport, never off the right edge of the window. */}
         <div className="flex items-center justify-end gap-3 min-w-0">
+          {/* RECORD's xl-and-up home: at the transport plate's right edge and
+              outside its centred group — see the plate comment above for why it
+              cannot be a sixth key, and RecordKey for why this copy starts at
+              xl. `mr-auto` is what glues it to the plate: "Up Next" is
+              `flex-1`, so from xl it has already absorbed the track's free
+              space and the margin resolves to 0. EDIT only (`inEditorMode`) —
+              off EDIT there is no timeline to record onto, so neither copy is
+              rendered and this row is byte-for-byte what it was. */}
+          {inEditorMode && (
+            <RecordKey
+              tourId="record"
+              className="hidden xl:flex"
+              status={recStatus}
+              armedCount={recArmedCount}
+              punch={recPunch}
+              onSetPunch={setRecPunch}
+              onPress={recordPress}
+            />
+          )}
+          {/* PUNCH, beside the RECORD key it belongs to, and from 2xl only —
+              NOT xl, and not beside the count-in select it copies. A native
+              select, so it keeps a real id/name and an sr-only <label htmlFor>
+              (CLAUDE.md rule 3); the WINDOW itself is the editor's loop region,
+              and this only picks which of its edges a take may cross.
+
+              A w-16 select costs 68px wherever it goes (64 + the track's gap),
+              and 2xl is the first width that HAS 68px. Measured in Chrome on
+              the EDIT tab, getBoundingClientRect, this build:
+                - 960:  in the LEFT track it took the now-playing title from
+                        32.4px to 0.4px — 32.4 being what batch 7 left after
+                        the compact RECORD key took the track's 68.4px title
+                        down — and pushed that key to 338-370, ON the transport
+                        plate (342.4-617.6), 27.6px of overlap. Not rendered
+                        now: title back to 32.4px, RECORD 302.4-334.4, 8px
+                        clear of the plate.
+                - 1024: not rendered. Title 64.4px, RECORD 334.4-366.4, 8px
+                        clear. Both widths: plate 0px off centre, 0px overflow.
+                - 1280: in THIS track it took "Up Next" from 70.4px to 0px and
+                        squeezed RECORD's clearance from 16px to 6.4px (the key
+                        slid 793.6->784). Not rendered now: RECORD back at
+                        793.6-841.6, 16px off the plate, "Up Next" 70.4px —
+                        this width is byte-for-byte what T12b-a measured.
+                - 1536: rendered, 985.6-1049.6, 16px right of the RECORD key
+                        (921.6-969.6, still 16px off the plate). "Up Next"
+                        126.4px -> 46.4px, which it can afford. Plate 0px off
+                        centre, 0px footer overflow.
+              Below 2xl this select is not rendered, and until T26 that meant a
+              persisted mode could be READ off the RECORD key's title but not
+              changed. Now the key's plate takes a right-click at every width
+              and opens the same four choices (see RecordKey), so this select is
+              the WIDE-screen convenience rather than the only way in — the two
+              read and write the one `useRecordingPrefs.punch`, so whichever the
+              user reaches for, the other shows it. */}
+          {inEditorMode && (
+            <div className="hidden 2xl:flex shrink-0 items-center gap-1">
+              <label htmlFor="record-punch" className="sr-only">Punch recording window</label>
+              <select
+                id="record-punch"
+                name="recordPunch"
+                value={recPunch}
+                onChange={(e) => setRecPunch(e.target.value as PunchMode)}
+                title="Punch: record only inside the loop region"
+                className="w-16 rounded-md bg-white/5 border border-white/10 px-1 py-0.5 text-xs text-zinc-300 hover:text-white focus:outline-hidden focus:ring-1 focus:ring-[rgb(var(--et-accent))]"
+              >
+                {PUNCH_CHOICES.map((m) => (
+                  <option key={m} value={m}>{PUNCH_OPTION[m]}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {/* Next, left-aligned against the transport: the mirror of now
               playing. Click loads it (no formal queue yet, so it is the next
               library entry, or a random other one while RAND is on, which the

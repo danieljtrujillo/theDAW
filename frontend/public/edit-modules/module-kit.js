@@ -83,6 +83,192 @@
     scope.querySelectorAll('[role="slider"]').forEach(function (el) { sync(el); });
   }
 
+  /* ── output-device follow ────────────────────────────────────────────────
+     Each edit-module page builds its OWN AudioContext lazily (ensureAudio(),
+     on first Load/Play), for local preview only — it is never part of the
+     shared engine graph lib/audioSink.ts routes. Without this, a module's
+     preview always plays on the OS default output no matter what
+     Settings -> Inputs & outputs says, which is silent-but-wrong on any rig
+     with more than one output.
+
+     EffectGuiStage posts { type: 'thedaw-output-device', deviceId } into this
+     iframe once it loads and again whenever the app's main output changes
+     (EffectGuiStage.tsx); this file remembers the last id and applies it to
+     EVERY AudioContext a page creates — including ones created LATER than the
+     message, which is the common case, since ensureAudio() runs on first
+     Load/Play rather than at page load.
+
+     AudioContext.setSinkId is Chromium 110+ (see lib/audioSink.ts
+     supportsContextSink); its absence, and a rejection (device unplugged), are
+     both silent no-ops — same degrade path the app's own main-output control
+     takes, so a module keeps previewing on the current device rather than
+     losing audio over a missing API or a stale choice.
+
+     Audit round 2: several pages (character-fx, cleanup, enhance, granular,
+     neural-codec, parametric-eq, promptfx, repair, tool, vocoder) DO build an
+     AudioContext (for an analyser / visualizer), but ALSO play their
+     processed preview through a plain <audio controls> element that never
+     goes through that context at all (lib/audioSink.ts's OWN "tier 2" for
+     exactly this reason: HTMLMediaElement.setSinkId moves one element). The
+     AudioContext wrapper above never touches those, so applyOutputDevice ALSO
+     walks every <audio>/<video> on the page below. No page edits were needed:
+     this only reads the DOM, the same way theDAWKit's other helpers already
+     do (see slider/syncAll above). */
+  var lastOutputDeviceId = '';
+  var trackedContexts = [];
+
+  function applySinkId(ctx) {
+    if (!ctx || typeof ctx.setSinkId !== 'function') return;
+    if (ctx.sinkId === lastOutputDeviceId) return;
+    try {
+      var result = ctx.setSinkId(lastOutputDeviceId);
+      if (result && typeof result.then === 'function') {
+        result.then(null, function () { /* stays on the previous device */ });
+      }
+    } catch (e) { /* stays on the previous device */ }
+  }
+
+  /** Same shape as applySinkId, for an <audio>/<video> element rather than an
+   *  AudioContext — kept as its own function because the two have unrelated
+   *  types even though the call looks identical. */
+  function applyElementSink(el) {
+    if (!el || typeof el.setSinkId !== 'function') return;
+    if (el.sinkId === lastOutputDeviceId) return;
+    try {
+      var result = el.setSinkId(lastOutputDeviceId);
+      if (result && typeof result.then === 'function') {
+        result.then(null, function () { /* stays on the previous device */ });
+      }
+    } catch (e) { /* stays on the previous device */ }
+  }
+
+  /** Every <audio>/<video> currently under `root` (default: the whole
+   *  document) gets the current device applied. Safe to call repeatedly —
+   *  applyElementSink no-ops an element already on the right device. */
+  function applyToMediaElements(root) {
+    var scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+    var els = scope.querySelectorAll('audio, video');
+    for (var i = 0; i < els.length; i++) applyElementSink(els[i]);
+  }
+
+  function applyOutputDevice(deviceId) {
+    lastOutputDeviceId = typeof deviceId === 'string' ? deviceId : '';
+    trackedContexts.forEach(applySinkId);
+    applyToMediaElements();
+  }
+
+  // Applied once at load — covers every <audio>/<video> already in the
+  // static HTML (every named page's #ain/#aout-style elements) as soon as a
+  // device id is known, without waiting for a page action. A no-op until
+  // applyOutputDevice has run at least once (lastOutputDeviceId is still '').
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { applyToMediaElements(); });
+  } else {
+    applyToMediaElements();
+  }
+
+  // `applyOutputDevice` already re-applies to every element on the page each
+  // time it runs (a device CHOSEN while an element already exists is already
+  // covered by that direct call, with no help needed from this observer —
+  // and per the Audio Output Devices spec, `[[SinkId]]` is a plain element
+  // slot that a new `src` does not touch, so it is not "lost" across a take
+  // either). This is deliberate belt-and-braces for the one thing neither of
+  // those already covers: a `setSinkId` call this script made LOST the race
+  // — rejected, or silently a no-op because the element was not yet in a
+  // state that accepted it — before a page's own `src` write (which always
+  // queues an attribute mutation record, even for the same value) gives a
+  // second, later chance to apply the CURRENT `lastOutputDeviceId` again.
+  // `document.documentElement` rather than `document.body`: the element this
+  // script attaches to always exists once the DOM starts parsing, so this
+  // does not depend on where in the page module-kit.js's own <script> tag
+  // happens to sit.
+  //
+  // NOT watching childList: every page's <audio>/<video> is static markup —
+  // checked across every page in public/edit-modules (zero
+  // createElement('audio'|'video'), zero `new Audio()`) — so there is
+  // nothing for a childList observer to ever catch, only cost: it would fire
+  // on every element any page inserts for ANY reason (maximizer.html redraws
+  // its meter markup on every animation frame), for four
+  // querySelectorAll('audio, video') calls a frame that can never find
+  // anything new. If a future page ever builds its preview element
+  // dynamically, `applyToMediaElements()` still needs calling for it
+  // directly at the point it is created — this observer is not the place to
+  // discover that node.
+  if (typeof MutationObserver === 'function') {
+    var mediaObserver = new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var target = records[i].target;
+        if (target && (target.tagName === 'AUDIO' || target.tagName === 'VIDEO')) applyElementSink(target);
+      }
+    });
+    mediaObserver.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src'],
+    });
+  }
+
+  function dropClosedContext(ctx) {
+    var idx = trackedContexts.indexOf(ctx);
+    if (idx !== -1) trackedContexts.splice(idx, 1);
+  }
+
+  var NativeAudioContext = window.AudioContext;
+  if (NativeAudioContext) {
+    var WrappedAudioContext = function () {
+      var ctx = Reflect.construct(NativeAudioContext, arguments, WrappedAudioContext);
+      trackedContexts.push(ctx);
+      // A fresh context already opens on the OS default, so there is nothing
+      // to apply until a real (non-default) device id is known — skips a
+      // no-op setSinkId('') on every single context a page creates.
+      if (lastOutputDeviceId) applySinkId(ctx);
+      // Not exercised by any page today — every ensureAudio() creates at
+      // most one context, guarded (`if (actx) return;`), nothing calls
+      // .close(), and a module reload remounts EffectGuiStage's iframe into
+      // a FRESH JS realm, which discards trackedContexts (and everything
+      // else in the old realm) wholesale rather than accumulating across
+      // reloads. Kept anyway as correct, cheap bookkeeping for the page this
+      // is not yet true of — one that closes and rebuilds a context without
+      // a full iframe remount — rather than assuming today's one-context
+      // pattern is permanent. ctx.close() always fires 'statechange' on its
+      // way to 'closed', which is the only thing this listens for.
+      if (typeof ctx.addEventListener === 'function') {
+        ctx.addEventListener('statechange', function () {
+          if (ctx.state === 'closed') dropClosedContext(ctx);
+        });
+      }
+      return ctx;
+    };
+    // Keep the native constructor's own name (`AudioContext`) rather than the
+    // wrapper's inferred one, so anything introspecting `AudioContext.name`
+    // still sees the real thing.
+    Object.defineProperty(WrappedAudioContext, 'name', { value: NativeAudioContext.name, configurable: true });
+    // Deliberately NOT `WrappedAudioContext.prototype.constructor = WrappedAudioContext`:
+    // this line assigns the SAME prototype OBJECT the native constructor
+    // uses (not a copy), so repointing `.constructor` here would mutate it
+    // for every AudioContext instance on the page, including any built
+    // through the native constructor directly and any other code (ours or
+    // third-party) that reads `instance.constructor` expecting the native
+    // identity — a much bigger blast radius than this file. Nothing in these
+    // pages reads `.constructor` off an AudioContext, so there is no upside
+    // to taking that risk; `instanceof` and every native method still work
+    // unchanged either way.
+    WrappedAudioContext.prototype = NativeAudioContext.prototype;
+    window.AudioContext = WrappedAudioContext;
+  }
+
+  window.addEventListener('message', function (e) {
+    // Assumes the stage is always an <iframe> mounted directly in the host
+    // document (EffectGuiStage.tsx today) — if a future DetachableWindow ever
+    // pops this stage into its own OS window, its opener (not window.parent)
+    // becomes the legitimate sender, and this guard must accept that realm too.
+    if (e.source !== window.parent) return;
+    var data = e.data;
+    if (data && data.type === 'thedaw-output-device' && typeof data.deviceId === 'string') {
+      applyOutputDevice(data.deviceId);
+    }
+  });
+
   /** Accessible name for a native control that has no <label for>. */
   function label(el, text) {
     if (!el) return;
@@ -115,5 +301,13 @@
     return refresh;
   }
 
-  window.theDAWKit = { slider: slider, sync: sync, syncAll: syncAll, label: label, pressed: pressed, toggleGroup: toggleGroup };
+  window.theDAWKit = {
+    slider: slider,
+    sync: sync,
+    syncAll: syncAll,
+    label: label,
+    pressed: pressed,
+    toggleGroup: toggleGroup,
+    applyOutputDevice: applyOutputDevice,
+  };
 })();

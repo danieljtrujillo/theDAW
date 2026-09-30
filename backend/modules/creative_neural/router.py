@@ -2,17 +2,20 @@
 
 All 8 tools are implemented with real DSP processing:
 - grainlab, voxsynth, spectramorph, crossfade_morph, tokensynth: numpy/scipy/librosa
-- timbreforge: ffmpeg pitch/formant shift
+  (tokensynth's prompt picks its synth voice by keyword)
+- timbreforge: ffmpeg pitch/formant shift, then numpy Structure and Wander
 - promptfx: keyword->FFmpeg filter chain
-- ambientforge: ffmpeg lavfi synthesis
+- ambientforge: ffmpeg lavfi synthesis, shaped by its prompt's keywords
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 
 from ...core.module_base import build_router
-from ...lib import ffmpeg
+from ...lib import ffmpeg, ffmpeg_tools
 from ...lib.params import ParamSpec as P
 from ...lib.params import ToolSpec
 
@@ -48,30 +51,81 @@ def _crossfade_morph(inp: Path, out: Path, params: dict) -> None:
 
 # ── 5. timbreforge (process, pitch/formant shift via ffmpeg) ──────────────
 async def _timbreforge(inp: Path, out: Path, params: dict) -> None:
-    """Timbre transform via formant/pitch manipulation.
+    """Timbre transform via combined pitch+formant manipulation, then the
+    Structure and Wander stages (``dsp.timbreforge_shape``).
 
-    Uses asetrate to shift formants while aresample + atempo preserve pitch
-    and duration. timbreBlend drives the shift ratio.
+    ``asetrate`` reinterprets the sample rate, which shifts BOTH pitch and
+    formants together (that combined shift is the effect — it is not
+    undone). ``atempo`` only restores the original DURATION (the tempo
+    change asetrate introduced); it does not, and cannot, restore pitch.
+    ``aresample`` afterwards just puts the stream back at a standard rate
+    for downstream stages. timbreBlend drives the shift ratio.
+
+    structureWeight pulls the shifted result's loudness contour (attacks,
+    dynamics, rhythm) back toward the source's; latentWander lets the shift
+    drift slowly around its setting. A missing key means off. Every stage
+    runs on float intermediates and the result is written at the upload's
+    bit depth; an ffmpeg render straight to ``out`` wrote 16-bit whatever
+    came in.
     """
     blend = params["timbreBlend"]
+    structure = float(params.get("structureWeight", 0.0))
+    wander = float(params.get("latentWander", 0.0))
     # Map timbreBlend 0..1 -> ratio 0.5..2.0 (octave down to octave up formant shift)
     # 0.5 = formants shifted down an octave, 1.0 = no shift, 2.0 = up an octave
     ratio = 2.0 ** (blend * 2 - 1)  # blend=0 -> 0.5, blend=0.5 -> 1.0, blend=1.0 -> 2.0
 
-    if abs(ratio - 1.0) < 0.01:
-        # no shift needed — copy through with minimal processing
-        await ffmpeg.render(inp, out, ["-af", "acopy"])
-        return
+    decoded = out.with_name(f"{out.stem}.source.wav")
+    shifted = out.with_name(f"{out.stem}.shifted.wav")
+    shaped = out.with_name(f"{out.stem}.shaped.wav")
+    float_wav = ["-c:a", "pcm_f32le"]
+    try:
+        # A float decode of the upload: the shaping stage reads its samples
+        # whatever container it came in.
+        await ffmpeg.render(inp, decoded, [], extra_out_args=float_wav)
+        if abs(ratio - 1.0) < 0.01:
+            # no shift needed — the shaping stages run on the source itself
+            shifted_src = decoded
+        else:
+            # asetrate/aresample must reinterpret+restore at the SOURCE's own
+            # rate, not a hardcoded 44.1 kHz — a 48 kHz source resampled
+            # through a 44.1 kHz asetrate/aresample pair audibly shifts
+            # pitch/duration beyond what timbreBlend asked for. Best-effort
+            # probe via ffprobe; falls back to the CD-standard 44.1 kHz only
+            # when the source rate can't be read.
+            source_rate = await asyncio.to_thread(_probe_sample_rate, inp)
+            new_rate = int(source_rate * ratio)
+            tempo = 1.0 / ratio
+            # atempo only accepts 0.5..100.0; chain multiple if needed
+            tempo_chain = _build_atempo_chain(tempo)
 
-    # asetrate shifts pitch+formants, aresample restores sample rate,
-    # atempo corrects the duration change
-    new_rate = int(44100 * ratio)
-    tempo = 1.0 / ratio
-    # atempo only accepts 0.5..100.0; chain multiple if needed
-    tempo_chain = _build_atempo_chain(tempo)
+            af = f"asetrate={new_rate},aresample={source_rate},{tempo_chain}"
+            await ffmpeg.render(decoded, shifted, ["-af", af], extra_out_args=float_wav)
+            shifted_src = shifted
+        await asyncio.to_thread(
+            dsp.timbreforge_shape, decoded, shifted_src, shaped, inp, structure, wander
+        )
+        if out.suffix.lower() == ".wav":
+            shaped.replace(out)
+        else:
+            # Any other container: ffmpeg picks the encoder from the extension.
+            await ffmpeg.render(shaped, out, [])
+    finally:
+        for temp in (decoded, shifted, shaped):
+            temp.unlink(missing_ok=True)
 
-    af = f"asetrate={new_rate},aresample=44100,{tempo_chain}"
-    await ffmpeg.render(inp, out, ["-af", af])
+
+def _probe_sample_rate(path: Path, default: int = 44100) -> int:
+    """Best-effort source sample rate via ffprobe.
+
+    Falls back to 44.1 kHz (CD-standard) when ffprobe is missing or the
+    probe fails — ``probe_file`` never raises, it returns ``{}`` instead.
+    """
+    from backend.modules.analysis.ffprobe import probe_file
+
+    info = probe_file(path)
+    rate = info.get("_summary", {}).get("sample_rate")
+    return int(rate) if rate else default
 
 
 def _build_atempo_chain(tempo: float) -> str:
@@ -141,34 +195,126 @@ async def _promptfx(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── 7. ambientforge (process, ffmpeg lavfi synth) ─────────────────────────
-async def _ambientforge(inp: Path, out: Path, params: dict) -> None:
-    """Generate an ambient drone/texture bed using ffmpeg's lavfi sources.
+_AMBIENT_ECHO_ROOM = ["aecho=0.8:0.9:500:0.4", "aecho=0.8:0.88:800:0.3"]
+_AMBIENT_ECHO_VAST = ["aecho=0.8:0.9:1200:0.5", "aecho=0.8:0.88:1900:0.4"]
 
-    Ignores input content — synthesizes from noise + spectral shaping + reverb.
+AMBIENT_PROMPT_HELP = (
+    "Words that shape the bed: white/hiss, brown/ocean/deep, rain, wind "
+    "(noise colour); dark/murky or bright/airy; waves, pulsing or calm "
+    "(motion); space/cathedral/cave or dry/close; drone/pad/chord adds a "
+    "tone, and a note name such as A2 or C#3 sets its pitch."
+)
+
+
+def _ambient_plan(prompt: str) -> dict:
+    """Read AmbientForge's prompt into the bed it describes.
+
+    The synth has no text model, so the prompt steers the lavfi graph by
+    word: the noise colour, the low-pass (brightness), the tremolo (motion),
+    the echo taps (space) and an optional tonal drone whose root is the first
+    note name in the prompt (A2 = 110 Hz when none is given). With none of
+    these words the plan is the pink-noise bed the tool has always made.
+    """
+    words = set(re.findall(r"[a-z0-9#]+", prompt.lower()))
+    plan: dict = {
+        "color": "pink",
+        "lowpass": 2000.0,
+        "highpass": 40.0,
+        "tremolo": (0.1, 0.4),
+        "echoes": _AMBIENT_ECHO_ROOM,
+        "drone": None,
+    }
+    if words & {"white", "hiss", "hissy", "static"}:
+        plan["color"] = "white"
+    elif words & {
+        "brown",
+        "ocean",
+        "waves",
+        "sea",
+        "surf",
+        "tide",
+        "rumble",
+        "thunder",
+        "deep",
+    }:
+        plan["color"] = "brown"
+    if words & {"rain", "rainy", "shower", "drizzle"}:
+        plan["highpass"], plan["lowpass"] = 800.0, 9000.0
+    if words & {"wind", "windy", "breeze", "gust"}:
+        plan["lowpass"], plan["tremolo"] = 1200.0, (0.15, 0.7)
+    if words & {"dark", "murky", "underwater", "muffled", "low"}:
+        plan["lowpass"] = 600.0
+    elif words & {"bright", "airy", "shimmer", "glassy", "crisp"}:
+        plan["lowpass"] = 9000.0
+    if words & {"ocean", "waves", "sea", "surf", "tide"}:
+        plan["tremolo"] = (0.1, 0.85)
+    elif words & {"pulse", "pulsing", "breathing", "throb", "throbbing"}:
+        plan["tremolo"] = (0.5, 0.6)
+    elif words & {"still", "calm", "steady", "frozen"}:
+        plan["tremolo"] = (0.1, 0.1)
+    if words & {"space", "cathedral", "cave", "cavern", "vast", "hall", "huge"}:
+        plan["echoes"] = _AMBIENT_ECHO_VAST
+    elif words & {"dry", "close", "small", "intimate"}:
+        plan["echoes"] = []
+    root = dsp.note_frequency(prompt)
+    if root is not None or words & {"drone", "pad", "hum", "tone", "organ", "chord"}:
+        root = root or 110.0
+        # a chord is root, major third and fifth; otherwise root, fifth, octave
+        steps = (1.0, 1.26, 1.5) if "chord" in words else (1.0, 1.5, 2.0)
+        plan["drone"] = [root * s for s in steps]
+    return plan
+
+
+async def _ambientforge(inp: Path, out: Path, params: dict) -> None:
+    """Generate an ambient drone/texture bed using ffmpeg's lavfi sources,
+    shaped by the prompt (see ``_ambient_plan``).
+
+    Ignores input content — synthesizes from noise (+ an optional sine
+    drone) + spectral shaping + reverb.
     """
     # The process dispatch always passes the uploaded file; this tool synthesizes
     # its bed from lavfi sources and deliberately never reads it.
     _ = inp
     duration = params["duration"]
+    plan = _ambient_plan(str(params.get("prompt", "")))
 
-    # Build a pink noise source with spectral shaping and reverb
-    # anoisesrc generates noise, lowpass shapes it, aecho adds space
+    # anoisesrc generates noise, lowpass/highpass shape it, tremolo moves it,
+    # aecho adds space
+    rate, depth = plan["tremolo"]
+    chain = ",".join(
+        [
+            f"lowpass=f={plan['lowpass']:g}",
+            f"highpass=f={plan['highpass']:g}",
+            f"tremolo=f={rate:g}:d={depth:g}",
+            *plan["echoes"],
+            "volume=0.7",
+        ]
+    )
+    noise = f"anoisesrc=color={plan['color']}:duration={duration}:sample_rate=44100"
+    if plan["drone"] is None:
+        graph_args = ["-f", "lavfi", "-i", noise, "-af", chain]
+    else:
+        # sine sources play at 1/8 full scale; the weights set each partial
+        # over a quieter noise floor so the drone leads.
+        tones = [
+            f"sine=frequency={f:.3f}:duration={duration}:sample_rate=44100[s{i}]"
+            for i, f in enumerate(plan["drone"])
+        ]
+        labels = "".join(f"[s{i}]" for i in range(len(tones)))
+        weights = " ".join(["0.35", "2", "1.2", "0.8"][: len(tones) + 1])
+        graph = ";".join(
+            [
+                f"{noise}[n]",
+                *tones,
+                f"[n]{labels}amix=inputs={len(tones) + 1}:weights='{weights}'"
+                f":normalize=0,{chain}[out]",
+            ]
+        )
+        graph_args = ["-filter_complex", graph, "-map", "[out]"]
     cmd = [
-        "ffmpeg",
+        await ffmpeg_tools.ffmpeg_exe_async(),
         "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"anoisesrc=color=pink:duration={duration}:sample_rate=44100",
-        "-af",
-        (
-            "lowpass=f=2000,"
-            "highpass=f=40,"
-            "tremolo=f=0.1:d=0.4,"
-            "aecho=0.8:0.9:500:0.4,"
-            "aecho=0.8:0.88:800:0.3,"
-            "volume=0.7"
-        ),
+        *graph_args,
         "-ac",
         "2",  # stereo output
         str(out),
@@ -179,6 +325,14 @@ async def _ambientforge(inp: Path, out: Path, params: dict) -> None:
 
 
 # ── 8. tokensynth (process, ring mod + vibrato + tremolo) ─────────────────
+TOKENSYNTH_PROMPT_HELP = (
+    "Words that pick the voice: sine, square, saw or triangle; a note name "
+    "such as C3 for the pitch, or sub/bass, low/deep, high/lead to move it "
+    "by octaves; steady, wobble or tremolo for the LFOs; dark/warm or "
+    "bright/crisp for the tone."
+)
+
+
 def _tokensynth(inp: Path, out: Path, params: dict) -> None:
     dsp.tokensynth(inp, out, params)
 
@@ -212,13 +366,37 @@ TOOLS: list[ToolSpec] = [
         gpu=False,
         flagship=True,
         license="MIT / CC-BY-NC (OK free-use)",
-        engine="pitch/formant shift (RAVE later)",
+        engine="pitch/formant shift + envelope/drift shaping (RAVE later)",
         handler=_timbreforge,
-        description="Neural timbre transfer — turn any sound into any instrument via an XY morph pad.",
+        description=(
+            "Formant/pitch color shift via asetrate + atempo resampling, driven "
+            "by the Timbre knob. Structure pulls the result's dynamics and "
+            "attacks back to the source's; Wander lets the shift drift slowly."
+        ),
         params=[
-            P("structureWeight", "float", 0, 1, 0.5, "", "ParamKnob", "Structure"),
+            P(
+                "structureWeight",
+                "float",
+                0,
+                1,
+                0.5,
+                "",
+                "ParamKnob",
+                "Structure",
+                help="How closely the result follows the source's loudness contour: 0 leaves the shift as rendered, 1 matches the source's dynamics and attacks.",
+            ),
             P("timbreBlend", "float", 0, 1, 0.5, "", "ParamKnob", "Timbre"),
-            P("latentWander", "float", 0, 1, 0.0, "", "ParamKnob", "Wander"),
+            P(
+                "latentWander",
+                "float",
+                0,
+                1,
+                0.0,
+                "",
+                "ParamKnob",
+                "Wander",
+                help="Slow random drift of the shift around its setting; 1 drifts up to a semitone either way.",
+            ),
         ],
     ),
     ToolSpec(
@@ -247,9 +425,20 @@ TOOLS: list[ToolSpec] = [
         license="MIT",
         engine="synth preview (TokenSynth later)",
         handler=_tokensynth,
-        description="Text -> playable instrument, driven from the piano roll.",
+        description=(
+            "Ring-modulate the input with vibrato + tremolo LFOs into a "
+            "tonal synth texture, shaped by Temp. The prompt picks the voice: "
+            "wave, pitch (a note name such as C3), LFOs and tone."
+        ),
         params=[
-            P("prompt", "string", default="", control="TextInput", label="Prompt"),
+            P(
+                "prompt",
+                "string",
+                default="",
+                control="TextInput",
+                label="Prompt",
+                help=TOKENSYNTH_PROMPT_HELP,
+            ),
             P("temperature", "float", 0.1, 2.0, 1.0, "", "ParamKnob", "Temp"),
         ],
     ),
@@ -279,7 +468,7 @@ TOOLS: list[ToolSpec] = [
         license="LGPL",
         engine="spectral morph (RAVE SLERP later)",
         handler=_crossfade_morph,
-        description="Spectrally interpolate between two tracks.",
+        description="Spectrally morph a sound toward a heavily smeared version of itself (single input).",
         params=[
             P("morphPosition", "float", 0, 1, 0.5, "", "ParamSlider", "Morph"),
             P("mix", "float", 0, 1, 1.0, "", "ParamKnob", "Mix"),
@@ -295,9 +484,20 @@ TOOLS: list[ToolSpec] = [
         license="FFmpeg / CC-BY-NC (OK free-use)",
         engine="ffmpeg synth (MusicGen later)",
         handler=_ambientforge,
-        description="Generate ambience / drone / texture beds from a text prompt.",
+        description=(
+            "Generate a noise drone/texture bed via lowpass/highpass, tremolo "
+            "and echo, shaped by the prompt: noise colour, brightness, motion, "
+            "space and an optional tonal drone (ignores the input audio)."
+        ),
         params=[
-            P("prompt", "string", default="", control="TextInput", label="Prompt"),
+            P(
+                "prompt",
+                "string",
+                default="",
+                control="TextInput",
+                label="Prompt",
+                help=AMBIENT_PROMPT_HELP,
+            ),
             P("duration", "float", 5, 300, 30, "s", "ParamKnob", "Duration"),
         ],
     ),

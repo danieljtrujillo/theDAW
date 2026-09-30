@@ -20,6 +20,7 @@ import {
   ElementType,
 } from "../types";
 import { buildIndexHtml } from "./vst3ExportUi";
+import { appendCustomCodeParams } from "../features/custom-code-export/manifest";
 import { routesOf } from "./routing";
 import { isVstBindId } from "./vstBinds";
 import type { RouteCurve } from "../types";
@@ -189,14 +190,7 @@ function firstDawTargetForAxis(
   return match?.targetId;
 }
 
-/**
- * The theDAW target bound to a CustomCode element's parameter `key`, if any
- * (see UIElement.paramBindings). Informational, mirroring firstDawTargetForAxis
- * for native controls; the native shell may ignore it.
- */
-function customParamDawTarget(el: UIElement, key: string): string | undefined {
-  return (el.paramBindings ?? []).find((b) => b.key === key)?.targetId;
-}
+
 
 // ---------------------------------------------------------------------------
 // Manifest
@@ -248,35 +242,8 @@ export function buildVst3Manifest(
   };
 
   for (const el of elements) {
-    // CustomCode is not a native control, but each NUMERIC CustomParam becomes a
-    // host-automatable continuous param (id: <element-slug>-<param-slug>, matching
-    // the id the exported UI computes). Handled BEFORE the SKIP_TYPES gate —
-    // CustomCode is a member, so an element with no numeric params still yields
-    // nothing (unchanged from prior behavior).
     if (el.type === "CustomCode") {
-      const ccBaseId = slugify(el.id);
-      for (const p of el.params ?? []) {
-        if (p.type !== "number") continue;
-        if (atCap()) break;
-        const min = typeof p.min === "number" ? p.min : 0;
-        let max = typeof p.max === "number" ? p.max : 100;
-        if (max === min) max = min + 1;
-        const ccParam: Vst3Param = {
-          id: `${ccBaseId}-${slugify(p.key)}`,
-          elementId: el.id,
-          name: `${el.name} ${p.label || p.key}`,
-          kind: "continuous",
-          min,
-          max,
-          default: spNumber(p.default, spNumber(p.value, (min + max) / 2)),
-          cc: nextCc(),
-        };
-        const ccTargetId = customParamDawTarget(el, p.key);
-        if (ccTargetId) {
-          ccParam.binding = { dawTargetId: ccTargetId };
-        }
-        params.push(ccParam);
-      }
+      appendCustomCodeParams(el, params, { slugify, nextCc, atCap });
       continue;
     }
 

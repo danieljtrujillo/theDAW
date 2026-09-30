@@ -15,6 +15,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import type { DeviceRef } from '../lib/ioResolve';
 import { dismissFeatureGate, requireFeature } from '../notices/featureGateStore';
 import { logError } from './logStore';
@@ -106,6 +107,45 @@ export interface IoSettings {
   overrides: Record<string, DeviceRef>;
 }
 
+/** Local model discovery. `extra_folders` are additional directories theDAW
+ *  scans for model checkpoints, on top of its built-in locations. Absolute or
+ *  project-relative paths; order is preserved; no fixed count. Replaced
+ *  wholesale by a patch (like `io`), never element-merged. */
+export interface ModelsSettings {
+  extra_folders: string[];
+  /** Blanked for the same reason as `media_roots_redacted`. */
+  extra_folders_redacted?: boolean;
+}
+
+/** Library storage. `media_roots` are folders holding the user's own copies
+ *  of library media, named after the entry they belong to (the full id, or the
+ *  `[xxxxxxxx]` short tag). The backend resolves an entry that has no file of
+ *  its own from these before it asks any remote source. Replaced wholesale by
+ *  a patch, like `models.extra_folders`. */
+export interface LibrarySettings {
+  media_roots: string[];
+  /** The backend blanked the list because this caller may not set it (a LAN
+   *  device, not the machine theDAW runs on -- see settings/router.py's
+   *  `_redacted_for`). Absent means the list is the real one. */
+  media_roots_redacted?: boolean;
+}
+
+/** The in-app Claude Code session's setup (backend settings `assistant`). */
+export interface AssistantSettings {
+  /** "Use my Claude settings and MCP servers". True (the default): the session
+   *  loads the user's own ~/.claude settings, CLAUDE.md, skills, agents and MCP
+   *  servers next to theDAW's relay, and the user's own allow rules approve
+   *  what they match, except in Read-only mode and for edits to the
+   *  assistant's own code. False: only this project's settings and theDAW's
+   *  own MCP servers. The backend reads it on every turn and respawns the
+   *  session when it changes. */
+  use_user_claude_config: boolean;
+  /** Loaded Claude allow rules that run without a prompt in Ask mode. In Ask
+   *  mode every other loaded allow rule asks first (AllowRulesList). Exact
+   *  rule strings as the settings files spell them. */
+  always_allow_rules: string[];
+}
+
 export interface FeatureSettings {
   schema_version: number;
   app: AppSettings;
@@ -116,6 +156,9 @@ export interface FeatureSettings {
   vj: VjSettings;
   notation: NotationSettings;
   io: IoSettings;
+  models: ModelsSettings;
+  library: LibrarySettings;
+  assistant: AssistantSettings;
 }
 
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
@@ -161,6 +204,16 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
     visual_display: { id: '', label: '' },
     overrides: {},
   },
+  models: {
+    extra_folders: [],
+  },
+  library: {
+    media_roots: [],
+  },
+  assistant: {
+    use_user_claude_config: true,
+    always_allow_rules: [],
+  },
 };
 
 interface FeatureToggleState {
@@ -189,8 +242,14 @@ type DeepPartial<T> = {
  * slot and drop the label. Writers send complete slot objects; the io store's
  * helpers are what build them.
  */
-export type FeatureSettingsPatch = DeepPartial<Omit<FeatureSettings, 'io'>> & {
+export type FeatureSettingsPatch = DeepPartial<Omit<FeatureSettings, 'io' | 'models' | 'library'>> & {
   io?: Partial<IoSettings>;
+  // `models.extra_folders` is a list assigned wholesale, so it is kept out of
+  // DeepPartial (which would fragment the array into partial index keys) and
+  // sent as a complete array, mirroring the backend's replace semantics.
+  models?: Partial<ModelsSettings>;
+  // `library.media_roots` is a list assigned wholesale for the same reason.
+  library?: Partial<LibrarySettings>;
 };
 
 function mergeSettings(base: FeatureSettings, patch: FeatureSettingsPatch): FeatureSettings {
@@ -207,6 +266,15 @@ function mergeSettings(base: FeatureSettings, patch: FeatureSettingsPatch): Feat
     // semantics. Deep-merging here would make a deleted per-surface override
     // resurrect itself on the next patch.
     io: { ...DEFAULT_FEATURE_SETTINGS.io, ...(base.io ?? {}), ...(patch.io ?? {}) },
+    // Wholesale replace, and tolerant of the key being absent from the server
+    // payload (older backend / T01 not yet merged) — falls back to [].
+    models: { ...DEFAULT_FEATURE_SETTINGS.models, ...(base.models ?? {}), ...(patch.models ?? {}) },
+    // Same wholesale-replace rule, same tolerance for an older backend that
+    // does not send the section at all.
+    library: { ...DEFAULT_FEATURE_SETTINGS.library, ...(base.library ?? {}), ...(patch.library ?? {}) },
+    // Tolerant of a backend (or a persisted mirror) that predates the section:
+    // the switch then reads as its default, ON.
+    assistant: { ...DEFAULT_FEATURE_SETTINGS.assistant, ...(base.assistant ?? {}), ...(patch.assistant ?? {}) },
   };
   if (patch.schema_version != null) next.schema_version = patch.schema_version;
   return next;
@@ -239,6 +307,13 @@ function describePatch(partial: FeatureSettingsPatch): string {
 
 const PATCH_NOTICE_ID = 'settings:patch';
 
+/** The last sentence of a "Setting not saved" notice, by how far the PATCH got. */
+const PATCH_OUTCOME_TEXT = {
+  unsent: 'The backend never received it.',
+  refused: 'The backend refused it.',
+  unreadable: 'The backend answered, but its reply could not be read.',
+} as const;
+
 export const useFeatureToggleStore = create<FeatureToggleState>()(
   persist(
     (set, get) => ({
@@ -268,6 +343,9 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
         const previous = get().settings;
         const optimistic = mergeSettings(previous, partial);
         set({ settings: optimistic });
+        // How far the request got, so the notice says what really happened:
+        // a LAN device's 403 reached the backend and was refused there.
+        let outcome: 'unsent' | 'refused' | 'unreadable' = 'unsent';
         try {
           const res = await fetch('/api/settings', {
             method: 'PATCH',
@@ -275,6 +353,7 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
             body: JSON.stringify(partial),
           });
           if (!res.ok) {
+            outcome = 'refused';
             let reason = `HTTP ${res.status}`;
             try {
               const body = (await res.json()) as { detail?: unknown };
@@ -284,6 +363,7 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
             }
             throw new Error(`PATCH /api/settings → ${reason}`);
           }
+          outcome = 'unreadable';
           const payload = (await res.json()) as FeatureSettings;
           set({ settings: mergeSettings(DEFAULT_FEATURE_SETTINGS, payload), loaded: true, error: null });
           dismissFeatureGate(PATCH_NOTICE_ID);
@@ -299,7 +379,7 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
             id: PATCH_NOTICE_ID,
             kind: 'error',
             title: 'Setting not saved',
-            message: `${what} was reverted — ${reason}. The backend never received it.`,
+            message: `${what} was reverted — ${reason}. ${PATCH_OUTCOME_TEXT[outcome]}`,
             action: {
               label: 'Retry',
               run: async () => {
@@ -315,7 +395,17 @@ export const useFeatureToggleStore = create<FeatureToggleState>()(
     }),
     {
       name: 'thedaw-feature-settings',
+      storage: persistStorage(),
       partialize: (s) => ({ settings: s.settings }),
+      // A mirror saved by an older build lacks the sections added since (the
+      // `assistant` switch, the folder lists); fill them from the defaults so
+      // a reader never finds a section missing before the first refresh.
+      merge: (persisted, current) => {
+        const saved = (persisted as { settings?: FeatureSettingsPatch } | undefined)?.settings;
+        return saved && typeof saved === 'object'
+          ? { ...current, settings: mergeSettings(DEFAULT_FEATURE_SETTINGS, saved) }
+          : current;
+      },
     },
   ),
 );

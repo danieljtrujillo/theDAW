@@ -27,9 +27,10 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components
 import { SurfacePlayKey } from '../components/ui/SurfacePlayKey';
 import { effectiveZoom } from '../lib/canvasScale';
 import { ownsKey } from '../lib/keyScope';
-import { logInfo } from '../state/logStore';
-import { useLibraryStore } from '../state/libraryStore';
-import { NODEFI_TEMPLATES, resolveTemplateSource } from '../data/nodefiTemplates';
+import { logError, logInfo } from '../state/logStore';
+import { NODEFI_TEMPLATES } from '../data/nodefiTemplates';
+import { findTemplateSource } from '../lib/nodefiTemplateSource';
+import type { LibraryEntry } from '../state/libraryEntry';
 import { startLiveGraph, isLiveOnlyKind, type LiveController } from '../lib/nodefiLive';
 import { registerSinkElement } from '../lib/audioSink';
 import type { SavedNodeSet } from '../state/nodefiSetsStore';
@@ -657,16 +658,19 @@ export function NodefiView(): React.ReactElement {
     });
   }, [setViewport]);
 
-  // Load a template patch: resolve its GANTASMO source song against the live
+  // Load a template patch: resolve its GANTASMO source song against the whole
   // library (id first, then title), stamp the Library node, replace the graph
   // (one undo step), and frame it.
   const loadTemplate = useCallback(
     async (tplId: string) => {
       const tpl = NODEFI_TEMPLATES.find((t) => t.id === tplId);
       if (!tpl) return;
-      const lib = useLibraryStore.getState();
-      if (!lib.entries.length) await lib.load();
-      const entry = resolveTemplateSource(tpl, useLibraryStore.getState().entries);
+      let entry: LibraryEntry | null = null;
+      try {
+        entry = await findTemplateSource(tpl);
+      } catch (e) {
+        logError('nodefi', `could not look up "${tpl.song}" in the library: ${e instanceof Error ? e.message : String(e)}`);
+      }
       const nodes = tpl.nodes.map((n) =>
         tpl.sourceKeys.includes(n.key)
           ? {

@@ -1,0 +1,13 @@
+# The built host binary: produced by build.ps1, never committed.
+bin/
+
+# Build trees. build/ is build.ps1's own default (override it with -BuildDir or
+# THEDAW_VST_BUILD_DIR); out/ is what an in-source CMake configure leaves here.
+build/
+out/
+*.user
+
+# Written when the launch-time build offer is declined, so theDAW.bat asks
+# once instead of every launch. Delete it to be asked again; a successful
+# build deletes it too.
+.build-declined

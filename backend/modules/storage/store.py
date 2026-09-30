@@ -29,6 +29,7 @@ from typing import Any
 
 from stable_audio_3.model_configs import resolve_local_checkpoint
 from backend.lib import paths
+from backend.lib.atomic import atomic_write
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +71,7 @@ class CheckpointRegistry:
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._cache, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write(self.path, json.dumps(self._cache, indent=2))
 
     def _apply_local_only_env(self) -> None:
         os.environ["SA3_LOCAL_ONLY"] = "1" if self._cache["local_only"] else "0"

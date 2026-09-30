@@ -6,7 +6,7 @@ the track. Noteheads, stems, flags, accidentals and rests, arriving on the beat.
 
 ```mermaid
 flowchart LR
-    SCORE["theDAW SCORE tab<br/>export format 'unity'"] --> JSON["chart.unity.json<br/>gantasmo.notechart v1"]
+    SCORE["theDAW SCORE tab<br/>export format 'notechart'"] --> JSON["*.notechart.json<br/>gantasmo.notechart v1"]
     JSON --> LD["NoteChartLoader<br/>JsonUtility"]
     LD --> SP["NoteChartSpawner<br/>pooled FlyingNote"]
     CK["NoteChartClock<br/>AudioSettings.dspTime"] --> SP
@@ -32,11 +32,14 @@ flowchart LR
    glyph template the pool clones from.
 2. Generate the Bravura TMP font asset (below) and assign it to the
    `Flying Note Template/Glyph` and `.../Accidental` text objects.
-3. Point the loader at a chart: drop the `.unity.json` into
-   `Assets/StreamingAssets/`, or set `artifactId` and let it fetch from theDAW.
+3. Point the loader at a chart: rename theDAW's export (it always ends
+   `.notechart.json`) to `NoteChartLoader.fileName`'s value (`chart.notechart.json`
+   by default) and drop it into `Assets/StreamingAssets/`, or set `artifactId`
+   and let it fetch from theDAW.
 
-theDAW side: SCORE tab, export format `unity`, which registers a `unityscore`
-artifact. The loader's defaults reach the backend at `127.0.0.1:8600` over the
+theDAW side: SCORE tab, export format `notechart`, which registers a
+`notechart`-kind artifact whose file always ends `.notechart.json`. The
+loader's defaults reach the backend at `127.0.0.1:8600` over the
 `adb reverse` tunnel theDAW's questmidi module already opens, so a
 USB-tethered headset needs no network setup. For Wi-Fi, set the desktop's LAN
 IP on `NoteChartLoader`.

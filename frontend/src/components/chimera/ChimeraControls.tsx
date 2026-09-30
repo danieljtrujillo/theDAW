@@ -1,5 +1,7 @@
 import React from 'react';
 import { Target, Layers } from 'lucide-react';
+import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
+import { useTempoField } from '../../lib/useTempoField';
 import {
   useGenerateParamsStore,
   type ChimeraAlignMode,
@@ -35,6 +37,9 @@ const HEAL_LABELS: Record<ChimeraHealMode, string> = {
 };
 
 const LABEL = 'text-zinc-400 uppercase tracking-widest cursor-default';
+/** The row's value fields: compact-input's box, with its 11px mono face replaced by 12px bold sans
+ *  (utilities win over the components layer compact-input lives in). */
+const FIELD = 'compact-input text-xs font-sans font-bold';
 
 export const ChimeraControls: React.FC = () => {
   const clipsCount = useGenerateParamsStore((s) => s.chimera.clips.length);
@@ -53,6 +58,20 @@ export const ChimeraControls: React.FC = () => {
   const updateChimeraClip = useGenerateParamsStore((s) => s.updateChimeraClip);
   const clips = useGenerateParamsStore((s) => s.chimera.clips);
 
+  // Above the early return, so the hook runs on every render. Typing keeps a draft (lib/useTempoField)
+  // that lands on Enter or blur, clamped to 20-300; an arrow or spin step lands at once. An emptied
+  // field means auto, as it always has.
+  const bpmField = useTempoField(
+    typeof targetBpm === 'number' ? targetBpm : '',
+    (bpm) => {
+      setChimeraField('targetBpm', bpm);
+      clips.forEach((c) => {
+        if (c.isBase) updateChimeraClip(c.id, { isBase: false });
+      });
+    },
+    { onEmpty: () => setChimeraField('targetBpm', 'auto') },
+  );
+
   if (clipsCount === 0) return null;
 
   const isAuto = targetBpm === 'auto';
@@ -68,18 +87,6 @@ export const ChimeraControls: React.FC = () => {
     }
   };
 
-  const onBpmChange = (raw: string) => {
-    const n = parseFloat(raw);
-    if (Number.isFinite(n) && n > 0) {
-      setChimeraField('targetBpm', n);
-      clips.forEach((c) => {
-        if (c.isBase) updateChimeraClip(c.id, { isBase: false });
-      });
-    } else {
-      setChimeraField('targetBpm', 'auto');
-    }
-  };
-
   // a stored phrase length outside the preset set is shown as an extra
   // option so nothing is silently changed under the user
   const phraseOptions = PHRASE_OPTIONS.includes(weaveBars)
@@ -87,7 +94,7 @@ export const ChimeraControls: React.FC = () => {
     : [...PHRASE_OPTIONS, weaveBars].sort((a, b) => a - b);
 
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[9px] font-mono">
+    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs font-sans font-bold">
       <div className="flex items-center gap-1">
         <Target className="w-2.5 h-2.5 text-purple-400" />
         <label htmlFor="chimera-target-bpm" className={LABEL}>BPM</label>
@@ -95,20 +102,20 @@ export const ChimeraControls: React.FC = () => {
           id="chimera-target-bpm"
           type="number"
           name="chimera-target-bpm"
-          min={40}
-          max={240}
+          min={TEMPO_BPM_MIN}
+          max={TEMPO_BPM_MAX}
           step={0.1}
           disabled={isAuto}
-          value={isAuto ? '' : (typeof targetBpm === 'number' ? targetBpm : '')}
+          {...bpmField}
+          value={isAuto ? '' : bpmField.value}
           placeholder={isAuto ? 'auto' : ''}
-          onChange={(e) => onBpmChange(e.target.value)}
-          className="compact-input w-16 disabled:opacity-40"
+          className={`${FIELD} w-16 disabled:opacity-40`}
         />
         <button
           type="button"
           onClick={onAutoToggle}
           aria-pressed={isAuto}
-          className={`px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest transition-colors ${
+          className={`px-1.5 py-0.5 rounded border text-xs font-display font-bold uppercase tracking-wider transition-colors ${
             isAuto
               ? 'border-purple-400 bg-purple-500/20 text-purple-200'
               : 'border-white/10 bg-black/30 text-zinc-400 hover:bg-white/5'
@@ -127,7 +134,7 @@ export const ChimeraControls: React.FC = () => {
           name="chimera-align-mode"
           value={alignMode}
           onChange={(e) => setChimeraField('alignMode', e.target.value as ChimeraAlignMode)}
-          className="compact-input"
+          className={FIELD}
         >
           {(Object.keys(ALIGN_LABELS) as ChimeraAlignMode[]).map((m) => (
             <option key={m} value={m}>
@@ -155,7 +162,7 @@ export const ChimeraControls: React.FC = () => {
                 const n = parseInt(e.target.value);
                 setChimeraField('weaveBars', Number.isFinite(n) ? n : 8);
               }}
-              className="compact-input"
+              className={FIELD}
               title="Bars per phrase; phrases start on real downbeats."
             >
               {phraseOptions.map((n) => (
@@ -186,7 +193,7 @@ export const ChimeraControls: React.FC = () => {
                 const n = parseInt(e.target.value);
                 setChimeraField('weaveTotalBars', Number.isFinite(n) ? n : 0);
               }}
-              className="compact-input w-14"
+              className={`${FIELD} w-14`}
               title="0 = match the generation Length"
             />
           </div>
@@ -211,7 +218,7 @@ export const ChimeraControls: React.FC = () => {
                 const clamped = Math.max(1, Math.min(8, Number.isFinite(n) ? n : 3));
                 setChimeraField('weaveMaxPolyphony', clamped);
               }}
-              className="compact-input w-10"
+              className={`${FIELD} w-10`}
               title="Polyphony cap (1-8). Default 3."
             />
           </div>
@@ -228,7 +235,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-harmony"
               value={harmony}
               onChange={(e) => setChimeraField('harmony', e.target.value as ChimeraHarmonyMode)}
-              className="compact-input"
+              className={FIELD}
               title="Auto picks one Camelot-compatible key and pitch-shifts clips by at most 2 semitones; drums and uncertain keys are never shifted."
             >
               {(Object.keys(HARMONY_LABELS) as ChimeraHarmonyMode[]).map((m) => (
@@ -251,7 +258,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-arc"
               value={arc}
               onChange={(e) => setChimeraField('arc', e.target.value as ChimeraArc)}
-              className="compact-input"
+              className={FIELD}
               title="Song = intro/build/peak/release/outro; Rise = continuous build; Flat = DJ blend."
             >
               {(Object.keys(ARC_LABELS) as ChimeraArc[]).map((m) => (
@@ -274,7 +281,7 @@ export const ChimeraControls: React.FC = () => {
               name="chimera-heal"
               value={heal}
               onChange={(e) => setChimeraField('heal', e.target.value as ChimeraHealMode)}
-              className="compact-input"
+              className={FIELD}
               title="Off = today; Preserve = regenerate only the seams in one pass; Polish = a second pass on the result (2x model time)"
             >
               {(Object.keys(HEAL_LABELS) as ChimeraHealMode[]).map((m) => (
@@ -288,7 +295,7 @@ export const ChimeraControls: React.FC = () => {
             type="button"
             aria-pressed={engine === 'v1'}
             onClick={() => setChimeraField('engine', engine === 'v1' ? 'v2' : 'v1')}
-            className={`px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest transition-colors ${
+            className={`px-1.5 py-0.5 rounded border text-xs font-display font-bold uppercase tracking-wider transition-colors ${
               engine === 'v1'
                 ? 'border-amber-400 bg-amber-500/20 text-amber-200'
                 : 'border-white/10 bg-black/30 text-zinc-400 hover:bg-white/5'

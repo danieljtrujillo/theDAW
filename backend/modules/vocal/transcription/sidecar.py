@@ -39,12 +39,207 @@ _WORKER = _PACKAGE_DIR / "worker.py"
 _REQUIREMENTS = _PACKAGE_DIR / "requirements.txt"
 _REQUIREMENTS_CUDA = _PACKAGE_DIR / "requirements-cuda.txt"
 SIDECAR_VENV_DIRNAME = ".whisper_venv"
-_CRITICAL_PACKAGES: tuple[str, ...] = ("faster_whisper",)
+# onnxruntime belongs here: decode_options() always sets vad_filter=True, so a
+# venv without it imports faster_whisper fine and then fails at transcribe time.
+# Probing only faster_whisper reported such a venv as healthy — the failure
+# surfaced as an opaque RuntimeError mid-job instead of a missing dependency.
+_CRITICAL_PACKAGES: tuple[str, ...] = ("faster_whisper", "onnxruntime")
 # The CUDA runtime libraries faster-whisper needs on the GPU path; optional.
 _CUDA_PACKAGES: tuple[str, ...] = ("nvidia.cublas", "nvidia.cudnn")
 # Defaults per device class. Model ids are faster-whisper's own names.
 _GPU_DEFAULTS = {"device": "cuda", "compute_type": "float16", "model": "large-v3"}
 _CPU_DEFAULTS = {"device": "cpu", "compute_type": "int8", "model": "small"}
+
+
+def _dir_size(path: Path) -> int:
+    """Sum of every regular file under ``path`` (recursive). Never raises;
+    files that vanish or deny access mid-walk are skipped."""
+    total = 0
+    try:
+        for f in path.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def _hf_layout_revision(d: Path) -> Optional[tuple[Path, int]]:
+    """For a HuggingFace-cache-layout dir ``models--org--name``, return the
+    ``(largest_revision_dir, size)`` under ``snapshots/``, else ``None``.
+
+    Size is the largest SINGLE revision, not the whole ``snapshots`` tree: every
+    revision dir links the same blobs, so summing them all would count a small
+    multi-revision model several times and let it outrank a bigger one."""
+    if "faster-whisper" not in d.name.lower():
+        return None
+    snap = d / "snapshots"
+    if not snap.is_dir():
+        return None
+    best: Optional[Path] = None
+    best_size = -1
+    try:
+        for r in snap.iterdir():
+            if not r.is_dir():
+                continue
+            size = _dir_size(r)
+            if size > best_size:
+                best, best_size = r, size
+    except OSError:
+        return None
+    if best is None:
+        return None
+    return best, best_size
+
+
+def _hf_cache_model(d: Path) -> Optional[tuple[str, int]]:
+    """For a dir in the REAL HuggingFace cache, return ``(repo_id, size)``.
+
+    A bare repo id is right here and only here: ``WhisperModel`` resolves it
+    against this very cache, so nothing is re-downloaded. For a hub tree copied
+    somewhere else the id would be a cache MISS and trigger a download — see
+    ``_scan_extra_folder``, which returns the revision path instead."""
+    rev = _hf_layout_revision(d)
+    if rev is None:
+        return None
+    parts = d.name.split("--", 2)
+    if len(parts) != 3:
+        return None
+    return f"{parts[1]}/{parts[2]}", rev[1]
+
+
+def _ct2_model(d: Path) -> Optional[tuple[str, int]]:
+    """For a plain CTranslate2 faster-whisper model dir (directly contains
+    ``model.bin`` + ``config.json``), return ``(absolute_dir_path, size)``, else
+    ``None``. ``WhisperModel`` accepts such a local directory path directly.
+
+    A CTranslate2 layout alone is not enough — it is also how non-whisper CT2
+    models (translation, etc.) look, and handing one to ``WhisperModel`` fails at
+    load time. We additionally require a whisper marker: a ``tokenizer.json`` in
+    the dir, or ``whisper`` in the dir name."""
+    try:
+        if not ((d / "model.bin").is_file() and (d / "config.json").is_file()):
+            return None
+        if not ((d / "tokenizer.json").is_file() or "whisper" in d.name.lower()):
+            return None
+        return str(d.resolve()), _dir_size(d)
+    except OSError:
+        return None
+
+
+def _scan_hf_cache() -> list[tuple[str, int]]:
+    """Every faster-whisper model in the HuggingFace cache as ``(repo_id, size)``.
+    Empty when the hub is unimportable or the cache is absent."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except Exception:  # noqa: BLE001 - hub not importable in this env
+        return []
+    cache = Path(HF_HUB_CACHE)
+    if not cache.is_dir():
+        return []
+    out: list[tuple[str, int]] = []
+    try:
+        for d in cache.glob("models--*"):
+            m = _hf_cache_model(d)
+            if m is not None:
+                out.append(m)
+    except OSError:
+        return out
+    return out
+
+
+def _extra_model_folders() -> list[Path]:
+    """Folders listed in the ``models.extra_folders`` setting, as ``Path``s.
+
+    Read defensively: the settings module may not have landed yet, the key may
+    be absent, and the value may be the wrong type. Any of that yields ``[]``
+    rather than raising, so this module stays cheap and importable.
+
+    Read-ONLY: we use the already-initialized store rather than ``get_store()``,
+    because constructing a ``SettingsStore`` creates directories and writes /
+    migrates the real settings.json. Resolving a model must never write to the
+    user's config. The app initializes the store at startup, so this is a no-op
+    there; off the app (tests, CLI) it simply reports no extra folders."""
+    try:
+        from backend.modules.settings import router as _settings_router
+
+        store = getattr(_settings_router, "_store", None)
+        if store is None:
+            return []
+        raw = store.get_all().get("models", {}).get("extra_folders", [])
+    except Exception:  # noqa: BLE001 - setting optional / store may be unavailable
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[Path] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        try:
+            out.append(Path(item).expanduser())
+        except Exception:  # noqa: BLE001 - a bogus path string is just skipped
+            continue
+    return out
+
+
+def _scan_extra_folder(folder: Path) -> list[tuple[str, int]]:
+    """faster-whisper models found in ``folder``: the folder itself as a
+    CTranslate2 model, plus any immediate subfolder that is a CTranslate2 model
+    or a HuggingFace-cache-layout dir. Returns ``(identifier, size)`` pairs.
+    Nonexistent / unreadable folders yield ``[]``."""
+    out: list[tuple[str, int]] = []
+    try:
+        if not folder.is_dir():
+            return out
+    except OSError:
+        return out
+    root = _ct2_model(folder)
+    if root is not None:
+        out.append(root)
+    try:
+        children = list(folder.iterdir())
+    except OSError:
+        return out
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        hf = _hf_layout_revision(child)
+        if hf is not None:
+            # The revision DIRECTORY, not the repo id. This hub tree lives under
+            # a user folder, so a repo id would miss the real HF_HUB_CACHE and
+            # make WhisperModel download it. A local dir loads straight off disk.
+            out.append((str(hf[0].resolve()), hf[1]))
+        ct2 = _ct2_model(child)
+        if ct2 is not None:
+            out.append(ct2)
+    return out
+
+
+def _best_cached_whisper_model() -> Optional[str]:
+    """Return the identifier of the largest faster-whisper model already on disk
+    across the HuggingFace cache AND every folder in ``models.extra_folders``,
+    or ``None`` if none are found.
+
+    The identifier is a repo id for HuggingFace-cache-layout models (resolved
+    from that cache, no download) or an absolute directory path for plain
+    CTranslate2 model folders. Lets the app use whatever whisper model the user
+    actually has — including local ones outside the hub cache — without a
+    hardcoded catalog and without a network fetch.
+    """
+    candidates: list[tuple[str, int]] = list(_scan_hf_cache())
+    for folder in _extra_model_folders():
+        candidates.extend(_scan_extra_folder(folder))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c[1])[0]
+
+
 # Env var the worker reads for the DLL / shared-library folders to load.
 LIB_DIRS_ENV = "theDAW_WHISPER_LIB_DIRS"
 _INSTALL_TIMEOUT_SEC = 20 * 60
@@ -115,7 +310,11 @@ def resolve_config() -> WhisperConfig:
     return WhisperConfig(
         venv_base=venv_base,
         python_exe=python_exe,
-        model=os.getenv("theDAW_WHISPER_MODEL", "").strip() or defaults["model"],
+        model=(
+            os.getenv("theDAW_WHISPER_MODEL", "").strip()
+            or (_best_cached_whisper_model() if device.startswith("cuda") else "")
+            or defaults["model"]
+        ),
         device=device,
         compute_type=os.getenv("theDAW_WHISPER_COMPUTE", "").strip()
         or defaults["compute_type"],

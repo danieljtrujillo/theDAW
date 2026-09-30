@@ -619,6 +619,20 @@ function ControlRequestCard({
         The agent wants to use <span className="font-mono text-red-200">{control.toolName}</span>.
       </div>
       {control.reason && <div className="text-[10px] text-zinc-500">{control.reason}</div>}
+      {/* G5 item 6: the server's OWN policy reason (server/permissions.ts
+          decide()), distinct from control.reason above (the CLI's own
+          decision_reason, when it sends one). */}
+      {control.policyReason && <div className="text-[10px] text-zinc-500">{control.policyReason}</div>}
+      {control.selfModifyPath && (
+        // m3: the server's OWN policy (server/permissions.ts) flagged this as
+        // a write to the assistant's own tool surface — always ask, in every
+        // mode including "trusted". Surfaced as its own explicit line (not
+        // folded into `control.reason`, which is the CLI's unrelated text) so
+        // the user sees exactly what would change before answering.
+        <div className="text-[10px] text-amber-300">
+          Edits the assistant&apos;s own code: <span className="font-mono">{control.selfModifyPath}</span>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => onAnswer({ behavior: "allow", updatedInput: control.input ?? {} })}
@@ -626,7 +640,14 @@ function ControlRequestCard({
         >
           Allow once
         </button>
-        {control.suggestions && control.suggestions.length > 0 && (
+        {/* G5 item 6: never offer "Always allow" for a self-modify request —
+            server/permissions.ts's own decide() rule is that self-modify is
+            NEVER remembered for the session, in any mode; offering the button
+            here would just invite a click server/routes.ts's
+            control-response handler silently ignores (updatedPermissions
+            gets stripped for a self-modify pending entry regardless), which
+            is confusing UX for a control that can never do what it says. */}
+        {!control.selfModifyPath && control.suggestions && control.suggestions.length > 0 && (
           <button
             onClick={() =>
               onAnswer({ behavior: "allow", updatedInput: control.input ?? {}, updatedPermissions: control.suggestions })

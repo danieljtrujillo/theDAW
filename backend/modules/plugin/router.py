@@ -26,6 +26,7 @@ from backend.modules.plugin.gan_file import GanFile
 from backend.modules.plugin.owl_import import import_vst_foundry, source_fingerprint
 from backend.lib import known_paths, paths
 from backend.lib import reveal as reveal_lib
+from backend.lib.cross_site import require_loopback_or_launch_token
 
 log = logging.getLogger(__name__)
 
@@ -384,8 +385,12 @@ class RevealRequest(BaseModel):
 
 
 @router.post("/reveal")
-def reveal_path(req: RevealRequest) -> dict:
+def reveal_path(req: RevealRequest, request: Request) -> dict:
     """Reveal a file in the OS file manager (Explorer/Finder), selecting it."""
+    # ITW security P1: same gate places/router.py's /reveal gets from
+    # refuse_cross_site, tightened to loopback-or-launch-token since this
+    # router (unlike places) is not behind that dependency for every route.
+    require_loopback_or_launch_token(request)
     try:
         shown = reveal_lib.reveal(req.path)
     except FileNotFoundError:
@@ -449,7 +454,10 @@ def serve_runtime(plugin_id: str, asset_path: str, request: Request) -> Response
         _ensure_runtime(plugin_id)
     base = _runtime_dir(plugin_id).resolve()
     target = (base / asset_path).resolve()
-    if not str(target).startswith(str(base)) or not target.is_file():
+    # A string-prefix check would wrongly accept a sibling directory that
+    # merely shares base's characters (SEC-003), same shape as gan_file.py's
+    # extract().
+    if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(404, "Asset not found")
     stat = target.stat()
     etag_base = f"{stat.st_mtime}-{stat.st_size}"

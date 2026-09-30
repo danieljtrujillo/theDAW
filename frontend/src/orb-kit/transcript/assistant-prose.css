@@ -1,0 +1,281 @@
+/* ==========================================================================
+   Assistant prose — the formatting inside an assistant chat bubble.
+
+   Copied from the red orb's rules in
+   VST-Foundry-UI/VST-UI-FOUNDRY/src/orb-kit-skin/orb-chat.css
+   (section 11 "Markdown Prose Styles" + section 12 "Streaming Cursor"), with
+   two changes and nothing else:
+
+   1. RE-SCOPED. The Foundry's selectors are all `.gantasmo-orb-theme
+      .orb-chat__prose …`. theDAW ships that same stylesheet at
+      orb-kit/chat/orb-chat.css and loads it from App.tsx, but the MAIN
+      assistant panel is not inside a `.gantasmo-orb-theme` root, so not one of
+      those rules ever reached it. These are scoped to `.assistant-prose`
+      alone, so they apply wherever transcript/Markdown.tsx renders.
+
+   2. THEME VARIABLES RESOLVED to what theDAW gives them. `--text-primary` and
+      `--text-secondary` exist in theDAW's `:root` (index.css) and are used as
+      vars with the Foundry's values as fallbacks; `--border-subtle` and
+      `--transition-fast` do not exist here, so they are written out literally.
+      The accent — link colour, link focus ring, blockquote rule — is theDAW's
+      OWN primary token (`--color-primary`, #8b5cf6) rather than the Foundry's
+      red, per "do not restyle anything but the bubble formatting".
+
+   These rules are deliberately UNLAYERED. Tailwind v4 emits its preflight into
+   `@layer base`, and unlayered CSS outranks every layer — which is what lets
+   `h1`, `ul`, `table` and `code` get their formatting back inside a bubble.
+   ========================================================================== */
+
+.assistant-prose h1 {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary, #fafafa);
+    margin: 12px 0 8px;
+    line-height: 1.3;
+}
+
+.assistant-prose h2 {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary, #fafafa);
+    margin: 10px 0 6px;
+    line-height: 1.3;
+}
+
+.assistant-prose h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary, #fafafa);
+    margin: 8px 0 4px;
+    line-height: 1.4;
+}
+
+.assistant-prose h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary, #fafafa);
+    margin: 6px 0 4px;
+    line-height: 1.4;
+}
+
+.assistant-prose strong {
+    font-weight: 600;
+}
+
+.assistant-prose em {
+    font-style: italic;
+}
+
+.assistant-prose del {
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.assistant-prose a {
+    color: var(--color-primary, #8b5cf6);
+    text-decoration: none;
+    transition: color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+}
+
+.assistant-prose a:hover {
+    text-decoration: underline;
+    color: color-mix(in srgb, var(--color-primary, #8b5cf6) 70%, white);
+}
+
+.assistant-prose a:focus-visible {
+    outline: 2px solid var(--color-primary, #8b5cf6);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+.assistant-prose code {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #e2e8f0;
+}
+
+.assistant-prose pre {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    font-family: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 6px 0;
+    color: #e2e8f0;
+}
+
+.assistant-prose pre code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+}
+
+.assistant-prose blockquote {
+    border-left: 3px solid var(--color-primary, #8b5cf6);
+    padding-left: 12px;
+    opacity: 0.8;
+    font-style: italic;
+    margin: 6px 0;
+    color: var(--text-secondary, #a1a1aa);
+}
+
+.assistant-prose ul,
+.assistant-prose ol {
+    padding-left: 20px;
+    margin: 4px 0;
+}
+
+.assistant-prose ul {
+    list-style: disc;
+}
+
+.assistant-prose ol {
+    list-style: decimal;
+}
+
+.assistant-prose li {
+    margin: 2px 0;
+    line-height: 1.5;
+}
+
+.assistant-prose hr {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin: 8px 0;
+}
+
+.assistant-prose img,
+.assistant-prose video {
+    max-width: 100%;
+    border-radius: 8px;
+    margin: 4px 0;
+}
+
+.assistant-prose img {
+    max-height: 300px;
+    object-fit: contain;
+}
+
+.assistant-prose audio {
+    width: 100%;
+    margin: 4px 0;
+}
+
+.assistant-prose p {
+    margin: 4px 0;
+    line-height: 1.5;
+}
+
+.assistant-prose table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 11px;
+}
+
+.assistant-prose th,
+.assistant-prose td {
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    text-align: left;
+}
+
+.assistant-prose th {
+    background: rgba(255, 255, 255, 0.05);
+    font-weight: 600;
+    color: var(--text-secondary, #a1a1aa);
+}
+
+/* --------------------------------------------------------------------------
+   Streaming cursor (Foundry section 12, `.orb-chat__cursor`), re-scoped and on
+   theDAW's accent. `prefers-reduced-motion` stops the blink but keeps the
+   caret visible, so the "still writing" signal survives.
+   -------------------------------------------------------------------------- */
+
+.assistant-prose__cursor {
+    display: inline-block;
+    width: 2px;
+    height: 14px;
+    background: var(--color-primary, #8b5cf6);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    animation: assistant-prose-blink 1s step-end infinite;
+}
+
+@keyframes assistant-prose-blink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .assistant-prose__cursor {
+        animation: none;
+    }
+}
+
+/* --------------------------------------------------------------------------
+   theDAW's extras on top of the copy: the hover "Copy code" button on a fenced
+   block, and the click-to-copy affordance on inline code. Both are wired by
+   delegation in Markdown.tsx — this file only makes them visible.
+   -------------------------------------------------------------------------- */
+
+.assistant-prose .assistant-prose__block {
+    position: relative;
+}
+
+.assistant-prose .assistant-prose__copy {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px;
+    border: none;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-secondary, #a1a1aa);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1),
+        background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.assistant-prose .assistant-prose__block:hover .assistant-prose__copy,
+.assistant-prose .assistant-prose__copy:focus-visible {
+    opacity: 1;
+}
+
+.assistant-prose .assistant-prose__copy:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.assistant-prose .assistant-prose__copy:focus-visible {
+    outline: 2px solid var(--color-primary, #8b5cf6);
+    outline-offset: 2px;
+}
+
+/* Inline code only — the fenced block's own <code> has no title attribute.
+   This is the affordance the pre-transcript-port renderer had (`cursor-pointer
+   hover:bg-white/20`) and lost. */
+.assistant-prose code[title] {
+    cursor: pointer;
+    transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.assistant-prose code[title]:hover {
+    background: rgba(255, 255, 255, 0.2);
+}

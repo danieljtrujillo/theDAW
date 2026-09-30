@@ -8,6 +8,7 @@ data/api_key_pools.json
 data/tour_keys.json
 data/tour_filters.json
 data/tour_cache/
+data/playable-cache/
 # Underfit upstream-update check cache (written by backend/modules/underfit/updater.py)
 data/underfit_update.json
 # App update check cache (written by backend/modules/updates/router.py)
@@ -21,10 +22,15 @@ data/performance-sets/
 # The LYRIC tab's notebook: drafts the writer has not published anywhere.
 data/lyric-documents/
 data/settings.json
+# The LAN HTTPS switch as this build last wrote it into settings.json
+# (backend/lib/lan_https.py record_path), per machine like settings.json
+data/lan_https.json
 data/recent_projects.json
 # Paths theDAW saved, installed, picked or downloaded (absolute, per machine)
 data/known_paths.json
-# Per-machine media roots (absolute paths to the user's audio folders)
+# Per-machine /clip-audio folder grants (absolute paths to the user's audio
+# folders): this build's file, and the list older builds read
+data/clip_audio_roots.json
 data/media_roots.json
 # Cockpit-saved Sway projects (contain absolute paths to the user's media)
 data/sway-projects/
@@ -40,6 +46,14 @@ data/plugins/
 backend/modules/vst/vst3_scan_cache.json
 # Captured VST3 native-editor state (per-plugin presets, machine-specific)
 data/vst_presets/
+# LAN pairing token (a secret, generated per install)
+data/pairing_token.txt
+# Self-signed HTTPS certificate + private key for the LAN listener, generated
+# per install by backend/lib/lan_cert.py. The key is a secret; the certificate
+# names this machine's LAN addresses and hostname.
+data/lan-cert/
+# One-time notation migration bookkeeping (regenerated on demand)
+data/notation_migrations.json
 CHANGES-LOGS/
 backend/rag_index/
 archive/
@@ -351,6 +365,17 @@ logs/
 *.bak
 *.bak-*
 deprecated/
+# ...except the backend's, which is a live import target:
+# tests/test_assistant_stream_lock.py imports
+# backend/deprecated/assistant_claude_spawn_20260915.py (the pre-T07 Claude
+# spawn paths, moved not deleted). The directory has to be re-included
+# BEFORE its contents - git will not descend into an excluded directory.
+!backend/deprecated/
+!backend/deprecated/**
+# ...but the re-include above also overrides the global __pycache__/ rule
+# (line 62) inside that tree, so put the bytecode back out.
+backend/deprecated/**/__pycache__/
+backend/deprecated/**/*.pyc
 
 # Local model weights (multi-GB safetensors + configs) - never commit.
 # ROOT-anchored on purpose: a bare `models/` matches at any depth and was
@@ -391,6 +416,9 @@ video-scripts/
 /lyria/
 data/magenta_engine.json
 data/lyria_gemini_key.json
+data/lyria_provider_keys.json
+# Lyria checkouts an Update moved whose npm install has not finished
+data/lyria_deps_pending.json
 logs/magenta-download-*.log
 
 # Chimera v2 per-clip analysis cache (sha256-keyed JSON)
@@ -410,3 +438,57 @@ examples/audio/
 # ran it, which do not belong in the repository.
 /.codacy/codacy.config.json
 /.codacy/codacy.config.baseline.json
+oss-refs/
+
+# Local-only parking areas (never-delete backups, old runtime venvs, caches,
+# scratch API dumps). Kept on disk, never committed: _deprecated/ alone is 7+ GB
+# of site-packages. Same intent as the deprecated/ rule above.
+_deprecated/
+_backup/
+.scratch/
+
+# ── Session scratch that must never be committed ──────────────────────────────
+# Orchestration run logs. Same class as /docs/plans/ and /docs/audits/ above:
+# local working notes about HOW a batch was built, not product documentation.
+/docs/runs/
+# Session, audit and "theirs vs ours" reports. /docs/reports/ was already
+# ignored; these landed at the repo root instead and slipped through.
+/reports/
+# Donor reference code read for its design and re-implemented in our own tree.
+# Cited in "adapted from" comments only — never imported, never shipped.
+/docs/design/repair-pack/
+# Screenshot-capture scratch: one-off _probe*.mjs DOM dumps and the group
+# runners. Not in CI, npm, or docs; their output dir is already ignored.
+/scripts/screenshots/callouts/
+/scripts/screenshots/label_guide_shots.py
+# Browser QA harness. Drives a RUNNING app by hand; `npm test` only collects
+# *.test.ts(x) under src/, so nothing here is ever run automatically.
+/frontend/qa/
+# One-off benchmarks.
+/scripts/bench_*.py
+# Interactive user guides that inline screenshots as base64. A 13.6 MB HTML of
+# the running app is not documentation the repo should carry.
+/docs/guides/*_Interactive_*.html
+# Suno/Harvester bulk cache ingestion — a personal tool, not a product feature.
+# The stage/promote pipeline that walks a ~200k-song provider cache stays out
+# of the repo. NOT covered by this: reading the metadata a provider embeds in
+# the audio file itself (backend/modules/library/tags.py), which is generic and
+# ships.
+/backend/modules/library/suno_stage.py
+/backend/modules/library/suno_promote.py
+/scripts/stage_suno_cache.py
+/scripts/promote_suno_stage.py
+/tests/test_suno_stage.py
+/tests/test_suno_promote*.py
+/backend/modules/library/suno_routes.py
+
+# Local scratch and captures that must never ship (kept in place, untracked)
+/2026-09-18
+/300mb
+/VST-Foundry-UI/VST-UI-FOUNDRY/exports/
+/docs/design/repair-expansion-report-and-plan.html
+/docs/guides/screenshots.7z
+/docs/guides/screenshots/
+/docs/guides/t37a-roll-initial.png
+# A cockpit build set aside while a newer one is staged.
+electron-ui/resources/sway-dist.*-backup/

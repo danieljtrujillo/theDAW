@@ -1,4 +1,5 @@
 import { TextureGenParams } from '../../types';
+import type { OpenRouterTab } from '../../features/openrouter-textures/types';
 
 // Shared types for the Texture Generate modal and its sub-components.
 // Extracted verbatim from the original TextureGenerateModal.tsx.
@@ -36,5 +37,5 @@ export interface SDResources {
   samplers: SDResource[];
 }
 
-export type ProviderTab = 'sd' | 'dalle' | 'gemini';
+export type ProviderTab = 'sd' | 'dalle' | 'gemini' | OpenRouterTab;
 export type SdType = 'a1111' | 'comfyui';

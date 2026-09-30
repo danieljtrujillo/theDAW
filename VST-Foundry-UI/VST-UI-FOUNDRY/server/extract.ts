@@ -1,5 +1,7 @@
 // UI-element extraction endpoints — segment + classify a composite UI image
-// (the Foundry canvas background) via the Gemini REST API. Prompts and
+// (the Foundry canvas background) via the Gemini REST API, or via OpenRouter
+// (provider:"openrouter") so Gemini models can run on the user's OpenRouter
+// account instead of the direct Google API and its rate limits. Prompts and
 // response schemas are ported VERBATIM from component-extractor/server.ts
 // (the proven working set). Plain fetch, same pattern as sd.ts
 // generateViaGemini — no SDK dependency. Key resolution follows getApiKey:
@@ -7,6 +9,8 @@
 import { Express, Request, Response } from "express";
 import { getApiKey } from "./providers";
 import { appendLog } from "./logging";
+import { buildDetectionPrompt, buildPanelPrompt, EXTRACT_ELEMENT_DESCRIPTION } from "./features/openrouter/extractorPrompts";
+import { generateExtractJson, resolveExtractionSettings, type ExtractProvider } from "./features/openrouter/extraction";
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const MIME_OK = /^image\/(png|jpe?g|webp)$/;
@@ -17,7 +21,7 @@ const DETECT_SCHEMA = {
     type: "OBJECT",
     properties: {
       label: { type: "STRING", description: "Descriptive name of the element" },
-      type: { type: "STRING", description: "Type of element (e.g., knob, button, panel, display)" },
+      type: { type: "STRING", description: EXTRACT_ELEMENT_DESCRIPTION },
       ymin: { type: "NUMBER", description: "Normalized top Y coordinate (0.0 to 1.0)" },
       xmin: { type: "NUMBER", description: "Normalized left X coordinate (0.0 to 1.0)" },
       ymax: { type: "NUMBER", description: "Normalized bottom Y coordinate (0.0 to 1.0)" },
@@ -67,7 +71,7 @@ function detectPrompt(sensitivity: number): string {
       : sensitivity < 0.3
         ? "Be conservative and only detect the most obvious, distinct, large elements."
         : "Use a balanced threshold for detection.";
-  return `Analyze this image and identify EVERY single interactive UI element (such as knobs, buttons, sliders, meters, switches, icons, displays, readouts, and panels/frames (module backplates)). ${thresholdLevel} Break down complex groups into their individual components. You must return their precise bounding boxes. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000. Be extremely thorough. Provide a short, descriptive label for each (e.g., 'Reverb Knob', 'Sync Button', 'Filter Icon').`;
+  return buildDetectionPrompt(thresholdLevel);
 }
 
 function panelPrompt(sensitivity: number): string {
@@ -77,7 +81,7 @@ function panelPrompt(sensitivity: number): string {
       : sensitivity < 0.3
         ? "Only include the most clearly delineated major panels."
         : "Use a balanced threshold.";
-  return `Analyze this audio-plugin UI image and identify every distinct MODULE PANEL — a visually grouped section with its own background plate, usually a border/frame and a title (e.g. 'KAOSS PAD', 'FREEZE CHAMBER', 'OUTPUT'). ${thresholdLevel} Do NOT return individual controls (knobs, buttons, sliders) — only whole panels/sections that CONTAIN controls. Return the panel's visible title verbatim (or a short descriptive name if untitled) and its precise bounding box. Coordinate values (ymin, xmin, ymax, xmax) must be exactly normalized floats between 0.000 and 1.000 and must include the panel's full backplate edge-to-edge.`;
+  return buildPanelPrompt(thresholdLevel);
 }
 
 function labelPrompt(sensitivity: number): string {
@@ -141,8 +145,8 @@ async function geminiGenerateJson(args: {
 function validateExtractBody(
   req: Request,
   res: Response,
-): { base64Image: string; mimeType: string; sensitivity: number; model: string; apiKey: string } | null {
-  const { image, mimeType, sensitivity = 0.5, apiKey, model } = req.body || {};
+): { base64Image: string; mimeType: string; sensitivity: number; model: string; apiKey: string; provider: ExtractProvider } | null {
+  const { image, mimeType, sensitivity = 0.5, apiKey, model, provider } = req.body || {};
   if (!image || typeof image !== "string" || !mimeType || typeof mimeType !== "string") {
     res.status(400).json({ error: "Missing image or mimeType" });
     return null;
@@ -151,15 +155,11 @@ function validateExtractBody(
     res.status(400).json({ error: "Unsupported image type" });
     return null;
   }
-  const useModel =
-    typeof model === "string" && model ? model.replace(/^models\//, "") : "";
-  if (!useModel) {
-    res.status(400).json({ error: "model required" });
-    return null;
-  }
-  const key = getApiKey("gemini", typeof apiKey === "string" && apiKey ? apiKey : undefined);
-  if (!key) {
-    res.status(400).json({ error: "Gemini API key required — set one in assistant settings" });
+  let settings: ReturnType<typeof resolveExtractionSettings>;
+  try {
+    settings = resolveExtractionSettings({ provider, model, apiKey }, getApiKey);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Invalid extraction settings" });
     return null;
   }
   const sens = Math.min(1, Math.max(0, Number(sensitivity) || 0.5));
@@ -167,8 +167,7 @@ function validateExtractBody(
     base64Image: image.replace(/^data:image\/\w+;base64,/, ""),
     mimeType,
     sensitivity: sens,
-    model: useModel,
-    apiKey: key,
+    ...settings,
   };
 }
 
@@ -178,14 +177,7 @@ export function registerExtractRoutes(app: Express): void {
     const v = validateExtractBody(req, res);
     if (!v) return;
     try {
-      const elements = await geminiGenerateJson({
-        model: v.model,
-        apiKey: v.apiKey,
-        base64Image: v.base64Image,
-        mimeType: v.mimeType,
-        prompt: detectPrompt(v.sensitivity),
-        responseSchema: DETECT_SCHEMA,
-      });
+      const elements = await generateExtractJson(v, detectPrompt(v.sensitivity), DETECT_SCHEMA, geminiGenerateJson);
       res.json({ elements: Array.isArray(elements) ? elements : [] });
     } catch (e: any) {
       appendLog(`[extract] detect failed: ${e?.message || e}`);
@@ -198,14 +190,7 @@ export function registerExtractRoutes(app: Express): void {
     const v = validateExtractBody(req, res);
     if (!v) return;
     try {
-      const panels = await geminiGenerateJson({
-        model: v.model,
-        apiKey: v.apiKey,
-        base64Image: v.base64Image,
-        mimeType: v.mimeType,
-        prompt: panelPrompt(v.sensitivity),
-        responseSchema: PANEL_SCHEMA,
-      });
+      const panels = await generateExtractJson(v, panelPrompt(v.sensitivity), PANEL_SCHEMA, geminiGenerateJson);
       res.json({ panels: Array.isArray(panels) ? panels : [] });
     } catch (e: any) {
       appendLog(`[extract] detect-panels failed: ${e?.message || e}`);
@@ -218,14 +203,7 @@ export function registerExtractRoutes(app: Express): void {
     const v = validateExtractBody(req, res);
     if (!v) return;
     try {
-      const info = await geminiGenerateJson({
-        model: v.model,
-        apiKey: v.apiKey,
-        base64Image: v.base64Image,
-        mimeType: v.mimeType,
-        prompt: labelPrompt(v.sensitivity),
-        responseSchema: LABEL_SCHEMA,
-      });
+      const info = await generateExtractJson(v, labelPrompt(v.sensitivity), LABEL_SCHEMA, geminiGenerateJson);
       res.json(info);
     } catch (e: any) {
       appendLog(`[extract] label failed: ${e?.message || e}`);

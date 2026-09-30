@@ -170,7 +170,7 @@ const SlideKnobImpl: React.FC<SlideKnobProps> = ({
 
   return (
     <div className="flex flex-col items-center gap-1 select-none min-w-0" style={accentVars(colorT)}>
-      {tip ? <HoverTip text={tip}>{labelEl}</HoverTip> : labelEl}
+      {tip ? <HoverTip text={tip} focusable focusLabel={label}>{labelEl}</HoverTip> : labelEl}
       <div
         ref={dialRef}
         className={`tk-dial${active ? ' is-active' : ''}`}

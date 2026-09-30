@@ -13,8 +13,10 @@
  */
 
 import { getEngineCtx } from '../state/playerStore';
+import { addWorkletModule } from './audioWorkletSupport';
 import type { PianoNote } from '../state/pianoRollStore';
 import type { RenderNote } from './midiSynth';
+import { takeToRoll } from './takeNotes';
 
 export interface F0Frame {
   tSec: number; // capture-relative seconds
@@ -52,7 +54,7 @@ const yinModuleByCtx = new WeakMap<BaseAudioContext, Promise<void>>();
 export const ensureYinModule = (ctx: BaseAudioContext): Promise<void> => {
   let p = yinModuleByCtx.get(ctx);
   if (!p) {
-    p = ctx.audioWorklet.addModule('/yin.worklet.js').catch((e) => {
+    p = addWorkletModule(ctx, '/yin.worklet.js').catch((e) => {
       yinModuleByCtx.delete(ctx);
       throw e;
     });
@@ -188,14 +190,6 @@ const notePermissionGranted = (): void => {
     .catch(() => {
       /* the store is not in this bundle; labels fill in on the next refresh */
     });
-};
-
-/** Available microphone inputs. Labels are blank until mic permission is granted
- * once, so call this after a successful capture (or permission prompt). */
-export const listAudioInputs = async (): Promise<MediaDeviceInfo[]> => {
-  if (!navigator.mediaDevices?.enumerateDevices) return [];
-  const all = await navigator.mediaDevices.enumerateDevices();
-  return all.filter((d) => d.kind === 'audioinput');
 };
 
 export interface InputMonitor {
@@ -366,18 +360,9 @@ export const captureNotesToRenderNotes = (notes: CaptureNote[]): RenderNote[] =>
     velocity: n.velocity,
   }));
 
-const stepSec = (bpm: number): number => 60 / bpm / 4; // one 16th note
-
-export const captureNotesToPianoNotes = (
-  notes: CaptureNote[],
-  bpm: number,
-): PianoNote[] => {
-  const ss = stepSec(bpm);
-  return notes.map((n, i) => ({
-    id: `vox-${i}-${n.startMs}`,
-    note: n.pitch,
-    step: Math.max(0, Math.round(n.startMs / 1000 / ss)),
-    length: Math.max(1, Math.round((n.endMs - n.startMs) / 1000 / ss)),
-    velocity: n.velocity,
-  }));
-};
+/** Captured notes as roll notes at `bpm`, at the ticks they were sung on (lib/takeNotes); APPLY quantises. */
+export const captureNotesToPianoNotes = (notes: CaptureNote[], bpm: number): PianoNote[] =>
+  takeToRoll(
+    notes.map((n) => ({ note: n.pitch, velocity: n.velocity, startSec: n.startMs / 1000, endSec: n.endMs / 1000 })),
+    { bpm, idPrefix: 'vox' },
+  ).rollNotes;

@@ -104,7 +104,14 @@ Host to relay, to revoke a controller:
 - In `open` mode any controller is authenticated immediately.
 - In `code` mode a controller is authenticated only if its `code` matches the
   host's posture code. The host sets the posture BEFORE handing out the QR; the
-  QR carries `?pair=<code>` so scanning auto-fills it.
+  QR carries `?xrcode=<code>` so scanning auto-fills it. For one release the
+  companion client (`mobile/net/controlClient.ts`) also reads the older
+  `?pair=<code>` query param as a read-only fallback, so a bookmarked or
+  shared link minted before this rename keeps working; no newly generated
+  QR/link ever writes `?pair=` again. This is never a second *authentication*
+  path — the relay/backend never reads either query param at all, only the
+  `code` field inside the `controller-hello` JSON message the client sends
+  after reading it from the URL.
 - The REST surface is never gated. Only the control bus is. A companion can
   browse Library without pairing; transport/DJ/VJ remotes require it.
 - Only authenticated peers exchange control frames. Frames from an

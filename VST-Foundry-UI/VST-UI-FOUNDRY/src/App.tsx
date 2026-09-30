@@ -53,6 +53,7 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import CompactElementProperties from "./components/CompactElementProperties";
+import PropertiesPanel from "./components/PropertiesPanel";
 import InpaintModal from "./components/InpaintModal";
 import AIAssistantOrb from "./components/AIAssistantOrb";
 import EventLog from "./components/EventLog";
@@ -825,6 +826,7 @@ export default function App() {
   // Global keyboard shortcuts (tool switch, undo/redo, copy/paste/cut, group,
   // delete, arrow-nudge). Copy/paste/cut are delegated to useClipboard.
   useKeyboardShortcuts({
+    enabled: !isExtractorOpen,
     elements,
     selectedElementIds,
     setElements,
@@ -1348,6 +1350,16 @@ export default function App() {
                 className={`flex flex-col bg-app-base h-full min-h-0 transition-all duration-300 overflow-hidden ${isRightPanelOpen ? "w-auto" : "w-0"}`}
               >
                 <div className="w-72 md:w-80 flex flex-col h-full min-h-0 overflow-y-auto">
+                  <PropertiesPanel
+                    elements={elements}
+                    selectedElements={elements.filter((e) =>
+                      selectedElementIds.includes(e.id),
+                    )}
+                    onUpdateElements={handleUpdateElements}
+                    canvasState={canvasState}
+                    textures={textures}
+                    assets={assets}
+                  />
                   <LayersPanel
                     elements={elements}
                     assets={assets}

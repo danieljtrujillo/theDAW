@@ -5,26 +5,38 @@
  * assemble those into full, developing, stylistic arrangements.
  *
  * Phrase transforms (each amount 0..1, optionally seeded per instance):
- *   harmony  — diatonic counter-line (contrary motion) + borrowed/modal tones.
+ *   harmony  — a diatonic third below a share of the top-line notes equal to the
+ *              amount, moving in parallel with the line; past 0.66 about three
+ *              in ten of those thirds drop a semitone for a borrowed/modal tone,
+ *              unless the lowered note would sound a semitone (or a major
+ *              seventh or minor ninth) against a melody note sounding with it.
  *   ragtime  — Joplin stride: oom-pah LH under syncopated, accented RH stabs.
  *   runs     — Rudess scalar/chromatic flourishes that LAND on chord tones.
- *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents.
- *   humanize — velocity dynamics, beat accents, and phrase-shaped rubato.
+ *   rhythm   — polyrhythm/odd-meter feel via 3-against-4 cross-accents, and real
+ *              3:2, 4:3 and 5:4 notes over the spans each bar's groups give.
+ *   humanize — velocity dynamics, beat accents, and small per-note micro-timing.
  *   sync     — anticipations: strong onsets move to the weak position before them.
  *   accent   — group and bar starts louder, every other note softer.
  *
  * `buildSong` composes rather than repeats. It (1) lays out a chord plan from the
- * style's degree progression with real cadences, (2) voices every chord by
+ * style's degree progression, counted from the key's tonic, with real cadences
+ * (in a minor mode a cadential V takes the leading tone), (2) voices every chord by
  * nearest-neighbor VOICE-LEADING (so inner voices move minimally, not in parallel
  * blocks), (3) writes an actual MELODY over it (stepwise motion, passing/neighbor
  * tones, appoggiaturas, an arch contour), and (4) renders each section with its
  * own accompaniment + right-hand behaviour (sustained, Alberti, arpeggio, stride,
- * octave stabs, or continuous runs). A song-long crescendo, phrase-shaped
- * rubato, and the global sliders shape the finished result.
+ * octave stabs, or continuous runs). A song-long crescendo and the global
+ * sliders shape the finished result.
+ *
+ * Phrasing is written as TEMPO, not as notes moved late: the song carries a
+ * tempo map (lib/tempoMap) with a linear ritardando over each section's last
+ * bar, deeper at the final cadence, and a section can hold a tempo of its own.
+ * Every note stays on its bar line, so the roll, a bounce and a MIDI file all
+ * agree on where the bars are while the music still slows into each cadence.
  *
  * Positions live on a 16th grid but allow fractional steps (32nd = 0.5, 64th =
  * 0.25, plus micro-timing), which the time-based preview scheduler plays and the
- * bounce path rounds — so runs and rubato both preview and render.
+ * bounce path rounds — so runs and micro-timing both preview and render.
  *
  * Bars follow the roll's meter map (lib/meterMap) when the opts carry one, and
  * are 4/4 from step 0 when they do not. Accents come from the metrical weights
@@ -34,10 +46,10 @@
 import { MusicalScale, noteNameToMidi } from './arpEngine';
 import { barSeconds, DEFAULT_METER, type Meter } from './colony';
 import {
+  accentLines,
   barAt,
   bars,
   barStartStep,
-  groupLines,
   meterAtBar,
   normalizeMeterMap,
   sanitizeMeter,
@@ -47,7 +59,12 @@ import {
   type MeterSegment,
 } from './meterMap';
 import { metricalWeights, stepsPerBeat } from './syncopation';
-import type { PianoNote } from '../state/pianoRollStore';
+import { PPQ } from './noteClock';
+import { sanitizeRollTempoMap } from './rollTempo';
+import { clampTempoBpm, getTempoAtBeat, type TempoCurve, type TempoEvent } from './tempoMap';
+import { MIN_NOTE_STEPS, type PianoNote, type RollControl } from '../state/pianoRollStore';
+import { buildExpression } from './clipNotes/expression';
+import { humanizeSections } from './clipNotes/humanize';
 
 const RH_FLOOR = 60; // C4 — right-hand register floor
 const MEL_CENTER = 74; // D5 — melodic register center
@@ -56,6 +73,14 @@ const BASS_CENTER = 36; // C2 — bass register center
 const SEED_PRIME = 1009;
 const EPS = 1e-9;
 
+/** Steps that take their own scale, such as a cadential V with a raised leading tone. */
+export interface ScaleSpan {
+  start: number;
+  end: number;
+  /** The span's pitch classes, sorted. */
+  pcs: number[];
+}
+
 export interface TransformOpts {
   key: string;
   mode: string;
@@ -63,6 +88,8 @@ export interface TransformOpts {
   meterMap?: MeterSegment[];
   /** Steps before bar 0. Absent means bar 0 starts at step 0. */
   pickupSteps?: number;
+  /** Steps whose notes come from their own scale. Outside them, and when absent, the key's scale. */
+  scaleSpans?: ScaleSpan[];
 }
 
 /** The meter fields of TransformOpts. */
@@ -90,10 +117,16 @@ export const ZERO_AMOUNTS: VirtuosoAmounts = { harmony: 0, ragtime: 0, runs: 0, 
  */
 export interface GrooveTemplate {
   name: string;
-  /** 16 timing offsets, one per 16th slot, in step units (roughly -0.5..0.5). */
+  /**
+   * Timing offsets, one per slot of the reference bar, in step units (roughly
+   * -0.5..0.5). An older pocket holds 16, one per 16th of a 4/4 bar; one
+   * extracted from a 7/8 file holds 14.
+   */
   timing: number[];
-  /** 16 relative-emphasis weights, one per 16th slot, 0..1. */
+  /** Relative-emphasis weights, one per slot, 0..1. */
   accent: number[];
+  /** Steps in one slot: 1 (a 16th) when absent, 0.5 for a bar of 32nds such as 7/32. */
+  slotSteps?: number;
 }
 
 let _seq = 0;
@@ -111,23 +144,28 @@ const hash01 = (i: number): number => {
 
 // Quantize to 1/1000 of a step to tame float noise while allowing sub-16th
 // positions (32nd = 0.5, 64th = 0.25) and micro-timing offsets. Integer callers
-// are unaffected (round-trips exactly).
+// are unaffected (round-trips exactly). A length floors at the roll's one tick
+// (MIN_NOTE_STEPS), so a note shorter than a 64th keeps its length.
 const q3 = (v: number): number => Math.round(v * 1000) / 1000;
 const mk = (note: number, step: number, length: number, velocity: number): PianoNote => ({
   id: uid(),
   note: clampMidi(note),
   step: Math.max(0, q3(step)),
-  length: Math.max(0.25, q3(length)),
+  length: Math.max(MIN_NOTE_STEPS, q3(length)),
   velocity: clampVel(velocity),
 });
 
 const pcOf = (name: string): number => noteNameToMidi(name, 0) % 12;
 const pcToMidi = (pc: number, octave: number): number => (octave + 1) * 12 + (((pc % 12) + 12) % 12);
 
+/** The scale's pitch classes from the tonic up, so index 0 is the tonic and each index is a scale degree. */
+function scaleDegrees(key: string, mode: string): number[] {
+  return new MusicalScale({ key, mode }).notes.map((n) => pcOf(n.note));
+}
+
+/** The scale's pitch classes as a set sorted from C, for ladders and chord lookups by pitch. */
 function scalePitchClasses(key: string, mode: string): number[] {
-  const ms = new MusicalScale({ key, mode });
-  const pcs = ms.notes.map((n) => pcOf(n.note));
-  return Array.from(new Set(pcs)).sort((a, b) => a - b);
+  return Array.from(new Set(scaleDegrees(key, mode))).sort((a, b) => a - b);
 }
 
 function scaleLadder(pcs: number[], lo = 33, hi = 96): number[] {
@@ -135,6 +173,42 @@ function scaleLadder(pcs: number[], lo = 33, hi = 96): number[] {
   const out: number[] = [];
   for (let m = lo; m <= hi; m += 1) if (set.has(((m % 12) + 12) % 12)) out.push(m);
   return out;
+}
+
+/** The scale at `step`: the first scale span holding it, else `pcs`. */
+function scaleAt(opts: TransformOpts, pcs: number[], step: number): number[] {
+  return opts.scaleSpans?.find((s) => step >= s.start - EPS && step < s.end - EPS)?.pcs ?? pcs;
+}
+
+/** One ladder per scale for the length of a transform call. */
+function ladderCache(lo?: number, hi?: number): (pcs: number[]) => number[] {
+  const memo = new Map<string, number[]>();
+  return (pcs) => {
+    const k = pcs.join(',');
+    let l = memo.get(k);
+    if (!l) {
+      l = scaleLadder(pcs, lo, hi);
+      memo.set(k, l);
+    }
+    return l;
+  };
+}
+
+/**
+ * The tones a minor mode raises on a cadential V, as scale tone -> raised tone:
+ * the subtonic becomes the leading tone, and in Phrygian the flat 2nd becomes the
+ * natural 2nd, so the V is a major triad that leads to the tonic. Empty when the
+ * tonic triad is not minor with a perfect fifth (major modes, Locrian) or the 7th
+ * already leads (harmonic and melodic minor).
+ */
+function cadentialRaises(degrees: number[]): Map<number, number> {
+  const raises = new Map<number, number>();
+  if (degrees.length < 7) return raises;
+  const rel = (i: number): number => (((degrees[i] - degrees[0]) % 12) + 12) % 12;
+  if (rel(2) !== 3 || rel(4) !== 7 || rel(6) !== 10) return raises;
+  raises.set(degrees[6], (degrees[0] + 11) % 12);
+  if (rel(1) === 1) raises.set(degrees[1], (degrees[0] + 2) % 12);
+  return raises;
 }
 
 function topLine(notes: PianoNote[]): PianoNote[] {
@@ -172,10 +246,10 @@ function triadFromScale(rootPc: number, pcs: number[]): number[] {
   return [pcs[i], pcs[(i + 2) % pcs.length], pcs[(i + 4) % pcs.length]];
 }
 
-/** Diatonic triad pitch classes seated on a scale DEGREE (0-indexed). */
-function chordAtDegree(deg: number, pcs: number[]): number[] {
-  const i = ((deg % pcs.length) + pcs.length) % pcs.length;
-  return [pcs[i], pcs[(i + 2) % pcs.length], pcs[(i + 4) % pcs.length]];
+/** Diatonic triad pitch classes seated on a scale DEGREE (0 = the tonic) of a tonic-first scale from `scaleDegrees`. */
+function chordAtDegree(deg: number, degrees: number[]): number[] {
+  const i = ((deg % degrees.length) + degrees.length) % degrees.length;
+  return [degrees[i], degrees[(i + 2) % degrees.length], degrees[(i + 4) % degrees.length]];
 }
 
 /** The MIDI note with pitch class `pc` nearest to `target`. */
@@ -278,10 +352,10 @@ function gridOf(o?: MeterOpts): Grid {
   return { map, pickup, bar, inBar, segmentStart, onPosition };
 }
 
-/** Each group of `m` as a start and a length in steps; a meter without groups is one group. */
+/** Each group of `m` as a start and a length in steps; a compound meter without groups is one group per dotted beat, any other meter without groups one group. */
 function groupSpans(m: Meter): Array<{ start: number; len: number }> {
   const len = stepsPerBar(m);
-  const starts = groupLines(m);
+  const starts = accentLines(m);
   return starts.map((start, i) => ({ start, len: (starts[i + 1] ?? len) - start }));
 }
 
@@ -367,19 +441,28 @@ export interface Voicing {
   voices: number[];
 }
 
+/** `m` moved by whole octaves into [lo, hi], so it keeps its pitch class. */
+function inRange(m: number, lo: number, hi: number): number {
+  let x = m;
+  while (x < lo) x += 12;
+  while (x > hi) x -= 12;
+  return x;
+}
+
 /**
  * Voice a triad so each tone moves to its nearest neighbour from the previous
  * voicing (smooth inner-voice motion, inversions chosen implicitly) rather than
  * jumping in parallel root-position blocks. The bass tracks the root register.
+ * A tone that walks out of its register comes back by an octave.
  */
 function voiceChord(triad: number[], prev: Voicing | null, center = VOICE_CENTER): Voicing {
   const voices = triad.map((pc, i) => {
     const target = prev ? (prev.voices[i] ?? center) : center + (i - 1) * 4;
-    return Math.max(30, Math.min(84, pcNearest(pc, target)));
+    return inRange(pcNearest(pc, target), 30, 84);
   });
   voices.sort((a, b) => a - b);
   const bassTarget = prev ? prev.bass : BASS_CENTER;
-  const bass = Math.max(24, Math.min(52, pcNearest(triad[0], bassTarget)));
+  const bass = inRange(pcNearest(triad[0], bassTarget), 24, 52);
   return { bass, voices };
 }
 
@@ -401,6 +484,23 @@ interface RunOpts {
   tuplet?: 0 | 3 | 6;
   /** The bars the run's pulse accents follow (4/4 from step 0 when absent). */
   grid?: Grid;
+  /**
+   * The ladder at a step, for a run that crosses a scale span. A run note off
+   * the ladder of the step it sounds on moves to that ladder's nearest tone,
+   * toward the run's direction on a tie. Absent means `ladder` throughout.
+   */
+  ladderAt?: (step: number) => number[];
+}
+
+/** `m` on `ladder`: itself when on it, else the nearest tone, the one toward `dir` on a tie. */
+function snapToLadder(ladder: number[], m: number, dir: number): number {
+  if (!ladder.length || ladder.includes(m)) return m;
+  let best = ladder[0];
+  for (const t of ladder) {
+    const d = Math.abs(t - m) - Math.abs(best - m);
+    if (d < 0 || (d === 0 && Math.sign(t - m) === dir)) best = t;
+  }
+  return best;
 }
 
 /** Subdivision increments (in 16th steps) for a run's before/after-accel phases. */
@@ -455,6 +555,7 @@ function genRun(
       const idx = i0 + dir * Math.round(t * span);
       pitch = ladder[Math.max(0, Math.min(ladder.length - 1, idx))];
     }
+    if (k !== last && opts.ladderAt) pitch = snapToLadder(opts.ladderAt(slots[k].s), pitch, dir);
     const on = grid.onPosition(Math.round(slots[k].s));
     const pulse = on !== null && on.weight >= pulseWeight(on.b.meter);
     const vel = clampVel(baseVel + Math.round(t * 30) + (pulse ? 10 : 0));
@@ -472,6 +573,8 @@ export interface ChordSpan {
   len: number;
   /** The bar's time signature; absent means 4/4. */
   meter?: Meter;
+  /** The scale the bar's melody and runs move in; absent means the section's ladder. */
+  ladder?: number[];
 }
 
 interface MelodyOpts {
@@ -509,10 +612,11 @@ function genMelodyLine(
   const inc = 4 / Math.max(1, opts.density);
 
   // 1. anchors: a chord tone on each group start and each quarter inside the
-  // group, near the cursor + arch bias.
-  const anchors: Array<{ step: number; midi: number; end: number }> = [];
+  // group, near the cursor + arch bias. Each anchor keeps its bar's ladder.
+  const anchors: Array<{ step: number; midi: number; end: number; ladder: number[] }> = [];
   for (const sp of spans) {
-    const chordTones = ladder.filter((m) => sp.triad.includes(((m % 12) + 12) % 12) && m >= RH_FLOOR - 5);
+    const barLadder = sp.ladder ?? ladder;
+    const chordTones = barLadder.filter((m) => sp.triad.includes(((m % 12) + 12) % 12) && m >= RH_FLOOR - 5);
     if (!chordTones.length) continue;
     const slotsInBar = anchorSlots(sp.meter ?? DEFAULT_METER);
     slotsInBar.forEach((q, j) => {
@@ -530,19 +634,21 @@ function genMelodyLine(
           best = m;
         }
       }
-      anchors.push({ step, midi: best, end: sp.start + (slotsInBar[j + 1] ?? sp.len) });
+      anchors.push({ step, midi: best, end: sp.start + (slotsInBar[j + 1] ?? sp.len), ladder: barLadder });
       cur = best;
     });
   }
   if (!anchors.length) return { notes, cursor: cur };
 
-  // 2. connect anchors with stepwise passing motion at the chosen density.
+  // 2. connect anchors with stepwise passing motion at the chosen density, in
+  // the scale of the bar the passing notes sound in.
   for (let a = 0; a < anchors.length; a += 1) {
     const cs = anchors[a].step;
     const cm = anchors[a].midi;
     const ns = a + 1 < anchors.length ? anchors[a + 1].step : anchors[a].end;
     const nm = a + 1 < anchors.length ? anchors[a + 1].midi : cm;
-    const path = ladderPath(ladder, cm, nm);
+    const barLadder = anchors[a].ladder;
+    const path = ladderPath(barLadder, cm, nm);
     const slots = Math.max(1, Math.round((ns - cs) / inc));
     for (let k = 0; k < slots; k += 1) {
       const step = cs + k * inc;
@@ -552,7 +658,7 @@ function genMelodyLine(
       const vel = opts.baseVel + (onBeat ? 12 : 0) - (k % 2 === 1 ? 6 : 0);
       if (onBeat && opts.ornament && hash01(step + opts.seed * 7) < 0.16) {
         // appoggiatura: an upper neighbour on the beat resolving down to the anchor.
-        notes.push(mk(stepUp(ladder, pitch), step, inc * 0.5, clampVel(vel - 4)));
+        notes.push(mk(stepUp(barLadder, pitch), step, inc * 0.5, clampVel(vel - 4)));
         notes.push(mk(pitch, step + inc * 0.5, inc * 0.5, clampVel(vel)));
       } else {
         notes.push(mk(pitch, step, inc, clampVel(vel)));
@@ -564,6 +670,64 @@ function genMelodyLine(
 
 // --- phrase transforms (amount 0..1, optional per-instance seed) ------------- //
 
+/** The amount past which harmonize lowers some of its thirds a semitone. */
+export const HARMONY_BORROW_FROM = 0.66;
+
+/**
+ * What the Harmony slider does, range by range, for its tooltip, and what it
+ * does at `amount` (0..1) now. The ranges are harmonize's own thresholds.
+ */
+export function harmonyDescription(amount: number): string {
+  const v = Math.round(Math.max(0, Math.min(1, Number.isFinite(amount) ? amount : 0)) * 100);
+  const cut = Math.round(HARMONY_BORROW_FROM * 100);
+  const now =
+    v === 0
+      ? 'Now 0: off, the melody plays alone.'
+      : v <= cut
+        ? `Now ${v}: a scale third under about ${v} in 100 top notes.`
+        : `Now ${v}: a third under about ${v} in 100 top notes, up to about three in ten of them a semitone lower where that does not clash with the melody.`;
+  return [
+    "Harmony adds a second line a third below the melody's top notes, each as long as its note.",
+    '0: off.',
+    `1 to ${cut}: that share of the top notes gets the third below it in the key's scale.`,
+    `${cut + 1} to 100: about three in ten of those thirds drop a semitone for a borrowed or modal colour; a drop that would sit a semitone from a melody note sounding with it keeps the scale third.`,
+    now,
+  ].join('\n');
+}
+
+/**
+ * Whether `pitch`, sounding from `start` to `end`, is a semitone from any note
+ * of `sorted` (sorted by step; `maxLen` its longest length) that sounds with
+ * it, counted by pitch class: a minor second, a major seventh or a minor ninth.
+ */
+function clashesWithMelody(sorted: readonly PianoNote[], maxLen: number, pitch: number, start: number, end: number): boolean {
+  // The first note that can still be sounding at `start`.
+  let lo = 0;
+  let hi = sorted.length;
+  const from = start - maxLen;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].step < from) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < sorted.length && sorted[i].step < end - EPS; i += 1) {
+    const m = sorted[i];
+    if (m.step + m.length <= start + EPS) continue;
+    const pc = (((m.note - pitch) % 12) + 12) % 12;
+    if (pc === 1 || pc === 11) return true;
+  }
+  return false;
+}
+
+/**
+ * A diatonic third below a share of the top-line notes equal to `amount`, each
+ * as long as its note, so the added line moves in parallel with the melody.
+ * Past HARMONY_BORROW_FROM (0.66) about three in ten of those thirds drop a
+ * semitone, a borrowed or modal tone, except where the lowered note would clash
+ * with the melody: a semitone, major seventh or minor ninth against any note
+ * of the input sounding while it sounds. Those keep the diatonic third. A note
+ * inside a scale span takes its third from that span's scale.
+ */
 export function harmonize(
   notes: PianoNote[],
   amount: number,
@@ -572,15 +736,29 @@ export function harmonize(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
-  const ladder = scaleLadder(pcs);
+  // Every MIDI note is on the ladder, so a line above C7 or below A1 still gets the third below it.
+  const ladderOf = ladderCache(0, 127);
   const out = notes.map(clone);
   const top = topLine(notes);
+  const melody = [...notes].sort((a, b) => a.step - b.step);
+  const maxLen = melody.reduce((m, n) => Math.max(m, n.length), 0);
   top.forEach((n, i) => {
     if (hash01(i * 7 + 101 + seed * SEED_PRIME) > amount) return;
+    const ladder = ladderOf(scaleAt(opts, pcs, n.step));
     const idx = nearestIndex(ladder, n.note);
-    let counter = ladder[Math.max(0, idx - 2)];
-    if (amount > 0.66 && hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3) counter -= 1;
-    out.push(mk(counter, n.step, Math.max(1, n.length), Math.max(1, n.velocity - 18)));
+    if (idx < 2) return;
+    let counter = ladder[idx - 2];
+    const length = Math.max(MIN_NOTE_STEPS, n.length);
+    if (
+      amount > HARMONY_BORROW_FROM &&
+      hash01(i * 13 + 211 + seed * SEED_PRIME) < 0.3 &&
+      !clashesWithMelody(melody, maxLen, counter - 1, n.step, n.step + length)
+    ) {
+      counter -= 1;
+    }
+    // The counter note takes the melody note's own length, so a run shorter
+    // than a 16th gets a counter run that stays detached.
+    out.push(mk(counter, n.step, length, Math.max(1, n.velocity - 18)));
   });
   return out.sort(byStepThenNote);
 }
@@ -594,7 +772,7 @@ export function ragtimeStride(
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
   const grid = gridOf(opts);
-  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + Math.max(1, n.length)), 0);
+  const lastStep = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
   const out: PianoNote[] = [];
   let prev: Voicing | null = null;
   for (const b of bars(grid.map, lastStep, grid.pickup)) {
@@ -606,7 +784,7 @@ export function ragtimeStride(
       continue;
     }
     const rootPc = inBar.reduce((lo, n) => (n.note < lo.note ? n : lo)).note % 12;
-    const triad = triadFromScale(rootPc, pcs);
+    const triad = triadFromScale(rootPc, scaleAt(opts, pcs, b.start));
     const voicing = voiceChord(triad, prev);
     prev = voicing;
     // Oom-pah left hand: bass then chord on the bar's pulse, alternating root/fifth low note.
@@ -638,7 +816,7 @@ export function runsAndFlourishes(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const pcs = scalePitchClasses(opts.key, opts.mode);
-  const ladder = scaleLadder(pcs);
+  const ladderOf = ladderCache();
   const grid = gridOf(opts);
   const anchors = topLine(notes);
   const out = notes.map(clone);
@@ -663,13 +841,17 @@ export function runsAndFlourishes(
     } else {
       // scalar flourish that accelerates and lands on the next anchor (b). Past
       // ~0.75 the runs turn into true triplet flourishes for a virtuosic feel.
+      // Each run note takes the scale of the step it sounds on, so a run into a
+      // scale span changes scale where the span starts.
       const tuplet: 0 | 3 | 6 = amount > 0.75 && hash01(gapIndex * 5 + seed * SEED_PRIME) < amount ? 3 : 0;
-      genRun(a.note, b.note, a.step + inc0(gap), b.step, ladder, {
+      const from = a.step + inc0(gap);
+      genRun(a.note, b.note, from, b.step, ladderOf(scaleAt(opts, pcs, from)), {
         baseVel: 74,
         doubleOctave: octaveDouble,
         accelAt: amount > 0.8 ? 0.35 : 0.6,
         tuplet,
         grid,
+        ...(opts.scaleSpans?.length ? { ladderAt: (s: number) => ladderOf(scaleAt(opts, pcs, s)) } : {}),
       }).forEach((n) => out.push(n));
     }
   }
@@ -692,6 +874,40 @@ function crossAccent(grid: Grid, step: number): boolean {
   return on !== null && on.weight >= 3;
 }
 
+/** A span a cross-rhythm is written over: steps from the bar line, its length, and the beats it holds. */
+export interface CrossSpan { start: number; len: number; beats: number }
+
+/**
+ * The spans of one bar of `m` that take a cross-rhythm, chosen from its
+ * groups: each accent group when the bar has more than one (7/8 3+2+2 gives a
+ * 3 and two 2s, 6/8 its two dotted beats), otherwise its beats, two or three to
+ * a span (4/4 gives two half bars, 3/4 one span of 3, 5/4 a 2 and a 3). A span
+ * of 2, 3 or 4 beats plays 3:2, 4:3 or 5:4; any other span holds none.
+ */
+export function crossSpans(m: Meter): CrossSpan[] {
+  const unit = 16 / m.den;
+  const len = stepsPerBar(m);
+  const accents = accentLines(m);
+  const starts: number[] = [];
+  if (accents.length > 1) starts.push(...accents);
+  else if (m.num <= 3) starts.push(0);
+  else {
+    // Pairs of beats; an odd count ends on a 3 (5 = 2+3, 7 = 2+2+3).
+    const pairsEnd = m.num % 2 === 1 ? m.num - 3 : m.num;
+    for (let b = 0; b + 2 <= pairsEnd; b += 2) starts.push(b * unit);
+    if (m.num % 2 === 1) starts.push(pairsEnd * unit);
+  }
+  return starts
+    .map((start, i) => {
+      const end = i + 1 < starts.length ? starts[i + 1] : len;
+      return { start, len: end - start, beats: Math.round((end - start) / unit) };
+    })
+    .filter((s) => s.beats >= 2 && s.beats <= 4 && Math.abs(s.len - s.beats * unit) < EPS);
+}
+
+/** The id ending that marks a note the polyrhythm transform wrote. */
+export const CROSS_ID_SUFFIX = '-x';
+
 export function polyrhythm(
   notes: PianoNote[],
   amount: number,
@@ -700,23 +916,57 @@ export function polyrhythm(
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
   const grid = gridOf(opts);
-  return notes
-    .map((n) => {
-      let vel = n.velocity;
-      if (crossAccent(grid, n.step)) vel = Math.min(127, vel + Math.round(34 * amount));
-      else vel = Math.max(1, vel - Math.round(10 * amount));
-      let step = n.step;
-      // Push some odd 16ths (counted from the bar start) onto the next 16th.
-      if (odd(grid.inBar(n.step)) && hash01(n.step * 9 + 17 + seed * SEED_PRIME) < amount * 0.5) step = n.step + 1;
-      return mk(n.note, step, n.length, vel);
-    })
-    .sort(byStepThenNote);
+  const out = notes.map((n) => {
+    let vel = n.velocity;
+    if (crossAccent(grid, n.step)) vel = Math.min(127, vel + Math.round(34 * amount));
+    else vel = Math.max(1, vel - Math.round(10 * amount));
+    let step = n.step;
+    // Push some odd 16ths (counted from the bar start) onto the next 16th.
+    if (odd(grid.inBar(n.step)) && hash01(n.step * 9 + 17 + seed * SEED_PRIME) < amount * 0.5) step = n.step + 1;
+    return mk(n.note, step, n.length, vel);
+  });
+  // Real cross-rhythms: over a seeded share `amount` of the spans each bar's
+  // groups give (crossSpans), n notes in the time of the span's m beats, 3:2,
+  // 4:3 or 5:4, spaced evenly one cell of span/n apart. The span's
+  // first note is the chord already there; the rest take the chord's tones in
+  // turn an octave up (the bass left out when there is more than one).
+  const end = notes.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+  const cross = clampVel(56 + Math.round(30 * amount));
+  let spanIndex = 0;
+  for (const b of bars(grid.map, end, grid.pickup)) {
+    if (b.bar < 0) continue;
+    for (const span of crossSpans(b.meter)) {
+      const index = spanIndex++;
+      const start = b.start + span.start;
+      if (start + span.len > end + EPS || hash01(index * 13 + 7 + seed * SEED_PRIME) >= amount) continue;
+      const sounding = notes
+        .filter((n) => n.step <= start + EPS && n.step + n.length > start + EPS)
+        .map((n) => n.note)
+        .sort((a, b2) => a - b2);
+      if (!sounding.length) continue;
+      const tones = sounding.length > 1 ? sounding.slice(1) : sounding;
+      const count = span.beats + 1;
+      const cell = span.len / count;
+      for (let i = 1; i < count; i += 1) {
+        const tone = tones[(i - 1) % tones.length];
+        const pitch = tone + 12 <= 108 ? tone + 12 : tone;
+        out.push({ ...mk(pitch, start + i * cell, cell, cross), id: `${uid()}${CROSS_ID_SUFFIX}` });
+      }
+    }
+  }
+  return out.sort(byStepThenNote);
 }
 
-/** The groove slot of a step: its 16th inside its bar, wrapped to the template's 16 slots. */
-const slotOf = (grid: Grid, step: number): number => {
-  const r = Math.round(step);
-  return ((Math.round(grid.inBar(r)) % 16) + 16) % 16;
+/**
+ * The groove slot of a step: its slot inside its bar (a 16th, or the pocket's
+ * own `slotSteps`), wrapped to the pocket's length, which is its reference
+ * bar's (16 for a 4/4 pocket, 14 for one learned from 7/8).
+ */
+const slotOf = (grid: Grid, step: number, groove: GrooveTemplate): number => {
+  const len = Math.max(1, groove.timing.length);
+  const unit = groove.slotSteps && groove.slotSteps > 0 ? groove.slotSteps : 1;
+  const r = Math.round(step / unit) * unit;
+  return ((Math.round(grid.inBar(r) / unit) % len) + len) % len;
 };
 const avg = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 
@@ -727,6 +977,12 @@ const avg = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / 
  * synthesized (on-beats pull ahead, off-beats lay back). Bar starts take the
  * big accent and the bar's pulse (beats, or group starts in 7/8 and 5/16) the
  * small one; off-16ths count from the bar start.
+ *
+ * With `sections` (the steps each section starts on, and a step's seconds),
+ * the line is then played by section (lib/clipNotes/humanize
+ * humanizeSections): each section pushes ahead or lays back by its own
+ * seeded bias, each phrase drifts, and velocities lean toward each phrase's
+ * peak, up to 12 ms, 8 ms and 10 velocity at an amount of 1.
  */
 export function humanize(
   notes: PianoNote[],
@@ -734,23 +990,51 @@ export function humanize(
   seed = 0,
   groove?: GrooveTemplate,
   meter?: MeterOpts,
+  sections?: { starts: readonly number[]; stepSec: number },
 ): PianoNote[] {
   if (amount <= 0 || !notes.length) return notes.map(clone);
+  const out = humanizeBeats(notes, amount, seed, groove, meter);
+  if (!sections || !(sections.stepSec > 0)) return out;
+  // On the step clock: the offsets in seconds become steps at the song's tempo.
+  const played = humanizeSections(
+    [{ id: 'line', notes: out.map((n, i) => ({ id: String(i), t: n.step, dur: n.length, velocity: n.velocity, note: n.note })) }],
+    {
+      sections: sections.starts,
+      onsetBias: (0.012 * amount) / sections.stepSec,
+      drift: (0.008 * amount) / sections.stepSec,
+      velocity: 10 * amount,
+      phraseGap: 4,
+      seed: seed * 7919 + 3,
+    },
+  ).get('line') ?? [];
+  return out.map((n, i) => {
+    const p = played[i];
+    return p ? mk(n.note, Math.max(0, p.t), n.length, clampVel(p.velocity)) : n;
+  });
+}
+
+/** humanize's own pass: velocity dynamics, beat accents and micro-timing. */
+function humanizeBeats(notes: PianoNote[], amount: number, seed: number, groove: GrooveTemplate | undefined, meter: MeterOpts | undefined): PianoNote[] {
   const grid = gridOf(meter);
   const meanAccent = groove ? avg(groove.accent) : 0;
   return notes.map((n, i) => {
-    const slot = slotOf(grid, n.step);
+    const slot = groove ? slotOf(grid, n.step, groove) : 0;
     let vel = n.velocity;
-    if (groove) vel += Math.round((groove.accent[slot] - meanAccent) * 44 * amount);
+    if (groove) vel += Math.round(((groove.accent[slot] ?? meanAccent) - meanAccent) * 44 * amount);
     else vel += Math.round((hash01(i + seed * 131) - 0.5) * 2 * 20 * amount);
     const on = grid.onPosition(n.step);
     if (on && on.weight >= 4) vel += Math.round(12 * amount);
     else if (on && on.weight >= pulseWeight(on.b.meter)) vel += Math.round(6 * amount);
+    // Some notes grow or shrink by a 32nd (0.5 steps), or by half their own
+    // length when that is less, so a note shorter than a 16th changes in
+    // proportion to its length and never floors above the roll's one tick.
     let len = n.length;
-    if (hash01(i + seed * 257) < amount * 0.3) len = Math.max(0.25, len + (hash01(i) > 0.5 ? 0.5 : -0.5));
+    if (hash01(i + seed * 257) < amount * 0.3) {
+      len = Math.max(MIN_NOTE_STEPS, len + (hash01(i) > 0.5 ? 1 : -1) * Math.min(0.5, len / 2));
+    }
     let micro: number;
     if (groove) {
-      micro = groove.timing[slot] * amount + (hash01(i * 3 + seed * 131 + 5) - 0.5) * amount * 0.03;
+      micro = (groove.timing[slot] ?? 0) * amount + (hash01(i * 3 + seed * 131 + 5) - 0.5) * amount * 0.03;
     } else {
       const laid = odd(grid.inBar(n.step)) ? 1 : -1;
       micro = (hash01(i * 3 + seed * 131 + 5) - 0.5 + laid * 0.4) * amount * 0.14;
@@ -990,7 +1274,7 @@ export function renderSection(
       const tuplet: 0 | 3 | 6 = role === 'climax'
         ? roll < 0.5 ? 6 : 3
         : roll < 0.4 ? 3 : 0;
-      genRun(cursor, nextTone, sp.start, sp.start + sp.len, ctx.ladder, {
+      genRun(cursor, nextTone, sp.start, sp.start + sp.len, sp.ladder ?? ctx.ladder, {
         baseVel: role === 'climax' ? 98 : 84,
         doubleOctave: true,
         accelAt: 0.4,
@@ -1029,7 +1313,7 @@ export function renderSection(
     if (role === 'build' && spans.length) {
       const lastSp = spans[spans.length - 1];
       const target = pcNearest(lastSp.triad[2], MEL_CENTER + 7);
-      genRun(state.cursor, target, lastSp.start + midPulse(lastSp.meter ?? DEFAULT_METER), lastSp.start + lastSp.len, ctx.ladder, {
+      genRun(state.cursor, target, lastSp.start + midPulse(lastSp.meter ?? DEFAULT_METER), lastSp.start + lastSp.len, lastSp.ladder ?? ctx.ladder, {
         baseVel: 86, accelAt: 0.3, grid,
       }).forEach((n) => out.push(n));
       state.cursor = target;
@@ -1044,7 +1328,7 @@ interface Style {
   mode: string;
   climaxAt: number;
   humanize: number;
-  /** Chord progression as scale degrees (0-indexed) — the harmonic movement. */
+  /** Chord progression as scale degrees counted from the key's tonic (0 = I, 4 = V) — the harmonic movement. */
   progression: number[];
   /** Ordered arrangement of section roles, cycled to the target length. */
   arrangement: Role[];
@@ -1108,6 +1392,25 @@ export interface SectionSpec {
   bars: number;
   /** The section's time signature; absent follows the roll's meter map. */
   meter?: Meter;
+  /** The section's tempo in quarter notes a minute; absent keeps the tempo in force (an earlier section's, else the roll's map). */
+  bpm?: number;
+}
+
+/** A section tempo the song can hold: inside the app's 20..300, to the hundredth, or undefined. */
+export const sanitizeSectionTempo = (bpm: unknown): number | undefined =>
+  typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0 ? clampTempoBpm(Math.round(bpm * 100) / 100) : undefined;
+
+/**
+ * The tempo section `i` keeps when it has none of its own: the nearest
+ * earlier section's tempo, or undefined when no earlier section has one (the
+ * section then follows the roll's tempo map). songTempoMap builds the same.
+ */
+export function heldSectionTempo(sections: readonly Pick<SectionSpec, 'bpm'>[], i: number): number | undefined {
+  for (let k = Math.min(i, sections.length) - 1; k >= 0; k -= 1) {
+    const bpm = sanitizeSectionTempo(sections[k]?.bpm);
+    if (bpm !== undefined) return bpm;
+  }
+  return undefined;
 }
 
 /** The default section layout for a style, one full harmonic cycle per section. */
@@ -1128,12 +1431,129 @@ export interface BuildSongOpts extends TransformOpts {
   sections?: SectionSpec[];
   /** Reference groove pocket applied by the final humanize pass. */
   groove?: GrooveTemplate;
+  /**
+   * The roll's tempo map (lib/rollTempo), which the sections before the first
+   * section tempo follow; after one, a section without a tempo keeps the tempo
+   * in force (songTempoMap). Absent means one tempo at `bpm`.
+   */
+  tempoMap?: readonly TempoEvent[];
+  /**
+   * The roll's EXPRESSION toggle: the song is shaped by phrase expression
+   * (lib/clipNotes/expression), its sections splitting its phrases, and comes
+   * back with the CC 1 and CC 11 curves (`controls`) and its attacks moved.
+   */
+  expression?: boolean;
 }
 
 export interface BuiltSong {
   notes: PianoNote[];
   /** The song's time signatures by bar: each section's meter, else the roll's map at that bar. */
   meterMap: MeterSegment[];
+  /**
+   * The song's tempo map: the roll's map, each section's own tempo over its
+   * bars, and a ritardando over each section's last bar (songTempoMap).
+   */
+  tempoMap: TempoEvent[];
+  /**
+   * Each FORM section in order: its role and the roll step its first bar line
+   * is on (after the pickup). The virtuoso store writes a section marker on
+   * the ruler at each one. Empty for an empty source.
+   */
+  sections: Array<{ role: Role; step: number }>;
+  /** With `expression`: the song's CC 1 and CC 11 phrase curves, on the roll's clock. */
+  controls?: RollControl[];
+}
+
+/** How much slower a section's last bar ends than it starts: 6% with Humanize at 0, up to 24% at 1. */
+export const RIT_DEPTH_BASE = 0.06;
+export const RIT_DEPTH_HUMANIZE = 0.18;
+/** The final cadence's ritardando is this many times deeper than a section's. */
+export const RIT_FINAL_MULT = 2.2;
+/** The deepest ritardando: the last bar ends at half its tempo. */
+export const RIT_DEPTH_MAX = 0.5;
+
+/** The share of its tempo a section's last bar gives up by its end. */
+export const ritDepth = (humanize: number, final: boolean): number =>
+  Math.min(RIT_DEPTH_MAX, (RIT_DEPTH_BASE + RIT_DEPTH_HUMANIZE * clamp01(humanize)) * (final ? RIT_FINAL_MULT : 1));
+
+/** One section's place in quarter-note beats from the roll's first step, and its own tempo. */
+export interface SectionBeats {
+  start: number;
+  /** Where its last bar starts. */
+  lastBar: number;
+  end: number;
+  bpm?: number;
+}
+
+/** A ritardando ends one tick before its section does, so the next section's tempo starts on the bar line. */
+const RIT_END_BEATS = 1 / PPQ;
+
+/**
+ * The song's tempo map. `base` is the roll's map, which the sections before
+ * the first section tempo follow. A section with a tempo holds it from its
+ * first bar line until the next change: a later section's own tempo, or a
+ * point of the roll's map past the section's end. A section without a tempo
+ * of its own keeps the tempo in force, as in a score. Then each
+ * section's last bar ramps linearly from the tempo in force at its bar line to
+ * `1 - ritDepth` of the tempo in force at its end, reached one tick before the
+ * end, and the next section starts at the tempo the ramp interrupted ("a
+ * tempo"). The final section's ramp is deeper, and its slowed tempo holds after
+ * the song. The roll's fermatas stay where they are.
+ */
+export function songTempoMap(
+  base: readonly TempoEvent[],
+  startBpm: number,
+  sections: readonly SectionBeats[],
+  humanize: number,
+): TempoEvent[] {
+  const own = sanitizeRollTempoMap(base, startBpm);
+  const holds = own.filter((e) => !!e.fermata);
+  const baseTempi = own.filter((e) => !e.fermata);
+  const tempos = new Map<number, TempoEvent>(baseTempi.map((e) => [e.beat, e]));
+  const list = (): TempoEvent[] => [...tempos.values()].sort((a, b) => a.beat - b.beat);
+  /** The curve of the tempo point that owns `beat`. */
+  const curveAt = (events: readonly TempoEvent[], beat: number): TempoCurve => {
+    let curve: TempoCurve = 'step';
+    for (const e of events) if (e.beat <= beat) curve = e.curve === 'linear' ? 'linear' : 'step';
+    return curve;
+  };
+  const put = (beat: number, bpm: number, curve: TempoCurve): void => {
+    tempos.set(beat, { beat, bpm: clampTempoBpm(bpm), curve });
+  };
+  /** Removes the tempo points in [from, to), or in (from, to) when `fromIncluded` is false. */
+  const dropInside = (from: number, to: number, fromIncluded: boolean): void => {
+    for (const beat of [...tempos.keys()]) if ((fromIncluded ? beat >= from : beat > from) && beat < to) tempos.delete(beat);
+  };
+
+  // Each section's own tempo from its first bar line. It stays until the next
+  // change, as a tempo marking does in a score: a later section without a
+  // tempo of its own keeps it, and a point of the roll's map past the
+  // section's end is the next change.
+  for (const sec of sections) {
+    const bpm = sanitizeSectionTempo(sec.bpm);
+    if (bpm === undefined || !(sec.end > sec.start)) continue;
+    dropInside(sec.start, sec.end, true);
+    put(sec.start, bpm, 'step');
+  }
+
+  // A ritardando over each section's last bar.
+  sections.forEach((sec, i) => {
+    const final = i === sections.length - 1;
+    const from = sec.lastBar;
+    const until = sec.end - RIT_END_BEATS;
+    if (!(until > from)) return;
+    const now = list();
+    const startTempo = getTempoAtBeat(now, from);
+    const endTempo = getTempoAtBeat(now, until);
+    // "A tempo": the tempo the ramp interrupts, unless a point already starts the next section.
+    const aTempo = { bpm: getTempoAtBeat(now, sec.end), curve: curveAt(now, sec.end) };
+    dropInside(from, sec.end, false);
+    put(from, startTempo, 'linear');
+    put(until, endTempo * (1 - ritDepth(humanize, final)), 'step');
+    if (!final && !tempos.has(sec.end)) put(sec.end, aTempo.bpm, aTempo.curve);
+  });
+
+  return sanitizeRollTempoMap([...list(), ...holds], startBpm);
 }
 
 /** Build the ordered section list, either explicit or derived from the style. */
@@ -1141,11 +1561,12 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
   if (opts.sections && opts.sections.length) {
     return opts.sections.map((s) => {
       const meter = sanitizeMeter(s.meter);
-      return { role: s.role, bars: Math.max(1, Math.round(s.bars)), ...(meter ? { meter } : {}) };
+      const bpm = sanitizeSectionTempo(s.bpm);
+      return { role: s.role, bars: Math.max(1, Math.round(s.bars)), ...(meter ? { meter } : {}), ...(bpm !== undefined ? { bpm } : {}) };
     });
   }
   const style = STYLES[opts.style] ?? STYLES.romantic;
-  const bpm = Math.max(40, Math.min(300, opts.bpm || 120));
+  const bpm = clampTempoBpm(opts.bpm || 120);
   const barSec = barSeconds(meterAtBar(normalizeMeterMap(opts.meterMap), 0), 60 / bpm);
   const targetBars = Math.max(style.progression.length * 3, Math.ceil((opts.targetSec ?? 110) / barSec));
   const barsPer = Math.max(2, style.progression.length);
@@ -1164,15 +1585,20 @@ function resolveSections(opts: BuildSongOpts): SectionSpec[] {
 /**
  * Build a full, developing arrangement. Lay out a voice-led chord plan (with
  * cadences), render each section with its own texture + real melody, shape it with
- * a crescendo arc and phrase-shaped rubato, then bias with the global sliders.
- * Sections come from the configurator when given, else from the style. Bar 0
- * starts after the roll's pickup, and each bar takes its section's meter or the
- * roll's meter at that bar; the result carries the meter map that follows.
+ * a crescendo arc, then bias with the global sliders. Sections come from the
+ * configurator when given, else from the style. Bar 0 starts after the roll's
+ * pickup, and each bar takes its section's meter or the roll's meter at that
+ * bar; the result carries the meter map that follows. The phrasing is the
+ * result's tempo map (songTempoMap): every note stays on its step, and only
+ * humanize's small micro-timing moves it.
  */
 export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   const rollMap = normalizeMeterMap(opts.meterMap);
-  if (!source.length) return { notes: [], meterMap: rollMap };
+  const startBpm = clampTempoBpm(opts.bpm > 0 ? opts.bpm : 120);
+  if (!source.length) return { notes: [], meterMap: rollMap, tempoMap: sanitizeRollTempoMap(opts.tempoMap, startBpm), sections: [] };
   const style = STYLES[opts.style] ?? STYLES.romantic;
+  // Degrees count from the key's tonic; the sorted set feeds the ladders.
+  const degrees = scaleDegrees(opts.key, opts.mode);
   const pcs = scalePitchClasses(opts.key, opts.mode);
   const ladder = scaleLadder(pcs);
   const sections = resolveSections(opts);
@@ -1184,7 +1610,12 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   }
   const meterMap = normalizeMeterMap(barMeters.map((meter, bar) => ({ bar, meter })));
   const songStart = Math.max(0, opts.pickupSteps ?? 0);
-  const songEnd = barMeters.reduce((s, m) => s + stepsPerBar(m), songStart);
+  const barStart: number[] = [];
+  let songEnd = songStart;
+  for (const m of barMeters) {
+    barStart.push(songEnd);
+    songEnd += stepsPerBar(m);
+  }
 
   // Chord plan: cycle the degree progression bar by bar across the whole song,
   // then impose cadences — a half cadence (V) to end the intro, and an authentic
@@ -1198,13 +1629,31 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
     degSeq[totalBars - 2] = 4; // dominant
   }
 
-  const o: TransformOpts = { key: opts.key, mode: opts.mode, meterMap, pickupSteps: songStart };
+  // A cadential V is a V that ends a section (the intro's half cadence among
+  // them) or leads into the final tonic. In a minor mode it takes the leading
+  // tone, in its chord and in every note written over its bar.
+  const cadential = new Set<number>();
+  let sectionEnd = 0;
+  for (const sec of sections) {
+    sectionEnd += sec.bars;
+    if (degSeq[sectionEnd - 1] === 4) cadential.add(sectionEnd - 1);
+  }
+  if (totalBars >= 2) cadential.add(totalBars - 2);
+  const raises = cadentialRaises(degrees);
+  const raise = (pc: number): number => raises.get(pc) ?? pc;
+  const cadPcs = Array.from(new Set(pcs.map(raise))).sort((a, b) => a - b);
+  const cadLadder = scaleLadder(cadPcs);
+  const scaleSpans: ScaleSpan[] = raises.size
+    ? [...cadential].sort((a, b) => a - b).map((bar) => ({ start: barStart[bar], end: barStart[bar] + stepsPerBar(barMeters[bar]), pcs: cadPcs }))
+    : [];
+
+  const o: TransformOpts = { key: opts.key, mode: opts.mode, meterMap, pickupSteps: songStart, ...(scaleSpans.length ? { scaleSpans } : {}) };
   const ctx: RenderCtx = { ladder, chorusTexture: style.chorusTexture, seed: 1, meter: o };
   const state: SectionState = { voicing: null, cursor: MEL_CENTER };
   const out: PianoNote[] = [];
-  const ritPoints: Array<{ end: number; span: number; depth: number }> = [];
+  const sectionBeats: SectionBeats[] = [];
+  const sectionStarts: BuiltSong['sections'] = [];
   const humAmt = clamp01(style.humanize * 0.6 + opts.amounts.humanize);
-  const rubatoDepth = 0.5 + opts.amounts.humanize * 2.5;
 
   let cursorBar = 0;
   let cursorStep = songStart;
@@ -1215,7 +1664,9 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
       const bar = cursorBar + b;
       const meter = barMeters[bar];
       const len = stepsPerBar(meter);
-      spans.push({ triad: chordAtDegree(degSeq[bar] ?? 0, pcs), start: cursorStep, len, meter });
+      const triad = chordAtDegree(degSeq[bar] ?? 0, degrees);
+      if (raises.size && cadential.has(bar)) spans.push({ triad: triad.map(raise), start: cursorStep, len, meter, ladder: cadLadder });
+      else spans.push({ triad, start: cursorStep, len, meter });
       cursorStep += len;
     }
     const notes = renderSection(sec.role, spans, state, ctx);
@@ -1225,9 +1676,9 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
       const dyn = crescendoMult(pos, style.climaxAt) * ROLE_DYN[sec.role];
       out.push(mk(n.note, n.step, n.length, n.velocity * dyn));
     }
-    // ritardando into each section end; strongest at the final cadence.
-    const isFinal = si === sections.length - 1;
-    ritPoints.push({ end: cursorStep, span: spans[spans.length - 1].len, depth: rubatoDepth * (isFinal ? 2.2 : 1) });
+    // Where the section and its last bar sit, for its ritardando in the tempo map.
+    sectionBeats.push({ start: spans[0].start / 4, lastBar: spans[spans.length - 1].start / 4, end: cursorStep / 4, bpm: sec.bpm });
+    sectionStarts.push({ role: sec.role, step: spans[0].start });
     cursorBar += sec.bars;
   });
 
@@ -1237,24 +1688,17 @@ export function buildSong(source: PianoNote[], opts: BuildSongOpts): BuiltSong {
   if (opts.amounts.harmony > 0) notes = harmonize(notes, opts.amounts.harmony * 0.5, o, 12);
   if (opts.amounts.runs > 0) notes = runsAndFlourishes(notes, opts.amounts.runs * 0.5, o, 13);
   if (opts.amounts.rhythm > 0) notes = polyrhythm(notes, opts.amounts.rhythm * 0.6, o, 14);
-  notes = humanize(notes, humAmt, 7, opts.groove, o);
+  // Played by section too: each FORM section leans its own way, each phrase drifts, velocities rise to its peak.
+  notes = humanize(notes, humAmt, 7, opts.groove, o, { starts: sectionStarts.map((sec) => sec.step), stepSec: 60 / startBpm / 4 });
   if (opts.amounts.sync > 0) notes = syncopate(notes, opts.amounts.sync, o, 15);
   if (opts.amounts.accent > 0) notes = accentGroups(notes, opts.amounts.accent, o);
 
-  // Phrase-shaped rubato: a monotonic time-warp that eases each note later as it
-  // approaches a section end (ritardando), pushing subsequent material too. It
-  // eases over the last bar of each section.
-  notes = notes.map((n) => {
-    let shift = 0;
-    for (const rp of ritPoints) {
-      if (n.step >= rp.end) shift += rp.depth;
-      else if (n.step >= rp.end - rp.span) {
-        const e = (n.step - (rp.end - rp.span)) / rp.span;
-        shift += rp.depth * (e * e); // ease-in for a natural slow-down
-      }
-    }
-    return mk(n.note, n.step + shift, n.length, n.velocity);
-  });
-
-  return { notes: notes.sort(byStepThenNote), meterMap };
+  // The phrasing: a ritardando into each section end, written as tempo.
+  const tempo = songTempoMap(opts.tempoMap ?? [], startBpm, sectionBeats, opts.amounts.humanize);
+  // EXPRESSION: CC 1 and CC 11 over each phrase, the sections splitting them, and seeded attacks.
+  if (opts.expression) {
+    const shaped = buildExpression(notes, { seed: 7, boundaries: sectionStarts.map((s) => Math.round((s.step * PPQ) / 4)) });
+    return { notes: shaped.notes.sort(byStepThenNote), meterMap, tempoMap: tempo, sections: sectionStarts, controls: shaped.controls };
+  }
+  return { notes: notes.sort(byStepThenNote), meterMap, tempoMap: tempo, sections: sectionStarts };
 }

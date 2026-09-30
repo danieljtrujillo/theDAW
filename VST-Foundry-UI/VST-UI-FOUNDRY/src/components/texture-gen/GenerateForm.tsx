@@ -14,6 +14,8 @@ import NumberField from './NumberField';
 import { labelCls, inputCls, btnCls, CLOUD_SIZES } from './constants';
 import { ProviderTab, SdType, SDResource, SDResources } from './types';
 import { SDStatus, LoraEntry } from '../../types';
+import OpenRouterModelPicker from '../../features/openrouter-textures/OpenRouterModelPicker';
+import type { OpenRouterTextureControls } from '../../features/openrouter-textures/types';
 
 interface GenerateFormProps {
   // ---- SD sub-options + status ----
@@ -63,6 +65,8 @@ interface GenerateFormProps {
   setStyle: React.Dispatch<React.SetStateAction<'vivid' | 'natural'>>;
   apiKey: string;
   setApiKey: React.Dispatch<React.SetStateAction<string>>;
+
+  openRouter?: OpenRouterTextureControls;
 
   // ---- Advanced ----
   advancedOpen: boolean;
@@ -127,6 +131,7 @@ export default function GenerateForm({
   setStyle,
   apiKey,
   setApiKey,
+  openRouter,
   advancedOpen,
   setAdvancedOpen,
   model,
@@ -280,6 +285,7 @@ export default function GenerateForm({
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
+          {activeTab === 'openrouter' && openRouter && <OpenRouterModelPicker {...openRouter} />}
           <div>
             <div className={labelCls}>Size</div>
             <CustomSelect

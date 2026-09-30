@@ -7,7 +7,7 @@ import { usePlayerStore } from '../state/playerStore';
 import { logError } from '../state/logStore';
 import { HoverTip } from '../components/ui/Tooltip';
 import { formatDuration, formatDate, formatSize } from './catalogFormat';
-import { CatalogueProviderBadge } from './CatalogueProviderBadge';
+import { ProviderBadge } from '../components/library/ProviderBadge';
 import { CoverArt } from './CoverArt';
 
 const ROW_HEIGHT = 52;
@@ -33,7 +33,10 @@ export async function playCatalogueEntry(entry: LibraryEntry): Promise<void> {
 
 /** Props forwarded to every row via react-window v2's `rowProps`. */
 interface RowProps {
-  entries: LibraryEntry[];
+  /** The row at a global index, or undefined while its page is still coming. */
+  entryAt: (index: number) => LibraryEntry | undefined;
+  /** New reference whenever loaded rows change, so rows re-read `entryAt`. */
+  loadedRows: readonly LibraryEntry[];
   selectedEntryId: string | null;
   currentEntryId: string | null;
   isPlaying: boolean;
@@ -47,7 +50,7 @@ interface RowProps {
 function Row({
   index,
   style,
-  entries,
+  entryAt,
   selectedEntryId,
   currentEntryId,
   isPlaying,
@@ -55,8 +58,22 @@ function Row({
   onToggleFavorite,
   onContextMenu,
 }: RowComponentProps<RowProps>) {
-  const entry = entries[index];
-  if (!entry) return null;
+  const entry = entryAt(index);
+  // The page this row sits on has not arrived: draw the same box so the
+  // scrollbar does not jump when it does.
+  if (!entry) {
+    return (
+      <div style={style} className="px-2">
+        <div aria-hidden="true" className="hardware-card flex flex-row items-center gap-2 p-1.5 h-11.5 animate-pulse">
+          <div className="w-8 h-8 shrink-0 rounded-sm bg-white/5" />
+          <div className="flex-1 min-w-0 flex flex-col gap-1">
+            <div className="h-2 w-1/2 rounded bg-white/5" />
+            <div className="h-1.5 w-1/3 rounded bg-white/5" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   const isSelected = selectedEntryId === entry.id;
   const isCurrent = currentEntryId === entry.id;
   const hasChimera = (entry.chimeraSources?.length ?? 0) > 0;
@@ -96,7 +113,9 @@ function Row({
 
         <div className="flex-1 min-w-0 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
-            <CatalogueProviderBadge model={entry.model} source={entry.source} className="shrink-0" />
+            {/* One badge for the entry's one provider: detected when the file
+                said who made it, derived from model/source when it did not. */}
+            <ProviderBadge entry={entry} className="shrink-0" />
             <span className="font-bold text-[10px] truncate text-zinc-200" title={entry.title}>
               {entry.title}
             </span>
@@ -128,16 +147,31 @@ function Row({
 }
 
 interface Props {
-  entries: LibraryEntry[];
+  /** Rows in the result set — every match, not just the ones loaded. */
+  rowCount: number;
+  /** The row at a global index, or undefined while its page is coming. */
+  entryAt: (index: number) => LibraryEntry | undefined;
+  /** The rows currently loaded; its identity is the re-render trigger. */
+  loadedRows: readonly LibraryEntry[];
+  /** Called with the inclusive index range react-window has rendered. */
+  onRangeRendered?: (start: number, end: number) => void;
   onContextMenu: (e: React.MouseEvent, entry: LibraryEntry) => void;
 }
 
 /**
- * CatalogueList — react-window v2 virtualized list. Scales to tens of
- * thousands of rows (the SunoHarvester Library lesson). The `List` fills its
- * parent's bounded height via the wrapping flex container + style height:'100%'.
+ * CatalogueList — react-window v2 virtualized list over the PAGED library
+ * store. Row indices are global indices into the current query's result set,
+ * so the list scrolls through 200,000 entries while holding a few hundred.
+ * The `List` fills its parent's bounded height via the wrapping flex container
+ * + style height:'100%'.
  */
-export const CatalogueList: React.FC<Props> = ({ entries, onContextMenu }) => {
+export const CatalogueList: React.FC<Props> = ({
+  rowCount,
+  entryAt,
+  loadedRows,
+  onRangeRendered,
+  onContextMenu,
+}) => {
   const selectedEntryId = useLibraryStore((s) => s.selectedEntryId);
   const setSelectedEntry = useLibraryStore((s) => s.setSelectedEntry);
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite);
@@ -147,14 +181,22 @@ export const CatalogueList: React.FC<Props> = ({ entries, onContextMenu }) => {
 
   const handleToggleFavorite = useCallback((id: string) => { void toggleFavorite(id); }, [toggleFavorite]);
 
+  const handleRowsRendered = useCallback((
+    _visible: { startIndex: number; stopIndex: number },
+    rendered: { startIndex: number; stopIndex: number },
+  ) => {
+    onRangeRendered?.(rendered.startIndex, rendered.stopIndex);
+  }, [onRangeRendered]);
+
   return (
     <div className="flex-1 min-h-0">
       <List
         rowComponent={Row}
-        rowCount={entries.length}
+        rowCount={rowCount}
         rowHeight={ROW_HEIGHT}
         rowProps={{
-          entries,
+          entryAt,
+          loadedRows,
           selectedEntryId,
           currentEntryId,
           isPlaying,
@@ -162,7 +204,9 @@ export const CatalogueList: React.FC<Props> = ({ entries, onContextMenu }) => {
           onToggleFavorite: handleToggleFavorite,
           onContextMenu,
         }}
-        overscanCount={6}
+        overscanCount={8}
+        onRowsRendered={handleRowsRendered}
+        aria-label="Catalogue tracks"
         style={{ height: '100%' }}
       />
     </div>

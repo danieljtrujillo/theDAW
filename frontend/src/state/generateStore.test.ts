@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { buildGenerateJobFormData, type GenerateParams } from './generateStore.ts';
+import { buildGenerateJobFormData, extractResolvedSeed, type GenerateParams } from './generateStore.ts';
 
 const loraFile = new File(['synthetic-lora'], 'style.safetensors', { type: 'application/octet-stream' });
 
@@ -83,6 +83,16 @@ const enabledInitAudioForm = buildGenerateJobFormData(
 
 assert.equal(disabledInitAudioForm.has('init_audio'), false);
 assert.equal((enabledInitAudioForm.get('init_audio') as File).name, 'source.wav');
+
+// ── extractResolvedSeed (T01 contract: response/metadata `seed`) ─────────
+assert.equal(extractResolvedSeed({ seed: 123456789 }), 123456789, 'top-level seed');
+assert.equal(extractResolvedSeed({ job: { id: 'abc', seed: 42 } }), 42, 'nested job.seed fallback');
+assert.equal(extractResolvedSeed({ seed: 1, job: { seed: 2 } }), 1, 'top-level wins when both are present');
+assert.equal(extractResolvedSeed({ job: { id: 'abc' } }), null, 'no seed field: older backend');
+assert.equal(extractResolvedSeed({ seed: 'nope' }), null, 'a non-number seed is not resolved');
+assert.equal(extractResolvedSeed({ seed: Number.NaN }), null, 'NaN is not a resolved seed');
+assert.equal(extractResolvedSeed(null), null, 'no payload at all (non-JSON error body)');
+assert.equal(extractResolvedSeed('not an object'), null, 'a string payload is not a seed source');
 
 console.log('generateStore form contract regression passed');
 

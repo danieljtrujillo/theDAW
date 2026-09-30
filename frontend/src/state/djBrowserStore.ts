@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* DJ TrackBrowser column layout — persisted order, widths, and sort so the
  * library grid the user arranges survives reloads. The 'title' column flexes
@@ -74,6 +75,6 @@ export const useDjBrowser = create<DjBrowserState>()(
           sortDir: 'asc',
         }),
     }),
-    { name: 'thedaw.dj.browser.v1' },
+    { name: 'thedaw.dj.browser.v1', storage: persistStorage() },
   ),
 );

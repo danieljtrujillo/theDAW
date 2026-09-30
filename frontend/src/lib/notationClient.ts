@@ -1,3 +1,5 @@
+import { pairingHeaderFor } from './apiJson';
+
 export interface NotationArtifact {
   id: string;
   entry_id: string;
@@ -21,6 +23,12 @@ export interface NotationArtifact {
   engine_version: string;
   metadata_json?: string;
   created_at: number;
+  /** MusicXML only: the sheet is one an older build wrote with its transposing
+   *  parts at the pitch they sound (backend notation/sheet_pitch.py). */
+  legacy_sounding_pitch?: boolean;
+  /** MusicXML only: that sheet's MIDI is in the library, so "Rewrite from
+   *  MIDI" (rewriteSheetFromMidi) can engrave it again at written pitch. */
+  rewrite_from_midi?: boolean;
 }
 
 export async function listNotationArtifacts(entryId: string, kind?: string): Promise<NotationArtifact[]> {
@@ -32,16 +40,33 @@ export async function listNotationArtifacts(entryId: string, kind?: string): Pro
 }
 
 export async function convertMidiToMusicXml(entryId: string, midiId: string): Promise<NotationArtifact | null> {
-  const res = await fetch(
-    `/api/notation/${encodeURIComponent(entryId)}/from-midi/${encodeURIComponent(midiId)}`,
-    { method: 'POST' },
-  );
+  const url = `/api/notation/${encodeURIComponent(entryId)}/from-midi/${encodeURIComponent(midiId)}`;
+  const res = await fetch(url, { method: 'POST', headers: pairingHeaderFor(url) });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
   if (!res.ok) {
     const detail = (payload as { detail?: unknown }).detail;
     const message = typeof detail === 'object' && detail && 'error' in detail
       ? String((detail as { error?: unknown }).error)
       : `notation conversion HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
+}
+
+/**
+ * Engrave a sheet an older build wrote at sounding pitch again from its MIDI,
+ * at written pitch, over the same file and artifact id. The backend keeps the
+ * old file until the new one is written.
+ */
+export async function rewriteSheetFromMidi(entryId: string, artifactId: string): Promise<NotationArtifact | null> {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/rewrite-from-midi/${encodeURIComponent(artifactId)}`;
+  const res = await fetch(url, { method: 'POST', headers: pairingHeaderFor(url) });
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : `sheet rewrite HTTP ${res.status}`;
     throw new Error(message);
   }
   return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
@@ -69,9 +94,142 @@ export interface NotationCapabilities {
   tab_tuning_pitches?: Record<string, number[]>;
   arrangement_styles?: string[];
   engines?: Record<string, unknown>;
+  /** True when chord tracks are buildable. They are never in `formats`:
+   *  they reach the entry through POST /{entry}/chords, not /export. */
+  chords?: boolean;
   /** True when an ffmpeg binary is reachable, so a Beat Saber export can
    *  encode song.ogg itself. */
   ffmpeg?: boolean;
+  /** True when POST /{entry}/perform can play a sheet as a MIDI performance
+   *  (partitura is installed). Never in `formats`: it has its own route. */
+  perform?: boolean;
+  /** What POST /import takes and whether the music21 corpus can be opened. */
+  score_import?: {
+    extensions: string[];
+    max_bytes: number;
+    corpus: boolean;
+  };
+  /** What GET /musescore reports; 'audio' is in `formats` only when its
+   *  reason is empty. */
+  musescore_render?: MuseScoreRenderStatus;
+}
+
+/** One piece of the music21 corpus, as GET /api/notation/corpus lists it. */
+export interface CorpusPiece {
+  /** The corpus path id POST /corpus/open takes (e.g. bach_bwv66_6_mxl). */
+  id: string;
+  composer: string;
+  title: string;
+  movement: string;
+  parts: number | null;
+  /** The file inside the corpus, e.g. bach/bwv66.6.mxl. */
+  path: string;
+  number?: number | null;
+  format?: string;
+}
+
+export interface CorpusSearchResult {
+  query: string;
+  total: number;
+  results: CorpusPiece[];
+}
+
+/** What POST /import and POST /corpus/open answer: the new composition
+ *  entry, its credit, and the sheet the SCORE tab opens. */
+export interface ScoreImportResult {
+  ok: boolean;
+  entry_id: string;
+  title: string;
+  composer: string;
+  sheet: NotationArtifact | null;
+  artifacts: NotationArtifact[];
+}
+
+/** The backend's error text from a failed notation request. */
+async function errorText(res: Response, what: string): Promise<string> {
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  const detail = (payload as { detail?: unknown }).detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (typeof detail === 'object' && detail && 'error' in detail) return String((detail as { error?: unknown }).error);
+  return `${what} HTTP ${res.status}`;
+}
+
+/** Import a score file (.musicxml, .xml, .mxl, .krn, .abc) as a composition
+ *  entry of its own: POST /api/notation/import. */
+export async function importScoreFile(file: File): Promise<ScoreImportResult> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const url = '/api/notation/import';
+  const res = await fetch(url, { method: 'POST', body, headers: pairingHeaderFor(url) });
+  if (!res.ok) throw new Error(await errorText(res, 'score import'));
+  return await res.json() as ScoreImportResult;
+}
+
+/** Search the music21 corpus: GET /api/notation/corpus?q=. */
+export async function searchCorpus(query: string, signal?: AbortSignal): Promise<CorpusSearchResult> {
+  const res = await fetch(`/api/notation/corpus?q=${encodeURIComponent(query)}&limit=100`, { signal });
+  if (!res.ok) throw new Error(await errorText(res, 'corpus search'));
+  return await res.json() as CorpusSearchResult;
+}
+
+/** Import one corpus piece as a composition entry: POST /api/notation/corpus/open. */
+export async function openCorpusPiece(id: string): Promise<ScoreImportResult> {
+  const url = '/api/notation/corpus/open';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(await errorText(res, 'corpus open'));
+  return await res.json() as ScoreImportResult;
+}
+
+/** GET /api/notation/musescore: MuseScore 4 and Muse Sounds for the 'audio'
+ *  export. `reason` is empty when a render can run. */
+export interface MuseScoreRenderStatus {
+  found: boolean;
+  path: string | null;
+  muse_sounds: boolean;
+  reason: string;
+}
+
+export async function getMuseScoreStatus(): Promise<MuseScoreRenderStatus> {
+  const res = await fetch('/api/notation/musescore');
+  if (!res.ok) throw new Error(`MuseScore status HTTP ${res.status}`);
+  return await res.json() as MuseScoreRenderStatus;
+}
+
+/** What the 'audio' export made: a new Library entry holding the WAV. */
+export interface ScoreAudioRender {
+  library_entry_id: string;
+  title: string;
+  audio_url?: string;
+}
+
+/**
+ * Render a sheet (or its parts) with MuseScore 4 and Muse Sounds into a WAV
+ * the backend adds to the Library. Takes minutes on a long score.
+ */
+export async function renderScoreAudio(
+  entryId: string,
+  sourceArtifactId: string,
+  options?: Record<string, unknown>,
+): Promise<ScoreAudioRender> {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/export`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
+    body: JSON.stringify({ source_artifact_id: sourceArtifactId, format: 'audio', options: options ?? {} }),
+  });
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : `MuseScore render HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return payload as ScoreAudioRender;
 }
 
 /** Options for POST /{entry}/chords (the gantasmo.chordtrack builder). */
@@ -111,6 +269,8 @@ export interface MakeArrangementRequest {
   source_artifact_id?: string;
   source_artifact_ids?: string[];
   midi_id?: string;
+  /** Band score: source artifact id -> orchestral registry instrument id (lib/orchestra.ts). */
+  instruments?: Record<string, string>;
 }
 
 export async function getNotationCapabilities(): Promise<NotationCapabilities> {
@@ -125,9 +285,10 @@ export async function exportArtifact(
   format: string,
   options?: Record<string, unknown>,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/export`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/export`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify({ source_artifact_id: sourceArtifactId, format, options: options ?? {} }),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -141,13 +302,44 @@ export async function exportArtifact(
   return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
 }
 
+/**
+ * POST /{entry}/perform: play a MusicXML sheet as an expressive MIDI
+ * (ritardandos into cadences, fermatas, printed dynamics and articulation,
+ * a tempo map on the sheet's beat grid). Returns the registered `midi`
+ * artifact; throws with the backend's error when the sheet cannot be played.
+ */
+export async function performScore(
+  entryId: string,
+  sourceArtifactId: string,
+  bpm?: number,
+): Promise<NotationArtifact | null> {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/perform`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
+    body: JSON.stringify(bpm ? { source_artifact_id: sourceArtifactId, bpm } : { source_artifact_id: sourceArtifactId }),
+  });
+  const payload = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok) {
+    const detail = (payload as { detail?: unknown }).detail;
+    const message = typeof detail === 'object' && detail && 'error' in detail
+      ? String((detail as { error?: unknown }).error)
+      : typeof detail === 'string'
+        ? detail
+        : `notation perform HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return ((payload as { artifact?: NotationArtifact | null }).artifact) ?? null;
+}
+
 export async function makeTabs(
   entryId: string,
   req: MakeTabsRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/tabs`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/tabs`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -165,9 +357,10 @@ export async function makeArrangement(
   entryId: string,
   req: MakeArrangementRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/arrange`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/arrange`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));
@@ -188,9 +381,10 @@ export async function makeChordTrack(
   entryId: string,
   req: ChordTrackRequest,
 ): Promise<NotationArtifact | null> {
-  const res = await fetch(`/api/notation/${encodeURIComponent(entryId)}/chords`, {
+  const url = `/api/notation/${encodeURIComponent(entryId)}/chords`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...pairingHeaderFor(url) },
     body: JSON.stringify(req),
   });
   const payload = await res.json().catch(() => ({} as Record<string, unknown>));

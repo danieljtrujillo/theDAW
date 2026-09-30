@@ -1,16 +1,17 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from '../state/persistStorage';
 import {
   Upload, X, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2,
   Download, Send, Sparkles, Plus, Gauge, History, LayoutList, Grid3x3,
   Plug, RefreshCw, Loader2, Square, Blocks, FolderOpen, SlidersHorizontal,
-  AudioWaveform, Activity, Layers,
+  AudioWaveform, Activity, Layers, LayoutGrid,
 } from 'lucide-react';
 import { effectiveZoom } from '../lib/canvasScale';
 import { useEffectChainStore, EFFECT_LABELS, EFFECT_DEFAULTS, MIX_RACK_IDS } from '../state/effectChainStore';
-import { useVstStore } from '../state/vstStore';
-import { useVstEditorStore } from '../state/vstEditorStore';
+import { useVstStore, vstBrowserEmptyText } from '../state/vstStore';
+import { useVstEditorStore, vstEntryName } from '../state/vstEditorStore';
 import type { Vst3PluginInfo } from '../lib/vstClient';
 import { useAdvancedEditorSourceStore } from '../state/advancedEditorStore';
 import { useStudioStore } from '../state/studioStore';
@@ -35,6 +36,7 @@ import {
   useMixLiveRackStore, LEVEL_TAKING_RACK_IDS,
 } from '../state/mixLiveRack';
 import { registerAresBridge, ARES_XY_PAD_FALLBACK_ID } from '../lib/aresBridge';
+import { usePowerModeBridge } from '../features/power-mode/usePowerModeBridge';
 import { RACK_EFFECTS, getRackEffect } from '../lib/rackEffects';
 import type { WidgetRegistry } from '../components/surface/widgetTypes';
 import type { SurfaceLayout } from '../state/surfaceLayoutStore';
@@ -90,8 +92,8 @@ if (import.meta.env.DEV) {
 const AllHeader: React.FC<{ icon: React.ComponentType<{ className?: string }>; color: string; label: string; count: number }> = ({ icon: Icon, color, label, count }) => (
   <div className="flex items-center gap-1.5 px-1 pt-0.5">
     <Icon className={`w-3 h-3 shrink-0 ${color}`} />
-    <span className={`text-[9px] font-black uppercase tracking-widest ${color}`}>{label}</span>
-    <span className="text-[8px] font-mono text-zinc-600">{count}</span>
+    <span className={`text-xs font-black uppercase tracking-widest ${color}`}>{label}</span>
+    <span className="text-xs font-semibold tabular-nums text-zinc-600">{count}</span>
   </div>
 );
 // A Studio module / psychoacoustic effect cell (color is a hex accent).
@@ -99,8 +101,8 @@ const ModuleRow: React.FC<{ name: string; desc: string; color: string; marked: b
   <div onClick={onClick} className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${marked ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
     <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
     <div className="flex-1 min-w-0">
-      <span className="text-[11px] font-medium block truncate" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
-      <p className="text-[9px] text-zinc-500 truncate mt-0.5">{desc}</p>
+      <span className="text-xs font-semibold block truncate" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
+      <p className="text-xs font-semibold text-zinc-500 truncate mt-0.5">{desc}</p>
     </div>
     {marked && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />}
   </div>
@@ -113,7 +115,7 @@ const ModuleTile: React.FC<{ name: string; color: string; marked: boolean; onCli
         : <span className="absolute left-1/2 top-9 -translate-x-1/2 w-7 h-7 rounded-full" style={{ background: color, boxShadow: `0 0 10px ${color}80` }} />}
     </div>
     <div className="absolute inset-x-0 bottom-0 px-1 pt-3 pb-1 bg-linear-to-t from-black/95 to-transparent">
-      <span className="text-[9px] font-medium leading-tight line-clamp-2 block" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
+      <span className="text-xs font-semibold leading-tight line-clamp-2 block" style={{ color: `var(--mix-label, ${color})`, textShadow: `0 0 8px ${color}` }}>{name}</span>
     </div>
   </div>
 );
@@ -122,8 +124,8 @@ const FxRow: React.FC<{ name: string; desc: string; cat: CategoryMeta; inChain: 
   <div onClick={onClick} className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
     <span aria-hidden="true" className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />
     <div className="flex-1 min-w-0">
-      <span className={`text-[11px] font-medium block truncate ${cat.tile.text}`}>{name}</span>
-      <p className="text-[9px] text-zinc-500 truncate mt-0.5">{desc}</p>
+      <span className={`text-xs font-semibold block truncate ${cat.tile.text}`}>{name}</span>
+      <p className="text-xs font-semibold text-zinc-500 truncate mt-0.5">{desc}</p>
     </div>
     {inChain && <span className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />}
   </div>
@@ -138,7 +140,7 @@ const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onCl
           : <div className="grid place-items-center h-full"><Icon className={`w-7 h-7 ${cat.tile.text}`} /></div>}
       </div>
       <div className="absolute inset-x-0 bottom-0 px-1 pt-3 pb-1 bg-linear-to-t from-black/95 to-transparent">
-        <span className={`text-[9px] font-medium leading-tight line-clamp-2 block ${cat.tile.text}`}>{name}</span>
+        <span className={`text-xs font-semibold leading-tight line-clamp-2 block ${cat.tile.text}`}>{name}</span>
       </div>
       {inChain && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-white z-10" />}
     </div>
@@ -157,7 +159,7 @@ const FxTile: React.FC<{ name: string; cat: CategoryMeta; inChain: boolean; onCl
      LOWER  — effectStage (active effect's UI/viz; ModuleShell + hero viz lands here later)
    The footer is the PROCESS-CHAIN transport. */
 
-const sectionTitle = 'text-[10px] font-black uppercase tracking-widest text-purple-300';
+const sectionTitle = 'text-xs font-black uppercase tracking-widest text-purple-300';
 
 /* ── MIX transport — play / pause / stop for a row's audio (input source or
    processed output). Drives the global player engine; the row whose label is
@@ -255,8 +257,8 @@ function StatRow({ stats }: { stats: AudioStats }) {
   const fmtDur = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}m${Math.round(s % 60)}s` : `${s.toFixed(1)}s`);
   const Pill = ({ label, value }: { label: string; value: string }) => (
     <span className="flex items-center gap-1">
-      <span className="text-[8px] font-mono text-zinc-600 uppercase">{label}</span>
-      <span className="text-[9px] font-mono text-zinc-300">{value}</span>
+      <span className="text-xs font-bold text-zinc-600 uppercase">{label}</span>
+      <span className="text-xs font-semibold tabular-nums text-zinc-300">{value}</span>
     </span>
   );
   return (
@@ -300,7 +302,7 @@ const useVizRackPrefs = create<VizRackPrefs>()(
       setRow: (row, pref) => set(row === 'input' ? { input: pref } : { output: pref }),
       setBodyPx: (px) => set({ bodyPx: Math.round(Math.max(VIZ_BODY_MIN, Math.min(VIZ_BODY_MAX, px))) }),
     }),
-    { name: 'thedaw.mix.vizrack.v1', partialize: (s) => ({ input: s.input, output: s.output, bodyPx: s.bodyPx }) },
+    { name: 'thedaw.mix.vizrack.v1', storage: persistStorage(), partialize: (s) => ({ input: s.input, output: s.output, bodyPx: s.bodyPx }) },
   ),
 );
 const vizRowOpen = (pref: VizRowPref, hasAudio: boolean, mode: MixVizMode): boolean =>
@@ -375,14 +377,14 @@ const VizRackRow: React.FC<VizRackRowProps> = (p) => {
           />
           {p.busy && (
             <div className="absolute inset-0 grid place-items-center rounded-lg bg-black/50 backdrop-blur-sm pointer-events-none">
-              <span className="text-[10px] font-mono text-purple-300 animate-pulse">processing chain…</span>
+              <span className="text-xs font-semibold tabular-nums text-purple-300 animate-pulse">processing chain…</span>
             </div>
           )}
         </div>
       ) : (
         <div className="h-6 flex items-center gap-2 px-2 rounded-lg border bg-black/40" style={{ borderColor: `${p.accent}55` }}>
           {p.transport}
-          <span className="text-[10px] font-black uppercase tracking-[0.18em] shrink-0" style={{ color: `var(--mix-label, ${p.accent})`, textShadow: `0 0 8px ${p.accent}` }}>{p.label}</span>
+          <span className="text-xs font-black uppercase tracking-[0.18em] shrink-0" style={{ color: `var(--mix-label, ${p.accent})`, textShadow: `0 0 8px ${p.accent}` }}>{p.label}</span>
           <div className="flex items-center gap-0.5 bg-black/40 rounded p-0.5 shrink-0">
             <button type="button" onClick={() => p.onMode('wave')} aria-pressed={p.mode === 'wave'} aria-label={`${p.label}: waveform view`} title="Waveform" className={vizTabBtn(p.mode === 'wave')}>
               <AudioWaveform className="w-3 h-3" />
@@ -401,7 +403,7 @@ const VizRackRow: React.FC<VizRackRowProps> = (p) => {
           >
             <Layers className="w-3 h-3" />
           </button>
-          <span className="text-[9px] font-mono text-zinc-600 truncate min-w-0">
+          <span className="text-xs font-semibold tabular-nums text-zinc-600 truncate min-w-0">
             {p.busy ? <span className="text-purple-300 animate-pulse">processing chain…</span> : p.url ? '' : p.placeholder}
           </span>
           <div className="ml-auto flex items-center gap-2 shrink-0">{extra}</div>
@@ -570,6 +572,10 @@ interface MixRegArgs {
   // VST3 plugins (hosted via pedalboard) — shown in the effects browser and
   // added to the chain as 'vst3' nodes.
   vstPlugins: Vst3PluginInfo[]; vstScanning: boolean; rescanVst: () => void;
+  /** Why the list is empty here (the backend's words), or null. See vstStore. */
+  vstUnavailableReason: string | null;
+  /** The folder the scan reads for installed plugins, named when the list is empty. See vstStore. */
+  vstInstallFolder: string | null;
   addVstToChain: (p: Vst3PluginInfo) => void; vstInChain: Set<string>;
   // .gan web-plugins (generic loader): installed list + the one open in the stage.
   ganPlugins: GanPluginSummary[]; ganActiveId: string | null; ganActiveUrl: string | null;
@@ -614,36 +620,37 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
         <button onClick={() => p.setActiveCategory('all')}
           title="Every effect in MIX, grouped by category"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'all' ? 'border-purple-400 text-purple-200 bg-purple-500/10' : 'border-transparent text-zinc-300 hover:text-zinc-100 hover:bg-white/5'}`}>
-          <span className="text-[10px] font-bold flex-1 truncate">All</span>
-          <span className="text-[8px] font-mono text-zinc-500 shrink-0">{p.allEffectCount}</span>
+          <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-xs font-bold flex-1 truncate">All</span>
+          <span className="text-xs font-semibold tabular-nums text-zinc-500 shrink-0">{p.allEffectCount}</span>
         </button>
         <button onClick={() => p.setActiveCategory('studio')}
           title="Studio modules, the Ares control surface, and the psychoacoustic effects"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'studio' ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10' : 'border-transparent text-cyan-400/80 hover:text-cyan-200 hover:bg-cyan-500/5'}`}>
           <Boxes className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-bold flex-1 truncate">Studio</span>
-          <span className="text-[8px] font-mono text-cyan-600 shrink-0">{STUDIO_MODULES.length + PSYCHO_MODULES.length + TOOL_STACK_MODULES.length + 1}</span>
+          <span className="text-xs font-bold flex-1 truncate">Studio</span>
+          <span className="text-xs font-semibold tabular-nums text-cyan-600 shrink-0">{STUDIO_MODULES.length + PSYCHO_MODULES.length + TOOL_STACK_MODULES.length + 1}</span>
         </button>
         <button onClick={() => p.setActiveCategory('magenta')}
           title="Magenta RealTime 2 — generative instruments (Collider · Jam · MRT2)"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'magenta' ? 'border-sky-400 text-sky-200 bg-sky-500/10' : 'border-transparent text-sky-400/80 hover:text-sky-200 hover:bg-sky-500/5'}`}>
           <Music className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-bold flex-1 truncate">Magenta</span>
-          <span className="text-[8px] font-mono text-sky-600 shrink-0">{MAGENTA_TOOLS.length}</span>
+          <span className="text-xs font-bold flex-1 truncate">Magenta</span>
+          <span className="text-xs font-semibold tabular-nums text-sky-600 shrink-0">{MAGENTA_TOOLS.length}</span>
         </button>
         <button onClick={() => p.setActiveCategory('vst')}
           title="VST3 plugins hosted via pedalboard — add them to the chain like any effect"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'vst' ? 'border-teal-400 text-teal-200 bg-teal-500/10' : 'border-transparent text-teal-400/80 hover:text-teal-200 hover:bg-teal-500/5'}`}>
           <Plug className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-bold flex-1 truncate">VST</span>
-          <span className="text-[8px] font-mono text-teal-600 shrink-0">{p.vstPlugins.length}</span>
+          <span className="text-xs font-bold flex-1 truncate">VST</span>
+          <span className="text-xs font-semibold tabular-nums text-teal-600 shrink-0">{p.vstPlugins.length}</span>
         </button>
         <button onClick={() => p.setActiveCategory('plugins')}
           title="GAN web-plugins — open a .gan or import a VST Foundry export; renders in the effect stage"
           className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${p.activeCategory === 'plugins' ? 'border-indigo-400 text-indigo-200 bg-indigo-500/10' : 'border-transparent text-indigo-400/80 hover:text-indigo-200 hover:bg-indigo-500/5'}`}>
           <Blocks className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[10px] font-bold flex-1 truncate">Plugins</span>
-          <span className="text-[8px] font-mono text-indigo-600 shrink-0">{p.ganPlugins.length}</span>
+          <span className="text-xs font-bold flex-1 truncate">Plugins</span>
+          <span className="text-xs font-semibold tabular-nums text-indigo-600 shrink-0">{p.ganPlugins.length}</span>
         </button>
         {CATEGORY_META.map((cat) => {
           const Icon = cat.icon;
@@ -652,8 +659,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
             <button key={cat.id} onClick={() => p.setActiveCategory(cat.id)}
               className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded w-full text-left border-l-2 transition-colors ${active ? cat.rail.active : cat.rail.idle}`}>
               <Icon className="w-3.5 h-3.5 shrink-0" />
-              <span className="text-[10px] font-semibold flex-1 truncate">{cat.label}</span>
-              <span className="text-[8px] font-mono text-zinc-600 shrink-0">{cat.count}</span>
+              <span className="text-xs font-semibold flex-1 truncate">{cat.label}</span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-600 shrink-0">{cat.count}</span>
             </button>
           );
         })}
@@ -666,7 +673,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <SlideKnob label="Drive" value={p.quickMaster.targetLUFS} onChange={(v) => p.setQuickParam('targetLUFS', v)} min={-24} max={-8} step={0.5} size={34} />
           <SlideKnob label="Ceil" value={p.quickMaster.limiterCeiling} onChange={(v) => p.setQuickParam('limiterCeiling', v)} min={0.8} max={1} step={0.01} size={34} />
         </div>
-        <button onClick={p.applyQuickMaster} className="w-full btn-ghost text-[9px] py-1 flex items-center justify-center gap-1 text-purple-300 border-purple-500/20 bg-purple-500/5">
+        <button onClick={p.applyQuickMaster} className="w-full btn-ghost text-xs font-semibold py-1 flex items-center justify-center gap-1 text-purple-300 border-purple-500/20 bg-purple-500/5">
           <Plus className="w-3 h-3" /> {p.masterEntry ? 'Sync Master' : 'Add Quick Master'}
         </button>
       </div>
@@ -695,12 +702,12 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 style={{ width: 132 }}>
                 <div className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                  <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                  <span className="text-xs font-bold text-zinc-100 truncate flex-1">{m.name}</span>
                 </div>
                 <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
                   <ModuleThumb preview={m.preview} className="w-full h-full" />
                 </div>
-                <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+                <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
               </button>
             );
           })}
@@ -714,13 +721,13 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
               style={{ width: 132 }}>
               <div className="flex items-center gap-1.5">
                 <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: '#ff3b3b', boxShadow: '0 0 5px #ff3b3b80' }} />
-                <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">Ares</span>
+                <span className="text-xs font-bold text-zinc-100 truncate flex-1">Ares</span>
                 {p.ganActiveId === 'ares' && <span aria-label="Open" className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />}
               </div>
               <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden grid place-items-center">
                 <Gauge className="w-7 h-7 text-rose-300/80" />
               </div>
-              <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{p.aresInstalled ? 'XY Kaoss control surface' : 'packaging…'}</span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{p.aresInstalled ? 'XY Kaoss control surface' : 'packaging…'}</span>
             </button>
             {STUDIO_MODULES.map((m) => {
               const active = p.activeModule?.id === m.id;
@@ -730,12 +737,12 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   style={{ width: 132 }}>
                   <div className="flex items-center gap-1.5">
                     <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                    <span className="text-xs font-bold text-zinc-100 truncate flex-1">{m.name}</span>
                   </div>
                   <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
                     <ModuleThumb preview={m.preview} className="w-full h-full" />
                   </div>
-                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
                 </button>
               );
             })}
@@ -748,21 +755,21 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   style={{ width: 132 }}>
                   <div className="flex items-center gap-1.5">
                     <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                    <span className="text-xs font-bold text-zinc-100 truncate flex-1">{m.name}</span>
                     {inChain && <span role="img" aria-label="In chain" className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 shrink-0" />}
                   </div>
                   <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
                     <ModuleThumb preview={m.preview} className="w-full h-full" />
                   </div>
-                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{m.desc}</span>
                 </button>
               );
             })}
             {/* Edit Tool Stack: every offline tool without a hero GUI opens the
                 schema-driven tool page, so all 49 tools are reachable from here. */}
             <div className="basis-full flex items-center gap-2 px-1 pt-1">
-              <span className="text-[9px] font-black uppercase tracking-[0.18em] text-lime-300/80">Tool Stack</span>
-              <span className="text-[8px] font-mono text-zinc-500">{TOOL_STACK_MODULES.length} offline tools</span>
+              <span className="text-xs font-black uppercase tracking-[0.18em] text-lime-300/80">Tool Stack</span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-500">{TOOL_STACK_MODULES.length} offline tools</span>
               <span className="flex-1 h-px bg-white/5" />
             </div>
             {TOOL_STACK_MODULES.map((m) => {
@@ -773,12 +780,12 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   style={{ width: 132 }}>
                   <div className="flex items-center gap-1.5">
                     <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color, boxShadow: `0 0 5px ${m.color}80` }} />
-                    <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{m.name}</span>
+                    <span className="text-xs font-bold text-zinc-100 truncate flex-1">{m.name}</span>
                   </div>
                   <div className="relative w-full h-20 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
                     <ModuleThumb preview={m.preview} seed={m.id} className="w-full h-full" />
                   </div>
-                  <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{m.category}</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{m.category}</span>
                 </button>
               );
             })}
@@ -790,30 +797,34 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
             <button onClick={p.rescanVst} disabled={p.vstScanning} className="btn-ghost inline-flex items-center gap-1 disabled:opacity-40" title="Rescan the standard VST3 folders">
               {p.vstScanning ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Rescan
             </button>
-            <span className="text-[8px] font-mono text-zinc-600">host: pedalboard</span>
+            <span className="text-xs font-semibold text-zinc-500">host: pedalboard</span>
           </div>
           {p.vstPlugins.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center opacity-30 italic gap-2 py-8">
-              <Plug className="w-7 h-7" />
-              <span className="text-[10px]">{p.vstScanning ? 'Scanning…' : 'No VST3 plugins found. Click Rescan.'}</span>
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 py-8">
+              <Plug className="w-7 h-7 text-zinc-600" />
+              <span className="text-sm font-semibold text-zinc-400 text-center px-4">{vstBrowserEmptyText(p.vstScanning, p.vstUnavailableReason, p.vstInstallFolder)}</span>
             </div>
           ) : (
             <div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
               {p.vstPlugins.map((pl) => {
                 const inChain = p.vstInChain.has(pl.path);
+                // The plugin's OWN name once the backend probe has read it; the
+                // file stem is only the fallback. The vendor already shows below
+                // as the muted secondary line.
+                const name = pl.display_name || pl.name;
                 return (
                   <button key={pl.path} onClick={() => p.addVstToChain(pl)} title={pl.path}
                     className={`group relative flex flex-col gap-1.5 rounded-md border overflow-hidden transition-all p-2 text-left ${inChain ? 'border-teal-400/60 ring-1 ring-teal-400/40 bg-teal-500/5' : 'border-white/8 bg-black/30 hover:border-white/20 hover:brightness-110'}`}
                     style={{ width: 132 }}>
                     <div className="flex items-center gap-1.5">
                       <Plug className="w-3 h-3 text-teal-300 shrink-0" />
-                      <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
+                      <span className="text-xs font-bold text-zinc-100 truncate flex-1">{name}</span>
                       {inChain && <span aria-label="In chain" className="w-1.5 h-1.5 rounded-full bg-teal-400 shrink-0" />}
                     </div>
                     <div className="relative w-full h-16 rounded bg-[#0a0c14] border border-white/5 overflow-hidden">
                       <ModuleThumb preview={vstPreviewKey(pl.category)} seed={`${pl.name}|${pl.manufacturer}`} className="w-full h-full" />
                     </div>
-                    <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{[pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category}</span>
+                    <span className="text-xs font-semibold text-zinc-500 leading-tight line-clamp-2">{[pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category}</span>
                   </button>
                 );
               })}
@@ -834,7 +845,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           {p.ganPlugins.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center opacity-30 italic gap-2 py-8">
               <Blocks className="w-7 h-7" />
-              <span className="text-[10px]">No .gan plugins yet. Open or import one.</span>
+              <span className="text-xs font-semibold">No .gan plugins yet. Open or import one.</span>
             </div>
           ) : (
             <div className="flex flex-wrap gap-3 content-start justify-center p-1.5">
@@ -848,10 +859,10 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                     style={{ width: 132 }}>
                     <div className="flex items-center gap-1.5">
                       <Blocks className="w-3 h-3 text-indigo-300 shrink-0" />
-                      <span className="text-[10px] font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
+                      <span className="text-xs font-bold text-zinc-100 truncate flex-1">{pl.name}</span>
                       {active && <span aria-label="Open" className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />}
                     </div>
-                    <span className="text-[8px] font-mono text-zinc-500 leading-tight line-clamp-2">{pl.description || pl.kind}</span>
+                    <span className="text-xs font-semibold tabular-nums text-zinc-500 leading-tight line-clamp-2">{pl.description || pl.kind}</span>
                   </button>
                 );
               })}
@@ -903,10 +914,15 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 <div className={boxCls}>
                   {p.vstPlugins.map((pl) => {
                     const inChain = p.vstInChain.has(pl.path);
+                    // Vendor · version is the muted secondary label under the
+                    // plugin's own name (file stem only as the fallback). The
+                    // thumbnail seed stays on the FILE name so a plugin's
+                    // generated artwork does not change when a probe lands.
+                    const name = pl.display_name || pl.name;
                     const desc = [pl.manufacturer, pl.version].filter(Boolean).join(' · ') || pl.category;
                     return tile
-                      ? <ModuleTile key={pl.path} name={pl.name} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} preview={vstPreviewKey(pl.category)} seed={`${pl.name}|${pl.manufacturer}`} />
-                      : <ModuleRow key={pl.path} name={pl.name} desc={desc} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />;
+                      ? <ModuleTile key={pl.path} name={name} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} preview={vstPreviewKey(pl.category)} seed={`${pl.name}|${pl.manufacturer}`} />
+                      : <ModuleRow key={pl.path} name={name} desc={desc} color="#2dd4bf" marked={inChain} onClick={() => p.addVstToChain(pl)} />;
                   })}
                 </div>
               </div>
@@ -940,8 +956,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 className={`flex items-center gap-2 border rounded px-3 py-2 cursor-pointer transition-all ${inChain ? 'border-white/30 bg-white/5' : 'border-zinc-800 hover:border-white/25 hover:bg-white/5'}`}>
                 <span aria-hidden="true" className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />
                 <div className="flex-1 min-w-0">
-                  <span className={`text-[11px] font-medium block truncate ${cat.tile.text}`}>{fx.name}</span>
-                  <p className="text-[9px] text-zinc-500 truncate mt-0.5">{fx.desc}</p>
+                  <span className={`text-xs font-semibold block truncate ${cat.tile.text}`}>{fx.name}</span>
+                  <p className="text-xs font-semibold text-zinc-500 truncate mt-0.5">{fx.desc}</p>
                 </div>
                 {inChain && <span className={`w-2 h-2 rounded-full shrink-0 ${cat.dot}`} />}
               </div>
@@ -966,8 +982,8 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       <div className="flex items-center gap-2 mb-1.5 shrink-0">
         <span className={sectionTitle}>Chain {p.chain.length > 0 && <span className="text-zinc-600">({p.chain.length})</span>}</span>
         <div className="ml-auto flex items-center gap-1.5">
-          <label htmlFor="mix-output-format" className="text-[9px] font-mono text-zinc-500 shrink-0">FORMAT</label>
-          <select id="mix-output-format" name="mix-output-format" className="compact-input text-[10px] w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
+          <label htmlFor="mix-output-format" className="text-xs font-semibold tabular-nums text-zinc-500 shrink-0">FORMAT</label>
+          <select id="mix-output-format" name="mix-output-format" className="compact-input text-xs w-20" value={p.outputFormat} onChange={(e) => p.setOutputFormat(e.target.value)}>
             <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="ogg">OGG</option>
           </select>
           <button onClick={() => p.setShowHistory(!p.showHistory)} title="Process history" className={`btn-ghost p-1 shrink-0 ${p.showHistory ? 'text-purple-300' : 'text-zinc-500 hover:text-zinc-300'}`}><History className="w-3.5 h-3.5" /></button>
@@ -976,17 +992,17 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
       </div>
       {p.showHistory && (
         <div className="max-h-14 overflow-y-auto flex flex-col gap-0.5 mb-1.5 shrink-0">
-          {p.processHistory.length === 0 ? <span className="text-[9px] font-mono text-zinc-600 px-1">No process jobs yet.</span> : p.processHistory.map((h) => (
+          {p.processHistory.length === 0 ? <span className="text-xs font-semibold tabular-nums text-zinc-600 px-1">No process jobs yet.</span> : p.processHistory.map((h) => (
             <div key={h.id} className="flex items-center justify-between px-1.5 py-0.5 bg-white/5 rounded">
-              <span className="text-[9px] font-mono text-zinc-300 uppercase truncate">{EFFECT_LABELS[h.effect] || h.effect}</span>
-              <span className="text-[8px] font-mono text-zinc-600 shrink-0">{new Date(h.createdAt).toLocaleTimeString()}</span>
+              <span className="text-xs font-bold text-zinc-300 uppercase truncate">{EFFECT_LABELS[h.effect] || h.effect}</span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-600 shrink-0">{new Date(h.createdAt).toLocaleTimeString()}</span>
             </div>
           ))}
         </div>
       )}
       <div className="flex-1 overflow-x-auto overflow-y-hidden flex flex-row items-stretch gap-0 min-h-0">
         {p.chain.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center px-2"><span className="text-[10px] text-zinc-600 text-center">Add effects from the library — they flow left → right</span></div>
+          <div className="flex-1 flex items-center justify-center px-2"><span className="text-xs font-semibold text-zinc-600 text-center">Add effects from the library — they flow left → right</span></div>
         ) : (
           p.chain.map((entry, index) => (
             <React.Fragment key={entry.id}>
@@ -995,7 +1011,10 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                 className={`rounded p-1.5 border transition-all cursor-pointer shrink-0 w-40 flex flex-col ${p.selectedEntry?.id === entry.id ? 'border-purple-500/60 bg-purple-500/5' : 'border-zinc-800 hover:border-white/10'} ${!entry.enabled ? 'opacity-40' : ''}`}>
                 <div className="flex items-center gap-1 shrink-0">
                   <button className="text-zinc-600 hover:text-purple-400 disabled:opacity-20 shrink-0" disabled={index === 0} title="Move earlier" onClick={(e) => { e.stopPropagation(); p.reorder(index, index - 1); }}><ChevronLeft className="w-3 h-3" /></button>
-                  <span className="text-[10px] font-mono text-purple-300 font-semibold flex-1 truncate">{entry.vst ? entry.vst.plugin_name : (EFFECT_LABELS[entry.effect] || getRackEffect(entry.effect)?.label || entry.effect)}</span>
+                  {/* A VST row is named after the PLUGIN; vstEntryName keeps an
+                      entry whose stored name is empty off the bare format id
+                      'vst3', which names the host library, not the effect. */}
+                  <span className="text-xs tabular-nums text-purple-300 font-semibold flex-1 truncate">{entry.vst ? vstEntryName(entry.vst.plugin_name, entry.vst.plugin_path) : (EFFECT_LABELS[entry.effect] || getRackEffect(entry.effect)?.label || entry.effect)}</span>
                   {entry.vst && (
                     <button
                       className={`shrink-0 ${entry.vst.raw_state ? 'text-teal-400 hover:text-teal-300' : 'text-zinc-500 hover:text-teal-300'}`}
@@ -1070,14 +1089,14 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
           <div className="flex flex-col gap-2 rounded-md border border-teal-500/25 bg-black/40 px-4 py-3 min-w-56">
             <div className="flex items-center gap-1.5">
               <Plug className="w-3.5 h-3.5 text-teal-300 shrink-0" />
-              <span className="text-[11px] font-bold text-zinc-100 truncate">{selected.vst.plugin_name}</span>
+              <span className="text-xs font-bold text-zinc-100 truncate">{vstEntryName(selected.vst.plugin_name, selected.vst.plugin_path)}</span>
             </div>
-            {selected.vst.raw_state && <span className="text-[8px] font-mono text-teal-400">settings saved</span>}
+            {selected.vst.raw_state && <span className="text-xs font-semibold tabular-nums text-teal-400">settings saved</span>}
             <button
               type="button"
               aria-label="Open plugin GUI"
               onClick={() => p.onEditVst(selected)}
-              className="btn-ghost text-[9px] py-1 flex items-center justify-center gap-1 text-teal-300 border-teal-500/20 bg-teal-500/5"
+              className="btn-ghost text-xs font-semibold py-1 flex items-center justify-center gap-1 text-teal-300 border-teal-500/20 bg-teal-500/5"
             >
               <SlidersHorizontal className="w-3 h-3" /> Open plugin GUI
             </button>
@@ -1089,7 +1108,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
     : selected
       ? (() => {
           const schema = schemaForEffectId(selected.effect);
-          if (!schema) return <EffectsVizPanel effect={selected.effect} params={selected.params} className="h-full! border-purple-500/15!" />;
+          if (!schema) return <EffectsVizPanel effect={selected.effect} params={selected.params} enabled={selected.enabled} className="h-full! border-purple-500/15!" />;
           return (
             <div className="h-full min-h-0 flex flex-col gap-2">
               <div className="shrink-0 max-h-[62%] overflow-y-auto rounded border border-purple-500/15 bg-black/30">
@@ -1103,7 +1122,7 @@ function buildMixRegistry(p: MixRegArgs): WidgetRegistry {
                   onChange={(np) => p.updateParams(selected.id, np)}
                 />
               </div>
-              <EffectsVizPanel effect={selected.effect} params={selected.params} className="flex-1 min-h-0 border-purple-500/15!" />
+              <EffectsVizPanel effect={selected.effect} params={selected.params} enabled={selected.enabled} className="flex-1 min-h-0 border-purple-500/15!" />
             </div>
           );
         })()
@@ -1134,7 +1153,7 @@ const MasterInsertStrip: React.FC<{ entries: ChainEntry[]; onPick: (id: string) 
         <Activity className="w-3 h-3 text-purple-300" />
         <span className={sectionTitle}>Live on master</span>
       </span>
-      <span className="hidden md:block shrink-0 text-[9px] font-mono text-zinc-500">
+      <span className="hidden md:block shrink-0 text-xs font-semibold tabular-nums text-zinc-500">
         on everything the transport plays, in every tab
       </span>
       <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-x-auto">
@@ -1149,7 +1168,7 @@ const MasterInsertStrip: React.FC<{ entries: ChainEntry[]; onPick: (id: string) 
               title={takesLevel
                 ? `${label} — on the master insert, and it takes level, not just colour`
                 : `${label} — on the master insert`}
-              className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-mono uppercase tracking-widest transition-colors ${
+              className={`shrink-0 px-1.5 py-0.5 rounded border text-xs font-bold uppercase tracking-widest transition-colors ${
                 takesLevel
                   ? 'border-amber-500/40 bg-amber-500/5 text-amber-300 hover:border-amber-400/70'
                   : 'border-purple-500/30 bg-purple-500/5 text-purple-200 hover:border-purple-400/70'
@@ -1161,7 +1180,7 @@ const MasterInsertStrip: React.FC<{ entries: ChainEntry[]; onPick: (id: string) 
         })}
       </div>
       {takers > 0 && (
-        <span className="shrink-0 text-[9px] font-mono text-amber-300">
+        <span className="shrink-0 text-xs font-semibold tabular-nums text-amber-300">
           {takers === 1 ? '1 of these takes level' : `${takers} of these take level`}
         </span>
       )}
@@ -1169,7 +1188,7 @@ const MasterInsertStrip: React.FC<{ entries: ChainEntry[]; onPick: (id: string) 
         type="button"
         onClick={bypassLiveRack}
         title="Switch every live-rack effect off — the master goes back to a clean passthrough. The chain is kept."
-        className="shrink-0 px-2 py-0.5 rounded border border-purple-500/40 bg-purple-500/10 text-[9px] font-black uppercase tracking-widest text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
+        className="shrink-0 px-2 py-0.5 rounded border border-purple-500/40 bg-purple-500/10 text-xs font-black uppercase tracking-widest text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 transition-colors"
       >
         Bypass all
       </button>
@@ -1195,6 +1214,8 @@ export const MixView: React.FC = () => {
   // VST3 plugins for the effects browser (hosted via pedalboard).
   const vstPlugins = useVstStore((s) => s.plugins);
   const vstScanning = useVstStore((s) => s.scanning);
+  const vstUnavailableReason = useVstStore((s) => s.unavailableReason);
+  const vstInstallFolder = useVstStore((s) => s.installFolder);
   const scanVst = useVstStore((s) => s.scan);
   // .gan web-plugins (generic loader) for the MIX effect stage.
   const ganPlugins = useGanStore((s) => s.plugins);
@@ -1331,6 +1352,7 @@ export const MixView: React.FC = () => {
     findEntry: () => useEffectChainStore.getState().chain.find((e) => e.effect === 'ares') ?? null,
     updateParams: (id, params) => useEffectChainStore.getState().updateParams(id, params),
   }), []);
+  usePowerModeBridge();
 
   // While Ares is open, feed the live master output level into its .gan so its
   // level meter reflects the real signal (pushed down through the runtime relay).
@@ -1454,7 +1476,13 @@ export const MixView: React.FC = () => {
   const activeEffects = activeCategory === 'all' ? allEffects : (EFFECT_CATALOG[activeCategory] || []);
   const chainEffectIds = new Set(chain.map((e) => e.effect));
   const vstInChain = new Set(chain.filter((e) => e.vst).map((e) => e.vst!.plugin_path));
-  const addVstToChain = (pl: Vst3PluginInfo) => addVst({ plugin_path: pl.path, plugin_name: pl.name });
+  // A new chain entry stores the plugin's OWN name where the backend probe has
+  // read one, so the chain reads the way the vendor names the plugin rather
+  // than the way its file happens to be named. Entries added before the probe
+  // landed keep the stem they were stored with — the chain is the record of
+  // what the user added, not a live view of the scan.
+  const addVstToChain = (pl: Vst3PluginInfo) =>
+    addVst({ plugin_path: pl.path, plugin_name: pl.display_name || pl.name });
   const selectedEntry = chain.find((e) => e.id === selectedChainId) ?? chain[0] ?? null;
 
   // Open a VST3 plugin's REAL native GUI (pedalboard show_editor in a sidecar
@@ -1482,8 +1510,9 @@ export const MixView: React.FC = () => {
   // takes priority; otherwise the selected chain effect opens its mapped module.
   const mappedModuleId = selectedEntry ? effectToModuleId[selectedEntry.effect] : undefined;
   const activeModule: StudioModule | null =
-    (activeModuleId ? moduleById[activeModuleId] ?? null : null)
-    ?? (mappedModuleId ? moduleById[mappedModuleId] ?? null : null);
+    (activeModuleId ? moduleById[activeModuleId] : undefined)
+    ?? (mappedModuleId ? moduleById[mappedModuleId] : undefined)
+    ?? null;
 
   // Picking a module from the library toggles its instrument open/closed. The
   // toggle reads the store directly because the store setter takes a plain
@@ -1595,7 +1624,7 @@ export const MixView: React.FC = () => {
     activeCategory, setActiveCategory, allEffectCount: allEffects.length + PSYCHO_MODULES.length + STUDIO_MODULES.length + vstPlugins.length + 1,
     quickMaster, setQuickParam, applyQuickMaster, masterEntry: !!masterEntry,
     activeEffects, viewMode, setViewMode, addEffect, chainEffectIds,
-    vstPlugins, vstScanning, rescanVst: () => void scanVst(true), addVstToChain: addAndEditVst, vstInChain,
+    vstPlugins, vstScanning, vstUnavailableReason, vstInstallFolder, rescanVst: () => void scanVst(true), addVstToChain: addAndEditVst, vstInChain,
     ganPlugins: ganPluginsVisible, ganActiveId, ganActiveUrl, ganActiveName, ganBusy,
     onOpenGan: () => void handleOpenGan(), onImportGan: () => void handleImportGan(),
     onPickGan: handlePickGan, onRevealGan: handleRevealGan,

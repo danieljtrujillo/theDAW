@@ -8,6 +8,8 @@ export const LS_PROVIDER_KEYS = "vst-foundry-provider-api-keys";
 export const LS_EFFORT = "vst-foundry-effort";
 export const LS_LEGACY_KEY = "vst-foundry-custom-api-key";
 export const LS_SESSIONS = "vst-foundry-assistant-sessions";
+// The Claude Code permission mode (ask | accept_edits | readonly | trusted).
+export const LS_PERMISSION_MODE = "vst-foundry-permission-mode";
 
 export const DEFAULT_PROVIDER = "claude";
 // Must be a full model id the backend/CLI accepts.

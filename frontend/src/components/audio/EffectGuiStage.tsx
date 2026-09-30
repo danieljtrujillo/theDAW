@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { LayoutGrid } from 'lucide-react';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
 import type { StudioModule } from '../../lib/moduleCatalog';
+import { useResolvedGlobal } from '../../state/ioDevicesStore';
 
 /* ── EffectGuiStage ──────────────────────────────────────────────────────────
    Mounts the selected effect's EXACT GUI (the self-contained instrument from
@@ -33,13 +34,29 @@ export const EffectGuiStage: React.FC<{
   const [loaded, setLoaded] = useState(false);
   const [playing, setPlaying] = useState(false);
 
+  // Output routing for edit-module previews: each module builds its own
+  // AudioContext outside the shared engine graph (see module-kit.js), so it
+  // never sees a device choice made in Settings -> Inputs & outputs on its
+  // own. This is the host half of that contract — module-kit.js's wrapped
+  // AudioContext applies it to every context the page creates.
+  const outputDeviceId = useResolvedGlobal('audio_output').deviceId;
+  const sendOutputDevice = useCallback(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    // The module iframe is always same-origin (served from /edit-modules on
+    // this same host/port), so the real origin is used rather than '*' — a
+    // '*' target would still hand the device id to whatever origin the
+    // iframe navigated to, if it ever did.
+    win.postMessage({ type: 'thedaw-output-device', deviceId: outputDeviceId }, window.location.origin);
+  }, [outputDeviceId]);
+
   // Push the current source into the iframe (the module decodes + previews it).
   const sendAudio = useCallback(async () => {
     const win = iframeRef.current?.contentWindow;
     if (!win || !sourceFile) return;
     try {
       const buffer = await sourceFile.arrayBuffer();
-      win.postMessage({ type: 'thedaw-audio', buffer, name: sourceFile.name }, '*');
+      win.postMessage({ type: 'thedaw-audio', buffer, name: sourceFile.name }, window.location.origin);
     } catch { /* non-fatal — the instrument has its own Load Audio button */ }
   }, [sourceFile]);
 
@@ -60,6 +77,10 @@ export const EffectGuiStage: React.FC<{
   };
 
   useEffect(() => { if (loaded) void sendAudio(); }, [loaded, sendAudio]);
+  // Sent on every load AND whenever the app's output device changes while
+  // the stage stays mounted, so a device swapped mid-session is followed
+  // rather than only picked up on the next module open.
+  useEffect(() => { if (loaded) sendOutputDevice(); }, [loaded, sendOutputDevice]);
   useEffect(() => { setLoaded(false); }, [module?.id]);
 
   // The preview defaults to paused and re-pauses whenever the instrument or the
@@ -87,12 +108,12 @@ export const EffectGuiStage: React.FC<{
     if (playing) {
       // Pause always succeeds, so it is reflected immediately; the module's
       // state echo confirms it.
-      win.postMessage({ type: 'thedaw-transport', action: 'pause' }, '*');
+      win.postMessage({ type: 'thedaw-transport', action: 'pause' }, window.location.origin);
       setPlaying(false);
     } else {
       // Play is confirmed by the module's state echo once audio actually
       // starts, so a play sent before any audio is loaded stays paused.
-      win.postMessage({ type: 'thedaw-transport', action: 'play' }, '*');
+      win.postMessage({ type: 'thedaw-transport', action: 'play' }, window.location.origin);
     }
   };
 

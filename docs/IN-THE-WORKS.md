@@ -318,6 +318,43 @@ on `meter-map-tempo-flags` because the on-screen meter map exists only there.
 
 ---
 
+## P1 — from the user, 2026-09-17, second list (marked done only when the user says so)
+
+One theDAW branch, `edit-lineup-and-sway-import`, cut from `main`; the SWAY
+item also needs the SwayCommand branch `sway-track-menu` and a `SWAY_REF` bump
+in `.github/workflows/release.yml` once that lands.
+
+- [ ] **EDIT: a clip drags to any lane, and a gap makes a lane.** The lane under
+  the pointer is the target (`laneTargetAtY` in
+  `frontend/src/components/audio/laneTarget.ts`); the band at a lane's edge,
+  the space above the first lane and the space below the last are "a new lane
+  here", drawn as a line with a label, made on release (`insertTrack` in
+  `frontend/src/state/editorStore.ts`). Library and desktop drops use the same
+  resolver. — S
+- [ ] **EDIT: zoom out to the whole set.** The zoom floor is 0.25 px/s
+  (`ZOOM_MIN`), the toolbar keys step by 1.25x, and the fit key (Shift+F, the
+  frame icon) fits any length. — XS
+- [ ] **Send to EDIT fills lane 1 first.** `sendAudioToEditor` in
+  `frontend/src/lib/sendToTargets.ts` takes the first empty lane; when every
+  lane holds something, "Own lane in EDIT" adds one and "End of EDIT lane 1"
+  appends after lane 1's last clip. — XS
+- [ ] **EDIT starts with six empty lanes.** `DEFAULT_TRACK_COUNT` in the editor
+  store; a project with no lanes loads the same six. — XS
+- [ ] **EDIT beat match (DJ sync).** `frontend/src/lib/beatMatch.ts`: the
+  stretch ratio picks the half/double-time reading nearest unity, the first
+  analysed beat goes on the project grid, the project tempo follows the
+  master. Right-click a clip: "Beat match to project (N bpm)" and, with more
+  selected, "Beat match N selected to this clip". Toolbar: SYNC beside the BPM
+  field (one clip: to the project; several: the rest to the first selected).
+  Clips with no library analysis are skipped and the LOG says so. A clip's
+  readout shows its matched tempo (`AudioClip.bpm`). — M
+- [ ] **SWAY: right-click a track adds audio from the library, a file or a
+  link.** Cockpit posts `sway/track-menu`, the host opens `SwayTrackMenu`
+  (`frontend/src/components/sway/SwayTrackMenu.tsx`) and answers
+  `sway/load-audio` with a library URL; every source is imported to the
+  library first. Cap `host-track-menu`. Cockpit side in SwayCommand branch
+  `sway-track-menu`. — M
+
 ## P1 — from the user, 2026-09-16 (marked done only when the user says so)
 
 - [ ] **A notation writing tool in SCORE.** Write and correct notation by hand

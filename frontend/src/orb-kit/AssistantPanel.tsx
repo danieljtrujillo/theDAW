@@ -1,15 +1,54 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { X, Send, Sparkles, Bot, User, Loader2, Command, Play, Zap, KeyRound, RefreshCw, Trash2, Minimize2, Maximize2, Copy, Square, Paperclip, Mic, MicOff, FileText, Image as ImageIcon, Music, Film } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+// Prose rendering (ReactMarkdown + remark-gfm) moved to transcript/Markdown.tsx
+// with the message rows; the icons left here are the panel's own chrome plus
+// the reference-chip set (Clock / Library / Layers / AlertTriangle).
+import { X, Send, Sparkles, Loader2, Zap, KeyRound, Trash2, Minimize2, Maximize2, Square, Paperclip, Mic, MicOff, FileText, Image as ImageIcon, Music, Film, History, Plus, Clock, Library, Layers, AlertTriangle } from 'lucide-react';
 import { ProviderModelSelector, type ModelInfo } from './ProviderModelSelector';
 import { SecretFieldLabel } from '../components/ui/SecretFieldLabel';
-import { actionFromAssistantEvent, sanitizeAssistantAction, statusFromAssistantEvent } from './assistantEvents';
-import { getToolTier, describeToolCall } from './tool-tiers';
+import { handletheDAWAction } from './actionHandlers';
+import type { AssistantExecutableAction } from './assistantEvents';
 import { buildtheDAWAppContext } from './appContext';
+import { CLAUDE_SESSION_ID_KEY, CONVERSATION_ID_KEY } from './promptEnhancer';
 import { uuid } from './utils';
+import { useChatStream } from './stream';
+import type { ChatTurnContext, SendAttachment } from './stream';
+import type { ChatMessage } from './stream/types';
+import { Transcript } from './transcript';
+import {
+    EFFORT_OPTIONS,
+    effortLabel,
+    normalizeEffort,
+    readStoredEffort,
+    writeStoredEffort,
+    type AssistantEffort,
+} from './assistantEffort';
+import { contextPercentage, fetchContextUsage, type ContextUsage } from './contextUsage';
+import { PermissionModeSelect } from './permission/PermissionModeSelect';
+import { UserClaudeConfigToggle } from './permission/UserClaudeConfigToggle';
+import { AllowRulesList } from './permission/AllowRulesList';
+import { useAssistantPermissionStore } from './permission/assistantPermissionStore';
+import {
+    loadConversations,
+    upsertConversation,
+    deleteConversation,
+    getConversation,
+    getActiveId,
+    setActiveId,
+    deriveTitle,
+    clearAllConversations,
+    conversationNeedsWrite,
+    type StoredConversation,
+} from './chatHistory';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { useAssistantActivityStore } from '../state/assistantActivityStore';
+import {
+    ASSISTANT_FOCUS_EVENT,
+    referenceKey,
+    resolveAssistantReference,
+    useAssistantReferenceStore,
+    type AssistantReference,
+} from '../state/assistantReferenceStore';
+import { logInfo } from '../state/logStore';
 
 // Inline clipboard helper (no external util available in theDAW)
 const copyToClipboard = (text: string) => navigator.clipboard.writeText(text).catch(() => {});
@@ -34,11 +73,44 @@ const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reje
 interface AssistantPanelProps {
     isOpen: boolean;
     onClose: () => void;
+    /**
+     * Host hook for a DAW action.
+     *
+     * NOT the execution path for the assistant's own tools any more. An MCP
+     * relay tool has to hand its RESULT back to the model in-turn, and this
+     * callback returns `void`; calling it *and* `handletheDAWAction` to read a
+     * result would run every action twice (`append_prompt` would append twice).
+     * The panel therefore dispatches through `handletheDAWAction` directly —
+     * the same function the host's handler calls — and keeps this prop for
+     * hosts that mount the panel for their own reasons.
+     *
+     * It is typed `=> void` on purpose: a host handler that returns a result is
+     * still assignable, and nothing here reads that return value, so no caller
+     * can mistake "dispatched" for "succeeded".
+     */
     onExecuteAction: (action: { type: string; payload?: any }) => void;
     orbPosition?: { x: number; y: number };
 }
 
-interface Message {
+/**
+ * The transcript shape this panel stored BEFORE the Claude Code port.
+ *
+ * The live transcript is `ChatMessage` (orb-kit/stream/types.ts) and the
+ * `Transcript` component owns every row; nothing in the panel produces a
+ * `Message` any more. It stays exported because saved conversations written in
+ * this shape are still on disk — `chatHistory` revives them (`content` → `text`)
+ * — and because an external reader of a pre-port localStorage record needs a
+ * name for what it is parsing. Do not build anything new on it.
+ */
+export interface MessageActionResult {
+    id: string;
+    type: string;
+    status: 'running' | 'succeeded' | 'failed';
+    message: string;
+}
+
+/** @see MessageActionResult — legacy persisted transcript row. */
+export interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
@@ -48,6 +120,10 @@ interface Message {
     data?: any;
     suggestions?: string[];
     isError?: boolean;
+    /** The chips the user attached to this (user) message. */
+    references?: AssistantReference[];
+    /** What every action fired from this (assistant) message actually did. */
+    actionResults?: MessageActionResult[];
 }
 
 interface AssistantAttachment {
@@ -86,15 +162,21 @@ const PANEL_MARGIN = 16;
 
 // Provider info type and defaults (shared between useState init and fetch fallback)
 type ProviderInfo = { id: string; label: string; default_model: string; has_key: boolean; is_local: boolean };
-const ASSISTANT_DEFAULTS_VERSION = 'claude-opus-4-6-effort-max-v1';
+const ASSISTANT_DEFAULTS_VERSION = 'bcc-claude-opus-4-8-effort-max-v2';
 const DEFAULT_ASSISTANT_PROVIDER = 'claude';
-const DEFAULT_ASSISTANT_MODEL = 'claude-opus-4-6';
-const DEFAULT_CLAUDE_MODE = 'interactive';
-const DEFAULT_ASSISTANT_EFFORT = 'max';
+/** The Foundry's `CLAUDE_DEFAULT_MODEL` (server/claude-bridge.ts), verbatim. */
+const DEFAULT_ASSISTANT_MODEL = 'claude-opus-4-8';
+/** The provider whose CLI has permission modes. */
+const CLAUDE_PROVIDER_ID = 'claude';
+/** What the Claude provider is CALLED — the Foundry's label, same product. */
+const CLAUDE_PROVIDER_LABEL = 'BCC (Better Claude Code)';
 
+// BCC leads: it is the default provider, the one with the CLI, the permission
+// modes and the effort control, so it is the first thing the dropdown offers.
+// (The backend sends the same order; this list is the offline fallback.)
 const DEFAULT_PROVIDERS: ProviderInfo[] = [
+   { id: 'claude', label: CLAUDE_PROVIDER_LABEL, default_model: DEFAULT_ASSISTANT_MODEL, has_key: true, is_local: false },
    { id: 'gemini', label: 'Gemini', default_model: 'gemini-flash-recent', has_key: true, is_local: false },
-    { id: 'claude', label: 'Claude Code', default_model: DEFAULT_ASSISTANT_MODEL, has_key: true, is_local: false },
    { id: 'openai', label: 'OpenAI', default_model: 'gpt-4.1-mini', has_key: false, is_local: false },
    { id: 'anthropic', label: 'Anthropic', default_model: 'claude-sonnet-4-20250514', has_key: false, is_local: false },
    { id: 'grok', label: 'xAI Grok', default_model: 'grok-3-mini-fast', has_key: false, is_local: false },
@@ -110,22 +192,214 @@ function readInitialAssistantSelection() {
         if (localStorage.getItem('thedaw:assistantDefaultsVersion') !== ASSISTANT_DEFAULTS_VERSION) {
             localStorage.setItem('thedaw:provider', DEFAULT_ASSISTANT_PROVIDER);
             localStorage.setItem('thedaw:model', DEFAULT_ASSISTANT_MODEL);
-            localStorage.setItem('thedaw:claudeMode', DEFAULT_CLAUDE_MODE);
             localStorage.setItem('thedaw:assistantDefaultsVersion', ASSISTANT_DEFAULTS_VERSION);
         }
 
         return {
             provider: localStorage.getItem('thedaw:provider') || DEFAULT_ASSISTANT_PROVIDER,
             model: localStorage.getItem('thedaw:model') || DEFAULT_ASSISTANT_MODEL,
-            claudeMode: localStorage.getItem('thedaw:claudeMode') || DEFAULT_CLAUDE_MODE,
         };
     } catch {
         return {
             provider: DEFAULT_ASSISTANT_PROVIDER,
             model: DEFAULT_ASSISTANT_MODEL,
-            claudeMode: DEFAULT_CLAUDE_MODE,
         };
     }
+}
+
+/**
+ * Does this provider get the permission-mode dropdown?
+ *
+ * Only the Claude Code provider has permission modes — the others have no CLI
+ * to grant or refuse anything, so showing them a dropdown would promise a
+ * control that does not exist.
+ */
+export function shouldShowPermissionSelect(provider: string): boolean {
+    return provider === CLAUDE_PROVIDER_ID;
+}
+
+/** Everything the composer footer's status line is decided from. */
+export interface ComposerStatusState {
+    isStreaming: boolean;
+    /** Transient backend chatter for the live turn ("Running Bash"). */
+    statusText: string | null;
+    /** Prompts the hook is holding until this turn ends. */
+    queuedCount: number;
+    /** Has the live turn produced prose, reasoning or a tool row yet? */
+    hasLiveContent: boolean;
+    /** The panel's OWN status (attachment preparation, a send that failed). */
+    localStatus?: string | null;
+}
+
+/**
+ * Is the transcript's live row currently rendering its "Thinking…" indicator?
+ *
+ * It does so exactly while a turn is streaming and has produced nothing yet.
+ * That row is an `aria-live` region, so anything the composer shows at the same
+ * moment is a SECOND region announcing over it.
+ */
+function transcriptIndicatorShowing(state: ComposerStatusState): boolean {
+    return state.isStreaming && !state.hasLiveContent;
+}
+
+/**
+ * What the composer footer's status line says, or null for "render nothing".
+ *
+ * `statusText` used to render as an assistant message row with an avatar, which
+ * put a fake turn in the transcript. It belongs in exactly one place — here.
+ * While the transcript's own indicator is up it says nothing at all, EXCEPT for
+ * the two things nothing else on screen reports: how many prompts are queued,
+ * and the panel's own local status (attachment preparation, a failed send).
+ */
+export function composerStatusLine(state: ComposerStatusState): string | null {
+    // A local status is the panel reporting on itself, usually before a turn
+    // even exists. It outranks the turn's chatter.
+    if (state.localStatus?.trim()) return state.localStatus.trim();
+    if (!state.isStreaming) return null;
+    if (transcriptIndicatorShowing(state) && state.queuedCount === 0) return null;
+    const base = state.statusText?.trim() ? state.statusText.trim() : 'Working…';
+    return state.queuedCount > 0 ? `${base} · ${state.queuedCount} queued` : base;
+}
+
+/**
+ * Should the composer's status line be an `aria-live` region?
+ *
+ * Only when it is the ONLY one. While the transcript's indicator is up it owns
+ * the announcement and the queue depth below is plain text — visible, but not
+ * a second voice talking over the first.
+ */
+export function composerStatusIsLiveRegion(state: ComposerStatusState): boolean {
+    return !transcriptIndicatorShowing(state);
+}
+
+/** Everything the context meter renders, decided from the reading and the %. */
+export interface ContextMeterView {
+    /** `Context` for the CLI's real reading, `Memory` for the estimate. */
+    label: 'Context' | 'Memory';
+    /** The bar's fill class — the panel's primary until the window fills up. */
+    barClass: string;
+    /** Hover text: the real token counts, or a plain admission that it is a guess. */
+    title: string;
+    /** What a screen reader hears instead of a bare number. */
+    ariaLabel: string;
+}
+
+/**
+ * How the context meter reads.
+ *
+ * Ported from the Foundry's status bar (AIAssistantOrb.tsx ~L1075-1090). Two
+ * things it gets right and are worth keeping: the label distinguishes the CLI's
+ * REAL context-window reading from the character-count estimate — a meter that
+ * called a guess "Context" would be lying — and the bar warms from primary
+ * through amber to red as the window fills, so a conversation about to be
+ * compacted is visible before it happens.
+ *
+ * Pure, and exported, because it is the whole of the meter's logic; the JSX
+ * below is just the shape it is poured into.
+ */
+export function contextMeterView(usage: ContextUsage | null, percent: number): ContextMeterView {
+    const isLive = !!usage;
+    return {
+        label: isLive ? 'Context' : 'Memory',
+        barClass: percent > 80 ? 'bg-red-500' : percent > 50 ? 'bg-amber-500' : 'bg-primary',
+        title: isLive
+            ? `Context: ${usage!.totalTokens.toLocaleString()} / ${usage!.maxTokens.toLocaleString()} tokens`
+            : 'Estimated (no live context reading yet)',
+        ariaLabel: isLive
+            ? `Context window used: ${percent}%`
+            : `Estimated context window used: ${percent}%`,
+    };
+}
+
+/**
+ * The conversation id a freshly mounted panel starts from.
+ *
+ * The saved conversation wins. `sessionStorage['thedaw:conversationId']` is a
+ * single tab-wide slot that the prompt enhancer also touches, so reading it
+ * first meant reopening chat B could resume chat A's backend conversation. The
+ * slot is only a fallback now, for the case where nothing was saved yet (the
+ * very first turn of a brand-new chat, before the debounced write lands).
+ */
+export function seedConversationId(
+    restored: { sessionId: string | null } | null,
+    tabSessionId: string | null,
+): string | null {
+    return restored?.sessionId || tabSessionId || null;
+}
+
+/** The two tabs of the panel's settings drawer (Model Info). */
+export type AssistantSettingsTab = 'model' | 'keys';
+
+const SETTINGS_TABS: ReadonlyArray<{ id: AssistantSettingsTab; label: string }> = [
+    { id: 'model', label: 'Chat' },
+    { id: 'keys', label: 'Keys' },
+];
+
+export const settingsTabId = (tab: AssistantSettingsTab) => `assistant-settings-tab-${tab}`;
+export const settingsPanelId = (tab: AssistantSettingsTab) => `assistant-settings-panel-${tab}`;
+
+/**
+ * The settings drawer's tab strip: a tablist whose tabs say which one is
+ * selected (aria-selected) and which panel it shows (aria-controls, on the
+ * selected tab only, since only that panel is in the DOM). Arrow keys, Home
+ * and End move between tabs; only the selected tab is in the Tab order.
+ */
+export function AssistantSettingsTabs({
+    active,
+    onSelect,
+}: {
+    active: AssistantSettingsTab;
+    onSelect: (tab: AssistantSettingsTab) => void;
+}) {
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+        const count = SETTINGS_TABS.length;
+        const index = SETTINGS_TABS.findIndex((t) => t.id === active);
+        let next: number;
+        if (event.key === 'ArrowRight') next = (index + 1) % count;
+        else if (event.key === 'ArrowLeft') next = (index - 1 + count) % count;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = count - 1;
+        else return;
+        event.preventDefault();
+        const tab = SETTINGS_TABS[next].id;
+        onSelect(tab);
+        document.getElementById(settingsTabId(tab))?.focus();
+    };
+    return (
+        <div role="tablist" aria-label="Assistant settings" className="flex border-b border-white/5">
+            {SETTINGS_TABS.map((tab) => {
+                const selected = tab.id === active;
+                return (
+                    <button
+                        key={tab.id}
+                        type="button"
+                        role="tab"
+                        id={settingsTabId(tab.id)}
+                        aria-selected={selected}
+                        aria-controls={selected ? settingsPanelId(tab.id) : undefined}
+                        tabIndex={selected ? 0 : -1}
+                        onClick={() => onSelect(tab.id)}
+                        onKeyDown={handleKeyDown}
+                        className={`flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-bold transition-colors ${selected ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}
+                    >
+                        {tab.id === 'keys' && <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />}
+                        {tab.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+function timeAgo(ts: number): string {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return 'just now';
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
 }
 
 export const AssistantPanel: React.FC<AssistantPanelProps> = ({
@@ -136,29 +410,256 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
 }) => {
     const isBackendReady = useStatusBarStore((s) => s.isBackendReady);
     const initialAssistantSelection = useMemo(readInitialAssistantSelection, []);
-    const [messages, setMessages] = useState<Message[]>([]);
+    // Chat history: restore the last-active conversation on mount so a reload
+    // or app restart keeps the transcript (persisted to localStorage below).
+    const activeConvIdRef = useRef<string>('');
+    if (!activeConvIdRef.current) activeConvIdRef.current = getActiveId() || uuid();
+    const [conversations, setConversations] = useState<StoredConversation[]>(() => loadConversations());
+    const [showHistory, setShowHistory] = useState(false);
+    const persistTimerRef = useRef<number | null>(null);
     const [input, setInput] = useState('');
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [statusText, setStatusText] = useState<string>('');
-    // Mirror the busy flag into the global activity store so the orb (thinking
-    // visuals, drip trail) tracks it. One effect covers every set point:
-    // sendMessage, the finally-reset, and stopGeneration.
-    useEffect(() => {
-        useAssistantActivityStore.getState().setThinking(isProcessing);
-        return () => useAssistantActivityStore.getState().setThinking(false);
-    }, [isProcessing]);
     const [attachments, setAttachments] = useState<AssistantAttachment[]>([]);
+    // `sendMessage` is a stable callback; without this it would close over the
+    // attachment list as it stood when the callback was built.
+    const attachmentsRef = useRef<AssistantAttachment[]>(attachments);
+    attachmentsRef.current = attachments;
     const [currentHint, setCurrentHint] = useState(0);
     const [showModelInfo, setShowModelInfo] = useState(false);
-    const [settingsTab, setSettingsTab] = useState<'model' | 'keys'>('model');
+    const [settingsTab, setSettingsTab] = useState<AssistantSettingsTab>('model');
     const [selectedProvider, setSelectedProvider] = useState<string>(initialAssistantSelection.provider);
 
     const [selectedModel, setSelectedModel] = useState<string>(initialAssistantSelection.model);
-    const [claudeMode, setClaudeMode] = useState<string>(initialAssistantSelection.claudeMode);
-    const conversationIdRef = useRef<string | null>(
-        (() => { try { return sessionStorage.getItem('thedaw:conversationId'); } catch { return null; } })()
-    );
-    const abortRef = useRef<AbortController | null>(null);
+
+    // How hard the Claude CLI is asked to think. theDAW pinned this to `max`
+    // and never showed it; the Foundry's orb has had a dropdown for it since
+    // its BCC port. Remembered across reloads under `thedaw:effort`.
+    const [effort, setEffort] = useState<AssistantEffort>(readStoredEffort);
+    useEffect(() => { writeStoredEffort(effort); }, [effort]);
+
+    // --- conversation identity ------------------------------------------------
+    // Two ids, and they are NOT the same thing: `conversationId` is the
+    // backend's key (control-response, interrupt, permission-mode all address
+    // it), `claudeSessionId` is the CLI's own `--resume` id. State, not just a
+    // ref, because the permission dropdown has to re-render when the backend
+    // mints a conversation mid-turn; refs alongside so the stream callbacks and
+    // the debounced persist read the current value without a re-render race.
+    const restoredConversation = useMemo(() => getConversation(activeConvIdRef.current), []);
+    const [conversationId, setConversationIdState] = useState<string | null>(() => {
+        let tabSessionId: string | null = null;
+        try { tabSessionId = sessionStorage.getItem(CONVERSATION_ID_KEY); } catch { /* ignore */ }
+        return seedConversationId(restoredConversation, tabSessionId);
+    });
+    const conversationIdRef = useRef<string | null>(conversationId);
+    const claudeSessionIdRef = useRef<string | null>((() => {
+        if (restoredConversation?.claudeSessionId) return restoredConversation.claudeSessionId;
+        try { return sessionStorage.getItem(CLAUDE_SESSION_ID_KEY); } catch { return null; }
+    })());
+
+    const setConversationId = useCallback((id: string | null) => {
+        conversationIdRef.current = id;
+        setConversationIdState(id);
+        try {
+            if (id) sessionStorage.setItem(CONVERSATION_ID_KEY, id);
+            else sessionStorage.removeItem(CONVERSATION_ID_KEY);
+        } catch { /* ignore */ }
+    }, []);
+
+    const setClaudeSessionId = useCallback((id: string | null) => {
+        claudeSessionIdRef.current = id;
+        try {
+            if (id) sessionStorage.setItem(CLAUDE_SESSION_ID_KEY, id);
+            else sessionStorage.removeItem(CLAUDE_SESSION_ID_KEY);
+        } catch { /* ignore */ }
+    }, []);
+
+    // --- the stream ------------------------------------------------------------
+    // Attachment summaries for the app-context block, captured at submit time:
+    // the `attachments` state is cleared the moment a turn starts, and
+    // getTurnContext runs after that.
+    const contextAttachmentsRef = useRef<Array<{ name: string; mime: string; size: number }>>([]);
+    // The reference chips that went out with THIS turn, captured for the same
+    // reason: the store is emptied as the turn starts, and the app-context block
+    // carries the ids the model must act on (see appContext's REFERENCES rule).
+    const contextReferencesRef = useRef<AssistantReference[]>([]);
+    // Provider/model read fresh at send time rather than closed over, so a
+    // model switched between typing and sending is the one that gets used.
+    // Effort for the same reason, and one more: a send made DURING a live turn
+    // is queued by the hook and its context is built when the queue drains, so
+    // a closed-over value would send the effort the user had chosen minutes
+    // earlier.
+    const selectionRef = useRef({ provider: selectedProvider, model: selectedModel, effort });
+    selectionRef.current = { provider: selectedProvider, model: selectedModel, effort };
+
+    const getTurnContext = useCallback((): ChatTurnContext => {
+        const { provider, model, effort: turnEffort } = selectionRef.current;
+        const isClaude = shouldShowPermissionSelect(provider);
+        return {
+            provider,
+            model,
+            systemContext: buildtheDAWAppContext({
+                selectedProvider: provider,
+                selectedModel: model,
+                attachments: contextAttachmentsRef.current,
+                references: contextReferencesRef.current,
+            }),
+            effort: isClaude ? turnEffort : undefined,
+            conversationId: conversationIdRef.current,
+            claudeSessionId: claudeSessionIdRef.current,
+            permissionMode: useAssistantPermissionStore.getState().mode,
+            // The panel owns conversation identity — it restores it from saved
+            // history and drops it on "New chat". `extraBody` merges last, so
+            // these win over whatever the hook is still carrying from the
+            // previous turn; without them a new chat would silently resume the
+            // old CLI session.
+            extraBody: isClaude
+                ? {
+                      conversationId: conversationIdRef.current,
+                      claudeSessionId: claudeSessionIdRef.current,
+                  }
+                : undefined,
+        };
+    }, []);
+
+    // Tool execution. `handletheDAWAction` is the same dispatcher the host's
+    // onExecuteAction calls — the difference is that it RETURNS the result
+    // string, which is what the MCP relay POSTs back so the model finally sees
+    // what its own tool did. Tier gating (T0/T1 run, T2 parks for Run/Skip)
+    // happens upstream in the frame reducer.
+    //
+    // The log line is emitted HERE rather than by calling `onExecuteAction`:
+    // that prop executes the action, so using it for logging would run every
+    // tool twice. This is the same line App.tsx's handler used to write.
+    //
+    // `handletheDAWAction` returns `string | Promise<string>` — the editor tools
+    // wait for their audio re-render before answering. Awaiting it is what makes
+    // the log (and the relay result the model reads) the real outcome instead of
+    // "[object Promise]".
+    const executeAction = useCallback(async (action: AssistantExecutableAction) => {
+        const result = await handletheDAWAction(action);
+        logInfo('assistant', `Action: ${action.type} → ${result}`);
+        return result;
+    }, []);
+
+    const handleSessionId = useCallback((sessionId: string) => {
+        setClaudeSessionId(sessionId);
+    }, [setClaudeSessionId]);
+
+    const {
+        messages,
+        setMessages,
+        isStreaming,
+        statusText,
+        liveText,
+        liveThinking,
+        liveToolCalls,
+        livePendingActions,
+        pendingControls,
+        queuedSends,
+        cliModel,
+        send,
+        stop,
+        interrupt,
+        retry,
+        clear: clearStream,
+        answerControl,
+        runPendingAction,
+        skipPendingAction,
+    } = useChatStream({
+        getTurnContext,
+        executeAction,
+        onConversationId: setConversationId,
+        onSessionId: handleSessionId,
+    });
+
+    // The panel's own status: attachment preparation, or a send that never got
+    // off the ground. Distinct from the turn's `statusText`, which the hook owns.
+    const [localStatus, setLocalStatus] = useState<string | null>(null);
+
+    // --- context meter ---------------------------------------------------------
+    // The CLI's REAL context-window reading, or null while the meter is running
+    // on the character-count estimate. Only the Claude provider has a CLI to ask.
+    const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+
+    /**
+     * Ask the backend for the CLI's context usage.
+     *
+     * A failed read KEEPS the previous reading (the Foundry does the same): a
+     * busy child that skips one answer should not make the meter jump back to
+     * the estimate. `provider` is passed explicitly by callers that have just
+     * switched it, because `selectionRef` only catches up on the next render.
+     */
+    const refreshContextUsage = useCallback(async (provider?: string) => {
+        if (!shouldShowPermissionSelect(provider ?? selectionRef.current.provider)) return;
+        const usage = await fetchContextUsage(conversationIdRef.current);
+        if (usage) setContextUsage(usage);
+    }, []);
+
+    // A turn just finished (streaming fell): the child is idle, so this is the
+    // moment it can answer. The hook has no "turn ended" callback — the falling
+    // edge of `isStreaming` IS that event.
+    const wasStreamingRef = useRef(false);
+    useEffect(() => {
+        const wasStreaming = wasStreamingRef.current;
+        wasStreamingRef.current = isStreaming;
+        if (wasStreaming && !isStreaming) void refreshContextUsage();
+    }, [isStreaming, refreshContextUsage]);
+
+    // Leaving Claude leaves the reading behind with it: no other provider has a
+    // CLI to report a window, so keeping the number would attribute one
+    // provider's usage to another.
+    useEffect(() => {
+        if (!shouldShowPermissionSelect(selectedProvider)) setContextUsage(null);
+    }, [selectedProvider]);
+
+    const composerStatus: ComposerStatusState = {
+        isStreaming,
+        statusText,
+        queuedCount: queuedSends.length,
+        // Mirrors Transcript's own `hasLiveContent` exactly — that is the
+        // condition under which it renders its indicator, and the whole point
+        // here is to never speak at the same time as it.
+        hasLiveContent: !!(
+            liveText ||
+            liveThinking ||
+            liveToolCalls.length > 0 ||
+            livePendingActions.length > 0
+        ),
+        localStatus,
+    };
+    const statusLine = composerStatusLine(composerStatus);
+    const statusIsLive = composerStatusIsLiveRegion(composerStatus);
+    const contextPercent = contextPercentage(contextUsage, messages);
+    const contextMeter = contextMeterView(contextUsage, contextPercent);
+
+    /**
+     * Stop.
+     *
+     * Aborting our own read of the SSE stream does NOT stop the CLI: the Claude
+     * provider holds one persistent child per conversation, which would keep
+     * working (and keep costing) with nobody listening. Ask it to interrupt
+     * first — the child survives, the turn does not — then drop the stream.
+     */
+    const handleStop = useCallback(() => {
+        if (shouldShowPermissionSelect(selectionRef.current.provider)) void interrupt();
+        stop();
+    }, [interrupt, stop]);
+
+    // Mirror the busy flag into the global activity store so the orb (thinking
+    // visuals, drip trail) tracks it.
+    useEffect(() => {
+        useAssistantActivityStore.getState().setThinking(isStreaming);
+        return () => useAssistantActivityStore.getState().setThinking(false);
+    }, [isStreaming]);
+
+    // Hydrate the restored transcript once. The hook owns `messages`, so this
+    // is a mount effect rather than a useState initialiser.
+    const hydratedRef = useRef(false);
+    useEffect(() => {
+        if (hydratedRef.current) return;
+        hydratedRef.current = true;
+        if (restoredConversation?.messages.length) setMessages(restoredConversation.messages);
+    }, [restoredConversation, setMessages]);
+
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const [isRecording, setIsRecording] = useState(false);
     const recognitionRef = useRef<any>(null);
@@ -172,10 +673,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SpeechRecognition) {
             setMessages(prev => [...prev, {
-                id: Date.now().toString(),
+                id: uuid(),
                 role: 'assistant',
-                content: 'Speech recognition is not supported in this browser. Try Chrome or Edge.',
-                timestamp: new Date(),
+                text: 'Speech recognition is not supported in this browser. Try Chrome or Edge.',
+                timestamp: Date.now(),
                 isError: true,
             }]);
             return;
@@ -241,14 +742,24 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
         return <FileText size={12} />;
     };
 
-    const stopGeneration = () => {
-        if (abortRef.current) {
-            abortRef.current.abort();
-            abortRef.current = null;
-        }
-        setIsProcessing(false);
-        setStatusText('');
+    // Reference chips — the "act on THIS" list built from the EDIT timeline and
+    // the Library. Resolved at render so a clip deleted while the composer sits
+    // open greys out instead of quietly pointing at nothing.
+    const references = useAssistantReferenceStore((s) => s.references);
+    const removeReference = useAssistantReferenceStore((s) => s.remove);
+
+    const renderReferenceIcon = (kind: AssistantReference['kind']) => {
+        if (kind === 'clip') return <Music size={12} />;
+        if (kind === 'time-range') return <Clock size={12} />;
+        if (kind === 'track') return <Layers size={12} />;
+        return <Library size={12} />;
     };
+
+    // The panel used to dispatch actions itself (`runAction`) and paint a
+    // result card under the bubble. Tools now execute in `executeAction` above
+    // — the one path whose result also goes back to the model over the MCP
+    // relay — and the Transcript renders each call with its real outcome, so a
+    // second dispatcher here would run every tool twice.
 
     // API key pools — multiple keys per provider with rotation
     const [keyPools, setKeyPools] = useState<Record<string, {
@@ -340,11 +851,6 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
        });
     }, [isBackendReady]);
 
-     const resolveClaudeMode = (model: string) => {
-         if (model.startsWith('claude-code-')) return model.replace('claude-code-', '');
-         return claudeMode || DEFAULT_CLAUDE_MODE;
-     };
-
     // Fetch models when provider changes — only after backend is reachable
     useEffect(() => {
        if (!isBackendReady || !selectedProvider) return;
@@ -408,10 +914,6 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
     };
     useEffect(() => { localStorage.setItem('thedaw:provider', selectedProvider); }, [selectedProvider]);
     useEffect(() => { localStorage.setItem('thedaw:model', selectedModel); }, [selectedModel]);
-    useEffect(() => { localStorage.setItem('thedaw:claudeMode', claudeMode); }, [claudeMode]);
-     useEffect(() => {
-         if (selectedProvider === 'claude') setClaudeMode(resolveClaudeMode(selectedModel));
-     }, [selectedProvider, selectedModel]);
 
     const [isMinimized, setIsMinimized] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -471,255 +973,251 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
         }
     }, [isOpen, isMinimized]);
 
+    // Adding a reference must not send anything — `requestAssistantFocus()`
+    // only brings the composer forward so the user can type against the chips
+    // they just made.
+    useEffect(() => {
+        const onFocusRequest = () => {
+            setIsMinimized(false);
+            window.setTimeout(() => inputRef.current?.focus(), 0);
+        };
+        window.addEventListener(ASSISTANT_FOCUS_EVENT, onFocusRequest);
+        return () => window.removeEventListener(ASSISTANT_FOCUS_EVENT, onFocusRequest);
+    }, []);
 
 
 
+    // Follow the tail of the transcript. Kept apart from the persist effect
+    // below so switching provider/model/mode doesn't yank the view to the
+    // bottom — only new messages scroll.
+    // The live row grows OUTSIDE `messages` now (the hook keeps the in-flight
+    // turn in its own state and appends one finished message at the end), so
+    // the live fields have to be dependencies too or the view stops following
+    // the stream the moment a turn starts.
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+    }, [messages, liveText, liveThinking, liveToolCalls.length, livePendingActions.length, pendingControls.length]);
 
-    const sendMessage = async (text: string) => {
-        const pendingAttachments = attachments;
-        const promptText = text.trim() || (pendingAttachments.length ? 'Analyze the attached file(s).' : '');
+    // The single write path for a conversation record. Shared by the debounced
+    // timer below and the synchronous flushes in "New chat" / resume, so the
+    // last <500ms of a reply survives an active-id swap.
+    const flushConversation = useCallback((
+        convId: string,
+        sessionId: string | null,
+        claudeSessionId: string | null,
+        snapshot: ChatMessage[],
+    ) => {
+        const existing = getConversation(convId);
+        // Skip a no-op write (e.g. the mount effect for a restored chat) — it
+        // would only rebrand provider/model and bump updatedAt, silently
+        // reshuffling the history list under the user. `conversationNeedsWrite`
+        // carries the hardening this comparison grew inline: an empty snapshot
+        // never writes, and the signature covers content, the error flag and the
+        // tool/meta state, so a finished reply is never mistaken for the
+        // mid-stream partial already on disk and truncated forever.
+        if (!conversationNeedsWrite(existing, snapshot)) return;
+        const now = Date.now();
+        const record: StoredConversation = {
+            id: convId,
+            title: existing?.title || deriveTitle(snapshot),
+            messages: snapshot,
+            provider: selectedProvider,
+            model: selectedModel,
+            sessionId,
+            claudeSessionId,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+        };
+        setActiveId(convId);
+        setConversations(upsertConversation(record));
+    }, [selectedProvider, selectedModel]);
+
+    useEffect(() => {
+        // Debounced persist of the active conversation. Streaming mutates
+        // `messages` per token, so writes are coalesced to ~half a second.
+        // Any pending timer is cleared first so a stale write can't fire after
+        // "New chat" / resume has swapped the active id out from under it.
+        if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current);
+        if (messages.length === 0) return;
+        // Snapshot at schedule time: the timer must write to the conversation
+        // these messages belong to, not whichever id is active 500ms later.
+        const convId = activeConvIdRef.current;
+        const sessionId = conversationIdRef.current;
+        const claudeSessionId = claudeSessionIdRef.current;
+        const snapshot = messages;
+        persistTimerRef.current = window.setTimeout(() => {
+            flushConversation(convId, sessionId, claudeSessionId, snapshot);
+            persistTimerRef.current = null;
+        }, 500);
+        return () => { if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current); };
+    }, [messages, selectedProvider, selectedModel, flushConversation]);
+
+    /**
+     * Start a turn.
+     *
+     * Everything that used to live here — the fetch, the SSE reader, the
+     * <action> scraper, the tier gate, the placeholder assistant message — now
+     * lives in `useChatStream` + the frame reducer. What is left is this
+     * panel's own job: turn the attachment files into base64, remember their
+     * summaries for the app-context block, and hand the prompt over.
+     *
+     * A send during a live turn is QUEUED by the hook rather than colliding
+     * with it; the composer footer says how many are waiting.
+     */
+    const sendMessage = useCallback(async (text: string) => {
+        const pendingAttachments = attachmentsRef.current;
+        // Snapshot the chips: they go out with THIS message and are then
+        // cleared, so a later message never silently inherits them.
+        const pendingReferences = useAssistantReferenceStore.getState().references;
+        const promptText = text.trim()
+            || (pendingAttachments.length ? 'Analyze the attached file(s).' : '')
+            || (pendingReferences.length ? 'Work on the referenced items.' : '');
         if (!promptText && pendingAttachments.length === 0) return;
 
-        // If currently generating, stop it first
-        if (isProcessing) stopGeneration();
-
-
-        setStatusText('');
         setInput('');
+        setLocalStatus(null);
 
-        let attachmentsPayload: Array<{ name: string; mime: string; data: string }> | undefined;
+        let payload: SendAttachment[] | undefined;
         if (pendingAttachments.length > 0) {
-            setStatusText(`Preparing ${pendingAttachments.length} attachment${pendingAttachments.length === 1 ? '' : 's'}...`);
-            attachmentsPayload = await Promise.all(pendingAttachments.map(async item => ({
-                name: item.name,
-                mime: item.mime,
-                data: await fileToBase64(item.file),
-            })));
+            const count = pendingAttachments.length;
+            setLocalStatus(`Preparing ${count} attachment${count === 1 ? '' : 's'}…`);
+            try {
+                payload = await Promise.all(pendingAttachments.map(async item => ({
+                    name: item.name,
+                    mime: item.mime,
+                    size: item.size,
+                    data: await fileToBase64(item.file),
+                })));
+            } catch (err) {
+                // A file the browser cannot read must not vanish silently, and
+                // must not reject out of an un-awaited event handler either.
+                const detail = err instanceof Error ? err.message : String(err);
+                setLocalStatus(null);
+                setMessages(prev => [...prev, {
+                    id: uuid(),
+                    role: 'assistant',
+                    text: `Could not read the attached file(s): ${detail}`,
+                    isError: true,
+                    timestamp: Date.now(),
+                }]);
+                return;
+            }
+            setLocalStatus(null);
             setAttachments([]);
         }
 
-        const attachmentSummary = pendingAttachments.length
-            ? `\n\nAttached: ${pendingAttachments.map(item => `${item.name} (${formatBytes(item.size)})`).join(', ')}`
-            : '';
-        const appContext = buildtheDAWAppContext({
-            selectedProvider,
-            selectedModel,
-            attachments: pendingAttachments.map(item => ({
-                name: item.name,
-                mime: item.mime,
-                size: item.size,
-            })),
+        // Read by getTurnContext, which runs after the state above is cleared.
+        contextAttachmentsRef.current = pendingAttachments.map(item => ({
+            name: item.name,
+            mime: item.mime,
+            size: item.size,
+        }));
+        // Same reason for the chips: the store is emptied on the next line, and
+        // getTurnContext builds the app-context block after that.
+        contextReferencesRef.current = pendingReferences;
+        // The chips are spent the moment the turn starts.
+        if (pendingReferences.length) useAssistantReferenceStore.getState().clear();
+
+        await send(promptText, payload ? { attachments: payload } : undefined);
+    }, [send, setMessages]);
+
+    /** Fire a send from an event handler. `sendMessage` handles its own errors;
+     *  this is the last net, so a rejection can never escape unhandled. */
+    const startSend = useCallback((text: string) => {
+        void sendMessage(text).catch((err) => {
+            console.error('Assistant send failed', err);
+            setLocalStatus(`Send failed: ${err instanceof Error ? err.message : String(err)}`);
         });
-
-        const userMessage: Message = {
-            id: uuid(),
-            role: 'user',
-            content: `${promptText}${attachmentSummary}`,
-            timestamp: new Date()
-        };
-
-        setMessages(prev => [...prev, userMessage]);
-        setIsProcessing(true);
-
-        // Create placeholder assistant message for streaming
-        const assistantId = uuid();
-        const assistantMessage: Message = {
-            id: assistantId,
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-        };
-        setMessages(prev => [...prev, assistantMessage]);
-
-        try {
-            // SSE stream from backend for all providers
-            const controller = new AbortController();
-                abortRef.current = controller;
-                const response = await fetch('/api/assistant/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                    signal: controller.signal,
-                    body: JSON.stringify({
-                        messages: [
-                            { role: 'system', content: appContext },
-                            ...messages.filter(m => m.role !== 'assistant' || m.content).map(m => ({ role: m.role, content: m.content })),
-                            { role: 'user', content: promptText },
-                        ],
-                        provider: selectedProvider,
-                        model: selectedModel,
-                        ...(attachmentsPayload ? { attachments: attachmentsPayload } : {}),
-                        ...(selectedProvider === 'claude' ? {
-                            effort: DEFAULT_ASSISTANT_EFFORT,
-                            claudeMode: resolveClaudeMode(selectedModel),
-                            conversationId: conversationIdRef.current,
-                            claudeSessionId: conversationIdRef.current,
-                        } : {}),
-
-                    }),
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Backend error: ${response.status}`);
-                }
-
-                const reader = response.body?.getReader();
-                if (!reader) throw new Error('No response body');
-
-                const decoder = new TextDecoder();
-                let buffer = '';
-                // Accumulated assistant prose for THIS reply. Inline <action>
-                // blocks are scraped from it exactly once (offset-keyed), and
-                // executed OUT here — never inside a setMessages updater, which
-                // StrictMode double-invokes.
-                let streamText = '';
-                const scrapedActionOffsets = new Set<number>();
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const frames = buffer.split('\n\n');
-                    buffer = frames.pop() || '';
-
-                    for (const frame of frames) {
-                        const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
-                        if (!dataLine) continue;
-
-                        try {
-                            const event = JSON.parse(dataLine.slice(6));
-                            if (event.session_id) {
-                                conversationIdRef.current = event.session_id;
-                                try { sessionStorage.setItem('thedaw:conversationId', event.session_id); } catch {}
-                            }
-
-                            const executableAction = actionFromAssistantEvent(event);
-                            if (executableAction) {
-                                // Tier gate: expensive / irreversible tools (generate,
-                                // abort, destructive editor ops, anything unknown) are
-                                // NOT executed — they park on the message as
-                                // pendingAction and render the confirmation card.
-                                if (getToolTier(executableAction.type) === 'T2_confirm') {
-                                    setMessages(prev => prev.map(msg =>
-                                        msg.id === assistantId
-                                            ? {
-                                                ...msg,
-                                                pendingAction: executableAction,
-                                                content: msg.content
-                                                    || `I want to: ${describeToolCall(executableAction.type, executableAction.payload ?? {})}`,
-                                            }
-                                            : msg
-                                    ));
-                                } else {
-                                    onExecuteAction(executableAction);
-                                    setMessages(prev => prev.map(msg =>
-                                        msg.id === assistantId
-                                            ? {
-                                                ...msg,
-                                                action: executableAction,
-                                                content: msg.content || `Executed action: ${executableAction.type}`,
-                                            }
-                                            : msg
-                                    ));
-                                }
-                                continue;
-                            }
-
-                            const toolStatus = statusFromAssistantEvent(event);
-                            if (toolStatus) {
-                                setStatusText(toolStatus);
-                                continue;
-                            }
-
-                            if (event.type === 'text_delta') {
-                                streamText += event.delta;
-                                const actionRx = /<action>([\s\S]*?)<\/action>/g;
-                                let match: RegExpExecArray | null;
-                                let scrapedPending: ReturnType<typeof sanitizeAssistantAction> = null;
-                                while ((match = actionRx.exec(streamText)) !== null) {
-                                    if (scrapedActionOffsets.has(match.index)) continue;
-                                    scrapedActionOffsets.add(match.index);
-                                    try {
-                                        // Validate through the same allowlist as tool_call
-                                        // frames — an arbitrary type string in prose must
-                                        // not execute — then tier-gate it like any tool.
-                                        const act = sanitizeAssistantAction(JSON.parse(match[1]));
-                                        if (!act) continue;
-                                        if (getToolTier(act.type) === 'T2_confirm') scrapedPending = act;
-                                        else onExecuteAction(act);
-                                    } catch {}
-                                }
-                                const cleaned = streamText.replace(actionRx, '').trim();
-                                const pendingUpdate = scrapedPending;
-                                setMessages(prev => prev.map(msg =>
-                                    msg.id === assistantId
-                                        ? { ...msg, content: cleaned, ...(pendingUpdate ? { pendingAction: pendingUpdate } : {}) }
-                                        : msg
-                                ));
-                            } else if (event.type === 'status') {
-                                setStatusText(event.message);
-                            } else if (event.type === 'error') {
-                                setMessages(prev => prev.map(msg =>
-                                    msg.id === assistantId
-                                        ? { ...msg, content: event.error, isError: true }
-                                        : msg
-                                ));
-                            }
-                        } catch { /* skip malformed frames */ }
-                    }
-                }
-
-                // Finalize — set final content from accumulated message
-                setMessages(prev => prev.map(msg =>
-                    msg.id === assistantId
-                        ? { ...msg, content: msg.content || 'No response.' }
-                        : msg
-                ));
-        } catch (error) {
-            if (error instanceof DOMException && error.name === 'AbortError') {
-                setMessages(prev => prev.map(msg =>
-                    msg.id === assistantId
-                        ? { ...msg, content: msg.content || '[Cancelled]' }
-                        : msg
-                ));
-            } else {
-                console.error('Message processing error:', error);
-                setMessages(prev => prev.map(msg =>
-                    msg.id === assistantId
-                        ? {
-                            ...msg,
-                            content: "I encountered an error processing your request. Please try again.",
-                            isError: true,
-                            suggestions: ['Try again', 'Check settings']
-                        }
-                        : msg
-                ));
-            }
-        } finally {
-            abortRef.current = null;
-            setStatusText('');
-            setIsProcessing(false);
-        }
-    };
+    }, [sendMessage]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        sendMessage(input);
+        startSend(input);
     };
 
     const handleQuickCommand = (command: string) => {
-        sendMessage(command);
+        startSend(command);
     };
 
-    const handleSuggestionClick = (suggestion: string) => {
-        handleQuickCommand(suggestion);
-    };
-
+    // "New chat": flush any pending debounced write first — the persist timer
+    // is up to 500ms behind the stream, and the id swap below would leave that
+    // tail unwritten — then start a fresh conversation id with an empty view.
     const handleClearHistory = () => {
-        setMessages([]);
+        if (persistTimerRef.current) {
+            window.clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+            flushConversation(activeConvIdRef.current, conversationIdRef.current, claudeSessionIdRef.current, messages);
+        }
+        // clearStream drops the transcript, any unanswered permission cards and
+        // the session cost carried across turns — a new chat must not inherit a
+        // bubble the previous CLI is still blocked on.
+        clearStream();
+        activeConvIdRef.current = uuid();
+        setActiveId(activeConvIdRef.current);
+        // Both ids are cleared through their setters, which also clear the
+        // sessionStorage slots — a new chat must not resume the old CLI session.
+        setConversationId(null);
+        setClaudeSessionId(null);
+        setLocalStatus(null);
+        // The reading belonged to the CLI session we just walked away from.
+        setContextUsage(null);
+        setShowHistory(false);
+    };
+
+    // "Clear all": wipe every saved transcript from localStorage, then start
+    // a fresh empty conversation so the panel doesn't show a deleted chat.
+    const handleClearAll = () => {
+        if (!window.confirm('Delete ALL saved chats from this browser?')) return;
+        // Drop the pending persist write before wiping, or the flush in
+        // handleClearHistory would write the just-deleted chat straight back.
+        if (persistTimerRef.current) {
+            window.clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+        }
+        clearAllConversations();
+        setConversations([]);
+        handleClearHistory();
+    };
+
+    const resumeConversation = (conv: StoredConversation) => {
+        // Same tail problem as "New chat": write out whatever the debounce is
+        // still holding for the conversation we're leaving, under its own id.
+        if (persistTimerRef.current) {
+            window.clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+            flushConversation(activeConvIdRef.current, conversationIdRef.current, claudeSessionIdRef.current, messages);
+        }
+        activeConvIdRef.current = conv.id;
+        setActiveId(conv.id);
+        // Clear BEFORE hydrating: an unanswered permission card belongs to the
+        // conversation we are leaving, and answering it from here would POST the
+        // wrong conversationId. Both calls are state setters, applied in order,
+        // so the transcript below is what survives.
+        clearStream();
+        setMessages(conv.messages);
+        setConversationId(conv.sessionId);
+        setClaudeSessionId(conv.claudeSessionId ?? null);
+        setLocalStatus(null);
+        if (conv.provider) setSelectedProvider(conv.provider);
+        if (conv.model) setSelectedModel(conv.model);
+        setShowHistory(false);
+        // The resumed chat has its own window. Drop the old reading and ask for
+        // this one's — `setConversationId` above already moved the ref, and the
+        // provider is passed explicitly because the state setter just above has
+        // not re-rendered yet.
+        setContextUsage(null);
+        void refreshContextUsage(conv.provider ?? selectionRef.current.provider);
+    };
+
+    const removeConversation = (id: string) => {
+        // Deleting the active chat: drop its pending write, otherwise the flush
+        // in handleClearHistory below would resurrect it.
+        if (id === activeConvIdRef.current && persistTimerRef.current) {
+            window.clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+        }
+        setConversations(deleteConversation(id));
+        if (id === activeConvIdRef.current) handleClearHistory();
     };
 
     if (!isOpen) return null;
@@ -743,7 +1241,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         </div>
                         <span className="font-semibold text-sm">theDAW</span>
                         {messages.length > 0 && (
-                            <span className="text-[10px] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
+                            <span className="text-xs font-semibold px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
                                 {messages.length}
                             </span>
                         )}
@@ -780,34 +1278,56 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 height: `${PANEL_HEIGHT}px`,
             }}
         >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-linear-to-r from-primary/10 via-purple-500/10 to-pink-500/10">
-                <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-full bg-linear-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center animate-pulse relative">
+            {/* Header. `flex-wrap` so the control group drops to a second line
+                rather than squeezing the permission dropdown out of a 420px
+                panel — the dropdown is the point, it must never be clipped. */}
+            <div className="flex flex-wrap items-center justify-between gap-y-2 px-4 py-3 border-b border-border bg-linear-to-r from-primary/10 via-purple-500/10 to-pink-500/10">
+                <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-linear-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center animate-pulse relative shrink-0">
                         <div className="absolute inset-0 rounded-full bg-linear-to-br from-primary via-purple-500 to-pink-500 animate-spin-slow opacity-50 blur-sm"></div>
                         <div className="w-4 h-4 rounded-full bg-white/90 z-10"></div>
                     </div>
-                    <div>
-                        <h2 className="font-bold text-sm">
+                    <div className="min-w-0">
+                        <h2 className="font-bold text-sm truncate">
                             GANTASMO-b0t
                         </h2>
-                        <p className="text-[10px] text-muted">Stable Audio 3 expert</p>
+                        <p className="text-xs font-semibold text-muted truncate">Stable Audio 3 expert</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 min-w-0">
+                    {/* Always visible, not buried in the Model Info popover: the
+                        permission mode decides what the agent may do without
+                        asking, so it has to be readable at a glance. The compact
+                        form keeps its real <label htmlFor> (sr-only). */}
+                    {shouldShowPermissionSelect(selectedProvider) && (
+                        <PermissionModeSelect conversationId={conversationId} compact />
+                    )}
                     <button
                         onClick={() => setShowModelInfo(!showModelInfo)}
-                        className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-muted hover:text-white"
+                        className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-muted hover:text-white shrink-0"
                         title="Model Info"
+                        aria-label="Model info and settings"
+                        aria-expanded={showModelInfo}
                     >
-                        <Zap size={14} />
+                        <Zap size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                        onClick={() => setShowHistory((v) => !v)}
+                        className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-muted hover:text-white"
+                        title="Chat history"
+                        aria-label="Chat history"
+                        aria-expanded={showHistory}
+                        aria-haspopup="true"
+                    >
+                        <History size={14} />
                     </button>
                     <button
                         onClick={handleClearHistory}
                         className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-muted hover:text-white"
-                        title="Clear History"
+                        title="New chat"
+                        aria-label="New chat"
                     >
-                        <Trash2 size={14} />
+                        <Plus size={14} />
                     </button>
                     <button
                         onClick={() => setIsMinimized(true)}
@@ -827,15 +1347,73 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                 </div>
             </div>
 
+            {showHistory && (
+                <div className="border-b border-border bg-surface/95 max-h-72 overflow-y-auto custom-scrollbar">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                        <span className="text-xs font-semibold text-muted uppercase tracking-wide">History</span>
+                        <div className="flex items-center gap-3">
+                            <button
+                                type="button"
+                                onClick={handleClearHistory}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:text-white transition-colors"
+                                title="Start a new chat"
+                            >
+                                <Plus size={12} /> New chat
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleClearAll}
+                                title="Delete all saved chats"
+                                aria-label="Clear all history"
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400/80 hover:text-rose-300 transition-colors"
+                            >
+                                Clear all
+                            </button>
+                        </div>
+                    </div>
+                    {conversations.length === 0 ? (
+                        <div className="px-3 py-3 text-xs font-semibold text-muted italic">No saved conversations yet.</div>
+                    ) : (
+                        conversations.map((c) => (
+                            <div
+                                key={c.id}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => resumeConversation(c)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); resumeConversation(c); }
+                                }}
+                                className={`group flex items-center gap-2 px-3 py-2 border-b border-white/5 last:border-0 cursor-pointer hover:bg-white/5 ${c.id === activeConvIdRef.current ? 'bg-primary/10' : ''}`}
+                            >
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-xs font-semibold text-white truncate">{c.title}</div>
+                                    <div className="text-xs font-semibold text-muted">{timeAgo(c.updatedAt)} · {c.messages.length} msgs</div>
+                                </div>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); removeConversation(c.id); }}
+                                    className="p-1 text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                    title="Delete conversation"
+                                    aria-label={`Delete conversation: ${c.title}`}
+                                >
+                                    <Trash2 size={12} />
+                                </button>
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
+
             {showModelInfo && (
                 <div className="border-b border-border">
-                    <div className="flex border-b border-white/5">
-                        <button onClick={() => setSettingsTab('model')} className={`flex-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'model' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}>Chat</button>
-                        <button onClick={() => setSettingsTab('keys')} className={`flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 text-[10px] font-medium transition-colors ${settingsTab === 'keys' ? 'text-primary border-b border-primary' : 'text-muted hover:text-white'}`}><KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />Keys</button>
-                    </div>
+                    <AssistantSettingsTabs active={settingsTab} onSelect={setSettingsTab} />
 
                     {settingsTab === 'model' && (
-                        <div className="px-4 py-2.5 bg-linear-to-r from-blue-500/10 to-purple-500/10 space-y-2">
+                        <div
+                            role="tabpanel"
+                            id={settingsPanelId('model')}
+                            aria-labelledby={settingsTabId('model')}
+                            className="px-4 py-2.5 bg-linear-to-r from-blue-500/10 to-purple-500/10 space-y-2"
+                        >
                             <ProviderModelSelector
                                 providers={providers}
                                 selectedProvider={selectedProvider}
@@ -844,11 +1422,57 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 onModelChange={handleModelChange}
                                 loading={!!loadingModels}
                             />
-                            <div className="flex items-center justify-between text-[10px] pt-0.5">
-                                <span className="text-muted">Active: <span className="font-mono text-primary">{selectedModel}</span></span>
-                                <span className="inline-flex items-center gap-1 font-mono text-green-400">
-                                    {selectedProvider === 'claude' ? (
-                                        `effort ${DEFAULT_ASSISTANT_EFFORT}`
+                            {/* The permission dropdown is NOT repeated here. It
+                                lives in the always-visible header row above;
+                                PermissionModeSelect hardcodes
+                                id="assistant-permission-mode", so a second copy
+                                would duplicate that id and break the label
+                                association for both (HARD RULE 3). */}
+                            {/* Effort — only the Claude CLI has one, so only it
+                                gets the control (the Foundry gates it the same
+                                way). A native <select> like the permission
+                                dropdown: five values, no badges, and a real
+                                <label htmlFor> for free. */}
+                            {shouldShowPermissionSelect(selectedProvider) && (
+                                <div>
+                                    <label htmlFor="assistant-effort" className="text-xs font-bold text-muted block mb-0.5">Effort</label>
+                                    <select
+                                        id="assistant-effort"
+                                        name="assistant-effort"
+                                        value={effort}
+                                        onChange={(e) => setEffort(normalizeEffort(e.target.value))}
+                                        className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-white cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary/50 transition-colors"
+                                    >
+                                        {EFFORT_OPTIONS.map((level) => (
+                                            <option key={level} value={level} className="bg-black text-white">
+                                                {effortLabel(level)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                            {/* Whether the Claude CLI loads the user's own
+                                ~/.claude settings, CLAUDE.md, skills, agents and
+                                MCP servers. An app setting (data/settings.json),
+                                read by the backend on every turn; Claude only. */}
+                            {shouldShowPermissionSelect(selectedProvider) && <UserClaudeConfigToggle />}
+                            {/* The loaded allow rules; in Ask mode each one asks
+                                unless marked Always allow. Claude only. */}
+                            {shouldShowPermissionSelect(selectedProvider) && <AllowRulesList />}
+                            <div className="flex items-center justify-between text-xs pt-0.5">
+                                {/* The CLI reports the model it actually loaded,
+                                    which can differ from the one requested (a
+                                    fallback model, an alias resolved server-side).
+                                    Show what is running, not what was asked for. */}
+                                <span className="text-muted">
+                                    Active: <span className="font-bold text-primary">{cliModel ?? selectedModel}</span>
+                                    {cliModel && cliModel !== selectedModel && (
+                                        <span className="text-muted/60"> (asked for {selectedModel})</span>
+                                    )}
+                                </span>
+                                <span className="inline-flex items-center gap-1 font-bold text-green-400">
+                                    {selectedProvider === CLAUDE_PROVIDER_ID ? (
+                                        `effort ${effort}`
                                     ) : (
                                         <>
                                             <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -866,7 +1490,12 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                     )}
 
                     {settingsTab === 'keys' && (
-                        <div className="px-4 py-2.5 bg-linear-to-r from-purple-500/10 to-pink-500/10 space-y-1 max-h-56 overflow-y-auto custom-scrollbar">
+                        <div
+                            role="tabpanel"
+                            id={settingsPanelId('keys')}
+                            aria-labelledby={settingsTabId('keys')}
+                            className="px-4 py-2.5 bg-linear-to-r from-purple-500/10 to-pink-500/10 space-y-1 max-h-56 overflow-y-auto custom-scrollbar"
+                        >
                             {providerCatalog.filter(p => p.id !== 'claude' && !p.is_local).map(p => {
                                 const pool = keyPools[p.id];
                                 const keyCount = pool?.total || 0;
@@ -877,23 +1506,23 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 return (
                                 <div key={p.id} className="py-1.5 border-b border-white/5 last:border-0">
                                     <div className="flex items-center gap-2">
-                                        <span className="text-[10px] text-muted w-20 shrink-0 truncate" title={p.label}>{p.label}</span>
+                                        <span className="text-xs font-bold text-muted w-20 shrink-0 truncate" title={p.label}>{p.label}</span>
                                         <div className="flex-1 flex items-center gap-1.5">
                                             {keyCount > 0 ? (
-                                                <span className="text-[9px] font-mono">
+                                                <span className="text-xs font-bold">
                                                     <span className="text-green-400">{availCount}</span>
                                                     <span className="text-muted">/{keyCount} keys</span>
                                                     {pool && pool.cooldown > 0 && <span className="text-yellow-400 ml-1">({pool.cooldown} cooling)</span>}
                                                 </span>
                                             ) : (
-                                                <span className="text-[9px] text-muted/50">{p.has_key ? 'env only' : 'no keys'}</span>
+                                                <span className="text-xs text-muted/50">{p.has_key ? 'env only' : 'no keys'}</span>
                                             )}
                                             <button
                                                 onClick={() => { setEditingKeyProvider(editingKeyProvider === p.id ? null : p.id); setKeyInput(''); }}
                                                 aria-expanded={editingKeyProvider === p.id}
                                                 aria-controls={editingKeyProvider === p.id ? keyFieldId : undefined}
                                                 title={editingKeyProvider === p.id ? `Close the ${p.label} key field` : `Paste ${p.label} API keys`}
-                                                className="ml-auto inline-flex items-center gap-1 text-[9px] text-primary/70 hover:text-primary"
+                                                className="ml-auto inline-flex items-center gap-1 text-xs font-bold text-primary/70 hover:text-primary"
                                             >
                                                 {editingKeyProvider === p.id
                                                     ? <X className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -905,7 +1534,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                     onClick={() => clearProviderKeys(p.id)}
                                                     aria-label={`Clear every ${p.label} key`}
                                                     title={`Forget every ${p.label} key`}
-                                                    className="inline-flex items-center gap-1 text-[9px] text-red-400/50 hover:text-red-400"
+                                                    className="inline-flex items-center gap-1 text-xs font-bold text-red-400/50 hover:text-red-400"
                                                 >
                                                     <Trash2 className="w-3 h-3 shrink-0" aria-hidden="true" />
                                                     Clear
@@ -922,7 +1551,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                 and unmarked on screen. */}
                                             <SecretFieldLabel
                                                 htmlFor={keyFieldId}
-                                                className="text-[9px] font-mono uppercase tracking-wider text-muted"
+                                                className="text-xs font-bold text-muted"
                                                 iconClassName="w-3 h-3 shrink-0 text-primary/70"
                                             >
                                                 {p.label} API keys
@@ -933,17 +1562,17 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                                 value={keyInput}
                                                 onChange={e => setKeyInput(e.target.value)}
                                                 placeholder="Paste keys (one per line, or comma/semicolon separated)..."
-                                                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-white focus:outline-none focus:border-primary/50 resize-none"
+                                                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-primary/50 resize-none"
                                                 rows={3}
                                                 autoFocus
                                                 onKeyDown={e => { if (e.key === 'Enter' && e.ctrlKey && keyInput.trim()) ingestKeys(p.id, keyInput); }}
                                             />
                                             <div className="flex items-center gap-1.5">
-                                                <span className="text-[9px] text-muted/40 flex-1">Ctrl+Enter to save. Comma, newline, or semicolon separated.</span>
+                                                <span className="text-xs text-muted/40 flex-1">Ctrl+Enter to save. Comma, newline, or semicolon separated.</span>
                                                 <button
                                                     onClick={() => ingestKeys(p.id, keyInput)}
                                                     disabled={!keyInput.trim() || ingestingKeys}
-                                                    className="px-2.5 py-0.5 bg-primary/20 text-primary text-[9px] rounded hover:bg-primary/30 disabled:opacity-50"
+                                                    className="px-2.5 py-0.5 bg-primary/20 text-primary text-xs font-bold rounded hover:bg-primary/30 disabled:opacity-50"
                                                 >{ingestingKeys ? 'Saving...' : 'Ingest Keys'}</button>
                                             </div>
                                         </div>
@@ -953,10 +1582,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                     {pool?.keys && pool.keys.length > 0 && editingKeyProvider !== p.id && (
                                         <div className="mt-1 space-y-0.5">
                                             {pool.keys.map((k) => (
-                                                <div key={k.id} className="flex items-center gap-1.5 pl-2 text-[9px]">
+                                                <div key={k.id} className="flex items-center gap-1.5 pl-2 text-xs">
                                                     <span className={`w-1.5 h-1.5 rounded-full ${k.available ? 'bg-green-400' : 'bg-yellow-400'}`} title={k.available ? 'Available' : 'Cooling down'} />
                                                     <KeyRound className="w-3 h-3 shrink-0 text-muted/60" aria-hidden="true" />
-                                                    <span className="font-mono text-muted">{k.masked}</span>
+                                                    <span className="tabular-nums font-semibold text-muted">{k.masked}</span>
                                                     <span className="text-muted/40">{k.source}</span>
                                                     {k.fail_count > 0 && <span className="text-red-400/60">{k.fail_count}x fail</span>}
                                                     {k.source !== 'env' && (
@@ -976,7 +1605,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 </div>
                                 );
                             })}
-                            <div className="pt-1 text-[9px] text-muted/40 italic">Keys persisted on backend. Env vars auto-detected.</div>
+                            <div className="pt-1 text-xs text-muted/40 italic">Keys persisted on backend. Env vars auto-detected.</div>
                         </div>
                     )}
                 </div>
@@ -990,10 +1619,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                             <Sparkles size={28} className="text-primary" />
                         </div>
                         <h3 className="text-base font-bold mb-1">How can I help?</h3>
-                        <p className="text-[11px] text-muted max-w-xs mb-1">
+                        <p className="text-xs font-semibold text-muted max-w-xs mb-1">
                             I have <span className="text-primary font-semibold">full access</span> to all app capabilities.
                         </p>
-                        <p className="text-[10px] text-muted/70 mb-4 italic">
+                        <p className="text-xs font-semibold text-muted/70 mb-4 italic">
                             {CAPABILITY_HINTS[currentHint]}
                         </p>
 
@@ -1003,7 +1632,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 <button
                                     key={i}
                                     onClick={() => handleQuickCommand(cmd.command)}
-                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-primary/30 rounded-full text-[11px] font-medium transition-all hover:scale-105"
+                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-primary/30 rounded-full text-xs font-semibold transition-all hover:scale-105"
                                 >
                                     {cmd.label}
                                 </button>
@@ -1011,206 +1640,30 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         </div>
                     </div>
                 ) : (
-                    messages.map((msg) => (
-                        <div
-                            key={msg.id}
-                            className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                        >
-                            {msg.role === 'assistant' && (
-                                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${msg.isError ? 'bg-red-500/20' : 'bg-linear-to-br from-primary to-pink-500'}`}>
-                                    <Bot size={12} className={msg.isError ? 'text-red-400' : 'text-white'} />
-                                </div>
-                            )}
-                            <div className="flex flex-col gap-1.5 max-w-[85%]">
-                                <div
-                                    className={`px-3 py-2 rounded-xl text-[12px] ${msg.role === 'user'
-                                        ? 'bg-primary text-white rounded-br-sm'
-                                        : msg.isError
-                                            ? 'bg-red-500/10 border border-red-500/30 rounded-bl-sm'
-                                            : 'bg-white/5 border border-white/10 rounded-bl-sm'
-                                        }`}
-                                >
-                                    {msg.role === 'user' ? (
-                                        <p className="whitespace-pre-wrap">{msg.content}</p>
-                                    ) : (
-                                        <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10 prose-pre:p-2 prose-pre:my-2 prose-a:text-primary hover:prose-a:text-primary/80 text-[12px]">
-                                            <ReactMarkdown
-                                                remarkPlugins={[remarkGfm]}
-                                                components={{
-                                                    img({ src, alt, ...props }: any) {
-                                                        return (
-                                                            <img
-                                                                src={src}
-                                                                alt={alt}
-                                                                className="max-w-full h-auto rounded-lg border border-white/10 my-2"
-                                                                {...props}
-                                                            />
-                                                        );
-                                                    },
-                                                    code({ inline, className, children, ...props }: any) {
-                                                        const match = /language-(\w+)/.exec(className || '')
-                                                        const text = String(children).replace(/\n$/, '')
-                                                        return !inline ? (
-                                                            <div className="relative group">
-                                                                <button
-                                                                    onClick={() => copyToClipboard(text)}
-                                                                    className="absolute right-2 top-2 p-1.5 bg-white/10 hover:bg-white/20 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                                                                    title="Copy code"
-                                                                >
-                                                                    <Copy size={12} />
-                                                                </button>
-                                                                <code className={className} {...props}>
-                                                                    {children}
-                                                                </code>
-                                                            </div>
-                                                        ) : (
-                                                            <code
-                                                                className={`${className} cursor-pointer hover:bg-white/20 transition-colors px-1 rounded`}
-                                                                onClick={() => copyToClipboard(text)}
-                                                                title="Click to copy"
-                                                                {...props}
-                                                            >
-                                                                {children}
-                                                            </code>
-                                                        )
-                                                    }
-                                                }}
-                                            >
-                                                {msg.content}
-                                            </ReactMarkdown>
-                                        </div>
-                                    )}
-                                    {msg.action && (
-                                        <div className="mt-1.5 pt-1.5 border-t border-white/10 flex items-center gap-1.5 text-[10px] opacity-70">
-                                            <Command size={10} />
-                                            <span className="font-mono">{msg.action.type}</span>
-                                        </div>
-                                    )}
-                                    {msg.pendingAction && msg.role === 'assistant' && (
-                                        <div className="mt-2 pt-2 border-t border-yellow-500/30 flex flex-col gap-2">
-                                            <div className="flex items-center gap-1.5 text-[11px] text-yellow-400 font-medium">
-                                                <Zap size={12} />
-                                                <span>Requires Confirmation: <span className="font-mono">{msg.pendingAction.type}</span></span>
-                                            </div>
-                                            <div className="text-[11px] text-zinc-300">
-                                                {describeToolCall(msg.pendingAction.type, msg.pendingAction.payload ?? {})}
-                                            </div>
+                    /* The ported transcript owns every message row: tool
+                       rows, diff cards, collapsible reasoning, the turn meta
+                       line, the permission card and the T2 Run/Skip card. A
+                       turn with tools and no prose renders its tools with NO
+                       bubble and NO Copy/Retry — the empty "No response."
+                       bubble is gone with the loop that produced it.
 
-                                            <div className="flex gap-2 mt-1">
-                                                <button
-                                                    onClick={() => {
-                                                        onExecuteAction(msg.pendingAction!);
-                                                        setMessages(prev => {
-                                                            const updated = prev.map(m =>
-                                                                m.id === msg.id ? { ...m, pendingAction: undefined } : m
-                                                            );
-                                                            return [...updated, {
-                                                                id: uuid(),
-                                                                role: 'assistant' as const,
-                                                                content: 'Action "' + msg.pendingAction!.type + '" has been executed.',
-                                                                timestamp: new Date(),
-                                                            }];
-                                                        });
-                                                    }}
-                                                    className="flex-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 border border-green-500/30 rounded py-1.5 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
-                                                    disabled={isProcessing}
-                                                >
-                                                    <Play size={12} />
-                                                    YES, DO IT
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setMessages(prev => prev.map(m =>
-                                                            m.id === msg.id ? { ...m, pendingAction: undefined } : m
-                                                        ));
-
-                                                        // Just send a message back saying NO
-                                                        handleQuickCommand("No, cancel that action. Do not run it.");
-                                                    }}
-                                                    className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 rounded py-1.5 text-xs font-semibold transition-colors"
-                                                    disabled={isProcessing}
-                                                >
-                                                    NO, CANCEL
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {msg.role === 'assistant' && !msg.pendingAction && (
-                                        <div className="mt-1.5 pt-1.5 border-t border-white/10 flex items-center justify-end gap-2 text-[10px] opacity-50 hover:opacity-100 transition-opacity">
-                                            <button
-                                                onClick={() => copyToClipboard(msg.content)}
-                                                className="flex items-center gap-1 hover:text-primary transition-colors"
-                                                title="Copy message"
-                                            >
-                                                <Copy size={10} />
-                                                <span>Copy</span>
-                                            </button>
-                                            {/* Only show retry for the last message if it's an assistant message */}
-                                            {messages[messages.length - 1].id === msg.id && (
-                                                <button
-                                                    onClick={() => {
-                                                        // Find the last user message
-                                                        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-                                                        if (lastUserMsg) {
-                                                            // Remove the last user message and this assistant message from UI
-                                                            setMessages(prev => prev.filter(m => m.id !== msg.id && m.id !== lastUserMsg.id));
-                                                            // Retry the command
-                                                            handleQuickCommand(lastUserMsg.content);
-                                                        }
-                                                    }}
-                                                    className="flex items-center gap-1 hover:text-primary transition-colors"
-                                                    title="Retry response"
-                                                >
-                                                    <RefreshCw size={10} />
-                                                    <span>Retry</span>
-                                                </button>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-
-
-
-                                {/* Suggestions */}
-                                {msg.suggestions && msg.suggestions.length > 0 && (
-                                    <div className="flex flex-wrap gap-1">
-                                        {msg.suggestions.map((suggestion, i) => (
-                                            <button
-                                                key={i}
-                                                onClick={() => handleSuggestionClick(suggestion)}
-                                                className="px-2 py-0.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-[10px] font-medium transition-colors"
-                                            >
-                                                {suggestion}
-                                            </button>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                            {msg.role === 'user' && (
-                                <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center shrink-0">
-                                    <User size={12} />
-                                </div>
-                            )}
-                        </div>
-                    ))
-                )}
-
-                {isProcessing && (
-                    <div className="flex gap-2">
-                        <div className="w-6 h-6 rounded-full bg-linear-to-br from-primary to-pink-500 flex items-center justify-center">
-                            <Loader2 size={12} className="text-white animate-spin" />
-                        </div>
-                        <div className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl rounded-bl-sm">
-                            <div className="flex items-center gap-2">
-                                <div className="flex gap-1">
-                                    <span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                                    <span className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                                    <span className="w-1.5 h-1.5 bg-pink-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                                </div>
-                                <span className="text-[10px] text-muted">{statusText || 'Thinking...'}</span>
-                            </div>
-                        </div>
-                    </div>
+                       `statusText` is deliberately NOT passed: it renders once,
+                       in the composer footer below. The live row keeps its own
+                       single "Thinking…" indicator. */
+                    <Transcript
+                        messages={messages}
+                        isStreaming={isStreaming}
+                        liveText={liveText}
+                        liveThinking={liveThinking}
+                        liveToolCalls={liveToolCalls}
+                        livePendingActions={livePendingActions}
+                        pendingControls={pendingControls}
+                        onCopyMessage={copyToClipboard}
+                        onRetry={retry}
+                        onAnswerControl={answerControl}
+                        onRunPendingAction={runPendingAction}
+                        onSkipPendingAction={skipPendingAction}
+                    />
                 )}
 
                 <div ref={messagesEndRef} />
@@ -1220,6 +1673,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
             <form onSubmit={handleSubmit} className="p-3 border-t border-border bg-black/20">
                 <input
                     ref={fileInputRef}
+                    id="assistant-attach-files"
                     type="file"
                     name="assistant-attach-files"
                     multiple
@@ -1232,10 +1686,43 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         event.target.value = '';
                     }}
                 />
+                {references.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                        {references.map(ref => {
+                            const key = referenceKey(ref);
+                            const resolved = resolveAssistantReference(ref);
+                            const missing = resolved.status === 'missing';
+                            return (
+                                <div
+                                    key={key}
+                                    title={resolved.detail}
+                                    className={`flex items-center gap-1.5 max-w-full rounded-full border px-2 py-1 text-xs font-semibold ${missing
+                                        ? 'border-red-500/40 bg-red-500/10 text-red-300 line-through'
+                                        : resolved.status === 'changed'
+                                            ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                                            : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+                                        }`}
+                                >
+                                    {missing ? <AlertTriangle size={12} /> : renderReferenceIcon(ref.kind)}
+                                    <span className="max-w-48 truncate">{ref.label}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => removeReference(key)}
+                                        className="ml-0.5 rounded-full opacity-70 hover:opacity-100 hover:text-red-300"
+                                        title={`Remove reference ${ref.label}`}
+                                        aria-label={`Remove reference ${ref.label}`}
+                                    >
+                                        <X size={10} />
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
                 {attachments.length > 0 && (
                     <div className="mb-2 flex flex-wrap gap-1.5">
                         {attachments.map(item => (
-                            <div key={item.id} className="flex items-center gap-1.5 max-w-full rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-[10px] text-primary">
+                            <div key={item.id} className="flex items-center gap-1.5 max-w-full rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
                                 {renderAttachmentIcon(item.mime)}
                                 <span className="max-w-48 truncate" title={item.name}>{item.name}</span>
                                 <span className="text-primary/60">{formatBytes(item.size)}</span>
@@ -1252,14 +1739,60 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         ))}
                     </div>
                 )}
+                {/* The composer status row: transient status on the left, the
+                    context meter on the right. Status is still the ONE place
+                    transient chatter shows — it used to render as a fake
+                    assistant row in the transcript, complete with avatar — and
+                    still takes `role="status"` only when the transcript's
+                    live-row indicator is NOT up, so there is never a second
+                    region announcing. The meter beside it is not a region at
+                    all. */}
+                <div className="mb-2 flex items-center gap-2 px-0.5">
+                    {statusLine && (
+                        <div
+                            className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-muted"
+                            role={statusIsLive ? 'status' : undefined}
+                            aria-live={statusIsLive ? 'polite' : undefined}
+                        >
+                            <Loader2 className="w-3 h-3 shrink-0 animate-spin text-primary" aria-hidden="true" />
+                            <span className="truncate" title={statusLine}>{statusLine}</span>
+                        </div>
+                    )}
+                    {/* The context meter, ported from the Foundry's status bar.
+                        Deliberately NOT a live region: it sits beside the status
+                        line, which already owns the one announcement allowed
+                        here, and a percentage ticking over would talk across it.
+                        role="meter" is what it is — a reading inside a known
+                        range — so it still reads correctly on demand. */}
+                    <div
+                        role="meter"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={contextPercent}
+                        aria-label={contextMeter.ariaLabel}
+                        title={contextMeter.title}
+                        className="ml-auto flex shrink-0 items-center gap-1.5 text-xs font-semibold text-muted"
+                    >
+                        <span>{contextMeter.label}</span>
+                        <div className="h-1 w-16 overflow-hidden rounded-full bg-white/6">
+                            <div
+                                className={`h-full rounded-full transition-all ${contextMeter.barClass}`}
+                                style={{ width: `${contextPercent}%` }}
+                            />
+                        </div>
+                        <span className="tabular-nums font-semibold">{contextPercent}%</span>
+                    </div>
+                </div>
                 <div className="flex gap-2">
+                    <label htmlFor="assistant-chat-input" className="sr-only">Message the assistant</label>
                     <input
                         ref={inputRef}
+                        id="assistant-chat-input"
                         type="text"
                         name="assistant-chat-input"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder={isProcessing ? 'Type to interrupt...' : 'Ask anything...'}
+                        placeholder={isStreaming ? 'Send to queue a follow-up…' : 'Ask anything...'}
                         className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[12px] focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all"
                     />
 
@@ -1267,12 +1800,12 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         className="px-3 py-2 bg-white/5 border border-white/10 text-muted hover:text-white hover:border-primary/30 rounded-lg transition-all relative"
-                        title="Attach code, logs, images, audio, or video for Claude Code to inspect"
+                        title={`Attach code, logs, images, audio, or video for ${CLAUDE_PROVIDER_LABEL} to inspect`}
                         aria-label="Attach files"
                     >
-                        <Paperclip size={14} />
+                        <Paperclip size={14} aria-hidden="true" />
                         {attachments.length > 0 && (
-                            <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-[9px] font-bold text-white">
+                            <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-xs font-bold text-white">
                                 {attachments.length}
                             </span>
                         )}
@@ -1287,27 +1820,33 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({
                                 : 'bg-white/5 border-white/10 text-muted hover:text-white hover:border-white/20'
                         }`}
                         title={isRecording ? 'Stop recording' : 'Voice input'}
+                        aria-label={isRecording ? 'Stop voice input' : 'Start voice input'}
+                        aria-pressed={isRecording}
                     >
-                        {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                        {isRecording
+                            ? <MicOff size={14} aria-hidden="true" />
+                            : <Mic size={14} aria-hidden="true" />}
                     </button>
 
-                    {isProcessing ? (
+                    {isStreaming ? (
                         <button
                             type="button"
-                            onClick={stopGeneration}
+                            onClick={handleStop}
                             className="px-3 py-2 bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 rounded-lg transition-all"
                             title="Stop generation"
+                            aria-label="Stop generation"
                         >
-                            <Square size={14} />
+                            <Square size={14} aria-hidden="true" />
                         </button>
                     ) : (
                         <button
                             type="submit"
-                            disabled={!input.trim() && attachments.length === 0}
+                            disabled={!input.trim() && attachments.length === 0 && references.length === 0}
                             className="px-3 py-2 bg-linear-to-r from-primary to-pink-500 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all"
                             title="Send message"
+                            aria-label="Send message"
                         >
-                            <Send size={14} />
+                            <Send size={14} aria-hidden="true" />
                         </button>
                     )}
                 </div>
@@ -1365,7 +1904,7 @@ const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) 
                 {caps.map((c) => (
                     <span
                         key={c}
-                        className={`text-[8px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                        className={`text-xs font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
                             CAP_TINT[c] ?? 'border-zinc-500/20 text-zinc-400 bg-white/3'
                         }`}
                     >
@@ -1374,12 +1913,12 @@ const ModelCapabilityHints: React.FC<{ model: ModelInfo | null }> = ({ model }) 
                 ))}
             </div>
             {nonChat.length > 0 && (
-                <div className="text-[9px] text-amber-300 bg-amber-500/8 border border-amber-500/30 rounded px-2 py-1 leading-snug">
-                    This model is built for <span className="font-bold">{nonChat.join(' / ')}</span> — chat requests will likely error. Pick a model with <span className="font-mono">tools</span> or <span className="font-mono">reasoning</span> for normal conversation.
+                <div className="text-xs font-semibold text-amber-300 bg-amber-500/8 border border-amber-500/30 rounded px-2 py-1 leading-snug">
+                    This model is built for <span className="font-bold">{nonChat.join(' / ')}</span> — chat requests will likely error. Pick a model with <span className="font-bold">tools</span> or <span className="font-bold">reasoning</span> for normal conversation.
                 </div>
             )}
             {isDeprecated && (
-                <div className="text-[9px] text-red-300 bg-red-500/8 border border-red-500/30 rounded px-2 py-1 leading-snug">
+                <div className="text-xs font-semibold text-red-300 bg-red-500/8 border border-red-500/30 rounded px-2 py-1 leading-snug">
                     Deprecated — Google will shut this model down soon. Migrate to a 3.x model when convenient.
                 </div>
             )}

@@ -46,7 +46,7 @@ export interface SlidePadProps {
   ariaLabel?: string;
   /** Id of a visible legend that names the pad; wins over ariaLabel. */
   ariaLabelledBy?: string;
-  /** Font-size utility for the legend. Defaults to the 9px DJ pad legend. */
+  /** Font-size utility for the legend. Defaults to 12px (text-xs), the smallest legend size. */
   textSize?: string;
   onClick?: (e: React.MouseEvent) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -57,7 +57,7 @@ export interface SlidePadProps {
 
 export function SlidePad({
   children, on, color, disabled, danger, title, className, style, shape,
-  ariaLabel, ariaLabelledBy, textSize = 'text-[9px]',
+  ariaLabel, ariaLabelledBy, textSize = 'text-xs',
   onClick, onContextMenu, onPointerDown, onPointerUp, onPointerLeave,
 }: SlidePadProps) {
   const c = danger ? DANGER : (color ?? PURPLE);

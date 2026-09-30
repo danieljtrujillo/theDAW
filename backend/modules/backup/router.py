@@ -12,7 +12,13 @@ Endpoints (prefix from module.json -> ``/api/backup``):
 
 Every route refuses a call a page on another site started
 (``refuse_cross_site``): an export writes the user's keys into a zip, an import
-overwrites user data, and the manifest lists the user's folders.
+overwrites user data, and the manifest lists the user's folders. A LAN script
+that sends no browser headers passes that check, and the backend binds
+0.0.0.0, so every route also answers only to this machine's own UI or the
+desktop shell (``require_loopback_or_launch_token``). Without it a device on
+the network could export the keys to a folder it names (a UNC path is another
+machine), or restore an archive of its own over ``data/*.json``: the settings,
+and the folders ``/api/project/clip-audio`` may serve.
 """
 
 from __future__ import annotations
@@ -26,11 +32,16 @@ from pydantic import BaseModel
 
 from backend.core import folder_dialog
 from backend.lib import known_paths
-from backend.lib.cross_site import refuse_cross_site
+from backend.lib.cross_site import refuse_cross_site, require_loopback_or_launch_token
 from backend.modules.backup import service
 
 log = logging.getLogger(__name__)
-router = APIRouter(dependencies=[Depends(refuse_cross_site)])
+router = APIRouter(
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_or_launch_token),
+    ]
+)
 
 
 @router.get("/manifest")

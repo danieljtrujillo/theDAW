@@ -13,6 +13,8 @@
  * the same contract FxRack / the stores already use, so automation recording,
  * live rack pushes and persistence all keep working unchanged. `display`
  * overrides what is SHOWN (automation follow) without touching what is written.
+ * Optional `onGestureStart` / `onGestureEnd` report the panel's gesture
+ * boundary around those writes (see the props below).
  *
  * Widgets: EffectKnob (the SLIDE tk-dial skin), SlideTrack (SLIDE capsule
  * slider), SlidePad (SLIDE pad button), native <select> for enums. Every
@@ -55,6 +57,20 @@ export interface EffectControlsProps {
   hideHeader?: boolean;
   /** Extra host actions rendered at the end of the tools row. */
   headerExtra?: React.ReactNode;
+  /** The panel's GESTURE boundary: one start before the first `onChange` of a
+   *  drag / key press / wheel burst on any of its controls, one end after its
+   *  last. Every control forwards it — the knobs and XY pads through their own
+   *  `lib/gestureTracker`, the SLIDE sliders through theirs, and the discrete
+   *  controls (toggle pad, enum select, preset, reset) as a pair around their
+   *  single change. The boundary is per PANEL, not per param key, because one
+   *  surface writes several keys (an XY drag moves both axes, a preset moves
+   *  many) and a consumer recording automation opens and closes them together.
+   *
+   *  Both are optional, and a host that omits them (MixView's rack tiles, which
+   *  are not on the automation path) leaves the consumer on the idle-deadline
+   *  fallback in `lib/automationGesture.ts` — which is why that fallback stays. */
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
   className?: string;
 }
 
@@ -78,6 +94,8 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
   onToggleEnabled,
   hideHeader,
   headerExtra,
+  onGestureStart,
+  onGestureEnd,
   className,
 }) => {
   const expanded = layout === 'expanded';
@@ -98,12 +116,21 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
 
   const set = (key: string, v: number) => onChange({ ...params, [key]: v });
   const setMany = (patch: Record<string, number>) => onChange({ ...params, ...patch });
-  const resetAll = () => onChange({ ...params, ...schemaDefaults(schema) });
+  /** A DISCRETE control — a toggle, an enum pick, a preset, the reset — writes
+   *  once and is over, so it reports a gesture of exactly one change rather
+   *  than leaving the consumer to time one out. (The `SlideTrack` double-click
+   *  reset is the same shape: no tracker, no state, just the pair.) */
+  const discrete = (write: () => void) => {
+    onGestureStart?.();
+    write();
+    onGestureEnd?.();
+  };
+  const resetAll = () => discrete(() => onChange({ ...params, ...schemaDefaults(schema) }));
   const onPreset = (label: string) => {
     if (!label) return;
     if (label === '__default') { resetAll(); return; }
     const preset = presets.find((p) => p.label === label);
-    if (preset) onChange(applyPreset(schema, params, preset));
+    if (preset) discrete(() => onChange(applyPreset(schema, params, preset)));
   };
 
   const knobSize = expanded ? 46 : 38;
@@ -124,7 +151,7 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
       return (
         <div key={p.key} className="flex flex-col items-center gap-1 min-w-0" title={p.tip}>
           <span id={legendId} className="font-sans text-xs font-bold text-zinc-400 leading-none truncate max-w-full">{label}</span>
-          <SlidePad on={on} onClick={() => set(p.key, on ? 0 : 1)} title={p.tip ?? `${label}: ${on ? 'on' : 'off'}`} ariaLabelledBy={legendId} textSize="text-xs" className="min-w-12 h-7 font-sans">
+          <SlidePad on={on} onClick={() => discrete(() => set(p.key, on ? 0 : 1))} title={p.tip ?? `${label}: ${on ? 'on' : 'off'}`} ariaLabelledBy={legendId} textSize="text-xs" className="min-w-12 h-7 font-sans">
             {on ? 'On' : 'Off'}
           </SlidePad>
         </div>
@@ -139,7 +166,7 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
             id={ctlId}
             name={ctlId}
             value={idx}
-            onChange={(e) => set(p.key, optionValue(p, Number(e.target.value)))}
+            onChange={(e) => discrete(() => set(p.key, optionValue(p, Number(e.target.value))))}
             className="form-select px-1.5 py-1 font-sans text-xs font-bold min-w-24"
             style={{ colorScheme: 'dark' }}
           >
@@ -165,6 +192,8 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
             ariaLabelledBy={labelId}
             className="flex-1"
             onChange={(v) => set(p.key, v)}
+            onGestureStart={onGestureStart}
+            onGestureEnd={onGestureEnd}
           />
           <span className="font-sans text-xs font-bold text-zinc-300 w-16 shrink-0 text-right tabular-nums">{formatParamValue(p, value)}</span>
         </div>
@@ -178,6 +207,8 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
         value={value}
         size={knobSize}
         onChange={(v) => set(p.key, v)}
+        onGestureStart={onGestureStart}
+        onGestureEnd={onGestureEnd}
       />
     );
   };
@@ -247,6 +278,8 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
               size={expanded ? 40 : 34}
               tint={0.62}
               onChange={(v) => set(mixParam.key, v)}
+              onGestureStart={onGestureStart}
+              onGestureEnd={onGestureEnd}
             />
           </div>
         )}
@@ -272,6 +305,8 @@ export const EffectControls: React.FC<EffectControlsProps> = ({
                 y={shown[yp.key] ?? yp.default}
                 size={padSize}
                 onChange={({ x, y }) => setMany({ [xp.key]: x, [yp.key]: y })}
+                onGestureStart={onGestureStart}
+                onGestureEnd={onGestureEnd}
               />
             );
           })}

@@ -11,7 +11,8 @@ become a comma-separated string. The raw mutagen object is intentionally
 NOT exposed — callers get a stable JSON-serializable shape.
 
 Supported containers:
-  - ID3v2 (MP3) — TIT2, TPE1, TBPM, TXXX:<key>, COMM
+  - ID3v2 (MP3) — TIT2, TPE1, TBPM, TXXX:<key>, COMM, the URL link
+    frames (WXXX:<key>, WOAR, WOAS, ...) and TSSE / TENC / TPUB / TCOP
   - Vorbis comments (FLAC, OGG)
   - MP4/M4A iTunes atoms, including ``----:com.apple.iTunes:<key>``
   - RIFF INFO chunks (WAV)
@@ -122,18 +123,76 @@ KNOWN_AI_TAGS: dict[str, str] = {
 # tag.
 GENERATOR_SIGNATURES: dict[str, str] = {
     "suno": "suno",
+    # Suno's model family. A file whose generator/encoder frame says
+    # "chirp-v4" and nothing else names no service by name, and the
+    # ``(model, source)`` derivation in ``db.py`` already reads that string as
+    # Suno -- the detection side has to agree, or one file is Suno by its
+    # columns and something else by its tags.
+    "chirp": "suno",
     "udio": "udio",
     "riffusion": "riffusion",
     "musicgen": "musicgen",
     "stable_audio": "stable-audio",
     "stable-audio": "stable-audio",
-    "thedaw": "stable-audio",
+    "stable audio": "stable-audio",
+    # Made IN theDAW, origin unspecified -- NOT the Stable Audio generator.
+    # Matches the `thedaw` rule in `provider.py` and the fallback's last arm
+    # in `db.py`. The explicit "stable_audio" / "stable-audio" spellings above
+    # are tried first, so a theDAW export that names the model still lands on
+    # stable-audio.
+    "thedaw": "thedaw",
     "audacity": "audacity",
     "logic pro": "logic-pro",
     "ableton": "ableton-live",
     "fl studio": "fl-studio",
     "reaper": "reaper",
     "pro tools": "pro-tools",
+}
+
+#: ``needle -> word deleted from the text before the needle is looked for``.
+#:
+#: This exists for exactly one needle. "udio" is a substring of "audio", so a
+#: bare test files every encoder or model string containing "audio" --
+#: ``stable-audio``, ``Stable Audio 3``, ``audiocraft`` -- under the Udio
+#: generator, which is also what the ``stable_audio`` entries above were meant
+#: to answer and never could: they are declared later, and the loop returns on
+#: the first hit.
+#:
+#: The rule is the one ``_PROVIDER_BY_MODEL_SUBSTRING`` in ``db.py`` already
+#: spells for the ``model`` column, and ``inferProvider`` in
+#: ``frontend/src/catalog/catalogProviders.ts`` for the catalogue
+#: (``model.toLowerCase().replace(/audio/g, '').includes('udio')``): delete the
+#: word "audio" from the text first. ``udio-1``, ``Udio v1.5`` and even
+#: ``audio-udio-blend`` still match; ``stable-audio-3-medium`` does not. One
+#: rule, three places, so a file cannot be badged Udio here and Stable Audio in
+#: the catalogue.
+GENERATOR_NEEDLE_STRIP_WORDS: dict[str, str] = {"udio": "audio"}
+
+# ID3v2 URL link frames (``W***``), under a flat name that says what the
+# URL points at. Every name keeps the word "url" in it, because the
+# consumers that look for an origin URL scan for url-ish key names rather
+# than for four-letter frame ids — an MP3's purchase link has to read the
+# same as a FLAC's ``PURCHASE_URL`` comment or an MP4's ``----:...:url``.
+ID3_URL_FRAMES: dict[str, str] = {
+    "WOAR": "artist_url",
+    "WOAS": "source_url",
+    "WOAF": "file_url",
+    "WORS": "radio_url",
+    "WPUB": "publisher_url",
+    "WCOM": "commercial_url",
+    "WPAY": "payment_url",
+    "WCOP": "copyright_url",
+}
+
+# Text frames that name the tool which wrote the file, plus the two
+# rights-holder frames. TSSE is the encoder settings string ("Lavf58.29",
+# "LAME3.100") and TENC is whoever ran the encoder, so they land under the
+# two canonical tool names the rest of the app already reads.
+ID3_TEXT_FRAMES: dict[str, str] = {
+    "TSSE": "encoder",
+    "TENC": "encoded_by",
+    "TPUB": "publisher",
+    "TCOP": "copyright",
 }
 
 
@@ -149,6 +208,56 @@ def _stringify(value: Any) -> str:
         except Exception:
             return value.decode("latin-1", errors="replace").strip()
     return str(value).strip()
+
+
+def _id3_link_payload(tags: Any) -> dict[str, str]:
+    """URL + encoder frames from an ID3 tag, as flat lowercase keys.
+
+    These are the frames that say where an MP3 came from — the source or
+    purchase page, the artist's site, a user-defined link a tagger wrote —
+    and the frames that say what encoded it. Vorbis, MP4 and RIFF files
+    hand their equivalents over as plain keys already; ID3 hides them
+    behind frame classes, so they never reached the caller until now.
+
+    Frame ids arrive as mutagen HashKeys, which carry a suffix whenever the
+    spec allows the frame to repeat (``WOAR:http://...``) and no suffix
+    otherwise (``WOAS``), so the id is read off the front. Repeats are
+    comma-joined, the way multi-value text frames already are.
+
+    A frame that does not hold what its id claims is skipped and the rest of
+    the tag is still read: URL frames expose ``url`` and text frames expose
+    ``text``, and a file in the wild is under no obligation to agree.
+    """
+    out: dict[str, str] = {}
+    try:
+        items = list(tags.items())
+    except Exception as e:
+        log.debug("library.tags: ID3 link frames unreadable: %s", e)
+        return out
+
+    for key, frame in items:
+        try:
+            frame_id = str(key).split(":", 1)[0].strip().upper()
+            if frame_id == "WXXX":
+                # User-defined URL: keyed by its description, the way TXXX is.
+                desc = _stringify(getattr(frame, "desc", "")).lower()
+                name = f"wxxx_{desc}" if desc else "wxxx"
+                value = _stringify(getattr(frame, "url", ""))
+            elif frame_id in ID3_URL_FRAMES:
+                name = ID3_URL_FRAMES[frame_id]
+                value = _stringify(getattr(frame, "url", ""))
+            elif frame_id in ID3_TEXT_FRAMES:
+                name = ID3_TEXT_FRAMES[frame_id]
+                value = _stringify(getattr(frame, "text", ""))
+            else:
+                continue
+            if not value:
+                continue
+            previous = out.get(name)
+            out[name] = f"{previous}, {value}" if previous else value
+        except Exception as e:  # noqa: BLE001 — one bad frame, not a bad tag
+            log.debug("library.tags: skipping ID3 frame %r: %s", key, e)
+    return out
 
 
 def _id3_payload(audio: Any) -> dict[str, str]:
@@ -181,6 +290,9 @@ def _id3_payload(audio: Any) -> dict[str, str]:
                     out.setdefault(KNOWN_AI_TAGS[sub], value)
     except Exception as e:
         log.debug("library.tags: ID3 read failed: %s", e)
+    # Additive: a key the loop above already produced always wins.
+    for name, value in _id3_link_payload(tags).items():
+        out.setdefault(name, value)
     return out
 
 
@@ -253,6 +365,17 @@ def _coerce_json(value: str) -> Any:
         return s
 
 
+def _mentions(needle: str, text: str) -> bool:
+    """Does ``text`` name ``needle``, under :data:`GENERATOR_NEEDLE_STRIP_WORDS`?
+
+    The one caller-visible difference from ``needle in text`` is that a needle
+    with a strip word is not found inside that word -- "udio" does not match
+    the "audio" in "stable-audio".
+    """
+    strip = GENERATOR_NEEDLE_STRIP_WORDS.get(needle)
+    return needle in (text.replace(strip, "") if strip else text)
+
+
 def _detect_generator(tags: dict[str, Any]) -> str | None:
     """Best-guess which tool authored this file based on which tag keys
     + values appear. Returns a canonical lowercase name or None."""
@@ -260,13 +383,13 @@ def _detect_generator(tags: dict[str, Any]) -> str | None:
         f"{k} {v}" for k, v in tags.items() if isinstance(v, (str, int, float))
     ).lower()
     for needle, canonical in GENERATOR_SIGNATURES.items():
-        if needle in haystack:
+        if _mentions(needle, haystack):
             return canonical
     # Heuristics: if Suno-specific fields are present (e.g. control_sliders)
     # we call it Suno even if no explicit tool tag appears.
     if any(k.startswith("control_sliders") for k in tags):
         return "suno"
-    if any("udio" in k for k in tags):
+    if any(_mentions("udio", k.lower()) for k in tags):
         return "udio"
     return None
 

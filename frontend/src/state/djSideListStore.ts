@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 /* DJ side list (D7) — an ephemeral "prepare / play-next" staging queue, distinct
  * from the persisted named Setlists. The DJ drags tracks here from the browser
@@ -48,6 +49,6 @@ export const useDjSideList = create<DjSideListState>()(
       }),
       clear: () => set({ items: [] }),
     }),
-    { name: 'thedaw.dj.sidelist.v1' },
+    { name: 'thedaw.dj.sidelist.v1', storage: persistStorage() },
   ),
 );

@@ -15,15 +15,25 @@ Used by both:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.lib.atomic import atomic_write
 from backend.modules.library.db import LibraryDB
 
+from .manifest import (
+    KNOWN_QUALITY_TIERS,
+    MANIFEST_FILENAME,
+    build_run_manifest,
+    parse_sidecar_submit_message,
+    role_name,
+)
 from .sidecar import StemsSidecar, get_sidecar
 
 log = logging.getLogger(__name__)
@@ -154,7 +164,11 @@ async def separate_entry(
 
     _set_status(db, entry_id, "running")
     device_label = _effective_device_label(device)
-    quality_label = quality or "hq (sidecar default)"
+    # Not "hq (sidecar default)": when no quality is sent the sidecar picks its
+    # own, and which tier that is belongs to the external package, not to a
+    # constant here. It echoes what it settled on in the submit response, which
+    # is read below — until then the honest label is that we did not choose.
+    quality_label = quality or "sidecar default"
     # Stash the device + quality + stems so every later progress tick
     # can include them in its message — the sidecar's own status updates
     # don't carry them.
@@ -184,12 +198,34 @@ async def separate_entry(
         if not task_id:
             raise RuntimeError(f"sidecar didn't return a task_id: {submit}")
         sidecar_msg = submit.get("message") or "Queued in sidecar"
+        # The submit response is the only place the sidecar says which device
+        # and quality tier it resolved — /status carries neither.
+        echoed = parse_sidecar_submit_message(submit.get("message"))
+        if echoed["device"]:
+            device_reported, device_source = echoed["device"], "sidecar"
+        else:
+            device_reported, device_source = device_label, "engine-probe"
+        # Only claim an effective tier when the sidecar named one it actually
+        # implements; anything else it resolves internally and we don't know.
+        quality_effective = (
+            echoed["quality"] if echoed["quality"] in KNOWN_QUALITY_TIERS else None
+        )
+        if echoed["quality"]:
+            # Now we can name the tier instead of guessing one, and say where
+            # the name came from when it was not our choice.
+            quality_label = (
+                echoed["quality"]
+                if quality
+                else f"{echoed['quality']} (sidecar default)"
+            )
+            _ctx = f"device={device_label}, quality={quality_label}, stems={stems}"
         _set_progress(
             entry_id,
             phase="queued",
             task_id=task_id,
             message=f"{sidecar_msg} ({_ctx})",
             progress=0,
+            quality=quality_label,
         )
 
         deadline = time.monotonic() + JOB_TIMEOUT_SEC
@@ -247,6 +283,7 @@ async def separate_entry(
         )
 
         written = 0
+        file_bytes: dict[str, int] = {}
         for filename in files:
             try:
                 data = await sc.fetch_stem_bytes(task_id, filename)
@@ -276,6 +313,7 @@ async def separate_entry(
                 to_id=f"{entry_id}__{stem_name}",
                 kind="stem_of",
             )
+            file_bytes[role_name(filename)] = written_bytes
             written += 1
 
         if files and written == 0:
@@ -284,18 +322,50 @@ async def separate_entry(
                 f"but none could be fetched/written for {entry_id}"
             )
 
-        _set_status(db, entry_id, "complete")
+        # Reconcile what was asked for against what is on disk. A run that
+        # lost a stem to a failed fetch used to land here as "complete" with
+        # nothing anywhere recording which role went missing.
+        manifest = _write_manifest(
+            stems_dir,
+            requested_mode=stems,
+            produced_names=list(file_bytes),
+            quality_requested=quality,
+            quality_effective=quality_effective,
+            device=device_reported,
+            device_source=device_source,
+            file_bytes=file_bytes,
+        )
+        run_status = str(manifest["status"]) if manifest else "complete"
+        missing = list(manifest["missing"]) if manifest else []
+        summary = f"Wrote {written} stem(s)"
+        if missing:
+            summary += f" — {run_status}: missing {', '.join(missing)}"
+            log.warning(
+                "stems.engine: %s finished %s — missing role(s): %s",
+                entry_id,
+                run_status,
+                ", ".join(missing),
+            )
+
+        _set_status(db, entry_id, run_status)
         _set_progress(
             entry_id,
+            # The frontend treats idle|completed|failed|aborted as terminal and
+            # keeps polling anything else, so the phase stays "completed" and
+            # the outcome rides alongside it.
             phase="completed",
-            message=f"Wrote {written} stem(s)",
+            message=summary,
             progress=100,
+            result_status=run_status,
+            missing=missing,
         )
         return {
             "task_id": task_id,
-            "status": "completed",
+            "status": run_status,
             "written": written,
             "files": files,
+            "missing": missing,
+            "manifest": manifest,
         }
     except Exception as e:
         aborted = "aborted by user" in str(e)
@@ -313,6 +383,53 @@ async def separate_entry(
         # (one active job per ``stems:{id}`` name); this set is the second layer.
         with _PROGRESS_LOCK:
             _IN_FLIGHT.discard(entry_id)
+
+
+def _write_manifest(
+    stems_dir: Path,
+    *,
+    requested_mode: int,
+    produced_names: list[str],
+    quality_requested: Optional[str],
+    quality_effective: Optional[str],
+    device: Optional[str],
+    device_source: str,
+    file_bytes: dict[str, int],
+) -> Optional[dict[str, Any]]:
+    """Build and atomically write ``stems/manifest.json``. Returns it, or None.
+
+    Never raises: the stems are already on disk by the time this runs, and a
+    bookkeeping failure (an unknown stem count reaching the engine from a
+    settings default, an unwritable directory) must not turn a finished
+    separation into a failed one. It is logged loudly instead.
+    """
+    try:
+        manifest = build_run_manifest(
+            requested_mode=requested_mode,
+            produced_names=produced_names,
+            run_id=str(uuid.uuid4()),
+            separated_at=datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            quality_requested=quality_requested,
+            quality_effective=quality_effective,
+            device=device,
+            device_source=device_source,
+            file_bytes=file_bytes,
+        )
+        atomic_write(
+            stems_dir / MANIFEST_FILENAME,
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+        )
+        return manifest
+    except Exception:
+        log.exception(
+            "stems.engine: could not write %s for a %s-stem run; the stems are "
+            "on disk but this run has no manifest",
+            stems_dir / MANIFEST_FILENAME,
+            requested_mode,
+        )
+        return None
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:

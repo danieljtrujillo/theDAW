@@ -14,9 +14,11 @@
  * Edges carry triggers: `pulse -> kick`, `swarm -> bass on=0`,
  * `pulse -> maybe -> dark -> bass`. A trigger into a colony starts its bar.
  *
- * Meters are free: `meter 7/8 groups=3+2+2`, `meter 11/8 groups=3+3+3+2`,
- * `meter 5/4`. A colony's bar is num/den whole notes at its tempo; groups
- * accent the downbeats of each group and shape the drawing.
+ * Meters are free: `meter 7/8 groups=3+2+2` (or `meter 7/8 3+2+2`),
+ * `meter 11/8 groups=3+3+3+2`, `meter 5/4`. A colony's bar is num/den whole
+ * notes at its tempo; groups accent the downbeats of each group and shape the
+ * drawing. The root colony's meter is the bar the beat clock counts while it
+ * plays (colonyClockMeter).
  *
  * The text is the colony, as with the plane. Everything here is pure: the
  * parser, the serializer, and the bar arithmetic.
@@ -101,17 +103,27 @@ export function barSeconds(meter: Meter, beatSec: number): number {
   return (meter.num / meter.den) * 4 * beatSec;
 }
 
-/** Group starts as step indices when the bar has `steps` steps. */
-export function groupStarts(meter: Meter, steps: number): number[] {
+/**
+ * Group starts when the bar has `steps` steps: whole step indices (a rule's
+ * steps), or with `exact` the true positions, fractions kept (the piano roll's
+ * /32 bars, whose groups start on half steps).
+ */
+export function groupStarts(meter: Meter, steps: number, exact = false): number[] {
   const groups = meter.groups.length ? meter.groups : [meter.num];
   const total = groups.reduce((a, b) => a + b, 0) || 1;
   const out: number[] = [];
   let acc = 0;
   for (const g of groups) {
-    out.push(Math.round((acc / total) * steps));
+    const at = (acc / total) * steps;
+    out.push(exact ? at : Math.round(at));
     acc += g;
   }
   return out;
+}
+
+/** The beat clock's meter map for a root colony's meter: its own numerator, denominator and groups, so 7/8 is 3.5 quarters. */
+export function colonyClockMeter(meter: Meter): Array<{ bar: number; meter: Meter }> {
+  return [{ bar: 0, meter: { num: meter.num, den: meter.den, groups: [...meter.groups] } }];
 }
 
 export function meterText(m: Meter): string {
@@ -134,17 +146,35 @@ export function parseGroups(s: string, num: number): number[] | null {
   return parts;
 }
 
-/** Sensible groupings of n beats into 2s and 3s (plus even). */
-export function partitions(n: number): number[][] {
+/** The most groupings `partitions` lists; any other grouping is typed (the METER face's grouping field). */
+export const PARTITIONS_MAX = 24;
+
+/**
+ * Sensible groupings of n beats, Even first: groups of 3, 2 and 4 (2s and 1s
+ * under four beats, so 3/8 offers 2+1 and 1+2), any number of parts. The
+ * groupings of one repeated size come next (12 gives 3+3+3+3, 2+2+2+2+2+2,
+ * 4+4+4), then the rest, 3s first, up to `max` choices in all.
+ */
+export function partitions(n: number, max = PARTITIONS_MAX): number[][] {
   const out: number[][] = [[]];
-  if (n < 4) return out;
+  if (!Number.isInteger(n) || n < 2) return out;
+  const sizes = n < 4 ? [2, 1] : [3, 2, 4];
   const seen = new Set<string>();
-  const rec = (rest: number, acc: number[]) => {
-    if (rest === 0) { const k = acc.join('+'); if (!seen.has(k) && acc.length > 1) { seen.add(k); out.push([...acc]); } return; }
-    for (const p of [3, 2, 4]) if (p <= rest && acc.length < 5) rec(rest - p, [...acc, p]);
+  const add = (g: number[]): void => {
+    const k = g.join('+');
+    // One part, or every part a single beat, is Even by another name.
+    if (g.length < 2 || g.every((x) => x === 1) || seen.has(k) || out.length >= max) return;
+    seen.add(k);
+    out.push(g);
+  };
+  for (const p of sizes) if (p > 1 && n % p === 0) add(new Array<number>(n / p).fill(p));
+  const rec = (rest: number, acc: number[]): void => {
+    if (out.length >= max) return;
+    if (rest === 0) { add([...acc]); return; }
+    for (const p of sizes) if (p <= rest) rec(rest - p, [...acc, p]);
   };
   rec(n, []);
-  return out.slice(0, 9);
+  return out;
 }
 
 /** Placeholder alphabet so lib/loomGen's rules yield a symbol INDEX. */
@@ -289,10 +319,10 @@ export function parseColony(text: string): { score: ColonyScore; errors: LoomPar
     }
     if (h === 'meter') {
       const m = parseMeter(rest[0] ?? '');
-      if (!m) { err(lineNo, 'meter looks like 7/8 (optionally groups=3+2+2)'); continue; }
+      if (!m) { err(lineNo, 'meter looks like 7/8 (optionally groups=3+2+2, or 3+2+2)'); continue; }
       for (const a of rest.slice(1)) {
-        const gm = /^groups=(.+)$/.exec(a);
-        if (!gm) { err(lineNo, `meter option looks like groups=3+2+2 — got "${a}"`); continue; }
+        const gm = /^groups=(.+)$/.exec(a) ?? /^(\d+(?:\+\d+)+)$/.exec(a);
+        if (!gm) { err(lineNo, `meter option looks like groups=3+2+2 or 3+2+2 — got "${a}"`); continue; }
         const groups = parseGroups(gm[1], m.num);
         if (!groups) err(lineNo, `groups must add up to ${m.num}`); else m.groups = groups;
       }

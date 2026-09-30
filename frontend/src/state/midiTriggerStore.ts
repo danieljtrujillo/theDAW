@@ -17,6 +17,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 interface MidiTriggerState {
   /** Master Web MIDI gate. Default ON.
@@ -49,6 +50,7 @@ export const useMidiTriggerStore = create<MidiTriggerState>()(
     }),
     {
       name: 'thedaw.midiTrigger.v1',
+      storage: persistStorage(),
       // v1 shipped with enabled:false persisted for everyone who ever loaded the
       // app, so changing the default alone would leave every existing install
       // still dark. Bumping the version re-runs migrate, which adopts the new

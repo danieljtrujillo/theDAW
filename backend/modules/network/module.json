@@ -1,0 +1,10 @@
+{
+  "name": "network",
+  "label": "Network",
+  "enabled": true,
+  "icon": "Wifi",
+  "sidebar": false,
+  "api_prefix": "/api/network",
+  "backend": true,
+  "description": "How another device on this network reaches theDAW. Reports this machine's LAN address, the plain http dev-server port, and — only while the TLS listener is actually up — the https address to share. The UI's Mobile Access link and QR use the https one when it is there, because browsers hand out the audio worklet, the microphone and Web MIDI only in a secure context."
+}

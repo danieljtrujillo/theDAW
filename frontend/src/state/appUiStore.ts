@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export const theDAW_VIEWS = ['create', 'edit', 'train', 'library', 'advanced'] as const;
 export type theDAWView = typeof theDAW_VIEWS[number];
@@ -198,6 +199,7 @@ export const useAppUiStore = create<AppUiState>()(
     }),
     {
       name: 'thedaw-app-ui-v2',
+      storage: persistStorage(),
       // Bumped when a persisted centerTab value could reference a removed tab
       // (e.g. the retired 'train' workspace). migrate() coerces it to a valid
       // tab so returning users never rehydrate onto a tab that no longer exists.

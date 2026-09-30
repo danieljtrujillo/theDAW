@@ -2,8 +2,9 @@
  * meterFace — the logic behind the SHAPE row's METER face
  * (components/audio/MeterFace.tsx): the bar range a meter segment prints, the
  * selection as segments come and go, where ADD starts a change, the loop
- * stepper, the pitches GEN plays, the GEN write into a lane, what MATCH
- * applies from a song's rhythm analysis, and the FORM editor's section meters.
+ * stepper, a lane's own time (its meter and tuplet ratio, the lane TIME card),
+ * the pitches GEN plays, the GEN write into a lane, what MATCH applies from a
+ * song's rhythm analysis, and the FORM editor's section meters.
  *
  * Meter edits keep a segment that repeats its neighbour's meter (setMeterAt
  * with merge off), so stepping BEATS through the meter before it never takes
@@ -11,22 +12,25 @@
  *
  * Everything here is pure.
  */
-import { partitions, type Meter, type RuleNode } from './colony';
+import { parseGroups, partitions, type Meter, type RuleNode } from './colony';
 import { GEN_DEFAULT_OPTS, type GenKind, type GenOpts } from './loomGen';
 import { pitchClass } from './loomKey';
 import {
-  barAt, barStartStep, normalizeMeterMap, removeChangeAt, segmentBars, segmentIndexAt, setMeterAt, stepsPerBar,
-  type MeterSegment, type PolyLane,
+  TUPLET_RATIO_MAX, barAt, barStartStep, defaultGroups, laneBars, laneLoop, laneTimeOf, normalizeMeterMap, removeChangeAt, sanitizeMeter, sanitizeTuplet,
+  segmentBars, segmentIndexAt, setMeterAt, stepsPerBar, type LaneSpan, type LaneTuplet, type MeterSegment, type PolyLane,
 } from './meterMap';
+import { sanitizeBendPoints, type LaneBend } from './pitchBend';
 import { accelSpan, renderGen, type GenGate, type RollNote } from './rollLoom';
-import { seedFromRhythm, type RhythmAnalysis } from './rhythmSeed';
-import type { PianoNote } from '../state/pianoRollStore';
+import { seedFromRhythm, type RhythmAnalysis, type RhythmSwing } from './rhythmSeed';
+import { clampTempoBpm, type TempoEvent } from './tempoMap';
+import type { PianoNote, RollTrack } from '../state/pianoRollStore';
 
 const EPS = 1e-9;
 
 export const BEATS_MIN = 1;
 export const BEATS_MAX = 32;
-export const UNITS = [4, 8, 16] as const;
+/** The unit keys: whole, half, quarter, 8th, 16th and 32nd notes (2/2, 3/2 and 7/32 are all choosable). */
+export const UNITS = [1, 2, 4, 8, 16, 32] as const;
 /** Velocity of a GEN note at 0 dB; the rule's gain and the group accent move it. */
 export const GEN_VELOCITY = 96;
 
@@ -92,12 +96,23 @@ export function editMeter(map: readonly MeterSegment[], selected: number, patch:
   return { meterMap, selected: i };
 }
 
-/** BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears them. */
-export const setBeats = (map: readonly MeterSegment[], selected: number, num: number): MeterEdit =>
-  editMeter(map, selected, { num: clamp(Math.round(num), BEATS_MIN, BEATS_MAX), groups: [] });
+/**
+ * BEATS: the numerator, 1..32. The groups clear, as LOOM's meter editor clears
+ * them, except that a compound meter starts in threes (6/8 is 3+3), so its
+ * accents land on the dotted beats.
+ */
+export function setBeats(map: readonly MeterSegment[], selected: number, num: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const n = clamp(Math.round(num), BEATS_MIN, BEATS_MAX);
+  return editMeter(segs, selected, { num: n, groups: defaultGroups(n, segs[clampSelection(segs, selected)].meter.den) });
+}
 
-export const setUnit = (map: readonly MeterSegment[], selected: number, den: number): MeterEdit =>
-  editMeter(map, selected, { den });
+/** UNIT: the denominator. Groups the meter has stay; a meter with none that becomes compound starts in threes. */
+export function setUnit(map: readonly MeterSegment[], selected: number, den: number): MeterEdit {
+  const segs = normalizeMeterMap(map, false);
+  const meter = segs[clampSelection(segs, selected)].meter;
+  return editMeter(segs, selected, { den, ...(meter.groups.length > 1 ? {} : { groups: defaultGroups(meter.num, den) }) });
+}
 
 export const setGroups = (map: readonly MeterSegment[], selected: number, groups: readonly number[]): MeterEdit =>
   editMeter(map, selected, { groups: [...groups] });
@@ -115,6 +130,62 @@ export function removeChange(map: readonly MeterSegment[], selected: number): Me
 export const groupsValue = (groups: readonly number[]): string => (groups.length > 1 ? groups.join('+') : '');
 export const parseGroupsValue = (value: string): number[] => (value ? value.split('+').map(Number) : []);
 
+/**
+ * The grouping field's text as groups for `meter`: "3+3+2+1" gives the
+ * groups, and a sum that differs from the numerator gives the numerator with
+ * them (typing 2+2+3 into 4/8 makes 7/8 2+2+3). "" or one number is Even.
+ * Null for text that is not whole numbers joined by "+", or that sums past
+ * BEATS_MAX.
+ */
+export function parseGroupingText(text: string, meter: Meter): { num: number; groups: number[] } | null {
+  const t = text.replace(/\s+/g, '');
+  if (!t) return { num: meter.num, groups: [] };
+  if (!/^\d+(\+\d+)*$/.test(t)) return null;
+  const parts = t.split('+').map(Number);
+  const sum = parts.reduce((a, b) => a + b, 0);
+  if (sum < BEATS_MIN || sum > BEATS_MAX || !parseGroups(t, sum)) return null;
+  return { num: sum, groups: parts.length > 1 ? parts : [] };
+}
+
+/** GROUPING field: the typed grouping applied to the selected segment, or null (the text is kept for the user to fix). */
+export function setGroupingText(map: readonly MeterSegment[], selected: number, text: string): MeterEdit | null {
+  const segs = normalizeMeterMap(map, false);
+  const parsed = parseGroupingText(text, segs[clampSelection(segs, selected)].meter);
+  return parsed ? editMeter(segs, selected, parsed) : null;
+}
+
+/* ── the pickup ─────────────────────────────────────────────────────────── */
+
+/**
+ * PICKUP steps by one unit of the first meter (an 8th in 6/8, a quarter in
+ * 4/4), and by a half step with Shift, from none up to one unit short of a
+ * full bar, the store's half-step grid and its 64-step cap. Returns the new
+ * pickup in steps.
+ */
+export function stepPickup(map: readonly MeterSegment[], pickupSteps: number, dir: -1 | 1, fine: boolean): number {
+  const first = normalizeMeterMap(map, false)[0].meter;
+  const unit = fine ? 0.5 : Math.max(0.5, 16 / first.den);
+  const max = pickupMax(map);
+  const now = clamp(Number.isFinite(pickupSteps) ? pickupSteps : 0, 0, max);
+  // From an off-unit pickup the first press lands on the unit grid.
+  const next = dir > 0 ? Math.floor(now / unit + EPS) * unit + unit : Math.ceil(now / unit - EPS) * unit - unit;
+  return clamp(Math.round(next * 2) / 2, 0, max);
+}
+
+/** The longest pickup: half a step short of a full bar of the first meter, and at most 64 steps. */
+export const pickupMax = (map: readonly MeterSegment[]): number =>
+  Math.max(0, Math.min(64, stepsPerBar(normalizeMeterMap(map, false)[0].meter) - 0.5));
+
+/** The PICKUP readout: "Off", or the pickup as a fraction of a whole note in lowest terms ("1/2", "3/8", "5/32"). */
+export function pickupLabel(pickupSteps: number): string {
+  if (!(pickupSteps > EPS)) return 'Off';
+  // Steps are 16ths and the store keeps half steps, so the pickup is a whole number of 32nds.
+  const num = Math.round(pickupSteps * 2);
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const g = gcd(num, 32);
+  return `${num / g}/${32 / g}`;
+}
+
 /** GROUPS: Even plus LOOM's partitions of the numerator, and the meter's own grouping when those miss it. */
 export function groupChoices(meter: Meter): Array<{ value: string; label: string }> {
   const out = partitions(meter.num).map((g) => ({ value: groupsValue(g), label: g.length > 1 ? g.join('+') : 'Even' }));
@@ -129,18 +200,134 @@ export function groupChoices(meter: Meter): Array<{ value: string; label: string
 export const newLaneCycle = (map: readonly MeterSegment[]): number =>
   Math.max(1, Math.round(stepsPerBar(normalizeMeterMap(map, false)[0].meter)));
 
+/** The steps a lane's span covers inside a roll of `totalSteps`, or null for a lane without a span. */
+export function laneSpanSteps(lane: Pick<PolyLane, 'span'>, totalSteps: number): number | null {
+  if (!lane.span) return null;
+  const origin = Math.max(0, Math.min(totalSteps, lane.span.start));
+  const end = Math.max(origin, Math.min(totalSteps, lane.span.end ?? totalSteps));
+  return end - origin;
+}
+
+/**
+ * A spanned lane whose loop is longer than its span: the loop and the span's
+ * length, or null. Such a lane plays its loop's first span-length once, inside
+ * the span, and the rest of the loop is never heard (laneLoop keeps the loop so
+ * that taking the span off gives it back whole). SPAN on a lane that already
+ * loops longer, a MATCH or an older file can leave a lane this way; the METER
+ * face flags the LOOP readout and SPAN says so in the LOG.
+ */
+export function loopPastSpan(lane: Pick<PolyLane, 'id' | 'span' | 'cycleSteps'>, totalSteps: number): { cycle: number; span: number } | null {
+  if (lane.id === 0 || !lane.cycleSteps || lane.cycleSteps <= 0) return null;
+  const span = laneSpanSteps(lane, totalSteps);
+  return span !== null && lane.cycleSteps > span ? { cycle: lane.cycleSteps, span } : null;
+}
+
 /**
  * LOOP: one step, or one bar of `barSteps` with Shift. A lane with no loop
  * counts as the whole roll; reaching the roll's length stops the loop (null).
  * A shorter loop always loops: from a loop at or past the roll's length it
  * lands one step inside the roll.
+ *
+ * A lane with a span (`spanSteps`, the length of the bars it plays in) counts
+ * inside its span: its loop runs from one step up to the span's length, where
+ * one pass fills the span. A press past the span's length wraps to the
+ * shortest loop (one step, or one bar with Shift), so the lane keeps looping;
+ * a loop longer than its span would play its first span-length once and never
+ * repeat. A lane with no loop counts as its whole span.
  */
-export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number): number | null {
-  const total = Math.max(1, Math.floor(totalSteps));
+export function stepLoop(cycle: number | null, dir: -1 | 1, byBar: boolean, barSteps: number, totalSteps: number, spanSteps?: number | null): number | null {
   const by = byBar ? Math.max(1, Math.round(barSteps)) : 1;
+  if (spanSteps != null && Number.isFinite(spanSteps) && spanSteps > 0) {
+    const span = Math.max(1, Math.round(spanSteps));
+    const now = Math.min(Math.round(cycle ?? span), span);
+    if (dir < 0) return clamp(now - by, 1, span);
+    const next = now + by;
+    return next > span ? Math.min(by, span) : next;
+  }
+  const total = Math.max(1, Math.floor(totalSteps));
   if (dir < 0) return clamp(Math.min(Math.round(cycle ?? total), total) - by, 1, Math.max(1, total - 1));
   const next = clamp(Math.round(cycle ?? total) + by, 1, total);
   return next >= total ? null : next;
+}
+
+/* ── a lane's own time ─────────────────────────────────────────────────── */
+
+/** The ratios the lane TIME card offers as keys: three in two, four in three, five in four, and their inverses. */
+export const LANE_TUPLET_PRESETS: readonly LaneTuplet[] = [
+  { n: 3, m: 2 }, { n: 4, m: 3 }, { n: 5, m: 4 }, { n: 2, m: 3 }, { n: 3, m: 4 },
+];
+
+/** A ratio as the card prints it: "3:2", or "Straight". */
+export const tupletLabel = (t: LaneTuplet | null | undefined): string => {
+  const clean = sanitizeTuplet(t);
+  return clean ? `${clean.n}:${clean.m}` : 'Straight';
+};
+
+/**
+ * One press of the card's Notes (n) or In (m) stepper: that side moves by one
+ * within 1..TUPLET_RATIO_MAX, from 1:1 when the lane is straight. A press that
+ * would make the two sides equal steps over that value (3:2, In + gives 3:4), so
+ * the side the user is not stepping always keeps its number; the Straight key
+ * is how a lane goes straight. A press with nowhere to go keeps the ratio.
+ */
+export function stepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): LaneTuplet | null {
+  const now = sanitizeTuplet(t) ?? { n: 1, m: 1 };
+  const other = side === 'n' ? now.m : now.n;
+  let value = now[side] + dir;
+  if (value === other) value += dir;
+  if (value < 1 || value > TUPLET_RATIO_MAX) return sanitizeTuplet(t) ?? null;
+  return sanitizeTuplet({ ...now, [side]: value }) ?? null;
+}
+
+/** Whether one press of that stepper changes the ratio: the card disables the arrow when it would not. */
+export function canStepLaneTuplet(t: LaneTuplet | null | undefined, side: 'n' | 'm', dir: -1 | 1): boolean {
+  const now = sanitizeTuplet(t);
+  const next = stepLaneTuplet(t, side, dir);
+  return !(now?.n === next?.n && now?.m === next?.m);
+}
+
+/** The card's meter select: "Roll" (the roll's own map), the FORM list, and the lane's first meter when the list lacks it. */
+export function laneMeterChoices(lane: PolyLane | null | undefined): Array<{ value: string; label: string }> {
+  return [{ value: '', label: 'Roll' }, ...sectionMeterChoices(lane?.meterMap?.[0]?.meter)];
+}
+
+/** The select's value for a lane: its first meter's label, or "" for the roll's. */
+export const laneMeterValue = (lane: PolyLane | null | undefined): string => (lane?.meterMap?.length ? meterLabel(lane.meterMap[0].meter) : '');
+
+/** A select value as the lane's meter map: that meter from its bar 1, or null for the roll's map. */
+export function laneMeterFromValue(value: string): MeterSegment[] | null {
+  const meter = parseMeterLabel(value);
+  return meter ? [{ bar: 0, meter }] : null;
+}
+
+/**
+ * The card's typed meter ("11/16", "11/16 3+3+3+2") as the lane's meter map,
+ * checked as the roll's own meters are (sanitizeMeter: numerator 1-64, unit
+ * 1 to 32, groups that sum to the numerator); "" is the roll's map. Undefined
+ * for text that is not a meter, which the card reports and keeps.
+ */
+export function laneMeterFromText(text: string): MeterSegment[] | null | undefined {
+  const t = text.trim().replace(/\s+/g, ' ');
+  if (!t) return null;
+  const parsed = parseMeterLabel(t);
+  const meter = parsed ? sanitizeMeter(parsed) : null;
+  if (!meter || (parsed && parsed.groups.length > 1 && meter.groups.length === 0)) return undefined;
+  return [{ bar: 0, meter }];
+}
+
+/** A lane's time in words: "7/8 3+2+2 · 3:2", "Roll meter · 3:2", "7/8 3+2+2", or "Roll time". */
+export function laneTimeLabel(lane: PolyLane | null | undefined): string {
+  const meter = lane?.meterMap?.length ? meterLabel(lane.meterMap[0].meter) : null;
+  const ratio = sanitizeTuplet(lane?.tuplet);
+  if (!meter && !ratio) return 'Roll time';
+  return [meter ?? 'Roll meter', ratio ? tupletLabel(ratio) : null].filter(Boolean).join(' · ');
+}
+
+/** The length of a lane's first bar in roll steps, to two decimals, or null when the lane reads the roll's time. */
+export function laneBarSteps(lane: PolyLane | null | undefined, map: readonly MeterSegment[], pickupSteps = 0): number | null {
+  const lt = laneTimeOf(lane, map, pickupSteps);
+  if (!lt) return null;
+  return Math.round(stepsPerBar(lt.map[0].meter) * lt.scale * 100) / 100;
 }
 
 export type LaneForm = 'solid' | 'outline' | 'stripe' | 'hatch' | 'stripe45';
@@ -258,8 +445,9 @@ export interface GenTarget {
   /** Roll steps in one rule pass, and how many passes. */
   passLen: number;
   passes: number;
-  /** The lane's loop when it loops. */
+  /** The lane's loop when it loops, and the step its first cycle starts on. */
   cycle: number | null;
+  origin?: number;
   /** Bars written (0-based) when the target is a segment's bars. */
   bars: { first: number; last: number } | null;
   /** The segment's meter, whose group starts GEN accents. */
@@ -268,17 +456,45 @@ export interface GenTarget {
 
 type RollShape = { meterMap: MeterSegment[]; pickupSteps: number; lanes: PolyLane[]; activeLane: number; totalSteps: number };
 
-/** A looping lane gets one cycle from step 0; any other lane gets the selected segment's bars, one pass per bar. */
+/**
+/**
+ * A looping lane gets one cycle from the step its loop starts on (step 0, or
+ * its span's first step); any other lane gets the selected segment's bars, one
+ * pass per bar. A lane with its own time (a meter, a tuplet ratio) gets its own
+ * bars that start inside those, one pass per lane bar, as long as they keep the
+ * first one's meter, so a 3:2 lane's pass is its own bar, two thirds as long;
+ * `bars` then counts the lane's bars.
+ */
 export function genTarget(roll: RollShape, selected: number): GenTarget {
   const lane = roll.lanes.find((l) => l.id === roll.activeLane) ?? roll.lanes[0] ?? { id: 0, name: 'A', cycleSteps: null };
-  const cycle = lane.cycleSteps;
-  if (lane.id !== 0 && cycle != null && cycle > 0 && cycle < roll.totalSteps) {
-    return { lane: lane.id, name: lane.name, start: 0, end: cycle, passLen: cycle, passes: 1, cycle, bars: null, meter: null };
+  const loop = lane.id !== 0 ? laneLoop(lane, roll.totalSteps) : null;
+  if (loop) {
+    // A span shorter than the cycle ends the pass where the span ends.
+    const { cycle, origin, end } = loop;
+    const lt = laneTimeOf(lane, roll.meterMap, roll.pickupSteps);
+    return {
+      lane: lane.id, name: lane.name, start: origin, end: Math.min(origin + cycle, end), passLen: cycle, passes: 1, cycle, origin, bars: null,
+      meter: lt ? lt.map[0].meter : null,
+    };
   }
   const segs = normalizeMeterMap(roll.meterMap, false);
   const i = clampSelection(segs, selected);
   const bars = segmentBars(segs, i, roll.totalSteps, roll.pickupSteps);
   const start = barStartStep(segs, bars.first, roll.pickupSteps);
+  const lt = laneTimeOf(lane, segs, roll.pickupSteps);
+  if (lt) {
+    const segEnd = Math.min(roll.totalSteps, barStartStep(segs, bars.last + 1, roll.pickupSteps));
+    const inside = laneBars(lt, roll.totalSteps).filter((b) => b.bar >= 0 && b.start >= start - EPS && b.start < segEnd - EPS);
+    if (inside.length) {
+      const first = inside[0];
+      let n = 1;
+      while (n < inside.length && inside[n].meter === first.meter) n += 1;
+      return {
+        lane: lane.id, name: lane.name, start: first.start, end: first.start + n * first.len, passLen: first.len, passes: n,
+        cycle: null, bars: { first: first.bar, last: first.bar + n - 1 }, meter: first.meter,
+      };
+    }
+  }
   const passLen = stepsPerBar(segs[i].meter);
   const passes = bars.last - bars.first + 1;
   return { lane: lane.id, name: lane.name, start, end: start + passes * passLen, passLen, passes, cycle: null, bars, meter: segs[i].meter };
@@ -301,13 +517,15 @@ export function genPreview(s: GenSettings, pitches: readonly number[], lane = 0)
 
 /**
  * `notes` with `lane`'s notes in [start, end) swapped for `fresh`. With a
- * `cycle`, a note's place is its step within the cycle, since a looping lane
- * plays every note it holds inside its first cycle. Lane 0 notes carry no lane.
+ * `cycle`, a note's place is its step within the cycle counted from `origin`
+ * (the lane's first cycle), since a looping lane plays every note it holds
+ * inside its first cycle. Lane 0 notes carry no lane.
  */
 export function replaceLaneNotes(
   notes: readonly PianoNote[], lane: number, start: number, end: number, fresh: readonly RollNote[], idPrefix: string, cycle: number | null = null,
+  origin = 0,
 ): PianoNote[] {
-  const at = (step: number) => (cycle ? ((step % cycle) + cycle) % cycle : step);
+  const at = (step: number) => (cycle ? origin + ((((step - origin) % cycle) + cycle) % cycle) : step);
   const kept = notes.filter((n) => !((n.lane ?? 0) === lane && at(n.step) >= start - EPS && at(n.step) < end - EPS));
   const added = fresh.map((n, i) => {
     const { lane: _drop, ...rest } = n;
@@ -341,7 +559,7 @@ export function genWrite(
   const stop = Math.min(target.end, roll.totalSteps);
   fresh = fresh.filter((n) => n.step < stop - EPS).map((n) => ({ ...n, length: Math.min(n.length, stop - n.step) }));
   return {
-    notes: replaceLaneNotes(roll.notes, target.lane, target.start, target.end, fresh, idPrefix, target.cycle),
+    notes: replaceLaneNotes(roll.notes, target.lane, target.start, target.end, fresh, idPrefix, target.cycle, target.origin ?? 0),
     written: fresh.length,
     target,
   };
@@ -357,7 +575,16 @@ export const genStatus = (written: number, laneName: string): string =>
 export interface MatchApply {
   meterMap: MeterSegment[];
   pickupSteps: number;
+  /** The song's quarter-note tempo with its fraction, held to the roll's 20-300; null when the analysis has none. */
   bpm: number | null;
+  /**
+   * The song's tempo map from its first downbeat (empty when one BPM holds it)
+   * when the tempo was read off the downbeats; null otherwise. The roll's map
+   * starts at its first tempo, so the roll's BPM reads the song's opening tempo.
+   */
+  tempoMap: TempoEvent[] | null;
+  /** The song's swing as the feel's groove, or null when the song plays straight. */
+  swing: RhythmSwing | null;
   /** The song's lanes, given only when the roll holds lane A alone. */
   lanes: PolyLane[] | null;
 }
@@ -367,32 +594,259 @@ export interface MatchResult { apply: MatchApply | null; status: string; level: 
 const joinParts = (parts: string[]): string =>
   parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} AND ${parts[parts.length - 1]}`;
 
-/** What MATCH writes from a rhythm analysis, and the status line that says so. The roll's `bpm` places the pickup when the analysis has no tempo. */
+/** A tempo as the status line prints it: up to two decimals, no trailing zeros. */
+export const bpmText = (bpm: number): string => String(Math.round(bpm * 100) / 100);
+
+/** The METER face's TEMPO readout for a tempo map that holds more than its start. */
+export interface TempoSummary {
+  /** The tempo range: one tempo when the map never moves off it ("120"), else "90-120". */
+  value: string;
+  /** The hover: how many tempo points and fermatas follow the start, and the range. */
+  title: string;
+  /** Tempo points after the start (a ramp's target counts as one). */
+  points: number;
+  /** Fermatas. */
+  holds: number;
+  /**
+   * The Clear key's name and hover. It clears the tempo changes and keeps the
+   * fermatas; null when there are no tempo changes to clear.
+   */
+  clearTempo: { label: string; description: string } | null;
+  /** The Clear fermatas key's name and hover: it keeps the tempo changes. Null with no fermata. */
+  clearFermatas: { label: string; description: string } | null;
+}
+
+/** The map with its tempo changes cleared: the start tempo and every fermata, which keeps its place. */
+export const withoutTempoChanges = (map: readonly TempoEvent[]): TempoEvent[] =>
+  map.filter((e) => !!e.fermata || e.beat === 0);
+
+/** The map with its fermatas cleared: every tempo change stays. */
+export const withoutFermatas = (map: readonly TempoEvent[]): TempoEvent[] => map.filter((e) => !e.fermata);
+
+/**
+ * The readout for `map` (the roll's tempo map; `startBpm` is its beat-0
+ * tempo). A fermata is a hold, not a tempo, so it is counted apart from the
+ * tempo points and never widens the range.
+ */
+export function tempoSummary(map: readonly TempoEvent[], startBpm: number): TempoSummary {
+  const tempos = map.filter((e) => !e.fermata);
+  const holds = map.length - tempos.length;
+  const points = Math.max(0, tempos.length - 1);
+  const low = tempos.reduce((m, e) => Math.min(m, e.bpm), Infinity);
+  const high = tempos.reduce((m, e) => Math.max(m, e.bpm), 0);
+  const lowText = bpmText(Number.isFinite(low) ? low : startBpm);
+  const highText = bpmText(high > 0 ? high : startBpm);
+  const value = lowText === highText ? lowText : `${lowText}-${highText}`;
+  const pointText = `${points} tempo point${points === 1 ? '' : 's'}`;
+  const holdText = `${holds} fermata${holds === 1 ? '' : 's'}`;
+  const counted = [points > 0 ? pointText : '', holds > 0 ? holdText : ''].filter(Boolean).join(' and ');
+  const range = lowText === highText ? `at ${lowText} BPM throughout` : `from ${lowText} to ${highText} BPM`;
+  const title = `${counted || 'Nothing'} after the ${bpmText(startBpm)} BPM start, ${range}`;
+  const keep = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  return {
+    value,
+    title,
+    points,
+    holds,
+    clearTempo: points > 0
+      ? {
+        label: 'Clear the tempo changes',
+        description: `Clear the tempo changes; the roll runs at ${bpmText(startBpm)} BPM throughout${holds > 0 ? ` and keeps its ${keep(holds, 'fermata', 'fermatas')}` : ''}`,
+      }
+      : null,
+    clearFermatas: holds > 0
+      ? {
+        label: 'Clear the fermatas',
+        description: `Clear the ${keep(holds, 'fermata', 'fermatas')}${points === 1 ? '; the tempo point stays' : points > 1 ? `; the ${points} tempo points stay` : ''}`,
+      }
+      : null,
+  };
+}
+
+/** The swing groove's name as the status line prints it: "GROUP SWING 8THS 61.5%". */
+export const swingText = (sw: RhythmSwing): string => `GROUP SWING ${sw.unit}THS ${sw.pct}%`;
+
+/**
+ * What MATCH writes from a rhythm analysis, and the status line that says so.
+ * The roll's `bpm` places the pickup when the analysis has no tempo.
+ *
+ * The tempo keeps its fraction. When it was read off the downbeats, MATCH
+ * also writes the tempo map (empty for a song that holds one BPM), placed so
+ * each bar line sits on the song's downbeat; the roll plays, bounces, exports
+ * and saves that map, so the status names the opening tempo and the changes.
+ * With no downbeats to read the tempo from, a song whose tempo moves warns
+ * that bar lines drift from the notes.
+ */
 export function matchApply(roll: { lanes: readonly PolyLane[]; bpm: number }, analysis: RhythmAnalysis): MatchResult {
   if (analysis.status !== 'ready') {
     return { apply: null, status: 'THE RHYTHM ANALYSIS IS STILL RUNNING. PRESS MATCH AGAIN WHEN IT FINISHES.', level: 'warn' };
   }
   const seed = seedFromRhythm(analysis, roll.bpm);
   if (!seed) return { apply: null, status: 'THE RHYTHM ANALYSIS HAS NO METER. ANALYZE THE SONG AGAIN, THEN PRESS MATCH.', level: 'warn' };
-  // A whole number: the BPM field shows and steps whole beats per minute.
-  const bpm = seed.bpm != null ? clamp(Math.round(seed.bpm), 40, 240) : null;
+  const bpm = seed.bpm != null ? clampTempoBpm(seed.bpm) : null;
   const addLanes = roll.lanes.length <= 1 && seed.lanes.length > 1;
-  const apply: MatchApply = { meterMap: seed.meterMap, pickupSteps: seed.pickupSteps, bpm, lanes: addLanes ? seed.lanes : null };
+  const apply: MatchApply = {
+    meterMap: seed.meterMap,
+    pickupSteps: seed.pickupSteps,
+    bpm,
+    tempoMap: seed.tempoFromDownbeats ? seed.tempoMap : null,
+    swing: seed.swing,
+    lanes: addLanes ? seed.lanes : null,
+  };
 
   const changes = seed.meterMap.length;
   const parts = [changes === 1 ? `${meterLabel(seed.meterMap[0].meter)} THROUGHOUT` : `${changes} METERS`];
   parts.push(seed.pickupSteps > 0 ? `A ${seed.pickupSteps}-STEP PICKUP` : 'NO PICKUP');
-  if (bpm != null) parts.push(`${bpm} BPM`);
+  const moves = seed.tempoFromDownbeats && seed.tempoMap.length > 1;
+  if (moves) {
+    const changes = seed.tempoMap.length - 1;
+    parts.push(`${bpmText(clampTempoBpm(seed.tempoMap[0].bpm))} BPM WITH ${changes} TEMPO CHANGE${changes === 1 ? '' : 'S'}`);
+  } else if (bpm != null) parts.push(`${bpmText(bpm)} BPM`);
   if (addLanes) parts.push(`${seed.lanes.length - 1} LANE${seed.lanes.length === 2 ? '' : 'S'}`);
+  if (seed.swing) parts.push(swingText(seed.swing));
   let status = `MATCH SET ${joinParts(parts)}.`;
+  if (addLanes && seed.lanes.some((l) => l.span)) status += ' A LANE HEARD IN PART OF THE SONG PLAYS ONLY THERE.';
   if (!addLanes && seed.lanes.length > 1) status += ' THE ROLL KEPT ITS OWN LANES.';
+  if (seed.swing) status += ' APPLY IN THE FEEL KEYS SWINGS THE NOTES.';
   if (seed.uncertainBars > 0) status += ` ${seed.uncertainBars} BAR${seed.uncertainBars === 1 ? ' IS' : 'S ARE'} UNCERTAIN.`;
   let level: MatchResult['level'] = 'info';
-  if (!seed.tempoStable) {
+  if (!seed.tempoStable && !seed.tempoFromDownbeats) {
     status += " THE SONG'S TEMPO MOVES, SO BAR LINES DRIFT FROM THE NOTES.";
     level = 'warn';
   }
   return { apply, status, level };
+}
+
+/** The roll actions MATCH writes through (the piano roll store's), and the parts it reads to know which came from audio. */
+export interface MatchWriter {
+  setBpm: (bpm: number) => void;
+  setTempoMap: (map: readonly TempoEvent[]) => void;
+  setTempoKeepingTime: (next: { bpm?: number; tempoMap?: readonly TempoEvent[] }, opts?: { parts?: 'all' | 'audio' }) => number;
+  applyMeter: (meter: { meterMap?: MeterSegment[]; pickupSteps?: number; lanes?: PolyLane[] }) => void;
+  setGrooveId: (id: string) => void;
+  tracks: readonly RollTrack[];
+  activeTrackId: string;
+  notes: readonly PianoNote[];
+}
+
+/** What writeMatch did besides the maps: how many notes of the parts from a song's audio kept their seconds. */
+export interface MatchWritten {
+  keptTime: number;
+}
+
+/** True when a part holding notes was timed against audio (RollTrack `fromAudio`): MATCH keeps its seconds. */
+export const rollHasAudioParts = (r: Pick<MatchWriter, 'tracks' | 'activeTrackId' | 'notes'>): boolean =>
+  r.tracks.some((t) => t.fromAudio === true && (t.id === r.activeTrackId ? r.notes.length : t.notes.length) > 0);
+
+/**
+ * MATCH's writes, in one go so they fold into one undo step: the BPM, the
+ * tempo map (whose first tempo then starts the roll; an empty map clears any
+ * changes the roll had and keeps the BPM), the meter map with the pickup and
+ * the song's lanes, then the swing as the feel's groove.
+ *
+ * When parts of the roll came from a song's audio (rollHasAudioParts), the
+ * BPM and the map go in through setTempoKeepingTime for those parts: their
+ * notes keep the seconds they were transcribed at, so they stay on the song
+ * under its real tempo, while every other part keeps its place in the bar.
+ */
+export function writeMatch(r: MatchWriter, apply: MatchApply): MatchWritten {
+  let keptTime = 0;
+  if (rollHasAudioParts(r) && (apply.bpm != null || apply.tempoMap)) {
+    keptTime = r.setTempoKeepingTime(
+      { ...(apply.bpm != null ? { bpm: apply.bpm } : {}), ...(apply.tempoMap ? { tempoMap: apply.tempoMap } : {}) },
+      { parts: 'audio' },
+    );
+  } else {
+    if (apply.bpm != null) r.setBpm(apply.bpm);
+    if (apply.tempoMap) r.setTempoMap(apply.tempoMap);
+  }
+  r.applyMeter({ meterMap: apply.meterMap, pickupSteps: apply.pickupSteps, ...(apply.lanes ? { lanes: apply.lanes } : {}) });
+  if (apply.swing) r.setGrooveId(apply.swing.grooveId);
+  return { keptTime };
+}
+
+/** The sentence MATCH's status adds when notes from the song's audio kept their seconds. */
+export const keptTimeText = (notes: number): string =>
+  notes > 0 ? ` THE ${notes} NOTE${notes === 1 ? '' : 'S'} FROM THE SONG'S AUDIO KEPT THEIR TIME.` : '';
+
+/** A lane's span as bars, 1-based ("9-16", "9+" when it runs to the roll's end), for the SPAN key. */
+export function laneSpanLabel(map: readonly MeterSegment[], span: LaneSpan, pickupSteps = 0): string {
+  const first = Math.max(0, barAt(map, span.start, pickupSteps).bar) + 1;
+  if (span.end == null) return `${first}+`;
+  const last = Math.max(0, barAt(map, Math.max(span.start, span.end - 1e-6), pickupSteps).bar) + 1;
+  return first === last ? `${first}` : `${first}-${last}`;
+}
+
+/** The span SPAN gives a lane for the selected segment: its bars in steps, the first segment from step 0, the last to the roll's end. */
+export function segmentSpan(map: readonly MeterSegment[], selected: number, pickupSteps = 0): LaneSpan {
+  const segs = normalizeMeterMap(map, false);
+  const i = clampSelection(segs, selected);
+  return {
+    start: i === 0 ? 0 : barStartStep(segs, segs[i].bar, pickupSteps),
+    end: i + 1 < segs.length ? barStartStep(segs, segs[i + 1].bar, pickupSteps) : null,
+  };
+}
+
+/** True when `span` is exactly the selected segment's span. */
+export function spanIsSegment(map: readonly MeterSegment[], selected: number, span: LaneSpan | null | undefined, pickupSteps = 0): boolean {
+  if (!span) return false;
+  const seg = segmentSpan(map, selected, pickupSteps);
+  return Math.abs(seg.start - span.start) < EPS && (seg.end === null ? span.end == null : span.end != null && Math.abs(seg.end - span.end) < EPS);
+}
+
+/**
+ * SPAN: lane `laneId` limited to the selected segment's bars, or back to the
+ * whole roll when it already is. A segment that covers the whole roll gives no
+ * span. The loop keeps its length; lane A never takes a span.
+ */
+export function toggleLaneSpan(map: readonly MeterSegment[], lanes: readonly PolyLane[], selected: number, laneId: number, pickupSteps = 0): PolyLane[] {
+  const seg = segmentSpan(map, selected, pickupSteps);
+  return lanes.map((l) => {
+    if (l.id !== laneId || l.id === 0) return l;
+    const { span: _old, ...rest } = l;
+    if (spanIsSegment(map, selected, l.span, pickupSteps) || (seg.start <= EPS && seg.end === null)) return rest;
+    return { ...rest, span: seg };
+  });
+}
+
+/** The step a lane's first cycle starts on: its span's first step, or step 0. */
+const laneOrigin = (l: PolyLane, totalSteps: number): number => Math.max(0, Math.min(totalSteps, l.span?.start ?? 0));
+
+/**
+ * SPAN as the roll writes it: the lanes toggleLaneSpan gives, with lane
+ * `laneId`'s notes and bend points moved from the cycle its loop started on
+ * to the cycle it starts on now, each keeping its place in the cycle. A lane
+ * written from step 0 therefore starts its loop on the span's first step, and
+ * the roll draws its notes inside the span. `notes` and `bends` are null when
+ * nothing moved (no loop, or a loop that starts where it did).
+ */
+export function respanLane<N extends PianoNote>(
+  roll: { meterMap: readonly MeterSegment[]; pickupSteps: number; lanes: readonly PolyLane[]; notes: readonly N[]; bends: readonly LaneBend[]; totalSteps: number },
+  selected: number,
+  laneId: number,
+): { lanes: PolyLane[]; notes: N[] | null; bends: LaneBend[] | null } {
+  const lanes = toggleLaneSpan(roll.meterMap, roll.lanes, selected, laneId, roll.pickupSteps);
+  const before = roll.lanes.find((l) => l.id === laneId);
+  const after = lanes.find((l) => l.id === laneId);
+  const cyc = after?.cycleSteps;
+  if (!before || !after || !cyc || cyc <= 0) return { lanes, notes: null, bends: null };
+  const from = laneOrigin(before, roll.totalSteps);
+  const to = laneOrigin(after, roll.totalSteps);
+  if (Math.abs(from - to) < EPS) return { lanes, notes: null, bends: null };
+  const fold = (step: number): number => to + ((((step - from) % cyc) + cyc) % cyc);
+  const notes = roll.notes.map((n) => {
+    if ((n.lane ?? 0) !== laneId) return n;
+    // The store ticks the note again from its new step.
+    const { tick: _tick, ...rest } = n;
+    return { ...rest, step: fold(n.step) } as N;
+  });
+  const bends = roll.bends.map((b) => {
+    if (b.lane !== laneId || !b.points.length) return b;
+    // A point on the cycle's end stays on it; the rest fold in, the later winning a step.
+    const moved = b.points.map((p) => ({ ...p, step: Math.abs(p.step - from - cyc) <= EPS ? to + cyc : fold(p.step) }));
+    return { ...b, points: sanitizeBendPoints(moved.sort((x, y) => x.step - y.step)) };
+  });
+  return { lanes, notes, bends };
 }
 
 /**
@@ -418,8 +872,8 @@ const m = (num: number, den: number, groups: number[] = []): Meter => ({ num, de
 
 /** The meters the FORM editor offers a section; "" is the roll's own map. */
 export const SECTION_METERS: readonly Meter[] = [
-  m(4, 4), m(3, 4), m(2, 4), m(6, 8), m(5, 4), m(5, 8),
-  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8),
+  m(4, 4), m(3, 4), m(2, 4), m(2, 2), m(3, 2), m(6, 8, [3, 3]), m(9, 8, [3, 3, 3]), m(5, 4), m(5, 8),
+  m(7, 8, [3, 2, 2]), m(7, 8, [2, 2, 3]), m(9, 8, [2, 2, 2, 3]), m(11, 8, [3, 3, 3, 2]), m(12, 8, [3, 3, 3, 3]),
 ];
 
 /** The FORM select's options for a section: the list, plus the section's own meter when the list lacks it. */

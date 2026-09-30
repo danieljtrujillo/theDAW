@@ -25,7 +25,12 @@ import {
   teardownClaudeSession,
   resolveLiveClaudeSession,
   claudeControlWaiters,
+  setClaudeSessionPermissionMode,
+  recordClaudePermissionAnswer,
+  takeClaudePendingToolRequest,
+  PROJECT_CWD,
 } from "./claude-bridge";
+import { normalizePermissionMode, selfModifyPath, PERMISSION_MODES } from "./permissions";
 import {
   startSDProcess,
   stopSDProcess,
@@ -34,10 +39,12 @@ import {
   generateViaComfyUI,
   generateViaDallE,
   generateViaGemini,
+  generateViaOpenRouter,
   saveImagesToFiles,
   GenParams,
 } from "./sd";
 import { registerExtractRoutes } from "./extract";
+import { registerOpenRouterRoutes } from "./features/openrouter/catalog";
 
 // ---------- /api/assistant/transcribe: local Whisper STT via faster-whisper ----------
 // Raw audio body (audio/*) → temp file → spawn stt/transcribe.py → return its
@@ -195,21 +202,43 @@ export function registerRoutes(app: Express, deps: { shutdown: (signal: string) 
       claudeSessionId,
       effort,
       claudeMode,
+      permissionMode: rawPermissionMode,
       appState,
       screenshot,
     } = req.body || {};
     void claudeMode; // accepted from the orb but not used by the Claude CLI path
+    // The orb's PermissionModeSelect dropdown (src/components/orb/useChatStream.ts)
+    // sends its chosen mode with every turn. G5 audit item 5: an unknown or
+    // MISSING value must NOT be forced to DEFAULT_PERMISSION_MODE here — for
+    // an EXISTING session that would override the mode the user already set
+    // for it with the fallback default on every turn that happens not to
+    // resend one. Pass `undefined` through instead: streamClaude's own
+    // dispatch (claude-bridge.ts) falls back to the LIVE session's current
+    // mode first, and only reaches for DEFAULT_PERMISSION_MODE when there is
+    // no session yet to have a mode of its own.
+    const permissionMode = normalizePermissionMode(rawPermissionMode) ?? undefined;
 
     // Claude Code CLI path — a PERSISTENT per-conversation child (see streamClaude
     // above). It owns its own SSE/HTTP lifecycle (status / headers / close), so we
     // branch out BEFORE the shared SSE setup the direct-API providers use below.
     if (provider === "claude") {
       appendLog(
-        `[chat] provider=claude model=${model} effort=${effort} ` +
+        `[chat] provider=claude model=${model} effort=${effort} permissionMode=${permissionMode} ` +
           `conv=${conversationId || "(new)"} msgs=${Array.isArray(messages) ? messages.length : 0} ` +
           `screenshotInBody=${screenshot ? `yes(len=${screenshot.length})` : "NO"}`,
       );
-      await streamClaude({ req, res, messages, model, conversationId, claudeSessionId, effort, appState, screenshot });
+      await streamClaude({
+        req,
+        res,
+        messages,
+        model,
+        conversationId,
+        claudeSessionId,
+        effort,
+        permissionMode,
+        appState,
+        screenshot,
+      });
       return;
     }
 
@@ -289,6 +318,34 @@ export function registerRoutes(app: Express, deps: { shutdown: (signal: string) 
     res.json({ ok: true });
   });
 
+  // Set a live session's permission policy mode (src/components/orb/
+  // PermissionModeSelect.tsx). Body: {conversationId?, claudeSessionId?, mode}.
+  // 400 on an unrecognized mode, 404 when there's no live session to apply it
+  // to (mirrors control-response's 409-for-"no live session" in spirit, but a
+  // mode change targets a session that must already exist — nothing to queue
+  // it against — so 404 is the closer fit).
+  app.post("/api/assistant/permission-mode", (req, res) => {
+    const { conversationId, claudeSessionId, mode } = req.body || {};
+    const normalized = normalizePermissionMode(mode);
+    if (!normalized) {
+      res.status(400).json({
+        ok: false,
+        error: `mode must be one of: ${PERMISSION_MODES.join(", ")}`,
+      });
+      return;
+    }
+    const session = resolveLiveClaudeSession(
+      typeof conversationId === "string" ? conversationId : undefined,
+      typeof claudeSessionId === "string" ? claudeSessionId : undefined,
+    );
+    if (!session) {
+      res.status(404).json({ ok: false, error: "No live Claude session for this conversation" });
+      return;
+    }
+    setClaudeSessionPermissionMode(session, normalized);
+    res.json({ ok: true, mode: normalized });
+  });
+
   // Answer a live CLI control_request (AskUserQuestion / can_use_tool permission).
   // The CLI is BLOCKED on stdin until this arrives, so the answer must reach the
   // SAME persistent child that raised the request. Mirrors BCC's writeToSession:
@@ -314,32 +371,160 @@ export function registerRoutes(app: Express, deps: { shutdown: (signal: string) 
       res.status(409).json({ ok: false, error: "No live Claude session for this conversation" });
       return;
     }
+    // G5 round 4 item 3 (MAJOR): require a LIVE pending entry for this
+    // requestId — matches Python's assistant_routes.py, which 404s when
+    // ``session.pending_controls.get(request_id)`` is None. A prior version
+    // proceeded regardless (relying only on a client-controlled response
+    // SHAPE to guess whether this was an AskUserQuestion answer), so a
+    // replayed POST for an already-consumed requestId — `pending == null` —
+    // fell back to that shape heuristic: send `updatedInput:{questions:[],
+    // answers:[]}` plus `updatedPermissions` and it slipped through
+    // unstripped. claude-bridge.ts's forwarding loop now tracks EVERY
+    // bubbled control_request (both can_use_tool and AskUserQuestion, not
+    // just the former — see its comment), so `pending` is non-null for any
+    // requestId that is still awaiting an answer, of either kind.
+    const pending = takeClaudePendingToolRequest(session, requestId);
+    if (pending == null) {
+      res.status(404).json({ ok: false, error: "unknown or already-answered requestId" });
+      return;
+    }
+    const behavior = (response as Record<string, unknown>).behavior;
+    // G5 round 5 item 4 (MINOR): validate the VALUE of `behavior`, not just
+    // which keys are present. `behavior`/`message`/`updatedInput` is a KEY
+    // allowlist (below) — it lets an arbitrary `behavior` STRING through
+    // unchecked. That string is forwarded verbatim to the live CLI's stdin
+    // (a `control_response` the CLI itself must validate, so this alone
+    // isn't a CLI-side bypass) but is also interpolated unescaped into the
+    // `appendLog` call below (`behavior=${behavior}`), letting a malicious
+    // or buggy client forge arbitrary text into the server's own log
+    // stream. Matches Python's identical guard at
+    // `assistant_routes.py:1427` (`behavior not in ("allow", "deny")` ->
+    // 400) — both prompt shapes (a permission bubble and an AskUserQuestion
+    // submit) only ever legitimately send "allow" or "deny".
+    if (behavior !== "allow" && behavior !== "deny") {
+      // Re-insert the pending entry we already popped above (G5 round 5
+      // item 5's fix applies here too) — an invalid-behavior request must
+      // not permanently consume it, or a client that retries with a
+      // corrected body 404s on an otherwise-still-live requestId.
+      session.pendingToolRequests.set(requestId, pending);
+      res.status(400).json({ ok: false, error: "response.behavior must be 'allow' or 'deny'" });
+      return;
+    }
+    // AskUserQuestion's control_request carries tool_name "AskUserQuestion"
+    // (see Transcript.tsx's own `control.toolName === "AskUserQuestion"`
+    // check and claude-bridge.ts's tracking of it) — recognized here from
+    // SERVER state now that every bubble is tracked, never from client input.
+    const isAskUserQuestion = pending.toolName === "AskUserQuestion";
+    const isSelfModify =
+      !isAskUserQuestion &&
+      selfModifyPath(pending.toolName, pending.toolInput as Record<string, unknown>, PROJECT_CWD) !== null;
+    // G5 round 4 item 4 (MINOR): forward via an ALLOWLIST, not a
+    // strip-one-key blacklist. `behavior`/`message`/`updatedInput` are the
+    // entire vocabulary either answer shape ever legitimately uses — a
+    // permission prompt: `{behavior, updatedInput?, message?}`; an
+    // AskUserQuestion submit: `{behavior:"allow", updatedInput:{questions,
+    // answers}}`. Anything else the client sends (`updatedPermissions`
+    // included) is dropped unconditionally: the Foundry's OWN policy
+    // (server/permissions.ts's sessionAllow, recorded below) is the single
+    // source of truth for "allow this tool for the rest of the session" —
+    // the CLI must never get a standing rule of its own (a second,
+    // ungoverned enforcement path the server's mode changes, 3x-deny rule,
+    // and self-modify's own never-remember rule could never reach again).
+    // An allowlist also means a NEW permission-carrying field the CLI grows
+    // later is excluded by default, not forwarded by default.
+    const ALLOWED_CONTROL_RESPONSE_KEYS = new Set(["behavior", "message", "updatedInput"]);
+    const forwardedResponse: Record<string, unknown> = Object.fromEntries(
+      Object.entries(response as Record<string, unknown>).filter(([key]) => ALLOWED_CONTROL_RESPONSE_KEYS.has(key)),
+    );
+    let written = false;
     try {
       const payload = {
         type: "control_response",
-        response: { subtype: "success", request_id: requestId, response },
+        response: { subtype: "success", request_id: requestId, response: forwardedResponse },
       };
       session.proc.stdin.write(JSON.stringify(payload) + "\n");
+      written = true;
       appendLog(
         `[Claude] wrote control_response id=${requestId} conv=${session.conversationId} ` +
-          `behavior=${(response as any).behavior}`,
+          `behavior=${behavior} droppedKeys=${Object.keys(response as object)
+            .filter((k) => !ALLOWED_CONTROL_RESPONSE_KEYS.has(k))
+            .join(",") || "none"}`,
       );
+      // Feed the answer into the policy's session-allow / deny-count state so
+      // "always allow" and the 3x-decline rule take effect on the NEXT
+      // identical request. AskUserQuestion answers are not policy — never
+      // recorded.
+      if (!isAskUserQuestion && (behavior === "allow" || behavior === "deny")) {
+        // "Always allow" sends `updatedPermissions`; "Allow once" / "Deny"
+        // don't. Self-modify requests are NEVER remembered for the session,
+        // no matter what the client sent — matches permissions.ts's own
+        // self-modify rule (it always re-bubbles regardless of sessionAllow).
+        const requestedRemember =
+          behavior === "allow" &&
+          Object.prototype.hasOwnProperty.call(response as object, "updatedPermissions");
+        recordClaudePermissionAnswer(
+          session,
+          pending.toolName,
+          pending.toolInput,
+          behavior,
+          requestedRemember && !isSelfModify,
+        );
+      }
       res.json({ ok: true });
     } catch (e: any) {
+      // G5 round 5 item 5 (MINOR): the pending entry was already popped
+      // above, before this write was attempted. If the write itself throws
+      // (e.g. EPIPE on a closing-but-not-yet-torn-down stdin), the entry is
+      // gone with nothing delivered — a client retry then 404s on
+      // `takeClaudePendingToolRequest` above, and the CLI stays blocked on
+      // that control_request's stdin answer forever, with no way for the
+      // user to unblock it. Re-insert the entry so the SAME requestId can be
+      // answered again -- but ONLY when the write never went out (written
+      // is still false); once the CLI has the answer, a later throw (log
+      // I/O, recordClaudePermissionAnswer, or res.json on a closed
+      // socket) must not resurrect an already-delivered request (G5
+      // batch-11 fixup, minor 3).
+      if (!written) {
+        session.pendingToolRequests.set(requestId, pending);
+      }
       appendLog(`[Claude] control_response write failed id=${requestId}: ${e?.message || e}`);
       res.status(500).json({ ok: false, error: String(e?.message || e) });
     }
   });
 
-  // UI-INITIATED control request to the CLI (get_context_usage, set_permission_mode,
-  // …). Writes `{type:"control_request", request_id, request}` to the persistent
-  // child's stdin (BCC's sendControl → writeToSession) and awaits the matching
-  // control_response on stdout (resolved by handleClaudeStdoutLine). Returns the
-  // CLI's response envelope. Works BETWEEN turns (the child is persistent/idle).
+  // G5 round 4 item 2 (MAJOR): the ONLY UI-initiated control request the orb
+  // ever actually sends (src/components/orb/useChatStream.ts's
+  // refreshContextUsage). This is an ALLOWLIST, not documentation of what the
+  // CLI supports — accepting an arbitrary client-supplied subtype here let a
+  // request body of {"subtype":"set_permission_mode","mode":"bypassPermissions"}
+  // reach the live child's stdin verbatim (see below), which is the exact
+  // failure class as the round-2 CRITICAL (CLI_PERMISSION_MODES bypass) but
+  // through this sibling endpoint instead of /permission-mode: under
+  // bypassPermissions the CLI stops emitting can_use_tool entirely, so
+  // decide() (and its never-remember self-modify rule) never runs again for
+  // the rest of that session. /permission-mode remains the ONLY legitimate
+  // way to change a session's mode — it goes through setClaudeSessionPermissionMode,
+  // which always sends the CLI "default" regardless of the app-level mode
+  // (server/permissions.ts's CLI_PERMISSION_MODES). Add a subtype here ONLY
+  // after confirming the orb actually sends it.
+  const ALLOWED_UI_CONTROL_REQUEST_SUBTYPES = new Set(["get_context_usage"]);
+
+  // UI-INITIATED control request to the CLI. Writes `{type:"control_request",
+  // request_id, request}` to the persistent child's stdin (BCC's sendControl
+  // → writeToSession) and awaits the matching control_response on stdout
+  // (resolved by handleClaudeStdoutLine). Returns the CLI's response
+  // envelope. Works BETWEEN turns (the child is persistent/idle).
   app.post("/api/assistant/control-request", async (req, res) => {
     const { conversationId, sessionId, request } = req.body || {};
     if (!request || typeof request !== "object" || typeof request.subtype !== "string") {
       res.status(400).json({ ok: false, error: "request.subtype (string) required" });
+      return;
+    }
+    if (!ALLOWED_UI_CONTROL_REQUEST_SUBTYPES.has(request.subtype)) {
+      res.status(400).json({
+        ok: false,
+        error: `unsupported control-request subtype ${JSON.stringify(request.subtype)}; allowed: ${Array.from(ALLOWED_UI_CONTROL_REQUEST_SUBTYPES).join(", ")}`,
+      });
       return;
     }
     const session = resolveLiveClaudeSession(
@@ -741,6 +926,8 @@ export function registerRoutes(app: Express, deps: { shutdown: (signal: string) 
     }
   });
 
+  registerOpenRouterRoutes(app);
+
   // Generate textures
   app.post("/api/textures/generate", async (req, res) => {
     const params: GenParams = req.body || {};
@@ -755,6 +942,7 @@ export function registerRoutes(app: Express, deps: { shutdown: (signal: string) 
         case "comfyui": images = await generateViaComfyUI(params, cfg); break;
         case "openai": case "dalle": images = await generateViaDallE(params); break;
         case "gemini": images = await generateViaGemini(params); break;
+        case "openrouter": images = await generateViaOpenRouter(params); break;
         default:
           res.status(400).json({ error: `Unsupported image generation provider: ${params.provider}` });
           return;

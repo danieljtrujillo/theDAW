@@ -19,7 +19,11 @@ import {
   trimTransparentPixels,
 } from "../../lib/extractor/utils";
 import { panelLocalToGlobal } from "../../lib/extractor/mapping";
-import { LS_PROVIDER_KEYS } from "../orb/constants";
+import { useExtractorProvider } from "../../features/extractor/useExtractorProvider";
+import { ProviderControls } from "../../features/extractor/ProviderControls";
+import { useExtractorSelection } from "../../features/extractor/useExtractorSelection";
+import { SelectionControls } from "../../features/extractor/SelectionControls";
+import { useExtractorKeyboard } from "../../features/extractor/useExtractorKeyboard";
 import ExtractCanvas from "./ExtractCanvas";
 import ExtractTray from "./ExtractTray";
 import MaskEditor from "./MaskEditor";
@@ -89,14 +93,8 @@ export default function ExtractorModal({
   const [lassoMode, setLassoMode] = useState(false);
   const [editingMaskId, setEditingMaskId] = useState<string | null>(null);
   const [detectError, setDetectError] = useState<string | null>(null);
-
-  // Provider/model state — key comes from the same localStorage store the
-  // assistant orb uses; the model list is live-fetched. No hardcoded ids.
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
-  const [availableModels, setAvailableModels] = useState<
-    { id: string; label: string }[]
-  >([]);
+  const providerState = useExtractorProvider(isOpen);
+  const { provider, apiKey, model, ready: providerReady } = providerState;
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   // Blob URLs this modal owns (created by the @imgly background-removal
@@ -104,73 +102,26 @@ export default function ExtractorModal({
   // and hand ownership to the design when a cutout is placed as an asset.
   const blobUrlsRef = useRef<Set<string>>(new Set());
 
+  // Revoke any blob URLs an element references that this modal still owns.
+  const revokeElementBlobUrls = (el: ExtractedElement) => {
+    [el.cutoutDataUrl, el.maskDataUrl, el.cropDataUrl].forEach((u) => {
+      if (u && blobUrlsRef.current.has(u)) {
+        URL.revokeObjectURL(u);
+        blobUrlsRef.current.delete(u);
+      }
+    });
+  };
+
+  const selection = useExtractorSelection({ elements, setElements, releaseElement: revokeElementBlobUrls });
+  const { selectMode, selectedIds, clearSelection, selectElement, marqueeSelect, deleteElement } = selection;
+  const { dialogRef, onKeyDown } = useExtractorKeyboard({
+    isOpen, selectionCount: selectedIds.size, deleteSelected: selection.deleteSelected,
+    isEditingMask: editingMaskId !== null,
+  });
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
-
-  // On open: read the Gemini key from the orb's store, live-fetch the model
-  // list, and default the selection to gemini's provider defaultModel.
-  useEffect(() => {
-    if (!isOpen) return;
-
-    let key = "";
-    try {
-      const raw = localStorage.getItem(LS_PROVIDER_KEYS);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        key =
-          parsed && typeof parsed.gemini === "string" ? parsed.gemini : "";
-      }
-    } catch (err) {
-      console.error("Failed to read provider keys from localStorage", err);
-    }
-    setApiKey(key ?? "");
-
-    let cancelled = false;
-    const load = async () => {
-      let list: { id: string; label: string }[] = [];
-      try {
-        const url = key
-          ? `/api/assistant/models/gemini?apiKey=${encodeURIComponent(key)}`
-          : "/api/assistant/models/gemini";
-        const res = await fetch(url);
-        const data = await res.json();
-        list = Array.isArray(data) ? data : data?.models || [];
-      } catch (err) {
-        console.error("Failed to fetch Gemini models", err);
-      }
-      if (cancelled) return;
-      setAvailableModels(list);
-
-      let defaultModel = "";
-      try {
-        const res = await fetch("/api/assistant/providers");
-        const data = await res.json();
-        const provList = Array.isArray(data) ? data : data?.providers || [];
-        const gemini = provList.find((p: { id?: string }) => p?.id === "gemini");
-        defaultModel =
-          gemini && typeof gemini.defaultModel === "string"
-            ? gemini.defaultModel
-            : "";
-      } catch (err) {
-        console.error("Failed to fetch provider defaults", err);
-      }
-      if (cancelled) return;
-
-      setModel((prev) => {
-        if (prev && list.some((m) => m.id === prev)) return prev;
-        if (defaultModel && list.some((m) => m.id === defaultModel)) {
-          return defaultModel;
-        }
-        return list[0]?.id || defaultModel || "";
-      });
-    };
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen]);
 
   // The workspace SURVIVES close/reopen — captured elements, cutouts, and
   // settings stay put so closing the modal never throws work away. State only
@@ -185,12 +136,13 @@ export default function ExtractorModal({
     imageRef.current = null;
     setElements([]);
     setPanels([]);
+    clearSelection();
     setImageSize({ width: 0, height: 0 });
     setEditingMaskId(null);
     setIsDetecting(false);
     setIsProcessing(false);
     setDetectError(null);
-  }, [sourceImage]);
+  }, [sourceImage, clearSelection]);
 
   // Final safety net: revoke any remaining owned blob URLs on unmount.
   useEffect(() => {
@@ -208,24 +160,6 @@ export default function ExtractorModal({
     setElements((prev) =>
       prev.map((el) => (el.id === id ? { ...el, ...updates } : el)),
     );
-  };
-
-  // Revoke any blob URLs an element references that this modal still owns.
-  const revokeElementBlobUrls = (el: ExtractedElement) => {
-    [el.cutoutDataUrl, el.maskDataUrl, el.cropDataUrl].forEach((u) => {
-      if (u && blobUrlsRef.current.has(u)) {
-        URL.revokeObjectURL(u);
-        blobUrlsRef.current.delete(u);
-      }
-    });
-  };
-
-  const deleteElement = (id: string) => {
-    setElements((prev) => {
-      const target = prev.find((el) => el.id === id);
-      if (target) revokeElementBlobUrls(target);
-      return prev.filter((el) => el.id !== id);
-    });
   };
 
   const onImageLoad = (e: SyntheticEvent<HTMLImageElement>) => {
@@ -306,6 +240,7 @@ export default function ExtractorModal({
             image: el.cropDataUrl,
             mimeType: "image/png",
             sensitivity: sensitivityOverride ?? sensitivity,
+            provider,
             apiKey,
             model,
           }),
@@ -391,6 +326,7 @@ export default function ExtractorModal({
   };
 
   const handleProcessPending = async () => {
+    if (!providerReady) return;
     const pending = elements.filter(
       (el) => el.status === "pending" || el.status === "detected",
     );
@@ -412,7 +348,7 @@ export default function ExtractorModal({
     el: ExtractedElement,
     altSensitivity: number,
   ) => {
-    if (!imageRef.current || el.status === "processing") return;
+    if (!providerReady || !imageRef.current || el.status === "processing") return;
     revokeElementBlobUrls(el);
     const cropDataUrl = extractCrop(
       imageRef.current,
@@ -438,7 +374,7 @@ export default function ExtractorModal({
   // Auto detect — downscales the source to <=2048 max dim before base64.
   // ---------------------------------------------------------------------------
   const handleAutoDetect = async () => {
-    if (!sourceImage || !imageRef.current) return;
+    if (!providerReady || !sourceImage || !imageRef.current) return;
     setIsDetecting(true);
     setDetectError(null);
 
@@ -457,6 +393,7 @@ export default function ExtractorModal({
           image: base64Data,
           mimeType: "image/png",
           sensitivity,
+          provider,
           apiKey,
           model,
         }),
@@ -504,7 +441,7 @@ export default function ExtractorModal({
   // (rate-limit safety, same as Process Pending).
   // ---------------------------------------------------------------------------
   const handleDetectModules = async () => {
-    if (!sourceImage || !imageRef.current) return;
+    if (!providerReady || !sourceImage || !imageRef.current) return;
     setIsDetectingPanels(true);
     setDetectError(null);
     try {
@@ -521,6 +458,7 @@ export default function ExtractorModal({
           image: base64Data,
           mimeType: "image/png",
           sensitivity,
+          provider,
           apiKey,
           model,
         }),
@@ -565,6 +503,7 @@ export default function ExtractorModal({
               image: panel.cropDataUrl,
               mimeType: "image/png",
               sensitivity,
+              provider,
               apiKey,
               model,
             }),
@@ -882,7 +821,7 @@ export default function ExtractorModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div ref={dialogRef} onKeyDown={onKeyDown} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Extract Components" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-app-base border border-app-border rounded-xl shadow-2xl w-full max-w-[95vw] h-full max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header toolbar */}
         <div className="border-b border-app-border bg-app-surface px-4 py-2.5 flex items-center justify-between gap-4 shrink-0">
@@ -898,33 +837,7 @@ export default function ExtractorModal({
               <span className="text-xs text-red-400">{detectError}</span>
             )}
 
-            <div className="flex items-center gap-1.5">
-              <label
-                htmlFor="extract-model"
-                className="text-xs text-app-muted"
-              >
-                Model
-              </label>
-              <select
-                id="extract-model"
-                name="extract-model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="bg-app-surface text-app-main text-sm py-1.5 px-3 rounded border border-app-border outline-none focus:border-app-accent max-w-50"
-              >
-                {availableModels.length > 0 ? (
-                  availableModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label || m.id}
-                    </option>
-                  ))
-                ) : model ? (
-                  <option value={model}>{model}</option>
-                ) : (
-                  <option value="">Loading models…</option>
-                )}
-              </select>
-            </div>
+            <ProviderControls {...providerState} />
 
             <button
               type="button"
@@ -940,6 +853,8 @@ export default function ExtractorModal({
               <PenTool className="w-4 h-4" />
               Lasso
             </button>
+
+            <SelectionControls {...selection} elementCount={elements.length} />
 
             <div className="flex items-center gap-2">
               <label
@@ -964,7 +879,7 @@ export default function ExtractorModal({
             <button
               type="button"
               onClick={handleProcessPending}
-              disabled={isProcessing || !hasProcessable}
+              disabled={!providerReady || isProcessing || !hasProcessable}
               className="text-sm font-medium py-1.5 px-3 rounded border border-app-border bg-app-surface text-app-main hover:bg-app-surface-hover disabled:opacity-50 transition-colors flex items-center gap-2"
             >
               {isProcessing ? (
@@ -978,7 +893,7 @@ export default function ExtractorModal({
             <button
               type="button"
               onClick={handleAutoDetect}
-              disabled={!sourceImage || isDetecting}
+              disabled={!providerReady || !sourceImage || isDetecting}
               className="btn-3d text-white text-sm font-medium py-1.5 px-3 rounded disabled:opacity-50 flex items-center gap-2"
             >
               {isDetecting ? (
@@ -992,7 +907,7 @@ export default function ExtractorModal({
             <button
               type="button"
               onClick={handleDetectModules}
-              disabled={!sourceImage || isDetectingPanels}
+              disabled={!providerReady || !sourceImage || isDetectingPanels}
               className="btn-3d text-white text-sm font-medium py-1.5 px-3 rounded disabled:opacity-50 flex items-center gap-2"
             >
               {isDetectingPanels ? (
@@ -1033,11 +948,16 @@ export default function ExtractorModal({
                 onDrawBox={handleManualDraw}
                 onDeleteElement={deleteElement}
                 lassoMode={lassoMode}
+                selectMode={selectMode}
+                selectedIds={selectedIds}
+                onSelectElement={selectElement}
+                onMarqueeSelect={marqueeSelect}
               />
             )}
           </div>
 
           <ExtractTray
+            canProcess={providerReady}
             elements={elements}
             panels={panels}
             onDelete={deleteElement}

@@ -110,7 +110,16 @@ def set_review(asset_id: str, req: ReviewRequest) -> dict:
     """Mark an artifact reviewed (the render-trust gate) and save reviewer notes."""
     result = service.set_review(asset_id, req.reviewed, req.notes)
     if not result.get("ok"):
-        raise HTTPException(status_code=404, detail=result.get("error", "no artifact"))
+        # Only ONE of the failures is "there is no such thing": a wrong asset
+        # id. A review that could not be written is this machine's problem, and
+        # answering 404 for it told the UI the click could never work, so the
+        # retry that would have saved the review was never offered. The service
+        # says which it was in `code`; sniffing the sentence would break the
+        # moment the message is reworded.
+        status = 404 if result.get("code") == "missing_artifact" else 500
+        raise HTTPException(
+            status_code=status, detail=result.get("error", "no artifact")
+        )
     return result
 
 

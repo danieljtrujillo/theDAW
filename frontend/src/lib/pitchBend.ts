@@ -18,7 +18,7 @@
  *
  * Everything here is pure, so node tests load it.
  */
-import type { PolyLane } from './meterMap';
+import { laneLoop, type LaneSpan, type PolyLane } from './meterMap';
 
 export type BendShape = 'linear' | 'hold' | 'smooth';
 
@@ -80,18 +80,52 @@ export const WHEEL_STEP_CENTS = 3.125;
 export const BEND_IMPORT_CENTS = 3;
 /** Linear pieces a `smooth` segment is scheduled as on a Web Audio parameter. */
 export const SMOOTH_SEGMENTS = 16;
-/** The furthest step a bend point may sit at (the roll's longest grid). */
-export const MAX_BEND_STEP = 4096;
+/**
+ * The furthest step a bend point may sit at: the roll's longest grid, 65,536
+ * sixteenths (4,096 bars of 4/4, about 68 minutes at 60 BPM), enough for a
+ * symphony movement. The roll's MAX_ROLL_STEPS is this same number, so a bend
+ * point can sit anywhere a note can.
+ */
+export const MAX_BEND_STEP = 65536;
 /** MIDI channels a file gives lanes, in the order lanes take them. Zero-based channel 9 (MIDI channel 10, General MIDI drums) is skipped. */
 export const BEND_CHANNELS: readonly number[] = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]);
 /**
  * Live soundfont channels the roll plays its lanes on, in the order lanes take
- * them: from 14 down, past the drum channel 9, so EDIT's live MIDI (which takes
- * channels from 0 up) and the arpeggiator keep theirs.
+ * them: from 14 down, past the drum channel 9, so the arpeggiator keeps 15.
+ * These are channels of the preview synth. EDIT's live MIDI plays on synths of
+ * its own (lib/editChannels), so it never shares one with a lane.
  */
 export const LIVE_ROLL_CHANNELS: readonly number[] = Object.freeze([14, 13, 12, 11, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
 /** The live soundfont channel the arpeggiator plays and bends on. No roll lane takes it. */
 export const ARP_LIVE_CHANNEL = 15;
+/**
+ * The live soundfont channel a hardware keyboard sounds on (lib/keyboardMonitor):
+ * a seventeenth channel the preview synth adds for it, so no lane, the
+ * arpeggiator or a preview changes its program under a held note. It shares
+ * channel 0's dry output, and both play to the engine master.
+ */
+export const KEYBOARD_LIVE_CHANNEL = 16;
+/**
+ * The live soundfont channels DRAW's soundfont mode plays its strokes on, one
+ * after another: eight more channels the preview synth adds past the keyboard's,
+ * none a drum channel (SpessaSynth makes every channel n with n % 16 === 9 a
+ * drum channel), so a stroke never plays a kit and never takes a roll lane's,
+ * the arpeggiator's or the keyboard's channel.
+ */
+export const DRAW_LIVE_CHANNELS: readonly number[] = Object.freeze([17, 18, 19, 20, 21, 22, 23, 24]);
+/** How many channels the preview synth has when it starts: 0-15, the keyboard's and DRAW's. */
+export const PREVIEW_CHANNEL_COUNT = DRAW_LIVE_CHANNELS[DRAW_LIVE_CHANNELS.length - 1] + 1;
+/**
+ * The first live channel the roll's parts after the first take (lib/rollTracks
+ * rollLiveChannels). The preview synth adds channels past it on demand, so a
+ * roll of 40 parts plays each part on a channel of its own.
+ */
+export const ROLL_PART_FIRST_CHANNEL = PREVIEW_CHANNEL_COUNT;
+/** The most channels the preview synth grows to: eight groups of sixteen. */
+export const MAX_PREVIEW_CHANNELS = 128;
+/** The channel DRAW's `stroke`-th soundfont stroke (counting from 0) plays on. */
+export const drawStrokeChannel = (stroke: number): number =>
+  DRAW_LIVE_CHANNELS[((Math.round(stroke) % DRAW_LIVE_CHANNELS.length) + DRAW_LIVE_CHANNELS.length) % DRAW_LIVE_CHANNELS.length];
 /**
  * The most lanes that bend. Each takes a channel of its own and every other lane
  * shares one, so the roll's lanes fit LIVE_ROLL_CHANNELS on the live synth as
@@ -129,7 +163,7 @@ const shapeOf = (shape: unknown): BendShape => ((SHAPES as readonly unknown[]).i
 
 /**
  * Sorted by step, one point per step (the later one in the list wins), steps 0
- * to 4096, values -1 to 1, a shape on every point. A point with no id, or an id
+ * to MAX_BEND_STEP, values -1 to 1, a shape on every point. A point with no id, or an id
  * already taken, gets `<idPrefix>-<index>`.
  */
 export function sanitizeBendPoints(points: readonly Partial<BendPointInput>[] | null | undefined, idPrefix = 'bp'): BendPoint[] {
@@ -346,16 +380,22 @@ export function repeatBend(local: readonly BendPoint[], period: number, until: n
  * step, a point at the cycle's length ends the cycle (a ramp drawn across the
  * cycle arrives there before the next cycle starts over), and a point past the
  * cycle wraps into it as unrollLanes wraps notes, the later point winning a
- * step. A lane that does not loop keeps its points.
+ * step. A lane that does not loop keeps its points. A lane with a `span`
+ * counts its cycles from the span's first step and repeats them to its end,
+ * as unrollLanes does with the lane's notes.
  */
-export function unrollBend(points: readonly BendPoint[], cycleSteps: number | null | undefined, totalSteps: number): BendPoint[] {
-  const cyc = cycleSteps;
-  if (!points.length || !cyc || cyc <= 0 || cyc >= totalSteps) return points.map((p) => ({ ...p }));
-  const atEnd = (p: BendPoint) => Math.abs(p.step - cyc) <= EPS;
-  const local = sanitizeBendPoints(points.filter((p) => !atEnd(p)).map((p) => ({ ...p, step: ((p.step % cyc) + cyc) % cyc })));
+export function unrollBend(
+  points: readonly BendPoint[], cycleSteps: number | null | undefined, totalSteps: number, span?: LaneSpan | null,
+): BendPoint[] {
+  const loop = laneLoop({ id: -1, name: '', cycleSteps: cycleSteps ?? null, span }, totalSteps);
+  if (!points.length || !loop) return points.map((p) => ({ ...p }));
+  const { cycle: cyc, origin, end: stop } = loop;
+  const atEnd = (p: BendPoint) => Math.abs(p.step - origin - cyc) <= EPS;
+  const local = sanitizeBendPoints(points.filter((p) => !atEnd(p)).map((p) => ({ ...p, step: ((((p.step - origin) % cyc) + cyc) % cyc) })));
   const end = points.filter(atEnd).pop();
   if (end) local.push({ ...end, step: cyc, shape: 'hold' });
-  return repeatBend(local, cyc, totalSteps);
+  const rolled = repeatBend(local, cyc, stop - origin);
+  return origin > 0 ? rolled.map((p) => ({ ...p, step: p.step + origin })) : rolled;
 }
 
 /**
@@ -398,6 +438,47 @@ export function loopBend(points: readonly BendPoint[], period: number, laps: num
   return out;
 }
 
+/**
+ * The curve re-based so `from` is its step 0, for the roll's transport looping
+ * a range that starts at `from`: the points after `from` moved back by `from`,
+ * led by a point at 0 where the curve is at `from`. The segment `from` falls
+ * inside keeps its course: a hold and a ramp carry on exactly, and an ease
+ * carries on as straight pieces at its own SMOOTH_SEGMENTS divisions (the ones
+ * bendAutomation plays an ease with). A `from` at or before 0 gives a copy.
+ */
+export function shiftBend(points: readonly BendPoint[], from: number): BendPoint[] {
+  if (!(from > EPS) || !points.length) return points.map((p) => ({ ...p }));
+  const i = pointIndexAt(points, from);
+  const p = i >= 0 ? points[i] : null;
+  const q = points[i + 1];
+  const onPoint = !!p && Math.abs(p.step - from) <= EPS;
+  const out: BendPoint[] = [];
+  if (!p) {
+    // Before the first point the curve is at the centre until that point.
+    out.push({ id: `${points[0].id}~from`, step: 0, value: 0, shape: 'hold' });
+  } else if (!onPoint) {
+    if (!q || p.shape === 'hold') out.push({ id: `${p.id}~from`, step: 0, value: p.value, shape: 'hold' });
+    else {
+      out.push({ id: `${p.id}~from`, step: 0, value: bendValueAt(points, from), shape: 'linear' });
+      if (p.shape === 'smooth') {
+        for (let m = 1; m < SMOOTH_SEGMENTS; m += 1) {
+          const s = p.step + ((q.step - p.step) * m) / SMOOTH_SEGMENTS;
+          if (s <= from + EPS) continue;
+          out.push({ id: `${p.id}~from${m}`, step: s - from, value: segmentValue(p, q, m / SMOOTH_SEGMENTS), shape: 'linear' });
+        }
+      }
+    }
+  }
+  for (let j = onPoint ? i : i + 1; j < points.length; j += 1) out.push({ ...points[j], step: points[j].step - from });
+  return out;
+}
+
+/** Each lane's played curve re-based so `from` is its step 0 (shiftBend); a `from` at or before 0 gives `played` itself. */
+export function shiftPlayedBends(played: Map<number, PlayedBend>, from: number): Map<number, PlayedBend> {
+  if (!(from > EPS)) return played;
+  return new Map([...played].map(([lane, c]) => [lane, { range: c.range, points: shiftBend(c.points, from) }]));
+}
+
 /** The lane a note plays in: its own when the roll has that lane, else lane 0 (unrollLanes plays such a note as lane 0). */
 export const playingLane = (lane: number | undefined, lanes: readonly PolyLane[]): number =>
   lane !== undefined && lanes.some((l) => l.id === lane) ? lane : 0;
@@ -417,12 +498,13 @@ export function capBentLanes(bends: readonly LaneBend[], lanes: readonly PolyLan
 
 /** Each lane's curve as the roll plays it, by lane id: only the lanes that bend (bentLanes). */
 export function playedRollBends(bends: readonly LaneBend[], lanes: readonly PolyLane[], totalSteps: number): Map<number, PlayedBend> {
-  const cycles = new Map(lanes.map((l) => [l.id, l.cycleSteps]));
+  const byId = new Map(lanes.map((l) => [l.id, l]));
   const bent = bentLanes(lanes, bends);
   const out = new Map<number, PlayedBend>();
   for (const b of bends) {
     if (!bent.has(b.lane)) continue;
-    out.set(b.lane, { range: b.range, points: unrollBend(b.points, cycles.get(b.lane), totalSteps) });
+    const lane = byId.get(b.lane);
+    out.set(b.lane, { range: b.range, points: unrollBend(b.points, lane?.cycleSteps, totalSteps, lane?.span) });
   }
   return out;
 }

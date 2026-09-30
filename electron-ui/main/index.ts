@@ -10,6 +10,9 @@ import {
   shell,
 } from 'electron'
 import { ChildProcess, spawn, execFile } from 'child_process'
+// Node's own net, under a name of its own: `net` in this file is ELECTRON's
+// net module (the app:// protocol handler fetches through it).
+import { connect as netConnect } from 'net'
 import { autoUpdater } from 'electron-updater'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
@@ -22,6 +25,17 @@ import { pathToFileURL } from 'url'
 // carries meaning is transliterated rather than dropped, so a key of F-sharp
 // still reads as F# in the log.
 import { plainAscii } from '../../frontend/src/lib/plainText'
+import { stopBackend } from './backendStop'
+import { AutoDownloadClaims, uniqueDownloadPath } from './downloadNaming'
+import { DialogFolderMemory, dialogDefaultPath, folderAfterDialog } from './dialogFolder'
+import {
+  lanHttpsLogLine,
+  lanListenerCommand,
+  lanListenerEnv,
+  parseLanHttpsPlan,
+  rendererDevPort,
+  type LanHttpsPlan,
+} from './lanHttps'
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -91,6 +105,14 @@ function log(msg: string): void {
 let backendProcess: ChildProcess | null = null
 let weSpawnedBackend = false
 let isQuitting = false
+// A backend that dies under a running window is brought back (see the exit
+// handler in spawnBackend). Bounded, so a backend that cannot start is not
+// respawned forever: at most this many times inside the window.
+const BACKEND_RESPAWN_MAX = 5
+const BACKEND_RESPAWN_WINDOW_MS = 10 * 60_000
+// backend/run.py: another instance already owns the port. Respawning cannot help.
+const BACKEND_PORT_IN_USE_EXIT_CODE = 90
+let backendRespawnTimes: number[] = []
 // First-run `uv sync` child; tracked so before-quit can kill it (an orphaned
 // sync keeps downloading and holds the venv lock against the next launch).
 let uvSyncProcess: ChildProcess | null = null
@@ -278,7 +300,31 @@ function buildBaseEnv(): NodeJS.ProcessEnv {
 // its own children with child_env (backend/lib/launch_token.py), which leaves
 // the token out.
 function buildBackendEnv(): NodeJS.ProcessEnv {
-  return { ...buildBaseEnv(), THEDAW_LAUNCH_TOKEN: LAUNCH_TOKEN }
+  const env: NodeJS.ProcessEnv = { ...buildBaseEnv(), THEDAW_LAUNCH_TOKEN: LAUNCH_TOKEN }
+  // Tell the backend the port the renderer's dev server actually got (5173,
+  // strictPort in electron.vite.config.ts); /api/network/lan reports it
+  // (backend.ports.frontend_port). A packaged build has no dev server and the
+  // backend keeps its default.
+  const rendererPort = rendererDevPort(process.env.ELECTRON_RENDERER_URL)
+  if (rendererPort) env.theDAW_FRONTEND_PORT = String(rendererPort)
+  // Live VST host: a packaged build may ship the exe under resourcesPath (see
+  // electron-builder.yml's win.extraResources, staged by
+  // scripts/stage-vst-host.mjs). Point the backend's HostLocator at it unless
+  // the user (or a wrapping launcher) already set THEDAW_VST_HOST -- checked
+  // case-insensitively like the PATH lookup above, since Windows env names
+  // aren't case-sensitive. Only set it when the exe is actually there: the
+  // native host doesn't ship on every platform/build, and HostLocator treats
+  // an explicit env var as an unconditional path, not a hint.
+  if (app.isPackaged) {
+    const hasVstHostEnv = Object.keys(env).some((k) => k.toUpperCase() === 'THEDAW_VST_HOST')
+    if (!hasVstHostEnv) {
+      const vstHostExe = path.join(process.resourcesPath, 'vst-host', 'thedaw-vst-host.exe')
+      if (fs.existsSync(vstHostExe)) {
+        env.THEDAW_VST_HOST = vstHostExe
+      }
+    }
+  }
+  return env
 }
 
 function coreImportsOk(py: string): Promise<boolean> {
@@ -488,6 +534,33 @@ function spawnBackend(): void {
     log(msg)
     sendLoadingLog(msg, 'err')
     backendProcess = null
+
+    // The window used to stay up over a dead backend, every /api call answering
+    // 500 until the whole app was restarted. Bring the backend back instead —
+    // except after a deliberate stop (code 0: the in-app Shutdown button), when
+    // another instance owns the port, or while quitting (every intentional kill
+    // sets isQuitting first).
+    if (isQuitting || !weSpawnedBackend) return
+    if (code === 0 || code === BACKEND_PORT_IN_USE_EXIT_CODE) return
+    const now = Date.now()
+    backendRespawnTimes = backendRespawnTimes.filter((t) => now - t < BACKEND_RESPAWN_WINDOW_MS)
+    if (backendRespawnTimes.length >= BACKEND_RESPAWN_MAX) {
+      const giveUp = `Backend died ${BACKEND_RESPAWN_MAX} times in ten minutes — not restarting it again.`
+      log(giveUp)
+      sendLoadingLog(giveUp, 'err')
+      return
+    }
+    backendRespawnTimes.push(now)
+    const delayMs = 1000 * backendRespawnTimes.length
+    const again = `Restarting the backend in ${delayMs} ms (attempt ${backendRespawnTimes.length}/${BACKEND_RESPAWN_MAX})...`
+    log(again)
+    sendLoadingLog(again, '')
+    setTimeout(() => {
+      if (isQuitting || backendProcess) return
+      void isBackendRunning().then((up) => {
+        if (!up && !isQuitting && !backendProcess) spawnBackend()
+      })
+    }, delayMs)
   })
 
   backendProcess.on('error', (err) => {
@@ -502,69 +575,258 @@ function spawnBackend(): void {
 // ---------------------------------------------------------------------------
 
 function killBackend(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!backendProcess || !weSpawnedBackend) {
-      resolve()
-      return
+  // Before the early return below: the LAN listener exists whether or not
+  // this process spawned the backend, and it must not outlive the app.
+  killLanHttps()
+  if (!backendProcess || !weSpawnedBackend) return Promise.resolve()
+
+  log('Stopping the backend...')
+  const proc = backendProcess
+  const pid = proc.pid
+  // The order lives in ./backendStop.ts: ask the backend to shut down, wait out
+  // its shutdown handlers when it accepts, force-kill its tree when it refuses,
+  // never answers or runs past its budget.
+  return stopBackend({
+    requestShutdown: () =>
+      globalThis
+        .fetch(SHUTDOWN_URL, { method: 'POST', signal: AbortSignal.timeout(2000) })
+        .then((response) => response.ok),
+    onExit: (listener) => {
+      proc.on('exit', listener)
+    },
+    forceKill: () =>
+      new Promise<void>((done) => {
+        if (!pid) {
+          done()
+          return
+        }
+        try {
+          if (process.platform === 'win32') {
+            execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { env: buildBaseEnv() }, (err) => {
+              if (err) log(`taskkill error: ${err.message}`)
+              else log('taskkill /T completed.')
+              done()
+            })
+          } else {
+            // Kill the process group (negative PID) created by detached:true
+            process.kill(-pid, 'SIGKILL')
+            log('Sent SIGKILL to backend process group.')
+            done()
+          }
+        } catch {
+          done()
+        }
+      }),
+    log,
+  }).then(() => undefined)
+}
+
+// ---------------------------------------------------------------------------
+// The LAN HTTPS listener (dev only)
+//
+// electron-vite's renderer dev server is plain http on :5173. A second computer
+// opening theDAW at http://<lan-ip>:5173 is not a secure context, so Chromium
+// withholds AudioContext.audioWorklet, the microphone, Web MIDI, the clipboard
+// and crypto.subtle -- the EDIT tab dies on `ctx.audioWorklet` being undefined.
+// So dev mode also serves the SAME app over TLS on the LAN port.
+//
+// Whether it runs at all is one decision, shared with the web launcher and
+// owned by backend/lib/lan_https.py (the setting, the LAN address, the
+// certificate). This side asks that module rather than reimplementing it, and
+// nothing here can hold up the window: the plan is read on its own timeline,
+// the spawn is never awaited, and every failure is one log line.
+//
+// A packaged build serves its UI over app:// and has no dev server to mirror;
+// the packaged LAN path is separate work.
+// ---------------------------------------------------------------------------
+
+let lanHttpsProcess: ChildProcess | null = null
+
+/** The short-lived `--json` child that answers the plan. Tracked for the same
+ *  reason the listener is: a cold `uv run` can take tens of seconds, and a
+ *  quit inside that window must not leave it -- or the shell it runs under --
+ *  behind holding the venv lock. */
+let lanPlanProcess: ChildProcess | null = null
+
+/** Stop one of the two LAN children, and on Windows the whole tree under it.
+ *  Both run through a shell (`cmd /c`, `uv run`), so killing the process this
+ *  side holds leaves the real work behind: a vite still on the port against
+ *  the next launch, or a uv still in the venv. Synchronous and idempotent:
+ *  quitting must not wait on either. */
+function killLanChild(proc: ChildProcess | null, what: string): void {
+  // A child killed by a signal has `exitCode === null` and `signalCode` set --
+  // node reports one or the other, never both. Testing only exitCode meant a
+  // listener already taken down by taskkill (or a SIGTERM'd uv on posix) was
+  // "killed" a second time, logging a line and, on Windows, running a taskkill
+  // against a pid the OS is free to have reused.
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return
+  const pid = proc.pid
+  log(`Stopping ${what}...`)
+  try {
+    if (process.platform === 'win32' && pid) {
+      execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { env: buildBaseEnv() }, (err) => {
+        if (err) log(`LAN (https): taskkill error: ${err.message}`)
+      })
+    } else {
+      proc.kill()
     }
+  } catch {
+    // already gone
+  }
+}
 
-    log('Killing backend process...')
-    const proc = backendProcess
-    const pid = proc.pid
+/** Is something already answering on 127.0.0.1:port? A 300 ms connect, on the
+ *  way to a spawn nothing waits for. Without this, vite's strictPort exit was
+ *  all the log had to say about a port someone else holds: "the listener
+ *  exited (code=1)". */
+function portIsHeld(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host: '127.0.0.1', port })
+    const settle = (held: boolean): void => {
+      socket.destroy()
+      resolve(held)
+    }
+    socket.setTimeout(300, () => settle(false))
+    socket.once('connect', () => settle(true))
+    // `on`, not `once`: a socket destroyed by settle() can still raise, and an
+    // unhandled 'error' on a socket takes the main process down.
+    socket.on('error', () => settle(false))
+  })
+}
+
+/** The Python that answers the plan: the dev venv's when it exists (the same
+ *  reliable path spawnBackend prefers), otherwise `uv run`. */
+function lanHttpsPlanCommand(): { command: string; args: string[] } {
+  const module = ['-m', 'backend.lib.lan_https', '--json']
+  const devVenvPy = venvPython(path.join(getPythonDir(), '.venv'))
+  if (fs.existsSync(devVenvPy)) return { command: devVenvPy, args: module }
+  return { command: getUvCommand(), args: ['run', 'python', ...module] }
+}
+
+/** The plan, or null when it could not be read. Never rejects. */
+function readLanHttpsPlan(): Promise<LanHttpsPlan | null> {
+  return new Promise((resolve) => {
+    const { command, args } = lanHttpsPlanCommand()
+    let stdout = ''
     let settled = false
-
-    const settle = (): void => {
+    const done = (plan: LanHttpsPlan | null): void => {
       if (settled) return
       settled = true
-      resolve()
+      resolve(plan)
     }
-
-    proc.on('exit', () => {
-      log('Backend process terminated.')
-      settle()
-    })
-
-    // Step 1: attempt graceful HTTP shutdown
-    globalThis
-      .fetch(SHUTDOWN_URL, {
-        method: 'POST',
-        signal: AbortSignal.timeout(2000),
+    try {
+      const proc = spawn(command, args, {
+        cwd: getPythonDir(),
+        env: buildBaseEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       })
-      .then(() => log('Sent shutdown request to backend.'))
-      .catch(() => log('Shutdown endpoint unreachable — will force-kill.'))
-
-    // Step 2: after a grace period, force-kill the process tree
-    setTimeout(() => {
-      if (settled) return
-      if (!pid) {
-        settle()
-        return
+      lanPlanProcess = proc
+      const release = (): void => {
+        if (lanPlanProcess === proc) lanPlanProcess = null
       }
-      log('Grace period expired — force-killing backend tree...')
-
-      try {
-        if (process.platform === 'win32') {
-          execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { env: buildBaseEnv() }, (err) => {
-            if (err) log(`taskkill error: ${err.message}`)
-            else log('taskkill /T completed.')
-            settle()
-          })
-        } else {
-          // Kill the process group (negative PID) created by detached:true
-          process.kill(-pid, 'SIGKILL')
-          log('Sent SIGKILL to backend process group.')
-          settle()
-        }
-      } catch {
-        settle()
-      }
-    }, 3000)
-
-    // Step 3: hard deadline so quit is never blocked forever
-    setTimeout(() => {
-      settle()
-    }, 6000)
+      // A cold `uv run` can be slow; a hung one must still not keep this
+      // pending forever.
+      const deadline = setTimeout(() => {
+        killLanChild(proc, 'the LAN HTTPS plan (it took too long)')
+        release()
+        log('LAN (https): the plan took too long — no listener this launch.')
+        done(null)
+      }, 30_000)
+      proc.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString()
+      })
+      proc.stderr?.on('data', (data: Buffer) => {
+        const text = plainAscii(data.toString()).trimEnd()
+        if (text) log(`[lan:plan] ${text}`)
+      })
+      proc.on('error', (err) => {
+        clearTimeout(deadline)
+        release()
+        log(`LAN (https): the plan could not be read (${err.message})`)
+        done(null)
+      })
+      // 'close', not 'exit': 'exit' fires when the process ends, while its
+      // stdio pipes can still have buffered data on the way. Parsing there
+      // could read a truncated final line -- exactly the line the plan is on --
+      // and silently turn a good plan into "no plan". 'close' fires once every
+      // stream is drained and closed, so the plan is whole by then.
+      proc.on('close', () => {
+        clearTimeout(deadline)
+        release()
+        done(parseLanHttpsPlan(stdout))
+      })
+    } catch (err) {
+      log(`LAN (https): the plan could not be read (${String(err)})`)
+      done(null)
+    }
   })
+}
+
+async function startLanHttps(): Promise<void> {
+  if (app.isPackaged || isQuitting || lanHttpsProcess) return
+
+  const plan = await readLanHttpsPlan()
+  log(lanHttpsLogLine(plan))
+  // The user began quitting while the plan was being read: a listener started
+  // now is one nothing would ever kill.
+  if (!plan || !plan.enabled || isQuitting) return
+
+  // Somebody else is on the port -- another copy of theDAW, or a listener run
+  // by hand. Say so once and leave it alone: vite would exit 1 on strictPort
+  // and a retry loop would only fight whatever owns it.
+  if (await portIsHeld(plan.port)) {
+    log(`LAN (https): port ${plan.port} is already in use — no listener this launch.`)
+    return
+  }
+  if (isQuitting) return
+
+  const { command, args } = lanListenerCommand(process.platform, plan)
+  const frontendDir = path.join(repoRoot, 'frontend')
+  try {
+    lanHttpsProcess = spawn(command, args, {
+      cwd: frontendDir,
+      // buildBaseEnv() drops the launch token; lanListenerEnv drops it again
+      // and adds only the three names vite.lan.config.ts reads. Vite runs the
+      // frontend's own devDependencies, so none of it may pass as this shell.
+      env: lanListenerEnv(buildBaseEnv(), plan),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+  } catch (err) {
+    lanHttpsProcess = null
+    log(`LAN (https): the listener could not start (${String(err)})`)
+    return
+  }
+
+  const emit = (data: Buffer): void => {
+    for (const raw of data.toString().split('\n')) {
+      const text = plainAscii(raw.replace(/\r$/, '')).trimEnd()
+      if (text) log(`[lan] ${text}`)
+    }
+  }
+  lanHttpsProcess.stdout?.on('data', emit)
+  lanHttpsProcess.stderr?.on('data', emit)
+  lanHttpsProcess.on('exit', (code, signal) => {
+    lanHttpsProcess = null
+    if (!isQuitting) log(`LAN (https): the listener exited (code=${code}, signal=${signal}).`)
+  })
+  lanHttpsProcess.on('error', (err) => {
+    lanHttpsProcess = null
+    log(`LAN (https): listener process error: ${err.message}`)
+  })
+}
+
+/** Stop the listener, and the plan child if one is still being read.
+ *  Synchronous and idempotent: quitting must not wait on it, and it is called
+ *  from both will-quit and killBackend. */
+function killLanHttps(): void {
+  const plan = lanPlanProcess
+  lanPlanProcess = null
+  killLanChild(plan, 'the LAN HTTPS plan')
+  const listener = lanHttpsProcess
+  lanHttpsProcess = null
+  killLanChild(listener, 'the LAN HTTPS listener')
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +923,39 @@ function createWindow(): void {
     if (isExternal(url)) {
       event.preventDefault()
       void shell.openExternal(url)
+    }
+  })
+  // The renderer guards an unsaved arrangement with a `beforeunload` veto
+  // (Shell.tsx). A browser turns that into its "Leave site?" prompt; Electron
+  // shows nothing and silently cancels the close, so a window holding unsaved
+  // work could not be closed at all — not by the X, not by Alt+F4, not by Quit.
+  // Ask here instead. preventDefault() on THIS event means "ignore the page's
+  // veto", i.e. let the window close.
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const win = mainWindow
+    const choice = win
+      ? dialog.showMessageBoxSync(win, {
+          type: 'question',
+          buttons: ['Close anyway', 'Keep editing'],
+          defaultId: 1,
+          cancelId: 1,
+          title: 'theDAW',
+          message: 'This project has unsaved changes.',
+          detail: 'Closing now discards everything since the last save. The autosave keeps a recovery copy.',
+          noLink: true,
+        })
+      : 0
+    if (choice === 0) {
+      event.preventDefault()
+      return
+    }
+    // The user stays, so a quit that was under way is over: the window lives
+    // on, and it needs its backend (and the auto-restart) back.
+    isQuitting = false
+    if (weSpawnedBackend && !backendProcess) {
+      void isBackendRunning().then((up) => {
+        if (!up && !isQuitting && !backendProcess) spawnBackend()
+      })
     }
   })
 
@@ -823,8 +1118,26 @@ async function recordDownload(savePath: string): Promise<void> {
   }
 }
 
+// Item 4 (T17 audit): which exact filenames the renderer's autoDownload
+// toggle is about to click — set by the downloads:markAutomatic IPC call,
+// right before it clicks an <a download> once per finished take. Matched on
+// filename (not just counted) so an unrelated user download never gets
+// silently auto-saved by a leftover count, and each mark expires on its own
+// (AutoDownloadClaims' TTL) so a mismatch never leaks a slot indefinitely —
+// see downloadNaming.ts.
+const autoDownloads = new AutoDownloadClaims()
+
 function watchDownloads(ses: Electron.Session): void {
   ses.on('will-download', (_event, item) => {
+    if (autoDownloads.claim(item.getFilename())) {
+      // setSavePath() is what skips Electron's "original routine" (the save
+      // dialog) — see download-item.md. Unique against the real Downloads
+      // folder so a batch's takes never silently overwrite one another.
+      const dir = app.getPath('downloads')
+      const savePath = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p))
+      item.setSavePath(savePath)
+      log(`Auto-download: saving to ${savePath}`)
+    }
     item.once('done', async (_doneEvent, state) => {
       const filename = item.getFilename()
       const savePath = state === 'completed' ? item.getSavePath() || null : null
@@ -879,6 +1192,76 @@ async function warnIfBackendLacksLaunchToken(): Promise<void> {
 // Production: custom protocol for renderer files
 // ---------------------------------------------------------------------------
 
+/** Statuses the fetch spec forbids a body on. Re-wrapping one of these with a
+ *  stream body throws, which would turn a perfectly good 204 into a hard
+ *  failure of whatever request produced it. 1xx is deliberately absent: the
+ *  Response constructor rejects any status below 200 outright, so 101/103 are
+ *  handled by the range guard below, not by passing a null body. */
+const NULL_BODY_STATUS = new Set([204, 205, 304])
+
+/**
+ * Cross-origin isolation: OPT-IN, off by default, same switch as the dev
+ * server (`ISOLATION_ENABLED` in frontend/vite.config.ts).
+ *
+ * COOP + COEP are what make SharedArrayBuffer constructible, but COEP also
+ * blocks every embedded document that carries no embedder policy of its own —
+ * the Underfit (:8791), VST Foundry (:5472) and Lyria sidecar tabs, which run
+ * on their own origins — and COOP severs the window handle the VJ pop-out is
+ * driven through, because the packaged pop-out loads from the backend's http
+ * origin, not app://. Until those are proxied same-origin (T29B), isolation
+ * stays behind the flag: start the app with theDAW_ISOLATE=1 to get it.
+ *
+ * With the flag unset, nothing below runs — the handler returns the very
+ * Response object net.fetch produced, so not one byte of any response changes.
+ */
+const ISOLATION_ENABLED = process.env.theDAW_ISOLATE === '1'
+
+/**
+ * Re-issue a response with cross-origin isolation headers attached.
+ *
+ * A Response that came out of `net.fetch` has an immutable header guard, so
+ * its headers cannot be appended to in place — the only way to add one is to
+ * construct a new Response around the same body. The body is passed through
+ * untouched, so streamed responses (audio, model downloads, SSE) stay streamed.
+ *
+ * `document` responses — the renderer's own HTML and the embedded VJ /
+ * SwayCommand builds — get COOP + COEP, which is what makes
+ * `crossOriginIsolated` true and SharedArrayBuffer constructible (see
+ * frontend/src/lib/sabSupport.ts). Everything else gets only
+ * Cross-Origin-Resource-Policy, which is what an isolated document demands of
+ * each subresource it pulls in. In dev the same headers come from
+ * `server.headers` and the proxy hooks in frontend/vite.config.ts.
+ *
+ * The proxy branches that call this assume the backend sets no `Set-Cookie`:
+ * the header would survive the copy, but nothing in theDAW's API issues one,
+ * and a future cookie-bearing route should be checked against this path rather
+ * than assumed to pass through intact.
+ */
+function withIsolationHeaders(res: Response, kind: 'document' | 'resource'): Response {
+  // The default path: hand back the exact object net.fetch returned. No new
+  // Response, no header copy, no body re-plumbing — so a streamed response
+  // cannot be perturbed by a feature that is switched off.
+  if (!ISOLATION_ENABLED) return res
+  // The Response constructor accepts 200-599 and throws on anything else, so a
+  // 1xx or a malformed status is handed back untouched rather than re-wrapped
+  // into an exception that would take the whole request down.
+  if (res.status < 200 || res.status > 599) return res
+  const headers = new Headers(res.headers)
+  // The body we are about to re-attach is the DECODED stream — net.fetch has
+  // already undone any gzip/br — so the upstream encoding and length describe
+  // bytes that no longer exist. Left in place they make the renderer try to
+  // inflate plain text, or truncate it at the compressed length.
+  headers.delete('content-encoding')
+  headers.delete('content-length')
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+  if (kind === 'document') {
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+    headers.set('Cross-Origin-Embedder-Policy', 'require-corp')
+  }
+  const body = NULL_BODY_STATUS.has(res.status) ? null : res.body
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
 function registerAppProtocol(): void {
   protocol.handle('app', (request) => {
     const url = new URL(request.url)
@@ -896,6 +1279,10 @@ function registerAppProtocol(): void {
           body: request.body,
           duplex: 'half',
         } as RequestInit)
+        // A subresource of an isolated document, so CORP — and only CORP. The
+        // /api branch keeps its method, headers, body, streaming and 502
+        // behaviour exactly as before; one response header is the whole change.
+        .then((res) => withIsolationHeaders(res, 'resource'))
         .catch((err) => {
           // The reason travels with the status. A bare 502 here was read as
           // "huggingface.co is down" for two days; the header says which hop
@@ -904,7 +1291,14 @@ function registerAppProtocol(): void {
           log(`API proxy failed: ${request.method} ${url.pathname} -> ${why}`)
           return new Response(`theDAW backend unreachable at ${BACKEND_BASE}: ${why}`, {
             status: 502,
-            headers: { 'x-thedaw-proxy-error': 'backend-unreachable' },
+            headers: {
+              'x-thedaw-proxy-error': 'backend-unreachable',
+              // Only under isolation: without CORP the isolated renderer cannot
+              // read the 502 at all — it would surface as an opaque network
+              // error and hide the reason this header exists to carry. Off by
+              // default, the 502 is exactly the one-header response it was.
+              ...(ISOLATION_ENABLED ? { 'Cross-Origin-Resource-Policy': 'same-origin' } : {}),
+            },
           })
         })
     }
@@ -918,6 +1312,12 @@ function registerAppProtocol(): void {
           method: request.method,
           headers: request.headers,
         })
+        // The VJ build is a DOCUMENT in an iframe of an isolated page, and an
+        // iframe is checked against its embedder's COEP: without an embedder
+        // policy of its own it is blocked and the tab goes blank. Its own
+        // subresources are served from this same branch, so they get the same
+        // treatment and the whole build loads.
+        .then((res) => withIsolationHeaders(res, 'document'))
         .catch(() => new Response('backend unavailable', { status: 502 }))
     }
 
@@ -930,6 +1330,8 @@ function registerAppProtocol(): void {
           method: request.method,
           headers: request.headers,
         })
+        // Same as /vj-app: an embedded document needs its own embedder policy.
+        .then((res) => withIsolationHeaders(res, 'document'))
         .catch(() => new Response('backend unavailable', { status: 502 }))
     }
 
@@ -948,7 +1350,13 @@ function registerAppProtocol(): void {
       return new Response('Forbidden', { status: 403 })
     }
 
-    return net.fetch(pathToFileURL(resolved).href)
+    // The renderer's own files. index.html is the top-level document whose
+    // COOP + COEP decide whether the whole app is cross-origin isolated; the
+    // bundles, styles, fonts and the /splash and /owl iframes beside it are
+    // served from this same branch, so handing every one of them the document
+    // pair is both correct (each embedded HTML file needs its own COEP) and
+    // harmless for the rest — COOP/COEP on a script or a font is ignored.
+    return net.fetch(pathToFileURL(resolved).href).then((res) => withIsolationHeaders(res, 'document'))
   })
 }
 
@@ -980,21 +1388,32 @@ function openDialogOptions(raw: unknown): Pick<Electron.OpenDialogOptions, 'defa
 }
 
 function registerIpcHandlers(): void {
+  // Electron opens a dialog with no defaultPath in Downloads and the OS does
+  // not restore the last folder, so every dialog starts in the folder the
+  // previous one ended in (see dialogFolder.ts).
+  const dialogFolder = new DialogFolderMemory(path.join(app.getPath('userData'), 'dialog-folder.json'))
+
   ipcMain.handle('dialog:selectFile', async (_event, options?: unknown) => {
     if (!mainWindow) return { canceled: true, filePaths: [] }
+    const opts = openDialogOptions(options)
     const result = await dialog.showOpenDialog(mainWindow, {
-      ...openDialogOptions(options),
+      ...opts,
+      defaultPath: dialogDefaultPath(opts.defaultPath, dialogFolder.get()),
       properties: ['openFile'],
     })
+    dialogFolder.set(folderAfterDialog('openFile', result))
     return result
   })
 
   ipcMain.handle('dialog:selectDirectory', async (_event, options?: unknown) => {
     if (!mainWindow) return { canceled: true, filePaths: [] }
+    const opts = openDialogOptions(options)
     const result = await dialog.showOpenDialog(mainWindow, {
-      ...openDialogOptions(options),
+      ...opts,
+      defaultPath: dialogDefaultPath(opts.defaultPath, dialogFolder.get()),
       properties: ['openDirectory'],
     })
+    dialogFolder.set(folderAfterDialog('openDirectory', result))
     return result
   })
 
@@ -1002,7 +1421,11 @@ function registerIpcHandlers(): void {
     'dialog:showSave',
     async (_event, options: Electron.SaveDialogOptions) => {
       if (!mainWindow) return { canceled: true, filePath: undefined }
-      const result = await dialog.showSaveDialog(mainWindow, options)
+      const result = await dialog.showSaveDialog(mainWindow, {
+        ...options,
+        defaultPath: dialogDefaultPath(options?.defaultPath, dialogFolder.get()),
+      })
+      dialogFolder.set(folderAfterDialog('save', result))
       return result
     },
   )
@@ -1055,6 +1478,14 @@ function registerIpcHandlers(): void {
     } catch {
       return null
     }
+  })
+
+  // Item 4 (T17 audit): the renderer's auto-download loop calls this once,
+  // just before it clicks, with the EXACT filenames it's about to save —
+  // watchDownloads' will-download handler (above) claims a slot only for a
+  // matching filename, within AutoDownloadClaims' TTL.
+  ipcMain.handle('downloads:markAutomatic', (_event, names: unknown) => {
+    autoDownloads.mark(Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : [])
   })
 
   registerUpdaterHandlers()
@@ -1243,6 +1674,11 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
     log('Backend already running — skipping spawn.')
     await warnIfBackendLacksLaunchToken()
   }
+
+  // The same app over TLS for other devices on the network. Deliberately not
+  // awaited: reading the plan shells out to Python, and the window must never
+  // wait on it. Dev only; a failure is one log line and the app runs as before.
+  void startLanHttps()
 })
 
 app.on('window-all-closed', () => {
@@ -1250,7 +1686,7 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-app.on('before-quit', (event) => {
+app.on('before-quit', () => {
   if (isQuitting) return
   isQuitting = true
   // Kill an in-flight first-run sync so it doesn't outlive the app holding
@@ -1262,6 +1698,19 @@ app.on('before-quit', (event) => {
       // already gone
     }
   }
+})
+
+// The backend goes down here, not in before-quit: before-quit fires BEFORE the
+// windows are asked to close, and a window can still refuse (unsaved changes ->
+// "Keep editing"). Killing the backend first left that window open over a dead
+// backend. will-quit only fires once every window has really closed.
+let backendStoppedForQuit = false
+app.on('will-quit', (event) => {
+  if (backendStoppedForQuit) return
+  backendStoppedForQuit = true
+  // Unconditionally, unlike the backend below: the LAN listener is ours even
+  // when the backend was already running and we never spawned one.
+  killLanHttps()
   if (weSpawnedBackend && backendProcess) {
     event.preventDefault()
     killBackend().finally(() => {

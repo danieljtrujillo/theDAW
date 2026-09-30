@@ -16,6 +16,8 @@ const ALL_IDS: AddToTrackEntryId[] = [
   'audio-system',
   'midi-library',
   'midi-system',
+  'midi-tracks',
+  'midi-empty',
   'paste',
   'new-track',
 ];
@@ -58,8 +60,16 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
     assert.ok(byId(menu, id).title.includes('onto Bassline'), `${id} names the track`);
     assert.ok(byId(menu, id).title.includes('12.50s'), `${id} names the time`);
   }
-  // 'New empty track' is the one add entry that always makes a track.
+  // 'New empty track' always makes a track, and so does 'MIDI file as tracks',
+  // which puts every part of the file on a track of its own at the clicked time.
   assert.equal(byId(menu, 'new-track').createsTrack, true);
+  assert.equal(byId(menu, 'midi-tracks').createsTrack, true);
+  assert.equal(byId(menu, 'midi-tracks').enabled, true);
+  assert.equal(byId(menu, 'midi-tracks').kind, 'midi');
+  assert.equal(byId(menu, 'midi-tracks').source, 'system');
+  assert.ok(byId(menu, 'midi-tracks').title.includes('12.50s'), 'midi-tracks names the time');
+  assert.ok(byId(menu, 'midi-tracks').title.includes('a new track of its own'), 'midi-tracks says every part gets a track');
+  assert.equal(isAddSourceEntry(byId(menu, 'midi-tracks')), false, 'the track header menu, which adds to its own track, leaves it out');
   assert.equal(byId(menu, 'paste').createsTrack, false);
 }
 
@@ -76,7 +86,8 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
 }
 
 // (c) Every source x kind combination is present exactly once, and each is
-// tagged with the kind and source its handler routes on.
+// tagged with the kind and source its handler routes on. The empty MIDI part
+// is a MIDI clip made here, so it has a kind and no source.
 {
   const menu = buildAddToTrackMenu(onTrack, fullCaps);
   const combos = menu
@@ -87,8 +98,12 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
     'audio/library',
     'audio/system',
     'midi/library',
+    'midi/null',
     'midi/system',
   ]);
+  assert.equal(byId(menu, 'midi-empty').kind, 'midi');
+  assert.equal(byId(menu, 'midi-empty').source, null);
+  assert.equal(byId(menu, 'midi-empty').label, 'Empty MIDI part…');
   assert.equal(byId(menu, 'audio-library').kind, 'audio');
   assert.equal(byId(menu, 'audio-library').source, 'library');
   assert.equal(byId(menu, 'audio-system').kind, 'audio');
@@ -119,6 +134,7 @@ const byId = (entries: AddToTrackEntry[], id: AddToTrackEntryId) => {
   assert.match(byId(menu, 'midi-library').title, /No MIDI in the library/);
   assert.equal(byId(menu, 'audio-system').enabled, true);
   assert.equal(byId(menu, 'midi-system').enabled, true);
+  assert.equal(byId(menu, 'midi-empty').enabled, true, 'an empty part needs nothing from the library');
   assert.equal(byId(menu, 'paste').enabled, false);
   assert.match(byId(menu, 'paste').title, /Copy or cut a clip first/);
   assert.equal(byId(menu, 'new-track').enabled, true);

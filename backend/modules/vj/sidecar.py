@@ -44,6 +44,7 @@ Lifecycle:
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
 import shutil
@@ -51,6 +52,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,6 +149,7 @@ class VJConfig:
     project_path: Path
     port: int
     npm_path: str
+    node_path: str
     dev_mode: bool
 
 
@@ -154,27 +158,79 @@ _proc: Optional[subprocess.Popen[bytes]] = None
 _resolved_url: Optional[str] = None
 
 
+# A vite server started with `--port 0` doesn't get an OS-assigned free
+# port the way a raw socket bind(0) would -- vite treats 0 as falsy and
+# falls back to its own default (5173), which collides with the SA3
+# frontend's own dev server port (see resolve_config()'s validation).
+_MIN_TCP_PORT = 1
+_MAX_TCP_PORT = 65535
+
+
 def resolve_config() -> VJConfig:
-    """Resolve project path + port + the npm binary to use."""
+    """Resolve project path + port + the npm/node binaries to use.
+
+    ``theDAW_VJ_PORT`` is validated, never passed straight through to the
+    spawned vite argv: an unparsable value, port 3000 (banned on this
+    machine), or anything outside the valid TCP port range 1-65535
+    (``--port 0`` isn't "OS-assigned" for vite the way a raw socket bind(0)
+    is -- vite treats 0 as falsy and falls back to its own default, 5173,
+    which collides with the SA3 frontend's own dev server) all degrade to
+    ``DEFAULT_PORT`` with a ``log.warning`` -- the same degrade-and-log
+    shape for every kind of bad input, consistent with how a malformed
+    integer already fell back silently here; a warning was added to make
+    all three cases equally diagnosable instead of only the new ones."""
     pkg = os.getenv("theDAW_VJ_PROJECT")
     project_path = Path(pkg).expanduser().resolve() if pkg else DEFAULT_PROJECT_PATH
 
     port_env = os.getenv("theDAW_VJ_PORT")
-    try:
-        port = int(port_env) if port_env else DEFAULT_PORT
-    except ValueError:
-        port = DEFAULT_PORT
+    port = DEFAULT_PORT
+    if port_env:
+        try:
+            candidate = int(port_env.strip())
+        except ValueError:
+            log.warning(
+                "vj.sidecar: theDAW_VJ_PORT=%r is not a valid integer -- "
+                "using the default port %d instead.",
+                port_env,
+                DEFAULT_PORT,
+            )
+        else:
+            if candidate == 3000:
+                log.warning(
+                    "vj.sidecar: theDAW_VJ_PORT=3000 is banned on this "
+                    "machine -- using the default port %d instead.",
+                    DEFAULT_PORT,
+                )
+            elif not (_MIN_TCP_PORT <= candidate <= _MAX_TCP_PORT):
+                log.warning(
+                    "vj.sidecar: theDAW_VJ_PORT=%d is outside the valid TCP "
+                    "port range (%d-%d) -- using the default port %d "
+                    "instead.",
+                    candidate,
+                    _MIN_TCP_PORT,
+                    _MAX_TCP_PORT,
+                    DEFAULT_PORT,
+                )
+            else:
+                port = candidate
 
     # On Windows the executable is npm.cmd; shutil.which handles the
     # shim resolution. Fall back to a bare 'npm' so the error message
     # at spawn time is informative ("npm not found") rather than a
     # generic FileNotFoundError.
     npm_path = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
+    # Used to spawn VJ-9000's own local vite CLI directly (see
+    # _vite_spawn_cmd) instead of through the npm dev/preview scripts.
+    node_path = shutil.which("node") or "node"
 
     dev_mode = os.getenv("theDAW_VJ_DEV") == "1"
 
     return VJConfig(
-        project_path=project_path, port=port, npm_path=npm_path, dev_mode=dev_mode
+        project_path=project_path,
+        port=port,
+        npm_path=npm_path,
+        node_path=node_path,
+        dev_mode=dev_mode,
     )
 
 
@@ -310,6 +366,63 @@ def _ensure_build(cfg: VJConfig) -> None:
     log.info("vj.sidecar: build complete")
 
 
+def _vite_bin_js(project_path: Path) -> Path:
+    """Path to VJ-9000's own local vite CLI entrypoint
+    (``node_modules/vite/bin/vite.js``), spawned directly via ``node``
+    instead of through the ``dev``/``preview`` npm scripts.
+
+    Why: VJ-9000's ``package.json`` ``dev`` script is
+    ``vite --port=3000 --host=0.0.0.0`` -- port 3000 is banned on this
+    machine. The previous revision of this module appended its own
+    ``--port <port>`` after that (``npm run dev -- --port <port>``),
+    which happens to work ONLY because vite 6.4.2's bundled CLI arg
+    parser keeps every repeated flag as an array (``mri2``'s ``toVal`` in
+    ``node_modules/vite/dist/node/cli.js``: ``out[key] = old == null ? nxt
+    : (Array.isArray(old) ? old.concat(nxt) : [old, nxt]);``) and each
+    command's action then calls
+    ``filterDuplicateOptions(options)``, which does
+    ``options[key] = value[value.length - 1]`` -- i.e. the LAST ``--port``
+    wins, confirmed by reading that exact vendored file. But VJ-9000's
+    ``package.json`` pins vite with a caret range (``^6.2.3``, both in
+    ``dependencies`` and ``devDependencies``), not an exact version, so a
+    future ``npm install`` in that checkout could resolve a different
+    minor/patch whose CLI dedup behavior isn't guaranteed to match. Rather
+    than depend on that holding forever, we bypass the npm script and the
+    ambiguity entirely: spawn vite directly with a single, unambiguous
+    ``--port`` flag (see ``_vite_spawn_cmd``)."""
+    return project_path / "node_modules" / "vite" / "bin" / "vite.js"
+
+
+def _vite_spawn_cmd(cfg: VJConfig, *, preview: bool) -> list[str]:
+    """Build the argv to spawn VJ-9000's own vite CLI directly (``node`` +
+    ``_vite_bin_js``), with exactly one ``--port`` flag -- see
+    ``_vite_bin_js``'s docstring for why this replaced
+    ``npm run dev|preview -- --port ...``.
+
+    Host binding matches what each mode already used before this change:
+    dev mode carried ``--host=0.0.0.0`` inside VJ-9000's own ``dev`` npm
+    script (now bypassed, so it's passed explicitly here); preview mode
+    already passed a bare ``--host`` (binds all interfaces) directly.
+
+    Dev mode now also gets ``--strictPort`` (preview already had it). This
+    is an intentional behavior change from VJ-9000's own ``dev`` script,
+    which had no ``--strictPort`` and would let vite silently slide to the
+    next free port on a collision: this module's own port-collision
+    handling (``_adopt_if_confirmed`` / ``_await_ready``'s identity check)
+    depends on the child actually binding the port we resolved and told it
+    to use, not some other port vite picked on its own, so a busy port
+    must hard-fail here rather than silently move -- resolve_config()'s
+    validation is also what keeps that resolved port off 3000 and out of
+    the SA3 frontend's range in the first place."""
+    vite_js = _vite_bin_js(cfg.project_path)
+    cmd = [cfg.node_path, str(vite_js)]
+    if preview:
+        cmd += ["preview", "--port", str(cfg.port), "--strictPort", "--host"]
+    else:
+        cmd += ["--port", str(cfg.port), "--strictPort", "--host", "0.0.0.0"]
+    return cmd
+
+
 def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
     """True if something is already listening on ``host:port`` — used
     both for readiness polls and for detecting an existing VJ instance
@@ -319,6 +432,150 @@ def _port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
             return True
     except OSError:
         return False
+
+
+# Non-HTTP-protocol failures a loopback probe in this module can hit: refused
+# / reset / timed-out connections (OSError, which urllib.error.URLError also
+# subclasses), a malformed HTTP response from a non-HTTP listener such as an
+# SSH banner (http.client.HTTPException, e.g. BadStatusLine -- NOT an
+# OSError subclass, so it must be listed explicitly), and a malformed header
+# value the stdlib client can't parse (ValueError).
+_PROBE_ERRORS = (OSError, urllib.error.URLError, http.client.HTTPException, ValueError)
+
+_EXR_ACCEPT_HEADER = {"Accept": "application/octet-stream"}
+
+
+def _non_html_200(response: object) -> bool:
+    """True for a 200 response whose Content-Type does not start with
+    ``text/html``. Vite's dev-server SPA fallback (``htmlFallbackMiddleware``)
+    answers ANY missing path with 200 ``text/html`` (the real index page)
+    when no/loose Accept header is present, and some non-Vite SPA static
+    servers do the same unconditionally regardless of Accept -- so a bare
+    200 status is not sufficient proof this is the real asset (T30
+    re-audit, proven against a real Vite 6.4.2 template server)."""
+    if getattr(response, "status", None) != 200:
+        return False
+    content_type = response.headers.get("Content-Type", "")
+    return not content_type.lower().startswith("text/html")
+
+
+def _exr_marker_present(opener: urllib.request.OpenerDirector, port: int) -> bool:
+    """True when ``GET /piz_compressed.exr`` answers a non-html 200. That
+    asset lives at ``VJ-9000/public/piz_compressed.exr`` and Vite serves
+    everything under ``public/`` at the site root in both dev and preview
+    modes, so it is reachable at this exact path either way (verified
+    directly against the real VJ-9000 checkout's ``public/``, ``index.html``,
+    and ``vite.config.ts``).
+
+    Sends ``Accept: application/octet-stream`` on both the HEAD and the
+    GET-fallback request, and treats any ``text/html`` response as a miss
+    regardless of status (see ``_non_html_200``) -- neither on its own is
+    enough to rule out a SPA fallback that ignores Accept.
+
+    Tries HEAD first, reading only the status/headers, never the body.
+    Falls back to GET (again reading only the status/headers before closing
+    the connection without consuming the body) ONLY when HEAD raises
+    ``HTTPError`` 405 or 501 (method not supported) -- never for a genuine
+    404 (the asset really isn't there) or a timeout (the listener is hung);
+    retrying either of those on GET would either mask a real miss or double
+    the time a hung/unrelated listener can stall this probe for.
+
+    A real VJ-9000 instance -- ``vite`` dev server or ``vite preview`` --
+    answers HEAD on a static asset with a normal 200 (Node's static-file
+    serving path handles HEAD natively; verified against
+    ``node_modules/vite/dist/node/chunks/dep-*.js``), so this fallback
+    exists purely for defense against a DIFFERENT, non-Vite static server
+    that might legitimately reject HEAD -- not because real VJ-9000 ever
+    needs it.
+    """
+    url = f"http://127.0.0.1:{port}/piz_compressed.exr"
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers=_EXR_ACCEPT_HEADER)
+        with opener.open(req, timeout=1.0) as response:
+            return _non_html_200(response)
+    except urllib.error.HTTPError as e:
+        if e.code not in (405, 501):
+            return False
+    except _PROBE_ERRORS:
+        return False
+    try:
+        req = urllib.request.Request(url, headers=_EXR_ACCEPT_HEADER)
+        with opener.open(req, timeout=1.0) as response:
+            return _non_html_200(response)
+    except _PROBE_ERRORS:
+        return False
+
+
+def _is_vj_server(port: int) -> bool:
+    """Identity check: does whatever is listening on ``port`` answer as OUR
+    VJ-9000 sidecar (dev or preview Vite server), not some other process that
+    happened to grab the port first (same INT-001 shape as
+    ``lyria/sidecar.py``'s ``_is_lyria_server``, which this is modeled on)?
+
+    VJ-9000 has no backend API route of its own -- it's a pure static SPA
+    (see the module docstring), so there's no JSON endpoint to probe the way
+    foundry/sidecar.py and lyria/sidecar.py do. Two markers are required:
+
+      * ``GET /piz_compressed.exr`` -> a non-html 200 (see
+        ``_exr_marker_present``). This asset is VJ-9000-specific.
+      * ``GET /`` HTML carries an asset/script reference naming this
+        checkout specifically -- ``/src/main.tsx`` for a plain ``vite``
+        dev server (unbundled source, served at ``/``), or
+        ``/vj-app/assets/`` when the served ``dist/`` was produced by
+        ``vite build`` (VJ-9000/vite.config.ts sets ``base: '/vj-app/'``
+        for every ``vite build`` -- not a special "theDAW build" case --
+        which gets baked into the built HTML/JS at build time). ``vite
+        preview`` itself always serves at root ``/`` -- it resolves its
+        own config with ``command: 'serve'``, not ``'build'`` (see
+        ``preview()`` in ``node_modules/vite/dist/node/chunks/dep-*.js``),
+        so its own ``base`` is ``/`` -- but it serves that already-built
+        HTML byte-for-byte, so the ``/vj-app/assets/`` marker still shows
+        up in its response body even though preview's own routing base is
+        ``/``, not ``/vj-app/``.
+
+    The earlier revision of this check also required
+    ``<title>My Google AI Studio App</title>``. That title is the stock
+    AI Studio scaffold template shared by other local AI-Studio-generated
+    projects, and it is the field most likely to be renamed by a user, so
+    it has been dropped as a weak/unreliable marker in favor of the exr
+    asset, which is VJ-9000-specific.
+
+    Uses a ``ProxyHandler({})`` opener rather than plain ``urlopen`` --
+    which honours ``HTTP_PROXY``/``NO_PROXY`` from the environment by
+    default -- for every loopback probe in this file, so a system/corporate
+    proxy can never sit between theDAW and its own loopback sidecar (same
+    rule as ``lyria/sidecar.py``'s ``_is_lyria_server``).
+
+    Every probe in this function and in ``_exr_marker_present`` catches
+    ``_PROBE_ERRORS`` (which includes ``http.client.HTTPException``), so a
+    non-HTTP listener on the port (e.g. an SSH banner) makes this return
+    False instead of raising -- same class of bug the Lyria audit found.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if not _exr_marker_present(opener, port):
+        return False
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/", timeout=1.0) as response:
+            body = response.read(4096)
+    except _PROBE_ERRORS:
+        return False
+    return b"/src/main.tsx" in body or b"/vj-app/assets/" in body
+
+
+def _adopt_if_confirmed(cfg: VJConfig, url: str) -> Optional[str]:
+    """None if the port is free; ``url`` if a confirmed VJ-9000 instance is
+    already listening there (our child, or one the user launched manually);
+    raises if the port is held by something else (INT-001 shape: a bare TCP
+    connect is not enough to adopt a listener as "our sidecar")."""
+    if not _port_is_listening(cfg.port):
+        return None
+    if _is_vj_server(cfg.port):
+        return url
+    raise RuntimeError(
+        f"Port {cfg.port} is already in use by another process that did not "
+        "answer as the VJ sidecar. Set theDAW_VJ_PORT to a free port, or "
+        "stop the process using it, then retry."
+    )
 
 
 def detect_lan_ip() -> Optional[str]:
@@ -391,7 +648,35 @@ def probe() -> dict:
         issues.append(f"no package.json at {pkg_json}")
     if not (shutil.which("npm") or shutil.which("npm.cmd")):
         issues.append("npm not found on PATH — install Node.js first")
-    listening = _port_is_listening(cfg.port)
+    if not (shutil.which("node") or shutil.which("node.exe")):
+        # node is what actually gets spawned now (see _vite_spawn_cmd) --
+        # npm alone isn't sufficient to run the sidecar.
+        issues.append("node not found on PATH — install Node.js first")
+    # A TCP listener on the port isn't enough -- confirm it actually answers
+    # as our VJ sidecar before reporting "listening" (INT-001 shape). A
+    # listener that fails the identity check is a port collision, not us.
+    port_open = _port_is_listening(cfg.port)
+    listening = port_open and _is_vj_server(cfg.port)
+    # Read the module-global _proc exactly once (unlocked -- probe() is a
+    # read-only diagnostic and doesn't take _state_lock) and reuse that
+    # single snapshot everywhere below; reading `_proc.poll()` a second
+    # time later in this function could observe a different process state
+    # (ensure_running()/stop() could run concurrently) and make one
+    # response contradict itself (e.g. "starting" issue text alongside
+    # process_alive=False).
+    own_child_alive = _proc is not None and _proc.poll() is None
+    if port_open and not listening and not own_child_alive:
+        # Only a foreign listener is a collision worth flagging. When our
+        # own child is alive but hasn't answered the identity check yet
+        # (still starting up), that's not "in use by another process" --
+        # it's ours, just not ready.
+        issues.append(
+            f"Port {cfg.port} is already in use by another process that is "
+            "not the VJ sidecar. Set theDAW_VJ_PORT to a free port, or stop "
+            "the process using it."
+        )
+    elif own_child_alive and not listening:
+        issues.append("VJ sidecar is starting — not answering yet.")
     return {
         "project_path": str(pkg),
         "port": cfg.port,
@@ -400,7 +685,7 @@ def probe() -> dict:
         "mode": "dev",
         "build_stale": _build_is_stale(pkg) if pkg.is_dir() else None,
         "listening": listening,
-        "process_alive": _proc is not None and _proc.poll() is None,
+        "process_alive": own_child_alive,
         "url": _resolved_url or f"http://localhost:{cfg.port}",
         # LAN-reachable URL for phones/tablets (None if offline). The
         # Vite server is bound to 0.0.0.0 with allowedHosts disabled so
@@ -415,23 +700,33 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
     """Spawn the VJ Vite server (preview by default, dev with
     theDAW_VJ_DEV=1) if it isn't already, and return the URL it serves
     on. Safe to call repeatedly — no-ops if the port is already
-    listening, even if some OTHER process started the server."""
+    listening AND confirmed to be our sidecar (INT-001 shape), even if
+    some other process started it."""
     global _proc, _resolved_url
     with _state_lock:
         cfg = resolve_config()
         url = f"http://localhost:{cfg.port}"
 
-        # Already listening (either our subprocess or one the user
-        # launched manually) — just return the URL.
-        if _port_is_listening(cfg.port):
-            _resolved_url = url
-            return url
-
         if _proc is not None and _proc.poll() is None:
-            # We have a live child but it's not yet listening; fall
-            # through to the wait-for-ready loop below.
+            # We already have a live child. Whatever is (or isn't yet)
+            # listening on the port right now is OURS -- either that child
+            # still starting up (not yet answering identity checks) or
+            # already confirmed and ready. Never call _adopt_if_confirmed
+            # here: it would raise "already in use by another process"
+            # about our own subprocess on a transient identity-check miss
+            # during startup. _await_ready() below confirms identity once
+            # it actually answers, or times out with its own diagnosis.
             pass
         else:
+            # No live child of ours — a listener here, if any, is either an
+            # existing confirmed VJ-9000 instance (adopt it) or something
+            # else entirely; a bare TCP connect isn't proof it's actually
+            # our VJ sidecar.
+            adopted = _adopt_if_confirmed(cfg, url)
+            if adopted is not None:
+                _resolved_url = adopted
+                return adopted
+
             # No live child — spawn one.
             if not cfg.project_path.is_dir():
                 raise RuntimeError(
@@ -478,8 +773,18 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                         f"See {SIDECAR_LOG_PATH} for the full output, then retry."
                     )
                 log.info("vj.sidecar: npm install complete")
+            # Spawn VJ-9000's own vite CLI directly (node + vite.js) rather
+            # than through the npm dev/preview scripts -- see
+            # _vite_bin_js's docstring for why (VJ-9000's dev script
+            # hardcodes the banned port 3000).
+            vite_js = _vite_bin_js(cfg.project_path)
+            if not vite_js.is_file():
+                raise RuntimeError(
+                    f"VJ sidecar: vite not found at {vite_js}. Run npm "
+                    f"install in {cfg.project_path} first."
+                )
             if cfg.dev_mode:
-                cmd = [cfg.npm_path, "run", "dev", "--", "--port", str(cfg.port)]
+                cmd = _vite_spawn_cmd(cfg, preview=False)
             else:
                 # Production serve: build once (when stale), then `vite
                 # preview` over dist/ — same port contract and SPA
@@ -488,31 +793,22 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 # URL keeps working; allowedHosts is inherited from the
                 # project's server config.
                 _ensure_build(cfg)
-                cmd = [
-                    cfg.npm_path,
-                    "run",
-                    "preview",
-                    "--",
-                    "--port",
-                    str(cfg.port),
-                    "--strictPort",
-                    "--host",
-                ]
+                cmd = _vite_spawn_cmd(cfg, preview=True)
             log.info(
                 "vj.sidecar: spawning %s (cwd=%s)",
                 " ".join(cmd),
                 cfg.project_path,
             )
             try:
-                # On Windows, npm is a .cmd shim; CREATE_NEW_PROCESS_GROUP
-                # keeps the spawn quiet inside the SA3 backend console
-                # instead of popping a separate cmd window. stdout/stderr go
-                # to the sidecar log file (data/logs/vj-sidecar.log) so a
-                # server that dies before ready leaves its actual error
-                # somewhere findable instead of vanishing into DEVNULL.
+                # CREATE_NEW_PROCESS_GROUP keeps the spawn quiet inside the
+                # SA3 backend console instead of popping a separate cmd
+                # window. stdout/stderr go to the sidecar log file
+                # (data/logs/vj-sidecar.log) so a server that dies before
+                # ready leaves its actual error somewhere findable instead
+                # of vanishing into DEVNULL.
                 creationflags = 0
                 if sys.platform == "win32":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 with _sidecar_log_handle() as spawn_out:
                     _proc = subprocess.Popen(
                         cmd,
@@ -525,31 +821,72 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                     )
             except FileNotFoundError as e:
                 raise RuntimeError(
-                    f"Failed to launch VJ sidecar: {e}. Is npm on PATH?"
+                    f"Failed to launch VJ sidecar: {e}. Is Node.js on PATH?"
                 ) from e
 
         if not wait_for_ready:
             _resolved_url = url
             return url
 
-        deadline = time.monotonic() + PORT_READY_TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            if _port_is_listening(cfg.port):
-                _resolved_url = url
-                log.info("vj.sidecar: ready at %s", url)
-                return url
+        return _await_ready(cfg, url)
+
+
+def _await_ready(cfg: VJConfig, url: str) -> str:
+    """Poll until the port is listening and confirmed as VJ-9000, the
+    spawned child exits, or the readiness deadline passes. Split out of
+    ``ensure_running()`` so the two distinct timeout diagnoses can be told
+    apart: the port never opened at all (npm-install/vite startup hang) vs.
+    the port opened but never answered as VJ-9000 (some other process is
+    serving that port) -- and so this loop can be exercised directly in
+    tests without spawning a real npm/vite process."""
+    global _resolved_url
+    deadline = time.monotonic() + PORT_READY_TIMEOUT_SEC
+    port_opened_unconfirmed = False
+    while time.monotonic() < deadline:
+        if not _port_is_listening(cfg.port):
             if _proc is not None and _proc.poll() is not None:
                 raise RuntimeError(
                     "VJ sidecar exited before becoming ready (rc="
-                    f"{_proc.returncode}). Check the project's "
-                    "package.json scripts (preview/dev)."
+                    f"{_proc.returncode}). See {SIDECAR_LOG_PATH} for the "
+                    "child's actual output."
                 )
             time.sleep(PORT_POLL_INTERVAL_SEC)
+            continue
+        # Something is listening. Re-check the deadline immediately before
+        # the expensive identity probe (_is_vj_server can issue up to two
+        # HTTP requests with a 1.0s timeout each) so a hung/slow listener
+        # discovered right as the deadline expires can't push this
+        # function's caller (ensure_running, which calls this inside
+        # `with _state_lock:`) further past PORT_READY_TIMEOUT_SEC than one
+        # such probe already costs.
+        if time.monotonic() >= deadline:
+            port_opened_unconfirmed = True
+            break
+        if _is_vj_server(cfg.port):
+            _resolved_url = url
+            log.info("vj.sidecar: ready at %s", url)
+            return url
+        port_opened_unconfirmed = True
+        if _proc is not None and _proc.poll() is not None:
+            raise RuntimeError(
+                "VJ sidecar exited before becoming ready (rc="
+                f"{_proc.returncode}). See {SIDECAR_LOG_PATH} for the "
+                "child's actual output."
+            )
+        time.sleep(PORT_POLL_INTERVAL_SEC)
+    if port_opened_unconfirmed:
         raise RuntimeError(
-            f"VJ sidecar didn't open port {cfg.port} within "
-            f"{int(PORT_READY_TIMEOUT_SEC)}s — likely a npm-install "
-            "or vite startup hang."
+            f"VJ sidecar opened port {cfg.port} but did not answer as "
+            "VJ-9000 (missing the /piz_compressed.exr asset and/or the "
+            "/src/main.tsx or /vj-app/assets/ marker in GET /) within "
+            f"{int(PORT_READY_TIMEOUT_SEC)}s. The process listening on that "
+            "port may be serving a different project."
         )
+    raise RuntimeError(
+        f"VJ sidecar didn't open port {cfg.port} within "
+        f"{int(PORT_READY_TIMEOUT_SEC)}s — likely a npm-install "
+        "or vite startup hang."
+    )
 
 
 def stop() -> bool:
@@ -564,9 +901,11 @@ def stop() -> bool:
             return False
         try:
             if sys.platform == "win32":
-                # npm.cmd is a shim: terminate() kills the cmd wrapper
-                # and leaves the node (vite) child listening. Kill the
-                # whole tree.
+                # We spawn `node vite.js` directly now (no npm.cmd shim
+                # layer), but vite itself can still spawn worker children
+                # (e.g. esbuild, optimizeDeps workers) -- terminate() only
+                # signals the node process we hold the handle to, not its
+                # children, so kill the whole tree via taskkill /T.
                 subprocess.call(
                     ["taskkill", "/PID", str(_proc.pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,

@@ -190,8 +190,9 @@ extraResources:
   # uv + ffmpeg + ffprobe, downloaded by scripts/fetch-runtime-tools.mjs before
   # the build. Prepended to the spawned backend's PATH at runtime. The contents
   # are HOST-PLATFORM-SPECIFIC (Windows: uv.exe/ffmpeg.exe/ffprobe.exe, macOS:
-  # uv/ffmpeg/ffprobe), so a Windows installer must be built on Windows and a
-  # mac dmg on macOS with a freshly fetched tools dir.
+  # uv/ffmpeg/ffprobe, plus ffmpeg-libs/ on Apple Silicon, the dylibs that
+  # ffmpeg and ffprobe load from @loader_path), so a Windows installer must be
+  # built on Windows and a mac dmg on macOS with a freshly fetched tools dir.
   - from: resources/tools
     to: tools
     filter:
@@ -207,6 +208,16 @@ win:
     - nsis
   # artifactName keeps the installer name stable for release uploads.
   artifactName: theDAW-Setup-${version}.${ext}
+  # Live VST host exe (+ vst3_probe.exe), staged by scripts/stage-vst-host.mjs
+  # from native/vst-host/bin into build-resources/vst-host. Lands at
+  # resources/vst-host in the installed app; main/index.ts's buildBackendEnv()
+  # points THEDAW_VST_HOST at it when present. Windows-only: the native host is
+  # a Windows exe and macOS has no equivalent build yet. The staging dir is
+  # gitignored + regenerated, and staging still runs (leaving only a README)
+  # when the host hasn't been built, so packaging never fails on a missing path.
+  extraResources:
+    - from: build-resources/vst-host
+      to: vst-host
 
 nsis:
   # Per-user install (no elevation). Lands under %LOCALAPPDATA%\Programs\theDAW,

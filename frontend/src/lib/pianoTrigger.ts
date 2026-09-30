@@ -12,14 +12,28 @@
 import { getEngineCtx, getMasterGain } from '../state/playerStore';
 import { triggerActiveVoice } from './midiSynth';
 import type { VoiceBend } from './pitchBendVoice';
-import { isSoundfontActive, previewNoteSF } from './soundfontEngine';
+import { ensureSoundfontReady, isLiveSynthReady, isSoundfontActive, liveNoteOff, liveNoteOn, previewNoteSF } from './soundfontEngine';
+import { DRUM_CHANNEL } from './editChannels';
+import { KEYBOARD_LIVE_CHANNEL } from './pitchBend';
+import type { ClipVoice } from './clipProgram';
 
 /** Where a scheduled roll note plays: its soundfont channel (a lane with a pitch
- *  bend has its own) and the bend a built-in voice follows. */
+ *  bend has its own, and every part after the first has its own, lib/rollTracks
+ *  rollLiveChannels), the bend a built-in voice follows, and the program and
+ *  bank it sounds (its part's, lib/rollTracks partVoice). A program plays
+ *  through the soundfont even while the picker is on Basic, as the clip does in
+ *  EDIT; `percussion` puts the note on a drum channel, where the program is the
+ *  kit: `channel` when it is one (a channel n with n % 16 === 9), else 9. */
 export interface PianoNoteVoice {
   channel?: number;
   bend?: VoiceBend;
+  program?: number;
+  bank?: number;
+  percussion?: boolean;
 }
+
+/** True for a soundfont channel SpessaSynth plays as drums: every n with n % 16 === 9. */
+export const isDrumChannel = (channel: number | undefined): boolean => channel !== undefined && channel % 16 === DRUM_CHANNEL;
 
 /** Live preview convenience: route the shared synth voice through the engine
  *  master/analyser. The voice itself lives in `lib/midiSynth` so previews,
@@ -34,24 +48,99 @@ export const triggerPianoNote = (
 ) => {
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume();
-  if (isSoundfontActive()) {
+  if (voice?.program !== undefined || isSoundfontActive()) {
     // The soundfont note is timed at `when` on the synth. Its bend is the
     // channel's pitch wheel, which the roll's scheduler sends for the same times.
-    void previewNoteSF(midi, velocity, duration, voice?.channel ?? 0, when);
+    const channel = voice?.percussion ? (isDrumChannel(voice.channel) ? (voice.channel as number) : DRUM_CHANNEL) : voice?.channel ?? 0;
+    void previewNoteSF(midi, velocity, duration, channel, when, voice?.program, voice?.percussion ? 0 : voice?.bank ?? 0);
     return;
   }
   triggerActiveVoice(ctx, getMasterGain(), midi, velocity, when, duration, master, voice?.bend);
 };
 
 /**
- * Public alias used by the global Web MIDI listener in App.tsx (and the Sway
- * surface). Defaults `when` to the engine's current time + a tiny lookahead,
- * `duration` to a comfortable 180ms decay, and `master` to 0.8 so
- * controller-driven notes feel uniform without callers having to know the
- * synth's internals.
+ * A one-shot controller note: the Sway surface's pads before the soundfont is
+ * live. Defaults `when` to the engine's current time + a tiny lookahead,
+ * `duration` to a 180 ms decay, and `master` to 0.8. A hardware keyboard holds
+ * its notes instead (startHeldNote, lib/keyboardMonitor).
  */
 export const triggerPianoNoteFromMidi = (midi: number, velocity = 100, duration = 0.18) => {
   const ctx = getEngineCtx();
   if (ctx.state === 'suspended') void ctx.resume();
   triggerPianoNote(midi, velocity, ctx.currentTime + 0.02, duration, 0.8);
+};
+
+/** The longest a built-in voice holds a key before its own envelope ends the note. */
+export const MAX_BUILTIN_HOLD_SEC = 16;
+
+/** What startHeldNote started, for stopHeldNote. */
+export type HeldNote =
+  | { kind: 'soundfont'; channel: number; note: number }
+  | { kind: 'builtin'; gate: GainNode }
+  | { kind: 'routed'; release: () => void };
+
+/**
+ * Where a hardware key goes instead of the synth, when something claims it:
+ * state/rollInstruments sets this while the MIDI tab is open, and it plays a
+ * key through the roll's active part's VST3 instrument, returning what
+ * releases it, or null when that part plays no plugin now. Kept as a
+ * registration so this module, which the first paint loads, imports none of
+ * the roll.
+ */
+export type HeldKeyRoute = (note: number, velocity: number) => (() => void) | null;
+let heldKeyRoute: HeldKeyRoute | null = null;
+
+/** Claim hardware keys (`route`), or give them back (null). */
+export const setHeldKeyRoute = (route: HeldKeyRoute | null): void => {
+  heldKeyRoute = route;
+};
+
+/** A key through the claimed route, when there is one and it takes the key; null otherwise. */
+export const startRoutedNote = (note: number, velocity: number): HeldNote | null => {
+  const release = heldKeyRoute?.(note, velocity) ?? null;
+  return release ? { kind: 'routed', release } : null;
+};
+
+/**
+ * Start a hardware keyboard's key and keep it sounding until stopHeldNote. A
+ * voice with a program plays on the preview synth's keyboard channel (the drum
+ * channel for a percussion voice), switched to that program. Until the
+ * soundfont is live, and for a voice with no program (the picker on Basic or a
+ * synth voice), the built-in voice plays it through a gate that stopHeldNote
+ * closes.
+ */
+export const startHeldNote = (note: number, velocity: number, voice: ClipVoice): HeldNote => {
+  const ctx = getEngineCtx();
+  if (ctx.state === 'suspended') void ctx.resume();
+  if (voice.program !== undefined && isLiveSynthReady()) {
+    const channel = voice.percussion ? DRUM_CHANNEL : KEYBOARD_LIVE_CHANNEL;
+    liveNoteOn(channel, voice.program, note, velocity, voice.percussion ? 0 : voice.bank ?? 0);
+    return { kind: 'soundfont', channel, note };
+  }
+  if (voice.program !== undefined) void ensureSoundfontReady(); // the next key plays the soundfont
+  const gate = ctx.createGain();
+  gate.connect(getMasterGain());
+  triggerActiveVoice(ctx, gate, note, velocity, ctx.currentTime + 0.005, MAX_BUILTIN_HOLD_SEC, 0.8);
+  return { kind: 'builtin', gate };
+};
+
+/** Release a key startHeldNote started: a note-off, or the gate closing over the built-in voice's release. */
+export const stopHeldNote = (held: HeldNote): void => {
+  if (held.kind === 'routed') {
+    held.release();
+    return;
+  }
+  if (held.kind === 'soundfont') {
+    liveNoteOff(held.channel, held.note);
+    return;
+  }
+  const ctx = getEngineCtx();
+  held.gate.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+  window.setTimeout(() => {
+    try {
+      held.gate.disconnect();
+    } catch {
+      /* already disconnected */
+    }
+  }, 500);
 };

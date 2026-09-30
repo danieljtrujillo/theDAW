@@ -8,7 +8,11 @@
  * status 'sharding' meanwhile and a tile stays silent until the rows land.
  */
 import { create } from 'zustand';
-import { useLibraryStore } from './libraryStore';
+import { useLibraryStore, type LibraryEntry } from './libraryStore';
+import { useLibraryCounts } from './libraryCountsStore';
+import { resolveLibraryEntryRef } from '../lib/backendLocalProvider';
+import { LibraryOpeningError } from '../lib/libraryIndexStatus';
+import { whenLibraryOpen } from './libraryIndexStatusStore';
 import { logError, logInfo } from './logStore';
 import type { LoomQuery, LoomRole } from '../lib/loomScore';
 
@@ -109,7 +113,8 @@ export const useShardIndexStore = create<ShardIndexState>()((set, get) => ({
         let rows = await fetchEntry(entryId);
         if (rows.length === 0 && opts?.run !== false) {
           set((s) => ({ status: { ...s.status, [entryId]: 'sharding' } }));
-          const title = useLibraryStore.getState().entries.find((e) => e.id === entryId)?.title ?? entryId;
+          // By id: `entries` holds only the loaded rows of the library.
+          const title = useLibraryStore.getState().getById(entryId)?.title ?? entryId;
           logInfo('loom', `Sharding "${title}"…`);
           const run = await fetch(`/api/shards/${encodeURIComponent(entryId)}/run`, { method: 'POST' });
           if (!run.ok) {
@@ -168,11 +173,18 @@ export const useShardIndexStore = create<ShardIndexState>()((set, get) => ({
   },
 }));
 
-/** An entry reference from the notation — an id, or a title fragment — to an id. */
+/** A title as a reference is compared against it: lowercased, a file extension
+ *  dropped, every run of spaces, underscores, dashes and dots one space. The
+ *  backend folds the same way (`fold_title` in library/db.py). */
 const foldTitle = (s: string) => s.toLowerCase().replace(/\.[a-z0-9]{2,4}$/, '').replace(/[\s_\-–—.]+/g, ' ').trim();
 
-export function resolveEntryRef(ref: string): string | null {
-  const entries = useLibraryStore.getState().entries;
+/**
+ * The same lookup over rows held in hand: the exact id, an id prefix of eight
+ * characters or more, then a title folded equal, starting with, containing.
+ * For a backend with no resolve route, which hands the client the whole
+ * library anyway.
+ */
+export function resolveEntryRefIn(ref: string, entries: readonly LibraryEntry[]): string | null {
   if (entries.some((e) => e.id === ref)) return ref;
   const byPrefix = ref.length >= 8 && entries.find((e) => e.id.startsWith(ref));
   if (byPrefix) return byPrefix.id;
@@ -187,18 +199,70 @@ export function resolveEntryRef(ref: string): string | null {
   return within ? within.id : null;
 }
 
+/** Answers per library revision: a rename or a delete is a new revision. */
+const refCache = new Map<string, Promise<string | null>>();
+let refCacheRevision = -1;
+
+/**
+ * An entry reference from the notation — an id, an id prefix, or a title
+ * fragment — to an id, over the WHOLE library: the backend answers it
+ * (`GET /api/library/entries/resolve`), so a song on no page the LIBRARY tab
+ * has loaded is found all the same. An id already in hand is answered at once.
+ *
+ * While the backend is still opening the library the route answers 503: the
+ * lookup waits until the library has opened and asks again, so a LOOM score
+ * opened during a schema upgrade finds its tracks once the upgrade is over.
+ * A failed open answers null, with the reason in the LOG.
+ */
+export function resolveEntryRef(ref: string): Promise<string | null> {
+  // An id on a loaded page. Not `getById`: that fetches an id it does not
+  // hold, and most references are titles, not ids.
+  if (useLibraryStore.getState().entries.some((e) => e.id === ref)) return Promise.resolve(ref);
+  const revision = useLibraryCounts.getState().revision;
+  if (revision !== refCacheRevision) {
+    refCache.clear();
+    refCacheRevision = revision;
+  }
+  const cached = refCache.get(ref);
+  if (cached) return cached;
+  const ask = async (): Promise<string | null> => {
+    for (;;) {
+      try {
+        const id = await resolveLibraryEntryRef(ref);
+        return id === undefined ? resolveEntryRefIn(ref, useLibraryStore.getState().entries) : id;
+      } catch (e) {
+        if (!(e instanceof LibraryOpeningError) || e.status.phase === 'failed') throw e;
+        const status = await whenLibraryOpen(e.status);
+        if (status === null || status.phase === 'failed') throw e;
+      }
+    }
+  };
+  const run = ask().catch((e: unknown) => {
+    refCache.delete(ref);
+    logError('loom', `Could not look up "${ref}" in the library: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  });
+  refCache.set(ref, run);
+  return run;
+}
+
 export function roleMatches(want: string | undefined, have: string): boolean {
   if (!want) return true;
   if (want === 'drums') return DRUM_ROLES.has(have);
   return want === have;
 }
 
-/** In-memory candidates for a query over the given entries (the crate, or a pin). */
-export function localCandidates(q: LoomQuery, entryIds: string[]): ShardRow[] {
+/** In-memory candidates for a query over the given entries (the crate, or a
+ *  pin). `excludeId` is `q.excludeEntry` already resolved to an id. */
+export function localCandidates(
+  q: LoomQuery,
+  entryIds: string[],
+  excludeId: string | null = null,
+): ShardRow[] {
   const by = useShardIndexStore.getState().byEntry;
   const out: ShardRow[] = [];
   for (const id of entryIds) {
-    if (q.excludeEntry && resolveEntryRef(q.excludeEntry) === id) continue;
+    if (excludeId && excludeId === id) continue;
     for (const r of by[id] ?? []) {
       if (q.shardId && r.id !== q.shardId) continue;
       if (!roleMatches(q.role, r.role)) continue;

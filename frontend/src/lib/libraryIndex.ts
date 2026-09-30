@@ -42,12 +42,25 @@ export interface LibraryStemRow {
   parent_id?: string;
 }
 
+/**
+ * The instrument/part a MIDI row stands for: its `midi_path` basename minus the
+ * `.mid`/`.midi` extension (guitar/bass/drums/…/full), falling back to `source`
+ * and then "midi". Per-stem MIDIs all carry `source: "stem"`, so the filename —
+ * which the backend writes as `<stem_name>.mid` — is the only place the real
+ * part survives. Shared so the LIBRARY sub-tab row and `midiRowLabel` agree.
+ */
+export const midiRowPart = (m: LibraryMidiRow): string => {
+  // The LIBRARY sub-tab row reaching here is an untyped `Record<string,
+  // unknown>`, so a non-string `midi_path` must neither throw inside a memoized
+  // render nor be used as a label: it is treated as absent. `source` is coerced
+  // for the same reason — the declared `string` return has to hold.
+  const path = typeof m.midi_path === 'string' ? m.midi_path : '';
+  return path.split(/[\\/]/).pop()?.replace(/\.midi?$/i, '') || String(m.source ?? '') || 'midi';
+};
+
 /** "<parent title> · <midi filename>" — the label every MIDI surface shows. */
 export const midiRowLabel = (m: LibraryMidiRow): string => {
-  const part =
-    (m.midi_path || '').split(/[\\/]/).pop()?.replace(/\.midi?$/i, '') ||
-    m.source ||
-    'midi';
+  const part = midiRowPart(m);
   const title = (m.parent_title || m.parent_id || 'Untitled').replace(/\.[a-z0-9]+$/i, '');
   return `${title} · ${part}`;
 };

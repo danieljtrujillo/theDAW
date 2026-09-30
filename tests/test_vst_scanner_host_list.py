@@ -1,0 +1,553 @@
+"""The VST3 scan classifies a plugin from its module's factory, not by loading it.
+
+Seen live on 2026-09-29, on a fresh install of 41 plugins: a plugin with no
+``Contents/moduleinfo.json`` was classified only by the metadata probe, which
+loads the whole plugin through pedalboard in a subprocess with a 25 s timeout.
+Surge XT, u-he Zebralette 3 and Six Sines outlast that load three times, were
+recorded as probed with category "unknown" for good, and EDIT's instrument
+slot, which lists only category "instrument", never offered them. A rescan
+carried the "unknown" verdict and its timeout count straight across.
+
+``thedaw-vst-host --list --plugin <path>`` reads the module's factory class
+info (name, vendor, version, sub-categories, class id) without instantiating a
+class, in well under a second. These tests replay the scans the app makes
+(``GET /api/vst/scan`` with ``refresh=false`` on mount, ``refresh=true`` from a
+rescan key) against a fake ``subprocess.run`` that answers ``--list`` with what
+the real host printed for these modules on the user's machine, and answers the
+load probe the way those synths did: a timeout.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import threading
+from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from backend.modules.vst import live_host
+from backend.modules.vst import path_policy, scanner
+from backend.modules.vst import router as vst_router
+from backend.modules.vst.scanner import Vst3PluginInfo, carry_over_metadata
+
+# What thedaw-vst-host --list printed for these modules on 2026-09-29. Six Sines
+# logs a line from its own module entry before the host's listing, and holds
+# two instrument classes.
+HOST_LISTINGS = {
+    "Surge XT.vst3": (
+        '[{"name":"Surge XT","vendor":"Surge Synth Team","version":"1.3.4",'
+        '"category":"Instrument|Synth","identifier":"01EFCDAB8291EBFA566D624153675854",'
+        '"format":"VST3"}]\n'
+    ),
+    "Zebralette3.vst3": (
+        '[{"name":"Zebralette3","vendor":"u-he","version":"3.0.0",'
+        '"category":"Instrument|u-he","identifier":"695B9DD3AFD6FA42123456785A334C45",'
+        '"format":"VST3"}]\n'
+    ),
+    "Six Sines.vst3": (
+        "src/clap/six-sines-clap-entry-impl.cpp:190 Initializing Six Sines "
+        "1.2.0.18ecb36 / v1.2.1\n"
+        '[{"name":"Six Sines","vendor":"BaconPaul","version":"1.2.0.18ecb36",'
+        '"category":"Instrument|Synth","identifier":"30D2C648CCAABA57976D20DEFF9B93C1",'
+        '"format":"VST3"},'
+        '{"name":"Six Sines, Seven Outs","vendor":"BaconPaul","version":"1.2.0.18ecb36",'
+        '"category":"Instrument|Synth","identifier":"346DA63783E28356B952CD15E50BAA6C",'
+        '"format":"VST3"}]\n'
+    ),
+    "OTT.vst3": (
+        '[{"name":"OTT","vendor":"Xfer Records","version":"1,3,7,0",'
+        '"category":"Fx|Dynamics","identifier":"5854535654666F547474000000000000",'
+        '"format":"VST3"}]\n'
+    ),
+    "MT-PowerDrumKit.vst3": (
+        '[{"name":"MT-PowerDrumKit","vendor":"MANDA AUDIO","version":"2.1.5.1",'
+        '"category":"Instrument|Drum","identifier":"24029AE7776DB2676A4FFB0690BFCFC8",'
+        '"format":"VST3"}]\n'
+    ),
+}
+
+# The modules pedalboard dies loading. On 2026-09-29 the load probe of
+# MT-PowerDrumKit exited 0xC0000005 (an access violation), and so did
+# ``host.render_instrument`` on it, which is what POST /api/vst/render-midi
+# runs inside the server for every bounce, freeze and export.
+CRASHES_ON_LOAD = {"MT-PowerDrumKit.vst3"}
+ACCESS_VIOLATION = 0xC0000005
+
+# The synths whose full load outlasted the probe's timeout on the user's machine.
+SLOW_TO_LOAD = {"Surge XT.vst3", "Zebralette3.vst3", "Six Sines.vst3"}
+SYNTHS = {"Surge XT", "Zebralette3", "Six Sines"}
+
+# What the pedalboard load probe reports for a plugin it does load in time.
+PROBE_RESULTS = {
+    "OTT.vst3": {
+        "display_name": "OTT",
+        "identifier": "VST3-OTT-1c1d1e1f-5854535654666f54",
+        "manufacturer": "Xfer Records",
+        "version": "1.3.7",
+        "category": "effect",
+    },
+    "Legacy.vst3": {
+        "display_name": "Legacy Delay",
+        "identifier": "VST3-Legacy Delay-0a0b0c0d-4c656761",
+        "manufacturer": "Old Vendor",
+        "version": "0.9",
+        "category": "effect",
+    },
+}
+
+
+class FakeRun:
+    """``subprocess.run`` for the two children the scanner starts.
+
+    ``--list`` is the native host: it answers from ``HOST_LISTINGS``, fails
+    the way the real host does (exit 4, an error line on stdout) for a module
+    it has no listing for, and hangs for any name in ``list_hangs``. ``--probe``
+    is the pedalboard load: it dies with an access violation for
+    ``CRASHES_ON_LOAD``, times out for ``SLOW_TO_LOAD``, and answers from
+    ``PROBE_RESULTS`` otherwise; ``probe_answers`` overrides that per module
+    with a function of how many times it has been loaded (1 on the first).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.list_hangs: set[str] = set()
+        self.probe_answers: dict[str, Callable[[list[str], int], object]] = {}
+
+    def __call__(self, cmd, **kwargs):
+        cmd = [str(part) for part in cmd]
+        self.calls.append(cmd)
+        if "--list" in cmd:
+            name = Path(cmd[cmd.index("--plugin") + 1]).name
+            if name in self.list_hangs:
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            listing = HOST_LISTINGS.get(name)
+            if listing is None:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    4,
+                    stdout='{"ev":"error","text":"LoadLibrary failed","fatal":true}\n',
+                    stderr="LoadLibrary failed\n",
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=listing, stderr="")
+        if "--probe" in cmd:
+            name = Path(cmd[-1]).name
+            if name in self.probe_answers:
+                return self.probe_answers[name](cmd, self.probes(name))
+            if name in CRASHES_ON_LOAD:
+                return subprocess.CompletedProcess(
+                    cmd, ACCESS_VIOLATION, stdout="", stderr=""
+                )
+            if name in SLOW_TO_LOAD or name not in PROBE_RESULTS:
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(PROBE_RESULTS[name]) + "\n", stderr=""
+            )
+        raise AssertionError(f"the scan started an unexpected child: {cmd}")
+
+    def lists(self, name: str) -> int:
+        return sum(
+            1
+            for c in self.calls
+            if "--list" in c and Path(c[c.index("--plugin") + 1]).name == name
+        )
+
+    def probes(self, name: str) -> int:
+        return sum(1 for c in self.calls if "--probe" in c and Path(c[-1]).name == name)
+
+
+def _file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"stand-in module")
+
+
+@pytest.fixture
+def vst3_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The user's VST3 folder, shaped as it was: Surge XT is a bundle in a
+    vendor folder with no moduleinfo.json, the rest are single-file modules."""
+    root = tmp_path / "VST3"
+    bundle = root / "Surge Synth Team" / "Surge XT.vst3"
+    if scanner.platform.system() == "Darwin":
+        bundle.mkdir(parents=True)
+    else:
+        _file(bundle / "Contents" / scanner._arch_dirs()[0] / "Surge XT.vst3")
+    for name in ("Zebralette3.vst3", "Six Sines.vst3", "OTT.vst3"):
+        _file(root / name)
+    monkeypatch.setattr(scanner, "_default_vst3_dirs", lambda: [root])
+    monkeypatch.setattr(path_policy, "allowed_roots", lambda: [root.resolve()])
+    monkeypatch.setattr(scanner, "_cache_path", lambda: tmp_path / "scan.json")
+    return root
+
+
+@pytest.fixture
+def run(monkeypatch: pytest.MonkeyPatch) -> FakeRun:
+    fake = FakeRun()
+    monkeypatch.setattr(scanner.subprocess, "run", fake)
+    return fake
+
+
+@pytest.fixture
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Switches theDAW's native host between built and not built.
+
+    Found the way the live host finds it: ``THEDAW_VST_HOST``, then
+    ``native/vst-host/bin``. The built path is pointed into tmp so a developer
+    machine's real binary never answers for the test.
+    """
+    binary = tmp_path / "vst-host" / "thedaw-vst-host.exe"
+    monkeypatch.setattr(
+        live_host, "default_host_path", lambda: tmp_path / "unbuilt" / binary.name
+    )
+    monkeypatch.delenv(live_host.HOST_ENV_VAR, raising=False)
+
+    def built(yes: bool) -> None:
+        if yes:
+            _file(binary)
+            monkeypatch.setenv(live_host.HOST_ENV_VAR, str(binary))
+        else:
+            monkeypatch.delenv(live_host.HOST_ENV_VAR, raising=False)
+
+    return built
+
+
+class Background:
+    """What the scans handed the metadata worker (``handed``), and how many
+    children the scan requests had started when each handed it over
+    (``calls_at_start``): a child before that index ran inside the request."""
+
+    def __init__(self) -> None:
+        self.handed: list[list[Vst3PluginInfo]] = []
+        self.calls_at_start: list[int] = []
+
+
+@pytest.fixture
+def background(monkeypatch: pytest.MonkeyPatch, run: FakeRun) -> Background:
+    """Runs the metadata worker a scan starts, to completion, before the test
+    reads on. It is the real worker on the real cache, only not on a thread.
+    The scan's answer is already built when it starts the worker, so the
+    answer is what the request knew on its own."""
+    seen = Background()
+
+    def start(plugins: list[Vst3PluginInfo]) -> bool:
+        seen.handed.append(copy.deepcopy(plugins))
+        seen.calls_at_start.append(len(run.calls))
+        if not any(not p.probed and p.loadable for p in plugins):
+            return False
+        scanner._enrich_worker(copy.deepcopy(plugins), scanner._rescan_serial)
+        return True
+
+    monkeypatch.setattr(vst_router, "start_background_enrichment", start)
+    return seen
+
+
+@pytest.fixture
+def client() -> TestClient:
+    app = FastAPI()
+    app.include_router(vst_router.router, prefix="/api/vst")
+    return TestClient(app, client=("127.0.0.1", 51000))
+
+
+def _scan(client: TestClient, refresh: bool) -> dict[str, dict]:
+    """``vstStore.scan(refresh)``'s request, answered as {display name: entry}."""
+    response = client.get(f"/api/vst/scan?refresh={'true' if refresh else 'false'}")
+    assert response.status_code == 200, response.text
+    return {p.get("display_name") or p["name"]: p for p in response.json()["plugins"]}
+
+
+def _instrument_slot(plugins: dict[str, dict]) -> set[str]:
+    """What EDIT's instrument slot offers (TrackVstInstrument instrumentPlugins)."""
+    return {name for name, p in plugins.items() if p["category"] == "instrument"}
+
+
+def test_the_first_scan_offers_the_synths_whose_load_outlasts_the_probe(
+    vst3_root, run, host, background, client
+):
+    host(True)
+
+    plugins = _scan(client, refresh=False)
+
+    assert _instrument_slot(plugins) == SYNTHS
+    surge = plugins["Surge XT"]
+    assert surge["manufacturer"] == "Surge Synth Team"
+    assert surge["version"] == "1.3.4"
+    assert surge["identifier"] == "01EFCDAB8291EBFA566D624153675854"
+    assert plugins["Zebralette3"]["manufacturer"] == "u-he"
+    assert plugins["OTT"]["category"] == "effect"
+    # Six Sines holds two instrument classes; the entry is the first one, the
+    # class a loader opens when none is named, under its own name.
+    six = plugins["Six Sines"]
+    assert six["category"] == "instrument"
+    assert six["identifier"] == "30D2C648CCAABA57976D20DEFF9B93C1"
+    # The answer came from the listing alone: the request loaded nothing.
+    in_request = run.calls[: background.calls_at_start[-1]]
+    assert not any("--probe" in c for c in in_request)
+    # The worker then loads each plugin out of process, only to learn whether
+    # the server's own host survives it. The synths' loads outlast the probe
+    # three times, and they stay the instruments their factories say they are.
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+    again = _scan(client, refresh=False)
+    assert _instrument_slot(again) == SYNTHS
+    assert again["Surge XT"]["manufacturer"] == "Surge Synth Team"
+
+
+def test_a_rescan_offers_the_synths_the_load_probe_gave_up_on(
+    vst3_root, run, host, background, client
+):
+    # The machine before its host was built: the load probe is all there is,
+    # and it times out on each synth three times.
+    host(False)
+    _scan(client, refresh=False)
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+    stuck = _scan(client, refresh=False)
+    assert stuck["Surge XT"]["category"] == "unknown"
+    assert _instrument_slot(stuck) == set()
+
+    # The host is built, and the user presses rescan in the instrument slot.
+    host(True)
+    plugins = _scan(client, refresh=True)
+
+    assert _instrument_slot(plugins) == SYNTHS
+    assert plugins["Surge XT"]["manufacturer"] == "Surge Synth Team"
+
+
+def test_a_rescan_gives_a_timed_out_plugin_three_fresh_load_probes(
+    vst3_root, run, host, background, client
+):
+    host(False)
+    _scan(client, refresh=False)
+    assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+
+    _scan(client, refresh=True)
+
+    # The rescan dropped the verdict and the count: the worker got the synth as
+    # never probed, and gave it the full three tries again.
+    handed = {p.name: p for p in background.handed[-1]}
+    assert handed["Surge XT"].probed is False
+    assert handed["Surge XT"].probe_timeouts == 0
+    assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    # A plugin the probe did classify keeps its verdict across the rescan.
+    assert run.probes("OTT.vst3") == 1
+
+
+def _join_worker() -> None:
+    for thread in threading.enumerate():
+        if thread.name == "vst3-metadata-enrichment":
+            thread.join(30)
+            assert not thread.is_alive(), "the metadata worker finished"
+
+
+def test_a_rescan_while_the_worker_is_still_loading_keeps_its_fresh_chance(
+    vst3_root, run, host, client
+):
+    """The machine without the host, on the real worker thread. The first
+    scan's worker gives each synth its three load probes, publishing the cache
+    after each round, and is still loading a slow plugin when the user presses
+    rescan. The rescan drops the synths' timeouts and finds the worker running,
+    so it starts none. The worker's next publish must not write back what the
+    rescan dropped: the synths get three fresh load probes."""
+    host(False)
+    _file(vst3_root / "Zz Slow.vst3")
+    loading = threading.Event()
+    release = threading.Event()
+
+    def slow_to_load(cmd: list[str], nth: int) -> subprocess.CompletedProcess:
+        if nth < scanner._MAX_PROBE_TIMEOUTS:
+            raise subprocess.TimeoutExpired(cmd, scanner._PROBE_TIMEOUT_S)
+        if nth == scanner._MAX_PROBE_TIMEOUTS:
+            loading.set()
+            release.wait(30)
+        meta = dict(PROBE_RESULTS["OTT.vst3"], display_name="Zz Slow")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(meta) + "\n", stderr=""
+        )
+
+    run.probe_answers["Zz Slow.vst3"] = slow_to_load
+    try:
+        _scan(client, refresh=False)
+        # Round three: each synth has had its third probe, and the worker is
+        # loading the slow plugin, which sorts after them.
+        assert loading.wait(30), "the worker reached the slow plugin"
+        assert run.probes("Surge XT.vst3") == scanner._MAX_PROBE_TIMEOUTS
+        assert scanner.enrichment_running()
+        _scan(client, refresh=True)
+    finally:
+        release.set()
+    _join_worker()
+
+    assert run.probes("Surge XT.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    assert run.probes("Six Sines.vst3") == 2 * scanner._MAX_PROBE_TIMEOUTS
+    cached = {p.name: p for p in scanner.read_cache_entries()}
+    assert cached["Zz Slow"].probed and cached["Zz Slow"].loadable
+    assert cached["Surge XT"].probe_timeouts == scanner._MAX_PROBE_TIMEOUTS
+
+
+def test_a_scan_without_refresh_keeps_the_timeout_count():
+    """A cache gone stale (a plugin installed) is not a rescan: the bound on
+    load probes for a slow plugin still holds."""
+    old = Vst3PluginInfo(
+        name="Surge XT",
+        path="/vst3/Surge XT.vst3",
+        category="unknown",
+        probed=True,
+        probe_timeouts=scanner._MAX_PROBE_TIMEOUTS,
+        last_modified=1.0,
+    )
+    fresh = Vst3PluginInfo(
+        name="Surge XT",
+        path="/vst3/Surge XT.vst3",
+        category="unknown",
+        last_modified=1.0,
+    )
+
+    carry_over_metadata([fresh], [old])
+
+    assert fresh.probed is True
+    assert fresh.probe_timeouts == scanner._MAX_PROBE_TIMEOUTS
+
+
+def test_the_first_scan_after_updating_reclassifies_what_the_old_probe_left_unknown(
+    vst3_root, run, host, background, client, tmp_path
+):
+    """The user's own cache, as the scanner before this fix wrote it (version
+    3): every synth probed, "unknown", three timeouts. The app is updated and
+    EDIT opens: its scan must not serve that cache."""
+    entries = scanner.scan_vst3_directories()
+    for entry in entries:
+        entry.probed = True
+        if entry.name in SYNTHS:
+            entry.probe_timeouts = scanner._MAX_PROBE_TIMEOUTS
+        else:
+            entry.category = "effect"
+            entry.display_name = "OTT"
+    (tmp_path / "scan.json").write_text(
+        json.dumps(
+            {
+                "cache_version": 3,
+                "scanned_at": 0,
+                "roots_signature": scanner.scan_roots_signature(),
+                "plugins": [asdict(e) for e in entries],
+            }
+        ),
+        encoding="utf-8",
+    )
+    host(True)
+
+    plugins = _scan(client, refresh=False)
+
+    assert _instrument_slot(plugins) == SYNTHS
+    assert plugins["Six Sines"]["manufacturer"] == "BaconPaul"
+
+
+def test_a_module_the_host_cannot_list_is_classified_by_the_load_probe(
+    vst3_root, run, host, background, client
+):
+    _file(vst3_root / "Legacy.vst3")
+    host(True)
+
+    _scan(client, refresh=False)
+    plugins = _scan(client, refresh=False)
+
+    legacy = plugins["Legacy Delay"]
+    assert legacy["category"] == "effect"
+    assert legacy["manufacturer"] == "Old Vendor"
+    assert run.probes("Legacy.vst3") == 1
+    assert _instrument_slot(plugins) == SYNTHS
+
+
+def test_a_plugin_the_servers_own_host_dies_loading_is_withheld_once_loaded(
+    vst3_root, run, host, background, client
+):
+    """MT-PowerDrumKit on the user's machine: its factory lists one instrument
+    class, and pedalboard dies loading it (0xC0000005). EDIT prints every VST
+    instrument through POST /api/vst/render-midi, which loads the plugin with
+    pedalboard inside the server, so offering it for good would take the
+    server down on the first bounce. The listing says what it is; the worker's
+    out-of-process load says whether the server may load it."""
+    _file(vst3_root / "MT-PowerDrumKit.vst3")
+    host(True)
+
+    first = _scan(client, refresh=False)
+
+    assert first["MT-PowerDrumKit"]["category"] == "instrument"
+    assert first["MT-PowerDrumKit"]["manufacturer"] == "MANDA AUDIO"
+    assert run.probes("MT-PowerDrumKit.vst3") == 1
+
+    later = _scan(client, refresh=False)
+
+    assert "MT-PowerDrumKit" not in later
+    assert _instrument_slot(later) == SYNTHS
+    every = client.get("/api/vst/scan?include_unloadable=true").json()["plugins"]
+    drums = next(p for p in every if p["name"] == "MT-PowerDrumKit")
+    assert drums["loadable"] is False
+    assert drums["category"] == "instrument"
+    # A rescan gives it another load, and it is withheld again.
+    _scan(client, refresh=True)
+    assert run.probes("MT-PowerDrumKit.vst3") == 2
+    assert "MT-PowerDrumKit" not in _scan(client, refresh=False)
+
+
+def test_the_worker_lists_a_module_once_however_many_probe_rounds_it_takes(
+    vst3_root, run, host, background, client
+):
+    """A module whose listing hangs (a plugin that blocks in its own module
+    entry) costs the host's timeout once in the worker, not once per round of
+    load probes."""
+    _file(vst3_root / "Hang.vst3")
+    run.list_hangs.add("Hang.vst3")
+    host(True)
+
+    _scan(client, refresh=False)
+
+    # One listing in the scan request, one in the worker, and the worker's three
+    # rounds of load probes after it.
+    assert run.lists("Hang.vst3") == 2
+    assert run.probes("Hang.vst3") == scanner._MAX_PROBE_TIMEOUTS
+
+
+def test_the_listing_is_read_past_what_a_plugin_prints_itself():
+    six = scanner._parse_class_listing(HOST_LISTINGS["Six Sines.vst3"])
+    assert [c["name"] for c in six] == ["Six Sines", "Six Sines, Seven Outs"]
+
+    # A module entry that prints without a newline, and a log line that starts
+    # with a bracket of its own.
+    glued = scanner._parse_class_listing(
+        "[surge] init" + HOST_LISTINGS["Surge XT.vst3"] + "[ok] bye\n"
+    )
+    assert [c["name"] for c in glued] == ["Surge XT"]
+
+    # The host's error line is not a listing, and neither is an empty one.
+    assert scanner._parse_class_listing('{"ev":"error","text":"x"}\n') == []
+    assert scanner._parse_class_listing("[]\n") == []
+
+
+def test_the_scan_answer_names_the_folder_it_reads_for_installs(
+    vst3_root, run, host, background, client, monkeypatch
+):
+    """Every empty VST3 list tells the user where to install plugins, and it
+    names the folder this answer gives: the first one the scan reads."""
+    host(True)
+
+    answer = client.get("/api/vst/scan").json()
+
+    assert answer["install_folder"] == scanner.vst3_install_folder()
+    assert Path(answer["install_folder"]) == scanner._vst3_dir_candidates()[0]
+
+
+def test_the_install_folder_follows_common_files_to_another_drive(monkeypatch):
+    monkeypatch.setattr(scanner.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("COMMONPROGRAMFILES", r"D:\Program Files\Common Files")
+
+    assert scanner.vst3_install_folder() == str(
+        Path(r"D:\Program Files\Common Files") / "VST3"
+    )
+
+
+def test_the_install_folder_on_linux_is_one_the_scan_reads(monkeypatch):
+    monkeypatch.setattr(scanner.platform, "system", lambda: "Linux")
+
+    assert scanner.vst3_install_folder() == str(Path("/usr/lib/vst3"))

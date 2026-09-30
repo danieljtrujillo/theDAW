@@ -62,7 +62,16 @@ function deviceLabel(): string {
 
 function pairCode(): string | null {
   try {
-    return new URLSearchParams(window.location.search).get('pair');
+    // T20 re-audit item 7: `pair` was ambiguous with the unrelated LAN
+    // pairing token, which rides `#pair=<token>` in the URL FRAGMENT (see
+    // lib/pairing.ts) — a user holding that token who followed RemoteGate's
+    // old "open the URL with ?pair=<code>" guidance would paste it into the
+    // QUERY string instead, where lib/pairing.ts never reads it and this
+    // submits it as an XR posture code: a silent auth failure. `?xrcode=` is
+    // this value's real name now. `?pair=` is still accepted as a fallback
+    // for one release so an existing bookmarked/shared link keeps working.
+    const params = new URLSearchParams(window.location.search);
+    return params.get('xrcode') ?? params.get('pair');
   } catch {
     return null;
   }

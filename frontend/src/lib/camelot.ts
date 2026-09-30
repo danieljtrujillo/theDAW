@@ -102,6 +102,27 @@ export function keysCompatible(
   return ca.compatible.includes(cb.code);
 }
 
+/** Parse a Camelot code ("8A", " 12b ") into its ring position. Null for
+ *  anything else. */
+export function parseCamelotCode(code: string | null | undefined): { number: number; letter: 'A' | 'B' } | null {
+  if (!code) return null;
+  const m = /^([0-9]{1,2})([AB])$/.exec(code.trim().toUpperCase());
+  if (!m) return null;
+  const number = Number(m[1]);
+  if (!(number >= 1 && number <= 12)) return null;
+  return { number, letter: m[2] as 'A' | 'B' };
+}
+
+/** True if two Camelot codes mix harmonically: the same rule as
+ *  `CamelotInfo.compatible` (same code, ±1 on the same ring, or the relative
+ *  major/minor). An unparseable code is never compatible. */
+export function camelotCodesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ca = parseCamelotCode(a);
+  const cb = parseCamelotCode(b);
+  if (!ca || !cb) return false;
+  return compatibleCodes(ca.number, ca.letter).includes(`${cb.number}${cb.letter}`);
+}
+
 /** Short human key label, e.g. "C maj" / "A min". */
 export function keyLabel(note: string | null | undefined, scale: string | null | undefined): string {
   if (!note) return '—';

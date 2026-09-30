@@ -41,7 +41,7 @@ def test_run_names_utf8_and_replaces_undecodable_bytes(monkeypatch, probe_target
             stdout=json.dumps({"format": {"format_name": "wav"}, "streams": []})
         )
 
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     payload = ffprobe.probe_file(probe_target)
@@ -75,7 +75,7 @@ def test_utf8_metadata_survives_the_round_trip(monkeypatch, probe_target):
     # What subprocess.run hands back once it decodes the child's UTF-8 bytes.
     decoded = out.encode("utf-8").decode("utf-8")
 
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(stdout=decoded))
 
     payload = ffprobe.probe_file(probe_target)
@@ -93,7 +93,7 @@ def test_undecodable_output_returns_empty_instead_of_raising(monkeypatch, probe_
             "charmap", b"\x81", 0, 1, "character maps to <undefined>"
         )
 
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert ffprobe.probe_file(probe_target) == {}
@@ -101,21 +101,21 @@ def test_undecodable_output_returns_empty_instead_of_raising(monkeypatch, probe_
 
 def test_no_stdout_returns_empty_instead_of_raising(monkeypatch, probe_target):
     """json.loads(None) raised TypeError from a function that never raises."""
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(stdout=None))
 
     assert ffprobe.probe_file(probe_target) == {}
 
 
 def test_blank_stdout_returns_empty(monkeypatch, probe_target):
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(stdout=""))
 
     assert ffprobe.probe_file(probe_target) == {}
 
 
 def test_unparseable_stdout_returns_empty(monkeypatch, probe_target):
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(
         subprocess, "run", lambda argv, **kw: _Result(stdout="not json {")
     )
@@ -124,7 +124,7 @@ def test_unparseable_stdout_returns_empty(monkeypatch, probe_target):
 
 
 def test_json_that_is_not_an_object_returns_empty(monkeypatch, probe_target):
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(
         subprocess, "run", lambda argv, **kw: _Result(stdout="[1, 2, 3]")
     )
@@ -134,7 +134,7 @@ def test_json_that_is_not_an_object_returns_empty(monkeypatch, probe_target):
 
 def test_nonzero_exit_with_no_stderr_returns_empty(monkeypatch, probe_target):
     """`result.stderr.strip()` crashed the error path when stderr was None."""
-    monkeypatch.setattr(ffprobe.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(ffprobe.ffmpeg_tools, "find_ffprobe", lambda: "ffprobe")
     monkeypatch.setattr(
         subprocess, "run", lambda argv, **kw: _Result(returncode=1, stderr=None)
     )

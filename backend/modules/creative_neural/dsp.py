@@ -8,11 +8,20 @@ source's bit depth: these are the tools whose whole point is fidelity, and
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
-import soundfile as sf
 from pathlib import Path
 
 from backend.lib.audio_depth import write_like_source
+from backend.lib.audio_io import load_audio_array
+
+
+def _read_frames(path: Path) -> tuple[np.ndarray, int]:
+    """Decode ``path`` to float32 (frames, channels) through audio_io, which
+    falls back to the ffmpeg CLI for anything libsndfile cannot open."""
+    data, sr = load_audio_array(path)
+    return np.ascontiguousarray(data.T), sr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,7 +31,7 @@ def grainlab(input_path: Path, output_path: Path, params: dict) -> None:
     """Slice input into grains, scatter, pitch-shift per grain, overlap-add."""
     import librosa
 
-    data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+    data, sr = _read_frames(input_path)
     n_channels = data.shape[1]
     n_samples = data.shape[0]
 
@@ -56,7 +65,6 @@ def grainlab(input_path: Path, output_path: Path, params: dict) -> None:
         if abs(pitch_spread) > 0.01:
             shift_st = rng.uniform(-abs(pitch_spread), abs(pitch_spread))
             ratio = 2.0 ** (shift_st / 12.0)
-            max(int(grain.shape[0] / ratio), 4)
             # per-channel resample
             shifted_channels = []
             for ch in range(n_channels):
@@ -100,7 +108,7 @@ def grainlab(input_path: Path, output_path: Path, params: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 def voxsynth(input_path: Path, output_path: Path, params: dict) -> None:
     """Spectral vocoder: modulator envelope from input shapes a noise carrier."""
-    data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+    data, sr = _read_frames(input_path)
     n_channels = data.shape[1]
     smooth = params["spectralSmooth"]
     mix = params["mix"]
@@ -171,7 +179,7 @@ def spectramorph(input_path: Path, output_path: Path, params: dict) -> None:
     from scipy.signal import stft as scipy_stft, istft as scipy_istft
     from scipy.ndimage import gaussian_filter1d
 
-    data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+    data, sr = _read_frames(input_path)
     n_channels = data.shape[1]
     smear_ms = params["smearLength"]
     intensity = params["brushIntensity"]
@@ -225,7 +233,7 @@ def crossfade_morph(input_path: Path, output_path: Path, params: dict) -> None:
     from scipy.signal import stft as scipy_stft, istft as scipy_istft
     from scipy.ndimage import gaussian_filter1d
 
-    data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+    data, sr = _read_frames(input_path)
     n_channels = data.shape[1]
     morph = params["morphPosition"]  # 0=original, 1=fully smeared
     mix = params["mix"]
@@ -270,27 +278,131 @@ def crossfade_morph(input_path: Path, output_path: Path, params: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. tokensynth — synth-preview: ring mod + vibrato + tremolo
 # ─────────────────────────────────────────────────────────────────────────────
+_NOTE_RE = re.compile(r"\b([a-g])([#b]?)(-?\d)\b")
+_PITCH_CLASS = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11}
+
+
+def note_frequency(text: str) -> float | None:
+    """The first note name in ``text`` (``A2``, ``c#4``, ``Bb3``) in Hz, or
+    None when there is none. A4 = 440 Hz."""
+    match = _NOTE_RE.search(text.lower())
+    if match is None:
+        return None
+    letter, accidental, octave = match.groups()
+    midi = 12 * (int(octave) + 1) + _PITCH_CLASS[letter]
+    midi += {"#": 1, "b": -1}.get(accidental, 0)
+    return 440.0 * 2.0 ** ((midi - 69) / 12.0)
+
+
+def tokensynth_voice(prompt: str) -> dict:
+    """Read TokenSynth's prompt into the synth voice it asks for.
+
+    The synth has no text model, so the prompt picks the voice by word: the
+    carrier wave (sine, square, saw, triangle), its pitch (a note name such as
+    ``C3``; else sub/bass, low/deep or high/lead/bell move the Temp-driven
+    pitch by octaves), the LFOs (steady turns them off, wobble triples the
+    vibrato, tremolo or pulsing doubles the tremolo rate) and the tone
+    (dark or warm rolls off the top, bright or crisp lifts it). With none of
+    these words the voice is the plain sine ring-mod the tool has always made.
+    """
+    words = set(re.findall(r"[a-z0-9]+", prompt.lower()))
+    voice = {
+        "wave": "sine",
+        "freq": note_frequency(prompt),
+        "octave_shift": 1.0,
+        "vibrato": 1.0,
+        "tremolo_rate": 1.0,
+        "tremolo_depth": 1.0,
+        "tone": "neutral",
+    }
+    if words & {"square", "pulse", "chip", "chiptune", "8bit"}:
+        voice["wave"] = "square"
+    elif words & {"saw", "sawtooth", "buzzy", "brass", "supersaw"}:
+        voice["wave"] = "saw"
+    elif words & {"triangle", "flute", "hollow"}:
+        voice["wave"] = "triangle"
+    if words & {"sub", "bass"}:
+        voice["octave_shift"] = 0.25
+    elif words & {"low", "deep"}:
+        voice["octave_shift"] = 0.5
+    elif words & {"high", "lead", "bell"}:
+        voice["octave_shift"] = 2.0
+    if words & {"steady", "clean", "still"}:
+        voice["vibrato"] = 0.0
+        voice["tremolo_depth"] = 0.0
+    else:
+        if words & {"wobble", "wobbly", "warble", "vibrato"}:
+            voice["vibrato"] = 3.0
+        if words & {"tremolo", "pulsing", "shimmer", "stutter"}:
+            voice["tremolo_rate"] = 2.0
+    if words & {"dark", "warm", "mellow", "soft"}:
+        voice["tone"] = "dark"
+    elif words & {"bright", "crisp", "airy", "sharp"}:
+        voice["tone"] = "bright"
+    return voice
+
+
+def _carrier(wave: str, freq: float, t: np.ndarray, sr: int) -> np.ndarray:
+    """A band-limited carrier: a sine, or a square, saw or triangle built
+    from at most 16 partials, each kept under Nyquist."""
+    phase = 2 * np.pi * freq * t
+    if wave == "sine":
+        return np.sin(phase)
+    harmonics = range(1, 17) if wave == "saw" else range(1, 33, 2)
+    out = np.zeros_like(t)
+    for k in harmonics:
+        if k * freq >= sr / 2:
+            break
+        if wave == "square":
+            out += np.sin(k * phase) / k
+        elif wave == "saw":
+            out += ((-1) ** (k + 1)) * np.sin(k * phase) / k
+        else:  # triangle
+            out += ((-1) ** ((k - 1) // 2)) * np.sin(k * phase) / (k * k)
+    peak = np.max(np.abs(out))
+    return out / peak if peak > 0 else out
+
+
+def _shape_tone(audio: np.ndarray, sr: int, tone: str) -> np.ndarray:
+    """dark: a 2 kHz low-pass; bright: the band above 3 kHz lifted by 60 %."""
+    if tone == "neutral":
+        return audio
+    from scipy.signal import butter, sosfilt
+
+    if tone == "dark":
+        return sosfilt(butter(2, 2000.0, fs=sr, output="sos"), audio, axis=0)
+    high = sosfilt(
+        butter(2, 3000.0, btype="highpass", fs=sr, output="sos"), audio, axis=0
+    )
+    return audio + 0.6 * high
+
+
 def tokensynth(input_path: Path, output_path: Path, params: dict) -> None:
-    """Transform input into a tonal/synth texture via ring mod + LFOs."""
-    data, sr = sf.read(str(input_path), dtype="float32", always_2d=True)
+    """Transform input into a tonal/synth texture via ring mod + LFOs, in the
+    voice the prompt names (see ``tokensynth_voice``)."""
+    data, sr = _read_frames(input_path)
     n_channels = data.shape[1]
     temperature = params["temperature"]  # 0.1-2.0, drives detune/intensity
+    voice = tokensynth_voice(str(params.get("prompt", "")))
 
     n_samples = data.shape[0]
-    t = np.arange(n_samples, dtype=np.float32) / sr
+    # float64: a float32 time base loses the carrier's phase a few minutes in
+    # (its step at 300 s is ~30 us, 0.2 rad of a 1 kHz carrier).
+    t = np.arange(n_samples, dtype=np.float64) / sr
 
-    # ring modulation — carrier frequency driven by temperature
-    ring_freq = 200 + temperature * 400  # 200-1000 Hz
-    ring_mod = np.sin(2 * np.pi * ring_freq * t)
+    # ring modulation — carrier frequency driven by temperature (200-1000 Hz,
+    # moved by octaves on request) unless the prompt names a note
+    ring_freq = voice["freq"] or (200 + temperature * 400) * voice["octave_shift"]
+    ring_mod = _carrier(voice["wave"], ring_freq, t, sr)
 
     # vibrato LFO
     vib_rate = 3 + temperature * 4  # 3-11 Hz
-    vib_depth = 0.002 + temperature * 0.005  # subtle pitch wobble in seconds
+    vib_depth = (0.002 + temperature * 0.005) * voice["vibrato"]  # seconds
     vib_lfo = vib_depth * np.sin(2 * np.pi * vib_rate * t)
 
     # tremolo LFO
-    trem_rate = 2 + temperature * 6  # 2-14 Hz
-    trem_depth = 0.3 + temperature * 0.3  # 0.3-0.9
+    trem_rate = (2 + temperature * 6) * voice["tremolo_rate"]  # 2-14 Hz
+    trem_depth = (0.3 + temperature * 0.3) * voice["tremolo_depth"]  # 0.3-0.9
     tremolo = 1.0 - trem_depth * 0.5 * (1 + np.sin(2 * np.pi * trem_rate * t))
 
     out_channels = []
@@ -299,7 +411,7 @@ def tokensynth(input_path: Path, output_path: Path, params: dict) -> None:
 
         # apply vibrato via variable delay (interpolated read)
         delay_samples = vib_lfo * sr
-        indices = np.arange(n_samples, dtype=np.float32) - delay_samples
+        indices = np.arange(n_samples, dtype=np.float64) - delay_samples
         indices = np.clip(indices, 0, n_samples - 1)
         idx_floor = np.floor(indices).astype(int)
         idx_ceil = np.minimum(idx_floor + 1, n_samples - 1)
@@ -314,9 +426,110 @@ def tokensynth(input_path: Path, output_path: Path, params: dict) -> None:
 
         out_channels.append(result)
 
-    out = np.column_stack(out_channels)
+    out = _shape_tone(np.column_stack(out_channels), sr, voice["tone"])
     # normalize
     peak = np.max(np.abs(out))
     if peak > 0:
         out *= 0.9 / peak
     write_like_source(output_path, out, sr, input_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. timbreforge shaping — Structure and Wander, after the ffmpeg shift
+# ─────────────────────────────────────────────────────────────────────────────
+def _impose_structure(
+    source: np.ndarray, shifted: np.ndarray, sr: int, weight: float
+) -> np.ndarray:
+    """Pull the shifted signal's loudness contour back toward the source's.
+
+    The resample-and-stretch shift keeps the duration but smears the timing
+    detail (atempo overlap-adds whole segments, so an attack can double).
+    Both signals' 10 ms RMS envelopes are compared and the shifted one is
+    scaled by ``(source / shifted) ** weight`` (clamped to +/-18 dB): at 0 the
+    shift is untouched, at 1 the result follows the source's dynamics,
+    attacks and rhythm exactly. The level is capped at the louder of the two
+    inputs' peaks so the correction never adds clipping.
+    """
+    if weight <= 0.0:
+        return shifted
+    from scipy.ndimage import uniform_filter1d
+
+    n = min(source.shape[0], shifted.shape[0])
+    win = max(int(0.01 * sr), 1)
+    env_src = np.sqrt(uniform_filter1d(np.mean(source[:n] ** 2, axis=1), win))
+    env_out = np.sqrt(uniform_filter1d(np.mean(shifted[:n] ** 2, axis=1), win))
+    # 80 dB under the louder envelope: silence stays silence.
+    floor = 1e-4 * max(float(env_src.max()), float(env_out.max()), 1e-12)
+    gain = np.clip(((env_src + floor) / (env_out + floor)) ** weight, 0.125, 8.0)
+    out = shifted.astype(np.float64)
+    out[:n] *= gain[:, None]
+    ceiling = max(float(np.max(np.abs(source))), float(np.max(np.abs(shifted))))
+    peak = float(np.max(np.abs(out)))
+    if peak > ceiling > 0:
+        out *= ceiling / peak
+    return out
+
+
+# Wander's deepest drift: a semitone either side of the Timbre setting.
+_WANDER_MAX_CENTS = 100.0
+# One new random target for the drift about every 0.75 s.
+_WANDER_STEP_S = 0.75
+
+
+def _wander(audio: np.ndarray, sr: int, depth: float, seed: int = 0) -> np.ndarray:
+    """Let the shift drift: a slow random pitch-and-formant wobble.
+
+    A smooth random delay curve (a new target every ~0.75 s, cubic between
+    them) is read through, which bends pitch and formants together by the
+    curve's slope, the same thing the Timbre shift does, so the colour moves
+    around its setting. ``depth`` scales the steepest bend to at most
+    ``_WANDER_MAX_CENTS``; the delay itself stays bounded, so the timing never
+    drifts off the source. The seed is fixed: the same file and settings
+    render the same way every time.
+    """
+    if depth <= 0.0:
+        return audio
+    from scipy.interpolate import CubicSpline
+
+    n = audio.shape[0]
+    if n < 4:
+        return audio
+    rng = np.random.default_rng(seed)
+    n_points = max(int(n / (_WANDER_STEP_S * sr)) + 2, 4)
+    knots = np.linspace(0, n - 1, n_points)
+    curve = CubicSpline(knots, rng.uniform(-1.0, 1.0, n_points))(np.arange(n))
+    slope = float(np.max(np.abs(np.gradient(curve))))
+    if slope <= 0:
+        return audio
+    max_bend = (2.0 ** (_WANDER_MAX_CENTS * depth / 1200.0)) - 1.0
+    delay = curve * (max_bend / slope)
+    positions = np.clip(np.arange(n) - delay, 0, n - 1)
+    grid = np.arange(n)
+    return np.column_stack(
+        [np.interp(positions, grid, audio[:, ch]) for ch in range(audio.shape[1])]
+    )
+
+
+def timbreforge_shape(
+    source_path: Path,
+    shifted_path: Path,
+    output_path: Path,
+    depth_source: Path,
+    structure: float,
+    wander: float,
+) -> None:
+    """TimbreForge's Structure and Wander stages, after the ffmpeg shift.
+
+    ``source_path`` and ``shifted_path`` are float WAVs of the source and of
+    its shifted render; the result is written at ``depth_source``'s bit depth
+    (the upload), so the float intermediates never turn into a 16-bit file.
+    """
+    source, sr = _read_frames(source_path)
+    shifted, shifted_sr = _read_frames(shifted_path)
+    if shifted_sr != sr:
+        raise RuntimeError(
+            f"timbreforge: shifted render came back at {shifted_sr} Hz, source is {sr} Hz"
+        )
+    out = _impose_structure(source, shifted, sr, structure)
+    out = _wander(out, sr, wander)
+    write_like_source(output_path, out, sr, depth_source)

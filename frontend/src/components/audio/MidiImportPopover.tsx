@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Upload, FolderOpen, Search, Star, Music, FileMusic } from 'lucide-react';
+import { Upload, FolderOpen, Search, Star, Music, FileMusic, Rows3 } from 'lucide-react';
 import { sendMidiIdToTarget } from '../../lib/sendToTargets';
 import { SHEET_ACCEPT } from '../../lib/sheetImportClient';
 import { KnownFilesMenu } from '../ui/KnownFilesMenu';
@@ -14,6 +14,7 @@ import { DockFlyout, FLYOUT_CARD, RAIL_GLYPH, RailKey } from './midiDockKit';
 const MIDI_ACCEPT_LIST = '.mid,.midi,audio/midi';
 const MIDI_RECENT_ID = 'piano-roll-import-midi-recent';
 const SHEET_RECENT_ID = 'piano-roll-import-sheet-recent';
+const TRACKS_RECENT_ID = 'piano-roll-import-tracks-recent';
 // KnownFilesMenu drops the mime entries, so the accept lists pass as they are.
 const MIDI_RECENT_EXTS = MIDI_ACCEPT_LIST.split(',');
 const SHEET_RECENT_EXTS = SHEET_ACCEPT.split(',');
@@ -21,7 +22,7 @@ const SHEET_RECENT_EXTS = SHEET_ACCEPT.split(',');
 /** True while one of the flyout's Recent lists is open. Those lists portal to
  *  document.body, so a click on one of their rows lands outside the flyout. */
 const recentListOpen = (): boolean =>
-  [MIDI_RECENT_ID, SHEET_RECENT_ID].some(
+  [MIDI_RECENT_ID, SHEET_RECENT_ID, TRACKS_RECENT_ID].some(
     (id) => document.getElementById(id)?.getAttribute('aria-expanded') === 'true',
   );
 
@@ -30,6 +31,8 @@ const recentListOpen = (): boolean =>
  * rail, with one flyout and these sources:
  *   - "MIDI file on disk…" opens the OS file picker (hidden <input type=file>).
  *   - "Sheet music…" imports MusicXML / ABC / kern through the backend.
+ *   - "As EDIT tracks" puts a MIDI file's parts on EDIT tracks of their own,
+ *     one per part on its own instrument (lib/midiImportTracks).
  *   - "Recent" beside each lists MIDI and sheet files the app saved or downloaded.
  *   - the library list loads any converted MIDI straight into the roll.
  */
@@ -37,7 +40,9 @@ export const MidiImportPopover: React.FC<{
   onImportFile: (file: File) => void;
   /** Optional: import a notation file (MusicXML/ABC/kern) via the backend. */
   onImportSheetFile?: (file: File) => void;
-}> = ({ onImportFile, onImportSheetFile }) => {
+  /** Optional: put a MIDI file's parts on EDIT tracks, one per part. */
+  onImportTracksFile?: (file: File) => void;
+}> = ({ onImportFile, onImportSheetFile, onImportTracksFile }) => {
   const [open, setOpen] = useState(false);
   const [midis, setMidis] = useState<MidiRow[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,6 +50,7 @@ export const MidiImportPopover: React.FC<{
   const keyRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const sheetRef = useRef<HTMLInputElement>(null);
+  const tracksRef = useRef<HTMLInputElement>(null);
 
   // The index (fetch, cache, row label) is shared with the LibraryPicker and
   // the LIBRARY tab, so a row reads the same wherever it is listed.
@@ -97,6 +103,13 @@ export const MidiImportPopover: React.FC<{
     keyRef.current?.focus();
   };
 
+  const importTracksFiles = (files: File[]) => {
+    const f = files[0];
+    if (f && onImportTracksFile) onImportTracksFile(f);
+    setOpen(false);
+    keyRef.current?.focus();
+  };
+
   // The flyout closes on an outside click, except one on an open Recent list's
   // rows; that list closes itself first and takes its own Escape.
   const closeFlyout = () => {
@@ -140,6 +153,26 @@ export const MidiImportPopover: React.FC<{
             const files = Array.from(e.target.files ?? []);
             e.target.value = '';
             importSheetFiles(files);
+          }}
+        />
+      )}
+
+      {/* Hidden picker for "As EDIT tracks": a MIDI file whose parts each get an EDIT track. */}
+      {onImportTracksFile && (
+        <label htmlFor="piano-roll-import-tracks" className="sr-only">MIDI file to import as EDIT tracks</label>
+      )}
+      {onImportTracksFile && (
+        <input
+          ref={tracksRef}
+          type="file"
+          id="piano-roll-import-tracks"
+          name="piano-roll-import-tracks"
+          accept={MIDI_ACCEPT_LIST}
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            importTracksFiles(files);
           }}
         />
       )}
@@ -189,6 +222,22 @@ export const MidiImportPopover: React.FC<{
               <span>Sheet</span>
             </button>
             <KnownFilesMenu id={SHEET_RECENT_ID} exts={SHEET_RECENT_EXTS} label="Recent" name="Recent sheet music files" size="flyout" onFiles={importSheetFiles} />
+          </div>
+        )}
+
+        {onImportTracksFile && (
+          <div className="flex items-stretch gap-1">
+            <button
+              type="button"
+              onClick={() => tracksRef.current?.click()}
+              className={sourceBtn}
+              title="Put a MIDI file into EDIT as tracks: one track per part, each on its own instrument, drums on a drum track"
+              aria-label="Import a MIDI file into EDIT as tracks, one track per part"
+            >
+              <Rows3 aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+              <span>As EDIT tracks</span>
+            </button>
+            <KnownFilesMenu id={TRACKS_RECENT_ID} exts={MIDI_RECENT_EXTS} label="Recent" name="Recent MIDI files to import as EDIT tracks" size="flyout" onFiles={importTracksFiles} />
           </div>
         )}
 
@@ -243,6 +292,10 @@ export const MidiImportPopover: React.FC<{
               </button>
             ))}
         </div>
+        <p className="px-1 text-[12px] font-semibold et-ink-3 leading-snug" data-import-parts-note="">
+          A file or score of several tracks opens as one part each, on its own instrument. One track goes into the part you are editing.
+          {onImportTracksFile ? ' As EDIT tracks puts each part on an EDIT track of its own at the start of the timeline.' : ''}
+        </p>
       </DockFlyout>
     </>
   );

@@ -36,6 +36,22 @@ export interface LibraryEntry {
    */
   lyrics: string;
   source: 'generate' | 'studio' | 'import';
+  /**
+   * The service the audio actually came from, detected by the backend from the
+   * file's own embedded metadata: a stable lowercase slug ('suno', 'udio',
+   * 'bandcamp', …). Null/undefined when nothing in the file identified an
+   * origin — which is the normal case for theDAW's own generations.
+   *
+   * Orthogonal to `source`, which stays 'generate' | 'studio' | 'import' and
+   * says how the entry entered the library, not who made the audio.
+   */
+  provider?: string | null;
+  /** Display name for `provider`, e.g. 'Suno'. */
+  providerLabel?: string | null;
+  /** True when the provider is an AI generation service (vs a store/host). */
+  providerIsAi?: boolean | null;
+  /** The provider's own track id, when the file carried one. */
+  providerId?: string | null;
   chimeraSources?: string[];
   /** Persistent play counter, incremented when the track starts in the player. */
   playCount?: number;
@@ -46,9 +62,11 @@ export interface LibraryEntry {
    * 'image' entries back the VJ video library + overlays; they carry
    * `mediaUrl` / `thumbUrl` / dimensions / `hasAlpha` instead of audio
    * analysis. `audioUrl` falls back to the media URL for these so generic
-   * consumers never see an empty URL.
+   * consumers never see an empty URL. 'score' is a composition: a score with
+   * no recording (an imported score file or music21 corpus piece), whose
+   * notation artifacts are the whole entry; its `audioUrl` is empty.
    */
-  kind?: 'audio' | 'video' | 'image';
+  kind?: 'audio' | 'video' | 'image' | 'score';
   mediaUrl?: string;
   thumbUrl?: string | null;
   /**

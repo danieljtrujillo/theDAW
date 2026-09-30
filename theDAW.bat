@@ -24,14 +24,24 @@ if not defined UV_CACHE_DIR set "UV_CACHE_DIR=%~dp0.uv-cache"
 :: -- Preflight: required tools ------------------------------------------
 :: uv  = Python env manager (creates .venv, installs torch/CUDA + flash-attn)
 :: node/npm = frontend dev server + the VJ sidecar
-:: ffmpeg = all audio I/O (effects, exports, library ingest, MIDI, YouTube)
+:: ffmpeg = all audio I/O (effects, exports, library ingest, MIDI, YouTube).
+::   It must be a build with libsoxr: Classical Upsample, Super-Res and
+::   High-Quality SRC resample with it, and gyan.dev's "essentials" build, which
+::   other apps put on PATH, has none. The quick check resamples 50 ms of sine
+::   through soxr with the first ffmpeg on PATH; only when that fails does
+::   setup.ps1 -FFmpegCheck look in the other places the backend looks (winget's
+::   Gyan.FFmpeg, scoop, Chocolatey, THEDAW_FFMPEG). No libsoxr anywhere counts
+::   as missing, so setup.ps1 offers the full build with the usual consent.
 :: The public tunnel (localtunnel "lt") is optional and auto-detected by the
 :: dev stack at the end.
 set "MISSING="
 where uv     >nul 2>&1 || set "MISSING=%MISSING% uv"
 where node   >nul 2>&1 || set "MISSING=%MISSING% node"
 where npm    >nul 2>&1 || set "MISSING=%MISSING% npm"
-where ffmpeg >nul 2>&1 || set "MISSING=%MISSING% ffmpeg"
+set "FFMPEG_SOXR=0"
+where ffmpeg >nul 2>&1 && ffmpeg -hide_banner -nostdin -loglevel error -f lavfi -i sine=d=0.05 -af aresample=48000:resampler=soxr -f null - >nul 2>&1 && set "FFMPEG_SOXR=1"
+if "%FFMPEG_SOXR%"=="0" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\setup.ps1" -FFmpegCheck >nul 2>&1 && set "FFMPEG_SOXR=1"
+if "%FFMPEG_SOXR%"=="0" set "MISSING=%MISSING% ffmpeg-full-build"
 where git    >nul 2>&1 || set "MISSING=%MISSING% git"
 if defined MISSING (
     echo   Missing tools:%MISSING%
@@ -45,7 +55,11 @@ if defined MISSING (
 where uv   >nul 2>&1 || goto :needtools
 where node >nul 2>&1 || goto :needtools
 where npm  >nul 2>&1 || goto :needtools
-where ffmpeg >nul 2>&1 || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
+:: A declined FFmpeg offer is not fatal; say what stays broken. FFMPEG_SOXR is
+:: from the check above: setup.ps1 sends a launch that installed something back
+:: through :rerun, so a value still at 0 here means nothing was installed. The
+:: IF governs the whole line, && and || included.
+if "%FFMPEG_SOXR%"=="0" where ffmpeg >nul 2>&1 && echo   [!] This FFmpeg has no libsoxr - Classical Upsample, Super-Res and High-Quality SRC fail until the full FFmpeg build is installed. || echo   [!] ffmpeg not on PATH - audio effects/exports/ingest fail until installed.
 
 :: -- Bootstrap Python deps if the venv is missing OR incomplete --------
 :: A previous `uv sync` can be interrupted AFTER uv creates the venv but
@@ -107,16 +121,67 @@ if not exist "VST-Foundry-UI\VST-UI-FOUNDRY\node_modules" (
 )
 echo.
 
-:: -- Kill any stale processes on our ports ------------------------------
-:: ONE netstat pass, not one per port. netstat enumerates the whole TCP table
-:: every time it runs, so five sequential calls cost five full enumerations
-:: (~0.45s here) before the launch can even begin. findstr takes the port list
-:: in a single regex instead. The fixed `timeout /t 1` that followed is gone
-:: too: taskkill /F is synchronous, so the ports are already free when it
-:: returns and the extra second bought nothing.
-:: Each /c: pattern keeps its TRAILING SPACE, so ":5173 " matches only port
-:: 5173 and never an ephemeral port like 51730 that merely starts with it.
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr "LISTENING" ^| findstr /c:":5173 " /c:":8600 " /c:":5187 " /c:":5188 " /c:":5472 "') do taskkill /F /PID %%a >nul 2>&1
+:: -- Native live-VST host: advisory status line ------------------------
+:: Mirrors theDAW.sh, which prints the same advisory line at this exact
+:: point in its launch order: after the dependency bootstrap, before the
+:: port sweep. scripts\check_vst_host.py imports nothing from backend and
+:: always exits 0; it runs on the launcher's own interpreter, guarded the
+:: same way as the launch-mode read below, so a launch that has no venv
+:: yet skips the whole thing in silence.
+:: Live VST hosting is an OPTIONAL capability: nothing in this block may
+:: print an error, stop for input twice, or leave an ERRORLEVEL behind -
+:: plugins still work offline without the host. THEDAW_SKIP_VST_HOST_BUILD=1
+:: suppresses the build offer; the status line is printed either way.
+:: Delayed expansion is scoped to this block alone. The status line can
+:: carry the host exe's own --version text, and !var! is substituted AFTER
+:: cmd has parsed the command, so a stray & | < > ^ in it stays text
+:: instead of turning into an operator. The one character that costs
+:: something is ! itself: that same pass eats it, so a version string
+:: containing one is echoed without it. Cosmetic, and only in the text
+:: printed here - nothing downstream reads this line.
+:: For the SAME reason no command below may use %~dp0. Percent expansion
+:: runs FIRST and pastes the repo path in, and the delayed pass then
+:: strips any ! out of THAT, so a checkout at C:\hi!\theDAW would hand
+:: powershell a -File path that does not exist. cwd is already the repo
+:: root (cd /d "%~dp0" at the top of this script), so every path below is
+:: relative - the same way the launch-mode read reaches its interpreter.
+if not exist ".venv\Scripts\python.exe" goto :vsthostdone
+setlocal enabledelayedexpansion
+set "VST_HOST_LINE="
+:: NOTE: the python path must be UNQUOTED inside the backticks - the same
+:: cmd parser limitation called out at the launch-mode read below.
+for /f "usebackq delims=" %%v in (`.venv\Scripts\python.exe scripts\check_vst_host.py 2^>nul`) do set "VST_HOST_LINE=%%v"
+if not defined VST_HOST_LINE goto :vsthostend
+echo !VST_HOST_LINE!
+:: Offer the build only for a missing exe, and only when CMake is actually
+:: there to build it. setup.ps1 asks for consent and prints one line when
+:: it is declined or the build fails; either way the launch carries on.
+if "!THEDAW_SKIP_VST_HOST_BUILD!"=="1" goto :vsthostend
+if "!VST_HOST_LINE:not built=!"=="!VST_HOST_LINE!" goto :vsthostend
+:: Ask once. An interactive decline leaves this marker behind; deleting it,
+:: or running install\setup.ps1 -VstHost by hand, brings the offer back, and
+:: a successful build clears it. Only the launcher consults the marker - the
+:: script run by hand always asks.
+if exist "native\vst-host\.build-declined" goto :vsthostend
+where cmake >nul 2>&1 || goto :vsthostend
+powershell -NoProfile -ExecutionPolicy Bypass -File "install\setup.ps1" -VstHost
+:vsthostend
+endlocal
+:vsthostdone
+:: Clear whatever the block left behind - a skipped check, a failed `where`,
+:: or a powershell that could not start - so none of it reads as a launch
+:: failure to the steps below.
+ver >nul
+
+:: -- Stop theDAW's OWN stale listeners -- and nothing else -------------
+:: backend.ports --free stops a listener ONLY when its command line or working
+:: directory is inside THIS checkout: the PID is revalidated just before the
+:: signal, and a backend is asked to shut down cleanly first. Any other
+:: program on these ports -- another project's Vite, another Electron app's
+:: server -- is LEFT ALONE and named in the log. This used to be a blind
+:: netstat ^| taskkill that killed whatever held the port.
+:: Without the venv nothing of ours can be running from this checkout.
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --free --all-ports
 
 :: -- Read the saved launch mode (web | desktop) from data\settings.json -
 :: Set in-app via Settings -> Startup. Defaults to web if unset/missing.
@@ -185,6 +250,14 @@ if not exist "electron-ui\node_modules\electron\dist\electron.exe" (
     python -m backend._devstack
     goto :stopped
 )
+
+:: The desktop window loads http://localhost:5173 as well, and its saved
+:: settings and mic/MIDI permissions belong to that address. When another
+:: program holds 5173 the launch stops here with that program's name, since
+:: on any other port the window would open with all of them empty.
+ver >nul
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" -m backend.ports --require-frontend-port
+if errorlevel 1 goto :stopped
 
 pushd electron-ui
 call npm run dev

@@ -1,4 +1,5 @@
 import { magentaFetch } from '../lib/magentaEngineClient';
+import { handleEngineElsewhere } from '../lib/magentaElsewhere';
 import { create } from 'zustand';
 import { useStatusBarStore } from './statusBarStore';
 import { logError, logInfo } from './logStore';
@@ -15,7 +16,8 @@ import { getOrRenderChimera } from '../lib/chimeraClient';
 import { fetchModelStatus, setLocalOnly, type ModelStatusResponse } from '../lib/storageClient';
 import { classifyModelGate } from '../lib/modelDownloadClient';
 import { requireFeature } from '../notices/featureGateStore';
-import { CLOUD_MODELS } from '../lib/cloudModels';
+import { CLOUD_MODELS, isCloudModel, isLyriaCheckedOut } from '../lib/cloudModels';
+import { useSunoStore } from '../suno/sunoStore';
 
 export interface GenerateParams {
   prompt: string;
@@ -102,10 +104,15 @@ interface GenerateStoreState {
    */
   runJobsBase: JobsBase;
   lastAudioUrl: string | null;
-  lastAudioBlob: Blob | null;
   lastFilename: string | null;
   lastDurationSec: number | null;
   lastModelName: string | null;
+  /** The seed the backend actually used for the last SUBMITTED job (T01
+   *  contract: `seed` on the /api/generate-jobs response, resolved from a
+   *  `-1` "fresh" request into a concrete 32-bit value before generating).
+   *  Set as soon as the POST answers, not on completion, so "reuse seed" and
+   *  the Seed row's readout are correct while the job is still rendering. */
+  lastSeedUsed: number | null;
   error: string | null;
   pollRunId: number;
   submitGeneration: (params: GenerateParams) => Promise<void>;
@@ -307,6 +314,12 @@ const getErrorMessage = (payload: unknown, fallback: string): string => {
     }
     if (typeof maybe.detail === 'string') {
       return maybe.detail;
+    }
+    // A structured refusal (the Magenta engine_elsewhere 409) carries its
+    // sentence in `message`.
+    const message = (maybe.detail as { message?: unknown } | null)?.message;
+    if (typeof message === 'string' && message) {
+      return message;
     }
   }
   return fallback;
@@ -536,6 +549,95 @@ const modelGateMessage = (status: ModelStatusResponse | null, model: string): st
     : 'No usable model is configured yet. Pick a local checkpoint, connect Suno, set up Magenta, or allow a one-time Stable Audio download — Settings → Models has all of it.';
 };
 
+/** INT-005: whether the Lyria sidecar is checked out, for the cloud panels'
+ *  model switchers (cloudModels.panelModelOptions). Reuses probeModelStatus's
+ *  cache/TTL so calling this from three different panels costs one fetch, and
+ *  fails open on a missing/unreachable probe — same convention as
+ *  modelGateMessage above, which never blocks generation on a probe outage. */
+export const probeLyriaCheckedOut = async (): Promise<boolean> => {
+  const status = await withTimeout(probeModelStatus(), MODEL_STATUS_WAIT_MS, null);
+  const lyria = status?.providers.find((p) => p.id === 'lyria');
+  return isLyriaCheckedOut(lyria?.state ?? null);
+};
+
+/** T01 contract: the /api/generate-jobs response carries the seed the backend
+ *  actually resolved (a submitted `-1` becomes a concrete 32-bit value before
+ *  generating). Reads either a top-level `seed` or `job.seed` since this
+ *  ticket consumes that contract rather than defining it; returns null when
+ *  absent (an older backend, or the Magenta path, which resolves no such
+ *  field).
+ *
+ *  This is only the EARLY value: the POST reply's `seed` is the base seed
+ *  the run started from, not necessarily the per-take seed a batch item
+ *  actually rendered with. The completed job's `result.item.seed` /
+ *  `result.items[i].seed` (finiteSeedOf, below) is authoritative and wins
+ *  once the run finishes — see the `job.status === 'completed'` branch. */
+export function extractResolvedSeed(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const top = finiteSeedOf((payload as { seed?: unknown }).seed);
+  if (top !== null) return top;
+  return finiteSeedOf((payload as { job?: { seed?: unknown } }).job?.seed);
+}
+
+/** A `seed` field off some job-response shape, as a finite number or null. */
+function finiteSeedOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** DL: a plain client-side save-as for a finished generation, used when
+ *  generateParamsStore.autoDownload is on. No extra dependency — an anchor
+ *  with a `download` attribute and a revoked object URL. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const BROWSER_MULTI_DOWNLOAD_NOTICE_KEY = 'thedaw-auto-download-browser-notice-shown-v1';
+
+/** Item 4 (T17 audit): the plain browser build has no main process to tell
+ *  "these are automatic" — Chromium's own multi-download permission prompt is
+ *  the only gate on a batch of takes there. Told once, ever (localStorage),
+ *  and only when a batch is actually more than one file (a single download
+ *  never trips that prompt). */
+function showBrowserMultiDownloadNoticeOnce(count: number): void {
+  if (count <= 1) return;
+  try {
+    if (window.localStorage?.getItem(BROWSER_MULTI_DOWNLOAD_NOTICE_KEY)) return;
+    window.localStorage?.setItem(BROWSER_MULTI_DOWNLOAD_NOTICE_KEY, '1');
+  } catch {
+    /* localStorage unavailable (private mode, etc.) — show it anyway, this run only. */
+  }
+  const msg = `Auto-download is saving ${count} takes at once — this browser may ask to allow multiple downloads from this page.`;
+  logInfo('generate', msg);
+  useStatusBarStore.getState().setText(msg.toUpperCase(), { logged: true });
+}
+
+/** Item 4 (T17 audit): tells the desktop shell's main process these EXACT
+ *  filenames are about to be automatic downloads (electron-ui's
+ *  AutoDownloadClaims, matched by name with a short TTL — not a bare count,
+ *  which could mis-claim an unrelated later user download or leak a slot
+ *  forever), so watchDownloads saves a matching one straight into the
+ *  Downloads folder instead of opening a native Save dialog. Call once,
+ *  right before the click(s) it covers. A no-op outside Electron (no
+ *  `window.electronAPI`) — the plain browser build gets its own one-time
+ *  notice instead. */
+async function markAutomaticDownloads(filenames: readonly string[]): Promise<void> {
+  const api = (window as unknown as {
+    electronAPI?: { markAutomaticDownloads?: (names: string[]) => Promise<void> };
+  }).electronAPI;
+  if (api?.markAutomaticDownloads) {
+    await api.markAutomaticDownloads([...filenames]);
+    return;
+  }
+  showBrowserMultiDownloadNoticeOnce(filenames.length);
+}
+
 // ── Chimera prompt derivation ───────────────────────────────────────────────
 // A Chimera stack is a complete brief on its own: the clips carry BPM, key and
 // (for library takes) the analysis module's semantic tags. When the textarea
@@ -651,7 +753,7 @@ const clearHealParams = (): void => {
   }
 };
 
-interface JobResultItem { audio_base64?: string; mime_type?: string; filename?: string }
+interface JobResultItem { audio_base64?: string; mime_type?: string; filename?: string; seed?: number }
 interface FirstResult { blob: Blob; filename: string }
 
 /** HEAL = 'polish': a second /api/generate-jobs run on the first result —
@@ -706,7 +808,10 @@ const runHealPass = async (
       if (jobId) void confirmCancel(jobId, store.getState().isGenerating ? -1 : store.getState().pollRunId, '/api/jobs');
       return null;
     }
-    if (!response.ok) throw new Error(getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`));
+    if (!response.ok) {
+      handleEngineElsewhere(payload, 'Stable Audio cannot load beside it.');
+      throw new Error(getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`));
+    }
     if (!jobId) throw new Error('Backend did not return a job id for the heal pass.');
     store.setState({ currentJobId: jobId, jobStatus: 'queued', statusLabel: 'HEALING SEAMS...' });
     logInfo('generate', `[${elapsed()}] Heal pass queued: ${jobId.slice(0, 8)}`);
@@ -832,14 +937,62 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
   currentJobId: null,
   runJobsBase: '/api/jobs',
   lastAudioUrl: null,
-  lastAudioBlob: null,
   lastFilename: null,
   lastDurationSec: null,
   lastModelName: null,
+  lastSeedUsed: null,
   error: null,
   pollRunId: 0,
 
   submitGeneration: async (params) => {
+    // Re-entry claim — the FIRST check in the function, before even the cloud
+    // branch below. Without it, a caller pressing again during the pre-flight
+    // (desktop CREATE double-click, XR trigger bounce, or the assistant's
+    // generate action) — including one that switched `model` to suno/lyria
+    // mid-run — fell into the cloud branch first: it cleared statusLabel/error
+    // on a LIVE local run's caption and, for Suno, fired a second
+    // sunoStore.submit while the first was still in flight, since the cloud
+    // branch never touches (and so never checked) generateStore.isGenerating.
+    // Placed ahead of everything so no path — local or cloud — can start or
+    // reset anything while a run is already live.
+    if (get().isGenerating) {
+      logInfo('generate', 'CREATE ignored: a run is already in progress (press again to abort it)');
+      return;
+    }
+
+    // P0: Suno and Lyria are cloud providers with their own generate paths —
+    // Suno's own form/submit in sunoStore, Lyria's own transport inside its
+    // embedded iframe (LyriaPanel). Neither takes a Stable Audio job, so
+    // routing them through the rest of this function used to POST straight to
+    // /api/generate-jobs with model=suno|lyria, which the SA3 pipeline cannot
+    // serve. This has to run before the prompt guard below: Lyria takes no
+    // prompt at all, and Suno validates its own form fields in sunoStore.submit.
+    if (isCloudModel(params.model)) {
+      // A stale FAILED/PROMPT REQUIRED caption from a previous local run
+      // (or a previous Suno failure) must not linger under this key just
+      // because neither cloud branch below runs the code that normally
+      // clears it before a submit.
+      set({ error: null, statusLabel: 'READY' });
+      if (params.model === 'suno') {
+        logInfo('generate', 'CREATE pressed with Suno selected: routing to the Suno panel’s own Generate (sunoStore.submit), not /api/generate-jobs.');
+        try {
+          await useSunoStore.getState().submit();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logError('generate', `Suno submit failed: ${msg}`);
+          set({ error: msg, statusLabel: 'FAILED' });
+          useStatusBarStore.getState().setText(`SUNO GENERATE FAILED: ${msg}`, { logged: true });
+        }
+        return;
+      }
+      // lyria: fully embedded, unmodified sibling app (its own transport, its
+      // own Generate) — there is no host-callable generate path to route to.
+      const msg = 'Lyria generates from its own panel — use the controls inside the Lyria tab.';
+      logInfo('generate', `CREATE pressed with Lyria selected: ${msg}`);
+      useStatusBarStore.getState().setText(msg.toUpperCase());
+      return;
+    }
+
     const typedPrompt = params.prompt.trim();
     const chimeraStack = useGenerateParamsStore.getState().chimera;
     const chimeraArmed = chimeraStack.clips.length >= 2;
@@ -858,18 +1011,11 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       return;
     }
 
-    // Re-entry claim — synchronous, BEFORE the first await. Without it, every
-    // caller pressing again during the pre-flight (desktop CREATE
-    // double-click, XR trigger bounce, assistant) saw isGenerating=false and
-    // stacked a duplicate backend job; worse, a press MEANT as cancel during
-    // the SUBMITTING window started a second run instead. Claiming the flag
-    // here makes a second press route to cancelGeneration, and the pollRunId
-    // checks after each pre-flight await make that cancel actually abort the
-    // submission before the job is POSTed.
-    if (get().isGenerating) {
-      logInfo('generate', 'CREATE ignored: a run is already in progress (press again to abort it)');
-      return;
-    }
+    // The re-entry claim itself already ran, first thing in this function
+    // (above the cloud branch). What's still needed here, now that a fresh
+    // submission is definitely proceeding: revoke the previous run's object
+    // URL and bump pollRunId so the pollRunId checks after each pre-flight
+    // await below can tell this submission apart from a stale one.
     const nextRunId = get().pollRunId + 1;
     const previousUrl = get().lastAudioUrl;
     if (previousUrl) {
@@ -884,8 +1030,8 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       runJobsBase: params.model.startsWith('magenta-') ? '/api/magenta/jobs' : '/api/jobs',
       error: null,
       lastAudioUrl: null,
-      lastAudioBlob: null,
       lastFilename: null,
+      lastSeedUsed: null,
       pollRunId: nextRunId,
     });
 
@@ -1053,6 +1199,7 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       }
 
       const jobId = response.ok ? (payload as { job?: { id?: string } })?.job?.id : undefined;
+      const resolvedSeed = response.ok ? extractResolvedSeed(payload) : null;
 
       // STOP landed while the POST was in flight: cancel the job if one was
       // made, and leave the stopped run's state alone; a run started since
@@ -1068,6 +1215,9 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       if (!response.ok) {
         const detail = getErrorMessage(payload, `HTTP ${response.status} ${response.statusText}`);
         logError('generate', `POST ${genEndpoint} → ${response.status} ${response.statusText} — ${detail}`);
+        // Another copy's Magenta engine holds the GPU: its card names the
+        // engine and offers to stop it.
+        if (!isMagenta) handleEngineElsewhere(payload, 'Stable Audio cannot load beside it.');
         throw new Error(detail);
       }
 
@@ -1077,10 +1227,14 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
       }
 
       logInfo('generate', `[${elapsed()}] POST /api/generate-jobs → 200 OK — job_id=${jobId.slice(0, 8)} (server received the job)`);
+      if (resolvedSeed !== null) {
+        logInfo('generate', `[${elapsed()}] Resolved seed: ${resolvedSeed}${params.seed === -1 ? ' (was -1 / fresh)' : ''}`);
+      }
       set({
         currentJobId: jobId,
         jobStatus: 'queued',
         statusLabel: 'QUEUED...',
+        lastSeedUsed: resolvedSeed,
       });
       useStatusBarStore.getState().setText(`GENERATION QUEUED: ${jobId.slice(0, 8)}`);
       logInfo('generate', `[${elapsed()}] Job queued: ${jobId.slice(0, 8)} — waiting for backend to start sampling`);
@@ -1127,8 +1281,8 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           progress?: { step?: number; steps?: number; stage?: string };
           result?: {
             batch?: boolean;
-            item?: { audio_base64?: string; mime_type?: string; filename?: string };
-            items?: Array<{ audio_base64?: string; mime_type?: string; filename?: string }>;
+            item?: { audio_base64?: string; mime_type?: string; filename?: string; seed?: number };
+            items?: Array<{ audio_base64?: string; mime_type?: string; filename?: string; seed?: number }>;
           };
           error?: string;
         };
@@ -1164,6 +1318,11 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
           if (!resultItem?.audio_base64) {
             throw new Error('Generation completed but no audio payload was returned.');
           }
+          // The take's own seed, read BEFORE a HEAL = 'polish' pass replaces
+          // `items` below — a heal job's seed is not the take's seed. Falls
+          // back to whatever the POST reply resolved (extractResolvedSeed)
+          // when this backend predates the completed-result seed field.
+          const takeSeed = finiteSeedOf(resultItem.seed) ?? get().lastSeedUsed;
           let resultMime = resultItem.mime_type || 'audio/wav';
           let resultBlob = base64ToBlob(resultItem.audio_base64, resultMime);
 
@@ -1201,14 +1360,50 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
             statusLabel: 'COMPLETE',
             progressPct: 100,
             lastAudioUrl: audioUrl,
-            lastAudioBlob: resultBlob,
             lastFilename: resultItem.filename || 'output.wav',
             lastDurationSec: params.duration,
             lastModelName: params.model,
+            lastSeedUsed: takeSeed,
             error: null,
           });
           useStatusBarStore.getState().setText('Decoded — registering library entries...');
           logInfo('generate', `[${elapsed()}] Sampler finished — ${resultItem.filename || 'output.wav'} (${params.duration}s, ${Math.round(resultBlob.size / 1024)}KB). Audio was written to disk server-side; pulling the entries.`);
+          // DL: the auto-download toggle had no consumer — fires once per
+          // completed run, but for EVERY take that has audio (Batch > 1 makes
+          // `items` more than one entry; a heal pass replaces `items` with its
+          // own single healed take, which is what a user with HEAL on wants
+          // downloaded, not the pre-heal batch). Distinct filenames per take
+          // fall back to the job/batch index when the backend sent none.
+          // Item 4 (T17 audit): marks the exact filenames as automatic with
+          // the desktop shell BEFORE clicking, so its will-download handler
+          // can save straight to disk instead of opening one Save dialog per
+          // take — a best-effort hint, wrapped so a missing/rejecting IPC
+          // handler (a newer renderer against an older packaged shell) can
+          // never fail an otherwise-finished run: everything below this run
+          // still has to happen (library refresh, the Chimera PATCH, the
+          // player load, autoplay) whether or not the download succeeded.
+          if (useGenerateParamsStore.getState().autoDownload) {
+            try {
+              const toDownload = items
+                .map((it, i) => ({ it, i }))
+                .filter(({ it }) => !!it.audio_base64)
+                .map(({ it, i }) => ({
+                  it,
+                  filename: it.filename || `${resultJobId}_${String(i).padStart(2, '0')}.wav`,
+                }));
+              if (toDownload.length) {
+                await markAutomaticDownloads(toDownload.map((d) => d.filename));
+                toDownload.forEach(({ it, filename }) => {
+                  const blob = it === resultItem ? resultBlob : base64ToBlob(it.audio_base64 as string, it.mime_type || 'audio/wav');
+                  downloadBlob(blob, filename);
+                });
+                logInfo('generate', `[${elapsed()}] Auto-download: saved ${toDownload.length} take(s).`);
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              logError('generate', `Auto-download failed (the run itself still completed): ${msg}`);
+            }
+          }
 
           // The backend already wrote each item to disk via _save_generation_artifacts_sync.
           // Refresh the library to surface the new entries via /api/library/entries.
@@ -1417,7 +1612,6 @@ export const useGenerateStore = create<GenerateStoreState>()((set, get) => ({
     }
     set({
       lastAudioUrl: null,
-      lastAudioBlob: null,
       lastFilename: null,
       lastDurationSec: null,
       lastModelName: null,

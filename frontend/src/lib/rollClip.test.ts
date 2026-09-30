@@ -1,11 +1,12 @@
 // The sequence a roll in 7/8 with a looping lane goes through, in the order the
 // app runs it: bounce to EDIT, open the clip in the roll, save the project
-// (.tasmo JSON), reload, open in the roll again. projectImport.ts does not load
-// under node, so the save and the reload replay its projectClient mappers.
+// (.tasmo JSON), reload, open in the roll again. The save and the reload replay
+// the projectClient mappers projectImport.ts writes and reads a clip's notes with.
 import assert from 'node:assert/strict';
-import { clipRenderInput, clipRollLoad, playedRollNotes, rollClipFields, type RollClipInput, type RollLoadArgs } from './rollClip.ts';
-import { clipMeterToTasmo, pianoNoteToTasmo, tasmoMeterToClip, tasmoNotesToPiano, type TasmoStepNote } from './projectClient.ts';
-import { rollMeterOf, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
+import { clipRenderInput, clipRollLoad, midiFileClipFields, playedRollNotes, quantizeRollClip, rollClipFields, type RollClipInput, type RollLoadArgs } from './rollClip.ts';
+import { encodeMidi, parseMidi } from './midi.ts';
+import { clipNotesToTasmo, playedNotesFromRoll, tasmoMeterToClip } from './projectClient.ts';
+import { migrateNotes, rollMeterOf, tickOfStep, usePianoRollStore, type PianoNote } from '../state/pianoRollStore.ts';
 import { unrollLanes, type MeterSegment } from './meterMap.ts';
 import { copyBends, type LaneBend } from './pitchBend.ts';
 
@@ -51,13 +52,22 @@ const played = playedRollNotes(original.notes, original.meter.lanes, TOTAL);
 assert.equal(played.length, 2 + 2 * 5);
 
 /** loadFromClip's arguments carry the original roll. */
-const assertLoad = (args: RollLoadArgs, clipId: string) => {
+const assertLoad = (args: RollLoadArgs, clipId: string, source: 'roll' | 'tasmo') => {
   const [id, notes, bpm, total, meter, bends] = args;
   assert.equal(id, clipId);
   assert.equal(bpm, BPM);
   assert.equal(total, TOTAL);
   assert.deepEqual(meter, original.meter);
-  assert.deepEqual(withoutIds(notes), withoutIds(original.notes));
+  // migrateNotes is a no-op for a note whose ticks agree with its steps, so the
+  // wrap alone cannot tell a preserved tick from a reconstructed one.
+  assert.deepEqual(withoutIds(migrateNotes(notes)), withoutIds(original.notes));
+  // This says it: the in-memory clip arrives ticked, and so does the .tasmo
+  // reload, whose notes carry `tick`/`ticks` (pianoNoteToTasmo). A reload that
+  // lost them would re-derive a length under one step as a whole step.
+  for (const n of notes) {
+    assert.equal(n.tick, tickOfStep(n.step), `${n.id} reached the roll un-ticked (${source})`);
+    assert.equal(n.ticks, tickOfStep(n.length), `${n.id} reached the roll without its length in ticks (${source})`);
+  }
   assert.deepEqual(withoutPointIds(bends), withoutPointIds(original.bends));
 };
 
@@ -95,7 +105,7 @@ assert.notEqual(fields.sourceLanes, st().lanes);
 // 3. Open the clip in the roll.
 const clip: RollClipInput = { id: 'clip-1', ...fields };
 const firstLoad = clipRollLoad(clip);
-assertLoad(firstLoad, 'clip-1');
+assertLoad(firstLoad, 'clip-1', 'roll');
 assert.deepEqual(firstLoad[1], original.notes);
 assert.deepEqual(firstLoad[5], original.bends);
 
@@ -123,28 +133,36 @@ assertRoll('clip-1');
 // A second bounce writes the same clip.
 assert.deepEqual(rollClipFields(st()), fields);
 
-// 5. Save the project: captureEditorSession writes these keys, and the file goes out and back as JSON.
-const saved: { midi_notes: TasmoStepNote[] } & ReturnType<typeof clipMeterToTasmo> = JSON.parse(
-  JSON.stringify({ midi_notes: clip.sourcePianoRoll?.map(pianoNoteToTasmo), ...clipMeterToTasmo(clip) }),
-);
-assert.equal(saved.midi_notes.length, played.length);
-assert.equal(saved.midi_notes.some((n) => 'lane' in n), false);
+// 5. Save the project: captureEditorSession writes these keys through clipNotesToTasmo, and the file
+// goes out and back as JSON. Lane B loops and both lanes bend, so the file keeps the roll notes, and
+// beside them the played notes (their unroll) as midi_notes, the list every build reads.
+const saved: ReturnType<typeof clipNotesToTasmo> = JSON.parse(JSON.stringify(clipNotesToTasmo(clip)));
+assert.equal(saved.midi_notes?.length, clip.sourcePianoRoll.length, 'the played notes are written for older builds');
 assert.deepEqual(saved.roll_notes?.map((n) => n.lane), [undefined, undefined, 1, 1]);
 assert.deepEqual(saved.roll_bends?.map((b) => [b.lane, b.range, b.points.length]), [[0, 2, 2], [1, 12, 2]]);
+// Each roll note carries its ticks, which agree with its steps.
+assert.ok(saved.roll_notes?.every((n) => n.tick === tickOfStep(n.step) && n.ticks === tickOfStep(n.length)));
 
-// 6. Reload: buildClip takes the project tempo and the mapped fields.
+// 6. Reload: buildClip takes the project tempo and the mapped fields, and rebuilds the played notes
+// from the roll notes the way the bounce built them.
+const reloadedMeter = tasmoMeterToClip(saved);
 const reloaded: RollClipInput = {
   id: 'clip-1',
   sourceBpm: BPM,
-  sourcePianoRoll: tasmoNotesToPiano(saved.midi_notes, 'pn'),
-  ...tasmoMeterToClip(saved),
+  sourcePianoRoll: playedNotesFromRoll(reloadedMeter),
+  ...reloadedMeter,
 };
-assert.deepEqual(withoutIds(reloaded.sourcePianoRoll), withoutIds(played));
+assert.deepEqual(withoutIds(migrateNotes(reloaded.sourcePianoRoll ?? [])), withoutIds(played));
+assert.ok((reloaded.sourcePianoRoll ?? []).every((n) => typeof n.tick === 'number' && typeof n.ticks === 'number'), 'the reload carries its ticks');
+// A file written before the ticks (step and length only) migrates to the same
+// notes, exactly as the store migrates them when the clip is opened in step 7.
+const tickless = { ...saved, roll_notes: saved.roll_notes?.map(({ tick: _t, ticks: _ts, ...n }) => n) };
+assert.deepEqual(withoutIds(migrateNotes(playedNotesFromRoll(tasmoMeterToClip(tickless)))), withoutIds(played));
 assert.equal(reloaded.sourcePianoRoll?.some((n) => 'lane' in n), false);
 
 // 7. Open the reloaded clip in the roll.
 const secondLoad = clipRollLoad(reloaded);
-assertLoad(secondLoad, 'clip-1');
+assertLoad(secondLoad, 'clip-1', 'tasmo');
 st().loadFromClip('other', [], 120, 16, { meterMap: M44, pickupSteps: 0, lanes: LANE_A });
 st().loadFromClip(...secondLoad);
 assertRoll('clip-1');
@@ -180,6 +198,120 @@ assertRoll('clip-1');
   // The same clip saved and reloaded from a file without meter fields stays 4/4.
   const fromFile: RollClipInput = { id: 'old', sourceBpm: 110, sourcePianoRoll: legacy.sourcePianoRoll, ...tasmoMeterToClip({}) };
   assert.deepEqual(clipRollLoad(fromFile)[4], meter);
+}
+
+// 8. quantizeRollClip — T37B: quantize/swing/groove on the roll clip document
+// (there was none in rollClip.ts; the math is clipNotes.quantizeNotes and
+// grooveTemplate.applyGroove, not reimplemented here).
+{
+  const qnotes: PianoNote[] = [
+    { id: 'q0', note: 60, step: 0.2, length: 1.1, velocity: 100 },
+    { id: 'q1', note: 62, step: 3.9, length: 0.6, velocity: 90 },
+  ];
+
+  // A clip bounced before the roll had its own note list: only sourcePianoRoll
+  // exists, so that is what gets quantized, and sourceRollNotes stays empty —
+  // exactly what clipRollLoad already treats as "no roll document".
+  const legacyClip: RollClipInput = { id: 'q-legacy', sourcePianoRoll: qnotes, sourceBpm: 120, sourceTotalSteps: 8 };
+  const legacyOut = quantizeRollClip(legacyClip, { grid: '1/16', strength: 1, quantizeEnds: true });
+  assert.deepEqual(legacyOut.sourceRollNotes, []);
+  assert.deepEqual(legacyOut.sourcePianoRoll.map((n) => n.step), [0, 4]);
+  assert.deepEqual(legacyOut.sourcePianoRoll.map((n) => n.length), [1, 1]);
+  // The input list is untouched.
+  assert.deepEqual(qnotes.map((n) => n.step), [0.2, 3.9]);
+
+  // A clip with its own lane-based document: sourceRollNotes is quantized and
+  // sourcePianoRoll is re-derived from the result, so the two never drift.
+  const ownClip: RollClipInput = {
+    id: 'q-own',
+    sourceRollNotes: qnotes,
+    sourcePianoRoll: [],
+    sourceLanes: LANE_A,
+    sourceMeterMap: M44,
+    sourcePickupSteps: 0,
+    sourceTotalSteps: 8,
+    sourceBpm: 120,
+  };
+  const ownOut = quantizeRollClip(ownClip, { grid: '1/16', strength: 1, quantizeEnds: true });
+  assert.deepEqual(ownOut.sourceRollNotes.map((n) => n.step), [0, 4]);
+  assert.deepEqual(ownOut.sourceRollNotes.map((n) => n.length), [1, 1]);
+  // Lane A has no cycle, so the played list is the same notes unrolled once
+  // with the lane id dropped.
+  assert.deepEqual(ownOut.sourcePianoRoll.map((n) => n.step), [0, 4]);
+  assert.equal(ownOut.sourcePianoRoll.some((n) => 'lane' in n), false);
+
+  // A groove nudges the already-quantized grid: a flat lateness of +0.5 step on
+  // slot 0 (16 slots/bar; both notes' quantized steps land on-the-beat slots)
+  // pushes a note landing on that slot forward by 0.5 step at full strength.
+  const groove = { id: 'g', name: 'g', slots: 16, lateness: [0.5, ...new Array(15).fill(0)] };
+  const groovedOut = quantizeRollClip(ownClip, { grid: '1/16', strength: 1, groove, grooveStrength: 1 });
+  assert.equal(groovedOut.sourceRollNotes.find((n) => n.id === 'q0')?.step, 0.5);
+  // Slot 4 (q1's quantized step) has no lateness in this groove, so it is untouched.
+  assert.equal(groovedOut.sourceRollNotes.find((n) => n.id === 'q1')?.step, 4);
+
+  // grooveStrength scales the groove independently of the grid quantize's own strength.
+  const halfGrooved = quantizeRollClip(ownClip, { grid: '1/16', strength: 1, groove, grooveStrength: 0.5 });
+  assert.equal(halfGrooved.sourceRollNotes.find((n) => n.id === 'q0')?.step, 0.25);
+
+  // An empty roll's own notes (never any lane document) quantize to nothing and stay that way.
+  const emptyOut = quantizeRollClip({}, { grid: '1/16', strength: 1 });
+  assert.deepEqual(emptyOut, { sourceRollNotes: [], sourcePianoRoll: [] });
+}
+
+// A .mid dropped into EDIT (addMidiClipFromBytes): the bytes are parsed, the
+// clip takes midiFileClipFields, the clip renders (clipRenderInput) and then
+// opens in the roll (clipRollLoad -> loadFromClip). The file is 480 PPQ at
+// 97.3 BPM in 7/8, with a flam, a 32nd and a slide on channel 1. EDIT used to
+// round each note to the nearest 16th with a one-step floor, round the tempo
+// to 97 and drop the slide, so the clip neither played nor reopened as written.
+{
+  const bytes = encodeMidi({
+    ppq: 480,
+    bpm: 97.3,
+    timeSignatures: [{ tick: 0, num: 7, den: 8, groups: [3, 2, 2] }],
+    tracks: [
+      {
+        name: 'Lead',
+        notes: [
+          { tick: 0, note: 60, velocity: 100, durationTicks: 480, channel: 0 },
+          { tick: 19, note: 64, velocity: 90, durationTicks: 461, channel: 0 }, // a flam
+          { tick: 540, note: 67, velocity: 80, durationTicks: 60, channel: 0 }, // a 32nd, off the grid
+          { tick: 960, note: 55, velocity: 85, durationTicks: 480, channel: 1 }, // the slide's note
+        ],
+        bends: [
+          { tick: 960, channel: 1, value: 8192 },
+          { tick: 1200, channel: 1, value: 12288 },
+          { tick: 1440, channel: 1, value: 8192 },
+        ],
+        bendRanges: [{ tick: 0, channel: 1, semitones: 2 }],
+      },
+    ],
+  });
+  const fields = midiFileClipFields(parseMidi(bytes), 'imp');
+  // The file's FF 51 holds 616650 us a quarter; the clip plays exactly that.
+  assert.equal(fields.sourceBpm, 60_000_000 / 616650, 'the clip plays at the file tempo, to the microsecond');
+  // 960 PPQ in the model: every file tick doubles, nothing snaps.
+  const byTick = [...fields.sourcePianoRoll].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note);
+  assert.deepEqual(byTick.map((n) => [n.note, n.tick, n.ticks]), [[60, 0, 960], [64, 38, 922], [67, 1080, 120], [55, 1920, 960]]);
+  assert.equal(byTick[2].length, 0.5, 'the 32nd is half a 16th long');
+  assert.deepEqual(fields.sourceMeterMap, M78, 'the clip keeps the 7/8');
+  // The last note ends at step 12; the clip ends on the bar line after it.
+  assert.equal(fields.sourceTotalSteps, 14);
+  // The slide rides its own lane with its curve, and the render bends that lane.
+  assert.equal(fields.sourceLanes.length, 2, 'the bending channel has its own lane');
+  const bent = fields.sourceBends.find((b) => b.points.length > 0);
+  assert.ok(bent && bent.lane === 1, 'lane B carries the slide');
+  const render = clipRenderInput(fields, fields.sourceTotalSteps);
+  assert.ok(render.bends, 'the clip audio renders the slide');
+  // Open the clip in the roll: the same ticks, tempo, meter and slide.
+  usePianoRollStore.getState().loadFromClip(...clipRollLoad({ id: 'mid-clip', ...fields }));
+  const roll = st();
+  assert.equal(roll.bpm, 60_000_000 / 616650, 'the roll opens at the file tempo, to the microsecond');
+  assert.deepEqual(
+    [...roll.notes].sort((x, y) => (x.tick ?? 0) - (y.tick ?? 0) || x.note - y.note).map((n) => [n.note, n.tick, n.ticks, n.lane ?? 0]),
+    [[60, 0, 960, 0], [64, 38, 922, 0], [67, 1080, 120, 0], [55, 1920, 960, 1]],
+  );
+  assert.ok(roll.bends.some((b) => b.lane === 1 && b.points.length > 0), 'the roll bends lane B');
 }
 
 console.log('rollClip: ok');

@@ -9,7 +9,7 @@ import { keyLabel, toCamelot } from '../../lib/camelot';
 import { addBlobsToChimera } from '../../lib/chimeraClient';
 import { SlideTrack } from '../audio/SlideTrack';
 import { hasAudioDragData, readAudioDragData } from '../../lib/audioDnD';
-import { useExternalDragStore } from '../../state/externalDragStore';
+import { dropPending, useExternalDragStore } from '../../state/externalDragStore';
 import { logError } from '../../state/logStore';
 import { KnownFilesMenu } from '../ui/KnownFilesMenu';
 import { ChimeraControls } from './ChimeraControls';
@@ -84,13 +84,16 @@ export const ChimeraStack: React.FC = () => {
     if (!externalActive) return;
     const onDocPointerUp = (e: PointerEvent) => {
       const zone = dropZoneRef.current;
-      if (zone && externalItems.length > 0) {
+      const pending = useExternalDragStore.getState().pending;
+      if (zone && (externalItems.length > 0 || pending)) {
         const r = zone.getBoundingClientRect();
         const inside =
           e.clientX >= r.left && e.clientX <= r.right &&
           e.clientY >= r.top && e.clientY <= r.bottom;
         if (inside) {
-          addBlobsToChimera(externalItems);
+          if (externalItems.length > 0) addBlobsToChimera(externalItems);
+          // MIDI parts rendering for this drag join the stack as they land.
+          dropPending(addBlobsToChimera, (reason) => logError('chimera', `A dragged MIDI part could not be rendered: ${reason}`));
         }
       }
       endExternal();

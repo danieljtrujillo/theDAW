@@ -6,6 +6,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 import { CUSTOM_IMAGE_ID } from '../lib/editThemes';
 
 interface EditThemeState {
@@ -27,6 +28,6 @@ export const useEditThemeStore = create<EditThemeState>()(
           themeId: dataUrl ? CUSTOM_IMAGE_ID : 'obsidian',
         }),
     }),
-    { name: 'thedaw-edit-theme-v1', version: 1 },
+    { name: 'thedaw-edit-theme-v1', storage: persistStorage(), version: 1 },
   ),
 );

@@ -338,6 +338,3 @@ export const SurfaceAudio: React.FC<
   React.useEffect(() => registerSinkElement(surface, ref.current), [surface]);
   return <audio ref={ref} {...rest} />;
 };
-
-/** Non-hook read for a component that only needs the id (effect deps). */
-export const currentDeviceIds = (kind: 'audioIn' | 'audioOut'): LiveDevice[] => liveDevices(kind);

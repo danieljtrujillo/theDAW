@@ -15,10 +15,18 @@ Two gates, because neither is sufficient alone:
     proxy, ``app://.`` in the packaged app, ``http://<lan-ip>:8600`` on the
     phone), so every legitimate origin is loopback, private-range, or a
     non-http app scheme.
-  - Token. ``Origin`` is trivially forged by anything that is not a browser, so
-    a hostile LAN needs a real secret. ``theDAW_PROXY_TOKEN`` is opt-in: when
-    it is set the request must carry it, and when it is not set the origin gate
-    stands alone (the default posture on a home network).
+  - Token. ``Origin``, and every ``Sec-Fetch-*`` header along with it, is
+    trivially forged by anything that is not a real browser -- a LAN script
+    can send ``Sec-Fetch-Site: same-origin`` itself, so that header is not
+    proof either (SEC-001). A non-loopback caller must therefore also carry
+    a real secret: the desktop shell's launch token
+    (``backend/lib/launch_token.py``), a LAN pairing token
+    (``backend/lib/pairing.py`` -- what the phone uses, since a plain
+    ``http://<lan-ip>`` share link is not a secure context and so its browser
+    sends it no ``Sec-Fetch-*`` headers to lean on at all), or the opt-in
+    ``theDAW_PROXY_TOKEN``. This extra check is enforced in ``denial_reason``
+    via ``_needs_loopback_or_launch_token``, not in ``is_local_origin``
+    itself, which other routers also rely on and which is unaffected.
 """
 
 from __future__ import annotations
@@ -30,11 +38,50 @@ from urllib.parse import urlsplit
 
 from fastapi import Request
 
+from backend.lib import launch_token, pairing
+
 # Electron loads the packaged renderer over app://, and a file:// renderer
 # reports its scheme the same way. Neither can be reached by a remote page.
 _LOCAL_SCHEMES = {"app", "file", "tauri", "capacitor"}
 
 _LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _peer_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """``host`` parsed as an IP, with an IPv4-mapped IPv6 address (e.g.
+    ``::ffff:127.0.0.1``, which a dual-stack socket can report for an IPv4
+    peer) unwrapped to its IPv4 form. A non-IP host (a hostname, or a fake
+    TestClient peer) is not an address at all, so it is never loopback."""
+    h = host.strip().strip("[]")
+    if not h:
+        return None
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def caller_is_loopback(request: Request) -> bool:
+    """Whether the TCP peer itself -- what the OS reports for the socket, not
+    anything a caller's headers can claim -- is this machine.
+
+    Behind Vite's dev proxy (xfwd), the peer the backend sees is Vite's own
+    outgoing connection, which can be reported as ``::1`` rather than
+    ``127.0.0.1`` depending on the local dual-stack route; both, and the
+    IPv4-mapped form, must count."""
+    client = request.client
+    ip = _peer_ip(client.host if client else "")
+    return ip is not None and ip.is_loopback
+
+
+# Public name is `caller_is_loopback` above; this alias exists only because
+# `backend/modules/vst/router.py` still imports the old underscore-prefixed
+# name and is out of scope for this pass. Remove once that importer switches.
+_caller_is_loopback = caller_is_loopback
+
 
 TOKEN_ENV = "theDAW_PROXY_TOKEN"
 TOKEN_HEADER = "x-thedaw-token"
@@ -71,7 +118,13 @@ def _fetch_site(request: Request) -> str:
 
 
 def is_local_origin(request: Request) -> bool:
-    """Whether the caller's browsing context belongs to this machine."""
+    """Whether the caller's browsing context belongs to this machine.
+
+    Shared with ``backend.lib.cross_site.refuse_cross_site``, used across many
+    routers -- kept exactly as before. genai-proxy's own extra SEC-001 check
+    lives in ``denial_reason`` below, not here, so it cannot change behaviour
+    for any other caller of this function.
+    """
     site = _fetch_site(request)
     if site == "cross-site":
         return False
@@ -117,10 +170,39 @@ def _token_ok(request: Request) -> bool:
     return hmac.compare_digest(supplied, expected)
 
 
+def _needs_loopback_or_launch_token(request: Request) -> bool:
+    """SEC-001: every header ``is_local_origin`` trusts -- ``Sec-Fetch-Site``
+    included -- is one a non-browser HTTP client is free to set to whatever
+    it likes; nothing stops a LAN script from sending
+    ``Sec-Fetch-Site: same-origin`` itself. So this check is header-blind on
+    purpose: it never reads ``Sec-Fetch-Site``, ``Origin`` or ``Referer``, only
+    facts a caller cannot fake -- the real TCP peer, or a secret it actually
+    holds. A non-loopback caller must carry the desktop shell's launch token
+    (``backend/lib/launch_token.py``), a valid LAN pairing token
+    (``backend/lib/pairing.py`` -- what the phone, which is not a secure
+    context over plain ``http://<lan-ip>`` and so gets no ``Sec-Fetch-*``
+    headers from its browser at all, actually uses), or the opt-in
+    ``theDAW_PROXY_TOKEN`` (already validated by ``_token_ok`` before
+    ``denial_reason`` gets here, so it is not asked for twice). Scoped to
+    genai-proxy only: it does not touch ``is_local_origin`` itself, so every
+    other caller of that function (``backend.lib.cross_site.refuse_cross_site``
+    and the routers behind it) is unaffected.
+    """
+    if os.environ.get(TOKEN_ENV, "").strip():
+        return False
+    return not (
+        caller_is_loopback(request)
+        or launch_token.header_matches(request)
+        or pairing.header_matches(request)
+    )
+
+
 def denial_reason(request: Request) -> str | None:
     """None when the caller may spend the key, else a reason safe to return."""
     if not _token_ok(request):
         return "missing or invalid proxy token"
     if not is_local_origin(request):
         return "origin not allowed"
+    if _needs_loopback_or_launch_token(request):
+        return "non-loopback caller must present the launch or pairing token"
     return None

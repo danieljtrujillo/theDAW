@@ -1,4 +1,8 @@
 /**
+ * NOT CURRENTLY LOADED: no <script src> or import references this file
+ * anywhere in the app (confirmed by audit grep) — kept up to date in case
+ * a future module page wires it in, but it has no live effect today.
+ *
  * 14 archetype-specific visualization renderers for the Edit Tool Stack.
  *
  * Each export is a draw function:  (ctx, W, H, data, params) => void
@@ -477,21 +481,37 @@ function drawGrain(ctx, W, H, data, params) {
 // ═══════════════════════════════════════════════════════════════════════
 function drawXY(ctx, W, H, data, params) {
   const pad = 24, pw = W - pad * 2, ph = H - pad * 2;
+  // X is structureWeight (TimbreForge) or morphPosition (crossfade_morph);
+  // Y is timbreBlend (TimbreForge). An axis whose param the tool does not
+  // declare is not drawn: crossfade_morph has no timbreBlend, so it gets no
+  // permanently-centered TIMBRE axis reading a hardcoded Y:0.50.
+  const hasX = params.structureWeight !== undefined || params.morphPosition !== undefined;
+  const hasY = params.timbreBlend !== undefined;
   // pad background
   ctx.fillStyle = 'rgba(255,255,255,.02)'; ctx.fillRect(pad, pad, pw, ph);
   ctx.strokeStyle = C.grid; ctx.strokeRect(pad, pad, pw, ph);
   // grid
   ctx.strokeStyle = C.grid;
-  ctx.beginPath(); ctx.moveTo(pad + pw / 2, pad); ctx.lineTo(pad + pw / 2, pad + ph); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(pad, pad + ph / 2); ctx.lineTo(pad + pw, pad + ph / 2); ctx.stroke();
+  if (hasX) {
+    ctx.beginPath(); ctx.moveTo(pad + pw / 2, pad); ctx.lineTo(pad + pw / 2, pad + ph); ctx.stroke();
+  }
+  if (hasY) {
+    ctx.beginPath(); ctx.moveTo(pad, pad + ph / 2); ctx.lineTo(pad + pw, pad + ph / 2); ctx.stroke();
+  }
   // axis labels
   ctx.fillStyle = C.muted; ctx.font = `7px ${C.font}`;
-  ctx.textAlign = 'center'; ctx.fillText('STRUCTURE', pad + pw / 2, pad - 6);
-  ctx.save(); ctx.translate(pad - 10, pad + ph / 2); ctx.rotate(-Math.PI / 2);
-  ctx.fillText('TIMBRE', 0, 0); ctx.restore();
-  // puck
-  const px = pad + (params.structureWeight ?? params.morphPosition ?? 0.5) * pw;
-  const py = pad + (1 - (params.timbreBlend ?? 0.5)) * ph;
+  ctx.textAlign = 'center';
+  if (hasX) {
+    ctx.fillText('STRUCTURE', pad + pw / 2, pad - 6);
+  }
+  if (hasY) {
+    ctx.save(); ctx.translate(pad - 10, pad + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.fillText('TIMBRE', 0, 0); ctx.restore();
+  }
+  // puck — an axis with no driving param stays centered, only the other
+  // axis (if present) moves
+  const px = hasX ? pad + (params.structureWeight ?? params.morphPosition ?? 0.5) * pw : pad + pw / 2;
+  const py = hasY ? pad + (1 - (params.timbreBlend ?? 0.5)) * ph : pad + ph / 2;
   // glow trail
   const grad = ctx.createRadialGradient(px, py, 0, px, py, 30);
   grad.addColorStop(0, 'rgba(139,92,246,.3)'); grad.addColorStop(1, 'transparent');
@@ -503,9 +523,12 @@ function drawXY(ctx, W, H, data, params) {
   ctx.strokeStyle = 'rgba(139,92,246,.4)'; ctx.lineWidth = 2; ctx.stroke();
   // readout
   ctx.fillStyle = '#fff'; ctx.font = `8px ${C.font}`; ctx.textAlign = 'center';
-  const sv = (params.structureWeight ?? params.morphPosition ?? 0.5).toFixed(2);
-  const tv = (params.timbreBlend ?? 0.5).toFixed(2);
-  ctx.fillText(`X:${sv}  Y:${tv}`, W / 2, H - 6);
+  const parts = [];
+  if (hasX) parts.push(`X:${(params.structureWeight ?? params.morphPosition ?? 0.5).toFixed(2)}`);
+  if (hasY) parts.push(`Y:${(params.timbreBlend ?? 0.5).toFixed(2)}`);
+  if (parts.length) {
+    ctx.fillText(parts.join('  '), W / 2, H - 6);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1,19 +1,16 @@
 /** Every contact/social channel a venue carries, as icon links. */
 import React from 'react';
 import {
-  Facebook,
   Globe,
-  Instagram,
   Mail,
   MessageCircle,
   Music2,
   Music4,
   Phone,
-  Twitter,
-  Youtube,
   type LucideIcon,
 } from 'lucide-react';
 import type { TourVenue } from '../../lib/tourClient';
+import { Facebook, Instagram, Twitter, Youtube } from './brandIcons';
 
 // An OSM contact tag may be a full URL or a bare handle; normalize to a URL.
 const handleUrl = (host: string, v: string): string =>

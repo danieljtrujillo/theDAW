@@ -14,6 +14,7 @@ import { getEngineCtx, getMasterGain } from './playerStore';
 import { logError, logInfo } from './logStore';
 import { buildCorpus, buildTarget, type MorphCorpus, type MorphTarget } from '../lib/morphCorpus';
 import { encodeWav } from '../lib/wavEncode';
+import { addWorkletModule } from '../lib/audioWorkletSupport';
 
 export interface MorphParams {
   bleed: number;     // 0 = dry host, 1 = full A-mosaic
@@ -43,7 +44,7 @@ let sentBId: string | null = null;
 
 function ensureModule(ctx: AudioContext): Promise<void> {
   if (!moduleP) {
-    moduleP = ctx.audioWorklet.addModule('/granular-morph.worklet.js').catch((e) => {
+    moduleP = addWorkletModule(ctx, '/granular-morph.worklet.js').catch((e) => {
       moduleP = null; // allow a later retry
       throw e;
     });
@@ -180,7 +181,7 @@ export const useMorphStore = create<MorphState>()((set, get) => ({
     if (frames <= 0) return null;
     const offline = new OfflineAudioContext(2, frames, sr);
     try {
-      await offline.audioWorklet.addModule('/granular-morph.worklet.js');
+      await addWorkletModule(offline, '/granular-morph.worklet.js');
     } catch (e) {
       logError('editor', `Metamorph render worklet failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;

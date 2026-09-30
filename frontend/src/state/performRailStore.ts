@@ -11,6 +11,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { persistStorage } from './persistStorage';
 
 export type PerformRailTab = 'routes' | 'params';
 
@@ -43,6 +44,7 @@ export const usePerformRailStore = create<PerformRailState>()(
     }),
     {
       name: 'thedaw-perform-rail-v1',
+      storage: persistStorage(),
       // v2 forces the closed default once onto profiles that briefly stored
       // the v1 open-by-default state; explicit choices persist from then on.
       version: 2,

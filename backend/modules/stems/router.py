@@ -13,15 +13,18 @@ Endpoints (prefix from module.json → ``/api/stems``):
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
 from backend.modules.library.router import get_store as get_library_store
 
 from .engine import get_progress, request_abort
+from .manifest import MANIFEST_FILENAME, classify
 from .sidecar import get_sidecar, install_dependencies, probe, reset_sidecar
 
 log = logging.getLogger(__name__)
@@ -108,6 +111,26 @@ def get_entry_progress(entry_id: str) -> dict:
     return snap
 
 
+def _read_manifest(entry_dir: Optional[Path]) -> Optional[dict[str, Any]]:
+    """The run manifest for an entry, or None when there isn't a usable one.
+
+    Runs separated before manifests existed have no file; a truncated or
+    hand-edited one is treated the same way, because a caller that can tell
+    "no manifest" from "a manifest" must never be handed a third case.
+    """
+    if entry_dir is None:
+        return None
+    path = entry_dir / "stems" / MANIFEST_FILENAME
+    try:
+        if not path.is_file():
+            return None
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("stems: ignoring unreadable manifest %s (%s)", path, e)
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 @router.get("/{entry_id}")
 def list_entry_stems(entry_id: str) -> dict:
     store = get_library_store()
@@ -116,9 +139,27 @@ def list_entry_stems(entry_id: str) -> dict:
     record = store.get_entry(entry_id)
     if record is None:
         raise HTTPException(404, f"entry {entry_id!r} not found")
+
+    rows = store.db.list_stems(entry_id)
+    # Roles for every row, manifest or not: an old run has no manifest.json,
+    # and a caller mixing its stems still has to know that ``no_vocals`` is a
+    # sum of the others and that the LARSNET parts were re-gained. They are
+    # derived from the rows that exist now rather than copied out of the
+    # manifest, so a stem deleted since the run does not leave a stale role.
+    described = {e["name"]: e for e in classify(str(r["stem_name"]) for r in rows)}
+    for row in rows:
+        entry = described.get(str(row["stem_name"]))
+        if entry is None:
+            continue
+        row["role"] = entry["role"]
+        row["gain_normalized"] = entry["gain_normalized"]
+        if "aggregate_of" in entry:
+            row["aggregate_of"] = entry["aggregate_of"]
+
     return {
         "entry_id": entry_id,
-        "stems": store.db.list_stems(entry_id),
+        "stems": rows,
+        "manifest": _read_manifest(store._dir_for(entry_id)),  # noqa: SLF001
     }
 
 
@@ -131,7 +172,7 @@ async def run_separation(
 ) -> dict:
     if stems not in (2, 4, 6, 12):
         raise HTTPException(400, "stems must be 2, 4, 6, or 12")
-    store = get_library_store()
+    store = await asyncio.to_thread(get_library_store)
     if store.db is None:
         raise HTTPException(503, "library DB not available")
     record = store.get_entry(entry_id)

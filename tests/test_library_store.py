@@ -125,11 +125,50 @@ def test_load_perf_set_rejects_traversal_and_absolute_paths(tmp_path: Path):
         encoding="utf-8",
     )
 
-    result = router._load_perf_set(store, set_dir)
+    # The default read is the one behind ``GET /setlists``: it filters the same
+    # way, and it registers nothing (see ``tests/test_library_setlists.py``).
+    listed = router._load_perf_set(store, set_dir)
+
+    assert listed is not None
+    assert [entry["label"] for entry in listed["entries"]] == ["good"]
+    assert listed["entries"][0]["entryId"] is None
+
+    result = router._load_perf_set(store, set_dir, register=True)
 
     assert result is not None
     assert [entry["label"] for entry in result["entries"]] == ["good"]
     assert result["entries"][0]["entryId"]
+    # Same set, whether or not its tracks have been registered yet.
+    assert result["id"] == listed["id"]
+
+
+def test_register_reference_twice_reuses_the_entry(tmp_path: Path):
+    """The same file registered twice is one entry, not two.
+
+    The bulk importer has always skipped a ``source_path`` it already has, so
+    a re-run over a folder is a no-op; the per-file path now does the same.
+    It is what stops two clients opening one performance set from putting two
+    copies of every track in the library, and it holds without any lock --
+    the claim is the row, not the caller's timing.
+    """
+    store = LibraryStore(tmp_path)
+    src = tmp_path / "outside" / "track.wav"
+    src.parent.mkdir()
+    src.write_bytes(b"RIFF\x00\x00\x00\x00WAVEdata")
+
+    first = store.register_reference(str(src), {"source": "performance-set"})
+    assert first is not None
+    assert store.db is not None
+    after_first = store.db.library_counts()
+
+    second = store.register_reference(str(src), {"source": "performance-set"})
+
+    assert second is not None
+    assert second.id == first.id
+    assert store.db.library_counts() == after_first
+    assert store.db.entry_id_for_source_path(str(src.resolve()), "performance-set") == (
+        first.id
+    )
 
 
 def test_update_entry_writes_only_user_mutable_fields(tmp_path: Path):
@@ -213,8 +252,22 @@ def test_import_blob_creates_top_level_entry(tmp_path: Path):
 
 def test_user_mutable_fields_frozenset_is_locked():
     # Lock the contract — adding a new field requires an intentional update.
+    # notation_artist / notation_title: the DETAILS identity form's manual
+    # artist/title overrides (frontend/src/components/layout/DetailsView.tsx,
+    # saveIdentity) -- added for SCORE-001 (batch-12 T04); T08's notation
+    # routes and T09's identity resolver read them off metadata.json.
     assert USER_MUTABLE_FIELDS == frozenset(
-        {"favorite", "rating", "tags", "notes", "title", "chimera_sources", "lyrics"}
+        {
+            "favorite",
+            "rating",
+            "tags",
+            "notes",
+            "title",
+            "chimera_sources",
+            "lyrics",
+            "notation_artist",
+            "notation_title",
+        }
     )
 
 

@@ -50,8 +50,20 @@ interface FxParamOption {
 }
 
 /** The routable FX params of one track, indexed EXACTLY like the Perform
- *  grid's chain entries (flattened non-instrument, non-rack devices; vst3
- *  entries exist in the index but are not routable). */
+ *  grid's chain entries (flattened non-instrument, non-rack devices; plugin
+ *  entries exist in the index but are not routable).
+ *
+ *  THE PLUGIN EXCLUSION STAYS, and not for the reason it was written. "A VST3
+ *  cannot run in the live graph" is no longer true — the Perform grid hosts
+ *  one per entry now. What is still true is that a controller route needs a
+ *  NAMED, BOUNDED parameter: `min`, `max` and a stable key, so a knob can be
+ *  scaled onto it and a saved binding can find it again. A VST3 plugin has
+ *  none of that here — its parameters are opaque indices whose names and
+ *  ranges only exist inside a RUNNING host, and this function is pure over a
+ *  parsed project file, evaluated before any host is spawned. Routing one
+ *  would mean binding hardware to `p17` of a plugin nobody has loaded yet.
+ *  (Routing live plugin parameters needs the host's `params` list and is a
+ *  feature of its own, not a filter to delete.) */
 function fxParamsForTrack(project: DawProject, trackIndex: number): FxParamOption[] {
   const track = performTracks(project)[trackIndex];
   if (!track) return [];
@@ -59,6 +71,9 @@ function fxParamsForTrack(project: DawProject, trackIndex: number): FxParamOptio
   const devices = (track.devices ?? []).filter((d) => !d.is_instrument && !d.is_rack);
   devices.forEach((d, i) => {
     const node = dawDeviceToEffectNode(d);
+    // Belt and braces: for a plugin, `effect_name` is the DEVICE's name, so the
+    // rack lookup below is what actually excludes it. Both are kept — see the
+    // doc comment for why a plugin has nothing routable to offer here.
     if (node.effect_name === 'vst3') return;
     const def = getRackEffect(node.effect_name);
     if (!def) return;

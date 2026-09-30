@@ -7,9 +7,34 @@ import { useDjAnalysisStore } from '../state/djAnalysisStore';
  * `POST /api/stems/{entry}/run` (resolves when done). The djEngine then decodes
  * the returned URLs into per-stem live faders. */
 
-export interface StemRef { name: string; url: string; }
+export interface StemRef {
+  name: string;
+  url: string;
+  /**
+   * What the backend says this row IS: a `'part'` of the mix, or an
+   * `'aggregate'` — a SUM of other rows in the same run (`drums` over the
+   * LARSNET kit parts, `no_vocals` over everything but the vocal). Undefined
+   * for a run separated before roles existed, which callers must read as
+   * "unknown", never as "part".
+   *
+   * Left a plain string so a role a later backend introduces reaches the
+   * caller intact instead of being narrowed away here. `components/audio/
+   * clipDoubleClick.planStemInsert` is the one place that decides what to do
+   * with it.
+   */
+  role?: string;
+  /** True when the separator re-gained this stem to a fixed peak, so its level
+   *  is not the level it had inside the mix. */
+  gainNormalized?: boolean;
+}
 
-interface StemRow { id?: string; stem_name?: string; name?: string }
+interface StemRow {
+  id?: string;
+  stem_name?: string;
+  name?: string;
+  role?: string;
+  gain_normalized?: boolean;
+}
 
 /** List an entry's already-separated stems (empty if none cached yet). */
 export async function listStems(entryId: string): Promise<StemRef[]> {
@@ -20,7 +45,14 @@ export async function listStems(entryId: string): Promise<StemRef[]> {
     const rows: StemRow[] = Array.isArray(j?.stems) ? j.stems : [];
     return rows
       .filter((s) => !!s.id)
-      .map((s) => ({ name: s.stem_name || s.name || 'stem', url: `/api/library/stems/${s.id}/audio` }));
+      .map((s) => ({
+        name: s.stem_name || s.name || 'stem',
+        url: `/api/library/stems/${s.id}/audio`,
+        // Carried through verbatim: a row the backend did not describe has no
+        // role, and inventing one here would make an old run look classified.
+        ...(typeof s.role === 'string' ? { role: s.role } : {}),
+        ...(typeof s.gain_normalized === 'boolean' ? { gainNormalized: s.gain_normalized } : {}),
+      }));
   } catch {
     return [];
   }

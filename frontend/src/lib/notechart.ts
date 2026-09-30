@@ -17,6 +17,7 @@
  */
 
 import { exportArtifact, notationArtifactUrl, type NotationArtifact } from './notationClient';
+import { beatToTime, timeToBeat, type TempoEvent } from './tempoMap';
 
 export const NOTECHART_SCHEMA = 'gantasmo.notechart';
 export const NOTECHART_SCHEMA_VERSION = 1;
@@ -316,34 +317,34 @@ export function blankChartEvent(): ChartEvent {
   };
 }
 
-/** Index of the last tempo entry whose `key` is <= `value` (Python's
- *  `max(0, bisect_right(starts, value) - 1)`). */
-function tempoIndexAt(tempoMap: readonly TempoEntry[], key: 'timeBeats' | 'timeSec', value: number): number {
-  let lo = 0;
-  let hi = tempoMap.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (tempoMap[mid][key] <= value) lo = mid + 1;
-    else hi = mid;
+/**
+ * A chart's `TempoEntry[]` as the shared `tempoMap.ts` shape. Each entry keeps
+ * its own `timeSec` as authoritative (the exporter already integrated it) and
+ * a zero bpm still falls back to 120, so the numbers are the ones this file
+ * shipped with. Cached per array so a whole chart's worth of conversions does
+ * not rebuild it for every event.
+ */
+const tempoEventCache = new WeakMap<readonly TempoEntry[], TempoEvent[]>();
+
+function tempoEvents(tempoMap: readonly TempoEntry[]): TempoEvent[] {
+  let events = tempoEventCache.get(tempoMap);
+  if (!events) {
+    events = tempoMap.map((e) => ({ beat: e.timeBeats, bpm: e.bpm || FALLBACK_BPM, timeSec: e.timeSec }));
+    tempoEventCache.set(tempoMap, events);
   }
-  return Math.max(0, lo - 1);
+  return events;
 }
 
 /** Beats (quarter lengths) to absolute seconds across the piecewise-constant
- *  tempo map; the same two lines of arithmetic as `_seconds_from_beats`. */
+ *  tempo map; `tempoMap.ts` holds the one implementation. An empty map is the
+ *  seeded 120 bpm default, which is `FALLBACK_BPM`. */
 export function secondsFromBeats(tempoMap: readonly TempoEntry[], beats: number): number {
-  if (tempoMap.length === 0) return (beats * 60) / FALLBACK_BPM;
-  const entry = tempoMap[tempoIndexAt(tempoMap, 'timeBeats', beats)];
-  const bpm = entry.bpm || FALLBACK_BPM;
-  return entry.timeSec + ((beats - entry.timeBeats) * 60) / bpm;
+  return beatToTime(tempoEvents(tempoMap), beats);
 }
 
 /** Absolute seconds back to beats (`_apply_raw_beats.beats_from_seconds`). */
 export function beatsFromSeconds(tempoMap: readonly TempoEntry[], sec: number): number {
-  if (tempoMap.length === 0) return (sec * FALLBACK_BPM) / 60;
-  const entry = tempoMap[tempoIndexAt(tempoMap, 'timeSec', sec)];
-  const bpm = entry.bpm || FALLBACK_BPM;
-  return entry.timeBeats + ((sec - entry.timeSec) * bpm) / 60;
+  return timeToBeat(tempoEvents(tempoMap), sec);
 }
 
 /** True for an event a player is expected to strike: a sounding note that

@@ -28,7 +28,9 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eraser, Minus, Plus } from 'lucide-react';
-import { usePianoRollStore } from '../../state/pianoRollStore';
+import { beginRollGesture, endRollGesture, usePianoRollStore } from '../../state/pianoRollStore';
+import { barAt } from '../../lib/meterMap';
+import { clientToLocal } from '../../lib/canvasScale';
 import {
   BEND_LANE_HEIGHT,
   BEND_POINT_R,
@@ -84,6 +86,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   const removeBendPoint = usePianoRollStore((s) => s.removeBendPoint);
   const clearBend = usePianoRollStore((s) => s.clearBend);
   const setBendRange = usePianoRollStore((s) => s.setBendRange);
+  const meterMap = usePianoRollStore((s) => s.meterMap);
+  const pickupSteps = usePianoRollStore((s) => s.pickupSteps);
 
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null);
@@ -107,14 +111,24 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
     if (selectedId && !points.some((p) => p.id === selectedId)) setSelectedId(null);
   }, [points, selectedId]);
   useEffect(() => setSelectedId(null), [activeLane]);
+  // The lane closed under a drag: the drag's undo step ends with it, so the
+  // next edit anywhere in the roll is a step of its own.
+  useEffect(
+    () => () => {
+      if (dragRef.current) endRollGesture();
+    },
+    [],
+  );
 
   const width = Math.max(1, totalSteps * stepPx);
   const height = BEND_LANE_HEIGHT;
   const d = useMemo(() => bendPath(points, { stepPx, totalSteps, height }), [points, stepPx, totalSteps, height]);
 
+  // The pointer in the strip's own px: the shell's CSS zoom (1.1 at 1920x1080)
+  // taken out of the client point, so a point lands where it is drawn (lib/canvasScale).
   const localPoint = (e: React.PointerEvent): { x: number; y: number } => {
-    const r = surfaceRef.current?.getBoundingClientRect();
-    return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
+    const el = surfaceRef.current;
+    return el ? clientToLocal(el, e.clientX, e.clientY) : { x: e.clientX, y: e.clientY };
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -128,6 +142,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
       e.preventDefault();
       return;
     }
+    // Placing a point and dragging it is one undo step, however long the drag pauses.
+    beginRollGesture();
     const id =
       hit?.id ??
       addBendPoint(activeLane, {
@@ -135,7 +151,10 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
         value: snapBendValue(bendYToValue(y, height), e.altKey),
         shape: 'linear',
       });
-    if (!id) return; // no channel left for this lane
+    if (!id) {
+      endRollGesture();
+      return; // no channel left for this lane
+    }
     setSelectedId(id);
     dragRef.current = { id, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -156,6 +175,7 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragRef.current) return;
     dragRef.current = null;
+    endRollGesture();
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
 
@@ -209,6 +229,16 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
   };
 
   const rangeId = `bend-range-${activeLane}`;
+  // The strip is a slider over the selected point: its bend in semitones at
+  // the lane's range, or the centre with none picked.
+  const pointSemis = selected ? Math.round(bendCents(selected.value, range)) / 100 : 0;
+  const pointText = selected
+    ? (() => {
+        const b = barAt(meterMap, Math.max(0, selected.step), pickupSteps);
+        const where = b.bar < 0 ? 'the pickup' : `bar ${b.bar + 1}, step ${Math.round((selected.step - b.start) * 100) / 100 + 1}`;
+        return `${bendReading(selected.value, range)} at ${where}, ${BEND_SHAPE_LABEL[selected.shape]}`;
+      })()
+    : 'No point selected';
 
   return (
     <div className="shrink-0 border-t border-white/8 bg-black/30" data-bend-lane>
@@ -277,13 +307,18 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
         />
       </div>
 
-      {/* The strip. role="application": the arrow keys move a point here, and a
-          screen reader must send them through rather than move its own cursor. */}
+      {/* The strip: a slider whose value is the selected point's bend in
+          semitones. The arrow keys move that point (up and down its bend, left
+          and right its step), and a screen reader announces the bend and where. */}
       <div
         ref={surfaceRef}
-        role="application"
+        role="slider"
         tabIndex={0}
         aria-label={`Pitch bend for lane ${laneName}, ${points.length} point${points.length === 1 ? '' : 's'}, range ${range} semitones`}
+        aria-valuemin={-range}
+        aria-valuemax={range}
+        aria-valuenow={pointSemis}
+        aria-valuetext={pointText}
         aria-describedby="bend-lane-help"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -332,7 +367,8 @@ export const BendLane: React.FC<BendLaneProps> = ({ stepPx, totalSteps, quantum 
       </div>
       <p id="bend-lane-help" className="sr-only">
         Click to add a point, drag to move it, Alt-click to remove it. Alt while dragging places it off the grid.
-        The arrow keys move the selected point, Shift for a coarser step, Delete removes it.
+        The arrow keys move the selected point, Shift for a coarser step, Delete removes it. Home and End select
+        the first and last point.
       </p>
     </div>
   );

@@ -145,7 +145,10 @@ class GanFile:
                 if name == _MANIFEST_NAME or name.endswith("/"):
                     continue
                 dest = (out / name).resolve()
-                if not str(dest).startswith(str(out)):
+                if not dest.is_relative_to(out):
+                    # A string-prefix check would wrongly accept a sibling
+                    # directory that merely shares out's characters (e.g. out
+                    # ".../plugins/foo", entry "../foo_evil/x").
                     log.warning("Skipping unsafe .gan entry: %s", name)
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)

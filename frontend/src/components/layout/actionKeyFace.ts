@@ -26,6 +26,14 @@ export interface ActionKeyInput {
   isGenerating: boolean;
   progressPct: number;
   statusLabel: string;
+  /**
+   * A Suno submit is in flight (sunoStore.submitting). generateStore never
+   * claims `isGenerating` for it (CREATE routes Suno to sunoStore.submit, not
+   * a Stable Audio job it could poll or cancel), so this is the only signal
+   * the key has for it — and unlike isGenerating, a press cannot cancel it,
+   * so it renders busy, not STOP.
+   */
+  sunoSubmitting: boolean;
   isProcessing: boolean;
   isChainProcessing: boolean;
   /** The newest live Underfit dashboard run, or null when none is live. */
@@ -196,6 +204,22 @@ export function actionKeyFace(s: ActionKeyInput): ActionKeyFace {
     }
     default: {
       const caption = generationCaption(s.statusLabel, s.isGenerating);
+      // A Suno submit cannot be cancelled from here (sunoStore.submit is a
+      // single fire-and-forget POST, not a pollable/cancellable job like the
+      // local path's), so this renders busy — never STOP, which would imply
+      // a press aborts it.
+      if (s.model === 'suno' && s.sunoSubmitting) {
+        return {
+          ...rest,
+          glyph: 'create',
+          legend: 'CREATE',
+          label: 'Create: submitting to Suno…',
+          on: true,
+          disabled: true,
+          progress: PENDING,
+          caption: { text: 'SUBMITTING...', tone: 'running' },
+        };
+      }
       if (s.isGenerating) {
         // A press is generateStore.cancelGeneration: the run's job, Stable
         // Audio or Magenta, is cancelled on the backend.
@@ -215,9 +239,22 @@ export function actionKeyFace(s: ActionKeyInput): ActionKeyFace {
         ...rest,
         glyph: 'create',
         legend: 'CREATE',
-        label: `Create: submit ${s.model.toUpperCase()} to /api/generate-jobs`,
+        label: createLabel(s.model),
         caption,
       };
     }
   }
+}
+
+/**
+ * P0: the label used to always claim /api/generate-jobs, which is only true
+ * for local (Stable Audio / Magenta) models — Suno and Lyria are cloud
+ * providers with their own generate paths (generateStore.submitGeneration
+ * routes CREATE to sunoStore.submit for Suno; Lyria has none to route to at
+ * all, since its transport lives entirely inside its embedded iframe).
+ */
+function createLabel(model: string): string {
+  if (model === 'suno') return 'Create: submit to Suno (its own render queue)';
+  if (model === 'lyria') return 'Create: use the controls inside the Lyria tab — this key has no route into it';
+  return `Create: submit ${model.toUpperCase()} to /api/generate-jobs`;
 }

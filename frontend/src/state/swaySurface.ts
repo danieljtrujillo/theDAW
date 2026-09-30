@@ -14,6 +14,14 @@
  * controller drives Ableton. This is distinct from the expressive-dimension
  * `swayBus`, which reads the same device's CCs as learnable 0..1 signals; the two
  * are different ways to use the one controller, chosen by the DAW-control toggle.
+ *
+ * The mirror stands down while PERFORM or the SWAY tab is the open view: PERFORM
+ * launches scenes and clips from the same controller and the SWAY tab hands it to
+ * the cockpit, so a pad there must not also sound a General MIDI note, nor the
+ * Play button and faders reach an EDIT timeline nobody is looking at. A pad the
+ * mirror holds when either tab opens is released. The Sway's pad and Play notes
+ * stay the controller's while it stands down (`swaySurfaceConsumes`), so the
+ * keyboard monitor does not sound them either.
  */
 import { subscribeToMidi, type MidiBusMessage } from './midiBus';
 import { useEditorStore, type EditorTrack } from './editorStore';
@@ -23,11 +31,14 @@ import { getSelectedTracks } from './editorSelectionBridge';
 import { triggerPianoNoteFromMidi } from '../lib/pianoTrigger';
 import {
   ensureSoundfontReady,
+  getGlobalVoice,
   isLiveSynthReady,
   liveNoteOn,
   liveNoteOff,
 } from '../lib/soundfontEngine';
+import { PAD_LO, swayPadVoice } from '../lib/swayPadVoice';
 import { isSwaySurfaceEnabled, getSwayPadMode, isSwaySustain } from './swaySurfaceStore';
+import { useAppUiStore, type CenterTab } from './appUiStore';
 
 // --- The decoded "The Sway" MIDI map (channels are 0-indexed here) ---------- //
 const PLAY_NOTE = 0;
@@ -36,26 +47,39 @@ const SLIDER_CH = 0; // channel for the volume / pan CCs
 const PAD_CH = 15; // channel for the 16 pads (PADCHANNEL = 15)
 const TRACKVOL_CC = [1, 2, 3, 4, 5, 6, 7, 8];
 const TRACKPAN_CC = [9, 10, 11, 12, 13, 14, 15, 16];
-const PAD_LO = 24;
-const PAD_HI = 39; // inclusive -> 16 pads
+const PAD_HI = 39; // inclusive -> 16 pads (from lib/swayPadVoice PAD_LO)
 const BANK_SIZE = 8;
-
-// 16 pads -> General MIDI percussion (drum channel), MPC-style layout.
-const GM_DRUM_FOR_PAD = [
-  36, 38, 42, 46, // kick, snare, closed hat, open hat
-  41, 45, 48, 39, // low/mid/high tom, hand clap
-  37, 56, 54, 51, // rim shot, cowbell, tambourine, ride
-  49, 55, 70, 63, // crash, splash, maracas, high conga
-];
-const DRUM_CH = 9; // GM channel 10 = percussion
-const TRACK_PAD_CH = 0; // channel for "selected track instrument" pad mode
-const PIANO_PAD_CH = 1; // channel for "piano" pad mode (GM Acoustic Grand)
-const SUSTAIN_PROGRAM = 16; // GM Drawbar Organ — rings forever while a note is on
 
 // Held pad voices, so note-off releases exactly what note-on started (and a held
 // pad sustains until release). null = a fallback piano one-shot with nothing to
 // release. Keyed by pad index; survives a pad-mode change mid-hold.
 const padVoices = new Map<number, { channel: number; note: number } | null>();
+
+/** The tabs that own the Sway while they are open: PERFORM ('session') and SWAY. */
+const STAND_DOWN_TABS: ReadonlySet<CenterTab> = new Set<CenterTab>(['session', 'sway']);
+
+/** True while PERFORM or the SWAY tab is the open view. */
+const standsDown = (): boolean => STAND_DOWN_TABS.has(useAppUiStore.getState().centerTab);
+
+/** What the pads sound through. */
+export interface SwaySurfaceDeps {
+  liveSynthReady: () => boolean;
+  warmSoundfont: () => void;
+  /** The built-in piano, for a pad pressed before the soundfont synth is live. */
+  oneShot: (note: number, velocity: number) => void;
+  noteOn: (channel: number, program: number, note: number, velocity: number) => void;
+  noteOff: (channel: number, note: number) => void;
+}
+
+const SOUNDFONT_PADS: SwaySurfaceDeps = {
+  liveSynthReady: isLiveSynthReady,
+  warmSoundfont: () => { void ensureSoundfontReady(); },
+  oneShot: (note, velocity) => triggerPianoNoteFromMidi(note, velocity),
+  noteOn: liveNoteOn,
+  noteOff: liveNoteOff,
+};
+
+let pads: SwaySurfaceDeps = SOUNDFONT_PADS;
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 const clampPan = (v: number): number => Math.max(-1, Math.min(1, v));
@@ -87,11 +111,11 @@ function toggleTransport(): void {
   else callEditorPlay();
 }
 
-function selectedTrackProgram(): number {
+/** The selected EDIT track, else the first one. */
+function selectedTrack(): EditorTrack | undefined {
   const tracks = useEditorStore.getState().tracks;
   const sel = getSelectedTracks();
-  const t = sel.length ? tracks.find((x) => x.id === sel[0]) : tracks[0];
-  return Math.max(0, Math.min(127, t?.instrumentProgram ?? 0));
+  return sel.length ? tracks.find((x) => x.id === sel[0]) : tracks[0];
 }
 
 function padOn(padIdx: number, velocity: number): void {
@@ -108,41 +132,31 @@ function padOn(padIdx: number, velocity: number): void {
   const vel = Math.max(1, Math.min(127, velocity));
   // Until the soundfont synth is live, fall back to the built-in piano one-shot
   // (no sustain) and warm the soundfont so the next hit can hold.
-  if (!isLiveSynthReady()) {
-    void ensureSoundfontReady();
-    triggerPianoNoteFromMidi(PAD_LO + padIdx, vel);
+  if (!pads.liveSynthReady()) {
+    pads.warmSoundfont();
+    pads.oneShot(PAD_LO + padIdx, vel);
     padVoices.set(padIdx, null);
     return;
   }
-  let channel: number;
-  let program: number;
-  let note: number;
-  if (mode === 'drums') {
-    channel = DRUM_CH;
-    program = 0;
-    note = GM_DRUM_FOR_PAD[padIdx];
-  } else if (mode === 'track') {
-    channel = TRACK_PAD_CH;
-    // A sustaining organ patch when sustain is on, so a held melodic pad rings
-    // indefinitely (the selected track's piano-ish patch would decay).
-    program = sustain ? SUSTAIN_PROGRAM : selectedTrackProgram();
-    note = PAD_LO + padIdx;
-  } else {
-    channel = PIANO_PAD_CH;
-    program = sustain ? SUSTAIN_PROGRAM : 0; // GM Acoustic Grand, or organ when sustaining
-    note = PAD_LO + padIdx;
-  }
+  // Drums, the selected track's voice (its kit on a drum track) or the piano;
+  // a melodic pad plays a sustaining organ while sustain latches (lib/swayPadVoice).
+  const { channel, program, note } = swayPadVoice(mode, padIdx, sustain, mode === 'track' ? selectedTrack() : null, getGlobalVoice());
   // Note-on now; with sustain off, note-off on release; with sustain on, the note
   // is latched and only released by the next press on this pad.
-  liveNoteOn(channel, program, note, vel);
+  pads.noteOn(channel, program, note, vel);
   padVoices.set(padIdx, { channel, note });
 }
 
 /** Release a pad's held voice immediately, regardless of latch state. */
 function padRelease(padIdx: number): void {
   const v = padVoices.get(padIdx);
-  if (v) liveNoteOff(v.channel, v.note);
+  if (v) pads.noteOff(v.channel, v.note);
   padVoices.delete(padIdx);
+}
+
+/** Release every pad the mirror holds, latched ones included. */
+function releaseAllPads(): void {
+  for (const padIdx of [...padVoices.keys()]) padRelease(padIdx);
 }
 
 function padOff(padIdx: number): void {
@@ -154,6 +168,8 @@ function padOff(padIdx: number): void {
 
 function handle(msg: MidiBusMessage): void {
   if (!isSwaySurfaceEnabled()) return;
+  // PERFORM and the SWAY tab own the controller while they are open.
+  if (standsDown()) return;
   const data = msg.data;
   const status = data[0] ?? 0;
   const cmd = status & 0xf0;
@@ -192,7 +208,9 @@ function handle(msg: MidiBusMessage): void {
 /**
  * Whether the Sway surface (when enabled) consumes this note message, so the
  * caller can suppress the default piano-synth trigger for the Play button and
- * pads. CCs are not piano-triggering, so they are not reported here.
+ * pads. CCs are not piano-triggering, so they are not reported here. True
+ * while the mirror stands down for PERFORM or the SWAY tab too: the pads and
+ * Play belong to that view then, and are no keys for the keyboard monitor.
  */
 export function swaySurfaceConsumes(data: Uint8Array | number[]): boolean {
   if (!isSwaySurfaceEnabled()) return false;
@@ -211,13 +229,23 @@ let _unsub: (() => void) | null = null;
 
 /** Start mirroring the Sway control surface onto theDAW. Idempotent; returns a
  *  stop function. Runs for the MIDI session; the per-message handler no-ops when
- *  DAW-control mode is off, so it is safe to leave subscribed. */
-export function startSwaySurface(): () => void {
+ *  DAW-control mode is off, so it is safe to leave subscribed. `deps` is a seam
+ *  for tests; the app passes none and the pads play the soundfont. */
+export function startSwaySurface(deps: SwaySurfaceDeps = SOUNDFONT_PADS): () => void {
   if (_unsub) return _unsub;
-  if (isSwaySurfaceEnabled()) void ensureSoundfontReady();
+  pads = deps;
+  if (isSwaySurfaceEnabled()) pads.warmSoundfont();
   const off = subscribeToMidi(handle);
+  // A pad held (or latched) when PERFORM or the SWAY tab opens would otherwise
+  // ring until pressed again, and that press no longer reaches the mirror.
+  const offTabs = useAppUiStore.subscribe((state, prev) => {
+    if (state.centerTab !== prev.centerTab && STAND_DOWN_TABS.has(state.centerTab)) releaseAllPads();
+  });
   _unsub = () => {
     off();
+    offTabs();
+    releaseAllPads();
+    pads = SOUNDFONT_PADS;
     _unsub = null;
   };
   return _unsub;
