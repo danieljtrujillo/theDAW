@@ -211,6 +211,7 @@ def test_the_servable_sources_are_exactly_these() -> None:
         "pick",
         "gan",
         "sway-save",
+        "sway-render",
         "download",
     }
 
