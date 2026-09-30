@@ -74,6 +74,7 @@ DOC_PATHS = [
     # Feature guides added in the July 2026 documentation overhaul.
     PROJECT_ROOT / "docs" / "guides" / "edit-automation.md",
     PROJECT_ROOT / "docs" / "guides" / "mix-vst-and-gan.md",
+    PROJECT_ROOT / "docs" / "guides" / "sound-banks-and-midi-out.md",
     PROJECT_ROOT / "docs" / "guides" / "projects-and-daw-import.md",
     PROJECT_ROOT / "docs" / "guides" / "quest-deploy.md",
     PROJECT_ROOT / "docs" / "guides" / "backup-and-updates.md",
