@@ -28,7 +28,7 @@ import {
   setMagentaModel,
   stopMagentaEngine,
 } from '../../../lib/magentaEngineClient';
-import type { LyriaProvider, ModelOption, ProviderStatus } from './providerTypes';
+import type { LyriaProvider, LyriaProviderExtras, ModelOption, ProviderStatus } from './providerTypes';
 import {
   BTN_AMBER,
   BTN_GHOST,
@@ -165,6 +165,7 @@ export const ModelProviderCard: React.FC<{ provider: ProviderStatus; onFixed: ()
         )}
       </div>
       {isSuno && <SunoKeyInput />}
+      {isLyria && <LyriaCheckoutLine extras={provider.lyria} />}
       {isLyria && <LyriaKeyLists onSaved={onFixed} />}
     </article>
   );
@@ -688,6 +689,47 @@ const LyriaProviderKeyList: React.FC<{
         </button>
       ))}
     </form>
+  );
+};
+
+/**
+ * Which Lyria this is and whether it gets the keys below: the commit theDAW
+ * recorded at the last Install, Update or start (the checkout tracks the
+ * repo's latest commit; no commit is frozen), the package it names, and the
+ * backend's reason when the checkout failed the check it has to pass before
+ * keys go into its environment (the wrong package, a version below the last
+ * one that ran, a server that no longer reads GEMINI_API_KEY or
+ * OPENROUTER_API_KEY). Nothing here is a key.
+ */
+export const LyriaCheckoutLine: React.FC<{ extras?: LyriaProviderExtras }> = ({ extras }) => {
+  if (!extras) return null;
+  const commit = extras.head || extras.commit || '';
+  const verify = extras.verify ?? null;
+  const pkg = verify?.package_name ? `${verify.package_name}${verify.package_version ? ` ${verify.package_version}` : ''}` : '';
+  const recorded = extras.commit
+    ? `Recorded at the last ${extras.commit_event || 'install'}: ${extras.commit}${
+        extras.recorded_at ? ` (${new Date(extras.recorded_at * 1000).toLocaleString()})` : ''
+      }.`
+    : 'No Install, Update or start has recorded a commit yet.';
+  return (
+    <>
+      {commit && (
+        <p
+          data-lyria-checkout=""
+          className="text-xs font-bold leading-snug text-zinc-400 truncate"
+          title={`${extras.repo_url} at commit ${commit}. ${recorded} Update Lyria in the Lyria tab moves the checkout to the latest commit; it never moves on its own.`}
+        >
+          Checkout {commit.slice(0, 7)} of {extras.repo}
+          {pkg ? ` · ${pkg}` : ''}
+          {extras.ran_version ? ` · last ran ${extras.ran_version}` : ''}
+        </p>
+      )}
+      {verify && verify.ok === false && (
+        <p role="alert" className="text-xs font-bold leading-snug text-rose-300" title={verify.reason}>
+          No keys handed: {verify.reason}
+        </p>
+      )}
+    </>
   );
 };
 
