@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Timer, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Hand, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Timer, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   MAX_ROLL_STEPS,
@@ -691,9 +691,11 @@ export const PianoRollTransport: React.FC<{
       {playTip.tip}
       <div className="relative">
         <StripKey
+          iconOnly
           on={loopOn}
           aria-pressed={loopOn}
           onClick={toggleLoop}
+          aria-label="Loop"
           legend="Loop"
           icon={<Repeat className={STRIP_GLYPH} />}
           description={
@@ -748,10 +750,11 @@ export const PianoRollTransport: React.FC<{
         />
       </div>
       <StripKey
+        iconOnly
         on={keepTime}
         aria-pressed={keepTime}
         onClick={() => useRollKeepTime.getState().choose(rollDocId, !keepTime)}
-        aria-label="Keep time: a new BPM keeps every note at its time in seconds"
+        aria-label="Keep time"
         legend="Keep time"
         icon={<Timer className={STRIP_GLYPH} />}
         description={
@@ -788,9 +791,11 @@ export const PianoRollTransport: React.FC<{
         />
       </div>
       <StripKey
+        iconOnly
         on={clickOn}
         aria-pressed={clickOn}
         onClick={toggleClick}
+        aria-label="Click"
         legend="Click"
         icon={<Triangle className={STRIP_GLYPH} strokeWidth={2} />}
         description={
@@ -823,7 +828,7 @@ export const PianoRollTransport: React.FC<{
           className={FIELD_SELECT}
         >
           {COUNT_IN_CHOICES.map((n) => (
-            <option key={n} value={n}>{n === 0 ? 'Off' : `${n} bar${n === 1 ? '' : 's'}`}</option>
+            <option key={n} value={n} title={n === 0 ? 'No count-in' : `${n} bar${n === 1 ? '' : 's'} of clicks before PLAY starts`}>{n === 0 ? 'Off' : n}</option>
           ))}
         </select>
       </div>
@@ -844,6 +849,8 @@ export const PianoRollBendKey: React.FC<{ on: boolean; onChange: (on: boolean) =
       on={on}
       aria-pressed={on}
       onClick={() => onChange(!on)}
+      iconOnly
+      aria-label="Bend"
       legend="Bend"
       icon={<Waves className={STRIP_GLYPH} />}
       description={
@@ -868,6 +875,8 @@ export const PianoRollTempoKey: React.FC<{ on: boolean; onChange: (on: boolean) 
       on={on}
       aria-pressed={on}
       onClick={() => onChange(!on)}
+      iconOnly
+      aria-label="Tempo"
       legend="Tempo"
       icon={<Gauge className={STRIP_GLYPH} />}
       description={
@@ -902,7 +911,8 @@ export const PianoRollVoiceKey: React.FC = () => {
         on
         onClick={() => chooseRollVoice(null)}
         aria-label={`Part voice ${name}, from part ${part.name}. Press to put the part on the roll voice`}
-        legend={`Part: ${name}`}
+        legend={name}
+        legendClassName="max-w-24 truncate"
         icon={<X className={STRIP_GLYPH} />}
         description={`The part ${part.name} plays and bounces as ${name}, set in the parts column. Press to put it back on the roll voice (its linked clip's, or the picker's).`}
       />
@@ -915,7 +925,8 @@ export const PianoRollVoiceKey: React.FC = () => {
         on
         onClick={() => chooseRollVoice(null)}
         aria-label={`Roll voice ${name}, from track ${trackName}. Press to put the track on the instrument picker`}
-        legend={`Track: ${name}`}
+        legend={name}
+        legendClassName="max-w-24 truncate"
         icon={<X className={STRIP_GLYPH} />}
         description={`The roll plays and bounces as ${name}, the instrument of its EDIT clip's track ${trackName}. Vocal2MIDI's voice choice sets it. Press to put the track on the instrument picker.`}
       />
@@ -926,7 +937,8 @@ export const PianoRollVoiceKey: React.FC = () => {
       on
       onClick={() => chooseRollVoice(null)}
       aria-label={`Roll voice ${name}. Press to follow the instrument picker`}
-      legend={`Roll: ${name}`}
+      legend={name}
+      legendClassName="max-w-24 truncate"
       icon={<X className={STRIP_GLYPH} />}
       description={`The roll plays and bounces as ${name}, set by Vocal2MIDI. Press to follow the instrument picker.`}
     />
@@ -1067,88 +1079,121 @@ export const PianoRollFeel: React.FC = () => {
     logInfo('piano-roll', `Applied timing feel: quantize ${quantizePct}% to ${rollSnapDef(snap).label} · groove ${groove.name}`);
   };
 
+  const feelKeyRef = useRef<HTMLButtonElement>(null);
+  const [feelOpen, setFeelOpen] = useState(false);
+  const feelWord = grooveId === SLIDER_GROOVE_ID ? `swing ${swingPct > 0 ? '+' : ''}${swingPct}` : (imported && imported.id === grooveId ? imported : builtins.find((g) => g.id === grooveId) ?? named)?.name ?? 'swing';
+
   return (
     <>
-      <div className={FIELD} title={`Quantize: pulls notes toward the ${snapLabel} snap grid, and lengths toward whole cells (100 = dead on)`}>
-        <label htmlFor="piano-roll-quantize" className={FIELD_LEGEND}>Quant</label>
-        <input
-          id="piano-roll-quantize"
-          type="range"
-          name="piano-roll-quantize"
-          min={0}
-          max={100}
-          value={quantizePct}
-          onChange={(e) => setQuantizePct(parseInt(e.target.value) || 0)}
-          className={RANGE}
-        />
-        <span className={`${FIELD_VALUE} w-5.5`}>{quantizePct}</span>
-      </div>
-      <div className={FIELD} title="Swing (rag): delays (+) or pushes (−) the off-16ths, in percent of a step">
-        <label htmlFor="piano-roll-swing-rag" className={FIELD_LEGEND}>Swing</label>
-        <input
-          id="piano-roll-swing-rag"
-          type="range"
-          name="piano-roll-swing-rag"
-          min={-50}
-          max={50}
-          value={swingPct}
-          onChange={(e) => setSwingPct(parseInt(e.target.value) || 0)}
-          className={RANGE}
-        />
-        <span className={`${FIELD_VALUE} w-5.5`}>{swingPct > 0 ? '+' : ''}{swingPct}</span>
-      </div>
-      <div
-        className={FIELD}
-        title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT. The Group grooves, Notes inégales and Double-dotted follow each bar's groups, so 7/8 3+2+2 swings inside each group."
-      >
-        <label htmlFor="piano-roll-groove" className={FIELD_LEGEND}>Groove</label>
-        <select
-          id="piano-roll-groove"
-          name="piano-roll-groove"
-          // An id nothing answers to shows as the slider entry, which is what it applies as.
-          value={
-            grooveId === imported?.id || grooveId === named?.id || builtins.some((g) => g.id === grooveId) ? grooveId : SLIDER_GROOVE_ID
-          }
-          onChange={(e) => setGrooveId(e.target.value)}
-          className={`${FIELD_SELECT} max-w-28`}
-        >
-          <option value={SLIDER_GROOVE_ID}>Swing slider</option>
-          {builtins.map((g) => (
-            <option key={g.id} value={g.id}>{g.name}</option>
-          ))}
-          {named && named.id !== imported?.id && <option value={named.id}>{named.name}</option>}
-          {imported && <option value={imported.id}>{imported.name}</option>}
-        </select>
-        <label htmlFor="piano-roll-groove-file" className="sr-only">Groove from a MIDI file</label>
-        <input
-          ref={grooveFileRef}
-          type="file"
-          id="piano-roll-groove-file"
-          name="piano-roll-groove-file"
-          accept={GROOVE_FILE_ACCEPT}
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = '';
-            void loadGrooveFile(file);
-          }}
-        />
-        <StripKey
-          mini
-          onClick={() => grooveFileRef.current?.click()}
-          aria-label="Learn a groove from a MIDI file"
-          description="Read a MIDI file's timing pocket — how late or early each slot of the bar is played — and add it to the groove list"
-          legend="MIDI…"
-        />
-      </div>
       <StripKey
-        onClick={applyTimingFeel}
-        disabled={noteCount === 0}
-        aria-label="Apply timing feel"
-        description={`Apply the quantize amount on the ${snapLabel} snap grid and the groove to every note`}
-        icon={<Check className={STRIP_GLYPH} />}
-        legend="Apply"
+        ref={feelKeyRef}
+        onClick={() => setFeelOpen((v) => !v)}
+        aria-haspopup="dialog"
+        aria-expanded={feelOpen}
+        aria-controls="piano-roll-feel"
+        aria-label="Feel"
+        description={`Quantize ${quantizePct}% on the ${snapLabel} grid and the ${feelWord} groove. Open to set the timing feel and apply it to every note.`}
+        on={feelOpen}
+        icon={<Hand className={STRIP_GLYPH} />}
+        legend="Feel"
       />
+      <DockFlyout
+        open={feelOpen}
+        anchorRef={feelKeyRef}
+        onClose={() => setFeelOpen(false)}
+        placement="below"
+        align="start"
+        floorSelector="[data-dock-floor]"
+        id="piano-roll-feel"
+        role="dialog"
+        aria-label="Feel: the timing feel"
+        className={`w-max max-w-[92vw] p-2 flex flex-col gap-1.5 ${FLYOUT_CARD}`}
+      >
+        <span className="text-[12px] font-display font-extrabold uppercase et-ink">Feel</span>
+        <div className="flex items-center gap-1 flex-wrap">
+          <div className={FIELD} title={`Quantize: pulls notes toward the ${snapLabel} snap grid, and lengths toward whole cells (100 = dead on)`}>
+            <label htmlFor="piano-roll-quantize" className={FIELD_LEGEND}>Quant</label>
+            <input
+              id="piano-roll-quantize"
+              type="range"
+              name="piano-roll-quantize"
+              min={0}
+              max={100}
+              value={quantizePct}
+              onChange={(e) => setQuantizePct(parseInt(e.target.value) || 0)}
+              className={RANGE}
+            />
+            <span className={`${FIELD_VALUE} w-5.5`}>{quantizePct}</span>
+          </div>
+          <div className={FIELD} title="Swing (rag): delays (+) or pushes (−) the off-16ths, in percent of a step">
+            <label htmlFor="piano-roll-swing-rag" className={FIELD_LEGEND}>Swing</label>
+            <input
+              id="piano-roll-swing-rag"
+              type="range"
+              name="piano-roll-swing-rag"
+              min={-50}
+              max={50}
+              value={swingPct}
+              onChange={(e) => setSwingPct(parseInt(e.target.value) || 0)}
+              className={RANGE}
+            />
+            <span className={`${FIELD_VALUE} w-5.5`}>{swingPct > 0 ? '+' : ''}{swingPct}</span>
+          </div>
+          <div
+            className={FIELD}
+            title="Groove: the feel APPLY lays over the grid, as lateness per slot of the bar. The SWING slider is the first entry; the named grooves take their depth from QUANT. The Group grooves, Notes inégales and Double-dotted follow each bar's groups, so 7/8 3+2+2 swings inside each group."
+          >
+            <label htmlFor="piano-roll-groove" className={FIELD_LEGEND}>Groove</label>
+            <select
+              id="piano-roll-groove"
+              name="piano-roll-groove"
+              // An id nothing answers to shows as the slider entry, which is what it applies as.
+              value={
+                grooveId === imported?.id || grooveId === named?.id || builtins.some((g) => g.id === grooveId) ? grooveId : SLIDER_GROOVE_ID
+              }
+              onChange={(e) => setGrooveId(e.target.value)}
+              className={`${FIELD_SELECT} max-w-28`}
+            >
+              <option value={SLIDER_GROOVE_ID} title="The SWING slider's amount, on every off-16th">Slider</option>
+              {builtins.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+              {named && named.id !== imported?.id && <option value={named.id}>{named.name}</option>}
+              {imported && <option value={imported.id}>{imported.name}</option>}
+            </select>
+            <label htmlFor="piano-roll-groove-file" className="sr-only">Groove from a MIDI file</label>
+            <input
+              ref={grooveFileRef}
+              type="file"
+              id="piano-roll-groove-file"
+              name="piano-roll-groove-file"
+              accept={GROOVE_FILE_ACCEPT}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                void loadGrooveFile(file);
+              }}
+            />
+            <StripKey
+              mini
+              onClick={() => grooveFileRef.current?.click()}
+              aria-label="Learn a groove from a MIDI file"
+              description="Read a MIDI file's timing pocket, how late or early each slot of the bar is played, and add it to the groove list"
+              legend="MIDI…"
+            />
+          </div>
+          <StripKey
+            iconOnly
+            onClick={applyTimingFeel}
+            disabled={noteCount === 0}
+            aria-label="Apply timing feel"
+            description={`Apply the quantize amount on the ${snapLabel} snap grid and the groove to every note`}
+            icon={<Check className={STRIP_GLYPH} />}
+            legend="Apply"
+          />
+        </div>
+      </DockFlyout>
     </>
   );
 };

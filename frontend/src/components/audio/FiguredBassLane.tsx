@@ -242,6 +242,8 @@ export const PianoRollFiguresKey: React.FC = () => {
       on={on}
       aria-pressed={on}
       onClick={() => usePianoRollStore.getState().setShowFiguredBass(!on)}
+      iconOnly
+      aria-label="Figures"
       legend="Figures"
       icon={<Hash className={STRIP_GLYPH} />}
       description={

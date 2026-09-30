@@ -225,6 +225,8 @@ export const PianoRollHarmonyKey: React.FC = () => {
       on={on}
       aria-pressed={on}
       onClick={() => usePianoRollStore.getState().setShowHarmony(!on)}
+      iconOnly
+      aria-label="Harmony"
       legend="Harmony"
       icon={<ListChecks className={STRIP_GLYPH} />}
       description={

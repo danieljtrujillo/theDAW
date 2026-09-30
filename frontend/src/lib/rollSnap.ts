@@ -60,12 +60,12 @@ export const ROLL_SNAPS: readonly RollSnapDef[] = [
   { id: '1/16', label: '1/16', title: 'Sixteenth notes; a click draws an eighth', span: Q / 4, count: 1, unit: Q / 4, draw: Q / 2 },
   { id: '1/32', label: '1/32', title: 'Thirty-second notes', span: Q / 8, count: 1, unit: Q / 8 },
   { id: '1/64', label: '1/64', title: 'Sixty-fourth notes', span: Q / 16, count: 1, unit: Q / 16 },
-  { id: '1/8T', label: '1/8 triplet', title: 'Eighth-note triplets: three in a quarter', span: Q, count: 3, unit: Q / 2 },
-  { id: '1/16T', label: '1/16 triplet', title: 'Sixteenth-note triplets: three in an eighth', span: Q / 2, count: 3, unit: Q / 4 },
+  { id: '1/8T', label: '1/8T', title: 'Eighth-note triplets: three in a quarter', span: Q, count: 3, unit: Q / 2 },
+  { id: '1/16T', label: '1/16T', title: 'Sixteenth-note triplets: three in an eighth', span: Q / 2, count: 3, unit: Q / 4 },
   { id: '1/16Q', label: 'Quintuplet', title: 'Quintuplet sixteenths: five in a quarter', span: Q, count: 5, unit: Q / 4 },
   { id: '1/16S', label: 'Septuplet', title: 'Septuplet sixteenths: seven in a quarter', span: Q, count: 7, unit: Q / 4 },
-  { id: '1/8D', label: 'Dotted 1/8', title: 'Dotted eighths: three sixteenths each', span: (3 * Q) / 4, count: 1, unit: Q / 2 },
-  { id: 'group', label: 'Meter group', title: "The bar's groups (3+2+2), or its dotted beats, or its beats", span: 0, count: 1, unit: Q / 2 },
+  { id: '1/8D', label: '1/8.', title: 'Dotted eighths: three sixteenths each', span: (3 * Q) / 4, count: 1, unit: Q / 2 },
+  { id: 'group', label: 'Group', title: "The bar's groups (3+2+2), or its dotted beats, or its beats", span: 0, count: 1, unit: Q / 2 },
 ];
 
 export const DEFAULT_ROLL_SNAP: RollSnapId = '1/16';

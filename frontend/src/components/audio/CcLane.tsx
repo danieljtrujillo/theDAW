@@ -501,6 +501,8 @@ export const PianoRollCcKey: React.FC<{ on: boolean; onChange: (on: boolean) => 
       on={on}
       aria-pressed={on}
       onClick={() => onChange(!on)}
+      iconOnly
+      aria-label="CC"
       legend="CC"
       icon={<SlidersHorizontal className={STRIP_GLYPH} />}
       description={

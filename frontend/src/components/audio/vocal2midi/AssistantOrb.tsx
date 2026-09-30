@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
-import { Sparkles, Send, X } from 'lucide-react';
+import { Check, Play, Send, Sparkles, Square, X } from 'lucide-react';
 import type { ProcessingConfig, NoteEvent, ScaleType } from './types';
 import { askAssistant, type AssistantContext } from './geminiAssistant';
 import { FLYOUT_KEY, KEY_ON, KEY_REST, MINI_ICON_KEY, keyTone, useDockTip } from '../midiDockKit';
@@ -218,8 +218,9 @@ export const AssistantOrb: React.FC<AssistantOrbProps> = ({
                     <span className="et-ink-3">
                         {pianoRollControls.notes.length} notes | {pianoRollControls.bpm} BPM
                     </span>
-                    <span className={pianoRollControls.isPlaying ? 'text-[rgb(var(--et-accent))]' : 'et-ink-3'}>
-                        {pianoRollControls.isPlaying ? '▶ PLAYING' : '■ STOPPED'}
+                    <span className={`inline-flex items-center gap-1 ${pianoRollControls.isPlaying ? 'text-[rgb(var(--et-accent))]' : 'et-ink-3'}`}>
+                        {pianoRollControls.isPlaying ? <Play aria-hidden="true" className="w-3 h-3" /> : <Square aria-hidden="true" className="w-3 h-3" />}
+                        {pianoRollControls.isPlaying ? 'PLAYING' : 'STOPPED'}
                     </span>
                 </div>
 
@@ -236,7 +237,7 @@ export const AssistantOrb: React.FC<AssistantOrbProps> = ({
                                     <div className="mt-2 pt-2 border-t border-white/5">
                                         <div className="text-[12px] font-semibold text-[rgb(var(--et-accent))]">
                                             {m.actions.map((action, j) => (
-                                                <div key={j}>✓ {action}</div>
+                                                <div key={j} className="flex items-start gap-1"><Check aria-hidden="true" className="w-3 h-3 shrink-0 mt-0.5" />{action}</div>
                                             ))}
                                         </div>
                                     </div>

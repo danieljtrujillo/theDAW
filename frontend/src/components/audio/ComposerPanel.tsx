@@ -425,11 +425,11 @@ const ProfileNumbers: React.FC<{ profile: StyleProfile }> = ({ profile }) => (
         {profile.sample.cadences ? `, ${profile.sample.cadences} cadences` : ''}
       </p>
     </div>
-    <ShareList title="Top chords, major" shares={topChords(profile, 'major')} />
-    <ShareList title="Top chords, minor" shares={topChords(profile, 'minor')} />
+    <ShareList title="Major" shares={topChords(profile, 'major')} />
+    <ShareList title="Minor" shares={topChords(profile, 'minor')} />
     <ShareList title="Cadences" shares={cadenceShares(profile)} />
     <div>
-      <h4 className={FLYOUT_LEGEND}>Harmonic rhythm</h4>
+      <h4 className={FLYOUT_LEGEND}>Rhythm</h4>
       <p className="text-[12px] font-semibold text-zinc-300">{harmonicRhythmText(profile)}</p>
     </div>
   </div>
@@ -1173,7 +1173,8 @@ export const ComposerPanel: React.FC<{
               </div>
               <div className="flex items-center gap-2">
                 <ActionKey
-                  legend="Check inversion"
+                  legend="Check"
+                  aria-label="Check inversion"
                   description="Check the two parts as written and with the lower one moved above the upper at the interval"
                   onClick={() => void checkInversion()}
                   busy={busy}
@@ -1195,7 +1196,7 @@ export const ComposerPanel: React.FC<{
 
             {cpFlags && cpFlags.length > 0 && (
               <div className={GROUP}>
-                <h3 className={FLYOUT_LEGEND}>Rules broken in the last write</h3>
+                <h3 className={FLYOUT_LEGEND}>Rules</h3>
                 <FlagList flags={cpFlags} label="Rules broken in the last write" />
               </div>
             )}
@@ -1326,7 +1327,7 @@ export const ComposerPanel: React.FC<{
         {section === 'profile' && (
           <div className={GROUP}>
             <fieldset className="flex flex-col gap-1">
-              <legend className={`${FLYOUT_LEGEND} mb-1`}>Count from</legend>
+              <legend className={`${FLYOUT_LEGEND} mb-1`}>Source</legend>
               {(
                 [
                   ['corpus', 'Corpus pieces'],

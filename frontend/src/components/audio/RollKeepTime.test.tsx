@@ -6,7 +6,8 @@
  * as timed against audio), a BPM typed into the field and Enter. KEEP TIME
  * starts on for that roll, so every note keeps its second. Pressed off, the
  * next BPM keeps every note in its bar. A roll written on the grid starts with
- * it off. The key is a real toggle button with a name and a pressed state.
+ * it off. The key is a stopwatch icon, a real toggle button with the name
+ * "Keep time", a tip that says what the state does, and a pressed state.
  * The choice stays through the MIDI tab closing and opening again (another
  * bottom tab shown between), and a controller knob mapped to BPM (MAP, CC 14
  * by default) follows it as the field does.
@@ -68,11 +69,15 @@ await act(async () => root.render(<PianoRollTransport />));
 let bpmField = host.querySelector<HTMLInputElement>('#piano-roll-bpm')!;
 assert.ok(bpmField, 'the BPM field renders');
 assert.equal(host.querySelector(`label[for="piano-roll-bpm"]`)?.textContent, 'BPM', 'the field has its label');
-const keepKey = () => [...host.querySelectorAll('button')].find((b) => b.getAttribute('aria-label')?.startsWith('Keep time'))!;
+const keepKey = () => [...host.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Keep time')!;
 let keep = keepKey();
 assert.ok(keep, 'KEEP TIME renders beside the BPM field');
 assert.equal(keep.getAttribute('aria-pressed'), 'true', 'KEEP TIME starts on for a roll whose parts came from audio');
 assert.ok(keep.getAttribute('aria-describedby'), 'its tip describes it');
+assert.equal(keep.textContent, '', 'the key is an icon, with no word beside it');
+assert.ok(keep.querySelector('svg'), 'the stopwatch glyph');
+const tipText = () => document.getElementById(keep.getAttribute('aria-describedby')!)?.textContent ?? '';
+assert.match(tipText(), /^On: a new BPM keeps every note at its second/, 'its tip says what the state does');
 
 const before = onsets();
 await act(async () => {
@@ -85,6 +90,7 @@ onsets().forEach((t, i) => assert.ok(Math.abs(t - before[i]) < 0.002, `note ${i}
 // Off: the next tempo keeps each note in its bar.
 await act(async () => keep.click());
 assert.equal(keep.getAttribute('aria-pressed'), 'false');
+assert.match(tipText(), /^Off: a new BPM keeps every note in its bar/, 'the tip follows the state');
 const steps = roll().notes.map((n) => n.step);
 await act(async () => {
   type(bpmField, '110');
