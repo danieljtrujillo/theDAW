@@ -598,8 +598,24 @@ def free_ports(
         gone_after_kill, _still = psutil.wait_procs(alive, timeout=2)
         gone.extend(gone_after_kill)
     exited = {p.pid for p in gone}
-    stopped.extend(h for h, _p in targets if h.pid in exited)
+    stopped.extend(h for h, p in targets if h.pid in exited or _has_exited(psutil, p))
     return stopped, refused
+
+
+def _has_exited(psutil, proc) -> bool:
+    """Whether ``proc`` no longer runs: it is gone, or it is a zombie.
+
+    ``wait_procs`` reports a child as gone only once its parent reaps it. A
+    sidecar whose parent (another backend, a shell) never waits on it stays
+    a zombie on Linux and macOS after the signal, and a zombie holds no
+    port, so it counts as stopped.
+    """
+    try:
+        return proc.status() == psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return True
+    except psutil.AccessDenied:
+        return False
 
 
 def describe_occupant(port: int = BACKEND_PORT) -> Optional[str]:

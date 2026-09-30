@@ -73,7 +73,9 @@ from backend.lib.launch_token import child_env
 log = logging.getLogger(__name__)
 
 #: Render subprocesses are headless: no console window may flash on Windows.
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+_NO_WINDOW = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+)
 router = APIRouter(dependencies=[Depends(refuse_cross_site)])
 
 # Per-plugin captured editor state (from the native-GUI sidecar) lands here.

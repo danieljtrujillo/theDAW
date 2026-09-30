@@ -305,7 +305,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
             try:
                 creationflags = 0
                 if sys.platform == "win32":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 with _open_log() as log_fh:
                     _proc = subprocess.Popen(
                         cmd,

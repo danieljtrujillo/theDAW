@@ -1590,7 +1590,7 @@ def _git_env() -> dict[str, str]:
 
 
 def _git_creationflags() -> int:
-    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 def _git_run(
@@ -2440,7 +2440,9 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                     # of popping a separate cmd window.
                     creationflags = 0
                     if sys.platform == "win32":
-                        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                        creationflags = getattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                        )
                     with _sidecar_log_handle() as spawn_out:
                         new_proc = subprocess.Popen(
                             cmd,

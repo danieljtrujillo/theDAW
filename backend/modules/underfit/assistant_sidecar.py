@@ -204,7 +204,7 @@ def _group_flags() -> dict:
     """Start a child in its own process group, so ``_kill_tree`` reaches what
     it spawns (npm runs through cmd.exe on Windows and forks node)."""
     if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     return {"start_new_session": True}
 
 
@@ -304,7 +304,7 @@ def _spawn_node(cfg: AssistantConfig, node: str) -> subprocess.Popen[bytes]:
         cfg.port,
     )
     creationflags = (
-        subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else 0
     )
     with open(target, "ab") as fh:
         try:

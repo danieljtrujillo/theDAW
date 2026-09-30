@@ -303,7 +303,9 @@ def render_audio(
                 )
             except Exception as exc:  # reported, never raised
                 return {"ok": False, "engine": "musescore", "error": repr(exc)}
-        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        creationflags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        )
         try:
             proc = subprocess.run(
                 render_command(binary, source, output_path),

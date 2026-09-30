@@ -416,8 +416,60 @@ def test_free_leaves_a_shared_sidecar_to_the_checkout_whose_backend_runs_it(
         sidecar = next(h for h in ports.holders([port]) if h.pid != backend.pid).pid
         stopped, _refused = ports.free_ports([port])
         assert [h.pid for h in stopped] == ([sidecar] if expect_stopped else [])
-        assert psutil.pid_exists(sidecar) is not expect_stopped
+        # The fake backend never reaps its sidecar, so on Linux/macOS the
+        # stopped one lingers as a zombie: a PID with no port behind it.
+        assert _holds_nothing(sidecar) is expect_stopped
         assert backend.poll() is None
+
+
+def _holds_nothing(pid: int) -> bool:
+    """Whether ``pid`` is gone or a zombie (exited, not yet reaped)."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return True
+
+
+class _ZombieAfterTerminate:
+    """A psutil-shaped process whose parent never reaps it: ``terminate``
+    turns it into a zombie that ``wait_procs`` never lists as gone."""
+
+    pid = 424242
+
+    def __init__(self) -> None:
+        self.signalled: list[str] = []
+        self._status = psutil.STATUS_RUNNING
+
+    def terminate(self) -> None:
+        self.signalled.append("terminate")
+        self._status = psutil.STATUS_ZOMBIE
+
+    def kill(self) -> None:
+        self.signalled.append("kill")
+
+    def status(self) -> str:
+        return self._status
+
+
+def test_free_counts_a_zombie_the_parent_never_reaped_as_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``wait_procs`` reports a child gone only once its parent waits on it. A
+    sidecar spawned by another process that never does stays a zombie after
+    the signal on Linux; it holds no port, so ``free_ports`` counts it."""
+    zombie = _ZombieAfterTerminate()
+    holder = ports.Holder(
+        port=ports.BACKEND_PORT + 1, pid=zombie.pid, name="node", cmdline="", ours=True
+    )
+    monkeypatch.setattr(ports, "holders", lambda wanted: [holder])
+    monkeypatch.setattr(ports, "_still_the_same_process", lambda h: zombie)
+    monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout: ([], list(procs)))
+
+    stopped, refused = ports.free_ports([holder.port])
+
+    assert [h.pid for h in stopped] == [zombie.pid]
+    assert refused == []
+    assert zombie.signalled == ["terminate", "kill"]
 
 
 def test_free_leaves_the_same_entry_point_alone_outside_the_sidecar_folder(
@@ -567,8 +619,16 @@ def test_free_ports_skips_this_very_process(bound_port: int, monkeypatch):
 
 
 def _fake_proc(pid: int):
+    """A psutil-shaped process that stays running through every signal."""
     return type(
-        "P", (), {"pid": pid, "terminate": lambda s: None, "kill": lambda s: None}
+        "P",
+        (),
+        {
+            "pid": pid,
+            "terminate": lambda s: None,
+            "kill": lambda s: None,
+            "status": lambda s: "running",
+        },
     )()
 
 
