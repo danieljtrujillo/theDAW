@@ -49,6 +49,10 @@ DOC_PATHS = [
     # its confidence and `?` marks, syncopation, swing, polymeter, cross-rhythms
     # — and the six things that silently break any beat-synchronous analysis.
     PROJECT_ROOT / "docs" / "guides" / "rhythm-analysis.md",
+    # The section finder (backend/modules/sections): the bar grid it reads,
+    # the DETAILS SECTIONS block, EDIT section markers, the MIDI Form entry,
+    # the API and its limits.
+    PROJECT_ROOT / "docs" / "guides" / "song-sections.md",
     # Onboarding: the header's "?" feature search, the pinned LOG and PANELS
     # labels, why they retire themselves, and the menu entry that brings them
     # back. Indexed because "where is the library?" is exactly what gets asked

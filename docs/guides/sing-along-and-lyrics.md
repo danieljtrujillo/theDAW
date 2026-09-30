@@ -153,12 +153,21 @@ In `data/settings.json`, section `lyrics`:
 | `auto_on_import` | `true` | Align an imported song that has lyric text, right after its stems. |
 | `auto_on_generate` | `false` | The same for generated tracks. |
 | `auto_transcribe` | `false` | Transcribe a song that has no lyric text instead of skipping it. |
-| `language` | `auto` | Whisper language for the background jobs; `auto` detects. |
+| `language` | `auto` | Language of the lyrics for the background jobs; `auto` lets whisper detect it. `la` is Latin. |
 | `aligner` | `auto` | `mms` forced alignment, `whisper` (match whisper's words to yours, the old way), or `auto` (mms when torchaudio has it). |
 | `review` | `true` | Run the whisper review pass after a forced alignment. |
 
-The SING footer's language picker sets the language for the jobs you start
-from the tab.
+The SING footer's language picker is the language of the words on the page.
+Picking one saves it on the lyrics document, and TRANSCRIBE, ALIGN and STUDY
+read it from there; `Auto-detect` only tells whisper to listen for the
+language and leaves the document as it is.
+
+Latin is in the list. A Latin lyric can be pasted with or without its macrons
+(`Gallia est omnis dīvīsa in partēs trēs`): ALIGN folds the macrons, the
+ligatures `æ`/`œ` and the `i`/`j`, `u`/`v` spellings for the aligner, and the
+words on the page keep them. A sung hyphenation (`Ky-ri-e`) is one word to the
+aligner. STUDY reads a Latin document by the Latin rules (see the lyric
+analysis guide).
 
 ## How the heavy work is scheduled
 
