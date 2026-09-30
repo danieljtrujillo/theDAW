@@ -55,7 +55,7 @@ export const WaveformModeToggle: React.FC<WaveformModeToggleProps> = ({ variant,
   const look =
     variant === 'corner'
       ? 'absolute bottom-0.5 right-0.5 z-40 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/60 px-1 text-white/70 hover:text-white'
-      : 'flex h-6 items-center gap-1 rounded border border-white/10 bg-black/40 px-2 text-zinc-300 hover:border-purple-500/50 hover:text-white';
+      : 'flex h-6 w-6 items-center justify-center rounded text-zinc-300 hover:bg-white/5 hover:text-white';
   return (
     <button
       type="button"
@@ -68,14 +68,9 @@ export const WaveformModeToggle: React.FC<WaveformModeToggleProps> = ({ variant,
       }}
       className={`${base} ${look} ${className ?? ''}`}
     >
-      {variant === 'corner' ? (
-        <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
-      ) : (
-        <>
-          <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
-          <span aria-hidden="true">Wave: {WAVEFORM_MODE_NAME[mode]}</span>
-        </>
-      )}
+      {/* Glyph only on every surface — the mode's name and legend live in the
+          accessible label and tooltip, so the toolbar stays icon-dense. */}
+      <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
     </button>
   );
 };
