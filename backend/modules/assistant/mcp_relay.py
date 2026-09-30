@@ -31,6 +31,10 @@ Execution-boundary rules (both endpoints):
   pushed and nothing is resolved.
 * ``callId`` must be pending FOR THAT session — a result cannot be redirected
   into another conversation's pending call, and a replayed result is ignored.
+* ``POST /call`` answers this machine only (``require_loopback_or_launch_token``):
+  its one caller is ``thedaw_mcp_server.py``, the stdio child on this machine
+  that posts to 127.0.0.1. Anyone else who learns a session id must not be able
+  to push a tool call into the user's browser, where it runs as the user.
 """
 
 from __future__ import annotations
@@ -40,7 +44,9 @@ import logging
 import uuid
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
+
+from backend.lib.cross_site import require_loopback_or_launch_token
 
 from .tool_catalog import thedaw_mcp_tools
 
@@ -236,9 +242,13 @@ registry = RelayRegistry()
 router = APIRouter(prefix="/api/mcp-relay", tags=["assistant-mcp-relay"])
 
 
-@router.post("/call")
+@router.post("/call", dependencies=[Depends(require_loopback_or_launch_token)])
 async def mcp_relay_call(payload: dict[str, Any] = Body(default_factory=dict)):
-    """Relay an MCP tool call to the browser and block on its result (C2)."""
+    """Relay an MCP tool call to the browser and block on its result (C2).
+
+    The caller is the stdio child on this machine; the gate on the decorator
+    keeps a LAN caller who knows a session id from pushing a call the browser
+    would run as the user."""
     session_id = payload.get("sessionId")
     name = payload.get("name")
     args = payload.get("args") or {}
