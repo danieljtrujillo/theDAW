@@ -13,6 +13,9 @@
  *   - a symphony greys out the tempo and meter it would ignore;
  *   - a part marked as the cantus firmus is the cantus "the selected part"
  *     sends, and the species answer's cantus goes back into it;
+ *   - ORCHESTRATE sends the roll's parts, harmony row and markers; RUN adds
+ *     the answer's parts on the registry's instruments with a plan line per
+ *     section, and UNDO removes the parts it added;
  *   - CHECK shows the roll's key picker and the roll's last voice-leading
  *     answer, a write's or a check's: the same flags the harmony row shows,
  *     whichever key ran the check. A row selects its notes.
@@ -80,6 +83,32 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url === '/api/composer/check') {
     return json(200, checkAnswer);
   }
+  if (url === '/api/composer/orchestrate') {
+    orchestrateSent = bodies[url];
+    const one = (note: number, articulation?: string) => [{ note, tick: 0, ticks: 3840, velocity: 90, ...(articulation ? { articulation } : {}) }];
+    const part = (name: string, instrument_id: string, note: number, articulation?: string) => ({
+      name,
+      instrument_id,
+      role: 'voice',
+      notes: one(note, articulation),
+      controls: [{ tick: 0, controller: 1, value: 64 }],
+    });
+    return json(200, {
+      key: 'C major',
+      ppq: 960,
+      ensemble: 'strings',
+      texture: 'chorale',
+      density: 0.5,
+      melody_part: 'x',
+      bass_part: 'x',
+      parts: [part('Violin I', 'violin', 72, 'legato'), part('Viola', 'viola', 64, 'legato'), part('Contrabass', 'contrabass', 36, 'pizzicato')],
+      sections: [
+        { name: 'A', tick: 0, ticks: 3840, dynamic: 'mf', velocity: 90, climax: true, lead: 'strings', plan: 'A, bars 1-1, mf (climax): Violin I carries the melody; Viola holds the harmony; Cello and Contrabass carry the bass pizzicato.' },
+      ],
+      plan: ['A, bars 1-1, mf (climax): Violin I carries the melody; Viola holds the harmony; Cello and Contrabass carry the bass pizzicato.'],
+      chords: [{ tick: 0, ticks: 3840, figure: 'I', key: 'C major' }],
+    });
+  }
   if (url === '/api/composer/species') {
     const line = (notes: number[]) => notes.map((note, i) => ({ note, tick: i * 3840, ticks: 3840 }));
     return json(200, {
@@ -102,6 +131,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return json(404, { detail: `no route ${url}` });
 }) as typeof fetch;
 
+let orchestrateSent: unknown = null;
 let checkAnswer: unknown = {
   count: 2,
   flags: [
@@ -163,7 +193,7 @@ const assertLabelled = (where: string) => {
 
 // ── the tablist ─────────────────────────────────────────────────────────────
 const tabs = $$<HTMLButtonElement>('[role="tab"]');
-assert.deepEqual(tabs.map((t) => t.textContent), ['Harmony', 'Form', 'Counter', 'Check', 'Profile']);
+assert.deepEqual(tabs.map((t) => t.textContent), ['Harmony', 'Form', 'Counter', 'Orchestrate', 'Check', 'Profile']);
 assert.equal($('[role="tablist"]')?.getAttribute('aria-label'), 'Compose sections');
 for (const t of tabs) assert.ok(t.getAttribute('aria-label'), 'each section key has a name');
 const selected = () => tabs.find((t) => t.getAttribute('aria-selected') === 'true')!;
@@ -256,12 +286,49 @@ assert.ok(rollTracksOf(roll()).some((t) => t.name === 'Counterpoint'));
 const lagMax = (win.document.getElementById(idFor('Lag (beats)')) as HTMLInputElement).max;
 assert.equal(lagMax, '16');
 
+// ── ORCHESTRATE ─────────────────────────────────────────────────────────────
+await press(tab('Orchestrate'));
+assertLabelled('ORCHESTRATE');
+assert.ok(!host.innerHTML.match(/[\u{1F300}-\u{1FAFF}]/u), 'no emoji in the section');
+for (const k of ['Run', 'Undo']) assert.ok(key(k), `a ${k} key`);
+const density = win.document.getElementById(idFor('Density')) as HTMLInputElement;
+assert.equal(density.type, 'range', 'the density is a native slider');
+assert.equal((key('Undo') as HTMLButtonElement).disabled, true, 'nothing to undo before a run');
+const partsBefore = rollTracksOf(roll()).length;
+await choose(idFor('Ensemble'), 'strings');
+await choose(idFor('Texture'), 'chorale');
+await press(key('Run'));
+await settle();
+assert.ok(statusWord().startsWith('Done'), `the orchestration lands (got "${statusWord()}")`);
+const sentO = orchestrateSent as { parts: { id: string; notes: unknown[] }[]; ensemble: string; texture: string; density: number; harmony: unknown[]; markers: unknown[]; key: string };
+assert.equal(sentO.ensemble, 'strings');
+assert.equal(sentO.texture, 'chorale');
+assert.equal(sentO.density, 0.5);
+assert.ok(sentO.parts.length >= 1 && sentO.parts.every((p) => p.notes.length > 0), "the roll's parts with notes are the sketch");
+assert.ok(Array.isArray(sentO.harmony) && Array.isArray(sentO.markers), 'the harmony row and the markers go along');
+const orchestrated = rollTracksOf(roll());
+assert.equal(orchestrated.length, partsBefore + 3, 'three parts added');
+const violinI = orchestrated.find((t) => t.name === 'Violin I');
+assert.ok(violinI && violinI.instrumentId === 'violin' && violinI.program === 40, 'Violin I is the registry violin');
+assert.equal(violinI?.notes[0]?.articulation, 'legato');
+assert.equal(violinI?.notes[0]?.velocity, 90, 'the section dynamic is the velocity');
+assert.deepEqual(violinI?.controls, [{ tick: 0, controller: 1, value: 64 }], 'the CC 1 swell comes along');
+assert.equal(orchestrated.find((t) => t.name === 'Contrabass')?.notes[0]?.articulation, 'pizzicato');
+const planList = $('[aria-label="Orchestration plan"]');
+assert.ok(planList && planList.textContent?.includes('Violin I carries the melody'), 'the plan is shown, one line per section');
+assert.equal((key('Undo') as HTMLButtonElement).disabled, false);
+await press(key('Undo'));
+await settle();
+assert.equal(rollTracksOf(roll()).length, partsBefore, 'UNDO removes the parts the orchestration added');
+assert.ok(!rollTracksOf(roll()).some((t) => t.name === 'Violin I'));
+assert.ok(statusWord().startsWith('Removed'), `the status says so (got "${statusWord()}")`);
+
 // ── CHECK ───────────────────────────────────────────────────────────────────
 await press(tab('Check'));
 assertLabelled('CHECK');
 assert.ok(win.document.getElementById(idFor('Key')), "the roll's key picker, the one the harmony row's check reads");
 const source = () => $('[data-compose-flags-source]')?.textContent ?? '';
-assert.equal(source(), 'From the counterpoint written, in C major.', "before any check, the last write's answer");
+assert.equal(source(), 'From the orchestration written, in C major. The parts changed since.', "before any check, the last write's answer, stale since UNDO took its parts");
 await press(key('Check'));
 await settle();
 assert.ok(statusWord().startsWith('Flagged'), `flags read as Flagged (got "${statusWord()}")`);

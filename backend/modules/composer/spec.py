@@ -62,6 +62,11 @@ RULES = (
     "unresolved_seventh",
 )
 
+# Orchestration (orchestrate.py): the ensembles a sketch is written for and
+# the textures its accompaniment takes.
+ORCHESTRA_ENSEMBLES = ("strings", "chamber", "classical", "romantic")
+ORCHESTRA_TEXTURES = ("tutti", "melody_accompaniment", "chorale", "call_answer")
+
 # Counterpoint (counterpoint.py, canon.py, fugue.py).
 SPECIES = (1, 2, 3, 4, 5)
 MODES = (

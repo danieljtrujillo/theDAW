@@ -8,14 +8,15 @@
  *     with each part's range from the orchestra registry.
  *   - flagNoteIds: the notes a flag is about, part by part.
  *   - planPartWrites / continuoPartWrites / counterpointPartWrites /
- *     formMovementWrite: an answer's voices as named part writes, with the
- *     roman figures the harmony row shows.
+ *     formMovementWrite / orchestrationPartWrites: an answer's voices as
+ *     named part writes, with the roman figures the harmony row shows.
  *   - figuredBassLine: a part's notes and figures as the continuo route's bass.
  *
  * A composer note is `{note, tick, ticks}` at the roll's own 960 PPQ, so a
  * note goes in and comes back on the roll's clock unchanged.
  */
-import type { FiguredBassMark, PianoNote, RollTrack } from '../state/pianoRollStore';
+import type { FiguredBassMark, PianoNote, RollControl, RollTrack } from '../state/pianoRollStore';
+import { isArticulation } from './articulationMap';
 import type {
   CanonResult,
   ComposerNote,
@@ -24,6 +25,7 @@ import type {
   FiguredBassNote,
   FormResult,
   FugueResult,
+  OrchestrateResult,
   PartRanges,
   PlanResult,
   SpeciesResult,
@@ -187,8 +189,8 @@ export function flagNoteIds(flag: Pick<VoiceLeadingFlag, 'tick' | 'parts'>, ids:
 
 let noteSerial = 0;
 
-/** Composer notes as roll notes: each at its tick with its length, at `velocity` when it has none, with a new id. */
-export function composerNotesToRoll(notes: readonly ComposerNote[], idPrefix: string, velocity = 80): PianoNote[] {
+/** Composer notes as roll notes: each at its tick with its length, at `velocity` when it has none, its articulation when it names one of the roll's, with a new id. */
+export function composerNotesToRoll(notes: readonly (ComposerNote & { articulation?: string })[], idPrefix: string, velocity = 80): PianoNote[] {
   return notes.map((n) => {
     const tick = Math.max(0, Math.round(n.tick));
     const ticks = Math.max(1, Math.round(n.ticks));
@@ -201,6 +203,7 @@ export function composerNotesToRoll(notes: readonly ComposerNote[], idPrefix: st
       step: tick / TICKS_PER_STEP,
       length: ticks / TICKS_PER_STEP,
       velocity: Math.max(1, Math.min(127, Math.round(n.velocity ?? velocity))),
+      ...(isArticulation(n.articulation) ? { articulation: n.articulation } : {}),
     };
   });
 }
@@ -215,6 +218,8 @@ export interface PartWrite {
   instrumentId?: string;
   /** This voice is the cantus firmus: it goes into the part marked as the cantus firmus when there is one. */
   cantus?: boolean;
+  /** Controller changes the part takes with its notes (an orchestration's CC 1 swells); left out, a part keeps its own. */
+  controls?: RollControl[];
 }
 
 /** A roman figure the harmony row shows, at its tick. */
@@ -308,6 +313,24 @@ export function counterpointPartWrites(result: CounterpointResult): ComposerWrit
     ? result.suspensions.filter((x) => x.figure).map((x) => ({ tick: x.tick, figure: x.figure as string }))
     : [];
   return { writes, chords, flags: result.flags ?? [], key: parseRollKey(result.key) };
+}
+
+/**
+ * An orchestration's parts (composerApi.orchestrate) as part writes, in score
+ * order, each named as the answer names it ("Violin I", "Horn II") on its
+ * registry instrument, with its CC 1 swells, and the chords the answer read
+ * for the harmony row. No flags: the answer is not checked.
+ */
+export function orchestrationPartWrites(result: OrchestrateResult): ComposerWrite {
+  const writes: PartWrite[] = result.parts.map((p, i) => ({
+    voice: p.name,
+    name: p.name,
+    notes: composerNotesToRoll(p.notes, `orch-${i}`),
+    instrumentId: p.instrument_id,
+    controls: (p.controls ?? []).map((c) => ({ tick: c.tick, controller: c.controller, value: c.value })),
+  }));
+  const chords: RollChordLabel[] = (result.chords ?? []).filter((c) => c.figure).map((c) => ({ tick: c.tick, figure: c.figure, key: c.key }));
+  return { writes, chords, flags: [], key: parseRollKey(result.key) };
 }
 
 /** A realized form movement as the roll takes it: its voices, meter, tempo, sections and figures. */

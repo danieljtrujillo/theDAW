@@ -69,6 +69,7 @@ import {
   type CheckResult,
   type FormResult,
   type FugueResult,
+  type OrchestrateResult,
   type PartRanges,
   type PlanResult,
   type SpeciesResult,
@@ -79,6 +80,7 @@ import {
   checkPick,
   continuoPartWrites,
   counterpointPartWrites,
+  orchestrationPartWrites,
   figuredBassLine,
   flagNoteIds,
   formMovementWrite,
@@ -407,15 +409,17 @@ export interface RollVoiceLeading {
   /** The key the parts were read in. */
   key: RollKey;
   /** Where the flags came from. */
-  source: 'check' | 'plan' | 'continuo' | 'counterpoint' | 'form';
+  source: 'check' | 'plan' | 'continuo' | 'counterpoint' | 'form' | 'orchestrate';
 }
 
-/** What a composer write did (writePlanToRoll, writeCounterpoint, writeFormMovement, realizeFiguredBass). */
+/** What a composer write did (writePlanToRoll, writeCounterpoint, writeFormMovement, writeOrchestration, realizeFiguredBass). */
 export interface RollWriteResult {
   /** The id of the part each voice went into, in the answer's order (top voice first); a voice left out has none. */
   partIds: string[];
   /** Parts the write made (the rest existed and had their notes replaced). */
   created: number;
+  /** The ids of the parts the write made, in the answer's order: what removeTracks takes to undo the write's additions. */
+  createdIds: string[];
   /** Voices left out because the roll already held MAX_ROLL_PARTS parts. */
   skipped: number;
 }
@@ -735,6 +739,16 @@ interface PianoRollState {
    */
   writeFormMovement: (form: FormResult, movementIndex?: number) => RollWriteResult | null;
   /**
+   * Write an orchestration (composerApi.orchestrate) into the roll: one part
+   * per instrument of the answer, each into the part with its name ("Violin
+   * I", "Horn II") at its ticks, replacing that part's notes and CC 1
+   * swells, or into a new part on the answer's registry instrument
+   * (lib/rollComposer orchestrationPartWrites). One undo step. The harmony
+   * row gets the chords the answer read. The parts' own velocities and
+   * swells are the answer's expression, so EXPRESSION leaves them.
+   */
+  writeOrchestration: (result: OrchestrateResult) => RollWriteResult;
+  /**
    * Transform the selected notes of the part being edited (lib/rollTransforms):
    * invert, retrograde, augment, diminish, sequence or fragment, invert and
    * sequence by scale degree in the roll's key unless `opts.diatonic` is
@@ -779,6 +793,12 @@ interface PianoRollState {
   addTrack: (init?: Partial<Omit<RollTrack, 'id'>>) => string | null;
   /** Remove a part; the last part cannot go. Removing the active part makes its neighbour active. One undo step. */
   removeTrack: (id: string) => void;
+  /**
+   * Remove the parts `ids` names in one undo step (a write's additions
+   * undone); at least one part always stays, and when the active part goes
+   * its neighbour becomes active. Returns how many were removed.
+   */
+  removeTracks: (ids: readonly string[]) => number;
   /** Make part `id` the one `notes` holds. Not an undo step; the selection clears, since it named the other part's notes. */
   setActiveTrack: (id: string) => void;
   /** Move part `id` to `index` in the list (held inside it). One undo step. */
@@ -2121,6 +2141,8 @@ interface PartsWrite {
   /** The part each write went into, in the writes' order; null for one left out. */
   idsByWrite: (string | null)[];
   created: number;
+  /** The ids of the parts the write made, in the writes' order. */
+  createdIds: string[];
   skipped: number;
 }
 
@@ -2146,6 +2168,7 @@ const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite
   if (writes.length > 0 && tracks.every((t) => t.notes.length === 0)) tracks = tracks.filter((t) => !isSparePart(t));
   const written = new Set<string>();
   const idsByWrite: (string | null)[] = [];
+  const createdIds: string[] = [];
   let created = 0;
   let skipped = 0;
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -2156,7 +2179,8 @@ const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite
     if (i < 0) i = tracks.findIndex((t) => !written.has(t.id) && same(t.name, w.name));
     if (i >= 0) {
       const t = tracks[i];
-      tracks[i] = { ...t, notes, ...(markCantus ? { cantusFirmus: true } : {}) };
+      const next = { ...t, notes, ...(markCantus ? { cantusFirmus: true } : {}) };
+      tracks[i] = w.controls ? withControls(next, cleanPartControls(w.controls)) : next;
       written.add(t.id);
       idsByWrite.push(t.id);
       continue;
@@ -2170,13 +2194,15 @@ const writeParts = (s: PianoRollState, writes: readonly PartWrite[]): PartsWrite
     const inst = orchestraInstrument(w.instrumentId);
     if (inst) t = { ...t, ...instrumentPatchOf(tracks, t, inst) };
     if (markCantus) t.cantusFirmus = true;
+    if (w.controls) t = withControls(t, cleanPartControls(w.controls));
     tracks = [...tracks, t];
     written.add(t.id);
     idsByWrite.push(t.id);
+    createdIds.push(t.id);
     created += 1;
   }
   const active = tracks.find((t) => t.id === s.activeTrackId) ?? tracks.find((t) => written.has(t.id)) ?? tracks[0];
-  return { tracks, notes: active.notes, activeId: active.id, idsByWrite, created, skipped };
+  return { tracks, notes: active.notes, activeId: active.id, idsByWrite, created, createdIds, skipped };
 };
 
 /**
@@ -2249,6 +2275,7 @@ const writtenVoiceLeading = (
 const writeResultOf = (done: PartsWrite): RollWriteResult => ({
   partIds: done.idsByWrite.filter((id): id is string => !!id),
   created: done.created,
+  createdIds: [...done.createdIds],
   skipped: done.skipped,
 });
 
@@ -2294,7 +2321,7 @@ const commitComposerWrite = (
   readKey?: RollKey,
   expressive = false,
 ): RollWriteResult => {
-  let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
+  let out: RollWriteResult = { partIds: [], created: 0, createdIds: [], skipped: 0 };
   cutHistoryBurst();
   usePianoRollStore.setState((s) => {
     const written = writeParts(s, w.writes);
@@ -2409,6 +2436,25 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       // part's link stays in partLinks, so undoing the removal relinks it.
       return activateSlice(s, rest[Math.min(i, rest.length - 1)].id, rest);
     }),
+  removeTracks: (ids) => {
+    let removed = 0;
+    cutHistoryBurst();
+    set((s) => {
+      const going = new Set(ids);
+      const rest = s.tracks.filter((t) => !going.has(t.id));
+      // At least one part stays: the first named survives when every part would go.
+      const kept = rest.length ? rest : s.tracks.slice(0, 1);
+      removed = s.tracks.length - kept.length;
+      if (!removed) return {};
+      if (kept.some((t) => t.id === s.activeTrackId)) return { tracks: kept };
+      const i = s.tracks.findIndex((t) => t.id === s.activeTrackId);
+      const after = s.tracks.slice(i + 1).find((t) => kept.some((k) => k.id === t.id));
+      const before = s.tracks.slice(0, i).reverse().find((t) => kept.some((k) => k.id === t.id));
+      return activateSlice(s, (after ?? before ?? kept[0]).id, kept);
+    });
+    cutHistoryBurst();
+    return removed;
+  },
   setActiveTrack: (id) => {
     const s = get();
     if (id === s.activeTrackId || !s.tracks.some((t) => t.id === id)) return;
@@ -3367,10 +3413,11 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     }),
   writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true, {}, undefined, true),
   writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false, {}, undefined, true),
+  writeOrchestration: (result) => commitComposerWrite(orchestrationPartWrites(result), 'orchestrate', false),
   writeFormMovement: (form, movementIndex = 0) => {
     const w = formMovementWrite(form, movementIndex);
     if (!w) return null;
-    let out: RollWriteResult = { partIds: [], created: 0, skipped: 0 };
+    let out: RollWriteResult = { partIds: [], created: 0, createdIds: [], skipped: 0 };
     cutHistoryBurst();
     set((s) => {
       const written = writeParts(s, w.writes);

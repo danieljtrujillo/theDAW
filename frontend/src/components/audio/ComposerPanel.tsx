@@ -2,7 +2,7 @@
  * ComposerPanel — the MIDI tab's COMPOSE column: the composer backends
  * (backend/modules/composer) as controls, writing into the piano roll.
  *
- * The COMPOSE key on the action rail shows it to the right of the roll. Five
+ * The COMPOSE key on the action rail shows it to the right of the roll. Six
  * sections, one job each, on a tab row:
  *
  *   HARMONY       a roman-numeral phrase in a key, voiced SATB, optionally in
@@ -13,6 +13,10 @@
  *   COUNTERPOINT  species counterpoint against a cantus (the selected part or
  *                 one of Fux's), a canon, a fugue exposition, and an
  *                 inversion check of two parts.
+ *   ORCHESTRATE   the roll's parts as a sketch written for an ensemble
+ *                 (strings, chamber, classical, romantic): RUN adds one part
+ *                 per instrument on the orchestra registry's voices, with a
+ *                 plan line per section; UNDO takes the added parts back.
  *   CHECK         the roll's key and the voice-leading check over its SATB
  *                 parts, counted by rule; the list is the roll's last
  *                 voice-leading answer (a check's, or a write's), the same
@@ -28,7 +32,7 @@
  * writes are the roll store's composer actions (one undo step each).
  */
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
-import { ChartColumn, Dices, FlipVertical2, ListChecks, Loader2, PenLine, ScrollText, Search, Workflow, X } from 'lucide-react';
+import { ChartColumn, Dices, FlipVertical2, Layers, ListChecks, Loader2, PenLine, ScrollText, Search, Undo2, Workflow, X } from 'lucide-react';
 
 import {
   COMPOSER_PPQ,
@@ -39,6 +43,7 @@ import {
   type InvertibleInterval,
   type InvertibleResult,
   type ModalMode,
+  type OrchestratedSection,
   type StyleProfile,
   type StyleSummary,
 } from '../../lib/composerClient';
@@ -53,7 +58,9 @@ import {
   DEFAULT_FORM,
   DEFAULT_FUGUE,
   DEFAULT_HARMONY,
+  DEFAULT_ORCHESTRATE,
   DEFAULT_PROFILE,
+  ENSEMBLE_OPTIONS,
   FORM_METER_OPTIONS,
   FORM_OPTIONS,
   FUGUE_EPISODE_OPTIONS,
@@ -67,6 +74,7 @@ import {
   RONDO_OPTIONS,
   SPECIES_OPTIONS,
   SUBJECT_STARTS,
+  TEXTURE_OPTIONS,
   TONICS,
   busyStatus,
   cadenceShares,
@@ -85,6 +93,7 @@ import {
   harmonicRhythmText,
   inversionRequest,
   minCanonBars,
+  orchestrateRequest,
   planRequest,
   profileRequest,
   rerollSeed,
@@ -101,18 +110,23 @@ import {
   type FormState,
   type FugueState,
   type HarmonyState,
+  type OrchestrateState,
   type ProfileState,
 } from '../../lib/composerPanelModel';
 import {
   activeRollPartId,
+  removeRollParts,
   rollKeyForPanel,
+  rollOrchestrateContext,
   rollPartNotes,
   rollRequestContext,
+  rollSketchParts,
   runVoiceLeadingCheck,
   selectFlagNotes,
   speciesCantusNotes,
   writeCounterpoint,
   writeFormMovement,
+  writeOrchestration,
   writePlan,
   type RollWrite,
 } from '../../lib/composeToRoll';
@@ -125,13 +139,14 @@ import { RollKeyPicker } from './FiguredBassLane';
 import { FLYOUT_LEGEND, FLYOUT_SELECT, MINI_GLYPH, MINI_KEY, StripKey, keyTone } from './midiDockKit';
 import { ExpressionKey } from './ExpressionKey';
 
-export type ComposeSectionId = 'harmony' | 'form' | 'counterpoint' | 'check' | 'profile';
+export type ComposeSectionId = 'harmony' | 'form' | 'counterpoint' | 'orchestrate' | 'check' | 'profile';
 type SectionId = ComposeSectionId;
 
 const SECTIONS: readonly { id: SectionId; word: string; name: string }[] = [
   { id: 'harmony', word: 'Harmony', name: 'Harmony: plan a phrase' },
   { id: 'form', word: 'Form', name: 'Form: plan and realize a form' },
   { id: 'counterpoint', word: 'Counter', name: 'Counterpoint, canon and fugue' },
+  { id: 'orchestrate', word: 'Orchestrate', name: 'Orchestrate: the sketch as a full score' },
   { id: 'check', word: 'Check', name: 'Check voice leading' },
   { id: 'profile', word: 'Profile', name: 'Style profile' },
 ];
@@ -345,6 +360,7 @@ const FLAG_SOURCE: Record<RollVoiceLeading['source'], string> = {
   continuo: 'the realized figured bass',
   counterpoint: 'the counterpoint written',
   form: 'the movement written',
+  orchestrate: 'the orchestration written',
 };
 
 /** True when a part the roll's last voice-leading answer read has different notes now. */
@@ -466,6 +482,9 @@ export const ComposerPanel: React.FC<{
   const [cpFlags, setCpFlags] = useState<AnyFlag[] | null>(null);
   const [canon, setCanon] = useState<CanonState>(DEFAULT_CANON);
   const [fugue, setFugue] = useState<FugueState>(DEFAULT_FUGUE);
+  const [orchestrate, setOrchestrate] = useState<OrchestrateState>(DEFAULT_ORCHESTRATE);
+  // The last orchestration written: its plan per section, and the parts it added (what UNDO takes back).
+  const [orchestration, setOrchestration] = useState<{ sections: OrchestratedSection[]; createdIds: string[] } | null>(null);
   const [invUpper, setInvUpper] = useState('');
   const [invLower, setInvLower] = useState('');
   const [invInterval, setInvInterval] = useState<InvertibleInterval>(8);
@@ -617,6 +636,26 @@ export const ComposerPanel: React.FC<{
         result.violations.length,
       );
     });
+
+  const runOrchestrate = () =>
+    run('orchestrate', 'Orchestrate', async () => {
+      // The whole roll is the sketch: every part with notes, the harmony row, the meter and the section markers.
+      const req = orchestrateRequest(orchestrate, rollSketchParts(), rollOrchestrateContext());
+      const result = await composerApi.orchestrate(req);
+      const w = writeOrchestration(result);
+      setOrchestration({ sections: result.sections, createdIds: w.createdIds });
+      const ensemble = ENSEMBLE_OPTIONS.find((o) => o.value === result.ensemble)?.label ?? result.ensemble;
+      return doneStatus(
+        `Orchestrated for a ${ensemble.toLowerCase()} ensemble in ${result.key}: ${w.parts.length} parts, ${w.notes} notes, ${result.sections.length} section${result.sections.length === 1 ? '' : 's'}${w.created ? `, ${w.created} added` : ''}${leftOut(w)}`,
+      );
+    });
+
+  const undoOrchestrate = () => {
+    if (!orchestration) return;
+    const n = removeRollParts(orchestration.createdIds);
+    setOrchestration(null);
+    report({ tone: 'ok', word: 'Removed', message: `${n} part${n === 1 ? '' : 's'} the orchestration added removed; the roll's own undo takes back the rest` });
+  };
 
   const checkInversion = () =>
     run('invert', 'Inversion', async () => {
@@ -1161,6 +1200,87 @@ export const ComposerPanel: React.FC<{
               </div>
             )}
           </>
+        )}
+
+        {section === 'orchestrate' && (
+          <div className={GROUP}>
+            <fieldset className={GROUP}>
+              <legend className={`${FLYOUT_LEGEND} mb-1`}>Orchestrate</legend>
+              <div className="grid grid-cols-2 gap-2">
+                <Field id={idOf('o-ensemble')} label="Ensemble">
+                  <Select id={idOf('o-ensemble')} value={orchestrate.ensemble} options={ENSEMBLE_OPTIONS} onChange={(ensemble) => setOrchestrate((s) => ({ ...s, ensemble }))} />
+                </Field>
+                <Field id={idOf('o-texture')} label="Texture">
+                  <Select id={idOf('o-texture')} value={orchestrate.texture} options={TEXTURE_OPTIONS} onChange={(texture) => setOrchestrate((s) => ({ ...s, texture }))} />
+                </Field>
+                <Field id={idOf('o-melody')} label="Melody">
+                  <Select
+                    id={idOf('o-melody')}
+                    value={orchestrate.melody}
+                    options={[{ value: '', label: 'Highest' }, ...partOptions]}
+                    onChange={(melody) => setOrchestrate((s) => ({ ...s, melody }))}
+                  />
+                </Field>
+                <Field id={idOf('o-bass')} label="Bass">
+                  <Select
+                    id={idOf('o-bass')}
+                    value={orchestrate.bass}
+                    options={[{ value: '', label: 'Lowest' }, ...partOptions]}
+                    onChange={(bass) => setOrchestrate((s) => ({ ...s, bass }))}
+                  />
+                </Field>
+                <Field id={idOf('o-density')} label="Density" className="col-span-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      id={idOf('o-density')}
+                      name={idOf('o-density')}
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={orchestrate.density}
+                      onChange={(e) => setOrchestrate((s) => ({ ...s, density: Number(e.target.value) }))}
+                      className="min-w-0 flex-1 accent-[rgb(var(--et-accent))]"
+                    />
+                    <output htmlFor={idOf('o-density')} className="w-8 shrink-0 text-right text-[12px] font-bold et-ink tabular-nums">
+                      {orchestrate.density}
+                    </output>
+                  </div>
+                </Field>
+              </div>
+              <div className="flex items-center gap-2">
+                <ActionKey
+                  legend="Run"
+                  description="Write the roll's parts for the ensemble: one new part per instrument, the melody in Violin I, the bass in the cellos, the harmony spread over the rest"
+                  onClick={() => void runOrchestrate()}
+                  busy={busy}
+                  running={running === 'orchestrate'}
+                  icon={<Layers className={MINI_GLYPH} />}
+                />
+                <ActionKey
+                  legend="Undo"
+                  description="Remove the parts the last orchestration added"
+                  onClick={undoOrchestrate}
+                  busy={busy}
+                  running={false}
+                  disabled={!orchestration?.createdIds.length}
+                  icon={<Undo2 className={MINI_GLYPH} />}
+                />
+              </div>
+            </fieldset>
+            {orchestration && (
+              <div className="flex flex-col gap-0.5">
+                <h4 className={FLYOUT_LEGEND}>Plan</h4>
+                <ul aria-label="Orchestration plan" className="flex flex-col gap-1">
+                  {orchestration.sections.map((s) => (
+                    <li key={`${s.tick}-${s.name}`} className={NOTE}>
+                      {s.plan}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         )}
 
         {section === 'check' && (
