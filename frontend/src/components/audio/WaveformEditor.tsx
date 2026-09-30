@@ -3,10 +3,10 @@ import { createPortal, flushSync } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import {
   Scissors, Play, Square, ZoomIn, ZoomOut,
-  Magnet, Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
+  Trash2, Move, Plus, Volume2, Upload, Save, Piano, Paintbrush, X, Wand2, Layers,
   SlidersHorizontal, Undo2, Redo2, Gauge, Repeat, Flag, Circle, Copy, Music,
   Plug, Snowflake, Loader2, ChevronUp, ChevronDown, RefreshCw, Blocks,
-  Maximize2, Rows3, Keyboard, AudioLines, Spline, FolderOpen, Check,
+  Maximize2, Rows3, Keyboard, Eye, AudioLines, Spline, FolderOpen, Check,
   Settings2, ScanSearch, BoxSelect, Ellipsis, AudioWaveform, Bot, Drum, ListTree,
 } from 'lucide-react';
 import { addSectionMarkersToClip } from '../../lib/songSectionActions';
@@ -2613,11 +2613,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   };
   /** Timeline preferences popover, anchored under its toolbar key. */
   const [prefsAnchor, setPrefsAnchor] = useState<{ x: number; y: number } | null>(null);
-  /** Whether the popover was open when the key's press began (null = no press). */
-  const prefsOpenAtPressRef = useRef<boolean | null>(null);
   const closePrefs = useCallback(() => setPrefsAnchor(null), []);
   // The TOOLS dropdown (Magenta / Metamorph) — anchored under its button.
   const [toolsMenu, setToolsMenu] = useState<{ x: number; y: number } | null>(null);
+  // The VIEW dropdown (zoom-to-selection/clips, lane height, keyboard
+  // shortcuts, timeline preferences) — anchored under its button, so the
+  // toolbar stays a single row of icons from play to MIXDOWN.
+  const [viewMenu, setViewMenu] = useState<{ x: number; y: number } | null>(null);
   // Per-track FX rack popover. x/y anchor it at the opening click (clip FX
   // button, track-header F, context menu); both undefined falls back to the
   // legacy right-4 top-28 position.
@@ -6384,8 +6386,8 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   return (
     <div data-keyscope="edit-timeline" className="hardware-card h-full flex flex-col bg-black/40 overflow-hidden" ref={containerRef}>
       {/* Editor Toolbar */}
-      <div data-tour="edit-toolbar" className="flex items-center justify-between p-2 border-b border-white/5 bg-black/20 shrink-0">
-        <div className="flex items-center gap-3">
+      <div data-tour="edit-toolbar" className="flex flex-wrap items-center gap-y-2 p-2 border-b border-white/5 bg-black/20 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 gap-y-2">
           {/* The surface play key leads the toolbar with stop right after it,
               the spot every surface that plays keeps its play in. */}
           <div className="flex items-center gap-1">
@@ -6413,14 +6415,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <div className="flex bg-black/40 p-0.5 rounded border border-white/5 gap-0.5">
             <button
               onClick={() => setTool('move')}
-              className={`p-1 px-2 rounded transition-colors ${tool === 'move' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
+              className={`p-1 px-1.5 rounded transition-colors ${tool === 'move' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
               title="Move tool: drag clips"
             >
               <Move className="w-3 h-3" />
             </button>
             <button
               onClick={() => setTool('cut')}
-              className={`p-1 px-2 rounded transition-colors ${tool === 'cut' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
+              className={`p-1 px-1.5 rounded transition-colors ${tool === 'cut' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
               title="Cut tool: click a clip to split it at that point"
             >
               <Scissors className="w-3 h-3" />
@@ -6433,7 +6435,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               disabled={!canUndo}
               aria-label="Undo"
               title="Undo (Ctrl+Z)"
-              className="p-1 px-2 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
+              className="p-1 px-1.5 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
             >
               <Undo2 className="w-3 h-3" />
             </button>
@@ -6442,24 +6444,13 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               disabled={!canRedo}
               aria-label="Redo"
               title="Redo (Ctrl+Shift+Z)"
-              className="p-1 px-2 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
+              className="p-1 px-1.5 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
             >
               <Redo2 className="w-3 h-3" />
             </button>
           </div>
 
-          <button
-            onClick={openInpaintPanel}
-            disabled={!inpaintSelection}
-            className={`p-1 px-2 rounded border transition-colors disabled:opacity-30 disabled:pointer-events-none
-              ${inpaintSelection ? 'bg-purple-600/20 border-purple-500/40 text-purple-300 hover:bg-purple-600/30' : 'border-white/5 text-zinc-500'}`}
-            title="Inpaint selected region (Ctrl+P)"
-          >
-            <Paintbrush className="w-3 h-3" />
-          </button>
-
-          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 border border-white/5 rounded">
-            <Magnet className={`w-3 h-3 ${snap === 'off' ? 'text-zinc-700' : 'text-purple-300'}`} />
+          <div className="flex items-center gap-1 px-1.5 py-0.5 bg-black/40 border border-white/5 rounded">
             {/* BPM lives next to the snap picker because the grid divisions are
                 defined in terms of it — a bar/triplet grid is meaningless without
                 a tempo the user can actually set. */}
@@ -6514,7 +6505,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             </select>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5 bg-black/40 p-0.5 rounded border border-white/5">
             <button
               type="button"
               onClick={() => zoomStepBy('out')}
@@ -6543,80 +6534,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             >
               <Maximize2 className="w-3 h-3" />
             </button>
-            <button
-              type="button"
-              onClick={zoomToSelection}
-              disabled={!timeSelection}
-              aria-label="Zoom to selection"
-              className="p-1 hover:bg-white/5 rounded text-zinc-500 disabled:opacity-30 disabled:pointer-events-none"
-              title={timeSelection ? 'Zoom to selection — fit the time range' : 'Zoom to selection — drag on the ruler to make a time range first'}
-            >
-              <ScanSearch className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={zoomToSelectedClips}
-              disabled={!selectedClipsSpan}
-              aria-label="Zoom to selected clips"
-              className="p-1 hover:bg-white/5 rounded text-zinc-500 disabled:opacity-30 disabled:pointer-events-none"
-              title={selectedClipsSpan ? 'Zoom to selected clips' : 'Zoom to selected clips — select a clip first'}
-            >
-              <BoxSelect className="w-3 h-3" />
-            </button>
             {/* The waveform colour mode for every clip (and every waveform in
                 the app); a button inside each clip covered its trim handle
                 and fade grip. */}
             <WaveformModeToggle variant="toolbar" />
-            <button
-              onClick={() => setShowShortcuts(true)}
-              aria-label="Keyboard shortcuts"
-              aria-haspopup="dialog"
-              aria-expanded={showShortcuts}
-              className="p-1 hover:bg-white/5 rounded text-zinc-500"
-              title="Keyboard shortcuts (?)"
-            >
-              <Keyboard className="w-3 h-3" />
-            </button>
-            {/* Timeline preferences (wheel profile, zoom speeds, click profile,
-                grid). The panel closes itself on an outside mousedown, which
-                includes this button: open only if it was closed when the
-                press began, so the same click does not re-open it. */}
-            <button
-              type="button"
-              onPointerDown={() => { prefsOpenAtPressRef.current = prefsAnchor !== null; }}
-              onClick={(e) => {
-                const wasOpen = prefsOpenAtPressRef.current ?? prefsAnchor !== null;
-                prefsOpenAtPressRef.current = null;
-                setPrefsAnchor(wasOpen ? null : underKey(e.currentTarget));
-              }}
-              aria-label="Timeline preferences"
-              aria-haspopup="dialog"
-              aria-expanded={prefsAnchor !== null}
-              className={`p-1 rounded ${prefsAnchor ? 'bg-purple-600/20 text-purple-300' : 'hover:bg-white/5 text-zinc-500'}`}
-              title="Timeline preferences — wheel, zoom speed, clicks, grid"
-            >
-              <Settings2 className="w-3 h-3" />
-            </button>
+            {/* Zoom-to-selection, zoom-to-clips, keyboard shortcuts, lane
+                height and timeline preferences moved into the VIEW menu so the
+                toolbar is one row; the prefs panel it opens stays mounted here. */}
             <TimelinePrefsPanel anchor={prefsAnchor} onClose={closePrefs} />
-          </div>
-
-          {/* Vertical zoom — lane height. A native range needs a real label; it is
-              visually hidden so the toolbar stays icon-dense. */}
-          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 border border-white/5 rounded">
-            <Rows3 className="w-3 h-3 text-zinc-500" />
-            <label htmlFor="editor-track-height" className="sr-only">Track lane height</label>
-            <input
-              id="editor-track-height"
-              name="editor-track-height"
-              type="range"
-              min={TRACK_HEIGHT_MIN}
-              max={TRACK_HEIGHT_MAX}
-              step={4}
-              value={trackH}
-              onChange={(e) => setTrackHeight(Number(e.target.value))}
-              className="w-16 accent-purple-400 cursor-pointer"
-              title="Track height — vertical zoom for the timeline lanes"
-            />
           </div>
 
           <div className="h-4 w-px bg-white/10" />
@@ -6624,7 +6549,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
           <button
             disabled={selectedClipCount === 0}
             onClick={deleteSelectedClips}
-            className="p-1.5 hover:bg-red-500/20 rounded text-zinc-400 hover:text-red-400 disabled:opacity-30 disabled:pointer-events-none"
+            className="p-1 px-1.5 hover:bg-red-500/20 rounded text-zinc-400 hover:text-red-400 disabled:opacity-30 disabled:pointer-events-none"
             title="Delete selected clip(s) (Del)"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -6639,7 +6564,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             }}
             aria-pressed={showMasterFx}
             aria-label="Master FX"
-            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors font-display text-xs font-bold uppercase tracking-wider
+            className={`flex items-center gap-1.5 p-1 px-1.5 rounded border transition-colors font-display text-xs font-bold uppercase tracking-wider
               ${showMasterFx || masterFxChain.length + masterVstChain.length > 0 ? 'bg-purple-600/20 border-purple-500/40 text-purple-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
             title="Master FX — built-in effects, VST3s and control surfaces in one chain; click an entry to open its control window"
           >
@@ -6659,10 +6584,29 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
             aria-expanded={!!toolsMenu}
             aria-label="Generative tools"
             title="Generative tools — Magenta RT2, Metamorph"
-            className={`flex items-center gap-1.5 p-1 px-2 rounded border transition-colors font-display text-xs font-bold uppercase tracking-wider
+            className={`flex items-center gap-1.5 p-1 px-1.5 rounded border transition-colors font-display text-xs font-bold uppercase tracking-wider
               ${magentaTool || showMetamorph ? 'bg-cyan-600/20 border-cyan-500/40 text-cyan-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
           >
             <Wand2 className="w-3 h-3" /> TOOLS <ChevronDown className="w-2.5 h-2.5" />
+          </button>
+
+          {/* View options — zoom to selection or clips, lane height, keyboard
+              shortcuts and timeline preferences, nested so the bar stays one
+              row from play to MIXDOWN. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              setViewMenu((cur) => (cur ? null : { x: rect.left, y: rect.bottom + 4 }));
+            }}
+            aria-haspopup="menu"
+            aria-expanded={!!viewMenu}
+            aria-label="View options"
+            title="View — zoom to selection or clips, lane height, keyboard shortcuts, timeline preferences"
+            className={`flex items-center gap-1.5 p-1 px-1.5 rounded border transition-colors font-display text-xs font-bold uppercase tracking-wider
+              ${viewMenu ? 'bg-purple-600/20 border-purple-500/40 text-purple-300' : 'border-white/5 text-zinc-500 hover:text-white hover:bg-white/5'}`}
+          >
+            <Eye className="w-3 h-3" /> VIEW <ChevronDown className="w-2.5 h-2.5" />
           </button>
 
           {/* Mode cluster, grouped like the tool/undo clusters: the record-mode
@@ -6710,7 +6654,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               aria-pressed={automationEdit}
               aria-label="Edit automation lanes"
               title="AUTO — edit automation: draw, drag, and delete breakpoints on the selected lane"
-              className={`p-1 px-2 rounded transition-colors ${automationEdit ? 'bg-amber-600/30 text-amber-300' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
+              className={`p-1 px-1.5 rounded transition-colors ${automationEdit ? 'bg-amber-600/30 text-amber-300' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
             >
               <Spline className="w-3 h-3" />
             </button>
@@ -6720,7 +6664,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               aria-pressed={loopEnabled}
               aria-label="Loop region"
               title="LOOP — shift-drag the ruler to set the region, click to toggle, right-click to clear"
-              className={`p-1 px-2 rounded transition-colors ${loopEnabled ? 'bg-amber-600/30 text-amber-300' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
+              className={`p-1 px-1.5 rounded transition-colors ${loopEnabled ? 'bg-amber-600/30 text-amber-300' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`}
             >
               <Repeat className="w-3 h-3" />
             </button>
@@ -6728,63 +6672,65 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               onClick={() => addMarker(useEditorStore.getState().playheadSec)}
               aria-label="Add marker at playhead"
               title="MARK — add a marker at the playhead (double-click a flag to rename, Alt-click to delete)"
-              className="p-1 px-2 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5"
+              className="p-1 px-1.5 rounded transition-colors text-zinc-500 hover:text-white hover:bg-white/5"
             >
               <Flag className="w-3 h-3" />
             </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 ml-auto shrink-0">
           <span className="text-xs font-bold text-zinc-500 tabular-nums">
             <span ref={headerTcRef}>{formatTimecode(playheadSec)}</span> / {formatTimecode(totalDuration)}
           </span>
-          <label htmlFor="editor-mixdown-name" className="sr-only">Mixdown filename</label>
-          <input
-            id="editor-mixdown-name"
-            name="editor-mixdown-name"
-            type="text"
-            value={mixdownName}
-            onChange={(e) => setMixdownName(e.target.value)}
-            placeholder="mixdown name…"
-            className="bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs font-bold text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-purple-500/50 transition-colors w-28"
-            title="Optional filename for the committed mixdown"
-          />
-          {/* What the queue is doing right now: the active job, its progress
-              when it has any, how many are waiting behind it, and the one
-              cancel that can honestly be offered. */}
+          {/* What the render queue is doing right now: the active job, its
+              progress, how many wait behind it, and the one cancel that can
+              honestly be offered. */}
           <RenderJobsPill />
-          <button
-            type="button"
-            onClick={() => setExportDialogOpen('mix')}
-            aria-haspopup="dialog"
-            aria-expanded={exportDialogOpen !== null}
-            className="p-1 px-1.5 rounded text-zinc-500 hover:text-white hover:bg-white/5"
-            aria-label="Export options"
-            title="Export options — format, bit depth, range, stems or a clip selection"
-          >
-            <Ellipsis className="w-3 h-3" />
-          </button>
-          <button
-            onClick={commitEdit}
-            // Reads `isBusy('mixdown')`, so a MASTER VST FREEZE deliberately does
-            // not light it: the freeze is its own `freeze` job now, not the
-            // `commitEdit({ silent: true })` it used to borrow, and lighting
-            // COMMITTING for a render that writes no mixdown was always a lie.
-            // Pressing this during a freeze queues a real mixdown behind it.
-            // NOT disabled while one is committing any more: a second press
-            // queues a second mixdown behind the first (and the pill offers to
-            // cancel it) instead of being swallowed. Only an empty timeline has
-            // nothing to render.
-            disabled={clips.length === 0}
-            className="btn-primary py-1! px-2! text-xs font-bold flex items-center gap-1.5 disabled:opacity-40"
-            title={isCommitting
-              ? 'A mixdown is already rendering — pressing this queues another behind it'
-              : 'Render all clips to a single audio file and save it to the library'}
-          >
-            {isCommitting ? <Upload className="w-3 h-3 animate-pulse" /> : <Save className="w-3 h-3" />}
-            {isCommitting ? 'MIXING DOWN…' : 'MIXDOWN'}
-          </button>
+          {/* Name, options and render in one chip: the field names the file,
+              the ⋯ opens the export options, the button renders it. "Mixdown"
+              is said once, on the button, and the button is a neutral chip like
+              the rest of the bar rather than the primary purple. */}
+          <div className="flex items-center rounded border border-white/10 bg-black/40 overflow-hidden">
+            <label htmlFor="editor-mixdown-name" className="sr-only">Mixdown filename</label>
+            <input
+              id="editor-mixdown-name"
+              name="editor-mixdown-name"
+              type="text"
+              value={mixdownName}
+              onChange={(e) => setMixdownName(e.target.value)}
+              placeholder="name…"
+              className="w-24 bg-transparent px-2 py-1 text-xs font-bold text-zinc-300 placeholder:text-zinc-600 outline-none focus:bg-white/5 transition-colors"
+              title="Optional filename for the mixdown"
+            />
+            <button
+              type="button"
+              onClick={() => setExportDialogOpen('mix')}
+              aria-haspopup="dialog"
+              aria-expanded={exportDialogOpen !== null}
+              className="self-stretch border-l border-white/10 px-1.5 text-zinc-400 hover:text-white hover:bg-white/5"
+              aria-label="Export options"
+              title="Export options — format, bit depth, range, stems or a clip selection"
+            >
+              <Ellipsis className="w-3 h-3" />
+            </button>
+            <button
+              onClick={commitEdit}
+              // A MASTER VST FREEZE does not light this: it is its own `freeze` job.
+              // NOT disabled while one is committing: a second press queues a
+              // second mixdown behind the first (the pill offers to cancel it)
+              // instead of being swallowed. Only an empty timeline has nothing
+              // to render.
+              disabled={clips.length === 0}
+              className="flex items-center gap-1.5 self-stretch border-l border-white/10 bg-white/10 px-3 py-1 text-xs font-bold text-zinc-100 hover:bg-white/20 disabled:opacity-40 disabled:pointer-events-none"
+              title={isCommitting
+                ? 'A mixdown is already rendering — pressing this queues another behind it'
+                : 'Render all clips to a single audio file and save it to the library'}
+            >
+              {isCommitting ? <Upload className="w-3 h-3 animate-pulse" /> : <Save className="w-3 h-3" />}
+              {isCommitting ? 'Mixing…' : 'Mixdown'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -7034,6 +6980,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
         items={[
           {
             type: 'item',
+            label: 'Inpaint region',
+            icon: <Paintbrush className="w-3 h-3" />,
+            hint: inpaintSelection ? 'Ctrl+P' : 'select a region first',
+            disabled: !inpaintSelection,
+            onSelect: openInpaintPanel,
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
             label: 'Magenta RT2',
             icon: <Music className="w-3 h-3" />,
             hint: 'Collider · Jam · MRT2',
@@ -7050,6 +7005,63 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
               if (toolsMenu) setToolbarPanelAt(toolsMenu);
               setShowMetamorph((v) => !v);
             },
+          },
+        ]}
+      />
+
+      {/* VIEW dropdown — zoom, lane height, keyboard shortcuts and timeline
+          preferences, nested off the toolbar (shared ContextMenu primitive). */}
+      <ContextMenu
+        position={viewMenu}
+        onClose={() => setViewMenu(null)}
+        title="View"
+        items={[
+          { type: 'header', label: 'Zoom' },
+          {
+            type: 'item',
+            label: 'Zoom to selection',
+            icon: <ScanSearch className="w-3 h-3" />,
+            hint: timeSelection ? undefined : 'no range',
+            disabled: !timeSelection,
+            onSelect: zoomToSelection,
+          },
+          {
+            type: 'item',
+            label: 'Zoom to selected clips',
+            icon: <BoxSelect className="w-3 h-3" />,
+            hint: selectedClipsSpan ? undefined : 'no clips',
+            disabled: !selectedClipsSpan,
+            onSelect: zoomToSelectedClips,
+          },
+          { type: 'separator' },
+          { type: 'header', label: 'Lane height' },
+          {
+            type: 'item',
+            label: 'Taller lanes',
+            icon: <Rows3 className="w-3 h-3" />,
+            disabled: trackH >= TRACK_HEIGHT_MAX,
+            onSelect: () => setTrackHeight(Math.min(TRACK_HEIGHT_MAX, trackH + 8)),
+          },
+          {
+            type: 'item',
+            label: 'Shorter lanes',
+            icon: <Rows3 className="w-3 h-3" />,
+            disabled: trackH <= TRACK_HEIGHT_MIN,
+            onSelect: () => setTrackHeight(Math.max(TRACK_HEIGHT_MIN, trackH - 8)),
+          },
+          { type: 'separator' },
+          {
+            type: 'item',
+            label: 'Keyboard shortcuts',
+            icon: <Keyboard className="w-3 h-3" />,
+            hint: '?',
+            onSelect: () => setShowShortcuts(true),
+          },
+          {
+            type: 'item',
+            label: 'Timeline preferences…',
+            icon: <Settings2 className="w-3 h-3" />,
+            onSelect: () => { if (viewMenu) setPrefsAnchor(viewMenu); },
           },
         ]}
       />

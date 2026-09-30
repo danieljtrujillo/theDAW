@@ -38,7 +38,7 @@ export function waveformLegendText(mode: WaveformDrawMode): string {
 
 export interface WaveformModeToggleProps {
   /** `corner`: a small round button pinned to the bottom-right of the
-   *  positioned parent. `toolbar`: an inline button that names the mode. */
+   *  positioned parent. `toolbar`: an inline glyph button for a toolbar. */
   variant: 'corner' | 'toolbar';
   className?: string;
 }
@@ -47,15 +47,15 @@ export const WaveformModeToggle: React.FC<WaveformModeToggleProps> = ({ variant,
   const mode = useWaveformStyleStore((s) => s.mode);
   const cycleMode = useWaveformStyleStore((s) => s.cycleMode);
   const next = WAVEFORM_MODE_NAME[nextMode(mode)];
-  // Starts with the toolbar variant's visible words, so a voice-control user
-  // who says what they see ("click Wave Color") reaches the button.
+  // Starts with the mode's name, so a voice-control user who says "click
+  // Wave Color" reaches the button.
   const label = `Wave: ${WAVEFORM_MODE_NAME[mode]}. Waveform colors: ${waveformLegendText(mode)}. Press for ${next}.`;
   const base =
     'font-sans text-xs font-bold leading-none transition-colors focus-visible:outline focus-visible:outline-purple-400';
   const look =
     variant === 'corner'
       ? 'absolute bottom-0.5 right-0.5 z-40 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/60 px-1 text-white/70 hover:text-white'
-      : 'flex h-6 items-center gap-1 rounded border border-white/10 bg-black/40 px-2 text-zinc-300 hover:border-purple-500/50 hover:text-white';
+      : 'flex h-6 w-6 items-center justify-center rounded text-zinc-300 hover:bg-white/5 hover:text-white';
   return (
     <button
       type="button"
@@ -68,14 +68,9 @@ export const WaveformModeToggle: React.FC<WaveformModeToggleProps> = ({ variant,
       }}
       className={`${base} ${look} ${className ?? ''}`}
     >
-      {variant === 'corner' ? (
-        <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
-      ) : (
-        <>
-          <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
-          <span aria-hidden="true">Wave: {WAVEFORM_MODE_NAME[mode]}</span>
-        </>
-      )}
+      {/* Glyph only on every surface — the mode's name and legend live in the
+          accessible label and tooltip, so the toolbar stays icon-dense. */}
+      <span aria-hidden="true">{MODE_GLYPH[mode]}</span>
     </button>
   );
 };

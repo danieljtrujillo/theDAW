@@ -64,10 +64,10 @@ export const TuningControl: React.FC = () => {
         aria-controls={`${uid}-panel`}
         aria-label={`Project tuning: ${tuningSummary(tuning)}`}
         title="Project tuning: the pitch of A and the temperament every instrument plays in"
-        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold text-purple-200 hover:bg-purple-500/10 whitespace-nowrap"
+        className="flex items-center gap-1 px-1 py-0.5 rounded text-xs font-bold text-purple-200 hover:bg-purple-500/10 whitespace-nowrap"
       >
         <Tally5 aria-hidden="true" className="size-3" />
-        {tuningSummary(tuning)}
+        A={Number.isInteger(tuning.referenceHz) ? tuning.referenceHz : tuning.referenceHz.toFixed(1)}
       </button>
       {open && (
         <div

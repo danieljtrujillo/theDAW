@@ -111,18 +111,15 @@ const SMALL_TEXT = /text-\[(?:[0-9]|1[01])(?:\.\d+)?px\]|font-mono/;
   const legendText = () => (container.querySelector('ul') as HTMLUListElement).textContent ?? '';
   assert.match(legendText(), /Red: beat/);
   assert.match(legendText(), /Green: mids 420 Hz–1\.7 kHz/);
-  // The accessible name starts with the words on the button (WCAG 2.5.3):
-  // the visible "Wave: Color" was aria-hidden and the name began "Waveform
-  // colors", so "click Wave Color" reached nothing.
-  const visibleText = () =>
-    [...button.querySelectorAll('span')].map((el) => el.textContent ?? '').filter((t) => /\w/.test(t)).join(' ');
-  const nameStartsWithVisibleText = () => {
-    const visible = visibleText();
-    assert.ok(visible.length > 0, 'the toolbar toggle shows words');
-    assert.ok((button.getAttribute('aria-label') ?? '').startsWith(visible), `"${button.getAttribute('aria-label')}" starts with "${visible}"`);
+  // The toolbar toggle shows the mode's glyph only; its accessible name and
+  // tooltip start with the mode's name and carry the legend.
+  const glyph = () => [...button.querySelectorAll('span')].map((el) => el.textContent ?? '').join('');
+  const nameStartsWith = (name: string) => {
+    assert.ok((button.getAttribute('aria-label') ?? '').startsWith(name), `"${button.getAttribute('aria-label')}" starts with "${name}"`);
+    assert.equal(button.getAttribute('title'), button.getAttribute('aria-label'), 'the tooltip says what the name says');
   };
-  assert.equal(visibleText(), 'Wave: Color');
-  nameStartsWithVisibleText();
+  assert.equal(glyph(), '●');
+  nameStartsWith('Wave: Color.');
   assert.match(button.getAttribute('aria-label') ?? '', /Red: beat/, 'the name still carries the legend');
 
   await act(async () => {
@@ -134,8 +131,8 @@ const SMALL_TEXT = /text-\[(?:[0-9]|1[01])(?:\.\d+)?px\]|font-mono/;
   assert.equal(useWaveformStyleStore.getState().mode, 'clipping');
   assert.match(legendText(), /Red: clipped/);
   assert.doesNotMatch(legendText(), /beat/i, 'the clipping legend never calls red a beat');
-  assert.equal(visibleText(), 'Wave: Clipping');
-  nameStartsWithVisibleText();
+  assert.equal(glyph(), '!');
+  nameStartsWith('Wave: Clipping.');
   assert.match(button.getAttribute('aria-label') ?? '', /Red: clipped/);
 
   for (const el of container.querySelectorAll('button, ul, li, span')) {

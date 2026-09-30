@@ -53,7 +53,7 @@ export function EditorBpmField({ bpm, onChange }: EditorBpmFieldProps) {
           if (e.key === 'Enter') commit();
           else if (e.key === 'Escape') setDraft(null);
         }}
-        className="w-16 bg-transparent border-none outline-none text-xs font-bold text-zinc-100 tabular-nums"
+        className="w-14 bg-transparent border-none outline-none text-xs font-bold text-zinc-100 tabular-nums"
         title={`Start tempo, ${TEMPO_BPM_MIN}-${TEMPO_BPM_MAX}: the first tempo of the arrangement's tempo map. Tempo changes after it are in Meter · Tempo`}
       />
     </>
