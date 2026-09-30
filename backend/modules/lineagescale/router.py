@@ -692,6 +692,9 @@ async def get_relatives(
 #: seconds of quiet is enough that this is not competing with any of it, and
 #: still far inside the time it takes a user to reach the LEARN tab.
 WARM_DELAY_SEC = 5.0
+#: How long a warm waits for a running search index build before it runs
+#: its pass anyway (a build of a very large library takes minutes).
+WARM_BUILD_WAIT_SEC = 3600.0
 
 #: The thread :func:`start_warm_thread` last spawned. Diagnostics, and the
 #: handle a test joins instead of sleeping.
@@ -735,6 +738,10 @@ def warm_stats_cache() -> bool:
         if db is None:
             log.info("lineagescale: warm skipped, no library database")
             return False
+        # After the search index build, never beside it: two passes over the
+        # whole library at once starve the request threads of the
+        # interpreter (LibraryDB.wait_for_search_build).
+        db.wait_for_search_build(timeout=WARM_BUILD_WAIT_SEC)
         with _Snapshot(db) as snap:
             if not snap.isolated:
                 log.info(

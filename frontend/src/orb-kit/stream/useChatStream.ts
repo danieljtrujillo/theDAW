@@ -187,6 +187,22 @@ export function parseSseLine(line: string): unknown | null {
  * content. What the tools did is already back in the model's context through
  * the relay results, so nothing is lost.
  */
+/**
+ * The message for a chat POST the backend refused. The backend's own
+ * `detail` is the message when the body carries one (the 403 for the Claude
+ * Code provider from a paired device says where to use it instead); a body
+ * without one keeps the status line.
+ */
+export async function chatRefusalMessage(response: Response): Promise<string> {
+    const fallback = `Backend error: ${response.status} ${response.statusText}`;
+    try {
+        const body = (await response.json()) as { detail?: unknown };
+        return typeof body?.detail === 'string' && body.detail ? body.detail : fallback;
+    } catch {
+        return fallback;
+    }
+}
+
 export function buildConversationHistory(
     messages: ChatMessage[],
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
@@ -447,7 +463,7 @@ export function useChatStream(options: UseChatStreamOptions): UseChatStreamApi {
                     signal: controller.signal,
                     body: JSON.stringify(body),
                 });
-                if (!response.ok) throw new Error(`Backend error: ${response.status} ${response.statusText}`);
+                if (!response.ok) throw new Error(await chatRefusalMessage(response));
                 const reader = response.body?.getReader();
                 if (!reader) throw new Error('No readable stream received.');
 

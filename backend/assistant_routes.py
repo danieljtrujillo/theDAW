@@ -1518,7 +1518,32 @@ def _live_claude_session(
     return session
 
 
-@router.post("/control-response")
+def _require_this_machine_for_claude(request: Request) -> None:
+    """403 unless this machine's own UI or the desktop shell is asking.
+
+    The Claude Code child runs on the computer running theDAW, so starting
+    one (``/chat`` with the ``claude`` provider), answering its permission
+    bubbles, changing its permission mode (which respawns it) and stopping a
+    turn stay loopback-or-launch-token, the same gate ``/allow-rules`` uses.
+    A pairing token never unlocks them: a paired device may use the hosted
+    providers, which run nothing here. The refusal says why in words the
+    assistant panel can show as-is."""
+    try:
+        require_loopback_or_launch_token(request)
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Claude Code runs on the computer running theDAW. Use it there, "
+                "or pick a hosted provider."
+            ),
+        ) from e
+
+
+_CLAUDE_SESSION_GATE = [Depends(_require_this_machine_for_claude)]
+
+
+@router.post("/control-response", dependencies=_CLAUDE_SESSION_GATE)
 async def claude_control_response(payload: ControlResponseRequest):
     """
     Answer a pending permission bubble.
@@ -1639,7 +1664,7 @@ def get_allow_rules() -> dict:
     }
 
 
-@router.post("/permission-mode")
+@router.post("/permission-mode", dependencies=_CLAUDE_SESSION_GATE)
 async def claude_permission_mode(payload: PermissionModeRequest):
     """
     Switch a live session's permission mode.
@@ -1739,7 +1764,7 @@ def _parse_context_usage(answer: Any) -> dict | None:
     }
 
 
-@router.post("/context-usage")
+@router.post("/context-usage", dependencies=_CLAUDE_SESSION_GATE)
 async def claude_context_usage(payload: ContextUsageRequest):
     """
     The live CLI's REAL context-window usage, for the orb's context meter.
@@ -1769,7 +1794,7 @@ async def claude_context_usage(payload: ContextUsageRequest):
     return {"ok": True, "usage": usage}
 
 
-@router.post("/interrupt")
+@router.post("/interrupt", dependencies=_CLAUDE_SESSION_GATE)
 async def claude_interrupt(payload: InterruptRequest):
     """Interrupt the running turn over stdin. The child is NOT killed."""
     session = _live_claude_session(payload.conversationId, payload.claudeSessionId)
@@ -3593,6 +3618,16 @@ async def chat_stream(req: ChatRequest, request: Request):
     """
     provider = req.provider or "gemini"
 
+    # The Claude provider spawns the Claude Code CLI on this machine, with
+    # this machine's files in reach and, in accept_edits and trusted modes,
+    # the power to change them and run commands. Only this machine's own UI
+    # or the desktop shell may start that; the check is on the TCP peer and
+    # the launch token, so no header a LAN script sends can pass it. The
+    # hosted providers below stay open to a paired device: they call an API
+    # with the user's key and run nothing here.
+    if provider == "claude":
+        _require_this_machine_for_claude(request)
+
     # Reject an unknown permission mode BEFORE any work: permissions.decide()
     # raises on one, and a silent fallback to "ask" would hide a client bug that
     # the user would read as "the mode dropdown does nothing". Checked against
@@ -3733,7 +3768,15 @@ async def chat_stream(req: ChatRequest, request: Request):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/keys/{provider_id}/ingest")
+# The key pool holds the user's API keys. Ingesting, removing and reading
+# them back in the clear stay loopback-or-launch-token: the pool is this
+# machine's secret, and a LAN caller that sends no browser headers passed
+# every header-based check. The status routes stay open: they answer counts
+# and hash prefixes, never a key.
+_KEY_POOL_GATE = [Depends(require_loopback_or_launch_token)]
+
+
+@router.post("/keys/{provider_id}/ingest", dependencies=_KEY_POOL_GATE)
 async def ingest_keys(provider_id: str, request: Request):
     """Ingest one or more API keys (comma/newline/semicolon separated)."""
     body = await request.json()
@@ -3742,7 +3785,7 @@ async def ingest_keys(provider_id: str, request: Request):
     return {"added": added, "status": key_pool.get_pool_status(provider_id)}
 
 
-@router.delete("/keys/{provider_id}/{key_hash}")
+@router.delete("/keys/{provider_id}/{key_hash}", dependencies=_KEY_POOL_GATE)
 async def remove_key(provider_id: str, key_hash: str):
     """Remove a specific key by its hash prefix."""
     pool = key_pool._pools.get(provider_id, [])
@@ -3753,7 +3796,7 @@ async def remove_key(provider_id: str, key_hash: str):
     return {"removed": False}
 
 
-@router.delete("/keys/{provider_id}")
+@router.delete("/keys/{provider_id}", dependencies=_KEY_POOL_GATE)
 async def clear_keys(provider_id: str):
     """Clear all user-added keys for a provider."""
     key_pool.clear_provider(provider_id)
@@ -3772,8 +3815,8 @@ async def get_key_status(provider_id: str):
     return key_pool.get_pool_status(provider_id)
 
 
-@router.get("/keys/{provider_id}/raw")
+@router.get("/keys/{provider_id}/raw", dependencies=_KEY_POOL_GATE)
 async def get_raw_keys(provider_id: str):
-    """Return raw key strings for frontend sync. Local-only endpoint."""
+    """Return raw key strings for frontend sync. Answers this machine only."""
     keys = key_pool.get_raw_keys(provider_id)
     return {"provider": provider_id, "keys": keys, "count": len(keys)}

@@ -309,10 +309,25 @@ export const LyriaPanel: React.FC = () => {
     }
   };
 
-  // Same readiness contract as VJView: /api/lyria/url blocks server-side until
-  // the child is listening, and we retry quietly while the backend is still
-  // binding, so a cold start (npm install on a fresh checkout) renders
-  // "Starting…" rather than an error.
+  // The backend's own diagnostic (missing checkout, npm absent, startup hang,
+  // nothing listening) is the message; a bare status code says nothing.
+  const errorMessage = async (r: Response): Promise<string> => {
+    let msg = `backend returned ${r.status}`;
+    try {
+      const body = (await r.json()) as { detail?: string };
+      if (body.detail) msg = body.detail;
+    } catch {
+      /* non-JSON error body; keep the status line */
+    }
+    return msg;
+  };
+
+  // GET /api/lyria/url is a read: it answers the URL when a Lyria is
+  // listening and 503 when none is, and never starts one. Starting the child
+  // is POST /api/lyria/start, which blocks server-side until it is listening
+  // (the first npm install included), so a failed read is followed by one
+  // start and a second read, and we retry quietly while the backend is still
+  // binding, so a cold start renders "Starting…" rather than an error.
   const loadUrl = async (manual = false) => {
     if (manual) loadRetriesRef.current = 0;
     if (loadTimerRef.current !== null) {
@@ -321,18 +336,12 @@ export const LyriaPanel: React.FC = () => {
     }
     setStatus('loading');
     try {
-      const r = await fetch('/api/lyria/url');
+      let r = await fetch('/api/lyria/url');
       if (!r.ok) {
-        // The backend hands back the sidecar's own diagnostic (missing
-        // checkout, npm absent, startup hang) — surface it rather than a code.
-        let msg = `backend returned ${r.status}`;
-        try {
-          const body = (await r.json()) as { detail?: string };
-          if (body.detail) msg = body.detail;
-        } catch {
-          /* non-JSON error body; keep the status line */
-        }
-        throw new Error(msg);
+        const started = await fetch('/api/lyria/start', { method: 'POST' });
+        if (!started.ok) throw new Error(await errorMessage(started));
+        r = await fetch('/api/lyria/url');
+        if (!r.ok) throw new Error(await errorMessage(r));
       }
       applyReply((await r.json()) as LyriaUrlReply);
       loadRetriesRef.current = 0;

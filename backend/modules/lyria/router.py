@@ -1,9 +1,15 @@
 """HTTP surface for the Lyria 3 Pro sidecar.
 
-Mirrors backend/modules/vj/router.py: the frontend asks GET /url, which blocks
-server-side until the child is listening, and the view retries while that
-happens. Warm-up is request-driven (there is no FastAPI startup hook) so the
-Node process only starts when someone actually opens the Lyria panel.
+Mirrors backend/modules/vj/router.py in shape: the frontend asks GET /url for
+the sidecar's URL and mounts the iframe on a 200. GET /url itself never
+starts anything: when no Lyria is listening it answers 503 and the panel
+posts /start, which blocks server-side until the child is listening (and
+runs the first npm install), while the view retries. Starting the child runs
+a program on this machine, so it stays behind the change gate (_CHANGES)
+with every other state-changing route; the reads answer anyone who can reach
+the port. Warm-up is request-driven (there is no FastAPI startup hook) so
+the Node process only starts when someone actually opens the Lyria panel,
+and only when that someone passes the change gate.
 
 This module deliberately does NOT proxy Lyria's own API. The embedded iframe
 loads directly from the sidecar's origin, so its relative /api/* fetches
@@ -93,12 +99,25 @@ _auto_spawn_lock = threading.Lock()
 _auto_spawn_started = False
 
 
+def _caller_may_change(request: Request) -> bool:
+    """Whether ``request`` would pass ``_CHANGES``: theDAW's own UI, the
+    desktop shell or a paired device. The read routes use it to decide
+    whether to kick the warm-up, so a read from anyone else stays a read."""
+    try:
+        refuse_cross_site(request)
+        require_loopback_launch_or_pairing_token(request)
+    except HTTPException:
+        return False
+    return True
+
+
 def _maybe_auto_spawn() -> None:
     """Kick a one-time background readiness thread.
 
-    Fires on the first read endpoint rather than at import: spawning a Node
-    process for a panel the user may never open wastes memory. The work runs
-    on a daemon thread so a first-run npm install never blocks the request.
+    Fires on the first read endpoint from a caller ``_CHANGES`` would pass,
+    rather than at import: spawning a Node process for a panel the user may
+    never open wastes memory. The work runs on a daemon thread so a first-run
+    npm install never blocks the request.
     """
     global _auto_spawn_started
     if os.environ.get("theDAW_LYRIA_NO_AUTO_SPAWN"):
@@ -121,22 +140,35 @@ def _maybe_auto_spawn() -> None:
     threading.Thread(target=_warm, daemon=True, name="lyria-warm").start()
 
 
-@router.get("/url")
-async def url() -> dict:
-    """Return the URL the Lyria app is served on, spawning it if needed.
+#: The 503 detail GET /url answers when no Lyria is listening. The panel
+#: posts /start on any failed read; the words are for a caller that cannot.
+NOT_RUNNING_DETAIL = (
+    "Lyria is not running. Open the Lyria tab in theDAW, or press Start on "
+    "the Lyria card in Settings > Models."
+)
 
-    Blocks until the child is listening (up to the sidecar's readiness
-    deadline), so the frontend can treat a 200 as "safe to mount the iframe".
-    503 on failure, with the sidecar's diagnostic as the detail.
+
+@router.get("/url")
+async def url(request: Request) -> dict:
+    """Return the URL the Lyria app is served on, without starting it.
+
+    A 200 means a Lyria answers on the port, so the frontend can mount the
+    iframe. 503 with :data:`NOT_RUNNING_DETAIL` when nothing listens there,
+    and 503 with the sidecar's port-collision diagnostic when something else
+    does. Starting the child is ``POST /start``'s job, behind the change
+    gate; a caller that gate would pass also kicks the background warm-up
+    here, so opening the panel still starts Lyria without a second click.
     """
-    _maybe_auto_spawn()
+    if _caller_may_change(request):
+        _maybe_auto_spawn()
     try:
-        # ensure_running() can block for up to the sidecar's readiness
-        # deadline (installs included) -- run it off the event loop so it
-        # doesn't stall every other request this worker is handling.
-        live = await asyncio.to_thread(sidecar.ensure_running)
+        # The identity probe makes a TCP connect and an HTTP request -- off
+        # the event loop like the other sidecar calls in this file.
+        live = await asyncio.to_thread(sidecar.running_url)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    if live is None:
+        raise HTTPException(status_code=503, detail=NOT_RUNNING_DETAIL)
     cfg = sidecar.resolve_config()
     lan_ip = sidecar.detect_lan_ip()
     # Only claim a cost mode (mock/live) for a process WE spawned -- theDAW
@@ -162,10 +194,11 @@ async def url() -> dict:
 
 
 @router.get("/status")
-async def status() -> dict:
+async def status(request: Request) -> dict:
     """Non-spawning diagnostics, plus a warm kick so opening Settings starts
-    the child in the background."""
-    _maybe_auto_spawn()
+    the child in the background (for a caller the change gate would pass)."""
+    if _caller_may_change(request):
+        _maybe_auto_spawn()
     # probe() now includes an HTTP identity call (_is_lyria_server) on top of
     # the TCP check, so it can block for up to that request's timeout --
     # keep it off the event loop like the other sidecar calls in this file.
@@ -176,7 +209,9 @@ async def status() -> dict:
 
 @router.post("/start", dependencies=_CHANGES)
 async def start() -> dict:
-    """Foreground spawn. Used by the view's Retry button."""
+    """Foreground spawn: blocks until the child is listening (installs
+    included). The panel posts it whenever GET /url says nothing is running,
+    and its Retry button does the same."""
     try:
         live = await asyncio.to_thread(sidecar.ensure_running)
     except RuntimeError as e:
