@@ -2776,13 +2776,13 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "zipfile.ZipFile.write (packaging the .zip level)",
         (
             "exporters/chordtrack.py",
-            229,
+            257,
             "output_path",
             "write_text",
         ): "Path.write_text (chord-track JSON export, not MusicXML)",
         (
             "exporters/chordtrack.py",
-            627,
+            721,
             "log_emission[0]",
             "copy",
         ): (
@@ -2799,7 +2799,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (note-chart JSON export, not MusicXML)",
         (
             "router.py",
-            1368,
+            1365,
             "tree",
             "write",
         ): "xml.etree.ElementTree.write (chords route XML patch)",

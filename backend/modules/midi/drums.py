@@ -16,6 +16,12 @@ than to absolute loudness; every voice additionally has to make its own band
 group rise over the 30 ms before the hit, which keeps a decaying wash from
 reading as snare + open hat on top of the kick underneath it.
 
+A LARSNET part stem from a 12-stem run (``kick``, ``snare``, ``toms``,
+``hihat``, ``cymbals``) is one piece of the kit, so every hit on it is that
+piece: :func:`transcribe_drums` with ``part=`` writes each hit on the part's
+own voice (:data:`PART_VOICES`) and drops the faint bleed of the rest of the
+kit that the split leaves on it.
+
 Only librosa, numpy and pretty_midi are needed — all base dependencies —
 so :func:`transcribe_drums` is always available.
 """
@@ -50,6 +56,25 @@ GM: dict[str, int] = {
 
 #: Reverse map: GM pitch -> voice label.
 VOICE_FOR_PITCH: dict[int, str] = {pitch: label for label, pitch in GM.items()}
+
+#: The voices each LARSNET kit part is written on. A tom is voiced by its
+#: pitch, a hat by how long it rings, a cymbal as a crash or a ride.
+PART_VOICES: dict[str, tuple[str, ...]] = {
+    "kick": ("kick",),
+    "snare": ("snare",),
+    "toms": ("tom_low", "tom_mid", "tom_high"),
+    "hihat": ("hihat_closed", "hihat_open"),
+    "cymbals": ("crash", "ride"),
+}
+
+#: Track name each part's file carries.
+PART_NAMES: dict[str, str] = {
+    "kick": "Kick",
+    "snare": "Snare",
+    "toms": "Toms",
+    "hihat": "Hi-Hat",
+    "cymbals": "Cymbals",
+}
 
 #: Analysis bands in Hz (upper bound ``None`` = Nyquist).
 BANDS: dict[str, tuple[float, Optional[float]]] = {
@@ -118,6 +143,9 @@ RULES: dict[str, float] = {
     # quantisation (seconds) and note length
     "quantise_window_sec": 0.025,
     "note_len_sec": 0.1,
+    # a part stem: a hit under this fraction of the part's p95 head RMS
+    # (-20 dB) is the rest of the kit bleeding through the split, not the part
+    "part_min_rms_rel": 0.1,
 }
 
 SR = 22050
@@ -408,6 +436,64 @@ def classify_onset(f: dict[str, float]) -> list[str]:
     return labels
 
 
+def voice_for_part(part: str, f: dict[str, float], labels: list[str]) -> str:
+    """The one :data:`GM` voice a hit on a LARSNET ``part`` stem is written
+    on. ``labels`` are :func:`classify_onset`'s full-kit labels for the hit,
+    used where they already tell the part's voices apart."""
+    r = RULES
+    if part == "toms":
+        peak = f.get("low_peak_hz", 0.0)
+        if peak <= 0.0:
+            return "tom_mid"
+        if peak < r["tom_low_max_hz"]:
+            return "tom_low"
+        if peak < r["tom_mid_max_hz"]:
+            return "tom_mid"
+        return "tom_high"
+    if part == "hihat":
+        return "hihat_open" if f["air_decay"] >= r["open_decay_min"] else "hihat_closed"
+    if part == "cymbals":
+        if "ride" in labels:
+            return "ride"
+        if "crash" in labels:
+            return "crash"
+        return "ride" if f["hi"] > f["air"] else "crash"
+    return PART_VOICES[part][0]
+
+
+#: The band groups a hit on each part stem has to rise in (their
+#: ``<band>_rise`` features). A tom sits in the low group or, pitched high,
+#: just above it; a cymbal lives in the top two bands.
+PART_RISE_BANDS: dict[str, tuple[str, ...]] = {
+    "kick": ("lowgroup",),
+    "snare": ("crack",),
+    "toms": ("lowgroup", "lowmid"),
+    "hihat": ("air",),
+    "cymbals": ("air", "hi"),
+}
+
+
+def part_hits(part: str, features: list[dict[str, float]]) -> list[bool]:
+    """Which onsets on a ``part`` stem are hits of that part.
+
+    A hit lifts the part's own bands (:data:`PART_RISE_BANDS`) by
+    ``band_rise_min`` over the moment before it; the flux detector also fires
+    inside a cymbal's decaying wash, where they do not rise. And it reaches
+    ``part_min_rms_rel`` of the part's p95 head RMS; the rest of the kit
+    bleeds through the split far below the part itself.
+    """
+    if not features:
+        return []
+    rms = np.array([f["rms"] for f in features], dtype=np.float64)
+    floor = RULES["part_min_rms_rel"] * float(np.percentile(rms, 95))
+    bands = PART_RISE_BANDS[part]
+    return [
+        float(f["rms"]) >= floor
+        and max(f[f"{b}_rise"] for b in bands) >= RULES["band_rise_min"]
+        for f in features
+    ]
+
+
 # --------------------------------------------------------------------------
 # Timing helpers
 # --------------------------------------------------------------------------
@@ -540,6 +626,7 @@ def transcribe_drums(
     bpm: Optional[float] = None,
     beats: Optional[list[float]] = None,
     sr: int = SR,
+    part: Optional[str] = None,
 ) -> dict:
     """Transcribe a drum stem to a GM drum MIDI file.
 
@@ -548,11 +635,20 @@ def transcribe_drums(
     With ``beats``, note starts within 25 ms of a 1/16 grid point snap to it
     (raw timing is kept otherwise).
 
+    ``part`` names the LARSNET kit piece the stem holds (a key of
+    :data:`PART_VOICES`); each hit is then written once, on that piece's
+    voice (:func:`voice_for_part`), and onsets that are not the part's own
+    hits (:func:`part_hits`: bleed, a wash re-triggering the detector) are
+    dropped. ``None`` is a whole kit.
+
+    Every note is on one ``is_drum`` instrument, which a Standard MIDI File
+    carries on channel 10.
+
     Returns a result dict; never raises on a per-file problem::
 
         {"ok": True, "engine": "drum-onsets", "engine_version": "1",
          "notes_count": n, "onsets": m, "per_class": {label: count},
-         "bpm": bpm_used}
+         "bpm": bpm_used, "part": part}
     """
     import pretty_midi
 
@@ -560,11 +656,24 @@ def transcribe_drums(
     if not p.is_file():
         return {"ok": False, "engine": ENGINE_NAME, "error": f"audio not found: {p}"}
 
+    if part is not None and part not in PART_VOICES:
+        log.debug("drums: %r is not a kit part; transcribing a whole kit", part)
+        part = None
+
     try:
         features, labels, onset_env, y, sr_used = analyse_drums(p, sr=sr)
     except Exception as e:
         log.warning("drums: analysis failed for %s: %s", p.name, e)
         return {"ok": False, "engine": ENGINE_NAME, "error": repr(e)}
+
+    if part is not None:
+        kept = [
+            (f, lab)
+            for f, lab, k in zip(features, labels, part_hits(part, features))
+            if k
+        ]
+        features = [f for f, _ in kept]
+        labels = [[voice_for_part(part, f, lab)] for f, lab in kept]
 
     bpm_used: float
     if bpm is not None and float(bpm) > 0.0:
@@ -582,7 +691,8 @@ def transcribe_drums(
             grid = None
 
     midi = pretty_midi.PrettyMIDI(initial_tempo=bpm_used)
-    inst = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    name = PART_NAMES[part] if part is not None else "Drums"
+    inst = pretty_midi.Instrument(program=0, is_drum=True, name=name)
     per_class: dict[str, int] = {}
     note_len = RULES["note_len_sec"]
     window = RULES["quantise_window_sec"]
@@ -620,4 +730,5 @@ def transcribe_drums(
         "onsets": len(features),
         "per_class": per_class,
         "bpm": bpm_used,
+        "part": part,
     }

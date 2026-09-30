@@ -239,6 +239,34 @@ async def ensure_shards(entry_id: str, *, force: bool = False) -> list[dict[str,
     return await run_once(f"shards:{entry_id}", _run)
 
 
+# ---- sections ---------------------------------------------------------------
+
+
+async def ensure_sections(entry_id: str, *, force: bool = False) -> dict[str, Any]:
+    """The entry's sections (backend.modules.sections), finding them first
+    when there are none (or when ``force``). Waits for a separation in flight
+    so the finder reads the stems, and for a shard cut in flight so the
+    section it writes onto the shards is not overwritten. CPU only."""
+    from backend.modules.sections import store as sections_store
+
+    if not force:
+        doc = sections_store.read_sections(entry_id)
+        if doc is not None:
+            return doc
+    db, audio, entry_dir = _entry_paths(entry_id)
+
+    async def _run() -> dict[str, Any]:
+        from backend.modules.sections.service import find_entry_sections
+
+        await wait_for(f"stems:{entry_id}")
+        await wait_for(f"shards:{entry_id}")
+        return await asyncio.to_thread(
+            find_entry_sections, db, entry_id, audio, entry_dir
+        )
+
+    return await run_once(f"sections:{entry_id}", _run)
+
+
 # ---- midi -------------------------------------------------------------------
 
 

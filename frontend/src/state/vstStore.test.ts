@@ -14,7 +14,7 @@ const DESKTOP_ONLY = "This request must come from theDAW's desktop shell.";
 let nextResponse: Response = new Response('{"plugins":[]}', { status: 200 });
 globalThis.fetch = (async () => nextResponse.clone()) as typeof fetch;
 
-const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText, PAIR_THIS_DEVICE_TEXT } =
+const { useVstStore, isDesktopOnlyRefusal, resetDesktopOnlyNotice, vstBrowserEmptyText, PAIR_THIS_DEVICE_TEXT, vst3InstallHint } =
   await import('./vstStore.ts');
 const { useStatusBarStore } = await import('./statusBarStore.ts');
 const { useLogStore } = await import('./logStore.ts');
@@ -26,7 +26,7 @@ const errorLogCount = (): number =>
 const reset = (body: string, status: number): void => {
   nextResponse = new Response(body, { status, headers: { 'content-type': 'application/json' } });
   resetDesktopOnlyNotice();
-  useVstStore.setState({ plugins: [], scanning: false, scanned: false, error: null, unavailableReason: null });
+  useVstStore.setState({ plugins: [], scanning: false, scanned: false, error: null, unavailableReason: null, installFolder: null });
 };
 
 // --- the refusal predicate --------------------------------------------------
@@ -104,9 +104,36 @@ const reset = (body: string, status: number): void => {
     vstBrowserEmptyText(false, DESKTOP_ONLY),
     `VST hosting is desktop-only. ${DESKTOP_ONLY}`,
   );
-  // Nothing refused: the message that was always there.
-  assert.equal(vstBrowserEmptyText(false, null), 'No VST3 plugins found. Click Rescan.');
-  assert.equal(vstBrowserEmptyText(false, '   '), 'No VST3 plugins found. Click Rescan.');
+  // Nothing refused: where plugins are read from, and the rescan key.
+  assert.equal(vstBrowserEmptyText(false, null), `No VST3 plugins found. ${vst3InstallHint(null)}`);
+  assert.equal(vstBrowserEmptyText(false, '   '), `No VST3 plugins found. ${vst3InstallHint(null)}`);
+  assert.equal(
+    vstBrowserEmptyText(false, null, 'C:\\Program Files\\Common Files\\VST3'),
+    'No VST3 plugins found. Install them into C:\\Program Files\\Common Files\\VST3, or link their folder into it, then press Rescan.',
+  );
+  // Before a scan has answered, no folder is named, and none is made up.
+  assert.equal(vst3InstallHint(null), 'Install them into the VST3 folder, or link their folder into it, then press Rescan.');
+}
+
+// --- the folder named is the one the backend's scan reads --------------------
+//
+// The scan reads %COMMONPROGRAMFILES%\VST3 on Windows (another drive's Program
+// Files when Windows lives there) and /usr/lib/vst3 first on Linux; its answer
+// names that folder, and the empty lists name what it said.
+{
+  const onD = 'D:\\Program Files\\Common Files\\VST3';
+  reset(JSON.stringify({ plugins: [], install_folder: onD }), 200);
+  await useVstStore.getState().scan();
+  assert.equal(useVstStore.getState().installFolder, onD);
+  assert.equal(
+    vstBrowserEmptyText(false, null, useVstStore.getState().installFolder),
+    `No VST3 plugins found. Install them into ${onD}, or link their folder into it, then press Rescan.`,
+  );
+  reset(JSON.stringify({ plugins: [], install_folder: '/usr/lib/vst3' }), 200);
+  await useVstStore.getState().scan();
+  const linux = vstBrowserEmptyText(false, null, useVstStore.getState().installFolder);
+  assert.match(linux, /Install them into \/usr\/lib\/vst3, or link/);
+  assert.doesNotMatch(linux, /Program Files/);
 }
 
 // --- an unpaired device on the LAN is told how to pair ----------------------

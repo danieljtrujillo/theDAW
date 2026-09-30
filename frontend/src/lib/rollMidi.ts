@@ -14,6 +14,16 @@
  * file this module wrote comes back with its lanes in the same order. With no
  * bend every note is in lane A, as before.
  *
+ * A bent channel whose notes overlap (a transcriber's one channel, which puts
+ * each note's own bend on the wheel) is read note by note instead
+ * (noteBendsOfChannel): while one note sounds, the wheel is that note's own
+ * bend (its expression's start value and curve, at the channel's range);
+ * while several sound, the wheel would bend the whole chord, so it is left out
+ * and the chords play unbent. The import counts both (`noteBends`,
+ * `chordBends`) for its LOG line (chordBendLog). A file this module wrote
+ * keeps its lanes' curves as written: a lane's bend under a chord is the
+ * roll's own.
+ *
  * TIMING: notes travel on TICKS, not on the 16th grid. An export writes each
  * note's own `tick`/`ticks` at the file's PPQ, which is the roll's own 960
  * (ROLL_PPQ), so every tick goes out as the roll holds it and a septuplet or a
@@ -77,7 +87,10 @@
  * registry instrument its name or program names (lib/orchestra). A part on
  * MIDI channel 10, or one whose bank select is General MIDI 2's rhythm bank
  * (120), is percussion. The names the roll gives its own tracks ("Piano
- * Roll", "Lane B") name no instrument.
+ * Roll", "Lane B") name no instrument. A song's stem transcribed by
+ * basic-pitch comes on its stock program 4 whatever the stem held: given the
+ * stem's name (the file's, the library row's), such a part takes the stem's
+ * instrument instead (lib/stemRole).
  *
  * No Vite-only imports, so node tests load it.
  */
@@ -118,7 +131,8 @@ import {
 } from './midi';
 import { GM_NAMES } from './gmInstruments';
 import { PPQ as NOTE_PPQ } from './noteClock';
-import { guessInstrument, instrumentForProgram } from './orchestra';
+import { guessInstrument, instrumentForProgram, orchestraInstrument } from './orchestra';
+import { BASIC_PITCH_PROGRAM, stemRoleOf, stemRoleVoice, type StemRole } from './stemRole';
 import { articulatedNotes, articulationBankOf, articulationBankSelect, targetKey, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
 import { scaleExpressionTicks } from './noteExpression';
 import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
@@ -147,6 +161,8 @@ import {
   noteTicks,
   sanitizeLanes,
   ticksPerStep,
+  type NoteExpression,
+  type NoteExpressionPoint,
   type PianoNote,
   type RollControl,
   type RollMeter,
@@ -201,6 +217,21 @@ export interface RollMidiImport {
   tempoMap: TempoEvent[];
   /** The file's markers on the roll's clock (midiFileMarkers); none when it has none. */
   markers: RollMarker[];
+  /** Notes that took their channel's pitch wheel as their own bend (a channel whose notes overlap). */
+  noteBends: number;
+  /** Chords on such a channel that play unbent: the wheel was off centre while they sounded, and was left out. */
+  chordBends: number;
+}
+
+/** The LOG lines an import writes about a channel's wheel read note by note (RollMidiImport noteBends / chordBends). */
+export function chordBendLog(label: string, read: Pick<RollMidiImport, 'noteBends' | 'chordBends'>): { info: string[]; warn: string[] } {
+  const info = read.noteBends > 0
+    ? [`${read.noteBends} note${read.noteBends === 1 ? '' : 's'} of "${label}" took their channel's pitch bend as their own`]
+    : [];
+  const warn = read.chordBends > 0
+    ? [`"${label}": the pitch wheel moved under ${read.chordBends} chord${read.chordBends === 1 ? '' : 's'}; a wheel bends every note on its channel, so ${read.chordBends === 1 ? 'that bend was left out and the chord plays' : 'those bends were left out and the chords play'} unbent`]
+    : [];
+  return { info, warn };
 }
 
 /** The `theDAW:markers=` text of a roll's markers: each one's place (at the file's `ppq`), name, kind and origin. */
@@ -698,6 +729,7 @@ export const partMetaText = (t: RollTrack): string =>
     mute: t.mute,
     solo: t.solo,
     ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
+    ...(t.fromAudio ? { fromAudio: true } : {}),
   });
 
 /** The part a `theDAW:part=` text names, or null for text that is not one. */
@@ -718,6 +750,7 @@ export function parsePartMeta(text: string | undefined): (Partial<RollTrack> & {
       mute: raw.mute === true,
       solo: raw.solo === true,
       ...(typeof raw.instrumentId === 'string' && raw.instrumentId ? { instrumentId: raw.instrumentId } : {}),
+      ...(raw.fromAudio === true ? { fromAudio: true } : {}),
     };
   } catch {
     return null;
@@ -992,6 +1025,102 @@ function laneTracksToRoll(
   return { notes, lanes, bends: sanitizeBends(bends) };
 }
 
+/** How many of `notes` sound from each tick on, as [tick, count] steps; a note that ends where another starts ends first. */
+function soundingSteps(notes: readonly MidiNote[]): Array<[number, number]> {
+  const edges: Array<[number, number]> = [];
+  for (const n of notes) {
+    edges.push([n.tick, 1]);
+    edges.push([n.tick + Math.max(1, n.durationTicks), -1]);
+  }
+  edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const steps: Array<[number, number]> = [];
+  let on = 0;
+  for (const [tick, d] of edges) {
+    on += d;
+    if (steps.length && steps[steps.length - 1][0] === tick) steps[steps.length - 1][1] = on;
+    else steps.push([tick, on]);
+  }
+  return steps;
+}
+
+/** The index of the last item at or before `tick` in a list sorted by tick, or -1. */
+function lastAtOrBefore<T>(list: readonly T[], tickOf: (x: T) => number, tick: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (tickOf(list[mid]) <= tick) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+/**
+ * One channel's wheel read note by note (see the header): each note sounding
+ * alone takes the wheel as its own bend, a start value and a curve at ticks
+ * from its start on the file's clock, at the range in force on the channel at
+ * its start; while notes overlap, each of them holds 0 and the wheel is left
+ * out. Returns each note's expression (only for a note whose bend is not flat
+ * at 0), and how many chords (spans where notes overlap) the wheel was off
+ * centre under.
+ */
+function noteBendsOfChannel(
+  notes: readonly MidiNote[],
+  messages: readonly MidiBend[],
+  ranges: readonly MidiBendRange[],
+): { expr: Map<MidiNote, NoteExpression>; chords: number } {
+  const expr = new Map<MidiNote, NoteExpression>();
+  const steps = soundingSteps(notes);
+  const soundingAt = (tick: number): number => {
+    const i = lastAtOrBefore(steps, (c) => c[0], tick);
+    return i >= 0 ? steps[i][1] : 0;
+  };
+  const wheelAt = (tick: number): number => {
+    const i = lastAtOrBefore(messages, (m) => m.tick, tick);
+    return i >= 0 ? messages[i].value : BEND_CENTER;
+  };
+  // Each span where several notes sound, counted once when the wheel is off centre anywhere in it.
+  let chords = 0;
+  for (let i = 0; i < steps.length; i += 1) {
+    if (steps[i][1] < 2) continue;
+    let j = i;
+    while (j + 1 < steps.length && steps[j + 1][1] >= 2) j += 1;
+    const start = steps[i][0];
+    const end = j + 1 < steps.length ? steps[j + 1][0] : Infinity;
+    let bent = wheelAt(start) !== BEND_CENTER;
+    for (let k = lastAtOrBefore(messages, (m) => m.tick, start) + 1; !bent && k < messages.length && messages[k].tick < end; k += 1) {
+      bent = messages[k].value !== BEND_CENTER;
+    }
+    if (bent) chords += 1;
+    i = j;
+  }
+  for (const n of notes) {
+    const start = n.tick;
+    const end = n.tick + Math.max(1, n.durationTicks);
+    // Every tick inside the note where its bend can change: a wheel message, or another note starting or ending.
+    const ticks = new Set<number>();
+    for (let k = lastAtOrBefore(messages, (m) => m.tick, start) + 1; k < messages.length && messages[k].tick < end; k += 1) ticks.add(messages[k].tick);
+    for (let k = lastAtOrBefore(steps, (c) => c[0], start) + 1; k < steps.length && steps[k][0] < end; k += 1) ticks.add(steps[k][0]);
+    const valueAt = (tick: number): number => (soundingAt(tick) === 1 ? bendRawToValue(wheelAt(tick)) : 0);
+    const first = valueAt(start);
+    const curve: NoteExpressionPoint[] = [];
+    let last = first;
+    for (const tick of [...ticks].sort((a, b) => a - b)) {
+      const v = valueAt(tick);
+      if (v === last) continue;
+      curve.push({ tick: tick - start, value: v });
+      last = v;
+    }
+    if (first === 0 && curve.length === 0) continue;
+    expr.set(n, {
+      pitchBend: first,
+      bendRange: Math.min(MAX_BEND_RANGE, rangeAt(ranges, start)),
+      ...(curve.length ? { curves: { pitchBend: curve } } : {}),
+    });
+  }
+  return { expr, chords };
+}
+
 /** Where an imported note came from: its track in the file and its channel (0-15). */
 interface NoteOrigin {
   track: number;
@@ -1003,8 +1132,13 @@ export function midiFileToRoll(data: MidiFileData, idPrefix = 'imp'): RollMidiIm
   return readMidiFile(data, idPrefix);
 }
 
-/** midiFileToRoll, recording each note's track and channel in `origins` when given. */
-function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string, NoteOrigin>): RollMidiImport {
+/**
+ * midiFileToRoll, recording each note's track and channel in `origins` when
+ * given. `bendsOnNotes` reads every bent channel note by note, one that plays
+ * one note at a time too: a file whose parts join other files' parts in one
+ * roll (lib/stemMidiSet), where a lane's curve would bend their notes as well.
+ */
+function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string, NoteOrigin>, bendsOnNotes = false): RollMidiImport {
   const ppq = data.ppq || ROLL_PPQ;
   const stepTicks = ppq / 4;
   const { map, pickupSteps } = midiEventsToMeterMap(data.timeSignatures ?? [], ppq);
@@ -1027,15 +1161,32 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
   // A file the roll wrote with its lanes gives every lane back.
   if (data.tracks.some((t) => parseLaneMeta(t.laneMeta))) {
     const own = laneTracksToRoll(data, ppq, idPrefix, wheel, ranges, origins);
-    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap, markers };
+    return { notes: own.notes, bpm, meter: { meterMap: map, pickupSteps, lanes: own.lanes }, bends: own.bends, tempoMap, markers, noteBends: 0, chordBends: 0 };
   }
 
   const raw = data.tracks.flatMap((t) => t.notes);
   const rawTrack = data.tracks.flatMap((t, k) => t.notes.map(() => k));
   const noteChannels = [...new Set(raw.map((n) => n.channel))];
+  const wheelMoves = (ch: number): boolean => (wheel.get(ch) ?? []).some((b) => b.value !== BEND_CENTER);
+  // A bent channel whose notes overlap, in a file the roll did not write, is read note by note (noteBendsOfChannel).
+  const rollWrote = data.tracks.some((t) => parsePartMeta(t.partMeta) !== null);
+  const byNote = new Map<MidiNote, NoteExpression>();
+  const perNote = new Set<number>();
+  let chordBends = 0;
+  if (!rollWrote) {
+    for (const ch of noteChannels) {
+      if (!wheelMoves(ch)) continue;
+      const own = raw.filter((n) => n.channel === ch && !n.expr).sort((a, b) => a.tick - b.tick);
+      if (!bendsOnNotes && !soundingSteps(own).some(([, on]) => on > 1)) continue;
+      perNote.add(ch);
+      const read = noteBendsOfChannel(own, wheel.get(ch) ?? [], ranges.get(ch) ?? []);
+      for (const [n, e] of read.expr) byNote.set(n, e);
+      chordBends += read.chords;
+    }
+  }
   // A channel whose wheel leaves the centre bends, the lowest MAX_BENT_LANES of them; the rest play unbent in the shared lane.
   const bent = noteChannels
-    .filter((ch) => (wheel.get(ch) ?? []).some((b) => b.value !== BEND_CENTER))
+    .filter((ch) => wheelMoves(ch) && !perNote.has(ch))
     .sort((a, b) => a - b)
     .slice(0, MAX_BENT_LANES);
   const plain = noteChannels.filter((ch) => !bent.includes(ch));
@@ -1060,6 +1211,7 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
       const ticks = Math.max(MIN_NOTE_TICKS, Math.round(n.durationTicks * toModel));
       const id = `${idPrefix}-${stamp}-${i}`;
       origins?.set(id, { track: rawTrack[i], channel: n.channel });
+      const own = n.expr ?? byNote.get(n);
       return {
         id,
         note: n.note,
@@ -1070,7 +1222,8 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
         ticks,
         ...(lane > 0 ? { lane } : {}),
         ...(n.articulation ? { articulation: n.articulation } : {}),
-        ...(n.expr ? { expr: scaleExpressionTicks(n.expr, toModel) } : {}),
+        // An MPE note's own expression, or the bend its channel's wheel gave it while it sounded alone.
+        ...(own ? { expr: scaleExpressionTicks(own, toModel) } : {}),
       };
     })
     .sort((a, b) => a.step - b.step);
@@ -1081,17 +1234,28 @@ function readMidiFile(data: MidiFileData, idPrefix: string, origins?: Map<string
       g.bent ? [{ lane: id, ...channelBend(wheel.get(g.first) ?? [], ranges.get(g.first) ?? [], stepTicks, `bp${id}`) }] : [],
     ),
   );
-  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap, markers };
+  return { notes, bpm, meter: { meterMap: map, pickupSteps, lanes }, bends, tempoMap, markers, noteBends: byNote.size, chordBends };
 }
 
 /** One part of an imported file: the part's fields and its notes. */
 export interface RollMidiPart {
   track: Partial<RollTrack>;
   notes: PianoNote[];
+  /**
+   * The stem role the part's notes transcribe (lib/stemRole): the part took
+   * the role's instrument over basic-pitch's stock program, or keeps the role
+   * program the file carries. Absent when the file names no stem role. An
+   * import into the part being edited gives the part this voice even when it
+   * has one of its own: the notes are that stem's.
+   */
+  stemRole?: StemRole;
 }
 
 /** What an import of a file into parts hands to the roll's importParts (or, for one part, importNotes). */
 export type RollMidiPartsImport = Omit<RollMidiImport, 'notes'> & { parts: RollMidiPart[] };
+
+/** A track with no name of its own: blank, or the "Track n" lib/midi's parser gives one. */
+const UNNAMED_TRACK = /^\s*(?:Track \d+)?\s*$/;
 
 /** The names the roll gives its own tracks when it writes no part names ("Piano Roll", "Lane B"): they name no instrument. */
 const ROLL_TRACK_NAME = /^(?:Piano Roll|Lane [A-Z]+)$/;
@@ -1137,10 +1301,22 @@ const controlsOnRollClock = (controls: readonly MidiControl[], ppq: number): Rol
  * instrument (lib/orchestra guessInstrument) takes it when the file sets no
  * program or sets that instrument's program; otherwise the program names the
  * instrument (instrumentForProgram) when the registry has one for it.
+ *
+ * `opts.stem` names the song stem the file transcribes (a file name
+ * "bass.mid", a library row id or label). A melodic part on basic-pitch's
+ * stock program 4 then takes the instrument of the stem's role
+ * (lib/stemRole): its program, its registry instrument, the drum channel for
+ * a kit, and, when its track has no name, the role's name. A melodic part on
+ * any other program (the role program the transcription wrote: bass 33)
+ * keeps that program and is marked as the stem's all the same, so it takes
+ * the role's name when unnamed and replaces the voice of the part it goes
+ * into. `opts.bendsOnNotes`
+ * turns every bent channel's wheel into its notes' own bends (readMidiFile).
  */
-export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollMidiPartsImport {
+export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp', opts: { stem?: string; bendsOnNotes?: boolean } = {}): RollMidiPartsImport {
+  const stemVoice = stemRoleVoice(stemRoleOf(opts.stem));
   const origins = new Map<string, NoteOrigin>();
-  const read = readMidiFile(data, idPrefix, origins);
+  const read = readMidiFile(data, idPrefix, origins, opts.bendsOnNotes === true);
   const ppq = data.ppq || ROLL_PPQ;
   const metas = data.tracks.map((t) => parsePartMeta(t.partMeta));
   const own = metas.some((m) => m !== null);
@@ -1200,15 +1376,22 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
     const t = data.tracks[o.track];
     const channel = o.channel ?? 0;
     const change = firstProgram(t.programs, channel) ?? data.tracks.map((x) => firstProgram(x.programs, channel)).find((p) => p !== undefined);
-    const percussion = channel === 9 || isDrumBank(change?.bank);
+    const filePercussion = channel === 9 || isDrumBank(change?.bank);
+    // A melodic stem that names its instrument: the part is the stem's. On basic-pitch's stock Electric Piano it takes
+    // the stem's instrument; on a program of the stem's role (bass 33, voice 53) the file's own program stands.
+    const stemPart = !filePercussion && change !== undefined && !isDrumBank(change.bank) && stemVoice !== null && !stemVoice.percussion;
+    const role = !filePercussion && change?.program === BASIC_PITCH_PROGRAM && !isDrumBank(change?.bank) ? stemVoice : null;
+    const stemRole = role?.role ?? (stemPart ? stemVoice.role : undefined);
+    const percussion = filePercussion || role?.percussion === true;
     const split = trackChannels[o.track].length > 1;
-    const fileProgram = change?.program;
-    const bank = percussion ? 0 : change?.bank ?? 0;
+    const fileProgram = role ? role.program : change?.program;
+    const bank = percussion ? 0 : role ? role.bank : change?.bank ?? 0;
     // The bank select LSB (CC 32) the file sends with the program: XG and GS pick a voice's variations with it.
-    const bankLsb = percussion ? undefined : cleanPartBankLsb(change?.bankLsb);
+    const bankLsb = percussion || role ? undefined : cleanPartBankLsb(change?.bankLsb);
     const controls = controlsOnRollClock(channelControls.get(channel) ?? [], ppq);
+    // A track the file left unnamed (the parser calls it "Track n") takes the stem's name.
     const name = !split
-      ? t.name
+      ? (stemRole && stemVoice && UNNAMED_TRACK.test(t.name) ? stemVoice.name : t.name)
       : percussion
         ? `${t.name} drums`
         : fileProgram !== undefined
@@ -1218,7 +1401,7 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
     const named = fileProgram === undefined && ROLL_TRACK_NAME.test(name.trim()) ? undefined : guessInstrument(name);
     const byName = named && named.percussion === percussion && (fileProgram === undefined || named.program === fileProgram) ? named : undefined;
     const byProgram = fileProgram !== undefined ? instrumentForProgram(fileProgram, bank, percussion) : undefined;
-    const inst = byName ?? byProgram;
+    const inst = (role ? orchestraInstrument(role.instrumentId) : undefined) ?? byName ?? byProgram;
     const program = fileProgram ?? byName?.program ?? null;
     return {
       track: {
@@ -1232,7 +1415,17 @@ export function midiFileToRollParts(data: MidiFileData, idPrefix = 'imp'): RollM
         ...(controls ? { controls } : {}),
       },
       notes,
+      ...(stemRole ? { stemRole } : {}),
     };
   });
-  return { bpm: read.bpm, meter: read.meter, bends: read.bends, tempoMap: read.tempoMap, markers: read.markers, parts };
+  return {
+    bpm: read.bpm,
+    meter: read.meter,
+    bends: read.bends,
+    tempoMap: read.tempoMap,
+    markers: read.markers,
+    noteBends: read.noteBends,
+    chordBends: read.chordBends,
+    parts,
+  };
 }

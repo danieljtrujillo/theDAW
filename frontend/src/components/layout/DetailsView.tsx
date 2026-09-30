@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Database, Tag, Star, Calendar, Clock, Music, Hash, FileAudio, Layers, Send, Download, Scissors, Activity, Wand2, Loader2, MicVocal } from 'lucide-react';
 import { RhythmBlock } from './RhythmBlock';
+import { SectionsBlock } from './SectionsBlock';
 import { SurfacePlayKey } from '../ui/SurfacePlayKey';
 import { useLibraryStore, type LibraryEntry } from '../../state/libraryStore';
 import { usePlayerStore } from '../../state/playerStore';
 import { useEditorStore, computePeaks } from '../../state/editorStore';
 import { useGenerateParamsStore } from '../../state/generateParamsStore';
 import { logError, logInfo } from '../../state/logStore';
+import { linkSongTime } from '../../lib/songTimeLink';
 import { useBottomPanelStore } from '../../state/bottomPanelStore';
 import { deriveLyrics } from '../../catalog/catalogSearch';
 import { entryAudioFileName } from '../../convert/convertClient';
@@ -181,6 +183,7 @@ export const DetailsView: React.FC = () => {
         startSec: 0,
         color: trackColor,
         libraryEntryId: entry.id,
+        songTime: linkSongTime(entry.id),
       });
       editor.cachePeaks(clipId, peaks);
     } catch (e) {
@@ -419,6 +422,10 @@ export const DetailsView: React.FC = () => {
           guess, plus tempo segments, syncopation, swing and polymeter. Run on
           demand -- a full read is seconds of CPU per track. */}
       <RhythmBlock entryId={selectedId} title={entry?.title ?? 'track'} analysis={analysis} />
+
+      {/* The song's form: its sections on the bar grid above, with repeat
+          letters, roles and the user's names. Run on demand, like RHYTHM. */}
+      <SectionsBlock entryId={selectedId} title={entry?.title ?? 'track'} />
 
       {/* Prompt inference: a Stable Audio-style prompt + semantic tags derived
           from the analysis above (deterministic; folds in embedded genre/mood). */}

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -33,7 +35,11 @@ __all__ = [
     "classify_rhyme",
     "consonant_distance",
     "consonant_family",
+    "current_language",
     "homophone_key",
+    "is_latin_scope",
+    "language_scope",
+    "scope_marks_length",
     "max_rhyme_score",
     "normalize_word",
     "pronounce",
@@ -79,6 +85,46 @@ except Exception:  # pragma: no cover - any import failure means "use rules"
     _cmudict = None
 
 PRONUNCIATION_SOURCE = "cmudict" if _cmudict is not None else "rules"
+
+# The language every call in this context reads words as: ``(code, marked)``.
+# English is the default and the only language the dictionary and the
+# letter-to-sound rules speak. Latin is read by ``latin`` instead, and
+# ``marked`` says the text marks its vowel lengths (so an unmarked vowel is a
+# short one). A context variable, so an analysis running in a worker thread
+# never leaks its language into another one.
+_LANGUAGE: ContextVar[tuple[str, bool]] = ContextVar(
+    "lyric_language", default=("en", False)
+)
+
+
+@contextmanager
+def language_scope(code: str | None, *, macronized: bool = False) -> Iterator[None]:
+    """Read every word inside the block as ``code``: ``"la"`` pronounces by
+    the Latin rules, anything else by the English sources."""
+    from . import latin
+
+    lang = latin.LANGUAGE if latin.is_latin(code) else "en"
+    token = _LANGUAGE.set((lang, bool(macronized)))
+    try:
+        yield
+    finally:
+        _LANGUAGE.reset(token)
+
+
+def current_language() -> str:
+    """``"la"`` inside a Latin ``language_scope``, else ``"en"``."""
+    return _LANGUAGE.get()[0]
+
+
+def is_latin_scope() -> bool:
+    return _LANGUAGE.get()[0] == "la"
+
+
+def scope_marks_length() -> bool:
+    """The text being read marks its vowel lengths (a Latin text with
+    macrons)."""
+    return _LANGUAGE.get()[1]
+
 
 _CMU_TABLE: dict[str, list[list[str]]] | None = None
 
@@ -974,6 +1020,10 @@ _ONSET_CLUSTERS = frozenset(
 
 
 def _is_onset(cluster: tuple[str, ...]) -> bool:
+    if is_latin_scope():
+        from .latin import is_onset
+
+        return is_onset(cluster)
     if not cluster:
         return True
     if len(cluster) == 1:
@@ -1276,6 +1326,13 @@ def pronounce(word: str) -> Pron:
     Pass the word AS WRITTEN: the trailing apostrophe of "runnin'" is dropped
     by normalisation and is the only thing that says the word is g-dropped.
     """
+    lang, marked = _LANGUAGE.get()
+    if lang == "la":
+        # Latin keeps its length marks: the macron normalisation would strip
+        # is what places the stress.
+        from . import latin
+
+        return latin.pronounce(word, marked)
     try:
         text = str(word)
         token = normalize_word(text)
@@ -1563,6 +1620,9 @@ def pronunciations(word: str) -> tuple["Pron", ...]:
     first = pronounce(word)
     if not first.phones:
         return ()
+    if is_latin_scope():
+        # Latin spelling is its pronunciation: there is no second reading.
+        return (first,)
     key = normalize_word(word)
     return (first, *_cmu_alternates(key)) if key else (first,)
 
@@ -1938,7 +1998,9 @@ def _guess_penalty(a: Pron, b: Pron) -> float:
     the callers' confidence floors, which is what made a cmudict-less machine
     report a fraction of the rhymes a cmudict machine did.
     """
-    if PRONUNCIATION_SOURCE != "cmudict":
+    if PRONUNCIATION_SOURCE != "cmudict" or is_latin_scope():
+        # A Latin "guess" is only ever where the stress falls; the phones are
+        # the spelling's own, so there is nothing to discount them for.
         return 1.0
     if a.guessed and b.guessed:
         return 0.75
@@ -2010,7 +2072,8 @@ def classify_rhyme(
     if scored.score >= SLANT_FLOOR:
         return ("slant-rhyme", confidence)
 
-    # Nothing rhymes; the spelling might still promise it does.
-    if wa and wb and _shared_tail_letters(wa, wb) >= 2:
+    # Nothing rhymes; the spelling might still promise it does. Not in Latin,
+    # whose spelling IS the sound: a shared spelled ending is a shared sound.
+    if wa and wb and not is_latin_scope() and _shared_tail_letters(wa, wb) >= 2:
         return ("eye-rhyme", round(0.3 * penalty, 3))
     return ("", 0.0)

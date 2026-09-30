@@ -58,6 +58,20 @@ export const MARKER_NAME_MAX = 64;
 /** The prefix of an EDIT timeline marker a roll clip wrote. */
 export const ROLL_EDIT_MARKER_PREFIX = 'roll:';
 
+/**
+ * The prefix of an EDIT timeline marker "Add section markers" wrote on a clip
+ * of a library song (lib/songSections): `sect:<clip>:<section index>`. Like a
+ * roll clip's markers, it moves and splits with its clip; a bounce leaves it.
+ */
+export const SECTION_EDIT_MARKER_PREFIX = 'sect:';
+
+/** The prefixes of the EDIT markers that belong to a clip. */
+const CLIP_MARKER_PREFIXES = [ROLL_EDIT_MARKER_PREFIX, SECTION_EDIT_MARKER_PREFIX] as const;
+
+/** The prefix of `m` when clip `clipId` wrote it, else null. */
+const clipMarkerPrefix = (m: Pick<TimelineMarker, 'id'>, clipId: string): string | null =>
+  CLIP_MARKER_PREFIXES.find((p) => m.id.startsWith(`${p}${clipId}:`)) ?? null;
+
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
 export const isRollMarkerKind = (v: unknown): v is RollMarkerKind => v === 'section' || v === 'movement';
@@ -246,7 +260,10 @@ export const withoutFormMarkers = (markers: readonly RollMarker[]): RollMarker[]
 export const editMarkerId = (clipId: string, markerId: string): string => `${ROLL_EDIT_MARKER_PREFIX}${clipId}:${markerId}`;
 
 /** True when an EDIT marker was written by the roll clip `clipId`. */
-export const isClipEditMarker = (m: Pick<TimelineMarker, 'id'>, clipId: string): boolean => m.id.startsWith(`${ROLL_EDIT_MARKER_PREFIX}${clipId}:`);
+export const isClipRollMarker = (m: Pick<TimelineMarker, 'id'>, clipId: string): boolean => m.id.startsWith(`${ROLL_EDIT_MARKER_PREFIX}${clipId}:`);
+
+/** True when an EDIT marker belongs to clip `clipId`: its roll markers or its song's section markers. */
+export const isClipEditMarker = (m: Pick<TimelineMarker, 'id'>, clipId: string): boolean => clipMarkerPrefix(m, clipId) !== null;
 
 /** Where a roll clip sits on EDIT's timeline, and the clock its notes play through. */
 export interface ClipMarkerPlacement {
@@ -303,7 +320,15 @@ export const withClipTimelineMarkers = (
   existing: readonly TimelineMarker[],
   clipId: string,
   incoming: readonly TimelineMarker[],
-): TimelineMarker[] => [...existing.filter((m) => !isClipEditMarker(m, clipId)), ...incoming].sort((a, b) => a.t - b.t);
+): TimelineMarker[] => [...existing.filter((m) => !isClipRollMarker(m, clipId)), ...incoming].sort((a, b) => a.t - b.t);
+
+/** EDIT's markers with clip `clipId`'s section markers replaced by `incoming`, sorted by time. */
+export const withClipSectionMarkers = (
+  existing: readonly TimelineMarker[],
+  clipId: string,
+  incoming: readonly TimelineMarker[],
+): TimelineMarker[] =>
+  [...existing.filter((m) => !m.id.startsWith(`${SECTION_EDIT_MARKER_PREFIX}${clipId}:`)), ...incoming].sort((a, b) => a.t - b.t);
 
 /**
  * The timeline second a clip's source starts on: its left edge less its trim,
@@ -338,9 +363,13 @@ export const splitClipTimelineMarkers = (
   rightId: string,
   atSec: number,
 ): readonly TimelineMarker[] => {
-  const own = `${ROLL_EDIT_MARKER_PREFIX}${clipId}:`;
-  if (!existing.some((m) => m.id.startsWith(own) && m.t >= atSec - 1e-9)) return existing;
-  return existing.map((m) => (m.id.startsWith(own) && m.t >= atSec - 1e-9 ? { ...m, id: editMarkerId(rightId, m.id.slice(own.length)) } : m));
+  const moves = (m: TimelineMarker) => m.t >= atSec - 1e-9 && clipMarkerPrefix(m, clipId) !== null;
+  if (!existing.some(moves)) return existing;
+  return existing.map((m) => {
+    if (!moves(m)) return m;
+    const prefix = clipMarkerPrefix(m, clipId) as string;
+    return { ...m, id: `${prefix}${rightId}:${m.id.slice(`${prefix}${clipId}:`.length)}` };
+  });
 };
 
 // ── .tasmo ───────────────────────────────────────────────────────────────────

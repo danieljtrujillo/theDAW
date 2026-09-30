@@ -281,6 +281,96 @@ bool loadMidiEvents(const std::wstring& path, std::vector<TimedMidi>& out, size_
     return true;
 }
 
+// One automated parameter of --automation-json: a piecewise-linear curve of its normalized
+// value over the input's sample frames, in frame order. Before the first point and after the
+// last the value holds.
+struct AutomationCurve {
+    int32_t index = -1;
+    std::vector<std::pair<int64_t, double>> points;
+    size_t cursor = 0;       // the last point at or before the block being rendered
+    double sent = -1.0;      // the value last handed to the plugin; -1 = none yet
+};
+
+// The curve's value at `frame`. Walks the cursor forward: blocks arrive in frame order.
+double automationValueAt(AutomationCurve& curve, int64_t frame) {
+    const std::vector<std::pair<int64_t, double>>& p = curve.points;
+    if (frame <= p.front().first) return p.front().second;
+    while (curve.cursor + 1 < p.size() && p[curve.cursor + 1].first <= frame) ++curve.cursor;
+    if (curve.cursor + 1 >= p.size()) return p.back().second;
+    const std::pair<int64_t, double>& a = p[curve.cursor];
+    const std::pair<int64_t, double>& b = p[curve.cursor + 1];
+    const double span = static_cast<double>(b.first - a.first);
+    if (span <= 0.0) return b.second;
+    return a.second + (b.second - a.second) * (static_cast<double>(frame - a.first) / span);
+}
+
+// Reads --automation-json. A curve that names no parameter this plugin has, or that holds no
+// usable point, is left out with a warning rather than failing the render: the rest of the
+// render is still the sound the user asked for.
+bool loadAutomation(const std::wstring& path, const std::vector<ParamInfo>& params,
+                    std::vector<AutomationCurve>& out, std::vector<std::string>& warnings,
+                    std::string& error) {
+    std::string text;
+    if (!readTextFile(path, text, error)) return false;
+    json::Value document;
+    if (!json::parse(text, document, error)) return false;
+    if (!document.isArray()) {
+        error = "the automation must be a JSON array";
+        return false;
+    }
+    for (const json::Value& entry : document.array) {
+        if (!entry.isObject()) {
+            warnings.push_back("an --automation-json entry was not an object; it was skipped");
+            continue;
+        }
+        const json::Value* index = entry.find("index");
+        const json::Value* name = entry.find("name");
+        const json::Value* points = entry.find("points");
+        int32_t resolved = -1;
+        std::string label;
+        if (index != nullptr && index->isNumber() && index->number >= 0 &&
+            index->number < static_cast<double>(params.size())) {
+            resolved = static_cast<int32_t>(index->number);
+            label = util::toString(static_cast<long long>(resolved));
+        } else if (name != nullptr && name->isString()) {
+            resolved = findParamIndex(params, name->str);
+            label = name->str;
+        } else if (index != nullptr && index->isNumber()) {
+            label = util::toString(static_cast<long long>(index->number));
+        }
+        if (resolved < 0) {
+            warnings.push_back("this plugin has no parameter \"" + label +
+                               "\"; its automation was not applied");
+            continue;
+        }
+        AutomationCurve curve;
+        curve.index = resolved;
+        int64_t last = -1;
+        if (points != nullptr && points->isArray()) {
+            for (const json::Value& point : points->array) {
+                if (!point.isArray() || point.array.size() != 2 || !point.array[0].isNumber() ||
+                    !point.array[1].isNumber()) {
+                    continue;
+                }
+                const double frame = point.array[0].number;
+                const double value = point.array[1].number;
+                if (!std::isfinite(frame) || !std::isfinite(value) || frame < 0.0) continue;
+                const int64_t at = static_cast<int64_t>(std::llround(frame));
+                if (at < last) continue;  // out of order: the curve only moves forward
+                curve.points.emplace_back(at, std::clamp(value, 0.0, 1.0));
+                last = at;
+            }
+        }
+        if (curve.points.empty()) {
+            warnings.push_back("the automation of parameter \"" + label +
+                               "\" held no usable point; it was not applied");
+            continue;
+        }
+        out.push_back(std::move(curve));
+    }
+    return true;
+}
+
 // Everything the worker thread needs, and everything it hands back.
 struct RenderJob {
     IPluginInstance* plugin = nullptr;
@@ -295,9 +385,12 @@ struct RenderJob {
     int64_t outputFrames = 0;
     // --midi-events, in frame order; empty for an effect render.
     const std::vector<TimedMidi>* midi = nullptr;
+    // --automation-json; empty when nothing is automated.
+    std::vector<AutomationCurve>* automation = nullptr;
 
     std::vector<std::vector<float>> output;  // planar, fileChannels x outputFrames
     int64_t blocksProcessed = 0;
+    int64_t automationWrites = 0;
     int64_t nonFinite = 0;
     double peak = 0.0;
     double seconds = 0.0;
@@ -376,6 +469,17 @@ void renderOnWorker(RenderJob& job) {
         }
         const unsigned long fault = util::guarded([&] {
             if (transport.discontinuity) plugin->resetDsp();
+            // Each automated parameter takes its curve's value at the block's first frame, and
+            // only when it moved: the plugin hears it in this block's parameter changes.
+            if (job.automation != nullptr) {
+                for (AutomationCurve& curve : *job.automation) {
+                    const double value = automationValueAt(curve, fed);
+                    if (curve.sent >= 0.0 && std::fabs(value - curve.sent) < 1e-9) continue;
+                    plugin->setParamNormalized(curve.index, value);
+                    curve.sent = value;
+                    ++job.automationWrites;
+                }
+            }
             plugin->setBlockMidi(blockMidi.empty() ? nullptr : blockMidi.data(),
                                  static_cast<int32_t>(blockMidi.size()));
             plugin->process(job.channelsIn > 0 ? pluginInConstPtr.data() : nullptr,
@@ -527,6 +631,16 @@ int runRender(const Options& options, MessageLoop& loop) {
         }
     }
 
+    std::vector<AutomationCurve> automation;
+    if (!options.automationJson.empty()) {
+        std::string automationError;
+        if (!loadAutomation(options.automationJson, instance->params(), automation, warnings,
+                            automationError)) {
+            printFailure("--automation-json could not be read: " + automationError);
+            return kExitUnreadableInput;
+        }
+    }
+
     std::string tailSource;
     const double tailSeconds =
         resolveTailSeconds(options.tailSeconds, prepared.tailSeconds, tailSource);
@@ -544,6 +658,7 @@ int runRender(const Options& options, MessageLoop& loop) {
         static_cast<int64_t>(std::llround(tailSeconds * input.sampleRate));
     job.outputFrames = static_cast<int64_t>(input.frames()) + job.tailFrames;
     job.midi = midi.empty() ? nullptr : &midi;
+    job.automation = automation.empty() ? nullptr : &automation;
 
     // A render whose output cannot fit in a WAV file must be refused now, before the output
     // buffer is allocated or the worker thread starts — writeWavFile enforces this same ceiling
@@ -650,6 +765,8 @@ int runRender(const Options& options, MessageLoop& loop) {
         .intField("blocks", job.blocksProcessed)
         .intField("params_applied", paramsApplied)
         .intField("midi_events", static_cast<long long>(midi.size()))
+        .intField("automated_params", static_cast<long long>(automation.size()))
+        .intField("automation_writes", job.automationWrites)
         .numField("peak", job.peak)
         .intField("non_finite_samples", job.nonFinite)
         .numField("render_seconds", job.seconds)

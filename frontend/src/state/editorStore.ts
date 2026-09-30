@@ -11,6 +11,7 @@ import {
   clipContentOrigin,
   shiftClipTimelineMarkers,
   splitClipTimelineMarkers,
+  withClipSectionMarkers,
   withClipTimelineMarkers,
   type RollMarker,
 } from '../lib/rollMarkers';
@@ -34,6 +35,7 @@ import { MIN_CLIP_SEC } from '../lib/clipDragMath';
 import { moveByOffset, moveIds, sameOrder } from '../lib/timeline/trackOrder';
 import { deleteFolder, folderFlagPatch, moveIntoFolder, moveOutOfFolder, newFolderFromSelection } from '../lib/timeline/folderOps';
 import type { WarpMarker } from '../lib/audioWarp';
+import type { ClipSongTime } from '../lib/clipSongTime';
 import type { ChainEntry, VstNode, VstStateHost } from './effectChainStore';
 import type { Vst3SwitchMode } from '../lib/articulationMap';
 import { rackEffectDefaults } from '../lib/rackEffects';
@@ -279,6 +281,12 @@ export interface AudioClip {
   peaks?: Float32Array;
   /** Optional reference back to a Library entry id, if dropped from the library. */
   libraryEntryId?: string;
+  /** Audio from a library song or one of its stems: the song whose analysis
+   *  times this audio and where the audio sits in the song's time
+   *  (lib/clipSongTime). SYNC reads the song's tempo and beats through it and
+   *  "Use song tempo" lines the arrangement's bars up with the song's
+   *  downbeats. New audio that does not name it drops it (`clipWithUpdates`). */
+  songTime?: ClipSongTime;
   /** How this clip was produced — informs "Edit in Piano Roll" availability. */
   sourceKind?: ClipSourceKind;
   /** When sourceKind === 'piano-roll', the note list that produced the audio, as it
@@ -507,21 +515,60 @@ export interface EditorBus {
    scheduler for a MIDI track's controller (trackMidiCc: the controller's
    changes on every channel the track's MIDI plays on, lib/editMidiScheduler,
    written into the arrangement's MIDI export, lib/arrangementMidi). */
-export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx' | 'trackMidiCc';
+export type AutomationTargetKind = 'trackVolume' | 'trackPan' | 'trackFx' | 'masterFx' | 'trackMidiCc' | 'busFx';
+
+/** The kinds whose target is one parameter of one insert: a track's, a bus's or the master's. */
+export const FX_AUTOMATION_KINDS: readonly AutomationTargetKind[] = ['trackFx', 'busFx', 'masterFx'];
+
+/** True for a target that names an insert's parameter (trackFx, busFx, masterFx). */
+export const isFxAutomationKind = (kind: AutomationTargetKind): boolean => FX_AUTOMATION_KINDS.includes(kind);
 
 export interface AutomationTarget {
   kind: AutomationTargetKind;
-  /** Set for trackVolume / trackPan / trackFx / trackMidiCc. */
+  /**
+   * The routing node the lane writes to: the track for trackVolume / trackPan /
+   * trackFx / trackMidiCc, and the BUS for busFx. Track ids and bus ids share
+   * one namespace (both are the routing graph's node ids), which is why
+   * `removeBus` and `removeTrack` prune lanes by this one field.
+   */
   trackId?: string;
-  /** ChainEntry id, set for trackFx / masterFx. */
+  /** ChainEntry id, set for trackFx / busFx / masterFx. A masterFx entry sits in
+   *  the master rack or in the master VST chain; the id says which. */
   entryId?: string;
   /**
-   * Effect param key, set for trackFx / masterFx. For trackMidiCc it is the
-   * controller number as a string ('74'), one a roll part keeps (lib/rollTracks
+   * Effect param key, set for trackFx / busFx / masterFx: a rack effect's own
+   * key, or `p<index>` for a hosted VST3's parameter (its index in the
+   * plugin's own list, lib/vstLive). For trackMidiCc it is the controller
+   * number as a string ('74'), one a roll part keeps (lib/rollTracks
    * PART_CONTROLLERS), so the lane saves and reloads through the same field.
    */
   paramKey?: string;
 }
+
+/** The index of the hosted-plugin parameter a `p<index>` key names, or null for any other key. */
+export const vstParamIndexOfKey = (paramKey: string | undefined): number | null => {
+  const m = /^p(\d+)$/.exec(paramKey ?? '');
+  return m ? Number(m[1]) : null;
+};
+
+/**
+ * The insert an FX lane writes to, wherever it sits: a track's rack, a bus's
+ * rack, the master rack or the master VST chain. Undefined for a target that is
+ * not an FX kind, or whose owner or entry is gone.
+ */
+export const automationEntryFor = (
+  s: Pick<EditorStoreState, 'tracks' | 'buses' | 'masterFxChain' | 'masterVstChain'>,
+  target: AutomationTarget,
+): ChainEntry | undefined => {
+  const { kind, trackId, entryId } = target;
+  if (!entryId) return undefined;
+  if (kind === 'trackFx') return s.tracks.find((t) => t.id === trackId)?.fxChain?.find((e) => e.id === entryId);
+  if (kind === 'busFx') return s.buses.find((b) => b.id === trackId)?.fxChain.find((e) => e.id === entryId);
+  if (kind === 'masterFx') {
+    return s.masterFxChain.find((e) => e.id === entryId) ?? s.masterVstChain.find((e) => e.id === entryId);
+  }
+  return undefined;
+};
 
 /** The automation target of MIDI track `trackId`'s controller `controller` (0-127 values). */
 export const midiCcTarget = (trackId: string, controller: number): AutomationTarget => ({
@@ -586,6 +633,12 @@ export interface TimeMapOffer {
   summary: string;
   /** Timeline seconds where the clip's first step sits: where adoption starts. */
   anchorSec: number;
+}
+
+/** "Use song tempo" for a library song: its entry, and the clip lined up with it when one was named. */
+export interface SongTempoRequest {
+  entryId: string;
+  clipId?: string;
 }
 
 /** A meter the editor can actually bar out, or null. Defined in the
@@ -717,6 +770,13 @@ const trackSignaturePart = (t: EditorTrack): string =>
  * `global` is the instrument picker (soundfontEngine getGlobalVoice): a MIDI
  * clip with no program of its own or on its track renders through it. Left
  * out, the signature assumes soundfonts are off.
+ *
+ * `buses`, `routing` and `automationLanes` are what the master bounce reads
+ * past the tracks: the bus racks (their VST3 inserts print into the frozen
+ * master), where each strip goes, and every lane it bakes (a lane that is
+ * switched on and holds a breakpoint; no other reaches it). Every call that
+ * signs the document passes them (`documentFreezeSignature`), so a frozen
+ * master goes stale when one of them changes.
  */
 export const freezeSignature = (doc: {
   clips: readonly AudioClip[];
@@ -725,6 +785,9 @@ export const freezeSignature = (doc: {
   masterVstChain: readonly ChainEntry[];
   bpm: number;
   global?: GlobalVoice;
+  buses?: readonly EditorBus[];
+  routing?: RoutingGraph;
+  automationLanes?: readonly AutomationLane[];
 }): string => {
   // A clip's muted flag is part of the shape because the bounce drops muted
   // clips, so toggling mute changes the rendered master.
@@ -738,11 +801,44 @@ export const freezeSignature = (doc: {
     .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
     .map(trackSignaturePart)
     .join('|');
-  return [
+  const parts: (string | number)[] = [
     clipPart, trackPart,
     JSON.stringify(doc.masterFxChain), JSON.stringify(doc.masterVstChain), doc.bpm,
-  ].join('::');
+  ];
+  if (doc.buses || doc.routing || doc.automationLanes) {
+    parts.push(
+      // What a bounce reads of a bus and of the graph, not their display names:
+      // a renamed bus or track is the same mix.
+      JSON.stringify((doc.buses ?? []).map((b) => [b.id, b.volume, b.mute, b.fxChain])),
+      JSON.stringify({ nodes: (doc.routing?.nodes ?? []).map((n) => n.id), edges: doc.routing?.edges ?? [] }),
+      // The lanes a bounce reads: switched on, with a breakpoint (renderCore's
+      // lane filter, and lib/midiCcAutomation's). An empty lane opened from
+      // the picker, or an edit to a lane that is switched off, is the same mix.
+      JSON.stringify(
+        (doc.automationLanes ?? []).filter((l) => l.enabled && l.points.length > 0).map((l) => [l.target, l.points]),
+      ),
+    );
+  }
+  return parts.join('::');
 };
+
+/** `freezeSignature` of the document as the store holds it, every field the
+ *  master bounce reads included. The one way the app signs a frozen master, so
+ *  the signature a freeze stamps and the one it is compared with cannot differ. */
+export const documentFreezeSignature = (
+  s: Pick<EditorStoreState, 'clips' | 'tracks' | 'masterFxChain' | 'masterVstChain' | 'bpm' | 'buses' | 'routing' | 'automationLanes'>,
+  global?: GlobalVoice,
+): string => freezeSignature({
+  clips: s.clips,
+  tracks: s.tracks,
+  masterFxChain: s.masterFxChain,
+  masterVstChain: s.masterVstChain,
+  bpm: s.bpm,
+  global,
+  buses: s.buses,
+  routing: s.routing,
+  automationLanes: s.automationLanes,
+});
 
 /**
  * The same signature scoped to ONE track's printed stem: that track's clips and
@@ -823,7 +919,7 @@ const writeHoldSpan = (
 /** The value a parameter is actually sitting at, for a lane that has no points to
  *  sample. Null when the target no longer resolves (a deleted track or FX entry). */
 const storedValueForTarget = (
-  s: Pick<EditorStoreState, 'tracks' | 'masterFxChain'>,
+  s: Pick<EditorStoreState, 'tracks' | 'buses' | 'masterFxChain' | 'masterVstChain'>,
   target: AutomationTarget,
 ): number | null => {
   const { kind, trackId, entryId, paramKey } = target;
@@ -839,10 +935,7 @@ const storedValueForTarget = (
     return partController(cc)?.initial ?? 0;
   }
   if (!entryId || !paramKey) return null;
-  const chain = kind === 'masterFx'
-    ? s.masterFxChain
-    : s.tracks.find((t) => t.id === trackId)?.fxChain;
-  const v = chain?.find((e) => e.id === entryId)?.params?.[paramKey];
+  const v = automationEntryFor(s, target)?.params?.[paramKey];
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 };
 
@@ -884,6 +977,13 @@ interface EditorStoreState {
    * undo, not saved.
    */
   timeMapOffer: TimeMapOffer | null;
+  /**
+   * "Use song tempo" asked for a song, from a clip's menu or a library entry's:
+   * EDIT shows what the song's tempo and meter would change and applies them
+   * on a press (components/audio/SongTempoDialog). Workspace state: not undo,
+   * not saved.
+   */
+  songTempoRequest: SongTempoRequest | null;
   inpaintSelection: InpaintSelection | null;
   /* ── Workspace selection (batch 11) ───────────────────────────────────────
      Held here rather than in WaveformEditor's local state because EDIT is
@@ -1158,6 +1258,13 @@ interface EditorStoreState {
    *  clip's first step on (lib/editTimeMap adoptClipTimeMaps). One undo step.
    *  Returns the reason when it cannot. Clears the offer either way. */
   adoptClipTimeMaps: (clipId: string) => { ok: true; error?: undefined } | { ok: false; error: string };
+  /** Replace the tempo map and the meter map together, each sanitized, as one
+   *  edit: one undo step takes both back. False when neither changes. */
+  setTimeMaps: (tempoMap: readonly TempoEvent[], meterMap: readonly MeterSegment[]) => boolean;
+  /** Ask EDIT to show "Use song tempo" for a library song, lined up with `clipId` when given. */
+  requestSongTempo: (req: SongTempoRequest) => void;
+  /** Close the song-tempo preview without changing anything. */
+  dismissSongTempoRequest: () => void;
   setInpaintSelection: (sel: InpaintSelection | null) => void;
   clearInpaintSelection: () => void;
   /** Store a time selection. Stores null when either bound is non-finite,
@@ -1260,9 +1367,16 @@ interface EditorStoreState {
 
   // Bus FX racks (mirror the per-track ones)
   addBusEffect: (busId: string, effectId: string) => void;
+  /** Append a VST3 plugin to a bus's insert chain. Live, it is hosted on the
+   *  bus strip like a track insert; offline, the print runs it at its place in
+   *  the bus chain (lib/render/insertPrint). */
+  addBusVst: (busId: string, plugin: VstNode) => void;
   removeBusEffect: (busId: string, entryId: string) => void;
+  reorderBusEffect: (busId: string, from: number, to: number) => void;
   toggleBusEffect: (busId: string, entryId: string) => void;
   updateBusEffectParams: (busId: string, entryId: string, params: Record<string, number>) => void;
+  /** Store a captured plugin state on a bus's VST entry; see `setTrackVstRawState`. */
+  setBusVstRawState: (busId: string, entryId: string, rawState: string, stateHost?: VstStateHost) => void;
 
   // Master FX rack
   addMasterEffect: (effectId: string) => void;
@@ -1379,6 +1493,13 @@ interface EditorStoreState {
    * second bounce moves and renames them and never doubles them.
    */
   setClipRollMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
+  /**
+   * Replace the section markers "Add section markers" wrote on clip `clipId`
+   * (ids `sect:<clipId>:…`, lib/songSections) with `markers`; every other
+   * marker stays. One undo step; a second add moves and renames them and
+   * never doubles them.
+   */
+  setClipSectionMarkers: (clipId: string, markers: readonly TimelineMarker[]) => void;
 
   // Undo / redo (Phase D). Snapshots capture the document slices below; because
   // every mutation replaces arrays immutably, a snapshot just references the prior
@@ -1442,6 +1563,9 @@ interface EditorStoreState {
    *  keyed on the entry, so a 30 Hz burst from one editor gesture — and the
    *  state capture that ends it — coalesce into a single step. */
   setMasterVstParams: (entryId: string, params: Record<string, number>) => void;
+  /** Bypass (or bring back) one master VST entry: live, the chain passes it
+   *  dry, and the freeze and every export skip it. */
+  toggleMasterVst: (entryId: string) => void;
   removeMasterVst: (entryId: string) => void;
   reorderMasterVst: (from: number, to: number) => void;
   clearMasterVst: () => void;
@@ -1790,6 +1914,14 @@ const clipWithUpdates = (clip: AudioClip, updates: Partial<AudioClip>): AudioCli
     const { renderAuto: _auto, ...rest } = next;
     next = rest;
   }
+  // New audio is the song's time only when the write says where it sits in it
+  // (a beat match's stretch does, lib/beatMatchRun). Reversed, re-generated or
+  // bounced audio does not, and a stale tie would put the song's bar lines in
+  // the wrong places.
+  if ('audioBlob' in updates && !('songTime' in updates) && next.songTime !== undefined) {
+    const { songTime: _song, ...rest } = next;
+    next = rest;
+  }
   // A render stamps `renderedProgram`. One that does not say it rendered drums
   // rendered melodic, and one that names no bank rendered bank 0, so a stamp
   // from an earlier render does not survive it.
@@ -1910,6 +2042,8 @@ const controlKeyForTarget = (target: AutomationTarget): string => {
     case 'trackFx': return `track:${target.trackId ?? ''}:fx:${target.entryId ?? ''}`;
     case 'masterFx': return `master:fx:${target.entryId ?? ''}`;
     case 'trackMidiCc': return `track:${target.trackId ?? ''}:cc:${target.paramKey ?? ''}`;
+    // `updateBusEffectParams`' own key, so an armed knob drag on a bus insert is one gesture.
+    case 'busFx': return `bus:${target.trackId ?? ''}:fx:${target.entryId ?? ''}`;
   }
 };
 
@@ -2059,6 +2193,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
   tempoMap: editDefaultTempoMap(120),
   meterMap: editDefaultMeterMap(),
   timeMapOffer: null,
+  songTempoRequest: null,
   inpaintSelection: null,
   timeSelection: null,
   editCursorSec: 0,
@@ -2124,6 +2259,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       // than silently forcing 120 or 4/4, and none of its later changes.
       ...loadedTimeMaps(get(), { bpm, timeSignature, meterMap, tempoMap }),
       timeMapOffer: null,
+      songTempoRequest: null,
       markers: [],
       automationLanes: [],
       // A record pass cannot survive the document it was writing into.
@@ -3028,6 +3164,24 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     logInfo('editor', `The arrangement now follows "${clip.label}": ${describeClipTime(clip)} from ${res.anchorSec.toFixed(2)}s`);
     return { ok: true };
   },
+  setTimeMaps: (tempoMap, meterMap) => {
+    const s = get();
+    const nextTempo = sanitizeEditTempoMap(tempoMap ?? [], s.bpm);
+    const nextMeter = sanitizeEditMeterMap(meterMap);
+    const tempoSame = sameTempoMap(nextTempo, s.tempoMap);
+    const meterSame = sameMeterMap(nextMeter, s.meterMap);
+    if (tempoSame && meterSame) return false;
+    beginUndoStep();
+    set({ ...(tempoSame ? {} : tempoSlice(nextTempo)), ...(meterSame ? {} : { meterMap: nextMeter }) });
+    return true;
+  },
+  requestSongTempo: (req) => {
+    if (!req?.entryId) return;
+    set({ songTempoRequest: { entryId: req.entryId, ...(req.clipId ? { clipId: req.clipId } : {}) } });
+  },
+  dismissSongTempoRequest: () => {
+    if (get().songTempoRequest) set({ songTempoRequest: null });
+  },
   setInpaintSelection: (sel) => set({ inpaintSelection: sel }),
   clearInpaintSelection: () => set({ inpaintSelection: null }),
 
@@ -3197,11 +3351,48 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
       ),
     })),
 
+  addBusVst: (busId, plugin) =>
+    set((s) => ({
+      buses: s.buses.map((b) =>
+        b.id === busId
+          ? { ...b, fxChain: [...b.fxChain, { id: uid(), effect: 'vst3', params: {}, enabled: true, vst: plugin }] }
+          : b,
+      ),
+    })),
+
   removeBusEffect: (busId, entryId) =>
     set((s) => ({
       buses: s.buses.map((b) => (b.id === busId ? { ...b, fxChain: b.fxChain.filter((e) => e.id !== entryId) } : b)),
       automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
     })),
+
+  reorderBusEffect: (busId, from, to) =>
+    set((s) => ({
+      buses: s.buses.map((b) => {
+        if (b.id !== busId) return b;
+        if (from === to || from < 0 || to < 0 || from >= b.fxChain.length || to >= b.fxChain.length) return b;
+        const next = [...b.fxChain];
+        const [item] = next.splice(from, 1);
+        next.splice(to, 0, item);
+        return { ...b, fxChain: next };
+      }),
+    })),
+
+  setBusVstRawState: (busId, entryId, rawState, stateHost = 'pedalboard') => {
+    coalesceAs(`bus:${busId}:vst:${entryId}`); // see setMasterVstRawState
+    set((s) => ({
+      buses: s.buses.map((b) =>
+        b.id === busId
+          ? {
+              ...b,
+              fxChain: b.fxChain.map((e) =>
+                e.id === entryId && e.vst ? { ...e, vst: { ...e.vst, raw_state: rawState, state_host: stateHost } } : e,
+              ),
+            }
+          : b,
+      ),
+    }));
+  },
 
   toggleBusEffect: (busId, entryId) =>
     set((s) => ({
@@ -3293,10 +3484,18 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     }));
   },
 
+  toggleMasterVst: (entryId) =>
+    set((s) => ({
+      masterVstChain: s.masterVstChain.map((e) => (e.id === entryId ? { ...e, enabled: !e.enabled } : e)),
+    })),
+
   removeMasterVst: (entryId) =>
     set((s) => ({
       masterVstChain: s.masterVstChain.filter((e) => e.id !== entryId),
       frozenMaster: null,
+      // A lane on the plugin's parameters writes to nothing once it is gone,
+      // as `removeMasterEffect` already rules for the rack.
+      automationLanes: s.automationLanes.filter((l) => l.target.entryId !== entryId),
     })),
 
   reorderMasterVst: (from, to) =>
@@ -3757,6 +3956,13 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
     set((s) => {
       const markers = withClipTimelineMarkers(s.markers, clipId, incoming);
       // Nothing written when the clip's markers are already these, so a re-bounce with no marker edit is no marker change.
+      const same = markers.length === s.markers.length
+        && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
+      return same ? {} : { markers };
+    }),
+  setClipSectionMarkers: (clipId, incoming) =>
+    set((s) => {
+      const markers = withClipSectionMarkers(s.markers, clipId, incoming);
       const same = markers.length === s.markers.length
         && markers.every((m, i) => m.id === s.markers[i].id && m.t === s.markers[i].t && m.label === s.markers[i].label);
       return same ? {} : { markers };

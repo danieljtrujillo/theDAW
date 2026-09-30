@@ -1,5 +1,5 @@
 import { dawImportAudioUrl, type DawClip, type DawProject, type DawTrack } from './dawImportClient';
-import { computePeaks, useEditorStore } from '../state/editorStore';
+import { computePeaks, useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore';
 import { useAppUiStore } from '../state/appUiStore';
 import { useStatusBarStore } from '../state/statusBarStore';
 import { logError, logInfo } from '../state/logStore';
@@ -11,6 +11,11 @@ import { takeToRoll } from './takeNotes';
 import { clampTempoBpm } from './tempoMap';
 import { validTimeSignature } from './timeSignatureIO';
 import { pairingHeader } from './pairing';
+import { clipVoice, renderedVoiceFields, type ClipVoice } from './clipProgram';
+import { getGlobalVoice } from './soundfontEngine';
+import { DRUM_CHANNEL } from './editChannels';
+import { bankSelectOf, gmProgramOf } from './projectClient';
+import { BUNDLED_BANK_ID } from './bankRegistry';
 
 const DEFAULT_CLIP_SECONDS = 4;
 
@@ -102,7 +107,47 @@ export const dawMidiWindowSec = (clip: DawClip, notes: readonly RenderNote[], so
   return Math.min(available, allInside ? Math.max(own, available) : own);
 };
 
-const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
+/** A column's program, drum flag, bank and sound bank as EDIT holds them on a
+ *  track, read as EDIT's loader reads a .tasmo track's. None on an imported set. */
+export const dawTrackVoice = (
+  t: DawTrack,
+): Pick<EditorTrack, 'instrumentProgram' | 'isPercussion' | 'instrumentBank' | 'instrumentBankId'> => {
+  const program = gmProgramOf(t.instrument_program);
+  const bank = bankSelectOf(t.instrument_bank);
+  return {
+    ...(program !== undefined ? { instrumentProgram: program } : {}),
+    ...(t.is_percussion === true ? { isPercussion: true } : {}),
+    ...(program !== undefined && bank > 0 && t.is_percussion !== true ? { instrumentBank: bank } : {}),
+    ...(program !== undefined && t.instrument_bank_id && t.instrument_bank_id !== BUNDLED_BANK_ID ? { instrumentBankId: t.instrument_bank_id } : {}),
+  };
+};
+
+/** A cell's own program, bank and sound bank as EDIT holds them on a clip. */
+export const dawClipVoice = (c: DawClip): Pick<AudioClip, 'instrumentProgram' | 'instrumentBank' | 'instrumentBankId'> => {
+  const program = gmProgramOf(c.instrument_program);
+  const bank = bankSelectOf(c.instrument_bank);
+  return {
+    ...(program !== undefined ? { instrumentProgram: program } : {}),
+    ...(program !== undefined && bank > 0 ? { instrumentBank: bank } : {}),
+    ...(program !== undefined && c.instrument_bank_id && c.instrument_bank_id !== BUNDLED_BANK_ID ? { instrumentBankId: c.instrument_bank_id } : {}),
+  };
+};
+
+/** A DAW MIDI clip's render on `voice`: its notes (on the drum channel for a
+ *  drum voice) and the options naming the voice's program and bank. */
+export const dawMidiRender = (clip: DawClip, voice: ClipVoice): { notes: RenderNote[]; options: RenderOptions } => {
+  const notes = notesFromDawClip(clip);
+  return {
+    notes: voice.percussion ? notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : notes,
+    options: {
+      ...dawMidiRenderOptions(clip),
+      ...(voice.program !== undefined ? { program: voice.program } : {}),
+      ...(voice.bank ? { bank: voice.bank } : {}),
+    },
+  };
+};
+
+const loadClipAudio = async (clip: DawClip, project: DawProject, voice: ClipVoice): Promise<{
   blob: Blob;
   mimeType: string;
   duration: number;
@@ -125,9 +170,8 @@ const loadClipAudio = async (clip: DawClip, project: DawProject): Promise<{
     return { blob, mimeType: blob.type || 'audio/wav', duration };
   }
 
-  const notes = notesFromDawClip(clip);
+  const { notes, options } = dawMidiRender(clip, voice);
   if (notes.length === 0) throw new Error(`Clip has no audio or MIDI notes: ${clip.name}`);
-  const options = dawMidiRenderOptions(clip);
   // In the MIDI render queue's turn, so it never overlaps another render.
   const rendered = await withRenderTurn('', clip.name || 'Imported MIDI clip', () => renderNotesToBlob(notes, options));
   const { rollNotes, totalSteps } = pianoNotesFromRenderNotes(notes, project.tempo);
@@ -172,12 +216,17 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
       pan: Math.max(-1, Math.min(1, dawTrack.pan || 0)),
       mute: dawTrack.mute,
       solo: dawTrack.solo,
+      // The column's voice, so its parts play and render on their own instrument.
+      ...dawTrackVoice(dawTrack),
     });
     const trackColor = useEditorStore.getState().tracks.find((track) => track.id === trackId)?.color ?? '#8b5cf6';
 
     for (const clip of dawClips) {
       try {
-        const loaded = await loadClipAudio(clip, project);
+        // The voice EDIT gives this clip: its own program, else its track's, else the picker's.
+        const clipFields = dawClipVoice(clip);
+        const voice = clipVoice(clipFields, useEditorStore.getState().tracks.find((t) => t.id === trackId), getGlobalVoice());
+        const loaded = await loadClipAudio(clip, project, voice);
         const { peaks, duration } = await computePeaks(loaded.blob, 240);
         const sourceDuration = loaded.duration || duration || clipDuration(clip);
         const startSec = hasArrangement ? Math.max(0, clip.start_time || 0) : sceneStartSec(clip, project);
@@ -217,6 +266,9 @@ export async function importDawProjectToEditor(project: DawProject): Promise<num
                   sourceTotalSteps: loaded.sourceTotalSteps,
                 }),
                 renderAuto: true,
+                // What the render was made with, so EDIT reads it as current.
+                ...clipFields,
+                ...renderedVoiceFields(voice),
               }
             : {}),
         });

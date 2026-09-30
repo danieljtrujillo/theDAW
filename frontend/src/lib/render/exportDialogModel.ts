@@ -128,9 +128,12 @@ export function defaultExportState(opts: {
   selectionSec?: { startSec: number; endSec: number } | null;
   projectEndSec: number;
   name?: string;
+  /** WHAT the dialog opens on: the mix, unless it was opened for something
+   *  else (a clip's menu opens it on the selected clips). */
+  what?: ExportWhat;
 }): ExportDialogState {
   return {
-    what: { kind: 'mix' },
+    what: opts.what ?? { kind: 'mix' },
     rangeMode: 'project',
     selectionSec: opts.selectionSec ?? null,
     customSec: { startSec: 0, endSec: opts.projectEndSec },
@@ -198,11 +201,31 @@ const midiScopeOf = (what: ExportWhat): ArrangementMidiScope =>
       : { kind: 'clips', clipIds: [...what.clipIds] };
 
 /**
+ * The part of a stem's file name that says which track it is: the track's
+ * name, with the characters a file name cannot hold made '_', or its id when
+ * the dialog knows no name for it. Two picked tracks with one name are told
+ * apart by their place among the tracks of that name, "(1)", "(2)".
+ */
+function stemNames(trackIds: readonly string[], trackNames?: ReadonlyMap<string, string>): string[] {
+  const names = trackIds.map((id) => trackNames?.get(id)?.replace(/[<>:"/\\|?*]/g, '_').trim() || id);
+  const total = new Map<string, number>();
+  for (const n of names) total.set(n, (total.get(n) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return names.map((n) => {
+    if ((total.get(n) ?? 0) < 2) return n;
+    const k = (seen.get(n) ?? 0) + 1;
+    seen.set(n, k);
+    return `${n} (${k})`;
+  });
+}
+
+/**
  * Turns the dialog's five answers into the exact requests the engine runs.
  * Never throws: an unresolvable range is reported through `rangeError`
- * rather than by leaving `items` empty or raising.
+ * rather than by leaving `items` empty or raising. `trackNames` (track id to
+ * name) names each stem's file after its track.
  */
-export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
+export function buildRenderRequest(state: ExportDialogState, trackNames?: ReadonlyMap<string, string>): ExportRenderPlan {
   const { float32, kind } = formatOf(state.format);
   const tailSec = clampTailSec(state.tailSec);
   const trimmedName = state.name.trim();
@@ -250,7 +273,8 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
     // Mirrors `stemRequest`: the track's own rack, no automation, no track
     // mix. `float32` comes from the chosen format, not from VST detection —
     // there is no live chain to inspect from a dialog.
-    for (const trackId of what.trackIds) {
+    const names = stemNames(what.trackIds, trackNames);
+    for (const [i, trackId] of what.trackIds.entries()) {
       const request: BounceRequest = {
         ...base,
         scope: { kind: 'track', trackId },
@@ -260,7 +284,7 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
       };
       items.push({
         kind: 'stem',
-        label: withWavExt(`${trimmedName} — ${trackId}`),
+        label: withWavExt(`${trimmedName} — ${names[i]}`),
         trackId,
         request,
         range,
@@ -269,13 +293,16 @@ export function buildRenderRequest(state: ExportDialogState): ExportRenderPlan {
       });
     }
   } else {
-    // Mirrors `selectionRequest`: no inserts, no automation, but the track
-    // mix applies — a selection bounce should sound like what is balanced.
+    // Mirrors `selectionRequest`: the picked clips as they play, through
+    // their tracks' racks and VST3 inserts, the buses the graph routes them
+    // through and the master chain, with the automation and the track mix
+    // (lib/render/bounceWalksMix). Solo is ignored: the file holds exactly
+    // the clips that were picked.
     const request: BounceRequest = {
       ...base,
       scope: { kind: 'selection', clipIds: what.clipIds },
-      includeFx: false,
-      includeAutomation: false,
+      includeFx: true,
+      includeAutomation: true,
       includeTrackMix: true,
     };
     items.push({

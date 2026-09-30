@@ -24,7 +24,10 @@
  * The worklet does the audio; this module does the plumbing: quanta -> blocks
  * over the port, blocks -> WebSocket, processed blocks back. Transport state
  * (playing / position / tempo / discontinuity) is broadcast to every live node
- * by liveMixer through `broadcastVstTransport`.
+ * through `broadcastVstTransport`, by liveMixer for EDIT and by
+ * lib/performTransport for PERFORM's grid, except to an entry on a
+ * transport of its own (`setVstEntryTransport`: a piano-roll part's instrument,
+ * which plays on the roll's clock).
  *
  * Units: `positionSamples` is sample frames on the project timeline;
  * `tempoBpm` is beats per minute; `SWAP_RAMP_SEC` is seconds.
@@ -57,12 +60,32 @@ export const SWAP_RAMP_SEC = 0.02;
 /** What the mixer tells every live plugin about the transport. */
 export interface VstTransportInfo {
   playing: boolean;
-  /** Timeline position of the next quantum, in sample frames. */
+  /** Timeline position of the next quantum, in sample frames (at `atTime` when given). */
   positionSamples: number;
   /** 0 = unknown. */
   tempoBpm: number;
   /** Start / seek / loop wrap: the host resets the plugin. */
   discontinuity: boolean;
+  /**
+   * The AudioContext time `positionSamples` was read at. A node that goes live
+   * while the transport plays is told the position advanced by the time since,
+   * so a plugin whose host opened seconds into playback lands where the
+   * transport is and not where it was. Left out, the position is replayed as sent.
+   */
+  atSec?: number;
+  /**
+   * The context time `positionSamples` holds at, in seconds. The worklet runs
+   * the position on from there to the quantum the message lands in, so a
+   * position computed for a moment ahead (PLAY's first downbeat) is exact.
+   * Absent: the position is taken as the next quantum's.
+   */
+  atTime?: number;
+  /**
+   * Advance the position every quantum even while `playing` is false, so MIDI
+   * stamped on the position keeps its time with the transport stopped (a
+   * piano-roll part's audition). Absent: the position holds while stopped.
+   */
+  freeRun?: boolean;
 }
 
 /* ── worklet module loading (one promise per context, as makeChop does) ─────── */
@@ -84,8 +107,25 @@ export function ensureVstBridgeModule(ctx: BaseAudioContext): Promise<void> {
 
 /* ── transport broadcast ───────────────────────────────────────────────────── */
 
-/** Every live node's port, so the transport reaches all of them in one call. */
-const liveNodes = new Set<{ post: (msg: Record<string, unknown>) => void }>();
+/** Every live node's port, and the entry it hosts, so the transport reaches all of them in one call. */
+const liveNodes = new Set<{ entryId: string; post: (msg: Record<string, unknown>) => void }>();
+/**
+ * Entries whose plugin follows a transport of its own rather than EDIT's: a
+ * piano-roll part's instrument plays on the roll's clock (state/rollInstruments),
+ * so EDIT's play, stop and seek never reach it. By entry id.
+ */
+const entryTransports = new Map<string, VstTransportInfo>();
+
+/** The worklet message for `info`. */
+const transportMessage = (info: VstTransportInfo): Record<string, unknown> => ({
+  type: 'transport',
+  playing: info.playing,
+  positionSamples: info.positionSamples,
+  tempoBpm: info.tempoBpm,
+  discontinuity: info.discontinuity,
+  ...(info.atTime !== undefined && Number.isFinite(info.atTime) ? { atTime: info.atTime } : {}),
+  ...(info.freeRun ? { freeRun: true } : {}),
+});
 /** The last transport state, replayed into a node that appears mid-transport. */
 let lastTransport: VstTransportInfo = {
   playing: false,
@@ -95,20 +135,46 @@ let lastTransport: VstTransportInfo = {
 };
 
 /**
+ * The transport a node that goes live on `ctx` is told: the last broadcast,
+ * with its position carried forward to `ctx.currentTime` while it plays, and
+ * always a discontinuity, since the plugin has never seen this stream before.
+ */
+function transportNow(ctx: BaseAudioContext, t: VstTransportInfo = lastTransport): Record<string, unknown> {
+  let positionSamples = t.positionSamples;
+  if (t.playing && t.atSec !== undefined && Number.isFinite(t.atSec)) {
+    const elapsed = ctx.currentTime - t.atSec;
+    if (elapsed > 0) positionSamples += Math.round(elapsed * ctx.sampleRate);
+  }
+  return { ...transportMessage(t), positionSamples, discontinuity: true };
+}
+
+/**
  * Tell every live plugin where the transport is. Called by liveMixer on start,
- * seek, loop wrap and stop; `discontinuity` is what makes the host call the
- * plugin's `reset()`, so a delay tail does not smear across a seek.
+ * seek, loop wrap and stop, and by PERFORM's grid (lib/performTransport) on its
+ * first launch, a tempo change and Stop; `discontinuity` is what makes the host
+ * call the plugin's `reset()`, so a delay tail does not smear across a seek.
  */
 export function broadcastVstTransport(info: VstTransportInfo): void {
   lastTransport = info;
-  const msg = {
-    type: 'transport',
-    playing: info.playing,
-    positionSamples: info.positionSamples,
-    tempoBpm: info.tempoBpm,
-    discontinuity: info.discontinuity,
-  };
-  for (const n of liveNodes) n.post(msg);
+  const msg = transportMessage(info);
+  for (const n of liveNodes) if (!entryTransports.has(n.entryId)) n.post(msg);
+}
+
+/**
+ * Put entry `entryId`'s plugin on a transport of its own (`info`), which EDIT's
+ * broadcast then leaves alone; `null` hands it back to EDIT's transport, as a
+ * jump. Reaches the entry's live node now, and one that goes live later.
+ */
+export function setVstEntryTransport(entryId: string, info: VstTransportInfo | null): void {
+  if (info) entryTransports.set(entryId, info);
+  else if (!entryTransports.delete(entryId)) return;
+  const msg = transportMessage(info ?? { ...lastTransport, discontinuity: true });
+  for (const n of liveNodes) if (n.entryId === entryId) n.post(msg);
+}
+
+/** The transport entry `entryId`'s plugin follows: its own, else EDIT's. */
+export function vstEntryTransport(entryId: string): VstTransportInfo {
+  return entryTransports.get(entryId) ?? lastTransport;
 }
 
 /* ── the factory ───────────────────────────────────────────────────────────── */
@@ -269,6 +335,7 @@ export function createVstLiveNode(
   let audioPortClient: VstBridgeClientLike | null = null;
 
   const portEntry = {
+    entryId: entry.id,
     post: (msg: Record<string, unknown>) => {
       worklet?.port.postMessage(msg);
     },
@@ -437,13 +504,9 @@ export function createVstLiveNode(
 
     liveNodes.add(portEntry);
     portEntry.post({ type: 'live', live: true });
-    portEntry.post({
-      type: 'transport',
-      playing: lastTransport.playing,
-      positionSamples: lastTransport.positionSamples,
-      tempoBpm: lastTransport.tempoBpm,
-      discontinuity: true, // the plugin has never seen this stream before
-    });
+    // The plugin has never seen this stream before: a discontinuity, on the
+    // entry's own transport when it has one (a roll part's), else EDIT's.
+    portEntry.post(transportNow(ctx, vstEntryTransport(entry.id)));
     if (!audioOnPort) s.audioSink = onProcessed;
     // Whatever the entry already holds has to reach a plugin that just started
     // from its state file; the diff map is empty, so this pushes everything.
@@ -467,13 +530,8 @@ export function createVstLiveNode(
     if (!audioOnPort || s.client !== audioPortClient) audioOnPort = attachAudioPort(s, worklet);
     if (!audioOnPort) s.audioSink = onProcessed;
     portEntry.post({ type: 'live', live: true });
-    portEntry.post({
-      type: 'transport',
-      playing: lastTransport.playing,
-      positionSamples: lastTransport.positionSamples,
-      tempoBpm: lastTransport.tempoBpm,
-      discontinuity: true, // the respawned plugin has never seen this stream before
-    });
+    // The respawned plugin has never seen this stream before.
+    portEntry.post(transportNow(ctx, vstEntryTransport(entry.id)));
     // A respawned plugin starts from its state file, not from whatever the
     // diff map remembers sending last time, so the map must not suppress
     // this re-push the way it does a same-session param rebuild.

@@ -71,6 +71,12 @@ dependencies = [
     # basic-pitch). Downloads its checkpoint (~165 MB) to ~/piano_transcription
     # on first use.
     "piano-transcription-inference>=0.0.5",
+    # piano-transcription-inference imports audioread at module level (its
+    # utilities.py) but does not declare it, so without this line the package
+    # never imports and every piano stem falls back to basic-pitch. theDAW
+    # decodes the audio itself (backend/lib/audio_io.py); audioread is needed
+    # for the import alone.
+    "audioread>=3.1.0",
     "pretty_midi>=0.2.11",
     "mido>=1.3.3",
     # notation module — symbolic music conversion / analysis backbone.

@@ -41,6 +41,20 @@
  * another part soloed) and STOP put its controllers back where a channel
  * starts, pedal up first, so a held pedal never outlives its part.
  *
+ * VST3 instruments: a part whose voice is `vst` (it plays through a VST3
+ * instrument, state/rollInstruments) is scheduled as a soundfont part is, on
+ * its own channels, with its bends as channel wheel messages, its controllers
+ * and its expressive notes' member channels, and its notes and messages go to
+ * the plugin instead of the synth. It has no General MIDI preset for an
+ * articulation, so its notes stay on their lanes' channels, shaped by their
+ * articulations, and each change of articulation is a switch just before the
+ * note (lib/articulationMap vst3SwitchEvents, the part's `vst.mode`): a
+ * keyswitch note (a ScheduledRollNote with `keyswitch`) or a UACC value on
+ * CC 32, on every channel the part plays on, the switch in force sent where
+ * playback starts or loops back, as EDIT's instrument slot is sent them.
+ * `channelOwner` and `partChannels` name each live channel's part, so the
+ * transport can hand a VST part's messages to its plugin.
+ *
  * Expression: a note with pressure, timbre or bend of its own (PianoNote
  * `expr`) plays MPE-style on a member channel of its part's (lib/rollTracks
  * `mpe`), taken in rotation (lib/mpeRotation): just before it starts, that
@@ -79,7 +93,17 @@ import {
 import { REANCHOR_STEPS, rollStepAt, shownStep, windowOnsets } from './rollTransport';
 import { TICKS_PER_STEP } from './rollSnap';
 import { audiblePartIds, controlStateBefore, partController, rollLiveChannels, type PartLiveChannels } from './rollTracks';
-import { articulatedNotes, articulationBankOf, articulationBankSelect, type ArticulatedNote, type SoundfontArticulationTarget } from './articulationMap';
+import {
+  articulatedNotes,
+  articulationBankOf,
+  articulationBankSelect,
+  usesArticulations,
+  vst3SwitchEvents,
+  type ArticulatedNote,
+  type SoundfontArticulationTarget,
+  type Vst3ArticulationSwitch,
+  type Vst3SwitchMode,
+} from './articulationMap';
 import type { PianoNote } from '../state/pianoRollStore';
 import { MPE_DEFAULT_MEMBERS, TIMBRE_REST, expressionCurveSteps, expressionMessages, hasExpression, membersNeeded, noteBendRange } from './mpeRotation';
 
@@ -104,7 +128,16 @@ export interface SchedulerVoice {
   program?: number;
   bank?: number;
   percussion: boolean;
+  /**
+   * The part plays through a VST3 instrument, which is told its notes'
+   * articulations by `mode` (keyswitch notes or UACC on CC 32). Its messages
+   * are channel messages, as a soundfont part's are.
+   */
+  vst?: { mode: Vst3SwitchMode };
 }
+
+/** Seconds a keyswitch note is held: long enough for the plugin to see it, gone before the note it switches. */
+export const KEYSWITCH_HOLD_SEC = 0.001;
 
 /** One note to sound, at context time `when` for `duration` seconds. */
 export interface ScheduledRollNote {
@@ -123,6 +156,8 @@ export interface ScheduledRollNote {
   /** The note's roll step, and the absolute step (from PLAY) it sounds at. */
   step: number;
   abs: number;
+  /** An articulation switch of a VST3 part: a note on its key at velocity 1, held KEYSWITCH_HOLD_SEC. */
+  keyswitch?: boolean;
 }
 
 /**
@@ -155,6 +190,13 @@ interface ControlItem {
   value: number;
 }
 
+/** A VST3 part's articulation switch placed on the step grid: its roll tick and the switch. */
+interface SwitchItem {
+  step: number;
+  tick: number;
+  sw: Vst3ArticulationSwitch;
+}
+
 /** A part's notes as they sound (lane repeats written out), its live channels and its controller changes. */
 interface PartPlan {
   id: string;
@@ -172,6 +214,8 @@ interface PartPlan {
   artIndex: Map<PianoNote, number>;
   /** The bent lane each articulation channel follows (its wheel goes there too), or null. */
   artFollows: Array<number | null>;
+  /** A VST3 part's articulation switches, in tick order; empty for any other part. */
+  switches: SwitchItem[];
 }
 
 export interface RollScheduler {
@@ -185,7 +229,24 @@ export interface RollScheduler {
   release: (now: number) => ScheduledWheel[];
   /** The lap and its clock as the last tick left them (the click reads them). */
   state: () => RollPlayState;
+  /** The part live channel `channel` belongs to, as the last tick planned the parts; undefined for none. */
+  channelOwner: (channel: number) => string | undefined;
+  /** Every live channel part `partId` plays on, its own first, then its bent lanes', its articulations' and its member channels. */
+  partChannels: (partId: string) => number[] | undefined;
 }
+
+/** The last switch before `tick` (a switch AT `tick` plays there in the window), or undefined. */
+const switchBefore = (switches: readonly SwitchItem[], tick: number): SwitchItem | undefined => {
+  let out: SwitchItem | undefined;
+  for (const sw of switches) {
+    if (sw.tick >= tick - 0.5) break;
+    out = sw;
+  }
+  return out;
+};
+
+/** A voice whose messages are channel messages: a soundfont program, or a VST3 instrument. */
+const channelVoice = (v: SchedulerVoice): boolean => v.program !== undefined || v.vst !== undefined;
 
 /**
  * The controller values to send where playback lands on `tick`: each
@@ -235,6 +296,10 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
   let controlFresh = true;
   // Each part's controllers and channels as the last plan had them, so a change is seen.
   let controlShape = new Map<string, { controls: readonly RollControl[]; channels: string }>();
+  // VST3 parts' articulation switches: the next tick sends the switch in force where playback
+  // resumes (at the start and after a seek or re-anchor), and a part heard again gets its own.
+  let switchesFresh = true;
+  const switchLive = new Set<string>();
   // Member channels: the context time each one's last note ends, and the ones this playback has set.
   const memberBusy = new Map<number, number>();
   const memberTouched = new Set<number>();
@@ -254,6 +319,9 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     memberBusy.set(pick, Math.max(memberBusy.get(pick) ?? -Infinity, end));
     return pick;
   };
+
+  // Each live channel's part, as the last plan laid them out.
+  let channelOwners = new Map<number, string>();
 
   const releaseWheel = (ch: number, now: number, out: ScheduledWheel[]) => {
     const at = Math.max(now, lastWheelTime) + 0.001;
@@ -285,28 +353,32 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     if (followed.lapState !== playState.lapState) {
       wheelFresh = true;
       controlFresh = true;
+      switchesFresh = true;
     }
     playState = followed;
     const { lapState, steps, clock: lc } = playState;
     const { lap } = lapState;
-    // The program each part sounds, and the bank it is selected in, decide what its articulations resolve to.
+    // The program each part sounds, and the bank it is selected in, decide what its articulations resolve to; a VST3 part switches its own.
     const partPrograms = tracks.map((t) => voiceOf(t.id)?.program);
     const partBanks = tracks.map((t) => voiceOf(t.id)?.bank ?? t.bank);
-    const voiceSig = partPrograms.map((p, i) => `${p ?? ''}/${partBanks[i]}`).join(',');
+    const partVsts = tracks.map((t) => voiceOf(t.id)?.vst);
+    const voiceSig = tracks.map((_, i) => `${partPrograms[i] ?? ''}/${partBanks[i]}${partVsts[i] ? `|${partVsts[i]?.mode}` : ''}`).join(',');
     if (!source || source.tracks !== tracks || source.lanes !== lanes || source.total !== total || source.bends !== bends || source.voices !== voiceSig) {
       if (source && (source.lanes !== lanes || source.total !== total || source.bends !== bends)) wheelFresh = true;
       // A part moved to another channel starts its curve fresh there.
       if (source && source.tracks.length !== tracks.length) wheelFresh = true;
       source = { tracks, lanes, total, bends, voices: voiceSig };
       const unrolled = tracks.map((t) => unrollLanes(t.notes, lanes, total));
-      const artsOf = tracks.map((t, i) =>
-        articulatedNotes(unrolled[i], {
+      const artsOf = tracks.map((t, i) => {
+        const arts = articulatedNotes(unrolled[i], {
           instrumentId: t.instrumentId,
           program: t.program ?? partPrograms[i] ?? null,
           percussion: voiceOf(t.id)?.percussion === true,
           ...articulationBankOf(partBanks[i]),
-        }),
-      );
+        });
+        // A VST3 instrument has no preset channel for an articulation: every note stays on its lane.
+        return partVsts[i] ? { notes: arts.notes.map((a) => (a.target ? { ...a, target: null, slot: -1 } : a)), targets: [] } : arts;
+      });
       // An articulation channel per preset and bent lane, so a pizzicato in a bent lane bends with it.
       const bentSet = bentLanes(lanes, bends);
       const artPlans = artsOf.map((arts) => {
@@ -354,8 +426,11 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
           artTargets: artsOf[i].targets,
           artIndex: artPlans[i].index,
           artFollows: artPlans[i].follows,
+          switches: vstSwitches(unrolled[i], partVsts[i], voiceOf(t.id)?.percussion === true),
         };
       });
+      channelOwners = new Map();
+      for (const p of plans) for (const ch of p.channelList) if (!channelOwners.has(ch)) channelOwners.set(ch, p.id);
       bent = playedRollBends(bends, lanes, total);
       // A part whose controllers or channels changed: every channel goes back
       // to where it starts and every sounding part sends its state again, so
@@ -377,18 +452,18 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     const targetAbs = lapAbsAt(lc, now + lookahead);
     const voices = new Map(plans.map((p) => [p.id, voiceOf(p.id) ?? { percussion: false }]));
 
-    // Each soundfont part's bent lanes: their own channels' wheel messages for this window.
+    // Each soundfont or VST3 part's bent lanes: their own channels' wheel messages for this window.
     const bentChannels = new Set<number>();
     for (const plan of plans) {
       const voice = voices.get(plan.id) as SchedulerVoice;
-      if (voice.program === undefined || voice.percussion) continue;
+      if (!channelVoice(voice) || voice.percussion) continue;
       for (const lane of plan.channels.bent) if (lapCurves.has(lane)) for (const ch of laneWheelChannels(plan, lane)) bentChannels.add(ch);
     }
     // A channel whose lane stopped bending goes back to the centre.
     for (const ch of [...wheelRanges.keys()]) if (!bentChannels.has(ch)) releaseWheel(ch, now, wheels);
     for (const plan of plans) {
       const voice = voices.get(plan.id) as SchedulerVoice;
-      if (voice.program === undefined || voice.percussion) continue;
+      if (!channelVoice(voice) || voice.percussion) continue;
       for (const lane of plan.channels.bent) {
         const curve = lapCurves.get(lane);
         if (!curve) continue;
@@ -427,7 +502,7 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     const resumeTime = Math.max(now, lapTimeOf(lc, resumeAbs));
     for (const plan of plans) {
       const voice = voices.get(plan.id) as SchedulerVoice;
-      const sounding = voice.program !== undefined && audible.has(plan.id) && plan.controls.length > 0;
+      const sounding = channelVoice(voice) && audible.has(plan.id) && plan.controls.length > 0;
       if (!sounding) {
         if (controlLive.has(plan.id)) {
           const silenced: ScheduledWheel[] = [];
@@ -466,9 +541,41 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
     for (const c of controlOut) wheels.push(c.msg);
 
     for (const plan of plans) {
-      if (!audible.has(plan.id)) continue;
+      if (!audible.has(plan.id)) {
+        switchLive.delete(plan.id);
+        continue;
+      }
       const voice = voices.get(plan.id) as SchedulerVoice;
-      const soundfont = voice.program !== undefined;
+      // Channel messages bend and express the note: a soundfont program's, or a VST3 instrument's.
+      const soundfont = channelVoice(voice);
+      // A VST3 part's articulation switches, on every channel it plays on: the one in force where
+      // playback resumes (and where the lap starts over), then each in the window.
+      if (voice.vst && plan.switches.length) {
+        const pushSwitch = (sw: Vst3ArticulationSwitch, at: number, abs: number, step: number): void => {
+          for (const ch of plan.channelList) {
+            if (sw.kind === 'keyswitch') {
+              notes.push({ partId: plan.id, note: sw.note, velocity: 1, when: at, duration: KEYSWITCH_HOLD_SEC, channel: ch, percussion: false, step, abs, keyswitch: true });
+            } else {
+              wheels.push({ kind: 'control', channel: ch, controller: sw.controller, value: sw.value, time: at });
+            }
+          }
+        };
+        const resumed = switchesFresh || !switchLive.has(plan.id);
+        if (resumed) {
+          const held = switchBefore(plan.switches, resumeTick);
+          if (held) pushSwitch(held.sw, resumeTime, resumeAbs, resumeTick / TICKS_PER_STEP);
+          switchLive.add(plan.id);
+        }
+        const from = resumed ? resumeAbs + 1e-9 : cursor;
+        const firstLap = Math.max(0, Math.floor((from - lap.base) / lap.len) + 1);
+        for (let k = firstLap; k < firstLap + MAX_LAP_STARTS && lap.base + k * lap.len <= targetAbs; k += 1) {
+          const held = switchBefore(plan.switches, lap.start * TICKS_PER_STEP);
+          if (held) pushSwitch(held.sw, Math.max(now, lapTimeOf(lc, lap.base + k * lap.len)), lap.base + k * lap.len, lap.start);
+        }
+        for (const { note: sw, abs } of windowOnsets(plan.switches, lap, cursor, targetAbs)) {
+          pushSwitch(sw.sw, Math.max(now, lapTimeOf(lc, abs)), abs, sw.step);
+        }
+      } else switchLive.delete(plan.id);
       for (const { note: written, abs: occ } of windowOnsets(plan.played, lap, cursor, targetAbs)) {
         // The note as its articulation plays it, and the preset channel it plays on when it has one.
         const art = plan.arts.get(written);
@@ -532,6 +639,7 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
         });
       }
     }
+    switchesFresh = false;
     cursor = Math.max(cursor, targetAbs);
     return { notes, wheels, shownStep: shownStep(lapState, lapAbsAt(lc, now)) };
   };
@@ -557,5 +665,24 @@ export function createRollScheduler(roll: RollSchedulerSource, origin: number, l
       return out;
     },
     state: () => playState,
+    channelOwner: (channel) => channelOwners.get(channel),
+    partChannels: (partId) => {
+      const plan = plans.find((p) => p.id === partId);
+      if (!plan) return undefined;
+      const { base, lanes, arts, mpe } = plan.channels;
+      return [...new Set([base, ...lanes.values(), ...(arts ?? []), ...(mpe ?? [])])];
+    },
   };
+}
+
+/**
+ * A VST3 part's articulation switches over its played notes (lib/articulationMap
+ * vst3SwitchEvents, one tick ahead of the note), none for a part that plays no
+ * VST3 or plays drums. Once any note has an articulation, the first note's
+ * switch goes out too, so the plugin starts where the part does.
+ */
+function vstSwitches(played: readonly PianoNote[], vst: SchedulerVoice['vst'], percussion: boolean): SwitchItem[] {
+  if (!vst || percussion || !usesArticulations(played)) return [];
+  const notes = played.map((n) => ({ note: n.note, step: n.step, length: n.length, velocity: n.velocity, articulation: n.articulation, tick: n.tick ?? n.step * TICKS_PER_STEP }));
+  return vst3SwitchEvents(notes, vst.mode, {}, 1, TICKS_PER_STEP, true).map((e) => ({ step: e.tick / TICKS_PER_STEP, tick: e.tick, sw: e.switch }));
 }

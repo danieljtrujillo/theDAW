@@ -776,7 +776,7 @@ async function main(): Promise<void> {
     assert.deepEqual(
       bounceIsChunkSafe(req({ kind: 'selection', clipIds: ['c1'] }, false), tracks, master, stubResolve),
       { safe: true, reasons: [] },
-      "and today's selection bounce sets includeFx:false, so it is chunk-safe",
+      'a selection bounce with no inserts builds no rack, so it is chunk-safe',
     );
 
     assert.deepEqual(
@@ -876,12 +876,12 @@ async function main(): Promise<void> {
       {
         scope: { kind: 'selection', clipIds: ['c1', 'c2'] },
         sampleRate: BOUNCE_SAMPLE_RATE,
-        includeFx: false,
-        includeAutomation: false,
+        includeFx: true,
+        includeAutomation: true,
         includeTrackMix: true,
         float32: false,
       },
-      'sendSelectionToInit: no inserts, no automation, but the track mix applies',
+      'sendSelectionToInit: the clips as they play, inserts, automation and the track mix',
     );
 
     assert.deepEqual(
@@ -890,11 +890,14 @@ async function main(): Promise<void> {
         scope: { kind: 'track', trackId: 't1' },
         sampleRate: BOUNCE_SAMPLE_RATE,
         includeFx: true,
-        includeAutomation: false,
+        includeAutomation: true,
         includeTrackMix: false,
         float32: false,
       },
-      "renderTrackStem: the track's own rack, no automation, no track mix",
+      // The rack's lanes are in the stem: a freeze empties the live rack, so
+      // nothing else would play them. A volume or pan lane is a lane on the
+      // fader, which the render applies only with the track mix.
+      "renderTrackStem: the track's own rack with its lanes baked in, no track mix",
     );
     assert.equal(
       stemRequest('t1', true).float32,

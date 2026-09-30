@@ -36,6 +36,10 @@ interface ProjectState {
   tempo: number;
   embedAudio: boolean;
   savePath: string;
+  /** The payload a seeded open (PERFORM's Save as .tasmo) handed over, kept
+   *  whole so a save writes every field it carries (the scene names, the tempo
+   *  and meter maps). Null when the dialog was opened without a seed. */
+  pendingProject: TasmoProjectInput | null;
   pendingTracks: TasmoTrackInput[];
   /** Meter of a seeded (imported) project, carried through so saving it does
    *  not drop the source's time signature. Null when nothing seeded one. */
@@ -94,6 +98,60 @@ const writeLocal = (key: string, value: string) => {
 };
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The parts of a save payload beside its tracks and its time: the mix buses,
+ *  the markers, the loop, the master chains, the automation, the controller
+ *  mappings, the roll voice and the tuning. */
+type ProjectDocument = Pick<
+  TasmoProjectInput,
+  | 'buses'
+  | 'locators'
+  | 'loop'
+  | 'master_fx_chain'
+  | 'master_vst_chain'
+  | 'automation_lanes'
+  | 'controller_mappings'
+  | 'roll_voice'
+  | 'tuning'
+>;
+const DOCUMENT_KEYS = [
+  'buses',
+  'locators',
+  'loop',
+  'master_fx_chain',
+  'master_vst_chain',
+  'automation_lanes',
+  'controller_mappings',
+  'roll_voice',
+  'tuning',
+] as const satisfies readonly (keyof ProjectDocument)[];
+
+/**
+ * The document a seeded save (PERFORM's Save as .tasmo) writes.
+ *
+ * EDIT's, when EDIT holds the project being saved: a .tasmo opened in EDIT
+ * seeds PERFORM from the same load, so its tracks carry the ids EDIT's tracks
+ * have, and an edit made in EDIT since (a bus renamed, a master insert added)
+ * belongs in the file. Otherwise EDIT holds some other project, and the seed's
+ * own fields are the project's: a .tasmo PERFORM opened by itself carries its
+ * buses, markers, loop, master chains, automation, controller mappings, roll
+ * voice and tuning. EDIT's fill only what the seed does not carry, which is all
+ * of it for a seed with none (a DAW import carries only its markers).
+ */
+function seededDocument(
+  seed: TasmoProjectInput | null,
+  seedTracks: readonly TasmoTrackInput[],
+  edit: ProjectDocument,
+): ProjectDocument {
+  if (!seed) return edit;
+  const inEdit = new Set(useEditorStore.getState().tracks.map((t) => t.id));
+  if (seedTracks.some((t) => inEdit.has(t.id))) return edit;
+  const own: ProjectDocument = { ...edit };
+  for (const key of DOCUMENT_KEYS) {
+    if (seed[key] !== undefined) Object.assign(own, { [key]: seed[key] });
+  }
+  return own;
+}
 
 const applyDefaultDir = (dir: string) => {
   writeLocal(PROJECTS_DIR_KEY, dir);
@@ -187,6 +245,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   tempo: 120,
   embedAudio: false,
   savePath: '',
+  pendingProject: null,
   pendingTracks: [],
   pendingTimeSignature: null,
   sourceDaw: null,
@@ -204,12 +263,26 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       set({
         projectName: seed.project_name || 'Untitled',
         tempo: seed.tempo ?? 120,
+        pendingProject: seed,
         pendingTracks: seed.tracks ?? [],
         pendingTimeSignature: seed.time_signature ?? null,
         sourceDaw: seed.source_daw ?? null,
         importWarnings: seed.import_warnings ?? [],
         pendingPerformRouting: seed.perform_routing ?? null,
         lastSaved: null,
+      });
+    } else {
+      // No seed: Ctrl+S, the App menu's Save, or Open. The dialog saves the
+      // EDIT timeline, so a seed an earlier PERFORM save left behind is let
+      // go. Kept, it made every later Save write that PERFORM structure over
+      // the work done in EDIT since.
+      set({
+        pendingProject: null,
+        pendingTracks: [],
+        pendingTimeSignature: null,
+        sourceDaw: null,
+        importWarnings: [],
+        pendingPerformRouting: null,
       });
     }
     set({ isOpen: true, tab, error: null });
@@ -284,6 +357,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       tempo,
       embedAudio,
       savePath,
+      pendingProject,
       pendingTracks,
       pendingTimeSignature,
       sourceDaw,
@@ -312,25 +386,19 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       //    bytes (editor clips are in-memory blobs with no path to link).
       let res: { path: string; manifest: ProjectManifest };
       if (pendingTracks.length > 0) {
-        // The TRACKS are the imported structure; everything else about the
-        // project comes from the same capture helper the live-session branch
-        // uses. This branch used to build its own payload from four fields, so
-        // saving an imported project wrote no markers, no loop, no buses, no
-        // master chains and no automation — state the format carries and the
-        // user can see in the editor while the save dialog is open.
+        // The TRACKS are the seed's structure. The rest of the document comes
+        // from the same capture helper the live-session branch uses, unless
+        // the seed carries its own and EDIT holds another project
+        // (seededDocument). This branch used to build its own payload from
+        // four fields, so saving an imported project wrote no markers, no
+        // loop, no buses, no master chains and no automation.
         //
         // The lane filter is the reason the helper takes the track ids: an
         // automation lane keys off a TRACK id, and these tracks are the
         // importer's, so a lane naming an editor track is left out rather than
         // written as a dangler.
         const doc = captureProjectDocument(pendingTracks.map((t) => t.id));
-        const project: TasmoProjectInput = {
-          project_name: name,
-          tempo,
-          time_signature: pendingTimeSignature ?? [4, 4],
-          tracks: pendingTracks,
-          source_daw: sourceDaw,
-          import_warnings: importWarnings,
+        const document = seededDocument(pendingProject, pendingTracks, {
           buses: doc.buses,
           locators: doc.locators,
           loop: doc.loop,
@@ -338,9 +406,26 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           master_vst_chain: doc.masterVstChain,
           automation_lanes: doc.automationLanes,
           controller_mappings: doc.controllerMappings ?? null,
-          perform_routing: pendingPerformRouting,
           roll_voice: doc.rollVoice,
           tuning: doc.tuning,
+        });
+        const project: TasmoProjectInput = {
+          // Every field the seed carries (the scene names, the tempo and meter
+          // maps, the sample rate); the fields below replace their own keys.
+          ...pendingProject,
+          // The dialog's Tempo is the start tempo, which a tempo map states
+          // again in its first event; the map wins on load, so it follows.
+          ...(pendingProject?.tempo_map?.length
+            ? { tempo_map: pendingProject.tempo_map.map((e) => (e.beat === 0 && !e.fermata ? { ...e, bpm: tempo } : e)) }
+            : {}),
+          project_name: name,
+          tempo,
+          time_signature: pendingTimeSignature ?? [4, 4],
+          tracks: pendingTracks,
+          source_daw: sourceDaw,
+          import_warnings: importWarnings,
+          ...document,
+          perform_routing: pendingPerformRouting,
         };
         logInfo('project', `POST /api/project/save — ${path} embed=${embedAudio}`);
         res = await projectApi.save(project, path, embedAudio);
@@ -397,8 +482,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         res = await projectApi.saveSession(project, path, session.files);
       }
       set({ busy: false, lastSaved: { path: res.path, manifest: res.manifest } });
-      // The document now matches what is on disk — clear the unsaved-changes guard.
-      useEditorStore.getState().markSaved();
+      // The EDIT document now matches what is on disk — clear the unsaved-changes
+      // guard. Only after a save of the EDIT timeline: a seeded save writes
+      // PERFORM's tracks, so EDIT's own changes (to another project, or to this
+      // one since it was opened) are still unsaved, and New Project and closing
+      // the app must still ask before they are lost.
+      if (pendingTracks.length === 0) useEditorStore.getState().markSaved();
       status(`PROJECT SAVED (${res.manifest.audio_mode}): ${res.path}`);
       void get().refreshRecent();
     } catch (e) {

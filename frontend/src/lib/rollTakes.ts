@@ -18,6 +18,9 @@ import type { LaneBend } from './pitchBend';
 import { takeToRoll, type TakeNote } from './takeNotes';
 import { stepClock } from './rollTempo';
 
+/** A take was timed in seconds against audio: its part is marked (RollTrack `fromAudio`), so MATCH keeps its seconds. */
+const AUDIO_TAKE = { part: { fromAudio: true } } as const;
+
 /**
  * The tempo importTake gives the roll for a take at `bpm`: `bpm` held to
  * 20-300 (the app tempo range), or the roll's own tempo when `bpm` is not a positive number.
@@ -39,11 +42,11 @@ export function importTake(take: readonly TakeNote[], bpm: number, idPrefix: str
   const roll = usePianoRollStore.getState();
   if (otherPartsHoldNotes(roll)) {
     const clock = stepClock(roll.bpm, roll.tempoMap);
-    roll.importNotes(takeToRoll(take, { bpm: roll.bpm, idPrefix, tempoMap: clock.map }).rollNotes, undefined, undefined, bends);
+    roll.importNotes(takeToRoll(take, { bpm: roll.bpm, idPrefix, tempoMap: clock.map }).rollNotes, undefined, undefined, bends, undefined, AUDIO_TAKE);
     return roll.bpm;
   }
   const rollBpm = takeRollBpm(bpm);
-  roll.importNotes(takeToRoll(take, { bpm: rollBpm, idPrefix }).rollNotes, rollBpm, undefined, bends);
+  roll.importNotes(takeToRoll(take, { bpm: rollBpm, idPrefix }).rollNotes, rollBpm, undefined, bends, undefined, AUDIO_TAKE);
   return rollBpm;
 }
 

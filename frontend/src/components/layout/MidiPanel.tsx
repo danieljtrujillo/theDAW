@@ -30,6 +30,7 @@ import {
   Drum,
   Feather,
   FileCheck2,
+  ListTree,
   FolderOpen,
   Loader2,
   Mic,
@@ -59,9 +60,11 @@ import { useIoDevicesStore, useResolvedSurface } from '../../state/ioDevicesStor
 import { useLibraryStore } from '../../state/libraryStore';
 import { useLibrarySearch } from '../../state/useLibrarySearch';
 import { isAudioEntry } from '../../state/libraryEntry';
-import { logInfo, logWarn } from '../../state/logStore';
+import { logError, logInfo, logWarn } from '../../state/logStore';
+import { applySongFormToRoll } from '../../lib/songSectionActions';
 import { describeMicFailure, shouldAnnounceMicFailure } from '../../lib/micErrors';
 import { activeTrackOf, rollTracksOf, usePianoRollStore, type PianoNote } from '../../state/pianoRollStore';
+import { RollVstEditorHost } from '../audio/RollVstEditorHost';
 import { partComposeInstrument } from '../../lib/rollTracks';
 import { artifactTake } from '../../lib/takeNotes';
 import { importTake, placeTake } from '../../lib/rollTakes';
@@ -95,6 +98,7 @@ import { PianoRollFiguresKey } from '../audio/FiguredBassLane';
 import { PianoRollCcKey } from '../audio/CcLane';
 import { PianoRollArticulationKey } from '../audio/ArticulationLane';
 import { PianoRollTransformKey } from '../audio/RollTransforms';
+import { PianoRollCleanKey } from '../audio/RollCleanup';
 import { MidiImportPopover } from '../audio/MidiImportPopover';
 import { importMidiFileAsTracks } from '../../lib/midiImportTracksApp';
 import { InstrumentPicker } from '../audio/InstrumentPicker';
@@ -257,6 +261,8 @@ export const MidiPanel: React.FC = () => {
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const [songMenuOpen, setSongMenuOpen] = useState(false);
+  // FORM is reading (or finding) the song's sections and chord track.
+  const [formBusy, setFormBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const rollBpm = usePianoRollStore((s) => s.bpm);
   const rollMeterMap = usePianoRollStore((s) => s.meterMap);
@@ -799,7 +805,7 @@ export const MidiPanel: React.FC = () => {
           aria-expanded={songMenuOpen}
           aria-controls="midi-song-menu"
           aria-label="More song actions"
-          description="Load or validate the song's artifact"
+          description="Load or validate the song's artifact, or write the song's form into the roll"
           on={songMenuOpen}
           icon={<ChevronDown className={STRIP_GLYPH} />}
           legend="More"
@@ -835,6 +841,31 @@ export const MidiPanel: React.FC = () => {
             title="Check the notes survive a notes -> MIDI -> notes round-trip and report any timing drift"
             icon={<FileCheck2 className="w-3 h-3" />}
             legend="Validate"
+          />
+          <MenuKey
+            onClick={() => {
+              setSongMenuOpen(false);
+              if (!songEntryId || formBusy) return;
+              setFormBusy(true);
+              setStatus("FORM IS READING THE SONG'S SECTIONS.");
+              void applySongFormToRoll(songEntryId, assetQuery || songEntryId)
+                .then((r) => setStatus(r.status))
+                .catch((e: unknown) => {
+                  const why = e instanceof Error ? e.message : String(e);
+                  setStatus(`FORM COULD NOT READ THE SONG'S SECTIONS: ${why}`);
+                  logError('piano-roll', `Form failed: ${why}`);
+                })
+                .finally(() => setFormBusy(false));
+            }}
+            disabled={!songEntryId || formBusy}
+            aria-busy={formBusy || undefined}
+            title={
+              songEntryId
+                ? "The song's sections as markers on the marker row, and its chord track's chords in the HARMONY row (the sections are found first when the song has none). MATCH first puts the roll's bars on the song's."
+                : "Pick a song from the song field's list to write its form"
+            }
+            icon={formBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ListTree className="w-3 h-3" />}
+            legend="Form"
           />
         </DockFlyout>
 
@@ -1011,6 +1042,8 @@ export const MidiPanel: React.FC = () => {
               />
               {/* TRANSFORM: the motif transforms of the selected notes, beside the composer's column. */}
               <PianoRollTransformKey />
+              {/* CLEAN: one note at a time and a pitch range, for a transcription's notes. */}
+              <PianoRollCleanKey />
               <RailKey
                 onClick={() => void makeBeat()}
                 aria-label="Beat from the notes"
@@ -1053,6 +1086,8 @@ export const MidiPanel: React.FC = () => {
           <div className={arpOn ? 'absolute inset-0' : 'hidden'}>
             <ArpeggiatorPanel playing={arpPlaying} />
           </div>
+          {/* A roll part's VST3 instrument opens its own window here. */}
+          <RollVstEditorHost />
         </div>
 
         {!arpOn && artifact && (

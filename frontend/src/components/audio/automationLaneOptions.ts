@@ -15,11 +15,12 @@
  *
  * Pure and DOM-free so it is unit-testable without mounting WaveformEditor.
  */
-import type { AutomationLane, AutomationTarget, EditorTrack } from '../../state/editorStore';
+import type { AutomationLane, AutomationTarget, EditorBus, EditorTrack } from '../../state/editorStore';
 import { automationTargetKey, midiCcTarget } from '../../state/editorStore';
 import { PART_CONTROLLERS } from '../../lib/rollTracks';
 import type { ChainEntry } from '../../state/effectChainStore';
 import { getRackEffect } from '../../lib/rackEffects';
+import { visibleVstParams, vstParamKey, type VstParamView } from '../../state/vstParamStore';
 
 export interface AddLaneOption {
   key: string;
@@ -51,6 +52,7 @@ export function buildAddAutomationLaneOptions(
   masterFxChain: readonly ChainEntry[],
   automationLanes: readonly AutomationLane[],
   midiTrackIds: ReadonlySet<string> = new Set(),
+  buses: readonly EditorBus[] = [],
 ): AddLaneOption[] {
   const hasLane = (target: AutomationTarget) =>
     automationLanes.some((l) => automationTargetKey(l.target) === automationTargetKey(target));
@@ -82,6 +84,20 @@ export function buildAddAutomationLaneOptions(
     }
   }
 
+  // A bus rack's effects, the way a track's are offered. A busFx lane names the
+  // bus in `trackId`, the routing node id.
+  for (const b of buses) {
+    for (const entry of b.fxChain) {
+      for (const paramKey of Object.keys(entry.params ?? {})) {
+        if (!getRackEffect(entry.effect)?.params.some((p) => p.key === paramKey)) continue;
+        const fxTargetOpt: AutomationTarget = { kind: 'busFx', trackId: b.id, entryId: entry.id, paramKey };
+        if (!hasLane(fxTargetOpt)) {
+          opts.push({ key: automationTargetKey(fxTargetOpt), label: `${b.name} · ${fxEffectLabel(entry)} ${fxParamLabel(entry, paramKey)}`, target: fxTargetOpt });
+        }
+      }
+    }
+  }
+
   for (const entry of masterFxChain) {
     for (const paramKey of Object.keys(entry.params ?? {})) {
       if (!getRackEffect(entry.effect)?.params.some((p) => p.key === paramKey)) continue;
@@ -93,4 +109,87 @@ export function buildAddAutomationLaneOptions(
   }
 
   return opts;
+}
+
+/* ── Hosted plugins ─────────────────────────────────────────────────────────
+   A VST3 insert's parameters are not a rack descriptor's: they are whatever the
+   plugin declares, listed by its live host (state/vstParamStore), and there can
+   be hundreds. So the picker asks in two steps, the insert and then one of ITS
+   parameters, instead of folding every plugin's list into the one select above. */
+
+/** One hosted VST3 insert a lane can ride: a track's, a bus's or the master's. */
+export interface VstInsertOption {
+  /** Unique across the project: the entry id. */
+  key: string;
+  /** "Owner · Plugin", as the lane list names its lanes. */
+  label: string;
+  entryId: string;
+  /** The lane's kind and owner; the parameter's key completes it. */
+  kind: 'trackFx' | 'busFx' | 'masterFx';
+  /** The track or bus id; absent for the master. */
+  ownerId?: string;
+}
+
+/** Every VST3 insert in the project, in mixer order: tracks, then buses, then
+ *  the master chain. `name` is the plugin's name as its FX row shows it. */
+export function buildVstAutomationInserts(
+  tracks: readonly EditorTrack[],
+  buses: readonly EditorBus[],
+  masterVstChain: readonly ChainEntry[],
+  name: (entry: ChainEntry) => string,
+): VstInsertOption[] {
+  const out: VstInsertOption[] = [];
+  for (const t of tracks) {
+    for (const e of t.fxChain ?? []) {
+      if (e.effect !== 'vst3' || !e.vst) continue;
+      out.push({ key: e.id, label: `${t.name} · ${name(e)}`, entryId: e.id, kind: 'trackFx', ownerId: t.id });
+    }
+  }
+  for (const b of buses) {
+    for (const e of b.fxChain) {
+      if (e.effect !== 'vst3' || !e.vst) continue;
+      out.push({ key: e.id, label: `${b.name} · ${name(e)}`, entryId: e.id, kind: 'busFx', ownerId: b.id });
+    }
+  }
+  for (const e of masterVstChain) {
+    if (!e.vst) continue;
+    out.push({ key: e.id, label: `Master · ${name(e)}`, entryId: e.id, kind: 'masterFx' });
+  }
+  return out;
+}
+
+/** The lane target for parameter `index` of `insert`. */
+export const vstParamLaneTarget = (insert: VstInsertOption, index: number): AutomationTarget => ({
+  kind: insert.kind,
+  ...(insert.kind === 'masterFx' ? {} : { trackId: insert.ownerId }),
+  entryId: insert.entryId,
+  paramKey: vstParamKey(index),
+});
+
+/** One parameter of a plugin a lane can be added for. */
+export interface VstParamLaneOption {
+  index: number;
+  label: string;
+  target: AutomationTarget;
+}
+
+/**
+ * The parameters of `insert` a lane can be added for: the ones the plugin shows
+ * (not its own book-keeping), that it lets a host automate and that it does not
+ * only report (a meter), less those that already have a lane.
+ */
+export function buildVstParamLaneOptions(
+  insert: VstInsertOption,
+  params: readonly VstParamView[],
+  automationLanes: readonly AutomationLane[],
+): VstParamLaneOption[] {
+  const taken = new Set(automationLanes.map((l) => automationTargetKey(l.target)));
+  const out: VstParamLaneOption[] = [];
+  for (const p of visibleVstParams([...params])) {
+    if (!p.automatable || p.readOnly) continue;
+    const target = vstParamLaneTarget(insert, p.index);
+    if (taken.has(automationTargetKey(target))) continue;
+    out.push({ index: p.index, label: p.name || `Parameter ${p.index + 1}`, target });
+  }
+  return out;
 }

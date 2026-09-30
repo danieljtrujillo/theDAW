@@ -1,6 +1,10 @@
-"""VST3 plugin host — manages loaded plugin instances via pedalboard.
+"""VST3 plugin host — loads and runs plugins through pedalboard.
 
-In-process hosting: pedalboard runs inside the same Python process.
+The functions here that load a plugin run third-party native code, and some
+plugins crash the process that loads them. They run only inside a process
+started for that purpose: ``plugin_worker.py`` (renders, inserts and the
+``/api/vst/load`` instances, reached through ``isolation.py``), the scanner's
+load probe, and the editor sidecar. The backend itself never calls them.
 Each loaded plugin gets a unique instance_id (UUID).
 
 Every call that touches a plugin is funnelled onto one dedicated thread. VST3
@@ -22,6 +26,12 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 import numpy as np
+
+from backend.modules.vst.param_automation import (
+    AUTOMATION_BLOCK_SIZE,
+    ParamAutomation,
+    automation_value_at,
+)
 
 log = logging.getLogger(__name__)
 
@@ -300,6 +310,7 @@ def process_with_plugin(
     params: dict[str, float] | None = None,
     raw_state: str | bytes | None = None,
     warnings: list[str] | None = None,
+    automation: list[ParamAutomation] | None = None,
 ) -> np.ndarray:
     """Process audio through a single VST3 plugin, statelessly.
 
@@ -308,6 +319,10 @@ def process_with_plugin(
     parameters are applied, the audio is processed, and the plugin is discarded
     (it is never added to the instance registry). This mirrors the studio effect
     pipeline so a VST3 can be one stage of the MIX effect chain.
+
+    ``automation`` moves parameters while the audio plays (EDIT's lanes on the
+    insert): the audio then runs through in blocks, each parameter set to its
+    curve's value at the start of each block (``process_automated``).
 
     Anything that could not be applied is appended to ``warnings`` rather than
     swallowed, because the audible symptom of a silent skip (a plugin running at
@@ -333,7 +348,98 @@ def process_with_plugin(
             except Exception as e:
                 notes.append(f"parameter '{name}' not applied: {e}")
                 log.warning("VST param '%s' rejected by %s: %s", name, path.stem, e)
+    if automation:
+        return process_automated(plugin, audio, sample_rate, automation, notes)
     return plugin(audio, sample_rate)
+
+
+def _automation_targets(
+    plugin: Any, automation: list[ParamAutomation], notes: list[str]
+) -> list[tuple[Any, ParamAutomation]]:
+    """Each automated parameter as the pedalboard parameter it moves.
+
+    Pedalboard numbers a plugin's parameters its own way, so the index a lane
+    carries (theDAW host's own list) cannot address one here: the plugin's own
+    NAME for it can. One it cannot find is reported, and the print holds that
+    parameter where the state left it.
+    """
+    params = plugin.parameters
+    found: list[tuple[Any, ParamAutomation]] = []
+    for item in automation:
+        key = None
+        if item.name:
+            key = item.name if item.name in params else param_key(item.name)
+        if key is None or key not in params:
+            label = f"'{item.name}'" if item.name else f"number {item.index}"
+            notes.append(
+                f"automation of parameter {label} was not applied: this renderer "
+                "finds no parameter of that name"
+            )
+            continue
+        found.append((params[key], item))
+    return found
+
+
+def process_automated(
+    plugin: Any,
+    audio: np.ndarray,
+    sample_rate: int,
+    automation: list[ParamAutomation],
+    notes: list[str],
+    block: int = AUTOMATION_BLOCK_SIZE,
+) -> np.ndarray:
+    """Run ``audio`` (frames, channels) through ``plugin`` in blocks of
+    ``block`` frames, moving each automated parameter at the start of every
+    block to its curve's value there. Same length and layout out as in.
+
+    Every call hands the plugin a full block (the last one padded with
+    silence): pedalboard tells frames from channels by which dimension is
+    smaller, and a short final block could read the wrong way round. Silence
+    past the end also flushes a plugin's latency, which pedalboard holds back
+    across calls when it is not reset between them.
+    """
+    targets = _automation_targets(plugin, automation, notes)
+    frames = int(audio.shape[0])
+    channels = int(audio.shape[1]) if audio.ndim > 1 else 1
+    signal = audio.reshape(frames, channels).astype(np.float32, copy=False)
+    try:
+        latency = max(0, int(getattr(plugin, "reported_latency_samples", 0) or 0))
+    except Exception:
+        latency = 0
+    needed = frames + latency
+    padded_frames = max(block, -(-needed // block) * block)
+    padded = np.zeros((padded_frames, channels), dtype=np.float32)
+    padded[:frames] = signal
+    sent: dict[int, float] = {}
+    pieces: list[np.ndarray] = []
+    for start in range(0, padded_frames, block):
+        for param, item in targets:
+            value = automation_value_at(item.points, start)
+            if sent.get(id(param)) == value:
+                continue
+            param.raw_value = value
+            sent[id(param)] = value
+        out = plugin.process(
+            padded[start : start + block],
+            sample_rate,
+            buffer_size=block,
+            reset=start == 0,
+        )
+        arr = np.asarray(out, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        elif arr.shape[0] == channels and arr.shape[1] != channels:
+            arr = arr.T
+        pieces.append(arr)
+    joined = (
+        np.concatenate(pieces, axis=0)
+        if pieces
+        else np.zeros((0, channels), dtype=np.float32)
+    )
+    result = np.zeros((frames, channels), dtype=np.float32)
+    take = min(frames, int(joined.shape[0]))
+    result[:take] = joined[:take, :channels]
+    return result.reshape(audio.shape)
 
 
 #: Channel voice messages only: a status byte 0x80-0xEF, and how many data bytes

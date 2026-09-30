@@ -1,11 +1,12 @@
 // Typed client for the VST3 hosting backend (/api/vst/*).
 // MIX consumes VSTs as effect-chain nodes: it scans for plugins here, and the
 // per-stage processing is an UPLOAD POST to /api/vst/process-file driven from
-// studioStore (mirroring /api/studio/process), so no other client calls are
-// needed here.
+// studioStore (mirroring /api/studio/process). EDIT's offline prints of an
+// insert go through `processFileThroughVst` below, to the same route.
 import { delJson, describeApiError, getJson, pairingHeaderFor, postJson } from './apiJson';
 import { parseInstrumentRender, type InstrumentRenderResult, type InstrumentRenderTrack } from './vstInstrumentMidi';
 import { editorWindowsSuppressed, OFFLINE_EDITOR_SUPPRESSED_LOG } from './vstLive/editorWindowSwitch';
+import type { HostParamAutomation } from './render/vstParamAutomation';
 
 export interface Vst3PluginInfo {
   /** The bundle/file stem. Always present, because it costs nothing to read —
@@ -91,8 +92,10 @@ export function setLiveEditorRectRouter(router: LiveEditorRectRouter | null): vo
 }
 
 export const vstApi = {
+  // `install_folder`: the folder the scan reads for installed plugins, which an
+  // empty plugin list names (vstStore vst3InstallHint).
   scan: (refresh = false) =>
-    getJson<{ plugins: Vst3PluginInfo[] }>(`/api/vst/scan?refresh=${refresh ? 'true' : 'false'}`),
+    getJson<{ plugins: Vst3PluginInfo[]; install_folder?: string }>(`/api/vst/scan?refresh=${refresh ? 'true' : 'false'}`),
   // Open the plugin's real native editor window (sidecar process). Pass the
   // node's current raw_state so the editor opens where the user left off. When
   // `embed` is given (Electron), the editor is reparented into the MIX area over
@@ -158,6 +161,82 @@ export async function renderInstrumentTrack(
   const [result] = await parseInstrumentRender(await res.formData());
   if (!result) throw new Error('the instrument render answered with no track');
   return result;
+}
+
+/** The plugin a `processFileThroughVst` hop runs: `VstNode`'s fields. */
+export interface VstHopPlugin {
+  plugin_path: string;
+  /** Which plugin inside the file (a .vst3 can hold several). */
+  plugin_name?: string;
+  raw_state?: string;
+  state_host?: string;
+}
+
+/**
+ * Run one audio file through one VST3 plugin: POST /api/vst/process-file, and
+ * the plugin's WAV back, 32-bit float. Every offline print of an insert goes
+ * through here (a track freeze, a stem, an export, the frozen master), one
+ * call per plugin in chain order.
+ *
+ * The entry's captured state rides along: without it every plugin rendered at
+ * its factory defaults, silently discarding whatever the user dialled in. So
+ * does WHICH host captured it: a state theDAW's live host wrote is rendered
+ * back through that host (`state_host: 'thedaw'`), and absent means the
+ * pedalboard path the backend has always taken. And so does WHICH plugin in
+ * the file: a .vst3 can hold several, the live host loads the one the entry
+ * names, and theDAW's render host loads the first one when it is given no
+ * name, so a print without it could run a different plugin from the one heard.
+ *
+ * `automation` is the plugin's automated parameters over this file
+ * (lib/render/vstParamAutomation); the backend moves them block by block as it
+ * renders. Their indices are the live host's own list, so an automated plugin
+ * with no captured state at all prints through that host: no state stands in
+ * the way, and the host is the one whose parameter numbers the lanes name.
+ *
+ * A failure rejects in the backend's own words and is not retried through the
+ * other host: a silent fall back would print a state that host cannot read and
+ * report a clean render of the wrong sound. What the plugin did not take (a
+ * state or a parameter it refused) comes back in `X-Vst-Warnings`, since the
+ * body is audio, and is handed to `onWarning` one line at a time.
+ */
+export async function processFileThroughVst(
+  file: Blob,
+  vst: VstHopPlugin,
+  name: string,
+  opts: {
+    onWarning?: (warning: string) => void;
+    fetchImpl?: typeof fetch;
+    automation?: readonly HostParamAutomation[];
+  } = {},
+): Promise<File> {
+  const url = '/api/vst/process-file';
+  const form = new FormData();
+  form.append('audio', file, name);
+  form.append('plugin_path', vst.plugin_path);
+  if (vst.plugin_name) form.append('plugin_name', vst.plugin_name);
+  form.append('params', '{}');
+  if (vst.raw_state) form.append('raw_state', vst.raw_state);
+  const automated = (opts.automation?.length ?? 0) > 0;
+  if (vst.state_host === 'thedaw' || (automated && !vst.raw_state)) form.append('state_host', 'thedaw');
+  if (automated) form.append('automation', JSON.stringify(opts.automation));
+  // pairingHeaderFor: a device opened from the Mobile Access share link renders
+  // through the same route, paired; {} on this machine's own UI.
+  const res = await (opts.fetchImpl ?? fetch)(url, { method: 'POST', body: form, headers: pairingHeaderFor(url) });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const j = (await res.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch { /* non-JSON */ }
+    throw new Error(detail);
+  }
+  const warned = res.headers.get('X-Vst-Warnings');
+  if (warned && opts.onWarning) {
+    let lines: unknown = [warned];
+    try { lines = JSON.parse(warned); } catch { /* not JSON: the header as it came */ }
+    for (const w of Array.isArray(lines) ? lines : [warned]) opts.onWarning(String(w));
+  }
+  return new File([await res.blob()], name, { type: 'audio/wav' });
 }
 
 /* ── live host sessions (/api/vst/live/*) ───────────────────────────────────

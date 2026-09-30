@@ -25,6 +25,8 @@ import type { VstSessionRegistry } from './sessionRegistry';
 
 /** The holder name the project claims its sessions under. */
 export const PROJECT_HOLDER = 'project';
+/** The holder name the piano roll claims its parts' instruments under (state/rollInstruments). */
+export const ROLL_HOLDER = 'roll';
 
 export interface ProjectSessionsDeps {
   registry: Pick<VstSessionRegistry, 'hold' | 'forget' | 'hostAvailable'>;

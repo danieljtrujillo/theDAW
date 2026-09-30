@@ -12,6 +12,13 @@ class VstPluginState(BaseModel):
     parameters: dict[str, float] = {}
     preset_path: str | None = None
     instance_id: str = ""
+    # The opaque base64 state the plugin's window or its live host captured:
+    # the dialled-in sound of a track or bus insert. None: the plugin opens at
+    # its defaults, which is how every file written before this field loads.
+    raw_state: str | None = None
+    # Which host captured raw_state ("thedaw", the live host, or "pedalboard"),
+    # as ChainVst.state_host. None: the default.
+    state_host: str | None = None
 
 
 class EffectChainNode(BaseModel):
@@ -23,6 +30,22 @@ class EffectChainNode(BaseModel):
     # Stable chain-entry id so controller mappings (and other references) keyed to
     # a specific FX slot survive a save/load round-trip.
     id: str | None = None
+
+
+class SidechainKey(BaseModel):
+    """A sidechain key leaving a track or a bus.
+
+    The track's or bus's post-pan signal drives the detector of the effect
+    ``entry_id`` on the rack of ``target``, a track or bus id. Stored on the
+    SOURCE, beside ``output_routing`` and ``send_amounts``, so every edge a
+    node sends is written in one place (frontend ``CONN_SIDECHAIN``). Both
+    fields default to "" and are not validated here, exactly as
+    ``FollowAction`` is not: the app's reader drops a key that names no strip
+    or no entry on it, or that would close a loop.
+    """
+
+    target: str = ""
+    entry_id: str = ""
 
 
 class Locator(BaseModel):
@@ -102,9 +125,12 @@ class AutomationLaneTarget(BaseModel):
     """What an editor automation lane writes to (frontend ``AutomationTarget``).
 
     ``kind`` is "trackVolume" | "trackPan" | "trackFx" | "masterFx" |
-    "trackMidiCc"; the other three name the track, the chain entry and the
-    effect parameter the kind needs (for "trackMidiCc", ``param_key`` is the
-    MIDI controller number). Not validated here on purpose, exactly as
+    "trackMidiCc" | "busFx"; the other three name the track, the chain entry
+    and the effect parameter the kind needs (for "trackMidiCc", ``param_key`` is
+    the MIDI controller number; for "busFx", ``track_id`` names the BUS, the
+    routing node id track ids and bus ids share; a hosted VST3's parameter is
+    ``param_key`` "p<index>", its place in the plugin's own list). Not validated
+    here on purpose, exactly as
     ``FollowAction`` is not: storage stays tolerant so a hand-edited or older file still loads, and the
     app is the strict half — the reader drops a lane whose target names a track
     or a chain entry the loaded project does not have, rather than restoring a
@@ -260,6 +286,44 @@ class CompRegion(BaseModel):
     crossfade_sec: float = 0.0
 
 
+class SongTime(BaseModel):
+    """Where an audio clip's audio sits in a library song's own time.
+
+    ``entry_id`` is the library entry whose analysis (tempo, beats, downbeats,
+    meter) describes the audio: the entry itself for library audio, the song a
+    stem was separated from for a stem. A second of the clip's audio is
+    ``offset_sec + second * rate`` seconds of that song, so a beat match that
+    stretched the audio still reads the song's beats at the right places.
+    ``bpm`` is the song's analysed tempo when it was known.
+    """
+
+    entry_id: str
+    bpm: float | None = None
+    offset_sec: float = 0.0
+    rate: float = 1.0
+
+    @field_validator("offset_sec")
+    @classmethod
+    def _finite_offset(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("song_time.offset_sec must be finite")
+        return v
+
+    @field_validator("rate")
+    @classmethod
+    def _positive_rate(cls, v: float) -> float:
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("song_time.rate must be a finite number above 0")
+        return v
+
+    @field_validator("bpm")
+    @classmethod
+    def _positive_bpm(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        return v if math.isfinite(v) and v > 0 else None
+
+
 class Clip(BaseModel):
     id: str
     name: str
@@ -377,6 +441,12 @@ class Clip(BaseModel):
     # Defaulted, so older .tasmo files still validate.
     bpm: float | None = None
     library_entry_id: str | None = None
+    # Audio clips from a library song or one of its stems: the song whose
+    # rhythm analysis times the audio, and where the audio sits in that song's
+    # time (see SongTime). EDIT's SYNC reads the song's tempo and beats through
+    # it and "Use song tempo" lines the arrangement's bars up with the song's
+    # downbeats. Defaulted, so older .tasmo files still validate.
+    song_time: SongTime | None = None
     # Per-clip mute (the clip is skipped by playback and bounces). Defaulted so
     # .tasmo files written before this field existed still validate.
     muted: bool = False
@@ -408,7 +478,19 @@ class Clip(BaseModel):
     generation_prompt: str | None = None
     generation_seed: int | None = None
     generation_params: dict | None = None
+    # Warp anchors, [{source_sec, target_sec}] in clip-relative seconds, as
+    # theDAW writes them (frontend lib/audioWarp). An importer may store its own
+    # shape here; the reader keeps only theDAW's.
     warp_markers: list[dict] | None = None
+    # The clip's time stretch: the rate its source plays at (1 = original
+    # speed, above 1 shorter) and how the rate is realised ("repitch" rides the
+    # playback rate, "offline" is baked into the audio). And the shape of each
+    # fade ("linear", "exponential", "equal-power"). All None in files written
+    # before they were saved, which load unstretched with linear fades.
+    time_stretch_rate: float | None = None
+    stretch_mode: str | None = None
+    fade_in_curve: str | None = None
+    fade_out_curve: str | None = None
     # Alternate recordings of this clip, the comp across them, and which take
     # the clip's OWN fields currently mirror. Defaulted exactly like
     # `warp_markers` above, so a .tasmo written before takes existed still
@@ -495,6 +577,9 @@ class Track(BaseModel):
     input_routing: str | None = None
     output_routing: str | None = None
     send_amounts: dict[str, float] = {}
+    # The sidechain keys this track's signal feeds (see SidechainKey). Empty in
+    # files written before they were saved.
+    sidechain_keys: list[SidechainKey] = []
     # The GM program (0-127) this track's MIDI clips play through when a clip
     # has none of its own; None = the global instrument.
     instrument_program: int | None = None
@@ -557,6 +642,11 @@ class Bus(BaseModel):
     ``effect_chain`` is named to match ``Track`` and ``Clip`` rather than the
     frontend's ``fxChain``: one .tasmo file should not spell the same list two
     ways.
+
+    ``send_amounts`` (bus id -> linear send gain) and ``sidechain_keys`` are
+    the other edges a bus sends, exactly as a track's are. Both default to
+    empty, so a file written before they were saved loads a bus with its
+    output and nothing else.
     """
 
     id: str
@@ -564,6 +654,8 @@ class Bus(BaseModel):
     volume: float = 1.0
     mute: bool = False
     output_routing: str | None = None
+    send_amounts: dict[str, float] = {}
+    sidechain_keys: list[SidechainKey] = []
     effect_chain: list[EffectChainNode] = []
 
 

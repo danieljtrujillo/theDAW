@@ -12,16 +12,16 @@ common when basic-pitch is installed but piano-transcription isn't.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
+from backend.modules.analysis.tempo import SANE_BPM_MAX, SANE_BPM_MIN, analysis_tempo
 from backend.modules.library.db import LibraryDB
 
-from .engine import MidiHint, convert_to_midi, hint_for_stem
+from .engine import MidiHint, convert_to_midi, hint_for_stem, role_for_stem
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def convert_entry(
                 continue
             hint: MidiHint = hint_for_stem(stem_name)
             stem_out = midi_dir / f"{stem_name}.mid"
-            extra: dict = {"bpm": tempo_bpm}
+            extra: dict = {"bpm": tempo_bpm, "role": role_for_stem(stem_name)}
             if hint == "drums":
                 # Only the drum engine consumes the beat list — it snaps
                 # on-grid hits to it. The pitched engines just need the tempo.
@@ -173,29 +173,41 @@ def convert_entry(
 def _analysis_tempo_map(
     db: LibraryDB, entry_id: str
 ) -> tuple[Optional[float], list[float]]:
-    """``(bpm, beats)`` from the entry's analysis row; ``(None, [])`` when
-    the entry has not been analysed or the row is malformed."""
+    """``(bpm, beats)`` from the entry's analysis row
+    (:func:`backend.modules.analysis.tempo.analysis_tempo`); ``(None, [])``
+    when the entry has not been analysed or the row is malformed.
+
+    The row's BPM is used when it lies in ``SANE_BPM_MIN``-``SANE_BPM_MAX``.
+    Otherwise (or when the row has none) the tempo comes from the beat list,
+    when that lies in the range; when neither does, no tempo is stamped and
+    the beats are not used for the drum grid either."""
     try:
         row = db.get_analysis(entry_id)
     except Exception as e:
         log.debug("midi.runner: analysis lookup failed for %s: %s", entry_id, e)
         return None, []
-    if not row:
-        return None, []
-    bpm: Optional[float] = None
-    try:
-        raw_bpm = row.get("bpm")
-        if raw_bpm is not None and float(raw_bpm) > 0.0:
-            bpm = float(raw_bpm)
-    except (TypeError, ValueError):
-        bpm = None
-    beats: list[float] = []
-    try:
-        parsed = json.loads(row.get("beats_json") or "[]")
-        beats = [float(b) for b in parsed if b is not None]
-    except (TypeError, ValueError):
-        beats = []
-    return bpm, beats
+    tempo = analysis_tempo(row)
+    if tempo.rejected_bpm is not None and tempo.bpm is not None:
+        log.info(
+            "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f; "
+            "stamping %.2f BPM from its beat list",
+            entry_id,
+            tempo.rejected_bpm,
+            SANE_BPM_MIN,
+            SANE_BPM_MAX,
+            tempo.bpm,
+        )
+    elif tempo.rejected_bpm is not None:
+        log.warning(
+            "midi.runner: %s analysis tempo %.2f BPM is outside %.0f-%.0f and "
+            "its beat list gives no tempo inside it; its MIDI keeps no tempo "
+            "from the analysis",
+            entry_id,
+            tempo.rejected_bpm,
+            SANE_BPM_MIN,
+            SANE_BPM_MAX,
+        )
+    return tempo.bpm, tempo.beats
 
 
 def _set_status(db: LibraryDB, entry_id: str, status: str) -> None:

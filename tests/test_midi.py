@@ -40,6 +40,24 @@ def test_hint_for_stem_routes_piano_specially():
     assert hint_for_stem("") == "generic"
 
 
+def test_hint_for_stem_sends_a_split_kit_to_the_drum_engine():
+    # A 12-stem run splits the kit into five stems; basic-pitch would read
+    # each one as pitched notes over five octaves, as it does a whole kit.
+    for piece in (
+        "kick",
+        "snare",
+        "toms",
+        "hihat",
+        "cymbals",
+        "Hi-Hat",
+        "overheads",
+        "percussion",
+    ):
+        assert hint_for_stem(piece) == "drums", piece
+    assert hint_for_stem("bass") == "generic"
+    assert hint_for_stem("other") == "generic"
+
+
 def test_convert_to_midi_returns_error_when_no_engine_installed_and_no_autoinstall(
     tmp_path: Path,
 ):

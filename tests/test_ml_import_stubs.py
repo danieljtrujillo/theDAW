@@ -237,7 +237,15 @@ def test_basic_pitch_stub_matches_the_source() -> None:
             _source_module("basic_pitch", "inference"),
             "basic_pitch.inference",
         )
-        >= 5
+        >= 6
+    )
+    assert (
+        _check_source(
+            _stub("basic_pitch", "constants"),
+            _source_module("basic_pitch", "constants"),
+            "basic_pitch.constants",
+        )
+        == 1
     )
 
 
