@@ -440,7 +440,8 @@ def test_upload_guards(library, tmp_path, monkeypatch):
     assert _upload(client, empty).status_code == 400
 
     with monkeypatch.context() as patched:
-        patched.setattr(score_import, "MAX_IMPORT_BYTES", 64)
+        # 16 bytes: under the fixture on every OS (Windows text mode writes CRLF).
+        patched.setattr(score_import, "MAX_IMPORT_BYTES", 16)
         assert _upload(client, _write_fixture(tmp_path, ".abc")).status_code == 413
 
     broken = tmp_path / "broken.musicxml"
