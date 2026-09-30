@@ -1044,6 +1044,8 @@ def warm_explore_cache() -> bool:
         if db is None:
             log.info("lineagescale: explore warm skipped, no library database")
             return False
+        # After the search index build, never beside it (see router).
+        db.wait_for_search_build(timeout=_router.WARM_BUILD_WAIT_SEC)
         with _Snapshot(db) as snap:
             if not snap.isolated:
                 log.info("lineagescale: explore warm skipped, no read-only connection")

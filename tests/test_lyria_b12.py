@@ -1033,7 +1033,16 @@ def _fake_config() -> sidecar.LyriaConfig:
     )
 
 
-def test_url_route_offloads_ensure_running_via_to_thread(monkeypatch):
+def _loopback_request():
+    """This machine's own UI asking: the peer the read routes take."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": [], "client": ("127.0.0.1", 51000)})
+
+
+def test_url_route_offloads_running_url_via_to_thread(monkeypatch):
+    """GET /url reads the running URL and never calls ensure_running: the
+    spawn moved behind POST /start."""
     from backend.modules.lyria import router as lyria_router
 
     calls: list[object] = []
@@ -1042,16 +1051,20 @@ def test_url_route_offloads_ensure_running_via_to_thread(monkeypatch):
         calls.append(fn)
         return fn(*args, **kwargs)
 
+    def _never_spawn(**k):
+        raise AssertionError("GET /url must not spawn")
+
     monkeypatch.setattr(lyria_router.asyncio, "to_thread", _recording_to_thread)
     monkeypatch.setattr(lyria_router, "_maybe_auto_spawn", lambda: None)
-    monkeypatch.setattr(sidecar, "ensure_running", lambda **k: "http://127.0.0.1:5188")
+    monkeypatch.setattr(sidecar, "ensure_running", _never_spawn)
+    monkeypatch.setattr(sidecar, "running_url", lambda: "http://127.0.0.1:5188")
     monkeypatch.setattr(sidecar, "resolve_config", _fake_config)
     monkeypatch.setattr(sidecar, "detect_lan_ip", lambda: None)
     monkeypatch.setattr(sidecar, "owns_process", lambda: True)
 
-    result = asyncio.run(lyria_router.url())
+    result = asyncio.run(lyria_router.url(_loopback_request()))
 
-    assert sidecar.ensure_running in calls
+    assert sidecar.running_url in calls
     assert result["url"] == "http://127.0.0.1:5188"
 
 
@@ -1068,7 +1081,7 @@ def test_status_route_offloads_probe_via_to_thread(monkeypatch):
     monkeypatch.setattr(lyria_router, "_maybe_auto_spawn", lambda: None)
     monkeypatch.setattr(sidecar, "probe", lambda: {"issues": [], "listening": True})
 
-    result = asyncio.run(lyria_router.status())
+    result = asyncio.run(lyria_router.status(_loopback_request()))
 
     assert sidecar.probe in calls
     assert result["ok"] is True
@@ -1147,12 +1160,12 @@ def test_url_route_offloads_owns_process_via_to_thread(monkeypatch):
 
     monkeypatch.setattr(lyria_router.asyncio, "to_thread", _recording_to_thread)
     monkeypatch.setattr(lyria_router, "_maybe_auto_spawn", lambda: None)
-    monkeypatch.setattr(sidecar, "ensure_running", lambda **k: "http://127.0.0.1:5188")
+    monkeypatch.setattr(sidecar, "running_url", lambda: "http://127.0.0.1:5188")
     monkeypatch.setattr(sidecar, "resolve_config", _fake_config)
     monkeypatch.setattr(sidecar, "detect_lan_ip", lambda: None)
     monkeypatch.setattr(sidecar, "owns_process", lambda: True)
 
-    result = asyncio.run(lyria_router.url())
+    result = asyncio.run(lyria_router.url(_loopback_request()))
 
     assert sidecar.owns_process in calls
     assert result["mode"] == "mock"
@@ -1171,12 +1184,12 @@ def test_url_route_reports_external_when_not_owned(monkeypatch):
 
     monkeypatch.setattr(lyria_router.asyncio, "to_thread", _identity_to_thread)
     monkeypatch.setattr(lyria_router, "_maybe_auto_spawn", lambda: None)
-    monkeypatch.setattr(sidecar, "ensure_running", lambda **k: "http://127.0.0.1:5188")
+    monkeypatch.setattr(sidecar, "running_url", lambda: "http://127.0.0.1:5188")
     monkeypatch.setattr(sidecar, "resolve_config", _fake_config)
     monkeypatch.setattr(sidecar, "detect_lan_ip", lambda: None)
     monkeypatch.setattr(sidecar, "owns_process", lambda: False)
 
-    result = asyncio.run(lyria_router.url())
+    result = asyncio.run(lyria_router.url(_loopback_request()))
 
     assert result["mode"] == "external"
     assert result["mock"] is None
@@ -1191,12 +1204,12 @@ def test_url_route_reports_mock_mode_when_owned(monkeypatch):
 
     monkeypatch.setattr(lyria_router.asyncio, "to_thread", _identity_to_thread)
     monkeypatch.setattr(lyria_router, "_maybe_auto_spawn", lambda: None)
-    monkeypatch.setattr(sidecar, "ensure_running", lambda **k: "http://127.0.0.1:5188")
+    monkeypatch.setattr(sidecar, "running_url", lambda: "http://127.0.0.1:5188")
     monkeypatch.setattr(sidecar, "resolve_config", _fake_config)
     monkeypatch.setattr(sidecar, "detect_lan_ip", lambda: None)
     monkeypatch.setattr(sidecar, "owns_process", lambda: True)
 
-    result = asyncio.run(lyria_router.url())
+    result = asyncio.run(lyria_router.url(_loopback_request()))
 
     assert result["mode"] == "mock"
     assert result["mock"] is True

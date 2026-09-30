@@ -328,7 +328,9 @@ def client_with_root(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setenv("theDAW_GENERATIONS_DIR", str(tmp_path / "root"))
     app = FastAPI()
     app.include_router(library_router_module.router, prefix="/api/library")
-    return TestClient(app)
+    # This machine's own UI: the route answers only a loopback peer or the
+    # desktop shell's launch token (see the LAN test below).
+    return TestClient(app, client=("127.0.0.1", 51000))
 
 
 def _seed_via_client(client: TestClient, n: int, **meta) -> LibraryStore:
@@ -336,6 +338,36 @@ def _seed_via_client(client: TestClient, n: int, **meta) -> LibraryStore:
     for i in range(n):
         _managed_entry(store, f"e{i:03d}", **meta)
     return store
+
+
+def test_a_lan_caller_cannot_bulk_delete(client_with_root, monkeypatch):
+    """A script on the LAN sends no browser headers, so nothing header-based
+    tells it from the UI; the TCP peer does. Neither form deletes a row, and
+    the desktop shell's launch token is the one thing that passes from there."""
+    from backend.lib import launch_token
+
+    monkeypatch.delenv(launch_token.ENV_VAR, raising=False)
+    store = _seed_via_client(client_with_root, 3)
+    lan = TestClient(client_with_root.app, client=("10.20.30.40", 51000))
+
+    by_ids = lan.post("/api/library/entries/bulk-delete", json={"ids": ["e000"]})
+    assert by_ids.status_code == 403
+    by_filter = lan.post(
+        "/api/library/entries/bulk-delete",
+        json={"filter": {}, "all": True, "confirm_total": 3},
+    )
+    assert by_filter.status_code == 403
+    remaining = library_router_module._entry_filters("all", None, None, None)
+    assert store.db.count_entries_filtered(remaining) == 3
+
+    monkeypatch.setenv(launch_token.ENV_VAR, "s3cret-launch")
+    shell = lan.post(
+        "/api/library/entries/bulk-delete",
+        json={"ids": ["e000"]},
+        headers={launch_token.HEADER: "s3cret-launch"},
+    )
+    assert shell.status_code == 200
+    assert shell.json()["deleted"] == 1
 
 
 def test_bulk_delete_by_ids_answers_the_frozen_shape(client_with_root):

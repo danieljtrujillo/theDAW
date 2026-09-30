@@ -17,7 +17,13 @@ FastAPI lifespan runs, which ``backend/server.py`` registers on
 ``app.state`` under ``SHUTDOWN_HANDLERS_STATE`` -- before the process
 exits, with a time budget. Both refuse a request that a web page outside
 theDAW started (``refuse_cross_site``): stopping the backend is not
-something any site the user visits may do.
+something any site the user visits may do. Both also refuse a caller that is
+not this machine (``require_loopback_or_launch_token``): the backend binds
+0.0.0.0, and a script on the LAN that sends no browser headers passed the
+cross-site check. Every caller that legitimately stops the backend is on this
+machine: the SETTINGS modal in this machine's browser, the desktop shell
+(``electron-ui/main/index.ts`` posts to 127.0.0.1 and carries the launch
+token) and ``python -m backend.ports --free``.
 """
 
 from __future__ import annotations
@@ -31,12 +37,17 @@ from typing import Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from backend.lib.cross_site import refuse_cross_site
+from backend.lib.cross_site import refuse_cross_site, require_loopback_or_launch_token
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/api/admin", tags=["admin"], dependencies=[Depends(refuse_cross_site)]
+    prefix="/api/admin",
+    tags=["admin"],
+    dependencies=[
+        Depends(refuse_cross_site),
+        Depends(require_loopback_or_launch_token),
+    ],
 )
 
 RESTART_EXIT_CODE = 88
