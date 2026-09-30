@@ -14,6 +14,7 @@ module: parameters applied as raw 0..1 positions, the cockpit's convention.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -234,9 +235,11 @@ def test_the_pure_parts(tmp_path: Path):
     ]
     key = vst_render.render_key("C:\\x\\song.wav", 10, 100, chain, 3.0)
     assert len(key) == 64
-    assert key == vst_render.render_key("c:\\X\\SONG.WAV", 10, 100, chain, 3.0), (
-        "case-insensitive path"
-    )
+    other_case = vst_render.render_key("c:\\X\\SONG.WAV", 10, 100, chain, 3.0)
+    if os.path.normcase("A") == "a":
+        assert key == other_case, "case-insensitive path on a case-folding OS"
+    else:
+        assert key != other_case, "case-sensitive path on Linux and macOS"
     assert key != vst_render.render_key("C:\\x\\song.wav", 11, 100, chain, 3.0), "mtime"
     assert key != vst_render.render_key("C:\\x\\song.wav", 10, 100, chain, 4.0), "tail"
     assert key != vst_render.render_key(
