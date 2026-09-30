@@ -121,7 +121,7 @@ import { hasTempoChanges, sanitizeRollTempoMap, stepClock, type StepClock } from
 import { PERCUSSION_PART_CHANNEL, cleanPartBank, cleanPartBankLsb, partController, partFileChannels } from './rollTracks';
 import { beatToTime, getTempoAtBeat, timeToBeat, type TempoEvent } from './tempoMap';
 import { automatedControllers, ccLaneEvents, ccLaneValueAt, trackCcLanes } from './midiCcAutomation';
-import { articulatedNotes, clipArticulationInstrument, type Articulation, type SoundfontArticulationTarget } from './articulationMap';
+import { articulatedNotes, articulationBankSelect, clipArticulationInstrument, type Articulation, type SoundfontArticulationTarget } from './articulationMap';
 import { artChannelKey } from './rollMidi';
 import { memberPartControls, mpeNoteMessages, mpeZoneEvent, planMpeExport, writesAsMpe, type MpeExportNote } from './mpeMidi';
 import { EXPRESSION_DIMENSIONS, type ExpressionDimension } from './noteExpression';
@@ -280,9 +280,12 @@ function clipEvents(clip: AudioClip, track: EditorTrack, global: GlobalVoice, fa
   const bends = input?.bends;
   const notes: ClipEvents['notes'] = [];
   const voice = clipVoice(clip, track, global);
-  // The notes' articulations, as they resolve for the voice EDIT plays the clip with.
+  // The notes' articulations, as they resolve for the voice EDIT plays the clip with, in the bank that voice is selected in.
   const source = bends && input ? input.notes : (clip.sourcePianoRoll ?? []);
-  const arts = articulatedNotes(source, clipArticulationInstrument(clip, voice.program ?? clip.sourceRollPart?.program ?? undefined, percussion)).notes;
+  const arts = articulatedNotes(
+    source,
+    clipArticulationInstrument(clip, voice.program ?? clip.sourceRollPart?.program ?? undefined, percussion, clipBankSelect(voice, clip.sourceRollPart).bank),
+  ).notes;
   source.forEach((n, i) => {
     // On a VST3 instrument the note sounds shaped by its articulation, and no preset channel is its own.
     const sounded = vst3 ? (arts[i]?.played ?? n) : n;
@@ -661,10 +664,12 @@ export function arrangementToMidiFile(source: ArrangementMidiSource, options: Ar
         for (const channel of trackChannels) controls.push({ tick: tickOf(e.sec), channel, controller: l.controller, value: e.value });
       }
     }
-    // Each articulation channel's preset at tick 0, with its bank select.
+    // Each articulation channel's preset at tick 0, with its bank select (a user bank's offset plus the preset's own bank) and its LSB when it sends one.
     for (const a of arts) {
       const channel = artChannelOf(a.key);
-      if (channel !== undefined) programs.push({ tick: 0, channel, program: a.target.program, ...(a.target.bank > 0 ? { bank: a.target.bank } : {}) });
+      if (channel === undefined) continue;
+      const bank = articulationBankSelect(a.target);
+      programs.push({ tick: 0, channel, program: a.target.program, ...(bank > 0 ? { bank } : {}), ...(a.target.bankLsb !== undefined ? { bankLsb: a.target.bankLsb } : {}) });
     }
     programs.sort((a, b) => a.tick - b.tick);
     // The fader and pan, on the General MIDI volume curve and around the centre.

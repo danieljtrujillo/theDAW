@@ -231,8 +231,8 @@ export async function renderMidiClipAudio(
     ...(clip.sourceTempoMap?.length ? { tempoMap: clip.sourceTempoMap } : {}),
     // Its part's volume, pan, expression, modulation and pedal (lib/rollClip clipRenderInput).
     ...(input.controls ? { controls: input.controls } : {}),
-    // Its notes' articulations, each played as it resolves for the clip's instrument (lib/articulationRender).
-    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true),
+    // Its notes' articulations, each played as it resolves for the clip's instrument in its bank (lib/articulationRender).
+    articulation: clipArticulationInstrument(clip, voice.program, voice.percussion === true, voice.bank),
   });
 }
 

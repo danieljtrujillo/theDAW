@@ -6,14 +6,25 @@
  * sordino; a note with none plays ordinario. Where the part plays decides how
  * the articulation is heard:
  *
- *   - SOUNDFONT: an articulation a General MIDI bank holds as a preset of its
- *     own plays that preset on a channel of its own, so the part's other notes
- *     keep their program: a string part's pizzicato is GM 46 Pizzicato Strings
- *     (program 45), its tremolo GM 45 Tremolo Strings (program 44), a
- *     trumpet's or trombone's con sordino GM 60 Muted Trumpet (program 59).
- *     Col legno has no GM preset; it plays the pizzicato preset, short and
- *     soft, the nearest struck string sound the bank has. Every other
- *     articulation stays on the part's own channel and program.
+ *   - SOUNDFONT: an articulation the bank holds as a preset of its own plays
+ *     that preset on a channel of its own, so the part's other notes keep
+ *     their program. A part whose voice is a preset of a user bank
+ *     (lib/bankRegistry: an orchestral bank loaded at a bank-select offset)
+ *     plays that bank's own articulation preset at the same program, found by
+ *     its name: "Violins Pizzicato" in bank 2 for a Violins part in bank 0,
+ *     "Trumpet Straight Mute" for a trumpet's con sordino, "Timpani Roll" for
+ *     a timpani tremolo, and so a staccato or spiccato switches too where the
+ *     bank has one. A solo violin part (its own bank, the same program as the
+ *     section) prefers the preset whose name starts as its own does. Where the
+ *     bank has no such preset, and on the bundled General MIDI bank, the
+ *     General MIDI rule applies: a string part's pizzicato is GM 46 Pizzicato
+ *     Strings (program 45), its tremolo GM 45 Tremolo Strings (program 44), a
+ *     trumpet's or trombone's con sordino GM 60 Muted Trumpet (program 59),
+ *     from the user bank when it holds that preset under that name, else from
+ *     the bundled bank. Col legno has no preset of its own; it plays the
+ *     pizzicato preset, short and soft, the nearest struck string sound the
+ *     bank has. Every other articulation stays on the part's own channel and
+ *     program.
  *   - VST3: an orchestral library switches articulations itself, with a
  *     keyswitch note sent just before the note, or a controller. The default
  *     keyswitches are theDAW's own layout, one per articulation from C0 (MIDI
@@ -29,12 +40,17 @@
  * written; only what sounds is shaped.
  *
  * EDIT's live MIDI (lib/editMidiScheduler clipLiveTiming), the roll's PLAY
- * (lib/rollPartPlay) and a clip's soundfont render (lib/articulationRender)
- * all read `articulatedNotes`, so the three split the same notes onto the
- * same targets.
+ * (lib/rollPartPlay), a clip's soundfont render (lib/articulationRender) and
+ * the MIDI exports (lib/rollMidi, lib/arrangementMidi) all read
+ * `articulatedNotes`, so they split the same notes onto the same targets, and
+ * each sends a target's preset at its bank's offset (articulationBankSelect),
+ * as it sends the part's own voice.
  *
- * Pure, so node tests load it.
+ * Pure, so node tests load it: the bank a part plays and that bank's presets
+ * come in on the ArticulationInstrument, or from lib/bankRegistry's list of
+ * the banks the app last heard.
  */
+import { BUNDLED_BANK_ID, bankOfSelect, bankPresetsOf, bankSelectFor, type BankPreset } from './bankRegistry';
 import { orchestraInstrument } from './orchestra';
 
 export type Articulation =
@@ -110,22 +126,48 @@ export const ARTICULATION_SHAPES: Readonly<Record<Articulation, ArticulationShap
   'con-sordino': { lengthScale: 1, velocityDelta: -6 },
 });
 
-/** The instrument a part plays, as far as the map cares: its registry record, else its GM program. */
+/**
+ * The instrument a part plays, as far as the map cares: its registry record,
+ * else its GM program; and the sound bank its voice is a preset of, when it
+ * is a user bank's (lib/bankRegistry), with the voice's bank select inside
+ * that bank's file, so the bank's own articulation presets are found.
+ */
 export interface ArticulationInstrument {
   instrumentId?: string | null;
   program?: number | null;
   percussion?: boolean;
+  /** The user bank the voice is a preset of; absent (or the bundled bank): the General MIDI rule alone. */
+  bankId?: string | null;
+  /** The voice's bank select inside that bank's own file. */
+  bank?: number | null;
+  /** That bank's presets; absent: the registry's list for `bankId` (lib/bankRegistry bankPresetsOf). */
+  presets?: readonly BankPreset[];
+}
+
+/**
+ * The bank fields of an instrument whose voice sends bank select `msb`
+ * (lib/clipProgram clipVoice `bank`, a roll part's `bank`): the user bank
+ * that select falls in and the select inside it, or nothing for the bundled
+ * bank (bank select 0, or one no user bank is loaded at).
+ */
+export function articulationBankOf(msb: number | null | undefined): Pick<ArticulationInstrument, 'bankId' | 'bank'> {
+  if (!msb) return {};
+  const at = bankOfSelect(msb);
+  return at.bankId === BUNDLED_BANK_ID ? {} : { bankId: at.bankId, bank: at.bank };
 }
 
 /**
  * The instrument a clip's articulations resolve against: its roll part's
  * registry record while the clip still plays the part's program, else the
- * program it plays (`program`, the clip's effective one), else its part's.
+ * program it plays (`program`, the clip's effective one), else its part's;
+ * and the bank of `bank`, the bank select the clip's voice sends with that
+ * program (articulationBankOf).
  */
 export function clipArticulationInstrument(
   clip: { sourceRollPart?: { instrumentId?: string; program: number | null } },
   program: number | undefined,
   percussion: boolean,
+  bank?: number,
 ): ArticulationInstrument {
   const part = clip.sourceRollPart;
   const partsOwn = !!part && (program === undefined || part.program === null || part.program === program);
@@ -133,6 +175,7 @@ export function clipArticulationInstrument(
     ...(partsOwn && part?.instrumentId ? { instrumentId: part.instrumentId } : {}),
     program: program ?? part?.program ?? null,
     percussion,
+    ...articulationBankOf(bank),
   };
 }
 
@@ -156,11 +199,26 @@ export function articulationFamily(inst: ArticulationInstrument): ArticulationFa
   return 'other';
 }
 
-/** A preset an articulation plays on a soundfont: its bank select and program. */
+/**
+ * A preset an articulation plays on a soundfont: its bank select inside its
+ * bank's file and its program. A General MIDI target names no bank: it is the
+ * bundled bank's, at offset 0. A user bank's own preset names its bank
+ * (`bankId`) and its name, and plays at the bank's offset plus `bank`
+ * (articulationBankSelect), exactly as the part's own voice does.
+ */
 export interface SoundfontArticulationTarget {
   bank: number;
   program: number;
+  /** The user bank the preset is in (lib/bankRegistry); absent: the bundled General MIDI bank. */
+  bankId?: string;
+  /** The preset's bank select LSB (CC 32) inside its file, when it sends one. */
+  bankLsb?: number;
+  /** The preset's name, as its bank lists it. */
+  name?: string;
 }
+
+/** The bank select (CC 0) a target's preset answers to: its bank's offset plus its own bank select; the bundled bank's is its own. */
+export const articulationBankSelect = (t: SoundfontArticulationTarget): number => (t.bankId ? bankSelectFor(t.bankId, t.bank) : t.bank);
 
 /** GM 46 Pizzicato Strings, GM 45 Tremolo Strings, GM 60 Muted Trumpet (0-based programs). */
 const PIZZICATO_STRINGS = 45;
@@ -168,12 +226,10 @@ const TREMOLO_STRINGS = 44;
 const MUTED_TRUMPET = 59;
 
 /**
- * The soundfont preset `art` plays on a part of `inst`, or null when it plays
- * on the part's own channel and program (an articulation the bank has no
- * preset for, or a note with none).
+ * The General MIDI preset `art` plays on a part of `inst`, or null when the
+ * General MIDI set has none for it: the rule every bank falls back on.
  */
-export function soundfontArticulationTarget(art: Articulation | undefined, inst: ArticulationInstrument): SoundfontArticulationTarget | null {
-  if (!art) return null;
+function gmArticulationTarget(art: Articulation, inst: ArticulationInstrument): SoundfontArticulationTarget | null {
   const family = articulationFamily(inst);
   if (family === 'strings') {
     if (art === 'pizzicato' || art === 'col-legno') return { bank: 0, program: PIZZICATO_STRINGS };
@@ -188,8 +244,100 @@ export function soundfontArticulationTarget(art: Articulation | undefined, inst:
   return null;
 }
 
-/** A soundfont target's key: one channel per key. */
-export const targetKey = (t: SoundfontArticulationTarget): string => `${t.bank}:${t.program}`;
+/**
+ * How a bank names the preset each articulation plays, in order of
+ * preference: a spiccato takes a "Spiccato" preset before a "Staccato" one
+ * and a staccato the other way round; a tremolo takes "Tremolo" before a
+ * "Roll" (a timpani's); col legno, which no bank samples, takes a "Col legno"
+ * preset where one exists, else the pizzicato; con sordino takes "Sordino" or
+ * any "Mute"/"Muted" ("Straight Mute", "Harmon Mute", "French Horn Muted").
+ * Legato and harmonics switch nothing.
+ */
+const ARTICULATION_PRESET_NAMES: Readonly<Partial<Record<Articulation, readonly RegExp[]>>> = Object.freeze({
+  staccato: [/staccato|\bstacc\b/i, /spiccato|\bspicc\b/i],
+  spiccato: [/spiccato|\bspicc\b/i, /staccato|\bstacc\b/i],
+  pizzicato: [/pizz/i],
+  'col-legno': [/col\W?legno/i, /pizz/i],
+  tremolo: [/trem/i, /\broll/i],
+  marcato: [/marcato|\bmarc\b/i],
+  'con-sordino': [/sordino|\bmuted?\b/i],
+});
+
+/** The leading words two preset names share, ignoring case: "Solo Violin" and "Solo Violin Pizzicato" share two. */
+function sharedPrefixWords(a: string, b: string): number {
+  const x = a.toLowerCase().split(/\s+/).filter(Boolean);
+  const y = b.toLowerCase().split(/\s+/).filter(Boolean);
+  let n = 0;
+  while (n < x.length && n < y.length && x[n] === y[n]) n += 1;
+  return n;
+}
+
+/** The preset of `inst`'s own voice in `presets`, when the bank lists it. */
+const ownPreset = (inst: ArticulationInstrument, presets: readonly BankPreset[]): BankPreset | undefined =>
+  presets.find((p) => !p.drum && p.program === inst.program && p.bank === (inst.bank ?? 0));
+
+/**
+ * The preset of a user bank that `art` plays on a part of `inst`, by name:
+ * the bank's melodic presets at the part's own program whose name carries the
+ * articulation (ARTICULATION_PRESET_NAMES, in its order of preference), the
+ * one whose name starts as the part's own preset's does first (a solo violin
+ * part takes "Solo Violin Pizzicato" over the section's "Violins Pizzicato",
+ * both at program 40), then the lowest bank. Null when the bank has none.
+ */
+function bankArticulationPreset(art: Articulation, inst: ArticulationInstrument, presets: readonly BankPreset[], program: number): BankPreset | null {
+  const patterns = ARTICULATION_PRESET_NAMES[art];
+  if (!patterns) return null;
+  const own = ownPreset(inst, presets);
+  const atProgram = presets.filter((p) => !p.drum && p.program === program && !(p.program === inst.program && p.bank === (inst.bank ?? 0)));
+  for (const re of patterns) {
+    const found = atProgram
+      .filter((p) => re.test(p.name))
+      .sort((a, b) => (own ? sharedPrefixWords(b.name, own.name) - sharedPrefixWords(a.name, own.name) : 0) || a.bank - b.bank || a.bankLsb - b.bankLsb);
+    if (found.length) return found[0];
+  }
+  return null;
+}
+
+/** A user bank's preset as a target. */
+const presetTarget = (bankId: string, p: BankPreset): SoundfontArticulationTarget => ({
+  bank: p.bank,
+  program: p.program,
+  bankId,
+  ...(p.bankLsb ? { bankLsb: p.bankLsb } : {}),
+  name: p.name,
+});
+
+/**
+ * The soundfont preset `art` plays on a part of `inst`, or null when it plays
+ * on the part's own channel and program (an articulation the bank has no
+ * preset for, or a note with none). On a user bank (`inst.bankId`) a part
+ * whose own preset already is the articulation ("Violins Pizzicato" playing a
+ * pizzicato note) stays on it; otherwise the bank's own preset at the part's
+ * program (bankArticulationPreset), else the General MIDI rule's preset from
+ * that bank when it holds one under that name (a General MIDI bank's own
+ * "Pizzicato Strings"), else the bundled bank's.
+ */
+export function soundfontArticulationTarget(art: Articulation | undefined, inst: ArticulationInstrument): SoundfontArticulationTarget | null {
+  if (!art) return null;
+  const bankId = inst.bankId && inst.bankId !== BUNDLED_BANK_ID ? inst.bankId : null;
+  const presets = bankId ? (inst.presets ?? bankPresetsOf(bankId)) : [];
+  const program = inst.program ?? orchestraInstrument(inst.instrumentId ?? undefined)?.program;
+  if (bankId && typeof program === 'number') {
+    const own = ownPreset(inst, presets);
+    if (own && (ARTICULATION_PRESET_NAMES[art] ?? []).some((re) => re.test(own.name))) return null;
+    const found = bankArticulationPreset(art, inst, presets, program);
+    if (found) return presetTarget(bankId, found);
+  }
+  const gm = gmArticulationTarget(art, inst);
+  if (!gm || !bankId) return gm;
+  // A user bank's own copy of the General MIDI preset (its "Pizzicato Strings" at program 45), so the part stays in its bank.
+  const patterns = ARTICULATION_PRESET_NAMES[art] ?? [];
+  const copy = presets.find((p) => !p.drum && p.bank === 0 && p.program === gm.program && patterns.some((re) => re.test(p.name)));
+  return copy ? presetTarget(bankId, copy) : gm;
+}
+
+/** A soundfont target's key: one channel per key. A General MIDI target's is its bank and program; a user bank's preset's names its bank first. */
+export const targetKey = (t: SoundfontArticulationTarget): string => `${t.bankId ? `${t.bankId}:` : ''}${t.bank}:${t.program}`;
 
 /** A note as the three players read it: its pitch, place, length and velocity, and its articulation. */
 export interface ArticulatedInput {

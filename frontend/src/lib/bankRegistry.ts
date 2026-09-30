@@ -11,10 +11,13 @@
  * select `offset + b` on every synth (SpessaSynth addSoundBank with a bank
  * offset), live, in a render and in an exported file.
  *
- * The offsets the app last heard are held here, so the pure voice code
- * (lib/clipProgram) resolves a ref without a store. A bank the registry does
- * not know (removed, or not listed yet) resolves at offset 0: its preset plays
- * the bundled bank's preset at the same bank select and program.
+ * The banks the app last heard are held here (each user bank's offset, span
+ * and presets), so the pure voice code (lib/clipProgram) resolves a ref
+ * without a store, and the articulation map (lib/articulationMap) finds the
+ * bank a bank select falls in and the presets that bank holds. A bank the
+ * registry does not know (removed, or not listed yet) resolves at offset 0:
+ * its preset plays the bundled bank's preset at the same bank select and
+ * program.
  *
  * Pure, so node tests load it.
  */
@@ -76,22 +79,50 @@ const dataByte = (v: unknown, fallback = 0): number =>
 export const cleanBankId = (id: unknown): string =>
   typeof id === 'string' && id.trim() ? id.trim() : BUNDLED_BANK_ID;
 
-/* ── the offsets the app last heard ─────────────────────────────────────── */
+/* ── the banks the app last heard ───────────────────────────────────────── */
 
-let offsets = new Map<string, number>([[BUNDLED_BANK_ID, 0]]);
+/** A user bank as the registry keeps it: where it is loaded, how wide it is, and what it holds. */
+interface KnownBank {
+  offset: number;
+  span: number;
+  presets: readonly BankPreset[];
+}
 
-/** Replace the known offsets (the registry store calls this on every refresh). */
-export function setBankOffsets(banks: ReadonlyArray<Pick<SoundBank, 'id' | 'offset'>>): void {
-  const next = new Map<string, number>([[BUNDLED_BANK_ID, 0]]);
-  for (const b of banks) if (b.id !== BUNDLED_BANK_ID) next.set(b.id, dataByte(b.offset));
-  offsets = next;
+let known = new Map<string, KnownBank>();
+
+/**
+ * Replace the known banks (the registry store calls this on every refresh):
+ * each user bank's offset, and its span and presets when the caller has them
+ * (a listing has; a test may give the offset alone).
+ */
+export function setKnownBanks(banks: ReadonlyArray<Pick<SoundBank, 'id' | 'offset'> & Partial<Pick<SoundBank, 'span' | 'presets'>>>): void {
+  const next = new Map<string, KnownBank>();
+  for (const b of banks) {
+    if (b.id === BUNDLED_BANK_ID) continue;
+    next.set(b.id, { offset: dataByte(b.offset), span: Math.max(1, dataByte(b.span, 1)), presets: b.presets ?? [] });
+  }
+  known = next;
 }
 
 /** The offset a bank is loaded at: 0 for the bundled bank and for a bank the registry does not know. */
-export const bankOffsetOf = (bankId: string | undefined): number => offsets.get(cleanBankId(bankId)) ?? 0;
+export const bankOffsetOf = (bankId: string | undefined): number => known.get(cleanBankId(bankId))?.offset ?? 0;
 
 /** True when the registry knows `bankId` (the bundled bank always). */
-export const isKnownBank = (bankId: string | undefined): boolean => offsets.has(cleanBankId(bankId));
+export const isKnownBank = (bankId: string | undefined): boolean => {
+  const id = cleanBankId(bankId);
+  return id === BUNDLED_BANK_ID || known.has(id);
+};
+
+/** The presets of a known user bank, as its file numbers them; none for the bundled bank or a bank the registry does not know. */
+export const bankPresetsOf = (bankId: string | undefined): readonly BankPreset[] => known.get(cleanBankId(bankId))?.presets ?? [];
+
+/**
+ * The bank and its own bank select that bank select `msb` falls in, among the
+ * known banks (bankForSelect over the registry): the user bank whose range
+ * holds it, else the bundled bank.
+ */
+export const bankOfSelect = (msb: number): { bankId: string; bank: number } =>
+  bankForSelect(msb, [...known.entries()].map(([id, b]) => ({ id, offset: b.offset, span: b.span, kind: 'user' as const })));
 
 /**
  * The bank select MSB a synth and a MIDI file send for bank `bank` of bank

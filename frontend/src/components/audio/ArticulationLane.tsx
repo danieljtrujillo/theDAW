@@ -9,7 +9,9 @@
  * articulation (Ordinario takes it away), one undo step; the line under it
  * says what that articulation plays as on this part's instrument
  * (lib/articulationMap: a string part's pizzicato is GM 46 Pizzicato Strings
- * on a channel of its own, a staccato plays half its written length).
+ * on a channel of its own, or its sound bank's own "Violins Pizzicato" when
+ * the part plays a user bank's preset; a staccato plays half its written
+ * length).
  */
 import React, { useMemo } from 'react';
 import { Music2 } from 'lucide-react';
@@ -20,6 +22,7 @@ import {
   ARTICULATION_MARKS,
   ARTICULATION_SHAPES,
   ORDINARIO_MARK,
+  articulationBankOf,
   articulationFamily,
   articulationRuns,
   isArticulation,
@@ -28,19 +31,27 @@ import {
   type ArticulationInstrument,
 } from '../../lib/articulationMap';
 import { GM_NAMES } from '../../lib/gmInstruments';
+import { useSoundBankStore } from '../../state/soundBankStore';
 import { isPercussionPart } from '../../lib/rollTracks';
 import { FIELD, FIELD_LEGEND, FIELD_SELECT, FIELD_VALUE, STRIP_GLYPH, StripKey } from './midiDockKit';
 
 /** The strip's height in px: one line of 12px marks. */
 export const ARTICULATION_LANE_HEIGHT = 24;
 
-/** What `art` plays as on `inst`, in words. */
-export function articulationSoundText(art: Articulation | null, inst: ArticulationInstrument): string {
+/**
+ * What `art` plays as on `inst`, in words: the preset it switches to, named
+ * as its bank lists it (`bankName` gives a user bank's name by id; a General
+ * MIDI preset is named by its number), and how the note is shaped.
+ */
+export function articulationSoundText(art: Articulation | null, inst: ArticulationInstrument, bankName: (bankId: string) => string | undefined = () => undefined): string {
   if (!art) return 'Ordinario: the part’s own sound';
   const target = soundfontArticulationTarget(art, inst);
   const shape = ARTICULATION_SHAPES[art];
   const parts: string[] = [];
-  if (target) parts.push(`GM ${target.program + 1} ${GM_NAMES[target.program] ?? ''} on a channel of its own`.trim());
+  if (target?.bankId) {
+    const bank = bankName(target.bankId);
+    parts.push(`${target.name ?? `preset ${target.program + 1}`} (${bank ? `${bank}, ` : ''}bank ${target.bank}) on a channel of its own`);
+  } else if (target) parts.push(`GM ${target.program + 1} ${GM_NAMES[target.program] ?? ''} on a channel of its own`.trim());
   if (shape.lengthScale !== 1) parts.push(`${Math.round(shape.lengthScale * 100)}% of its written length`);
   if (shape.velocityDelta !== 0) parts.push(`${shape.velocityDelta > 0 ? '+' : ''}${shape.velocityDelta} velocity`);
   if (!parts.length) parts.push('the part’s own sound; a VST3 library switches with its keyswitch');
@@ -59,15 +70,19 @@ export const ArticulationLane: React.FC<ArticulationLaneProps> = ({ stepPx, tota
   const setArticulation = usePianoRollStore((s) => s.setArticulation);
   const setSelection = usePianoRollStore((s) => s.setSelection);
 
+  const banks = useSoundBankStore((s) => s.banks);
+  const bankName = (bankId: string) => banks.find((b) => b.id === bankId)?.name;
+
   const runs = useMemo(() => articulationRuns(notes), [notes]);
-  const inst: ArticulationInstrument = { instrumentId: part.instrumentId, program: part.program, percussion: isPercussionPart(part) };
+  // The part's bank decides whether a user bank's own articulation presets are named; `banks` keeps the line current when the list changes.
+  const inst: ArticulationInstrument = { instrumentId: part.instrumentId, program: part.program, percussion: isPercussionPart(part), ...articulationBankOf(part.bank) };
   const strings = articulationFamily(inst) === 'strings';
   const selected = notes.filter((n) => selectedIds.has(n.id));
   // The selection's articulation when every selected note shares one.
   const shared = selected.length && selected.every((n) => n.articulation === selected[0].articulation) ? (selected[0].articulation ?? '') : null;
   const width = Math.max(1, totalSteps * stepPx);
   const selectId = `articulation-lane-${part.id}`;
-  const soundText = shared === null ? 'The selected notes have more than one articulation' : articulationSoundText(isArticulation(shared) ? shared : null, inst);
+  const soundText = shared === null ? 'The selected notes have more than one articulation' : articulationSoundText(isArticulation(shared) ? shared : null, inst, bankName);
 
   return (
     <div className="shrink-0 border-t border-white/8 bg-black/30" data-articulation-lane>

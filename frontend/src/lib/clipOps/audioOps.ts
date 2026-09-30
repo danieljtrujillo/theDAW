@@ -403,7 +403,7 @@ export async function bounceMidiClip(
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
     ...(input.controls ? { controls: input.controls } : {}),
-    articulation: clipArticulationInstrument(clip, program, opts.percussion === true),
+    articulation: clipArticulationInstrument(clip, program, opts.percussion === true, opts.bank),
   });
 }
 
@@ -444,6 +444,6 @@ export async function stretchMidiClip(
     ...tempoOpt(clip),
     ...(input.bends && !opts.percussion ? { bends: input.bends } : {}),
     ...(input.controls ? { controls: input.controls } : {}),
-    articulation: clipArticulationInstrument(clip, program, opts.percussion === true),
+    articulation: clipArticulationInstrument(clip, program, opts.percussion === true, opts.bank),
   });
 }

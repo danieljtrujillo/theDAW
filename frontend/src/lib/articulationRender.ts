@@ -3,9 +3,10 @@
  *
  * A clip's render plays every note through one program. A note whose
  * articulation the soundfont holds as a preset of its own (lib/articulationMap:
- * a string part's pizzicato, GM 46) has to play that preset, on a channel of
- * its own so the part's other notes keep theirs, exactly as EDIT's live MIDI
- * and the roll's PLAY play it. This render does that:
+ * a string part's pizzicato, GM 46, or a user bank's own "Violins Pizzicato")
+ * has to play that preset, on a channel of its own so the part's other notes
+ * keep theirs, exactly as EDIT's live MIDI and the roll's PLAY play it. This
+ * render does that:
  *
  *   1. every note is shaped by its articulation (a staccato at half its
  *      length), which is all a render with no preset articulation needs, so
@@ -22,17 +23,25 @@
  *
  * The synth modules load on the first render, so node tests import the plan.
  */
-import { articulatedNotes, type ArticulatedInput, type ArticulatedNote, type ArticulationInstrument, type SoundfontArticulationTarget } from './articulationMap';
+import {
+  articulatedNotes,
+  articulationBankSelect,
+  type ArticulatedInput,
+  type ArticulatedNote,
+  type ArticulationInstrument,
+  type SoundfontArticulationTarget,
+} from './articulationMap';
 import type { RenderNote, StepRenderOptions } from './midiSynth';
 import { notesToSmf, type SmfControl, type SmfWheel } from './midiWrite';
 
 /** The General MIDI drum channel, never taken by an articulation. */
 const DRUM_CHANNEL = 9;
 
-/** A render's notes with each preset articulation on a channel of its own, the controllers copied there, and each channel's program. */
+/** A render's notes with each preset articulation on a channel of its own, the controllers copied there, and each channel's program and bank select. */
 export interface ArticulatedRenderPlan {
   notes: RenderNote[];
   controls: SmfControl[];
+  /** `bank` is the bank select the channel's preset answers to: a user bank's offset plus the preset's own bank (lib/articulationMap articulationBankSelect). */
   channelPrograms: Array<{ channel: number; program: number; bank: number }>;
   /** The wheels: the render's own, and a copy of a bent lane's on each articulation channel that follows it. */
   wheel: SmfWheel[];
@@ -82,7 +91,7 @@ export function articulatedRenderPlan(
   const outControls = [...controls];
   const outWheel = [...wheel];
   for (const at of plan.values()) {
-    channelPrograms.push({ channel: at.channel, program: at.target.program, bank: at.target.bank });
+    channelPrograms.push({ channel: at.channel, program: at.target.program, bank: articulationBankSelect(at.target) });
     for (const c of controls) if (c.channel === 0) outControls.push({ ...c, channel: at.channel });
     const w = at.follows !== null ? wheelOf.get(at.follows) : undefined;
     if (w) outWheel.push({ ...w, channel: at.channel });

@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { captureEditorSession, loadProjectIntoEditor } from './projectImport.ts';
 import type { TasmoProjectLoaded } from './projectClient.ts';
-import { setBankOffsets, BUNDLED_BANK_ID } from './bankRegistry.ts';
+import { setKnownBanks, BUNDLED_BANK_ID } from './bankRegistry.ts';
 import { clipVoice } from './clipProgram.ts';
 import { useEditorStore, type AudioClip, type EditorTrack } from '../state/editorStore.ts';
 import { useTuningStore } from '../state/tuningStore.ts';
@@ -71,7 +71,7 @@ function roundTrip(): TasmoProjectLoaded {
 
 // ── bank ids, MIDI out and tuning survive save -> open ─────────────────────
 {
-  setBankOffsets([{ id: 'sb-strings0001', offset: 32 }]);
+  setKnownBanks([{ id: 'sb-strings0001', offset: 32 }]);
   useTuningStore.getState().setTuning({ referenceHz: 415, temperament: 'werckmeister3', root: 0 });
   useEditorStore.setState({
     bpm: 100,
