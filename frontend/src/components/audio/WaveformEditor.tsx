@@ -4344,7 +4344,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   // frame. Form fields and anything under [data-wheel-passthrough] (editable
   // automation lanes, popovers) keep their own wheel, as does a child that
   // already consumed the event (a focused header knob); so does any gesture
-  // the profile does not handle — preventDefault only when the editor acts.
+  // the profile does not handle; preventDefault only when the editor acts.
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   /** The mounted scroller as state, so effects that attach listeners re-run
    *  when it (re)mounts instead of depending on mount order. */
