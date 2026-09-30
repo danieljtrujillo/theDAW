@@ -2562,7 +2562,10 @@ class LibraryDB:
         indexed = 0
         reported = time.monotonic()
         top: Optional[int] = None
-        size = max(1, min(batch, 500))
+        # The first batch is the smallest: its rate sets the next size, and a
+        # 500-row first batch held the lock for over a second on a slow runner
+        # while every read (and the event loop under it) waited.
+        size = max(1, min(batch, SEARCH_BATCH_MIN))
         while True:
             with self._writelock:
                 if self._closed:
