@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import sys
 import threading
 
@@ -1519,8 +1520,12 @@ def _require_inpaint_region(mask_start: float, mask_end: float) -> None:
 _FA_WARNED: set[str] = set()
 
 
+@functools.lru_cache(maxsize=1)
 def _flash_attn_installed() -> bool:
-    """Cheap, import-free: is the flash_attn package present at all?"""
+    """Import-free: is the flash_attn package present at all? Answered once:
+    find_spec walks and stats every sys.path entry, and /api/health must not
+    touch the filesystem on every call (behind a library index build's fsyncs
+    those stats took over a second on a CI disk)."""
     import importlib.util
 
     return importlib.util.find_spec("flash_attn") is not None

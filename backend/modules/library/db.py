@@ -32,6 +32,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from collections import deque
@@ -2612,6 +2613,11 @@ class LibraryDB:
                 break
             indexed += len(rows)
             self.progress.advance("index", len(rows))
+            # Between batches the interpreter is handed to whoever is waiting:
+            # a request thread that only needs the GIL for a few steps was
+            # starved by this loop on Linux, where a thread that has just
+            # released the GIL wins it back before a waiter is scheduled.
+            time.sleep(sys.getswitchinterval())
             if held > 0:
                 size = int(len(rows) * SEARCH_BATCH_TARGET_SEC / held)
             size = max(min(SEARCH_BATCH_MIN, batch), min(batch, size))
