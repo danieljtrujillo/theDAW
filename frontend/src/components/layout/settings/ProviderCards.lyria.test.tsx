@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   const React = await import('react');
   const { act } = React;
   const { createRoot } = await import('react-dom/client');
-  const { LyriaKeyLists, lyriaKeyCounts } = await import('./ProviderCards.tsx');
+  const { LyriaCheckoutLine, LyriaKeyLists, lyriaKeyCounts } = await import('./ProviderCards.tsx');
 
   const doc = dom.window.document;
   const host = doc.getElementById('root')!;
@@ -182,6 +182,58 @@ async function main(): Promise<void> {
   assert.equal(toggle!.getAttribute('aria-pressed'), 'true');
 
   await act(async () => root.unmount());
+
+  // ── 6. the checkout line: the recorded commit, and a checkout that got
+  //       no keys says why ──────────────────────────────────────────────────
+  const extras = {
+    missing: [],
+    installable: true,
+    installing: false,
+    install: { status: 'idle' },
+    gemini_key: true,
+    gemini_key_source: 'file',
+    mock: true,
+    project_path: 'C:\\lyria',
+    repo: 'StarskreamEXE/lyria-3-pro',
+    repo_url: 'https://github.com/StarskreamEXE/lyria-3-pro.git',
+    head: '192032ebe80397d869de6c9dbf4b8a7b64274db0',
+    commit: '192032ebe80397d869de6c9dbf4b8a7b64274db0',
+    commit_event: 'install',
+    recorded_at: 1_790_000_000,
+    ran_version: '0.0.0',
+    verify: { ok: true, reason: '', package_name: 'lyria-3-pro', package_version: '0.0.0' },
+    git: true,
+    node: true,
+    npm: true,
+    listening: true,
+  };
+  const lineRoot = createRoot(host);
+  await act(async () => {
+    lineRoot.render(React.createElement(LyriaCheckoutLine, { extras }));
+  });
+  const line = host.querySelector<HTMLElement>('[data-lyria-checkout]');
+  assert.ok(line, 'the checkout line renders');
+  assert.match(line!.textContent ?? '', /Checkout 192032e of StarskreamEXE\/lyria-3-pro · lyria-3-pro 0\.0\.0 · last ran 0\.0\.0/);
+  assert.ok(line!.title.includes('192032ebe80397d869de6c9dbf4b8a7b64274db0'), line!.title);
+  assert.ok(line!.title.includes('Recorded at the last install'), line!.title);
+  assert.equal(host.querySelector('[role="alert"]'), null, 'a checkout that passed has no alert');
+  const withheld = "The checkout at C:\\lyria is the package 'not-lyria', not lyria-3-pro, so theDAW hands it no keys.";
+  await act(async () => {
+    lineRoot.render(
+      React.createElement(LyriaCheckoutLine, {
+        extras: { ...extras, verify: { ok: false, reason: withheld, package_name: 'not-lyria', package_version: '0.0.0' } },
+      }),
+    );
+  });
+  const keysAlert = host.querySelector<HTMLElement>('[role="alert"]');
+  assert.ok(keysAlert, 'a checkout that failed the check shows why');
+  assert.equal(keysAlert!.textContent, `No keys handed: ${withheld}`);
+  for (const el of Array.from<HTMLElement>(host.querySelectorAll<HTMLElement>('p'))) {
+    const cls = el.className;
+    assert.ok(!/text-\[(?:[0-9]|1[01])px\]/.test(cls), `text under 12px on "${el.textContent}": ${cls}`);
+    assert.ok(!cls.includes('font-mono'), `mono on "${el.textContent}": ${cls}`);
+  }
+  await act(async () => lineRoot.unmount());
   assert.deepEqual(unhandled, []);
   console.log('ProviderCards.lyria.test.tsx: all assertions passed');
 }

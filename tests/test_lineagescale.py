@@ -1605,6 +1605,26 @@ def test_the_startup_warm_fills_the_cache_before_the_first_request(
     )
 
 
+def test_the_startup_warm_waits_for_the_search_index_build(monkeypatch, small_library):
+    """A library-wide pass beside the search index build starves the request
+    threads of the interpreter, so the warm runs after the build ends."""
+    _client(monkeypatch, small_library)
+    db = small_library.db
+    before = lineage_router._stats_cache.passes
+    db._search_built.clear()
+    try:
+        thread = threading.Thread(target=lineage_router.warm_stats_cache, daemon=True)
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive(), "the warm ran while the index build was still going"
+        assert lineage_router._stats_cache.passes == before
+    finally:
+        db._search_built.set()
+    thread.join(30.0)
+    assert not thread.is_alive(), "the warm never ran after the build ended"
+    assert lineage_router._stats_cache.passes == before + 1
+
+
 def test_the_startup_warm_does_nothing_without_a_library_database(monkeypatch, caplog):
     """A launch where the library never came up. Warming a cache for it
     would be inventing an answer, and failing would take the app down from

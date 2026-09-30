@@ -347,6 +347,7 @@ def test_status_route_reports_the_probe(client, monkeypatch):
 def test_start_route_serves_the_dashboard_page_and_refuses_a_foreign_page(
     client, monkeypatch
 ):
+    monkeypatch.setattr(assistant_sidecar, "_background_start", None)
     calls: list[bool] = []
 
     def fake_start(**_):
@@ -366,7 +367,12 @@ def test_start_route_serves_the_dashboard_page_and_refuses_a_foreign_page(
         headers={"Origin": "http://localhost:8791", "Sec-Fetch-Site": "same-site"},
     )
     assert ok.status_code == 200
-    assert ok.json() == {"ok": True, "url": "http://localhost:5473"}
+    assert ok.json() == {
+        "ok": True,
+        "url": "http://localhost:5473",
+        "running": True,
+        "starting": False,
+    }
 
     def failing(**_):
         raise RuntimeError("npm install exited 1")
@@ -377,3 +383,54 @@ def test_start_route_serves_the_dashboard_page_and_refuses_a_foreign_page(
     )
     assert failed.status_code == 503
     assert failed.json()["detail"] == "npm install exited 1"
+
+
+def test_a_slow_start_answers_before_it_finishes(client, monkeypatch):
+    """With node_modules missing the first start sits in npm install for a
+    minute or more. The route hands the start to a thread and answers within
+    its wait with ``starting: true``; the orb polls /assistant/status, which
+    reports the same start, until it is running. A second POST while the
+    start runs joins it: no second install."""
+    monkeypatch.setattr(assistant_sidecar, "_background_start", None)
+    monkeypatch.setattr(underfit_router, "ASSISTANT_START_WAIT_SEC", 0.2)
+    monkeypatch.setattr(
+        assistant_sidecar,
+        "resolve_config",
+        lambda: assistant_sidecar.AssistantConfig(
+            project_path=Path("unused"),
+            port=5473,
+            underfit_root=Path("unused"),
+            dashboard_port=8791,
+        ),
+    )
+    release = threading.Event()
+    starts: list[bool] = []
+
+    def slow_start(**_):
+        starts.append(True)
+        assert release.wait(10), "the test never released the start"
+        return "http://localhost:5473"
+
+    monkeypatch.setattr(assistant_sidecar, "ensure_running", slow_start)
+    headers = {"Origin": "http://localhost:8791", "Sec-Fetch-Site": "same-site"}
+
+    began = time.monotonic()
+    first = client.post("/api/underfit/assistant/start", headers=headers)
+    assert time.monotonic() - began < 5
+    assert first.status_code == 200
+    assert first.json() == {
+        "ok": True,
+        "url": "http://localhost:5473",
+        "running": False,
+        "starting": True,
+    }
+    second = client.post("/api/underfit/assistant/start", headers=headers)
+    assert second.json()["starting"] is True
+    assert starts == [True]
+
+    release.set()
+    start = assistant_sidecar._background_start
+    assert start is not None
+    start.thread.join(10)
+    third = client.post("/api/underfit/assistant/start", headers=headers)
+    assert third.json()["running"] is True
