@@ -40,7 +40,7 @@ export const WHEEL_GESTURES: ReadonlyArray<{ key: WheelGestureKey; gesture: stri
 ] as const);
 
 const WHEEL_PROFILE_DESCRIPTIONS: Readonly<Record<WheelProfileId, string>> = Object.freeze({
-  thedaw: 'The wheel zooms; hold Ctrl for finer zoom steps.',
+  thedaw: 'The wheel scrolls the lanes; Shift scrolls along time; Ctrl (Cmd on macOS) zooms time; Alt zooms track height.',
   reaper: 'The bindings REAPER ships with; Ctrl + wheel resizes lanes.',
 });
 

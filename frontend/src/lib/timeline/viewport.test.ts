@@ -96,7 +96,7 @@ assert.throws(() => normalizeWheelDelta({ deltaX: 0, deltaY: 1, deltaMode: 2 }, 
 // --- wheel profiles -------------------------------------------------------
 
 assert.equal(WHEEL_PROFILES.thedaw.id, 'thedaw');
-assert.equal(WHEEL_PROFILES.thedaw.label, 'theDAW (wheel zooms, Ctrl = fine zoom)');
+assert.equal(WHEEL_PROFILES.thedaw.label, 'theDAW (wheel scrolls, Ctrl zooms)');
 assert.equal(WHEEL_PROFILES.reaper.id, 'reaper');
 assert.equal(WHEEL_PROFILES.reaper.label, 'REAPER default');
 
@@ -108,17 +108,20 @@ const mods = (s: string): Mods => ({
   shiftKey: s.includes('s'),
   altKey: s.includes('a'),
 });
-const vertical = (m: string, dy = 100) => ({ deltaX: 0, deltaY: dy, deltaMode: 0, ...mods(m) });
+const vertical = (m: string, dy = 100, platform = 'win32') => ({ deltaX: 0, deltaY: dy, deltaMode: 0, platform, ...mods(m) });
 
+// The default profile is the EDIT convention table: wheel scrolls the lanes,
+// Shift scrolls time, Ctrl zooms time, Alt zooms track height. Meta is the OS
+// key on Windows (ignored) and Cmd on macOS (counts as Ctrl).
 const expectations: Record<'thedaw' | 'reaper', Record<string, WheelAction>> = {
   thedaw: {
-    '': 'zoom-time', c: 'zoom-time-fine', m: 'zoom-time-fine', s: 'pan-time', a: 'pan-lanes',
-    cs: 'resize-lanes', ms: 'resize-lanes', ca: 'pan-lanes', ma: 'pan-lanes', csa: 'resize-lanes', sa: 'pan-lanes',
-    cm: 'zoom-time-fine',
+    '': 'pan-lanes', c: 'zoom-time', m: 'pan-lanes', s: 'pan-time', a: 'resize-lanes',
+    cs: 'zoom-time-fine', ms: 'pan-time', ca: 'pan-lanes', ma: 'resize-lanes', csa: 'zoom-time-fine', sa: 'resize-lanes',
+    cm: 'zoom-time',
   },
   reaper: {
-    '': 'zoom-time', c: 'resize-lanes', m: 'resize-lanes', s: 'pan-time', a: 'pan-time',
-    cs: 'zoom-time-fine', ms: 'zoom-time-fine', ca: 'pan-lanes', ma: 'pan-lanes', csa: 'zoom-time-fine', sa: 'pan-time',
+    '': 'zoom-time', c: 'resize-lanes', m: 'zoom-time', s: 'pan-time', a: 'pan-time',
+    cs: 'zoom-time-fine', ms: 'pan-time', ca: 'pan-lanes', ma: 'pan-time', csa: 'zoom-time-fine', sa: 'pan-time',
     cm: 'resize-lanes',
   },
 };
@@ -128,60 +131,79 @@ for (const id of ['thedaw', 'reaper'] as const) {
     assert.equal(wheelIntent(vertical(combo), profile, 800).action, action, `${id} "${combo}"`);
   }
 }
+const macExpectations: Record<'thedaw' | 'reaper', Record<string, WheelAction>> = {
+  thedaw: { m: 'zoom-time', ms: 'zoom-time-fine', ma: 'pan-lanes', cm: 'zoom-time' },
+  reaper: { m: 'resize-lanes', ms: 'zoom-time-fine', ma: 'pan-lanes', cm: 'resize-lanes' },
+};
+for (const id of ['thedaw', 'reaper'] as const) {
+  for (const [combo, action] of Object.entries(macExpectations[id])) {
+    assert.equal(wheelIntent(vertical(combo, 100, 'darwin'), WHEEL_PROFILES[id], 800).action, action, `${id} mac "${combo}"`);
+    assert.equal(wheelIntent(vertical(combo, 100, 'MacIntel'), WHEEL_PROFILES[id], 800).action, action, `${id} MacIntel "${combo}"`);
+  }
+}
 
 // Zoom factors: wheel up zooms in; fine is nearer 1 than coarse; delta clamps at +-400.
 {
   const p = WHEEL_PROFILES.thedaw;
-  const coarse = wheelIntent(vertical('', -100), p, 800);
-  const fine = wheelIntent(vertical('c', -100), p, 800);
+  const coarse = wheelIntent(vertical('c', -100), p, 800);
+  const fine = wheelIntent(vertical('cs', -100), p, 800);
   close(coarse.zoomFactor, Math.exp(100 * 0.002));
   close(fine.zoomFactor, Math.exp(100 * 0.0006));
   assert.ok(coarse.zoomFactor > fine.zoomFactor && fine.zoomFactor > 1);
-  const coarseOut = wheelIntent(vertical('', 100), p, 800).zoomFactor;
-  const fineOut = wheelIntent(vertical('c', 100), p, 800).zoomFactor;
+  const coarseOut = wheelIntent(vertical('c', 100), p, 800).zoomFactor;
+  const fineOut = wheelIntent(vertical('cs', 100), p, 800).zoomFactor;
   assert.ok(coarseOut < fineOut && fineOut < 1);
-  close(wheelIntent(vertical('', -5000), p, 800).zoomFactor, Math.exp(400 * 0.002));
-  close(wheelIntent(vertical('', -100), p, 800, { coarseSpeed: 0.01 }).zoomFactor, Math.exp(1));
-  close(wheelIntent(vertical('c', -100), p, 800, { fineSpeed: 0.001 }).zoomFactor, Math.exp(0.1));
+  close(wheelIntent(vertical('c', -5000), p, 800).zoomFactor, Math.exp(400 * 0.002));
+  close(wheelIntent(vertical('c', -100), p, 800, { coarseSpeed: 0.01 }).zoomFactor, Math.exp(1));
+  close(wheelIntent(vertical('cs', -100), p, 800, { fineSpeed: 0.001 }).zoomFactor, Math.exp(0.1));
   // deltaMode 1 and 2 go through normalisation.
-  close(wheelIntent({ ...vertical(''), deltaY: -3, deltaMode: 1 }, p, 800).zoomFactor, Math.exp(48 * 0.002));
-  close(wheelIntent({ ...vertical(''), deltaY: -1, deltaMode: 2 }, p, 100).zoomFactor, Math.exp(100 * 0.002));
+  close(wheelIntent({ ...vertical('c'), deltaY: -3, deltaMode: 1 }, p, 800).zoomFactor, Math.exp(48 * 0.002));
+  close(wheelIntent({ ...vertical('c'), deltaY: -1, deltaMode: 2 }, p, 100).zoomFactor, Math.exp(100 * 0.002));
   // Non-zoom actions report factor 1.
+  assert.equal(wheelIntent(vertical(''), p, 800).zoomFactor, 1);
   assert.equal(wheelIntent(vertical('s'), p, 800).zoomFactor, 1);
-  assert.equal(wheelIntent(vertical('cs'), p, 800).zoomFactor, 1);
+  assert.equal(wheelIntent(vertical('a'), p, 800).zoomFactor, 1);
 }
 
 // Pan and lane payloads.
 {
   const p = WHEEL_PROFILES.thedaw;
+  assert.deepEqual(wheelIntent(vertical('', 120), p, 800), { action: 'pan-lanes', zoomFactor: 1, panPx: 120, lanePx: 0 });
   assert.deepEqual(wheelIntent(vertical('s', 120), p, 800), { action: 'pan-time', zoomFactor: 1, panPx: 120, lanePx: 0 });
-  assert.deepEqual(wheelIntent(vertical('a', -60), p, 800), { action: 'pan-lanes', zoomFactor: 1, panPx: -60, lanePx: 0 });
-  assert.deepEqual(wheelIntent(vertical('cs', -30), p, 800), { action: 'resize-lanes', zoomFactor: 1, panPx: 0, lanePx: 30 });
-  assert.deepEqual(wheelIntent(vertical('cs', 30), p, 800), { action: 'resize-lanes', zoomFactor: 1, panPx: 0, lanePx: -30 });
-  const zoom = wheelIntent(vertical('', -30), p, 800);
+  assert.deepEqual(wheelIntent(vertical('ca', -60), p, 800), { action: 'pan-lanes', zoomFactor: 1, panPx: -60, lanePx: 0 });
+  assert.deepEqual(wheelIntent(vertical('a', -30), p, 800), { action: 'resize-lanes', zoomFactor: 1, panPx: 0, lanePx: 30 });
+  assert.deepEqual(wheelIntent(vertical('a', 30), p, 800), { action: 'resize-lanes', zoomFactor: 1, panPx: 0, lanePx: -30 });
+  const zoom = wheelIntent(vertical('c', -30), p, 800);
   assert.equal(zoom.panPx, 0);
   assert.equal(zoom.lanePx, 0);
   // Line-mode pan is normalised to px.
   assert.equal(wheelIntent({ ...vertical('s'), deltaY: 2, deltaMode: 1 }, p, 800).panPx, 32);
+  assert.equal(wheelIntent({ ...vertical(''), deltaY: 2, deltaMode: 1 }, p, 800).panPx, 32);
   // Shift+wheel that the browser already turned horizontal still pans by that delta.
   assert.deepEqual(
-    wheelIntent({ deltaX: 90, deltaY: 0, deltaMode: 0, ...mods('s') }, p, 800),
+    wheelIntent({ deltaX: 90, deltaY: 0, deltaMode: 0, platform: 'win32', ...mods('s') }, p, 800),
     { action: 'pan-time', zoomFactor: 1, panPx: 90, lanePx: 0 },
   );
+  // A zero delta is nothing, whatever is held.
+  assert.deepEqual(wheelIntent(vertical('', 0), p, 800), { action: 'none', zoomFactor: 1, panPx: 0, lanePx: 0 });
+  assert.deepEqual(wheelIntent(vertical('c', 0), p, 800), { action: 'none', zoomFactor: 1, panPx: 0, lanePx: 0 });
 }
 
 // Horizontal trackpad with no modifiers pans time under both profiles.
 for (const id of ['thedaw', 'reaper'] as const) {
   assert.deepEqual(
-    wheelIntent({ deltaX: -40, deltaY: 5, deltaMode: 0, ...mods('') }, WHEEL_PROFILES[id], 800),
+    wheelIntent({ deltaX: -40, deltaY: 5, deltaMode: 0, platform: 'win32', ...mods('') }, WHEEL_PROFILES[id], 800),
     { action: 'pan-time', zoomFactor: 1, panPx: -40, lanePx: 0 },
   );
 }
 // A modified horizontal gesture follows the profile, not the trackpad rule.
 assert.equal(
-  wheelIntent({ deltaX: -40, deltaY: 5, deltaMode: 0, ...mods('c') }, WHEEL_PROFILES.thedaw, 800).action,
-  'zoom-time-fine',
+  wheelIntent({ deltaX: -40, deltaY: 5, deltaMode: 0, platform: 'win32', ...mods('c') }, WHEEL_PROFILES.thedaw, 800).action,
+  'zoom-time',
 );
+// A pinch (Ctrl + wheel in Chromium) zooms time on either platform.
+assert.equal(wheelIntent(vertical('c', -8, 'darwin'), WHEEL_PROFILES.thedaw, 800).action, 'zoom-time');
+assert.equal(wheelIntent(vertical('c', -8, 'win32'), WHEEL_PROFILES.thedaw, 800).action, 'zoom-time');
 
 assert.throws(() => wheelIntent({ ...vertical(''), deltaY: Number.NaN }, WHEEL_PROFILES.thedaw, 800), RangeError);
 assert.throws(() => wheelIntent(vertical(''), WHEEL_PROFILES.thedaw, 800, { coarseSpeed: -1 }), RangeError);

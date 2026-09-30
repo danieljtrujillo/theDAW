@@ -4336,12 +4336,15 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   ]);
 
   // --- Wheel (F08): the selected profile in useTimelinePrefs decides what each
-  // modifier does. theDAW default: wheel = time zoom, Ctrl/Cmd = fine time
-  // zoom, Shift = horizontal scroll, Alt = vertical scroll, Ctrl/Cmd+Shift =
-  // lane height. Zooms go through requestZoom (edit-cursor anchored), one per
+  // modifier does; the gesture itself is read by lib/editWheel. theDAW default
+  // (EDIT_WHEEL_BINDINGS): wheel = vertical scroll, Shift = horizontal scroll,
+  // Ctrl (Cmd on macOS) = time zoom, Alt = track height, Ctrl+Shift = fine
+  // time zoom. The lane scroller and the track header column share one
+  // handler. Zooms go through requestZoom (edit-cursor anchored), one per
   // frame. Form fields and anything under [data-wheel-passthrough] (editable
-  // automation lanes, popovers) keep their own wheel; so does any gesture the
-  // profile does not handle — preventDefault only when the editor acts.
+  // automation lanes, popovers) keep their own wheel, as does a child that
+  // already consumed the event (a focused header knob); so does any gesture
+  // the profile does not handle; preventDefault only when the editor acts.
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   /** The mounted scroller as state, so effects that attach listeners re-run
    *  when it (re)mounts instead of depending on mount order. */
@@ -4353,7 +4356,7 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
   const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
   const wheelHandler = (e: WheelEvent) => {
     const el = timelineScrollRef.current;
-    if (!el) return;
+    if (!el || e.defaultPrevented) return;
     const target = e.target instanceof Element ? e.target : null;
     if (isWheelExcludedTarget(target)) return;
     const prefs = useTimelinePrefs.getState();
@@ -4390,7 +4393,14 @@ export const WaveformEditor: React.FC<{ onSwitchTab?: (tab: string) => void }> =
     if (!scrollerEl) return;
     const onWheel = (e: WheelEvent) => wheelHandlerRef.current(e);
     scrollerEl.addEventListener('wheel', onWheel, { passive: false });
-    return () => scrollerEl.removeEventListener('wheel', onWheel);
+    // The track header column mounts in the same body as the scroller and
+    // mirrors its scrollTop, so a wheel over the headers moves the lanes too.
+    const headerEl = trackHeaderScrollRef.current;
+    headerEl?.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      scrollerEl.removeEventListener('wheel', onWheel);
+      headerEl?.removeEventListener('wheel', onWheel);
+    };
   }, [scrollerEl]);
 
   /* Visible window of the scroller (local px), for the grid window, the ruler's

@@ -9,8 +9,19 @@
  *
  * Adapted from docs/design/repair-pack/repair/src/timelineGeometry.ts; the
  * wheel bindings follow plan decision D1
- * (docs/design/repair-expansion-report-and-plan.md §7).
+ * (docs/design/repair-expansion-report-and-plan.md §7); the default profile
+ * is the EDIT wheel convention table in lib/editWheel.
  */
+import {
+  EDIT_WHEEL_BINDINGS,
+  normalizeWheelDelta,
+  resolveEditWheel,
+  type EditWheelBinding,
+  type EditWheelInput,
+  type WheelGestureKey,
+} from '../editWheel';
+
+export { normalizeWheelDelta };
 
 function finite(n: number, name: string): number {
   if (!Number.isFinite(n)) throw new RangeError(`${name} must be finite`);
@@ -90,7 +101,8 @@ export function timeAtLocalX(localX: number, scrollLeft: number, zoom: number): 
 export type WheelAction = 'zoom-time' | 'zoom-time-fine' | 'resize-lanes' | 'pan-time' | 'pan-lanes' | 'none';
 export type WheelProfileId = 'thedaw' | 'reaper';
 
-/** Action per modifier combination. Meta (Cmd) counts as Ctrl. */
+/** Action per modifier combination. Meta (Cmd) counts as Ctrl on macOS only
+ *  (lib/editWheel zoomModifierHeld). */
 export interface WheelProfile {
   id: WheelProfileId;
   label: string;
@@ -102,16 +114,37 @@ export interface WheelProfile {
   ctrlAlt: WheelAction;
 }
 
+/** A wheel binding (lib/editWheel) as the profile action it names. */
+const BINDING_ACTION: Readonly<Record<EditWheelBinding, WheelAction>> = Object.freeze({
+  'zoom-x': 'zoom-time',
+  'zoom-x-fine': 'zoom-time-fine',
+  'scroll-x': 'pan-time',
+  'scroll-y': 'pan-lanes',
+  'zoom-y': 'resize-lanes',
+  none: 'none',
+});
+
+const ACTION_BINDING: Readonly<Record<WheelAction, EditWheelBinding>> = Object.freeze({
+  'zoom-time': 'zoom-x',
+  'zoom-time-fine': 'zoom-x-fine',
+  'pan-time': 'scroll-x',
+  'pan-lanes': 'scroll-y',
+  'resize-lanes': 'zoom-y',
+  none: 'none',
+});
+
 export const WHEEL_PROFILES: Readonly<Record<WheelProfileId, WheelProfile>> = Object.freeze({
+  // The default: the EDIT conventions, taken from EDIT_WHEEL_BINDINGS so the
+  // wheel handler and the preferences table read the same rows.
   thedaw: Object.freeze<WheelProfile>({
     id: 'thedaw',
-    label: 'theDAW (wheel zooms, Ctrl = fine zoom)',
-    plain: 'zoom-time',
-    ctrl: 'zoom-time-fine',
-    shift: 'pan-time',
-    alt: 'pan-lanes',
-    ctrlShift: 'resize-lanes',
-    ctrlAlt: 'pan-lanes',
+    label: 'theDAW (wheel scrolls, Ctrl zooms)',
+    plain: BINDING_ACTION[EDIT_WHEEL_BINDINGS.plain],
+    ctrl: BINDING_ACTION[EDIT_WHEEL_BINDINGS.ctrl],
+    shift: BINDING_ACTION[EDIT_WHEEL_BINDINGS.shift],
+    alt: BINDING_ACTION[EDIT_WHEEL_BINDINGS.alt],
+    ctrlShift: BINDING_ACTION[EDIT_WHEEL_BINDINGS.ctrlShift],
+    ctrlAlt: BINDING_ACTION[EDIT_WHEEL_BINDINGS.ctrlAlt],
   }),
   reaper: Object.freeze<WheelProfile>({
     id: 'reaper',
@@ -124,23 +157,6 @@ export const WHEEL_PROFILES: Readonly<Record<WheelProfileId, WheelProfile>> = Ob
     ctrlAlt: 'pan-lanes',
   }),
 });
-
-const LINE_HEIGHT_PX = 16;
-
-/**
- * Wheel deltas in px: deltaMode 0 (pixels) as-is, 1 (lines) x16,
- * 2 (pages) x `pageHeightPx`. Unknown modes are treated as pixels.
- */
-export function normalizeWheelDelta(
-  e: { deltaX: number; deltaY: number; deltaMode: number },
-  pageHeightPx: number,
-): { dx: number; dy: number } {
-  finite(e.deltaX, 'deltaX');
-  finite(e.deltaY, 'deltaY');
-  finite(pageHeightPx, 'pageHeightPx');
-  const scale = e.deltaMode === 1 ? LINE_HEIGHT_PX : e.deltaMode === 2 ? pageHeightPx : 1;
-  return { dx: e.deltaX * scale, dy: e.deltaY * scale };
-}
 
 export interface WheelIntent {
   action: WheelAction;
@@ -163,63 +179,49 @@ function speed(value: number | undefined, fallback: number, name: string): numbe
   return value;
 }
 
+const NO_INTENT: WheelIntent = Object.freeze({ action: 'none', zoomFactor: 1, panPx: 0, lanePx: 0 });
+
 /**
  * Resolve a wheel event into an action under `profile`.
  *
- * Modifier resolution order: ctrl+shift, ctrl+alt, ctrl, alt, shift, plain
- * (meta counts as ctrl). With no modifiers and |dx| > |dy| (a horizontal
- * trackpad swipe) the result is pan-time by dx regardless of profile.
- * Otherwise the gesture's delta is dy, or dx when |dx| > |dy| (browsers turn
- * Shift+wheel into deltaX). zoomFactor = exp(-clamp(delta, -400, 400) * k),
- * k = coarseSpeed (0.002) or, for zoom-time-fine, fineSpeed (0.0006).
+ * The gesture is resolved by lib/editWheel resolveEditWheel with the profile's
+ * bindings: modifier order ctrl+shift, ctrl+alt, ctrl, alt, shift, plain, where
+ * meta counts as ctrl on macOS only (`e.platform`, or the host's when absent).
+ * With no modifiers and |dx| > |dy| (a horizontal trackpad swipe) the result
+ * is pan-time by dx regardless of profile. Otherwise the gesture's delta is
+ * dy, or dx when |dx| > |dy| (browsers turn Shift+wheel into deltaX).
+ * zoomFactor = exp(-clamp(delta, -400, 400) * k), k = coarseSpeed (0.002) or,
+ * for zoom-time-fine, fineSpeed (0.0006). A zero delta is `none`.
  */
 export function wheelIntent(
-  e: {
-    deltaX: number;
-    deltaY: number;
-    deltaMode: number;
-    ctrlKey: boolean;
-    metaKey: boolean;
-    shiftKey: boolean;
-    altKey: boolean;
-  },
+  e: EditWheelInput,
   profile: WheelProfile,
   pageHeightPx: number,
   opts?: { coarseSpeed?: number; fineSpeed?: number },
 ): WheelIntent {
-  const { dx, dy } = normalizeWheelDelta(e, pageHeightPx);
   const coarse = speed(opts?.coarseSpeed, DEFAULT_COARSE_SPEED, 'coarseSpeed');
   const fine = speed(opts?.fineSpeed, DEFAULT_FINE_SPEED, 'fineSpeed');
-  const ctrl = e.ctrlKey || e.metaKey;
-  const horizontal = Math.abs(dx) > Math.abs(dy);
-
-  if (!ctrl && !e.shiftKey && !e.altKey && horizontal) {
-    return { action: 'pan-time', zoomFactor: 1, panPx: dx, lanePx: 0 };
-  }
-
-  const action: WheelAction =
-    ctrl && e.shiftKey ? profile.ctrlShift
-    : ctrl && e.altKey ? profile.ctrlAlt
-    : ctrl ? profile.ctrl
-    : e.altKey ? profile.alt
-    : e.shiftKey ? profile.shift
-    : profile.plain;
-  const delta = horizontal ? dx : dy;
-
-  switch (action) {
-    case 'zoom-time':
-    case 'zoom-time-fine': {
-      const k = action === 'zoom-time-fine' ? fine : coarse;
-      const zoomFactor = Math.exp(-clamp(delta, -MAX_ZOOM_DELTA_PX, MAX_ZOOM_DELTA_PX) * k);
-      return { action, zoomFactor, panPx: 0, lanePx: 0 };
+  const bindings: Record<WheelGestureKey, EditWheelBinding> = {
+    plain: ACTION_BINDING[profile.plain],
+    ctrl: ACTION_BINDING[profile.ctrl],
+    shift: ACTION_BINDING[profile.shift],
+    alt: ACTION_BINDING[profile.alt],
+    ctrlShift: ACTION_BINDING[profile.ctrlShift],
+    ctrlAlt: ACTION_BINDING[profile.ctrlAlt],
+  };
+  const a = resolveEditWheel(e, { pageHeightPx, bindings });
+  if (!a) return NO_INTENT;
+  switch (a.kind) {
+    case 'zoom-x': {
+      const zoomFactor = Math.exp(-clamp(a.amount, -MAX_ZOOM_DELTA_PX, MAX_ZOOM_DELTA_PX) * (a.fine ? fine : coarse));
+      return { action: a.fine ? 'zoom-time-fine' : 'zoom-time', zoomFactor, panPx: 0, lanePx: 0 };
     }
-    case 'pan-time':
-    case 'pan-lanes':
-      return { action, zoomFactor: 1, panPx: delta, lanePx: 0 };
-    case 'resize-lanes':
-      return { action, zoomFactor: 1, panPx: 0, lanePx: -delta };
-    case 'none':
-      return { action, zoomFactor: 1, panPx: 0, lanePx: 0 };
+    case 'scroll-x':
+      return { action: 'pan-time', zoomFactor: 1, panPx: a.amount, lanePx: 0 };
+    case 'scroll-y':
+      return { action: 'pan-lanes', zoomFactor: 1, panPx: a.amount, lanePx: 0 };
+    case 'zoom-y':
+      return { action: 'resize-lanes', zoomFactor: 1, panPx: 0, lanePx: -a.amount };
   }
 }
 
