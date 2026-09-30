@@ -5,14 +5,18 @@
  * The panel and the assistant's composer tools call only this module, and
  * each write is the roll store's own composer action of the same job, one
  * undo step each: `writePlan` is `writePlanToRoll`, `writeCounterpoint`,
- * `writeFormMovement`, `runVoiceLeadingCheck` and `selectFlagNotes` are their
- * namesakes (state/pianoRollStore.ts). The flags a check or a write comes back
+ * `writeFormMovement`, `writeOrchestration`, `runVoiceLeadingCheck` and
+ * `selectFlagNotes` are their namesakes (state/pianoRollStore.ts), and
+ * `removeRollParts` is `removeTracks`, which takes back the parts an
+ * orchestration added. The flags a check or a write comes back
  * with live in the store's `voiceLeading`, so the panel's CHECK list and the
  * roll's harmony row show the same flags.
  *
  * What the panel sends reads the roll through `rollComposeContext` (its key,
- * meter map, pickup and SATB ranges) and `cantusFirmusOf` (the part marked as
- * the cantus firmus). `writePartsToRoll` writes parts by name for a caller
+ * meter map, pickup and SATB ranges), `cantusFirmusOf` (the part marked as
+ * the cantus firmus), and, for ORCHESTRATE, `rollSketchParts` (every part
+ * with its notes, velocities and articulations) and `rollOrchestrateContext`
+ * (the key, meter, harmony row and section markers). `writePartsToRoll` writes parts by name for a caller
  * with no composer answer.
  *
  * Notes come from the backend as `{note, tick, ticks}` at the roll's own PPQ
@@ -27,10 +31,13 @@ import type {
   FugueResult,
   KeyMode,
   NoteLike,
+  OrchestrateResult,
   PlanResult,
+  SketchPart,
   SpeciesResult,
   VoiceLeadingFlag,
 } from './composerClient';
+import type { OrchestrateContext } from './composerPanelModel';
 import type { MeterSegment } from './meterMap';
 import { PPQ, ROLL_STEPS_PER_BEAT } from './noteClock';
 import { TONICS } from './composerPanelModel';
@@ -65,6 +72,8 @@ export interface RollWrite {
   replaced: boolean;
   /** Parts the write made (the rest existed and had their notes replaced). */
   created: number;
+  /** The ids of the parts the write made, in the answer's order. */
+  createdIds: string[];
   /** Voices left out because the roll already held its most parts. */
   skipped: number;
 }
@@ -108,6 +117,7 @@ function reportWrite(done: RollWriteResult, replaced: boolean): RollWrite {
     notes: written.reduce((sum, t) => sum + t.notes.length, 0),
     replaced,
     created: done.created,
+    createdIds: [...done.createdIds],
     skipped: done.skipped,
   };
 }
@@ -130,9 +140,10 @@ export function writePartsToRoll(parts: readonly ComposedPart[], opts: { meterMa
       opts.meterMap && opts.meterMap.length ? { meterMap: opts.meterMap.map((s) => ({ bar: s.bar, meter: { ...s.meter, groups: [...(s.meter.groups ?? [])] } })) } : undefined,
     );
     const ids = rollTracksOf(usePianoRollStore.getState()).map((t) => t.id);
-    return { parts: names, partIds: ids, notes: count, replaced: true, created: names.length, skipped: 0 };
+    return { parts: names, partIds: ids, notes: count, replaced: true, created: names.length, createdIds: [...ids], skipped: 0 };
   }
   const ids: string[] = [];
+  const createdIds: string[] = [];
   let created = 0;
   parts.forEach((p, i) => {
     const s = usePianoRollStore.getState();
@@ -145,7 +156,10 @@ export function writePartsToRoll(parts: readonly ComposedPart[], opts: { meterMa
       id = found.id;
     } else {
       id = s.addTrack({ name, notes });
-      if (id) created += 1;
+      if (id) {
+        created += 1;
+        createdIds.push(id);
+      }
     }
     if (id) ids.push(id);
   });
@@ -153,7 +167,7 @@ export function writePartsToRoll(parts: readonly ComposedPart[], opts: { meterMa
   if (ids[0]) after.setActiveTrack(ids[0]);
   const needed = Math.ceil(lastStep(parts));
   if (needed > after.totalSteps) after.setTotalSteps(needed);
-  return { parts: names, partIds: ids, notes: count, replaced: false, created, skipped: parts.length - ids.length };
+  return { parts: names, partIds: ids, notes: count, replaced: false, created, createdIds, skipped: parts.length - ids.length };
 }
 
 /**
@@ -187,6 +201,23 @@ export function writeFormMovement(form: FormResult, movementIndex = 0): RollWrit
   const done = usePianoRollStore.getState().writeFormMovement(form, movementIndex);
   if (!done) throw new Error('the movement has no notes: plan it with REALIZE, not PLAN');
   return reportWrite(done, replaced);
+}
+
+/**
+ * An orchestration into the roll (pianoRollStore writeOrchestration): one
+ * part per instrument, each into the part with its name ("Violin I", "Horn
+ * II") or a new part on the answer's registry instrument, with its CC 1
+ * swells. One undo step. `createdIds` names the parts it added, which
+ * `removeRollParts` takes back.
+ */
+export function writeOrchestration(result: OrchestrateResult): RollWrite {
+  const replaced = rollIsEmpty();
+  return reportWrite(usePianoRollStore.getState().writeOrchestration(result), replaced);
+}
+
+/** Remove the parts `ids` names in one undo step (pianoRollStore removeTracks). Returns how many went. */
+export function removeRollParts(ids: readonly string[]): number {
+  return usePianoRollStore.getState().removeTracks(ids);
 }
 
 /* ── reading the roll ────────────────────────────────────────────────────── */
@@ -232,6 +263,40 @@ export function speciesCantusNotes(): NoteLike[] {
 /** The roll as a request reads it: its meter map and pickup, and the ranges of its SATB parts. */
 export function rollRequestContext(): RollComposeContext {
   return rollComposeContext(usePianoRollStore.getState());
+}
+
+/** Every roll part as ORCHESTRATE's sketch reads it: id, name, registry instrument, program, and its notes with their velocities and articulations. */
+export function rollSketchParts(): SketchPart[] {
+  return rollTracksOf(usePianoRollStore.getState()).map((t) => ({
+    id: t.id,
+    name: t.name,
+    ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
+    program: t.program,
+    notes: t.notes.map((n) => ({
+      note: n.note,
+      tick: n.tick,
+      ticks: n.ticks,
+      step: n.step,
+      length: n.length,
+      velocity: n.velocity,
+      ...(n.articulation ? { articulation: n.articulation } : {}),
+    })),
+  }));
+}
+
+/** What ORCHESTRATE reads from the roll besides its parts: the key, the meter and pickup, the harmony row's figures and the section markers. */
+export function rollOrchestrateContext(): OrchestrateContext {
+  const s = usePianoRollStore.getState();
+  const ctx = rollComposeContext(s);
+  const { key, mode } = rollKeyForPanel();
+  return {
+    key,
+    mode,
+    meterMap: ctx.meterMap,
+    pickupSteps: ctx.pickupSteps,
+    harmony: s.harmonyChords.map((c) => ({ tick: c.tick, figure: c.roman ?? c.figure, ...(c.key ? { key: c.key } : {}) })),
+    markers: s.markers.map((m) => ({ tick: m.tick, name: m.name })),
+  };
 }
 
 /**

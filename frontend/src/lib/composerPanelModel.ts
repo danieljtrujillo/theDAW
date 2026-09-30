@@ -13,6 +13,8 @@ import { ApiError } from './apiJson';
 import type {
   Cadence,
   CanonRequest,
+  ChordLabel,
+  Ensemble,
   CantusPreset,
   ComposerNote,
   CounterpointFlag,
@@ -26,6 +28,7 @@ import type {
   KeyMode,
   ModalMode,
   NoteLike,
+  OrchestrateRequest,
   PartRanges,
   PlanRequest,
   ProfileRequest,
@@ -34,6 +37,8 @@ import type {
   SpeciesRequest,
   StyleProfile,
   StyleSummary,
+  SketchPart,
+  Texture,
   VoiceLeadingFlag,
 } from './composerClient';
 import type { MeterSegment } from './meterMap';
@@ -452,6 +457,72 @@ export function canonRequest(c: CanonState): CanonRequest {
     transposition: c.transposition,
     rhythm: c.rhythm,
     seed: clampInt(c.seed, LIMITS.seed.min, LIMITS.seed.max, 0),
+  };
+}
+
+/** The ensembles ORCHESTRATE writes for, one word each. */
+export const ENSEMBLE_OPTIONS: readonly Option<Ensemble>[] = [
+  { value: 'strings', label: 'Strings' },
+  { value: 'chamber', label: 'Chamber' },
+  { value: 'classical', label: 'Classical' },
+  { value: 'romantic', label: 'Romantic' },
+];
+
+/** The textures the accompaniment takes. */
+export const TEXTURE_OPTIONS: readonly Option<Texture>[] = [
+  { value: 'tutti', label: 'Tutti' },
+  { value: 'melody_accompaniment', label: 'Accompanied' },
+  { value: 'chorale', label: 'Chorale' },
+  { value: 'call_answer', label: 'Antiphonal' },
+];
+
+export interface OrchestrateState {
+  ensemble: Ensemble;
+  texture: Texture;
+  /** 0-100, the slider's own scale; the request sends it as 0-1. */
+  density: number;
+  /** A roll part id, or '' for the highest part by mean pitch. */
+  melody: string;
+  /** A roll part id, or '' for the lowest part by mean pitch. */
+  bass: string;
+}
+
+export const DEFAULT_ORCHESTRATE: OrchestrateState = {
+  ensemble: 'classical',
+  texture: 'tutti',
+  density: 50,
+  melody: '',
+  bass: '',
+};
+
+/** What ORCHESTRATE reads from the roll besides the parts. */
+export interface OrchestrateContext {
+  key: string;
+  mode: KeyMode;
+  meterMap: readonly MeterSegment[];
+  pickupSteps: number;
+  harmony: readonly ChordLabel[];
+  markers: readonly { tick: number; name: string }[];
+}
+
+/** The request for a sketch: the roll's parts that hold notes, its key, meter, harmony row and markers, and the panel's choices. */
+export function orchestrateRequest(o: OrchestrateState, parts: readonly SketchPart[], ctx: OrchestrateContext): OrchestrateRequest {
+  const sketch = parts.filter((p) => p.notes.length > 0);
+  if (!sketch.length) throw new ComposeInputError('the roll has no notes to orchestrate');
+  const has = (id: string) => sketch.some((p) => p.id === id);
+  return {
+    parts: sketch,
+    harmony: ctx.harmony.filter((c) => c.figure),
+    markers: ctx.markers.map((m) => ({ tick: m.tick, name: m.name })),
+    key: ctx.key,
+    mode: ctx.mode,
+    meterMap: ctx.meterMap,
+    pickupSteps: ctx.pickupSteps,
+    ensemble: o.ensemble,
+    texture: o.texture,
+    density: Math.max(0, Math.min(1, clampInt(o.density, 0, 100, 50) / 100)),
+    ...(o.melody && has(o.melody) ? { melody: o.melody } : {}),
+    ...(o.bass && has(o.bass) ? { bass: o.bass } : {}),
   };
 }
 

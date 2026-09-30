@@ -637,6 +637,89 @@ export interface FugueResult {
   flags: VoiceLeadingFlag[];
 }
 
+// ── orchestration ───────────────────────────────────────────────────────────
+
+export type Ensemble = 'strings' | 'chamber' | 'classical' | 'romantic';
+export type Texture = 'tutti' | 'melody_accompaniment' | 'chorale' | 'call_answer';
+
+/** A note of the sketch as ORCHESTRATE reads it: the roll's velocity and articulation come along. */
+export interface SketchNote extends NoteLike {
+  velocity?: number;
+  articulation?: string;
+}
+
+/** One part of the sketch: a roll part by id and name, with its notes. */
+export interface SketchPart {
+  id: string;
+  name: string;
+  instrumentId?: string;
+  program?: number | null;
+  notes: readonly SketchNote[];
+}
+
+export interface OrchestrateRequest {
+  parts: readonly SketchPart[];
+  /** The harmony row's roman numerals by tick; empty reads the chords in the sketch. */
+  harmony?: readonly ChordLabel[];
+  /** The section markers; none makes the whole sketch one section. */
+  markers?: readonly { tick: number; name: string }[];
+  key?: string;
+  mode?: KeyMode;
+  meterMap?: readonly MeterSegment[];
+  pickupSteps?: number;
+  ensemble?: Ensemble;
+  texture?: Texture;
+  /** 0-1: how many of the optional players join outside the climax. */
+  density?: number;
+  /** The melody part's id (unset: the highest by mean pitch). */
+  melody?: string;
+  /** The bass part's id (unset: the lowest by mean pitch). */
+  bass?: string;
+}
+
+/** A note ORCHESTRATE wrote: its velocity is the section's dynamic; the articulation is one of lib/articulationMap's. */
+export interface OrchestratedNote extends ComposerNote {
+  velocity: number;
+  articulation?: string;
+}
+
+export interface OrchestratedPart {
+  /** The part name in the roll ("Violin I", "Horn II"). */
+  name: string;
+  /** The orchestra registry id the part plays (lib/orchestra). */
+  instrument_id: string;
+  role: string;
+  notes: OrchestratedNote[];
+  /** CC 1 swells, one per phrase. */
+  controls: { tick: number; controller: number; value: number }[];
+}
+
+export interface OrchestratedSection {
+  name: string;
+  tick: number;
+  ticks: number;
+  dynamic: string;
+  velocity: number;
+  climax: boolean;
+  lead: 'strings' | 'winds';
+  /** One sentence: who carries the melody, who doubles it, who holds the harmony, what the bass does. */
+  plan: string;
+}
+
+export interface OrchestrateResult {
+  key: string;
+  ppq: number;
+  ensemble: Ensemble;
+  texture: Texture;
+  density: number;
+  melody_part: string;
+  bass_part: string;
+  parts: OrchestratedPart[];
+  sections: OrchestratedSection[];
+  plan: string[];
+  chords: { tick: number; ticks: number; figure: string; key: string }[];
+}
+
 const TICKS_PER_STEP = PPQ / ROLL_STEPS_PER_BEAT;
 
 /** `{note, tick, ticks}` for the backend: the note's own ticks when it has
@@ -764,6 +847,40 @@ export function canonBody(req: CanonRequest): Record<string, unknown> {
   });
 }
 
+/** A sketch note for the wire: the composer note plus its velocity and articulation when it has them. */
+export function toSketchNote(n: SketchNote): Record<string, unknown> {
+  return compact({
+    ...toComposerNote(n),
+    velocity: typeof n.velocity === 'number' && Number.isFinite(n.velocity) ? Math.max(1, Math.min(127, Math.round(n.velocity))) : undefined,
+    articulation: typeof n.articulation === 'string' && n.articulation ? n.articulation : undefined,
+  });
+}
+
+export function orchestrateBody(req: OrchestrateRequest): Record<string, unknown> {
+  return compact({
+    parts: req.parts.map((p) =>
+      compact({
+        id: p.id,
+        name: p.name,
+        instrument_id: p.instrumentId,
+        program: typeof p.program === 'number' ? p.program : undefined,
+        notes: p.notes.map(toSketchNote),
+      }),
+    ),
+    harmony: req.harmony ? req.harmony.map((c) => compact({ tick: c.tick, figure: c.figure, key: c.key })) : undefined,
+    markers: req.markers ? req.markers.map((m) => ({ tick: m.tick, name: m.name })) : undefined,
+    key: req.key,
+    mode: req.mode,
+    meter_map: req.meterMap ? toMeterMap(req.meterMap) : undefined,
+    pickup_steps: req.pickupSteps,
+    ensemble: req.ensemble,
+    texture: req.texture,
+    density: req.density,
+    melody: req.melody,
+    bass: req.bass,
+  });
+}
+
 export function fugueBody(req: FugueRequest): Record<string, unknown> {
   return compact({
     key: req.key,
@@ -843,5 +960,10 @@ export const composerApi = {
   /** A fugue exposition with its answer, countersubject, episodes and stretto search. */
   fugue(req: FugueRequest): Promise<FugueResult> {
     return postJson<FugueResult>('/api/composer/fugue', fugueBody(req));
+  },
+
+  /** A sketch of parts written for a whole ensemble: one part per instrument of the orchestra registry, with a plan per section. */
+  orchestrate(req: OrchestrateRequest): Promise<OrchestrateResult> {
+    return postJson<OrchestrateResult>('/api/composer/orchestrate', orchestrateBody(req));
   },
 };

@@ -15,6 +15,7 @@
     POST /canon             a two-voice canon at an interval and time lag
     POST /fugue             a fugue exposition, episodes and stretto search
     POST /invertible-check  a two-voice pair checked as written and inverted
+    POST /orchestrate       a sketch of parts written for a whole ensemble
 
 Notes go in and come out as ``{note, tick, ticks}`` at 960 ticks to the
 quarter, the piano roll's PPQ. Meter maps are the roll's own
@@ -53,6 +54,8 @@ from .spec import (
     HARMONIC_RHYTHMS,
     INVERTIBLE_AT,
     MODES,
+    ORCHESTRA_ENSEMBLES,
+    ORCHESTRA_TEXTURES,
     PPQ,
     RONDO_PATTERNS,
     RULES,
@@ -246,6 +249,51 @@ class FugueRequest(BaseModel):
     start_tick: int = Field(default=0, ge=0, le=MAX_TICK)
 
 
+Ensemble = Literal["strings", "chamber", "classical", "romantic"]
+Texture = Literal["tutti", "melody_accompaniment", "chorale", "call_answer"]
+MAX_SKETCH_PARTS = 64
+MAX_SKETCH_NOTES = 16384
+MAX_MARKERS = 256
+
+
+class OrchestraNoteIn(NoteIn):
+    velocity: Optional[int] = Field(default=None, ge=1, le=127)
+    articulation: Optional[str] = Field(default=None, max_length=16)
+
+
+class SketchPartIn(BaseModel):
+    id: str = Field(default="", max_length=128)
+    name: str = Field(default="", max_length=128)
+    instrument_id: Optional[str] = Field(default=None, max_length=64)
+    program: Optional[int] = Field(default=None, ge=0, le=127)
+    notes: list[OrchestraNoteIn] = Field(
+        default_factory=list, max_length=MAX_SKETCH_NOTES
+    )
+
+
+class MarkerIn(BaseModel):
+    tick: int = Field(ge=0, le=MAX_TICK)
+    name: str = Field(default="", max_length=128)
+
+
+class OrchestrateRequest(BaseModel):
+    parts: list[SketchPartIn] = Field(min_length=1, max_length=MAX_SKETCH_PARTS)
+    harmony: list[ChordIn] = Field(
+        default_factory=list, max_length=MAX_SYMPHONY_BARS * 16
+    )
+    markers: list[MarkerIn] = Field(default_factory=list, max_length=MAX_MARKERS)
+    key: Optional[str] = Field(default=None, max_length=32)
+    mode: Optional[Mode] = None
+    meter_map: list[MeterSegmentIn] = Field(default_factory=list)
+    pickup_steps: float = Field(default=0, ge=0, le=MAX_PICKUP_STEPS)
+    ensemble: Ensemble = "classical"
+    texture: Texture = "tutti"
+    density: float = Field(default=0.5, ge=0, le=1)
+    # A part id or name; unset: the highest part by mean pitch, and the lowest.
+    melody: Optional[str] = Field(default=None, max_length=128)
+    bass: Optional[str] = Field(default=None, max_length=128)
+
+
 class InvertibleRequest(BaseModel):
     upper: list[NoteIn] = Field(min_length=1, max_length=MAX_NOTES)
     lower: list[NoteIn] = Field(min_length=1, max_length=MAX_NOTES)
@@ -287,6 +335,8 @@ def health() -> dict[str, Any]:
         "cantus_firmi": {k: dict(v) for k, v in CANTUS_FIRMI.items()},
         "fugue_voices": {str(k): list(v) for k, v in FUGUE_VOICES.items()},
         "counterpoint_rules": list(COUNTERPOINT_RULES),
+        "ensembles": list(ORCHESTRA_ENSEMBLES),
+        "textures": list(ORCHESTRA_TEXTURES),
     }
 
 
@@ -546,4 +596,30 @@ def invertible(req: InvertibleRequest) -> dict[str, Any]:
             mode=req.mode,
         )
     except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.post("/orchestrate")
+def orchestrate_sketch(req: OrchestrateRequest) -> dict[str, Any]:
+    from .orchestrate import orchestrate
+
+    if sum(len(p.notes) for p in req.parts) > MAX_SKETCH_NOTES:
+        raise HTTPException(422, f"at most {MAX_SKETCH_NOTES} notes")
+    try:
+        return orchestrate(
+            [p.model_dump() for p in req.parts],
+            ensemble=req.ensemble,
+            texture=req.texture,
+            density=req.density,
+            melody=req.melody,
+            bass=req.bass,
+            key=req.key,
+            mode=req.mode,
+            harmony=[c.model_dump() for c in req.harmony],
+            meter_map=_meter_map(req.meter_map),
+            pickup_steps=req.pickup_steps,
+            markers=[m.model_dump() for m in req.markers],
+        )
+    except ValueError as e:
+        # OrchestrateError is a ValueError: no notes, an unknown part name.
         raise HTTPException(422, str(e)) from e
