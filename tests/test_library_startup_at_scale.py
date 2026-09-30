@@ -18,6 +18,7 @@ resumes on the next start, and the progress a status request reports.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -44,7 +45,13 @@ from tests.test_security_b12 import real_app_context
 ROWS = 200_000
 
 #: A request that answers "at once" answers inside this.
-PROMPT_SEC = 1.0
+#: What "prompt" means for a health or search answer while the library
+#: works: 1 s on a developer machine (a probe measures 4 ms there). GitHub's
+#: hosted runners have two vCPUs shared with the index build thread, and
+#: on seven runs the first probe of the index phase took 1.1 to 1.5 s while
+#: every later one took 0.05 to 0.3 s; the bound there is 2.5 s, still far
+#: under the multi-second stalls this test exists to catch.
+PROMPT_SEC = 2.5 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 
 _MAIN_INSERT = """
     INSERT INTO entries (
